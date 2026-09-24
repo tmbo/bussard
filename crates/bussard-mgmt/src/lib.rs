@@ -31,13 +31,13 @@
 //!
 //! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 //! // Open a bus session (a tunnel to a gateway).
-//! let gateway = "192.0.2.10:3671".parse().unwrap();
+//! let gateway = "192.0.2.10:3671".parse()?;
 //! let config = ConnectionConfig::tunnel(gateway);
 //! let mut bus = Transport::connect(&config).await?;
 //!
 //! // Connect to device 1.1.4 and read its mask version.
-//! let target = "1.1.4".parse().unwrap();
-//! let source = "0.0.255".parse().unwrap();
+//! let target = "1.1.4".parse()?;
+//! let source = "0.0.255".parse()?;
 //! let mut device = DeviceConnection::connect(&mut bus, target, source).await?;
 //! let mask = device.device_descriptor().await?;
 //! println!("mask version: {mask:#06x} ({})", bussard_mgmt::system_type(mask));

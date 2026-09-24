@@ -26,7 +26,6 @@
 //! live bus.**
 
 use std::collections::{BTreeMap, HashMap};
-use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -38,11 +37,11 @@ use bussard_mgmt::LsmAccess;
 use bussard_mgmt::connection::Layer4Connection;
 use bussard_mgmt::load::LoadState;
 use bussard_prod::application::{ApplicationProgram, parse_application_program};
-use bussard_transport::cemi::{Apdu, CemiFrame, Destination, Tpci};
-use bussard_transport::knxnet::{self, ConnectionHeader, ServiceType};
+use bussard_testkit::{Inbound, MockDevice, MockGateway, Reaction, Verdict};
+use bussard_transport::cemi::Destination;
+use bussard_transport::knxnet::ServiceType;
 use bussard_transport::tpci::{self, TpciKind};
 use bussard_transport::{ConnectionConfig, Transport};
-use tokio::net::UdpSocket;
 
 const CHANNEL: u8 = 0x37;
 
@@ -257,7 +256,7 @@ fn fresh_device(mode: LsmMode, fault: Fault) -> Shared {
 /// The MDT A-000E canonical System 7 app (mask 0705): obj0/PID78 preflight,
 /// three LSMs, a 0x4000 table segment with a `<Mask>`, a 0x0700 allocate-only RAM
 /// segment, a 0x4400 param segment, a TaskSegment per loaded LSM, a restart.
-fn mdt_canonical_app() -> ApplicationProgram {
+fn mdt_canonical_app() -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
     // AS-1 @ 0x4000: 4 data bytes, mask FF FF 00 FF (byte 2 device-owned).
     // AS-2 @ 0x4201: 3 assoc bytes. AS-3 @ 0x0700: allocate-only (no Data).
     // AS-4 @ 0x4400: 2 param bytes.
@@ -297,7 +296,8 @@ fn mdt_canonical_app() -> ApplicationProgram {
        </LoadProcedures>
       </Static>
      </ApplicationProgram></KNX>"#;
-    parse_application_program("M-83_A-E", xml.as_bytes()).expect("parse MDT S7 app")
+    parse_application_program("M-83_A-E", xml.as_bytes())
+        .map_err(|e| format!("parse MDT S7 app: {e}").into())
 }
 
 /// A Theben-style 0701 app with a **post-restart LSM-5** section (spec §3/§4.7):
@@ -305,7 +305,7 @@ fn mdt_canonical_app() -> ApplicationProgram {
 /// issued on LSM 5 (a fourth machine the device opens only after the restart).
 /// This is the memory-mapped × post-restart-LSM5 corner that no earlier mock or
 /// replay test exercised — the shape that broke the live `run.sh` device 1.1.8.
-fn theben_post_restart_lsm5_app() -> ApplicationProgram {
+fn theben_post_restart_lsm5_app() -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
     let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
      <ApplicationProgram Id="M-48_A-4947" ApplicationNumber="18759" ApplicationVersion="16"
         MaskVersion="MV-0701" Name="FIX2 post-restart LSM5" LoadProcedureStyle="ProductProcedure">
@@ -342,41 +342,7 @@ fn theben_post_restart_lsm5_app() -> ApplicationProgram {
       </Static>
      </ApplicationProgram></KNX>"#;
     parse_application_program("M-48_A-4947", xml.as_bytes())
-        .expect("parse Theben post-restart LSM5 app")
-}
-
-// --- KNXnet/IP gateway scaffolding (mirrors flash_mock.rs) ------------------
-
-fn knxnet_frame(service: ServiceType, body: &[u8]) -> Vec<u8> {
-    let total = (6 + body.len()) as u16;
-    let mut out = Vec::with_capacity(total as usize);
-    out.push(0x06);
-    out.push(0x10);
-    out.extend_from_slice(&(service as u16).to_be_bytes());
-    out.extend_from_slice(&total.to_be_bytes());
-    out.extend_from_slice(body);
-    out
-}
-
-fn connect_response_body(channel: u8, gw: &UdpSocket) -> Vec<u8> {
-    let mut body = vec![channel, 0x00];
-    body.push(0x08);
-    body.push(0x01);
-    body.extend_from_slice(&[127, 0, 0, 1]);
-    body.extend_from_slice(&gw.local_addr().unwrap().port().to_be_bytes());
-    body.extend_from_slice(&[0x04, 0x04, 0x11, 0xFF]);
-    body
-}
-
-async fn push(gw: &UdpSocket, peer: SocketAddr, gw_seq: &mut u8, cemi: &CemiFrame) {
-    let hdr = ConnectionHeader {
-        channel_id: CHANNEL,
-        seq: *gw_seq,
-    };
-    gw.send_to(&knxnet::tunneling_request(hdr, cemi), peer)
-        .await
-        .unwrap();
-    *gw_seq = gw_seq.wrapping_add(1);
+        .map_err(|e| format!("parse Theben post-restart LSM5 app: {e}").into())
 }
 
 fn prop_response(object_index: u8, pid: u8, count: u8, start: u16, data: &[u8]) -> Vec<u8> {
@@ -420,12 +386,6 @@ fn crc16_aug_ccitt(data: &[u8]) -> u16 {
     (result & 0xFFFF) as u16
 }
 
-enum Reaction {
-    Ack,
-    Nak,
-    Answer(u16, Vec<u8>),
-}
-
 fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
     let sel = req_apci & APCI_SELECTOR;
     lock(state).requests_seen += 1;
@@ -440,7 +400,7 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
 
     // Basic restart (terminal): fire-and-forget — just T_ACK, no response NDT.
     if sel == A_RESTART_SEL {
-        let mut s = state.lock().unwrap();
+        let mut s = lock(state);
         s.restarts_seen += 1;
         if s.restart_outage
             .is_some_and(|(nth, _, _)| nth == s.restarts_seen)
@@ -468,7 +428,7 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
 
     // Authorize: grant level 0 for the free-access key.
     if req_apci == A_AUTHORIZE_REQUEST {
-        let mut s = state.lock().unwrap();
+        let mut s = lock(state);
         s.authorizes_seen += 1;
         s.authorized = true;
         return Reaction::Answer(A_AUTHORIZE_RESPONSE, vec![0x00]);
@@ -481,7 +441,7 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
             return Reaction::Nak;
         }
         let addr = u16::from_be_bytes([payload[0], payload[1]]);
-        let mut s = state.lock().unwrap();
+        let mut s = lock(state);
         if s.lsm_mode == LsmMode::MemoryMapped
             && (LSM_STATUS_ADDR..LSM_STATUS_ADDR + 8).contains(&addr)
         {
@@ -514,7 +474,7 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
         let count = (req_apci & 0x3f) as usize;
         let addr = u16::from_be_bytes([payload[0], payload[1]]);
         let data = &payload[2..2 + count.min(payload.len() - 2)];
-        let mut s = state.lock().unwrap();
+        let mut s = lock(state);
         if !s.authorized {
             return Reaction::Nak;
         }
@@ -560,7 +520,7 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
         let Some((obj, pid, count, start)) = decode_prop_header(payload) else {
             return Reaction::Nak;
         };
-        let mut s = state.lock().unwrap();
+        let mut s = lock(state);
         // A memory-mapped device has NO load-state-control property: a PID-5
         // access to object 5 (or any object) is a bug in the tool's realisation
         // switch. Count it and reject, exactly as the live sim does.
@@ -659,7 +619,7 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
             return Reaction::Nak;
         };
         let value = &payload[4..];
-        let mut s = state.lock().unwrap();
+        let mut s = lock(state);
         if !s.authorized {
             return Reaction::Nak;
         }
@@ -761,199 +721,143 @@ fn apply_lsm_event(s: &mut DeviceState, lsm: u8, event: &[u8]) {
     s.lsm_states.insert(lsm, next);
 }
 
-async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, state: Shared) {
-    let mut gw_seq = 0u8;
-    let mut dev_seq = 0u8;
-    loop {
-        let mut buf = [0u8; 1024];
-        let (n, from) =
-            match tokio::time::timeout(Duration::from_secs(30), gw.recv_from(&mut buf)).await {
-                Ok(Ok(v)) => v,
-                _ => return,
-            };
-        let Ok(parsed) = knxnet::parse(&buf[..n]) else {
-            continue;
-        };
-        // Gateway link outage (issue #192): nothing gets through while it
-        // lasts; when it ends the device has dropped its L4 connection.
-        {
-            let mut s = lock(&state);
-            match s.tunnel_down_until {
-                Some(until) if tokio::time::Instant::now() < until => {
-                    s.outage_swallowed += 1;
-                    continue;
-                }
-                Some(_) => {
-                    s.tunnel_down_until = None;
-                    s.l4_dead_after_outage = true;
-                }
-                None => {}
-            }
-            if s.restart_outage_armed
-                && parsed.service == ServiceType::TunnelingRequest
-                && let Ok(tr) = knxnet::parse_tunneling_request(parsed.body)
-                && tr.cemi.destination == Destination::Individual(address)
-                && matches!(
-                    tpci::classify(tr.cemi.tpci_octet()),
-                    TpciKind::NumberedData(_)
-                )
-            {
-                s.restart_outage_frames += 1;
-                if let Some((_, after, duration)) = s.restart_outage
-                    && s.restart_outage_frames > after
-                {
-                    s.restart_outage = None;
-                    s.restart_outage_armed = false;
-                    s.tunnel_down_until = tokio::time::Instant::now().checked_add(duration);
-                    s.outage_swallowed += 1;
-                    continue;
-                }
-            }
+/// The gateway-level fault of issue #192: a link outage in the reconnect phase
+/// after a restart. Nothing gets through while it lasts; when it ends the device
+/// has dropped its L4 connection. Also counts tunnel (re)establishments.
+fn gateway_faults(
+    state: &Shared,
+    address: bussard_model::IndividualAddress,
+    inbound: &Inbound<'_>,
+) -> Verdict {
+    let mut s = lock(state);
+    match s.tunnel_down_until {
+        Some(until) if tokio::time::Instant::now() < until => {
+            s.outage_swallowed += 1;
+            return Verdict::Swallow;
         }
-        match parsed.service {
-            ServiceType::ConnectRequest => {
-                lock(&state).tunnel_connects += 1;
-                let resp = knxnet_frame(
-                    ServiceType::ConnectResponse,
-                    &connect_response_body(CHANNEL, &gw),
-                );
-                gw.send_to(&resp, from).await.unwrap();
-            }
-            ServiceType::ConnectionstateRequest => {
-                gw.send_to(&knxnet::connectionstate_response(CHANNEL, 0), from)
-                    .await
-                    .unwrap();
-            }
-            ServiceType::DisconnectRequest => {
-                gw.send_to(&knxnet::disconnect_response(CHANNEL, 0), from)
-                    .await
-                    .unwrap();
-            }
-            ServiceType::TunnelingRequest => {
-                let Ok(tr) = knxnet::parse_tunneling_request(parsed.body) else {
-                    continue;
-                };
-                gw.send_to(
-                    &knxnet::tunneling_ack(tr.header.channel_id, tr.header.seq, 0),
-                    from,
-                )
-                .await
-                .unwrap();
-
-                let cemi = &tr.cemi;
-                let dest = match cemi.destination {
-                    Destination::Individual(ia) => ia,
-                    Destination::Group(_) => continue,
-                };
-                if dest != address {
-                    continue;
-                }
-                let tool = cemi.source;
-                match tpci::classify(cemi.tpci_octet()) {
-                    TpciKind::Connect => {
-                        dev_seq = 0;
-                        let mut s = state.lock().unwrap();
-                        // A fresh window after a death: consume one death so the
-                        // next window (or a later one) eventually serves fully.
-                        if s.die_after_exchanges.is_some()
-                            && s.exchanges_this_connection > s.die_after_exchanges.unwrap()
-                            && s.deaths_remaining > 0
-                        {
-                            s.deaths_remaining -= 1;
-                        }
-                        s.exchanges_this_connection = 0;
-                        s.authorized = false;
-                        // The tool reconnecting after a reboot: the device is back
-                        // up and answers the fresh connection normally.
-                        s.rebooting = false;
-                        s.l4_dead_after_outage = false;
-                    }
-                    TpciKind::Disconnect => {}
-                    TpciKind::NumberedData(client_seq) => {
-                        {
-                            let mut s = state.lock().unwrap();
-                            s.exchanges_this_connection += 1;
-                            if let Some(budget) = s.die_after_exchanges
-                                && s.deaths_remaining > 0
-                                && s.exchanges_this_connection > budget
-                            {
-                                // This connection dies; the next fresh T_Connect
-                                // decrements the death budget so a later window
-                                // serves fully and the resume completes.
-                                continue;
-                            }
-                            // A rebooting device is unreachable: it went silent when
-                            // it saw the restart and stays silent until the tool
-                            // reconnects (a fresh T_Connect clears `rebooting`).
-                            if s.rebooting || s.l4_dead_after_outage {
-                                continue;
-                            }
-                        }
-                        let (req_apci, payload) = match (&cemi.tpci, &cemi.apdu) {
-                            (Tpci::Other(_), Apdu::Other { apci, data }) => (*apci, data.clone()),
-                            _ => continue,
-                        };
-                        match handle_request(&state, req_apci, &payload) {
-                            Reaction::Nak => {
-                                let nak =
-                                    CemiFrame::t_control(tool, address, tpci::t_nak(client_seq));
-                                push(&gw, from, &mut gw_seq, &nak).await;
-                            }
-                            Reaction::Ack => {
-                                let ack =
-                                    CemiFrame::t_control(tool, address, tpci::t_ack(client_seq));
-                                push(&gw, from, &mut gw_seq, &ack).await;
-                            }
-                            Reaction::Answer(rapci, rdata) => {
-                                let ack =
-                                    CemiFrame::t_control(tool, address, tpci::t_ack(client_seq));
-                                push(&gw, from, &mut gw_seq, &ack).await;
-                                let resp = CemiFrame::t_data_connected(
-                                    tool,
-                                    address,
-                                    tpci::ndt(dev_seq),
-                                    rapci,
-                                    &rdata,
-                                );
-                                push(&gw, from, &mut gw_seq, &resp).await;
-                                dev_seq = (dev_seq + 1) & 0x0f;
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            _ => {}
+        Some(_) => {
+            s.tunnel_down_until = None;
+            s.l4_dead_after_outage = true;
+        }
+        None => {}
+    }
+    if s.restart_outage_armed
+        && let Some(cemi) = inbound.cemi
+        && cemi.destination == Destination::Individual(address)
+        && matches!(tpci::classify(cemi.tpci_octet()), TpciKind::NumberedData(_))
+    {
+        s.restart_outage_frames += 1;
+        if let Some((_, after, duration)) = s.restart_outage
+            && s.restart_outage_frames > after
+        {
+            s.restart_outage = None;
+            s.restart_outage_armed = false;
+            s.tunnel_down_until = tokio::time::Instant::now().checked_add(duration);
+            s.outage_swallowed += 1;
+            return Verdict::Swallow;
         }
     }
+    if inbound.service == ServiceType::ConnectRequest {
+        s.tunnel_connects += 1;
+    }
+    Verdict::Serve
 }
 
-async fn setup(mode: LsmMode, fault: Fault) -> (Transport, Shared, tokio::task::JoinHandle<()>) {
-    let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let port = sock.local_addr().unwrap().port();
-    let addr: bussard_model::IndividualAddress = "1.1.99".parse().unwrap();
+/// The device's reaction to a fresh `T_Connect`.
+fn on_t_connect(state: &Shared) {
+    let mut s = lock(state);
+    // A fresh window after a death: consume one death so the next window (or a
+    // later one) eventually serves fully.
+    if let Some(budget) = s.die_after_exchanges
+        && s.exchanges_this_connection > budget
+        && s.deaths_remaining > 0
+    {
+        s.deaths_remaining -= 1;
+    }
+    s.exchanges_this_connection = 0;
+    s.authorized = false;
+    // The tool reconnecting after a reboot: the device is back up and answers
+    // the fresh connection normally.
+    s.rebooting = false;
+    s.l4_dead_after_outage = false;
+}
+
+/// The device's reaction to one numbered request: the per-connection death
+/// budget and reboot silence first, then [`handle_request`].
+fn on_numbered(state: &Shared, apci: u16, data: &[u8]) -> Reaction {
+    {
+        let mut s = lock(state);
+        s.exchanges_this_connection += 1;
+        if let Some(budget) = s.die_after_exchanges
+            && s.deaths_remaining > 0
+            && s.exchanges_this_connection > budget
+        {
+            // This connection dies; the next fresh T_Connect decrements the death
+            // budget so a later window serves fully and the resume completes.
+            return Reaction::Silent;
+        }
+        // A rebooting device is unreachable: it went silent when it saw the
+        // restart and stays silent until the tool reconnects (a fresh T_Connect
+        // clears `rebooting`).
+        if s.rebooting || s.l4_dead_after_outage {
+            return Reaction::Silent;
+        }
+    }
+    handle_request(state, apci, data)
+}
+
+/// The device's individual address on the mock line.
+const DEVICE: &str = "1.1.99";
+
+/// Starts the mock gateway with the System 7 device model behind it.
+async fn start_gateway(state: &Shared) -> Result<MockGateway, Box<dyn std::error::Error>> {
+    let addr: bussard_model::IndividualAddress = DEVICE.parse()?;
+    let (faults, connects, requests) = (Arc::clone(state), Arc::clone(state), Arc::clone(state));
+    Ok(MockGateway::builder()
+        .channel(CHANNEL)
+        .idle_timeout(Duration::from_secs(30))
+        // A tool that re-establishes the tunnel sends DISCONNECT first; keep
+        // serving so its follow-up CONNECT is answered.
+        .keep_serving()
+        .intercept(move |inbound| gateway_faults(&faults, addr, inbound))
+        .device(
+            MockDevice::new(addr)
+                .with_control_hook(move |_, kind| {
+                    if kind == TpciKind::Connect {
+                        on_t_connect(&connects);
+                    }
+                    Vec::new()
+                })
+                .with_hook(move |_, apci, data| Some(on_numbered(&requests, apci, data))),
+        )
+        .start()
+        .await?)
+}
+
+async fn setup(
+    mode: LsmMode,
+    fault: Fault,
+) -> Result<(Transport, Shared, MockGateway), Box<dyn std::error::Error>> {
     let state = fresh_device(mode, fault);
-    let handle = tokio::spawn(run_gateway(sock, addr, Arc::clone(&state)));
+    let handle = start_gateway(&state).await?;
     let bus = Transport::connect(
-        &ConnectionConfig::tunnel(format!("127.0.0.1:{port}").parse().unwrap())
+        &ConnectionConfig::tunnel(handle.addr())
             // These tests abort the mock gateway before the final T_Disconnect; with
             // the issue #177 re-establish on, that send would ride out the full budget.
             .with_reconnect(bussard_transport::TunnelReconnect::disabled()),
     )
-    .await
-    .unwrap();
-    (bus, state, handle)
+    .await?;
+    Ok((bus, state, handle))
 }
 
 /// Authorizes a fresh L4 connection with the free-access key and wraps it in a
 /// single-connection session (System 7 requires authorize before memory access).
 async fn authed_session<Ch: bussard_mgmt::L4Channel>(
     mut l4: Layer4Connection<Ch>,
-) -> Session<bussard_download::SingleConnector<Ch>> {
-    l4.authorize_or_fail(0xFFFF_FFFF)
-        .await
-        .expect("free-access authorize must be granted by the mock");
-    Session::from_connection(l4)
+) -> Result<Session<bussard_download::SingleConnector<Ch>>, Box<dyn std::error::Error>> {
+    // The mock grants the free-access key.
+    l4.authorize_or_fail(0xFFFF_FFFF).await?;
+    Ok(Session::from_connection(l4))
 }
 
 fn no_overrides() -> std::collections::BTreeMap<String, String> {
@@ -984,10 +888,10 @@ async fn run_full_flash(mode: LsmMode) -> Result<(), Box<dyn std::error::Error>>
     // memory-mapped mock must flip bussard's realisation switch, exactly as the
     // system7 example's run.sh does with `BUSSARD_FLASH_SYS7_LSM=memory`.
     set_sys7_lsm_env(mode);
-    let (mut bus, state, handle) = setup(mode, Fault::None).await;
-    let target: bussard_model::IndividualAddress = "1.1.99".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
-    let app = mdt_canonical_app();
+    let (mut bus, state, handle) = setup(mode, Fault::None).await?;
+    let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
+    let app = mdt_canonical_app()?;
     let plan = plan_flash(
         &app,
         "1.1.99",
@@ -1003,7 +907,7 @@ async fn run_full_flash(mode: LsmMode) -> Result<(), Box<dyn std::error::Error>>
     );
 
     let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
-    let mut session = authed_session(l4).await;
+    let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
         &plan,
@@ -1014,7 +918,7 @@ async fn run_full_flash(mode: LsmMode) -> Result<(), Box<dyn std::error::Error>>
 
     assert!(outcome.ok(), "flash should reach Loaded: {outcome:?}");
     {
-        let s = state.lock().unwrap();
+        let s = lock(&state);
         assert!(s.authorizes_seen >= 1, "the tool must authorize");
         assert!(s.memory_writes_seen >= 1, "segment content must be written");
         assert_eq!(s.restarts_seen, 1, "one terminal restart");
@@ -1032,7 +936,7 @@ async fn run_full_flash(mode: LsmMode) -> Result<(), Box<dyn std::error::Error>>
         );
         assert_eq!(s.memory.get(&0x4003).copied(), Some(0x03));
     }
-    handle.abort();
+    drop(handle);
     let _ = session.into_disconnect().await;
     Ok(())
 }
@@ -1048,10 +952,10 @@ async fn flash_system7_verify_mismatch_fails() -> Result<(), Box<dyn std::error:
     // success — either a step's own compare fails, or the post-flash read-back
     // spot check diverges.
     set_sys7_lsm_env(LsmMode::MemoryMapped);
-    let (mut bus, _state, handle) = setup(LsmMode::MemoryMapped, Fault::CorruptStoredImage).await;
-    let target: bussard_model::IndividualAddress = "1.1.99".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
-    let app = mdt_canonical_app();
+    let (mut bus, _state, handle) = setup(LsmMode::MemoryMapped, Fault::CorruptStoredImage).await?;
+    let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
+    let app = mdt_canonical_app()?;
     let plan = plan_flash(
         &app,
         "1.1.99",
@@ -1062,7 +966,7 @@ async fn flash_system7_verify_mismatch_fails() -> Result<(), Box<dyn std::error:
         &std::collections::BTreeMap::new(),
     )?;
     let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
-    let mut session = authed_session(l4).await;
+    let mut session = authed_session(l4).await?;
     let result = flash(
         &mut session,
         &plan,
@@ -1078,7 +982,7 @@ async fn flash_system7_verify_mismatch_fails() -> Result<(), Box<dyn std::error:
         !succeeded,
         "a corrupted stored image must not report success: {result:?}"
     );
-    handle.abort();
+    drop(handle);
     Ok(())
 }
 
@@ -1089,20 +993,17 @@ async fn flash_system7_resumes_across_a_connection_drop() -> Result<(), Box<dyn 
     // resume. This needs a reconnecting session (LeaseConnector), so use the bus
     // actor. Model a generous budget so the drop lands mid-procedure but the
     // resume completes.
-    let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let port = sock.local_addr().unwrap().port();
-    let addr: bussard_model::IndividualAddress = "1.1.99".parse().unwrap();
     let state = fresh_device(LsmMode::MemoryMapped, Fault::None);
     {
-        let mut s = state.lock().unwrap();
+        let mut s = lock(&state);
         // The device drops the L4 connection once, after 6 exchanges; the tool
         // reconnects and resumes, and the second window serves fully.
         s.die_after_exchanges = Some(6);
         s.deaths_remaining = 1;
     }
-    let gw = tokio::spawn(run_gateway(sock, addr, Arc::clone(&state)));
+    let gw = start_gateway(&state).await?;
     let (handle, _actor) = bussard_bus::Bus::connect(
-        ConnectionConfig::tunnel(format!("127.0.0.1:{port}").parse().unwrap())
+        ConnectionConfig::tunnel(gw.addr())
             // These tests abort the mock gateway before the final T_Disconnect; with
             // the issue #177 re-establish on, that send would ride out the full budget.
             .with_reconnect(bussard_transport::TunnelReconnect::disabled()),
@@ -1111,12 +1012,12 @@ async fn flash_system7_resumes_across_a_connection_drop() -> Result<(), Box<dyn 
 
     let connector = LeaseConnector {
         handle: handle.clone(),
-        target: "1.1.99".parse().unwrap(),
-        source: "0.0.255".parse().unwrap(),
+        target: "1.1.99".parse()?,
+        source: "0.0.255".parse()?,
         timeouts: Some(fast_timeouts()),
     };
     let mut session = Session::open_with_key(connector, None).await?;
-    let app = mdt_canonical_app();
+    let app = mdt_canonical_app()?;
     set_sys7_lsm_env(LsmMode::MemoryMapped);
     let plan = plan_flash(
         &app,
@@ -1139,12 +1040,12 @@ async fn flash_system7_resumes_across_a_connection_drop() -> Result<(), Box<dyn 
         "flash should resume and reach Loaded: {outcome:?}"
     );
     {
-        let s = state.lock().unwrap();
+        let s = lock(&state);
         for lsm in [1u8, 2, 3] {
             assert_eq!(s.lsm_state(lsm), LS_LOADED);
         }
     }
-    gw.abort();
+    drop(gw);
     let _ = session.into_disconnect().await;
     Ok(())
 }
@@ -1164,18 +1065,15 @@ async fn run_flash_with_reboot(
     ),
     Box<dyn std::error::Error>,
 > {
-    let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let port = sock.local_addr().unwrap().port();
-    let addr: bussard_model::IndividualAddress = "1.1.99".parse().unwrap();
     let state = fresh_device(LsmMode::MemoryMapped, Fault::None);
     {
-        let mut s = state.lock().unwrap();
+        let mut s = lock(&state);
         s.reboot_on_restart = true;
         s.revert_on_reboot = revert;
     }
-    let gw = tokio::spawn(run_gateway(sock, addr, Arc::clone(&state)));
+    let gw = start_gateway(&state).await?;
     let (handle, _actor) = bussard_bus::Bus::connect(
-        ConnectionConfig::tunnel(format!("127.0.0.1:{port}").parse().unwrap())
+        ConnectionConfig::tunnel(gw.addr())
             // These tests abort the mock gateway before the final T_Disconnect; with
             // the issue #177 re-establish on, that send would ride out the full budget.
             .with_reconnect(bussard_transport::TunnelReconnect::disabled()),
@@ -1184,12 +1082,12 @@ async fn run_flash_with_reboot(
 
     let connector = LeaseConnector {
         handle: handle.clone(),
-        target: "1.1.99".parse().unwrap(),
-        source: "0.0.255".parse().unwrap(),
+        target: "1.1.99".parse()?,
+        source: "0.0.255".parse()?,
         timeouts: None,
     };
     let mut session = Session::open_with_key(connector, None).await?;
-    let app = mdt_canonical_app();
+    let app = mdt_canonical_app()?;
     set_sys7_lsm_env(LsmMode::MemoryMapped);
     let plan = plan_flash(
         &app,
@@ -1215,7 +1113,7 @@ async fn run_flash_with_reboot(
         ..Default::default()
     };
     let result = flash(&mut session, &plan, options, |_p| {}).await;
-    gw.abort();
+    drop(gw);
     let _ = session.into_disconnect().await;
     Ok((result, state))
 }
@@ -1233,7 +1131,7 @@ async fn flash_system7_verifies_after_restart_reaches_loaded()
         outcome.ok(),
         "a persisting load must verify Loaded after the reboot: {outcome:?}"
     );
-    let s = state.lock().unwrap();
+    let s = lock(&state);
     // ETS's pre-download restart before the first segment write, then the
     // terminal one after the last (issue #116).
     assert_eq!(
@@ -1265,7 +1163,7 @@ async fn flash_system7_after_restart_verify_catches_reverted_load()
         !succeeded,
         "a load that reverted to Unloaded after the reboot must not report success: {result:?}"
     );
-    let s = state.lock().unwrap();
+    let s = lock(&state);
     assert_eq!(
         s.restarts_seen, 2,
         "the pre-download and the terminal restart still fired"
@@ -1330,20 +1228,20 @@ impl bussard_download::Connector for LeaseConnector {
 #[tokio::test]
 async fn lsm_access_property_drives_state() -> Result<(), Box<dyn std::error::Error>> {
     use bussard_mgmt::LsmAccess;
-    let (mut bus, state, handle) = setup(LsmMode::Property, Fault::None).await;
-    let target: bussard_model::IndividualAddress = "1.1.99".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+    let (mut bus, state, handle) = setup(LsmMode::Property, Fault::None).await?;
+    let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
     let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
     l4.authorize_or_fail(0xFFFF_FFFF).await?;
     let lsm = LsmAccess::Property;
     lsm.drive(&mut l4, 1, bussard_mgmt::LoadControl::StartLoading)
         .await?;
-    assert_eq!(state.lock().unwrap().lsm_state(1), LS_LOADING);
+    assert_eq!(lock(&state).lsm_state(1), LS_LOADING);
     lsm.drive(&mut l4, 1, bussard_mgmt::LoadControl::LoadCompleted)
         .await?;
-    assert_eq!(state.lock().unwrap().lsm_state(1), LS_LOADED);
+    assert_eq!(lock(&state).lsm_state(1), LS_LOADED);
     assert_eq!(lsm.read_state(&mut l4, 1).await?, LoadState::Loaded);
-    handle.abort();
+    drop(handle);
     Ok(())
 }
 
@@ -1361,10 +1259,10 @@ async fn flash_system7_memory_mapped_post_restart_lsm5_tail_is_not_run()
     // 0701 defaults to memory-mapped; also flip the switch explicitly so the plan
     // and the mock device agree on the realisation.
     set_sys7_lsm_env(LsmMode::MemoryMapped);
-    let (mut bus, state, handle) = setup(LsmMode::MemoryMapped, Fault::None).await;
+    let (mut bus, state, handle) = setup(LsmMode::MemoryMapped, Fault::None).await?;
     let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
-    let app = theben_post_restart_lsm5_app();
+    let app = theben_post_restart_lsm5_app()?;
     // Mask 0x0701 → memory-mapped LSM realisation by mask-family default.
     let plan = plan_flash(
         &app,
@@ -1386,7 +1284,7 @@ async fn flash_system7_memory_mapped_post_restart_lsm5_tail_is_not_run()
     );
 
     let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
-    let mut session = authed_session(l4).await;
+    let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
         &plan,
@@ -1416,7 +1314,7 @@ async fn flash_system7_memory_mapped_post_restart_lsm5_tail_is_not_run()
             "LSM 5 must never be accessed via object-5/PID-5 property"
         );
     }
-    handle.abort();
+    drop(handle);
     let _ = session.into_disconnect().await;
     Ok(())
 }
@@ -1427,7 +1325,7 @@ async fn flash_system7_memory_mapped_post_restart_lsm5_tail_is_not_run()
 #[tokio::test]
 async fn test_lsm_access_read_state_count_zero_is_object_absent()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (mut bus, state, handle) = setup(LsmMode::Property, Fault::None).await;
+    let (mut bus, state, handle) = setup(LsmMode::Property, Fault::None).await?;
     state.lock().map_err(|e| e.to_string())?.absent_objects = vec![5];
     let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
@@ -1469,7 +1367,7 @@ async fn test_lsm_access_read_state_count_zero_is_object_absent()
     );
     // An object the device has still reads normally.
     assert_eq!(lsm.read_state(&mut l4, 1).await?, LoadState::Unloaded);
-    handle.abort();
+    drop(handle);
     Ok(())
 }
 
@@ -1483,12 +1381,12 @@ async fn test_lsm_access_read_state_count_zero_is_object_absent()
 async fn test_flash_sys7_post_restart_step_on_absent_object_warns()
 -> Result<(), Box<dyn std::error::Error>> {
     set_sys7_lsm_env(LsmMode::Property);
-    let (mut bus, state, handle) = setup(LsmMode::Property, Fault::None).await;
+    let (mut bus, state, handle) = setup(LsmMode::Property, Fault::None).await?;
     state.lock().map_err(|e| e.to_string())?.absent_objects = vec![5];
     let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
     let mut plan = plan_flash(
-        &mdt_canonical_app(),
+        &mdt_canonical_app()?,
         "1.1.99",
         0x0705,
         &no_overrides(),
@@ -1506,7 +1404,7 @@ async fn test_flash_sys7_post_restart_step_on_absent_object_warns()
     plan.steps.push(FlashStep::Sys7StartLoading { lsm: 5 });
 
     let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
-    let mut session = authed_session(l4).await;
+    let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
         &plan,
@@ -1529,7 +1427,7 @@ async fn test_flash_sys7_post_restart_step_on_absent_object_warns()
             "{warning}"
         );
     }
-    handle.abort();
+    drop(handle);
     let _ = session.into_disconnect().await;
     Ok(())
 }
@@ -1544,7 +1442,9 @@ async fn test_flash_sys7_post_restart_step_on_absent_object_warns()
 /// A Theben-style 0701 app: a masked 4-octet table segment at `0x4000` (octet 2
 /// device-owned) on LSM 1 and a 40-octet parameter segment at `0x4400` (octets
 /// `01..=28`) on LSM 3, spanning several memory chunks.
-fn theben_read_compare_app(mask_version: &str) -> ApplicationProgram {
+fn theben_read_compare_app(
+    mask_version: &str,
+) -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
     let xml = format!(
         r#"<KNX xmlns="http://knx.org/xml/project/23">
      <ApplicationProgram Id="M-48_A-4948" ApplicationNumber="18760" ApplicationVersion="16"
@@ -1574,13 +1474,14 @@ fn theben_read_compare_app(mask_version: &str) -> ApplicationProgram {
       </Static>
      </ApplicationProgram></KNX>"#
     );
-    parse_application_program("M-48_A-4948", xml.as_bytes()).expect("parse read-compare app")
+    parse_application_program("M-48_A-4948", xml.as_bytes())
+        .map_err(|e| format!("parse read-compare app: {e}").into())
 }
 
 /// Seeds the mock's memory with every image octet the plan owns, as if an
 /// earlier download had already written this exact configuration.
 fn seed_planned_images(state: &Shared, plan: &bussard_download::FlashPlan) {
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     for step in &plan.steps {
         if let bussard_download::FlashStep::Sys7AbsSegment {
             address,
@@ -1606,10 +1507,10 @@ async fn run_read_compare_flash(
     prepare: impl FnOnce(&Shared, &bussard_download::FlashPlan),
 ) -> Result<(Shared, bussard_download::FlashPlan), Box<dyn std::error::Error>> {
     set_sys7_lsm_env(LsmMode::MemoryMapped);
-    let (mut bus, state, handle) = setup(LsmMode::MemoryMapped, Fault::None).await;
+    let (mut bus, state, handle) = setup(LsmMode::MemoryMapped, Fault::None).await?;
     let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
-    let app = theben_read_compare_app(&format!("MV-{mask:04X}"));
+    let app = theben_read_compare_app(&format!("MV-{mask:04X}"))?;
     let plan = plan_flash(
         &app,
         "1.1.99",
@@ -1621,7 +1522,7 @@ async fn run_read_compare_flash(
     )?;
     prepare(&state, &plan);
     let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
-    let mut session = authed_session(l4).await;
+    let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
         &plan,
@@ -1630,7 +1531,7 @@ async fn run_read_compare_flash(
     )
     .await?;
     assert!(outcome.ok(), "flash should reach Loaded: {outcome:?}");
-    handle.abort();
+    drop(handle);
     let _ = session.into_disconnect().await;
     Ok((state, plan))
 }
@@ -1646,7 +1547,7 @@ async fn test_flash_sys7_read_compare_unchanged_device_writes_no_segment()
             .any(|l| l.contains("stream segment (read-compare, 40 octets)")),
         "the plan text names the read-compare stream"
     );
-    let s = state.lock().unwrap();
+    let s = lock(&state);
     assert_eq!(
         s.memory_writes_seen, 0,
         "an unchanged device gets no segment write, only LSM records"
@@ -1664,10 +1565,10 @@ async fn test_flash_sys7_read_compare_one_differing_octet_writes_one_chunk()
     let (state, _plan) = run_read_compare_flash(0x0701, |state, plan| {
         seed_planned_images(state, plan);
         // One stale octet in the middle of the 40-octet parameter segment.
-        state.lock().unwrap().memory.insert(0x4414, 0xEE);
+        lock(state).memory.insert(0x4414, 0xEE);
     })
     .await?;
-    let s = state.lock().unwrap();
+    let s = lock(&state);
     assert_eq!(
         s.memory_writes_seen, 1,
         "exactly the differing chunk is written"
@@ -1684,7 +1585,7 @@ async fn test_flash_sys7_read_compare_one_differing_octet_writes_one_chunk()
 async fn test_flash_sys7_read_compare_fresh_device_writes_owned_octets()
 -> Result<(), Box<dyn std::error::Error>> {
     let (state, _plan) = run_read_compare_flash(0x0701, |_, _| {}).await?;
-    let s = state.lock().unwrap();
+    let s = lock(&state);
     assert!(s.memory_writes_seen >= 1, "differing chunks are written");
     for i in 0..40u16 {
         assert_eq!(s.memory.get(&(0x4400 + i)).copied(), Some(i as u8 + 1));
@@ -1704,7 +1605,7 @@ async fn test_flash_sys7_verify_mode_mask_writes_blind() -> Result<(), Box<dyn s
     // device already holds it.
     let (state, plan) = run_read_compare_flash(0x0705, seed_planned_images).await?;
     assert!(!plan.sys7_read_compare(), "0705 declares VerifyMode=1");
-    let s = state.lock().unwrap();
+    let s = lock(&state);
     assert!(
         s.memory_writes_seen >= 3,
         "a blind write streams every segment: {}",
@@ -1724,7 +1625,7 @@ async fn test_flash_sys7_verify_mode_mask_writes_blind() -> Result<(), Box<dyn s
 
 /// Plans the MDT canonical System 7 app against the mock's mask.
 fn sys7_plan() -> Result<bussard_download::FlashPlan, Box<dyn std::error::Error>> {
-    let app = mdt_canonical_app();
+    let app = mdt_canonical_app()?;
     Ok(plan_flash(
         &app,
         "1.1.99",
@@ -1755,7 +1656,7 @@ async fn sys7_probe(
 
 async fn probe_fresh_sys7_device(mode: LsmMode) -> Result<(), Box<dyn std::error::Error>> {
     set_sys7_lsm_env(mode);
-    let (mut bus, state, handle) = setup(mode, Fault::None).await;
+    let (mut bus, state, handle) = setup(mode, Fault::None).await?;
     let plan = sys7_plan()?;
 
     let resident = sys7_probe(&mut bus, &plan).await?;
@@ -1773,13 +1674,13 @@ async fn probe_fresh_sys7_device(mode: LsmMode) -> Result<(), Box<dyn std::error
         bussard_download::Freshness::Fresh
     );
     {
-        let s = state.lock().unwrap();
+        let s = lock(&state);
         assert_eq!(s.memory_writes_seen, 0, "the probe must write no memory");
         for lsm in [1u8, 2, 3] {
             assert_eq!(s.lsm_state(lsm), LS_UNLOADED, "the probe drove no LSM");
         }
     }
-    handle.abort();
+    drop(handle);
     Ok(())
 }
 
@@ -1797,10 +1698,10 @@ async fn test_probe_resident_state_sys7_property_fresh_device_is_fresh()
 
 async fn probe_loaded_sys7_device(mode: LsmMode) -> Result<(), Box<dyn std::error::Error>> {
     set_sys7_lsm_env(mode);
-    let (mut bus, state, handle) = setup(mode, Fault::None).await;
+    let (mut bus, state, handle) = setup(mode, Fault::None).await?;
     {
         // A previously-programmed device: its application LSM is Loaded.
-        let mut s = state.lock().unwrap();
+        let mut s = lock(&state);
         s.lsm_states.insert(3, LS_LOADED);
     }
     let plan = sys7_plan()?;
@@ -1821,12 +1722,12 @@ async fn probe_loaded_sys7_device(mode: LsmMode) -> Result<(), Box<dyn std::erro
         other => panic!("expected a refusal verdict, got {other:?}"),
     }
     {
-        let s = state.lock().unwrap();
+        let s = lock(&state);
         assert_eq!(s.memory_writes_seen, 0, "the probe must write no memory");
         assert_eq!(s.lsm_state(3), LS_LOADED, "the probe left the LSM alone");
         assert_eq!(s.lsm_state(1), LS_UNLOADED, "the probe drove no other LSM");
     }
-    handle.abort();
+    drop(handle);
     Ok(())
 }
 
@@ -1850,8 +1751,8 @@ async fn test_probe_resident_state_sys7_without_a_plan_follows_the_env_realisati
     // default plus the `BUSSARD_FLASH_SYS7_LSM` override. Against a
     // memory-mapped device that means the status region, not PID 5.
     set_sys7_lsm_env(LsmMode::MemoryMapped);
-    let (mut bus, state, handle) = setup(LsmMode::MemoryMapped, Fault::None).await;
-    state.lock().unwrap().lsm_states.insert(3, LS_LOADED);
+    let (mut bus, state, handle) = setup(LsmMode::MemoryMapped, Fault::None).await?;
+    lock(&state).lsm_states.insert(3, LS_LOADED);
     let plan = sys7_plan()?;
 
     let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
@@ -1870,13 +1771,13 @@ async fn test_probe_resident_state_sys7_without_a_plan_follows_the_env_realisati
         "a loaded System 7 device is refused without --force"
     );
     {
-        let s = state.lock().unwrap();
+        let s = lock(&state);
         assert_eq!(
             s.lsm5_property_accesses, 0,
             "a memory-mapped probe must not touch PID 5"
         );
     }
-    handle.abort();
+    drop(handle);
     Ok(())
 }
 
@@ -1919,7 +1820,7 @@ fn seed_tables(state: &Shared, own_ia: u16, gas: &[u16], assoc: &[(u8, u8)], go:
         assoc_image.push(asap);
     }
 
-    let mut s = state.lock().unwrap();
+    let mut s = lock(state);
     for (i, &b) in image.iter().enumerate() {
         s.memory.insert(0x4000 + i as u16, b);
     }
@@ -1935,18 +1836,18 @@ fn seed_tables(state: &Shared, own_ia: u16, gas: &[u16], assoc: &[(u8, u8)], go:
     go_base
 }
 
-fn ga(s: &str) -> bussard_model::GroupAddress {
-    s.parse().expect("a valid group address")
+fn ga(s: &str) -> Result<bussard_model::GroupAddress, Box<dyn std::error::Error>> {
+    Ok(s.parse()?)
 }
 
 /// The model the plan wants: com-object 1 sends 1/0/1 and listens on 1/0/2.
-fn desired_links() -> bussard_download::DesiredTables {
-    compute_tables(&[bussard_model::schema::Link {
+fn desired_links() -> Result<bussard_download::DesiredTables, Box<dyn std::error::Error>> {
+    Ok(compute_tables(&[bussard_model::schema::Link {
         object: 1,
         name: None,
-        send: Some(ga("1/0/1")),
-        listen: vec![ga("1/0/2")],
-    }])
+        send: Some(ga("1/0/1")?),
+        listen: vec![ga("1/0/2")?],
+    }]))
 }
 
 /// Connects and authorizes a plain layer-4 connection (System 7 gates memory
@@ -1954,20 +1855,17 @@ fn desired_links() -> bussard_download::DesiredTables {
 async fn authed_connection<'a>(
     bus: &'a mut Transport,
     target: bussard_model::IndividualAddress,
-) -> Layer4Connection<impl bussard_mgmt::L4Channel + 'a> {
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
-    let mut l4 = Layer4Connection::connect(bus, target, source)
-        .await
-        .unwrap();
-    l4.authorize_or_fail(0xFFFF_FFFF)
-        .await
-        .expect("free-access authorize must be granted by the mock");
-    l4
+) -> Result<Layer4Connection<impl bussard_mgmt::L4Channel + 'a>, Box<dyn std::error::Error>> {
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
+    let mut l4 = Layer4Connection::connect(bus, target, source).await?;
+    // The mock grants the free-access key.
+    l4.authorize_or_fail(0xFFFF_FFFF).await?;
+    Ok(l4)
 }
 
 async fn run_table_apply(mode: LsmMode) -> Result<(), Box<dyn std::error::Error>> {
-    let (mut bus, state, handle) = setup(mode, Fault::None).await;
-    let target: bussard_model::IndividualAddress = "1.1.99".parse().unwrap();
+    let (mut bus, state, handle) = setup(mode, Fault::None).await?;
+    let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
     let own_ia = target.raw();
     // Two descriptors the download put there; `apply` must carry them over
     // untouched even though the address table in front of them changes length.
@@ -1979,25 +1877,25 @@ async fn run_table_apply(mode: LsmMode) -> Result<(), Box<dyn std::error::Error>
     let go_base = seed_tables(&state, own_ia, &[0x0801], &[(1, 1)], &go_image);
     assert_eq!(go_base, 0x4005, "CNT + own IA + one GA");
 
-    let mut l4 = authed_connection(&mut bus, target).await;
+    let mut l4 = authed_connection(&mut bus, target).await?;
 
     // --- plan: read the live tables and diff them -----------------------------
     let live = read_sys7_tables(&mut l4).await?;
     assert_eq!(live.tables.mask, MASK_0705);
     assert_eq!(live.own_ia, own_ia, "entry 0 is the device's own IA");
-    assert_eq!(live.tables.addresses, vec![ga("1/0/1")]);
+    assert_eq!(live.tables.addresses, vec![ga("1/0/1")?]);
     assert_eq!(live.tables.associations, vec![(1, 1)]);
     assert_eq!(live.tables.resolved.len(), 1);
     assert_eq!(live.tables.resolved[0].object, 1);
-    assert_eq!(live.tables.resolved[0].ga, ga("1/0/1"));
+    assert_eq!(live.tables.resolved[0].ga, ga("1/0/1")?);
     assert_eq!(live.group_object_base, go_base);
     assert_eq!(live.group_object_image, go_image);
     assert_eq!(live.group_objects.len(), 2);
 
-    let desired = desired_links();
+    let desired = desired_links()?;
     let report = plan(&live.tables, &desired);
     assert_eq!(report.additions.len(), 1, "one new link: {report:?}");
-    assert_eq!(report.additions[0].ga, ga("1/0/2"));
+    assert_eq!(report.additions[0].ga, ga("1/0/2")?);
     assert_eq!(report.unchanged.len(), 1);
     assert!(report.removals.is_empty());
 
@@ -2010,7 +1908,7 @@ async fn run_table_apply(mode: LsmMode) -> Result<(), Box<dyn std::error::Error>
     );
     let profile = bussard_mgmt::MaskProfile::from_mask(MASK_0705)
         .sys7_default_profile()
-        .expect("a System 7 profile");
+        .ok_or("a System 7 profile")?;
     let outcome = apply_sys7_tables(
         &mut l4,
         &lsm_access_for(mode),
@@ -2041,7 +1939,7 @@ async fn run_table_apply(mode: LsmMode) -> Result<(), Box<dyn std::error::Error>
     );
 
     {
-        let s = state.lock().unwrap();
+        let s = lock(&state);
         assert_eq!(
             s.restarts_seen, 0,
             "a table-only apply must not restart the device"
@@ -2063,7 +1961,7 @@ async fn run_table_apply(mode: LsmMode) -> Result<(), Box<dyn std::error::Error>
     }
 
     let _ = l4.disconnect().await;
-    handle.abort();
+    drop(handle);
     Ok(())
 }
 
@@ -2090,10 +1988,10 @@ async fn read_system7_tables_never_invents_links_from_unprogrammed_memory()
     // - the one well-formed association entry resolves to an address-table slot
     //   reading 0xFFFF, whose D15 is reserved and never a group address, so it
     //   does not become a link.
-    let (mut bus, state, handle) = setup(LsmMode::Property, Fault::None).await;
-    let target: bussard_model::IndividualAddress = "1.1.99".parse().unwrap();
+    let (mut bus, state, handle) = setup(LsmMode::Property, Fault::None).await?;
+    let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
     {
-        let mut s = state.lock().unwrap();
+        let mut s = lock(&state);
         for addr in 0x4000u16..0x4400 {
             s.memory.insert(addr, 0xFF);
         }
@@ -2106,7 +2004,7 @@ async fn read_system7_tables_never_invents_links_from_unprogrammed_memory()
             s.lsm_states.insert(lsm, LS_LOADED);
         }
     }
-    let mut l4 = authed_connection(&mut bus, target).await;
+    let mut l4 = authed_connection(&mut bus, target).await?;
     let live = read_sys7_tables(&mut l4).await?;
     assert_eq!(
         live.tables.addresses.len(),
@@ -2133,11 +2031,11 @@ async fn read_system7_tables_never_invents_links_from_unprogrammed_memory()
         "one summary note per kind, not one per entry: {notes}"
     );
     // And the diff against a model is pure addition — nothing to "remove".
-    let report = plan(&live.tables, &desired_links());
+    let report = plan(&live.tables, &desired_links()?);
     assert!(report.removals.is_empty(), "{report:?}");
     assert_eq!(report.additions.len(), 2);
     let _ = l4.disconnect().await;
-    handle.abort();
+    drop(handle);
     Ok(())
 }
 
@@ -2166,19 +2064,19 @@ async fn apply_system7_tables_fails_on_a_verify_mismatch() -> Result<(), Box<dyn
 {
     // A device that corrupts every stored segment write: the per-chunk read-back
     // must catch it at the first chunk, before the load is completed.
-    let (mut bus, state, handle) = setup(LsmMode::Property, Fault::CorruptStoredImage).await;
-    let target: bussard_model::IndividualAddress = "1.1.99".parse().unwrap();
+    let (mut bus, state, handle) = setup(LsmMode::Property, Fault::CorruptStoredImage).await?;
+    let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
     let own_ia = target.raw();
     let go_image = vec![0x01, 0x07, 0x00, 0x07, 0x00, 0xDF, 0x00];
     seed_tables(&state, own_ia, &[0x0801], &[(1, 1)], &go_image);
 
-    let mut l4 = authed_connection(&mut bus, target).await;
+    let mut l4 = authed_connection(&mut bus, target).await?;
     let live = read_sys7_tables(&mut l4).await?;
-    let desired = desired_links();
+    let desired = desired_links()?;
     let images = sys7_table_images(&live, &desired, own_ia)?;
     let profile = bussard_mgmt::MaskProfile::from_mask(MASK_0705)
         .sys7_default_profile()
-        .expect("a System 7 profile");
+        .ok_or("a System 7 profile")?;
     let err = apply_sys7_tables(
         &mut l4,
         &lsm_access_for(LsmMode::Property),
@@ -2193,7 +2091,7 @@ async fn apply_system7_tables_fails_on_a_verify_mismatch() -> Result<(), Box<dyn
         "expected a verify mismatch, got {err}"
     );
     {
-        let s = state.lock().unwrap();
+        let s = lock(&state);
         assert_ne!(
             s.lsm_state(1),
             LS_LOADED,
@@ -2201,7 +2099,7 @@ async fn apply_system7_tables_fails_on_a_verify_mismatch() -> Result<(), Box<dyn
         );
     }
     let _ = l4.disconnect().await;
-    handle.abort();
+    drop(handle);
     Ok(())
 }
 
@@ -2211,7 +2109,7 @@ async fn apply_system7_tables_fails_on_a_verify_mismatch() -> Result<(), Box<dyn
 
 /// [`mdt_canonical_app`] with two 8-bit parameters in the `0x4400` segment
 /// (defaults 4 and 5, the segment's own `<Data>`).
-fn mdt_app_with_parameters() -> ApplicationProgram {
+fn mdt_app_with_parameters() -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
     let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
      <ApplicationProgram Id="M-83_A-E" ApplicationNumber="14" ApplicationVersion="35"
         MaskVersion="MV-0705" Name="MDT S7" LoadProcedureStyle="ProductProcedure">
@@ -2257,7 +2155,8 @@ fn mdt_app_with_parameters() -> ApplicationProgram {
        </LoadProcedures>
       </Static>
      </ApplicationProgram></KNX>"#;
-    parse_application_program("M-83_A-E", xml.as_bytes()).expect("parse MDT S7 app")
+    parse_application_program("M-83_A-E", xml.as_bytes())
+        .map_err(|e| format!("parse MDT S7 app: {e}").into())
 }
 
 /// The programmed MDT S7 device (defaults 4, 5 at `0x4400`) with LSM 3 in
@@ -2274,7 +2173,7 @@ fn parameters_only_fixture(
         s.memory.insert(0x4400, 4);
         s.memory.insert(0x4401, 5);
     }
-    let app = mdt_app_with_parameters();
+    let app = mdt_app_with_parameters()?;
     let overrides = std::collections::BTreeMap::from([("P-1_R-2".to_string(), "9".to_string())]);
     let full = plan_flash(
         &app,
@@ -2292,12 +2191,12 @@ async fn run_parameters_only_refuses_unloaded_lsm3(
     mode: LsmMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
     set_sys7_lsm_env(mode);
-    let (mut bus, state, handle) = setup(mode, Fault::None).await;
+    let (mut bus, state, handle) = setup(mode, Fault::None).await?;
     let (_app, full) = parameters_only_fixture(&state, LS_ERROR)?;
     let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
     let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
-    let mut session = authed_session(l4).await;
+    let mut session = authed_session(l4).await?;
     let regions = bussard_download::read_parameter_regions(session.l4(), &full).await;
     let partial = full.parameters_only(&regions)?;
     let result = flash(
@@ -2307,7 +2206,7 @@ async fn run_parameters_only_refuses_unloaded_lsm3(
         |_p| {},
     )
     .await;
-    handle.abort();
+    drop(handle);
     let _ = session.into_disconnect().await;
     let Err(err) = result else {
         return Err("a device whose LSM 3 is not Loaded must be refused".into());
@@ -2349,14 +2248,14 @@ async fn test_parameters_only_sys7_property_refuses_unloaded_lsm3()
 
 async fn run_parameters_only_sys7(mode: LsmMode) -> Result<(), Box<dyn std::error::Error>> {
     set_sys7_lsm_env(mode);
-    let (mut bus, state, handle) = setup(mode, Fault::None).await;
+    let (mut bus, state, handle) = setup(mode, Fault::None).await?;
     // A programmed device holding the vendor defaults 4, 5 at 0x4400; the
     // model moves the second parameter from 5 to 9.
     let (app, full) = parameters_only_fixture(&state, LS_LOADED)?;
     let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
     let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
-    let mut session = authed_session(l4).await;
+    let mut session = authed_session(l4).await?;
     let regions = bussard_download::read_parameter_regions(session.l4(), &full).await;
     let region = regions
         .get("M-83_A-E_AS-4")
@@ -2404,7 +2303,7 @@ async fn run_parameters_only_sys7(mode: LsmMode) -> Result<(), Box<dyn std::erro
     )
     .await?;
     let after = bussard_download::read_parameter_regions(session.l4(), &full).await;
-    handle.abort();
+    drop(handle);
     let _ = session.into_disconnect().await;
     assert!(
         outcome.ok(),
@@ -2461,8 +2360,6 @@ async fn run_parity_flash(
     mode: LsmMode,
     device_control: u8,
 ) -> Result<(bussard_download::FlashOutcome, Shared), Box<dyn std::error::Error>> {
-    let sock = UdpSocket::bind("127.0.0.1:0").await?;
-    let port = sock.local_addr()?.port();
     let addr: bussard_model::IndividualAddress = "1.1.99".parse()?;
     let state = fresh_device(mode, Fault::None);
     {
@@ -2470,9 +2367,9 @@ async fn run_parity_flash(
         s.reboot_on_restart = true;
         s.device_control = device_control;
     }
-    let gw = tokio::spawn(run_gateway(sock, addr, Arc::clone(&state)));
+    let gw = start_gateway(&state).await?;
     let (handle, _actor) = bussard_bus::Bus::connect(
-        ConnectionConfig::tunnel(format!("127.0.0.1:{port}").parse()?)
+        ConnectionConfig::tunnel(gw.addr())
             .with_reconnect(bussard_transport::TunnelReconnect::disabled()),
     );
     handle.wait_connected(Duration::from_secs(5)).await;
@@ -2492,7 +2389,7 @@ async fn run_parity_flash(
     }
     let mut session = Session::open_with_key(connector, None).await?;
     let plan = plan_flash(
-        &mdt_canonical_app(),
+        &mdt_canonical_app()?,
         "1.1.99",
         MASK_0705,
         &no_overrides(),
@@ -2505,7 +2402,7 @@ async fn run_parity_flash(
         ..Default::default()
     };
     let result = flash(&mut session, &plan, options, |_p| {}).await;
-    gw.abort();
+    drop(gw);
     let _ = session.into_disconnect().await;
     Ok((result?, state))
 }
@@ -2589,10 +2486,10 @@ async fn test_flash_sys7_leaves_verify_mode_alone_when_already_on()
     // A single-connection session skips the pre-download restart, so the
     // device keeps the verify-mode bit it already holds: nothing is written.
     set_sys7_lsm_env(LsmMode::Property);
-    let (mut bus, state, handle) = setup(LsmMode::Property, Fault::None).await;
+    let (mut bus, state, handle) = setup(LsmMode::Property, Fault::None).await?;
     lock(&state).device_control = DEVICE_CONTROL_VERIFY_MODE | 0x01;
     let plan = plan_flash(
-        &mdt_canonical_app(),
+        &mdt_canonical_app()?,
         "1.1.99",
         MASK_0705,
         &no_overrides(),
@@ -2601,7 +2498,7 @@ async fn test_flash_sys7_leaves_verify_mode_alone_when_already_on()
         &BTreeMap::new(),
     )?;
     let l4 = Layer4Connection::connect(&mut bus, "1.1.99".parse()?, "0.0.255".parse()?).await?;
-    let mut session = authed_session(l4).await;
+    let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
         &plan,
@@ -2615,7 +2512,7 @@ async fn test_flash_sys7_leaves_verify_mode_alone_when_already_on()
         assert!(s.device_control_writes.is_empty(), "bit already set");
         assert_eq!(s.restarts_seen, 1, "only the terminal restart");
     }
-    handle.abort();
+    drop(handle);
     let _ = session.into_disconnect().await;
     Ok(())
 }
@@ -2642,8 +2539,6 @@ async fn run_flash_across_restart_outage(
         std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
     }
     set_sys7_lsm_env(LsmMode::MemoryMapped);
-    let sock = UdpSocket::bind("127.0.0.1:0").await?;
-    let port = sock.local_addr()?.port();
     let addr: bussard_model::IndividualAddress = "1.1.99".parse()?;
     let state = fresh_device(LsmMode::MemoryMapped, Fault::None);
     {
@@ -2651,7 +2546,7 @@ async fn run_flash_across_restart_outage(
         s.reboot_on_restart = true;
         s.restart_outage = Some((restart, 1, Duration::from_millis(1500)));
     }
-    let gw = tokio::spawn(run_gateway(sock, addr, Arc::clone(&state)));
+    let gw = start_gateway(&state).await?;
     let reconnect = bussard_transport::TunnelReconnect {
         budget: Duration::from_secs(20),
         initial_backoff: Duration::from_millis(100),
@@ -2659,9 +2554,8 @@ async fn run_flash_across_restart_outage(
         attempt_timeout: Duration::from_millis(300),
         ..bussard_transport::TunnelReconnect::default()
     };
-    let (handle, _actor) = bussard_bus::Bus::connect(
-        ConnectionConfig::tunnel(format!("127.0.0.1:{port}").parse()?).with_reconnect(reconnect),
-    );
+    let (handle, _actor) =
+        bussard_bus::Bus::connect(ConnectionConfig::tunnel(gw.addr()).with_reconnect(reconnect));
     handle.wait_connected(Duration::from_secs(5)).await;
     let connector = LeaseConnector {
         handle: handle.clone(),
@@ -2675,7 +2569,7 @@ async fn run_flash_across_restart_outage(
     };
     let mut session = Session::open_with_key(connector, None).await?;
     let plan = plan_flash(
-        &mdt_canonical_app(),
+        &mdt_canonical_app()?,
         "1.1.99",
         MASK_0705,
         &no_overrides(),
@@ -2690,7 +2584,7 @@ async fn run_flash_across_restart_outage(
     let result = flash(&mut session, &plan, options, |_p| {}).await;
     let _ = session.into_disconnect().await;
     let _ = handle.close().await;
-    gw.abort();
+    drop(gw);
     Ok((result, state))
 }
 

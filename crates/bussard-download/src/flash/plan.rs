@@ -1354,7 +1354,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_lowers_supported_procedure() {
+    fn plan_lowers_supported_procedure() -> Result<(), Box<dyn std::error::Error>> {
         let app = fabricated_app();
         let plan = plan_flash(
             &app,
@@ -1364,8 +1364,7 @@ mod tests {
             &BTreeMap::new(),
             None,
             &BTreeMap::new(),
-        )
-        .unwrap();
+        )?;
         assert_eq!(plan.identity.mask_version, "07B0");
         // Connect/Disconnect are session-boundary no-ops; 8 device steps remain.
         assert_eq!(
@@ -1409,10 +1408,12 @@ mod tests {
         assert_eq!(plan.total_write_bytes(), 7);
         // The parameter image reflects the default 7.
         assert_eq!(plan.param_images["M-1_A-1_RS-2"], vec![7]);
+        Ok(())
     }
 
     #[test]
-    fn write_rel_mem_without_applies_to_streams_the_parameter_image() {
+    fn write_rel_mem_without_applies_to_streams_the_parameter_image()
+    -> Result<(), Box<dyn std::error::Error>> {
         // The KNX-Virtual DA.tp shape: a single 256-byte relative segment whose
         // `<Data>` base is all 0xFF, a parameter placing a non-0xFF value into it,
         // and an app-segment `LdCtrlWriteRelMem` with NO `AppliesTo`. ETS writes the
@@ -1441,7 +1442,7 @@ mod tests {
            </LoadProcedures>
           </Static>
          </ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-1_A-P", xml.as_bytes()).unwrap();
+        let app = parse_application_program("M-1_A-P", xml.as_bytes())?;
         let plan = plan_flash(
             &app,
             "1.1.4",
@@ -1450,8 +1451,7 @@ mod tests {
             &BTreeMap::new(),
             None,
             &BTreeMap::new(),
-        )
-        .unwrap();
+        )?;
 
         // The (only) relative-memory write must stream the PARAMETER image.
         let write = plan
@@ -1474,10 +1474,11 @@ mod tests {
             plan.param_images["M-1_A-P_RS-04"],
             vec![5, 0xFF, 0xFF, 0xFF]
         );
+        Ok(())
     }
 
     #[test]
-    fn plan_lowers_master_reset() {
+    fn plan_lowers_master_reset() -> Result<(), Box<dyn std::error::Error>> {
         // An LdCtrlMasterReset mid-procedure (KNX-Virtual shape) lowers to a
         // MasterReset step carrying the op's EraseCode/ChannelNumber, between the
         // allocate and the write. It is NOT refused as an unsupported op.
@@ -1499,7 +1500,7 @@ mod tests {
            </LoadProcedures>
           </Static>
          </ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-1_A-MR", xml.as_bytes()).unwrap();
+        let app = parse_application_program("M-1_A-MR", xml.as_bytes())?;
         let plan = plan_flash(
             &app,
             "1.1.4",
@@ -1508,8 +1509,7 @@ mod tests {
             &BTreeMap::new(),
             None,
             &BTreeMap::new(),
-        )
-        .unwrap();
+        )?;
         // The master reset sits between the allocation and the write.
         let mr_pos = plan
             .steps
@@ -1527,12 +1527,12 @@ mod tests {
             .steps
             .iter()
             .position(|s| matches!(s, FlashStep::AllocateSegment { .. }))
-            .unwrap();
+            .ok_or("the plan allocates a segment")?;
         let write_pos = plan
             .steps
             .iter()
             .position(|s| matches!(s, FlashStep::WriteRelMem { .. }))
-            .unwrap();
+            .ok_or("the plan writes relative memory")?;
         assert!(
             alloc_pos < mr_pos && mr_pos < write_pos,
             "steps {:?}",
@@ -1540,10 +1540,11 @@ mod tests {
         );
         // The trace names the reconnect-and-resume master-reset step.
         assert!(trace(&plan).iter().any(|l| l.contains("master reset")));
+        Ok(())
     }
 
     #[test]
-    fn plan_threads_rel_segment_fill_flag_data_driven() {
+    fn plan_threads_rel_segment_fill_flag_data_driven() -> Result<(), Box<dyn std::error::Error>> {
         // Item 1 (issue #73): the `LdCtrlRelSegment` `Fill`/`FillByte` is
         // per-product, not a blanket rule. A procedure that sets `Fill="1"` on the
         // code segment (the Jung LED A-3030 shape, obj4 alloc
@@ -1567,7 +1568,7 @@ mod tests {
            </LoadProcedures>
           </Static>
          </ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-1_A-FILL", fill_xml.as_bytes()).unwrap();
+        let app = parse_application_program("M-1_A-FILL", fill_xml.as_bytes())?;
         let plan = plan_flash(
             &app,
             "1.1.4",
@@ -1576,8 +1577,7 @@ mod tests {
             &BTreeMap::new(),
             None,
             &BTreeMap::new(),
-        )
-        .unwrap();
+        )?;
         let fill = plan
             .steps
             .iter()
@@ -1610,7 +1610,7 @@ mod tests {
            </LoadProcedures>
           </Static>
          </ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-1_A-DATP", da_tp_xml.as_bytes()).unwrap();
+        let app = parse_application_program("M-1_A-DATP", da_tp_xml.as_bytes())?;
         let plan = plan_flash(
             &app,
             "1.1.4",
@@ -1619,8 +1619,7 @@ mod tests {
             &BTreeMap::new(),
             None,
             &BTreeMap::new(),
-        )
-        .unwrap();
+        )?;
         let fill = plan
             .steps
             .iter()
@@ -1633,10 +1632,11 @@ mod tests {
             fill, None,
             "a DA.tp-shape allocation (no Fill) must stay no-fill (byte-identical)"
         );
+        Ok(())
     }
 
     #[test]
-    fn plan_defaults_master_reset_erase_code() {
+    fn plan_defaults_master_reset_erase_code() -> Result<(), Box<dyn std::error::Error>> {
         // An LdCtrlMasterReset with no attributes defaults EraseCode to 1
         // ("Confirmed Restart") and ChannelNumber to 0.
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
@@ -1651,7 +1651,7 @@ mod tests {
            </LoadProcedures>
           </Static>
          </ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-1_A-MR2", xml.as_bytes()).unwrap();
+        let app = parse_application_program("M-1_A-MR2", xml.as_bytes())?;
         let plan = plan_flash(
             &app,
             "1.1.4",
@@ -1660,8 +1660,7 @@ mod tests {
             &BTreeMap::new(),
             None,
             &BTreeMap::new(),
-        )
-        .unwrap();
+        )?;
         assert!(plan.steps.iter().any(|s| matches!(
             s,
             FlashStep::MasterReset {
@@ -1669,10 +1668,11 @@ mod tests {
                 channel_number: 0
             }
         )));
+        Ok(())
     }
 
     #[test]
-    fn plan_refuses_non_system_b() {
+    fn plan_refuses_non_system_b() -> Result<(), Box<dyn std::error::Error>> {
         // System 2 (0x0300): neither System B nor System 7, refused at the gate.
         // (System 7 masks 0705/0701 are now supported — issue #49 — so they no
         // longer hit this gate; see `plan_lowers_system_7`.)
@@ -1686,8 +1686,10 @@ mod tests {
             None,
             &BTreeMap::new(),
         )
-        .unwrap_err();
+        .err()
+        .ok_or("expected an error")?;
         assert!(matches!(err, PlanError::NotSystemB { .. }), "{err:?}");
+        Ok(())
     }
 
     #[test]
@@ -1713,7 +1715,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_refuses_mask_mismatch() {
+    fn plan_refuses_mask_mismatch() -> Result<(), Box<dyn std::error::Error>> {
         // App declares MV-07B0 but the device is a different System B medium
         // (0x57B0 IP): the exact-mask compare refuses it.
         let app = fabricated_app();
@@ -1726,12 +1728,14 @@ mod tests {
             None,
             &BTreeMap::new(),
         )
-        .unwrap_err();
+        .err()
+        .ok_or("expected an error")?;
         assert!(matches!(err, PlanError::MaskMismatch { .. }), "{err:?}");
+        Ok(())
     }
 
     #[test]
-    fn plan_refuses_unsupported_op() {
+    fn plan_refuses_unsupported_op() -> Result<(), Box<dyn std::error::Error>> {
         // An app whose procedure carries a task-segment op (device-side
         // behaviour bussard cannot yet verify) is refused whole, at pre-flight.
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
@@ -1746,7 +1750,7 @@ mod tests {
            </LoadProcedures>
           </Static>
          </ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-1_A-2", xml.as_bytes()).unwrap();
+        let app = parse_application_program("M-1_A-2", xml.as_bytes())?;
         let err = plan_flash(
             &app,
             "1.1.4",
@@ -1756,15 +1760,17 @@ mod tests {
             None,
             &BTreeMap::new(),
         )
-        .unwrap_err();
+        .err()
+        .ok_or("expected an error")?;
         match err {
             PlanError::UnsupportedOp { op } => assert!(op.contains("TaskSegment"), "{op}"),
             other => panic!("expected UnsupportedOp, got {other:?}"),
         }
+        Ok(())
     }
 
     #[test]
-    fn plan_lowers_load_image_prop() {
+    fn plan_lowers_load_image_prop() -> Result<(), Box<dyn std::error::Error>> {
         // A procedure in the real MDT A-0007 / Jung 23024 shape: allocate +
         // write a combined full,par segment, then LoadImageProp x4 for the MCB
         // integrity check. Every LoadImageProp lowers (none is refused); the
@@ -1789,7 +1795,7 @@ mod tests {
            </LoadProcedures>
           </Static>
          </ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-1_A-3", xml.as_bytes()).unwrap();
+        let app = parse_application_program("M-1_A-3", xml.as_bytes())?;
         let plan = plan_flash(
             &app,
             "1.1.4",
@@ -1798,8 +1804,7 @@ mod tests {
             &BTreeMap::new(),
             None,
             &BTreeMap::new(),
-        )
-        .unwrap();
+        )?;
 
         let image_props: Vec<&FlashStep> = plan
             .steps
@@ -1832,10 +1837,11 @@ mod tests {
         ));
         // The trace names the verify step.
         assert!(trace(&plan).iter().any(|l| l.contains("verify image")));
+        Ok(())
     }
 
     #[test]
-    fn plan_dedupes_identical_consecutive_allocations() {
+    fn plan_dedupes_identical_consecutive_allocations() -> Result<(), Box<dyn std::error::Error>> {
         // The real MDT A-0007 shape: the MergeId=2 block carries TWO
         // <LdCtrlRelSegment> ops for one segment — AppliesTo="full" and
         // AppliesTo="par", both LsmIdx=4 Size=6 — followed by a single combined
@@ -1863,7 +1869,7 @@ mod tests {
            </LoadProcedures>
           </Static>
          </ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-83_A-7", xml.as_bytes()).unwrap();
+        let app = parse_application_program("M-83_A-7", xml.as_bytes())?;
         let plan = plan_flash(
             &app,
             "1.1.4",
@@ -1872,8 +1878,7 @@ mod tests {
             &BTreeMap::new(),
             None,
             &BTreeMap::new(),
-        )
-        .unwrap();
+        )?;
 
         let allocs = plan
             .steps
@@ -1894,10 +1899,12 @@ mod tests {
                 .count(),
             1
         );
+        Ok(())
     }
 
     #[test]
-    fn plan_dedupes_a_restated_allocation_when_segments_span_several_lsms() {
+    fn plan_dedupes_a_restated_allocation_when_segments_span_several_lsms()
+    -> Result<(), Box<dyn std::error::Error>> {
         // The real ABB/BJE i-bus shape (M-0002_A-0806-71-AD30-O0007, issue #113):
         // the app declares TWO relative segments on DIFFERENT load state machines
         // — RS-03 (LSM 3, the group-object-table segment) and RS-04 (LSM 4, the
@@ -1931,7 +1938,7 @@ mod tests {
            </LoadProcedures>
           </Static>
          </ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-2_A-806", xml.as_bytes()).unwrap();
+        let app = parse_application_program("M-2_A-806", xml.as_bytes())?;
         let plan = plan_flash(
             &app,
             "1.1.4",
@@ -1940,8 +1947,7 @@ mod tests {
             &BTreeMap::new(),
             None,
             &BTreeMap::new(),
-        )
-        .unwrap();
+        )?;
 
         let allocs: Vec<&FlashStep> = plan
             .steps
@@ -1982,10 +1988,11 @@ mod tests {
             !plan.images.contains_key("M-2_A-806_RS-03-00000"),
             "the LSM-3 segment is never allocated by this procedure"
         );
+        Ok(())
     }
 
     #[test]
-    fn plan_keeps_distinct_allocations() {
+    fn plan_keeps_distinct_allocations() -> Result<(), Box<dyn std::error::Error>> {
         // Two RelSegment ops for DIFFERENT segments (different sizes) must NOT be
         // deduped — the fabricated app allocates a 6-byte code segment and a
         // 1-byte parameter segment.
@@ -1998,18 +2005,18 @@ mod tests {
             &BTreeMap::new(),
             None,
             &BTreeMap::new(),
-        )
-        .unwrap();
+        )?;
         let allocs = plan
             .steps
             .iter()
             .filter(|s| matches!(s, FlashStep::AllocateSegment { .. }))
             .count();
         assert_eq!(allocs, 2, "distinct segments keep distinct allocations");
+        Ok(())
     }
 
     #[test]
-    fn plan_lowers_compare_prop() {
+    fn plan_lowers_compare_prop() -> Result<(), Box<dyn std::error::Error>> {
         // The MDT SCN-DA64x DALI-gateway shape: a CompareProp precondition (with
         // InlineData + OnError child) before the download proper. It must lower to
         // an executable CompareProp step carrying the expected bytes, not refuse.
@@ -2033,7 +2040,7 @@ mod tests {
            </LoadProcedures>
           </Static>
          </ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-1_A-4", xml.as_bytes()).unwrap();
+        let app = parse_application_program("M-1_A-4", xml.as_bytes())?;
         let plan = plan_flash(
             &app,
             "1.1.4",
@@ -2042,8 +2049,7 @@ mod tests {
             &BTreeMap::new(),
             None,
             &BTreeMap::new(),
-        )
-        .unwrap();
+        )?;
 
         let compares: Vec<&FlashStep> = plan
             .steps
@@ -2079,10 +2085,11 @@ mod tests {
         ));
         // The trace names the verify-property step.
         assert!(trace(&plan).iter().any(|l| l.contains("verify property")));
+        Ok(())
     }
 
     #[test]
-    fn plan_refuses_unknown_parameter_override_key() {
+    fn plan_refuses_unknown_parameter_override_key() -> Result<(), Box<dyn std::error::Error>> {
         // A parameter override naming a ref-id this application does not define is
         // a pre-flight refusal that names the offending key — the device is never
         // touched with an unresolvable parameter image.
@@ -2098,17 +2105,19 @@ mod tests {
             None,
             &BTreeMap::new(),
         )
-        .unwrap_err();
+        .err()
+        .ok_or("expected an error")?;
         match err {
             PlanError::UnresolvableImage { reason, .. } => {
                 assert!(reason.contains("P-999"), "must name the key: {reason}");
             }
             other => panic!("expected UnresolvableImage, got {other:?}"),
         }
+        Ok(())
     }
 
     #[test]
-    fn plan_applies_parameter_override_to_image() {
+    fn plan_applies_parameter_override_to_image() -> Result<(), Box<dyn std::error::Error>> {
         // A valid ref-id override changes the computed parameter image the plan
         // carries (proving the re-keyed override flows into plan_flash).
         let app = fabricated_app();
@@ -2122,13 +2131,13 @@ mod tests {
             &BTreeMap::new(),
             None,
             &BTreeMap::new(),
-        )
-        .unwrap();
+        )?;
         assert_eq!(plan.param_images["M-1_A-1_RS-2"], vec![99]);
+        Ok(())
     }
 
     #[test]
-    fn select_application_disambiguates() {
+    fn select_application_disambiguates() -> Result<(), Box<dyn std::error::Error>> {
         let a = fabricated_app();
         let b = {
             let mut b = fabricated_app();
@@ -2142,16 +2151,15 @@ mod tests {
             Err(PlanError::AmbiguousApplication { .. })
         ));
         // Naming one selects it.
-        assert_eq!(
-            select_application(&cands, Some("M-1_A-9")).unwrap().id,
-            "M-1_A-9"
-        );
+        assert_eq!(select_application(&cands, Some("M-1_A-9"))?.id, "M-1_A-9");
         // A single candidate needs no name.
-        assert_eq!(select_application(&[&a], None).unwrap().id, "M-1_A-1");
+        assert_eq!(select_application(&[&a], None)?.id, "M-1_A-1");
+        Ok(())
     }
 
     #[test]
-    fn plan_refuses_write_rel_mem_offset_past_24bit_space() {
+    fn plan_refuses_write_rel_mem_offset_past_24bit_space() -> Result<(), Box<dyn std::error::Error>>
+    {
         // A WriteRelMem whose offset alone lands the write past the 24-bit
         // extended-memory space (0xFF_FFFF) must be refused at plan time (the
         // segment base is added at flash time and is >= 0, so the range already
@@ -2172,7 +2180,7 @@ mod tests {
            </LoadProcedures>
           </Static>
          </ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-1_A-7", xml.as_bytes()).unwrap();
+        let app = parse_application_program("M-1_A-7", xml.as_bytes())?;
         let err = plan_flash(
             &app,
             "1.1.4",
@@ -2182,7 +2190,8 @@ mod tests {
             None,
             &BTreeMap::new(),
         )
-        .unwrap_err();
+        .err()
+        .ok_or("expected an error")?;
         match err {
             PlanError::AddressOutOfRange { end, .. } => {
                 assert!(
@@ -2192,10 +2201,12 @@ mod tests {
             }
             other => panic!("expected AddressOutOfRange, got {other:?}"),
         }
+        Ok(())
     }
 
     #[test]
-    fn plan_accepts_write_rel_mem_offset_above_16bit_space() {
+    fn plan_accepts_write_rel_mem_offset_above_16bit_space()
+    -> Result<(), Box<dyn std::error::Error>> {
         // A WriteRelMem at an offset past 0xFFFF but inside the 24-bit space is now
         // planned (the extended service reaches it) — the old 16-bit refusal is
         // gone. The plain-vs-extended selection is deferred to flash time from the
@@ -2214,7 +2225,7 @@ mod tests {
            </LoadProcedures>
           </Static>
          </ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-1_A-7b", xml.as_bytes()).unwrap();
+        let app = parse_application_program("M-1_A-7b", xml.as_bytes())?;
         let plan = plan_flash(
             &app,
             "1.1.4",
@@ -2231,10 +2242,11 @@ mod tests {
                 .any(|s| matches!(s, FlashStep::WriteRelMem { offset, .. } if *offset == 65540)),
             "the WriteRelMem step must survive lowering"
         );
+        Ok(())
     }
 
     #[test]
-    fn plan_refuses_write_mem_address_past_24bit_space() {
+    fn plan_refuses_write_mem_address_past_24bit_space() -> Result<(), Box<dyn std::error::Error>> {
         // An absolute WriteMem at an address past the 24-bit space (0xFF_FFFF) is
         // refused (a cast would silently truncate and stream to the wrong memory).
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
@@ -2250,7 +2262,7 @@ mod tests {
            </LoadProcedures>
           </Static>
          </ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-1_A-8", xml.as_bytes()).unwrap();
+        let app = parse_application_program("M-1_A-8", xml.as_bytes())?;
         let err = plan_flash(
             &app,
             "1.1.4",
@@ -2260,15 +2272,17 @@ mod tests {
             None,
             &BTreeMap::new(),
         )
-        .unwrap_err();
+        .err()
+        .ok_or("expected an error")?;
         assert!(
             matches!(err, PlanError::AddressOutOfRange { .. }),
             "expected AddressOutOfRange, got {err:?}"
         );
+        Ok(())
     }
 
     #[test]
-    fn plan_refuses_absurd_segment_allocation_size() {
+    fn plan_refuses_absurd_segment_allocation_size() -> Result<(), Box<dyn std::error::Error>> {
         // A RelSegment declaring a multi-gigabyte size is corrupt input; refuse
         // it before it becomes a huge allocation request.
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
@@ -2284,7 +2298,7 @@ mod tests {
            </LoadProcedures>
           </Static>
          </ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-1_A-A", xml.as_bytes()).unwrap();
+        let app = parse_application_program("M-1_A-A", xml.as_bytes())?;
         let err = plan_flash(
             &app,
             "1.1.4",
@@ -2294,11 +2308,13 @@ mod tests {
             None,
             &BTreeMap::new(),
         )
-        .unwrap_err();
+        .err()
+        .ok_or("expected an error")?;
         assert!(
             matches!(err, PlanError::AddressOutOfRange { .. }),
             "expected AddressOutOfRange, got {err:?}"
         );
+        Ok(())
     }
 
     // ---------------------------------------------------------------------
@@ -2321,11 +2337,12 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#
         );
-        parse_application_program("M-1_A-W", xml.as_bytes()).unwrap()
+        parse_application_program("M-1_A-W", xml.as_bytes()).expect("the fixture app parses")
     }
 
     #[test]
-    fn plan_lowers_value_carrying_write_prop_as_real_write() {
+    fn plan_lowers_value_carrying_write_prop_as_real_write()
+    -> Result<(), Box<dyn std::error::Error>> {
         // A WriteProp carrying InlineData lowers to an executable WriteProp step
         // with the decoded value — a real write in the plan, not a skipped no-op.
         let app = app_with_write_prop("0102", "0", "204");
@@ -2337,8 +2354,7 @@ mod tests {
             &BTreeMap::new(),
             None,
             &BTreeMap::new(),
-        )
-        .unwrap();
+        )?;
         let write_props: Vec<&FlashStep> = plan
             .steps
             .iter()
@@ -2364,10 +2380,12 @@ mod tests {
             .find(|l| l.contains("write property"))
             .expect("a write-property line is rendered");
         assert!(line.contains("2 byte"), "renders the value length: {line}");
+        Ok(())
     }
 
     #[test]
-    fn plan_skips_bare_write_prop_without_emitting_a_step() {
+    fn plan_skips_bare_write_prop_without_emitting_a_step() -> Result<(), Box<dyn std::error::Error>>
+    {
         // A bare WriteProp (no InlineData) carries no value: the device seeds the
         // property on LoadCompleted. It must NOT lower to a WriteProp step, so it
         // can never be rendered as an executed write.
@@ -2383,7 +2401,7 @@ mod tests {
            </LoadProcedures>
           </Static>
          </ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-1_A-B", xml.as_bytes()).unwrap();
+        let app = parse_application_program("M-1_A-B", xml.as_bytes())?;
         let plan = plan_flash(
             &app,
             "1.1.4",
@@ -2392,8 +2410,7 @@ mod tests {
             &BTreeMap::new(),
             None,
             &BTreeMap::new(),
-        )
-        .unwrap();
+        )?;
         assert!(
             !plan
                 .steps
@@ -2402,10 +2419,11 @@ mod tests {
             "a bare WriteProp must not lower to an executed step: {:?}",
             plan.steps
         );
+        Ok(())
     }
 
     #[test]
-    fn plan_refuses_write_prop_shape_it_cannot_execute() {
+    fn plan_refuses_write_prop_shape_it_cannot_execute() -> Result<(), Box<dyn std::error::Error>> {
         // A value-carrying WriteProp whose object index exceeds the 8-bit space
         // the property-write primitive addresses is refused at pre-flight rather
         // than dropped at execute time.
@@ -2419,17 +2437,20 @@ mod tests {
             None,
             &BTreeMap::new(),
         )
-        .unwrap_err();
+        .err()
+        .ok_or("expected an error")?;
         match err {
             PlanError::UnsupportedWriteProp { reason, .. } => {
                 assert!(reason.contains("object index"), "{reason}");
             }
             other => panic!("expected UnsupportedWriteProp, got {other:?}"),
         }
+        Ok(())
     }
 
     #[test]
-    fn plan_targets_the_obj_idx_of_the_write_not_the_type() {
+    fn plan_targets_the_obj_idx_of_the_write_not_the_type() -> Result<(), Box<dyn std::error::Error>>
+    {
         // A DA.tp-shaped write: RelSegment LsmIdx=4, then WriteRelMem ObjIdx=4. The
         // lowered steps carry those indices verbatim so the executor resolves the
         // write to device object 4 (base 0x6000), not the type-discovered object.
@@ -2450,7 +2471,7 @@ mod tests {
            </LoadProcedures>
           </Static>
          </ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-1_A-DA", xml.as_bytes()).unwrap();
+        let app = parse_application_program("M-1_A-DA", xml.as_bytes())?;
         let plan = plan_flash(
             &app,
             "1.1.4",
@@ -2459,8 +2480,7 @@ mod tests {
             &BTreeMap::new(),
             None,
             &BTreeMap::new(),
-        )
-        .unwrap();
+        )?;
         // The allocate targets LsmIdx=4; the write targets ObjIdx=4.
         assert!(plan.steps.iter().any(|s| matches!(
             s,
@@ -2476,6 +2496,7 @@ mod tests {
                 ..
             }
         )));
+        Ok(())
     }
 
     #[test]

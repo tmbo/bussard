@@ -15,3 +15,9 @@ bussard-secure = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+bussard-testkit = { workspace = true }
+
+[lints]
+workspace = true

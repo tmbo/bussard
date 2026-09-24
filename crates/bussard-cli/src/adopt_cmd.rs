@@ -792,7 +792,7 @@ mod tests {
     fn model_with(addrs: &[&str]) -> Model {
         let mut model = crate::assign_cmd::empty_model();
         for s in addrs {
-            let addr: IndividualAddress = s.parse().unwrap();
+            let addr: IndividualAddress = s.parse().expect("test fixture");
             model.devices.insert(
                 addr,
                 bussard_model::LoadedDevice {
@@ -817,12 +817,10 @@ mod tests {
     }
 
     #[test]
-    fn allocate_picks_lowest_free_on_dominant_line() {
+    fn allocate_picks_lowest_free_on_dominant_line() -> Result<(), Box<dyn std::error::Error>> {
         let model = model_with(&["1.1.1", "1.1.2", "1.1.4"]);
-        assert_eq!(
-            allocate_address(Some(&model)),
-            Some("1.1.3".parse().unwrap())
-        );
+        assert_eq!(allocate_address(Some(&model)), Some("1.1.3".parse()?));
+        Ok(())
     }
 
     #[test]
@@ -836,7 +834,7 @@ mod tests {
     }
 
     #[test]
-    fn build_product_prefers_product_over_readback() {
+    fn build_product_prefers_product_over_readback() -> Result<(), Box<dyn std::error::Error>> {
         let v = Verified {
             mask: Some(0x07B0),
             manufacturer_id: Some(0x0083),
@@ -853,16 +851,18 @@ mod tests {
             order_numbers: vec!["MDT-BE-04001.02".to_string()],
             com_objects: BTreeMap::new(),
         };
-        let p = build_product(&v, Some(&sel)).unwrap();
+        let p = build_product(&v, Some(&sel)).ok_or("expected a value")?;
         assert_eq!(p.order_number.as_deref(), Some("MDT-BE-04001.02"));
         assert_eq!(p.application_ref.as_deref(), Some("M-0083_A-1234-11-ABCD"));
         assert_eq!(p.manufacturer_ref.as_deref(), Some("M-0083"));
         assert_eq!(p.mask.as_deref(), Some("07B0"));
         assert_eq!(p.manufacturer.as_deref(), Some("MDT"));
+        Ok(())
     }
 
     #[test]
-    fn build_product_falls_back_to_readback_without_product() {
+    fn build_product_falls_back_to_readback_without_product()
+    -> Result<(), Box<dyn std::error::Error>> {
         let v = Verified {
             mask: Some(0x07B0),
             manufacturer_id: Some(0x0083),
@@ -870,21 +870,22 @@ mod tests {
             order: Some("MDT-JAL0410".to_string()),
             ..Verified::default()
         };
-        let p = build_product(&v, None).unwrap();
+        let p = build_product(&v, None).ok_or("expected a value")?;
         assert_eq!(p.order_number.as_deref(), Some("MDT-JAL0410"));
         assert_eq!(p.mask.as_deref(), Some("07B0"));
         assert!(p.application_ref.is_none());
+        Ok(())
     }
 
     #[test]
-    fn build_device_carries_com_objects() {
+    fn build_device_carries_com_objects() -> Result<(), Box<dyn std::error::Error>> {
         let mut com = BTreeMap::new();
         com.insert(
             0u16,
             ComObjectShape {
                 text: Some("Switch".to_string()),
                 dpt: Some(Dpt::new(1, Some(1))),
-                flags: "CWT".parse().unwrap(),
+                flags: "CWT".parse()?,
                 size: None,
                 ref_id: "R-1".to_string(),
             },
@@ -899,11 +900,12 @@ mod tests {
             com_objects: com,
         };
         let v = Verified::default();
-        let dev = build_device("1.1.7".parse().unwrap(), &v, Some(&sel));
+        let dev = build_device("1.1.7".parse()?, &v, Some(&sel));
         assert_eq!(dev.name, "Taster");
         assert_eq!(dev.com_objects.len(), 1);
-        let co = dev.com_objects.get(&0).unwrap();
+        let co = dev.com_objects.get(&0).ok_or("expected a value")?;
         assert_eq!(co.dpt, Some(Dpt::new(1, Some(1))));
         assert_eq!(co.reference.as_deref(), Some("R-1"));
+        Ok(())
     }
 }

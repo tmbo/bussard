@@ -1,7 +1,7 @@
 //! End-to-end test of `bussard test` against an in-process mock KNX gateway
 //! (issue #101).
 //!
-//! The mock gateway answers a group write on one address with an indication on
+//! The `bussard-testkit` mock gateway answers a group write on one address with an indication on
 //! another, which is exactly the "the light switched and reported back" shape an
 //! acceptance test checks. The fixture file exercises every outcome: a passing
 //! test, a failing one (the report must name the observed value and the command
@@ -10,42 +10,17 @@
 //!
 //! Everything binds `127.0.0.1:0`, so no real gateway is ever contacted.
 
-use std::net::SocketAddr;
 use std::process::{Command, Stdio};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use bussard_model::{GroupAddress, IndividualAddress};
+use bussard_model::GroupAddress;
+use bussard_testkit::{MockGateway, TestResult, ia};
 use bussard_transport::cemi::{Apdu, CemiFrame, Destination, MessageCode};
-use bussard_transport::knxnet::{self, ConnectionHeader, ServiceType};
-use tokio::net::UdpSocket;
 
 const CHANNEL: u8 = 0x21;
 
 /// The device the mock answers as.
 const RESPONDER: &str = "1.1.30";
-
-fn knxnet_frame(service: ServiceType, body: &[u8]) -> Vec<u8> {
-    let total = (6 + body.len()) as u16;
-    let mut out = Vec::with_capacity(total as usize);
-    out.push(0x06);
-    out.push(0x10);
-    out.extend_from_slice(&(service as u16).to_be_bytes());
-    out.extend_from_slice(&total.to_be_bytes());
-    out.extend_from_slice(body);
-    out
-}
-
-fn connect_response_body(channel: u8, port: u16) -> Vec<u8> {
-    let mut body = vec![channel, 0x00];
-    body.push(0x08);
-    body.push(0x01);
-    body.extend_from_slice(&[127, 0, 0, 1]);
-    body.extend_from_slice(&port.to_be_bytes());
-    body.extend_from_slice(&[0x04, 0x04, 0x11, 0xFF]);
-    body
-}
 
 /// How the simulated installation reacts to a write.
 ///
@@ -61,94 +36,47 @@ fn reaction(ga: GroupAddress, payload: &[u8]) -> Option<(GroupAddress, Vec<u8>)>
     None
 }
 
-/// Runs the mock gateway. Records every group address written to, so the test
-/// can assert that a refused protected GA never reached the bus.
-async fn run_gateway(
-    socket: Arc<UdpSocket>,
-    port: u16,
-    written: Arc<std::sync::Mutex<Vec<String>>>,
-    writes: Arc<AtomicUsize>,
-) {
-    let gw_seq = AtomicU8::new(0);
-    loop {
-        let mut buf = [0u8; 1024];
-        let (n, from) =
-            match tokio::time::timeout(Duration::from_secs(60), socket.recv_from(&mut buf)).await {
-                Ok(Ok(v)) => v,
-                _ => break,
-            };
-        let Ok(parsed) = knxnet::parse(&buf[..n]) else {
-            continue;
-        };
-        match parsed.service {
-            ServiceType::ConnectRequest => {
-                let resp = knxnet_frame(
-                    ServiceType::ConnectResponse,
-                    &connect_response_body(CHANNEL, port),
-                );
-                let _ = socket.send_to(&resp, from).await;
-            }
-            ServiceType::ConnectionstateRequest => {
-                let _ = socket
-                    .send_to(&knxnet::connectionstate_response(CHANNEL, 0), from)
-                    .await;
-            }
-            ServiceType::DisconnectRequest => {
-                // Keep serving: the determinism check connects a second time.
-                let _ = socket
-                    .send_to(&knxnet::disconnect_response(CHANNEL, 0), from)
-                    .await;
-            }
-            ServiceType::TunnelingRequest => {
-                let Ok(tr) = knxnet::parse_tunneling_request(parsed.body) else {
-                    continue;
+/// Starts the mock gateway on `rt`. It keeps serving across the determinism
+/// check's second connection and pushes the installation's reaction to a group
+/// write as an indication. The test reads the group writes back from the
+/// gateway's capture, so it can assert that a refused protected GA never
+/// reached the bus.
+fn start_gateway(rt: &tokio::runtime::Runtime) -> TestResult<MockGateway> {
+    let source = ia(RESPONDER)?;
+    Ok(rt.block_on(
+        MockGateway::builder()
+            .channel(CHANNEL)
+            .keep_serving()
+            .idle_timeout(Duration::from_secs(60))
+            .respond(move |cemi| {
+                let Destination::Group(ga) = cemi.destination else {
+                    return vec![];
                 };
-                let _ = socket
-                    .send_to(
-                        &knxnet::tunneling_ack(tr.header.channel_id, tr.header.seq, 0),
-                        from,
-                    )
-                    .await;
-                answer(&socket, from, &tr.cemi, &gw_seq, &written, &writes).await;
-            }
-            _ => {}
-        }
-    }
+                let Apdu::GroupValueWrite(data) = &cemi.apdu else {
+                    return vec![];
+                };
+                let Some((target, payload)) = reaction(ga, &data.bytes()) else {
+                    return vec![];
+                };
+                let mut out = CemiFrame::group_write_packed(target, source, &payload);
+                out.message_code = MessageCode::LDataInd;
+                vec![out]
+            })
+            .start(),
+    )?)
 }
 
-/// Records a group write and pushes the installation's reaction, if any.
-async fn answer(
-    socket: &UdpSocket,
-    peer: SocketAddr,
-    cemi: &CemiFrame,
-    gw_seq: &AtomicU8,
-    written: &Arc<std::sync::Mutex<Vec<String>>>,
-    writes: &Arc<AtomicUsize>,
-) {
-    let Destination::Group(ga) = cemi.destination else {
-        return;
-    };
-    let Apdu::GroupValueWrite(data) = &cemi.apdu else {
-        return;
-    };
-    writes.fetch_add(1, Ordering::SeqCst);
-    if let Ok(mut log) = written.lock() {
-        log.push(ga.to_string());
-    }
-
-    let Some((target, payload)) = reaction(ga, &data.bytes()) else {
-        return;
-    };
-    let source: IndividualAddress = RESPONDER.parse().expect("responder address");
-    let mut out = CemiFrame::group_write_packed(target, source, &payload);
-    out.message_code = MessageCode::LDataInd;
-    let header = ConnectionHeader {
-        channel_id: CHANNEL,
-        seq: gw_seq.fetch_add(1, Ordering::SeqCst),
-    };
-    let _ = socket
-        .send_to(&knxnet::tunneling_request(header, &out), peer)
-        .await;
+/// The group addresses written to, in order, from the gateway's capture.
+fn written(gw: &MockGateway) -> TestResult<Vec<String>> {
+    Ok(gw
+        .sent()?
+        .iter()
+        .filter(|cemi| matches!(cemi.apdu, Apdu::GroupValueWrite(_)))
+        .filter_map(|cemi| match cemi.destination {
+            Destination::Group(ga) => Some(ga.to_string()),
+            Destination::Individual(_) => None,
+        })
+        .collect())
 }
 
 /// Writes the fixture model and its acceptance-test file.
@@ -196,22 +124,11 @@ fn temp_dir(tag: &str) -> std::path::PathBuf {
     dir
 }
 
-type TestResult = Result<(), Box<dyn std::error::Error>>;
-
 #[test]
 fn test_runner_reports_pass_fail_refusal_and_skip() -> TestResult {
     let rt = tokio::runtime::Runtime::new()?;
-    let (socket, port) = rt.block_on(async {
-        let sock = UdpSocket::bind("127.0.0.1:0")
-            .await
-            .expect("bind mock gateway");
-        let port = sock.local_addr().expect("local addr").port();
-        (Arc::new(sock), port)
-    });
-
-    let written = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let writes = Arc::new(AtomicUsize::new(0));
-    let gateway = rt.spawn(run_gateway(socket, port, written.clone(), writes.clone()));
+    let gw = start_gateway(&rt)?;
+    let port = gw.port();
 
     let tmp = temp_dir("mixed");
     let model_dir = tmp.join("knx");
@@ -273,7 +190,7 @@ fn test_runner_reports_pass_fail_refusal_and_skip() -> TestResult {
     );
 
     // The protected group address never reached the bus.
-    let log = written.lock().map_err(|_| "write log poisoned")?.clone();
+    let log = written(&gw)?;
     assert!(
         !log.iter().any(|ga| ga == "3/1/0"),
         "a refused test must not write: {log:?}"
@@ -301,7 +218,7 @@ fn test_runner_reports_pass_fail_refusal_and_skip() -> TestResult {
         "two runs of the same installation must render the same report"
     );
 
-    rt.block_on(async { gateway.abort() });
+    drop(gw);
     let _ = std::fs::remove_dir_all(&tmp);
     Ok(())
 }
@@ -309,17 +226,8 @@ fn test_runner_reports_pass_fail_refusal_and_skip() -> TestResult {
 #[test]
 fn test_runner_only_filter_and_json_report() -> TestResult {
     let rt = tokio::runtime::Runtime::new()?;
-    let (socket, port) = rt.block_on(async {
-        let sock = UdpSocket::bind("127.0.0.1:0")
-            .await
-            .expect("bind mock gateway");
-        let port = sock.local_addr().expect("local addr").port();
-        (Arc::new(sock), port)
-    });
-
-    let written = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let writes = Arc::new(AtomicUsize::new(0));
-    let gateway = rt.spawn(run_gateway(socket, port, written.clone(), writes.clone()));
+    let gw = start_gateway(&rt)?;
+    let port = gw.port();
 
     let tmp = temp_dir("only");
     let model_dir = tmp.join("knx");
@@ -362,9 +270,9 @@ fn test_runner_only_filter_and_json_report() -> TestResult {
     assert!(report["started_at"].is_string(), "{stdout}");
 
     // Only the selected test's write went out.
-    assert_eq!(writes.load(Ordering::SeqCst), 1);
+    assert_eq!(written(&gw)?.len(), 1);
 
-    rt.block_on(async { gateway.abort() });
+    drop(gw);
     let _ = std::fs::remove_dir_all(&tmp);
     Ok(())
 }

@@ -6,68 +6,22 @@
 //! condition instead of a generic timeout.
 
 use std::process::Command;
+use std::time::Duration;
 
-use bussard_transport::knxnet::{self, ServiceType};
-use tokio::net::UdpSocket;
-
-/// Wraps a body in a KNXnet/IP header.
-fn frame(service: ServiceType, body: &[u8]) -> Vec<u8> {
-    let total = (6 + body.len()) as u16;
-    let mut out = vec![0x06, 0x10];
-    out.extend_from_slice(&(service as u16).to_be_bytes());
-    out.extend_from_slice(&total.to_be_bytes());
-    out.extend_from_slice(body);
-    out
-}
-
-/// A device-info DIB plus a tunnelling-info DIB with `slots` slots, the first
-/// `in_use` of them occupied.
-fn description_body(slots: usize, in_use: usize) -> Vec<u8> {
-    let mut dev = vec![0u8; 54];
-    dev[0] = 54;
-    dev[1] = 0x01;
-    dev[2] = 0x02;
-    dev[4..6].copy_from_slice(&0x1000u16.to_be_bytes());
-    let name = b"Mock Interface";
-    dev[24..24 + name.len()].copy_from_slice(name);
-
-    let mut tun = vec![(4 + 4 * slots) as u8, 0x07];
-    tun.extend_from_slice(&248u16.to_be_bytes());
-    for slot in 0..slots {
-        tun.extend_from_slice(&(0x10F1u16 + slot as u16).to_be_bytes());
-        let status: u16 = if slot < in_use { 0x0006 } else { 0x0007 };
-        tun.extend_from_slice(&status.to_be_bytes());
-    }
-    dev.extend_from_slice(&tun);
-    dev
-}
-
-/// Serves the mock until the socket is dropped: describe with 4/3, refuse connects.
-async fn serve(gw: UdpSocket) {
-    let mut buf = [0u8; 1024];
-    loop {
-        let Ok((n, peer)) = gw.recv_from(&mut buf).await else {
-            return;
-        };
-        let Ok(parsed) = knxnet::parse(&buf[..n]) else {
-            continue;
-        };
-        let reply = match parsed.service {
-            ServiceType::DescriptionRequest => {
-                frame(ServiceType::DescriptionResponse, &description_body(4, 3))
-            }
-            ServiceType::ConnectRequest => frame(ServiceType::ConnectResponse, &[0x00, 0x24]),
-            _ => continue,
-        };
-        let _ = gw.send_to(&reply, peer).await;
-    }
-}
+use bussard_testkit::MockGateway;
+use bussard_testkit::wire::description_response_body;
 
 #[tokio::test]
 async fn test_init_reports_tunnels_and_full_interface() -> Result<(), Box<dyn std::error::Error>> {
-    let gw = UdpSocket::bind("127.0.0.1:0").await?;
-    let port = gw.local_addr()?.port();
-    let server = tokio::spawn(serve(gw));
+    // Describe with 4 slots / 3 in use, refuse every CONNECT with 0x24.
+    let gw = MockGateway::builder()
+        .description(description_response_body("Mock Interface", 4, 3))
+        .refuse_connect(0x24)
+        .keep_serving()
+        .idle_timeout(Duration::from_secs(60))
+        .start()
+        .await?;
+    let port = gw.port();
 
     let dir = std::env::temp_dir().join(format!("bussard-init-tunnels-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -79,7 +33,7 @@ async fn test_init_reports_tunnels_and_full_interface() -> Result<(), Box<dyn st
             .output()
     })
     .await??;
-    server.abort();
+    drop(gw);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);

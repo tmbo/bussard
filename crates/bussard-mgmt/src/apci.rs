@@ -969,22 +969,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn property_value_read_roundtrips_through_response() {
+    fn property_value_read_roundtrips_through_response()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let req = encode_property_value_read(DEVICE_OBJECT_INDEX, PID_MANUFACTURER_ID, 1, 1);
         assert_eq!(req, vec![0x00, 12, 0x10, 0x01]);
 
         // A synthetic response: object 0, PID 12, count 1, start 1, data 00 04.
         let resp_payload = vec![0x00, 12, 0x10, 0x01, 0x00, 0x04];
-        let parsed = decode_property_value_response(&resp_payload).unwrap();
+        let parsed = decode_property_value_response(&resp_payload).ok_or("missing value")?;
         assert_eq!(parsed.object_index, 0);
         assert_eq!(parsed.property_id, 12);
         assert_eq!(parsed.count, 1);
         assert_eq!(parsed.start, 1);
         assert_eq!(parsed.data, vec![0x00, 0x04]);
+        Ok(())
     }
 
     #[test]
-    fn property_value_write_shares_the_read_header() {
+    fn property_value_write_shares_the_read_header()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Write 1 element of object 1 / PID 23 at start 1 with value 0x1234.
         let w = encode_property_value_write(1, 23, 1, 1, &[0x12, 0x34]);
         assert_eq!(w, vec![0x01, 23, 0x10, 0x01, 0x12, 0x34]);
@@ -993,16 +996,18 @@ mod tests {
         assert_eq!(&w[..4], &r[..]);
         // The device echoes the stored value in an A_PropertyValue_Response; the
         // response parser reads it back with the same header layout.
-        let parsed = decode_property_value_response(&w).unwrap();
+        let parsed = decode_property_value_response(&w).ok_or("missing value")?;
         assert_eq!(parsed.object_index, 1);
         assert_eq!(parsed.property_id, 23);
         assert_eq!(parsed.count, 1);
         assert_eq!(parsed.start, 1);
         assert_eq!(parsed.data, vec![0x12, 0x34]);
+        Ok(())
     }
 
     #[test]
-    fn property_description_read_encodes_three_octet_header() {
+    fn property_description_read_encodes_three_octet_header()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // By PID: object 3, PID 51, index 0.
         let req = encode_property_description_read(3, 51, 0);
         assert_eq!(req, vec![0x03, 51, 0x00]);
@@ -1010,7 +1015,7 @@ mod tests {
         let req = encode_property_description_read(3, 0, 5);
         assert_eq!(req, vec![0x03, 0x00, 0x05]);
         // Decode round-trips.
-        let parsed = decode_property_description_read(&req).unwrap();
+        let parsed = decode_property_description_read(&req).ok_or("missing value")?;
         assert_eq!(
             parsed,
             PropertyDescriptionRead {
@@ -1021,10 +1026,12 @@ mod tests {
         );
         // Too short is None.
         assert!(decode_property_description_read(&[0x03, 0x00]).is_none());
+        Ok(())
     }
 
     #[test]
-    fn property_description_response_roundtrips() {
+    fn property_description_response_roundtrips()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let desc = PropertyDescription {
             object_index: 0,
             property_id: PID_MAX_APDU_LENGTH,
@@ -1041,12 +1048,14 @@ mod tests {
             payload,
             vec![0x00, PID_MAX_APDU_LENGTH, 0x07, 0x07, 0x00, 0x01, 0x3F]
         );
-        let parsed = decode_property_description_response(&payload).unwrap();
+        let parsed = decode_property_description_response(&payload).ok_or("missing value")?;
         assert_eq!(parsed, desc);
+        Ok(())
     }
 
     #[test]
-    fn property_description_response_write_enable_and_max_clamp() {
+    fn property_description_response_write_enable_and_max_clamp()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Writable, PDT 0x05, a large array count that fits the 12-bit field.
         let desc = PropertyDescription {
             object_index: 1,
@@ -1063,40 +1072,48 @@ mod tests {
         assert_eq!(payload[3], 0x85);
         assert_eq!(&payload[4..6], &[0x0A, 0xBC]);
         assert_eq!(payload[6], 0x02);
-        let parsed = decode_property_description_response(&payload).unwrap();
+        let parsed = decode_property_description_response(&payload).ok_or("missing value")?;
         assert!(parsed.writable);
         assert_eq!(parsed.pdt, 0x05);
         assert_eq!(parsed.max_elements, 0x0ABC);
         assert_eq!(parsed.read_level, 0);
         assert_eq!(parsed.write_level, 2);
+        Ok(())
     }
 
     #[test]
-    fn property_description_response_zero_max_means_absent() {
+    fn property_description_response_zero_max_means_absent()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // A device reports max_elements 0 for a non-existent property/index.
         let payload = vec![0x02, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00];
-        let parsed = decode_property_description_response(&payload).unwrap();
+        let parsed = decode_property_description_response(&payload).ok_or("missing value")?;
         assert_eq!(parsed.max_elements, 0);
         assert_eq!(parsed.property_id, 0);
         // Too short is None.
         assert!(decode_property_description_response(&payload[..6]).is_none());
+        Ok(())
     }
 
     #[test]
-    fn property_response_count_zero_means_absent() {
+    fn property_response_count_zero_means_absent()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let resp_payload = vec![0x00, 78, 0x00, 0x01];
-        let parsed = decode_property_value_response(&resp_payload).unwrap();
+        let parsed = decode_property_value_response(&resp_payload).ok_or("missing value")?;
         assert_eq!(parsed.count, 0);
         assert!(parsed.data.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn property_response_too_short_is_none() {
+    fn property_response_too_short_is_none() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
         assert!(decode_property_value_response(&[0x00, 12, 0x10]).is_none());
+        Ok(())
     }
 
     #[test]
-    fn memory_read_encodes_count_in_apci_and_clamps() {
+    fn memory_read_encodes_count_in_apci_and_clamps()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Count lives in the APCI low bits; the payload is address-only.
         let (apci, payload) = encode_memory_read(0x0060, 4);
         assert_eq!(apci, A_MEMORY_READ | 4);
@@ -1104,10 +1121,12 @@ mod tests {
         // Over-long counts clamp to MAX_MEMORY_READ_LEN.
         let (apci, _) = encode_memory_read(0x0100, 200);
         assert_eq!((apci & 0x3f) as u8, MAX_MEMORY_READ_LEN);
+        Ok(())
     }
 
     #[test]
-    fn authorize_request_is_reserved_byte_then_key_be() {
+    fn authorize_request_is_reserved_byte_then_key_be()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Free-access request: the captured wire form is [00 FF FF FF FF].
         let payload = encode_authorize_request(FREE_ACCESS_KEY);
         assert_eq!(payload, vec![0x00, 0xFF, 0xFF, 0xFF, 0xFF]);
@@ -1115,10 +1134,12 @@ mod tests {
         // A concrete keyed value encodes big-endian after the reserved octet.
         let keyed = encode_authorize_request(0x0011_2233);
         assert_eq!(keyed, vec![0x00, 0x00, 0x11, 0x22, 0x33]);
+        Ok(())
     }
 
     #[test]
-    fn authorize_response_decodes_level_octet() {
+    fn authorize_response_decodes_level_octet()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // The captured free-access response was [00] = granted level 0.
         assert_eq!(decode_authorize_response(&[0x00]), Some(0));
         // A non-zero level (insufficient access) decodes to that level.
@@ -1127,24 +1148,29 @@ mod tests {
         assert_eq!(decode_authorize_response(&[0x00, 0xAA]), Some(0));
         // An empty payload is not a level.
         assert_eq!(decode_authorize_response(&[]), None);
+        Ok(())
     }
 
     #[test]
-    fn device_descriptor_read_has_empty_payload() {
+    fn device_descriptor_read_has_empty_payload()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let (apci, payload) = encode_device_descriptor_read(0);
         assert_eq!(apci, A_DEVICE_DESCRIPTOR_READ);
         assert!(payload.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn restart_carries_variant_in_apci() {
+    fn restart_carries_variant_in_apci() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let (apci, payload) = encode_restart(0);
         assert_eq!(apci, A_RESTART);
         assert!(payload.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn master_reset_encodes_erase_code_and_channel() {
+    fn master_reset_encodes_erase_code_and_channel()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // The master-reset restart-type bit is the low bit of the A_Restart APCI;
         // the payload is [erase_code, channel_number]. The KNX-Virtual capture
         // carried EraseCode=4, ChannelNumber=0.
@@ -1152,6 +1178,7 @@ mod tests {
         assert_eq!(apci, A_RESTART_MASTER_RESET);
         assert_eq!(apci, A_RESTART | 1);
         assert_eq!(payload, vec![0x04, 0x00]);
+        Ok(())
     }
 
     /// Rebuilds the connected TPDU `[tpci|apci_hi, apci_lo, payload…]` the way
@@ -1166,7 +1193,8 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_master_reset_factory_reset_matches_ets_capture() {
+    fn test_encode_master_reset_factory_reset_matches_ets_capture()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // tastsensor-universal-2-download.pcapng, device 1.1.18 (mask 07B0): ETS
         // opens the initial download with `4f 81 07 00`, a numbered (seq 3)
         // A_Restart master reset, erase code 7, channel 0.
@@ -1175,10 +1203,12 @@ mod tests {
         // And closes it with the confirmed restart `43 81 01 00` (seq 0).
         let (apci, payload) = encode_master_reset(ERASE_CODE_CONFIRMED_RESTART, 0);
         assert_eq!(tpdu(0, apci, &payload), vec![0x43, 0x81, 0x01, 0x00]);
+        Ok(())
     }
 
     #[test]
-    fn test_decode_restart_response_full_matches_ets_capture() {
+    fn test_decode_restart_response_full_matches_ets_capture()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // The device answers the factory reset with `4f a1 00 00 08`: APCI 0x3A1,
         // error 0, process time 8 s; the confirmed restart with `43 a1 00 00 00`.
         let wire = [0x4f_u8, 0xa1, 0x00, 0x00, 0x08];
@@ -1204,42 +1234,49 @@ mod tests {
             }
         );
         assert_eq!(decode_restart_response_full(&[]).error_code, 0);
+        Ok(())
     }
 
     #[test]
-    fn restart_response_error_code_is_the_first_octet() {
+    fn restart_response_error_code_is_the_first_octet()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // [error_code, process_time_hi, process_time_lo]: zero = accepted.
         assert_eq!(decode_restart_response(&[0x00, 0x00, 0x64]), 0);
         // A non-zero error code is surfaced.
         assert_eq!(decode_restart_response(&[0x04, 0x00, 0x00]), 4);
         // An empty payload is treated as accepted (the device answered at all).
         assert_eq!(decode_restart_response(&[]), 0);
+        Ok(())
     }
 
     #[test]
-    fn memory_response_roundtrips_via_apci() {
+    fn memory_response_roundtrips_via_apci() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
         // Response: count 3 in the APCI, payload = addr + data.
         let (apci, payload) = encode_memory_response(0x0060, &[0xAA, 0xBB, 0xCC]);
         assert_eq!(apci, A_MEMORY_RESPONSE | 3);
         assert_eq!(payload, vec![0x00, 0x60, 0xAA, 0xBB, 0xCC]);
-        let parsed = decode_memory_response(apci, &payload).unwrap();
+        let parsed = decode_memory_response(apci, &payload).ok_or("missing value")?;
         assert_eq!(parsed.count, 3);
         assert_eq!(parsed.addr, 0x0060);
         assert_eq!(parsed.data, vec![0xAA, 0xBB, 0xCC]);
+        Ok(())
     }
 
     #[test]
-    fn memory_response_rejects_wrong_apci_or_short_payload() {
+    fn memory_response_rejects_wrong_apci_or_short_payload()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Wrong selector.
         assert!(decode_memory_response(A_PROPERTY_VALUE_RESPONSE, &[0x00, 0x60]).is_none());
         // Too short for the address header.
         assert!(decode_memory_response(A_MEMORY_RESPONSE | 1, &[0x00]).is_none());
         // Count advertises more data than present.
         assert!(decode_memory_response(A_MEMORY_RESPONSE | 3, &[0x00, 0x60, 0xAA]).is_none());
+        Ok(())
     }
 
     #[test]
-    fn memory_write_encodes_count_in_apci() {
+    fn memory_write_encodes_count_in_apci() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Count in the APCI low bits; payload = addr + data (no leading count octet).
         let (apci, payload) = encode_memory_write(0x4000, &[0xAA, 0xBB, 0xCC]);
         assert_eq!(apci, A_MEMORY_WRITE | 3);
@@ -1249,39 +1286,47 @@ mod tests {
         let (apci, payload) = encode_memory_write(0x0100, &big);
         assert_eq!((apci & 0x3f) as u8, MAX_MEMORY_WRITE_LEN);
         assert_eq!(payload.len(), 2 + usize::from(MAX_MEMORY_WRITE_LEN));
+        Ok(())
     }
 
     #[test]
-    fn memory_write_roundtrips_through_decode() {
+    fn memory_write_roundtrips_through_decode()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let (apci, payload) = encode_memory_write(0x4010, &[0x01, 0x02, 0x03, 0x04]);
-        let parsed = decode_memory_write(apci, &payload).unwrap();
+        let parsed = decode_memory_write(apci, &payload).ok_or("missing value")?;
         assert_eq!(parsed.count, 4);
         assert_eq!(parsed.addr, 0x4010);
         assert_eq!(parsed.data, vec![0x01, 0x02, 0x03, 0x04]);
+        Ok(())
     }
 
     #[test]
-    fn memory_write_decode_rejects_wrong_apci_or_short_payload() {
+    fn memory_write_decode_rejects_wrong_apci_or_short_payload()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Wrong selector (a memory READ is not a WRITE).
         assert!(decode_memory_write(A_MEMORY_READ | 3, &[0x40, 0x00, 0xAA, 0xBB, 0xCC]).is_none());
         // Too short for the address header.
         assert!(decode_memory_write(A_MEMORY_WRITE | 1, &[0x40]).is_none());
         // Count advertises more data than present.
         assert!(decode_memory_write(A_MEMORY_WRITE | 3, &[0x40, 0x00, 0xAA]).is_none());
+        Ok(())
     }
 
     #[test]
-    fn device_descriptor_response_reads_mask() {
+    fn device_descriptor_response_reads_mask() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
         // System B mask 0x07B0.
         assert_eq!(
             decode_device_descriptor_response(&[0x07, 0xB0]),
             Some(0x07B0)
         );
         assert!(decode_device_descriptor_response(&[0x07]).is_none());
+        Ok(())
     }
 
     #[test]
-    fn device_descriptor_response_accepts_extra_trailing_payload() {
+    fn device_descriptor_response_accepts_extra_trailing_payload()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // The mask version is the leading big-endian word; a legal descriptor
         // response may carry more (a type-2 descriptor is longer, and the KNX
         // Virtual IP/TP interface was observed answering type 0 with extra
@@ -1291,10 +1336,11 @@ mod tests {
             decode_device_descriptor_response(&[0x07, 0xB0, 0x00, 0x11, 0x22]),
             Some(0x07B0)
         );
+        Ok(())
     }
 
     #[test]
-    fn memory_chunk_scales_with_max_apdu() {
+    fn memory_chunk_scales_with_max_apdu() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // KNX Virtual advertises 66 → the 63-octet ceiling.
         assert_eq!(memory_chunk_for_apdu(66), MAX_MEMORY_WRITE_LEN);
         assert_eq!(memory_chunk_for_apdu(66), 63);
@@ -1308,10 +1354,12 @@ mod tests {
         // A pathologically small value never underflows below 1.
         assert_eq!(memory_chunk_for_apdu(0), 1);
         assert_eq!(memory_chunk_for_apdu(3), 1);
+        Ok(())
     }
 
     #[test]
-    fn memory_extended_write_encodes_count_then_3byte_addr() {
+    fn memory_extended_write_encodes_count_then_3byte_addr()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Payload is [count][addr:3 BE][data]; the address reaches the 24-bit space.
         let (apci, payload) = encode_memory_extended_write(0x01_6000, &[0xAA, 0xBB, 0xCC]);
         assert_eq!(apci, A_MEMORY_EXTENDED_WRITE);
@@ -1321,64 +1369,76 @@ mod tests {
         let (_, payload) = encode_memory_extended_write(0x10_0000, &big);
         assert_eq!(payload[0], MAX_EXTENDED_MEMORY_LEN as u8);
         assert_eq!(payload.len(), 4 + usize::from(MAX_EXTENDED_MEMORY_LEN));
+        Ok(())
     }
 
     #[test]
-    fn memory_extended_read_encodes_count_then_3byte_addr() {
+    fn memory_extended_read_encodes_count_then_3byte_addr()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let (apci, payload) = encode_memory_extended_read(0x01_7805, 8);
         assert_eq!(apci, A_MEMORY_EXTENDED_READ);
         assert_eq!(payload, vec![0x08, 0x01, 0x78, 0x05]);
+        Ok(())
     }
 
     #[test]
-    fn memory_extended_write_roundtrips_through_decode() {
+    fn memory_extended_write_roundtrips_through_decode()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Top address 0x1aad3 (past u16) survives the 3-octet round-trip.
         let (_, payload) = encode_memory_extended_write(0x01_AAD3, &[1, 2, 3, 4]);
-        let parsed = decode_memory_extended_request(&payload, true).unwrap();
+        let parsed = decode_memory_extended_request(&payload, true).ok_or("missing value")?;
         assert_eq!(parsed.count, 4);
         assert_eq!(parsed.addr, 0x01_AAD3);
         assert_eq!(parsed.data, vec![1, 2, 3, 4]);
         // The read form carries no data tail.
         let (_, payload) = encode_memory_extended_read(0x0F_0000, 12);
-        let parsed = decode_memory_extended_request(&payload, false).unwrap();
+        let parsed = decode_memory_extended_request(&payload, false).ok_or("missing value")?;
         assert_eq!(parsed.count, 12);
         assert_eq!(parsed.addr, 0x0F_0000);
         assert!(parsed.data.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn memory_extended_request_rejects_short_or_truncated() {
+    fn memory_extended_request_rejects_short_or_truncated()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Shorter than [count][addr:3].
         assert!(decode_memory_extended_request(&[0x03, 0x01, 0x60], true).is_none());
         // Write count advertises more data than present.
         assert!(decode_memory_extended_request(&[0x03, 0x01, 0x60, 0x00, 0xAA], true).is_none());
+        Ok(())
     }
 
     #[test]
-    fn memory_extended_write_response_confirms_return_code_and_addr() {
+    fn memory_extended_write_response_confirms_return_code_and_addr()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let (apci, payload) = encode_memory_extended_write_response(0x00, 0x01_6000);
         assert_eq!(apci, A_MEMORY_EXTENDED_WRITE_RESPONSE);
         assert_eq!(payload, vec![0x00, 0x01, 0x60, 0x00]);
-        let parsed = decode_memory_extended_response(apci, &payload).unwrap();
+        let parsed = decode_memory_extended_response(apci, &payload).ok_or("missing value")?;
         assert_eq!(parsed.return_code, 0);
         assert_eq!(parsed.addr, 0x01_6000);
         assert!(parsed.data.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn memory_extended_read_response_carries_data() {
+    fn memory_extended_read_response_carries_data()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let (apci, payload) = encode_memory_extended_read_response(0x00, 0x0F_0000, &[0xDE, 0xAD]);
         assert_eq!(apci, A_MEMORY_EXTENDED_READ_RESPONSE);
-        let parsed = decode_memory_extended_response(apci, &payload).unwrap();
+        let parsed = decode_memory_extended_response(apci, &payload).ok_or("missing value")?;
         assert_eq!(parsed.return_code, 0);
         assert_eq!(parsed.addr, 0x0F_0000);
         assert_eq!(parsed.data, vec![0xDE, 0xAD]);
         // A non-extended-response APCI is rejected.
         assert!(decode_memory_extended_response(A_MEMORY_RESPONSE, &payload).is_none());
+        Ok(())
     }
 
     #[test]
-    fn extended_memory_chunk_scales_with_max_apdu() {
+    fn extended_memory_chunk_scales_with_max_apdu()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // The two capture APDU sizes: 233 -> 228, 55 -> 50.
         assert_eq!(extended_memory_chunk_for_apdu(233), 228);
         assert_eq!(extended_memory_chunk_for_apdu(55), 50);
@@ -1388,10 +1448,12 @@ mod tests {
             MAX_EXTENDED_MEMORY_LEN
         );
         assert_eq!(extended_memory_chunk_for_apdu(0), 1);
+        Ok(())
     }
 
     #[test]
-    fn property_read_octets_scales_with_max_apdu() {
+    fn property_read_octets_scales_with_max_apdu()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // 66 → 60 value octets (66 - 6 header), capped at 63.
         assert_eq!(property_read_octets_for_apdu(66), 60);
         // Standard-frame floor 15 → 9 octets.
@@ -1399,5 +1461,6 @@ mod tests {
         // Never underflows.
         assert_eq!(property_read_octets_for_apdu(0), 1);
         assert_eq!(property_read_octets_for_apdu(6), 1);
+        Ok(())
     }
 }

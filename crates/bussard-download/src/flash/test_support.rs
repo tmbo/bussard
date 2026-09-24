@@ -38,7 +38,7 @@ pub(super) fn fabricated_app() -> ApplicationProgram {
        </LoadProcedures>
       </Static>
      </ApplicationProgram></KNX>"#;
-    parse_application_program("M-1_A-1", xml.as_bytes()).unwrap()
+    parse_application_program("M-1_A-1", xml.as_bytes()).expect("the fixture app parses")
 }
 
 pub(super) fn no_overrides() -> BTreeMap<String, String> {

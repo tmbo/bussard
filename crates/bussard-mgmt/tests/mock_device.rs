@@ -1,8 +1,8 @@
 //! Integration tests: the management layer against an in-process **mock KNX
 //! device** reached through the existing mock-gateway (tunneling) pattern.
 //!
-//! A mock gateway task speaks just enough KNXnet/IP tunneling to relay cEMI
-//! frames, and behind it a device simulator implements the KNX device side:
+//! The testkit's mock gateway relays cEMI frames, and behind it a device
+//! simulator (a [`MockDevice`] hook) implements the KNX device side:
 //! accept `T_Connect`, `T_ACK` our numbered data telegrams, and answer
 //! `A_DeviceDescriptor_Read`, `A_PropertyValue_Read` and `A_Memory_Read` with
 //! response NDTs (which the client must in turn acknowledge). One simulated
@@ -15,14 +15,10 @@ use std::collections::HashMap;
 use std::net::SocketAddrV4;
 use std::time::Duration;
 
-use tokio::net::UdpSocket;
-
 use bussard_mgmt::apci;
 use bussard_mgmt::{DeviceConnection, MgmtError, Timeouts};
 use bussard_model::IndividualAddress;
-use bussard_transport::cemi::{Apdu, CemiFrame, Destination, Tpci};
-use bussard_transport::knxnet::{self, ConnectionHeader, ServiceType};
-use bussard_transport::tpci::{self, TpciKind};
+use bussard_testkit::{BoxError, MockDevice, MockError, MockGateway, Reaction, Step, TestResult};
 use bussard_transport::{ConnectionConfig, Transport};
 
 /// How a simulated device reacts to a connection.
@@ -85,7 +81,7 @@ enum Behavior {
 
 /// One simulated device at an individual address.
 #[derive(Clone)]
-struct MockDevice {
+struct SimDevice {
     address: IndividualAddress,
     behavior: Behavior,
 }
@@ -93,290 +89,91 @@ struct MockDevice {
 /// The channel id the mock gateway hands out.
 const CHANNEL: u8 = 0x15;
 
-/// Binds a mock gateway socket on an ephemeral localhost port.
-async fn bind_mock() -> (SocketAddrV4, UdpSocket) {
-    let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let addr = match sock.local_addr().unwrap() {
-        std::net::SocketAddr::V4(v4) => v4,
-        _ => panic!("expected v4"),
-    };
-    (addr, sock)
-}
-
-fn connect_response_body(channel: u8, gw: &UdpSocket) -> Vec<u8> {
-    let mut body = vec![channel, 0x00];
-    body.push(0x08);
-    body.push(0x01);
-    body.extend_from_slice(&[127, 0, 0, 1]);
-    body.extend_from_slice(&gw.local_addr().unwrap().port().to_be_bytes());
-    body.extend_from_slice(&[0x04, 0x04, 0x11, 0xFF]);
-    body
-}
-
-fn knxnet_frame(service: ServiceType, body: &[u8]) -> Vec<u8> {
-    let total = (6 + body.len()) as u16;
-    let mut out = Vec::with_capacity(total as usize);
-    out.push(0x06);
-    out.push(0x10);
-    out.extend_from_slice(&(service as u16).to_be_bytes());
-    out.extend_from_slice(&total.to_be_bytes());
-    out.extend_from_slice(body);
-    out
-}
-
-/// Runs the mock gateway + device simulator until the client disconnects the
-/// KNXnet/IP channel or the socket goes quiet.
+/// Starts a testkit gateway with one hook-driven device per [`SimDevice`].
 ///
-/// The gateway's own outbound tunneling sequence (for pushing indications back
-/// to the client) is tracked in `gw_seq`. Each device tracks its own KNX TPCI
-/// receive/send sequence numbers.
-///
-/// The loop only returns after 5 s of silence, so tests end with
-/// `gw_task.abort()` rather than awaiting the task: awaiting it (even
-/// under a 1 s timeout) added that wait to every test.
-async fn run_mock(gw: UdpSocket, devices: Vec<MockDevice>) {
-    let mut gw_seq: u8 = 0;
-    // Per-device KNX send sequence (for the response NDTs the device emits).
-    let mut dev_send_seq: HashMap<u16, u8> = HashMap::new();
-    // Per-device count of numbered requests seen (drives the retransmit-previous
-    // behaviour, which fires only from the second request on).
-    let mut dev_req_count: HashMap<u16, u32> = HashMap::new();
-
-    loop {
-        let mut buf = [0u8; 1024];
-        let (n, from) =
-            match tokio::time::timeout(Duration::from_secs(5), gw.recv_from(&mut buf)).await {
-                Ok(Ok(v)) => v,
-                _ => return,
-            };
-        let parsed = match knxnet::parse(&buf[..n]) {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
-        match parsed.service {
-            ServiceType::ConnectRequest => {
-                let resp = knxnet_frame(
-                    ServiceType::ConnectResponse,
-                    &connect_response_body(CHANNEL, &gw),
-                );
-                gw.send_to(&resp, from).await.unwrap();
-            }
-            ServiceType::ConnectionstateRequest => {
-                let resp = knxnet::connectionstate_response(CHANNEL, 0);
-                gw.send_to(&resp, from).await.unwrap();
-            }
-            ServiceType::DisconnectRequest => {
-                let resp = knxnet::disconnect_response(CHANNEL, 0);
-                gw.send_to(&resp, from).await.unwrap();
-                return;
-            }
-            ServiceType::TunnelingAck => {
-                // The client acknowledging one of our pushed indications. Nothing
-                // to do — we push the next telegram only after this arrives, so
-                // ordering is naturally serialised by the request flow.
-            }
-            ServiceType::TunnelingRequest => {
-                let tr = match knxnet::parse_tunneling_request(parsed.body) {
-                    Ok(tr) => tr,
-                    Err(_) => continue,
-                };
-                // ACK the client's tunneling request at the KNXnet layer.
-                let ack = knxnet::tunneling_ack(tr.header.channel_id, tr.header.seq, 0);
-                gw.send_to(&ack, from).await.unwrap();
-
-                handle_device_frame(
-                    &gw,
-                    from,
-                    &devices,
-                    &tr.cemi,
-                    &mut gw_seq,
-                    &mut dev_send_seq,
-                    &mut dev_req_count,
-                )
-                .await;
-            }
-            _ => {}
-        }
-    }
+/// The gateway stops when the client disconnects the KNXnet/IP channel or when
+/// it is dropped at the end of the test.
+async fn start_mock(devices: Vec<SimDevice>) -> Result<MockGateway, MockError> {
+    MockGateway::builder()
+        .channel(CHANNEL)
+        .idle_timeout(Duration::from_secs(5))
+        .devices(devices.into_iter().map(|sim| {
+            let behavior = sim.behavior;
+            MockDevice::new(sim.address)
+                .with_hook(move |dev, apci, data| Some(react(&behavior, dev, apci, data)))
+        }))
+        .start()
+        .await
 }
 
-/// Pushes a cEMI frame from the device back to the client as a tunneling
-/// indication. Does not wait inline for the client's KNXnet ACK — the single
-/// `run_mock` loop is the only reader of the socket and drains those ACKs as
-/// they arrive, so waiting here would deadlock against the client's own
-/// outgoing telegrams.
-async fn push_indication(
-    gw: &UdpSocket,
-    peer: std::net::SocketAddr,
-    gw_seq: &mut u8,
-    cemi: &CemiFrame,
-) {
-    let hdr = ConnectionHeader {
-        channel_id: CHANNEL,
-        seq: *gw_seq,
-    };
-    let frame = knxnet::tunneling_request(hdr, cemi);
-    gw.send_to(&frame, peer).await.unwrap();
-    *gw_seq = gw_seq.wrapping_add(1);
-}
-
-/// The device-side reaction to one management cEMI frame from the client.
-async fn handle_device_frame(
-    gw: &UdpSocket,
-    peer: std::net::SocketAddr,
-    devices: &[MockDevice],
-    cemi: &CemiFrame,
-    gw_seq: &mut u8,
-    dev_send_seq: &mut HashMap<u16, u8>,
-    dev_req_count: &mut HashMap<u16, u32>,
-) {
-    let dest = match cemi.destination {
-        Destination::Individual(ia) => ia,
-        Destination::Group(_) => return,
-    };
-    let device = match devices.iter().find(|d| d.address == dest) {
-        Some(d) => d,
-        None => return, // absent address: no reaction
-    };
-    let source = cemi.source; // the tool's address — becomes our reply destination
-    let dev_ia = device.address;
-
-    match tpci::classify(cemi.tpci_octet()) {
-        TpciKind::Connect => {
-            // Reset this device's send sequence on a fresh connection.
-            dev_send_seq.insert(dev_ia.raw(), 0);
+/// The device-side reaction to one numbered management request.
+fn react(behavior: &Behavior, dev: &mut MockDevice, apci_: u16, data: &[u8]) -> Reaction {
+    match behavior {
+        // Absent/silent: no ACK, no response.
+        Behavior::Silent => Reaction::Silent,
+        // Present but refusing: NAK the numbered data telegram.
+        Behavior::Nak => Reaction::Nak,
+        // Fold the ACK: send the response NDT *instead of* a separate T_ACK. The
+        // client's await_ack must treat the folded NDT as the acknowledgement,
+        // stash it and deliver it.
+        Behavior::FoldsAck { mask } => Reaction::Script(vec![Step::Data(
+            apci::A_DEVICE_DESCRIPTOR_RESPONSE,
+            mask.to_be_bytes().to_vec(),
+        )]),
+        // ACK, then answer with a deliberately wrong APCI (a property response
+        // selector) so the descriptor decoder rejects it.
+        Behavior::WrongDescriptorApci { payload } => Reaction::Script(vec![
+            Step::Ack,
+            Step::Data(apci::A_PROPERTY_VALUE_RESPONSE, payload.clone()),
+        ]),
+        // ACK, then echo the read: answer with the read's own APCI (0x0300) and
+        // an empty payload, exactly as the KV IP interface does. The decoder
+        // must recognise the echo.
+        Behavior::EchoesDescriptorRead => Reaction::Script(vec![
+            Step::Ack,
+            Step::Data(apci::A_DEVICE_DESCRIPTOR_READ, Vec::new()),
+        ]),
+        Behavior::RetransmitsPreviousResponse { mask } => {
+            // The client just sent request N. On N >= 2, first replay the
+            // PREVIOUS response at its old (one-behind) send sequence, modelling
+            // a device that never saw our T_ACK for the prior answer and
+            // retransmits it, then ACK and answer the fresh request at the
+            // correct sequence. `telegrams` already counts this request.
+            let mut steps = Vec::new();
+            if dev.telegrams >= 2 {
+                // The current send seq points at the NEXT (fresh) response; the
+                // previous response used seq-1. Replay it there.
+                let cur = dev.send_seq().unwrap_or(0);
+                let prev_seq = cur.wrapping_sub(1) & 0x0f;
+                steps.push(Step::DataAtSeq(
+                    prev_seq,
+                    apci::A_DEVICE_DESCRIPTOR_RESPONSE,
+                    mask.to_be_bytes().to_vec(),
+                ));
+                // A brief pause so the client processes the stale replay (ACK
+                // expected-1, keep waiting) before the real answer.
+                steps.push(Step::Pause(Duration::from_millis(20)));
+            }
+            steps.push(Step::Ack);
+            steps.push(Step::Data(
+                apci::A_DEVICE_DESCRIPTOR_RESPONSE,
+                mask.to_be_bytes().to_vec(),
+            ));
+            Reaction::Script(steps)
         }
-        TpciKind::Disconnect => {
-            dev_send_seq.remove(&dev_ia.raw());
-        }
-        TpciKind::Ack(_) => {}
-        TpciKind::NumberedData(client_seq) => {
-            match &device.behavior {
-                Behavior::Silent => {
-                    // Absent/silent: no ACK, no response.
-                }
-                Behavior::Nak => {
-                    // Present but refusing: NAK the numbered data telegram.
-                    let nak = CemiFrame::t_control(source, dev_ia, tpci::t_nak(client_seq));
-                    push_indication(gw, peer, gw_seq, &nak).await;
-                }
-                Behavior::FoldsAck { mask } => {
-                    // Fold the ACK: send the response NDT *before* / instead of a
-                    // separate T_ACK. The client's await_ack must treat the folded
-                    // NDT as the acknowledgement, stash it and deliver it.
-                    let seq = *dev_send_seq.get(&dev_ia.raw()).unwrap_or(&0);
-                    let resp = CemiFrame::t_data_connected(
-                        source,
-                        dev_ia,
-                        tpci::ndt(seq),
-                        apci::A_DEVICE_DESCRIPTOR_RESPONSE,
-                        &mask.to_be_bytes(),
-                    );
-                    push_indication(gw, peer, gw_seq, &resp).await;
-                    dev_send_seq.insert(dev_ia.raw(), (seq + 1) & 0x0f);
-                }
-                Behavior::WrongDescriptorApci { payload } => {
-                    // ACK, then answer with a deliberately wrong APCI (a property
-                    // response selector) so the descriptor decoder rejects it.
-                    let ack = CemiFrame::t_control(source, dev_ia, tpci::t_ack(client_seq));
-                    push_indication(gw, peer, gw_seq, &ack).await;
-                    let seq = *dev_send_seq.get(&dev_ia.raw()).unwrap_or(&0);
-                    let resp = CemiFrame::t_data_connected(
-                        source,
-                        dev_ia,
-                        tpci::ndt(seq),
-                        apci::A_PROPERTY_VALUE_RESPONSE,
-                        payload,
-                    );
-                    push_indication(gw, peer, gw_seq, &resp).await;
-                    dev_send_seq.insert(dev_ia.raw(), (seq + 1) & 0x0f);
-                }
-                Behavior::EchoesDescriptorRead => {
-                    // ACK, then echo the read: answer with the read's own APCI
-                    // (0x0300) and an empty payload, exactly as the KV IP
-                    // interface does. The decoder must recognise the echo.
-                    let ack = CemiFrame::t_control(source, dev_ia, tpci::t_ack(client_seq));
-                    push_indication(gw, peer, gw_seq, &ack).await;
-                    let seq = *dev_send_seq.get(&dev_ia.raw()).unwrap_or(&0);
-                    let resp = CemiFrame::t_data_connected(
-                        source,
-                        dev_ia,
-                        tpci::ndt(seq),
-                        apci::A_DEVICE_DESCRIPTOR_READ,
-                        &[],
-                    );
-                    push_indication(gw, peer, gw_seq, &resp).await;
-                    dev_send_seq.insert(dev_ia.raw(), (seq + 1) & 0x0f);
-                }
-                Behavior::RetransmitsPreviousResponse { mask } => {
-                    // The client just sent request N (at client_seq). On N >= 2,
-                    // first replay the PREVIOUS response at its old (one-behind)
-                    // send sequence — modelling a device that never saw our T_ACK
-                    // for the prior answer and retransmits it — then ACK and answer
-                    // the fresh request at the correct sequence.
-                    let count = dev_req_count.entry(dev_ia.raw()).or_insert(0);
-                    *count += 1;
-                    let is_repeat = *count >= 2;
-
-                    if is_repeat {
-                        // The current send seq points at the NEXT (fresh) response;
-                        // the previous response used seq-1. Replay it there.
-                        let cur = *dev_send_seq.get(&dev_ia.raw()).unwrap_or(&0);
-                        let prev_seq = cur.wrapping_sub(1) & 0x0f;
-                        let replay = CemiFrame::t_data_connected(
-                            source,
-                            dev_ia,
-                            tpci::ndt(prev_seq),
-                            apci::A_DEVICE_DESCRIPTOR_RESPONSE,
-                            &mask.to_be_bytes(),
-                        );
-                        push_indication(gw, peer, gw_seq, &replay).await;
-                        // A brief pause so the client processes the stale replay
-                        // (ACK expected-1, keep waiting) before the real answer.
-                        tokio::time::sleep(Duration::from_millis(20)).await;
-                    }
-
-                    // ACK the fresh request, then answer it at the correct seq.
-                    let ack = CemiFrame::t_control(source, dev_ia, tpci::t_ack(client_seq));
-                    push_indication(gw, peer, gw_seq, &ack).await;
-                    let seq = *dev_send_seq.get(&dev_ia.raw()).unwrap_or(&0);
-                    let resp = CemiFrame::t_data_connected(
-                        source,
-                        dev_ia,
-                        tpci::ndt(seq),
-                        apci::A_DEVICE_DESCRIPTOR_RESPONSE,
-                        &mask.to_be_bytes(),
-                    );
-                    push_indication(gw, peer, gw_seq, &resp).await;
-                    dev_send_seq.insert(dev_ia.raw(), (seq + 1) & 0x0f);
-                }
-                Behavior::Responds { .. } => {
-                    // 1. ACK the client's request NDT.
-                    let ack = CemiFrame::t_control(source, dev_ia, tpci::t_ack(client_seq));
-                    push_indication(gw, peer, gw_seq, &ack).await;
-
-                    // 2. Build and push the response NDT with our own seq.
-                    if let Some((resp_apci, resp_data)) = device_response(&device.behavior, cemi) {
-                        let seq = *dev_send_seq.get(&dev_ia.raw()).unwrap_or(&0);
-                        let resp = CemiFrame::t_data_connected(
-                            source,
-                            dev_ia,
-                            tpci::ndt(seq),
-                            resp_apci,
-                            &resp_data,
-                        );
-                        push_indication(gw, peer, gw_seq, &resp).await;
-                        dev_send_seq.insert(dev_ia.raw(), (seq + 1) & 0x0f);
-                    }
-                }
+        Behavior::Responds { .. } => {
+            // 1. ACK the client's request NDT. 2. Push the response NDT (if the
+            // request has one) with our own seq.
+            match device_response(behavior, apci_, data) {
+                Some((resp_apci, resp_data)) => Reaction::Answer(resp_apci, resp_data),
+                None => Reaction::Ack,
             }
         }
-        _ => {}
     }
 }
 
 /// Computes the response APCI + payload for a management request.
-fn device_response(behavior: &Behavior, cemi: &CemiFrame) -> Option<(u16, Vec<u8>)> {
+fn device_response(behavior: &Behavior, req_apci: u16, data: &[u8]) -> Option<(u16, Vec<u8>)> {
     let Behavior::Responds {
         mask,
         manufacturer,
@@ -388,10 +185,6 @@ fn device_response(behavior: &Behavior, cemi: &CemiFrame) -> Option<(u16, Vec<u8
     } = behavior
     else {
         return None;
-    };
-    let (req_apci, data) = match (&cemi.tpci, &cemi.apdu) {
-        (Tpci::Other(_), Apdu::Other { apci, data }) => (*apci, data.clone()),
-        _ => return None,
     };
 
     // Strict, spec-independent framing (implemented from the KNX standard, not
@@ -427,7 +220,7 @@ fn device_response(behavior: &Behavior, cemi: &CemiFrame) -> Option<(u16, Vec<u8
 
     match req_apci {
         apci::A_PROPERTY_VALUE_READ => {
-            let pv = apci::decode_property_value_read(&data)?;
+            let pv = apci::decode_property_value_read(data)?;
             let value = match pv.property_id {
                 apci::PID_MANUFACTURER_ID => manufacturer.to_be_bytes().to_vec(),
                 apci::PID_SERIAL_NUMBER => serial.clone(),
@@ -449,7 +242,7 @@ fn device_response(behavior: &Behavior, cemi: &CemiFrame) -> Option<(u16, Vec<u8
             Some((apci::A_PROPERTY_VALUE_RESPONSE, resp))
         }
         apci::A_PROPERTY_DESCRIPTION_READ => {
-            let pd = apci::decode_property_description_read(&data)?;
+            let pd = apci::decode_property_description_read(data)?;
             // The mock exposes descriptions only on object 0, addressed by index
             // (PID 0). A request with no descriptions configured, an unknown
             // object, or an index past the list is answered with a zero-max
@@ -496,7 +289,7 @@ fn device_response(behavior: &Behavior, cemi: &CemiFrame) -> Option<(u16, Vec<u8
 }
 
 /// A fully-responsive device fixture that does not expose `PID_MAX_APDU_LENGTH`.
-fn responder(addr: &str, mask: u16, manufacturer: u16) -> MockDevice {
+fn responder(addr: &str, mask: u16, manufacturer: u16) -> Result<SimDevice, BoxError> {
     responder_with_apdu(addr, mask, manufacturer, None)
 }
 
@@ -507,7 +300,7 @@ fn responder_with_apdu(
     mask: u16,
     manufacturer: u16,
     max_apdu: Option<u16>,
-) -> MockDevice {
+) -> Result<SimDevice, BoxError> {
     responder_with_apdu_and_descriptions(addr, mask, manufacturer, max_apdu, Vec::new())
 }
 
@@ -520,11 +313,11 @@ fn responder_with_apdu_and_descriptions(
     manufacturer: u16,
     max_apdu: Option<u16>,
     descriptions: Vec<(u8, u8, bool, u16, u8, u8)>,
-) -> MockDevice {
+) -> Result<SimDevice, BoxError> {
     let mut memory = HashMap::new();
     memory.insert(0x0060u16, vec![0xDE, 0xAD, 0xBE, 0xEF]);
-    MockDevice {
-        address: addr.parse().unwrap(),
+    Ok(SimDevice {
+        address: addr.parse()?,
         behavior: Behavior::Responds {
             mask,
             manufacturer,
@@ -534,12 +327,20 @@ fn responder_with_apdu_and_descriptions(
             max_apdu,
             descriptions,
         },
-    }
+    })
 }
 
-async fn open_bus(addr: SocketAddrV4) -> Transport {
+async fn open_bus(addr: SocketAddrV4) -> Result<Transport, BoxError> {
     let config = ConnectionConfig::tunnel(addr);
-    Transport::connect(&config).await.unwrap()
+    Ok(Transport::connect(&config).await?)
+}
+
+/// Returns the error of a call that must fail.
+fn must_fail<T, E>(result: Result<T, E>) -> Result<E, BoxError> {
+    match result {
+        Ok(_) => Err("expected the call to fail, it succeeded".into()),
+        Err(e) => Ok(e),
+    }
 }
 
 /// The lease path: an L4 session driven over a [`LeaseChannel`] on the bus actor
@@ -547,13 +348,13 @@ async fn open_bus(addr: SocketAddrV4) -> Transport {
 /// same bus must still see the device's response frames (the single-consumer
 /// fix — the old `recv` would have stolen them).
 #[tokio::test]
-async fn device_read_over_a_lease_and_group_subscriber_both_see_frames() {
+async fn device_read_over_a_lease_and_group_subscriber_both_see_frames() -> TestResult {
     use bussard_bus::Bus;
     use bussard_mgmt::LeaseChannel;
 
-    let (addr, gw) = bind_mock().await;
-    let devices = vec![responder("1.1.4", 0x07B0, 0x0083)];
-    let gw_task = tokio::spawn(run_mock(gw, devices));
+    let devices = vec![responder("1.1.4", 0x07B0, 0x0083)?];
+    let gw = start_mock(devices).await?;
+    let addr = gw.addr();
 
     let (handle, _task) = Bus::connect(ConnectionConfig::tunnel(addr));
     // Wait for the actor to connect.
@@ -581,104 +382,91 @@ async fn device_read_over_a_lease_and_group_subscriber_both_see_frames() {
         seen
     });
 
-    let lease = handle.lease().await.unwrap();
+    let lease = handle.lease().await?;
     let channel = LeaseChannel::new(lease);
-    let target: IndividualAddress = "1.1.4".parse().unwrap();
-    let source: IndividualAddress = "0.0.255".parse().unwrap();
-    let mut dev = DeviceConnection::connect(channel, target, source)
-        .await
-        .unwrap();
+    let target: IndividualAddress = "1.1.4".parse()?;
+    let source: IndividualAddress = "0.0.255".parse()?;
+    let mut dev = DeviceConnection::connect(channel, target, source).await?;
 
-    let mask = dev.device_descriptor().await.unwrap();
+    let mask = dev.device_descriptor().await?;
     assert_eq!(mask, 0x07B0, "the L4 session over a lease reads correctly");
-    dev.disconnect().await.unwrap();
+    dev.disconnect().await?;
 
-    let seen = observer.await.unwrap();
+    let seen = observer.await?;
     assert!(
         seen >= 1,
         "a concurrent group subscriber must see the device's response frames"
     );
 
     let _ = handle.close().await;
-    gw_task.abort();
+    drop(gw);
+    Ok(())
 }
 
 #[tokio::test]
-async fn device_descriptor_property_and_memory() {
-    let (addr, gw) = bind_mock().await;
-    let devices = vec![responder("1.1.4", 0x07B0, 0x0083)];
-    let gw_task = tokio::spawn(run_mock(gw, devices));
+async fn device_descriptor_property_and_memory() -> TestResult {
+    let devices = vec![responder("1.1.4", 0x07B0, 0x0083)?];
+    let gw = start_mock(devices).await?;
+    let addr = gw.addr();
 
-    let mut bus = open_bus(addr).await;
-    let target: IndividualAddress = "1.1.4".parse().unwrap();
-    let source: IndividualAddress = "0.0.255".parse().unwrap();
-    let mut dev = DeviceConnection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
+    let mut bus = open_bus(addr).await?;
+    let target: IndividualAddress = "1.1.4".parse()?;
+    let source: IndividualAddress = "0.0.255".parse()?;
+    let mut dev = DeviceConnection::connect(&mut bus, target, source).await?;
 
-    let mask = dev.device_descriptor().await.unwrap();
+    let mask = dev.device_descriptor().await?;
     assert_eq!(mask, 0x07B0);
 
-    let manu = dev
-        .read_device_property(apci::PID_MANUFACTURER_ID)
-        .await
-        .unwrap();
+    let manu = dev.read_device_property(apci::PID_MANUFACTURER_ID).await?;
     assert_eq!(manu, vec![0x00, 0x83]);
 
-    let serial = dev
-        .read_device_property(apci::PID_SERIAL_NUMBER)
-        .await
-        .unwrap();
+    let serial = dev.read_device_property(apci::PID_SERIAL_NUMBER).await?;
     assert_eq!(serial, vec![0x00, 0x01, 0x02, 0x03, 0x04, 0x05]);
 
-    let order = dev
-        .read_device_property(apci::PID_ORDER_INFO)
-        .await
-        .unwrap();
+    let order = dev.read_device_property(apci::PID_ORDER_INFO).await?;
     assert_eq!(order, b"MDT-JAL0410");
 
-    let mem = dev.read_memory(0x0060, 4).await.unwrap();
+    let mem = dev.read_memory(0x0060, 4).await?;
     assert_eq!(mem, vec![0xDE, 0xAD, 0xBE, 0xEF]);
 
-    dev.disconnect().await.unwrap();
-    gw_task.abort();
+    dev.disconnect().await?;
+    drop(gw);
+    Ok(())
 }
 
 #[tokio::test]
-async fn max_apdu_negotiation_scales_memory_chunk() {
+async fn max_apdu_negotiation_scales_memory_chunk() -> TestResult {
     use bussard_mgmt::Layer4Connection;
 
     // A device advertising a large max APDU (KNX Virtual's 66) scales to the
     // 63-octet memory ceiling; a device at the standard-frame floor (15) is capped
     // to 12-octet chunks (standard frames); a device without the property falls
     // back to the conservative 12 (issue #58).
-    let (addr, gw) = bind_mock().await;
     let devices = vec![
-        responder_with_apdu("1.1.10", 0x07B0, 0x0083, Some(66)),
-        responder_with_apdu("1.1.11", 0x07B0, 0x0083, Some(15)),
-        responder_with_apdu("1.1.12", 0x07B0, 0x0083, None),
+        responder_with_apdu("1.1.10", 0x07B0, 0x0083, Some(66))?,
+        responder_with_apdu("1.1.11", 0x07B0, 0x0083, Some(15))?,
+        responder_with_apdu("1.1.12", 0x07B0, 0x0083, None)?,
     ];
-    let gw_task = tokio::spawn(run_mock(gw, devices));
+    let gw = start_mock(devices).await?;
+    let addr = gw.addr();
 
-    let mut bus = open_bus(addr).await;
-    let source: IndividualAddress = "0.0.255".parse().unwrap();
+    let mut bus = open_bus(addr).await?;
+    let source: IndividualAddress = "0.0.255".parse()?;
 
     for (target_str, expected_chunk, expect_negotiated) in [
         ("1.1.10", 63u8, true),
         ("1.1.11", 12u8, true),
         ("1.1.12", 12u8, false),
     ] {
-        let target: IndividualAddress = target_str.parse().unwrap();
-        let mut l4 = Layer4Connection::connect(&mut bus, target, source)
-            .await
-            .unwrap();
+        let target: IndividualAddress = target_str.parse()?;
+        let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
         // Before negotiation the conservative default applies.
         assert_eq!(
             l4.max_memory_chunk(),
             12,
             "{target_str}: pre-negotiation must be conservative"
         );
-        let negotiated = l4.negotiate_max_apdu().await.unwrap();
+        let negotiated = l4.negotiate_max_apdu().await?;
         assert_eq!(
             negotiated.is_some(),
             expect_negotiated,
@@ -689,33 +477,32 @@ async fn max_apdu_negotiation_scales_memory_chunk() {
             expected_chunk,
             "{target_str}: memory chunk must scale to the advertised APDU"
         );
-        l4.disconnect().await.unwrap();
+        l4.disconnect().await?;
     }
 
-    gw_task.abort();
+    drop(gw);
+    Ok(())
 }
 
 #[tokio::test]
-async fn retransmitted_previous_response_does_not_desync() {
+async fn retransmitted_previous_response_does_not_desync() -> TestResult {
     // A device retransmits the PREVIOUS response (its old, one-behind send seq)
     // before answering each new request — as it does when our earlier T_ACK was
     // lost. await_ack must NOT treat that stale/out-of-window NDT as the ack of
     // the new request (which would advance send_seq off stale evidence and
     // desync). It must ACK expected-1, keep waiting, then consume the fresh
     // response. Several requests in a row must all decode correctly (#57).
-    let (addr, gw) = bind_mock().await;
-    let devices = vec![MockDevice {
-        address: "1.1.7".parse().unwrap(),
+    let devices = vec![SimDevice {
+        address: "1.1.7".parse()?,
         behavior: Behavior::RetransmitsPreviousResponse { mask: 0x07B0 },
     }];
-    let gw_task = tokio::spawn(run_mock(gw, devices));
+    let gw = start_mock(devices).await?;
+    let addr = gw.addr();
 
-    let mut bus = open_bus(addr).await;
-    let target: IndividualAddress = "1.1.7".parse().unwrap();
-    let source: IndividualAddress = "0.0.255".parse().unwrap();
-    let mut dev = DeviceConnection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
+    let mut bus = open_bus(addr).await?;
+    let target: IndividualAddress = "1.1.7".parse()?;
+    let source: IndividualAddress = "0.0.255".parse()?;
+    let mut dev = DeviceConnection::connect(&mut bus, target, source).await?;
 
     // The first read is clean; every subsequent read is preceded by a replayed
     // previous response. All must yield the correct mask and stay in sync.
@@ -727,115 +514,108 @@ async fn retransmitted_previous_response_does_not_desync() {
         assert_eq!(mask, 0x07B0, "read {i} must decode the fresh response");
     }
 
-    dev.disconnect().await.unwrap();
-    gw_task.abort();
+    dev.disconnect().await?;
+    drop(gw);
+    Ok(())
 }
 
 #[tokio::test]
-async fn wraparound_across_many_requests() {
+async fn wraparound_across_many_requests() -> TestResult {
     // Issue > 16 property reads on one connection to exercise TPCI sequence
     // wraparound at 15 in both directions.
-    let (addr, gw) = bind_mock().await;
-    let devices = vec![responder("1.1.4", 0x07B0, 0x0083)];
-    let gw_task = tokio::spawn(run_mock(gw, devices));
+    let devices = vec![responder("1.1.4", 0x07B0, 0x0083)?];
+    let gw = start_mock(devices).await?;
+    let addr = gw.addr();
 
-    let mut bus = open_bus(addr).await;
-    let target: IndividualAddress = "1.1.4".parse().unwrap();
-    let source: IndividualAddress = "0.0.255".parse().unwrap();
-    let mut dev = DeviceConnection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
+    let mut bus = open_bus(addr).await?;
+    let target: IndividualAddress = "1.1.4".parse()?;
+    let source: IndividualAddress = "0.0.255".parse()?;
+    let mut dev = DeviceConnection::connect(&mut bus, target, source).await?;
 
     for _ in 0..20 {
-        let manu = dev
-            .read_device_property(apci::PID_MANUFACTURER_ID)
-            .await
-            .unwrap();
+        let manu = dev.read_device_property(apci::PID_MANUFACTURER_ID).await?;
         assert_eq!(manu, vec![0x00, 0x83]);
     }
-    dev.disconnect().await.unwrap();
-    gw_task.abort();
+    dev.disconnect().await?;
+    drop(gw);
+    Ok(())
 }
 
 #[tokio::test]
-async fn folded_ack_device_still_delivers_response() {
+async fn folded_ack_device_still_delivers_response() -> TestResult {
     // A device that folds its ACK (answers with the response NDT before/instead
     // of a separate T_ACK) must still yield the descriptor, and the connection
     // must stay in sync for a following request.
-    let (addr, gw) = bind_mock().await;
-    let devices = vec![MockDevice {
-        address: "1.1.4".parse().unwrap(),
+    let devices = vec![SimDevice {
+        address: "1.1.4".parse()?,
         behavior: Behavior::FoldsAck { mask: 0x07B0 },
     }];
-    let gw_task = tokio::spawn(run_mock(gw, devices));
+    let gw = start_mock(devices).await?;
+    let addr = gw.addr();
 
-    let mut bus = open_bus(addr).await;
-    let target: IndividualAddress = "1.1.4".parse().unwrap();
-    let source: IndividualAddress = "0.0.255".parse().unwrap();
-    let mut dev = DeviceConnection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
+    let mut bus = open_bus(addr).await?;
+    let target: IndividualAddress = "1.1.4".parse()?;
+    let source: IndividualAddress = "0.0.255".parse()?;
+    let mut dev = DeviceConnection::connect(&mut bus, target, source).await?;
 
-    let mask = dev.device_descriptor().await.unwrap();
+    let mask = dev.device_descriptor().await?;
     assert_eq!(mask, 0x07B0, "folded-ACK response must still decode");
 
     // A second request must also succeed: the receive sequence advanced exactly
     // once for the folded response, so nothing is dropped as a duplicate.
-    let mask2 = dev.device_descriptor().await.unwrap();
+    let mask2 = dev.device_descriptor().await?;
     assert_eq!(
         mask2, 0x07B0,
         "connection stayed in sync after a folded ACK"
     );
 
-    dev.disconnect().await.unwrap();
-    gw_task.abort();
+    dev.disconnect().await?;
+    drop(gw);
+    Ok(())
 }
 
 #[tokio::test]
-async fn nak_device_is_present_but_refuses() {
-    let (addr, gw) = bind_mock().await;
-    let devices = vec![MockDevice {
-        address: "1.1.7".parse().unwrap(),
+async fn nak_device_is_present_but_refuses() -> TestResult {
+    let devices = vec![SimDevice {
+        address: "1.1.7".parse()?,
         behavior: Behavior::Nak,
     }];
-    let gw_task = tokio::spawn(run_mock(gw, devices));
+    let gw = start_mock(devices).await?;
+    let addr = gw.addr();
 
-    let mut bus = open_bus(addr).await;
-    let target: IndividualAddress = "1.1.7".parse().unwrap();
-    let source: IndividualAddress = "0.0.255".parse().unwrap();
-    let mut dev = DeviceConnection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
+    let mut bus = open_bus(addr).await?;
+    let target: IndividualAddress = "1.1.7".parse()?;
+    let source: IndividualAddress = "0.0.255".parse()?;
+    let mut dev = DeviceConnection::connect(&mut bus, target, source).await?;
 
-    let err = dev.device_descriptor().await.unwrap_err();
+    let err = must_fail(dev.device_descriptor().await)?;
     assert!(matches!(err, MgmtError::Nak { .. }), "got {err:?}");
     assert!(err.device_present(), "a NAK means the device is present");
-    gw_task.abort();
+    drop(gw);
+    Ok(())
 }
 
 #[tokio::test]
-async fn malformed_descriptor_error_carries_raw_hex() {
+async fn malformed_descriptor_error_carries_raw_hex() -> TestResult {
     // A device that answers a descriptor read with the wrong APCI + payload must
     // surface a MalformedResponse whose reason includes the raw APCI and payload
     // bytes (hex) — the KNX Virtual interface finding: the frame is captured in
     // the error text so no packet sniffer is needed.
-    let (addr, gw) = bind_mock().await;
-    let devices = vec![MockDevice {
-        address: "1.0.255".parse().unwrap(),
+    let devices = vec![SimDevice {
+        address: "1.0.255".parse()?,
         behavior: Behavior::WrongDescriptorApci {
             payload: vec![0x00, 0x0C, 0x10, 0x01, 0x07, 0xB0],
         },
     }];
-    let gw_task = tokio::spawn(run_mock(gw, devices));
+    let gw = start_mock(devices).await?;
+    let addr = gw.addr();
 
-    let mut bus = open_bus(addr).await;
-    let target: IndividualAddress = "1.0.255".parse().unwrap();
-    let source: IndividualAddress = "0.0.255".parse().unwrap();
-    let mut dev = DeviceConnection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
+    let mut bus = open_bus(addr).await?;
+    let target: IndividualAddress = "1.0.255".parse()?;
+    let source: IndividualAddress = "0.0.255".parse()?;
+    let mut dev = DeviceConnection::connect(&mut bus, target, source).await?;
 
-    let err = dev.device_descriptor().await.unwrap_err();
+    let err = must_fail(dev.device_descriptor().await)?;
     match err {
         MgmtError::MalformedResponse { reason, .. } => {
             // The A_PropertyValue_Response selector is 0x03D6.
@@ -850,30 +630,29 @@ async fn malformed_descriptor_error_carries_raw_hex() {
         }
         other => panic!("expected MalformedResponse, got {other:?}"),
     }
-    gw_task.abort();
+    drop(gw);
+    Ok(())
 }
 
 #[tokio::test]
-async fn descriptor_echo_is_named_in_the_error() {
+async fn descriptor_echo_is_named_in_the_error() -> TestResult {
     // Finding 2: the KNX Virtual IP interface answers A_DeviceDescriptor_Read by
     // echoing the read (APCI 0x0300) rather than a Response (0x0340). The decoder
     // must name that echo pattern — not report a bare "unexpected response" — so
     // the operator knows the device does not implement descriptor responses.
-    let (addr, gw) = bind_mock().await;
-    let devices = vec![MockDevice {
-        address: "1.0.255".parse().unwrap(),
+    let devices = vec![SimDevice {
+        address: "1.0.255".parse()?,
         behavior: Behavior::EchoesDescriptorRead,
     }];
-    let gw_task = tokio::spawn(run_mock(gw, devices));
+    let gw = start_mock(devices).await?;
+    let addr = gw.addr();
 
-    let mut bus = open_bus(addr).await;
-    let target: IndividualAddress = "1.0.255".parse().unwrap();
-    let source: IndividualAddress = "0.0.255".parse().unwrap();
-    let mut dev = DeviceConnection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
+    let mut bus = open_bus(addr).await?;
+    let target: IndividualAddress = "1.0.255".parse()?;
+    let source: IndividualAddress = "0.0.255".parse()?;
+    let mut dev = DeviceConnection::connect(&mut bus, target, source).await?;
 
-    let err = dev.device_descriptor().await.unwrap_err();
+    let err = must_fail(dev.device_descriptor().await)?;
     match err {
         MgmtError::MalformedResponse { reason, .. } => {
             assert!(
@@ -895,21 +674,22 @@ async fn descriptor_echo_is_named_in_the_error() {
         }
         other => panic!("expected MalformedResponse, got {other:?}"),
     }
-    gw_task.abort();
+    drop(gw);
+    Ok(())
 }
 
 #[tokio::test]
-async fn silent_device_is_absent() {
-    let (addr, gw) = bind_mock().await;
-    let devices = vec![MockDevice {
-        address: "1.1.9".parse().unwrap(),
+async fn silent_device_is_absent() -> TestResult {
+    let devices = vec![SimDevice {
+        address: "1.1.9".parse()?,
         behavior: Behavior::Silent,
     }];
-    let gw_task = tokio::spawn(run_mock(gw, devices));
+    let gw = start_mock(devices).await?;
+    let addr = gw.addr();
 
-    let mut bus = open_bus(addr).await;
-    let target: IndividualAddress = "1.1.9".parse().unwrap();
-    let source: IndividualAddress = "0.0.255".parse().unwrap();
+    let mut bus = open_bus(addr).await?;
+    let target: IndividualAddress = "1.1.9".parse()?;
+    let source: IndividualAddress = "0.0.255".parse()?;
     // A silent address costs `2 × ack_timeout` to rule out; the real discovery()
     // budget is 1500ms per attempt (~3s wasted here). Nothing about this test
     // depends on that duration, so use a tight budget that keeps the wall low.
@@ -918,21 +698,19 @@ async fn silent_device_is_absent() {
         max_repetitions: 1,
         response_timeout: Duration::from_millis(50),
     };
-    let mut dev = DeviceConnection::connect_with(&mut bus, target, source, fast)
-        .await
-        .unwrap();
+    let mut dev = DeviceConnection::connect_with(&mut bus, target, source, fast).await?;
 
-    let err = dev.device_descriptor().await.unwrap_err();
+    let err = must_fail(dev.device_descriptor().await)?;
     assert!(matches!(err, MgmtError::NoResponse { .. }), "got {err:?}");
     assert!(!err.device_present(), "silence means the device is absent");
-    gw_task.abort();
+    drop(gw);
+    Ok(())
 }
 
 #[tokio::test]
-async fn describe_property_reads_one_descriptor() {
+async fn describe_property_reads_one_descriptor() -> TestResult {
     // A device that exposes property descriptions on object 0 answers a
     // single-PID-by-index A_PropertyDescription_Read with the full descriptor.
-    let (addr, gw) = bind_mock().await;
     let devices = vec![responder_with_apdu_and_descriptions(
         "1.1.4",
         0x07B0,
@@ -943,21 +721,19 @@ async fn describe_property_reads_one_descriptor() {
             (1u8, 0x03, false, 1, 3, 15),
             (apci::PID_SERIAL_NUMBER, 0x04, false, 1, 3, 15),
         ],
-    )];
-    let gw_task = tokio::spawn(run_mock(gw, devices));
+    )?];
+    let gw = start_mock(devices).await?;
+    let addr = gw.addr();
 
-    let mut bus = open_bus(addr).await;
-    let target: IndividualAddress = "1.1.4".parse().unwrap();
-    let source: IndividualAddress = "0.0.255".parse().unwrap();
-    let mut dev = DeviceConnection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
+    let mut bus = open_bus(addr).await?;
+    let target: IndividualAddress = "1.1.4".parse()?;
+    let source: IndividualAddress = "0.0.255".parse()?;
+    let mut dev = DeviceConnection::connect(&mut bus, target, source).await?;
 
     // By index (PID 0): index 1 is the object-type property.
     let desc = dev
         .describe_property(apci::DEVICE_OBJECT_INDEX, 0, 1)
-        .await
-        .unwrap();
+        .await?;
     assert_eq!(desc.property_id, 1u8);
     assert_eq!(desc.property_index, 1);
     assert_eq!(desc.pdt, 0x03);
@@ -966,15 +742,15 @@ async fn describe_property_reads_one_descriptor() {
     assert_eq!(desc.read_level, 3);
     assert_eq!(desc.write_level, 15);
 
-    dev.disconnect().await.unwrap();
-    gw_task.abort();
+    dev.disconnect().await?;
+    drop(gw);
+    Ok(())
 }
 
 #[tokio::test]
-async fn describe_object_enumerates_all_properties_and_terminates() {
+async fn describe_object_enumerates_all_properties_and_terminates() -> TestResult {
     // Walking object 0 yields every seeded property in index order and stops
     // cleanly at the first absent index (the device returns max_elements == 0).
-    let (addr, gw) = bind_mock().await;
     let seeded = vec![
         (1u8, 0x03, false, 1, 3, 15),
         (apci::PID_SERIAL_NUMBER, 0x04, false, 1, 3, 15),
@@ -987,20 +763,16 @@ async fn describe_object_enumerates_all_properties_and_terminates() {
         0x0083,
         Some(66),
         seeded.clone(),
-    )];
-    let gw_task = tokio::spawn(run_mock(gw, devices));
+    )?];
+    let gw = start_mock(devices).await?;
+    let addr = gw.addr();
 
-    let mut bus = open_bus(addr).await;
-    let target: IndividualAddress = "1.1.4".parse().unwrap();
-    let source: IndividualAddress = "0.0.255".parse().unwrap();
-    let mut dev = DeviceConnection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
+    let mut bus = open_bus(addr).await?;
+    let target: IndividualAddress = "1.1.4".parse()?;
+    let source: IndividualAddress = "0.0.255".parse()?;
+    let mut dev = DeviceConnection::connect(&mut bus, target, source).await?;
 
-    let props = dev
-        .describe_object(apci::DEVICE_OBJECT_INDEX)
-        .await
-        .unwrap();
+    let props = dev.describe_object(apci::DEVICE_OBJECT_INDEX).await?;
     assert_eq!(
         props.len(),
         seeded.len(),
@@ -1017,32 +789,29 @@ async fn describe_object_enumerates_all_properties_and_terminates() {
         assert_eq!(props[i].write_level, *wl);
     }
 
-    dev.disconnect().await.unwrap();
-    gw_task.abort();
+    dev.disconnect().await?;
+    drop(gw);
+    Ok(())
 }
 
 #[tokio::test]
-async fn describe_object_on_device_without_descriptions_is_empty() {
+async fn describe_object_on_device_without_descriptions_is_empty() -> TestResult {
     // A device that does not implement the description service (no descriptions
     // seeded → every index answers max_elements == 0) yields an empty list, not
     // an error: enumeration terminates cleanly at index 1.
-    let (addr, gw) = bind_mock().await;
-    let devices = vec![responder("1.1.4", 0x07B0, 0x0083)];
-    let gw_task = tokio::spawn(run_mock(gw, devices));
+    let devices = vec![responder("1.1.4", 0x07B0, 0x0083)?];
+    let gw = start_mock(devices).await?;
+    let addr = gw.addr();
 
-    let mut bus = open_bus(addr).await;
-    let target: IndividualAddress = "1.1.4".parse().unwrap();
-    let source: IndividualAddress = "0.0.255".parse().unwrap();
-    let mut dev = DeviceConnection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
+    let mut bus = open_bus(addr).await?;
+    let target: IndividualAddress = "1.1.4".parse()?;
+    let source: IndividualAddress = "0.0.255".parse()?;
+    let mut dev = DeviceConnection::connect(&mut bus, target, source).await?;
 
-    let props = dev
-        .describe_object(apci::DEVICE_OBJECT_INDEX)
-        .await
-        .unwrap();
+    let props = dev.describe_object(apci::DEVICE_OBJECT_INDEX).await?;
     assert!(props.is_empty(), "no descriptions → empty enumeration");
 
-    dev.disconnect().await.unwrap();
-    gw_task.abort();
+    dev.disconnect().await?;
+    drop(gw);
+    Ok(())
 }

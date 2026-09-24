@@ -1852,7 +1852,7 @@ mod tests {
     /// Builds a one-device model whose device at `addr` carries `params`.
     fn model_with_params(addr: &str, params: &[(&str, &str)]) -> bussard_model::Model {
         use bussard_model::schema::Device;
-        let address: IndividualAddress = addr.parse().unwrap();
+        let address: IndividualAddress = addr.parse().expect("test fixture");
         let device = Device {
             address,
             name: "test".to_string(),
@@ -1886,10 +1886,10 @@ mod tests {
     }
 
     #[test]
-    fn parameter_overrides_are_rekeyed_to_ref_id() {
+    fn parameter_overrides_are_rekeyed_to_ref_id() -> Result<(), Box<dyn std::error::Error>> {
         // A device file keys parameters `<slug>@<ref-id>`; collection drops the
         // slug and keys by the ETS-stable ref id (the part after @).
-        let target: IndividualAddress = "1.1.4".parse().unwrap();
+        let target: IndividualAddress = "1.1.4".parse()?;
         let model = model_with_params(
             "1.1.4",
             &[
@@ -1905,25 +1905,28 @@ mod tests {
         assert_eq!(out.get("P-1312_R-2140").map(String::as_str), Some("18"));
         // The human slug is gone from the key entirely.
         assert!(!out.keys().any(|k| k.contains('@')));
+        Ok(())
     }
 
     #[test]
-    fn malformed_parameter_key_without_at_is_skipped() {
+    fn malformed_parameter_key_without_at_is_skipped() -> Result<(), Box<dyn std::error::Error>> {
         // A key with no `@` has no determinable ref-id identity; it is skipped
         // rather than fed to the engine as a bogus ref id.
-        let target: IndividualAddress = "1.1.4".parse().unwrap();
+        let target: IndividualAddress = "1.1.4".parse()?;
         let model = model_with_params("1.1.4", &[("bogus_no_at_sign", "5")]);
         let out = collect_parameter_overrides(Some(&model), target);
         assert!(out.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn no_model_or_unknown_device_yields_no_overrides() {
-        let target: IndividualAddress = "1.1.4".parse().unwrap();
+    fn no_model_or_unknown_device_yields_no_overrides() -> Result<(), Box<dyn std::error::Error>> {
+        let target: IndividualAddress = "1.1.4".parse()?;
         assert!(collect_parameter_overrides(None, target).is_empty());
         // A model that has no device at the target address contributes nothing.
         let model = model_with_params("1.1.9", &[("x@P-1_R-1", "1")]);
         assert!(collect_parameter_overrides(Some(&model), target).is_empty());
+        Ok(())
     }
 
     /// A minimal parseable single-segment System B application under id `id`.
@@ -1942,7 +1945,7 @@ mod tests {
               </Static>
              </ApplicationProgram></KNX>"#
         );
-        parse_application_program(id, xml.as_bytes()).unwrap()
+        parse_application_program(id, xml.as_bytes()).expect("test fixture")
     }
 
     /// Builds a [`ProductData`] from `(order_number, [app_ref…])` rows and the
@@ -1965,24 +1968,26 @@ mod tests {
     }
 
     #[test]
-    fn resolves_exactly_one_match() {
+    fn resolves_exactly_one_match() -> Result<(), Box<dyn std::error::Error>> {
         let data = product(
             &[("AKK-0216.03", &["M-0083_A-000D-23-5BFD"])],
             &["M-0083_A-000D-23-5BFD"],
         );
-        let app = resolve_by_order_number(&data, "AKK-0216.03").unwrap();
+        let app = resolve_by_order_number(&data, "AKK-0216.03")?;
         assert_eq!(app.id, "M-0083_A-000D-23-5BFD");
+        Ok(())
     }
 
     #[test]
-    fn resolution_normalizes_case_and_whitespace() {
+    fn resolution_normalizes_case_and_whitespace() -> Result<(), Box<dyn std::error::Error>> {
         // Index-style normalization: trim + upper-case, interior separators kept.
         let data = product(
             &[("AKK-0216.03", &["M-0083_A-000D-23-5BFD"])],
             &["M-0083_A-000D-23-5BFD"],
         );
-        let app = resolve_by_order_number(&data, "  akk-0216.03 ").unwrap();
+        let app = resolve_by_order_number(&data, "  akk-0216.03 ")?;
         assert_eq!(app.id, "M-0083_A-000D-23-5BFD");
+        Ok(())
     }
 
     #[test]
@@ -1994,7 +1999,7 @@ mod tests {
             ],
             &["M-0083_A-1"],
         );
-        let err = resolve_by_order_number(&data, "NOPE-9").unwrap_err();
+        let err = resolve_by_order_number(&data, "NOPE-9").expect_err("expected an error");
         let msg = err.to_string();
         assert!(msg.contains("no application matches order number"), "{msg}");
         assert!(
@@ -2014,7 +2019,7 @@ mod tests {
             &[("AKK-0216.03", &["M-0083_A-1", "M-0083_A-2"])],
             &["M-0083_A-1", "M-0083_A-2"],
         );
-        let err = resolve_by_order_number(&data, "AKK-0216.03").unwrap_err();
+        let err = resolve_by_order_number(&data, "AKK-0216.03").expect_err("expected an error");
         let msg = err.to_string();
         assert!(msg.contains("maps to 2 applications"), "{msg}");
         assert!(
@@ -2025,8 +2030,9 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_disconnect_after_connect_names_the_pattern() {
-        let target: IndividualAddress = "1.0.10".parse().unwrap();
+    fn descriptor_disconnect_after_connect_names_the_pattern()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let target: IndividualAddress = "1.0.10".parse()?;
         let err = descriptor_read_error(
             target,
             true, // the T_Connect established before the read
@@ -2039,13 +2045,15 @@ mod tests {
             "{msg}"
         );
         assert!(msg.contains("*.ip") && msg.contains("*.tp"), "{msg}");
+        Ok(())
     }
 
     #[test]
-    fn descriptor_disconnect_without_connect_is_passed_through() {
+    fn descriptor_disconnect_without_connect_is_passed_through()
+    -> Result<(), Box<dyn std::error::Error>> {
         // A disconnect that happened before the connection established is not the
         // IP-medium pattern; it passes through with the generic context.
-        let target: IndividualAddress = "1.0.10".parse().unwrap();
+        let target: IndividualAddress = "1.0.10".parse()?;
         let err = descriptor_read_error(
             target,
             false,
@@ -2058,21 +2066,24 @@ mod tests {
             !msg.contains("accepted the connection but disconnected"),
             "{msg}"
         );
+        Ok(())
     }
 
     #[test]
-    fn descriptor_other_error_is_passed_through() {
-        let target: IndividualAddress = "1.0.10".parse().unwrap();
+    fn descriptor_other_error_is_passed_through() -> Result<(), Box<dyn std::error::Error>> {
+        let target: IndividualAddress = "1.0.10".parse()?;
         let err = descriptor_read_error(target, true, false, MgmtError::Nak { address: target });
         let msg = err.to_string();
         assert!(msg.contains("reading the device descriptor"), "{msg}");
+        Ok(())
     }
 
     /// A silent activated device (wrong tool key, or a plain device ignoring the
     /// wrapper) names the KNX Data Secure cause, not the IP-medium pattern.
     #[test]
-    fn descriptor_silence_on_a_secure_connection_names_the_tool_key() {
-        let target: IndividualAddress = "1.1.2".parse().unwrap();
+    fn descriptor_silence_on_a_secure_connection_names_the_tool_key()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let target: IndividualAddress = "1.1.2".parse()?;
         for err in [
             MgmtError::Disconnected { address: target },
             MgmtError::NoResponse { address: target },
@@ -2090,13 +2101,15 @@ mod tests {
                 "the IP-medium guidance is wrong here: {msg}"
             );
         }
+        Ok(())
     }
 
     /// A silent PLAIN connection points at the keyring: an activated device
     /// refuses unsecured management (spec §6.4).
     #[test]
-    fn descriptor_silence_on_a_plain_connection_suggests_the_keyring() {
-        let target: IndividualAddress = "1.1.2".parse().unwrap();
+    fn descriptor_silence_on_a_plain_connection_suggests_the_keyring()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let target: IndividualAddress = "1.1.2".parse()?;
         for err in [
             MgmtError::NoResponse { address: target },
             MgmtError::Disconnected { address: target },
@@ -2111,10 +2124,11 @@ mod tests {
             assert!(msg.contains("--keyring"), "{msg}");
             assert!(msg.contains("KNX Data Secure"), "{msg}");
         }
+        Ok(())
     }
 
     #[test]
-    fn duplicate_refs_across_rows_collapse_to_one() {
+    fn duplicate_refs_across_rows_collapse_to_one() -> Result<(), Box<dyn std::error::Error>> {
         // Two order-number rows pointing at the same application resolve cleanly.
         let data = product(
             &[
@@ -2123,15 +2137,16 @@ mod tests {
             ],
             &["M-0083_A-1"],
         );
-        let app = resolve_by_order_number(&data, "AKK-0216.03").unwrap();
+        let app = resolve_by_order_number(&data, "AKK-0216.03")?;
         assert_eq!(app.id, "M-0083_A-1");
+        Ok(())
     }
 
     // --- The factory-freshness gate (issue #79) -----------------------------
 
     /// A target, gateway and model dir for the gate messages.
     fn gate(force: bool, freshness: &Freshness) -> FreshnessDecision {
-        let target: IndividualAddress = "1.0.2".parse().unwrap();
+        let target: IndividualAddress = "1.0.2".parse().expect("test fixture");
         decide_freshness(target, "127.0.0.1:3671", Path::new("knx"), force, freshness)
     }
 

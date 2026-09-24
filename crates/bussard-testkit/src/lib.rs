@@ -3,7 +3,7 @@
 //!
 //! Before this crate, 28 test files carried their own copy of the same mock
 //! (`fn run_gateway`, `fn run_mock`, `spawn_gateway`, ...). This crate is the
-//! single implementation. It is a `publish = false` dev-dependency and never
+//! single implementation; since issue #87 no suite keeps a copy. It is a `publish = false` dev-dependency and never
 //! part of the shipped binary.
 //!
 //! **Safety rule:** every constructor here binds `127.0.0.1:0`. Nothing in this
@@ -95,6 +95,24 @@
 //!   a System 7 memory-mapped LSM, PID_MCB_TABLE CRCs, and PID_TABLE writes
 //!   *(hook)*.
 //!
+//! Scripting hooks (for suites that keep a de-mirrored device model of their
+//! own and plug it in, rather than a gateway copy):
+//! - [`Reaction::Script`] with [`Step`]s: a folded ACK (answer without
+//!   `T_ACK`), a replay at a stale sequence ([`Step::DataAtSeq`]), a wrong APCI,
+//!   several answers, raw control frames, verbatim frames and inline pauses.
+//! - [`MockDevice::with_control_hook`]: reactions to the client's `T_Connect`,
+//!   `T_Disconnect`, `T_ACK` and `T_NAK` (per-connection budgets, reboot
+//!   silence, a refused connect).
+//! - The request context a hook reads from the device: `client_seq`, `tool`,
+//!   `request_tpci` (Data Secure nonces) and [`MockDevice::send_seq`].
+//! - [`GatewayBuilder::intercept`]: traffic-dependent datagram faults (drop the
+//!   tunnel after the Nth memory frame until the next CONNECT, a blackout that
+//!   keeps the channel id).
+//! - [`GatewayBuilder::push_once_after_connect`] (a push that skips a short
+//!   probe connection) and [`MockGateway::with_line`] (swap devices between
+//!   client runs).
+//! - The gateway's send sequence restarts at 0 on every granted CONNECT.
+//!
 //! Device models and recording:
 //! - Several devices on one line. System B presets with preloaded tables. A
 //!   persistent NAK on writes into one table object. Non-System-B masks
@@ -110,8 +128,8 @@ pub mod gateway;
 pub mod secure_gateway;
 pub mod wire;
 
-pub use device::{MemoryWritePolicy, MockDevice, Reaction};
-pub use gateway::{AckPolicy, GatewayBuilder, GatewayStats, MockGateway, Outage};
+pub use device::{ControlHook, Hook, MemoryWritePolicy, MockDevice, Reaction, Step};
+pub use gateway::{AckPolicy, GatewayBuilder, GatewayStats, Inbound, MockGateway, Outage, Verdict};
 pub use secure_gateway::{MockSecureGateway, SecureGatewayBuilder, SecureGatewayStats};
 pub use wire::RawGateway;
 

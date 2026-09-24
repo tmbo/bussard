@@ -16,8 +16,11 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
+use std::time::Duration;
 
 use bussard_model::IndividualAddress;
+use bussard_transport::cemi::CemiFrame;
+use bussard_transport::tpci::TpciKind;
 
 use crate::consts::{
     A_AUTHORIZE_REQUEST, A_AUTHORIZE_RESPONSE, A_DEVICE_DESCRIPTOR_READ,
@@ -45,6 +48,37 @@ pub enum Reaction {
     Nak,
     /// Say nothing at all.
     Silent,
+    /// Emit these steps in order. This expresses what the fixed variants cannot:
+    /// a folded ACK (an answer without a separate `T_ACK`), a replayed earlier
+    /// response at a stale sequence number, several answers, an answer with a
+    /// wrong APCI, or a pause before the answer.
+    Script(Vec<Step>),
+}
+
+/// One device-originated frame (or a pause) in a [`Reaction::Script`] or a
+/// control-hook answer. Every frame goes to the client as an `L_Data.ind` from
+/// the device to the tool address of the request being handled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Step {
+    /// `T_ACK` the request being handled (its sequence number).
+    Ack,
+    /// `T_NAK` the request being handled.
+    Nak,
+    /// A `T_Data_Connected` answer at the device's next send sequence number,
+    /// which then advances.
+    Data(u16, Vec<u8>),
+    /// A `T_Data_Connected` answer at an explicit sequence number (for example
+    /// one behind, to replay the previous response). The device's send sequence
+    /// is left as it is.
+    DataAtSeq(u8, u16, Vec<u8>),
+    /// A transport control frame with this raw TPCI octet, e.g. `0x81`
+    /// (`T_Disconnect`).
+    Control(u8),
+    /// This frame, verbatim (its message code is forced to `L_Data.ind`).
+    Frame(CemiFrame),
+    /// Wait this long before the next step. The gateway task sleeps inline, as
+    /// a slow device would hold up its interface.
+    Pause(Duration),
 }
 
 /// Where `A_Memory_Write` / `A_MemoryExtended_Write` may land.
@@ -60,6 +94,13 @@ pub enum MemoryWritePolicy {
 /// A custom request handler. It runs before the built-in services. Returning
 /// `Some` answers the request; `None` falls through to the built-ins.
 pub type Hook = Arc<dyn Fn(&mut MockDevice, u16, &[u8]) -> Option<Reaction> + Send + Sync>;
+
+/// A handler for the client's transport control frames (`T_Connect`,
+/// `T_Disconnect`, `T_ACK`, `T_NAK`). It runs after the built-in bookkeeping
+/// (a `T_Connect` resets the send sequence and counts) and returns the frames the
+/// device sends back, usually none. [`Step::Ack`] and [`Step::Nak`] are ignored
+/// here, since a control frame carries nothing to acknowledge.
+pub type ControlHook = Arc<dyn Fn(&mut MockDevice, TpciKind) -> Vec<Step> + Send + Sync>;
 
 /// One element-array property value.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,10 +156,21 @@ pub struct MockDevice {
     pub connects: usize,
     /// Every connected-mode request as `(apci, data)`, in order.
     pub requests: Vec<(u16, Vec<u8>)>,
+    /// The sequence number of the numbered request being handled (or the last
+    /// one handled), so a hook can tell a retransmission from a fresh request.
+    pub client_seq: u8,
+    /// The raw TPCI octet of the numbered request being handled, including the
+    /// two APCI bits it carries, exactly as it came off the wire. A hook that
+    /// rebuilds the frame's addressing (for example the KNX Data Secure CCM
+    /// nonce) needs it.
+    pub request_tpci: u8,
+    /// The source (tool) address of the last frame addressed to this device.
+    pub tool: IndividualAddress,
     /// The device's next outgoing sequence number while connected.
     pub(crate) send_seq: Option<u8>,
     properties: HashMap<(u8, u8), Property>,
     hook: Option<Hook>,
+    control_hook: Option<ControlHook>,
 }
 
 impl fmt::Debug for MockDevice {
@@ -130,6 +182,7 @@ impl fmt::Debug for MockDevice {
             .field("telegrams", &self.telegrams)
             .field("writes", &self.writes)
             .field("hook", &self.hook.is_some())
+            .field("control_hook", &self.control_hook.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -193,9 +246,13 @@ impl MockDevice {
             restarts: 0,
             connects: 0,
             requests: Vec::new(),
+            client_seq: 0,
+            request_tpci: 0,
+            tool: IndividualAddress::from_raw(0),
             send_seq: None,
             properties: HashMap::new(),
             hook: None,
+            control_hook: None,
         }
     }
 
@@ -357,6 +414,31 @@ impl MockDevice {
     {
         self.hook = Some(Arc::new(hook));
         self
+    }
+
+    /// Installs a handler for the client's transport control frames; see
+    /// [`ControlHook`]. Use it for a device that reacts to `T_Connect` (for
+    /// example refusing it with a `T_Disconnect`, or ending a reboot silence).
+    pub fn with_control_hook<F>(mut self, hook: F) -> Self
+    where
+        F: Fn(&mut MockDevice, TpciKind) -> Vec<Step> + Send + Sync + 'static,
+    {
+        self.control_hook = Some(Arc::new(hook));
+        self
+    }
+
+    /// Runs the control hook, if any, for one client control frame.
+    pub fn handle_control(&mut self, kind: TpciKind) -> Vec<Step> {
+        match self.control_hook.clone() {
+            Some(hook) => hook(self, kind),
+            None => Vec::new(),
+        }
+    }
+
+    /// The device's next outgoing sequence number, or `None` while it has no
+    /// transport connection.
+    pub fn send_seq(&self) -> Option<u8> {
+        self.send_seq
     }
 
     /// Places a System B table image; see [`MockDevice::with_table`].

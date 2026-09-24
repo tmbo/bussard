@@ -318,7 +318,7 @@ impl Drop for VirtualDevice {
 
 /// Runs the built `bussard` binary with `--routing` and the given args, returning
 /// (success, stdout, stderr). A short assign/scan window keeps the run brisk.
-fn bussard(args: &[&str]) -> (bool, String, String) {
+fn bussard(args: &[&str]) -> std::io::Result<(bool, String, String)> {
     // Keep the assign/scan windows generous on slow CI runners; overridable via
     // env so a fast local box can shorten them. The netns hop adds latency, so
     // the default here is deliberately roomy (5s assign, 800ms scan discovery).
@@ -337,28 +337,27 @@ fn bussard(args: &[&str]) -> (bool, String, String) {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
-        .expect("run bussard");
-    (
+        .output()?;
+    Ok((
         out.status.success(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
+    ))
 }
 
 /// The full ladder in one test (the rungs share one booted device, and later
 /// rungs depend on the assign from earlier ones, so they must run in order).
 #[test]
 #[ignore = "external virtual device; enable with BUSSARD_VIRTUAL_DEVICE=1 (Linux+multicast)"]
-fn ladder_against_thelsing_knx_linux_ip() {
+fn ladder_against_thelsing_knx_linux_ip() -> Result<(), Box<dyn std::error::Error>> {
     let Some(bin) = device_bin() else {
-        return;
+        return Ok(());
     };
 
     // The address we assign the fresh device. `scan` and `reconstruct` target it.
     let assigned = "1.1.47";
 
-    let device = VirtualDevice::spawn_fresh(&bin).expect("spawn virtual device");
+    let device = VirtualDevice::spawn_fresh(&bin)?;
     // Wait for the device to print its startup banner rather than sleeping
     // blindly; then a short settle for the multicast join to take effect.
     if !device.wait_ready(Duration::from_secs(20)) {
@@ -388,9 +387,15 @@ fn ladder_against_thelsing_knx_linux_ip() {
     //
     // `--yes` is required: an explicit address stopped being consent in issue
     // #74, so a non-TTY assign without it refuses before touching the bus.
-    let tmp = TmpDir::new("model").expect("model dir");
+    let tmp = TmpDir::new("model")?;
     let dir = tmp.path().join("knx");
-    let (ok, out, err) = bussard(&["assign", assigned, "--yes", "--dir", dir.to_str().unwrap()]);
+    let (ok, out, err) = bussard(&[
+        "assign",
+        assigned,
+        "--yes",
+        "--dir",
+        dir.to_str().ok_or("non-UTF-8 path")?,
+    ])?;
     eprintln!("--- assign stdout ---\n{out}\n--- assign stderr ---\n{err}");
     if !ok {
         device.dump_log();
@@ -417,14 +422,13 @@ fn ladder_against_thelsing_knx_linux_ip() {
         "--to",
         "47",
         "--dir",
-        dir.to_str().unwrap(),
+        dir.to_str().ok_or("non-UTF-8 path")?,
         "--json",
-    ]);
+    ])?;
     eprintln!("--- scan stdout ---\n{out}\n--- scan stderr ---\n{err}");
     assert!(ok, "rung (c): scan should exit 0; stderr:\n{err}");
-    let json: serde_json::Value =
-        serde_json::from_str(&out).expect("scan --json must emit valid JSON");
-    let found = json["found"].as_array().expect("found array");
+    let json: serde_json::Value = serde_json::from_str(&out)?;
+    let found = json["found"].as_array().ok_or("found array")?;
     let dev = found
         .iter()
         .find(|d| d["address"] == assigned)
@@ -444,7 +448,12 @@ fn ladder_against_thelsing_knx_linux_ip() {
     // The mask profile made reconstruct medium-agnostic: 57B0 (System B, IP)
     // is read like 07B0. The fresh device has no application loaded, so the
     // tables are empty, but the read must succeed against the foreign stack.
-    let (ok, out, err) = bussard(&["reconstruct", assigned, "--dir", dir.to_str().unwrap()]);
+    let (ok, out, err) = bussard(&[
+        "reconstruct",
+        assigned,
+        "--dir",
+        dir.to_str().ok_or("non-UTF-8 path")?,
+    ])?;
     eprintln!("--- reconstruct stdout ---\n{out}\n--- reconstruct stderr ---\n{err}");
     if !ok {
         device.dump_log();
@@ -458,4 +467,5 @@ fn ladder_against_thelsing_knx_linux_ip() {
         "ladder complete: (a) prog-mode discovery, (b) assign+verify (mask 57B0), \
          (c) scan classified 57B0 as 'System B (IP)', (d) reconstruct read it."
     );
+    Ok(())
 }

@@ -1185,7 +1185,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
-    fn estimates_are_sane() {
+    fn estimates_are_sane() -> Result<(), Box<dyn std::error::Error>> {
         let app = fabricated_app();
         let plan = plan_flash(
             &app,
@@ -1195,11 +1195,11 @@ mod tests {
             &BTreeMap::new(),
             None,
             &BTreeMap::new(),
-        )
-        .unwrap();
+        )?;
         // 7 bytes fit in one conservative 12-octet chunk each write → 2 frames.
         assert_eq!(plan.estimated_write_frames(), 2);
         assert!(plan.estimated_duration().as_millis() >= 40);
+        Ok(())
     }
 
     // ---------------------------------------------------------------------

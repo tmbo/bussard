@@ -1395,7 +1395,7 @@ mod tests {
            </LoadProcedures>
           </Static>
          </ApplicationProgram></KNX>"#;
-        parse_application_program("M-83_A-E", xml.as_bytes()).unwrap()
+        parse_application_program("M-83_A-E", xml.as_bytes()).expect("the fixture app parses")
     }
 
     /// A minimal System 7 app whose single `LdCtrlAbsSegment` carries the given
@@ -1419,7 +1419,7 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#
         );
-        parse_application_program("M-83_A-F", xml.as_bytes()).unwrap()
+        parse_application_program("M-83_A-F", xml.as_bytes()).expect("the fixture app parses")
     }
 
     fn plan_sys7_range(
@@ -1501,7 +1501,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_lowers_system_7() {
+    fn plan_lowers_system_7() -> Result<(), Box<dyn std::error::Error>> {
         let app = fabricated_sys7_app();
         let plan = plan_flash(
             &app,
@@ -1542,7 +1542,7 @@ mod tests {
         assert_eq!(unloads, vec![1, 2, 3]);
 
         // The 0x4000 AbsSegment carries an image AND a mask (streamed under mask).
-        let s7 = plan.sys7.as_ref().unwrap();
+        let s7 = plan.sys7.as_ref().ok_or("a System 7 plan")?;
         let table_seg = plan
             .steps
             .iter()
@@ -1589,6 +1589,7 @@ mod tests {
             }
         )));
         assert!(matches!(plan.steps.last(), Some(FlashStep::Restart)));
+        Ok(())
     }
 
     #[test]
@@ -1706,7 +1707,8 @@ mod tests {
     }
 
     #[test]
-    fn plan_lowers_system_7_task_ctrl1_and_ends_at_the_restart() {
+    fn plan_lowers_system_7_task_ctrl1_and_ends_at_the_restart()
+    -> Result<(), Box<dyn std::error::Error>> {
         // The Theben FIX2 shape (§4.4): a TaskCtrl1 on LSM 3, then a restart
         // followed by a converted TaskSegment + Load on LSM 5, which ETS never
         // sends and the plan drops (issue #178).
@@ -1734,7 +1736,7 @@ mod tests {
            </LoadProcedures>
           </Static>
          </ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-48_A-4947", xml.as_bytes()).unwrap();
+        let app = parse_application_program("M-48_A-4947", xml.as_bytes())?;
         let plan = plan_flash(
             &app,
             "1.1.99",
@@ -1761,6 +1763,7 @@ mod tests {
             s,
             FlashStep::Sys7TaskSegment { lsm: 5, .. } | FlashStep::Sys7StartLoading { lsm: 5 }
         )));
+        Ok(())
     }
 
     #[test]
@@ -1786,7 +1789,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_lowers_system_7_compare_mem() {
+    fn plan_lowers_system_7_compare_mem() -> Result<(), Box<dyn std::error::Error>> {
         // The Zennio LUMENTO shape (§4.5): a raw LdCtrlCompareMem before the LSMs.
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
          <ApplicationProgram Id="M-71_A-3211" ApplicationNumber="12817" ApplicationVersion="18"
@@ -1808,7 +1811,7 @@ mod tests {
            </LoadProcedures>
           </Static>
          </ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-71_A-3211", xml.as_bytes()).unwrap();
+        let app = parse_application_program("M-71_A-3211", xml.as_bytes())?;
         let plan = plan_flash(
             &app,
             "1.1.99",
@@ -1823,6 +1826,7 @@ mod tests {
             s,
             FlashStep::Sys7CompareMem { address: 46609, expected } if expected == &[0x32, 0x10]
         )));
+        Ok(())
     }
 
     #[test]

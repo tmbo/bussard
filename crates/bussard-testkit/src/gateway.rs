@@ -19,6 +19,7 @@
 
 use std::collections::VecDeque;
 use std::net::{SocketAddr, SocketAddrV4};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -31,7 +32,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
 use crate::MockError;
-use crate::device::{MockDevice, Reaction};
+use crate::device::{MockDevice, Reaction, Step};
 use crate::wire::{self, connect_refusal_body, connect_response_body};
 
 /// How the gateway answers the client's TUNNELLING_REQUESTs.
@@ -66,6 +67,31 @@ pub struct Outage {
 /// A scripted reaction to a client frame: returns the frames to push back.
 type Responder = Box<dyn FnMut(&CemiFrame) -> Vec<CemiFrame> + Send>;
 
+/// One datagram as an [`GatewayBuilder::intercept`] hook sees it, before the
+/// gateway acts on it.
+#[derive(Debug, Clone, Copy)]
+pub struct Inbound<'a> {
+    /// The KNXnet/IP service.
+    pub service: ServiceType,
+    /// The cEMI frame of a TUNNELLING_REQUEST, `None` for other services.
+    pub cemi: Option<&'a CemiFrame>,
+}
+
+/// What the gateway does with one datagram, as decided by an
+/// [`GatewayBuilder::intercept`] hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// Handle it normally.
+    Serve,
+    /// Drop it silently: no answer, no ACK, no capture, not seen by the line.
+    /// A hook that keeps its own "link down until" clock models a gateway
+    /// outage that, unlike [`Outage`], keeps the channel id when it ends.
+    Swallow,
+}
+
+/// A fault-injection hook; see [`GatewayBuilder::intercept`].
+type Interceptor = Box<dyn FnMut(&Inbound<'_>) -> Verdict + Send>;
+
 /// A snapshot of what the gateway has seen.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GatewayStats {
@@ -84,6 +110,8 @@ pub struct GatewayStats {
     pub services: Vec<ServiceType>,
     /// Datagrams swallowed during an [`Outage`].
     pub outage_dropped: usize,
+    /// Datagrams an [`GatewayBuilder::intercept`] hook swallowed.
+    pub intercepted: usize,
     /// The channel ids granted by successful CONNECTs, in order.
     pub channels: Vec<u8>,
     /// Whether the gateway task has ended.
@@ -100,9 +128,11 @@ pub struct GatewayBuilder {
     idle_timeout: Duration,
     description: Option<Vec<u8>>,
     after_connect: Vec<(Duration, CemiFrame)>,
+    once_after_connect: Vec<(Duration, CemiFrame)>,
     responders: Vec<Responder>,
     devices: Vec<MockDevice>,
     outage: Option<Outage>,
+    interceptors: Vec<Interceptor>,
 }
 
 impl Default for GatewayBuilder {
@@ -116,9 +146,11 @@ impl Default for GatewayBuilder {
             idle_timeout: Duration::from_secs(10),
             description: None,
             after_connect: Vec::new(),
+            once_after_connect: Vec::new(),
             responders: Vec::new(),
             devices: Vec::new(),
             outage: None,
+            interceptors: Vec::new(),
         }
     }
 }
@@ -175,6 +207,18 @@ impl GatewayBuilder {
         self
     }
 
+    /// Push `frame` to the client once, `delay` after the latest CONNECT the
+    /// client keeps: a DISCONNECT or a newer CONNECT before the first of these
+    /// frames goes out restarts the wait. Frames go out in delay order (and in
+    /// configuration order for equal delays), all measured from that CONNECT;
+    /// once the first has gone out the rest follow. Use it for traffic that a
+    /// client's long-lived session should see exactly once, when the client
+    /// opens a short probe connection first.
+    pub fn push_once_after_connect(mut self, delay: Duration, frame: CemiFrame) -> Self {
+        self.once_after_connect.push((delay, frame));
+        self
+    }
+
     /// Add a scripted responder. After the ACK, it sees every frame the client
     /// sends and returns the frames to push back, in order. Responders run
     /// before the device line.
@@ -194,6 +238,20 @@ impl GatewayBuilder {
             after_frame,
             duration,
         });
+        self
+    }
+
+    /// Add a fault-injection hook. It sees every parsed datagram first (after
+    /// it is recorded in [`GatewayStats::services`]) and decides whether the
+    /// gateway serves or swallows it. Use it for faults that depend on the
+    /// traffic: drop the tunnel after the Nth memory frame, stop ACKing until
+    /// the next CONNECT, or black out for a while after a restart. Hooks run in
+    /// the order they were added; the first [`Verdict::Swallow`] wins.
+    pub fn intercept<F>(mut self, hook: F) -> Self
+    where
+        F: FnMut(&Inbound<'_>) -> Verdict + Send + 'static,
+    {
+        self.interceptors.push(Box::new(hook));
         self
     }
 
@@ -230,7 +288,11 @@ impl GatewayBuilder {
             idle_timeout: self.idle_timeout,
             description: self.description,
             after_connect: self.after_connect,
+            once_after_connect: self.once_after_connect,
+            connect_gen: Arc::new(AtomicU64::new(0)),
+            once_done: Arc::new(AtomicBool::new(false)),
             responders: Mutex::new(self.responders),
+            interceptors: Mutex::new(self.interceptors),
             line: Arc::clone(&line),
             sent: Arc::clone(&sent),
             stats: stats_tx,
@@ -348,6 +410,16 @@ impl MockGateway {
         Ok(self.line.lock().map_err(|_| MockError::Poisoned)?.clone())
     }
 
+    /// Runs `f` on the whole device line, e.g. to swap a dead device for a
+    /// factory-fresh spare between two client runs.
+    ///
+    /// # Errors
+    /// Fails when the line lock is poisoned.
+    pub fn with_line<R>(&self, f: impl FnOnce(&mut Vec<MockDevice>) -> R) -> Result<R, MockError> {
+        let mut line = self.line.lock().map_err(|_| MockError::Poisoned)?;
+        Ok(f(&mut line))
+    }
+
     /// Runs `f` on the device currently at `address`.
     ///
     /// # Errors
@@ -406,8 +478,16 @@ struct Server {
     idle_timeout: Duration,
     description: Option<Vec<u8>>,
     after_connect: Vec<(Duration, CemiFrame)>,
+    once_after_connect: Vec<(Duration, CemiFrame)>,
+    /// Bumped on every CONNECT and DISCONNECT; a pending one-shot push
+    /// schedule is dropped when it changes.
+    connect_gen: Arc<AtomicU64>,
+    /// Whether the one-shot push schedule has started sending.
+    once_done: Arc<AtomicBool>,
     // A mutex only to make `Server` `Sync`; the task is its sole user.
     responders: Mutex<Vec<Responder>>,
+    // Likewise.
+    interceptors: Mutex<Vec<Interceptor>>,
     line: Arc<Mutex<Vec<MockDevice>>>,
     sent: Arc<Mutex<Vec<CemiFrame>>>,
     stats: watch::Sender<GatewayStats>,
@@ -486,6 +566,21 @@ impl Server {
         Flow::Continue
     }
 
+    /// Pushes the line's output, sleeping through its pauses.
+    async fn push_out(&mut self, peer: SocketAddr, out: Vec<Out>) -> Flow {
+        for item in out {
+            match item {
+                Out::Frame(frame) => {
+                    if matches!(self.push(peer, &frame).await, Flow::Stop) {
+                        return Flow::Stop;
+                    }
+                }
+                Out::Pause(pause) => tokio::time::sleep(pause).await,
+            }
+        }
+        Flow::Continue
+    }
+
     /// Whether the link is down right now; ends an outage whose time is up
     /// (dropping the old channel and moving to a new channel id).
     fn link_down(&mut self) -> bool {
@@ -504,6 +599,28 @@ impl Server {
         }
     }
 
+    /// Whether an intercept hook swallows this datagram.
+    fn intercepted(&self, service: ServiceType, body: &[u8]) -> bool {
+        let Ok(mut hooks) = self.interceptors.lock() else {
+            return false;
+        };
+        if hooks.is_empty() {
+            return false;
+        }
+        let tunnelled = if service == ServiceType::TunnelingRequest {
+            knxnet::parse_tunneling_request(body).ok()
+        } else {
+            None
+        };
+        let inbound = Inbound {
+            service,
+            cemi: tunnelled.as_ref().map(|tr| &tr.cemi),
+        };
+        hooks
+            .iter_mut()
+            .any(|hook| hook(&inbound) == Verdict::Swallow)
+    }
+
     async fn on_datagram(&mut self, bytes: &[u8], from: SocketAddr) -> Flow {
         let Ok(parsed) = knxnet::parse(bytes) else {
             return Flow::Continue;
@@ -511,6 +628,10 @@ impl Server {
         let service = parsed.service;
         let body = parsed.body.to_vec();
         self.stats.send_modify(|s| s.services.push(service));
+        if self.intercepted(service, &body) {
+            self.stats.send_modify(|s| s.intercepted += 1);
+            return Flow::Continue;
+        }
         if self.link_down() {
             self.stats.send_modify(|s| s.outage_dropped += 1);
             return Flow::Continue;
@@ -548,6 +669,7 @@ impl Server {
                 }
             }
             ServiceType::DisconnectRequest => {
+                self.connect_gen.fetch_add(1, Ordering::SeqCst);
                 let resp = knxnet::disconnect_response(self.channel, 0);
                 let flow = self.send(&resp, from).await;
                 self.stats.send_modify(|s| s.disconnects += 1);
@@ -585,6 +707,9 @@ impl Server {
         let channel = self.channel;
         self.stats.send_modify(|s| s.channels.push(channel));
         self.peer = Some(from);
+        // A fresh tunnel connection: the gateway's send sequence starts at 0, as
+        // on a real KNXnet/IP server.
+        self.gw_seq = 0;
         if !self.after_connect.is_empty() {
             // One task for all scheduled pushes, sorted by delay, so frames with
             // equal delays still go out in the order they were configured.
@@ -595,6 +720,29 @@ impl Server {
                 let start = tokio::time::Instant::now();
                 for (delay, frame) in schedule {
                     tokio::time::sleep_until(start + delay).await;
+                    if tx.send(Command::Push(frame)).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+        let generation = self.connect_gen.fetch_add(1, Ordering::SeqCst) + 1;
+        if !self.once_after_connect.is_empty() && !self.once_done.load(Ordering::SeqCst) {
+            let mut schedule = self.once_after_connect.clone();
+            schedule.sort_by_key(|(delay, _)| *delay);
+            let tx = self.cmd_tx.clone();
+            let current = Arc::clone(&self.connect_gen);
+            let done = Arc::clone(&self.once_done);
+            tokio::spawn(async move {
+                let start = tokio::time::Instant::now();
+                for (i, (delay, frame)) in schedule.into_iter().enumerate() {
+                    tokio::time::sleep_until(start + delay).await;
+                    if i == 0
+                        && (current.load(Ordering::SeqCst) != generation
+                            || done.swap(true, Ordering::SeqCst))
+                    {
+                        return;
+                    }
                     if tx.send(Command::Push(frame)).is_err() {
                         return;
                     }
@@ -643,24 +791,43 @@ impl Server {
         if matches!(self.push_all(from, replies).await, Flow::Stop) {
             return Flow::Stop;
         }
-        let replies = self.line_replies(&tr.cemi);
-        self.push_all(from, replies).await
+        let replies = self.line_output(&tr.cemi);
+        self.push_out(from, replies).await
     }
 
     /// The device line's answers to one client frame.
-    fn line_replies(&self, cemi: &CemiFrame) -> Vec<CemiFrame> {
+    fn line_output(&self, cemi: &CemiFrame) -> Vec<Out> {
         let Ok(mut line) = self.line.lock() else {
             return Vec::new();
         };
-        line_replies(&mut line, cemi)
+        line_output(&mut line, cemi)
     }
+}
+
+/// One item of a line's output: a frame to push, or a pause.
+#[derive(Debug, Clone)]
+pub(crate) enum Out {
+    Frame(CemiFrame),
+    Pause(Duration),
+}
+
+/// The frames of a line's output, dropping pauses. For the secure gateway mock,
+/// which sends its replies as one batch.
+pub(crate) fn line_replies(line: &mut [MockDevice], cemi: &CemiFrame) -> Vec<CemiFrame> {
+    line_output(line, cemi)
+        .into_iter()
+        .filter_map(|out| match out {
+            Out::Frame(frame) => Some(frame),
+            Out::Pause(_) => None,
+        })
+        .collect()
 }
 
 /// The answers of a line of [`MockDevice`]s to one client frame: broadcast
 /// management, connected-mode transport control and the devices' application
 /// answers, each as an `L_Data.ind`. Shared by [`MockGateway`] and the secure
 /// gateway mock.
-pub(crate) fn line_replies(line: &mut [MockDevice], cemi: &CemiFrame) -> Vec<CemiFrame> {
+pub(crate) fn line_output(line: &mut [MockDevice], cemi: &CemiFrame) -> Vec<Out> {
     let tool = cemi.source;
     let mut out = Vec::new();
     match cemi.destination {
@@ -670,11 +837,11 @@ pub(crate) fn line_replies(line: &mut [MockDevice], cemi: &CemiFrame) -> Vec<Cem
             };
             for dev in line.iter_mut() {
                 if let Some((rapci, rdata)) = dev.handle_broadcast(*apci, data) {
-                    out.push(indication(CemiFrame::t_broadcast(
+                    out.push(Out::Frame(indication(CemiFrame::t_broadcast(
                         dev.address,
                         rapci,
                         &rdata,
-                    )));
+                    ))));
                 }
             }
         }
@@ -683,7 +850,9 @@ pub(crate) fn line_replies(line: &mut [MockDevice], cemi: &CemiFrame) -> Vec<Cem
             let Some(dev) = line.iter_mut().find(|d| d.address == dest) else {
                 return out;
             };
-            match tpci::classify(cemi.tpci_octet()) {
+            dev.tool = tool;
+            let kind = tpci::classify(cemi.tpci_octet());
+            match kind {
                 TpciKind::Connect => {
                     dev.send_seq = Some(0);
                     dev.connects += 1;
@@ -694,41 +863,64 @@ pub(crate) fn line_replies(line: &mut [MockDevice], cemi: &CemiFrame) -> Vec<Cem
                     else {
                         return out;
                     };
-                    match dev.handle_request(*apci, data) {
-                        Reaction::Silent => {}
-                        Reaction::Nak => out.push(indication(CemiFrame::t_control(
-                            tool,
-                            dest,
-                            tpci::t_nak(client_seq),
-                        ))),
-                        Reaction::Ack => out.push(indication(CemiFrame::t_control(
-                            tool,
-                            dest,
-                            tpci::t_ack(client_seq),
-                        ))),
-                        Reaction::Answer(rapci, rdata) => {
-                            out.push(indication(CemiFrame::t_control(
-                                tool,
-                                dest,
-                                tpci::t_ack(client_seq),
-                            )));
-                            let seq = dev.send_seq.unwrap_or(0);
-                            out.push(indication(CemiFrame::t_data_connected(
-                                tool,
-                                dest,
-                                tpci::ndt(seq),
-                                rapci,
-                                &rdata,
-                            )));
-                            dev.send_seq = Some((seq + 1) & 0x0f);
-                        }
-                    }
+                    dev.client_seq = client_seq;
+                    dev.request_tpci = cemi.tpci_octet();
+                    let steps = match dev.handle_request(*apci, data) {
+                        Reaction::Silent => Vec::new(),
+                        Reaction::Nak => vec![Step::Nak],
+                        Reaction::Ack => vec![Step::Ack],
+                        Reaction::Answer(rapci, rdata) => vec![Step::Ack, Step::Data(rapci, rdata)],
+                        Reaction::Script(steps) => steps,
+                    };
+                    emit(dev, tool, Some(client_seq), steps, &mut out);
+                    return out;
                 }
                 _ => {}
             }
+            let steps = dev.handle_control(kind);
+            emit(dev, tool, None, steps, &mut out);
         }
     }
     out
+}
+
+/// Turns a device's steps into line output. `client_seq` is the request being
+/// answered; without one, [`Step::Ack`] and [`Step::Nak`] are ignored.
+fn emit(
+    dev: &mut MockDevice,
+    tool: IndividualAddress,
+    client_seq: Option<u8>,
+    steps: Vec<Step>,
+    out: &mut Vec<Out>,
+) {
+    let me = dev.address;
+    for step in steps {
+        let frame = match step {
+            Step::Ack => match client_seq {
+                Some(seq) => CemiFrame::t_control(tool, me, tpci::t_ack(seq)),
+                None => continue,
+            },
+            Step::Nak => match client_seq {
+                Some(seq) => CemiFrame::t_control(tool, me, tpci::t_nak(seq)),
+                None => continue,
+            },
+            Step::Data(apci, data) => {
+                let seq = dev.send_seq.unwrap_or(0);
+                dev.send_seq = Some((seq + 1) & 0x0f);
+                CemiFrame::t_data_connected(tool, me, tpci::ndt(seq), apci, &data)
+            }
+            Step::DataAtSeq(seq, apci, data) => {
+                CemiFrame::t_data_connected(tool, me, tpci::ndt(seq & 0x0f), apci, &data)
+            }
+            Step::Control(octet) => CemiFrame::t_control(tool, me, octet),
+            Step::Frame(frame) => frame,
+            Step::Pause(pause) => {
+                out.push(Out::Pause(pause));
+                continue;
+            }
+        };
+        out.push(Out::Frame(indication(frame)));
+    }
 }
 
 /// Marks a device-originated frame as an `L_Data.ind`, as a real interface

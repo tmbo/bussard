@@ -425,11 +425,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_line_accepts_area_line() {
-        assert_eq!(parse_line("1.1").unwrap(), (1, 1));
-        assert_eq!(parse_line("15.15").unwrap(), (15, 15));
+    fn parse_line_accepts_area_line() -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(parse_line("1.1")?, (1, 1));
+        assert_eq!(parse_line("15.15")?, (15, 15));
         // A full address ignores the device part.
-        assert_eq!(parse_line("2.3.55").unwrap(), (2, 3));
+        assert_eq!(parse_line("2.3.55")?, (2, 3));
+        Ok(())
     }
 
     #[test]
@@ -458,7 +459,7 @@ mod tests {
     use bussard_model::{LoadedDevice, Model};
 
     fn ia(s: &str) -> IndividualAddress {
-        s.parse().unwrap()
+        s.parse().expect("test fixture")
     }
 
     /// Builds a model whose `devices` map contains exactly `addrs`.

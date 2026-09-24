@@ -44,8 +44,7 @@
 //! **The write path is only ever exercised here — never against a live bus.**
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use bussard_download::{apply_tables, compute_tables, discover_table_objects};
@@ -53,11 +52,8 @@ use bussard_mgmt::connection::Layer4Connection;
 use bussard_mgmt::load::{LoadState, WriteError};
 use bussard_model::schema::Link;
 use bussard_model::{GroupAddress, IndividualAddress};
-use bussard_transport::cemi::{Apdu, CemiFrame, Destination, Tpci};
-use bussard_transport::knxnet::{self, ConnectionHeader, ServiceType};
-use bussard_transport::tpci::{self, TpciKind};
+use bussard_testkit::{MockDevice, MockGateway, Reaction, TestResult};
 use bussard_transport::{ConnectionConfig, Transport};
-use tokio::net::UdpSocket;
 
 const CHANNEL: u8 = 0x33;
 
@@ -246,40 +242,15 @@ impl DeviceState {
 
 type Shared = Arc<Mutex<DeviceState>>;
 
-fn ga(s: &str) -> GroupAddress {
-    s.parse().unwrap()
+fn ga(s: &str) -> TestResult<GroupAddress> {
+    Ok(s.parse()?)
 }
 
-fn knxnet_frame(service: ServiceType, body: &[u8]) -> Vec<u8> {
-    let total = (6 + body.len()) as u16;
-    let mut out = Vec::with_capacity(total as usize);
-    out.push(0x06);
-    out.push(0x10);
-    out.extend_from_slice(&(service as u16).to_be_bytes());
-    out.extend_from_slice(&total.to_be_bytes());
-    out.extend_from_slice(body);
-    out
-}
-
-fn connect_response_body(channel: u8, gw: &UdpSocket) -> Vec<u8> {
-    let mut body = vec![channel, 0x00];
-    body.push(0x08);
-    body.push(0x01);
-    body.extend_from_slice(&[127, 0, 0, 1]);
-    body.extend_from_slice(&gw.local_addr().unwrap().port().to_be_bytes());
-    body.extend_from_slice(&[0x04, 0x04, 0x11, 0xFF]);
-    body
-}
-
-async fn push(gw: &UdpSocket, peer: SocketAddr, gw_seq: &mut u8, cemi: &CemiFrame) {
-    let hdr = ConnectionHeader {
-        channel_id: CHANNEL,
-        seq: *gw_seq,
-    };
-    gw.send_to(&knxnet::tunneling_request(hdr, cemi), peer)
-        .await
-        .unwrap();
-    *gw_seq = gw_seq.wrapping_add(1);
+/// Locks the shared device state for a test assertion.
+fn lock(state: &Shared) -> TestResult<MutexGuard<'_, DeviceState>> {
+    state
+        .lock()
+        .map_err(|_| "device state lock poisoned".into())
 }
 
 /// Builds a property-value response payload (4-octet header + data), from the
@@ -315,15 +286,11 @@ fn decode_prop_header(payload: &[u8]) -> Option<(u8, u8, u8, u16)> {
     Some((object_index, pid, count, start))
 }
 
-/// The device's reaction to one management request: answer with an APDU, or NAK
-/// at the transport layer (a refused service).
-enum Reaction {
-    Answer(u16, Vec<u8>),
-    Nak,
-}
-
+/// The device's reaction to one management request: answer with an APDU
+/// ([`Reaction::Answer`]), or NAK at the transport layer (a refused service).
 fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
-    let mut s = state.lock().unwrap();
+    // A poisoned lock only means an assertion panicked elsewhere; keep serving.
+    let mut s = state.lock().unwrap_or_else(PoisonError::into_inner);
 
     // Device descriptor read (empty payload, strict).
     if req_apci & APCI_SELECTOR == A_DEVICE_DESCRIPTOR_READ_SEL && data.is_empty() {
@@ -598,95 +565,6 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
     Reaction::Nak
 }
 
-async fn run_gateway(gw: UdpSocket, address: IndividualAddress, state: Shared) {
-    let mut gw_seq = 0u8;
-    let mut dev_seq = 0u8;
-    loop {
-        let mut buf = [0u8; 1024];
-        let (n, from) =
-            match tokio::time::timeout(Duration::from_secs(30), gw.recv_from(&mut buf)).await {
-                Ok(Ok(v)) => v,
-                _ => return,
-            };
-        let Ok(parsed) = knxnet::parse(&buf[..n]) else {
-            continue;
-        };
-        match parsed.service {
-            ServiceType::ConnectRequest => {
-                let resp = knxnet_frame(
-                    ServiceType::ConnectResponse,
-                    &connect_response_body(CHANNEL, &gw),
-                );
-                gw.send_to(&resp, from).await.unwrap();
-            }
-            ServiceType::ConnectionstateRequest => {
-                gw.send_to(&knxnet::connectionstate_response(CHANNEL, 0), from)
-                    .await
-                    .unwrap();
-            }
-            ServiceType::DisconnectRequest => {
-                gw.send_to(&knxnet::disconnect_response(CHANNEL, 0), from)
-                    .await
-                    .unwrap();
-                return;
-            }
-            ServiceType::TunnelingRequest => {
-                let Ok(tr) = knxnet::parse_tunneling_request(parsed.body) else {
-                    continue;
-                };
-                gw.send_to(
-                    &knxnet::tunneling_ack(tr.header.channel_id, tr.header.seq, 0),
-                    from,
-                )
-                .await
-                .unwrap();
-
-                let cemi = &tr.cemi;
-                let dest = match cemi.destination {
-                    Destination::Individual(ia) => ia,
-                    Destination::Group(_) => continue,
-                };
-                if dest != address {
-                    continue;
-                }
-                let tool = cemi.source;
-                match tpci::classify(cemi.tpci_octet()) {
-                    TpciKind::Connect => dev_seq = 0,
-                    TpciKind::NumberedData(client_seq) => {
-                        let (req_apci, payload) = match (&cemi.tpci, &cemi.apdu) {
-                            (Tpci::Other(_), Apdu::Other { apci, data }) => (*apci, data.clone()),
-                            _ => continue,
-                        };
-                        match handle_request(&state, req_apci, &payload) {
-                            Reaction::Nak => {
-                                let nak =
-                                    CemiFrame::t_control(tool, address, tpci::t_nak(client_seq));
-                                push(&gw, from, &mut gw_seq, &nak).await;
-                            }
-                            Reaction::Answer(rapci, rdata) => {
-                                let ack =
-                                    CemiFrame::t_control(tool, address, tpci::t_ack(client_seq));
-                                push(&gw, from, &mut gw_seq, &ack).await;
-                                let resp = CemiFrame::t_data_connected(
-                                    tool,
-                                    address,
-                                    tpci::ndt(dev_seq),
-                                    rapci,
-                                    &rdata,
-                                );
-                                push(&gw, from, &mut gw_seq, &resp).await;
-                                dev_seq = (dev_seq + 1) & 0x0f;
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
 fn fresh_device(cfg: DeviceCfg) -> Shared {
     // Objects: 0 device, 1 address table, 2 association table, 3 group object.
     // Both table objects start Loaded with an empty (count-word-only) segment,
@@ -716,41 +594,45 @@ fn fresh_device(cfg: DeviceCfg) -> Shared {
     }))
 }
 
-fn model_links() -> Vec<Link> {
+fn model_links() -> TestResult<Vec<Link>> {
     // object 20 → 1/2/0 (send); object 21 → 1/2/1, 1/3/2 (listen).
-    vec![
+    Ok(vec![
         Link {
             object: 20,
             name: None,
-            send: Some(ga("1/2/0")),
+            send: Some(ga("1/2/0")?),
             listen: vec![],
         },
         Link {
             object: 21,
             name: None,
             send: None,
-            listen: vec![ga("1/2/1"), ga("1/3/2")],
+            listen: vec![ga("1/2/1")?, ga("1/3/2")?],
         },
-    ]
+    ])
 }
 
 /// Spins up the gateway and returns a connected [`Transport`] plus the shared
-/// device state.
-async fn setup_cfg(cfg: DeviceCfg) -> (Transport, Shared, tokio::task::JoinHandle<()>) {
-    let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let port = sock.local_addr().unwrap().port();
+/// device state. The mock device's application layer is [`handle_request`],
+/// plugged in as a testkit hook.
+async fn setup_cfg(cfg: DeviceCfg) -> TestResult<(Transport, Shared, MockGateway)> {
     let state = fresh_device(cfg);
-    let addr: IndividualAddress = "1.1.4".parse().unwrap();
-    let handle = tokio::spawn(run_gateway(sock, addr, Arc::clone(&state)));
-    let bus = Transport::connect(&ConnectionConfig::tunnel(
-        format!("127.0.0.1:{port}").parse().unwrap(),
-    ))
-    .await
-    .unwrap();
-    (bus, state, handle)
+    let addr: IndividualAddress = TARGET.parse()?;
+    let model = Arc::clone(&state);
+    let gw = MockGateway::builder()
+        .channel(CHANNEL)
+        .idle_timeout(Duration::from_secs(30))
+        .device(
+            MockDevice::new(addr)
+                .with_hook(move |_, apci, data| Some(handle_request(&model, apci, data))),
+        )
+        .start()
+        .await?;
+    let bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
+    Ok((bus, state, gw))
 }
 
-async fn setup(fault: Fault) -> (Transport, Shared, tokio::task::JoinHandle<()>) {
+async fn setup(fault: Fault) -> TestResult<(Transport, Shared, MockGateway)> {
     setup_cfg(DeviceCfg {
         fault,
         ..DeviceCfg::default()
@@ -764,31 +646,31 @@ const SOURCE: &str = "0.0.255";
 /// Runs the full apply against a configured device and returns the result.
 async fn run_apply(
     cfg: DeviceCfg,
-) -> (
+) -> TestResult<(
     Result<bussard_download::VerifyOutcome, WriteError>,
     Shared,
-    tokio::task::JoinHandle<()>,
-) {
-    let (mut bus, state, handle) = setup_cfg(cfg).await;
-    let target: IndividualAddress = TARGET.parse().unwrap();
-    let source: IndividualAddress = SOURCE.parse().unwrap();
+    MockGateway,
+)> {
+    let (mut bus, state, handle) = setup_cfg(cfg).await?;
+    let target: IndividualAddress = TARGET.parse()?;
+    let source: IndividualAddress = SOURCE.parse()?;
 
-    let desired = compute_tables(&model_links());
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
-    let objects = discover_table_objects(&mut l4).await.unwrap();
+    let desired = compute_tables(&model_links()?);
+    let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let objects = discover_table_objects(&mut l4).await?;
     let outcome = apply_tables(&mut l4, objects, &desired).await;
     let _ = l4.disconnect().await;
-    (outcome, state, handle)
+    Ok((outcome, state, handle))
 }
 
 /// Asserts the device holds exactly the desired table images (count word +
 /// elements) in the segments it allocated.
-fn assert_stored_images(state: &Shared, desired: &bussard_download::DesiredTables) {
-    let s = state.lock().unwrap();
-    let addr_image = s.table_image(OBJ_ADDRESS).expect("address segment");
-    let assoc_image = s.table_image(OBJ_ASSOCIATION).expect("association segment");
+fn assert_stored_images(state: &Shared, desired: &bussard_download::DesiredTables) -> TestResult {
+    let s = lock(state)?;
+    let addr_image = s.table_image(OBJ_ADDRESS).ok_or("address segment")?;
+    let assoc_image = s
+        .table_image(OBJ_ASSOCIATION)
+        .ok_or("association segment")?;
 
     let mut want_addr = (desired.addresses.len() as u16).to_be_bytes().to_vec();
     want_addr.extend_from_slice(&desired.address_elements());
@@ -797,13 +679,14 @@ fn assert_stored_images(state: &Shared, desired: &bussard_download::DesiredTable
 
     assert_eq!(addr_image, want_addr, "stored address-table image");
     assert_eq!(assoc_image, want_assoc, "stored association-table image");
+    Ok(())
 }
 
 #[tokio::test]
-async fn apply_happy_path_writes_verifies_and_loads() {
-    let (outcome, state, handle) = run_apply(DeviceCfg::default()).await;
-    let outcome = outcome.expect("apply must succeed");
-    let desired = compute_tables(&model_links());
+async fn apply_happy_path_writes_verifies_and_loads() -> TestResult {
+    let (outcome, state, handle) = run_apply(DeviceCfg::default()).await?;
+    let outcome = outcome?;
+    let desired = compute_tables(&model_links()?);
 
     assert!(outcome.ok(), "apply must verify: {outcome:?}");
     assert_eq!(outcome.address_state, LoadState::Loaded);
@@ -811,17 +694,18 @@ async fn apply_happy_path_writes_verifies_and_loads() {
     assert!(outcome.addresses_match);
     assert!(outcome.associations_match);
 
-    assert_stored_images(&state, &desired);
+    assert_stored_images(&state, &desired)?;
     assert_eq!(
-        state.lock().unwrap().table_property_writes,
+        lock(&state)?.table_property_writes,
         0,
         "a real device refuses PID_TABLE writes; the tool must never send one"
     );
-    handle.abort();
+    drop(handle);
+    Ok(())
 }
 
 #[tokio::test]
-async fn apply_uses_extended_memory_for_a_segment_above_16_bits() {
+async fn apply_uses_extended_memory_for_a_segment_above_16_bits() -> TestResult {
     // The real 07B0 actuators place their segments above 0xFFFF, where the plain
     // A_Memory_Write cannot reach. The same apply must run over
     // A_MemoryExtended_Write and verify identically.
@@ -829,14 +713,14 @@ async fn apply_uses_extended_memory_for_a_segment_above_16_bits() {
         segment_base: 0x01_0000,
         ..DeviceCfg::default()
     };
-    let (outcome, state, handle) = run_apply(cfg).await;
-    let outcome = outcome.expect("apply over extended memory must succeed");
+    let (outcome, state, handle) = run_apply(cfg).await?;
+    let outcome = outcome?;
     assert!(outcome.ok(), "apply must verify: {outcome:?}");
 
-    let desired = compute_tables(&model_links());
-    assert_stored_images(&state, &desired);
+    let desired = compute_tables(&model_links()?);
+    assert_stored_images(&state, &desired)?;
     {
-        let s = state.lock().unwrap();
+        let s = lock(&state)?;
         assert!(
             s.ops
                 .iter()
@@ -844,12 +728,12 @@ async fn apply_uses_extended_memory_for_a_segment_above_16_bits() {
             "the segment above 0xFFFF must be written through extended memory"
         );
     }
-    handle.abort();
+    drop(handle);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_apply_tables_negotiates_max_apdu_before_the_first_table_write()
--> Result<(), Box<dyn std::error::Error>> {
+async fn test_apply_tables_negotiates_max_apdu_before_the_first_table_write() -> TestResult {
     // ETS reads obj0/PID_MAX_APDU_LENGTH first and then writes 228-octet
     // A_MemoryExtended_Write chunks (issue #116). Without the read, the
     // association table went out in 12-octet chunks.
@@ -858,11 +742,11 @@ async fn test_apply_tables_negotiates_max_apdu_before_the_first_table_write()
         max_apdu: Some(233),
         ..DeviceCfg::default()
     };
-    let (outcome, state, handle) = run_apply(cfg).await;
+    let (outcome, state, handle) = run_apply(cfg).await?;
     let outcome = outcome?;
     assert!(outcome.ok(), "apply must verify: {outcome:?}");
     {
-        let s = state.lock().map_err(|e| e.to_string())?;
+        let s = lock(&state)?;
         let first_write = s
             .ops
             .iter()
@@ -897,12 +781,12 @@ async fn test_apply_tables_negotiates_max_apdu_before_the_first_table_write()
             "chunks must scale past the standard-frame floor: {writes:?}"
         );
     }
-    handle.abort();
+    drop(handle);
     Ok(())
 }
 
 #[tokio::test]
-async fn apply_verifies_through_memory_when_pid_table_reads_are_unavailable() {
+async fn apply_verifies_through_memory_when_pid_table_reads_are_unavailable() -> TestResult {
     // A device that serves no PID_TABLE property read at all forces the read-back
     // onto PID_TABLE_REFERENCE + memory. Both paths must produce the same bytes,
     // so the verification outcome is identical.
@@ -910,32 +794,34 @@ async fn apply_verifies_through_memory_when_pid_table_reads_are_unavailable() {
         table_property_reads: false,
         ..DeviceCfg::default()
     };
-    let (outcome, state, handle) = run_apply(cfg).await;
-    let outcome = outcome.expect("apply must succeed on the memory read-back path");
+    let (outcome, state, handle) = run_apply(cfg).await?;
+    let outcome = outcome?;
     assert!(outcome.ok(), "apply must verify via memory: {outcome:?}");
 
-    let desired = compute_tables(&model_links());
-    assert_stored_images(&state, &desired);
-    handle.abort();
+    let desired = compute_tables(&model_links()?);
+    assert_stored_images(&state, &desired)?;
+    drop(handle);
+    Ok(())
 }
 
 #[tokio::test]
-async fn apply_reports_load_error_after_completed() {
+async fn apply_reports_load_error_after_completed() -> TestResult {
     let (outcome, _state, handle) = run_apply(DeviceCfg {
         fault: Fault::ErrorOnAssocComplete,
         ..DeviceCfg::default()
     })
-    .await;
+    .await?;
     let err = outcome.expect_err("a load Error must surface");
     assert!(
         matches!(err, WriteError::LoadError { .. }),
         "expected LoadError, got {err:?}"
     );
-    handle.abort();
+    drop(handle);
+    Ok(())
 }
 
 #[tokio::test]
-async fn apply_fails_when_the_device_refuses_the_segment_allocation() {
+async fn apply_fails_when_the_device_refuses_the_segment_allocation() -> TestResult {
     // A device whose maximum table length is smaller than the image drops the
     // object into Error on the LdCtrlRelSegment write. `allocate_segment` reads
     // the state back and must fail the apply loudly.
@@ -943,48 +829,50 @@ async fn apply_fails_when_the_device_refuses_the_segment_allocation() {
         max_segment_size: 4,
         ..DeviceCfg::default()
     })
-    .await;
+    .await?;
     let err = outcome.expect_err("a refused allocation must surface");
     assert!(
         matches!(err, WriteError::LoadError { .. }),
         "expected LoadError from the refused allocation, got {err:?}"
     );
     {
-        let s = state.lock().unwrap();
+        let s = lock(&state)?;
         assert!(
             !s.ops.iter().any(|op| matches!(op, Op::MemWrite { .. })),
             "no table image may be written after a refused allocation: {:?}",
             s.ops
         );
     }
-    handle.abort();
+    drop(handle);
+    Ok(())
 }
 
 #[tokio::test]
-async fn apply_aborts_when_the_memory_write_is_refused() {
+async fn apply_aborts_when_the_memory_write_is_refused() -> TestResult {
     let (outcome, _state, handle) = run_apply(DeviceCfg {
         fault: Fault::NakMemoryWrite,
         ..DeviceCfg::default()
     })
-    .await;
+    .await?;
     let err = outcome.expect_err("a refused memory write must abort the apply");
     // A NAK tears the connection down → a Mgmt(Nak/Disconnected) error.
     assert!(
         matches!(err, WriteError::Mgmt(_)),
         "expected a Mgmt error from the refused memory write, got {err:?}"
     );
-    handle.abort();
+    drop(handle);
+    Ok(())
 }
 
 #[tokio::test]
-async fn apply_drives_the_ets_op_sequence_and_never_writes_pid_table() {
-    let (outcome, state, handle) = run_apply(DeviceCfg::default()).await;
-    outcome.expect("apply must succeed");
+async fn apply_drives_the_ets_op_sequence_and_never_writes_pid_table() -> TestResult {
+    let (outcome, state, handle) = run_apply(DeviceCfg::default()).await?;
+    outcome?;
 
-    let desired = compute_tables(&model_links());
+    let desired = compute_tables(&model_links()?);
     let addr_size = (2 + desired.address_elements().len()) as u32;
     let assoc_size = (2 + desired.association_elements().len()) as u32;
-    let ops = state.lock().unwrap().ops.clone();
+    let ops = lock(&state)?.ops.clone();
 
     // 1..4: open both objects, each followed immediately by its allocation —
     // association first, address second (the ordering `apply_tables` documents).
@@ -1037,7 +925,7 @@ async fn apply_drives_the_ets_op_sequence_and_never_writes_pid_table() {
     let split = written
         .iter()
         .position(|&(a, _)| a >= assoc_base)
-        .expect("the association image must be written");
+        .ok_or("the association image must be written")?;
     assert!(
         written[..split]
             .iter()
@@ -1061,28 +949,28 @@ async fn apply_drives_the_ets_op_sequence_and_never_writes_pid_table() {
         !ops.iter().any(|op| matches!(op, Op::TablePropertyWrite(_))),
         "apply must never write PID_TABLE: {ops:?}"
     );
-    assert_eq!(state.lock().unwrap().table_property_writes, 0);
-    handle.abort();
+    assert_eq!(lock(&state)?.table_property_writes, 0);
+    drop(handle);
+    Ok(())
 }
 
 #[tokio::test]
-async fn plan_only_read_touches_no_load_state() {
-    let (mut bus, state, handle) = setup(Fault::None).await;
-    let target: IndividualAddress = TARGET.parse().unwrap();
-    let source: IndividualAddress = SOURCE.parse().unwrap();
+async fn plan_only_read_touches_no_load_state() -> TestResult {
+    let (mut bus, state, handle) = setup(Fault::None).await?;
+    let target: IndividualAddress = TARGET.parse()?;
+    let source: IndividualAddress = SOURCE.parse()?;
 
     // A plan is a read-only `read_tables` — it must never write a load control.
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
-    let _ = bussard_mgmt::tables::read_tables(&mut l4).await.unwrap();
+    let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let _ = bussard_mgmt::tables::read_tables(&mut l4).await?;
     let _ = l4.disconnect().await;
 
-    let s = state.lock().unwrap();
+    let s = lock(&state)?;
     assert_eq!(
         s.control_writes, 0,
         "a plan-only read must not write any load-state control"
     );
     assert!(s.ops.is_empty(), "a plan-only read performs no write op");
-    handle.abort();
+    drop(handle);
+    Ok(())
 }

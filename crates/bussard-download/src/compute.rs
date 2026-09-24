@@ -696,7 +696,7 @@ mod tests {
     use super::*;
 
     fn ga(s: &str) -> GroupAddress {
-        s.parse().unwrap()
+        s.parse().expect("a valid test group address")
     }
 
     fn link(object: u16, send: Option<&str>, listen: &[&str]) -> Link {
@@ -818,7 +818,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_group_object_table_places_by_asap() {
+    fn test_compute_group_object_table_places_by_asap() -> Result<(), Box<dyn std::error::Error>> {
         use bussard_model::Flags;
         // Objects 1 and 3 present, object 2 absent (a gap, zero-filled).
         let descs = [
@@ -835,13 +835,14 @@ mod tests {
                 priority: Priority::Low,
             },
         ];
-        let table = compute_group_object_table(&descs).unwrap();
+        let table = compute_group_object_table(&descs).ok_or("the group object table computes")?;
         // count word = 3 (max asap), then 3 descriptor words in the System B bit
         // layout (C=bit10, W=bit12, T=bit14; priority Low=0b11 in bits 8-9).
         // obj1: C|W|Low -> bit10|bit12|(3<<8) = 0x1400|0x0300 = 0x1700, size 0.
         // obj2: absent -> 0x0000.
         // obj3: C|T|Low -> bit10|bit14|(3<<8) = 0x4400|0x0300 = 0x4700, size 7.
         assert_eq!(table, vec![0x00, 0x03, 0x17, 0x00, 0x00, 0x00, 0x47, 0x07]);
+        Ok(())
     }
 
     /// The DA.tp (KNX Virtual "Dimming") reference: bussard's group-object table
@@ -857,7 +858,8 @@ mod tests {
     /// so Communication is cleared (Write/size retained). Priority is Low
     /// throughout. Max ASAP = 73.
     #[test]
-    fn test_compute_group_object_table_matches_ets_da_tp() {
+    fn test_compute_group_object_table_matches_ets_da_tp() -> Result<(), Box<dyn std::error::Error>>
+    {
         use bussard_model::Flags;
         let cw = Flags::COMMUNICATION | Flags::WRITE;
         let ct = Flags::COMMUNICATION | Flags::TRANSMIT;
@@ -882,7 +884,7 @@ mod tests {
             descs.push(d(base + 1, w, 3)); // Dimming Control, 4 bit
             descs.push(d(base + 2, w, 7)); // Dimming Value, 1 byte
         }
-        let table = compute_group_object_table(&descs).unwrap();
+        let table = compute_group_object_table(&descs).ok_or("the group object table computes")?;
 
         // The exact 148 bytes ETS wrote to obj3 @0x8000 (count word 0x0049 = 73,
         // then 73 big-endian descriptor words).
@@ -901,6 +903,7 @@ mod tests {
         ];
         assert_eq!(table.len(), 148);
         assert_eq!(table, ets);
+        Ok(())
     }
 
     /// The exact 148 bytes ETS wrote to obj3 @0x8000 for the DA.tp device (count

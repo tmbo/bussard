@@ -8,7 +8,6 @@
 //! `"unsecured_management": "refused"` in `--json`), not as a device with no
 //! objects.
 
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
@@ -16,10 +15,7 @@ use std::time::Duration;
 use bussard_mgmt::apci;
 use bussard_mgmt::tables::{OT_ADDRESS_TABLE, OT_DEVICE, PID_OBJECT_TYPE};
 use bussard_model::IndividualAddress;
-use bussard_transport::cemi::{Apdu, CemiFrame, Destination, Tpci};
-use bussard_transport::knxnet::{self, ConnectionHeader, ServiceType};
-use bussard_transport::tpci::{self, TpciKind};
-use tokio::net::UdpSocket;
+use bussard_testkit::{MockGateway, Reaction};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -35,41 +31,6 @@ struct MockDevice {
     object_types: Vec<u16>,
 }
 
-fn knxnet_frame(service: ServiceType, body: &[u8]) -> Vec<u8> {
-    let total = (6 + body.len()) as u16;
-    let mut out = Vec::with_capacity(total as usize);
-    out.push(0x06);
-    out.push(0x10);
-    out.extend_from_slice(&(service as u16).to_be_bytes());
-    out.extend_from_slice(&total.to_be_bytes());
-    out.extend_from_slice(body);
-    out
-}
-
-fn connect_response_body(channel: u8, gw: &UdpSocket) -> std::io::Result<Vec<u8>> {
-    let mut body = vec![channel, 0x00, 0x08, 0x01];
-    body.extend_from_slice(&[127, 0, 0, 1]);
-    body.extend_from_slice(&gw.local_addr()?.port().to_be_bytes());
-    body.extend_from_slice(&[0x04, 0x04, 0x11, 0xFF]);
-    Ok(body)
-}
-
-async fn push(
-    gw: &UdpSocket,
-    peer: SocketAddr,
-    gw_seq: &mut u8,
-    cemi: &CemiFrame,
-) -> std::io::Result<()> {
-    let hdr = ConnectionHeader {
-        channel_id: CHANNEL,
-        seq: *gw_seq,
-    };
-    gw.send_to(&knxnet::tunneling_request(hdr, cemi), peer)
-        .await?;
-    *gw_seq = gw_seq.wrapping_add(1);
-    Ok(())
-}
-
 fn property_response(object_index: u8, pid: u8, count: u8, start: u16, data: &[u8]) -> Vec<u8> {
     let mut resp = vec![
         object_index,
@@ -81,11 +42,7 @@ fn property_response(object_index: u8, pid: u8, count: u8, start: u16, data: &[u
     resp
 }
 
-fn device_response(dev: &MockDevice, cemi: &CemiFrame) -> Option<(u16, Vec<u8>)> {
-    let (req_apci, data) = match (&cemi.tpci, &cemi.apdu) {
-        (Tpci::Other(_), Apdu::Other { apci, data }) => (*apci, data.clone()),
-        _ => return None,
-    };
+fn device_response(dev: &MockDevice, req_apci: u16, data: &[u8]) -> Option<(u16, Vec<u8>)> {
     match req_apci {
         apci::A_AUTHORIZE_REQUEST => Some((apci::A_AUTHORIZE_RESPONSE, vec![0x00])),
         apci::A_DEVICE_DESCRIPTOR_READ if data.is_empty() => Some((
@@ -93,7 +50,7 @@ fn device_response(dev: &MockDevice, cemi: &CemiFrame) -> Option<(u16, Vec<u8>)>
             0x07B0u16.to_be_bytes().to_vec(),
         )),
         apci::A_PROPERTY_VALUE_READ => {
-            let pv = apci::decode_property_value_read(&data)?;
+            let pv = apci::decode_property_value_read(data)?;
             let empty = property_response(pv.object_index, pv.property_id, 0, pv.start, &[]);
             let resp = if pv.object_index == 0 && pv.property_id == apci::PID_MAX_APDU_LENGTH {
                 // Answered even by an activated device (the ETS capture in #155).
@@ -127,77 +84,15 @@ fn device_response(dev: &MockDevice, cemi: &CemiFrame) -> Option<(u16, Vec<u8>)>
     }
 }
 
-/// Runs the mock gateway until the client disconnects or it goes idle.
-async fn run_gateway(gw: UdpSocket, device: MockDevice) -> std::io::Result<()> {
-    let mut gw_seq = 0u8;
-    let mut dev_seq = 0u8;
-    loop {
-        let mut buf = [0u8; 1024];
-        let (n, from) =
-            match tokio::time::timeout(Duration::from_secs(30), gw.recv_from(&mut buf)).await {
-                Ok(Ok(v)) => v,
-                _ => return Ok(()),
-            };
-        let Ok(parsed) = knxnet::parse(&buf[..n]) else {
-            continue;
-        };
-        match parsed.service {
-            ServiceType::ConnectRequest => {
-                let body = connect_response_body(CHANNEL, &gw)?;
-                gw.send_to(&knxnet_frame(ServiceType::ConnectResponse, &body), from)
-                    .await?;
-            }
-            ServiceType::ConnectionstateRequest => {
-                gw.send_to(&knxnet::connectionstate_response(CHANNEL, 0), from)
-                    .await?;
-            }
-            ServiceType::DisconnectRequest => {
-                gw.send_to(&knxnet::disconnect_response(CHANNEL, 0), from)
-                    .await?;
-                return Ok(());
-            }
-            ServiceType::TunnelingRequest => {
-                let Ok(tr) = knxnet::parse_tunneling_request(parsed.body) else {
-                    continue;
-                };
-                gw.send_to(
-                    &knxnet::tunneling_ack(tr.header.channel_id, tr.header.seq, 0),
-                    from,
-                )
-                .await?;
-                let cemi = &tr.cemi;
-                let dest = match cemi.destination {
-                    Destination::Individual(ia) => ia,
-                    Destination::Group(_) => continue,
-                };
-                if dest != device.address {
-                    continue;
-                }
-                let tool = cemi.source;
-                match tpci::classify(cemi.tpci_octet()) {
-                    TpciKind::Connect => dev_seq = 0,
-                    TpciKind::NumberedData(client_seq) => {
-                        let ack =
-                            CemiFrame::t_control(tool, device.address, tpci::t_ack(client_seq));
-                        push(&gw, from, &mut gw_seq, &ack).await?;
-                        if let Some((rapci, rdata)) = device_response(&device, cemi) {
-                            let resp = CemiFrame::t_data_connected(
-                                tool,
-                                device.address,
-                                tpci::ndt(dev_seq),
-                                rapci,
-                                &rdata,
-                            );
-                            push(&gw, from, &mut gw_seq, &resp).await?;
-                            dev_seq = (dev_seq + 1) & 0x0f;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            _ => {}
-        }
-    }
+/// Puts `device` on a testkit gateway line: every numbered request is
+/// `T_ACK`ed, then answered when [`device_response`] has an answer.
+fn gateway_device(device: MockDevice) -> bussard_testkit::MockDevice {
+    bussard_testkit::MockDevice::new(device.address).with_hook(move |_, apci, data| {
+        Some(match device_response(&device, apci, data) {
+            Some((rapci, rdata)) => Reaction::Answer(rapci, rdata),
+            None => Reaction::Ack,
+        })
+    })
 }
 
 /// A scratch model directory, removed on drop.
@@ -235,13 +130,14 @@ impl Drop for TempModel {
 /// Starts the mock gateway for `device` and runs `bussard describe 1.1.12`.
 fn describe_against(device: MockDevice, model_dir: &Path, extra: &[&str]) -> TestResult<Output> {
     let rt = tokio::runtime::Runtime::new()?;
-    let (gw, port) = rt.block_on(async {
-        let sock = UdpSocket::bind("127.0.0.1:0").await?;
-        let port = sock.local_addr()?.port();
-        Ok::<_, std::io::Error>((sock, port))
-    })?;
-    let handle = rt.spawn(run_gateway(gw, device));
-    let gateway = format!("127.0.0.1:{port}");
+    let gw = rt.block_on(
+        MockGateway::builder()
+            .channel(CHANNEL)
+            .idle_timeout(Duration::from_secs(30))
+            .device(gateway_device(device))
+            .start(),
+    )?;
+    let gateway = format!("127.0.0.1:{}", gw.port());
     let dir = model_dir.to_str().ok_or("non-UTF-8 temp dir")?;
     let mut args = vec!["describe", "1.1.12", "--dir", dir, "--gateway", &gateway];
     args.extend_from_slice(extra);
@@ -250,7 +146,7 @@ fn describe_against(device: MockDevice, model_dir: &Path, extra: &[&str]) -> Tes
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()?;
-    rt.block_on(async { handle.abort() });
+    drop(gw);
     Ok(output)
 }
 

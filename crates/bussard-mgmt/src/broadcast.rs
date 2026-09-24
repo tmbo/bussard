@@ -186,19 +186,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn recognises_individual_address_response() {
-        let frame = CemiFrame::t_broadcast(
-            "1.1.4".parse().unwrap(),
-            apci::A_INDIVIDUAL_ADDRESS_RESPONSE,
-            &[],
-        );
+    fn recognises_individual_address_response()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let frame =
+            CemiFrame::t_broadcast("1.1.4".parse()?, apci::A_INDIVIDUAL_ADDRESS_RESPONSE, &[]);
         assert!(is_individual_address_response(&frame));
 
-        let other = CemiFrame::t_broadcast(
-            "1.1.4".parse().unwrap(),
-            apci::A_INDIVIDUAL_ADDRESS_READ,
-            &[],
-        );
+        let other = CemiFrame::t_broadcast("1.1.4".parse()?, apci::A_INDIVIDUAL_ADDRESS_READ, &[]);
         assert!(!is_individual_address_response(&other));
+        Ok(())
     }
 }
