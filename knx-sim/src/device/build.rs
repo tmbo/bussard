@@ -360,3 +360,40 @@ impl Device {
         device
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::bus::event::RecordingSink;
+    use crate::device::profile::LsmAccess;
+    use crate::device::test_support::*;
+    use crate::device::*;
+
+    #[test]
+    fn test_sys7_profile_selected_from_product_mask() {
+        let dev = sys7_device(LsmAccess::MemoryMapped);
+        assert!(dev.profile().is_system7());
+        assert_eq!(dev.profile().mask(), 0x0705);
+        // The three canonical LSMs exist and start Unloaded.
+        for lsm in [1u8, 2, 3] {
+            assert_eq!(dev.load_state(lsm), Some(LoadState::Unloaded));
+        }
+    }
+
+    #[test]
+    fn test_unmodelled_mask_override_is_refused() {
+        // A mask override to an unmodelled family is refused — a strict
+        // simulator will not pretend to be a device generation it lacks.
+        let product = crate::testfixtures::synthetic_mdt_sys7_product();
+        let err = Device::from_product_with_overrides(
+            IndividualAddress::new(1, 1, 5),
+            &product,
+            LoadState::Unloaded,
+            ProfileOverrides {
+                mask: Some("0012".into()),
+                ..Default::default()
+            },
+            std::sync::Arc::new(RecordingSink::new()),
+        );
+        assert!(err.is_err(), "unmodelled mask must be refused");
+    }
+}

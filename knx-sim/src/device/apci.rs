@@ -254,3 +254,21 @@ impl Device {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::device::test_support::*;
+
+    #[test]
+    fn test_authorize_unlocks() -> Result<(), Box<dyn std::error::Error>> {
+        let Some(mut dev) = da_tp_device()? else {
+            return Ok(());
+        };
+        connect(&mut dev)?;
+        let auth = data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]);
+        let r = dev.handle_cemi(&auth)?;
+        assert_eq!(r.responses.len(), 1);
+        assert_eq!(dev.access_level, 0);
+        Ok(())
+    }
+}

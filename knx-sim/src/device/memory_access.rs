@@ -222,3 +222,44 @@ impl Device {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::device::test_support::*;
+    use crate::device::*;
+
+    #[test]
+    fn test_memory_write_without_auth_rejected() -> Result<(), Box<dyn std::error::Error>> {
+        let Some(mut dev) = da_tp_device()? else {
+            return Ok(());
+        };
+        connect(&mut dev)?;
+        // Start loading object 4 needs auth too; write should be rejected as
+        // unauthorized before any load state work.
+        let mw = data(&dev, 0x280 | 4, &[0x60, 0x00, 1, 2, 3, 4]);
+        assert!(matches!(
+            dev.handle_cemi(&mw),
+            Err(DeviceError::Unauthorized { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn test_memory_write_to_wrong_base_rejected() -> Result<(), Box<dyn std::error::Error>> {
+        let Some(mut dev) = da_tp_device()? else {
+            return Ok(());
+        };
+        connect(&mut dev)?;
+        dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
+        dev.handle_cemi(&data(&dev, 0x3D7, &[0x04, 0x05, 0x10, 0x01, 0x01]))?;
+        dev.handle_cemi(&data(
+            &dev,
+            0x3D7,
+            &[0x04, 0x05, 0x10, 0x01, 0x03, 0x0b, 0x00, 0x00, 0x01, 0x00],
+        ))?;
+        // Write to 0x8000 (com-object base) while only obj4@0x6000 is open.
+        let mw = data(&dev, 0x280 | 4, &[0x80, 0x00, 1, 2, 3, 4]);
+        assert!(dev.handle_cemi(&mw).is_err());
+        Ok(())
+    }
+}

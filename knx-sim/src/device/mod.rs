@@ -24,6 +24,8 @@ mod secure_group;
 pub mod security_object;
 mod sys7_group_comm;
 pub mod sys7_lsm;
+#[cfg(test)]
+mod test_support;
 mod transport;
 
 pub use group_comm::{ComObject, GroupComm, flag};
@@ -592,4 +594,70 @@ impl Device {
 }
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    use super::*;
+    use crate::device::test_support::*;
+
+    #[test]
+    fn test_individual_address_response_only_when_in_prog_mode()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // A device NOT in programming mode is silent to the broadcast read.
+        let quiet = prog_device(false)?;
+        assert!(quiet.individual_address_response().is_none());
+
+        // A device in programming mode answers with an A_IndividualAddress_Response
+        // whose source is its own address and dest is the broadcast group 0/0/0.
+        let programming = prog_device(true)?;
+        let resp = programming
+            .individual_address_response()
+            .ok_or("device in prog mode must answer")?;
+        assert_eq!(resp.message_code, MessageCode::LDataInd);
+        assert_eq!(resp.source, IndividualAddress::new(1, 1, 2));
+        assert_eq!(resp.dest, 0x0000);
+        assert!(resp.is_group(), "broadcast frames carry the group bit");
+        let apci10 = ((resp.tpdu[0] as u16 & 0x03) << 8) | resp.tpdu[1] as u16;
+        assert_eq!(Apci::from_u10(apci10), Apci::IndividualAddressResponse);
+        Ok(())
+    }
+
+    #[test]
+    fn test_pid_progmode_write_toggles_prog_mode() -> Result<(), Box<dyn std::error::Error>> {
+        // Writing PID_PROGMODE over the wire (as ETS/`bussard assign` do) flips the
+        // runtime bit: 1 enters programming mode, 0 leaves it.
+        let mut dev = prog_device(false)?;
+        connect(&mut dev)?;
+        // Authorize (free access) so property writes are accepted.
+        dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
+        assert!(!dev.prog_mode());
+
+        // A_PropertyValue_Write obj0 PID_PROGMODE count=1 start=1 value=01.
+        dev.handle_cemi(&data(&dev, 0x3D7, &[0x00, PID_PROGMODE, 0x10, 0x01, 0x01]))?;
+        assert!(dev.prog_mode(), "writing PID_PROGMODE=1 enters prog mode");
+        assert!(
+            dev.individual_address_response().is_some(),
+            "now answers the broadcast read"
+        );
+
+        // Writing 0 leaves programming mode again (how `assign` clears it).
+        dev.handle_cemi(&data(&dev, 0x3D7, &[0x00, PID_PROGMODE, 0x10, 0x01, 0x00]))?;
+        assert!(!dev.prog_mode(), "writing PID_PROGMODE=0 leaves prog mode");
+        assert!(dev.individual_address_response().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_prog_mode_syncs_property() -> Result<(), Box<dyn std::error::Error>> {
+        // The programmatic toggle updates both the bit and the PID_PROGMODE
+        // property value so a subsequent property read agrees.
+        let mut dev = prog_device(false)?;
+        dev.set_prog_mode(true);
+        assert!(dev.prog_mode());
+        let prop = dev
+            .objects
+            .get(&0)
+            .and_then(|io| io.property(PID_PROGMODE))
+            .ok_or("device object has PID_PROGMODE")?;
+        assert_eq!(prop.value, vec![0x01]);
+        Ok(())
+    }
+}

@@ -301,3 +301,269 @@ impl Device {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::device::test_support::*;
+    use crate::device::*;
+
+    #[test]
+    fn test_object_type_discovery_returns_iot_per_index() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // A tool discovers the interface-object table by reading PID_OBJECT_TYPE
+        // (PID 1) on each object index. The device must report each object's
+        // IOT: [0:device, 1:address-table, 2:association-table,
+        // 3:group-object-table, 4:application-program]. The object that owns the
+        // application code segment (LSM index 4 at base 0x6000) is the
+        // application-program object (type 3), and the com-object table (LSM index
+        // 3 at 0x8000) is the group-object-table object (type 9) — so a tool's
+        // MCB image-integrity read lands on the object that actually holds each
+        // segment.
+        let Some(mut dev) = da_tp_device()? else {
+            return Ok(());
+        };
+        connect(&mut dev)?;
+        let expected: [(u8, u16); 5] = [
+            (0, iot::DEVICE),
+            (1, iot::ADDRESS_TABLE),
+            (2, iot::ASSOCIATION_TABLE),
+            (3, iot::GROUP_OBJECT_TABLE),
+            (4, iot::APPLICATION_PROGRAM),
+        ];
+        for (object, want) in expected {
+            // A_PropertyValue_Read obj/pid=1/count=1/start=1.
+            let r = dev.handle_cemi(&data(&dev, 0x3D5, &[object, 0x01, 0x10, 0x01]))?;
+            let value = prop_response_value(&r);
+            assert_eq!(
+                value,
+                want.to_be_bytes(),
+                "object {object} reported wrong interface-object type"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_property_read_unknown_object_returns_error_signal()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Reading PID_OBJECT_TYPE past the end of the object table must return
+        // the spec error signal: an A_PropertyValue_Response echoing the header
+        // with nr_of_elem = 0 and no value (not silence), so a probing tool can
+        // detect the table end rather than time out.
+        let Some(mut dev) = da_tp_device()? else {
+            return Ok(());
+        };
+        connect(&mut dev)?;
+        // Object 6 does not exist on the DA.tp device.
+        let r = dev.handle_cemi(&data(&dev, 0x3D5, &[0x06, 0x01, 0x10, 0x01]))?;
+        assert_eq!(r.responses.len(), 1, "must respond, not drop");
+        let resp = &r.responses[0];
+        // TPDU: [tpci][d6][obj=06][pid=01][count|start_hi][start_lo]; count = 0.
+        let count = resp.tpdu[4] >> 4;
+        assert_eq!(count, 0, "unknown property must report nr_of_elem = 0");
+        assert_eq!(resp.tpdu.len(), 6, "error signal carries no value bytes");
+        Ok(())
+    }
+
+    #[test]
+    fn test_property_description_read_by_index_and_terminates()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // A_PropertyDescription_Read on object 0 by index (PID 0): the device
+        // answers each index with a 7-octet descriptor and reports the first
+        // absent index with max_elements == 0 (the enumeration terminator).
+        let Some(mut dev) = da_tp_device()? else {
+            return Ok(());
+        };
+        connect(&mut dev)?;
+        // Object 0 exposes several device-object properties; index 1 is PID 1
+        // (PID_OBJECT_TYPE) since the property map is PID-sorted.
+        let r = dev.handle_cemi(&data(&dev, 0x3D8, &[0x00, 0x00, 0x01]))?;
+        assert_eq!(r.responses.len(), 1, "must respond to a description read");
+        let resp = &r.responses[0];
+        // TPDU: [tpci][apci_lo][obj][pid][index][type][max_hi][max_lo][access].
+        let payload = &resp.tpdu[2..];
+        assert_eq!(payload[0], 0x00, "object index echoed");
+        assert_eq!(payload[1], PID_OBJECT_TYPE, "index 1 is PID_OBJECT_TYPE");
+        assert_eq!(payload[2], 0x01, "property index echoed");
+        // PID_OBJECT_TYPE is read-only → write-enable bit clear, PDT generic.
+        assert_eq!(payload[3] & 0x80, 0, "read-only property");
+        assert_eq!(payload[3] & 0x3F, PDT_GENERIC_01);
+        let max = u16::from_be_bytes([payload[4], payload[5]]);
+        assert_eq!(max, 1, "one element");
+        // read level 3 (high nibble), write level 15 (read-only, low nibble).
+        assert_eq!(payload[6] >> 4, 3);
+        assert_eq!(payload[6] & 0x0F, 15);
+
+        // Walk indices until absence: the device reports max_elements == 0 once
+        // the index runs past the object's property list.
+        let mut last_present = 0u8;
+        for index in 1u8..=32 {
+            let r = dev.handle_cemi(&data(&dev, 0x3D8, &[0x00, 0x00, index]))?;
+            let payload = &r.responses[0].tpdu[2..];
+            let max = u16::from_be_bytes([payload[4], payload[5]]);
+            if max == 0 {
+                break;
+            }
+            last_present = index;
+        }
+        assert!(last_present >= 1, "object 0 has at least one property");
+        Ok(())
+    }
+
+    #[test]
+    fn test_property_description_read_by_pid() -> Result<(), Box<dyn std::error::Error>> {
+        // Addressing by PID (non-zero property_id) returns that PID's descriptor
+        // and reports its 1-based property index. PID_PROGMODE is writable.
+        let Some(mut dev) = da_tp_device()? else {
+            return Ok(());
+        };
+        connect(&mut dev)?;
+        let r = dev.handle_cemi(&data(&dev, 0x3D8, &[0x00, PID_PROGMODE, 0x00]))?;
+        let payload = &r.responses[0].tpdu[2..];
+        assert_eq!(payload[1], PID_PROGMODE, "PID echoed");
+        assert!(payload[2] >= 1, "a real 1-based property index reported");
+        assert_eq!(payload[3] & 0x80, 0x80, "PID_PROGMODE is writable");
+        assert_eq!(payload[6] & 0x0F, 0, "writable → write level 0");
+        Ok(())
+    }
+
+    #[test]
+    fn test_property_description_read_unknown_reports_zero_max()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // A description read for an object that does not exist is answered with a
+        // zero-max descriptor (not silence), matching the value-read error signal.
+        let Some(mut dev) = da_tp_device()? else {
+            return Ok(());
+        };
+        connect(&mut dev)?;
+        let r = dev.handle_cemi(&data(&dev, 0x3D8, &[0x40, 0x00, 0x01]))?;
+        assert_eq!(r.responses.len(), 1, "must respond, not drop");
+        let payload = &r.responses[0].tpdu[2..];
+        let max = u16::from_be_bytes([payload[4], payload[5]]);
+        assert_eq!(max, 0, "unknown object → max_elements 0");
+        Ok(())
+    }
+
+    #[test]
+    fn test_pid_table_property_write_is_refused_with_zero_count()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // A real System B device does not take a loadable table through the
+        // PID_TABLE property array. The Jung F50 52911ST answered this write with
+        // a zero-count A_PropertyValue_Response (issue #89); the simulator models
+        // that, so a tool that skips the allocate + memory-write realisation is
+        // caught here rather than on a real bus.
+        let mut dev = system_b_device()?;
+        connect(&mut dev)?;
+        // Authorize first, so the refusal is about PID 23 and not about access.
+        dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
+        assert_eq!(dev.access_level, 0);
+
+        // A_PropertyValue_Write(object 1, PID 23, count 1, start 1, [0x12, 0x34]).
+        let write = data(&dev, 0x3D7, &[0x01, PID_TABLE, 0x10, 0x01, 0x12, 0x34]);
+        let reaction = dev.handle_cemi(&write)?;
+
+        // A refusal is still an answer, not silence: the tool must be able to
+        // tell "refused" from "dropped telegram".
+        let resp = reaction
+            .responses
+            .first()
+            .ok_or("a refused PID_TABLE write must still be answered")?;
+        let apci10 = ((resp.tpdu[0] as u16 & 0x03) << 8) | resp.tpdu[1] as u16;
+        assert_eq!(Apci::from_u10(apci10), Apci::PropertyValueResponse);
+        assert_eq!(
+            &resp.tpdu[2..],
+            // object, pid, nr_of_elem = 0 in the high nibble | start_hi, start_lo
+            &[0x01, PID_TABLE, 0x00, 0x01],
+            "the header is echoed with nr_of_elem = 0 and no data"
+        );
+
+        // And nothing was stored: no PID 23 appeared on the object, and the write
+        // left the device's memory untouched.
+        assert!(
+            dev.objects
+                .get(&1)
+                .map(|o| o.property(PID_TABLE).is_none())
+                .unwrap_or(true),
+            "a refused write must not create or fill PID_TABLE"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_sys7_pid78_preflight_value_is_readable() -> Result<(), Box<dyn std::error::Error>> {
+        // Object-0 PID 78 (PID_HARDWARE_TYPE) serves the 10-octet preflight
+        // value the MDT CompareProp matches. App 14 seeds byte 5 = 0x0E.
+        let mut dev = sys7_device(LsmAccess::MemoryMapped);
+        connect(&mut dev)?;
+        let r = dev.handle_cemi(&data(&dev, 0x3D5, &[0x00, 0x4E, 0x10, 0x01]))?;
+        let value = prop_response_value(&r);
+        assert_eq!(value.len(), 10, "PID 78 is a 10-octet value");
+        assert_eq!(value[4], 0x03, "byte 4 is the run-state marker");
+        Ok(())
+    }
+
+    #[test]
+    fn test_sys7_serves_mcb_table_after_load() -> Result<(), Box<dyn std::error::Error>> {
+        // A System 7 device serves PID_MCB_TABLE (27) per loadable object,
+        // computed over the written segment memory (Jung A-A011 uses
+        // LoadImageProp on System 7). Drive LSM 1 to hold real bytes, then read
+        // PID 27 and expect an 8-octet integrity block whose CRC matches.
+        let mut dev = sys7_device(LsmAccess::MemoryMapped);
+        connect(&mut dev)?;
+        dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
+        // StartLoading + alloc LSM 1 at 0x4000 via the 11-octet memory record
+        // (LSM in the high nibble of octet 0, 3-octet start address).
+        let start_rec = [0x11u8, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0];
+        dev.handle_cemi(&mem_write_frame(&dev, 0x0104, &start_rec))?;
+        let alloc_rec = [
+            0x13u8, 0x00, 0x00, 0x40, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00,
+        ];
+        dev.handle_cemi(&mem_write_frame(&dev, 0x0104, &alloc_rec))?;
+        // Write 8 bytes into the segment.
+        dev.handle_cemi(&mem_write_frame(&dev, 0x4000, &[1, 2, 3, 4, 5, 6, 7, 8]))?;
+        // Read PID_MCB_TABLE (27) on object 1.
+        let r = dev.handle_cemi(&data(&dev, 0x3D5, &[0x01, 27, 0x10, 0x01]))?;
+        let mcb = prop_response_value(&r);
+        assert_eq!(mcb.len(), MCB_ENTRY_LEN, "MCB entry is 8 octets");
+        // The size field is the 8 written bytes; the CRC matches an independent
+        // computation over those bytes.
+        assert_eq!(&mcb[0..4], &[0, 0, 0, 8]);
+        let crc = crc16_aug_ccitt(&[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(&mcb[6..8], &crc.to_be_bytes());
+        Ok(())
+    }
+
+    #[test]
+    fn test_sys7_multi_element_mcb_read_is_refused() -> Result<(), Box<dyn std::error::Error>> {
+        // A real Jung 3361-1MWW (mask 0705, `M-0004_A-A011-13`) refused a
+        // multi-element MCB read: `A_PropertyValue_Read obj=3 pid=27 count=6
+        // start=1` came back count 0 with no data (issue #89 campaign,
+        // 1.1.36). Six 8-octet entries never fit a standard-frame APDU and a
+        // real device does not partially answer. ETS reads them one at a
+        // time, so the sim serves count=1 and refuses anything wider.
+        let mut dev = sys7_device(LsmAccess::MemoryMapped);
+        connect(&mut dev)?;
+        dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
+        let start_rec = [0x11u8, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0];
+        dev.handle_cemi(&mem_write_frame(&dev, 0x0104, &start_rec))?;
+        let alloc_rec = [
+            0x13u8, 0x00, 0x00, 0x40, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00,
+        ];
+        dev.handle_cemi(&mem_write_frame(&dev, 0x0104, &alloc_rec))?;
+        dev.handle_cemi(&mem_write_frame(&dev, 0x4000, &[1, 2, 3, 4, 5, 6, 7, 8]))?;
+
+        // count = 6, start = 1 — the shape the Jung refused.
+        let r = dev.handle_cemi(&data(&dev, 0x3D5, &[0x01, 27, 0x60, 0x01]))?;
+        let resp = &r.responses[0];
+        assert_eq!(
+            &resp.tpdu[2..],
+            &[0x01, 27, 0x00, 0x01],
+            "a multi-element MCB read is refused with nr_of_elem = 0 and no data"
+        );
+
+        // count = 1 at the same index still serves the entry.
+        let r = dev.handle_cemi(&data(&dev, 0x3D5, &[0x01, 27, 0x10, 0x01]))?;
+        assert_eq!(prop_response_value(&r).len(), MCB_ENTRY_LEN);
+        Ok(())
+    }
+}
