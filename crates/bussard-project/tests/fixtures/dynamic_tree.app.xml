@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FABRICATED fixture. The Dynamic-section container structure the device-file
+     keys are derived from (shape only, no vendor content copied):
+       * an application <Channel Number TextParameterRefId> whose Text carries
+         a {{0:...}} label placeholder, with an en-US translation;
+       * nested <ParameterBlock>s, the outer one labelled by TextParameterRefId,
+         an inner one titled by ParamRefId;
+       * parameter P-2 with two refs: R-2 inside a <when> that is not taken,
+         R-3 in the taken branch; parameter P-4 with two refs both shown;
+       * a <ModuleDef> whose <Channel Number TextParameterRefId> is
+         instantiated twice (M-2 before M-1 in document order);
+       * <ComObjectRef TextParameterRefId>, a <ParameterRef Text> override, and
+         an <Assign> target P-5 that is never shown. -->
+<KNX xmlns="http://knx.org/xml/project/21">
+ <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
+  <ApplicationProgram Id="M-00FA_A-00D1-10-0001" ApplicationNumber="209" ApplicationVersion="16" MaskVersion="MV-07B0" Name="Dynamic Tree Fixture" LoadProcedureStyle="MergedProcedure">
+   <Static>
+    <ParameterTypes>
+     <ParameterType Id="M-00FA_A-00D1-10-0001_PT-Text" Name="Label"><TypeText SizeInBit="80" /></ParameterType>
+     <ParameterType Id="M-00FA_A-00D1-10-0001_PT-Byte" Name="Byte"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+     <ParameterType Id="M-00FA_A-00D1-10-0001_PT-Mode" Name="Mode">
+      <TypeRestriction Base="Value" SizeInBit="8">
+       <Enumeration Text="Off" Value="0" Id="M-00FA_A-00D1-10-0001_PT-Mode_EN-0" />
+       <Enumeration Text="Heating" Value="1" Id="M-00FA_A-00D1-10-0001_PT-Mode_EN-1" />
+      </TypeRestriction>
+     </ParameterType>
+    </ParameterTypes>
+    <Parameters>
+     <Parameter Id="M-00FA_A-00D1-10-0001_P-1" Name="ChLabel" Text="Channel label" ParameterType="M-00FA_A-00D1-10-0001_PT-Text" Value="Kitchen">
+      <Memory CodeSegment="M-00FA_A-00D1-10-0001_RS-1" Offset="0" BitOffset="0" />
+     </Parameter>
+     <Parameter Id="M-00FA_A-00D1-10-0001_P-2" Name="Delay" Text="Delay" ParameterType="M-00FA_A-00D1-10-0001_PT-Byte" Value="5">
+      <Memory CodeSegment="M-00FA_A-00D1-10-0001_RS-1" Offset="10" BitOffset="0" />
+     </Parameter>
+     <Parameter Id="M-00FA_A-00D1-10-0001_P-3" Name="Mode" Text="Mode" ParameterType="M-00FA_A-00D1-10-0001_PT-Mode" Value="1">
+      <Memory CodeSegment="M-00FA_A-00D1-10-0001_RS-1" Offset="11" BitOffset="0" />
+     </Parameter>
+     <Parameter Id="M-00FA_A-00D1-10-0001_P-5" Name="Hidden" Text="Hidden" ParameterType="M-00FA_A-00D1-10-0001_PT-Byte" Value="0">
+      <Memory CodeSegment="M-00FA_A-00D1-10-0001_RS-1" Offset="13" BitOffset="0" />
+     </Parameter>
+     <Parameter Id="M-00FA_A-00D1-10-0001_P-4" Name="Cycle" Text="Cycle" ParameterType="M-00FA_A-00D1-10-0001_PT-Byte" Value="60">
+      <Memory CodeSegment="M-00FA_A-00D1-10-0001_RS-1" Offset="12" BitOffset="0" />
+     </Parameter>
+    </Parameters>
+    <ParameterRefs>
+     <ParameterRef Id="M-00FA_A-00D1-10-0001_P-1_R-1" RefId="M-00FA_A-00D1-10-0001_P-1" />
+     <ParameterRef Id="M-00FA_A-00D1-10-0001_P-2_R-2" RefId="M-00FA_A-00D1-10-0001_P-2" Text="Delay when off" />
+     <ParameterRef Id="M-00FA_A-00D1-10-0001_P-2_R-3" RefId="M-00FA_A-00D1-10-0001_P-2" Text="Verzoegerung Heizen" />
+     <ParameterRef Id="M-00FA_A-00D1-10-0001_P-3_R-4" RefId="M-00FA_A-00D1-10-0001_P-3" />
+     <ParameterRef Id="M-00FA_A-00D1-10-0001_P-4_R-5" RefId="M-00FA_A-00D1-10-0001_P-4" />
+     <ParameterRef Id="M-00FA_A-00D1-10-0001_P-5_R-7" RefId="M-00FA_A-00D1-10-0001_P-5" />
+     <ParameterRef Id="M-00FA_A-00D1-10-0001_P-4_R-6" RefId="M-00FA_A-00D1-10-0001_P-4" Text="Cycle (again)" />
+    </ParameterRefs>
+    <ComObjects>
+     <ComObject Id="M-00FA_A-00D1-10-0001_O-0" Name="Switch" Text="Switch" Number="0" FunctionText="On/Off" ObjectSize="1 Bit" DatapointType="DPST-1-1" CommunicationFlag="Enabled" WriteFlag="Enabled" />
+    </ComObjects>
+    <ComObjectRefs>
+     <ComObjectRef Id="M-00FA_A-00D1-10-0001_O-0_R-1" RefId="M-00FA_A-00D1-10-0001_O-0" Text="Switch ({{0:...}})" TextParameterRefId="M-00FA_A-00D1-10-0001_P-1_R-1" />
+    </ComObjectRefs>
+   </Static>
+   <ModuleDefs>
+    <ModuleDef Id="M-00FA_A-00D1-10-0001_MD-1" Name="Output">
+     <Arguments>
+      <Argument Id="M-00FA_A-00D1-10-0001_MD-1_A-1" Name="argPar" />
+      <Argument Id="M-00FA_A-00D1-10-0001_MD-1_A-2" Name="ArgBeschriftung" />
+     </Arguments>
+     <Static>
+      <Parameters>
+       <Parameter Id="M-00FA_A-00D1-10-0001_MD-1_P-1" Name="OutLabel" Text="Output label" ParameterType="M-00FA_A-00D1-10-0001_PT-Text" Value="">
+        <Memory CodeSegment="M-00FA_A-00D1-10-0001_RS-1" Offset="0" BitOffset="0" BaseOffset="M-00FA_A-00D1-10-0001_MD-1_A-1" />
+       </Parameter>
+       <Parameter Id="M-00FA_A-00D1-10-0001_MD-1_P-2" Name="OutMode" Text="Output mode" ParameterType="M-00FA_A-00D1-10-0001_PT-Mode" Value="0">
+        <Memory CodeSegment="M-00FA_A-00D1-10-0001_RS-1" Offset="10" BitOffset="0" BaseOffset="M-00FA_A-00D1-10-0001_MD-1_A-1" />
+       </Parameter>
+      </Parameters>
+      <ParameterRefs>
+       <ParameterRef Id="M-00FA_A-00D1-10-0001_MD-1_P-1_R-1" RefId="M-00FA_A-00D1-10-0001_MD-1_P-1" />
+       <ParameterRef Id="M-00FA_A-00D1-10-0001_MD-1_P-2_R-2" RefId="M-00FA_A-00D1-10-0001_MD-1_P-2" />
+      </ParameterRefs>
+     </Static>
+     <Dynamic>
+      <Channel Id="M-00FA_A-00D1-10-0001_MD-1_CH-1" Name="Output" Text="Output {{ArgBeschriftung}} ({{0:...}})" Number="1" TextParameterRefId="M-00FA_A-00D1-10-0001_MD-1_P-1_R-1">
+       <ParameterBlock Id="M-00FA_A-00D1-10-0001_MD-1_PB-1" Name="General" Text="General">
+        <ParameterRefRef RefId="M-00FA_A-00D1-10-0001_MD-1_P-1_R-1" />
+        <ParameterRefRef RefId="M-00FA_A-00D1-10-0001_MD-1_P-2_R-2" />
+       </ParameterBlock>
+      </Channel>
+     </Dynamic>
+    </ModuleDef>
+   </ModuleDefs>
+   <Dynamic>
+    <Channel Id="M-00FA_A-00D1-10-0001_CH-1" Name="Heating" Text="Heizung ({{0:...}})" Number="7" TextParameterRefId="M-00FA_A-00D1-10-0001_P-1_R-1">
+     <ParameterBlock Id="M-00FA_A-00D1-10-0001_PB-1" Name="Main" Text="Main {{0}}" TextParameterRefId="M-00FA_A-00D1-10-0001_P-1_R-1">
+      <ParameterRefRef RefId="M-00FA_A-00D1-10-0001_P-1_R-1" />
+      <ParameterRefRef RefId="M-00FA_A-00D1-10-0001_P-3_R-4" />
+      <ParameterRefRef RefId="M-00FA_A-00D1-10-0001_P-4_R-5" />
+      <ComObjectRefRef RefId="M-00FA_A-00D1-10-0001_O-0_R-1" />
+      <Assign TargetParamRefRef="M-00FA_A-00D1-10-0001_P-5_R-7" Value="3" />
+      <choose ParamRefId="M-00FA_A-00D1-10-0001_P-3_R-4">
+       <when test="0">
+        <ParameterRefRef RefId="M-00FA_A-00D1-10-0001_P-2_R-2" />
+       </when>
+       <when test="1">
+        <ParameterBlock Id="M-00FA_A-00D1-10-0001_PB-2" Name="Heat" Text="Heating times" Inline="true">
+         <ParameterRefRef RefId="M-00FA_A-00D1-10-0001_P-2_R-3" />
+         <ParameterBlock Id="M-00FA_A-00D1-10-0001_PB-3" Name="Extra" ParamRefId="M-00FA_A-00D1-10-0001_P-4_R-6">
+          <ParameterRefRef RefId="M-00FA_A-00D1-10-0001_P-4_R-6" />
+         </ParameterBlock>
+        </ParameterBlock>
+       </when>
+      </choose>
+     </ParameterBlock>
+     <ParameterBlock Id="M-00FA_A-00D1-10-0001_PB-9" Name="Empty" Text="Nothing here" />
+    </Channel>
+    <ChannelIndependentBlock>
+     <Module Id="M-00FA_A-00D1-10-0001_MD-1_M-2" RefId="M-00FA_A-00D1-10-0001_MD-1">
+      <NumericArg RefId="M-00FA_A-00D1-10-0001_MD-1_A-1" Value="40" />
+     </Module>
+     <Module Id="M-00FA_A-00D1-10-0001_MD-1_M-1" RefId="M-00FA_A-00D1-10-0001_MD-1">
+      <NumericArg RefId="M-00FA_A-00D1-10-0001_MD-1_A-1" Value="20" />
+     </Module>
+    </ChannelIndependentBlock>
+   </Dynamic>
+  </ApplicationProgram>
+ </ApplicationPrograms>
+ <Languages>
+  <Language Identifier="en-US">
+   <TranslationUnit RefId="M-00FA_A-00D1-10-0001">
+    <TranslationElement RefId="M-00FA_A-00D1-10-0001_CH-1">
+     <Translation AttributeName="Text" Text="Heating ({{0:...}})" />
+    </TranslationElement>
+    <TranslationElement RefId="M-00FA_A-00D1-10-0001_P-2_R-3">
+     <Translation AttributeName="Text" Text="Heating delay" />
+    </TranslationElement>
+   </TranslationUnit>
+  </Language>
+ </Languages>
+ </Manufacturer></ManufacturerData>
+</KNX>

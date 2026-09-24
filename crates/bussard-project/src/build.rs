@@ -15,6 +15,7 @@ use bussard_model::{Dpt, Flags, GroupAddress, IndividualAddress};
 
 use crate::container::Container;
 use crate::error::Result;
+use crate::facts::{apply_facts, derive_facts};
 use crate::hardware::Hardware;
 use crate::knx_master;
 use crate::manufacturer::{ApplicationProgram, parse_application_program};
@@ -60,7 +61,7 @@ fn normalize_size(size: &str) -> String {
 /// After substitution the result is whitespace-normalized (runs collapsed,
 /// ends trimmed) and any now-empty parenthetical left behind by a stripped
 /// token (e.g. `" ()"`) is removed. Returns `None` if nothing readable remains.
-fn resolve_placeholders(
+pub(crate) fn resolve_placeholders(
     text: &str,
     app: &ApplicationProgram,
     module_instance_id: Option<&str>,
@@ -373,15 +374,10 @@ pub fn build_model(project: RawProject, container: &mut Container) -> Result<Mod
             }
         }
 
-        if !dev_links.is_empty() {
-            dev_links.sort_by_key(|l| l.object);
-            links.insert(raw_dev.address, dev_links);
-        }
-
         // Per-device parameter values (issue #46): resolve each configured
-        // ParameterInstanceRef to its stable key + value, keeping the ones whose
+        // ParameterInstanceRef to its ref + value, keeping the ones whose
         // value differs from the vendor default (display-only ones included).
-        let parameters = resolve_parameters(raw_dev, &apps);
+        let stored = resolve_parameters(raw_dev, &apps);
 
         // Per-module-instance memory base offsets (issue #48): resolve each of
         // the device's module instances' `BaseOffset` argument values so a module
@@ -429,7 +425,7 @@ pub fn build_model(project: RawProject, container: &mut Container) -> Result<Mod
             None
         };
 
-        let device = Device {
+        let mut device = Device {
             address: raw_dev.address,
             name,
             description: raw_dev.description.clone(),
@@ -439,13 +435,57 @@ pub fn build_model(project: RawProject, container: &mut Container) -> Result<Mod
             replaced: None,
             product,
             channels,
-            parameters,
+            parameters: BTreeMap::new(),
             module_bases,
             com_objects,
             security,
             application_override: None,
             lock: Default::default(),
         };
+
+        // The lock-side facts (channel handles, object and parameter keys,
+        // labels) from the primary program evaluated with the project's
+        // values; without a program the values keep the `<slug>@<ref>` key.
+        match primary_app {
+            Some(app) => {
+                let prefix = format!("{}_", app.id);
+                let values: BTreeMap<String, String> = raw_dev
+                    .parameters
+                    .iter()
+                    .filter_map(|(r, v)| Some((r.strip_prefix(&prefix)?.to_string(), v.clone())))
+                    .collect();
+                let facts = derive_facts(app, &values, &raw_dev.module_instances);
+                let stored: BTreeMap<String, String> = stored
+                    .into_iter()
+                    .map(|(reference, (_, value))| (reference, value))
+                    .collect();
+                apply_facts(&mut device, app, &facts, &stored);
+                // A keyed object reads by its key; the vendor text the link
+                // carried is in the lock, so it is not repeated as a name.
+                for link in &mut dev_links {
+                    if device
+                        .com_objects
+                        .get(&link.object)
+                        .is_some_and(|co| co.key.is_some())
+                    {
+                        link.name = None;
+                    }
+                }
+            }
+            None => {
+                device.parameters = stored
+                    .into_iter()
+                    .map(|(reference, (name, value))| {
+                        (format!("{}@{reference}", param_name_slug(&name)), value)
+                    })
+                    .collect();
+            }
+        }
+
+        if !dev_links.is_empty() {
+            dev_links.sort_by_key(|l| l.object);
+            links.insert(raw_dev.address, dev_links);
+        }
 
         let file_stem = raw_dev.address.to_string();
         devices.insert(raw_dev.address, LoadedDevice { device, file_stem });
@@ -699,14 +739,16 @@ fn resolve_com_object(
 ///   ref the configuration shows, so leaving it out would let another ref's
 ///   default take over.
 ///
-/// The key is `<name-slug>@<app-relative-ref-id>`, where the app-relative ref id
-/// preserves the module-instance selector (`MD-2_M-20_MI-1_P-15_R-17`), the
-/// unique+stable handle; the slug is a human aid. See the `parameters:` field
-/// rustdoc on [`bussard_model::schema::Device`] for the full rationale.
+/// The map is keyed by the app-relative ref id, which preserves the
+/// module-instance selector (`MD-2_M-20_MI-1_P-15_R-17`), the unique+stable
+/// handle, and holds the parameter `Name` next to the value. The in-memory key
+/// comes from the lock-side facts ([`crate::facts::apply_facts`]); see the
+/// `parameters` field rustdoc on [`bussard_model::schema::Device`] for the key
+/// scheme.
 fn resolve_parameters(
     raw_dev: &RawDevice,
     apps: &[&ApplicationProgram],
-) -> BTreeMap<String, String> {
+) -> BTreeMap<String, (String, String)> {
     let mut out = BTreeMap::new();
     for (ref_id, value) in &raw_dev.parameters {
         // App-relative ref id, module-instance selector preserved (the key body).
@@ -732,11 +774,10 @@ fn resolve_parameters(
             continue;
         }
 
-        let name = resolved.param.name.as_deref().unwrap_or("");
-        let key = format!("{}@{app_rel}", param_name_slug(name));
+        let name = resolved.param.name.clone().unwrap_or_default();
         // Determinism: an app-relative ref id is unique per device, so keys do
         // not collide; the first write wins if a malformed file repeats one.
-        out.entry(key).or_insert_with(|| value.clone());
+        out.entry(app_rel).or_insert_with(|| (name, value.clone()));
     }
     out
 }
@@ -816,10 +857,13 @@ fn resolve_module_bases(
 /// real data a module def's parameters all reference a single base-offset argument
 /// (`MD-1` → `MD-1_A-1`), matching the single-base-per-instance shape the flasher's
 /// `base_offsets` map (keyed only by module-instance selector) can represent.
-fn base_offset_args(apps: &[&ApplicationProgram]) -> BTreeMap<String, String> {
+pub(crate) fn base_offset_args(apps: &[&ApplicationProgram]) -> BTreeMap<String, String> {
     let mut out: BTreeMap<String, String> = BTreeMap::new();
     for app in apps {
-        for param in app.parameters.values() {
+        // Sorted, so the first argument per module is the same on every run.
+        let mut params: Vec<_> = app.parameters.values().collect();
+        params.sort_by(|a, b| a.id.cmp(&b.id));
+        for param in params {
             let Some(base_ref) = param.memory.as_ref().and_then(|m| m.base_offset.as_deref())
             else {
                 continue;
@@ -1239,10 +1283,7 @@ mod tests {
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
         let params = resolve_parameters(&raw, &[&app]);
-        let keys: Vec<&str> = params
-            .keys()
-            .filter_map(|k| k.split_once('@').map(|(_, r)| r))
-            .collect();
+        let keys: Vec<&str> = params.keys().map(String::as_str).collect();
         assert_eq!(keys, ["P-1_R-1", "P-2_R-2", "UP-3_R-4"]);
         Ok(())
     }
