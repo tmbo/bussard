@@ -84,6 +84,28 @@ pub(crate) fn sys7_lsm_override() -> Option<bussard_mgmt::LsmRealisation> {
     }
 }
 
+/// The length of the System 7 procedure bussard lowers: everything up to and
+/// including the terminal `LdCtrlRestart`, or the whole procedure when it has
+/// no restart.
+///
+/// The restart ends the download: the device reboots into the loaded
+/// application, and ETS sends nothing after it. Some procedures converted from
+/// pre-ETS4 product data carry a tail past the restart anyway: the Jung
+/// 2308.16REGHM application `M-0004_A-2088-11-C937-O000A`
+/// (`ConvertedFromPreEts4Data="1"`) ends with `<LdCtrlRestart/>`,
+/// `<LdCtrlTaskSegment LsmIdx="5" Address="17407"/>`, `<LdCtrlLoad LsmIdx="5"/>`,
+/// `<LdCtrlDisconnect/>`. The device has no interface object 5 (its
+/// `PID_LOAD_STATE_CONTROL` read answers count 0), and ETS's download of it
+/// (capture `schaltaktor-8fach-1-1-49.pcapng`) ends with the restart. Lowering
+/// the tail failed the flash of 1.1.49 after a complete download (issue #178).
+/// A trailing `LdCtrlDisconnect` lowers to nothing, so cutting it changes no
+/// step.
+pub(super) fn sys7_procedure_end(ops: &[LoadOp]) -> usize {
+    ops.iter()
+        .rposition(|op| matches!(op, LoadOp::Restart))
+        .map_or(ops.len(), |i| i + 1)
+}
+
 /// Lowers a System 7 (mask 0705 / 0701) application into an executable
 /// [`FlashPlan`] (`[system7-spec §3/§4]`).
 ///
@@ -126,10 +148,11 @@ pub(super) fn plan_flash_sys7(
 
     // System 7 apps carry their whole download in their own load procedures
     // (ProductProcedure style — no master-template splice; `[corpus 49/49]`).
-    let (ops, _spliced) = assemble_ops(app, None);
+    let (mut ops, _spliced) = assemble_ops(app, None);
     if ops.is_empty() {
         return Err(PlanError::NoProcedure(app.id.clone()));
     }
+    ops.truncate(sys7_procedure_end(&ops));
 
     // Resolve parameter images up front: each parameter segment's <Data> is only
     // the vendor's template, and the image streamed for it is that template with
@@ -1566,9 +1589,10 @@ mod tests {
     }
 
     #[test]
-    fn plan_lowers_system_7_task_ctrl1_and_post_restart_lsm5() {
-        // The Theben FIX2 shape (§4.4/§4.7): a TaskCtrl1 on LSM 3, then a restart
-        // followed by a post-restart TaskSegment + Load on LSM 5.
+    fn plan_lowers_system_7_task_ctrl1_and_ends_at_the_restart() {
+        // The Theben FIX2 shape (§4.4): a TaskCtrl1 on LSM 3, then a restart
+        // followed by a converted TaskSegment + Load on LSM 5, which ETS never
+        // sends and the plan drops (issue #178).
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
          <ApplicationProgram Id="M-48_A-4947" ApplicationNumber="18759" ApplicationVersion="16"
             MaskVersion="MV-0701" Name="FIX2" LoadProcedureStyle="ProductProcedure">
@@ -1614,22 +1638,34 @@ mod tests {
                 count: 1
             }
         )));
-        // A post-restart LSM-5 TaskSegment + Load appears after the Restart.
-        let restart_pos = plan
-            .steps
-            .iter()
-            .position(|s| matches!(s, FlashStep::Restart))
-            .expect("a restart");
-        assert!(
-            plan.steps[restart_pos + 1..]
-                .iter()
-                .any(|s| matches!(s, FlashStep::Sys7TaskSegment { lsm: 5, .. }))
-        );
-        assert!(
-            plan.steps[restart_pos + 1..]
-                .iter()
-                .any(|s| matches!(s, FlashStep::Sys7StartLoading { lsm: 5 }))
-        );
+        // Nothing follows the restart, and LSM 5 is never touched.
+        assert!(matches!(plan.steps.last(), Some(FlashStep::Restart)));
+        assert!(!plan.steps.iter().any(|s| matches!(
+            s,
+            FlashStep::Sys7TaskSegment { lsm: 5, .. } | FlashStep::Sys7StartLoading { lsm: 5 }
+        )));
+    }
+
+    #[test]
+    fn test_sys7_procedure_end_cuts_after_the_last_restart() {
+        let load5 = LoadOp::Load { lsm_idx: Some(5) };
+        let ops = [
+            LoadOp::Connect,
+            LoadOp::Restart,
+            load5.clone(),
+            LoadOp::Disconnect,
+        ];
+        assert_eq!(sys7_procedure_end(&ops), 2);
+        let ops = [
+            LoadOp::Restart,
+            load5.clone(),
+            LoadOp::Restart,
+            load5.clone(),
+        ];
+        assert_eq!(sys7_procedure_end(&ops), 3);
+        // No restart: the whole procedure.
+        let ops = [LoadOp::Connect, load5, LoadOp::Disconnect];
+        assert_eq!(sys7_procedure_end(&ops), 3);
     }
 
     #[test]
