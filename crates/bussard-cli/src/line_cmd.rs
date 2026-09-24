@@ -303,6 +303,7 @@ pub fn run_plan(
     line: &str,
     dir: &Path,
     json: bool,
+    tool_key_source: ToolKeySource<'_>,
     overrides: ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
     run_line(
@@ -315,7 +316,7 @@ pub fn run_plan(
             resume: false,
             allow_remote_gateway: false,
         },
-        ToolKeySource::default(),
+        tool_key_source,
         overrides,
     )
 }

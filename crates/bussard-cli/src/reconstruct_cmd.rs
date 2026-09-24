@@ -13,6 +13,12 @@
 //! `A_DeviceDescriptor_Read`, `A_Authorize_Request`, `A_PropertyValue_Read` and
 //! (on the System 7 and System B fallback paths) `A_Memory_Read`.
 //!
+//! A KNX Data Secure-activated device answers the plain descriptor read with
+//! mask `FFFF` and refuses the rest. With `--keyring` / `--tool-key` (issue
+//! #170) the session is opened through [`bussard_service::BusService::with_l4`]
+//! with the device's tool key, so every APDU above, the descriptor read
+//! included, rides `A_SecureData` and the device reports its real mask.
+//!
 //! ## What the diff can and cannot see
 //!
 //! The address + association tables recover *which* GAs each com-object is
@@ -29,7 +35,7 @@ use std::time::Duration;
 use anyhow::{Context, anyhow};
 use bussard_bus::BusHandle;
 use bussard_mgmt::apci::{PID_MANUFACTURER_ID, PID_ORDER_INFO, PID_SERIAL_NUMBER};
-use bussard_mgmt::tables::{DeviceTables, TablesError, read_tables};
+use bussard_mgmt::tables::{DeviceTables, read_tables};
 use bussard_mgmt::{
     DeviceConnection, L4Channel, Layer4Connection, LeaseChannel, MaskProfile, Timeouts,
     manufacturers, system_type,
@@ -116,6 +122,7 @@ pub fn run(
     json: bool,
     overrides: ConnOverrides,
     selection: crate::param_readback::Selection<'_>,
+    tool_key_source: crate::secure_key::ToolKeySource<'_>,
 ) -> anyhow::Result<ExitCode> {
     let target: IndividualAddress = address
         .parse()
@@ -128,56 +135,14 @@ pub fn run(
     let model_ref = model.as_ref();
     let product_ref = product.as_ref();
 
-    let runtime = tokio::runtime::Runtime::new()?;
-    let result = runtime.block_on(async move {
-        let service = BusService::open(config, WritePolicy::ReadOnly)?;
-        let handle = service.handle().clone();
-        if !handle.wait_connected(std::time::Duration::from_secs(10)).await {
-            eprintln!("warning: bus not connected yet; management traffic may use the 0.0.255 fallback source");
-        }
-        // Present the tunnel-assigned address as the source — devices commonly
-        // ignore management frames from any other address (falling back to
-        // 0.0.255 on routing, issue #30).
-        let source = checked_source_or_close(&handle, &overrides).await?;
-        // Lease the bus for this connection-oriented session; group traffic and
-        // other subscribers keep flowing on the shared connection.
-        let lease = handle.lease().await.context("leasing the bus")?;
-        let channel = LeaseChannel::new(lease);
-        let table_result = match Layer4Connection::connect(channel, target, source).await {
-            Ok(mut l4) => {
-                // Authorize the session (free access) as ETS does before any
-                // configuration access (issue #52 finding #1), and as System 7
-                // requires before any memory access. Best-effort for a read:
-                // tolerate a device without authorize; log an access-denied.
-                if let Err(err) = l4.authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY).await {
-                    tracing::debug!("{target} authorize (free access) did not grant: {err}");
-                }
-                let result = crate::plan_cmd::read_live_tables(&mut l4).await;
-                let params = match (&result, product_ref) {
-                    (Ok(crate::plan_cmd::LiveRead::Tables(live)), Some(product)) => Some(
-                        crate::param_readback::read(
-                            &mut l4,
-                            product,
-                            model_ref,
-                            target,
-                            live.tables().mask,
-                        )
-                        .await,
-                    ),
-                    _ => None,
-                };
-                let _ = l4.disconnect().await;
-                result.map(|r| (r, params))
-            }
-            Err(err) => Err(anyhow::Error::new(TablesError::Mgmt(err))
-                .context("connecting to the device")),
-        };
-        // Close the bus cleanly (release the gateway tunnel slot) — issue #31.
-        let _ = handle.close().await;
-        anyhow::Ok(table_result)
-    })?;
-
-    let (read_result, params) = result?;
+    let (read_result, params) = crate::plan_cmd::read_device(
+        config,
+        target,
+        &overrides,
+        tool_key_source,
+        product_ref,
+        model_ref,
+    )?;
     let live = match read_result {
         crate::plan_cmd::LiveRead::Tables(live) => live,
         crate::plan_cmd::LiveRead::UnsupportedMask { address, mask } => {

@@ -306,6 +306,19 @@ enum Command {
         /// the model's application ref, else the order number, else the sole one).
         #[arg(long, value_name = "REF", conflicts_with = "line")]
         application: Option<String>,
+        /// The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool
+        /// key (issue #170). Required for a security-activated device, which
+        /// answers the plain descriptor read with mask FFFF; with the key every
+        /// read, the descriptor included, is secured. The keyring password comes
+        /// from `BUSSARD_KEYRING_PASSWORD`, never a CLI argument.
+        #[arg(long, value_name = "FILE", conflicts_with = "line")]
+        keyring: Option<PathBuf>,
+        /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
+        /// escape hatch for a simulator or a device with a synthetic key. Prefer
+        /// `--keyring` for a real installation: a process argument is visible to
+        /// other users on the machine.
+        #[arg(long, value_name = "HEX", conflicts_with_all = ["keyring", "line"])]
+        tool_key: Option<String>,
         /// Emit JSON instead of the report format.
         #[arg(long)]
         json: bool,
@@ -566,6 +579,20 @@ enum Command {
         /// the model's application ref, else the order number, else the sole one).
         #[arg(long, value_name = "REF", conflicts_with = "line")]
         application: Option<String>,
+        /// The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool
+        /// key (issue #170). Required for a security-activated device, which
+        /// answers the plain descriptor read with mask FFFF; with the key every
+        /// read, the descriptor included, is secured. The keyring password comes
+        /// from `BUSSARD_KEYRING_PASSWORD`, never a CLI argument.
+        /// With `--line`, each device's key is looked up in the keyring.
+        #[arg(long, value_name = "FILE")]
+        keyring: Option<PathBuf>,
+        /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
+        /// escape hatch for a simulator or a device with a synthetic key. Prefer
+        /// `--keyring` for a real installation: a process argument is visible to
+        /// other users on the machine.
+        #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
+        tool_key: Option<String>,
         /// Emit JSON instead of the report format.
         #[arg(long)]
         json: bool,
@@ -1396,6 +1423,8 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             dir,
             product,
             application,
+            keyring,
+            tool_key,
             json,
             gateway,
             routing,
@@ -1427,6 +1456,10 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                         param_readback::Selection {
                             product: product.as_deref(),
                             application: application.as_deref(),
+                        },
+                        secure_key::ToolKeySource {
+                            keyring: keyring.as_deref(),
+                            tool_key: tool_key.as_deref(),
                         },
                     )
                 }
@@ -1545,6 +1578,8 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             dir,
             product,
             application,
+            keyring,
+            tool_key,
             json,
             gateway,
             routing,
@@ -1555,8 +1590,12 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 routing,
                 skip_address_check,
             };
+            let tool_key_source = secure_key::ToolKeySource {
+                keyring: keyring.as_deref(),
+                tool_key: tool_key.as_deref(),
+            };
             match line {
-                Some(line) => line_cmd::run_plan(&line, &dir, json, overrides),
+                Some(line) => line_cmd::run_plan(&line, &dir, json, tool_key_source, overrides),
                 None => {
                     // clap guarantees ADDRESS is present when --line is absent.
                     let address = address.expect("clap requires ADDRESS without --line");
@@ -1569,6 +1608,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                             product: product.as_deref(),
                             application: application.as_deref(),
                         },
+                        tool_key_source,
                     )
                 }
             }

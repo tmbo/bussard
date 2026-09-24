@@ -141,6 +141,16 @@ struct MockDevice {
     /// Every non-load-control property write as `(object, pid)`.
     property_writes: Vec<(u8, u8)>,
     restarts: usize,
+    /// KNX Data Secure (issue #170): an activated device holds its tool key
+    /// here, answers the plain descriptor read with mask FFFF (as 1.1.12 does),
+    /// answers a plain authorize, and drops every other plain request.
+    secure: Option<Arc<Mutex<bussard_secure::DataSecureSession>>>,
+    /// The outer (wire) APCI of every numbered request, in order.
+    wire_apcis: Vec<u16>,
+    /// Requests that arrived inside a verified `A_SecureData`.
+    secured_requests: usize,
+    /// Plain requests an activated device dropped.
+    plain_refused: usize,
 }
 
 impl MockDevice {
@@ -173,7 +183,90 @@ impl MockDevice {
             memory_writes: Vec::new(),
             property_writes: Vec::new(),
             restarts: 0,
+            secure: None,
+            wire_apcis: Vec::new(),
+            secured_requests: 0,
+            plain_refused: 0,
         }
+    }
+
+    /// The same device, KNX Data Secure-activated with [`TOOL_KEY`].
+    fn activated(mut self) -> MockDevice {
+        self.secure = Some(Arc::new(Mutex::new(
+            bussard_secure::DataSecureSession::new(bussard_secure::Key16::new(TOOL_KEY)),
+        )));
+        self
+    }
+}
+
+/// The synthetic tool key of the activated mock device (no real key material).
+const TOOL_KEY: [u8; 16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+/// [`TOOL_KEY`] as `--tool-key` takes it.
+const TOOL_KEY_HEX: &str = "0102030405060708090a0b0c0d0e0f10";
+/// The Data Secure SCF octet of an S-A_Sync_Req.
+const SCF_SYNC_REQ: u8 = 0x92;
+
+/// The CCM addressing context of one frame (spec §5.4).
+fn addressing(
+    source: IndividualAddress,
+    dest: IndividualAddress,
+    tpci_octet: u8,
+) -> bussard_secure::TpAddressing {
+    bussard_secure::TpAddressing {
+        source: source.raw(),
+        destination: dest.raw(),
+        address_type_group: false,
+        extended_frame_format: 0,
+        tpci: tpci_octet,
+    }
+}
+
+/// Answers one numbered request through the device's security layer.
+///
+/// `None` drops the frame (no `T_ACK`, no answer), as an activated device does
+/// with a plain request it refuses or a secured one that does not verify.
+/// `Some(reply)` acknowledges it and sends `reply`, if any. A plain device
+/// passes straight through to [`respond`].
+fn secure_respond(
+    dev: &mut MockDevice,
+    tool: IndividualAddress,
+    req_tpci: u8,
+    resp_tpci: u8,
+    wire_apci: u16,
+    data: &[u8],
+) -> Option<Option<(u16, Vec<u8>)>> {
+    let Some(session) = dev.secure.clone() else {
+        return Some(respond(dev, wire_apci, data));
+    };
+    let mut session = match session.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let req_addr = addressing(tool, dev.address, req_tpci);
+    let resp_addr = addressing(dev.address, tool, resp_tpci);
+    if wire_apci != bussard_secure::A_SECURE_DATA {
+        if wire_apci == apci::A_DEVICE_DESCRIPTOR_READ && data.is_empty() {
+            return Some(Some((apci::A_DEVICE_DESCRIPTOR_RESPONSE, vec![0xFF, 0xFF])));
+        }
+        if wire_apci == apci::A_AUTHORIZE_REQUEST {
+            return Some(respond(dev, wire_apci, data));
+        }
+        dev.plain_refused += 1;
+        return None;
+    }
+    if data.first() == Some(&SCF_SYNC_REQ) {
+        return session
+            .answer_sync_request(&req_addr, data, &resp_addr)
+            .ok()
+            .map(Some);
+    }
+    match session.unwrap(&req_addr, wire_apci, data) {
+        Ok(bussard_secure::UnwrapOutcome::Secured { apci, data }) => {
+            dev.secured_requests += 1;
+            let reply = respond(dev, apci, &data);
+            Some(reply.and_then(|(rapci, rdata)| session.wrap(&resp_addr, rapci, &rdata).ok()))
+        }
+        _ => None,
     }
 }
 
@@ -349,13 +442,27 @@ async fn handle_frame(
     match tpci::classify(cemi.tpci_octet()) {
         TpciKind::Connect => *dev_seq = 0,
         TpciKind::NumberedData(client_seq) => {
-            let ack = CemiFrame::t_control(tool, dest, tpci::t_ack(client_seq));
-            push(gw, peer, gw_seq, &ack).await;
             let (req_apci, data) = match (&cemi.tpci, &cemi.apdu) {
                 (Tpci::Other(_), Apdu::Other { apci, data }) => (*apci, data.clone()),
                 _ => return,
             };
-            let reply = respond(&mut lock(shared), req_apci, &data);
+            let reply = {
+                let mut dev = lock(shared);
+                dev.wire_apcis.push(req_apci);
+                secure_respond(
+                    &mut dev,
+                    tool,
+                    cemi.tpci_octet(),
+                    tpci::ndt(*dev_seq),
+                    req_apci,
+                    &data,
+                )
+            };
+            let Some(reply) = reply else {
+                return;
+            };
+            let ack = CemiFrame::t_control(tool, dest, tpci::t_ack(client_seq));
+            push(gw, peer, gw_seq, &ack).await;
             if let Some((rapci, rdata)) = reply {
                 let resp =
                     CemiFrame::t_data_connected(tool, dest, tpci::ndt(*dev_seq), rapci, &rdata);
@@ -824,5 +931,116 @@ fn test_plan_and_reconstruct_read_back_the_parameters() -> TestResult {
     let dev = bench.device();
     assert!(dev.load_events.is_empty() && dev.memory_writes.is_empty());
     assert!(dev.property_writes.is_empty());
+    // The plain path carries no KNX Data Secure frame at all (issue #170).
+    assert!(!dev.wire_apcis.contains(&bussard_secure::A_SECURE_DATA));
+    Ok(())
+}
+
+#[test]
+fn test_reconstruct_tool_key_reads_back_a_secure_device() -> TestResult {
+    let Some(bench) = Bench::start(
+        "params-secure",
+        MockDevice::running([9, 0]).activated(),
+        "  thr@P-0_R-1: \"12\"\n",
+    )?
+    else {
+        return Ok(());
+    };
+    let out = bench.bussard(&[
+        "reconstruct",
+        "1.1.4",
+        "--product",
+        bench.product()?,
+        "--tool-key",
+        TOOL_KEY_HEX,
+        "--json",
+    ])?;
+    let (stdout, stderr) = text(&out);
+    assert!(out.status.success(), "stdout:\n{stdout}\nstderr:\n{stderr}");
+    let json: serde_json::Value = serde_json::from_str(&stdout)?;
+    // The secured descriptor read returns the real mask, not FFFF.
+    assert_eq!(json["mask"], "07B0", "{json}");
+    assert_eq!(json["addresses"], serde_json::json!(["1/2/0"]), "{json}");
+    assert_eq!(json["objects"]["1"], serde_json::json!(["1/2/0"]), "{json}");
+    assert_eq!(json["parameters"]["application"], "M-00FA_A-0002", "{json}");
+    let diffs = json["parameters"]["differences"]
+        .as_array()
+        .ok_or("no parameter differences in the reconstruct report")?;
+    assert_eq!(diffs.len(), 1, "{json}");
+    assert_eq!(diffs[0]["device"], "9");
+    // Every numbered frame rode A_SecureData; nothing was refused or written.
+    let dev = bench.device();
+    assert!(dev.secured_requests > 0);
+    assert_eq!(dev.plain_refused, 0);
+    assert!(
+        dev.wire_apcis
+            .iter()
+            .all(|&a| a == bussard_secure::A_SECURE_DATA),
+        "a plain frame reached the secure device: {:03X?}",
+        dev.wire_apcis
+    );
+    assert!(dev.load_events.is_empty() && dev.memory_writes.is_empty());
+    assert!(dev.property_writes.is_empty());
+    Ok(())
+}
+
+#[test]
+fn test_plan_tool_key_reads_back_a_secure_device() -> TestResult {
+    let Some(bench) = Bench::start(
+        "plan-secure",
+        MockDevice::running([9, 0]).activated(),
+        "  thr@P-0_R-1: \"12\"\n",
+    )?
+    else {
+        return Ok(());
+    };
+    let out = bench.bussard(&[
+        "plan",
+        "1.1.4",
+        "--product",
+        bench.product()?,
+        "--tool-key",
+        TOOL_KEY_HEX,
+        "--json",
+    ])?;
+    let (stdout, stderr) = text(&out);
+    assert!(out.status.success(), "stdout:\n{stdout}\nstderr:\n{stderr}");
+    let json: serde_json::Value = serde_json::from_str(&stdout)?;
+    assert_eq!(json["mask"], "07B0", "{json}");
+    let diffs = json["parameters"]["differences"]
+        .as_array()
+        .ok_or("no parameter differences in the plan")?;
+    assert_eq!(diffs.len(), 1, "{json}");
+    assert_eq!(bench.device().plain_refused, 0);
+    Ok(())
+}
+
+#[test]
+fn test_reconstruct_without_key_on_a_secure_device_fails_with_hint() -> TestResult {
+    let Some(bench) = Bench::start(
+        "params-secure-nokey",
+        MockDevice::running([9, 0]).activated(),
+        "",
+    )?
+    else {
+        return Ok(());
+    };
+    let out = bench.bussard(&["reconstruct", "1.1.4", "--product", bench.product()?])?;
+    let (stdout, stderr) = text(&out);
+    assert!(
+        !out.status.success(),
+        "stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("mask FFFF") && stderr.contains("describe only"),
+        "the unsupported-mask refusal: {stderr}"
+    );
+    assert!(
+        stderr.contains("--keyring") && stderr.contains("--tool-key"),
+        "the Data Secure hint: {stderr}"
+    );
+    let dev = bench.device();
+    assert_eq!(dev.secured_requests, 0);
+    assert!(!dev.wire_apcis.contains(&bussard_secure::A_SECURE_DATA));
     Ok(())
 }

@@ -156,10 +156,14 @@ Read a device's tables back over the bus and diff them against the model, or (wi
 | `--dir <DIR>` | `knx` | The model directory (line mode: connection defaults only). |
 | `--product <FILE>` | cached archive | Single-device mode: the device's `.knxprod`, to read back and decode its parameter memory too (see [parameter read-back](#parameter-read-back)). Without it the archive in `<dir>/vendor/` whose catalogue carries the model's order number is used, when cached. |
 | `--application <REF>` | model's application | The application program id to decode with (default: the model's `application_ref`, else the order number, else the sole application). |
+| `--keyring <FILE>` | | Single-device mode: the ETS `.knxkeys` keyring holding the target's KNX Data Secure tool key. Required for a security-activated device; the password comes from `BUSSARD_KEYRING_PASSWORD`. |
+| `--tool-key <HEX>` | | Single-device mode: the raw 32-hex-character tool key, for a simulator or bench device. Conflicts with `--keyring`. |
 | `--json` | off | Emit JSON instead of the report format. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
 | `--skip-address-check` | off | Skip the pre-flight check that no bus device answers at bussard's own source address. See [SAFETY.md](SAFETY.md#source-address-check). |
+
+A KNX Data Secure-activated device answers the plain descriptor read with mask `FFFF`, so without its tool key `reconstruct` stops with "mask FFFF (System ?) ... can: describe only" plus the `--keyring` hint. With `--keyring` (or `--tool-key`) every read, the descriptor included, runs over KNX Data Secure: the device reports its real mask and the table reads and the parameter read-back run unchanged on the secured session. `plan` takes the same two flags.
 
 ### `bussard describe <ADDRESS>`
 
@@ -176,7 +180,7 @@ Introspect a device over the bus: discover its interface objects and, for each, 
 | `--routing` | off | Force routing transport. |
 | `--skip-address-check` | off | Skip the pre-flight check that no bus device answers at bussard's own source address. See [SAFETY.md](SAFETY.md#source-address-check). |
 
-A security-activated device refuses plain management access; pass its tool key with `--keyring` (or `--tool-key` for a test device) and `describe` runs over KNX Data Secure. The same two flags work on `flash` and `apply`. See [SAFETY.md](SAFETY.md#known-limitations) for what is verified.
+A security-activated device refuses plain management access; pass its tool key with `--keyring` (or `--tool-key` for a test device) and `describe` runs over KNX Data Secure. The same two flags work on `flash`, `apply`, `plan` and `reconstruct`. See [SAFETY.md](SAFETY.md#known-limitations) for what is verified.
 
 An activated device still answers the plain `A_DeviceDescriptor_Read` and the PID 56 read, then refuses the interface-object walk. `describe` treats a walk that finds no interface object after a successful descriptor read as a failure, not an empty device: it exits 1 with the `--keyring` hint on stderr. System 1 (BCU1) devices have no interface objects and are exempt.
 
@@ -203,7 +207,7 @@ Inspect an ETS KNX Secure keyring export (`.knxkeys`): print what it carries —
 | `<FILE>` | | The `.knxkeys` file to inspect. |
 | `--json` | off | Emit JSON instead of the text summary. |
 
-The keyring password comes from `BUSSARD_KEYRING_PASSWORD` and is deliberately **not** a flag, so it never lands in shell history or a process listing. Reading a keyring changes nothing on the bus; to program a Data Secure device, pass the same file to `flash`, `apply` or `describe` with `--keyring`. See [SAFETY.md](SAFETY.md#known-limitations).
+The keyring password comes from `BUSSARD_KEYRING_PASSWORD` and is deliberately **not** a flag, so it never lands in shell history or a process listing. Reading a keyring changes nothing on the bus; to program or read back a Data Secure device, pass the same file to `flash`, `apply`, `describe`, `plan` or `reconstruct` with `--keyring`. See [SAFETY.md](SAFETY.md#known-limitations).
 
 ### `bussard import-product [FILE]`
 
@@ -308,6 +312,8 @@ Read a device's live tables and show what `apply` would change. With `--line`, p
 | `--dir <DIR>` | `knx` | The model directory. |
 | `--product <FILE>` | cached archive | Also read back the parameter memory and list the parameters that differ from the model, next to the link differences (see [parameter read-back](#parameter-read-back)). Without it the archive in `<dir>/vendor/` whose catalogue carries the model's order number is used, when cached. |
 | `--application <REF>` | model's application | The application program id to decode with. |
+| `--keyring <FILE>` | | The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool key, as for [`reconstruct`](#bussard-reconstruct-address). With `--line`, each device's key is looked up in it. |
+| `--tool-key <HEX>` | | The raw 32-hex-character tool key, for a simulator or bench device. Conflicts with `--keyring`. |
 | `--json` | off | Emit JSON instead of the report format. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
@@ -696,7 +702,7 @@ Run the MCP server over stdio (see [the MCP server](#the-mcp-server)).
 | `--allow-remote-gateway` | off | Permit `--allow-writes` or `--allow-programming` against a non-loopback (real) gateway. The same gate as `bussard write`; without it (or `BUSSARD_ALLOW_REAL_GATEWAY=1`) such a server pointed at a real gateway refuses to start. |
 | `--no-model-edits` | off | Withhold the model-edit tools (`knx_set_group`, `knx_add_link`, `knx_remove_link`, `knx_set_device`, `knx_set_parameter`, `knx_undo`, `knx_scaffold_groups`). They write YAML files behind a history snapshot and never touch the bus, so they are registered by default. |
 | `--capture-db <PATH>` | | A `bussard capture` database to extend `knx_recent_telegrams` history beyond the in-memory ring. |
-| `--keyring <FILE>` | | ETS keyring export (`.knxkeys`) for KNX Data Secure management: `knx_describe_device` wraps its session with the target's tool key, as `bussard describe --keyring` does. The password comes from `BUSSARD_KEYRING_PASSWORD`. |
+| `--keyring <FILE>` | | ETS keyring export (`.knxkeys`) for KNX Data Secure management: `knx_describe_device` and `knx_plan_device` wrap their session with the target's tool key, as `bussard describe --keyring` and `bussard plan --keyring` do. `knx_plan_device` reads a device the keyring does not list in the clear; `knx_apply_device` refuses a device the keyring lists, since that write also reprograms the security object (use `bussard apply --keyring`). The password comes from `BUSSARD_KEYRING_PASSWORD`. |
 
 ### `bussard viz`
 
@@ -1102,8 +1108,8 @@ Bus operations share one rate limiter (minimum 250 ms between operations, at mos
 | `knx_undo` | `snapshot_id` (optional) | Restores the model files to a snapshot (default: the newest one that differs from the working files, i.e. undo the last change). Files only. |
 | `knx_export_bundle` | `path`, `include_history` (default true), both optional | Writes the model and its history as one `.bussard` file (default: next to the model directory) and returns the path and manifest. Available in every tier. |
 | `knx_diff_project` | `path` (a `.knxproj` or `.bussard`) | What that file would change compared with the working model: `{count, summary, touches_protected, sentences, changes, source}`. The assistant quotes the sentences before the human imports. A password-protected `.knxproj` needs `BUSSARD_PROJECT_PASSWORD` in the server's environment. Read-only; available in every tier. |
-| `knx_plan_device` | `address` | Reads the device's live tables (read-only on the bus) and returns `plan` (the text `bussard plan` prints: additions, removals, unchanged count, table sizes, load operations), `pending_model_changes` (sentences), the same lists as JSON, `backup_dir`, `plan_digest`, `planned_at` and `expires_at`. A plan with nothing to do has no digest. Refuses a change that touches a protected GA. Registered only with `--allow-programming`. |
-| `knx_apply_device` | `address`, `plan_digest` | Writes the planned tables: backup first, then the `bussard apply` write, then a read-back verify. Returns `verified`, the final load states, `backup`, `gateway` and the history `snapshot`. Refused unless the digest is fresh and a new read still reproduces it (see below). Registered only with `--allow-programming`. |
+| `knx_plan_device` | `address` | Reads the device's live tables (read-only on the bus) and returns `plan` (the text `bussard plan` prints: additions, removals, unchanged count, table sizes, load operations), `pending_model_changes` (sentences), the same lists as JSON, `backup_dir`, `plan_digest`, `planned_at` and `expires_at`. A plan with nothing to do has no digest. Refuses a change that touches a protected GA. With the server's `--keyring`, a Data Secure device the keyring lists is read over KNX Data Secure (`secured: true`). Registered only with `--allow-programming`. |
+| `knx_apply_device` | `address`, `plan_digest` | Writes the planned tables: backup first, then the `bussard apply` write, then a read-back verify. Returns `verified`, the final load states, `backup`, `gateway` and the history `snapshot`. Refused unless the digest is fresh and a new read still reproduces it (see below), and for a device the server's `--keyring` holds a Data Secure tool key for (use `bussard apply --keyring`). Registered only with `--allow-programming`. |
 
 ### The programming tier
 

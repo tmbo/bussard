@@ -535,8 +535,9 @@ sent to a device.
 - **KNX Secure: Data Secure tool access, verified on a physical device;
   KNXnet/IP Secure not implemented.** `bussard` can program a KNX Data Secure
   device through its tool key (`--keyring <file.knxkeys>` with
-  `BUSSARD_KEYRING_PASSWORD`, or `--tool-key` for tests) on `flash`, `describe`
-  and `apply`; `bussard keyring` inspects an ETS export. Each secured
+  `BUSSARD_KEYRING_PASSWORD`, or `--tool-key` for tests) on `flash` and
+  `apply`, and read one back with `describe`, `plan` and `reconstruct`;
+  `bussard keyring` inspects an ETS export. Each secured
   connection starts with the same S-A_Sync handshake ETS uses, and a secured
   `flash` or `apply` also programs the security object (group key table,
   group-object security flags). The crypto, the handshake and the
@@ -550,10 +551,8 @@ sent to a device.
   request before giving up, because the security layer comes up later than the
   transport layer. Still inferred (one device, one group key): the packing of
   several group-key entries and the meaning of the security-flag bits beyond
-  `0x03`. `reconstruct` and `plan` do not take a key yet, and `monitor`,
-  `read` and `write` do not handle secured group communication yet
-  ([#170](https://github.com/tmbo/bussard/issues/170),
-  [#172](https://github.com/tmbo/bussard/issues/172)). KNXnet/IP Secure
+  `0x03`. `monitor`, `read` and `write` do not handle secured group
+  communication yet ([#172](https://github.com/tmbo/bussard/issues/172)). KNXnet/IP Secure
   (encrypted tunnel sessions to a Secure-only interface) is not implemented; a
   Secure-only interface refuses `bussard`. Phase B of
   [issue #71](https://github.com/tmbo/bussard/issues/71) tracks it.

@@ -22,6 +22,8 @@ bussard-mgmt = { workspace = true }
 # The table plan / backup / write flow behind the programming tier (issue #118),
 # shared with `bussard plan` and `bussard apply`.
 bussard-download = { workspace = true }
+# The Data Secure send-sequence high-water mark for a secured plan read (#170).
+bussard-secure = { workspace = true }
 # SHA-256 for the programming tier's plan digest. MIT OR Apache-2.0.
 sha2 = { workspace = true }
 tokio = { workspace = true }
