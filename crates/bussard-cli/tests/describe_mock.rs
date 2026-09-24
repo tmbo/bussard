@@ -99,19 +99,37 @@ fn gateway_device(device: MockDevice) -> bussard_testkit::MockDevice {
 struct TempModel(PathBuf);
 
 impl TempModel {
-    /// Creates `<tmp>/<name>-<pid>/knx` with an empty link set and, when
-    /// `security` is given, a `devices/` entry for 1.1.12 carrying it.
+    /// Creates `<tmp>/<name>-<pid>/knx` and, when `security` is given (TOML
+    /// `key = value` lines), a device 1.1.12 carrying it: `activated` and
+    /// `secure_commissioning` in its file's `[security]`, the device facts
+    /// (`secure_capable`, `has_fdsk_certificate`, `sequence_number`) in its
+    /// `bussard.lock` entry.
     fn new(name: &str, security: Option<&str>) -> std::io::Result<Self> {
         let root = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
         let dir = root.join("knx");
         std::fs::create_dir_all(&dir)?;
-        std::fs::write(dir.join("links.yaml"), "links: {}\n")?;
         if let Some(security) = security {
+            let (intent, facts): (Vec<&str>, Vec<&str>) = security
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .partition(|l| {
+                    l.starts_with("activated") || l.starts_with("secure_commissioning")
+                });
+            let mut file = "address = \"1.1.12\"\nname = \"Secure module\"\n".to_string();
+            if !intent.is_empty() {
+                file.push_str(&format!("\n[security]\n{}\n", intent.join("\n")));
+            }
             std::fs::create_dir_all(dir.join("devices"))?;
-            std::fs::write(
-                dir.join("devices").join("secure.yaml"),
-                format!("address: 1.1.12\nname: Secure module\nsecurity:\n{security}"),
-            )?;
+            std::fs::write(dir.join("devices").join("1.1.12.toml"), file)?;
+            if !facts.is_empty() {
+                std::fs::write(
+                    dir.join("bussard.lock"),
+                    format!(
+                        "version = 1\n\n[[device]]\naddress = \"1.1.12\"\n{}\n",
+                        facts.join("\n")
+                    ),
+                )?;
+            }
         }
         Ok(TempModel(root))
     }
@@ -158,7 +176,7 @@ fn target() -> TestResult<IndividualAddress> {
 fn test_describe_refused_plain_walk_fails_with_hint_and_json_field() -> TestResult {
     let model = TempModel::new(
         "bussard-describe-refused",
-        Some("  secure_capable: true\n  has_fdsk_certificate: true\n  sequence_number: 42\n"),
+        Some("secure_capable = true\nhas_fdsk_certificate = true\nsequence_number = 42\n"),
     )?;
     let device = MockDevice {
         address: target()?,
@@ -257,7 +275,7 @@ fn test_describe_answering_device_succeeds_without_secure_block() -> TestResult 
 
 #[test]
 fn test_describe_answering_secure_capable_device_reports_answered() -> TestResult {
-    let model = TempModel::new("bussard-describe-capable", Some("  secure_capable: true\n"))?;
+    let model = TempModel::new("bussard-describe-capable", Some("secure_capable = true\n"))?;
     let device = MockDevice {
         address: target()?,
         object_types: vec![OT_DEVICE],

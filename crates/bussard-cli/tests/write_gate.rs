@@ -180,9 +180,8 @@ fn model_dir(tag: &str) -> std::io::Result<std::path::PathBuf> {
     std::fs::create_dir_all(&dir)?;
     std::fs::write(
         dir.join("groups.toml"),
-        "groups:\n  \"3/0/4\":\n    name: Living Room Blind Move\n    dpt: \"1.008\"\n",
+        "groups = [\n  { address = \"3/0/4\", name = \"Living Room Blind Move\", dpt = \"1.008\" },\n]\n",
     )?;
-    std::fs::write(dir.join("links.yaml"), "links: {}\n")?;
     Ok(dir)
 }
 

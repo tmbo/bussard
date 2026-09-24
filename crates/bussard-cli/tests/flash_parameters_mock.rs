@@ -572,26 +572,26 @@ fn build_knxprod(dir: &Path, app_xml: &str) -> Result<Option<PathBuf>, Box<dyn E
 }
 
 /// The model: 1.1.4 runs the synthetic app with one link and `params` as its
-/// `parameters:` block (YAML lines, indented by two).
+/// `[parameters]` table (TOML lines).
 fn write_model(dir: &Path, params: &str) -> TestResult {
     std::fs::create_dir_all(dir.join("devices"))?;
     std::fs::write(
         dir.join("bussard.toml"),
-        "connection:\n  transport: tunnel\n",
+        "[connection]\ntransport = \"tunnel\"\n",
     )?;
     std::fs::write(
-        dir.join("links.yaml"),
-        "links:\n  1.1.4:\n  - object: 1\n    listen:\n    - 1/2/0\n",
+        dir.join("bussard.lock"),
+        "version = 1\n\n[[device]]\naddress = \"1.1.4\"\napplication = \"M-00FA_A-0002\"\nmask = \"07B0\"\n",
     )?;
     let block = if params.is_empty() {
         String::new()
     } else {
-        format!("parameters:\n{params}")
+        format!("\n[parameters]\n{params}")
     };
     std::fs::write(
-        dir.join("devices").join("1.1.4-test.yaml"),
+        dir.join("devices").join("1.1.4.toml"),
         format!(
-            "address: 1.1.4\nname: Parameter test\nproduct:\n  application_ref: M-00FA_A-0002\n  mask: 07B0\n{block}"
+            "address = \"1.1.4\"\nname = \"Parameter test\"\n{block}\n[links]\n1.listen = [\"1/2/0\"]\n"
         ),
     )?;
     Ok(())
@@ -609,7 +609,7 @@ fn test_flash_parameters_only_writes_only_the_changed_octet() -> TestResult {
     let Some(bench) = Bench::start(
         "params-only",
         MockDevice::running([7, 0]),
-        "  thr@P-0_R-1: \"12\"\n",
+        "\"thr@P-0_R-1\" = \"12\"\n",
     )?
     else {
         return Ok(());
@@ -669,7 +669,7 @@ fn test_flash_parameters_only_piped_output_is_unchanged() -> TestResult {
     let Some(bench) = Bench::start(
         "params-piped",
         MockDevice::running([7, 0]),
-        "  thr@P-0_R-1: \"12\"\n",
+        "\"thr@P-0_R-1\" = \"12\"\n",
     )?
     else {
         return Ok(());
@@ -735,7 +735,7 @@ fn test_flash_parameters_only_with_nothing_to_change_touches_nothing() -> TestRe
     let Some(bench) = Bench::start(
         "params-noop",
         MockDevice::running([12, 0]),
-        "  thr@P-0_R-1: \"12\"\n",
+        "\"thr@P-0_R-1\" = \"12\"\n",
     )?
     else {
         return Ok(());
@@ -760,7 +760,7 @@ fn test_flash_parameters_only_with_nothing_to_change_touches_nothing() -> TestRe
 fn test_flash_parameters_only_refuses_another_application() -> TestResult {
     let mut device = MockDevice::running([7, 0]);
     device.program_version = [0x00, 0x83, 0x00, 0x42, 0x10];
-    let Some(bench) = Bench::start("params-other-app", device, "  thr@P-0_R-1: \"12\"\n")? else {
+    let Some(bench) = Bench::start("params-other-app", device, "\"thr@P-0_R-1\" = \"12\"\n")? else {
         return Ok(());
     };
     let out = bench.bussard(&[
@@ -790,7 +790,7 @@ fn test_flash_parameters_only_refuses_another_application() -> TestResult {
 fn test_flash_parameters_only_refuses_an_unloaded_device() -> TestResult {
     let mut device = MockDevice::running([7, 0]);
     device.load_states.insert(APP_OBJECT, LS_UNLOADED);
-    let Some(bench) = Bench::start("params-unloaded", device, "  thr@P-0_R-1: \"12\"\n")? else {
+    let Some(bench) = Bench::start("params-unloaded", device, "\"thr@P-0_R-1\" = \"12\"\n")? else {
         return Ok(());
     };
     let out = bench.bussard(&[
@@ -817,7 +817,7 @@ fn test_flash_parameters_only_refuses_a_group_object_change() -> TestResult {
     let Some(bench) = Bench::start(
         "params-visibility",
         MockDevice::running([7, 0]),
-        "  obj2@P-1_R-2: \"1\"\n",
+        "\"obj2@P-1_R-2\" = \"1\"\n",
     )?
     else {
         return Ok(());
@@ -851,7 +851,7 @@ fn test_plan_and_reconstruct_read_back_the_parameters() -> TestResult {
     let Some(bench) = Bench::start(
         "params-readback",
         MockDevice::running([9, 0]),
-        "  thr@P-0_R-1: \"12\"\n",
+        "\"thr@P-0_R-1\" = \"12\"\n",
     )?
     else {
         return Ok(());
@@ -890,7 +890,7 @@ fn test_reconstruct_tool_key_reads_back_a_secure_device() -> TestResult {
     let Some(bench) = Bench::start(
         "params-secure",
         MockDevice::running([9, 0]).activated(),
-        "  thr@P-0_R-1: \"12\"\n",
+        "\"thr@P-0_R-1\" = \"12\"\n",
     )?
     else {
         return Ok(());
@@ -938,7 +938,7 @@ fn test_plan_tool_key_reads_back_a_secure_device() -> TestResult {
     let Some(bench) = Bench::start(
         "plan-secure",
         MockDevice::running([9, 0]).activated(),
-        "  thr@P-0_R-1: \"12\"\n",
+        "\"thr@P-0_R-1\" = \"12\"\n",
     )?
     else {
         return Ok(());
@@ -1032,7 +1032,7 @@ fn large_preflight(tag: &str, extra: &[&str]) -> Result<Option<Preflight>, Box<d
     let Some(bench) = Bench::start_with_app(
         tag,
         MockDevice::running_large([7, 0], LARGE_SEGMENT, LARGE_BASE, 233).activated(),
-        "  thr@P-0_R-1: \"12\"\n",
+        "\"thr@P-0_R-1\" = \"12\"\n",
         &large_app_xml(LARGE_SEGMENT),
     )?
     else {
@@ -1118,7 +1118,7 @@ fn test_flash_verbose_reports_phase_timings() -> TestResult {
     let Some(bench) = Bench::start(
         "flash-timing",
         MockDevice::running([7, 0]),
-        "  thr@P-0_R-1: \"12\"\n",
+        "\"thr@P-0_R-1\" = \"12\"\n",
     )?
     else {
         return Ok(());

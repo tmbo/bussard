@@ -157,10 +157,11 @@ fn start_gateway(rt: &tokio::runtime::Runtime, device: MockDevice) -> TestResult
 /// The model: objects 20 (matches), 21 (matches), and 22 (a new addition). The
 /// ghost (59 → 4/2/12) is not in the model, so it is a removal.
 fn write_model(dir: &std::path::Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
+    std::fs::create_dir_all(dir.join("devices"))?;
     std::fs::write(
-        dir.join("links.yaml"),
-        "links:\n  1.1.4:\n  - object: 20\n    send: 1/2/0\n  - object: 21\n    listen:\n    - 1/2/1\n  - object: 22\n    listen:\n    - 1/2/2\n",
+        dir.join("devices").join("1.1.4.toml"),
+        "address = \"1.1.4\"\nname = \"Aktor\"\n\n[links]\n\
+         20.send = \"1/2/0\"\n21.listen = [\"1/2/1\"]\n22.listen = [\"1/2/2\"]\n",
     )
 }
 

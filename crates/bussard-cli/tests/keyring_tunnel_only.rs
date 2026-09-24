@@ -81,13 +81,18 @@ impl Scratch {
         let _ = std::fs::remove_dir_all(&root);
         let dir = root.join("knx");
         std::fs::create_dir_all(dir.join("devices"))?;
-        std::fs::write(dir.join("links.yaml"), "links: {}\n")?;
         std::fs::write(
             dir.join("bussard.toml"),
-            format!("connection:\n  transport: tunnel\n{config_extra}"),
+            format!("[connection]\ntransport = \"tunnel\"\n{config_extra}"),
         )?;
         if let Some(body) = device_file {
-            std::fs::write(dir.join("devices").join("device.yaml"), body)?;
+            // The device file is named by the address it declares.
+            let address = body
+                .lines()
+                .find_map(|l| l.strip_prefix("address = "))
+                .map(|a| a.trim_matches('"').to_string())
+                .ok_or("device file without an address")?;
+            std::fs::write(dir.join("devices").join(format!("{address}.toml")), body)?;
         }
         std::fs::write(root.join("keys.knxkeys"), KEYRING)?;
         Ok(Scratch(root))
@@ -201,7 +206,9 @@ async fn test_describe_keyring_listed_device_still_uses_secure_data() -> TestRes
 #[tokio::test(flavor = "multi_thread")]
 async fn test_describe_activated_device_missing_from_keyring_is_refused() -> TestResult {
     let gw = gateway().await?;
-    let device = format!("address: {PLAIN}\nname: Secure module\nsecurity:\n  activated: true\n");
+    let device = format!(
+        "address = \"{PLAIN}\"\nname = \"Secure module\"\n\n[security]\nactivated = true\n"
+    );
     let scratch = Scratch::new("activated", "", Some(&device))?;
     let keyring = scratch.keyring();
     let out = describe(
@@ -229,7 +236,7 @@ async fn test_describe_activated_device_missing_from_keyring_is_refused() -> Tes
 async fn test_describe_uses_the_config_keyring_by_default() -> TestResult {
     let gw = gateway().await?;
     // Relative to the model directory.
-    let scratch = Scratch::new("config", "  keyring: ../keys.knxkeys\n", None)?;
+    let scratch = Scratch::new("config", "keyring = \"../keys.knxkeys\"\n", None)?;
     let out = describe(PLAIN, &scratch.dir(), gw.addr().to_string(), &[]).await?;
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{stderr}");
@@ -242,7 +249,7 @@ async fn test_describe_uses_the_config_keyring_by_default() -> TestResult {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_describe_keyring_flag_overrides_the_config_keyring() -> TestResult {
     let gw = gateway().await?;
-    let scratch = Scratch::new("override", "  keyring: missing.knxkeys\n", None)?;
+    let scratch = Scratch::new("override", "keyring = \"missing.knxkeys\"\n", None)?;
     // The configured file does not exist: without the flag that is the error.
     let out = describe(PLAIN, &scratch.dir(), gw.addr().to_string(), &[]).await?;
     let stderr = String::from_utf8_lossy(&out.stderr);

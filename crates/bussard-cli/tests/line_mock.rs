@@ -144,20 +144,13 @@ fn write_model(dir: &Path) -> anyhow::Result<()> {
         ("1.1.6", "Schaltaktor Kueche"),
     ] {
         std::fs::write(
-            dir.join("devices").join(format!("{addr}.yaml")),
-            format!("address: {addr}\nname: {name}\n"),
+            dir.join("devices").join(format!("{addr}.toml")),
+            format!(
+                "address = \"{addr}\"\nname = \"{name}\"\n\n[links]\n\
+                 20.send = \"1/2/0\"\n21.listen = [\"1/2/1\"]\n22.listen = [\"1/2/2\"]\n"
+            ),
         )?;
     }
-    let links = "links:\n".to_string()
-        + &["1.1.4", "1.1.5", "1.1.6"]
-            .iter()
-            .map(|a| {
-                format!(
-                    "  {a}:\n  - object: 20\n    send: 1/2/0\n  - object: 21\n    listen:\n    - 1/2/1\n  - object: 22\n    listen:\n    - 1/2/2\n"
-                )
-            })
-            .collect::<String>();
-    std::fs::write(dir.join("links.yaml"), links)?;
     Ok(())
 }
 

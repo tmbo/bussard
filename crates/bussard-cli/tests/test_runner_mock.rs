@@ -84,29 +84,35 @@ fn write_fixture(dir: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     std::fs::write(
         dir.join("groups.toml"),
-        "groups:\n\
-         \x20 \"1/0/10\":\n    name: Kitchen ceiling light\n    dpt: \"1.001\"\n\
-         \x20 \"1/0/11\":\n    name: Hall light\n    dpt: \"1.001\"\n\
-         \x20 \"1/0/12\":\n    name: Kitchen ceiling light status\n    dpt: \"1.001\"\n\
-         \x20 \"1/0/13\":\n    name: Hall light status\n    dpt: \"1.001\"\n\
-         \x20 \"3/1/0\":\n    name: Wind alarm\n    dpt: \"1.005\"\n    protected: true\n",
+        "groups = [\n\
+         \x20 { address = \"1/0/10\", name = \"Kitchen ceiling light\", dpt = \"1.001\" },\n\
+         \x20 { address = \"1/0/11\", name = \"Hall light\", dpt = \"1.001\" },\n\
+         \x20 { address = \"1/0/12\", name = \"Kitchen ceiling light status\", dpt = \"1.001\" },\n\
+         \x20 { address = \"1/0/13\", name = \"Hall light status\", dpt = \"1.001\" },\n\
+         \x20 { address = \"3/1/0\", name = \"Wind alarm\", dpt = \"1.005\", protected = true },\n\
+         ]\n",
     )?;
-    std::fs::write(dir.join("links.yaml"), "links: {}\n")?;
     std::fs::write(
         dir.join("tests.toml"),
-        "tests:\n\
-         \x20 - name: Kitchen light switches and reports\n\
-         \x20   write: { ga: \"1/0/10\", value: on }\n\
-         \x20   expect: { ga: \"1/0/12\", value: on, within: 5s }\n\
-         \x20 - name: Hall light reports what it was told\n\
-         \x20   write: { ga: \"1/0/11\", value: on }\n\
-         \x20   expect: { ga: \"1/0/13\", value: on, within: 2s }\n\
-         \x20 - name: Wind alarm raises the blinds\n\
-         \x20   write: { ga: \"3/1/0\", value: alarm }\n\
-         \x20   expect: { ga: \"3/2/0\", value: on, within: 1s }\n\
-         \x20 - name: Rain sensor reports\n\
-         \x20   manual: Pour water on the rain sensor\n\
-         \x20   expect: { ga: \"1/0/12\", value: on, within: 1s }\n",
+        "[[tests]]\n\
+         name = \"Kitchen light switches and reports\"\n\
+         write = { ga = \"1/0/10\", value = \"on\" }\n\
+         expect = { ga = \"1/0/12\", value = \"on\", within = \"5s\" }\n\
+         \n\
+         [[tests]]\n\
+         name = \"Hall light reports what it was told\"\n\
+         write = { ga = \"1/0/11\", value = \"on\" }\n\
+         expect = { ga = \"1/0/13\", value = \"on\", within = \"2s\" }\n\
+         \n\
+         [[tests]]\n\
+         name = \"Wind alarm raises the blinds\"\n\
+         write = { ga = \"3/1/0\", value = \"alarm\" }\n\
+         expect = { ga = \"3/2/0\", value = \"on\", within = \"1s\" }\n\
+         \n\
+         [[tests]]\n\
+         name = \"Rain sensor reports\"\n\
+         manual = \"Pour water on the rain sensor\"\n\
+         expect = { ga = \"1/0/12\", value = \"on\", within = \"1s\" }\n",
     )?;
     Ok(())
 }
