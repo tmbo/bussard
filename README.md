@@ -14,7 +14,7 @@ All the configuration for your KNX setup is stored in TOML files, ready for your
       | import                   | import-product
       v                          v
  +--------------------------------------+
- |  TOML model in git (knx/)            |   reviewable diffs,
+ |  Configuration in TOML text files    |   reviewable diffs,
  +------------------+-------------------+   humans + LLMs edit it
      write path     |     observe path
   validate . plan   |   monitor . capture
