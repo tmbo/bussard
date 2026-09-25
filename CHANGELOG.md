@@ -117,6 +117,15 @@ entry supersedes it and is not a diff against it.
   `PID_IO_LIST` where a System B device offers it, with a fallback to the
   walk. `describe --full` walks the property descriptions again;
   `--refresh-facts` re-reads everything.
+- System B table read-back reads the address and association tables from
+  memory at the negotiated chunk when that takes fewer requests than
+  `PID_TABLE` property reads (#223). A 400-address, 1,333-association table
+  set on a Data Secure mock drops from 125 requests (25.7 s at 200 ms per
+  request) to 40 (8.4 s). Small tables keep the property reads, so the frames
+  are unchanged for them. The memory read falls back to `PID_TABLE` on a
+  missing reference, a refused or unanswered read, or a count mismatch.
+  `reconstruct`, `plan`, `apply`, `backup`, `line` and the MCP plan tool
+  share the reader.
 
 **Product data**
 
