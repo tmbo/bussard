@@ -1047,6 +1047,66 @@ fn test_plan_and_reconstruct_read_back_the_parameters() -> TestResult {
     Ok(())
 }
 
+/// Issue #215: `reconstruct --no-parameters` reads the links and tables only:
+/// no parameter memory is read and the report's tables are the ones the full
+/// run reports.
+#[test]
+fn test_reconstruct_no_parameters_reads_the_tables_only() -> TestResult {
+    let mut runs = Vec::new();
+    for no_parameters in [false, true] {
+        let Some(bench) = Bench::start(
+            if no_parameters {
+                "recon-noparams"
+            } else {
+                "recon-params"
+            },
+            MockDevice::running([9, 0]),
+            "\"thr@P-0_R-1\" = \"12\"\n",
+        )?
+        else {
+            return Ok(());
+        };
+        let mut args = vec!["reconstruct", "1.1.4", "--json"];
+        if no_parameters {
+            args.push("--no-parameters");
+        } else {
+            args.extend_from_slice(&["--product", bench.product()?]);
+        }
+        let started = std::time::Instant::now();
+        let out = bench.bussard(&args)?;
+        let elapsed = started.elapsed();
+        let (stdout, stderr) = text(&out);
+        assert!(out.status.success(), "stdout:\n{stdout}\nstderr:\n{stderr}");
+        let mut json: serde_json::Value = serde_json::from_str(&stdout)?;
+        let parameters = json
+            .as_object_mut()
+            .and_then(|o| o.remove("parameters"))
+            .unwrap_or(serde_json::Value::Null);
+        let dev = bench.device();
+        let memory_reads = dev
+            .served_apcis
+            .iter()
+            .filter(|a| **a & 0x3C0 == apci::A_MEMORY_READ || **a == apci::A_MEMORY_EXTENDED_READ)
+            .count();
+        println!(
+            "reconstruct no_parameters={no_parameters}: {} requests, {memory_reads} memory \
+             reads, {:.2} s",
+            dev.wire_apcis.len(),
+            elapsed.as_secs_f64()
+        );
+        runs.push((json, parameters, memory_reads, dev.wire_apcis.len()));
+    }
+    let (full, full_params, full_reads, full_requests) = &runs[0];
+    let (tables_only, no_params, reads, requests) = &runs[1];
+    assert_eq!(tables_only, full, "the tables report is the same");
+    assert!(full_params.is_object(), "{full_params}");
+    assert!(no_params.is_null(), "{no_params}");
+    assert!(*full_reads > 0);
+    assert_eq!(*reads, 0);
+    assert!(requests < full_requests);
+    Ok(())
+}
+
 #[test]
 fn test_reconstruct_tool_key_reads_back_a_secure_device() -> TestResult {
     let Some(bench) = Bench::start(

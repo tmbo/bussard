@@ -114,6 +114,7 @@ pub mod tools_groups;
 pub mod tools_learn;
 pub mod tools_model;
 pub mod tools_program;
+pub mod warm;
 
 use std::path::PathBuf;
 use std::sync::Arc;

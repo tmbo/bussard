@@ -672,6 +672,11 @@ enum Command {
         /// the model's application ref, else the order number, else the sole one).
         #[arg(long, value_name = "REF", conflicts_with = "line")]
         application: Option<String>,
+        /// Read the links and tables only: skip the parameter read-back and the
+        /// product parse behind it (issue #215). On a large parameter segment
+        /// that read-back is most of the command's time.
+        #[arg(long, conflicts_with_all = ["line", "product", "application"])]
+        no_parameters: bool,
         /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
         /// escape hatch for a simulator or a device with a synthetic key. Prefer
         /// `--keyring` for a real installation: a process argument is visible to
@@ -1421,6 +1426,7 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
             out,
             product,
             application,
+            no_parameters,
             tool_key,
         } => {
             let overrides = g.mgmt_with_facts();
@@ -1440,6 +1446,7 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
                             product: product.as_deref(),
                             application: application.as_deref(),
                         },
+                        no_parameters,
                         g.tool_keys(tool_key.as_deref()),
                     )
                 }

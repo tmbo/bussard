@@ -45,6 +45,8 @@ use crate::tools;
 pub struct BussardMcp {
     state: Arc<SharedState>,
     tool_router: ToolRouter<BussardMcp>,
+    /// The warm management connection shared by every clone (issue #215).
+    warm: crate::warm::WarmConnection,
 }
 
 impl BussardMcp {
@@ -90,12 +92,22 @@ impl BussardMcp {
                 tool_router.remove_route(name);
             }
         }
-        BussardMcp { state, tool_router }
+        BussardMcp {
+            state,
+            tool_router,
+            warm: crate::warm::WarmConnection::new(),
+        }
     }
 
     /// The shared state (for tests and the runner).
     pub fn state(&self) -> &Arc<SharedState> {
         &self.state
+    }
+
+    /// The warm management connection (issue #215). Every tool that opens a
+    /// management connection holds its lock for the session.
+    pub(crate) fn warm(&self) -> &crate::warm::WarmConnection {
+        &self.warm
     }
 }
 
@@ -614,26 +626,60 @@ impl BussardMcp {
             tool_key,
             ..L4Options::default()
         };
-        let mut l4 = match service.connect_l4(target, &options).await {
-            Ok(l4) => l4,
-            Err(ServiceError::Lease(err)) => {
-                return ok(json!({
-                    "address": target.to_string(),
-                    "ok": false,
-                    "reason": format!("could not lease the bus: {err}"),
-                }));
+        // The warm connection (issue #215): a call to the device the previous
+        // call talked to, within the idle window and on the same tunnel, reuses
+        // its connection; anything else kept is disconnected first. The lock is
+        // held for the whole session, so management calls stay sequential.
+        let secure = options.tool_key.is_some();
+        let mut warm = self.warm.lock().await;
+        let reused = warm
+            .take(target, secure, service.handle().link_losses())
+            .await;
+        let mut result = Err(String::new());
+        let mut kept = None;
+        if let Some(mut l4) = reused {
+            result = describe_over_l4(&mut l4).await;
+            match &result {
+                Ok(_) => kept = Some(l4),
+                // A failure on a reused connection is repeated once on a fresh
+                // one: the device may have dropped it in the meantime.
+                Err(reason) => {
+                    tracing::debug!(
+                        "{target}: the warm connection failed ({reason}); reconnecting"
+                    );
+                    let _ = l4.disconnect().await;
+                }
             }
-            Err(err) => {
-                return ok(json!({
-                    "address": target.to_string(),
-                    "ok": false,
-                    "reason": format!("could not connect: {err}"),
-                }));
+        }
+        if kept.is_none() {
+            let mut l4 = match service.connect_l4(target, &options).await {
+                Ok(l4) => l4,
+                Err(ServiceError::Lease(err)) => {
+                    return ok(json!({
+                        "address": target.to_string(),
+                        "ok": false,
+                        "reason": format!("could not lease the bus: {err}"),
+                    }));
+                }
+                Err(err) => {
+                    return ok(json!({
+                        "address": target.to_string(),
+                        "ok": false,
+                        "reason": format!("could not connect: {err}"),
+                    }));
+                }
+            };
+            result = describe_over_l4(&mut l4).await;
+            if result.is_ok() {
+                kept = Some(l4);
+            } else {
+                let _ = l4.disconnect().await;
             }
-        };
-
-        let result = describe_over_l4(&mut l4).await;
-        let _ = l4.disconnect().await;
+        }
+        if let Some(l4) = kept {
+            warm.keep(l4, target, secure, service.handle().link_losses());
+        }
+        drop(warm);
 
         match result {
             Ok(objects) => ok(json!({

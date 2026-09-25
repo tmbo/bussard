@@ -321,3 +321,231 @@ async fn _serve_stdio_is_public(state: Arc<SharedState>, config: ConnectionConfi
         let _ = serve_stdio(state, service).await;
     }
 }
+
+// --- The warm management connection (issue #215) ---------------------------
+
+/// A describable System B device: four interface objects with a few property
+/// descriptions each, answering after `delay`. Counts the `T_Disconnect`s it
+/// sees in `disconnects`.
+fn describable_device(
+    address: &str,
+    delay: Option<Duration>,
+    disconnects: Arc<std::sync::atomic::AtomicUsize>,
+) -> TestResult<bussard_testkit::MockDevice> {
+    let mut dev = bussard_testkit::MockDevice::new(ia(address)?)
+        .with_object_types(&[0, 1, 2, 3])
+        .with_property(0, 56, 2, &55u16.to_be_bytes())
+        .with_control_hook(move |_, kind| {
+            if kind == bussard_transport::tpci::TpciKind::Disconnect {
+                disconnects.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            Vec::new()
+        });
+    for index in 0..4u8 {
+        let pids: &[u8] = if index == 0 { &[1, 11, 56] } else { &[1, 5, 7] };
+        let descriptions: Vec<bussard_testkit::MockPropertyDescription> = pids
+            .iter()
+            .map(|&pid| bussard_testkit::MockPropertyDescription {
+                pid,
+                pdt: 0x04,
+                writable: false,
+                max_elements: 1,
+                read_level: 3,
+                write_level: 1,
+            })
+            .collect();
+        dev = dev.with_property_descriptions(index, &descriptions);
+    }
+    Ok(match delay {
+        Some(delay) => dev.with_response_delay(delay),
+        None => dev,
+    })
+}
+
+/// One `knx_describe_device` call: its result, the requests the device saw
+/// for it and its wall-clock.
+async fn timed_describe(
+    client: &Client,
+    gw: &MockGateway,
+    address: &str,
+) -> TestResult<(serde_json::Value, usize, Duration)> {
+    let before = gw.with_device(ia(address)?, |d| d.requests.len())?;
+    let started = std::time::Instant::now();
+    let result = call_tool(
+        client,
+        "knx_describe_device",
+        serde_json::json!({ "address": address }),
+        Duration::from_secs(30),
+    )
+    .await?;
+    let elapsed = started.elapsed();
+    let after = gw.with_device(ia(address)?, |d| d.requests.len())?;
+    Ok((result, after - before, elapsed))
+}
+
+/// Issue #215: two consecutive `knx_describe_device` calls to one device share
+/// one management connection (one `T_Connect`, no second authorize or max-APDU
+/// read) and return the same objects. After the idle window the server has
+/// closed it, and the next call connects again.
+#[tokio::test]
+async fn describe_reuses_the_warm_connection_within_the_idle_window() -> TestResult {
+    let disconnects = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let gw = MockGateway::builder()
+        .channel(0x4C)
+        .keep_serving()
+        .idle_timeout(Duration::from_secs(60))
+        .device(describable_device(
+            "1.1.12",
+            None,
+            Arc::clone(&disconnects),
+        )?)
+        .start()
+        .await?;
+    let (client, server_task) =
+        connect_client_over(state_for()?, ConnectionConfig::tunnel(gw.addr())).await?;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let (first, first_requests, _) = timed_describe(&client, &gw, "1.1.12").await?;
+    let (second, second_requests, _) = timed_describe(&client, &gw, "1.1.12").await?;
+    assert_eq!(first["ok"], true, "{first}");
+    assert_eq!(first, second);
+    assert_eq!(gw.with_device(ia("1.1.12")?, |d| d.connects)?, 1);
+    // The second call skips the authorize and the max-APDU read.
+    assert_eq!(second_requests + 2, first_requests);
+    assert_eq!(disconnects.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+    // The idle close: the kept connection is disconnected after the window.
+    tokio::time::sleep(bussard_mcp::warm::WARM_IDLE_LIMIT + Duration::from_millis(500)).await;
+    assert_eq!(disconnects.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let (third, third_requests, _) = timed_describe(&client, &gw, "1.1.12").await?;
+    assert_eq!(third, first);
+    assert_eq!(third_requests, first_requests);
+    assert_eq!(gw.with_device(ia("1.1.12")?, |d| d.connects)?, 2);
+
+    client.cancel().await?;
+    server_task.abort();
+    Ok(())
+}
+
+/// Issue #215: a call to another device disconnects the warm connection first
+/// (one device at a time), and a call back to the first device connects again.
+#[tokio::test]
+async fn describe_of_another_device_releases_the_warm_connection() -> TestResult {
+    let (a_disconnects, b_disconnects) = (
+        Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    );
+    let gw = MockGateway::builder()
+        .channel(0x4D)
+        .keep_serving()
+        .idle_timeout(Duration::from_secs(60))
+        .device(describable_device(
+            "1.1.12",
+            None,
+            Arc::clone(&a_disconnects),
+        )?)
+        .device(describable_device(
+            "1.1.13",
+            None,
+            Arc::clone(&b_disconnects),
+        )?)
+        .start()
+        .await?;
+    let (client, server_task) =
+        connect_client_over(state_for()?, ConnectionConfig::tunnel(gw.addr())).await?;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let (a, _, _) = timed_describe(&client, &gw, "1.1.12").await?;
+    assert_eq!(a["ok"], true, "{a}");
+    let (b, _, _) = timed_describe(&client, &gw, "1.1.13").await?;
+    assert_eq!(b["ok"], true, "{b}");
+    // 1.1.12's connection was closed before 1.1.13 was connected.
+    assert_eq!(a_disconnects.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let (a_again, _, _) = timed_describe(&client, &gw, "1.1.12").await?;
+    assert_eq!(a_again, a);
+    assert_eq!(gw.with_device(ia("1.1.12")?, |d| d.connects)?, 2);
+    assert_eq!(b_disconnects.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    client.cancel().await?;
+    server_task.abort();
+    Ok(())
+}
+
+/// Issue #215 fallback: when the device has dropped the warm connection, the
+/// call fails on it and is repeated on a fresh connection, with the same
+/// result as a fresh call.
+#[tokio::test]
+async fn describe_on_a_dropped_warm_connection_reconnects() -> TestResult {
+    let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hook_armed = Arc::clone(&armed);
+    let device = describable_device(
+        "1.1.12",
+        None,
+        Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    )?
+    .with_hook(move |_, _, _| {
+        // Once armed, the next request is answered with a T_Disconnect: the
+        // device has closed the connection.
+        hook_armed
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+            .then(|| bussard_testkit::Reaction::Script(vec![bussard_testkit::Step::Control(0x81)]))
+    });
+    let gw = MockGateway::builder()
+        .channel(0x4F)
+        .keep_serving()
+        .idle_timeout(Duration::from_secs(60))
+        .device(device)
+        .start()
+        .await?;
+    let (client, server_task) =
+        connect_client_over(state_for()?, ConnectionConfig::tunnel(gw.addr())).await?;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let (first, _, _) = timed_describe(&client, &gw, "1.1.12").await?;
+    assert_eq!(first["ok"], true, "{first}");
+    armed.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (second, _, _) = timed_describe(&client, &gw, "1.1.12").await?;
+    assert_eq!(second, first);
+    assert_eq!(gw.with_device(ia("1.1.12")?, |d| d.connects)?, 2);
+
+    client.cancel().await?;
+    server_task.abort();
+    Ok(())
+}
+
+/// Measurement for issue #215 (ignored): two consecutive
+/// `knx_describe_device` calls with 200 ms per answer. The first call is what
+/// every call cost before the warm connection.
+#[tokio::test]
+#[ignore = "measurement: 200 ms per answer"]
+async fn measure_two_consecutive_describes() -> TestResult {
+    let gw = MockGateway::builder()
+        .channel(0x4E)
+        .keep_serving()
+        .idle_timeout(Duration::from_secs(60))
+        .device(describable_device(
+            "1.1.12",
+            Some(Duration::from_millis(200)),
+            Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        )?)
+        .start()
+        .await?;
+    let (client, server_task) =
+        connect_client_over(state_for()?, ConnectionConfig::tunnel(gw.addr())).await?;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let (_, n1, t1) = timed_describe(&client, &gw, "1.1.12").await?;
+    let (_, n2, t2) = timed_describe(&client, &gw, "1.1.12").await?;
+    println!(
+        "MEASURE two describes: first {n1} requests {:.2} s, second {n2} requests {:.2} s; \
+         before the warm connection 2 x first = {} requests {:.2} s, now {} requests {:.2} s",
+        t1.as_secs_f64(),
+        t2.as_secs_f64(),
+        2 * n1,
+        2.0 * t1.as_secs_f64(),
+        n1 + n2,
+        (t1 + t2).as_secs_f64()
+    );
+    client.cancel().await?;
+    server_task.abort();
+    Ok(())
+}
