@@ -76,7 +76,7 @@ fn write_model(dir: &std::path::Path) -> std::io::Result<()> {
     )?;
     std::fs::write(
         dir.join("bussard.lock"),
-        "version = 1\n\
+        "version = 2\n\
          \n\
          [[device]]\n\
          address = \"1.1.30\"\n\

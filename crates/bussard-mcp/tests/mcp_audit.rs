@@ -209,7 +209,7 @@ async fn test_knx_audit_live_probes_secure_devices() -> TestResult {
         "[connection]\ntransport = \"tunnel\"\ngateway = \"127.0.0.1:3671\"\n",
     )?;
     std::fs::write(dir.join("groups.toml"), "groups = []\n")?;
-    let mut lock = String::from("version = 1\n");
+    let mut lock = String::from("version = 2\n");
     for (addr, activated) in [("1.1.12", true), ("1.1.13", false)] {
         std::fs::write(
             dir.join("devices").join(format!("{addr}.toml")),

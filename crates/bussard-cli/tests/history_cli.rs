@@ -33,7 +33,7 @@ fn model_dir(tag: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
     std::fs::write(dir.join("groups.toml"), BASE_GROUPS)?;
     std::fs::write(
         dir.join("bussard.lock"),
-        "version = 1\nsource = \"home.knxproj\"\n",
+        "version = 2\nsource = \"home.knxproj\"\n",
     )?;
     Ok(dir)
 }

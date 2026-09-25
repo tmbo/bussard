@@ -262,6 +262,17 @@ impl RawType {
     }
 }
 
+/// Where the product models live under a model directory: regenerated data
+/// under `.bussard/` (issue #228), derived from the archives in `products/`.
+pub const MODELS_DIR: &str = ".bussard/models";
+
+/// The product-model directories of `dir`, in lookup order. The location
+/// earlier versions used (`<dir>/models/`) is not read: those models
+/// regenerate from `products/`.
+pub fn models_dirs(dir: &Path) -> [std::path::PathBuf; 1] {
+    [dir.join(MODELS_DIR)]
+}
+
 /// The product models available for validation, keyed by application ref, loaded
 /// lazily from `<dir>/models/*.yaml`.
 ///
@@ -279,12 +290,12 @@ impl ProductModels {
     /// set when the directory is absent. Individual files that fail to parse are
     /// skipped (their app then reads as "no model", an info-level note).
     pub fn load(dir: &Path) -> Self {
-        let models_dir = dir.join("models");
         let mut by_app_ref = BTreeMap::new();
-        let Ok(entries) = std::fs::read_dir(&models_dir) else {
-            return Self::default();
-        };
-        for entry in entries.flatten() {
+        let entries = models_dirs(dir)
+            .into_iter()
+            .filter_map(|d| std::fs::read_dir(d).ok())
+            .flat_map(|rd| rd.flatten());
+        for entry in entries {
             let path = entry.path();
             let is_yaml = path
                 .extension()
@@ -299,6 +310,9 @@ impl ProductModels {
             let Ok(text) = std::fs::read_to_string(&path) else {
                 continue;
             };
+            if by_app_ref.contains_key(app_ref) {
+                continue;
+            }
             if let Ok(model) = ProductModel::from_yaml(&text, app_ref) {
                 by_app_ref.insert(app_ref.to_string(), model);
             }
@@ -310,13 +324,15 @@ impl ProductModels {
     /// like [`ProductModels::load`]): what a model load or save needs to
     /// translate enum labels, without parsing every cached model.
     pub fn load_apps<'a>(dir: &Path, app_refs: impl IntoIterator<Item = &'a str>) -> Self {
-        let models_dir = dir.join("models");
+        let dirs = models_dirs(dir);
         let mut by_app_ref = BTreeMap::new();
         for app_ref in app_refs {
             if by_app_ref.contains_key(app_ref) || app_ref.contains(['/', '\\']) {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(models_dir.join(format!("{app_ref}.yaml")))
+            let Some(text) = dirs
+                .iter()
+                .find_map(|d| std::fs::read_to_string(d.join(format!("{app_ref}.yaml"))).ok())
             else {
                 continue;
             };

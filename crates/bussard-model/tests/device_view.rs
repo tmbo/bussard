@@ -10,7 +10,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 const APP: &str = "M-0004_A-20DE-22-C7D8-O000A";
 
-const LOCK: &str = r#"version = 1
+const LOCK: &str = r#"version = 2
 
 [[device]]
 address = "1.1.47"

@@ -385,10 +385,10 @@ fn adopt_happy_path_writes_rich_device_file() -> TestResult {
         stdout.contains("[channel.taste-1]") && stdout.contains("taste-1.send = \"0/0/1\""),
         "expected a keyed snippet; stdout:\n{stdout}"
     );
-    // The vendor .knxprod is cached under vendor/.
+    // The vendor .knxprod is stored under products/.
     assert!(
         vendor_cached,
-        "expected the vendor file cached under vendor/"
+        "expected the vendor file stored under products/"
     );
     Ok(())
 }
@@ -532,9 +532,9 @@ fn adopt_refuses_product_less_non_tty() -> TestResult {
     Ok(())
 }
 
-/// Whether the vendor `.knxprod` was cached under `<dir>/vendor/`.
+/// Whether the vendor `.knxprod` was stored under `<dir>/products/`.
 fn knxprod_cached(dir: &std::path::Path) -> bool {
-    std::fs::read_dir(dir.join("vendor"))
+    std::fs::read_dir(dir.join("products"))
         .into_iter()
         .flatten()
         .flatten()
@@ -602,7 +602,7 @@ fn adopt_fetches_the_product_data_for_the_reported_order_number() -> TestResult 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let lock = std::fs::read_to_string(model_dir.join("bussard.lock")).unwrap_or_default();
-    let cached = model_dir.join("vendor").join("fixture.knxprod").is_file();
+    let cached = model_dir.join("products").join("fixture.knxprod").is_file();
     let _ = std::fs::remove_dir_all(&tmp);
 
     assert!(
@@ -617,7 +617,7 @@ fn adopt_fetches_the_product_data_for_the_reported_order_number() -> TestResult 
         stdout.contains("using application M-0083_A-1234-11-ABCD-O000A"),
         "{stdout}"
     );
-    assert!(cached, "the download is cached under vendor/");
+    assert!(cached, "the download is stored under products/");
     assert!(
         lock.contains("application = \"M-0083_A-1234-11-ABCD-O000A\""),
         "lock:\n{lock}"

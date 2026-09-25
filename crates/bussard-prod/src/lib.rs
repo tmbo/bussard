@@ -26,6 +26,7 @@ pub mod cache;
 mod container;
 pub mod dpt_map;
 mod error;
+pub mod extract;
 pub mod fetch;
 pub mod flag_map;
 pub mod hardware;
@@ -48,6 +49,7 @@ pub use bussard_ets::master::{
 };
 pub use container::{AppEntry, MAX_INNER_KNXPROD_SIZE};
 pub use error::{ProdError, Result};
+pub use extract::{Extracted, extract_from_project};
 pub use fetch::{DownloadConsent, MAX_DOWNLOAD_BYTES, fetch_entry};
 pub use hardware::HardwareCatalog;
 pub use image::{

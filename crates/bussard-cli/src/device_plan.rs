@@ -60,9 +60,10 @@ pub(crate) fn build(
                     .and_then(|p| p.order_number.clone());
                 notes.push(match order {
                     Some(order) => format!(
-                        "parameters not compared: no product data for {order} under {} (run \
-                         `bussard import-product --order-number {order}`, or pass --product)",
-                        dir.join("vendor").display()
+                        "parameters not compared: bussard.lock pins no product data for {order} \
+                         in {} (run `bussard import-product --order-number {order}`, or pass \
+                         --product)",
+                        dir.join(crate::product_store::PRODUCTS_DIR).display()
                     ),
                     None => "parameters not compared: the device file names no product (order \
                              number), so no product data can be found"

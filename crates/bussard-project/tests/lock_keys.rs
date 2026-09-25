@@ -205,8 +205,11 @@ const MODEL_YAML: &str = "parameters:
 #[test]
 fn test_import_load_save_round_trip_with_product_model() -> TestResult {
     let (dir, model) = imported()?;
-    std::fs::create_dir_all(dir.join("models"))?;
-    std::fs::write(dir.join(format!("models/{APP_ID}.yaml")), MODEL_YAML)?;
+    std::fs::create_dir_all(dir.join(".bussard/models"))?;
+    std::fs::write(
+        dir.join(format!(".bussard/models/{APP_ID}.yaml")),
+        MODEL_YAML,
+    )?;
     let before_file = read(&dir, "devices/1.1.30.toml")?;
     let before_lock = read(&dir, "bussard.lock")?;
     let loaded = Model::load(&dir)?;
@@ -284,9 +287,9 @@ fn test_unlisted_key_resolves_through_the_product_model_else_e023() -> TestResul
     assert_eq!(e023, 2);
 
     // With one they resolve, and a save lists them in the lock.
-    std::fs::create_dir_all(dir.join("models"))?;
+    std::fs::create_dir_all(dir.join(".bussard/models"))?;
     std::fs::write(
-        dir.join(format!("models/{APP_ID}.yaml")),
+        dir.join(format!(".bussard/models/{APP_ID}.yaml")),
         MODEL_WITH_REFS_YAML,
     )?;
     let model = Model::load(&dir)?;

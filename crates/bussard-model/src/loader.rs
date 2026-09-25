@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use crate::address::IndividualAddress;
 use crate::emit;
-use crate::files::{self, GroupsFile, LOCK_VERSION, LOCK_VERSIONS_READ, LockDevice, LockFile};
+use crate::files::{self, GroupsFile, LOCK_VERSION, LockDevice, LockFile};
 use crate::param_model::ProductModels;
 use crate::schema::{BussardConfig, Group, Groups, Link, Links, Range};
 use crate::toml_io::{self, ParseError};
@@ -79,8 +79,8 @@ pub enum LoadError {
     },
     /// `bussard.lock` carries a format version this build does not read.
     #[error(
-        "{path}: lock format version {version} is not supported (this bussard reads versions 1 \
-         to {LOCK_VERSION}); regenerate it with `bussard import` or `bussard adopt`"
+        "{path}: lock format version {version} is not supported (this bussard reads version \
+         {LOCK_VERSION} only); regenerate it with `bussard import <export> --dir <dir>`"
     )]
     LockVersion {
         /// The lock file.
@@ -238,7 +238,7 @@ fn list_device_files(devices_dir: &Path) -> Vec<String> {
 /// Parses `bussard.lock` text.
 pub(crate) fn parse_lock(path: &Path, text: &str) -> Result<LockFile, LoadError> {
     let lock: LockFile = toml_io::parse(path, text)?;
-    if !LOCK_VERSIONS_READ.contains(&lock.version) {
+    if lock.version != LOCK_VERSION {
         return Err(LoadError::LockVersion {
             path: path.to_path_buf(),
             version: lock.version,
@@ -279,11 +279,10 @@ pub(crate) fn parse_groups(path: &Path, text: &str) -> Result<Groups, LoadError>
 /// and modification time. The product models translate enum labels, so a
 /// change there must miss the memo even when the model files are unchanged.
 fn models_fingerprint(dir: &Path) -> ModelsFingerprint {
-    let Ok(entries) = fs::read_dir(dir.join("models")) else {
-        return Vec::new();
-    };
-    let mut out: ModelsFingerprint = entries
-        .flatten()
+    let mut out: ModelsFingerprint = crate::param_model::models_dirs(dir)
+        .into_iter()
+        .filter_map(|d| fs::read_dir(d).ok())
+        .flat_map(|rd| rd.flatten())
         .map(|e| {
             let meta = e.metadata().ok();
             (
@@ -945,14 +944,16 @@ mod tests {
             2,
             "an edited file is parsed again"
         );
-        // So does a change under `models/` (the enum label translations).
-        fs::create_dir_all(dir.join("models"))?;
-        fs::write(dir.join("models").join("extra.yaml"), "# nothing\n")?;
+        // So does a change under `.bussard/models/` (the enum label
+        // translations).
+        let models = dir.join(crate::param_model::MODELS_DIR);
+        fs::create_dir_all(&models)?;
+        fs::write(models.join("extra.yaml"), "# nothing\n")?;
         Model::load(&dir)?;
         assert_eq!(
             thread_parses() - before,
             3,
-            "a models/ change is parsed again"
+            "a .bussard/models/ change is parsed again"
         );
         fs::remove_dir_all(&dir)?;
         Ok(())

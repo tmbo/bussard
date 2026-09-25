@@ -317,7 +317,7 @@ fn secure_model(tag: &str) -> TestResult<PathBuf> {
         "address = \"1.1.4\"\nname = \"Plain actuator\"\n",
     )?;
     let mut lock =
-        String::from("version = 1\n\n[[device]]\naddress = \"1.1.4\"\nmask = \"07B0\"\n");
+        String::from("version = 2\n\n[[device]]\naddress = \"1.1.4\"\nmask = \"07B0\"\n");
     for (addr, name) in [("1.1.10", "Secure dimmer"), ("1.1.12", "Secure sensor")] {
         std::fs::write(
             dir.join("devices").join(format!("{addr}.toml")),

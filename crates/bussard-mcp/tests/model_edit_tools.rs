@@ -44,7 +44,7 @@ fn model_dir(tag: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
     )?;
     std::fs::write(
         dir.join("bussard.lock"),
-        "version = 1\n\n[[device]]\naddress = \"1.1.4\"\n\
+        "version = 2\n\n[[device]]\naddress = \"1.1.4\"\n\
          channels = [\n  { id = \"CH-2\" },\n]\n\
          objects = [\n  { number = 12, channel = \"CH-2\", flags = \"CRT\" },\n]\n",
     )?;
@@ -401,7 +401,7 @@ async fn test_show_device_lists_a_channel_and_its_toml() -> TestResult {
 
 /// The fixture of a keyed device with its product model (see
 /// `bussard-model/tests/device_view.rs`).
-const KEYED_LOCK: &str = r#"version = 1
+const KEYED_LOCK: &str = r#"version = 2
 
 [[device]]
 address = "1.1.47"
@@ -467,9 +467,9 @@ parameters:
 async fn test_set_parameter_takes_the_file_key_and_a_label() -> TestResult {
     let dir = model_dir("keyed")?;
     let app = "M-0004_A-20DE-22-C7D8-O000A";
-    std::fs::create_dir_all(dir.join("models"))?;
+    std::fs::create_dir_all(dir.join(".bussard/models"))?;
     std::fs::write(
-        dir.join("models").join(format!("{app}.yaml")),
+        dir.join(".bussard/models").join(format!("{app}.yaml")),
         KEYED_PRODUCT,
     )?;
     std::fs::write(dir.join("bussard.lock"), KEYED_LOCK)?;

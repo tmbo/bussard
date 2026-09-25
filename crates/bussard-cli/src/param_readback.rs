@@ -33,6 +33,16 @@ pub(crate) struct Selection<'a> {
     pub application: Option<&'a str>,
 }
 
+/// What [`resolve`] does when the lock pins an archive that is missing or
+/// whose content changed (issue #228).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MissingProduct {
+    /// Refuse (a command about to write the parameters: `apply`).
+    Refuse,
+    /// Warn and read back without parameters (`plan`, `reconstruct`).
+    Warn,
+}
+
 /// The product file and application a read-back decodes with.
 pub(crate) struct ProductSource {
     /// The parsed product archive.
@@ -60,24 +70,46 @@ pub(crate) fn resolve(
     selection: Selection<'_>,
     model: Option<&Model>,
     target: IndividualAddress,
+    missing: MissingProduct,
 ) -> anyhow::Result<Option<ProductSource>> {
     let (explicit, application) = (selection.product, selection.application);
-    let device_product = model
+    let model_device = model
         .and_then(|m| m.devices.get(&target))
-        .and_then(|d| d.device.product.as_ref());
+        .map(|d| &d.device);
+    let device_product = model_device.and_then(|d| d.product.as_ref());
     let order = device_product.and_then(|p| p.order_number.clone());
-    let path = match (explicit, &order) {
-        (Some(path), _) => path.to_path_buf(),
-        (None, Some(order)) => {
-            match crate::commission_cmd::resolve_product_file(dir, None, order) {
-                Ok(path) => path,
-                Err(err) => {
-                    tracing::debug!(%err, "no cached product file for the parameter read-back");
+    // The archive bussard.lock pins for the device (issue #228), verified; a
+    // pinned archive that is missing or changed is refused or warned about
+    // per `missing`, an unpinned device decodes nothing.
+    let pinned = match (explicit, model_device) {
+        (None, Some(device)) => crate::product_store::device_archive(dir, device),
+        _ => Ok(None),
+    };
+    let pinned = match pinned {
+        Ok(pinned) => pinned,
+        Err(err) => match missing {
+            MissingProduct::Refuse => return Err(err),
+            MissingProduct::Warn => {
+                eprintln!("warning: {err:#}; the parameters are not read back");
+                return Ok(None);
+            }
+        },
+    };
+    let path = match (explicit, pinned, &order) {
+        (Some(path), _, _) => path.to_path_buf(),
+        (None, Some(path), _) => path,
+        (None, None, Some(order)) => match crate::product_store::archive_for_order(dir, order) {
+            Ok(Some(path)) => path,
+            Ok(None) => return Ok(None),
+            Err(err) => match missing {
+                MissingProduct::Refuse => return Err(err),
+                MissingProduct::Warn => {
+                    eprintln!("warning: {err:#}; the parameters are not read back");
                     return Ok(None);
                 }
-            }
-        }
-        (None, None) => return Ok(None),
+            },
+        },
+        (None, None, None) => return Ok(None),
     };
     // Parse only the program `select_app` will pick (issue #214), judged on
     // the catalogue's ids. The narrowed read is used only when `select_app`
@@ -447,7 +479,7 @@ pub(crate) fn print_missing_product_note(model: Option<&Model>, target: Individu
         .is_some_and(|d| !d.device.parameters.is_empty());
     if has_params {
         println!(
-            "\nparameters: not read back (no product data under vendor/ for this device; pass \
+            "\nparameters: not read back (bussard.lock pins no product data for this device; pass \
              --product <FILE> or run `bussard import-product` to cache it)"
         );
     }

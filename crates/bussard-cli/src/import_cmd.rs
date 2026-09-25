@@ -101,6 +101,9 @@ pub(crate) fn write_model(
     // History (issue #110): record an edit made outside bussard before the
     // import overwrites it, then snapshot the pre-import state so `bussard undo`
     // can put it back.
+    if dir.is_dir() {
+        crate::product_store::prepare(dir);
+    }
     crate::history_cmd::capture_external_edit(dir);
     crate::history_cmd::snapshot(
         dir,

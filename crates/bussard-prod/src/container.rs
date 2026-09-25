@@ -338,6 +338,12 @@ impl Container {
         }
     }
 
+    /// Reads a named entry exactly as stored (no BOM stripping), or `None`
+    /// if absent; size-capped like every other read.
+    pub fn entry_bytes(&mut self, name: &str) -> Result<Option<Vec<u8>>> {
+        self.read_entry_opt(name)
+    }
+
     /// Reads a named entry as raw bytes, or `None` if absent. The decompressed
     /// size is capped (a zip-bomb guard); an oversized entry errors rather than
     /// exhausting memory.

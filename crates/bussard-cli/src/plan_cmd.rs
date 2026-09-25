@@ -235,7 +235,13 @@ pub fn run(
     let desired = compute_desired(&model, target)?;
     // The product file the parameter read-back decodes with (issue #119), when
     // one is given or cached.
-    let product = crate::param_readback::resolve(dir, selection, Some(&model), target)?;
+    let product = crate::param_readback::resolve(
+        dir,
+        selection,
+        Some(&model),
+        target,
+        crate::param_readback::MissingProduct::Warn,
+    )?;
     let model_ref = &model;
     let product_ref = product.as_ref();
 

@@ -148,6 +148,9 @@ struct Target {
     manufacturer: Option<String>,
     floor: Option<String>,
     room: Option<String>,
+    /// The product archive `--flash` downloads from, resolved before any bus
+    /// access (issue #228).
+    product: Option<PathBuf>,
 }
 
 /// The model's devices on `area.line`, in address order.
@@ -166,6 +169,7 @@ fn targets_on_line(model: &Model, area: u8, line_no: u8) -> Vec<Target> {
                 manufacturer: product.and_then(|p| p.manufacturer.clone()),
                 floor: device.location.as_ref().and_then(|l| l.floor.clone()),
                 room: device.location.as_ref().and_then(|l| l.room.clone()),
+                product: None,
             }
         })
         .collect()
@@ -203,12 +207,33 @@ pub fn run(
     enforce_write_gate(&config, options.allow_remote_gateway)?;
     let gateway = gateway_display(&config);
 
-    let targets = targets_on_line(&model, area, line_no);
+    let mut targets = targets_on_line(&model, area, line_no);
     if targets.is_empty() {
         bail!(
             "the model has no devices on line {line} (looked in {}/devices)",
             dir.display()
         );
+    }
+    // `--flash` needs every device's product data: a missing or changed
+    // archive refuses the run before anything touches the bus (issue #228).
+    if options.flash {
+        let mut refusals = Vec::new();
+        for target in &mut targets {
+            let Some(order) = target.order_number.clone() else {
+                continue;
+            };
+            let device = model.devices.get(&target.address).map(|d| &d.device);
+            match crate::product_store::resolve(dir, options.product, device, &order) {
+                Ok(path) => target.product = Some(path),
+                Err(err) => refusals.push(format!("{}: {err:#}", target.address)),
+            }
+        }
+        if !refusals.is_empty() {
+            bail!(
+                "refusing to commission with --flash: product data is missing\n  {}",
+                refusals.join("\n  ")
+            );
+        }
     }
 
     // Phase 1 (read-only): which model devices already answer at their address?
@@ -388,9 +413,8 @@ fn commission_one(
                 );
             }
         };
-        let product = match resolve_product_file(dir, options.product, &order) {
-            Ok(path) => path,
-            Err(err) => return fail(one_line(&format!("{err:#}"))),
+        let Some(product) = target.product.clone() else {
+            return fail(format!("no product data resolved for {order}"));
         };
         eprintln!("  flashing from {}", product.display());
         let flashed = crate::flash_cmd::run(
@@ -614,59 +638,6 @@ async fn answers(service: &BusService, source: IndividualAddress, addr: Individu
         .unwrap_or(false)
 }
 
-/// Finds the `.knxprod` to flash: the explicit `--product`, else the first
-/// archive in `<dir>/vendor/` whose hardware catalogue carries `order`.
-pub(crate) fn resolve_product_file(
-    dir: &Path,
-    explicit: Option<&Path>,
-    order: &str,
-) -> anyhow::Result<PathBuf> {
-    if let Some(path) = explicit {
-        return Ok(path.to_path_buf());
-    }
-    let vendor = dir.join("vendor");
-    let entries = std::fs::read_dir(&vendor).with_context(|| {
-        format!(
-            "no --product given and the vendor cache {} could not be read; \
-             run `bussard import-product` first",
-            vendor.display()
-        )
-    })?;
-    let want = normalize_order_number(order);
-    let mut candidates: Vec<PathBuf> = entries
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| {
-            p.extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| e.eq_ignore_ascii_case("knxprod"))
-        })
-        .collect();
-    candidates.sort();
-    for path in &candidates {
-        // The hardware catalogue is all the match needs: no program is parsed
-        // (issue #214), and the parsed-product cache keeps it for next time.
-        let Ok(product) = crate::product_cache::read(path, None, dir, None, |_| {
-            bussard_prod::AppSelection::Exact(Vec::new())
-        }) else {
-            continue;
-        };
-        if product
-            .hardware
-            .order_to_apps
-            .keys()
-            .any(|o| normalize_order_number(o) == want)
-        {
-            return Ok(path.clone());
-        }
-    }
-    bail!(
-        "no cached `.knxprod` under {} carries order number {order:?}; pass --product <FILE> or \
-         run `bussard import-product --order-number {order}`",
-        vendor.display()
-    )
-}
-
 /// Builds the label line stuck on the device, e.g.
 /// `1.1.7  Blind actuator  MDT JAL-0810.03  Ground floor / Living room`.
 fn label_line(target: &Target, identity: &Identity) -> String {
@@ -861,6 +832,7 @@ mod tests {
             manufacturer: Some("MDT".to_string()),
             floor: Some("Ground floor".to_string()),
             room: Some("Living room".to_string()),
+            product: None,
         }
     }
 

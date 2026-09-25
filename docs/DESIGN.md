@@ -195,7 +195,7 @@ error; this section keeps only the decisions behind it.
   to fold the diff), a flat `[[device]]` list sorted by address, one file per model,
   and the rule that the tool owns every line. It holds the vendor facts:
   program, mask, channel ids, the com-object table, parameter refs, module base offsets.
-  It is committed because `models/` is not: a checkout without product data must still
+  It is committed because the product models are not: a checkout without product data must still
   validate, plan, decode telegrams and derive Home Assistant entities.
 - **Identity is a value, never a key.** An address in key position needs quotes in
   TOML. `groups.toml` is therefore a list of inline tables, one line per entry, each

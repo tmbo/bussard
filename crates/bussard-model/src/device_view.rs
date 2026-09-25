@@ -405,7 +405,7 @@ pub fn device_view(
     if product.is_none() {
         notes.push(match &application {
             Some(app) => format!(
-                "no product data: models/{app}.yaml is not cached, so there are no choices, \
+                "no product data: .bussard/models/{app}.yaml is not generated, so there are no choices, \
                  ranges or defaults (run `bussard import-product --order-number <order>` or \
                  re-run `bussard import`); showing what the lock has"
             ),

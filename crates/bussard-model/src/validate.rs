@@ -1110,7 +1110,7 @@ mod tests {
     /// Writes `models/<APP_REF>.yaml` with an int (`MD-1_P-3`, 0..=3), an enum
     /// (`P-9`, {0,7}) and a text (`P-20`, 6 bytes) parameter.
     fn write_model(dir: &std::path::Path) {
-        let models = dir.join("models");
+        let models = dir.join(".bussard/models");
         std::fs::create_dir_all(&models).expect("test fixture");
         let yaml = "\
 identity:

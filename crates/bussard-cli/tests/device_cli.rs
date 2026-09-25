@@ -9,7 +9,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 const APP: &str = "M-0004_A-20DE-22-C7D8-O000A";
 
-const LOCK: &str = r#"version = 1
+const LOCK: &str = r#"version = 2
 
 [[device]]
 address = "1.1.47"
@@ -80,14 +80,17 @@ fn model_dir(tag: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
     ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("devices"))?;
-    std::fs::create_dir_all(dir.join("models"))?;
+    std::fs::create_dir_all(dir.join(".bussard/models"))?;
     std::fs::write(
         dir.join("bussard.toml"),
         "[connection]\ntransport = \"tunnel\"\n",
     )?;
     std::fs::write(dir.join("bussard.lock"), LOCK)?;
     std::fs::write(dir.join("devices/1.1.47.toml"), DEVICE)?;
-    std::fs::write(dir.join("models").join(format!("{APP}.yaml")), PRODUCT)?;
+    std::fs::write(
+        dir.join(".bussard/models").join(format!("{APP}.yaml")),
+        PRODUCT,
+    )?;
     Ok(dir)
 }
 
@@ -177,7 +180,7 @@ fn test_device_toml_is_paste_ready() -> TestResult {
     assert!(stdout.contains("# status-position.send = \"\""), "{stdout}");
 
     // Without product data it says so and still lists what the lock has.
-    std::fs::remove_dir_all(dir.join("models"))?;
+    std::fs::remove_dir_all(dir.join(".bussard/models"))?;
     let out = bussard(&["device", "1.1.47", "a-1", "--toml", "--dir", d])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{stdout}");

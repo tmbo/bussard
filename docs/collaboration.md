@@ -9,7 +9,7 @@ On both sides an assistant usually does the reading and writing over MCP, and th
 | Never share | Why |
 |---|---|
 | `.knxproj` project files | Contain the full ETS project, often password-protected, and belong to whoever the contract says. |
-| `.knxprod` vendor product files, `models/`, `vendor/` | The manufacturer's copyrighted application data ([product-data.md](product-data.md)). |
+| `.knxprod` vendor product files, `products/` (unless the repository is private), `.bussard/` | The manufacturer's copyrighted application data ([product-data.md](product-data.md)). |
 | `.knxkeys` keyrings and tool keys | The KNX Secure keys to every secured device. |
 | Passwords, `.env` | The project password, keyring password, gateway credentials. |
 | `captures/` | Bus recordings of a lived-in house. |

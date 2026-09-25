@@ -356,13 +356,36 @@ entry supersedes it and is not a diff against it.
 
 ### Changed
 
+- Product data is retained model data in `<dir>/products/` (#228): vendor
+  `.knxprod` files as downloaded or supplied, and each application program
+  `import` and `import-product` extract once from an ETS export into
+  `<application-id>.knxprod` (new `bussard_prod::extract_from_project`; the
+  flash image is byte-identical to reading the export). `bussard.lock` pins
+  each archive and every use verifies its SHA-256. bussard no longer
+  git-ignores product data: committing `products/` is the owner's decision.
+- A missing or changed pinned archive refuses `flash`, `apply` (parameters)
+  and `commission --flash` before any bus access, naming the recovery step
+  for its origin; `plan` and `reconstruct` warn and read the links only.
+  `flash --product <file> --force` makes the file the device's pinned
+  product data (#228).
+- The product models moved to `.bussard/models/` and regenerate from
+  `products/` whenever the directory is missing; `.bussard/` now holds only
+  regenerable data. The old `<dir>/models/` is not read. The first command on
+  an older model directory moves `vendor/*.knxprod` into `products/` and pins
+  them (#228).
+- The lookups that opened every cached archive to find an order number
+  (`commission`, `flash`, `plan`, `apply`, `adopt`) and the models-based
+  "is it cached" check now read the lock's `[[product]]` entries (#228).
+- bussard is pre-release: a lock of another version than 2 is refused with
+  the fix (`bussard import <export> --dir <dir>`) instead of being upgraded.
 - `bussard.lock` is now version 2 (#228). It records every product-data
   archive the model depends on as a `[[product]]` entry (content hash, file,
   size, origin, applications, order numbers), and each device's
   `product_sha256`, `application_id` (the `PID_PROGRAM_VERSION` it must
   report) and `application_version`. `import`, `import-product`, the
-  product-data download and `adopt` pin what they read. A v1 lock still
-  loads and is written as v2 on the next save.
+  product-data download and `adopt` pin what they read. bussard is
+  pre-release: a lock of another version is refused, and `bussard import`
+  regenerates it.
 - Device identity is compared with the lock: `describe` and `reconstruct`
   report an `identity` verdict (`match`, `drift`, `unmodelled`), `plan` warns
   on drift, `apply` refuses a device whose application id or mask differs

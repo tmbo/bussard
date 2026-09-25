@@ -1,16 +1,18 @@
-//! The `bussard import-product` subcommand — generate device models from
-//! vendor `.knxprod` product data.
+//! The `bussard import-product` subcommand: record vendor product data in the
+//! model's product store and generate its product models.
 //!
-//! Reads a `.knxprod` (see `bussard-prod`), caches the original byte-identical
-//! under `<dir>/vendor/`, and writes one machine-generated-but-human-skimmable
-//! model YAML per ApplicationProgram under `<dir>/models/`. Both directories are
-//! local-only: vendor XML is copyrighted and the models are derived from it, so
-//! a `vendor/.gitignore` of `*` is planted to keep them out of git.
+//! Reads a `.knxprod` (see `bussard-prod`), stores the original byte-identical
+//! under `<dir>/products/` (retained model data, see
+//! [`crate::product_store`]), pins it in `bussard.lock`, and writes one
+//! machine-generated product model per ApplicationProgram under
+//! `<dir>/.bussard/models/` (regenerated from the archive whenever it is
+//! missing).
 //!
 //! An ETS project export (`.knxproj`) also carries the product data of every
-//! device in the project, so it is accepted as a source too. It is the owner's
-//! project, not vendor product data, and large, so it is read in place and
-//! never copied under `vendor/`; only the generated models are written.
+//! device in the project. Each application program is extracted from it once
+//! into its own archive under `products/` (`<application-id>.knxprod`,
+//! see [`bussard_prod::extract_from_project`]); the export itself is never
+//! copied.
 
 use std::collections::BTreeMap;
 use std::io::{IsTerminal, Write};
@@ -111,7 +113,8 @@ fn run_order_number(
     println!();
     println!(
         "This downloads copyrighted vendor product data over the network. It is \
-         cached locally under {}/vendor/ and never committed.",
+         stored under {}/products/; whether that directory is committed is your \
+         decision (see docs/product-data.md).",
         dir.display()
     );
 
@@ -125,23 +128,17 @@ fn run_order_number(
         .context("downloading product data")?;
     println!("Downloaded and verified {} bytes.", bytes.len());
 
-    // Cache the download under <dir>/vendor/<filename>, then import from there.
-    let vendor_dir = dir.join("vendor");
-    ensure_vendor_dir(&vendor_dir)?;
-    let cached = vendor_dir.join(&entry.filename);
-    std::fs::write(&cached, &bytes).with_context(|| format!("writing {}", cached.display()))?;
+    // Store the download under <dir>/products/, then import from there.
+    let cached = crate::product_store::store_bytes(dir, &entry.filename, &bytes)?;
 
     import_from_file(
         &cached,
         dir,
         inner,
-        DownloadNote::Downloaded(
-            entry.filename.clone(),
-            bussard_model::schema::ProductOrigin::Index {
-                order_number: Some(order.to_string()),
-                url: Some(entry.url.clone()),
-            },
-        ),
+        DownloadNote::Downloaded(bussard_model::schema::ProductOrigin::Index {
+            order_number: Some(order.to_string()),
+            url: Some(entry.url.clone()),
+        }),
     )
 }
 
@@ -186,11 +183,11 @@ pub(crate) fn load_index() -> anyhow::Result<ProductIndex> {
 }
 
 /// Downloads (or, for a `file://` pointer, reads) the `.knxprod` an index
-/// entry names, verifies its size and SHA-256 against the entry, and caches it
-/// under `<dir>/vendor/`. Returns the cached path.
+/// entry names, verifies its size and SHA-256 against the entry, and stores
+/// it under `<dir>/products/`. Returns the stored path.
 ///
 /// `consent` is the caller's proof that the human agreed to the download.
-pub(crate) fn fetch_to_vendor(
+pub(crate) fn fetch_to_store(
     entry: &bussard_prod::IndexEntry,
     dir: &Path,
     consent: DownloadConsent,
@@ -204,15 +201,11 @@ pub(crate) fn fetch_to_vendor(
         None => bussard_prod::fetch_entry(entry, consent)
             .with_context(|| format!("downloading {}", entry.url))?,
     };
-    let vendor_dir = dir.join("vendor");
-    ensure_vendor_dir(&vendor_dir)?;
-    let cached = vendor_dir.join(&entry.filename);
-    std::fs::write(&cached, &bytes).with_context(|| format!("writing {}", cached.display()))?;
-    Ok(cached)
+    crate::product_store::store_bytes(dir, &entry.filename, &bytes)
 }
 
-/// Generates the product models of a `.knxprod` already cached under
-/// `<dir>/vendor/`, quietly, then pins the archive in `bussard.lock` under
+/// Generates the product models of a `.knxprod` already stored under
+/// `<dir>/products/`, quietly, then pins the archive in `bussard.lock` under
 /// `origin` when one is given (lock v2, issue #228). Returns the model file
 /// names written.
 pub(crate) fn generate_models_pinned(
@@ -227,7 +220,7 @@ pub(crate) fn generate_models_pinned(
             file.display()
         );
     }
-    let written = write_models(&product, dir)?;
+    let written = write_product_models(&product, dir)?;
     if let Some(origin) = origin {
         let entry = crate::lock_pin::archive_entry(file, dir, &product, origin)?;
         crate::lock_pin::pin(dir, &[entry]);
@@ -252,9 +245,13 @@ fn read_in_model_language(
     .with_context(|| format!("reading product data from {}", file.display()))
 }
 
-/// Writes one model file per application program under `<dir>/models/`.
-fn write_models(product: &ProductData, dir: &Path) -> anyhow::Result<Vec<String>> {
-    let models_dir = dir.join("models");
+/// Writes one model file per application program under
+/// `<dir>/.bussard/models/`.
+pub(crate) fn write_product_models(
+    product: &ProductData,
+    dir: &Path,
+) -> anyhow::Result<Vec<String>> {
+    let models_dir = dir.join(bussard_model::param_model::MODELS_DIR);
     std::fs::create_dir_all(&models_dir)
         .with_context(|| format!("creating {}", models_dir.display()))?;
     let mut written: Vec<String> = Vec::new();
@@ -272,12 +269,12 @@ fn write_models(product: &ProductData, dir: &Path) -> anyhow::Result<Vec<String>
 
 /// Where a to-be-imported file came from, for the report line.
 enum DownloadNote {
-    /// A local positional file (copied into the vendor cache).
+    /// A local positional file (copied into the product store).
     Local,
-    /// Downloaded from the index and already written to `vendor/` (verified
-    /// against the index checksum); carries the cached filename for the note
-    /// and the lock's origin record.
-    Downloaded(String, bussard_model::schema::ProductOrigin),
+    /// Downloaded from the index and already stored under `products/`
+    /// (verified against the index checksum); carries the lock's origin
+    /// record.
+    Downloaded(bussard_model::schema::ProductOrigin),
 }
 
 /// Runs the normal import on a local `.knxprod` file (positional mode).
@@ -288,24 +285,13 @@ fn run_file(file: &Path, dir: &Path, inner: Option<&str>) -> anyhow::Result<Exit
     import_from_file(file, dir, inner, DownloadNote::Local)
 }
 
-/// Ensures `<dir>/vendor/` exists with its self-protecting `.gitignore`.
-fn ensure_vendor_dir(vendor_dir: &Path) -> anyhow::Result<()> {
-    let created = !vendor_dir.exists();
-    std::fs::create_dir_all(vendor_dir)
-        .with_context(|| format!("creating {}", vendor_dir.display()))?;
-    if created {
-        std::fs::write(vendor_dir.join(".gitignore"), VENDOR_GITIGNORE)
-            .with_context(|| format!("writing {}", vendor_dir.join(".gitignore").display()))?;
-    }
-    Ok(())
-}
-
-/// Imports a `.knxprod`: caches it under `<dir>/vendor/` and generates a device
-/// model under `<dir>/models/` for each application program it contains.
+/// Imports product data: stores the archive under `<dir>/products/`, pins it
+/// in `bussard.lock` and generates a product model under
+/// `<dir>/.bussard/models/` for each application program it contains.
 ///
-/// For a downloaded file the source already lives under `vendor/`, so the cache
-/// step notes it in place rather than copying it onto itself. An ETS project
-/// export (see [`is_project_export`]) is read in place and not cached at all.
+/// A downloaded file is already in the store. An ETS project export (see
+/// [`is_project_export`]) is not copied: each of its application programs is
+/// extracted once into its own archive in the store.
 fn import_from_file(
     file: &Path,
     dir: &Path,
@@ -320,93 +306,67 @@ fn import_from_file(
             file.display()
         );
     }
+    crate::product_store::prepare(dir);
 
-    let vendor_dir = dir.join("vendor");
-    // Only a local file is read in place; an index download is vendor data.
+    // Only a local file can be an export; an index download is vendor data.
     let project_export = matches!(note, DownloadNote::Local) && is_project_export(file, &product);
-
-    // The archive the lock pins, and where it came from (lock v2, issue #228).
-    let (pinned_file, origin) = match &note {
-        DownloadNote::Local if project_export => (
-            file.to_path_buf(),
-            bussard_model::schema::ProductOrigin::Knxproj {
-                path: file.display().to_string(),
-                project_hash: None,
-            },
-        ),
-        DownloadNote::Local => (
-            vendor_dir.join(file.file_name().context("product file has no file name")?),
-            bussard_model::schema::ProductOrigin::File {
-                path: file.display().to_string(),
-            },
-        ),
-        DownloadNote::Downloaded(filename, origin) => (vendor_dir.join(filename), origin.clone()),
-    };
-    let cached_note = match note {
-        // A project export is the owner's project, not vendor product data, and
-        // large: read it in place and only write the generated models.
-        DownloadNote::Local if project_export => format!(
-            "Read the ETS project export in place (not cached under {}): {}",
-            vendor_dir.display(),
-            file.display()
-        ),
-        // A downloaded file already lives under vendor/ (verified against the
-        // index checksum), so there is nothing to copy.
-        DownloadNote::Downloaded(filename, _) => {
-            ensure_vendor_dir(&vendor_dir)?;
+    let (stored_note, entries) = if project_export {
+        let apps: Vec<String> = product
+            .applications
+            .iter()
+            .filter(|a| !a.is_pei_program())
+            .map(|a| a.id.clone())
+            .collect();
+        let entries = crate::lock_pin::extract_and_entries(dir, file, &product, &apps)?;
+        (
             format!(
-                "Cached vendor file (downloaded): {}",
-                vendor_dir.join(&filename).display()
-            )
-        }
-        DownloadNote::Local => {
-            // Cache the source file verbatim under <dir>/vendor/.
-            ensure_vendor_dir(&vendor_dir)?;
-            let original_name = file
-                .file_name()
-                .context("product file has no file name")?
-                .to_owned();
-            let vendor_target = vendor_dir.join(&original_name);
-            cache_vendor_file(file, &vendor_target)?
-        }
+                "Extracted {} application program(s) from the ETS project export {} into {}",
+                entries.len(),
+                file.display(),
+                dir.join(crate::product_store::PRODUCTS_DIR).display()
+            ),
+            entries,
+        )
+    } else {
+        let (stored, origin, what) = match note {
+            DownloadNote::Downloaded(origin) => (file.to_path_buf(), origin, "downloaded"),
+            DownloadNote::Local => (
+                crate::product_store::store_file(dir, file)?,
+                bussard_model::schema::ProductOrigin::File {
+                    path: file.display().to_string(),
+                },
+                "supplied",
+            ),
+        };
+        let entry = crate::lock_pin::archive_entry(&stored, dir, &product, origin)?;
+        (
+            format!("Stored vendor file ({what}): {}", stored.display()),
+            vec![entry],
+        )
     };
 
-    // Generate one model YAML per application program.
-    let models_dir = dir.join("models");
-    let written = write_models(&product, dir)?;
-    let mut entry = crate::lock_pin::archive_entry(&pinned_file, dir, &product, origin)?;
-    if let bussard_model::schema::ProductOrigin::Knxproj { project_hash, .. } = &mut entry.origin {
-        *project_hash = Some(entry.sha256.clone());
-    }
-    crate::lock_pin::pin(dir, &[entry]);
+    let models_dir = dir.join(bussard_model::param_model::MODELS_DIR);
+    let written = write_product_models(&product, dir)?;
+    crate::lock_pin::pin(dir, &entries);
 
     // Report.
-    println!("{cached_note}");
+    println!("{stored_note}");
     println!(
-        "Generated {} model file{} in {}:",
+        "Generated {} product model{} in {}:",
         written.len(),
         if written.len() == 1 { "" } else { "s" },
         models_dir.display()
     );
     for name in &written {
-        println!("  models/{name}");
+        println!("  {}/{name}", bussard_model::param_model::MODELS_DIR);
     }
     println!();
-    if project_export {
-        println!(
-            "Reminder: {} is local-only — the models are derived from copyrighted",
-            models_dir.display()
-        );
-        println!("vendor product data inside the project export. Keep them out of git.");
-    } else {
-        println!(
-            "Reminder: {} and {} are local-only — vendor product data is copyrighted",
-            vendor_dir.display(),
-            models_dir.display()
-        );
-        println!("and the models are derived from it. Keep both out of git; cloners regenerate");
-        println!("their models from their own vendor downloads.");
-    }
+    println!(
+        "{} holds copyrighted vendor product data and is retained model data: bussard never \
+         regenerates it. Whether it is committed is your decision (a private repository is \
+         the usual case); the product models under .bussard/ regenerate from it.",
+        dir.join(crate::product_store::PRODUCTS_DIR).display()
+    );
 
     Ok(ExitCode::SUCCESS)
 }
@@ -420,23 +380,6 @@ pub(crate) fn is_project_export(file: &Path, product: &ProductData) -> bool {
             .extension()
             .and_then(|e| e.to_str())
             .is_some_and(|e| e.eq_ignore_ascii_case("knxproj"))
-}
-
-/// Copies `src` to `dst` byte-identically, skipping the copy (with a note) if an
-/// identical file is already cached.
-fn cache_vendor_file(src: &Path, dst: &Path) -> anyhow::Result<String> {
-    let src_bytes = std::fs::read(src).with_context(|| format!("reading {}", src.display()))?;
-    if dst.exists() {
-        let existing = std::fs::read(dst).with_context(|| format!("reading {}", dst.display()))?;
-        if existing == src_bytes {
-            return Ok(format!(
-                "Vendor file already cached (identical): {}",
-                dst.display()
-            ));
-        }
-    }
-    std::fs::write(dst, &src_bytes).with_context(|| format!("writing {}", dst.display()))?;
-    Ok(format!("Cached vendor file: {}", dst.display()))
 }
 
 // ---------------------------------------------------------------------------
@@ -941,15 +884,7 @@ const MODEL_BANNER: &str = "\
 # Machine-generated from vendor `.knxprod` product data — do not hand-edit; it
 # is regenerated on the next import and edits are lost. This describes one
 # application program: its identity, com-objects, parameters and the load
-# procedure used to download it. Local-only: derived from copyrighted vendor
-# data, never committed.
+# procedure used to download it. Regenerated data under .bussard/: derived from
+# the archive under products/, rebuilt whenever it is missing.
 # Docs: https://github.com/tmbo/bussard/blob/main/docs/product-data.md
-";
-
-/// `vendor/.gitignore`: ignore everything, since vendor product data is
-/// copyrighted and must never be committed.
-pub(crate) const VENDOR_GITIGNORE: &str = "\
-# Vendor `.knxprod` product data is copyrighted — never commit it. Each user
-# supplies their own downloads; models under ../models/ are regenerated from them.
-*
 ";

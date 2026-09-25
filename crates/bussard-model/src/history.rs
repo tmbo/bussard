@@ -684,7 +684,7 @@ mod tests {
         )?;
         fs::write(
             dir.join("bussard.lock"),
-            "version = 1\n\n[[device]]\naddress = \"1.1.4\"\nproduct = \"BA-4\"\n",
+            "version = 2\n\n[[device]]\naddress = \"1.1.4\"\nproduct = \"BA-4\"\n",
         )?;
         fs::write(
             dir.join("devices").join("1.1.4.toml"),

@@ -150,7 +150,7 @@ fn write_device(dir: &Path, address: &str, name: &str, order: &str) -> anyhow::R
         .append(true)
         .open(&lock)?;
     if fresh {
-        writeln!(file, "version = 1")?;
+        writeln!(file, "version = 2")?;
     }
     write!(
         file,

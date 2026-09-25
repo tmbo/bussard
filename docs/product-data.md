@@ -31,16 +31,24 @@ An ETS 6 project export (`.knxproj`) carries the converted ApplicationProgram XM
 every product used in the project, unencrypted under `M-<manufacturer>/`. This is the
 only route for devices whose vendor ships product data solely as ETS3-era `.vd4`
 files, and it is convenient whenever the project already holds the exact application
-version a device runs. `bussard import-product <project>.knxproj` (project password
-from `BUSSARD_PROJECT_PASSWORD`) generates the product models from that XML, and
-`bussard flash <ia> --product <project>.knxproj --application <application-id>`
-reads it directly; `--application` is required because a project holds several
-application programs. The generated models are byte-for-byte the same as from the
+version a device runs. `bussard import-product <project>.knxproj` and `bussard import
+<project>.knxproj` extract each application program the model needs from that XML,
+once, into its own archive under `<dir>/products/` (see
+[the product store](#the-product-store-products)). After that no command reads the
+export again. `bussard flash <ia> --product <project>.knxproj --application
+<application-id>` still reads an export directly; `--application` is required because
+a project holds several application programs. The generated models are byte-for-byte the same as from the
 vendor `.knxprod` when the versions match: two ETS3-era Jung devices were flashed from
 their project export and verified against ETS captures (issue #135).
 
-A project export is not cached under `vendor/`: it is the owner's project, not vendor
-product data, and it is large. Keep it where it is and pass its path.
+The export itself is never copied into the model: it is the owner's project, and large.
+The extracted archive holds only `knx_master.xml`, the manufacturer's `Hardware.xml`
+and `Catalog.xml`, and the program (plus the programs its `Hardware2Program` lists
+next to it), copied byte for byte into a plain ZIP with fixed timestamps. A flash
+image built from the extracted archive is byte-identical to one built from the export
+(checked on 1.1.52, `M-0004_A-A012-12-D63A-O000A`, and on the Data Secure device
+1.1.12, `M-0004_A-D141-22-151B-O000A`). Extracting the same program from the same
+export again gives the same bytes, so a re-import does not change the lock.
 
 ### Reading product data at flash time
 
@@ -103,23 +111,65 @@ normal), so bussard streams them with `quick-xml` and never builds a DOM. It ext
   nothing is lost. The downloader (`bussard-download`) interprets this list for
   `bussard flash`.
 
+## The product store (`products/`)
+
+`<dir>/products/` holds every product archive the model depends on: vendor `.knxprod`
+files as downloaded or supplied, and the archives extracted once from an ETS export.
+It is retained data, not a cache. Vendor downloads can disappear and the export is used
+once, so bussard never regenerates anything in it. File names stay readable: the
+vendor's file name, or `<application-id>.knxprod` for an extracted program. A
+different file under a name already taken is stored with the first eight hex digits of
+its SHA-256 appended; nothing in the store is overwritten.
+
+`bussard.lock` records each archive as a `[[product]]` entry (`file`, `sha256`,
+`origin`, the applications and order numbers it carries) and links each device to one
+(see [the model format](model-format.md#bussardlock)). Every use checks the file's
+SHA-256 against the lock before the archive is read.
+
+**Committing it is your decision.** bussard does not git-ignore `products/`. It holds
+copyrighted vendor data, so a public repository should not carry it; a private one
+usually does, because a clone without it cannot flash, apply parameters, commission
+with `--flash` or replace a device until the archives are back.
+
+**A missing or changed archive** refuses `flash`, `apply` (the parameters),
+`commission --flash` and `replace` before anything reaches the bus, with the lock's
+record and the way back, for example:
+
+```
+product data for 1.1.12 (52911ST, products/M-0004_A-D141-22-151B-O000A.knxprod, sha256 9f1c0a3b7d2e…) is missing; restore it from your backup or version control, or re-import the ETS export: bussard import ../house.knxproj
+```
+
+The recovery depends on the origin: restore the file from a backup or version control;
+for origin `index`, `bussard import-product --order-number <ORDER>`; for origin
+`file`, `bussard import-product <file>`; for origin `knxproj`, `bussard import
+<export>`. An archive whose SHA-256 differs from the lock's is refused naming both
+hashes; `bussard import-product <file>` re-pins it, which is a reviewable lock change.
+`flash --product <file>` uses a file explicitly; with `--force` it also becomes the
+device's pinned product data. `plan` and `reconstruct` warn and read the links only.
+
+**Migration.** A model directory from an earlier bussard kept its archives in
+`vendor/`. The first command that reads the model moves every `vendor/*.knxprod` into
+`products/`, pins it (origin `index` when the pointer index knows its hash, else
+`file`), links the devices whose order number its catalogue carries, removes the empty
+`vendor/` with its old `.gitignore`, and generates `.bussard/models/`. A device whose
+product data only existed in an ETS export gets its archive on the next `bussard
+import` of that export.
+
 ## What `import-product` writes
 
-In positional mode (`bussard import-product <file.knxprod>`) the command:
+In positional mode (`bussard import-product <file>`) the command:
 
-1. reads the `.knxprod`,
-2. caches the source file byte-identically under `<dir>/vendor/<original-name>`
-   (skipping the copy, with a note, if an identical file is already there),
-3. writes one model file per ApplicationProgram to
-   `<dir>/models/<application-id>.yaml`, and
-4. creates `<dir>/vendor/.gitignore` (`*`) if `vendor/` did not already exist, so the
-   copyrighted originals cannot be committed by accident.
+1. reads the `.knxprod`, or the `.knxproj` export,
+2. stores a `.knxprod` byte-identically under `<dir>/products/<original-name>` (an
+   identical file already there is kept); from an export it extracts every
+   application program into `<dir>/products/<application-id>.knxprod`,
+3. pins each archive in `bussard.lock` and links the devices it serves, and
+4. writes one product model per ApplicationProgram to
+   `<dir>/.bussard/models/<application-id>.yaml`.
 
-The application id already carries the manufacturer id (`M-0004_A-…`), so the model
-filename is just `<application-id>.yaml`, with no redundant prefix.
-
+With `--order-number` the downloaded file is stored the same way, origin `index`.
 Output is deterministic: running the command twice on the same file produces
-byte-identical model YAML.
+byte-identical archives, lock and model YAML.
 
 ## Product data and the device files
 
@@ -131,7 +181,7 @@ functions. `import` and `adopt` derive the keys from them and record the mapping
 holds the device's name, location and links, but its channels are keyed by vendor ids
 and its objects by number, and its parameters can be neither checked nor flashed. The
 lock carries what the rest of bussard needs (the com-object table, DPTs, flags, module
-offsets), so a checkout without `models/` still validates, plans and decodes. See
+offsets), so a checkout without `.bussard/models/` still validates, plans and decodes. See
 [the model format](model-format.md#without-product-data).
 
 ## The product-data pointer index
@@ -154,7 +204,7 @@ With `--order-number`, bussard:
 5. verifies the download's byte size and SHA-256 against the index, where a mismatch is
    a hard error, since it means the file is not the one the index vouches for (the
    vendor may have re-published it), and
-6. caches the verified file under `<dir>/vendor/` and runs the normal import on it.
+6. stores the verified file under `<dir>/products/` and runs the normal import on it.
 
 ### Index schema
 
@@ -169,7 +219,7 @@ With `--order-number`, bussard:
 | `url`             | string    | Vendor-hosted download URL for the `.knxprod`. |
 | `sha256`          | string    | Lower-case hex SHA-256 of the download. |
 | `size`            | number    | Exact byte size of the download. |
-| `filename`        | string    | Original vendor filename; also the cache name under `vendor/`. |
+| `filename`        | string    | Original vendor filename; also the file name under `products/`. |
 | `application_ref` | string?   | Optional: the application-program ref an order number resolves to (documentation only). |
 | `redistributable` | bool      | Whether bussard may mirror the file itself. Always `false` for vendor-hosted copyrighted data. |
 | `notes`           | string?   | Optional version / date-verified / caveats. |
@@ -225,9 +275,11 @@ see [the corpus findings in DESIGN.md](DESIGN.md#the-flashability-corpus-and-swe
 ## The model file format
 
 A model file describes one application program. It is machine-generated and carries a
-banner saying so; do not hand-edit it (it is regenerated on re-import). Product models
-stay YAML: they are generated, local-only files that nobody edits, so the reasons that
-moved the user's model files to TOML do not apply to them. Example (abridged):
+banner saying so; do not hand-edit it. It lives under `<dir>/.bussard/models/`, which
+holds only data bussard regenerates: when the directory is missing, the next command
+rebuilds it from the archives in `products/`. Product models stay YAML: they are
+generated files that nobody edits, so the reasons that moved the user's model files to
+TOML do not apply to them. Example (abridged):
 
 ```yaml
 # Product model (generated by `bussard import-product`).
@@ -298,16 +350,12 @@ Field notes:
 
 ## The never-redistribute rule
 
-Both `<dir>/vendor/` and `<dir>/models/` are local-only and git-ignored:
-
-- `vendor/` holds the copyrighted vendor `.knxprod` verbatim.
-- `models/` holds files derived from that copyrighted data.
-
-A user's committed repo carries only their own choices (group addresses, links, device
-parameter values), never product data. Anyone who clones the repo regenerates their
-models from `.knxprod` files they download themselves. This is the same footing as any
-interoperability tool: bussard reads legitimately obtained vendor files to interoperate;
-it never hosts or ships them.
+bussard never hosts, ships or mirrors vendor product data. `products/` holds the
+copyrighted `.knxprod` files you obtained (or extracted from your own export), and
+`.bussard/models/` holds files derived from them. Whether `products/` is committed is
+your decision; a private repository is the usual case, and a public one should leave it
+out. This is the same footing as any interoperability tool: bussard reads legitimately
+obtained vendor files to interoperate.
 
 ## ETS version and namespace caveats
 
