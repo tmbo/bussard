@@ -222,6 +222,11 @@ pub struct Device {
     /// The decrypted `Authentication` (a KNXnet/IP Secure device's device
     /// authentication code), if present.
     pub authentication: Option<Password>,
+    /// The decrypted factory default setup key (`FDSK`), if present. ETS 6
+    /// exports carry it next to the tool key (issue #241).
+    pub fdsk: Option<Key16>,
+    /// The device's serial number (`SerialNumber`, 12 hex digits), if present.
+    pub serial: Option<crate::keystore::SerialNumber>,
 }
 
 impl Device {
@@ -248,6 +253,8 @@ impl std::fmt::Debug for Device {
                 "authentication",
                 &self.authentication.as_ref().map(|_| "<redacted>"),
             )
+            .field("fdsk", &self.fdsk.as_ref().map(|_| "<redacted>"))
+            .field("serial", &self.serial.map(|s| s.to_string()))
             .finish()
     }
 }
@@ -718,12 +725,25 @@ fn parse_device(
         keyring_key,
         iv,
     )?;
+    let fdsk = match attr(e, b"FDSK")? {
+        Some(_) => Some(decrypt_key(e, b"FDSK", "Device/FDSK", keyring_key, iv)?),
+        None => None,
+    };
+    let serial = match attr(e, b"SerialNumber")? {
+        Some(s) => Some(s.parse().map_err(|reason| KeyringError::InvalidAttribute {
+            attribute: "Device/SerialNumber".to_string(),
+            reason,
+        })?),
+        None => None,
+    };
     Ok(Device {
         ia,
         tool_key,
         seq,
         management_password,
         authentication,
+        fdsk,
+        serial,
     })
 }
 

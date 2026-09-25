@@ -674,6 +674,11 @@ const GITIGNORE: &str = "\
 # product models). Local to this machine; `bussard history` and `bussard undo`
 # read it. Never commit it.
 .bussard/
+
+# ETS keyring exports hold key material under their own password. The key
+# store bussard.keys is encrypted and meant to be committed; a .knxkeys dropped
+# here is not (import it with `bussard keys import`).
+*.knxkeys
 ";
 
 /// `knx/README.md`: onboarding orientation.

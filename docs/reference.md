@@ -264,6 +264,22 @@ A user line notes a missing password or device authentication code; a keyring wi
 
 The keyring password comes from `BUSSARD_KEYRING_PASSWORD` and is deliberately **not** a flag, so it never lands in shell history or a process listing. Reading a keyring changes nothing on the bus; to program or read back a Data Secure device, pass the same file to `flash`, `apply`, `describe`, `plan` or `reconstruct` with `--keyring`. See [SAFETY.md](SAFETY.md#known-limitations).
 
+### `bussard keys <VERB>`
+
+Manage the KNX Secure key store, `bussard.keys` next to `bussard.lock` (issue #241). The store is bussard's own copy of the key material: the backbone key, the KNXnet/IP Secure interfaces and their credentials, per-device tool keys, serial numbers, factory keys (FDSK), management passwords and authentication codes, and the group keys. It is encrypted with the password in `BUSSARD_KEYRING_PASSWORD` by the same scheme as an ETS `.knxkeys` export, and meant to be committed with the model (see [model-format.md](model-format.md#bussardkeys) and [SAFETY.md](SAFETY.md#the-key-store)). **No key material or password is ever printed**, in text or JSON.
+
+- `bussard keys import <FILE>` merges an ETS `.knxkeys` export into the store and creates the store on first use. New devices, rotated tool keys, changed credentials, factory keys and group keys are taken from the export; entries the export lacks are kept, and a factory key is never dropped. The report lists what changed by address (`devices: 1 added (1.1.13), 1 tool key(s) rotated (1.1.12), 8 unchanged`); `--json` prints `written`, `backup`, `changed` and the `report` object. Importing the same export twice changes nothing and writes nothing.
+- `bussard keys export <FILE>` writes the store as a `.knxkeys` export ETS accepts: the ETS element and attribute set, a fresh `Created`, signed with the keyring key (see [knx-secure-spec.md](knx-secure-spec.md#47-writing-a-keyring-the-key-store-and-the-export)). A device without a tool key is left out and named. It refuses to overwrite an existing FILE unless `--force` is given.
+- `bussard keys show` prints the summary: the backbone, each device with its serial number and which keys it has, each interface with its user id and host, and the number of group keys. `--json` gives `project`, `created`, `has_backbone_key`, `devices[]` (`address`, `serial`, `has_tool_key`, `has_fdsk`, `has_management_password`, `has_authentication`), `interfaces[]` and `group_keys` (the addresses).
+
+| Flag / arg | Default | Meaning |
+|---|---|---|
+| `import <FILE>` | | The `.knxkeys` export to merge. Its password must be the store's (`BUSSARD_KEYRING_PASSWORD`). |
+| `export <FILE>` | | The `.knxkeys` file to write. |
+| `export --force` | off | Overwrite FILE if it exists. |
+
+The store and every export it reads or writes share one password, `BUSSARD_KEYRING_PASSWORD`; there is no flag for it. The bus commands still read the keyring given by `--keyring`, `BUSSARD_KEYRING` or `connection.keyring`; switching them to the store is the next step of #241. The model's `.gitignore` (from `init`) lists `*.knxkeys`, so an export dropped into the model directory is not committed by accident.
+
 ### `bussard import-product [FILE]`
 
 Import vendor product data (`.knxprod`): store it under `<dir>/products/`, pin it in `bussard.lock` and generate one product model per application program under `<dir>/.bussard/models/`. An ETS project export (`.knxproj`) works as a source too: each application program is extracted once into `<dir>/products/<application-id>.knxprod`, and the export itself is not copied. Three modes: a local file (positional), `--order-number` to look the file up in the pointer index and download it, or `--list` to show the index. Details in [product-data.md](product-data.md).
@@ -791,7 +807,7 @@ Serve the network-visualization website: an HTTP server that renders the model a
 | `BUSSARD_DIR` | The model directory when `--dir` is not given; beats [discovery](#global-options). |
 | `BUSSARD_GATEWAY` | The gateway `host[:port]` when `--gateway` is not given; beats `connection.gateway` in `bussard.toml`. It only selects a gateway: a non-loopback one still needs `--allow-remote-gateway` for a write. |
 | `BUSSARD_KEYRING` | The `.knxkeys` keyring when `--keyring` is not given; beats `connection.keyring` in `bussard.toml`. The password still comes from `BUSSARD_KEYRING_PASSWORD`. |
-| `BUSSARD_KEYRING_PASSWORD` | Password for a `.knxkeys` keyring read by `bussard keyring`, passed with `--keyring`, named by `BUSSARD_KEYRING`, or named by `connection.keyring` in `bussard.toml`. There is deliberately no flag for it, so it never lands in shell history or a process listing. |
+| `BUSSARD_KEYRING_PASSWORD` | Password for a `.knxkeys` keyring read by `bussard keyring`, passed with `--keyring`, named by `BUSSARD_KEYRING`, or named by `connection.keyring` in `bussard.toml`, and for the key store `bussard.keys` and the exports `bussard keys` reads and writes. There is deliberately no flag for it, so it never lands in shell history or a process listing. |
 | *(the `--secure-password-env` variable)* | The KNXnet/IP Secure tunnelling user's password for `--secure-user`. You choose the variable's name; bussard reads only that variable. |
 | `BUSSARD_ALLOW_REAL_GATEWAY` | Set to `1` to permit a write command against a non-loopback (real) gateway, equivalent to `--allow-remote-gateway`. Loopback gateways never need it. |
 | `RUST_LOG` | Log filter (e.g. `debug`, `bussard_transport=trace`). Overrides `-v`/`--verbose` when set. |

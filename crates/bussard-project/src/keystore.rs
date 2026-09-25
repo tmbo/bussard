@@ -20,10 +20,11 @@
 //!   serialization, ending with the keyring key (spec §4.4), so it is both the
 //!   password check and the tamper check.
 //!
-//! On top of an ETS export the store carries `Format="bussard.keys/1"` on the
-//! root, and `SerialNumber` and `FDSK` (encrypted) on a `<Device>`, whose
-//! `ToolKey` becomes optional (a device known only by its factory key). Group
-//! addresses are written three-level (`1/2/3`) for readable diffs. `Created`
+//! The element and attribute set is the one an ETS 6 export writes, including
+//! `SerialNumber` and the encrypted `FDSK` on a `<Device>`. On top of it the
+//! store carries `Format="bussard.keys/1"` on the root, a `<Device>` may lack
+//! `ToolKey` (a device known only by its factory key), and group addresses
+//! are written three-level (`1/2/3`) for readable diffs. `Created`
 //! is fixed when the store is first written and password prefixes are keyed
 //! and deterministic ([`bussard_secure::keyring_password_prefix`]), so an
 //! unchanged key or password keeps its ciphertext and a diff shows only what
@@ -332,6 +333,9 @@ pub struct ImportReport {
     pub devices_unchanged: usize,
     /// Devices in the store but not in the export (kept).
     pub devices_kept: Vec<String>,
+    /// Devices whose factory key (FDSK) or serial number the export added or
+    /// changed.
+    pub fdsks_updated: Vec<String>,
     /// Factory keys in the store after the import (never dropped).
     pub fdsks_kept: usize,
     /// Group keys new to the store.
@@ -360,6 +364,7 @@ impl ImportReport {
             || !self.tool_keys_rotated.is_empty()
             || !self.device_credentials_updated.is_empty()
             || !self.ets_sequences_updated.is_empty()
+            || !self.fdsks_updated.is_empty()
             || !self.group_keys_added.is_empty()
             || !self.group_keys_rotated.is_empty()
             || !self.interfaces_added.is_empty()
@@ -595,6 +600,7 @@ impl KeyStore {
             ets_sequences_updated: Vec::new(),
             devices_unchanged: 0,
             devices_kept: Vec::new(),
+            fdsks_updated: Vec::new(),
             fdsks_kept: 0,
             group_keys_added: Vec::new(),
             group_keys_rotated: Vec::new(),
@@ -676,8 +682,8 @@ impl KeyStore {
                         theirs.ia,
                         StoreDevice {
                             tool_key: Some(theirs.tool_key.clone()),
-                            serial: None,
-                            fdsk: None,
+                            serial: theirs.serial,
+                            fdsk: theirs.fdsk.clone(),
                             management_password: theirs.management_password.clone(),
                             authentication: theirs.authentication.clone(),
                             ets_sequence: Some(theirs.seq),
@@ -710,6 +716,23 @@ impl KeyStore {
             }
             if credentials {
                 report.device_credentials_updated.push(address.clone());
+                changed = true;
+            }
+            // A factory key or serial number the export carries is taken; one
+            // it lacks is never dropped.
+            let mut factory = false;
+            if let Some(fdsk) = &theirs.fdsk
+                && ours.fdsk.as_ref() != Some(fdsk)
+            {
+                ours.fdsk = Some(fdsk.clone());
+                factory = true;
+            }
+            if theirs.serial.is_some() && ours.serial != theirs.serial {
+                ours.serial = theirs.serial;
+                factory = true;
+            }
+            if factory {
+                report.fdsks_updated.push(address.clone());
                 changed = true;
             }
             if ours.ets_sequence != Some(theirs.seq) {
@@ -754,11 +777,11 @@ impl KeyStore {
     }
 
     /// Builds a signed `.knxkeys` export ETS accepts (spec §4, issue #241):
-    /// the ETS element and attribute set, raw group addresses, a fresh
-    /// `Created` and random password prefixes, signed with the keyring key of
+    /// the ETS element and attribute set (serial numbers and factory keys
+    /// included, as ETS writes them), raw group addresses, a fresh `Created`
+    /// and random password prefixes, signed with the keyring key of
     /// `password`. Devices without a tool key are left out (listed in
-    /// [`KnxkeysExport::skipped_devices`]); serial numbers and factory keys
-    /// never leave the store.
+    /// [`KnxkeysExport::skipped_devices`]).
     ///
     /// # Errors
     ///
@@ -837,8 +860,8 @@ impl KeyStore {
     }
 
     /// Writes the backbone, interfaces, group keys and devices in ETS order.
-    /// `store` adds the store-only attributes (`SerialNumber`, `FDSK`) and
-    /// keeps tool-key-less devices.
+    /// `store` keeps tool-key-less devices and leaves an unknown
+    /// `SequenceNumber` out instead of writing `0`.
     fn write_body(
         &self,
         w: &mut XmlWriter<'_>,
@@ -915,13 +938,11 @@ impl KeyStore {
                 if let Some(key) = &d.tool_key {
                     attrs.push(("ToolKey", w.key(key)?));
                 }
-                if store {
-                    if let Some(serial) = d.serial {
-                        attrs.push(("SerialNumber", serial.to_string()));
-                    }
-                    if let Some(fdsk) = &d.fdsk {
-                        attrs.push(("FDSK", w.key(fdsk)?));
-                    }
+                if let Some(serial) = d.serial {
+                    attrs.push(("SerialNumber", serial.to_string()));
+                }
+                if let Some(fdsk) = &d.fdsk {
+                    attrs.push(("FDSK", w.key(fdsk)?));
                 }
                 let context = format!("Device/{ia}");
                 if let Some(pw) = &d.management_password {
@@ -1658,6 +1679,39 @@ mod tests {
             store.tool_key(ia("1.1.10")?).map(|k| *k.bytes()),
             Some([0x43; 16])
         );
+        Ok(())
+    }
+
+    /// ETS 6 exports carry `FDSK` and `SerialNumber` per device: the export
+    /// writes them, the reader decrypts them, an import takes them.
+    #[test]
+    fn test_export_and_import_carry_fdsk_and_serial() -> TestResult {
+        let mut source = sample()?;
+        source.record_fdsk(
+            ia("1.1.10")?,
+            Some("00FA:00001234".parse()?),
+            Key16::new([0x88; 16]),
+        );
+        let export = source.export_knxkeys(PASSWORD)?;
+        let keyring = parse_keyring(&export.xml, PASSWORD)?;
+        let device = &keyring.devices[0];
+        assert_eq!(device.fdsk.as_ref().map(|k| *k.bytes()), Some([0x88; 16]));
+        assert_eq!(
+            device.serial.map(|s| s.to_string()).as_deref(),
+            Some("00FA00001234")
+        );
+
+        let mut store = KeyStore::new("");
+        store.merge_keyring(&parse_keyring(SYNTHETIC, PASSWORD)?);
+        let report = store.merge_keyring(&keyring);
+        assert_eq!(report.fdsks_updated, vec!["1.1.10".to_string()]);
+        assert_eq!(report.fdsks_kept, 1);
+        // An export without the FDSK never drops it.
+        let report = store.merge_keyring(&parse_keyring(SYNTHETIC, PASSWORD)?);
+        assert!(report.fdsks_updated.is_empty());
+        assert_eq!(report.fdsks_kept, 1);
+        let d = store.devices.get(&ia("1.1.10")?).ok_or("1.1.10")?;
+        assert_eq!(d.fdsk.as_ref().map(|k| *k.bytes()), Some([0x88; 16]));
         Ok(())
     }
 

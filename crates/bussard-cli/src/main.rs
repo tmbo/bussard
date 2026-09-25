@@ -31,6 +31,7 @@ mod import_cmd;
 mod import_product_cmd;
 mod init_cmd;
 mod keyring_cmd;
+mod keys_cmd;
 mod learn_cmd;
 mod line_cmd;
 mod lock_pin;
@@ -256,6 +257,7 @@ impl Command {
                 | Command::Reconstruct { .. }
                 | Command::Describe { .. }
                 | Command::Keyring { .. }
+                | Command::Keys { .. }
                 | Command::Flash { .. }
                 | Command::Plan { .. }
                 | Command::Apply { .. }
@@ -543,6 +545,34 @@ enum GroupsCommand {
     },
 }
 
+/// The `bussard keys` subcommands (issue #241).
+#[derive(Debug, Subcommand)]
+enum KeysCommand {
+    /// Merge an ETS keyring export (`.knxkeys`) into the key store
+    /// (`bussard.keys` next to `bussard.lock`), creating it on first use.
+    ///
+    /// New devices, rotated tool keys, changed credentials and group keys are
+    /// taken from the export; entries it lacks are kept and a factory key
+    /// (FDSK) is never dropped. Prints what changed, never a key.
+    Import {
+        /// The `.knxkeys` file to import.
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+    },
+    /// Write the key store as a signed `.knxkeys` export for ETS.
+    Export {
+        /// The `.knxkeys` file to write.
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+        /// Overwrite FILE if it exists.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Summarize the key store: devices, interfaces and group addresses,
+    /// never a key.
+    Show,
+}
+
 /// The top-level subcommands.
 #[derive(Debug, Subcommand)]
 enum Command {
@@ -724,6 +754,16 @@ enum Command {
         /// The `.knxkeys` file to inspect.
         #[arg(value_name = "FILE")]
         file: PathBuf,
+    },
+    /// Manage the KNX Secure key store, `bussard.keys` next to
+    /// `bussard.lock`: import an ETS `.knxkeys`, export one for ETS, show a
+    /// summary (issue #241). Key material is NEVER printed.
+    ///
+    /// The store is encrypted with the password in
+    /// `BUSSARD_KEYRING_PASSWORD` and meant to be committed with the model.
+    Keys {
+        #[command(subcommand)]
+        command: KeysCommand,
     },
     /// Import vendor product data (`.knxprod`): cache it and generate a model.
     ///
@@ -1481,6 +1521,11 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
             g.mgmt(),
         ),
         Command::Keyring { file } => keyring_cmd::run(&file, json),
+        Command::Keys { command } => match command {
+            KeysCommand::Import { file } => keys_cmd::run_import(dir, &file, json),
+            KeysCommand::Export { file, force } => keys_cmd::run_export(dir, &file, force, json),
+            KeysCommand::Show => keys_cmd::run_show(dir, json),
+        },
         Command::ImportProduct {
             file,
             order_number,
