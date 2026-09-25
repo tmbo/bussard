@@ -208,8 +208,7 @@ pub(crate) fn fetch_to_vendor(
 /// Generates the product models of a `.knxprod` already cached under
 /// `<dir>/vendor/`, quietly. Returns the model file names written.
 pub(crate) fn generate_models(file: &Path, dir: &Path) -> anyhow::Result<Vec<String>> {
-    let product = bussard_prod::read_knxprod(file)
-        .with_context(|| format!("reading product data from {}", file.display()))?;
+    let product = read_in_model_language(file, dir, None)?;
     if product.applications.is_empty() {
         bail!(
             "no application programs found in {} (is it a valid .knxprod?)",
@@ -217,6 +216,23 @@ pub(crate) fn generate_models(file: &Path, dir: &Path) -> anyhow::Result<Vec<Str
         );
     }
     write_models(&product, dir)
+}
+
+/// Reads every application program of `file` with its texts in the model's
+/// language (see [`crate::product_cache::model_language`]), so the generated
+/// models label enum members as the device files do and a label checked
+/// against them (MCP `knx_set_parameter`) resolves in that language (issue
+/// #231). Without a recorded language, en-US.
+fn read_in_model_language(
+    file: &Path,
+    dir: &Path,
+    inner: Option<&str>,
+) -> anyhow::Result<ProductData> {
+    let language = crate::product_cache::model_language(None, dir);
+    bussard_prod::read_knxprod_selected_in(file, inner, None, language.as_deref(), |_| {
+        bussard_prod::AppSelection::All
+    })
+    .with_context(|| format!("reading product data from {}", file.display()))
 }
 
 /// Writes one model file per application program under `<dir>/models/`.
@@ -278,8 +294,7 @@ fn import_from_file(
     inner: Option<&str>,
     note: DownloadNote,
 ) -> anyhow::Result<ExitCode> {
-    let product = bussard_prod::read_knxprod_inner(file, inner)
-        .with_context(|| format!("reading product data from {}", file.display()))?;
+    let product = read_in_model_language(file, dir, inner)?;
 
     if product.applications.is_empty() {
         bail!(

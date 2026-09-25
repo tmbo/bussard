@@ -408,6 +408,14 @@ entry supersedes it and is not a diff against it.
 
 ### Fixed
 
+- Enum labels in the project language resolve on the flash path: `flash`,
+  `plan`, `apply`, `reconstruct` and `replace` read the product in the lock's
+  `language`, so a German model's `Heizen und Kühlen` no longer fails with
+  "neither an enum code nor exactly one of its labels". A label matches the
+  lock's language first, then the default text, then any translation; the
+  Dynamic section evaluates a labelled value as its code, so the branch it
+  selects is the one ETS takes. `import-product` writes `models/` in the
+  same language (#231).
 - Group writes: DPT-blind 6-bit APCI packing corrupted values on the live bus
   (#59).
 - Tunnelling: ACK handling outside the window, a tunnel-slot leak on abort,

@@ -31,6 +31,11 @@ pub fn cache_dir(dir: &Path) -> Option<PathBuf> {
 /// parsing only what `select` picks, through the cache of the model at `dir`.
 /// The time it took is a `--timing` phase.
 ///
+/// `language` is the language the programs' texts are parsed in: the
+/// `language` the model's `bussard.lock` records (see [`model_language`]),
+/// so enum labels a device file carries resolve in the language `import`
+/// wrote them in. `None` parses in the default language (en-US).
+///
 /// # Errors
 ///
 /// As [`bussard_prod::read_knxprod`].
@@ -38,11 +43,13 @@ pub fn read(
     path: &Path,
     inner: Option<&str>,
     dir: &Path,
+    language: Option<&str>,
     select: impl FnOnce(&ProductCatalog) -> AppSelection,
 ) -> bussard_prod::Result<ProductData> {
     let started = std::time::Instant::now();
     let cache = cache_dir(dir);
-    let product = bussard_prod::read_knxprod_selected(path, inner, cache.as_deref(), select);
+    let product =
+        bussard_prod::read_knxprod_selected_in(path, inner, cache.as_deref(), language, select);
     let detail = match &product {
         Ok(p) => format!(
             "{} program(s), {}",
@@ -57,6 +64,17 @@ pub fn read(
     };
     crate::timing::record("product parse", started.elapsed(), detail);
     product
+}
+
+/// The language a model's device files carry their texts and enum labels in:
+/// the `language` the loaded `model`'s lock records, else the language
+/// `bussard import` would use for `dir` ([`bussard_model::import_language`]:
+/// `[import] language` in `bussard.toml`, else the lock's `language`).
+/// `None` when nothing says.
+pub fn model_language(model: Option<&bussard_model::Model>, dir: &Path) -> Option<String> {
+    model
+        .and_then(|m| m.lock_language().map(str::to_string))
+        .or_else(|| bussard_model::import_language(dir))
 }
 
 /// The selection of the one program `wanted` names, by the rule of

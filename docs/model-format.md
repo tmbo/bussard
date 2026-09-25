@@ -234,6 +234,21 @@ available (`models/`): an enum label becomes its code, a number with unit is
 checked against the range. Without the product model the string is kept as
 written and validation reports that the value could not be checked.
 
+`flash`, `plan`, `apply`, `reconstruct` and `replace` resolve an enum label
+against the vendor program itself, read in the lock's `language` (see
+[Text language](#text-language)). A label matches, in this order:
+
+1. the member's text in the lock's language;
+2. else its untranslated text (the program's `DefaultLanguage`);
+3. else its text in any other language the program carries, so a file
+   edited from an English catalogue still loads under a German lock.
+
+The first step with a match decides. A label two members share at that step
+is refused as ambiguous, and a label no member carries is refused with the
+list of labels in the lock's language. `import-product` writes `models/` in
+the same language, so the MCP `knx_set_parameter` check accepts the labels
+the device files carry.
+
 The loader translates between the file key and the parameter ref through
 the lock. A parameter key the lock does not list (a value the user sets for
 the first time) resolves through the product model: the key must equal the

@@ -646,7 +646,7 @@ pub(crate) fn resolve_product_file(
     for path in &candidates {
         // The hardware catalogue is all the match needs: no program is parsed
         // (issue #214), and the parsed-product cache keeps it for next time.
-        let Ok(product) = crate::product_cache::read(path, None, dir, |_| {
+        let Ok(product) = crate::product_cache::read(path, None, dir, None, |_| {
             bussard_prod::AppSelection::Exact(Vec::new())
         }) else {
             continue;

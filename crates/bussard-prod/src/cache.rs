@@ -2,7 +2,9 @@
 //! parsed [`ApplicationProgram`] of an archive, stored as JSON so the next
 //! command reads them back instead of inflating and parsing the XML again.
 //!
-//! Layout: `<cache>/<key>/catalog.json` and `<cache>/<key>/<application-id>.json`.
+//! Layout: `<cache>/<key>/catalog.json` and
+//! `<cache>/<key>/<application-id>@<language>.json` (a program's texts depend on
+//! the language it was parsed in).
 //! The key is the SHA-256 of the archive bytes, the selected inner `.knxprod`
 //! of a wrapper, the cache format and the identity of the running bussard
 //! build (its version and the size and modification time of its executable).
@@ -25,7 +27,7 @@ use sha2::{Digest, Sha256};
 use crate::{ApplicationProgram, ProductCatalog};
 
 /// Bumped whenever the stored shape changes incompatibly.
-const FORMAT: &str = "bussard-parsed-product-v1";
+const FORMAT: &str = "bussard-parsed-product-v2";
 
 /// The archive entries kept under one cache directory.
 pub const MAX_ENTRIES: usize = 32;
@@ -68,16 +70,17 @@ impl Store {
         write_json(&self.dir, "catalog.json", catalog);
     }
 
-    /// The cached program `id` as parsed (companions not attached), if stored.
-    pub fn application(&self, id: &str) -> Option<ApplicationProgram> {
-        let name = file_name(id)?;
+    /// The cached program `id` as parsed in `language` (companions not
+    /// attached), if stored.
+    pub fn application(&self, id: &str, language: &str) -> Option<ApplicationProgram> {
+        let name = file_name(id, language)?;
         let app: ApplicationProgram = read_json(&self.dir.join(name))?;
         (app.id == id).then_some(app)
     }
 
-    /// Stores the parsed program `id` (best effort).
-    pub fn put_application(&self, id: &str, app: &ApplicationProgram) {
-        if let Some(name) = file_name(id) {
+    /// Stores the program `id` parsed in `language` (best effort).
+    pub fn put_application(&self, id: &str, language: &str, app: &ApplicationProgram) {
+        if let Some(name) = file_name(id, language) {
             write_json(&self.dir, &name, app);
         }
     }
@@ -131,14 +134,16 @@ fn build_identity() -> String {
     format!("{}:{exe}", env!("CARGO_PKG_VERSION"))
 }
 
-/// The file name for program `id`, refusing anything that is not a plain name.
-fn file_name(id: &str) -> Option<String> {
-    let plain = !id.is_empty()
-        && id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-        && !id.starts_with('.');
-    plain.then(|| format!("{id}.json"))
+/// The file name for program `id` parsed in `language`, refusing anything
+/// that is not a plain name.
+fn file_name(id: &str, language: &str) -> Option<String> {
+    let plain = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            && !s.starts_with('.')
+    };
+    (plain(id) && plain(language)).then(|| format!("{id}@{language}.json"))
 }
 
 /// Reads and deserializes `path`, `None` on any failure.
