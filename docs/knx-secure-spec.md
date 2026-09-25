@@ -1009,8 +1009,12 @@ Chunks follow the inner APDU budget: `PID_MAX_APDU_LENGTH` minus 13 octets of
 Data Secure overhead (ETS: 233 → 215-octet `A_MemoryExtended_Write` chunks,
 211-element PID 61 chunks). The group key table and flags bussard builds from
 the keyring and the tables equal ETS's bytes (`secure_capture_oracle.rs`,
-`test_security_object_program_matches_ets`). INFERRED: the order and packing
-of several PID 53 entries (the capture has one), the meaning of the flag bits
+`test_security_object_program_matches_ets`). Several PID 53 entries are
+written in ascending address-table index, packed to the budget `[CONFIRMED: S3
+captures, 2026-09-24, address-table indices only]`: 1.1.5 got 16 entries as 11
+from element 1 (indices 1 2 6 8 9 10 12 14 17 18 19, 198 octets) and 5 from
+element 12 (20 23 24 25 26); 1.1.7 got 8, 1.1.9 3, 1.1.16 4, 1.1.47 and 1.1.48
+2, each in one telegram. INFERRED: the meaning of the flag bits
 (bit 0/1 = authentication/confidentiality). Only `0x00` and `0x03` have been
 observed; `0x01` (authentication only) and other combinations stay INFERRED
 (#197).
@@ -1042,9 +1046,14 @@ before 1.1.16 and 1.1.12 were downloaded, so they got its keyring value.
 there; the keyring exported after all downloads marks it activated with a later
 sequence, and bussard's entry on 1.1.5 differs from that capture in the 6
 sequence octets (the IA matches). That is the only remaining difference.
-INFERRED: several entries in ascending IA order (every observed table has
-one), and whether a device's own send GA counts as listened (it made no
-difference in the reference installation). A multi-sender sample is not
+INFERRED: several entries in ascending IA order, packed like PID 53 (26
+entries per telegram at `PID_MAX_APDU_LENGTH` 233). Every observed table has at
+most one entry: all eight decrypted downloads (secure-1-1-{5,7,9,12,16,47,48}
+and secure-1-1-12-group) write the count-0 clear and then zero or one element
+at element 1, so the order of several cannot be read from a capture. ETS writes
+the other tables of the object (PID 53, PID 61) ascending and packed, and
+bussard follows that shape. Also INFERRED: whether a device's own send GA
+counts as listened (it made no difference in the reference installation). A multi-sender sample is not
 available in the reference installation (#197, 2026-09-24): 1.1.10 is secured,
 but the GA it shares with 1.1.5 also carries a device that is not
 Secure-capable, so ETS cannot secure it. It needs another installation or a
