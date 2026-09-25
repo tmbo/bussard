@@ -542,6 +542,47 @@ fn test_flash_preflight_skips_the_authorize_the_facts_record_as_unanswered() -> 
     Ok(())
 }
 
+/// Issue #215: a cold `apply` (no facts yet) discovers the interface objects
+/// once, in its read phase; the write phase's table discovery and read-back
+/// use that table (the #209 seed), and a warm run reads none of it. The
+/// deep dive of 2026-09-24 counted three walks per apply before #209.
+#[test]
+fn test_apply_discovers_the_objects_at_most_once() -> TestResult {
+    // PID_IO_LIST confirms its list with three PID_OBJECT_TYPE reads (the last
+    // object, the first application object, the index after the last); the
+    // walk reads every index and the one after the last.
+    for (tag, device, discovery_reads) in [
+        ("apply-io-list", device()?, 3),
+        ("apply-walk", device()?.without_io_list(), TYPES.len() + 1),
+    ] {
+        let bench = Bench::start(tag, device)?;
+        let out = ok_stdout(&bench.run(&["apply", "1.1.12", "--yes"])?)?;
+        assert!(out.contains("apply verified"), "{out}");
+        let cold = bench.take_requests()?;
+        // The tables match now: a no-op apply.
+        ok_stdout(&bench.run(&["apply", "1.1.12", "--yes"])?)?;
+        let warm = bench.take_requests()?;
+        println!(
+            "{tag}: cold {} requests, {} PID_OBJECT_TYPE, {} PID 56; no-op warm {} requests, \
+             {} PID_OBJECT_TYPE, {} PID 56",
+            cold.len(),
+            object_type_reads(&cold),
+            max_apdu_reads(&cold),
+            warm.len(),
+            object_type_reads(&warm),
+            max_apdu_reads(&warm),
+        );
+        assert_eq!(object_type_reads(&cold), discovery_reads, "{tag}");
+        assert_eq!(max_apdu_reads(&cold), 1, "{tag}");
+        assert_eq!(
+            (object_type_reads(&warm), max_apdu_reads(&warm)),
+            (0, 0),
+            "{tag}"
+        );
+    }
+    Ok(())
+}
+
 /// `PID_MAX_APDU_LENGTH` reads in a request log.
 fn max_apdu_reads(requests: &[(u16, Vec<u8>)]) -> usize {
     requests
