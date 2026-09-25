@@ -474,6 +474,8 @@ body {
 .lr-dest { color: var(--accent); }
 .lr-apci { color: var(--text-dim); overflow: visible; text-align: center; }
 .lr-value { color: var(--text); }
+.lr-secure { color: var(--ok); }
+.lr-secure-bad { color: var(--bad); }
 .lr-dpt { color: var(--text-faint); }
 
 /* --- query-active dimming ------------------------------------------------- */
@@ -836,6 +838,8 @@ body.query-active .ga-sub:not(.match) { opacity: 0.35; }
 }
 .insp-chip.mono { font-family: var(--mono); }
 .protected-chip { color: var(--warn); border-color: var(--warn); }
+.secure-chip { color: var(--ok); border-color: var(--ok); }
+.secure-mark { color: var(--ok); font-size: 11px; }
 .insp-desc { color: var(--text-faint); font-size: 11px; }
 .insp-section { margin-bottom: 16px; }
 .insp-h3 {

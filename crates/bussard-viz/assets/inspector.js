@@ -32,6 +32,20 @@ function el(tag, className, text) {
 }
 
 /**
+ * The chip text for a device's model `security` block (issue #205), or null
+ * when the model records no Data Secure state worth showing.
+ * @param {{activated?:boolean, secure_commissioning?:boolean, secure_capable?:boolean}|null} sec
+ * @returns {string|null}
+ */
+export function securityLabel(sec) {
+  if (!sec) return null;
+  if (sec.activated) return "Data Secure: activated";
+  if (sec.secure_commissioning) return "Data Secure: activation pending";
+  if (sec.secure_capable) return "Data Secure capable";
+  return null;
+}
+
+/**
  * The inspector controller. Renders the currently selected device or GA and
  * wires the send widgets. One instance per page.
  */
@@ -110,6 +124,13 @@ class Inspector {
       if (p) meta.appendChild(el("span", "insp-chip", p));
     }
     if (d.description) meta.appendChild(el("span", "insp-desc", d.description));
+    // KNX Data Secure state from the model (read-only, issue #205).
+    const secure = securityLabel(d.security);
+    if (secure) {
+      const chip = el("span", "insp-chip secure-chip", secure);
+      chip.title = "KNX Data Secure, as the model records it (read-only)";
+      meta.appendChild(chip);
+    }
 
     // Com-object table, grouped by channel (the standalone channels list is
     // gone: the channel is now the grouping key inside the table).
@@ -189,7 +210,9 @@ class Inspector {
     const noLink = !co.send && !(co.listen && co.listen.length);
     if (noLink) tr.classList.add("unlinked");
     tr.appendChild(el("td", "mono", String(co.number)));
-    tr.appendChild(el("td", null, co.name || "—"));
+    const nameTd = el("td", null, co.name || "—");
+    if (co.secure) nameTd.appendChild(el("span", "secure-mark", " [secured]"));
+    tr.appendChild(nameTd);
     tr.appendChild(el("td", "mono dim", co.dpt || "—"));
     tr.appendChild(el("td", "mono dim", co.flags || "—"));
 
@@ -334,6 +357,11 @@ class Inspector {
     if (g.protected) {
       const lock = el("span", "insp-chip protected-chip", "🔒 protected");
       meta.appendChild(lock);
+    }
+    if (g.secure) {
+      const chip = el("span", "insp-chip secure-chip", "secured (Data Secure)");
+      chip.title = "groups.toml marks this GA secure: its telegrams are encrypted";
+      meta.appendChild(chip);
     }
     const valWrap = el("span", "insp-live");
     const rec = this.store.lastValue.get(ga);

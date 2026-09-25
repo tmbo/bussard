@@ -547,6 +547,32 @@ line in `bussard history`), the write, and a read-back verify. The result
 carries the verify outcome and the backup path. One device per call, tables
 only: the parameter half of `apply`, `flash` and `apply --line` stay CLI-only.
 
+### Secured devices over MCP
+
+A device the server's keyring lists (`bussard mcp --keyring`,
+`BUSSARD_KEYRING` or `connection.keyring`) is planned and written over KNX
+Data Secure, the way `bussard apply --keyring` does it (issue #205). Every
+APDU rides `A_SecureData` with the device's tool key, and on System B the
+write also reprograms the security object in the ETS order: unload, the
+security individual address table (PID 54), the group key table (PID 53), the
+group-object security flags (PID 61), load completed. The gates above apply
+unchanged, and three more rules cover the security object:
+
+- The plan shows what the security object receives (`security_object`: the
+  secured senders, the keyed group addresses, the secured objects) as the
+  same line the CLI prints, so the human approves it with the tables. It
+  names addresses and object numbers, never a key.
+- A group the model marks `secure = true` without a group key in the keyring
+  refuses the plan: a download without that key would leave the group
+  unusable.
+- The plan digest covers the security inputs too. A keyring or `secure` flag
+  that changes between plan and apply retires the plan.
+
+A device the model records as `security.activated` but the keyring does not
+list is refused, as on the CLI; plain management cannot reach it. System 7
+devices get their tables written secured and their security object left as
+it is, as with `bussard apply --keyring`.
+
 ## History and undo
 
 bussard keeps a full copy of the model files under `<dir>/.bussard/history`

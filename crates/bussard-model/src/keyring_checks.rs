@@ -62,7 +62,7 @@ pub enum KeyringStatus {
 
 /// The keyring diagnostics for `model` (see the module docs), given what the
 /// caller found for the configured keyring (`None`: no keyring configured).
-/// Sorted like [`crate::validate`]'s output.
+/// Sorted like [`crate::validate()`]'s output.
 pub fn validate_keyring(model: &Model, keyring: Option<&KeyringFacts>) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     let activated: Vec<(IndividualAddress, String)> = model

@@ -7,6 +7,9 @@ product = "HA-6"
 floor = "Ground Floor"
 room = "Utility Room"
 
+[security]
+activated = true
+
 [channel.CH-1]
 name = "Valve 1 - Living Room"
 1.listen = ["0/2/0"]
