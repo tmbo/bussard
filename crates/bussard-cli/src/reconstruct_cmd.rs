@@ -180,7 +180,7 @@ pub fn run(
         )
     });
     if json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        crate::output::print(crate::output::schema::RECONSTRUCT, &report)?;
     } else {
         print_text(&report);
         if let Some(identity) = &report.identity {
@@ -492,7 +492,7 @@ pub fn run_line(
 
     let summary = build_summary(line, out, &found, &model);
     if json {
-        println!("{}", serde_json::to_string_pretty(&summary)?);
+        crate::output::print(crate::output::schema::RECONSTRUCT_LINE, &summary)?;
     } else {
         print_line_summary(&summary);
     }

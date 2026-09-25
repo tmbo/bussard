@@ -611,7 +611,7 @@ ADOPT_MODEL="$(mktemp -d -t bussardadopt.XXXXXX)"
 printf '[connection]\ntransport = "tunnel"\ngateway = "%s"\nkeyring = "%s"\n' \
   "$GATEWAY" "$KEYRING" > "$ADOPT_MODEL/bussard.toml"
 mark=$(log_mark)
-out="$(BUSSARD_ADOPT_ADDRESS=1.1.10 "$BUSSARD" adopt --yes --product "$PRODUCT" \
+out="$("$BUSSARD" adopt 1.1.10 --yes --product "$PRODUCT" \
   --dir "$ADOPT_MODEL" --gateway "$GATEWAY" </dev/null 2>&1)"
 rc=$?
 if [[ $rc -eq 0 ]] && grep -q "verified (secured): mask 0x07b0" <<<"$out" \

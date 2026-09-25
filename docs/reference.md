@@ -6,7 +6,7 @@ The complete surface of `bussard`: every command and flag, the environment varia
 
 - Addresses: group addresses (GAs) are 3-level strings like `3/2/0`; individual addresses (IAs) are `area.line.device` like `1.1.4`; DPTs are `"1.001"`.
 - Filters (`monitor --filter`, `capture --filter`): a comma-separated list of GAs (`3/2/0`), GA prefixes (`3/` or `3/2/`), or IAs (`1.1.30`).
-- Confirmation: commands that write to devices confirm on a terminal (`y/N`), naming the resolved gateway (`host:port`). Without a TTY they refuse unless `--yes` is passed (`--yes-download` for `import-product`). This covers `write`, `flash`, `apply`, `assign` and `adopt`.
+- Confirmation: commands that write to devices or the bus confirm on a terminal (`y/N`), naming the resolved gateway (`host:port`). Without a terminal they refuse unless `--yes` is passed; see [confirmation, download consent and JSON](#confirmation-download-consent-and-json).
 - Real-gateway safety: a write command whose resolved gateway is **not** loopback (not `127.0.0.0/8` or `::1`) refuses to run unless you opt in with `--allow-remote-gateway` or `BUSSARD_ALLOW_REAL_GATEWAY=1`. Loopback gateways (the local simulator, the test suite) are always allowed. Reads (`monitor`, `read`, `scan`, `plan`, `reconstruct`) are never gated. The two long-running servers pass the same gate once, at startup, when they are able to transmit: `mcp --allow-writes`, `mcp --allow-programming`, `viz --allow-writes`, and `viz --watch-prog`. The MCP programming tools check it again on every call. Without those flags neither server can write, so neither is gated. [SAFETY.md](SAFETY.md) is the read-before-your-first-write guide to all of this.
 
 ### Global options
@@ -18,11 +18,21 @@ Precedence, for every option that has more than one source: the flag, then the e
 | Option | Environment | `bussard.toml` | Default | Meaning |
 |---|---|---|---|---|
 | `--keyring <FILE>` | `BUSSARD_KEYRING` | `connection.keyring` (deprecated) | the key store `bussard.keys` | The KNX Secure keys a bus command uses: their tunnelling users open the [KNXnet/IP Secure tunnel](#knxnetip-secure-tunnelling), their device entries carry the KNX Data Secure tool keys for management, and their group keys secure and decrypt group telegrams. Precedence (issue #241): an explicit `.knxkeys` file from `--keyring`, then `BUSSARD_KEYRING`; else the key store `bussard.keys` in the model directory (see [`bussard keys`](#bussard-keys-verb)); else `connection.keyring` in `bussard.toml`, which is deprecated, kept for one release for models without a store, and ignored with a warning when a store exists. `--keyring` stays as the explicit-file override (a keyring that is not the model's, a bench keyring). A relative `connection.keyring` is relative to the model directory; a relative flag or variable is relative to the working directory. The password comes from `BUSSARD_KEYRING_PASSWORD`, never a flag. Only commands that talk to the bus read it; `adopt` and `test` use it for the tunnel only. A key source other than `--keyring` serves the tunnel only when `--tool-key` is given; `--keyring` itself conflicts with `--tool-key`. |
-| `--json` | | | text | Machine-readable output: one JSON document, or JSON Lines for `monitor`. Refused by a command that has no JSON output. `apply --json` needs `--line`. |
+| `--json` | | | text | Machine-readable output: one JSON document with a top-level `"schema"`, or JSON Lines for `monitor`. Refused by a command that has no JSON output. `apply --json` needs `--line`. |
 | `--allow-remote-gateway` | `BUSSARD_ALLOW_REAL_GATEWAY=1` (exactly `1`) | deliberately none | off | Permit a transmitting command (a write, programming, an armed `viz` or `mcp`) against a non-loopback gateway. Read-only commands ignore it. No other environment variable can enable a transmit. |
 | `--skip-address-check` | | | off | On the commands that open a connection to a device, skip the pre-flight probe that no bus device answers at bussard's own source individual address. See [SAFETY.md](SAFETY.md#source-address-check). |
 
-`--yes`, `--force`, `--dry-run` and `--plan` are not global: they stay on the command whose action they consent to, and never come from the environment or `bussard.toml`.
+`--yes`, `--yes-download`, `--force`, `--dry-run` and `--plan` are not global: they stay on the command whose action they consent to, and never come from the environment or `bussard.toml`.
+
+#### Confirmation, download consent and JSON
+
+`--yes` means one thing on every command: skip the confirmation prompt. The commands that write (`assign`, `adopt`, `flash`, `apply`, `commission`, `restore`, `replace`, `write`, `test`) and `learn` ask on a terminal; without a terminal and without `--yes` they refuse with one sentence, `refusing to <action> without a terminal to confirm on; pass --yes to confirm non-interactively`. `assign`, `adopt`, `replace`, `commission` and `learn` refuse before they load the model; `flash`, `apply`, `restore`, `write` and `test` first read and show what they would change, then refuse at the prompt. An explicit address or value is never consent on its own.
+
+Downloading vendor product data is a separate question with its own flag, `--yes-download`, on `init`, `import`, `import-product` and `adopt`. `--yes` never answers it. Without a terminal and without `--yes-download`, `init`, `import` and `adopt` download nothing and list the missing order numbers, and `import-product --order-number` refuses. `--no-download` skips the question.
+
+Every `--json` document is one object whose first field is `"schema": <n>`, the version of that command's shape; each `monitor --json` line carries it too. A report that is a list is wrapped under a key: `validate --json` prints `{"schema", "diagnostics": [...]}`, `history --json` prints `{"schema", "snapshots": [...]}`. The number goes up when a field is removed or renamed, changes its type or changes its meaning. Adding a field does not bump it, so a consumer must ignore fields it does not know. Every shape starts at 1.
+
+`--force` and `--full` keep a per-command meaning. `--force` overrides one named refusal: the not-factory-fresh refusal (`flash`), the replacement-identity refusals (`replace`), or the protected-group-address refusal (`write`, `test`; `test` also needs `allow_protected = true` in the test file). `--full` means "skip nothing": `flash` re-streams every object, `describe` walks every property description again.
 
 **Model directory discovery.** Without `--dir` and `BUSSARD_DIR`, a command that reads an existing model looks for it the way `git` and `cargo` find their roots, so it works from the repository root, from inside the model and from any subdirectory of either:
 
@@ -88,7 +98,7 @@ Create a fresh model directory: discover the gateway, write the skeleton. The fi
 |---|---|---|
 | `[PROJECT]` | the one `.knxproj` next to `--dir` | The ETS project to import right after writing the skeleton. |
 | `--password <PASSWORD>` | | Project password, as for `import`. |
-| `--yes` | off | Download the project's missing product data without asking. |
+| `--yes-download` | off | Download missing vendor product data without asking. Without a terminal and without this flag nothing is downloaded; the missing order numbers are listed. |
 | `--no-download` | off | Do not download missing product data; list it instead. |
 | `--scan <LINE>` | | Without a project: scan this line after writing the skeleton, without asking. |
 
@@ -121,7 +131,7 @@ Import an existing `.knxproj`, a `.bussard` bundle (see [`export`](#bussard-expo
 | `--mine` | off | On a re-import, keep this model's value for every hand-edited conflict and exit 0. |
 | `--theirs` | off | On a re-import, take the incoming value for every hand-edited conflict. |
 | `--interactive` | off | On a re-import, ask per conflict (`m` keeps mine, `t` takes theirs). Needs a terminal. |
-| `--yes` | off | Download the missing product data without asking. |
+| `--yes-download` | off | Download missing vendor product data without asking. Without a terminal and without this flag nothing is downloaded; the missing order numbers are listed. |
 | `--no-download` | off | Do not look up or download missing product data; list it instead. |
 
 Product data fetches itself. After the write, `import` collects the order numbers of the project's devices, and every one whose product data `bussard.lock` does not pin in `<dir>/products/` yet is looked up in bussard's pointer index (the one `import-product --order-number` uses). The downloads it finds are listed with their size and origin and fetched after one confirmation for the whole list (`--yes` for scripts; without a terminal and without `--yes` nothing is downloaded); each is verified against the index checksum, stored under `<dir>/products/`, pinned in the lock and turned into product models under `<dir>/.bussard/models/`. Each application program the imported devices use that no stored archive carries is extracted once from the `.knxproj` into `<dir>/products/<application-id>.knxprod` (see [product-data.md](product-data.md#the-product-store-products)). Devices without product data still get their file (identity, location, links by number), and the summary says how many were written that way and, per order number, where to get the file and which command imports it:
@@ -190,7 +200,8 @@ The verification after the write reads the device at its new address. For a Data
 | Flag / arg | Default | Meaning |
 |---|---|---|
 | `[ADDRESS]` | next free on the line | The address to assign, e.g. `1.1.47`. |
-| `--yes` | off | Skip the confirmation prompt (required for a non-TTY assign). |
+| `--yes` | off | Skip the confirmation prompt. Without a terminal the command is refused unless this is given. |
+| `--json` | off | Print `{"schema", "from", "to", "gateway", "mask", "manufacturer_id", "serial", "secure", "programming_mode_cleared", "device_file"}`. |
 | `--keyring <FILE>` | `connection.keyring` | An ETS `.knxkeys` keyring: its tunnelling users open the [KNXnet/IP Secure tunnel](#knxnetip-secure-tunnelling), and its tool key for the new (else the old) address verifies a Data Secure-activated device. Password from `BUSSARD_KEYRING_PASSWORD`. |
 | `--tool-key <HEX>` | | A raw 16-byte tool key (32 hex characters) for the verification of a Data Secure-activated device; overrides the keyring's device entries (the keyring still opens the tunnel). For test or bench devices: process arguments are visible to other users. |
 
@@ -222,7 +233,7 @@ Introspect a device over the bus: discover its interface objects and, for each, 
 | Flag / arg | Default | Meaning |
 |---|---|---|
 | `<ADDRESS>` | | The device to introspect, e.g. `1.1.4`. |
-| `--full` | off | Walk every object's property descriptions again, even when the [device facts](#bussardfacts) hold them. |
+| `--full` | off | Skip nothing: walk every object's property descriptions again, even when the [device facts](#bussardfacts) hold them. |
 | `--keyring <FILE>` | `connection.keyring` | The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool key. Required for a security-activated device. A keyring that does not list the target only opens the [secure tunnel](#knxnetip-secure-tunnelling) and the device is read in the clear. The keyring password comes from `BUSSARD_KEYRING_PASSWORD`, never a flag. |
 | `--tool-key <HEX>` | | The raw 32-hex-character tool key, for a simulator or bench device with a synthetic key. Conflicts with `--keyring`. A process argument is visible to other users on the machine, so do not use it for a real installation. |
 
@@ -270,17 +281,17 @@ Import vendor product data (`.knxprod`): store it under `<dir>/products/`, pin i
 |---|---|---|
 | `[FILE]` | | The `.knxprod` or `.knxproj` file to import (positional mode). |
 | `--order-number <ORDER>` | | Look the `.knxprod` up in the pointer index by order number and download it from the vendor (with confirmation). |
-| `--yes-download` | off | Skip the download confirmation prompt. Only meaningful with `--order-number`; required on a non-TTY. |
+| `--yes-download` | off | Download the vendor product data without asking. Without a terminal and without this flag the download is refused. Only meaningful with `--order-number`. |
 | `--inner <NAME>` | | Import one named inner archive from a multi-product `.knxprod` instead of every one it contains. |
 | `--list` | | List the product-data pointer index and exit. |
 
 Downloads are verified against the index by byte size and SHA-256; a mismatch is a hard error. Order-number matching is case- and whitespace-insensitive but keeps interior separators (`AKK-0216.03` matches `akk-0216.03`, not `AKK021603`).
 
-### `bussard adopt`
+### `bussard adopt [ADDRESS]`
 
-Guide a new device from programming mode into the model: product data, address assignment with order-number cross-check, a rich device file with its `bussard.lock` entry, and ready-to-paste `groups.toml` / device-file snippets. Interactive; needs a terminal (or `BUSSARD_ADOPT_ADDRESS` plus `--yes` for scripted runs).
+Guide a new device from programming mode into the model: product data, address assignment with order-number cross-check, a rich device file with its `bussard.lock` entry, and ready-to-paste `groups.toml` / device-file snippets. Confirms the address write on a terminal; without one it needs `--yes`, and the wizard's choices take their defaults (the first application of a multi-application product).
 
-Product data fetches itself. Without `--product`, adopt reads the order number off the device and uses the archive `bussard.lock` pins for it in `<dir>/products/`; when there is none, it looks the order number up in bussard's pointer index (the one `import-product --order-number` uses), asks once, downloads and verifies the file, imports it and continues with it. An order number the index does not know is adopted without product data (identity and links by number), with the sentence that says where to get the file. `BUSSARD_PRODUCT_INDEX=<file.json>` points at another index of the same shape (a mirror, or a test with `file://` URLs).
+Product data fetches itself. Without `--product`, adopt reads the order number off the device and uses the archive `bussard.lock` pins for it in `<dir>/products/`; when there is none, it looks the order number up in bussard's pointer index (the one `import-product --order-number` uses), asks once (`--yes-download` answers yes), downloads and verifies the file, imports it and continues with it. An order number the index does not know is adopted without product data (identity and links by number), with the sentence that says where to get the file. `BUSSARD_PRODUCT_INDEX=<file.json>` points at another index of the same shape (a mirror, or a test with `file://` URLs).
 
 A device already at the target address gets no address write.
 
@@ -295,8 +306,10 @@ A device that hides its mask from the unsecured read (mask `FFFF`) but is not in
 
 | Flag | Default | Meaning |
 |---|---|---|
+| `[ADDRESS]` | next free on the line | The address to give the device, e.g. `1.1.47`. A Data Secure device keeps the address ETS gave it. |
 | `--product <FILE>` | cached or fetched | The vendor `.knxprod` for the new device. |
-| `--yes` | off | Skip the confirmation prompt (required for a non-TTY, scripted adopt); also consents to the product-data download. |
+| `--yes` | off | Skip the confirmation prompt. Without a terminal the command is refused unless this is given. |
+| `--yes-download` | off | Download missing vendor product data without asking. Without a terminal and without this flag nothing is downloaded; the missing order numbers are listed. |
 | `--no-download` | off | Never download product data; adopt without it and say where to get it. |
 
 ### `bussard flash <ADDRESS>`
@@ -313,9 +326,9 @@ The pre-flight and the write phase share one tunnel. With `--yes` they also shar
 | `--product <FILE>` | pinned archive | The vendor `.knxprod` containing the application program. Default: the archive `bussard.lock` pins for the device in `<dir>/products/`. With `--force` it becomes the pinned one. |
 | `--application <REF>` | the lock's program | The application program id (default: the program the lock pins, else the order number's, else the sole one). Mutually exclusive with `--order-number`. |
 | `--order-number <ORDER>` | | Select the application by hardware order number (e.g. `AKK-0216.03`), resolved through the product's hardware catalogue. Exactly one match is required. |
-| `--yes` | off | Skip the interactive confirmation (dangerous; for scripts). |
-| `--force` | off | Flash a device that is **not** factory-fresh: it already carries a different (or unidentifiable) application, or its load state could not be read. Destructive: the resident application, its parameters and its links are overwritten with no backup. Not needed to re-flash the same application. |
-| `--full` | off | Re-stream every object. By default, when the device already carries the same application (or none), an object whose resident image matches what would be written (MCB size and CRC) and which reports `Loaded` is skipped; the flash output lists each skipped step. A parameter-only change then re-downloads the parameter segment but not the code segment. Never skipped when `--force` replaces a different or unidentified application, or when the plan starts with a factory reset. |
+| `--yes` | off | Skip the confirmation prompt. Without a terminal the command is refused unless this is given. |
+| `--force` | off | Override the not-factory-fresh refusal: flash a device that is **not** factory-fresh: it already carries a different (or unidentifiable) application, or its load state could not be read. Destructive: the resident application, its parameters and its links are overwritten with no backup. Not needed to re-flash the same application. |
+| `--full` | off | Skip nothing: re-stream every object. By default, when the device already carries the same application (or none), an object whose resident image matches what would be written (MCB size and CRC) and which reports `Loaded` is skipped; the flash output lists each skipped step. A parameter-only change then re-downloads the parameter segment but not the code segment. Never skipped when `--force` replaces a different or unidentified application, or when the plan starts with a factory reset. |
 | `--parameters-only` | off | Rewrite only the parameter memory of a device that already runs this application (see [parameter-only download](#parameter-only-download)). Conflicts with `--full`, `--force` and `--no-factory-reset`; with `--dry-run` it prints the op sequence offline. |
 | `--no-factory-reset` | off | Leave out the factory reset (System B). By default a download that writes filled segments sparsely, or that replaces an application with `--force`, starts with a confirmed master reset, erase code 7: the device erases its application, parameters and links, keeps its individual address, and reboots. Use this only when you know the device holds no stale image. |
 | `--bcu-key <HEX>` | free access | The device's BCU access key, in hex (`FFFFFFFF` or `0x11223344`), presented with A_Authorize on every management connect. Unset presents the free-access key (`FFFFFFFF`), correct for an unkeyed device; a keyed device needs its project key here or it denies access. |
@@ -410,7 +423,7 @@ On the wire: System B (`x7B0`) and System 7 (`0705` / `0701`). On System B each 
 | `--line <LINE>` | | Apply to every model device on this line, e.g. `1.1`, in address order (see [whole-line runs](#whole-line-runs)). |
 | `--resume` | off | Line mode only: continue the run recorded in `<dir>/captures/apply-line-<line>.json`, skipping the devices it finished. |
 | `--json` | off | Line mode only: emit the summary as JSON. |
-| `--yes` | off | Skip the interactive confirmation (dangerous; for scripts). |
+| `--yes` | off | Skip the confirmation prompt. Without a terminal the command is refused unless this is given. |
 | `--plan <HASH>` | | Single-device mode: refuse unless the device state still hashes to this `state_hash` from `bussard plan --json`. |
 | `--product <FILE>` | pinned archive | Single-device mode: the product data to compare and write the parameter memory with. Default: the archive `bussard.lock` pins for the device in `<dir>/products/`; a pinned archive that is missing or changed refuses the apply before any bus access. |
 | `--application <REF>` | the lock's program | Single-device mode: the application program id to decode the parameters with. |
@@ -444,7 +457,7 @@ The summary table lists each device as `commissioned`, `present` or `failed: <re
 | `--apply` | off | Also apply the model's link tables. |
 | `--labels <FILE>` | | Append one row per commissioned device, columns `address;name;order_number;floor;room` (header written when the file is new). |
 | `--product <FILE>` | | The `.knxprod` to flash from (with `--flash`). |
-| `--yes` | off | Skip the confirmation (required without a TTY). |
+| `--yes` | off | Skip the confirmation prompt. Without a terminal the command is refused unless this is given. |
 | `--json` | off | Emit the summary as JSON; label lines then go to stderr and into each device's `label` field. |
 | `--keyring <FILE>` / `--tool-key <HEX>` | | KNX Data Secure tool key for `--flash` and `--apply`. |
 
@@ -454,7 +467,7 @@ Show what has changed in the model since the last history snapshot, as plain sen
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--json` | off | Emit the change set as JSON (`{"base": <snapshot id>, "changes": [...]}`). |
+| `--json` | off | Emit the change set as JSON (`{"schema", "base": <snapshot id>, "changes": [...]}`). |
 | `--raw` | off | Print the file-level diff instead of the sentences. |
 
 ### `bussard history`
@@ -463,6 +476,7 @@ List the snapshots under `<dir>/.bussard/history`, oldest first: number, id, the
 
 | Flag | Default | Meaning |
 |---|---|---|
+| `--json` | off | Print `{"schema", "snapshots": [...]}`; each snapshot has `index`, `id`, `created_at`, `command`, `args`, `gateway`, `result` and `summary`. |
 
 ### `bussard device <ADDRESS> [CHANNEL]`
 
@@ -497,6 +511,7 @@ Render what one snapshot changed (against the one before it), or the change betw
 |---|---|---|
 | `<SNAPSHOT>` | | The snapshot to show (id or number). |
 | `[SNAPSHOT]` | | A second snapshot: show the change from the first to this one. |
+| `--json` | off | Print `{"schema", "from", "to", "reason", "changes": [...]}`, the same change objects as `status --json`. |
 
 ### `bussard undo [SNAPSHOT]`
 
@@ -505,6 +520,7 @@ Restore the model files to a snapshot, print what that reverts, and point at `pl
 | Flag / arg | Default | Meaning |
 |---|---|---|
 | `[SNAPSHOT]` | the newest one that differs from the working files | The snapshot to restore (id or number). |
+| `--json` | off | Print `{"schema", "restored", "created_at", "undo_snapshot", "changes": [...]}`; `restored` is `null` (with a `reason`) when nothing was restored. |
 
 ### `bussard backup [ADDRESS...]`
 
@@ -536,7 +552,7 @@ Write one device's backed-up link tables back. `restore` picks the newest `<ia>-
 |---|---|---|
 | `<BACKUP_DIR>` | | The backup directory. |
 | `<ADDRESS>` | | The device to restore, e.g. `1.1.4`. |
-| `--yes` | off | Skip the interactive confirmation. |
+| `--yes` | off | Skip the confirmation prompt. Without a terminal the command is refused unless this is given. |
 | `--tool-key <HEX>` | | A raw 32-hex-character KNX Data Secure tool key, for a simulator or bench device. Conflicts with `--keyring`. |
 
 ### `bussard replace <ADDRESS> --product <FILE>`
@@ -554,8 +570,8 @@ Put a new device of the same product in place of a dead one. The steps:
 |---|---|---|
 | `<ADDRESS>` | | The address of the device being replaced. |
 | `--product <FILE>` | | The vendor `.knxprod` for the new device. |
-| `--yes` | off | Skip the confirmation (required without a TTY). |
-| `--force` | off | Proceed although the old device answers or the identity does not match. |
+| `--yes` | off | Skip the confirmation prompt. Without a terminal the command is refused unless this is given. |
+| `--force` | off | Override the replacement-identity refusals: proceed although the old device answers or the identity does not match. |
 | `--no-flash` | off | Leave the application image alone (a spare that already carries it). |
 | `--bcu-key <HEX>` | free access | BCU key for the flash step. |
 | `--tool-key <HEX>` | | A raw 32-hex-character KNX Data Secure tool key, for a simulator or bench device. Conflicts with `--keyring`. |
@@ -568,7 +584,7 @@ Validate the model and report diagnostics (see [the diagnostics table](#validati
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--format <FORMAT>` | `text` | `text` (rustc-style diagnostics) or `json` (a JSON array). |
+| `--json` | off | Print `{"schema", "diagnostics": [...]}`; each diagnostic has `code`, `severity`, `message` and `location`. (`--format` is gone: use `--json`.) |
 
 ### `bussard groups reserve "<FLOOR> <ROOM>" <FUNCTION>...`
 
@@ -665,6 +681,7 @@ Read a group value from the bus: send a GroupValueRead, print the typed response
 |---|---|---|
 | `<GA>` | | The group address to read, e.g. `3/2/0`. |
 | `--keyring <FILE>` | | Group keys for secured GAs (password in `BUSSARD_KEYRING_PASSWORD`). A GA with a key, or `secure = true` in `groups.toml`, is read with a secured GroupValueRead, and only a response whose MAC verifies under the group key is accepted; stderr says `secured: …`. A secured GA without a key is refused before anything is sent. |
+| `--json` | off | Print `{"schema", "ga", "name", "answered", "value", "dpt", "raw", "source", "secured"}`; without an answer `answered` is `false` and the exit code is non-zero, as for the text output. |
 
 ### `bussard write <GA> <VALUE>`
 
@@ -675,8 +692,9 @@ Write a group value to the bus. The value is human-typed (`on`/`off`, `up`/`down
 | `<GA>` | | The group address to write, e.g. `3/0/4`. |
 | `<VALUE>` | | The value to encode. |
 | `--dpt <DPT>` | the GA's DPT | The DPT to encode as. |
-| `--force` | off | Write even if the GA is marked `protected = true` in the model. |
-| `--yes` | off | Skip the confirmation prompt (required for a non-TTY write). |
+| `--force` | off | Override the protected-group-address refusal: write to a group address marked `protected = true` in `groups.toml`. |
+| `--yes` | off | Skip the confirmation prompt. Without a terminal the command is refused unless this is given. |
+| `--json` | off | Print `{"schema", "ga", "name", "value", "dpt", "payload", "secured", "gateway", "confirmed"}` after the write. |
 | `--keyring <FILE>` | | Group keys for secured GAs. A GA with a key, or `secure = true` in `groups.toml`, is written as a secured group telegram (SCF `0x10`, the group key, a sequence above the last one sent); a secured GA without a key is refused. A plain GA is sent byte for byte as without a keyring. A receiver accepts it only if bussard's tunnel address is in its security individual address table (PID 54): program the device with `flash`/`apply --keyring --secure-sender <tunnel IA>`, otherwise it drops the telegram silently. After a secured write bussard prints a note naming its tunnel address and the receivers the model links to the GA, because it does not record which devices got `--secure-sender`. See [SAFETY.md](SAFETY.md#secured-group-writes-from-bussard). |
 
 ### `bussard learn`
@@ -690,7 +708,7 @@ Learn mode never transmits. It listens on the same connection `monitor` uses and
 | `--ga <GA>` | | Learn this group address. Repeatable; learned in the order given. |
 | `--unnamed` | off | Learn every GA in the model whose name is a placeholder (empty, the address itself, `GA <address>`, `Unnamed`, `Unknown...`). |
 | `--untyped` | off | Learn every GA in the model with no DPT (the ones `validate` reports as W011). |
-| `--yes` | off | Accept the top candidate and the proposed name without prompting. Required without a terminal. |
+| `--yes` | off | Skip the confirmation prompt: accept the top candidate and the proposed name. Without a terminal the command is refused unless this is given. |
 | `--timeout <SECS>` | `30` | How long to wait for each telegram. |
 | `--keyring <FILE>` | `connection.keyring` | ETS `.knxkeys` keyring whose group keys decrypt secured group telegrams. The password comes from `BUSSARD_KEYRING_PASSWORD`. |
 
@@ -708,10 +726,10 @@ A test run writes to the bus, so it goes through the same rails as `bussard writ
 |---|---|---|
 | `--file <FILE>` | `<dir>/tests.toml` | The test file to run. |
 | `--json` | off | Print the report as JSON: `started_at`, `tests[]` (`name`, `status` of `pass`/`fail`/`skipped`/`refused`, `detail`, `observed`), and `summary` counts. |
-| `--force` | off | Together with `allow_protected = true` in the file, permit tests that write to protected GAs. |
+| `--force` | off | Override the protected-group-address refusal: write to a group address marked `protected = true` in `groups.toml`. A test also needs `allow_protected = true` in the test file. |
 | `--skip-manual` | off | Report `manual:` tests as skipped instead of prompting. Without a terminal they are skipped anyway. |
 | `--only <NAME>` | all | Run only the named test (case-insensitive). Repeatable. |
-| `--yes` | off | Skip the confirmation prompt (required for a non-TTY run). |
+| `--yes` | off | Skip the confirmation prompt. Without a terminal the command is refused unless this is given. |
 | `--secure-idle <SECS>` | | Instead of running `tests.toml`: measure the KNXnet/IP Secure session idle timeout (issue #197). See below. |
 
 **`--secure-idle <SECS>`** opens a KNXnet/IP Secure session with the interface (credentials from `connection.keyring`, or `--secure-user`/`--secure-password-env`), sends nothing for `SECS` seconds (no keepalive, no heartbeat, no tunnel), then sends one wrapped CONNECTIONSTATE_REQUEST for a channel it does not hold and prints one line: `ALIVE` (the interface answered), `DROPPED after <t> s (<reason>)` (it sent a SESSION_STATUS or closed the TCP connection) or `SILENT` (no answer). `--json` prints the same as an object (`outcome`, `after_ms`, `reason`, `answered_ms`, `transport`, `user_id`). It is read-only: no CONNECT, so no tunnel slot, and nothing reaches the bus, which is why it needs neither `--yes` nor `--allow-remote-gateway`. Run it with growing `SECS` (say 45, 65, 90, 125) to bracket the interface's timeout; `--secure-transport` picks the carrier.
@@ -793,7 +811,6 @@ Serve the network-visualization website: an HTTP server that renders the model a
 | *(the `--secure-password-env` variable)* | The KNXnet/IP Secure tunnelling user's password for `--secure-user`. You choose the variable's name; bussard reads only that variable. |
 | `BUSSARD_ALLOW_REAL_GATEWAY` | Set to `1` to permit a write command against a non-loopback (real) gateway, equivalent to `--allow-remote-gateway`. Loopback gateways never need it. |
 | `RUST_LOG` | Log filter (e.g. `debug`, `bussard_transport=trace`). Overrides `-v`/`--verbose` when set. |
-| `BUSSARD_ADOPT_ADDRESS` | The target address for `adopt`, for driving the wizard from a script or test (together with `--product`). |
 | `BUSSARD_ASSIGN_WAIT_MS` | Test knob: shrinks the programming-mode wait budget of `assign` and `adopt`. Unset in normal use. |
 | `BUSSARD_SCAN_DISCOVERY_MS` | Test knob: shrinks the per-address probe timeout of `scan` and `reconstruct --line`. Unset in normal use. |
 | `BUSSARD_ADDRESS_PROBE_MS` | Test knob: shrinks the per-attempt timeout of the source-address check (default 600 ms). Unset in normal use. |
@@ -1156,7 +1173,7 @@ These rules are opt-in and run only when `bussard.toml` carries a [`[lint]` tabl
 
 ## Telegram JSON contract
 
-`monitor --json` emits one object per line; the MCP telegram tools mirror the same fields. Absent fields are `null`, so the schema is uniform.
+`monitor --json` emits one object per line, each starting with `"schema": 1` (see [confirmation, download consent and JSON](#confirmation-download-consent-and-json)); the MCP telegram tools mirror the same fields without it. Absent fields are `null`, so the shape is uniform.
 
 | Field | Meaning |
 |---|---|

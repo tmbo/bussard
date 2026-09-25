@@ -62,7 +62,7 @@ pub fn run(
             "touches_protected": changes.touches_protected(),
             "changes": changes.changes,
         });
-        println!("{}", serde_json::to_string_pretty(&value)?);
+        crate::output::print(crate::output::schema::DIFF, &value)?;
         return Ok(ExitCode::SUCCESS);
     }
     if changes.is_empty() {

@@ -87,9 +87,29 @@ the real bus is the gateway and the `--allow-remote-gateway` opt-in.
 
 Every device write is plan-before-apply: `bussard` reads the live state, shows
 a diff, asks for confirmation on the terminal (`y/N`), writes, then verifies by
-reading back. Without a TTY the write is refused unless you pass `--yes`
-(`--yes-download` for `import-product`). A refusal exits non-zero *before*
-anything is written.
+reading back. A refusal exits non-zero *before* anything is written.
+
+### The confirmation rules
+
+- `--yes` means one thing on every command: skip the confirmation prompt. It
+  never consents to anything else.
+- Without a terminal and without `--yes`, every write command is refused with
+  one sentence: `refusing to <action> without a terminal to confirm on; pass
+  --yes to confirm non-interactively`. This covers `assign`, `adopt`, `flash`,
+  `apply`, `commission`, `restore`, `replace`, `write`, `test` and `learn`.
+- `assign`, `adopt`, `replace` and `commission` act on whatever device is in
+  programming mode as their first bus step, so they refuse before loading the
+  model or opening a connection. `learn` does the same. `flash`, `apply`,
+  `restore`, `write` and `test` first read and show what they would change,
+  then refuse at the prompt.
+- An explicit address or value is not consent. `bussard assign 1.1.47` in a
+  script still needs `--yes`.
+- Downloading vendor product data is a separate consent with its own flag,
+  `--yes-download` (`init`, `import`, `import-product`, `adopt`). Without a
+  terminal and without it, nothing is downloaded (`import-product` refuses).
+- `--yes` never lifts the real-gateway gate: a non-loopback gateway still needs
+  `--allow-remote-gateway` or `BUSSARD_ALLOW_REAL_GATEWAY=1`, and the gate is
+  checked before the prompt.
 
 **`write <GA> <VALUE>`** sends a single group value (`on`/`off`, `up`/`down`, a
 number, a percentage). It is a runtime command, not device programming: nothing
@@ -395,12 +415,12 @@ fails midway and the application still reads `Loaded`, re-run it (it writes
 only the octets that still differ); if it does not, recover with a full
 `flash --force`. The backup file holds the memory as it was.
 
-**`assign`** sets a device's individual address; **`adopt`** is the interactive
-wizard that assigns and flashes a new device. Both are gated the same way: they
-confirm on a terminal, and non-interactively they need `--yes`. An explicit
-target address is not itself consent, so a scripted `assign` still needs
-`--yes`; `adopt` additionally needs a product file and an explicit target
-address to run without a TTY.
+**`assign`** sets a device's individual address; **`adopt`** is the guided
+wizard that assigns a new device and writes its device file (it prints the
+`flash` command, it does not flash). Both follow the confirmation rules above:
+they confirm on a terminal, and without one they need `--yes`. The target
+address is the optional `ADDRESS` argument of either; without it they take the
+next free address on the line.
 
 **Changing the address of a Data Secure device.** After the address write,
 `assign` verifies by reading the device at its new address. A Data

@@ -385,7 +385,11 @@ fn test_apply_line_refuses_without_a_tty_or_yes() -> anyhow::Result<()> {
 
     assert!(!success, "a non-TTY run without --yes must fail");
     assert!(
-        stderr.contains("without a terminal") && stderr.contains("127.0.0.1"),
+        stderr.contains("refusing to apply line 1.1 (")
+            && stderr.contains("via 127.0.0.1:")
+            && stderr.contains(
+                "without a terminal to confirm on; pass --yes to confirm non-interactively"
+            ),
         "the refusal must name the gateway: {stderr}"
     );
     Ok(())

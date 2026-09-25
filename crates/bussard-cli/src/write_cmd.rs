@@ -46,6 +46,7 @@ pub fn run(
     allow_remote_gateway: bool,
     dir: &Path,
     keyring: Option<&Path>,
+    json: bool,
     overrides: ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
     let ga: GroupAddress = ga_str
@@ -86,12 +87,11 @@ pub fn run(
     if write.is_secured() {
         eprintln!("secured: KNX Data Secure group write with the group key of {ga}");
     }
-    let confirmed = crate::confirm::confirm(yes, &format!("write {label} via {gateway}?"), || {
-        format!(
-            "refusing to write {label} via {gateway} without a terminal to confirm on; pass \
-             --yes to write non-interactively"
-        )
-    })?;
+    let confirmed = crate::confirm::confirm(
+        yes,
+        &format!("write {label} via {gateway}?"),
+        &format!("write {label} via {gateway}"),
+    )?;
     if !confirmed {
         eprintln!("aborted; nothing was written.");
         return Ok(ExitCode::FAILURE);
@@ -121,9 +121,27 @@ pub fn run(
 
     match outcome {
         Ok(sent) => {
-            // Confirmation line, e.g.
-            // `3/0/4 Living Room Blind Move ← Down (1.008)`.
-            println!("{}", write_label(&sent.write));
+            if json {
+                let w = &sent.write;
+                let payload: String = w.payload.iter().map(|b| format!("{b:02x}")).collect();
+                crate::output::print(
+                    crate::output::schema::WRITE,
+                    &serde_json::json!({
+                        "ga": w.ga.to_string(),
+                        "name": w.name,
+                        "value": w.value,
+                        "dpt": w.dpt.as_ref().map(ToString::to_string),
+                        "payload": payload,
+                        "secured": w.is_secured(),
+                        "gateway": gateway,
+                        "confirmed": sent.confirmed,
+                    }),
+                )?;
+            } else {
+                // Confirmation line, e.g.
+                // `3/0/4 Living Room Blind Move ← Down (1.008)`.
+                println!("{}", write_label(&sent.write));
+            }
             if !sent.confirmed {
                 // Not an error: KNX group writes are fire-and-forget. Note the
                 // missing confirmation on stderr so scripts still see success.

@@ -99,7 +99,7 @@ impl TelegramSink for PrintSink {
             return Flow::Continue;
         }
         let line = if self.json {
-            json_line(telegram)
+            crate::output::with_schema_line(crate::output::schema::MONITOR, &json_line(telegram))
         } else {
             pretty_line(telegram, self.color)
         };

@@ -54,7 +54,7 @@ fn model(tag: &str, keyring: &Path) -> TestResult<PathBuf> {
 
 fn validate(dir: &Path, password: Option<&str>) -> TestResult<Output> {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_bussard"));
-    cmd.args(["validate", "--format", "json", "--dir"])
+    cmd.args(["validate", "--json", "--dir"])
         .arg(dir)
         .env_remove("BUSSARD_KEYRING")
         .env_remove("BUSSARD_KEYRING_PASSWORD")
@@ -67,12 +67,12 @@ fn validate(dir: &Path, password: Option<&str>) -> TestResult<Output> {
     Ok(cmd.output()?)
 }
 
-/// `(code, location)` of every diagnostic of a `--format json` run.
+/// `(code, location)` of every diagnostic of a `--json` run.
 fn diagnostics(out: &Output) -> TestResult<Vec<(String, String, String)>> {
-    let items: serde_json::Value = serde_json::from_slice(&out.stdout)?;
-    Ok(items
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    Ok(doc["diagnostics"]
         .as_array()
-        .ok_or("validate --format json prints an array")?
+        .ok_or("validate --json prints a diagnostics array")?
         .iter()
         .map(|d| {
             (

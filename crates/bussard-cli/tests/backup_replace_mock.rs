@@ -698,6 +698,25 @@ fn test_restore_after_apply_returns_byte_identical_tables() -> TestResult {
     let out = bench.bussard(&["apply", "1.1.4", "--yes"])?;
     let (stdout, stderr) = text(&out);
     assert!(out.status.success(), "apply failed:\n{stdout}\n{stderr}");
+
+    // Without a terminal and without --yes, restore reads the device, shows
+    // the plan and stops at its prompt with the one refusal text (#228).
+    let writes = bench.total_writes();
+    let out = bench.bussard(&["restore", run.to_str().ok_or("path")?, "1.1.4"])?;
+    let (_, stderr) = text(&out);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("refusing to restore 1.1.4 via 127.0.0.1:")
+            && stderr.contains(
+                "without a terminal to confirm on; pass --yes to confirm non-interactively"
+            ),
+        "{stderr}"
+    );
+    assert_eq!(
+        bench.total_writes(),
+        writes,
+        "a refused restore writes nothing"
+    );
     assert!(
         !stderr.contains("No installation-wide backup yet"),
         "a backup run exists, so apply must not nag; stderr:\n{stderr}"

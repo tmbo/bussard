@@ -512,7 +512,7 @@ fn run_line(
 
     if options.json {
         let out = to_json(&line, mode, &gateway, &outcomes, kept_state.clone());
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        crate::output::print(crate::output::schema::LINE, &out)?;
     } else {
         print_summary(&line, mode, &gateway, &outcomes);
         if let Some(path) = &kept_state {
@@ -866,12 +866,7 @@ fn confirm(line: &str, devices: usize, gateway: &str, yes: bool) -> anyhow::Resu
     crate::confirm::confirm(
         yes,
         &format!("apply the model's links to {devices} device(s) on line {line} via {gateway}?"),
-        || {
-            format!(
-                "refusing to apply to {devices} device(s) on line {line} via {gateway} without a \
-                 terminal to confirm on; pass --yes to apply non-interactively"
-            )
-        },
+        &format!("apply line {line} ({devices} device(s)) via {gateway}"),
     )
 }
 

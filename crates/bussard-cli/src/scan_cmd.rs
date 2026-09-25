@@ -536,7 +536,7 @@ fn print_json(report: &Report, timing: serde_json::Value) -> anyhow::Result<()> 
             .collect::<Vec<_>>(),
         "timing": timing,
     });
-    println!("{}", serde_json::to_string_pretty(&out)?);
+    crate::output::print(crate::output::schema::SCAN, &out)?;
     Ok(())
 }
 

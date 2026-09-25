@@ -33,7 +33,7 @@ pub fn run(
 
     if json {
         let value = serde_json::json!({ "path": out.display().to_string(), "manifest": manifest });
-        println!("{}", serde_json::to_string_pretty(&value)?);
+        crate::output::print(crate::output::schema::EXPORT, &value)?;
         return Ok(ExitCode::SUCCESS);
     }
     println!(

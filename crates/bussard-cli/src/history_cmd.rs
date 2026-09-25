@@ -75,13 +75,13 @@ pub fn run_status(dir: &Path, json: bool, raw: bool) -> anyhow::Result<ExitCode>
 
     let Some(latest) = latest else {
         if json {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
+            crate::output::print(
+                crate::output::schema::STATUS,
+                &serde_json::json!({
                     "base": serde_json::Value::Null,
                     "changes": [],
-                }))?
-            );
+                }),
+            )?;
         } else {
             println!(
                 "No history yet for {}. bussard records a snapshot the first time it \
@@ -103,10 +103,10 @@ pub fn run_status(dir: &Path, json: bool, raw: bool) -> anyhow::Result<ExitCode>
     let changes = describe(&old, &new);
 
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&change_json(Some(&latest.id), &changes))?
-        );
+        crate::output::print(
+            crate::output::schema::STATUS,
+            &change_json(Some(&latest.id), &changes),
+        )?;
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -149,7 +149,10 @@ pub fn run_history(dir: &Path, json: bool) -> anyhow::Result<ExitCode> {
                 "summary": summary_of(&history, &snapshots, index),
             }));
         }
-        println!("{}", serde_json::to_string_pretty(&rows)?);
+        crate::output::print(
+            crate::output::schema::HISTORY,
+            &serde_json::json!({ "snapshots": rows }),
+        )?;
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -179,11 +182,23 @@ pub fn run_history(dir: &Path, json: bool) -> anyhow::Result<ExitCode> {
 
 /// Runs `bussard show <id|N> [<id|N>]`: the change one snapshot introduced, or
 /// the change between two snapshots.
-pub fn run_show(dir: &Path, first: &str, second: Option<&str>) -> anyhow::Result<ExitCode> {
+pub fn run_show(
+    dir: &Path,
+    first: &str,
+    second: Option<&str>,
+    json: bool,
+) -> anyhow::Result<ExitCode> {
     let history = History::open(dir);
     let snapshots = history.list().context("reading .bussard/history")?;
     if snapshots.is_empty() {
-        println!("No history yet for {}.", dir.display());
+        if json {
+            crate::output::print(
+                crate::output::schema::SHOW,
+                &serde_json::json!({ "from": null, "to": null, "reason": null, "changes": [] }),
+            )?;
+        } else {
+            println!("No history yet for {}.", dir.display());
+        }
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -208,6 +223,18 @@ pub fn run_show(dir: &Path, first: &str, second: Option<&str>) -> anyhow::Result
     let new = history.load(&to.id)?;
     let changes = describe(&old, &new);
 
+    if json {
+        crate::output::print(
+            crate::output::schema::SHOW,
+            &serde_json::json!({
+                "from": from.as_ref().map(|s| s.id.to_string()),
+                "to": to.id.to_string(),
+                "reason": reason_line(&to),
+                "changes": changes.changes,
+            }),
+        )?;
+        return Ok(ExitCode::SUCCESS);
+    }
     match &from {
         Some(snapshot) => println!("Change from snapshot {} to {}:\n", snapshot.id, to.id),
         None => println!("Snapshot {} (the first one):\n", to.id),
@@ -226,10 +253,26 @@ pub fn run_show(dir: &Path, first: &str, second: Option<&str>) -> anyhow::Result
 /// the last change).
 ///
 /// Files only. Devices keep their tables until a human runs `plan` and `apply`.
-pub fn run_undo(dir: &Path, target: Option<&str>) -> anyhow::Result<ExitCode> {
+pub fn run_undo(dir: &Path, target: Option<&str>, json: bool) -> anyhow::Result<ExitCode> {
     let history = History::open(dir);
     let snapshots = history.list().context("reading .bussard/history")?;
+    // What `undo --json` prints when nothing was restored.
+    let nothing = |reason: &str| {
+        crate::output::print(
+            crate::output::schema::UNDO,
+            &serde_json::json!({
+                "restored": null,
+                "undo_snapshot": null,
+                "reason": reason,
+                "changes": [],
+            }),
+        )
+    };
     if snapshots.is_empty() {
+        if json {
+            nothing("no history")?;
+            return Ok(ExitCode::SUCCESS);
+        }
         println!(
             "No history yet for {}, so there is nothing to undo.",
             dir.display()
@@ -241,6 +284,10 @@ pub fn run_undo(dir: &Path, target: Option<&str>) -> anyhow::Result<ExitCode> {
         Some(spec) => history.resolve(spec)?,
         None => match history.undo_target()? {
             Some(snapshot) => snapshot,
+            None if json => {
+                nothing("the model files already match every snapshot")?;
+                return Ok(ExitCode::SUCCESS);
+            }
             None => {
                 println!(
                     "The model files already match every snapshot, so there is nothing to undo."
@@ -263,6 +310,18 @@ pub fn run_undo(dir: &Path, target: Option<&str>) -> anyhow::Result<ExitCode> {
         .unwrap_or_default();
 
     let undo_snapshot = history.restore(&target.id)?;
+    if json {
+        crate::output::print(
+            crate::output::schema::UNDO,
+            &serde_json::json!({
+                "restored": target.id.to_string(),
+                "created_at": target.manifest.created_at,
+                "undo_snapshot": undo_snapshot.to_string(),
+                "changes": changes.changes,
+            }),
+        )?;
+        return Ok(ExitCode::SUCCESS);
+    }
     println!(
         "Restored the model files to snapshot {} ({}).",
         target.id, target.manifest.created_at

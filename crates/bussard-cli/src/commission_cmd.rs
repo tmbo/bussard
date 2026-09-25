@@ -29,7 +29,7 @@
 //! closed before `flash`/`apply` open theirs: a gateway has few tunnel slots and
 //! bench mode is human-paced anyway.
 
-use std::io::{IsTerminal, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -186,14 +186,8 @@ pub fn run(
     let (area, line_no) = crate::line_cmd::parse_line(line)?;
     let line = format!("{area}.{line_no}");
 
-    // A non-TTY run must opt in with --yes before anything touches the bus, the
-    // same rule `assign` applies (issue #74).
-    if !options.yes && !std::io::stdin().is_terminal() {
-        bail!(
-            "refusing to commission without a terminal to confirm on; pass --yes to run \
-             non-interactively"
-        );
-    }
+    // A non-TTY run without --yes was refused before this (issue #74), by
+    // `confirm::require_terminal_or_yes` in `main`.
 
     let Some(model) = load_model_required(dir)? else {
         bail!(
@@ -347,7 +341,7 @@ pub fn run(
 
     if options.json {
         let out = to_json(&line, &gateway, &outcomes, labels_file);
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        crate::output::print(crate::output::schema::COMMISSION, &out)?;
     } else {
         print_summary(&line, &gateway, &outcomes);
         if let Some(path) = options.labels {
@@ -730,12 +724,7 @@ fn confirm(line: &str, devices: usize, gateway: &str, yes: bool) -> anyhow::Resu
     crate::confirm::confirm(
         yes,
         &format!("commission {devices} device(s) on line {line} via {gateway}?"),
-        || {
-            format!(
-                "refusing to commission {devices} device(s) on line {line} via {gateway} without \
-                 a terminal to confirm on; pass --yes to run non-interactively"
-            )
-        },
+        &format!("commission line {line} ({devices} device(s)) via {gateway}"),
     )
 }
 

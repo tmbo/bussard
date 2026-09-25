@@ -35,7 +35,7 @@ pub fn run(
     let products = ProductModels::load_apps(dir, app.iter().map(String::as_str));
     let view = bussard_model::device_view::device_view(&model, &products, target, channel)?;
     if json {
-        println!("{}", serde_json::to_string_pretty(&view)?);
+        crate::output::print(crate::output::schema::DEVICE, &view)?;
     } else if toml {
         print!("{}", view.render_toml());
     } else {

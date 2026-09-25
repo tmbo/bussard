@@ -28,7 +28,7 @@ pub fn run(dir: &Path, out: &Path, format: DocFormat, json: bool) -> anyhow::Res
     let doc = InstallationDoc::build(&model, &products, dir);
 
     if json {
-        let text = serde_json::to_string_pretty(&doc)
+        let text = crate::output::render(crate::output::schema::DOC, &doc)
             .context("serializing the documentation model to JSON")?;
         println!("{text}");
         return Ok(ExitCode::SUCCESS);

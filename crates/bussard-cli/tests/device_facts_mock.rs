@@ -616,7 +616,17 @@ fn test_flash_preflight_reads_an_absent_max_apdu_once() -> TestResult {
         return Ok(());
     };
     let product = product.to_str().ok_or("non-UTF-8 temp path")?.to_string();
-    let _ = bench.run(&["flash", "1.1.12", "--product", product.as_str()])?;
+    let out = bench.run(&["flash", "1.1.12", "--product", product.as_str()])?;
+    // Without a terminal and without --yes the flash stops at its prompt with
+    // the one refusal text (issue #228), after the read-only pre-flight.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("refusing to flash 1.1.12 via 127.0.0.1:")
+            && stderr.contains(
+                "without a terminal to confirm on; pass --yes to confirm non-interactively"
+            ),
+        "{stderr}"
+    );
     let requests = bench.take_requests()?;
     println!(
         "flash pre-flight PID_MAX_APDU_LENGTH reads: {}",

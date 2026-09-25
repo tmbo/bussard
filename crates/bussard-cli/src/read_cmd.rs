@@ -31,6 +31,7 @@ pub fn run(
     ga_str: &str,
     dir: &Path,
     keyring: Option<&Path>,
+    json: bool,
     overrides: ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
     let ga: GroupAddress = ga_str
@@ -69,6 +70,9 @@ pub fn run(
         anyhow::Ok(result)
     })?;
 
+    if json {
+        return print_json(ga, ga_name.as_deref(), secured, &outcome);
+    }
     match outcome {
         Ok(Some(read)) => {
             if let Some(name) = &ga_name {
@@ -114,4 +118,55 @@ pub fn run(
             Ok(ExitCode::FAILURE)
         }
     }
+}
+
+/// `read --json`: one document whether or not the GA answered; the exit code
+/// says the same as the text output's.
+fn print_json(
+    ga: GroupAddress,
+    name: Option<&str>,
+    secured: bool,
+    outcome: &Result<Option<bussard_service::GroupRead>, bussard_service::GroupSendError>,
+) -> anyhow::Result<ExitCode> {
+    let (body, code) = match outcome {
+        Ok(Some(read)) => {
+            let o = &read.outcome;
+            let raw: String = o.payload.iter().map(|b| format!("{b:02x}")).collect();
+            (
+                serde_json::json!({
+                    "ga": ga.to_string(),
+                    "name": name,
+                    "answered": true,
+                    "value": o.value.as_ref().map(ToString::to_string),
+                    "dpt": o.dpt.as_ref().map(ToString::to_string),
+                    "raw": raw,
+                    "source": o.source.to_string(),
+                    "secured": read.secured,
+                }),
+                ExitCode::SUCCESS,
+            )
+        }
+        Ok(None) => (
+            serde_json::json!({
+                "ga": ga.to_string(),
+                "name": name,
+                "answered": false,
+                "secured": secured,
+                "timeout_seconds": READ_TIMEOUT.as_secs(),
+            }),
+            ExitCode::FAILURE,
+        ),
+        Err(err) => (
+            serde_json::json!({
+                "ga": ga.to_string(),
+                "name": name,
+                "answered": false,
+                "secured": secured,
+                "error": err.to_string(),
+            }),
+            ExitCode::FAILURE,
+        ),
+    };
+    crate::output::print(crate::output::schema::READ, &body)?;
+    Ok(code)
 }

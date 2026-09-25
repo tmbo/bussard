@@ -80,7 +80,7 @@ pub fn run(
     }
 
     if options.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        crate::output::print(crate::output::schema::AUDIT, &report)?;
     } else {
         print!("{}", render_text(&report));
     }

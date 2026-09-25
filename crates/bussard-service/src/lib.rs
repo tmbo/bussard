@@ -41,6 +41,9 @@ pub mod describe;
 pub mod error;
 pub mod facts;
 pub mod group;
+/// The one wording per condition every surface reports (issue #228), from
+/// the transport crate so the libraries below this one share it.
+pub use bussard_transport::guidance;
 pub mod identity;
 pub mod model_handle;
 pub mod policy;

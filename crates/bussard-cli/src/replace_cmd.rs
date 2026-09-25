@@ -31,7 +31,6 @@
 //! adds sequencing, the identity cross-check and the record — nothing that
 //! touches the bus on its own.
 
-use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -66,14 +65,8 @@ pub fn run(
         .parse()
         .with_context(|| format!("parsing device address {address:?}"))?;
 
-    // `replace` re-addresses whatever is in programming mode, so a non-TTY run
-    // must opt in with --yes, exactly as `assign` does (issue #74).
-    if !yes && !std::io::stdin().is_terminal() {
-        bail!(
-            "refusing to replace {target} without a terminal to confirm on; pass --yes to \
-             replace non-interactively"
-        );
-    }
+    // A non-TTY run without --yes was refused before this (issue #74), by
+    // `confirm::require_terminal_or_yes` in `main`.
 
     let Some(model) = load_model_required(dir)? else {
         bail!(
@@ -488,12 +481,7 @@ fn confirm(
             "replace {target}: address {current} → {target}, flash the application and apply \
              the model's tables, via {gateway}?"
         ),
-        || {
-            format!(
-                "refusing to replace {target} without a terminal to confirm on; pass --yes to \
-                 replace non-interactively"
-            )
-        },
+        &format!("replace {target} via {gateway}"),
     )
 }
 

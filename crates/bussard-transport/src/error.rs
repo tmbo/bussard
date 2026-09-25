@@ -92,10 +92,9 @@ pub enum TransportError {
     /// The interface only accepts KNXnet/IP Secure tunnelling and bussard has no
     /// credentials for it (issue #182). Fatal: retrying cannot help.
     #[error(
-        "interface {gateway} requires KNXnet/IP Secure (secure tunnelling only) and {reason}. \
-         Pass --keyring <file.knxkeys> (password in BUSSARD_KEYRING_PASSWORD) exported from the \
-         ETS project that holds the interface's tunnelling users, or --secure-user <id> \
-         --secure-password-env <VAR>"
+        "interface {gateway} requires KNXnet/IP Secure (secure tunnelling only) and {reason}: \
+         {hint}",
+        hint = crate::guidance::tunnel_credentials_hint()
     )]
     SecureRequired {
         /// The gateway that refused the plain tunnel.

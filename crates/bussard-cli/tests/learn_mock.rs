@@ -200,22 +200,20 @@ fn learn_names_and_types_group_addresses_without_transmitting() -> TestResult {
             "validate",
             "--dir",
             model_dir.to_str().ok_or("utf-8 dir")?,
-            "--format",
-            "json",
+            "--json",
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()?;
     let diagnostics: serde_json::Value = serde_json::from_slice(&validate.stdout).map_err(|e| {
         format!(
-            "validate --format json must emit JSON: {e}\n{}",
+            "validate --json must emit JSON: {e}\n{}",
             String::from_utf8_lossy(&validate.stdout)
         )
     })?;
-    let items = diagnostics
+    let items = diagnostics["diagnostics"]
         .as_array()
         .cloned()
-        .or_else(|| diagnostics["diagnostics"].as_array().cloned())
         .ok_or("expected a diagnostics array")?;
     for item in &items {
         if item["code"] == "W011" {

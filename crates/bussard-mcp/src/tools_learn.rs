@@ -211,9 +211,9 @@ impl BussardMcp {
             "secured": secured,
             "undecrypted_secured": undecrypted,
             "secure_note": (undecrypted > 0).then(|| format!(
-                "{undecrypted} secured telegram(s) on {ga} did not decrypt and were left out; \
-                 start the server with --keyring <file.knxkeys> (password in \
-                 BUSSARD_KEYRING_PASSWORD) holding the group key of {ga}"
+                "{undecrypted} secured telegram(s) on {ga} did not decrypt and were left out: \
+                 {} (restart `bussard mcp` with it)",
+                bussard_service::guidance::group_key_hint()
             )),
             "next_step": NEXT_STEP,
         }))

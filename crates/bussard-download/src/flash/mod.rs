@@ -552,8 +552,8 @@ pub enum PlanError {
     /// other plain management service, so it needs its tool key.
     #[error(
         "device {device:?} reports mask FFFF to a plain descriptor read: it is \
-         security-activated (KNX Data Secure) and refuses plain management. Pass --keyring \
-         <file.knxkeys> (password in BUSSARD_KEYRING_PASSWORD), or --tool-key for a test device"
+         security-activated (KNX Data Secure) and refuses plain management: {hint}",
+        hint = bussard_transport::guidance::tool_key_hint()
     )]
     SecurityActivated {
         /// The device's individual address.
@@ -1185,6 +1185,18 @@ impl FlashOutcome {
 mod tests {
 
     use crate::flash::plan::plan_flash;
+
+    #[test]
+    fn test_security_activated_uses_the_tool_key_hint() {
+        let err = super::PlanError::SecurityActivated {
+            device: "1.1.4".to_string(),
+        };
+        assert!(
+            err.to_string()
+                .ends_with(&bussard_transport::guidance::tool_key_hint()),
+            "{err}"
+        );
+    }
     use crate::flash::test_support::{fabricated_app, no_overrides};
     use std::collections::BTreeMap;
 

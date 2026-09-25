@@ -216,8 +216,8 @@ pub fn build_state(config: &VizConfig) -> Result<BuiltState, VizError> {
             let service = BusService::open(conn.clone(), policy)?;
             if service.gate() == Some(WriteGate::OptedIn) {
                 tracing::warn!(
-                    "writing to non-loopback gateway {} (opt-in acknowledged)",
-                    service.gateway_display()
+                    "{}",
+                    bussard_service::guidance::opt_in_warning(&service.gateway_display())
                 );
             }
             let handle = service.handle().clone();
