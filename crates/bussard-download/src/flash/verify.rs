@@ -175,7 +175,7 @@ pub(super) async fn verify_outcome<C: Connector>(
     session: &mut Session<C>,
     app_obj: u8,
     completed_objects: &[u8],
-    written_samples: &[(u32, Vec<u8>)],
+    written_samples: &[WrittenSample],
 ) -> Result<FlashOutcome, WriteError> {
     // The application object's own state (kept as the headline `load_state`).
     let load_state = read_load_state_resumable(session, app_obj).await?;
@@ -198,13 +198,94 @@ pub(super) async fn verify_outcome<C: Connector>(
         object_states.push((obj, state));
     }
 
-    let mut spot_checks_match = true;
-    for (addr, expected) in written_samples {
-        let got = read_memory_resumable(session, *addr, expected.len() as u8).await?;
-        if &got != expected {
-            spot_checks_match = false;
+    let spot_checks_match = spot_check(session, written_samples.iter()).await?;
+    Ok(FlashOutcome {
+        load_state,
+        object_states,
+        spot_checks_match,
+        warnings: Vec::new(),
+        reboot_readiness: Vec::new(),
+    })
+}
+
+/// A post-flash read-back sample: the first octets streamed to `address`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct WrittenSample {
+    /// The 24-bit memory address the sample starts at.
+    pub(super) address: u32,
+    /// The octets written there (up to 4, see [`take_sample`]).
+    pub(super) bytes: Vec<u8>,
+    /// The device object and image segment a `WriteRelMem` streamed the sample
+    /// into, so a passed MCB check of that very segment can stand in for the
+    /// sample (issue #215). `None` for an absolute `WriteMem`, which no MCB
+    /// covers.
+    pub(super) segment: Option<(u8, String)>,
+}
+
+/// Reads every sample back; `false` as soon as one differs from what was
+/// written. Each read is resume-on-drop.
+async fn spot_check<'a, C: Connector>(
+    session: &mut Session<C>,
+    samples: impl Iterator<Item = &'a WrittenSample>,
+) -> Result<bool, WriteError> {
+    let mut all_match = true;
+    for sample in samples {
+        let got = read_memory_resumable(session, sample.address, sample.bytes.len() as u8).await?;
+        if got != sample.bytes {
+            all_match = false;
         }
     }
+    Ok(all_match)
+}
+
+/// The post-restart verification (issue #215): the reads that decide, instead
+/// of re-reading everything [`verify_outcome`] reads.
+///
+/// Called on the fresh connection after the terminal restart, once
+/// [`super::execute::confirm_app_object`] re-confirmed the application object
+/// (one `PID_OBJECT_TYPE` read). It then reads:
+///
+/// - the application object's load state (one `PID_LOAD_STATE` read), the
+///   state the device decides on after its reboot (KNX Virtual reverts a
+///   content-incomplete load to `Unloaded` here, #47);
+/// - a memory sample only for a segment no passed MCB check covers
+///   (`mcb_verified`, the `(object, segment)` pairs whose device CRC matched
+///   the streamed image before the restart). An absolute `WriteMem` or a
+///   segment with an advisory, missing or mismatching check keeps its sample.
+///
+/// The other programmed objects are reported with the `Loaded` state their
+/// own `LoadCompleted` (or the MCB skip's load-state read) confirmed before
+/// the restart; a completion that did not reach `Loaded` already failed the
+/// flash. When the application object is not `Loaded` after the reboot, this
+/// falls back to the full [`verify_outcome`], so a failed flash reports every
+/// object's state and every sample as before.
+///
+/// On the 2026-09-24 1.1.12 flash the full verify was 9 reads (one
+/// `PID_OBJECT_TYPE`, four `PID_LOAD_STATE`, four samples); this is 2.
+pub(super) async fn verify_after_reboot<C: Connector>(
+    session: &mut Session<C>,
+    app_obj: u8,
+    completed_objects: &[u8],
+    written_samples: &[WrittenSample],
+    mcb_verified: &BTreeSet<(u8, String)>,
+) -> Result<FlashOutcome, WriteError> {
+    let load_state = read_load_state_resumable(session, app_obj).await?;
+    if load_state != LoadState::Loaded {
+        return verify_outcome(session, app_obj, completed_objects, written_samples).await;
+    }
+    let mut object_states: Vec<(u8, LoadState)> = Vec::new();
+    for &obj in completed_objects.iter().chain(std::iter::once(&app_obj)) {
+        if !object_states.iter().any(|(seen, _)| *seen == obj) {
+            object_states.push((obj, LoadState::Loaded));
+        }
+    }
+    let uncovered = written_samples.iter().filter(|sample| {
+        !sample
+            .segment
+            .as_ref()
+            .is_some_and(|segment| mcb_verified.contains(segment))
+    });
+    let spot_checks_match = spot_check(session, uncovered).await?;
     Ok(FlashOutcome {
         load_state,
         object_states,

@@ -13,8 +13,8 @@ use super::session::{
     start_loading_resumable, write_load_control_resumable,
 };
 use super::verify::{
-    advisory_mcb_warning, mcb_read_object, mcb_skip_target, resident_match_objects, take_sample,
-    verify_outcome,
+    WrittenSample, advisory_mcb_warning, mcb_read_object, mcb_skip_target, resident_match_objects,
+    take_sample, verify_after_reboot, verify_outcome,
 };
 use super::{FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageKind, Progress};
 use bussard_mgmt::MgmtError;
@@ -320,7 +320,11 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
     // Track (address, sample_len) of writes for the post-flash spot check. The
     // address is 24-bit: an extended-memory segment (07B0 actuators) lives above
     // 0xFFFF, and the spot-check read picks plain vs extended from it.
-    let mut written_samples: Vec<(u32, Vec<u8>)> = Vec::new();
+    let mut written_samples: Vec<WrittenSample> = Vec::new();
+    // The `(object, segment)` pairs whose `PID_MCB_TABLE` CRC matched the
+    // streamed image (a non-advisory or passing `LoadImageProp`), so the
+    // post-restart verify skips their memory samples (issue #215).
+    let mut mcb_verified: BTreeSet<(u8, String)> = BTreeSet::new();
     // The verified outcome, captured just before a terminal restart reboots the
     // device (after which it is unreachable and cannot be verified). `None` until
     // then; the post-loop verify runs only if it is still `None`.
@@ -573,7 +577,11 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                             None => write_image(session, addr, &bytes, &mut progress).await?,
                         }
                         if let Some(sample) = bytes.first().map(|_| take_sample(&bytes)) {
-                            written_samples.push((addr, sample));
+                            written_samples.push(WrittenSample {
+                                address: addr,
+                                bytes: sample,
+                                segment: obj.map(|obj| (obj, image.segment_id.clone())),
+                            });
                         }
                     }
                     FlashStep::WriteMem { address, image } => {
@@ -618,7 +626,11 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                             None => write_image(session, addr, &bytes, &mut progress).await?,
                         }
                         if !bytes.is_empty() {
-                            written_samples.push((addr, take_sample(&bytes)));
+                            written_samples.push(WrittenSample {
+                                address: addr,
+                                bytes: take_sample(&bytes),
+                                segment: None,
+                            });
                         }
                     }
                     FlashStep::WriteProp {
@@ -792,7 +804,11 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                             )
                             .await
                             {
-                                Ok(_) => {}
+                                Ok(_) => {
+                                    if let (Some(img), Some(_)) = (image.as_ref(), expected) {
+                                        mcb_verified.insert((read_obj, img.segment_id.clone()));
+                                    }
+                                }
                                 // A check the application's own procedure does not
                                 // declare warns instead of aborting (issue #145), so
                                 // the download still reaches its restart.
@@ -1007,12 +1023,17 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                             // — cost one exchange per interface object on the tightest
                             // connection of the whole flash.
                             let post_app_obj = confirm_app_object(session, app_obj).await?;
+                            // Then only the reads that decide (issue #215): the
+                            // application's load state, plus samples no passed MCB
+                            // check covers; the full verify runs when the state is
+                            // not `Loaded`.
                             verified = Some(
-                                verify_outcome(
+                                verify_after_reboot(
                                     session,
                                     post_app_obj,
                                     &completed_objects,
                                     &written_samples,
+                                    &mcb_verified,
                                 )
                                 .await?,
                             );

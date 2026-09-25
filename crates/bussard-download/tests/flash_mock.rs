@@ -468,6 +468,11 @@ struct DeviceState {
     /// post-reboot reconnect) reverts `app_load_state` to `Unloaded` — modelling a
     /// device that discards a content-incomplete load on reboot.
     revert_app_on_next_connect: bool,
+    /// Every request APCI the device handled since the terminal restart (a
+    /// bare `A_Restart` that is not the master reset, or a confirmed restart
+    /// with erase code 1), so a test can count the post-restart verify reads
+    /// (issue #215). `None` until that restart.
+    after_terminal_restart: Option<Vec<u16>>,
     /// Model KNX Virtual's `EraseCode=4` master reset: erasing the app object's
     /// load state (back to `Unloaded`) and dropping the segment allocated before
     /// the reset. When set, accepting a master reset drops `app_load_state` to
@@ -587,6 +592,9 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
     let Ok(mut s) = state.lock() else {
         return Reaction::Nak;
     };
+    if let Some(log) = s.after_terminal_restart.as_mut() {
+        log.push(req_apci);
+    }
 
     // Device descriptor read (empty payload, strict).
     if req_apci & APCI_SELECTOR == A_DEVICE_DESCRIPTOR_READ_SEL && data.is_empty() {
@@ -656,6 +664,7 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
     // confirm and reboot, erasing nothing.
     if req_apci == A_RESTART_MASTER_RESET && data.first() == Some(&0x01) {
         s.confirmed_restarts_seen += 1;
+        s.after_terminal_restart = Some(Vec::new());
         s.l4_dead_after_master_reset = true;
         s.sync_drops_pending = s.sync_drops_after_restart;
         arm_restart_outage(&mut s, RestartKind::ConfirmedRestart);
@@ -703,6 +712,9 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
         s.saw_basic_restart = true;
         arm_restart_outage(&mut s, RestartKind::BasicRestart);
         let is_master_reset = s.wipe_app_on_master_reset && s.master_resets_seen == 0;
+        if !is_master_reset {
+            s.after_terminal_restart = Some(Vec::new());
+        }
         if is_master_reset {
             s.master_resets_seen += 1;
             s.last_master_reset_payload = data.to_vec();
@@ -901,6 +913,26 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
                 return Reaction::Answer(
                     A_PROPERTY_VALUE_RESPONSE,
                     prop_response(oi, pid, 0, start, &[]),
+                );
+            }
+            // Multi-object flash: every loadable object has its own segment
+            // and MCB, valid while that object is Loaded.
+            if s.multi_object
+                && let (Some(&base), Some(&size)) = (
+                    s.object_segment_bases.get(&oi),
+                    s.object_segment_sizes.get(&oi),
+                )
+                && s.object_load_states.get(&oi) == Some(&LS_LOADED)
+            {
+                let segment: Vec<u8> = (0..size)
+                    .map(|i| *s.memory.get(&base.wrapping_add(i)).unwrap_or(&0))
+                    .collect();
+                let mut entry = size.to_be_bytes().to_vec();
+                entry.extend_from_slice(&[0x00, 0xFF]);
+                entry.extend_from_slice(&crc16_ccitt(&segment).to_be_bytes());
+                return Reaction::Answer(
+                    A_PROPERTY_VALUE_RESPONSE,
+                    prop_response(oi, pid, 1, start, &entry),
                 );
             }
             if loadable_object_index(&s) != Some(oi)
@@ -1731,6 +1763,7 @@ fn fresh_device(fault: Fault) -> Shared {
         reboot_moved_on: false,
         saw_basic_restart: false,
         revert_app_on_next_connect: false,
+        after_terminal_restart: None,
         wipe_app_on_master_reset: false,
         app_erased_by_master_reset: false,
         loadable_object_override: None,
@@ -4577,6 +4610,24 @@ fn base64_ff_256() -> String {
 /// app segment + master reset) and MergeId 4 (write the app segment) blocks; one
 /// 256-byte LSM4 relative segment of 0xFF (like the real app).
 fn app_da_tp() -> TestResult<ApplicationProgram> {
+    app_da_tp_with("")
+}
+
+/// [`app_da_tp`] plus a MergeId 7 block with the `LdCtrlLoadImageProp` MCB
+/// checks of objects 1 to 4, as the real 07B0 applications carry.
+fn app_da_tp_with_mcb_checks() -> TestResult<ApplicationProgram> {
+    app_da_tp_with(
+        r#"<LoadProcedure MergeId="7">
+         <LdCtrlLoadImageProp ObjIdx="1" PropId="27" />
+         <LdCtrlLoadImageProp ObjIdx="2" PropId="27" />
+         <LdCtrlLoadImageProp ObjIdx="3" PropId="27" />
+         <LdCtrlLoadImageProp ObjIdx="4" PropId="27" />
+        </LoadProcedure>"#,
+    )
+}
+
+/// [`app_da_tp`] with `extra` load procedures appended.
+fn app_da_tp_with(extra: &str) -> TestResult<ApplicationProgram> {
     let data = base64_ff_256();
     let xml = format!(
         r#"<KNX xmlns="http://knx.org/xml/project/23">
@@ -4594,6 +4645,7 @@ fn app_da_tp() -> TestResult<ApplicationProgram> {
         <LoadProcedure MergeId="4">
          <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="256" Verify="false" />
         </LoadProcedure>
+        {extra}
        </LoadProcedures>
       </Static>
      </ApplicationProgram></KNX>"#
@@ -4609,6 +4661,67 @@ fn app_da_tp() -> TestResult<ApplicationProgram> {
 /// confirms every programmed object reached Loaded.
 #[tokio::test]
 async fn flash_da_tp_programs_all_four_objects() -> TestResult {
+    flash_da_tp_four_objects(false, false).await.map(|_| ())
+}
+
+/// Issue #215: after the terminal restart the verify reads only what decides,
+/// the application object's type (the confirm probe) and its load state. The
+/// three table objects keep the `Loaded` their `LoadCompleted` confirmed, and
+/// the four memory samples are covered by the passed MCB checks. Before this
+/// change the same flash read `PID_OBJECT_TYPE`, four `PID_LOAD_STATE`s and
+/// four memory samples (9 reads).
+#[tokio::test]
+async fn test_flash_post_restart_verify_reads_only_what_decides() -> TestResult {
+    let (outcome, state) = flash_da_tp_four_objects(true, true).await?;
+    assert!(outcome.ok(), "the flash must verify: {outcome:?}");
+    let s = lock(&state)?;
+    let log = s
+        .after_terminal_restart
+        .as_ref()
+        .ok_or("the terminal restart was not seen")?;
+    let property_reads = log.iter().filter(|a| **a == A_PROPERTY_VALUE_READ).count();
+    let memory_reads = log
+        .iter()
+        .filter(|a| **a & APCI_SELECTOR == A_MEMORY_READ_SEL || **a == A_MEMORY_EXTENDED_READ)
+        .count();
+    println!("post-restart reads: property {property_reads}, memory {memory_reads}");
+    assert_eq!(
+        (property_reads, memory_reads),
+        (2, 0),
+        "one PID_OBJECT_TYPE and one PID_LOAD_STATE after the restart; got {log:x?}"
+    );
+    Ok(())
+}
+
+/// Issue #215: a segment no MCB check covers keeps its post-restart memory
+/// sample (the DA.tp template here carries no `LdCtrlLoadImageProp`).
+#[tokio::test]
+async fn test_flash_post_restart_verify_keeps_samples_without_mcb_checks() -> TestResult {
+    let (outcome, state) = flash_da_tp_four_objects(true, false).await?;
+    assert!(outcome.ok(), "the flash must verify: {outcome:?}");
+    let s = lock(&state)?;
+    let log = s
+        .after_terminal_restart
+        .as_ref()
+        .ok_or("the terminal restart was not seen")?;
+    let memory_reads = log
+        .iter()
+        .filter(|a| **a & APCI_SELECTOR == A_MEMORY_READ_SEL || **a == A_MEMORY_EXTENDED_READ)
+        .count();
+    assert_eq!(
+        memory_reads, 4,
+        "one sample per written segment; got {log:x?}"
+    );
+    Ok(())
+}
+
+/// The DA.tp 4-object flash of [`flash_da_tp_programs_all_four_objects`],
+/// verified before (`false`) or after (`true`) the terminal restart, with or
+/// without the MergeId 7 MCB checks.
+async fn flash_da_tp_four_objects(
+    verify_after_restart: bool,
+    mcb_checks: bool,
+) -> TestResult<(bussard_download::FlashOutcome, Shared)> {
     use bussard_download::compute::{
         GroupObjectDescriptor, compute_group_object_table, table_image_with_count,
     };
@@ -4682,7 +4795,11 @@ async fn flash_da_tp_programs_all_four_objects() -> TestResult {
     .ok_or("the group-object table computes")?;
     table_images.insert(3, obj3.clone());
 
-    let app = app_da_tp()?;
+    let app = if mcb_checks {
+        app_da_tp_with_mcb_checks()?
+    } else {
+        app_da_tp()?
+    };
     let template = master_template_all_ops()?;
     let plan = plan_flash(
         &app,
@@ -4699,7 +4816,10 @@ async fn flash_da_tp_programs_all_four_objects() -> TestResult {
     let outcome = flash(
         &mut session,
         &plan,
-        bussard_download::FlashOptions::default(),
+        bussard_download::FlashOptions {
+            verify_after_restart,
+            ..Default::default()
+        },
         |_| {},
     )
     .await?;
@@ -4769,7 +4889,7 @@ async fn flash_da_tp_programs_all_four_objects() -> TestResult {
 
     let _ = handle.close().await;
     drop(gw);
-    Ok(())
+    Ok((outcome, state))
 }
 
 /// A merged flash whose master template programs obj1/obj2/obj3 but the caller

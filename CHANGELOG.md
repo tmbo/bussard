@@ -366,6 +366,18 @@ entry supersedes it and is not a diff against it.
   cache), `reconstruct --product` start to first frame 5.6 s to 0.65 s
   (0.34 s with the cache); `describe` is unchanged at 0.08 s.
 
+- The verification after the terminal restart reads what decides: the
+  application object's type and its load state. The other objects keep the
+  `Loaded` their `LoadCompleted` confirmed before the restart, and a written
+  segment's memory sample is skipped when its MCB check (`PID_MCB_TABLE` CRC
+  over the streamed image) passed before the restart. A segment without a
+  passed MCB check, such as an absolute `WriteMem` or an advisory check, is
+  still sampled, and an application that is not `Loaded` after the reboot
+  gets the full verification as before. On a 4-object System B flash with
+  MCB checks this is 2 reads instead of 9. On System 7 `0701` the LSM status
+  octets are read with one memory read instead of one per LSM, falling back
+  to per-LSM reads when the device refuses it (#215).
+
 ### Fixed
 
 - Group writes: DPT-blind 6-bit APCI packing corrupted values on the live bus

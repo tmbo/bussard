@@ -172,6 +172,10 @@ struct DeviceState {
     /// How many load-state reads the tool made (property `PID_LOAD_STATE_CONTROL`
     /// reads, or memory-mapped status reads at `0xB6EA+`).
     lsm_state_reads: usize,
+    /// Answer a multi-octet read of the memory-mapped LSM status area with no
+    /// data, so the verify's combined status read falls back to one read per
+    /// LSM (issue #215).
+    refuse_multi_octet_status: bool,
     /// Every numbered request the device answered or acknowledged.
     requests_seen: usize,
     /// A gateway link outage in the reconnect phase after a restart (issue
@@ -242,6 +246,7 @@ fn fresh_device(mode: LsmMode, fault: Fault) -> Shared {
         restart_at_writes: Vec::new(),
         verify_echoes_sent: 0,
         lsm_state_reads: 0,
+        refuse_multi_octet_status: false,
         requests_seen: 0,
         restart_outage: None,
         restart_outage_armed: false,
@@ -446,6 +451,9 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
             && (LSM_STATUS_ADDR..LSM_STATUS_ADDR + 8).contains(&addr)
         {
             s.lsm_state_reads += 1;
+            if s.refuse_multi_octet_status && count > 1 {
+                return Reaction::Answer(A_MEMORY_RESPONSE, addr.to_be_bytes().to_vec());
+            }
         }
         // Memory-mapped LSM status: read at 0xB6EA + (lsm-1).
         let mut data = Vec::with_capacity(count as usize);
@@ -2361,12 +2369,22 @@ async fn run_parity_flash(
     mode: LsmMode,
     device_control: u8,
 ) -> Result<(bussard_download::FlashOutcome, Shared), Box<dyn std::error::Error>> {
+    run_parity_flash_with(mode, device_control, |_| {}).await
+}
+
+/// [`run_parity_flash`] with the device further configured by `configure`.
+async fn run_parity_flash_with(
+    mode: LsmMode,
+    device_control: u8,
+    configure: impl FnOnce(&mut DeviceState),
+) -> Result<(bussard_download::FlashOutcome, Shared), Box<dyn std::error::Error>> {
     let addr: bussard_model::IndividualAddress = "1.1.99".parse()?;
     let state = fresh_device(mode, Fault::None);
     {
         let mut s = lock(&state);
         s.reboot_on_restart = true;
         s.device_control = device_control;
+        configure(&mut s);
     }
     let gw = start_gateway(&state).await?;
     let (handle, _actor) = bussard_bus::Bus::connect(
@@ -2428,12 +2446,31 @@ async fn test_flash_sys7_memory_mapped_reads_state_after_every_event()
 -> Result<(), Box<dyn std::error::Error>> {
     // The Theben 0701 capture reads the status octet after every event (the
     // memory write has no answer), so the memory-mapped realisation keeps one
-    // read per event: 4 prelude unloads + 16 procedure events + 3 verify.
+    // read per event: 4 prelude unloads + 16 procedure events. The
+    // post-restart verify reads the three status octets at once (issue #215;
+    // it read them one at a time before: + 3).
     let (outcome, state) = run_parity_flash(LsmMode::MemoryMapped, 0x00).await?;
     assert!(outcome.ok(), "flash should reach Loaded: {outcome:?}");
     let s = lock(&state);
     assert_eq!(s.lsm_events.len(), 4 + 16);
-    assert_eq!(s.lsm_state_reads, 4 + 16 + 3);
+    assert_eq!(s.lsm_state_reads, 4 + 16 + 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_sys7_verify_falls_back_to_one_status_read_per_lsm()
+-> Result<(), Box<dyn std::error::Error>> {
+    // A device that answers the combined status read without data: the
+    // verify reads each LSM's status octet on its own, as before (issue #215),
+    // and reaches the same verdict.
+    let (outcome, state) = run_parity_flash_with(LsmMode::MemoryMapped, 0x00, |s| {
+        s.refuse_multi_octet_status = true;
+    })
+    .await?;
+    assert!(outcome.ok(), "flash should reach Loaded: {outcome:?}");
+    assert_eq!(outcome.object_states.len(), 3, "{outcome:?}");
+    let s = lock(&state);
+    assert_eq!(s.lsm_state_reads, 4 + 16 + 1 + 3);
     Ok(())
 }
 

@@ -509,7 +509,26 @@ pub(super) async fn verify_sys7<C: Connector>(
 ) -> Result<FlashOutcome, WriteError> {
     let mut object_states: Vec<(u8, LoadState)> = Vec::new();
     let mut all_loaded = true;
-    for idx in completed_lsms {
+    let octets = completed_lsms
+        .iter()
+        .map(|idx| lsm_octet(session.l4().target(), *idx))
+        .collect::<Result<Vec<u8>, WriteError>>()?;
+    // One read for every memory-mapped status octet (issue #215); the
+    // per-LSM reads below stay the fallback.
+    if let Some(states) = read_lsm_states_at_once(session, lsm, &octets).await {
+        for (octet, state) in octets.iter().copied().zip(states) {
+            if state != LoadState::Loaded {
+                all_loaded = false;
+            }
+            object_states.push((octet, state));
+        }
+    }
+    let per_lsm: &[u32] = if object_states.is_empty() {
+        completed_lsms
+    } else {
+        &[]
+    };
+    for idx in per_lsm {
         let octet = lsm_octet(session.l4().target(), *idx)?;
         // Re-read through a resumable death: a just-rebooted device can drop the
         // first probe on the fresh connection before it is fully back, and a
@@ -553,6 +572,47 @@ pub(super) async fn verify_sys7<C: Connector>(
         warnings: Vec::new(),
         reboot_readiness: Vec::new(),
     })
+}
+
+/// Reads the status octets of several memory-mapped LSMs (the 0701
+/// realisation, status of LSM `n` at `status_addr + n - 1`) with a single
+/// `A_Memory_Read` over the contiguous span that holds them (issue #215).
+///
+/// The octets are the ones the per-LSM reads would read, decoded the same
+/// way, so the verdict is unchanged. Returns `None`, and the caller reads each
+/// LSM on its own as before, for a property-based realisation (one object per
+/// LSM), fewer than two LSMs, a span wider than the connection's memory chunk,
+/// or any failure or short answer of the combined read.
+async fn read_lsm_states_at_once<C: Connector>(
+    session: &mut Session<C>,
+    lsm: &bussard_mgmt::LsmAccess,
+    octets: &[u8],
+) -> Option<Vec<LoadState>> {
+    let bussard_mgmt::LsmAccess::MemoryMapped { status_addr, .. } = lsm else {
+        return None;
+    };
+    let (first, last) = (*octets.iter().min()?, *octets.iter().max()?);
+    if octets.len() < 2 || first == 0 {
+        return None;
+    }
+    let span = last - first + 1;
+    if span > session.l4().max_memory_chunk() {
+        return None;
+    }
+    let addr = status_addr.checked_add(u16::from(first - 1))?;
+    let data = read_memory(session.l4(), u32::from(addr), span)
+        .await
+        .ok()?;
+    if data.len() != usize::from(span) {
+        return None;
+    }
+    octets
+        .iter()
+        .map(|octet| {
+            data.get(usize::from(octet - first))
+                .map(|b| LoadState::from_octet(*b))
+        })
+        .collect()
 }
 
 /// One 16-bit System 7 record field (an address, a size) as the `u16` the wire
