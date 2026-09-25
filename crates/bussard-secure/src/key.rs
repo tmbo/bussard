@@ -81,6 +81,15 @@ impl Password {
         crate::crypto::pbkdf2_key(&latin1, salt)
     }
 
+    /// Borrows the password text.
+    ///
+    /// The single controlled read point, like [`Key16::bytes`]: only to feed a
+    /// key derivation or to re-encrypt the password into a key store or
+    /// keyring export; never to print, log, or persist in the clear.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+
     /// Whether the password is empty.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()

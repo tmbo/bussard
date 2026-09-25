@@ -43,7 +43,7 @@ use bussard_ets::attrs::{attr_value, attrs_map};
 use bussard_model::{GroupAddress, IndividualAddress};
 
 /// The number of bytes of raw key material in a KNX Secure key.
-const KEY_LEN: usize = 16;
+pub(crate) const KEY_LEN: usize = 16;
 
 /// The number of leading bytes to skip when extracting a password from a
 /// decrypted blob (spec §4.3): an 8-byte salt/prefix.
@@ -161,6 +161,9 @@ pub struct Interface {
     pub authentication: Option<Password>,
     /// The group addresses this interface may send to.
     pub gas: Vec<GroupAddress>,
+    /// The raw `Senders` attribute of each of those `<Group>` children, when
+    /// present, kept so a key store export writes it back (issue #241).
+    pub group_senders: HashMap<GroupAddress, String>,
 }
 
 impl Interface {
@@ -200,6 +203,7 @@ impl std::fmt::Debug for Interface {
                 &self.authentication.as_ref().map(|_| "<redacted>"),
             )
             .field("gas", &self.gas)
+            .field("group_senders", &self.group_senders)
             .finish()
     }
 }
@@ -218,6 +222,11 @@ pub struct Device {
     /// The decrypted `Authentication` (a KNXnet/IP Secure device's device
     /// authentication code), if present.
     pub authentication: Option<Password>,
+    /// The decrypted factory default setup key (`FDSK`), if present. ETS 6
+    /// exports carry it next to the tool key (issue #241).
+    pub fdsk: Option<Key16>,
+    /// The device's serial number (`SerialNumber`, 12 hex digits), if present.
+    pub serial: Option<crate::keystore::SerialNumber>,
 }
 
 impl Device {
@@ -244,6 +253,8 @@ impl std::fmt::Debug for Device {
                 "authentication",
                 &self.authentication.as_ref().map(|_| "<redacted>"),
             )
+            .field("fdsk", &self.fdsk.as_ref().map(|_| "<redacted>"))
+            .field("serial", &self.serial.map(|s| s.to_string()))
             .finish()
     }
 }
@@ -356,7 +367,7 @@ pub fn parse_keyring(xml: &str, password: &str) -> Result<Keyring, KeyringError>
 }
 
 /// Reads the `Created` attribute off the root `<Keyring>` element (§4.2).
-fn read_created(xml: &str) -> Result<String, KeyringError> {
+pub(crate) fn read_created(xml: &str) -> Result<String, KeyringError> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     loop {
@@ -380,11 +391,8 @@ fn read_created(xml: &str) -> Result<String, KeyringError> {
 
 /// Derives the AES-CBC IV from the `Created` timestamp: `sha256(created)[..16]`
 /// (spec §4.2).
-fn created_iv(created: &str) -> [u8; KEY_LEN] {
-    let digest = Sha256::digest(created.as_bytes());
-    let mut iv = [0u8; KEY_LEN];
-    iv.copy_from_slice(&digest[..KEY_LEN]);
-    iv
+pub(crate) fn created_iv(created: &str) -> [u8; KEY_LEN] {
+    bussard_secure::keyring_iv(created)
 }
 
 /// Verifies the keyring signature (spec §4.4).
@@ -392,7 +400,7 @@ fn created_iv(created: &str) -> [u8; KEY_LEN] {
 /// The signature is `sha256(canonical)[..16]`, compared in constant time against
 /// the base64-decoded `Signature` attribute; see [`canonical_serialization`] for
 /// the byte layout. Settled against a genuine ETS 6 export (issue #84).
-fn verify_signature(xml: &str, keyring_key: &Key16) -> Result<(), KeyringError> {
+pub(crate) fn verify_signature(xml: &str, keyring_key: &Key16) -> Result<(), KeyringError> {
     let signature = read_signature(xml)?;
     let serialized = canonical_serialization(xml, keyring_key)?;
     let digest = Sha256::digest(serialized.as_slice());
@@ -446,7 +454,7 @@ fn read_signature(xml: &str) -> Result<Vec<u8>, KeyringError> {
 ///
 /// Text content and comments are not signed. The buffer ends with key-derived
 /// material, so it is wiped on drop.
-fn canonical_serialization(
+pub(crate) fn canonical_serialization(
     xml: &str,
     keyring_key: &Key16,
 ) -> Result<Zeroizing<Vec<u8>>, KeyringError> {
@@ -567,7 +575,11 @@ fn parse_body(xml: &str, keyring_key: &Key16, iv: &[u8; KEY_LEN]) -> Result<Keyr
                         } else if let Some(iface) = current_interface.as_mut()
                             && let Some(addr) = attr(&e, b"Address")?
                         {
-                            iface.gas.push(parse_ga("Interface/Group/Address", &addr)?);
+                            let ga = parse_ga("Interface/Group/Address", &addr)?;
+                            iface.gas.push(ga);
+                            if let Some(senders) = attr(&e, b"Senders")? {
+                                iface.group_senders.insert(ga, senders);
+                            }
                         }
                     }
                     b"Device" => {
@@ -677,6 +689,7 @@ fn parse_interface(
         password,
         authentication,
         gas: Vec::new(),
+        group_senders: HashMap::new(),
     })
 }
 
@@ -712,17 +725,30 @@ fn parse_device(
         keyring_key,
         iv,
     )?;
+    let fdsk = match attr(e, b"FDSK")? {
+        Some(_) => Some(decrypt_key(e, b"FDSK", "Device/FDSK", keyring_key, iv)?),
+        None => None,
+    };
+    let serial = match attr(e, b"SerialNumber")? {
+        Some(s) => Some(s.parse().map_err(|reason| KeyringError::InvalidAttribute {
+            attribute: "Device/SerialNumber".to_string(),
+            reason,
+        })?),
+        None => None,
+    };
     Ok(Device {
         ia,
         tool_key,
         seq,
         management_password,
         authentication,
+        fdsk,
+        serial,
     })
 }
 
 /// Decrypts an optional encrypted password attribute into a [`Password`].
-fn optional_password(
+pub(crate) fn optional_password(
     e: &BytesStart,
     key: &[u8],
     attribute: &str,
@@ -753,7 +779,7 @@ fn parse_group_key(
 }
 
 /// Reads a required attribute, erroring if absent.
-fn require(e: &BytesStart, key: &[u8], element: &str) -> Result<String, KeyringError> {
+pub(crate) fn require(e: &BytesStart, key: &[u8], element: &str) -> Result<String, KeyringError> {
     attr(e, key)?.ok_or_else(|| KeyringError::MissingAttribute {
         element: element.to_string(),
         attribute: String::from_utf8_lossy(key).into_owned(),
@@ -766,7 +792,7 @@ fn require(e: &BytesStart, key: &[u8], element: &str) -> Result<String, KeyringE
 /// The value is base64 of exactly one AES-128-CBC block (keyring key, IV from
 /// `Created`), with no prefix and no padding, so it is not run through
 /// [`extract_password`].
-fn decrypt_key(
+pub(crate) fn decrypt_key(
     e: &BytesStart,
     key: &[u8],
     attribute: &str,
@@ -793,7 +819,7 @@ fn decrypt_key(
 }
 
 /// Decrypts an encrypted attribute and extracts the password string (§4.2, §4.3).
-fn decrypt_password(
+pub(crate) fn decrypt_password(
     e: &BytesStart,
     key: &[u8],
     attribute: &str,
@@ -864,7 +890,7 @@ fn extract_password(data: &[u8], attribute: &str) -> Result<Zeroizing<String>, K
 }
 
 /// Reads a single named attribute off an element as an owned `String`.
-fn attr(e: &BytesStart, key: &[u8]) -> Result<Option<String>, KeyringError> {
+pub(crate) fn attr(e: &BytesStart, key: &[u8]) -> Result<Option<String>, KeyringError> {
     attr_value(e, key, KEYRING_CONTEXT).map_err(xml_error)
 }
 
@@ -884,7 +910,7 @@ fn xml_error(e: bussard_ets::EtsError) -> KeyringError {
 }
 
 /// Parses an individual address attribute value.
-fn parse_ia(attribute: &str, value: &str) -> Result<IndividualAddress, KeyringError> {
+pub(crate) fn parse_ia(attribute: &str, value: &str) -> Result<IndividualAddress, KeyringError> {
     value.parse().map_err(|_| KeyringError::InvalidAttribute {
         attribute: attribute.to_string(),
         reason: format!("not an individual address: {value:?}"),
@@ -893,7 +919,7 @@ fn parse_ia(attribute: &str, value: &str) -> Result<IndividualAddress, KeyringEr
 
 /// Parses a group address attribute value: ETS writes the raw 16-bit integer
 /// (`2563`); the three-level form (`1/2/3`) is accepted too.
-fn parse_ga(attribute: &str, value: &str) -> Result<GroupAddress, KeyringError> {
+pub(crate) fn parse_ga(attribute: &str, value: &str) -> Result<GroupAddress, KeyringError> {
     if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
         return value
             .parse::<u16>()

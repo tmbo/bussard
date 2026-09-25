@@ -480,6 +480,40 @@ does not record which devices were programmed with `--secure-sender`, so after
 every secured write it prints a note with its tunnel address, the receivers
 the model links to the GA, and the command above.
 
+## The key store
+
+`knx/bussard.keys` is bussard's own copy of the KNX Secure key material
+(issue #241): the backbone key, the KNXnet/IP Secure tunnelling users with
+their passwords and the interfaces' authentication codes, every device's tool
+key, serial number, factory key (FDSK), management password and
+authentication code, and the group keys. Anyone who can decrypt it can
+manage every secured device and read and forge every secured group telegram.
+
+- **It is encrypted and signed like an ETS `.knxkeys`**, with the password in
+  `BUSSARD_KEYRING_PASSWORD`. Its protection is exactly the keyring password's
+  strength, the same as the ETS export you already keep; choose it
+  accordingly. The signature makes a wrong password or a hand edit fail the
+  load rather than yield wrong keys.
+- **It is committed on purpose**, so `git checkout` restores the model and its
+  keys together. A repository that holds it is only as private as the
+  password. The `.knxkeys` exports are not committed: `init` lists
+  `*.knxkeys` in the model's `.gitignore`.
+- **The password is never a flag** and never written anywhere by bussard. Keep
+  it in the environment (or a `.env` outside the repository).
+- **No key leaves in the clear.** `keys show`, `keys import` and their
+  `--json` print addresses, counts and presence flags only; the store types
+  redact themselves in logs and debug output.
+- **Every write is atomic** (temporary file, then rename) and keeps the
+  previous store as `bussard.keys.bak` until the next successful write, so a
+  bad import can be undone by copying the `.bak` back. The `.bak` is
+  encrypted with the same password.
+- **Sequence counters are not stored.** bussard seeds its Data Secure send
+  sequence from the clock, so restoring an old store never replays a
+  sequence a device has already accepted.
+
+Today the store is written by `bussard keys import` and read by `keys show`
+and `keys export`; the bus commands still take their keys from `--keyring`.
+
 ## Protected group addresses
 
 A GA marked `protected = true` in `groups.toml` (wind alarms, central functions,

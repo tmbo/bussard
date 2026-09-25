@@ -285,6 +285,26 @@ entry supersedes it and is not a diff against it.
   block, the groups' and com objects' `secure` flags, and `[secured]` on
   secured telegrams in the traffic view (#205).
 
+- The key store `knx/bussard.keys` (#241 items 1 and 3): bussard's own copy of
+  the KNX Secure key material (backbone, interfaces, tool keys, serial
+  numbers, FDSKs, management passwords, authentication codes, group keys),
+  encrypted and signed exactly like an ETS `.knxkeys` with
+  `BUSSARD_KEYRING_PASSWORD`, and git-tracked by design. Writes are atomic and
+  keep `bussard.keys.bak`; an unchanged entry keeps its ciphertext, so a diff
+  shows only what moved. `bussard keys import <file.knxkeys>` merges an ETS
+  export and reports new devices, rotated keys and group keys (an FDSK is
+  never dropped); `bussard keys export <file.knxkeys>` writes a signed export
+  for ETS; `bussard keys show [--json]` prints a redaction-safe summary. The
+  keyring reader now also reads the `FDSK` and `SerialNumber` an ETS 6 export
+  carries per device. `init` writes `*.knxkeys` into the model's
+  `.gitignore`. The bus commands still read `--keyring`; the switch to the
+  store follows.
+- Data Secure send sequences are clock-seeded without persistence (#241 item
+  3): 48-bit milliseconds since 2018-01-05, issued by a process-wide monotonic
+  guard that never repeats or goes below a value already issued or sent, even
+  within one millisecond or across a clock step back. The S-A_Sync handshake
+  still moves a session up when a device expects more.
+
 **KNXnet/IP Secure**
 
 - Secure tunnelling to a KNXnet/IP Secure interface over TCP: X25519 session

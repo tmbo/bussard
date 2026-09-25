@@ -20,8 +20,9 @@ use crate::sequence::{Sequence, SequenceHighWater};
 
 /// A live Data Secure session against one device, keyed by its tool key.
 ///
-/// Holds the monotonic send sequence (seeded from persisted state or the clock,
-/// spec §5.9) and a per-source-IA last-seen sequence table for replay protection.
+/// Holds the monotonic send sequence (seeded from the clock through the
+/// process-wide [`crate::sequence::SequenceClock`], spec §5.8; never persisted,
+/// issue #241) and a per-source-IA last-seen sequence table for replay protection.
 /// The [`Key16`] is moved in and never cloned or logged (spec §2.3).
 pub struct DataSecureSession {
     /// The device's tool key (keyring `ToolKey`, else the FDSK — spec §2.1).
@@ -53,13 +54,13 @@ enum SyncState {
 
 impl DataSecureSession {
     /// Builds a session with `tool_key`, seeding the send sequence from the
-    /// current clock (spec §5.8). Use [`with_send_sequence`](Self::with_send_sequence)
-    /// to seed from persisted state or a `<Security SequenceNumber>` value.
+    /// process-wide clock ([`Sequence::seed`], spec §5.8): strictly above any
+    /// sequence this process already issued or sent.
     pub fn new(tool_key: Key16) -> Self {
         DataSecureSession {
             tool_key,
             algorithm: SecurityAlgorithm::AuthenticationEncryption,
-            send_seq: Sequence::now(),
+            send_seq: Sequence::seed(),
             last_seen: HashMap::new(),
             high_water: None,
             sync: SyncState::NotStarted,
@@ -78,14 +79,13 @@ impl DataSecureSession {
         self
     }
 
-    /// Sets the initial send sequence exactly (spec §5.9 send-side persistence).
+    /// Sets the initial send sequence exactly, for deterministic tests and
+    /// device-role simulations.
     ///
-    /// The default from [`new`](Self::new) is the clock (`Sequence::now`). A
-    /// caller restoring persisted per-device state should pass
-    /// `max(persisted, Sequence::now())` so a new run never replays a lower value
-    /// than the device last accepted, while honouring a device already ahead of
-    /// the clock. The value is used verbatim (no implicit clamping) so callers get
-    /// deterministic, testable sequences.
+    /// bussard's own tool sessions never call this: they seed from the clock
+    /// ([`new`](Self::new), [`with_high_water`](Self::with_high_water)) and let
+    /// the S-A_Sync handshake (spec §6.3) move them up when a device expects
+    /// more. The value is used verbatim (no implicit clamping).
     pub fn with_send_sequence(mut self, seed: Sequence) -> Self {
         self.send_seq = seed;
         self
@@ -97,7 +97,7 @@ impl DataSecureSession {
         self
     }
 
-    /// The next sequence this session would send (for persistence, spec §5.9).
+    /// The next sequence this session would send.
     pub fn send_sequence(&self) -> Sequence {
         self.send_seq
     }
@@ -150,6 +150,7 @@ impl DataSecureSession {
         if let Some(hw) = &self.high_water {
             hw.observe(req.sequence);
         }
+        crate::sequence::process_clock().observe(req.sequence);
         self.sync = SyncState::Pending(challenge);
         Ok((asdu::A_SECURE_DATA, asdu))
     }
@@ -244,6 +245,7 @@ impl DataSecureSession {
         if let Some(hw) = &self.high_water {
             hw.observe(seq);
         }
+        crate::sequence::process_clock().observe(seq);
         self.send_seq = self.send_seq.next();
         Ok((asdu::A_SECURE_DATA, asdu))
     }

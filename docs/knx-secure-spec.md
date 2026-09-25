@@ -149,9 +149,11 @@ whichever key the project provides.
 
 ### 2.2 Where bussard stores key material
 
-- **In memory only, for the duration of a run.** Keys are loaded from the
-  `.knxkeys` file or the decrypted knxproj into a `Keyring` struct held by the
-  session, never written to `knx/` and never to any other file.
+- **In memory for a run, and in the encrypted key store.** Keys are loaded
+  from the `.knxkeys` file or the decrypted knxproj into a `Keyring` struct
+  held by the session. Since issue #241 bussard also keeps its own copy in
+  `knx/bussard.keys`, encrypted and signed exactly like a `.knxkeys` export
+  (§4.7). No key is ever written in the clear, to `knx/` or anywhere else.
 - The keyring/knxproj **password** arrives the same way the project password
   already does: an env var (`BUSSARD_KEYRING_PASSWORD`, mirroring
   `BUSSARD_PROJECT_PASSWORD` `[corpus §4]`), never a CLI arg, never a config file.
@@ -354,7 +356,13 @@ as raw base64 instead of being decrypted.
   e.g. `2563` = 1/2/3) and `Key` (encrypted group key).
 - **Devices**: child `Device` elements with `IndividualAddress`, `ToolKey`
   (encrypted key), `ManagementPassword` (encrypted), `Authentication`
-  (encrypted), `SequenceNumber` (int, default 0).
+  (encrypted), `SequenceNumber` (int, default 0), and in an ETS 6 export also
+  `SerialNumber` (12 upper-case hex digits, plain) and `FDSK` (24 base64
+  characters, one 16-byte block). `[CONFIRMED present in a real ETS 6 export
+  of the reference installation, 2026-09-25, 10 of 10 devices]`. The reader
+  decrypts `FDSK` like `ToolKey`; that the plaintext equals the certificate's
+  FDSK is INFERRED (the ciphertext length matches, the value was not
+  cross-checked against the knxproj certificate).
 
 ### 4.6 The typed result
 
@@ -370,6 +378,43 @@ Keyring {
 ```
 
 `Key16` is the zeroizing, non-`Debug`, non-`Serialize` key wrapper (§2.3).
+
+### 4.7 Writing a keyring: the key store and the export
+
+bussard writes the format of §4.1-§4.4 in two places (issue #241):
+`knx/bussard.keys`, its own key store, and `bussard keys export <file>`, a
+`.knxkeys` for ETS. Both are the exact inverse of the reader:
+
+- **Keys** (`ToolKey`, `FDSK`, `Backbone/@Key`, group `@Key`): one AES-128-CBC
+  block of the raw key under the keyring key, IV `sha256(Created)[:16]`,
+  base64 (`bussard_secure::keyring_encrypt_key`).
+- **Passwords**: `prefix(8) || utf8(password) || PKCS#7(1..16)`, AES-128-CBC,
+  base64 (`keyring_encrypt_password`). An export uses 8 random bytes, as ETS
+  does. The store uses `HMAC-SHA256(keyring key, context || 0x00 ||
+  password)[:8]` (`keyring_password_prefix`), keyed and deterministic, so an
+  unchanged password keeps its ciphertext and the git diff stays small.
+- **Signature**: the document is written without `Signature`, the canonical
+  serialization of §4.4 is computed over it (with the keyring key appended),
+  and `base64(sha256(canonical)[:16])` is spliced in as the first root
+  attribute. Attribute order in the file does not matter (the canonical form
+  sorts), and values are XML-escaped (`&amp;`, `&quot;`, `&#10;`...) so the
+  reader's unescaped value matches what was signed.
+
+The export carries the ETS element and attribute set (`Keyring` with
+`Project`, `CreatedBy`, `Created`, `Signature`, namespace
+`http://knx.org/xml/keyring/1`; `Backbone`, `Interface` with `Group`
+children, `GroupAddresses`, `Devices`) with raw 16-bit group addresses and a
+fresh `Created`. A device without a tool key is left out. Verification: the
+export round-trips through the reader's signature check and decryption with
+the synthetic fixture (unit and CLI tests), and a store imported from the
+reference installation's ETS 6 export, exported and read back gives the same
+10 devices, 8 interfaces and 33 group keys, the same element/attribute shape
+as the ETS file, and re-imports with no change. That ETS itself imports the
+file is not yet confirmed.
+
+The store adds `Format="bussard.keys/1"` and its own namespace on the root,
+allows a `Device` without `ToolKey`, writes group addresses three-level, and
+fixes `Created` when it is first written.
 
 ---
 
@@ -502,16 +547,21 @@ Sending sequence initialized to `int((now - epoch) * 1000)` where
 exactly one; any higher value is acceptable" `[ABB]`. This is why ETS shows
 per-device sequence numbers and why a device reset needs an ETS seqnum update.
 
-### 5.9 Sequence persistence
+### 5.9 Sequence seeding (no persistence)
 
-- **Send side (per device):** persist the last-sent tool sequence per device so a
-  new bussard run does not replay an old, lower value (which the device would
-  reject as stale). Seed from the knxproj `<Security SequenceNumber>` if present,
-  else from the epoch clock (§5.8). Store in a bussard state file (NOT in `knx/`;
-  it is machine state, not model), keyed by device IA. The Sync exchange (§6.3)
-  makes the seed self-correcting: the device's S-A_Sync_Res carries the sequence
-  it accepts next from the tool, and the tool continues from
-  `max(own seed, that value)`. ETS runs Sync on every secured connection
+- **Send side:** bussard does not persist its send sequence (issue #241). Every
+  seed comes from the clock of §5.8 through `bussard_secure::SequenceClock`:
+  the epoch is **2018-01-05T00:00:00Z** (Unix `1_515_110_400_000` ms), the
+  value is 48-bit milliseconds since it, and the process-wide instance never
+  issues a value at or below one it already issued or saw sent
+  (`issue() = max(clock, last + 1)`; every wrapped APDU is recorded). Two
+  seeds in the same millisecond, or a clock step backwards, still yield
+  strictly increasing values. A later run starts from a later millisecond,
+  so a restored key store or a fresh checkout never replays below what the
+  devices saw. The one gap is a run that sent more than one APDU per
+  millisecond and so ran ahead of the clock; the Sync exchange (§6.3) closes
+  it: the device's S-A_Sync_Res carries the sequence it accepts next from the
+  tool, and the tool continues from `max(own seed, that value)`. ETS runs Sync on every secured connection
   `[CONFIRMED, secure-1-1-12 capture, 2026-09-23]`, and bussard now does too.
   Whether a device refuses S-A_Data that is not preceded by a Sync cannot be
   seen in a capture where ETS always syncs; it no longer matters for bussard.
@@ -655,8 +705,8 @@ clock therefore replays sequences the device has already accepted — the device
 refuses every one as stale. **A new session for the same device must seed from
 `max(clock, last_sent + 1)`**, i.e. the per-device high-water mark has to outlive
 the connection (`bussard_secure::SequenceHighWater`). Cross-*process*
-monotonicity still rests on the clock until either the state file of §5.9 or the
-Sync preamble of §6.3 lands.
+monotonicity rests on the clock seed of §5.9 and the Sync preamble of §6.3;
+there is no state file.
 
 ---
 

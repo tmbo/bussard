@@ -196,10 +196,9 @@ pub fn aes_cbc_decrypt(key: &Key16, iv: &[u8], ciphertext: &[u8]) -> Result<Vec<
 /// ciphertext (the inverse of [`aes_cbc_decrypt`]).
 ///
 /// No padding is added: `plaintext` must already be a whole number of 16-byte
-/// blocks (callers apply their own PKCS#7 / zero padding before calling). This
-/// is used only by tests to build synthetic keyring fixtures (spec §12.3), so
-/// that the parser's decrypt path is exercised against bytes that were encrypted
-/// with the same primitive.
+/// blocks (callers apply their own PKCS#7 / zero padding before calling). The
+/// key store and the `.knxkeys` export use it through
+/// [`keyring_encrypt_key`] and [`keyring_encrypt_password`] (issue #241).
 ///
 /// # Errors
 ///
@@ -303,6 +302,100 @@ pub fn latin1_bytes(s: &str) -> Vec<u8> {
         .collect()
 }
 
+/// The length of the prefix ahead of an encrypted keyring password (spec §4.3).
+pub const KEYRING_PASSWORD_PREFIX_LEN: usize = 8;
+
+/// The AES-CBC IV of every encrypted keyring attribute:
+/// `sha256(created)[..16]`, where `created` is the root `Created` attribute
+/// (spec §4.2).
+pub fn keyring_iv(created: &str) -> [u8; BLOCK] {
+    use sha2::Digest as _;
+    let digest = Sha256::digest(created.as_bytes());
+    let mut iv = [0u8; BLOCK];
+    iv.copy_from_slice(&digest[..BLOCK]);
+    iv
+}
+
+/// Encrypts a raw 16-byte key for a keyring attribute (`ToolKey`,
+/// `Backbone/@Key`, a group `@Key`): one AES-128-CBC block under the keyring
+/// key, no prefix, no padding (spec §4.3). The inverse of the reader's key
+/// decryption.
+///
+/// # Errors
+///
+/// Never in practice; [`CryptoError::BadBlockLen`] is the block-size guard.
+pub fn keyring_encrypt_key(
+    keyring_key: &Key16,
+    iv: &[u8; BLOCK],
+    key: &Key16,
+) -> Result<[u8; BLOCK], CryptoError> {
+    let ct = aes_cbc_encrypt(keyring_key, iv, key.bytes())?;
+    let mut out = [0u8; BLOCK];
+    out.copy_from_slice(&ct[..BLOCK]);
+    Ok(out)
+}
+
+/// Encrypts a password for a keyring attribute (`Password`, `Authentication`,
+/// `ManagementPassword`): `prefix || utf8(password) || PKCS#7`, AES-128-CBC
+/// under the keyring key (spec §4.3). The inverse of the reader's
+/// `extract_password`.
+///
+/// # Errors
+///
+/// Never in practice; [`CryptoError::BadBlockLen`] is the block-size guard.
+pub fn keyring_encrypt_password(
+    keyring_key: &Key16,
+    iv: &[u8; BLOCK],
+    prefix: &[u8; KEYRING_PASSWORD_PREFIX_LEN],
+    password: &crate::key::Password,
+) -> Result<Vec<u8>, CryptoError> {
+    let body = password.expose().as_bytes();
+    let unpadded = KEYRING_PASSWORD_PREFIX_LEN + body.len();
+    // PKCS#7: 1..=16 bytes, a full block when already aligned.
+    let pad = BLOCK - unpadded % BLOCK;
+    let mut plain = zeroize::Zeroizing::new(Vec::with_capacity(unpadded + pad));
+    plain.extend_from_slice(prefix);
+    plain.extend_from_slice(body);
+    plain.extend(std::iter::repeat_n(pad as u8, pad));
+    aes_cbc_encrypt(keyring_key, iv, &plain)
+}
+
+/// A deterministic password prefix for the key store (issue #241):
+/// `HMAC-SHA256(keyring_key, context || 0x00 || password)[..8]`.
+///
+/// ETS fills the prefix with random bytes, so every export re-encrypts every
+/// password differently. The git-tracked store instead keeps an unchanged
+/// password's ciphertext unchanged, so a diff shows only what moved; the
+/// prefix is keyed, so it reveals nothing without the keyring key.
+pub fn keyring_password_prefix(
+    keyring_key: &Key16,
+    context: &str,
+    password: &crate::key::Password,
+) -> [u8; KEYRING_PASSWORD_PREFIX_LEN] {
+    use hmac::{Hmac, Mac};
+    let mut out = [0u8; KEYRING_PASSWORD_PREFIX_LEN];
+    // HMAC accepts a key of any length, so `new_from_slice` cannot fail here.
+    if let Ok(mut mac) = <Hmac<Sha256> as Mac>::new_from_slice(keyring_key.bytes()) {
+        mac.update(context.as_bytes());
+        mac.update(&[0]);
+        mac.update(password.expose().as_bytes());
+        let tag = mac.finalize().into_bytes();
+        out.copy_from_slice(&tag[..KEYRING_PASSWORD_PREFIX_LEN]);
+    }
+    out
+}
+
+/// `N` bytes from the operating system's random source.
+///
+/// # Errors
+///
+/// [`CryptoError::Random`] when the OS source fails.
+pub fn random_bytes<const N: usize>() -> Result<[u8; N], CryptoError> {
+    let mut out = [0u8; N];
+    getrandom::getrandom(&mut out).map_err(|e| CryptoError::Random(e.to_string()))?;
+    Ok(out)
+}
+
 /// Errors from the KNX Secure crypto primitives.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum CryptoError {
@@ -313,11 +406,58 @@ pub enum CryptoError {
     /// The additional-data length did not fit in the 2-byte length prefix.
     #[error("additional data too long for the 2-byte length prefix: {0} bytes")]
     AdditionalDataTooLong(usize),
+    /// The operating system's random source failed.
+    #[error("the OS random source failed: {0}")]
+    Random(String),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_keyring_encrypt_key_round_trips() -> Result<(), CryptoError> {
+        let kk = Key16::new([0x5A; 16]);
+        let iv = keyring_iv("2026-02-03T04:05:06");
+        let ct = keyring_encrypt_key(&kk, &iv, &Key16::new([0x42; 16]))?;
+        assert_ne!(ct, [0x42; 16]);
+        assert_eq!(aes_cbc_decrypt(&kk, &iv, &ct)?, vec![0x42; 16]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_keyring_encrypt_password_pads_pkcs7() -> Result<(), CryptoError> {
+        let kk = Key16::new([0x5A; 16]);
+        let iv = keyring_iv("x");
+        for pw in ["", "hi", "exactly8", "a-longer-password-than-a-block"] {
+            let password = crate::key::Password::new(pw);
+            let ct = keyring_encrypt_password(&kk, &iv, &[7u8; 8], &password)?;
+            let plain = aes_cbc_decrypt(&kk, &iv, &ct)?;
+            let pad = usize::from(*plain.last().ok_or(CryptoError::BadBlockLen(0))?);
+            assert!((1..=16).contains(&pad));
+            assert_eq!(&plain[..8], &[7u8; 8]);
+            assert_eq!(&plain[8..plain.len() - pad], pw.as_bytes());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_keyring_password_prefix_is_keyed_and_stable() {
+        let pw = crate::key::Password::new("pw");
+        let a = keyring_password_prefix(&Key16::new([1; 16]), "Device/1.1.1", &pw);
+        assert_eq!(
+            a,
+            keyring_password_prefix(&Key16::new([1; 16]), "Device/1.1.1", &pw)
+        );
+        assert_ne!(
+            a,
+            keyring_password_prefix(&Key16::new([2; 16]), "Device/1.1.1", &pw)
+        );
+        assert_ne!(
+            a,
+            keyring_password_prefix(&Key16::new([1; 16]), "Device/1.1.2", &pw)
+        );
+    }
 
     #[test]
     fn test_byte_pad_zero_pads_to_block_multiple() {
