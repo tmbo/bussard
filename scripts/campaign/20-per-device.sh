@@ -42,14 +42,19 @@ PROBES="describe"
 CUSTOM=()
 seen_dashdash=0
 want_probes=0
+want_value=0
 args=()
 for a in "$@"; do
   if [ "$seen_dashdash" -eq 1 ]; then CUSTOM[${#CUSTOM[@]}]="$a"; continue; fi
   if [ "$want_probes" -eq 1 ]; then PROBES="$a"; want_probes=0; continue; fi
+  # The value of a two-token common flag (`--dir knx`) belongs to the flag,
+  # not to the IA/PHASE positionals.
+  if [ "$want_value" -eq 1 ]; then args[${#args[@]}]="$a"; want_value=0; continue; fi
   case "$a" in
     --) seen_dashdash=1 ;;
     --probes)   want_probes=1 ;;
     --probes=*) PROBES="${a#--probes=}" ;;
+    --dir|--gateway|--iface|--date) args[${#args[@]}]="$a"; want_value=1 ;;
     -*) args[${#args[@]}]="$a" ;;
     *)  if   [ -z "$IA" ];    then IA="$a"
         elif [ -z "$PHASE" ]; then PHASE="$a"
