@@ -56,12 +56,75 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 /// bussard: manage a KNX installation as code.
 #[derive(Debug, Parser)]
 #[command(name = "bussard", version, about, long_about = None)]
 struct Cli {
+    #[command(flatten)]
+    global: Global,
+    #[command(subcommand)]
+    command: Command,
+}
+
+/// The options every subcommand shares (issue #228): declared once, accepted
+/// before or after the subcommand, and printed once under "Global options".
+/// A command that has no use for one accepts and ignores it, except `--json`,
+/// which a command without machine output refuses.
+///
+/// `--yes`, `--force`, `--dry-run` and `--plan` are deliberately not here: they
+/// stay on the command whose action they consent to, and never come from the
+/// environment or `bussard.toml`.
+#[derive(Debug, Args)]
+#[command(next_help_heading = "Global options")]
+struct Global {
+    /// The model directory. Default: `BUSSARD_DIR`, else discovered: `.` when
+    /// it holds `bussard.toml`, else `./knx`, else the nearest parent holding
+    /// `bussard.toml` (or `knx/bussard.toml`), else `knx`. `init` and `import`
+    /// create the model in `--dir`, `BUSSARD_DIR` or `knx` and never search.
+    #[arg(long, global = true, value_name = "DIR")]
+    dir: Option<PathBuf>,
+    /// The KNXnet/IP gateway `host[:port]`; implies tunnelling. Default:
+    /// `BUSSARD_GATEWAY`, else `connection.gateway` in `bussard.toml`. For
+    /// `init`: use this gateway instead of discovering one.
+    #[arg(long, global = true, value_name = "HOST[:PORT]")]
+    gateway: Option<String>,
+    /// Use KNXnet/IP routing (multicast) instead of tunnelling (for `init`:
+    /// configure it). No environment variable can select it.
+    #[arg(long, global = true)]
+    routing: bool,
+    /// An ETS `.knxkeys` keyring. Its tunnelling users open a KNXnet/IP Secure
+    /// tunnel, its device entries carry the KNX Data Secure tool keys for
+    /// management, and its group keys secure and decrypt group telegrams.
+    /// Default: `BUSSARD_KEYRING`, else `connection.keyring` in
+    /// `bussard.toml`. The password comes from `BUSSARD_KEYRING_PASSWORD`,
+    /// never a CLI argument.
+    #[arg(long, global = true, value_name = "FILE")]
+    keyring: Option<PathBuf>,
+    /// Emit machine-readable JSON instead of the text output (`monitor`: JSON
+    /// Lines). A command without JSON output refuses it.
+    #[arg(long, global = true)]
+    json: bool,
+    /// Permit a transmitting command (a write, programming, an armed `viz` or
+    /// `mcp`) against a non-loopback (real) gateway. Required for any gateway
+    /// that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
+    /// Read-only commands ignore it.
+    #[arg(long, global = true)]
+    allow_remote_gateway: bool,
+    /// Skip the pre-flight check that no bus device answers at bussard's own
+    /// source individual address. That check stops two management clients
+    /// sharing one source address, which interleaves their numbered telegrams
+    /// inside one layer-4 session at the device and can silently corrupt a
+    /// download. Only pass this for a gateway that misbehaves on the probe.
+    /// Only management commands consult it.
+    #[arg(long, global = true)]
+    skip_address_check: bool,
+    /// Ignore the stored device facts (`<dir>/.bussard/facts/<ia>.toml`) and
+    /// read them from the device again (issue #209). Consulted by
+    /// `reconstruct`, `describe`, `flash`, `plan` and `apply`.
+    #[arg(long, global = true)]
+    refresh_facts: bool,
     /// Increase log verbosity: `-v` = info, `-vv` = debug, `-vvv` = trace.
     /// An explicit `RUST_LOG` overrides this. Default (no flag) is `warn`.
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
@@ -88,8 +151,6 @@ struct Cli {
     /// (issue #197). UDP is verified against knx-sim only.
     #[arg(long, global = true, value_enum, value_name = "TRANSPORT")]
     secure_transport: Option<SecureTransportArg>,
-    #[command(subcommand)]
-    command: Command,
 }
 
 /// The `--secure-transport` values.
@@ -113,157 +174,273 @@ impl From<SecureTransportArg> for bussard_transport::SecureTransport {
     }
 }
 
-/// The `--keyring` slot of the subcommand, if it takes one: its tunnelling
-/// users open a KNXnet/IP Secure tunnel to a secure interface (issue #71 Phase
-/// B), and its device entries carry the tool keys for secured management.
-fn command_keyring_slot(command: &mut Command) -> Option<&mut Option<PathBuf>> {
-    match command {
-        Command::Scan { keyring, .. }
-        | Command::Assign { keyring, .. }
-        | Command::Reconstruct { keyring, .. }
-        | Command::Describe { keyring, .. }
-        | Command::Flash { keyring, .. }
-        | Command::Plan { keyring, .. }
-        | Command::Apply { keyring, .. }
-        | Command::Commission { keyring, .. }
-        | Command::Backup { keyring, .. }
-        | Command::Restore { keyring, .. }
-        | Command::Replace { keyring, .. }
-        | Command::Monitor { keyring, .. }
-        | Command::Capture { keyring, .. }
-        | Command::Read { keyring, .. }
-        | Command::Write { keyring, .. }
-        | Command::Viz { keyring, .. }
-        | Command::Audit { keyring, .. }
-        | Command::Learn { keyring, .. }
-        | Command::Mcp { keyring, .. } => Some(keyring),
-        _ => None,
+/// What a subcommand does with the global options, as far as resolving them
+/// is concerned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Role {
+    /// Creates a model (`init`, `import`): the directory is `--dir`,
+    /// `BUSSARD_DIR` or `knx`, never discovered upward.
+    Creates,
+    /// Talks to the bus; `slot` says whether the keyring also feeds the
+    /// command itself (tool keys, group keys) or only the tunnel.
+    Bus {
+        /// The command consumes the keyring beyond opening the tunnel.
+        slot: bool,
+    },
+    /// Works on the model files only (or on nothing: `diff`, `keyring`).
+    Files,
+}
+
+impl Command {
+    /// This subcommand's [`Role`].
+    fn role(&self) -> Role {
+        match self {
+            Command::Init { .. } | Command::Import { .. } => Role::Creates,
+            Command::Scan { .. }
+            | Command::Assign { .. }
+            | Command::Reconstruct { .. }
+            | Command::Describe { .. }
+            | Command::Flash { .. }
+            | Command::Plan { .. }
+            | Command::Apply { .. }
+            | Command::Commission { .. }
+            | Command::Backup { .. }
+            | Command::Restore { .. }
+            | Command::Replace { .. }
+            | Command::Monitor { .. }
+            | Command::Capture { .. }
+            | Command::Read { .. }
+            | Command::Write { .. }
+            | Command::Viz { .. }
+            | Command::Audit { .. }
+            | Command::Learn { .. }
+            | Command::Mcp { .. } => Role::Bus { slot: true },
+            Command::Adopt { .. } | Command::Test { .. } => Role::Bus { slot: false },
+            _ => Role::Files,
+        }
+    }
+
+    /// Whether the subcommand was given `--tool-key`. A keyring that did not
+    /// come from `--keyring` then serves the tunnel only: the two are mutually
+    /// exclusive tool-key sources.
+    fn has_tool_key(&self) -> bool {
+        match self {
+            Command::Assign { tool_key, .. }
+            | Command::Reconstruct { tool_key, .. }
+            | Command::Describe { tool_key, .. }
+            | Command::Flash { tool_key, .. }
+            | Command::Plan { tool_key, .. }
+            | Command::Apply { tool_key, .. }
+            | Command::Commission { tool_key, .. }
+            | Command::Backup { tool_key, .. }
+            | Command::Restore { tool_key, .. }
+            | Command::Replace { tool_key, .. } => tool_key.is_some(),
+            _ => false,
+        }
+    }
+
+    /// Whether the subcommand has a machine-readable output for `--json`.
+    fn supports_json(&self) -> bool {
+        matches!(
+            self,
+            Command::Export { .. }
+                | Command::Diff { .. }
+                | Command::Scan { .. }
+                | Command::Reconstruct { .. }
+                | Command::Describe { .. }
+                | Command::Keyring { .. }
+                | Command::Flash { .. }
+                | Command::Plan { .. }
+                | Command::Apply { .. }
+                | Command::Commission { .. }
+                | Command::Status { .. }
+                | Command::History { .. }
+                | Command::Device { .. }
+                | Command::Backup { .. }
+                | Command::Validate { .. }
+                | Command::Groups { .. }
+                | Command::Doc { .. }
+                | Command::Monitor { .. }
+                | Command::Test { .. }
+                | Command::Audit { .. }
+        )
     }
 }
 
-/// The model directory of a subcommand that talks to the bus, whose
-/// `bussard.toml` may name a default keyring (`connection.keyring`, issue
-/// #189). `init` is left out: it writes that file.
-fn bus_command_dir(command: &Command) -> Option<&std::path::Path> {
-    match command {
-        Command::Scan { dir, .. }
-        | Command::Assign { dir, .. }
-        | Command::Reconstruct { dir, .. }
-        | Command::Describe { dir, .. }
-        | Command::Adopt { dir, .. }
-        | Command::Flash { dir, .. }
-        | Command::Plan { dir, .. }
-        | Command::Apply { dir, .. }
-        | Command::Commission { dir, .. }
-        | Command::Backup { dir, .. }
-        | Command::Restore { dir, .. }
-        | Command::Replace { dir, .. }
-        | Command::Monitor { dir, .. }
-        | Command::Capture { dir, .. }
-        | Command::Read { dir, .. }
-        | Command::Write { dir, .. }
-        | Command::Viz { dir, .. }
-        | Command::Learn { dir, .. }
-        | Command::Test { dir, .. }
-        | Command::Audit { dir, .. }
-        | Command::Mcp { dir, .. } => Some(dir),
-        _ => None,
+/// The global options, resolved once for the subcommand: flag, then
+/// environment, then `bussard.toml`, then discovery or the built-in default.
+#[derive(Debug)]
+struct Resolved {
+    /// The model directory.
+    dir: PathBuf,
+    /// `--gateway`, else `BUSSARD_GATEWAY`; `bussard.toml` is consulted later,
+    /// by [`conn_cmd::resolve_config`].
+    gateway: Option<String>,
+    /// `--routing`.
+    routing: bool,
+    /// The keyring the command itself consumes (tool keys, group keys), when
+    /// it has a use for one beyond the tunnel.
+    keyring: Option<PathBuf>,
+    /// `--json`.
+    json: bool,
+    /// `--allow-remote-gateway`.
+    allow_remote_gateway: bool,
+    /// `--skip-address-check`.
+    skip_address_check: bool,
+    /// `--refresh-facts`.
+    refresh_facts: bool,
+    /// The `-v` repeat count.
+    verbose: u8,
+}
+
+impl Resolved {
+    /// Connection overrides for a management command that consults the
+    /// device facts (`reconstruct`, `describe`, `flash`, `plan`, `apply`).
+    fn mgmt_with_facts(&self) -> conn_cmd::ConnOverrides {
+        conn_cmd::ConnOverrides {
+            refresh_facts: self.refresh_facts,
+            ..self.mgmt()
+        }
+    }
+
+    /// Connection overrides for a management command: the source-address
+    /// check is consulted, the device facts are not.
+    fn mgmt(&self) -> conn_cmd::ConnOverrides {
+        conn_cmd::ConnOverrides {
+            skip_address_check: self.skip_address_check,
+            ..self.group()
+        }
+    }
+
+    /// Connection overrides for a group-communication command (no
+    /// source-address check, no device facts).
+    fn group(&self) -> conn_cmd::ConnOverrides {
+        conn_cmd::ConnOverrides {
+            gateway: self.gateway.clone(),
+            routing: self.routing,
+            skip_address_check: false,
+            refresh_facts: false,
+        }
+    }
+
+    /// The keyring and tool key a management command identifies devices with.
+    fn tool_keys<'a>(&'a self, tool_key: Option<&'a str>) -> secure_key::ToolKeySource<'a> {
+        secure_key::ToolKeySource {
+            keyring: self.keyring.as_deref(),
+            tool_key,
+        }
     }
 }
 
-/// Whether the subcommand was given `--tool-key`. A config default keyring
-/// must not collide with it (the two are mutually exclusive tool-key
-/// sources), so it then serves the tunnel only.
-fn command_has_tool_key(command: &Command) -> bool {
-    match command {
-        Command::Assign { tool_key, .. }
-        | Command::Reconstruct { tool_key, .. }
-        | Command::Describe { tool_key, .. }
-        | Command::Flash { tool_key, .. }
-        | Command::Plan { tool_key, .. }
-        | Command::Apply { tool_key, .. }
-        | Command::Commission { tool_key, .. }
-        | Command::Backup { tool_key, .. }
-        | Command::Restore { tool_key, .. }
-        | Command::Replace { tool_key, .. } => tool_key.is_some(),
-        _ => false,
-    }
-}
-
-/// The keyring this invocation uses, if any: the subcommand's `--keyring`,
-/// else `connection.keyring` from its model's `bussard.toml` (issue #189). The
-/// flag is `true` when the keyring came from the config.
-///
-/// A default from the config is written into the subcommand's `--keyring`
-/// slot, so every consumer (tool keys, group keys, the tunnel) sees one
-/// keyring. A subcommand without a slot (`adopt`, `test`), or one
-/// given `--tool-key`, uses it for the tunnel only. A `bussard.toml` that does
-/// not parse is left for the subcommand's own model load to report.
-fn effective_keyring(command: &mut Command) -> Option<(PathBuf, bool)> {
-    let configured = bus_command_dir(command).and_then(|dir| {
-        let config = bussard_model::load_config(dir).ok()?;
-        config.connection.keyring_path(dir)
-    });
-    if command_has_tool_key(command) {
-        return configured.map(|path| (path, true));
-    }
-    match command_keyring_slot(command) {
-        Some(slot) => match slot {
-            Some(path) => Some((path.clone(), false)),
-            None => {
-                *slot = configured.clone();
-                configured.map(|path| (path, true))
-            }
-        },
-        None => configured.map(|path| (path, true)),
-    }
-}
-
-/// Resolves the KNXnet/IP Secure tunnelling credentials once, before the
-/// subcommand runs, so every connection it opens uses them.
-fn setup_secure_tunnel(cli: &mut Cli) -> anyhow::Result<()> {
+/// Resolves the global options for `command` and sets up the KNXnet/IP Secure
+/// tunnel credentials, once, before the subcommand runs, so every connection
+/// it opens uses them.
+fn resolve_globals(global: &Global, command: &Command) -> anyhow::Result<Resolved> {
     use anyhow::Context as _;
-    let keyring = effective_keyring(&mut cli.command);
+    if global.json && !command.supports_json() {
+        anyhow::bail!(
+            "`bussard {}` has no JSON output; drop --json",
+            cli_name(command)
+        );
+    }
+    let env = conn_cmd::EnvGlobals::from_process();
+    let role = command.role();
+    let dir = conn_cmd::resolve_model_dir(
+        global.dir.as_deref(),
+        env.dir.as_deref(),
+        role == Role::Creates,
+    );
+    let gateway = conn_cmd::resolve_gateway(global.gateway.as_deref(), env.gateway.as_deref());
+    let keyring = match role {
+        // A keyring only ever serves a command that talks to the bus; a files
+        // command must not ask for its password.
+        Role::Bus { .. } => {
+            conn_cmd::resolve_keyring(global.keyring.as_deref(), env.keyring.as_deref(), &dir)
+        }
+        Role::Creates | Role::Files => None,
+    };
+    let slot = match (role, &keyring) {
+        (Role::Bus { slot: true }, Some(resolved))
+            if !command.has_tool_key() || resolved.source == conn_cmd::KeyringSource::Flag =>
+        {
+            Some(resolved.path.clone())
+        }
+        _ => None,
+    };
+
     // Without explicit flags, only a keyring can carry tunnelling users.
-    if keyring.is_none() && cli.secure_user.is_none() && cli.secure_password_env.is_none() {
-        if cli.secure_transport.is_some() {
+    if keyring.is_none() && global.secure_user.is_none() && global.secure_password_env.is_none() {
+        if global.secure_transport.is_some() {
             anyhow::bail!(
                 "--secure-transport needs KNXnet/IP Secure tunnelling credentials: pass --keyring \
                  <file.knxkeys> or --secure-user <id> --secure-password-env <VAR>"
             );
         }
-        return Ok(());
-    }
-    let config =
-        bussard_service::secure::tunnel_config(bussard_service::secure::TunnelCredentialSource {
-            keyring: keyring.as_ref().map(|(path, _)| path.as_path()),
-            user: cli.secure_user,
-            password_env: cli.secure_password_env.as_deref(),
-        })
+    } else {
+        let config = bussard_service::secure::tunnel_config(
+            bussard_service::secure::TunnelCredentialSource {
+                keyring: keyring.as_ref().map(|resolved| resolved.path.as_path()),
+                user: global.secure_user,
+                password_env: global.secure_password_env.as_deref(),
+            },
+        )
         .with_context(|| match &keyring {
-            Some((path, true)) => format!(
-                "the keyring {} comes from connection.keyring in bussard.toml (pass --keyring \
-                 to use another one)",
-                path.display()
+            Some(resolved) if resolved.source != conn_cmd::KeyringSource::Flag => format!(
+                "the keyring {} comes from {} (pass --keyring to use another one)",
+                resolved.path.display(),
+                resolved.source.describe()
             ),
             _ => "resolving the KNXnet/IP Secure tunnelling credentials".to_string(),
         })?;
-    if let Some((path, true)) = &keyring {
-        tracing::info!(
-            "using the keyring {} from connection.keyring in bussard.toml",
-            path.display()
-        );
+        if let Some(resolved) = &keyring
+            && resolved.source != conn_cmd::KeyringSource::Flag
+        {
+            tracing::info!(
+                "using the keyring {} from {}",
+                resolved.path.display(),
+                resolved.source.describe()
+            );
+        }
+        let config = match (config, global.secure_transport) {
+            (Some(config), Some(transport)) => Some(config.with_transport(transport.into())),
+            (None, Some(_)) => anyhow::bail!(
+                "--secure-transport needs KNXnet/IP Secure tunnelling credentials, and the keyring \
+                 lists no tunnelling user"
+            ),
+            (config, None) => config,
+        };
+        conn_cmd::set_secure_tunnel(config);
     }
-    let config = match (config, cli.secure_transport) {
-        (Some(config), Some(transport)) => Some(config.with_transport(transport.into())),
-        (None, Some(_)) => anyhow::bail!(
-            "--secure-transport needs KNXnet/IP Secure tunnelling credentials, and the keyring \
-             lists no tunnelling user"
-        ),
-        (config, None) => config,
-    };
-    conn_cmd::set_secure_tunnel(config);
-    Ok(())
+
+    Ok(Resolved {
+        dir,
+        gateway,
+        routing: global.routing,
+        keyring: slot,
+        json: global.json,
+        allow_remote_gateway: global.allow_remote_gateway,
+        skip_address_check: global.skip_address_check,
+        refresh_facts: global.refresh_facts,
+        verbose: global.verbose,
+    })
+}
+
+/// The subcommand's name as typed (`export-groups`), for messages.
+fn cli_name(command: &Command) -> String {
+    let debug = format!("{command:?}");
+    let variant = debug.split([' ', '{', '(']).next().unwrap_or_default();
+    let mut name = String::new();
+    for (i, c) in variant.chars().enumerate() {
+        if c.is_ascii_uppercase() {
+            if i > 0 {
+                name.push('-');
+            }
+            name.push(c.to_ascii_lowercase());
+        } else {
+            name.push(c);
+        }
+    }
+    name
 }
 
 /// Maps a `-v` repeat count to a tracing `EnvFilter` directive string, unless an
@@ -343,16 +520,10 @@ enum GroupsCommand {
         /// socket.
         #[arg(value_name = "FUNCTION", required = true)]
         functions: Vec<String>,
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
         /// The addressing scheme for a project that has none yet (default
         /// floor-trade-block). Refused when it contradicts `bussard.toml`.
         #[arg(long, value_enum)]
         scheme: Option<SchemeArg>,
-        /// Emit JSON instead of the address list.
-        #[arg(long)]
-        json: bool,
     },
 }
 
@@ -368,15 +539,6 @@ enum Command {
         /// model directory, when there is exactly one.
         #[arg(value_name = "PROJECT")]
         project: Option<PathBuf>,
-        /// The directory to create the model in.
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
-        /// Use this gateway `host[:port]` instead of discovering one.
-        #[arg(long, value_name = "HOST")]
-        gateway: Option<String>,
-        /// Configure KNXnet/IP routing (multicast) instead of tunneling.
-        #[arg(long)]
-        routing: bool,
         /// Project password (else `BUSSARD_PROJECT_PASSWORD`, else prompt).
         #[arg(long)]
         password: Option<String>,
@@ -402,9 +564,6 @@ enum Command {
         /// Project password (else `BUSSARD_PROJECT_PASSWORD`, else prompt).
         #[arg(long)]
         password: Option<String>,
-        /// The model directory to write (aligned with every other command).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
         /// On a re-import, keep this model's value for every hand-edited
         /// conflict and exit 0.
         #[arg(long, conflicts_with_all = ["theirs", "interactive"])]
@@ -429,15 +588,9 @@ enum Command {
         /// after it and today's date).
         #[arg(value_name = "FILE")]
         file: Option<PathBuf>,
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
         /// Leave the `.bussard/history` snapshots out.
         #[arg(long)]
         no_history: bool,
-        /// Print the path and manifest as JSON.
-        #[arg(long)]
-        json: bool,
     },
     /// Explain what changes between two projects, as plain sentences.
     Diff {
@@ -448,11 +601,8 @@ enum Command {
         /// The second side, in any of the same forms.
         #[arg(value_name = "B")]
         b: PathBuf,
-        /// Emit the change set as JSON.
-        #[arg(long, conflicts_with = "raw")]
-        json: bool,
         /// Print a file-level TOML diff instead of sentences.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "json")]
         raw: bool,
         /// Project password for both sides (else `BUSSARD_PROJECT_PASSWORD`).
         #[arg(long)]
@@ -472,74 +622,15 @@ enum Command {
         /// The last device number to probe (0–255).
         #[arg(long, value_name = "N", default_value_t = 255)]
         to: u8,
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
-        /// Emit JSON instead of the table format.
-        #[arg(long)]
-        json: bool,
-        /// Override the gateway `host[:port]` for tunneling.
-        #[arg(long, value_name = "HOST")]
-        gateway: Option<String>,
-        /// An ETS `.knxkeys` keyring: its KNXnet/IP Secure tunnelling users open
-        /// the tunnel to a secure interface (issue #189), and a device it lists
-        /// is identified over KNX Data Secure with its tool key, showing the real
-        /// mask (issue #203). Unlisted devices are read in the clear. Default:
-        /// `connection.keyring` in `bussard.toml`. The password comes from
-        /// `BUSSARD_KEYRING_PASSWORD`.
-        #[arg(long, value_name = "FILE")]
-        keyring: Option<PathBuf>,
-        /// Force KNXnet/IP routing (multicast) transport.
-        #[arg(long)]
-        routing: bool,
-        /// Skip the pre-flight check that no bus device answers at bussard's own
-        /// source individual address.
-        ///
-        /// That check is what stops two management clients sharing one source
-        /// address, which interleaves their numbered telegrams inside a single
-        /// layer-4 session at the device and can silently corrupt a download.
-        /// Only pass this for a gateway that misbehaves on the probe itself.
-        #[arg(long)]
-        skip_address_check: bool,
     },
     /// Assign an individual address to the device in programming mode.
     Assign {
         /// The address to assign, e.g. `1.1.47` (default: next free on the line).
         #[arg(value_name = "ADDRESS")]
         address: Option<String>,
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
         /// Skip the interactive confirmation (dangerous; for scripts).
         #[arg(long)]
         yes: bool,
-        /// Override the gateway `host[:port]` for tunneling.
-        #[arg(long, value_name = "HOST")]
-        gateway: Option<String>,
-        /// An ETS `.knxkeys` keyring: its KNXnet/IP Secure tunnelling users open
-        /// the tunnel to a secure interface (issue #189), and the tool key it
-        /// lists for the new (else the old) address verifies a Data
-        /// Secure-activated device after the write (issue #203). Default:
-        /// `connection.keyring` in `bussard.toml`. The password comes from
-        /// `BUSSARD_KEYRING_PASSWORD`.
-        #[arg(long, value_name = "FILE")]
-        keyring: Option<PathBuf>,
-        /// Force KNXnet/IP routing (multicast) transport.
-        #[arg(long)]
-        routing: bool,
-        /// Skip the pre-flight check that no bus device answers at bussard's own
-        /// source individual address.
-        ///
-        /// That check is what stops two management clients sharing one source
-        /// address, which interleaves their numbered telegrams inside a single
-        /// layer-4 session at the device and can silently corrupt a download.
-        /// Only pass this for a gateway that misbehaves on the probe itself.
-        #[arg(long)]
-        skip_address_check: bool,
-        /// Permit a write to a non-loopback (real) gateway. Required for any
-        /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
-        #[arg(long)]
-        allow_remote_gateway: bool,
         /// A raw KNX Data Secure tool key (32 hex characters) to verify a
         /// security-activated device with after the address write (issue #203).
         /// Overrides the keyring, which lists devices by individual address and
@@ -557,7 +648,7 @@ enum Command {
         address: Option<String>,
         /// Sweep a whole line, e.g. `1.1`, and synthesize a fresh model from
         /// every System B device's tables (requires `--out`).
-        #[arg(long, value_name = "LINE", conflicts_with = "address")]
+        #[arg(long, value_name = "LINE", conflicts_with_all = ["address", "keyring"])]
         line: Option<String>,
         /// The first device number to probe in line mode (0–255).
         #[arg(long, value_name = "N", default_value_t = 0, requires = "line")]
@@ -569,10 +660,6 @@ enum Command {
         /// absent or empty — reconstruction never merges into an existing model.
         #[arg(long, value_name = "DIR", requires = "line")]
         out: Option<PathBuf>,
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        /// In line mode this only supplies connection defaults.
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
         /// The device's vendor `.knxprod`, to read back and decode its parameter
         /// memory too (issue #119). Without it the archive in `<dir>/vendor/`
         /// whose catalogue carries the model's order number is used, when cached.
@@ -582,41 +669,12 @@ enum Command {
         /// the model's application ref, else the order number, else the sole one).
         #[arg(long, value_name = "REF", conflicts_with = "line")]
         application: Option<String>,
-        /// The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool
-        /// key (issue #170). Required for a security-activated device, which
-        /// answers the plain descriptor read with mask FFFF; with the key every
-        /// read, the descriptor included, is secured. The keyring password comes
-        /// from `BUSSARD_KEYRING_PASSWORD`, never a CLI argument.
-        #[arg(long, value_name = "FILE", conflicts_with = "line")]
-        keyring: Option<PathBuf>,
         /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
         /// escape hatch for a simulator or a device with a synthetic key. Prefer
         /// `--keyring` for a real installation: a process argument is visible to
         /// other users on the machine.
         #[arg(long, value_name = "HEX", conflicts_with_all = ["keyring", "line"])]
         tool_key: Option<String>,
-        /// Emit JSON instead of the report format.
-        #[arg(long)]
-        json: bool,
-        /// Override the gateway `host[:port]` for tunneling.
-        #[arg(long, value_name = "HOST")]
-        gateway: Option<String>,
-        /// Force KNXnet/IP routing (multicast) transport.
-        #[arg(long)]
-        routing: bool,
-        /// Skip the pre-flight check that no bus device answers at bussard's own
-        /// source individual address.
-        ///
-        /// That check is what stops two management clients sharing one source
-        /// address, which interleaves their numbered telegrams inside a single
-        /// layer-4 session at the device and can silently corrupt a download.
-        /// Only pass this for a gateway that misbehaves on the probe itself.
-        #[arg(long)]
-        skip_address_check: bool,
-        /// Ignore the stored device facts (`<dir>/.bussard/facts/<ia>.toml`)
-        /// and read them from the device again (issue #209).
-        #[arg(long)]
-        refresh_facts: bool,
     },
     /// Introspect a device: enumerate its interface objects and each property's
     /// description (PID, type, element count, access levels) over the bus.
@@ -624,45 +682,16 @@ enum Command {
         /// The device to introspect, e.g. `1.1.4`.
         #[arg(value_name = "ADDRESS")]
         address: String,
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
-        /// Emit JSON instead of the table format.
-        #[arg(long)]
-        json: bool,
         /// Walk every object's property descriptions again, even when the
         /// device facts (`<dir>/.bussard/facts/<ia>.toml`) already hold them.
         #[arg(long)]
         full: bool,
-        /// Ignore the stored device facts and read them from the device again.
-        #[arg(long)]
-        refresh_facts: bool,
-        /// The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool
-        /// key (issue #71). Required for a security-activated device; the keyring
-        /// password comes from `BUSSARD_KEYRING_PASSWORD`, never a CLI argument.
-        #[arg(long, value_name = "FILE")]
-        keyring: Option<PathBuf>,
         /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
         /// escape hatch for a simulator or a device with a synthetic key. Prefer
         /// `--keyring` for a real installation: a process argument is visible to
         /// other users on the machine.
         #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
         tool_key: Option<String>,
-        /// Override the gateway `host[:port]` for tunneling.
-        #[arg(long, value_name = "HOST")]
-        gateway: Option<String>,
-        /// Force KNXnet/IP routing (multicast) transport.
-        #[arg(long)]
-        routing: bool,
-        /// Skip the pre-flight check that no bus device answers at bussard's own
-        /// source individual address.
-        ///
-        /// That check is what stops two management clients sharing one source
-        /// address, which interleaves their numbered telegrams inside a single
-        /// layer-4 session at the device and can silently corrupt a download.
-        /// Only pass this for a gateway that misbehaves on the probe itself.
-        #[arg(long)]
-        skip_address_check: bool,
     },
     /// Inspect a KNX Secure keyring (`.knxkeys`): list the devices, interfaces
     /// and group addresses it carries (issue #71). Key material is NEVER printed.
@@ -674,9 +703,6 @@ enum Command {
         /// The `.knxkeys` file to inspect.
         #[arg(value_name = "FILE")]
         file: PathBuf,
-        /// Emit JSON instead of the text summary.
-        #[arg(long)]
-        json: bool,
     },
     /// Import vendor product data (`.knxprod`): cache it and generate a model.
     ///
@@ -688,9 +714,6 @@ enum Command {
         /// The `.knxprod` or `.knxproj` file to import (positional mode).
         #[arg(value_name = "FILE")]
         file: Option<PathBuf>,
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
         /// Look the `.knxprod` up in the pointer index by order number and
         /// download it from the vendor (with confirmation).
         #[arg(long, value_name = "ORDER", conflicts_with = "file")]
@@ -714,9 +737,6 @@ enum Command {
         /// The vendor `.knxprod` for the new device (else the cached model is used).
         #[arg(long, value_name = "FILE")]
         product: Option<PathBuf>,
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
         /// Skip the interactive confirmation (dangerous; for scripts). Also
         /// consents to downloading the product data the device's order number
         /// needs.
@@ -726,25 +746,6 @@ enum Command {
         /// it without (identity and links by number) and say where to get it.
         #[arg(long)]
         no_download: bool,
-        /// Override the gateway `host[:port]` for tunneling.
-        #[arg(long, value_name = "HOST")]
-        gateway: Option<String>,
-        /// Force KNXnet/IP routing (multicast) transport.
-        #[arg(long)]
-        routing: bool,
-        /// Skip the pre-flight check that no bus device answers at bussard's own
-        /// source individual address.
-        ///
-        /// That check is what stops two management clients sharing one source
-        /// address, which interleaves their numbered telegrams inside a single
-        /// layer-4 session at the device and can silently corrupt a download.
-        /// Only pass this for a gateway that misbehaves on the probe itself.
-        #[arg(long)]
-        skip_address_check: bool,
-        /// Permit a write to a non-loopback (real) gateway. Required for any
-        /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
-        #[arg(long)]
-        allow_remote_gateway: bool,
     },
     /// Download the full application program into a device (a fresh device, or
     /// one whose application changes). Everyday changes go through `apply`.
@@ -766,9 +767,6 @@ enum Command {
         /// product's hardware catalogue; exactly one match is required.
         #[arg(long, value_name = "ORDER")]
         order_number: Option<String>,
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
         /// Skip the interactive confirmation (dangerous; for scripts).
         #[arg(long)]
         yes: bool,
@@ -804,10 +802,6 @@ enum Command {
         /// op sequence offline.
         #[arg(long, conflicts_with_all = ["full", "force", "no_factory_reset"])]
         parameters_only: bool,
-        /// Permit a write to a non-loopback (real) gateway. Required for any
-        /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
-        #[arg(long)]
-        allow_remote_gateway: bool,
         /// The device's BCU access key, in hex (e.g. `FFFFFFFF` or `0x11223344`),
         /// presented with A_Authorize on every management connect (issue #52).
         /// Unset presents the free-access key (FFFFFFFF) — correct for an unkeyed
@@ -815,11 +809,6 @@ enum Command {
         /// project key here or it will deny access.
         #[arg(long, value_name = "HEX")]
         bcu_key: Option<String>,
-        /// The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool
-        /// key (issue #71). Required for a security-activated device; the keyring
-        /// password comes from `BUSSARD_KEYRING_PASSWORD`, never a CLI argument.
-        #[arg(long, value_name = "FILE")]
-        keyring: Option<PathBuf>,
         /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
         /// escape hatch for a simulator or a device with a synthetic key. Prefer
         /// `--keyring` for a real installation: a process argument is visible to
@@ -834,25 +823,6 @@ enum Command {
         /// telegrams silently. See docs/SAFETY.md.
         #[arg(long, value_name = "IA")]
         secure_sender: Option<bussard_model::IndividualAddress>,
-        /// Override the gateway `host[:port]` for tunneling.
-        #[arg(long, value_name = "HOST")]
-        gateway: Option<String>,
-        /// Force KNXnet/IP routing (multicast) transport.
-        #[arg(long)]
-        routing: bool,
-        /// Skip the pre-flight check that no bus device answers at bussard's own
-        /// source individual address.
-        ///
-        /// That check is what stops two management clients sharing one source
-        /// address, which interleaves their numbered telegrams inside a single
-        /// layer-4 session at the device and can silently corrupt a download.
-        /// Only pass this for a gateway that misbehaves on the probe itself.
-        #[arg(long)]
-        skip_address_check: bool,
-        /// Emit the pre-flight plan as JSON (including the `parameters` array)
-        /// instead of the human report.
-        #[arg(long)]
-        json: bool,
         /// Plan offline and stop: no gateway is resolved and no connection is
         /// opened. The plan is checked against the application's own mask.
         #[arg(long)]
@@ -861,10 +831,6 @@ enum Command {
         /// flash would stream (one `.bin` each, plus the table images) into DIR.
         #[arg(long, value_name = "DIR", requires = "dry_run")]
         dump_images: Option<PathBuf>,
-        /// Ignore the stored device facts (`<dir>/.bussard/facts/<ia>.toml`)
-        /// and read them from the device again (issue #209).
-        #[arg(long)]
-        refresh_facts: bool,
     },
     /// Show what `apply` would write to a device (links and, with product
     /// data, parameters) without writing; or (with `--line`) plan every model
@@ -878,9 +844,6 @@ enum Command {
         /// order, and print one summary table (issue #100).
         #[arg(long, value_name = "LINE", conflicts_with = "address")]
         line: Option<String>,
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
         /// The device's vendor `.knxprod`, to read back and decode its parameter
         /// memory too (issue #119). Without it the archive in `<dir>/vendor/`
         /// whose catalogue carries the model's order number is used, when cached.
@@ -890,42 +853,12 @@ enum Command {
         /// the model's application ref, else the order number, else the sole one).
         #[arg(long, value_name = "REF", conflicts_with = "line")]
         application: Option<String>,
-        /// The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool
-        /// key (issue #170). Required for a security-activated device, which
-        /// answers the plain descriptor read with mask FFFF; with the key every
-        /// read, the descriptor included, is secured. The keyring password comes
-        /// from `BUSSARD_KEYRING_PASSWORD`, never a CLI argument.
-        /// With `--line`, each device's key is looked up in the keyring.
-        #[arg(long, value_name = "FILE")]
-        keyring: Option<PathBuf>,
         /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
         /// escape hatch for a simulator or a device with a synthetic key. Prefer
         /// `--keyring` for a real installation: a process argument is visible to
         /// other users on the machine.
         #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
         tool_key: Option<String>,
-        /// Emit JSON instead of the report format.
-        #[arg(long)]
-        json: bool,
-        /// Override the gateway `host[:port]` for tunneling.
-        #[arg(long, value_name = "HOST")]
-        gateway: Option<String>,
-        /// Force KNXnet/IP routing (multicast) transport.
-        #[arg(long)]
-        routing: bool,
-        /// Skip the pre-flight check that no bus device answers at bussard's own
-        /// source individual address.
-        ///
-        /// That check is what stops two management clients sharing one source
-        /// address, which interleaves their numbered telegrams inside a single
-        /// layer-4 session at the device and can silently corrupt a download.
-        /// Only pass this for a gateway that misbehaves on the probe itself.
-        #[arg(long)]
-        skip_address_check: bool,
-        /// Ignore the stored device facts (`<dir>/.bussard/facts/<ia>.toml`)
-        /// and read them from the device again (issue #209).
-        #[arg(long)]
-        refresh_facts: bool,
     },
     /// Write the model to a device: validate, read the device, show the plan,
     /// ask once, back up, write only what differs (links and parameter
@@ -940,17 +873,11 @@ enum Command {
         /// resumable state file (issue #100).
         #[arg(long, value_name = "LINE", conflicts_with = "address")]
         line: Option<String>,
-        /// Line mode only: emit the JSON summary instead of the table.
-        #[arg(long, requires = "line")]
-        json: bool,
         /// Line mode only: continue the run recorded in
         /// `<dir>/captures/apply-line-<line>.json`, skipping the devices it
         /// already finished.
         #[arg(long, requires = "line")]
         resume: bool,
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
         /// Skip the interactive confirmation (dangerous; for scripts).
         #[arg(long)]
         yes: bool,
@@ -968,11 +895,6 @@ enum Command {
         /// the program the lock pins, else the order number, else the sole one).
         #[arg(long, value_name = "REF", conflicts_with = "line")]
         application: Option<String>,
-        /// The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool
-        /// key (issue #71). Required for a security-activated device; the keyring
-        /// password comes from `BUSSARD_KEYRING_PASSWORD`, never a CLI argument.
-        #[arg(long, value_name = "FILE")]
-        keyring: Option<PathBuf>,
         /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
         /// escape hatch for a simulator or a device with a synthetic key. Prefer
         /// `--keyring` for a real installation: a process argument is visible to
@@ -987,29 +909,6 @@ enum Command {
         /// telegrams silently. See docs/SAFETY.md.
         #[arg(long, value_name = "IA", conflicts_with = "line")]
         secure_sender: Option<bussard_model::IndividualAddress>,
-        /// Override the gateway `host[:port]` for tunneling.
-        #[arg(long, value_name = "HOST")]
-        gateway: Option<String>,
-        /// Force KNXnet/IP routing (multicast) transport.
-        #[arg(long)]
-        routing: bool,
-        /// Skip the pre-flight check that no bus device answers at bussard's own
-        /// source individual address.
-        ///
-        /// That check is what stops two management clients sharing one source
-        /// address, which interleaves their numbered telegrams inside a single
-        /// layer-4 session at the device and can silently corrupt a download.
-        /// Only pass this for a gateway that misbehaves on the probe itself.
-        #[arg(long)]
-        skip_address_check: bool,
-        /// Permit a write to a non-loopback (real) gateway. Required for any
-        /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
-        #[arg(long)]
-        allow_remote_gateway: bool,
-        /// Ignore the stored device facts (`<dir>/.bussard/facts/<ia>.toml`)
-        /// and read them from the device again (issue #209).
-        #[arg(long)]
-        refresh_facts: bool,
     },
     /// Bench mode: walk the model's devices on a line, prompt for each device's
     /// programming button, verify its order number, assign its address, and
@@ -1032,64 +931,22 @@ enum Command {
         /// `<dir>/vendor/` for an archive carrying the device's order number.
         #[arg(long, value_name = "FILE", requires = "flash")]
         product: Option<PathBuf>,
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
         /// Skip the interactive confirmation (dangerous; for scripts).
         #[arg(long)]
         yes: bool,
-        /// Emit the JSON summary instead of the table.
-        #[arg(long)]
-        json: bool,
-        /// The ETS `.knxkeys` keyring holding each target's KNX Data Secure tool
-        /// key (issue #71), used by `--flash` and `--apply`.
-        #[arg(long, value_name = "FILE")]
-        keyring: Option<PathBuf>,
         /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
         /// escape hatch. Prefer `--keyring` for a real installation.
         #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
         tool_key: Option<String>,
-        /// Override the gateway `host[:port]` for tunneling.
-        #[arg(long, value_name = "HOST")]
-        gateway: Option<String>,
-        /// Force KNXnet/IP routing (multicast) transport.
-        #[arg(long)]
-        routing: bool,
-        /// Skip the pre-flight check that no bus device answers at bussard's own
-        /// source individual address.
-        ///
-        /// That check is what stops two management clients sharing one source
-        /// address, which interleaves their numbered telegrams inside a single
-        /// layer-4 session at the device and can silently corrupt a download.
-        /// Only pass this for a gateway that misbehaves on the probe itself.
-        #[arg(long)]
-        skip_address_check: bool,
-        /// Permit a write to a non-loopback (real) gateway. Required for any
-        /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
-        #[arg(long)]
-        allow_remote_gateway: bool,
     },
     /// Show what has changed in the model since the last history snapshot.
     Status {
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
-        /// Emit the change set as JSON instead of sentences.
-        #[arg(long)]
-        json: bool,
         /// Print the file-level diff instead of the plain-language rendering.
         #[arg(long)]
         raw: bool,
     },
     /// List the model's history snapshots, oldest first.
-    History {
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
-        /// Emit the list as JSON.
-        #[arg(long)]
-        json: bool,
-    },
+    History {},
     /// Show what a device offers, in its device file's words: its channels,
     /// and for one channel its parameters (value, choices, default) and objects.
     Device {
@@ -1100,16 +957,10 @@ enum Command {
         /// `device` for the device-level parameters and objects.
         #[arg(value_name = "CHANNEL")]
         channel: Option<String>,
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
         /// Print the paste-ready device-file TOML, with commented lines for
         /// what the file does not set yet.
         #[arg(long, conflicts_with = "json")]
         toml: bool,
-        /// Emit the view as JSON.
-        #[arg(long)]
-        json: bool,
     },
     /// Show what one snapshot changed (or the change between two snapshots).
     Show {
@@ -1119,9 +970,6 @@ enum Command {
         /// A second snapshot: show the change from the first one to this one.
         #[arg(value_name = "SNAPSHOT")]
         to: Option<String>,
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
     },
     /// Put the model files back to a history snapshot (files only, no devices).
     Undo {
@@ -1130,9 +978,6 @@ enum Command {
         /// reverts the last change).
         #[arg(value_name = "SNAPSHOT")]
         snapshot: Option<String>,
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
     },
     /// Snapshot every device in the installation: tables, and where bussard can
     /// bound the read, the writable parameter memory (issue #96).
@@ -1152,36 +997,10 @@ enum Command {
         /// `<dir>/captures/backups/<UTC timestamp>/`).
         #[arg(long, value_name = "DIR")]
         out: Option<PathBuf>,
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
-        /// Emit the manifest as JSON instead of the text summary.
-        #[arg(long)]
-        json: bool,
-        /// The ETS `.knxkeys` keyring holding the targets' KNX Data Secure tool
-        /// keys (issue #71). The keyring password comes from
-        /// `BUSSARD_KEYRING_PASSWORD`, never a CLI argument.
-        #[arg(long, value_name = "FILE")]
-        keyring: Option<PathBuf>,
         /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
         /// escape hatch for a simulator or a device with a synthetic key.
         #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
         tool_key: Option<String>,
-        /// Override the gateway `host[:port]` for tunneling.
-        #[arg(long, value_name = "HOST")]
-        gateway: Option<String>,
-        /// Force KNXnet/IP routing (multicast) transport.
-        #[arg(long)]
-        routing: bool,
-        /// Skip the pre-flight check that no bus device answers at bussard's own
-        /// source individual address.
-        ///
-        /// That check is what stops two management clients sharing one source
-        /// address, which interleaves their numbered telegrams inside a single
-        /// layer-4 session at the device and can silently corrupt a download.
-        /// Only pass this for a gateway that misbehaves on the probe itself.
-        #[arg(long)]
-        skip_address_check: bool,
     },
     /// Write a device's backed-up link tables back onto it (issue #96).
     ///
@@ -1195,39 +1014,13 @@ enum Command {
         /// The device to restore, e.g. `1.1.4`.
         #[arg(value_name = "ADDRESS")]
         address: String,
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
         /// Skip the interactive confirmation (dangerous; for scripts).
         #[arg(long)]
         yes: bool,
-        /// The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool
-        /// key (issue #71).
-        #[arg(long, value_name = "FILE")]
-        keyring: Option<PathBuf>,
         /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
         /// escape hatch.
         #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
         tool_key: Option<String>,
-        /// Override the gateway `host[:port]` for tunneling.
-        #[arg(long, value_name = "HOST")]
-        gateway: Option<String>,
-        /// Force KNXnet/IP routing (multicast) transport.
-        #[arg(long)]
-        routing: bool,
-        /// Skip the pre-flight check that no bus device answers at bussard's own
-        /// source individual address.
-        ///
-        /// That check is what stops two management clients sharing one source
-        /// address, which interleaves their numbered telegrams inside a single
-        /// layer-4 session at the device and can silently corrupt a download.
-        /// Only pass this for a gateway that misbehaves on the probe itself.
-        #[arg(long)]
-        skip_address_check: bool,
-        /// Permit a write to a non-loopback (real) gateway. Required for any
-        /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
-        #[arg(long)]
-        allow_remote_gateway: bool,
     },
     /// Replace a dead device: assign, flash, apply and record, in one guided
     /// flow with one confirmation (issue #98).
@@ -1238,9 +1031,6 @@ enum Command {
         /// The vendor `.knxprod` for the replacement device.
         #[arg(long, value_name = "FILE")]
         product: PathBuf,
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
         /// Skip the interactive confirmation (dangerous; for scripts).
         #[arg(long)]
         yes: bool,
@@ -1257,39 +1047,13 @@ enum Command {
         /// every management connect (issue #52).
         #[arg(long, value_name = "HEX")]
         bcu_key: Option<String>,
-        /// The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool
-        /// key (issue #71).
-        #[arg(long, value_name = "FILE")]
-        keyring: Option<PathBuf>,
         /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
         /// escape hatch.
         #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
         tool_key: Option<String>,
-        /// Override the gateway `host[:port]` for tunneling.
-        #[arg(long, value_name = "HOST")]
-        gateway: Option<String>,
-        /// Force KNXnet/IP routing (multicast) transport.
-        #[arg(long)]
-        routing: bool,
-        /// Skip the pre-flight check that no bus device answers at bussard's own
-        /// source individual address.
-        ///
-        /// That check is what stops two management clients sharing one source
-        /// address, which interleaves their numbered telegrams inside a single
-        /// layer-4 session at the device and can silently corrupt a download.
-        /// Only pass this for a gateway that misbehaves on the probe itself.
-        #[arg(long)]
-        skip_address_check: bool,
-        /// Permit a write to a non-loopback (real) gateway. Required for any
-        /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
-        #[arg(long)]
-        allow_remote_gateway: bool,
     },
     /// Validate the model and report diagnostics.
     Validate {
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
         /// Output format.
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
@@ -1302,9 +1066,6 @@ enum Command {
     },
     /// Export the group-address plan in a format ETS can import.
     ExportGroups {
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
         /// The export format.
         #[arg(long, value_enum)]
         format: export_groups_cmd::ExportFormat,
@@ -1314,67 +1075,28 @@ enum Command {
     },
     /// Render the handover documentation folder from the model.
     Doc {
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
         /// The directory to write the rendered documentation into.
         #[arg(long, default_value = "docs/installation")]
         out: PathBuf,
         /// The rendered format.
         #[arg(long, value_enum, default_value_t = DocOutputFormat::Md)]
         format: DocOutputFormat,
-        /// Print the structured document model as JSON instead of writing files.
-        #[arg(long)]
-        json: bool,
     },
     /// Live-monitor the bus, decoding telegrams against the model.
     Monitor {
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
-        /// Emit JSON Lines (for tooling) instead of the pretty text format.
-        #[arg(long)]
-        json: bool,
         /// Only show telegrams matching this filter: a comma-separated list of
         /// GAs (`3/2/0`), GA prefixes (`3/` or `3/2/`) or IAs (`1.1.30`).
         #[arg(long, value_name = "EXPR")]
         filter: Option<String>,
-        /// An ETS `.knxkeys` keyring whose group keys verify and decrypt secured group
-        /// telegrams; they are marked `secured` in the output (KNX Data Secure group
-        /// communication, issue #172). The password is read from
-        /// `BUSSARD_KEYRING_PASSWORD`.
-        #[arg(long, value_name = "FILE")]
-        keyring: Option<PathBuf>,
-        /// Override the gateway `host[:port]` for tunneling.
-        #[arg(long, value_name = "HOST")]
-        gateway: Option<String>,
-        /// Force KNXnet/IP routing (multicast) transport.
-        #[arg(long)]
-        routing: bool,
     },
     /// Capture telegrams to a SQLite database.
     Capture {
         /// The database file to write (created if absent).
         #[arg(long, value_name = "DB")]
         to: PathBuf,
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
         /// Only capture telegrams matching this filter (see `monitor --filter`).
         #[arg(long, value_name = "EXPR")]
         filter: Option<String>,
-        /// An ETS `.knxkeys` keyring whose group keys verify and decrypt secured group
-        /// telegrams; the decoded snapshot carries the `secured` flag (KNX Data Secure
-        /// group communication, issue #172). The password is read from
-        /// `BUSSARD_KEYRING_PASSWORD`.
-        #[arg(long, value_name = "FILE")]
-        keyring: Option<PathBuf>,
-        /// Override the gateway `host[:port]` for tunneling.
-        #[arg(long, value_name = "HOST")]
-        gateway: Option<String>,
-        /// Force KNXnet/IP routing (multicast) transport.
-        #[arg(long)]
-        routing: bool,
     },
     /// Read a group value from the bus (sends a GroupValueRead, prints the
     /// typed response; exits non-zero on timeout).
@@ -1382,20 +1104,6 @@ enum Command {
         /// The group address to read, e.g. `3/2/0`.
         #[arg(value_name = "GA")]
         ga: String,
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
-        /// An ETS `.knxkeys` keyring whose group keys secure the read of a secured GA
-        /// and verify its response (KNX Data Secure group communication, issue #172).
-        /// The password is read from `BUSSARD_KEYRING_PASSWORD`.
-        #[arg(long, value_name = "FILE")]
-        keyring: Option<PathBuf>,
-        /// Override the gateway `host[:port]` for tunneling.
-        #[arg(long, value_name = "HOST")]
-        gateway: Option<String>,
-        /// Force KNXnet/IP routing (multicast) transport.
-        #[arg(long)]
-        routing: bool,
     },
     /// Write a group value to the bus, e.g. `bussard write 3/0/4 down`.
     Write {
@@ -1414,30 +1122,9 @@ enum Command {
         /// Skip the interactive confirmation (dangerous; for scripts).
         #[arg(long)]
         yes: bool,
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
-        /// An ETS `.knxkeys` keyring whose group keys secure the write of a secured GA
-        /// (KNX Data Secure group communication, issue #172). The password is read from
-        /// `BUSSARD_KEYRING_PASSWORD`.
-        #[arg(long, value_name = "FILE")]
-        keyring: Option<PathBuf>,
-        /// Override the gateway `host[:port]` for tunneling.
-        #[arg(long, value_name = "HOST")]
-        gateway: Option<String>,
-        /// Force KNXnet/IP routing (multicast) transport.
-        #[arg(long)]
-        routing: bool,
-        /// Permit a write to a non-loopback (real) gateway. Required for any
-        /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
-        #[arg(long)]
-        allow_remote_gateway: bool,
     },
     /// Generate the Home Assistant KNX integration YAML from the model.
     HaConfig {
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
         /// Output file (default: stdout).
         #[arg(long, value_name = "FILE")]
         out: Option<PathBuf>,
@@ -1447,21 +1134,6 @@ enum Command {
         /// The address to bind the HTTP server to.
         #[arg(long, default_value = "127.0.0.1:8080")]
         listen: SocketAddr,
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
-        /// An ETS `.knxkeys` keyring whose group keys secure `POST /api/group-write` to
-        /// a secured GA and decrypt secured telegrams in the live traffic (KNX Data
-        /// Secure group communication, issue #172). The password is read from
-        /// `BUSSARD_KEYRING_PASSWORD`.
-        #[arg(long, value_name = "FILE")]
-        keyring: Option<PathBuf>,
-        /// Override the gateway `host[:port]` for tunneling.
-        #[arg(long, value_name = "HOST")]
-        gateway: Option<String>,
-        /// Force KNXnet/IP routing (multicast) transport.
-        #[arg(long)]
-        routing: bool,
         /// Watch for devices in KNX programming mode and highlight them in the
         /// UI. This periodically broadcasts `A_IndividualAddress_Read` on the
         /// bus (active traffic), so it is off by default and must be enabled
@@ -1473,11 +1145,6 @@ enum Command {
         /// answers 403.
         #[arg(long)]
         allow_writes: bool,
-        /// Permit a non-loopback (real) gateway when this server may transmit
-        /// (`--allow-writes` or `--watch-prog`). Same gate as `bussard write`
-        /// (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
-        #[arg(long)]
-        allow_remote_gateway: bool,
         /// Also answer requests whose `Host` is this name. Repeatable. Loopback
         /// names and bare IP literals are always accepted; any other name is
         /// refused because it is how DNS rebinding reaches this port.
@@ -1504,31 +1171,12 @@ enum Command {
         /// How long to wait for each telegram, in seconds.
         #[arg(long, value_name = "SECS", default_value_t = 30)]
         timeout: u64,
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
-        /// An ETS `.knxkeys` keyring whose group keys verify and decrypt secured
-        /// group telegrams, so their values are learned and the group is marked
-        /// `secure` (KNX Data Secure, issue #204). Defaults to
-        /// `connection.keyring` in `bussard.toml`. The password is read from
-        /// `BUSSARD_KEYRING_PASSWORD`.
-        #[arg(long, value_name = "FILE")]
-        keyring: Option<PathBuf>,
-        /// Override the gateway `host[:port]` for tunneling.
-        #[arg(long, value_name = "HOST")]
-        gateway: Option<String>,
-        /// Force KNXnet/IP routing (multicast) transport.
-        #[arg(long)]
-        routing: bool,
     },
     /// Run the scripted acceptance tests in `tests.toml` against the bus.
     Test {
         /// The test file to run (default: `<dir>/tests.toml`).
         #[arg(long, value_name = "FILE")]
         file: Option<PathBuf>,
-        /// Emit the report as JSON instead of text.
-        #[arg(long)]
-        json: bool,
         /// Together with `allow_protected: true` in the file, permit tests that
         /// write to a protected group address.
         #[arg(long)]
@@ -1542,19 +1190,6 @@ enum Command {
         /// Skip the confirmation prompt (required for a non-TTY run).
         #[arg(long)]
         yes: bool,
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
-        /// Override the gateway `host[:port]` for tunneling.
-        #[arg(long, value_name = "HOST")]
-        gateway: Option<String>,
-        /// Force KNXnet/IP routing (multicast) transport.
-        #[arg(long)]
-        routing: bool,
-        /// Permit a run against a non-loopback (real) gateway. Required for any
-        /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
-        #[arg(long)]
-        allow_remote_gateway: bool,
         /// Instead of running `tests.toml`: open a KNXnet/IP Secure session,
         /// stay idle (no keepalive, no tunnel) for SECS seconds, and report
         /// whether the interface dropped it (issue #197). Read-only: nothing
@@ -1566,12 +1201,6 @@ enum Command {
     /// per device mask, KNX Secure coverage; with `--live`, the gateway's tunnel
     /// slots, a traffic sample and a scan of the modelled devices. Read-only.
     Audit {
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
-        /// Emit one JSON object instead of the sectioned text report.
-        #[arg(long)]
-        json: bool,
         /// Add the live part: gateway description, traffic sample and a probe of
         /// every modelled device. Read tier only; never sends a group telegram.
         #[arg(long)]
@@ -1579,38 +1208,10 @@ enum Command {
         /// Traffic-sample window in seconds for `--live`.
         #[arg(long, value_name = "SECS", default_value_t = 30, requires = "live")]
         window: u64,
-        /// An ETS `.knxkeys` keyring to check Secure devices against (password in
-        /// `BUSSARD_KEYRING_PASSWORD`). Key material is never printed.
-        #[arg(long, value_name = "FILE")]
-        keyring: Option<PathBuf>,
-        /// Override the gateway `host[:port]` for tunneling.
-        #[arg(long, value_name = "HOST")]
-        gateway: Option<String>,
-        /// Force KNXnet/IP routing (multicast) transport.
-        #[arg(long)]
-        routing: bool,
-        /// Skip the pre-flight check that no bus device answers at bussard's own
-        /// source individual address.
-        ///
-        /// That check is what stops two management clients sharing one source
-        /// address, which interleaves their numbered telegrams inside a single
-        /// layer-4 session at the device and can silently corrupt a download.
-        /// Only pass this for a gateway that misbehaves on the probe itself.
-        #[arg(long)]
-        skip_address_check: bool,
     },
     /// Run the MCP server over stdio: model tools and bus reads by default;
     /// bus writes and device programming only when their flags allow it.
     Mcp {
-        /// The directory containing the model (required for the MCP server).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
-        /// Override the gateway `host[:port]` for tunneling.
-        #[arg(long, value_name = "HOST")]
-        gateway: Option<String>,
-        /// Force KNXnet/IP routing (multicast) transport.
-        #[arg(long)]
-        routing: bool,
         /// Passive mode: never transmit on the bus (omits the `knx_read_group`
         /// tool). The server only observes.
         #[arg(long)]
@@ -1636,11 +1237,6 @@ enum Command {
             requires = "allow_programming"
         )]
         plan_ttl_minutes: u64,
-        /// Permit `--allow-writes` or `--allow-programming` against a
-        /// non-loopback (real) gateway. Same gate as `bussard write` (or set
-        /// BUSSARD_ALLOW_REAL_GATEWAY=1).
-        #[arg(long)]
-        allow_remote_gateway: bool,
         /// Refuse model edits: omits the `knx_set_group`, `knx_add_link`,
         /// `knx_remove_link`, `knx_set_device`, `knx_set_parameter`, `knx_undo`,
         /// `knx_scaffold_groups` and `knx_reserve_groups` tools. The read tools
@@ -1652,11 +1248,6 @@ enum Command {
         /// history beyond the in-memory ring window.
         #[arg(long, value_name = "PATH")]
         capture_db: Option<PathBuf>,
-        /// ETS keyring export (`.knxkeys`) for KNX Data Secure management:
-        /// `knx_describe_device` looks the target's tool key up in it. The
-        /// password comes from BUSSARD_KEYRING_PASSWORD.
-        #[arg(long, value_name = "FILE")]
-        keyring: Option<PathBuf>,
     },
 }
 
@@ -1690,12 +1281,12 @@ fn main() -> ExitCode {
 /// The whole CLI: parse arguments, set up logging, run the subcommand. Runs on
 /// the `bussard-main` thread spawned by [`main`].
 fn cli_main() -> ExitCode {
-    let mut cli = Cli::parse();
+    let cli = Cli::parse();
 
     // The live progress display (issue #147) is only possible on a terminal;
     // when it is, bus-layer events also feed its "last event" line, and log
     // lines hide the bar while they print. Off a terminal both are inert.
-    let live_progress = progress::init(cli.no_progress);
+    let live_progress = progress::init(cli.global.no_progress);
     {
         use tracing_subscriber::Layer as _;
         use tracing_subscriber::layer::SubscriberExt as _;
@@ -1709,7 +1300,7 @@ fn cli_main() -> ExitCode {
             .with(
                 tracing_subscriber::fmt::layer()
                     .with_writer(progress::LogWriter)
-                    .with_filter(verbosity_filter(cli.verbose)),
+                    .with_filter(verbosity_filter(cli.global.verbose)),
             )
             .with(events)
             .init();
@@ -1719,17 +1310,22 @@ fn cli_main() -> ExitCode {
     // invocation's elapsed time on stderr. Speed is a project goal, so this stays
     // available for regression spotting, but a plain 0.1.0 run is quiet.
     let started = timing::start();
-    if let Err(err) = timing::time("tunnel creds", || setup_secure_tunnel(&mut cli)) {
-        eprintln!("error: {err:#}");
-        return ExitCode::FAILURE;
-    }
-    let result = run(cli.command, cli.verbose);
+    let globals = match timing::time("tunnel creds", || {
+        resolve_globals(&cli.global, &cli.command)
+    }) {
+        Ok(globals) => globals,
+        Err(err) => {
+            eprintln!("error: {err:#}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let result = run(cli.command, &globals);
     // A connect error that retrying cannot fix (a secure-only interface
     // without credentials, a refused KNXnet/IP Secure password; issue #182) is
     // the real cause of whatever the command reported next; name it alone.
     if let Some(fatal) = bussard_bus::fatal_connect_error() {
         eprintln!("error: {fatal}");
-        if cli.timing {
+        if cli.global.timing {
             print_timing(started);
         }
         return ExitCode::FAILURE;
@@ -1748,7 +1344,7 @@ fn cli_main() -> ExitCode {
             no_free_tunnel_or(ExitCode::FAILURE)
         }
     };
-    if cli.timing {
+    if cli.global.timing {
         print_timing(started);
     }
     code
@@ -1787,61 +1383,32 @@ fn is_no_free_tunnel(err: &anyhow::Error) -> bool {
 
 /// Dispatches a subcommand, returning the process exit code on success.
 ///
-/// `verbose` is the global `-v` repeat count; `flash` uses it to unfold the
-/// memory-level plan under the parameter-level one (issue #109).
-fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
+/// `g` holds the resolved global options; `flash` and `plan` use its `-v`
+/// count to unfold the memory-level plan under the parameter-level one
+/// (issue #109).
+fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
+    let dir = g.dir.as_path();
+    let json = g.json;
     match command {
-        Command::Scan {
-            line,
-            from,
-            to,
-            dir,
-            json,
-            keyring,
-            gateway,
-            routing,
-            skip_address_check,
-        } => scan_cmd::run(
-            &line,
-            from,
-            to,
-            &dir,
-            json,
-            keyring.as_deref(),
-            conn_cmd::ConnOverrides {
-                gateway,
-                routing,
-                skip_address_check,
-                ..Default::default()
-            },
-        ),
+        Command::Scan { line, from, to } => {
+            scan_cmd::run(&line, from, to, dir, json, g.keyring.as_deref(), g.mgmt())
+        }
         Command::Assign {
             address,
-            dir,
             yes,
-            keyring,
-            gateway,
-            routing,
-            skip_address_check,
-            allow_remote_gateway,
             tool_key,
         } => assign_cmd::run(
             address.as_deref(),
-            &dir,
+            dir,
             yes,
-            allow_remote_gateway,
+            g.allow_remote_gateway,
             // `--tool-key` overrides the keyring's device entries; the keyring
             // still opens a KNXnet/IP Secure tunnel (issue #203).
             secure_key::ToolKeySource {
-                keyring: keyring.as_deref().filter(|_| tool_key.is_none()),
+                keyring: g.keyring.as_deref().filter(|_| tool_key.is_none()),
                 tool_key: tool_key.as_deref(),
             },
-            conn_cmd::ConnOverrides {
-                gateway,
-                routing,
-                skip_address_check,
-                ..Default::default()
-            },
+            g.mgmt(),
         ),
         Command::Reconstruct {
             address,
@@ -1849,94 +1416,57 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             from,
             to,
             out,
-            dir,
             product,
             application,
-            keyring,
             tool_key,
-            json,
-            gateway,
-            routing,
-            skip_address_check,
-            refresh_facts,
         } => {
-            let overrides = conn_cmd::ConnOverrides {
-                gateway,
-                routing,
-                skip_address_check,
-                refresh_facts,
-            };
+            let overrides = g.mgmt_with_facts();
             match line {
-                Some(line) => reconstruct_cmd::run_line(
-                    &line,
-                    from,
-                    to,
-                    out.as_deref(),
-                    &dir,
-                    json,
-                    overrides,
-                ),
+                Some(line) => {
+                    reconstruct_cmd::run_line(&line, from, to, out.as_deref(), dir, json, overrides)
+                }
                 None => {
                     // clap guarantees ADDRESS is present when --line is absent.
                     let address = address.expect("clap requires ADDRESS without --line");
                     reconstruct_cmd::run(
                         &address,
-                        &dir,
+                        dir,
                         json,
                         overrides,
                         param_readback::Selection {
                             product: product.as_deref(),
                             application: application.as_deref(),
                         },
-                        secure_key::ToolKeySource {
-                            keyring: keyring.as_deref(),
-                            tool_key: tool_key.as_deref(),
-                        },
+                        g.tool_keys(tool_key.as_deref()),
                     )
                 }
             }
         }
         Command::Describe {
             address,
-            dir,
-            json,
             full,
-            refresh_facts,
-            keyring,
             tool_key,
-            gateway,
-            routing,
-            skip_address_check,
         } => describe_cmd::run(
             &address,
-            &dir,
+            dir,
             json,
             describe_cmd::FactsOptions {
                 full,
-                refresh: refresh_facts,
+                refresh: g.refresh_facts,
             },
-            secure_key::ToolKeySource {
-                keyring: keyring.as_deref(),
-                tool_key: tool_key.as_deref(),
-            },
-            conn_cmd::ConnOverrides {
-                gateway,
-                routing,
-                skip_address_check,
-                ..Default::default()
-            },
+            g.tool_keys(tool_key.as_deref()),
+            g.mgmt(),
         ),
-        Command::Keyring { file, json } => keyring_cmd::run(&file, json),
+        Command::Keyring { file } => keyring_cmd::run(&file, json),
         Command::ImportProduct {
             file,
-            dir,
             order_number,
             yes_download,
             inner,
             list,
         } => import_product_cmd::run(
             file.as_deref(),
-            &dir,
+            dir,
             order_number.as_deref(),
             yes_download,
             inner.as_deref(),
@@ -1944,47 +1474,29 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
         ),
         Command::Adopt {
             product,
+            yes,
+            no_download,
+        } => adopt_cmd::run(
+            product.as_deref(),
             dir,
             yes,
             no_download,
-            gateway,
-            routing,
-            skip_address_check,
-            allow_remote_gateway,
-        } => adopt_cmd::run(
-            product.as_deref(),
-            &dir,
-            yes,
-            no_download,
-            allow_remote_gateway,
-            conn_cmd::ConnOverrides {
-                gateway,
-                routing,
-                skip_address_check,
-                ..Default::default()
-            },
+            g.allow_remote_gateway,
+            g.mgmt(),
         ),
         Command::Flash {
             address,
             product,
             application,
             order_number,
-            dir,
             yes,
             force,
             full,
             no_factory_reset,
             parameters_only,
-            allow_remote_gateway,
             bcu_key,
-            keyring,
             tool_key,
             secure_sender,
-            gateway,
-            routing,
-            skip_address_check,
-            refresh_facts,
-            json,
             dry_run,
             dump_images,
         } => flash_cmd::run(
@@ -1992,63 +1504,40 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             product.as_deref(),
             application.as_deref(),
             order_number.as_deref(),
-            &dir,
+            dir,
             yes,
             force,
             full,
             no_factory_reset,
             parameters_only,
-            allow_remote_gateway,
+            g.allow_remote_gateway,
             bcu_key.as_deref(),
-            secure_key::ToolKeySource {
-                keyring: keyring.as_deref(),
-                tool_key: tool_key.as_deref(),
-            },
+            g.tool_keys(tool_key.as_deref()),
             secure_sender,
-            conn_cmd::ConnOverrides {
-                gateway,
-                routing,
-                skip_address_check,
-                refresh_facts,
-            },
+            g.mgmt_with_facts(),
             flash_cmd::FlashOutput {
                 json,
-                verbose,
+                verbose: g.verbose,
                 dry_run: dry_run.then_some(flash_cmd::DryRun { dump_images }),
             },
         ),
         Command::Plan {
             address,
             line,
-            dir,
             product,
             application,
-            keyring,
             tool_key,
-            json,
-            gateway,
-            routing,
-            skip_address_check,
-            refresh_facts,
         } => {
-            let overrides = conn_cmd::ConnOverrides {
-                gateway,
-                routing,
-                skip_address_check,
-                refresh_facts,
-            };
-            let tool_key_source = secure_key::ToolKeySource {
-                keyring: keyring.as_deref(),
-                tool_key: tool_key.as_deref(),
-            };
+            let overrides = g.mgmt_with_facts();
+            let tool_key_source = g.tool_keys(tool_key.as_deref());
             match line {
-                Some(line) => line_cmd::run_plan(&line, &dir, json, tool_key_source, overrides),
+                Some(line) => line_cmd::run_plan(&line, dir, json, tool_key_source, overrides),
                 None => {
                     // clap guarantees ADDRESS is present when --line is absent.
                     let address = address.expect("clap requires ADDRESS without --line");
                     plan_cmd::run(
                         &address,
-                        &dir,
+                        dir,
                         json,
                         overrides,
                         param_readback::Selection {
@@ -2056,7 +1545,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                             application: application.as_deref(),
                         },
                         tool_key_source,
-                        verbose,
+                        g.verbose,
                     )
                 }
             }
@@ -2064,51 +1553,41 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
         Command::Apply {
             address,
             line,
-            json,
             resume,
-            dir,
             yes,
             plan_hash,
             product,
             application,
-            keyring,
             tool_key,
             secure_sender,
-            gateway,
-            routing,
-            skip_address_check,
-            refresh_facts,
-            allow_remote_gateway,
         } => {
-            let overrides = conn_cmd::ConnOverrides {
-                gateway,
-                routing,
-                skip_address_check,
-                refresh_facts,
-            };
-            let tool_key_source = secure_key::ToolKeySource {
-                keyring: keyring.as_deref(),
-                tool_key: tool_key.as_deref(),
-            };
+            let overrides = g.mgmt_with_facts();
+            let tool_key_source = g.tool_keys(tool_key.as_deref());
             match line {
                 Some(line) => line_cmd::run_apply(
                     &line,
-                    &dir,
+                    dir,
                     yes,
                     json,
                     resume,
-                    allow_remote_gateway,
+                    g.allow_remote_gateway,
                     tool_key_source,
                     overrides,
                 ),
                 None => {
+                    if json {
+                        anyhow::bail!(
+                            "`bussard apply --json` needs --line: a single-device apply has no \
+                             JSON output"
+                        );
+                    }
                     // clap guarantees ADDRESS is present when --line is absent.
                     let address = address.expect("clap requires ADDRESS without --line");
                     apply_cmd::run(
                         &address,
-                        &dir,
+                        dir,
                         yes,
-                        allow_remote_gateway,
+                        g.allow_remote_gateway,
                         tool_key_source,
                         secure_sender,
                         overrides,
@@ -2129,18 +1608,11 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             apply,
             labels,
             product,
-            dir,
             yes,
-            json,
-            keyring,
             tool_key,
-            gateway,
-            routing,
-            skip_address_check,
-            allow_remote_gateway,
         } => commission_cmd::run(
             &line,
-            &dir,
+            dir,
             commission_cmd::CommissionOptions {
                 flash,
                 apply,
@@ -2148,152 +1620,88 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 product: product.as_deref(),
                 yes,
                 json,
-                allow_remote_gateway,
+                allow_remote_gateway: g.allow_remote_gateway,
             },
-            secure_key::ToolKeySource {
-                keyring: keyring.as_deref(),
-                tool_key: tool_key.as_deref(),
-            },
-            conn_cmd::ConnOverrides {
-                gateway,
-                routing,
-                skip_address_check,
-                ..Default::default()
-            },
+            g.tool_keys(tool_key.as_deref()),
+            g.mgmt(),
         ),
-        Command::Status { dir, json, raw } => history_cmd::run_status(&dir, json, raw),
-        Command::History { dir, json } => history_cmd::run_history(&dir, json),
+        Command::Status { raw } => history_cmd::run_status(dir, json, raw),
+        Command::History {} => history_cmd::run_history(dir, json),
         Command::Device {
             address,
             channel,
-            dir,
             toml,
-            json,
-        } => device_cmd::run(&address, channel.as_deref(), &dir, toml, json),
-        Command::Show { snapshot, to, dir } => {
-            history_cmd::run_show(&dir, &snapshot, to.as_deref())
-        }
-        Command::Undo { snapshot, dir } => history_cmd::run_undo(&dir, snapshot.as_deref()),
+        } => device_cmd::run(&address, channel.as_deref(), dir, toml, json),
+        Command::Show { snapshot, to } => history_cmd::run_show(dir, &snapshot, to.as_deref()),
+        Command::Undo { snapshot } => history_cmd::run_undo(dir, snapshot.as_deref()),
         Command::Backup {
             addresses,
             line,
             out,
-            dir,
-            json,
-            keyring,
             tool_key,
-            gateway,
-            routing,
-            skip_address_check,
         } => backup_cmd::run(
             &addresses,
             line.as_deref(),
             out.as_deref(),
-            &dir,
+            dir,
             json,
-            secure_key::ToolKeySource {
-                keyring: keyring.as_deref(),
-                tool_key: tool_key.as_deref(),
-            },
-            conn_cmd::ConnOverrides {
-                gateway,
-                routing,
-                skip_address_check,
-                ..Default::default()
-            },
+            g.tool_keys(tool_key.as_deref()),
+            g.mgmt(),
         ),
         Command::Restore {
             backup_dir,
             address,
-            dir,
             yes,
-            keyring,
             tool_key,
-            gateway,
-            routing,
-            skip_address_check,
-            allow_remote_gateway,
         } => restore_cmd::run(
             &backup_dir,
             &address,
-            &dir,
+            dir,
             yes,
-            allow_remote_gateway,
-            secure_key::ToolKeySource {
-                keyring: keyring.as_deref(),
-                tool_key: tool_key.as_deref(),
-            },
-            conn_cmd::ConnOverrides {
-                gateway,
-                routing,
-                skip_address_check,
-                ..Default::default()
-            },
+            g.allow_remote_gateway,
+            g.tool_keys(tool_key.as_deref()),
+            g.mgmt(),
         ),
         Command::Replace {
             address,
             product,
-            dir,
             yes,
             force,
             no_flash,
             bcu_key,
-            keyring,
             tool_key,
-            gateway,
-            routing,
-            skip_address_check,
-            allow_remote_gateway,
         } => replace_cmd::run(
             &address,
             &product,
-            &dir,
+            dir,
             yes,
             force,
             no_flash,
-            allow_remote_gateway,
+            g.allow_remote_gateway,
             bcu_key.as_deref(),
-            secure_key::ToolKeySource {
-                keyring: keyring.as_deref(),
-                tool_key: tool_key.as_deref(),
-            },
-            conn_cmd::ConnOverrides {
-                gateway,
-                routing,
-                skip_address_check,
-                ..Default::default()
-            },
+            g.tool_keys(tool_key.as_deref()),
+            g.mgmt(),
         ),
-        Command::Validate { dir, format } => validate_cmd::run(&dir, format == Format::Json),
+        Command::Validate { format } => validate_cmd::run(dir, json || format == Format::Json),
         Command::Groups { command } => match command {
             GroupsCommand::Reserve {
                 room,
                 functions,
-                dir,
                 scheme,
-                json,
-            } => groups_cmd::run_reserve(&dir, &room, &functions, scheme.map(Into::into), json),
+            } => groups_cmd::run_reserve(dir, &room, &functions, scheme.map(Into::into), json),
         },
-        Command::ExportGroups { dir, format, out } => export_groups_cmd::run(&dir, format, &out),
-        Command::Doc {
-            dir,
-            out,
-            format,
-            json,
-        } => doc_cmd::run(&dir, &out, format.into(), json),
+        Command::ExportGroups { format, out } => export_groups_cmd::run(dir, format, &out),
+        Command::Doc { out, format } => doc_cmd::run(dir, &out, format.into(), json),
         Command::Init {
             project,
-            dir,
-            gateway,
-            routing,
             password,
             yes,
             no_download,
             scan,
         } => init_cmd::run(
-            &dir,
-            gateway.as_deref(),
-            routing,
+            dir,
+            g.gateway.as_deref(),
+            g.routing,
             init_cmd::FirstRun {
                 project,
                 password,
@@ -2305,7 +1713,6 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             project,
             from_json,
             password,
-            dir,
             mine,
             theirs,
             interactive,
@@ -2315,139 +1722,71 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             let choice = import_bundle::ConflictChoice::from_flags(mine, theirs, interactive);
             let consent = product_fetch::Consent { yes, no_download };
             if let Some(json) = from_json {
-                import_cmd::run_json(&json, &dir, choice, consent)
+                import_cmd::run_json(&json, dir, choice, consent)
             } else if let Some(project) = project {
                 if bussard_model::bundle::is_bundle_path(&project) {
-                    import_bundle::run_bundle(&project, &dir, choice)
+                    import_bundle::run_bundle(&project, dir, choice)
                 } else {
-                    import_cmd::run_knxproj(&project, &dir, password, choice, consent)
+                    import_cmd::run_knxproj(&project, dir, password, choice, consent)
                 }
             } else {
                 anyhow::bail!("provide a .knxproj path or --from-json <file>")
             }
         }
-        Command::Export {
-            file,
-            dir,
-            no_history,
-            json,
-        } => export_cmd::run(file.as_deref(), &dir, no_history, json),
+        Command::Export { file, no_history } => {
+            export_cmd::run(file.as_deref(), dir, no_history, json)
+        }
         Command::Diff {
             a,
             b,
-            json,
             raw,
             password,
             password_b,
         } => diff_cmd::run(&a, &b, json, raw, password, password_b),
-        Command::Monitor {
+        Command::Monitor { filter } => monitor_cmd::run(
             dir,
             json,
-            filter,
-            keyring,
-            gateway,
-            routing,
-        } => monitor_cmd::run(
-            &dir,
-            json,
             filter.as_deref(),
-            keyring.as_deref(),
-            conn_cmd::ConnOverrides {
-                gateway,
-                routing,
-                skip_address_check: false,
-                ..Default::default()
-            },
+            g.keyring.as_deref(),
+            g.group(),
         ),
-        Command::Capture {
-            to,
-            dir,
-            filter,
-            keyring,
-            gateway,
-            routing,
-        } => capture_cmd::run(
-            &to,
-            &dir,
-            filter.as_deref(),
-            keyring.as_deref(),
-            conn_cmd::ConnOverrides {
-                gateway,
-                routing,
-                skip_address_check: false,
-                ..Default::default()
-            },
-        ),
-        Command::Read {
-            ga,
-            dir,
-            keyring,
-            gateway,
-            routing,
-        } => read_cmd::run(
-            &ga,
-            &dir,
-            keyring.as_deref(),
-            conn_cmd::ConnOverrides {
-                gateway,
-                routing,
-                skip_address_check: false,
-                ..Default::default()
-            },
-        ),
+        Command::Capture { to, filter } => {
+            capture_cmd::run(&to, dir, filter.as_deref(), g.keyring.as_deref(), g.group())
+        }
+        Command::Read { ga } => read_cmd::run(&ga, dir, g.keyring.as_deref(), g.group()),
         Command::Write {
             ga,
             value,
             dpt,
             force,
             yes,
-            dir,
-            keyring,
-            gateway,
-            routing,
-            allow_remote_gateway,
         } => write_cmd::run(
             &ga,
             &value,
             dpt.as_deref(),
             force,
             yes,
-            allow_remote_gateway,
-            &dir,
-            keyring.as_deref(),
-            conn_cmd::ConnOverrides {
-                gateway,
-                routing,
-                skip_address_check: false,
-                ..Default::default()
-            },
+            g.allow_remote_gateway,
+            dir,
+            g.keyring.as_deref(),
+            g.group(),
         ),
-        Command::HaConfig { dir, out } => ha_config_cmd::run(&dir, out.as_deref()),
+        Command::HaConfig { out } => ha_config_cmd::run(dir, out.as_deref()),
         Command::Viz {
             listen,
-            dir,
-            keyring,
-            gateway,
-            routing,
             watch_prog,
             allow_writes,
-            allow_remote_gateway,
             allow_host,
         } => viz_cmd::run(
             listen,
-            &dir,
-            conn_cmd::ConnOverrides {
-                gateway,
-                routing,
-                skip_address_check: false,
-                ..Default::default()
-            },
+            dir,
+            g.group(),
             viz_cmd::VizOptions {
                 allow_writes,
                 watch_prog,
-                allow_remote_gateway,
+                allow_remote_gateway: g.allow_remote_gateway,
                 allowed_hosts: allow_host,
-                keyring,
+                keyring: g.keyring.clone(),
             },
         ),
         Command::Learn {
@@ -2456,59 +1795,31 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             untyped,
             yes,
             timeout,
-            dir,
-            keyring,
-            gateway,
-            routing,
         } => learn_cmd::run(
-            &dir,
+            dir,
             learn_cmd::LearnOptions {
                 gas,
                 unnamed,
                 untyped,
                 yes,
                 timeout_seconds: timeout,
-                keyring,
+                keyring: g.keyring.clone(),
             },
-            conn_cmd::ConnOverrides {
-                gateway,
-                routing,
-                skip_address_check: false,
-                ..Default::default()
-            },
+            g.group(),
         ),
         Command::Test {
-            json,
-            dir,
-            gateway,
-            routing,
             secure_idle: Some(secs),
             ..
-        } => test_cmd::run_secure_idle(
-            &dir,
-            std::time::Duration::from_secs(secs),
-            json,
-            conn_cmd::ConnOverrides {
-                gateway,
-                routing,
-                skip_address_check: false,
-                ..Default::default()
-            },
-        ),
+        } => test_cmd::run_secure_idle(dir, std::time::Duration::from_secs(secs), json, g.group()),
         Command::Test {
             file,
-            json,
             force,
             skip_manual,
             only,
             yes,
-            dir,
-            gateway,
-            routing,
-            allow_remote_gateway,
             secure_idle: None,
         } => test_cmd::run(
-            &dir,
+            dir,
             test_cmd::TestOptions {
                 file,
                 json,
@@ -2516,69 +1827,40 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 skip_manual,
                 only,
                 yes,
-                allow_remote_gateway,
+                allow_remote_gateway: g.allow_remote_gateway,
             },
-            conn_cmd::ConnOverrides {
-                gateway,
-                routing,
-                skip_address_check: false,
-                ..Default::default()
-            },
+            g.group(),
         ),
-        Command::Audit {
+        Command::Audit { live, window } => audit_cmd::run(
             dir,
-            json,
-            live,
-            window,
-            keyring,
-            gateway,
-            routing,
-            skip_address_check,
-        } => audit_cmd::run(
-            &dir,
             audit_cmd::AuditOptions {
                 json,
                 live,
                 window: std::time::Duration::from_secs(window),
-                keyring: keyring.as_deref(),
+                keyring: g.keyring.as_deref(),
             },
-            conn_cmd::ConnOverrides {
-                gateway,
-                routing,
-                skip_address_check,
-                ..Default::default()
-            },
+            g.mgmt(),
         ),
         Command::Mcp {
-            dir,
-            gateway,
-            routing,
             passive,
             allow_writes,
             allow_programming,
             plan_ttl_minutes,
-            allow_remote_gateway,
             no_model_edits,
             capture_db,
-            keyring,
         } => mcp_cmd::run(
-            &dir,
-            conn_cmd::ConnOverrides {
-                gateway,
-                routing,
-                skip_address_check: false,
-                ..Default::default()
-            },
+            dir,
+            g.group(),
             mcp_cmd::McpModes {
                 passive,
                 allow_writes,
                 allow_programming,
                 plan_ttl: std::time::Duration::from_secs(plan_ttl_minutes.saturating_mul(60)),
-                allow_remote_gateway,
+                allow_remote_gateway: g.allow_remote_gateway,
                 no_model_edits,
             },
             capture_db,
-            keyring,
+            g.keyring.clone(),
         ),
     }
 }
