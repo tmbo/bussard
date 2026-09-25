@@ -7,7 +7,7 @@
 //! * [`attrs`] — attribute-map/value helpers and BOM stripping.
 //! * [`dpt`] — `DPST`/`DPT` string parsing plus the `ObjectSize` fallback.
 //! * [`flags`] — the [`FlagSet`] override chain over ETS flag attributes.
-//! * [`translation`] — en-US `<Languages>` resolution.
+//! * [`translation`] — `<Languages>` resolution for one language.
 //! * [`zip_util`] — capped zip-entry reading (a zip-bomb guard, see issue #39).
 //! * [`application`] — one streaming ApplicationProgram parser (the superset of
 //!   both consumers' needs).
@@ -38,8 +38,8 @@ pub mod zip_util;
 pub use application::{
     ApplicationProgram, BlockRef, ChannelDef, ChannelRef, CodeSegment, ComObject, ComObjectRef,
     EnumValue, LoadOp, LoadProcedure, Memory, Parameter, ParameterRef, ParameterType,
-    ParameterTypeDecl, ResolvedComObject, ResolvedParameter, SegmentKind,
-    parse_application_program,
+    ParameterTypeDecl, ProgramLanguages, ResolvedComObject, ResolvedParameter, SegmentKind,
+    parse_application_program, parse_application_program_in, program_languages,
 };
 pub use attrs::{Attrs, attr_value, attrs_map, flagset_from, get, strip_bom, strip_bom_bytes};
 pub use dpt::{dpt_from_object_size, parse_ets_dpt};

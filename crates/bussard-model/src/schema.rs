@@ -41,6 +41,22 @@ pub struct BussardConfig {
     /// `L0xx` lints do not run, so an existing model gains no new warnings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lint: Option<LintConfig>,
+    /// Settings for `bussard import`. Absent means the defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import: Option<ImportConfig>,
+}
+
+/// The `[import]` table of `bussard.toml`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ImportConfig {
+    /// The language of the texts an import writes (channel and object texts,
+    /// parameter keys, enum labels), as an ETS language identifier such as
+    /// `"de-DE"`. It overrides the language the import would choose and the
+    /// one `bussard.lock` recorded; see "Text language" in
+    /// `docs/model-format.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 /// The `[connection]` table of `bussard.toml`.
@@ -460,6 +476,10 @@ pub struct DeviceLock {
     /// words; a changed value is written as its label when the product model
     /// has one, else as the code.
     pub spellings: BTreeMap<String, Spelling>,
+    /// The language the lock's texts and keys were derived in (the lock's
+    /// top-level `language`), e.g. `de-DE`. Every device of a model carries
+    /// the same value; the save writes it once.
+    pub language: Option<String>,
 }
 
 /// The file spelling of one enum parameter value (see [`DeviceLock::spellings`]).

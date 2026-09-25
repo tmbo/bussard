@@ -130,8 +130,46 @@ fn test_import_populates_the_lock() -> TestResult {
     ] {
         assert!(lock.contains(line), "lock lacks {line}\n{lock}");
     }
+    // Without an override the one language the program offers is used.
+    assert!(lock.contains("\nlanguage = \"en-US\"\n"), "{lock}");
     // The label parameters have no key.
     assert!(!lock.contains(r#"ref = "P-1_R-1", param"#), "{lock}");
+    Ok(())
+}
+
+#[test]
+fn test_import_with_language_records_it_for_the_reimport() -> TestResult {
+    let dir = tmp("language")?;
+    let knxproj = write_knxproj(&dir)?;
+    let out = dir.join("knx");
+    let options = bussard_project::ImportOptions {
+        language: Some("de-DE".to_string()),
+    };
+    bussard_project::import_with(&knxproj, None, &options)?.save(&out)?;
+    let lock = read(&out, "bussard.lock")?;
+    assert!(lock.contains("\nlanguage = \"de-DE\"\n"), "{lock}");
+    // The program has no de-DE layer, so its untranslated texts are used.
+    assert!(lock.contains(r#"text = "Heizung (Bath)""#), "{lock}");
+    let file = read(&out, "devices/1.1.30.toml")?;
+    assert!(file.contains("verzoegerung-heizen = \"9\""), "{file}");
+
+    // A re-import into the directory keeps the recorded language ...
+    assert_eq!(bussard_project::ImportOptions::for_dir(&out), options);
+    let again = bussard_project::import_with(&knxproj, None, &options)?;
+    again.save(&out)?;
+    assert_eq!(read(&out, "bussard.lock")?, lock);
+    assert_eq!(read(&out, "devices/1.1.30.toml")?, file);
+    // ... unless `bussard.toml` overrides it.
+    std::fs::write(
+        out.join("bussard.toml"),
+        "[connection]\ntransport = \"tunnel\"\n\n[import]\nlanguage = \"en-US\"\n",
+    )?;
+    assert_eq!(
+        bussard_project::ImportOptions::for_dir(&out)
+            .language
+            .as_deref(),
+        Some("en-US")
+    );
     Ok(())
 }
 

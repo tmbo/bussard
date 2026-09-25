@@ -819,6 +819,7 @@ fn model_config(overrides: &ConnOverrides, dir: &Path) -> BussardConfig {
         connection,
         // Reconstruction infers nothing about project lint policy.
         lint: None,
+        import: None,
     }
 }
 

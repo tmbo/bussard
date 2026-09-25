@@ -41,14 +41,15 @@ pub fn run_knxproj(
     consent: crate::product_fetch::Consent,
 ) -> anyhow::Result<ExitCode> {
     let password = resolve_password(password_flag);
+    let options = bussard_project::ImportOptions::for_dir(dir);
 
-    let model = match bussard_project::import(path, password.as_deref()) {
+    let model = match bussard_project::import_with(path, password.as_deref(), &options) {
         Ok(model) => model,
         Err(bussard_project::ImportError::PasswordRequired) => {
             // If we have no password yet and a TTY is available, prompt once.
             if password.is_none() && std::io::stdin().is_terminal() {
                 let pw = prompt_password()?;
-                bussard_project::import(path, Some(&pw))?
+                bussard_project::import_with(path, Some(&pw), &options)?
             } else {
                 anyhow::bail!(
                     "project is password-protected; provide --password, set \

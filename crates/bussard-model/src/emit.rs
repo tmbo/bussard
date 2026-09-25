@@ -474,10 +474,17 @@ pub(crate) fn render_groups(
 // ---------------------------------------------------------------------------
 
 /// Renders `bussard.lock`, always fresh (it is fully generated).
-pub(crate) fn render_lock(source: Option<&str>, devices: &[LockDevice]) -> String {
+pub(crate) fn render_lock(
+    source: Option<&str>,
+    language: Option<&str>,
+    devices: &[LockDevice],
+) -> String {
     let mut out = format!("{LOCK_HEADER}\nversion = {LOCK_VERSION}\n");
     if let Some(s) = source {
         out.push_str(&format!("source = {}\n", basic_string(s)));
+    }
+    if let Some(l) = language {
+        out.push_str(&format!("language = {}\n", basic_string(l)));
     }
     for d in devices {
         out.push_str("\n[[device]]\n");

@@ -428,6 +428,7 @@ mod tests {
             config: BussardConfig {
                 connection: Default::default(),
                 lint: Some(config),
+                import: None,
             },
             groups,
             links: Default::default(),

@@ -177,6 +177,10 @@ pub struct ProjectInfo {
     pub name: Option<String>,
     /// The declared `GroupAddressStyle`, if present and recognised.
     pub group_address_style: Option<GroupAddressStyle>,
+    /// The project's language, when `ProjectInformation` states one in a
+    /// `Language` or `DefaultLanguage` attribute. ETS 6 exports seen so far
+    /// state none; the importer then infers it from the programs.
+    pub language: Option<String>,
 }
 
 /// Parses `project.xml` for the project name and group-address style.
@@ -207,6 +211,9 @@ pub fn parse_project_info(xml: &str) -> Result<ProjectInfo> {
                 info.group_address_style = attr_value(&e, b"GroupAddressStyle", context)?
                     .as_deref()
                     .and_then(GroupAddressStyle::from_attr);
+                info.language = non_empty(attr_value(&e, b"Language", context)?.as_deref()).or(
+                    non_empty(attr_value(&e, b"DefaultLanguage", context)?.as_deref()),
+                );
                 // The first ProjectInformation is authoritative; stop early.
                 break;
             }
@@ -675,6 +682,17 @@ mod tests {
             info.group_address_style,
             Some(GroupAddressStyle::ThreeLevel)
         );
+    }
+
+    #[test]
+    fn test_parse_project_info_reads_a_stated_language() -> Result<()> {
+        let xml = r#"<KNX><Project Id="P-1"><ProjectInformation Name="N" Language="de-DE"/></Project></KNX>"#;
+        assert_eq!(parse_project_info(xml)?.language.as_deref(), Some("de-DE"));
+        let xml = r#"<KNX><Project Id="P-1"><ProjectInformation Name="N" DefaultLanguage="fr-FR"/></Project></KNX>"#;
+        assert_eq!(parse_project_info(xml)?.language.as_deref(), Some("fr-FR"));
+        let xml = r#"<KNX><Project Id="P-1"><ProjectInformation Name="N"/></Project></KNX>"#;
+        assert_eq!(parse_project_info(xml)?.language, None);
+        Ok(())
     }
 
     #[test]

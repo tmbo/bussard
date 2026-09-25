@@ -4,8 +4,9 @@
 //! Dynamic-section channel defs, and the module argument ids. See
 //! [`bussard_ets::application`].
 
-pub use bussard_ets::application::{ApplicationProgram, parse_application_program};
+pub use bussard_ets::application::ApplicationProgram;
 
-// Only `build.rs`'s unit tests construct a `ChannelDef` directly.
+// Only `build.rs`'s unit tests construct a `ChannelDef` directly or parse a
+// program with the default language.
 #[cfg(test)]
-pub use bussard_ets::application::ChannelDef;
+pub use bussard_ets::application::{ChannelDef, parse_application_program};

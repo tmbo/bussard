@@ -79,6 +79,7 @@ pub(crate) struct GroupEntry {
 pub(crate) struct LockFile {
     pub version: u32,
     pub source: Option<String>,
+    pub language: Option<String>,
     #[serde(default, rename = "device")]
     pub devices: Vec<LockDevice>,
 }

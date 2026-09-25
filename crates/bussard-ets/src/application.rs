@@ -10,11 +10,13 @@
 //!   section's `<Channel>` definitions and module `<Argument>` ids, plus the
 //!   base com-object `BaseNumber` reference used for module object numbering.
 //!
-//! Everything is keyed by full XML `Id`, so refs resolve by lookup. English
-//! (`en-US`) translations from the file's `<Languages>` section override the
-//! default-language `Name`/`Text` attributes, matching ETS behaviour.
+//! Everything is keyed by full XML `Id`, so refs resolve by lookup. The
+//! translations of one language from the file's `<Languages>` section
+//! override the default-language `Name`, `Text` and `FunctionText`
+//! attributes, matching ETS behaviour: en-US for [`parse_application_program`],
+//! the caller's choice for [`parse_application_program_in`].
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
@@ -91,7 +93,7 @@ pub struct ChannelRef {
     pub number: Option<u32>,
     /// The `Name` attribute (the vendor's short label), if non-empty.
     pub name: Option<String>,
-    /// The `Text` attribute (the display label, en-US translation applied),
+    /// The `Text` attribute (the display label, translation applied),
     /// which may carry `{{0:…}}` and `{{Arg…}}` placeholders.
     pub text: Option<String>,
     /// The `TextParameterRefId`, app-relative: the parameter ref whose value
@@ -108,7 +110,7 @@ pub struct BlockRef {
     pub id: String,
     /// The `Name` attribute, if non-empty.
     pub name: Option<String>,
-    /// The `Text` attribute (en-US translation applied), if non-empty; may
+    /// The `Text` attribute (translation applied), if non-empty; may
     /// carry `{{0:…}}` and `{{Arg…}}` placeholders.
     pub text: Option<String>,
     /// The `TextParameterRefId`, app-relative: the parameter ref whose value
@@ -367,7 +369,7 @@ pub enum DynamicNode {
         id: String,
         /// The `Name` attribute, if non-empty.
         name: Option<String>,
-        /// The `Text` attribute (en-US translation applied), if non-empty.
+        /// The `Text` attribute (translation applied), if non-empty.
         text: Option<String>,
         /// The `Number` attribute.
         number: Option<u32>,
@@ -382,7 +384,7 @@ pub enum DynamicNode {
         id: String,
         /// The `Name` attribute, if non-empty.
         name: Option<String>,
-        /// The `Text` attribute (en-US translation applied), if non-empty.
+        /// The `Text` attribute (translation applied), if non-empty.
         text: Option<String>,
         /// The `TextParameterRefId`, app-relative.
         text_parameter_ref: Option<String>,
@@ -626,8 +628,10 @@ pub enum ParameterType {
 pub struct EnumValue {
     /// The numeric `Value`.
     pub value: i64,
-    /// The display `Text`.
+    /// The display `Text` (translation applied).
     pub text: String,
+    /// The `Id`, which a translation refers to.
+    pub id: Option<String>,
     /// The decoded `BinaryValue` of a `<TypeRestriction Base="BinaryValue">`
     /// member: the octets ETS writes to memory for it, in place of `Value`
     /// (the ABB BE/S16's `…Select` parameters: `Value="0"`,
@@ -748,7 +752,7 @@ pub struct ParameterRef {
     pub value: Option<String>,
     /// An `Access` override, if present.
     pub access: Option<String>,
-    /// A `Text` override (en-US translation applied), if present: the label
+    /// A `Text` override (translation applied), if present: the label
     /// ETS shows for this ref instead of the parameter's own `Text`.
     pub text: Option<String>,
 }
@@ -1059,8 +1063,11 @@ pub struct ApplicationProgram {
     pub version: Option<String>,
     /// The mask version with the `MV-` prefix stripped, e.g. `"07B0"`.
     pub mask_version: Option<String>,
-    /// Application-program display name (en-US resolved).
+    /// Application-program display name (translation applied).
     pub name: Option<String>,
+    /// The declared `DefaultLanguage`: the language of the untranslated
+    /// attributes, e.g. `en-US`.
+    pub default_language: Option<String>,
     /// The declared `LoadProcedureStyle`.
     pub load_procedure_style: Option<String>,
     /// The declared `ProgramType`: absent (or `ApplicationProgram`) for an
@@ -1107,7 +1114,7 @@ pub struct ApplicationProgram {
     pub channels: HashMap<String, ChannelDef>,
     /// Every Dynamic-section `<Channel>` with its id, `Number` and
     /// `TextParameterRefId`, keyed like [`Self::channels`]. Unlike
-    /// [`ChannelDef`], the `Text` here has the en-US translation applied.
+    /// [`ChannelDef`], the `Text` here has the translation applied.
     pub channel_refs: HashMap<String, ChannelRef>,
     /// Module `<Argument>` name → app-relative argument id (e.g.
     /// `ArgBeschriftung` → `MD-1_A-3`), used to resolve `{{Arg…}}` placeholders
@@ -1259,6 +1266,18 @@ impl ResolvedParameter<'_> {
 /// `id` is the application-program id (used for error context and as the
 /// returned id).
 pub fn parse_application_program(id: &str, xml: &[u8]) -> Result<ApplicationProgram> {
+    parse_application_program_in(id, xml, crate::translation::DEFAULT_LANGUAGE)
+}
+
+/// [`parse_application_program`] with the texts in `language` (an ETS
+/// identifier such as `de-DE`): its translations replace the untranslated
+/// attributes, and an attribute it does not translate keeps the program's
+/// `DefaultLanguage` text.
+pub fn parse_application_program_in(
+    id: &str,
+    xml: &[u8],
+    language: &str,
+) -> Result<ApplicationProgram> {
     let context = format!("application program {id}");
     // Strip a leading UTF-8 BOM on the bytes so the reader starts on `<`.
     let xml = xml.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(xml);
@@ -1270,8 +1289,8 @@ pub fn parse_application_program(id: &str, xml: &[u8]) -> Result<ApplicationProg
         ..Default::default()
     };
 
-    // en-US translations, applied after the main pass.
-    let mut translations = TranslationCollector::new();
+    // The chosen language's translations, applied after the main pass.
+    let mut translations = TranslationCollector::for_language(language);
 
     // Everything the element handlers accumulate across events (see
     // [`ParseState`]).
@@ -1443,6 +1462,64 @@ pub fn parse_application_program(id: &str, xml: &[u8]) -> Result<ApplicationProg
     Ok(app)
 }
 
+/// The languages an ApplicationProgram XML offers (see [`program_languages`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProgramLanguages {
+    /// The `DefaultLanguage` of the program: the language of its untranslated
+    /// attributes.
+    pub default: Option<String>,
+    /// The `Identifier` of every `<Language>` translation layer.
+    pub translations: BTreeSet<String>,
+}
+
+impl ProgramLanguages {
+    /// Whether the program's texts exist in `language`, as its default
+    /// language or as a translation (compared without regard to case).
+    pub fn offers(&self, language: &str) -> bool {
+        self.default
+            .iter()
+            .chain(&self.translations)
+            .any(|l| l.eq_ignore_ascii_case(language))
+    }
+}
+
+/// Reads the languages an ApplicationProgram XML offers with a byte scan, so
+/// an importer can choose the language before the (much slower) full parse:
+/// the first `DefaultLanguage` attribute and the `Identifier` of every
+/// `<Language>` element.
+pub fn program_languages(xml: &[u8]) -> ProgramLanguages {
+    const DEFAULT: &[u8] = b"DefaultLanguage=\"";
+    const LAYER: &[u8] = b"<Language Identifier=\"";
+    let value_at = |start: usize| -> Option<String> {
+        let rest = xml.get(start..)?;
+        let end = rest.iter().position(|&b| b == b'"')?;
+        std::str::from_utf8(&rest[..end])
+            .ok()
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    };
+    let mut out = ProgramLanguages::default();
+    let mut i = 0;
+    while let Some(skip) = xml[i..].iter().position(|&b| b == b'<' || b == b'D') {
+        i += skip;
+        let rest = &xml[i..];
+        if out.default.is_none() && rest.starts_with(DEFAULT) {
+            out.default = value_at(i + DEFAULT.len());
+            i += DEFAULT.len();
+            continue;
+        }
+        if rest.starts_with(LAYER) {
+            if let Some(v) = value_at(i + LAYER.len()) {
+                out.translations.insert(v);
+            }
+            i += LAYER.len();
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
 /// Convenience wrapper over [`parse_application_program`] for `&str` callers
 /// (chiefly tests). Production callers hand raw bytes to the byte API to avoid
 /// an eager UTF-8 validation of a multi-megabyte file.
@@ -1478,6 +1555,7 @@ fn handle_start(
                 app.mask_version = Some(mv.strip_prefix("MV-").unwrap_or(mv).to_string());
             }
             app.name = get(m, b"Name").map(str::to_string);
+            app.default_language = get(m, b"DefaultLanguage").map(str::to_string);
             app.load_procedure_style = get(m, b"LoadProcedureStyle").map(str::to_string);
             app.program_type = get(m, b"ProgramType").map(str::to_string);
             // KNX Secure capability (issue #71, spec §11): the application
@@ -1593,7 +1671,7 @@ fn handle_start(
 
     // A `<Translation>` may appear as a Start with a nested value; capture attr.
     if e.local_name().as_ref() == b"Translation" {
-        translations.record(m, &["Name", "Text"]);
+        translations.record(m, TRANSLATED);
     }
     Ok(())
 }
@@ -1682,7 +1760,7 @@ fn handle_empty(
             }
         }
         b"TranslationElement" => translations.enter_element(get(m, b"RefId")),
-        b"Translation" => translations.record(m, &["Name", "Text"]),
+        b"Translation" => translations.record(m, TRANSLATED),
         // Parameter-type shapes (all self-closing except TypeRestriction).
         b"TypeNumber" => {
             state.pt_kind = Some(ParameterType::Int {
@@ -1721,6 +1799,7 @@ fn handle_empty(
                 values.push(EnumValue {
                     value,
                     text: text.to_string(),
+                    id: get(m, b"Id").map(str::to_string),
                     binary_value,
                 });
             }
@@ -1744,7 +1823,11 @@ fn handle_empty(
     Ok(())
 }
 
-/// Applies collected en-US translations to names/texts.
+/// The attributes a translation may replace.
+const TRANSLATED: &[&str] = &["Name", "Text", "FunctionText"];
+
+/// Applies the collected translations to names, texts, function texts and
+/// enumeration texts.
 fn apply_translations(app: &mut ApplicationProgram, translations: &TranslationCollector) {
     if translations.is_empty() {
         return;
@@ -1757,10 +1840,25 @@ fn apply_translations(app: &mut ApplicationProgram, translations: &TranslationCo
         if let Some(t) = translations.get(id, "Text") {
             obj.text = Some(t.to_string());
         }
+        if let Some(t) = translations.get(id, "FunctionText") {
+            obj.function_text = Some(t.to_string());
+        }
     }
     for (id, cref) in app.com_object_refs.iter_mut() {
         if let Some(t) = translations.get(id, "Text") {
             cref.text = Some(t.to_string());
+        }
+        if let Some(t) = translations.get(id, "FunctionText") {
+            cref.function_text = Some(t.to_string());
+        }
+    }
+    for decl in app.parameter_types.values_mut() {
+        if let ParameterType::Enum { values, .. } = &mut decl.kind {
+            for v in values {
+                if let Some(t) = v.id.as_deref().and_then(|id| translations.get(id, "Text")) {
+                    v.text = t.to_string();
+                }
+            }
         }
     }
     for (id, param) in app.parameters.iter_mut() {
@@ -3154,6 +3252,77 @@ mod tests {
             app.com_objects.get("M-1_A-1_O-0").unwrap().text.as_deref(),
             Some("Switch")
         );
+    }
+
+    const LANGUAGE_SAMPLE: &str = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-1" Name="Actuator" DefaultLanguage="en-US">
+          <Static>
+           <ParameterTypes>
+            <ParameterType Id="M-1_A-1_PT-1" Name="mode"><TypeRestriction Base="Value" SizeInBit="8">
+             <Enumeration Text="Blind" Value="0" Id="M-1_A-1_PT-1_EN-0" />
+             <Enumeration Text="Shutter" Value="1" Id="M-1_A-1_PT-1_EN-1" />
+            </TypeRestriction></ParameterType>
+           </ParameterTypes>
+           <ComObjectTable>
+            <ComObject Id="M-1_A-1_O-0" Number="0" Text="Blind" FunctionText="Long-time operation" />
+           </ComObjectTable>
+          </Static>
+          <Languages><Language Identifier="de-DE">
+           <TranslationUnit RefId="M-1_A-1">
+            <TranslationElement RefId="M-1_A-1_PT-1_EN-1"><Translation AttributeName="Text" Text="Rollladen" /></TranslationElement>
+            <TranslationElement RefId="M-1_A-1_O-0">
+             <Translation AttributeName="Text" Text="Jalousie" />
+             <Translation AttributeName="FunctionText" Text="Langzeitbetrieb" />
+            </TranslationElement>
+           </TranslationUnit>
+          </Language></Languages>
+         </ApplicationProgram>
+        </KNX>"#;
+
+    #[test]
+    fn test_parse_application_program_in_applies_the_chosen_language() -> Result<()> {
+        let app = parse_application_program_in("M-1_A-1", LANGUAGE_SAMPLE.as_bytes(), "de-de")?;
+        let object = app.com_objects.get("M-1_A-1_O-0");
+        assert_eq!(object.and_then(|o| o.text.as_deref()), Some("Jalousie"));
+        assert_eq!(
+            object.and_then(|o| o.function_text.as_deref()),
+            Some("Langzeitbetrieb")
+        );
+        let texts: Vec<&str> = match app.parameter_types.get("M-1_A-1_PT-1").map(|d| &d.kind) {
+            Some(ParameterType::Enum { values, .. }) => {
+                values.iter().map(|v| v.text.as_str()).collect()
+            }
+            _ => Vec::new(),
+        };
+        // An enumeration the layer does not translate keeps its default text.
+        assert_eq!(texts, ["Blind", "Rollladen"]);
+        assert_eq!(app.default_language.as_deref(), Some("en-US"));
+
+        // The en-US parse keeps the untranslated texts.
+        let app = parse_application_program("M-1_A-1", LANGUAGE_SAMPLE.as_bytes())?;
+        let object = app.com_objects.get("M-1_A-1_O-0");
+        assert_eq!(
+            object.and_then(|o| o.function_text.as_deref()),
+            Some("Long-time operation")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_program_languages_scans_default_and_layers() {
+        let langs = program_languages(LANGUAGE_SAMPLE.as_bytes());
+        assert_eq!(langs.default.as_deref(), Some("en-US"));
+        assert_eq!(
+            langs
+                .translations
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["de-DE"]
+        );
+        assert!(langs.offers("de-DE") && langs.offers("EN-us"));
+        assert!(!langs.offers("fr-FR"));
+        assert_eq!(program_languages(b"<KNX/>"), ProgramLanguages::default());
     }
 
     const MODULE_SAMPLE: &str = r#"<?xml version="1.0"?>

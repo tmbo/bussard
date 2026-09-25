@@ -310,8 +310,9 @@ fn assemble(sources: &Sources, models_dir: Option<&Path>) -> Result<Model, LoadE
         };
         let path = sources.path(rel);
         // The lock entry is found by the address the file declares.
-        let (device, device_links) =
+        let (mut device, device_links) =
             files::join_device(&path, text, &lock_by_address, models.as_ref())?;
+        device.lock.language = lock.language.clone();
         if let Some(first) = source_file.get(&device.address) {
             return Err(LoadError::DuplicateDeviceAddress {
                 address: device.address,
@@ -403,6 +404,14 @@ impl Model {
         )
     }
 
+    /// The language `bussard.lock` records: the one the devices carry (see
+    /// [`crate::schema::DeviceLock::language`]).
+    pub fn lock_language(&self) -> Option<&str> {
+        self.devices
+            .values()
+            .find_map(|l| l.device.lock.language.as_deref())
+    }
+
     /// The lock entries this model writes, sorted by address.
     fn lock_entries(&self) -> Vec<LockDevice> {
         self.devices
@@ -449,7 +458,11 @@ impl Model {
             locks.iter().map(|l| (l.address, l)).collect();
         out.insert(
             LOCK_FILE.to_string(),
-            emit::render_lock(self.groups.imported_from.as_deref(), &locks),
+            emit::render_lock(
+                self.groups.imported_from.as_deref(),
+                self.lock_language(),
+                &locks,
+            ),
         );
         let no_links: Vec<Link> = Vec::new();
         for (address, loaded) in &self.devices {
@@ -611,6 +624,23 @@ pub fn load_config(dir: &Path) -> Result<BussardConfig, LoadError> {
         Some(text) => Ok(toml_io::parse(&path, &text)?),
         None => Ok(BussardConfig::default()),
     }
+}
+
+/// The language `bussard import` should derive texts in for the model in
+/// `dir`: `[import] language` from `bussard.toml`, else the `language` the
+/// existing `bussard.lock` records, else `None` (the import chooses). Files
+/// that are missing or do not parse count as absent.
+pub fn import_language(dir: &Path) -> Option<String> {
+    let configured = load_config(dir)
+        .ok()
+        .and_then(|c| c.import)
+        .and_then(|i| i.language)
+        .filter(|l| !l.trim().is_empty());
+    configured.or_else(|| {
+        let path = dir.join(LOCK_FILE);
+        let text = fs::read_to_string(&path).ok()?;
+        parse_lock(&path, &text).ok()?.language
+    })
 }
 
 /// Loads a `groups.toml` from an explicit path, returning an empty plan when

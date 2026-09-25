@@ -1,4 +1,4 @@
-//! en-US translation resolution for ETS XML.
+//! Translation resolution for ETS XML.
 //!
 //! ETS stores non-default-language strings in a `<Languages>` section:
 //!
@@ -14,32 +14,61 @@
 //! </Languages>
 //! ```
 //!
-//! ETS/xknxproject resolve display strings to en-US by default, falling back to
-//! the untranslated attribute (the element's `DefaultLanguage`) rather than to
-//! some other language. This collector applies that rule: it keeps only en-US
-//! `<Translation>` values, keyed by `(element id, attribute name)`, and the
-//! parser applies them after the main pass.
+//! A collector keeps the `<Translation>` values of one language, keyed by
+//! `(element id, attribute name)`, and the parser applies them after the main
+//! pass. An attribute without a translation keeps its untranslated text (the
+//! program's `DefaultLanguage`) rather than falling back to some other
+//! language. [`TranslationCollector::new`] collects en-US, the language
+//! ETS/xknxproject resolve to by default; `bussard import` picks the
+//! project's language instead (see [`TranslationCollector::for_language`]).
 
 use std::collections::HashMap;
 
 use crate::attrs::{Attrs, get};
 
-/// Collects en-US translations while streaming an ETS XML file.
+/// The language [`TranslationCollector::new`] collects.
+pub const DEFAULT_LANGUAGE: &str = "en-US";
+
+/// Collects the translations of one language while streaming an ETS XML file.
 ///
 /// The parser feeds it `Language`, `TranslationElement`, and `Translation`
-/// events; it retains only the en-US layer.
-#[derive(Debug, Default)]
+/// events; it retains only the layer of its language.
+#[derive(Debug)]
 pub struct TranslationCollector {
+    /// The language kept, e.g. `de-DE`.
+    language: String,
     cur_lang: Option<String>,
     cur_element: Option<String>,
-    /// `(element id, attribute name)` → en-US text.
+    /// `(element id, attribute name)` → translated text.
     translations: HashMap<(String, String), String>,
 }
 
+impl Default for TranslationCollector {
+    fn default() -> Self {
+        Self::for_language(DEFAULT_LANGUAGE)
+    }
+}
+
 impl TranslationCollector {
-    /// Creates an empty collector.
+    /// Creates an empty collector for en-US.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Creates an empty collector for `language` (an ETS identifier such as
+    /// `de-DE`, compared without regard to case).
+    pub fn for_language(language: &str) -> Self {
+        Self {
+            language: language.to_string(),
+            cur_lang: None,
+            cur_element: None,
+            translations: HashMap::new(),
+        }
+    }
+
+    /// The language this collector keeps.
+    pub fn language(&self) -> &str {
+        &self.language
     }
 
     /// Records the enclosing `<Language Identifier=…>`.
@@ -64,11 +93,15 @@ impl TranslationCollector {
     }
 
     /// Records a `<Translation AttributeName=… Text=…>` if the enclosing
-    /// language is en-US and it targets one of `wanted_attrs`.
+    /// language is the collector's and it targets one of `wanted_attrs`.
     ///
     /// `m` is the parsed attribute map of the `<Translation>` tag.
     pub fn record(&mut self, m: &Attrs, wanted_attrs: &[&str]) {
-        if self.cur_lang.as_deref() != Some("en-US") {
+        if !self
+            .cur_lang
+            .as_deref()
+            .is_some_and(|l| l.eq_ignore_ascii_case(&self.language))
+        {
             return;
         }
         let (Some(element), Some(attr_name), Some(text)) = (
@@ -86,7 +119,7 @@ impl TranslationCollector {
         }
     }
 
-    /// The en-US text for `(element id, attribute)`, if collected.
+    /// The translated text for `(element id, attribute)`, if collected.
     pub fn get(&self, element_id: &str, attribute: &str) -> Option<&str> {
         self.translations
             .get(&(element_id.to_string(), attribute.to_string()))

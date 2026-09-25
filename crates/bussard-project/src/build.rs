@@ -5,8 +5,9 @@
 //! size / name, links are split into send (first) and listen (rest), and group
 //! addresses without an explicit DPT inherit one from a linked com-object.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use bussard_ets::application::{ProgramLanguages, parse_application_program_in, program_languages};
 use bussard_model::loader::{LoadedDevice, Model};
 use bussard_model::schema::{
     BussardConfig, Channel, ComObject, Device, Group, Groups, Link, Links, Location, Product, Range,
@@ -18,7 +19,7 @@ use crate::error::Result;
 use crate::facts::{apply_facts, derive_facts};
 use crate::hardware::Hardware;
 use crate::knx_master;
-use crate::manufacturer::{ApplicationProgram, parse_application_program};
+use crate::manufacturer::ApplicationProgram;
 use crate::project::{RawComObjectInstance, RawDevice, RawProject};
 
 /// A fully-resolved com object on a device.
@@ -226,7 +227,15 @@ fn generic_channel_label(app_channel_id: &str) -> Option<String> {
 
 /// Builds the model from a parsed project, reading manufacturer XML from the
 /// container as devices require it.
-pub fn build_model(project: RawProject, container: &mut Container) -> Result<Model> {
+///
+/// `language` is the language to derive texts in when the caller has one (the
+/// user's override, the lock's, or the project's); otherwise it is inferred
+/// from the programs (see [`choose_language`]).
+pub fn build_model(
+    project: RawProject,
+    container: &mut Container,
+    language: Option<&str>,
+) -> Result<Model> {
     // Manufacturer id -> name (best-effort; absent master is not fatal).
     let manufacturers = match container.knx_master_xml() {
         Ok(xml) => knx_master::parse_manufacturers(&xml)?,
@@ -259,7 +268,8 @@ pub fn build_model(project: RawProject, container: &mut Container) -> Result<Mod
     // The distinct referenced application-program ids, in first-seen order (kept
     // only for a stable serial read; the cache is a keyed lookup so emission
     // order downstream is independent of it).
-    let app_cache = parse_applications(container, &project.devices, &app_ids_by_device)?;
+    let (app_cache, language) =
+        parse_applications(container, &project.devices, &app_ids_by_device, language)?;
 
     // Accumulate: links per device, com_objects per device, and (GA -> inferred
     // DPT) from linked com-objects for GAs lacking an explicit DPT.
@@ -440,7 +450,10 @@ pub fn build_model(project: RawProject, container: &mut Container) -> Result<Mod
             com_objects,
             security,
             application_override: None,
-            lock: Default::default(),
+            lock: bussard_model::schema::DeviceLock {
+                language: Some(language.clone()),
+                ..Default::default()
+            },
         };
 
         // The lock-side facts (channel handles, object and parameter keys,
@@ -551,11 +564,16 @@ pub fn build_model(project: RawProject, container: &mut Container) -> Result<Mod
 /// is unchanged regardless of parse completion order. On a parse error the
 /// lowest app-id error wins (results are sorted by id before the first error is
 /// reported), so the surfaced failure is stable across runs and thread counts.
+///
+/// The texts are parsed in `language` when given, else in the language
+/// [`choose_language`] infers from the programs; the language used is
+/// returned with the cache.
 fn parse_applications(
     container: &mut Container,
     devices: &[RawDevice],
     app_ids_by_device: &[Vec<String>],
-) -> Result<HashMap<String, ApplicationProgram>> {
+    language: Option<&str>,
+) -> Result<(HashMap<String, ApplicationProgram>, String)> {
     use rayon::prelude::*;
 
     // The distinct referenced app ids, each paired with a device address for
@@ -572,6 +590,17 @@ fn parse_applications(
         }
     }
 
+    let language = match language {
+        Some(l) => l.to_string(),
+        None => {
+            let offered: Vec<ProgramLanguages> = raw
+                .iter()
+                .map(|(_, bytes)| program_languages(bytes))
+                .collect();
+            choose_language(&offered)
+        }
+    };
+
     // Parallel parse. Each result carries its app id so a failure can be
     // attributed deterministically (lowest id wins). The closure yields the
     // parser's own `EtsError` result; it converts to `ImportError` via `?` at
@@ -579,7 +608,7 @@ fn parse_applications(
     let mut parsed: Vec<(String, bussard_ets::Result<ApplicationProgram>)> = raw
         .into_par_iter()
         .map(|(id, bytes)| {
-            let app = parse_application_program(&id, &bytes);
+            let app = parse_application_program_in(&id, &bytes, &language);
             (id, app)
         })
         .collect();
@@ -591,7 +620,79 @@ fn parse_applications(
     for (id, result) in parsed {
         cache.insert(id, result?);
     }
-    Ok(cache)
+    Ok((cache, language))
+}
+
+/// The language a project's texts are derived in when neither the user nor
+/// the project names one, from the languages each program offers (its
+/// `DefaultLanguage` and its translation layers): the one language every
+/// program offers, leaving out a language that is merely every program's
+/// default when another is also common (ETS exports the translations of the
+/// languages the project uses, so a German project's programs all carry
+/// de-DE even when their default is en-US). Several candidates prefer en-US,
+/// then the first by name; no common language falls back to the most common
+/// `DefaultLanguage`, and no program at all to en-US.
+pub(crate) fn choose_language(programs: &[ProgramLanguages]) -> String {
+    const FALLBACK: &str = bussard_ets::translation::DEFAULT_LANGUAGE;
+    let offered = |p: &ProgramLanguages| -> BTreeSet<String> {
+        p.default
+            .iter()
+            .chain(&p.translations)
+            .map(|l| l.to_ascii_lowercase())
+            .collect()
+    };
+    let Some(first) = programs.first() else {
+        return FALLBACK.to_string();
+    };
+    let mut common = offered(first);
+    for p in &programs[1..] {
+        let o = offered(p);
+        common.retain(|l| o.contains(l));
+    }
+    let every_default = |l: &str| {
+        programs.iter().all(|p| {
+            p.default
+                .as_deref()
+                .is_some_and(|d| d.eq_ignore_ascii_case(l))
+        })
+    };
+    if common.len() > 1 {
+        let specific: BTreeSet<String> = common
+            .iter()
+            .filter(|l| !every_default(l))
+            .cloned()
+            .collect();
+        if !specific.is_empty() {
+            common = specific;
+        }
+    }
+    // Spell the choice the way the programs do.
+    let spelled = |lower: &str| -> String {
+        programs
+            .iter()
+            .flat_map(|p| p.default.iter().chain(&p.translations))
+            .find(|l| l.eq_ignore_ascii_case(lower))
+            .cloned()
+            .unwrap_or_else(|| lower.to_string())
+    };
+    if common.len() == 1 {
+        return common.iter().next().map(|l| spelled(l)).unwrap_or_default();
+    }
+    if common.contains(&FALLBACK.to_ascii_lowercase()) {
+        return FALLBACK.to_string();
+    }
+    if let Some(l) = common.iter().next() {
+        return spelled(l);
+    }
+    let mut defaults: BTreeMap<String, usize> = BTreeMap::new();
+    for d in programs.iter().filter_map(|p| p.default.as_deref()) {
+        *defaults.entry(d.to_string()).or_default() += 1;
+    }
+    defaults
+        .iter()
+        .max_by(|a, b| a.1.cmp(b.1).then_with(|| b.0.cmp(a.0)))
+        .map(|(l, _)| l.clone())
+        .unwrap_or_else(|| FALLBACK.to_string())
 }
 
 fn app_ids_for(
@@ -1101,6 +1202,51 @@ pub(crate) fn slugify(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::manufacturer::parse_application_program;
+
+    fn offered(default: Option<&str>, layers: &[&str]) -> ProgramLanguages {
+        ProgramLanguages {
+            default: default.map(str::to_string),
+            translations: layers.iter().map(|l| l.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn test_choose_language_takes_the_one_every_program_offers() {
+        // The German house: English defaults with a de-DE layer, and programs
+        // written in German.
+        let programs = [
+            offered(Some("en-US"), &["de-DE"]),
+            offered(Some("en-US"), &["de-DE", "en-US", "fr-FR"]),
+            offered(Some("de-DE"), &["de-DE"]),
+        ];
+        assert_eq!(choose_language(&programs), "de-DE");
+        // Every default is en-US, but every program also carries de-DE.
+        let programs = [
+            offered(Some("en-US"), &["de-DE"]),
+            offered(Some("en-US"), &["de-DE"]),
+        ];
+        assert_eq!(choose_language(&programs), "de-DE");
+    }
+
+    #[test]
+    fn test_choose_language_fallbacks() {
+        assert_eq!(choose_language(&[]), "en-US");
+        assert_eq!(choose_language(&[offered(Some("en-US"), &[])]), "en-US");
+        // No common language: the most common default.
+        let programs = [
+            offered(Some("de-DE"), &[]),
+            offered(Some("fr-FR"), &[]),
+            offered(Some("de-DE"), &[]),
+        ];
+        assert_eq!(choose_language(&programs), "de-DE");
+        // Several specific candidates prefer en-US.
+        let programs = [
+            offered(Some("nl-NL"), &["de-DE", "en-US"]),
+            offered(Some("fr-FR"), &["de-DE", "en-US"]),
+        ];
+        assert_eq!(choose_language(&programs), "en-US");
+    }
 
     #[test]
     fn slug_basic() {

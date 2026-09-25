@@ -48,6 +48,36 @@ use container::Container;
 /// the archive is encrypted and no password was supplied, and
 /// [`ImportError::WrongPassword`] if the supplied password does not decrypt it.
 pub fn import(path: &Path, password: Option<&str>) -> Result<Model, ImportError> {
+    import_with(path, password, &ImportOptions::default())
+}
+
+/// Options for [`import_with`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ImportOptions {
+    /// The language to derive texts in (an ETS identifier such as `de-DE`).
+    /// `None` lets the import choose: the project's stated language, else the
+    /// language every program offers (see "Text language" in
+    /// `docs/model-format.md`).
+    pub language: Option<String>,
+}
+
+impl ImportOptions {
+    /// The options for importing into the model directory `dir`: the language
+    /// its `bussard.toml` sets under `[import]`, else the one its
+    /// `bussard.lock` records, so a re-import keeps the texts it wrote.
+    pub fn for_dir(dir: &Path) -> Self {
+        Self {
+            language: bussard_model::import_language(dir),
+        }
+    }
+}
+
+/// [`import`] with [`ImportOptions`].
+pub fn import_with(
+    path: &Path,
+    password: Option<&str>,
+    options: &ImportOptions,
+) -> Result<Model, ImportError> {
     let mut container = Container::open(path, password)?;
     let schema = container.schema();
     tracing::info!(
@@ -60,6 +90,7 @@ pub fn import(path: &Path, password: Option<&str>) -> Result<Model, ImportError>
     // `project.xml` carries the project name and the group-address style, which
     // `0.xml` does not. Read it (when present) to populate the name and to
     // refuse projects whose address style bussard cannot represent.
+    let mut language = options.language.clone();
     if let Some(info_xml) = container.project_info_xml() {
         let info = project::parse_project_info(info_xml)?;
         if let Some(style) = info.group_address_style
@@ -72,9 +103,12 @@ pub fn import(path: &Path, password: Option<&str>) -> Result<Model, ImportError>
         if raw.project_name.is_none() {
             raw.project_name = info.name;
         }
+        if language.is_none() {
+            language = info.language;
+        }
     }
 
-    let mut model = build::build_model(raw, &mut container)?;
+    let mut model = build::build_model(raw, &mut container, language.as_deref())?;
     // Record provenance.
     if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
         model.groups.imported_from = Some(name.to_string());
