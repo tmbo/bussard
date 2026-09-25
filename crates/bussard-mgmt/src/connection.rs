@@ -1023,6 +1023,14 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
         self.target
     }
 
+    /// Whether this connection is known to be closed: the device sent a
+    /// `T_Disconnect`, a request timed out, or it was closed locally. A closed
+    /// connection refuses every further request with
+    /// [`MgmtError::Disconnected`].
+    pub fn is_closed(&self) -> bool {
+        self.closed
+    }
+
     /// How many numbered data telegrams (NDTs) this connection has sent and had
     /// acknowledged since it was opened.
     ///

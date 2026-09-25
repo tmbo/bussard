@@ -382,4 +382,14 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
     pub async fn disconnect(self) -> Result<()> {
         self.inner.disconnect().await
     }
+
+    /// Unwraps the typed client back into its open [`Layer4Connection`],
+    /// without sending anything.
+    ///
+    /// The seam that lets a caller hand a session it opened for reads (the
+    /// `bussard flash` pre-flight) to a procedure that drives the connection
+    /// itself (the download session, issue #213).
+    pub fn into_l4(self) -> Layer4Connection<Ch> {
+        self.inner
+    }
 }

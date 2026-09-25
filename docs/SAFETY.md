@@ -187,9 +187,12 @@ flash is re-running `bussard flash`.
 
 **The factory-freshness check.** Because there is no backup, `flash` verifies
 that assumption before it writes anything. In its read-only pre-flight it reads
-the load state of every object the download would rewrite: on System B each
-interface object's `PID_LOAD_STATE_CONTROL` plus the resident application id in
-`PID_PROGRAM_VERSION`, on System 7 each load-state machine. Then:
+the load states that decide: on System B the `PID_LOAD_STATE_CONTROL` of the
+application objects (interface-object types 3 and 4) plus the resident
+application id in `PID_PROGRAM_VERSION`, on System 7 each load-state machine.
+The other System B objects never change the verdict, so they are read only when
+no application object reports a load state; the verdict is then the one a read
+of every object gives. Then:
 
 | What the device reports | What `flash` does |
 | --- | --- |
@@ -572,7 +575,11 @@ still see an acknowledgement. That is silent configuration corruption rather
 than a loud failure. ETS runs the same check before it uses an interface.
 
 The check runs once per tunnel. `flash`, `apply` and `restore` hold one tunnel
-for their read-only pre-flight and their write phase, so they check once. A
+for their read-only pre-flight and their write phase, so they check once. Under
+`--yes`, `flash` also keeps the pre-flight's device connection for the write
+phase (issue #213); every check the write phase makes (the plan, the
+freshness verdict, the MCB checks, the post-restart verification) is the same
+on that connection. A
 command that opens several tunnels in turn (`commission`, `replace`) checks on
 each. Group-only commands (`read`, `write`, `monitor`, `capture`, `learn`,
 `test`) never open a device connection and skip it.

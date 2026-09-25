@@ -80,6 +80,10 @@ pub(crate) struct Context<'a> {
     pub tool_key: Option<bussard_secure::Key16>,
     /// The command-wide secure sequence high-water mark.
     pub secure_seq: bussard_secure::SequenceHighWater,
+    /// The pre-flight's connection, kept under `--yes` for the write session
+    /// (issue #213). It holds the bus lease, so it is released before any
+    /// other session opens.
+    pub handover: crate::flash_handover::Handover<'a>,
 }
 
 /// Runs the parameter-only download (module docs).
@@ -95,7 +99,10 @@ pub(crate) fn run(mut ctx: Context<'_>) -> anyhow::Result<ExitCode> {
     // or over a read-only session of its own when the pre-flight did not.
     let read = match ctx.preread.take() {
         Some(read) => read,
-        None => ctx.runtime.block_on(read_device(&ctx))?,
+        None => {
+            ctx.handover.release();
+            ctx.runtime.block_on(read_device(&ctx))?
+        }
     };
     if let Some(reason) = read.code_mismatch {
         eprintln!("refusing the parameter-only download to {target}: {reason}");
@@ -183,6 +190,7 @@ pub(crate) fn run(mut ctx: Context<'_>) -> anyhow::Result<ExitCode> {
     // Write, restart, verify, then read the parameters back on the same
     // (post-restart) connection instead of a fourth session (issue #215).
     let plan = ctx.plan;
+    let handed_over = ctx.handover.take();
     let (outcome, after) = ctx.runtime.block_on(crate::flash_cmd::execute_then(
         ctx.service,
         target,
@@ -194,6 +202,7 @@ pub(crate) fn run(mut ctx: Context<'_>) -> anyhow::Result<ExitCode> {
         ctx.secure_seq.clone(),
         ctx.json,
         &std::cell::Cell::new(None),
+        handed_over,
         async |l4| read_parameter_regions(l4, plan).await,
     ));
     match outcome {

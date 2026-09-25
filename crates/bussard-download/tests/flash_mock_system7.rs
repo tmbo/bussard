@@ -197,6 +197,8 @@ struct DeviceState {
     /// Set when an outage ended; the device answers no numbered frame until a
     /// fresh T_Connect.
     l4_dead_after_outage: bool,
+    /// Layer-4 `T_Connect`s the device saw (issue #213).
+    l4_connects: usize,
     /// KNXnet/IP CONNECT_REQUESTs answered (tunnel (re)establishments).
     tunnel_connects: usize,
 }
@@ -254,6 +256,7 @@ fn fresh_device(mode: LsmMode, fault: Fault) -> Shared {
         tunnel_down_until: None,
         outage_swallowed: 0,
         l4_dead_after_outage: false,
+        l4_connects: 0,
         tunnel_connects: 0,
     }))
 }
@@ -783,6 +786,7 @@ fn on_t_connect(state: &Shared) {
         s.deaths_remaining -= 1;
     }
     s.exchanges_this_connection = 0;
+    s.l4_connects += 1;
     s.authorized = false;
     // The tool reconnecting after a reboot: the device is back up and answers
     // the fresh connection normally.
@@ -819,7 +823,21 @@ const DEVICE: &str = "1.1.99";
 
 /// Starts the mock gateway with the System 7 device model behind it.
 async fn start_gateway(state: &Shared) -> Result<MockGateway, Box<dyn std::error::Error>> {
+    start_gateway_with_delay(state, None).await
+}
+
+/// [`start_gateway`] with every answer delayed by `delay`, to measure
+/// wall-clock (issue #213).
+async fn start_gateway_with_delay(
+    state: &Shared,
+    delay: Option<Duration>,
+) -> Result<MockGateway, Box<dyn std::error::Error>> {
     let addr: bussard_model::IndividualAddress = DEVICE.parse()?;
+    let device = MockDevice::new(addr);
+    let device = match delay {
+        Some(delay) => device.with_response_delay(delay),
+        None => device,
+    };
     let (faults, connects, requests) = (Arc::clone(state), Arc::clone(state), Arc::clone(state));
     Ok(MockGateway::builder()
         .channel(CHANNEL)
@@ -829,7 +847,7 @@ async fn start_gateway(state: &Shared) -> Result<MockGateway, Box<dyn std::error
         .keep_serving()
         .intercept(move |inbound| gateway_faults(&faults, addr, inbound))
         .device(
-            MockDevice::new(addr)
+            device
                 .with_control_hook(move |_, kind| {
                     if kind == TpciKind::Connect {
                         on_t_connect(&connects);
@@ -1176,6 +1194,153 @@ async fn flash_system7_after_restart_verify_catches_reverted_load()
         s.restarts_seen, 2,
         "the pre-download and the terminal restart still fired"
     );
+    Ok(())
+}
+
+/// What one pre-flight-then-flash run of the System 7 device observed (issue
+/// #213).
+#[derive(Debug)]
+struct HandoverRun {
+    ok: bool,
+    t_connects: usize,
+    requests: usize,
+    authorizes: usize,
+    lsm_events: Vec<(u8, u8)>,
+    segment_writes: Vec<(u16, usize)>,
+    device_control_writes: Vec<u8>,
+    memory: Vec<(u16, u8)>,
+    elapsed: Duration,
+}
+
+/// The `bussard flash` sequence against the System 7 device: the read-only
+/// pre-flight (authorize, descriptor, max APDU, the LSM probe) on one
+/// connection, then the MDT-canonical flash, on that same connection
+/// (`adopt`, the `--yes` hand-over of issue #213) or on a fresh one after a
+/// disconnect (the prompt path, and every flash before #213).
+async fn sys7_preflight_then_flash(
+    adopt: bool,
+    delay: Option<Duration>,
+) -> Result<HandoverRun, Box<dyn std::error::Error>> {
+    let state = fresh_device(LsmMode::MemoryMapped, Fault::None);
+    lock(&state).reboot_on_restart = true;
+    let gw = start_gateway_with_delay(&state, delay).await?;
+    let (handle, _actor) = bussard_bus::Bus::connect(
+        ConnectionConfig::tunnel(gw.addr())
+            .with_reconnect(bussard_transport::TunnelReconnect::disabled()),
+    );
+    handle.wait_connected(Duration::from_secs(5)).await;
+    set_sys7_lsm_env(LsmMode::MemoryMapped);
+    // SAFETY: nextest runs each test in its own process; the var only shortens
+    // the reboot wait.
+    unsafe {
+        std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
+    }
+    let plan = plan_flash(
+        &mdt_canonical_app()?,
+        DEVICE,
+        MASK_0705,
+        &no_overrides(),
+        &std::collections::BTreeMap::new(),
+        None,
+        &std::collections::BTreeMap::new(),
+    )?;
+    let started = std::time::Instant::now();
+    let mut connector = LeaseConnector {
+        handle: handle.clone(),
+        target: DEVICE.parse()?,
+        source: "0.0.255".parse()?,
+        timeouts: None,
+    };
+    let mut l4 = bussard_download::Connector::connect(&mut connector).await?;
+    let authorize = l4
+        .authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY)
+        .await?;
+    let mask = bussard_mgmt::read_device_descriptor(&mut l4).await?;
+    let max_apdu = l4.negotiate_max_apdu().await.ok().flatten();
+    let resident = bussard_download::probe_resident_state(&mut l4, mask, None).await;
+    let facts = bussard_download::DeviceFacts {
+        object_table: resident.object_table.clone(),
+        authorize: Some(authorize),
+        max_apdu,
+        max_apdu_absent: l4.max_apdu_absence() == Some(bussard_mgmt::MaxApduAbsence::Answered),
+    };
+    let mut session = if adopt {
+        Session::adopt_with_facts(connector, l4, None, facts).await?
+    } else {
+        let _ = l4.disconnect().await;
+        Session::open_with_facts(connector, None, facts).await?
+    };
+    let options = bussard_download::FlashOptions {
+        bcu_key: None,
+        verify_after_restart: true,
+        ..Default::default()
+    };
+    let outcome = flash(&mut session, &plan, options, |_p| {}).await?;
+    let _ = session.into_disconnect().await;
+    let elapsed = started.elapsed();
+    let s = lock(&state);
+    let mut memory: Vec<(u16, u8)> = s.memory.iter().map(|(a, b)| (*a, *b)).collect();
+    memory.sort_unstable();
+    let run = HandoverRun {
+        ok: outcome.ok(),
+        t_connects: s.l4_connects,
+        requests: s.requests_seen,
+        authorizes: s.authorizes_seen,
+        lsm_events: s.lsm_events.clone(),
+        segment_writes: s.segment_writes.clone(),
+        device_control_writes: s.device_control_writes.clone(),
+        memory,
+        elapsed,
+    };
+    drop(s);
+    drop(gw);
+    Ok(run)
+}
+
+/// Issue #213: on System 7 too, the write phase that takes over the
+/// pre-flight's connection sends one `T_Connect` and one
+/// `A_Authorize_Request` fewer and writes exactly the same.
+#[tokio::test]
+async fn test_flash_system7_adopting_the_preflight_connection_writes_the_same()
+-> Result<(), Box<dyn std::error::Error>> {
+    let reconnect = sys7_preflight_then_flash(false, None).await?;
+    let adopt = sys7_preflight_then_flash(true, None).await?;
+    println!(
+        "System 7 pre-flight + flash: T_Connect {} -> {}, requests {} -> {}, A_Authorize {} -> {}",
+        reconnect.t_connects,
+        adopt.t_connects,
+        reconnect.requests,
+        adopt.requests,
+        reconnect.authorizes,
+        adopt.authorizes
+    );
+    assert!(reconnect.ok && adopt.ok, "{reconnect:?} {adopt:?}");
+    assert_eq!(adopt.t_connects + 1, reconnect.t_connects);
+    assert_eq!(adopt.authorizes + 1, reconnect.authorizes);
+    assert_eq!(adopt.requests + 1, reconnect.requests);
+    assert_eq!(adopt.lsm_events, reconnect.lsm_events);
+    assert_eq!(adopt.segment_writes, reconnect.segment_writes);
+    assert_eq!(adopt.device_control_writes, reconnect.device_control_writes);
+    assert_eq!(adopt.memory, reconnect.memory);
+    Ok(())
+}
+
+/// Measurement for issue #213 (ignored): the System 7 pre-flight and flash
+/// with 200 ms per answer, reconnecting versus taking the connection over.
+#[tokio::test]
+#[ignore = "measurement: 200 ms per answer"]
+async fn measure_flash_system7_handover() -> Result<(), Box<dyn std::error::Error>> {
+    for adopt in [false, true] {
+        let run = sys7_preflight_then_flash(adopt, Some(Duration::from_millis(200))).await?;
+        println!(
+            "MEASURE System 7 adopt={adopt}: ok={} T_Connect {} requests {} A_Authorize {} {:.2} s",
+            run.ok,
+            run.t_connects,
+            run.requests,
+            run.authorizes,
+            run.elapsed.as_secs_f64()
+        );
+    }
     Ok(())
 }
 

@@ -86,7 +86,8 @@ pub use param_plan::{
 };
 pub use plan::{LoadStep, ObjectGa, PlanReport, plan};
 pub use preflight::{
-    Freshness, ResidentObject, ResidentState, assess_freshness, format_app_id, probe_resident_state,
+    Freshness, ResidentObject, ResidentState, assess_freshness, format_app_id,
+    probe_resident_state, probe_resident_state_full,
 };
 pub use program::{
     LiveRead, LiveReadError, LiveTables, NoLinks, TableWriteSummary, desired_tables_for,
