@@ -312,9 +312,36 @@ fn migrate_vendor(dir: &Path) -> anyhow::Result<()> {
 /// directory is created even when nothing is pinned, so the next command
 /// does not parse the lock again for nothing.
 fn regenerate_models(dir: &Path) {
-    let _ = std::fs::create_dir_all(dir.join(bussard_model::param_model::MODELS_DIR));
+    complete_models(dir, None);
+}
+
+/// Writes the product model of every application a pinned archive carries
+/// that `.bussard/models/` lacks, or only of `only` when given. An archive
+/// whose applications all have a model is not read.
+///
+/// The archives are parsed in the language the model's device files carry
+/// their enum labels in ([`crate::product_cache::model_language`]: the lock's
+/// `language`), as `import-product` and [`pinned_application`] read them;
+/// a model written in another language would not know those labels (E017,
+/// issue #255). The parsed-product cache keys programs by that language.
+///
+/// Failures are warnings: the command itself reports what it cannot do.
+pub(crate) fn complete_models(dir: &Path, only: Option<&str>) {
+    let models_dir = dir.join(bussard_model::param_model::MODELS_DIR);
+    let _ = std::fs::create_dir_all(&models_dir);
+    let has_model = |app: &str| models_dir.join(format!("{app}.yaml")).is_file();
+    let language = crate::product_cache::model_language(None, dir);
     for entry in bussard_model::lock_products::lock_entries(dir) {
         if entry.file.is_none() {
+            continue;
+        }
+        let wanted = match only {
+            Some(app) => entry.applications.iter().any(|a| a == app) && !has_model(app),
+            None => {
+                entry.applications.is_empty() || !entry.applications.iter().all(|a| has_model(a))
+            }
+        };
+        if !wanted {
             continue;
         }
         let what = entry
@@ -322,8 +349,10 @@ fn regenerate_models(dir: &Path) {
             .clone()
             .unwrap_or_else(|| entry.sha256.clone());
         match verified_path(dir, &what, &entry).and_then(|path| {
-            let product = bussard_prod::read_knxprod(&path)
-                .with_context(|| format!("reading product data from {}", path.display()))?;
+            let product = crate::product_cache::read(&path, None, dir, language.as_deref(), |_| {
+                bussard_prod::AppSelection::All
+            })
+            .with_context(|| format!("reading product data from {}", path.display()))?;
             crate::import_product_cmd::write_product_models(&product, dir)
         }) {
             Ok(_) => {}

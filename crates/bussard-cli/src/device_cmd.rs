@@ -32,6 +32,11 @@ pub fn run(
         .get(&target)
         .and_then(|d| d.device.product.as_ref())
         .and_then(|p| p.application_ref.clone());
+    // A pinned archive whose model is missing gets it now, in the lock's
+    // language, rather than the view reporting no product data (issue #255).
+    if let Some(app) = &app {
+        crate::product_store::complete_models(dir, Some(app));
+    }
     let products = ProductModels::load_apps(dir, app.iter().map(String::as_str));
     let view = bussard_model::device_view::device_view(&model, &products, target, channel)?;
     if json {
