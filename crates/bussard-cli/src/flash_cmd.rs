@@ -40,7 +40,7 @@ use bussard_mgmt::load::WriteError;
 use bussard_mgmt::{Layer4Connection, LeaseChannel, MaskProfile, MgmtError, Timeouts};
 use bussard_model::IndividualAddress;
 use bussard_prod::{AppSelection, ApplicationProgram, ProductData, normalize_order_number};
-use bussard_service::{Authorize, BusService, L4Options, ServiceError, SourcePolicy};
+use bussard_service::{Authorize, BusService, FactsSource, L4Options, ServiceError, SourcePolicy};
 
 use crate::conn_cmd::{
     BusSession, ConnOverrides, enforce_write_gate, gateway_display, load_model_required,
@@ -278,9 +278,21 @@ pub fn run(
     // writes anything.
     let preflight_started = std::time::Instant::now();
     // The device facts (issue #209): a valid set spares the pre-flight its
-    // object walk and max-APDU read. The authorize is still presented here
-    // (its verdict decides the write phase's), so the facts never skip it.
-    let device_facts = crate::device_facts::cache(dir, model.is_some(), overrides.refresh_facts);
+    // object walk and max-APDU read. Their authorize verdict decides whether
+    // the pre-flight presents the free-access key (issue #215): a device the
+    // facts record as never answering `A_Authorize` costs the full 3 s
+    // response timeout per session (speed deep dive 2026-09-24, 1.1.30,
+    // 1.1.39, 1.1.45, 1.1.51, 1.1.202), so it is skipped while the facts
+    // hold; a stale or unusable set presents it after all. A device that
+    // answers (granted or asking for a key) and a `--bcu-key` are always
+    // authorized.
+    let mut device_facts =
+        crate::device_facts::cache(dir, model.is_some(), overrides.refresh_facts);
+    let skip_authorize = bcu_key.is_none() && device_facts.may_skip_authorize(target);
+    if skip_authorize {
+        device_facts.defer_authorize(bussard_mgmt::apci::FREE_ACCESS_KEY);
+    }
+    let device_facts = device_facts;
     let secure_probe = tool_key.is_some();
     // The phase is read-only, so a connection loss in the middle of it (the
     // gateway link or the device's Layer-4 connection, issue #177) simply
@@ -313,29 +325,55 @@ pub fn run(
                 .with_device(target, &probe_options, async |dev| {
                     // Tolerate a device that does not implement authorize.
                     let key = bcu_key.unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY);
-                    let r = match dev.authorize(key).await {
-                        Ok(outcome) => {
-                            // Remember the verdict: a device that does not
-                            // implement authorize must not be asked again in the
-                            // write phase, where the unanswered request costs a
-                            // full RESPONSE_TIMEOUT per connection window.
-                            facts.authorize = Some(outcome);
-                            dev.device_descriptor().await
+                    let r = if skip_authorize {
+                        dev.device_descriptor().await
+                    } else {
+                        match dev.authorize(key).await {
+                            Ok(outcome) => {
+                                // Remember the verdict: a device that does not
+                                // implement authorize must not be asked again in
+                                // the write phase, where the unanswered request
+                                // costs a full RESPONSE_TIMEOUT per connection
+                                // window.
+                                facts.authorize = Some(outcome);
+                                dev.device_descriptor().await
+                            }
+                            Err(err) => Err(err),
                         }
-                        Err(err) => Err(err),
                     };
                     // Check (or read) the stored device facts on System B, the
                     // family whose freshness probe walks the objects: a valid
                     // set seeds this connection, so the walk and the max-APDU
                     // read below answer from it. A connection death surfaces
                     // on the reads that follow, as before.
+                    let mut facts_cached = false;
                     if let Ok(mask) = &r
                         && MaskProfile::from_mask(*mask).tables_supported()
-                        && let Err(err) = device_facts
+                    {
+                        match device_facts
                             .establish(dev.l4_mut(), *mask, bussard_service::FactsWant::Table)
                             .await
-                    {
-                        tracing::debug!("{target} device facts: {err}");
+                        {
+                            Ok(established) => {
+                                facts_cached = established.source == FactsSource::Cached;
+                            }
+                            Err(err) => tracing::debug!("{target} device facts: {err}"),
+                        }
+                    }
+                    // A skipped authorize stands only on facts that matched this
+                    // device; otherwise present the key now (stale facts already
+                    // did, on their re-read). The write phase takes the verdict
+                    // either way.
+                    if skip_authorize {
+                        if !facts_cached && dev.l4_mut().last_authorize().is_none() {
+                            let _ = dev.authorize(key).await;
+                        }
+                        facts.authorize = Some(dev.l4_mut().last_authorize().cloned().unwrap_or(
+                            bussard_mgmt::AuthorizeOutcome::Unsupported {
+                                detail:
+                                    "the device facts record no answer to A_Authorize".to_string(),
+                            },
+                        ));
                     }
                     // PID_MAX_APDU_LENGTH is device-stable: negotiate it here, on
                     // the read-only connection, so the write phase seeds it

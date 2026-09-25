@@ -62,7 +62,7 @@ use bussard_download::{
 use bussard_mgmt::tables::DeviceTables;
 use bussard_mgmt::{LeaseChannel, MaskProfile, system_type};
 use bussard_model::IndividualAddress;
-use bussard_service::{Authorize, L4Options, SourcePolicy};
+use bussard_service::{L4Options, SourcePolicy};
 
 use bussard_transport::ConnectionConfig;
 
@@ -272,20 +272,23 @@ pub(crate) fn apply_desired(
 
     // Phase A (read-only): read the live tables and build the plan.
     let service = bus.service();
+    // The device facts (issue #209): checked (or read) on the read connection,
+    // they spare the table reader its object walk, and the write phase below
+    // gets them as a seed so its discovery and read-back do not walk again.
+    let mut facts = crate::device_facts::cache(dir, model.is_some(), overrides.refresh_facts);
     let read_options = L4Options {
         source: SourcePolicy::Known(source),
         tool_key: tool_key.clone(),
         high_water: secure_seq.clone(),
         // Authorize (free access) before reading, as ETS does (issue #52
         // finding #1) and as System 7 requires before any memory access.
-        // Best-effort on this read-only pre-pass.
-        authorize: Authorize::BestEffort(bussard_mgmt::apci::FREE_ACCESS_KEY),
+        // Best-effort on this read-only pre-pass, and skipped for a device
+        // whose facts record that it never answers (issue #215; a stale set
+        // presents the key on the same connection).
+        authorize: crate::device_facts::read_only_authorize(&mut facts, target),
         ..L4Options::default()
     };
-    // The device facts (issue #209): checked (or read) on the read connection,
-    // they spare the table reader its object walk, and the write phase below
-    // gets them as a seed so its discovery and read-back do not walk again.
-    let facts = crate::device_facts::cache(dir, model.is_some(), overrides.refresh_facts);
+    let facts = facts;
     // The parameter memory rides the same session when product data is at
     // hand (the plan's read-back, issue #119).
     let read = runtime.block_on(async {

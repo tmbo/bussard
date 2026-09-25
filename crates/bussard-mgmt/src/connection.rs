@@ -406,6 +406,12 @@ pub struct ConnectionSeed {
     pub object_table: Vec<(u8, u16)>,
     /// `PID_MAX_APDU_LENGTH`, seeded like [`Layer4Connection::set_max_apdu`].
     pub max_apdu: Option<u16>,
+    /// The device does not answer `A_Authorize_Request` (the command's read
+    /// phase or its checked facts saw it stay silent), so a write session may
+    /// skip the request instead of waiting out the response timeout (issue
+    /// #215). Never set for a device that answered, granted or asking for a
+    /// key.
+    pub authorize_unanswered: bool,
 }
 
 impl<Ch: L4Channel> Layer4Connection<Ch> {
@@ -501,6 +507,12 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
     /// The seeded mask, when a caller seeded one.
     pub fn seeded_mask(&self) -> Option<u16> {
         self.seed.as_ref().and_then(|s| s.mask)
+    }
+
+    /// Whether the seed says the device does not answer `A_Authorize_Request`
+    /// (see [`ConnectionSeed::authorize_unanswered`]).
+    pub fn seeded_authorize_unanswered(&self) -> bool {
+        self.seed.as_ref().is_some_and(|s| s.authorize_unanswered)
     }
 
     /// Re-opens the connection after a request the device `T_ACK`ed but never

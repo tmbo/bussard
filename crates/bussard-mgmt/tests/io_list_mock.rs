@@ -249,6 +249,7 @@ async fn test_probe_object_types_uses_seeded_table() -> TestResult {
         mask: Some(0x07B0),
         object_table: expected(),
         max_apdu: Some(233),
+        authorize_unanswered: false,
     });
     assert_eq!(probe_object_types(&mut l4).await?, expected());
     assert_eq!(l4.negotiate_max_apdu().await?, Some(233));

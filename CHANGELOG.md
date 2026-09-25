@@ -117,6 +117,12 @@ entry supersedes it and is not a diff against it.
   `PID_IO_LIST` where a System B device offers it, with a fallback to the
   walk. `describe --full` walks the property descriptions again;
   `--refresh-facts` re-reads everything.
+- A device whose facts record that it never answers `A_Authorize` (1.1.30,
+  1.1.39, 1.1.45, 1.1.51, 1.1.202 in the reference installation) is no longer
+  asked in the `flash` pre-flight or in either phase of `apply`, which saves
+  the 3 s response timeout per session (mock: `apply` 2 authorize requests to
+  0). A device that answers, granted or asking for a key, is always asked;
+  stale facts present the key on the same connection (#215).
 - System B table read-back reads the address and association tables from
   memory at the negotiated chunk when that takes fewer requests than
   `PID_TABLE` property reads (#223). A 400-address, 1,333-association table

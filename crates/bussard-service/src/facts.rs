@@ -373,6 +373,7 @@ fn seed<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>, record: &DeviceFactsRecord
         mask: Some(mask),
         object_table: record.object_table(),
         max_apdu: record.max_apdu,
+        authorize_unanswered: record.authorize == Some(AuthorizeVerdict::Unsupported),
     });
 }
 
