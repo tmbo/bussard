@@ -595,6 +595,18 @@ pub(crate) fn render_lock(
             })
             .collect();
         push_array(&mut out, "parameters", &params);
+        let hidden: Vec<String> = d
+            .hidden
+            .iter()
+            .map(|h| {
+                format!(
+                    "ref = {}, value = {}",
+                    basic_string(&h.reference),
+                    basic_string(&h.value)
+                )
+            })
+            .collect();
+        push_array(&mut out, "hidden", &hidden);
     }
     out
 }

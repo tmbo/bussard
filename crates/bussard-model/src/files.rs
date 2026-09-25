@@ -110,6 +110,18 @@ pub(crate) struct LockDevice {
     pub objects: Vec<LockObject>,
     #[serde(default)]
     pub parameters: Vec<LockParameter>,
+    #[serde(default)]
+    pub hidden: Vec<LockHidden>,
+}
+
+/// One `hidden[]` entry: a value ETS stores for a parameter ref the
+/// configuration does not show.
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LockHidden {
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub value: String,
 }
 
 /// One `channels[]` entry.
@@ -676,6 +688,21 @@ pub fn label_mem_key(reference: &str) -> String {
     format!("label@{reference}")
 }
 
+/// The in-memory key of a value ETS stores for a parameter ref the
+/// configuration does not show (the lock's `hidden[]`). It is kept with the
+/// other values, so a flash writes it, but the device file does not show it.
+pub fn hidden_mem_key(reference: &str) -> String {
+    format!("{HIDDEN_PREFIX}{reference}")
+}
+
+/// The prefix of [`hidden_mem_key`].
+const HIDDEN_PREFIX: &str = "hidden@";
+
+/// Whether an in-memory parameter key is a [`hidden_mem_key`].
+pub fn is_hidden_mem_key(key: &str) -> bool {
+    key.starts_with(HIDDEN_PREFIX)
+}
+
 /// The contract's slug: lowercase, `ä ö ü ß` to `ae oe ue ss`, every run of
 /// characters outside `[a-z0-9]` collapsed to `-`, trimmed; empty becomes `x`.
 pub fn slug(text: &str) -> String {
@@ -817,6 +844,13 @@ pub(crate) fn join_device(
             if let Some(label_ref) = channel_labels.get(&id) {
                 parameters.insert(label_mem_key(label_ref), name.clone());
             }
+        }
+    }
+
+    // The values of refs the configuration does not show come from the lock.
+    if let Some(lock) = lock {
+        for h in &lock.hidden {
+            parameters.insert(hidden_mem_key(&h.reference), h.value.clone());
         }
     }
 
@@ -1063,10 +1097,18 @@ pub(crate) fn lock_entry(device: &Device) -> Option<LockDevice> {
             },
         );
     }
-    for key in device.parameters.keys() {
+    let mut hidden: Vec<LockHidden> = Vec::new();
+    for (key, value) in &device.parameters {
         let Some(reference) = ref_of(key) else {
             continue;
         };
+        if is_hidden_mem_key(key) {
+            hidden.push(LockHidden {
+                reference: reference.to_string(),
+                value: value.clone(),
+            });
+            continue;
+        }
         if is_label_ref(device, reference) {
             continue;
         }
@@ -1112,6 +1154,7 @@ pub(crate) fn lock_entry(device: &Device) -> Option<LockDevice> {
         module_bases,
         objects,
         parameters,
+        hidden,
     };
     let empty = entry.product.is_none()
         && entry.application.is_none()
@@ -1125,7 +1168,8 @@ pub(crate) fn lock_entry(device: &Device) -> Option<LockDevice> {
         && entry.channels.is_empty()
         && entry.module_bases.is_empty()
         && entry.objects.is_empty()
-        && entry.parameters.is_empty();
+        && entry.parameters.is_empty()
+        && entry.hidden.is_empty();
     (!empty).then_some(entry)
 }
 
@@ -1190,8 +1234,9 @@ pub(crate) fn device_entries(
 ) -> Vec<(Placement, EntryValue)> {
     let mut out: Vec<(Placement, EntryValue)> = Vec::new();
     for (key, value) in &device.parameters {
-        // A channel's label parameter is written as the channel `name`.
-        if ref_of(key).is_some_and(|r| is_label_ref(device, r)) {
+        // A channel's label parameter is written as the channel `name`; a
+        // hidden value lives in the lock.
+        if is_hidden_mem_key(key) || ref_of(key).is_some_and(|r| is_label_ref(device, r)) {
             continue;
         }
         let placement = existing

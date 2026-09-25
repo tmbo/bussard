@@ -399,3 +399,50 @@ fn test_reimport_takes_the_new_application_ref_with_the_new_tables() -> anyhow::
     let _ = fs::remove_dir_all(&dir);
     Ok(())
 }
+
+/// Hidden values (the lock's `hidden[]`: refs ETS stores that the configuration
+/// does not show) are generated data. A re-import takes the import's set as a
+/// whole: a changed value is replaced and one the project no longer holds is
+/// dropped.
+#[test]
+fn test_reimport_takes_hidden_values_from_the_import() -> anyhow::Result<()> {
+    let mut ours = device_with_comobject("1.1.4", "Switch Actuator", Dpt::new(1, Some(1)));
+    ours.device
+        .parameters
+        .insert("hidden@P-4_R-6".into(), "30".into());
+    ours.device
+        .parameters
+        .insert("hidden@P-9_R-12".into(), "1".into());
+    let mut fresh = device_with_comobject("1.1.4", "Switch Actuator", Dpt::new(1, Some(1)));
+    fresh
+        .device
+        .parameters
+        .insert("hidden@P-4_R-6".into(), "12".into());
+
+    let (merged, _) = bussard_model::merge(
+        &model(vec![ours], Groups::default()),
+        &model(vec![fresh], Groups::default()),
+    );
+    let dev = &merged.devices[&ia("1.1.4")].device;
+    assert_eq!(
+        dev.parameters.get("hidden@P-4_R-6").map(String::as_str),
+        Some("12")
+    );
+    assert!(!dev.parameters.contains_key("hidden@P-9_R-12"));
+    assert_eq!(dev.parameters.len(), 1, "{:?}", dev.parameters);
+
+    // The lock the merge saves lists exactly the import's values.
+    let texts = merged.to_texts()?;
+    let lock = &texts["bussard.lock"];
+    assert!(
+        lock.contains(r#"{ ref = "P-4_R-6", value = "12" }"#),
+        "{lock}"
+    );
+    assert!(!lock.contains("P-9_R-12"), "{lock}");
+    let (_, dev) = texts
+        .iter()
+        .find(|(k, _)| k.starts_with("devices/"))
+        .ok_or_else(|| anyhow::anyhow!("no device file"))?;
+    assert!(!dev.contains("hidden"), "{dev}");
+    Ok(())
+}

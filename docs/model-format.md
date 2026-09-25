@@ -174,8 +174,12 @@ writes the key from the lock when there is one.
 
 A parameter key is the key the lock assigns. When the same text would
 repeat within a scope, the lock assigns a longer key (page-qualified or
-`<key>@R-<ref>`). The emitter writes whatever the lock says, and the reader
+`<key>@<ref>`). The emitter writes whatever the lock says, and the reader
 resolves through the lock.
+
+The file holds only what ETS shows. ETS also stores values for parameter
+refs the configuration does not show (an inactive branch, the alternative
+of a shown ref); those are the lock's `hidden[]`, not the file's.
 
 ### Without product data
 
@@ -276,6 +280,9 @@ parameters = [
   { key = "betriebsart",  channel = "a-1",  ref = "MD-3_M-18_MI-1_P-14_R-14",  param = "MD-3_P-14" },
   { key = "sollwerte.komfort", channel = "a-1", ref = "MD-3_M-18_MI-1_P-40_R-61", param = "MD-3_P-40" },
 ]
+hidden = [
+  { ref = "MD-3_M-18_MI-1_P-103_R-160", value = "1" },
+]
 ```
 
 `language` is the language the lock's texts and keys were derived in (see
@@ -300,6 +307,11 @@ the join between the user's words and the vendor's ids:
   parameters are the channels' `label_ref`. The rest of the program's
   parameters, with their texts, types and defaults, are in the product model
   under `models/`.
+- `hidden[]` holds the values ETS stores for parameter refs the evaluated
+  configuration does not show: refs in an inactive branch, and the
+  alternatives of a shown ref. The user never sees them in ETS, so they are
+  generated data: a flash writes them as ETS would, the device file does not
+  show them, and every import replaces them.
 - The product facts (program, manufacturer, hardware, mask) and the device
   state of KNX Secure (`secure_capable`, `has_fdsk_certificate`,
   `sequence_number`) live here; the device file keeps only the intent.
@@ -352,9 +364,12 @@ importing again rewrites the keys in the new language.
   vendor gives no text at all; the file then uses the number.
 - **Parameter key:** slug of the parameter `Text` (falling back to `Name`)
   when unique within its scope; else `<page slug>.<slug>` using the
-  `ParameterBlock` text the ref sits in; else `<slug>@R-<ref>` as the escape
-  hatch. The channel's label parameter (`label_ref`) gets no key: its value
-  is the channel `name`.
+  `ParameterBlock` text the ref sits in; else `<slug>@<ref>` as the escape
+  hatch. Only a parameter the configuration shows gets a key; the escape
+  hatch is for such a parameter whose text still collides after page
+  qualification, never for a hidden ref (see `hidden[]`). The channel's
+  label parameter (`label_ref`) gets no key: its value is the channel
+  `name`.
 - **Slugs:** lowercase, `ä ö ü ß` to `ae oe ue ss`, everything not
   `[a-z0-9]` collapsed to `-`, trimmed; empty becomes `x`.
 

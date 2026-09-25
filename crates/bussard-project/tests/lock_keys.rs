@@ -21,7 +21,9 @@ const APP_XML: &[u8] = include_bytes!("fixtures/dynamic_tree.app.xml");
 
 /// A project with one device on 1.1.30 running the fixture program: a
 /// channel label, a heating delay, the first output's mode (an enum) and the
-/// second output's label set away from the defaults, and object 0 linked.
+/// second output's label set away from the defaults, a value for a ref the
+/// configuration does not show (`P-4_R-6`, the alternative of the shown
+/// `P-4_R-5`), and object 0 linked.
 const PROJECT_XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/21">
  <Project Id="P-9999">
   <Installations><Installation>
@@ -31,6 +33,7 @@ const PROJECT_XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/21">
       <ParameterInstanceRef RefId="M-00FA_A-00D1-10-0001_P-1_R-1" Value="Bath" />
       <ParameterInstanceRef RefId="M-00FA_A-00D1-10-0001_P-2_R-3" Value="9" />
       <ParameterInstanceRef RefId="M-00FA_A-00D1-10-0001_P-4_R-5" Value="60" />
+      <ParameterInstanceRef RefId="M-00FA_A-00D1-10-0001_P-4_R-6" Value="30" />
       <ParameterInstanceRef RefId="M-00FA_A-00D1-10-0001_MD-1_M-1_MI-1_P-2_R-2" Value="1" />
       <ParameterInstanceRef RefId="M-00FA_A-00D1-10-0001_MD-1_M-2_MI-1_P-1_R-1" Value="Garage" />
      </ParameterInstanceRefs>
@@ -136,6 +139,11 @@ fn test_import_populates_the_lock() -> TestResult {
     ] {
         assert!(!lock.contains(absent), "lock lists {absent}\n{lock}");
     }
+    // The value of the ref ETS does not show is the lock's, not the file's.
+    assert!(
+        lock.contains("hidden = [\n  { ref = \"P-4_R-6\", value = \"30\" },\n]\n"),
+        "{lock}"
+    );
     // Without an override the one language the program offers is used.
     assert!(lock.contains("\nlanguage = \"en-US\"\n"), "{lock}");
     // The label parameters have no key.
@@ -335,6 +343,40 @@ fn test_import_keeps_codes_in_memory() -> TestResult {
         device.parameters.get("heating-delay@P-2_R-3"),
         Some(&"9".to_string())
     );
+    // The hidden value stays in memory for the flash.
+    assert_eq!(
+        device.parameters.get("hidden@P-4_R-6"),
+        Some(&"30".to_string())
+    );
+    Ok(())
+}
+
+#[test]
+fn test_reimport_replaces_hidden_values() -> TestResult {
+    let (dir, _) = imported()?;
+    let ia: IndividualAddress = "1.1.30".parse()?;
+    let loaded = Model::load(&dir)?;
+    assert_eq!(
+        loaded.devices[&ia].device.parameters.get("hidden@P-4_R-6"),
+        Some(&"30".to_string())
+    );
+    // The project changes the hidden value; the merge takes the fresh one.
+    let mut fresh = loaded.clone();
+    if let Some(d) = fresh.devices.get_mut(&ia) {
+        d.device.parameters.remove("hidden@P-4_R-6");
+        d.device
+            .parameters
+            .insert("hidden@P-4_R-7".into(), "12".into());
+    }
+    let (merged, _) = bussard_model::merge(&loaded, &fresh);
+    merged.save(&dir)?;
+    let lock = read(&dir, "bussard.lock")?;
+    assert!(
+        lock.contains(r#"{ ref = "P-4_R-7", value = "12" }"#),
+        "{lock}"
+    );
+    assert!(!lock.contains("P-4_R-6"), "{lock}");
+    assert!(!read(&dir, "devices/1.1.30.toml")?.contains("P-4_R-"));
     Ok(())
 }
 

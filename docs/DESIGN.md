@@ -217,7 +217,9 @@ error; this section keeps only the decisions behind it.
   memory location and show whichever is visible. The file stores one value per
   parameter, the lock records the visible ref, and nine `konfiguration-rtr@R-…` lines
   on a heating actuator become one. Only values that differ from the vendor default are
-  stored.
+  stored. Values ETS keeps for refs the configuration does not show (an inactive
+  branch, an alternative of a shown ref) are generated data and go to the lock's
+  `hidden[]`, never the device file.
 - **Product data is a prerequisite for a readable device.** Parameter texts, enum
   labels and the memory map come from the `.knxprod`, not from the ETS project. Without
   it a device file holds identity, location and links, with vendor channel ids and

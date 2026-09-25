@@ -325,6 +325,10 @@ fn overlay_device(
     theirs: &mut Device,
     report: &mut MergeReport,
 ) {
+    // An import that derived keys lists exactly the stored parameters, so an
+    // empty list is the truth there, not a gap to fill from ours.
+    let derived = theirs.channels.values().any(|c| c.key.is_some())
+        || theirs.com_objects.values().any(|c| c.key.is_some());
     let path = format!("devices/{ia}");
     report_opt(report, &path, "name", Some(&ours.name), Some(&theirs.name));
     report_opt(
@@ -436,7 +440,7 @@ fn overlay_device(
             }
         }
     }
-    if theirs.lock.parameters.is_empty() {
+    if theirs.lock.parameters.is_empty() && !derived {
         theirs.lock.parameters = ours.lock.parameters.clone();
     }
 

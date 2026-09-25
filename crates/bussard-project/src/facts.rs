@@ -45,7 +45,7 @@ use bussard_ets::dynamic::{
 };
 use bussard_model::param_model::enum_label;
 use bussard_model::schema::{Channel, ComObject, Device, LockedParameter, Spelling};
-use bussard_model::{Dpt, Flags, label_mem_key, param_mem_key, slug};
+use bussard_model::{Dpt, Flags, hidden_mem_key, label_mem_key, param_mem_key, slug};
 
 use crate::build::{base_offset_args, resolve_placeholders};
 
@@ -186,18 +186,22 @@ pub fn derive_facts(
 /// keys and texts, the lock's parameter index (the parameters `stored` holds
 /// a value for), and the parameter values.
 ///
-/// `stored` holds the values the device file keeps (the non-default ones),
-/// keyed by app-relative ref with the module-instance selector. Each is keyed
-/// in memory the way the loader keys it ([`param_mem_key`] through the fact's
-/// file key, [`label_mem_key`] for a channel label, the `<slug>@<ref>` escape
-/// hatch otherwise), and an enum value whose code has a usable label is
-/// recorded to be written as that label. Objects the device already carries
+/// `stored` holds the values ETS stores (the non-default ones), keyed by
+/// app-relative ref with the module-instance selector. Each is keyed in
+/// memory the way the loader keys it: [`param_mem_key`] through the fact's
+/// file key, [`label_mem_key`] for a channel label, and [`hidden_mem_key`]
+/// for a ref the evaluated tree does not show (the lock's `hidden[]`, not
+/// the device file). An enum value whose code has a usable label is recorded
+/// to be written as that label. Objects the device already carries
 /// (from the ETS project, with its flag and DPT overrides) keep those and gain
 /// the derived key, texts and channel; the others are added. A device without
 /// module bases (a fresh one) takes the facts' bases.
+///
+/// `_app` is the program the facts were derived from. Everything this needs
+/// from it is in `facts` now; the argument stays so callers do not change.
 pub fn apply_facts(
     device: &mut Device,
-    app: &ApplicationProgram,
+    _app: &ApplicationProgram,
     facts: &DeviceFacts,
     stored: &BTreeMap<String, String>,
 ) {
@@ -279,11 +283,6 @@ pub fn apply_facts(
         .iter()
         .map(|p| (p.reference.as_str(), p))
         .collect();
-    let keys_by_param: BTreeMap<String, &str> = facts
-        .parameters
-        .iter()
-        .filter_map(|p| Some((param_key_of_ref(app, &p.reference)?, p.key.as_str())))
-        .collect();
     device.parameters.clear();
     device.lock.spellings.clear();
     for (reference, value) in stored {
@@ -292,12 +291,9 @@ pub fn apply_facts(
         } else if let Some(p) = by_ref.get(reference.as_str()) {
             (param_mem_key(&p.key, reference), p.enum_labels.clone())
         } else {
-            let sibling =
-                param_key_of_ref(app, reference).and_then(|k| keys_by_param.get(&k).copied());
-            (
-                escape_key(app, reference, sibling),
-                enum_labels_of_ref(app, reference),
-            )
+            // A ref the evaluated tree does not show (an inactive branch, an
+            // alternative of a shown ref): the lock keeps it, not the file.
+            (hidden_mem_key(reference), Vec::new())
         };
         if let Some(text) = enum_label(&enum_labels, value) {
             device.lock.spellings.insert(
@@ -992,48 +988,6 @@ fn assign_parameter_keys(pending: &mut [Pending], members: &[usize], taken: &BTr
 // ---------------------------------------------------------------------------
 // Values and bases
 // ---------------------------------------------------------------------------
-
-/// The escape-hatch in-memory key of a stored value whose ref the lock does
-/// not list: `<slug>@<ref>`, the slug being the file key of the same
-/// parameter's listed ref (an alternative ref of a visible parameter), else
-/// the ref's text, the parameter's text or its name.
-fn escape_key(app: &ApplicationProgram, reference: &str, sibling: Option<&str>) -> String {
-    let head = sibling
-        .map(|k| k.split_once('@').map_or(k, |(h, _)| h).to_string())
-        .or_else(|| {
-            let (_, rel) = bussard_ets::dynamic::split_selector(reference);
-            let pref = app.parameter_ref(&rel)?;
-            let param = app.parameters.get(&pref.ref_id);
-            [
-                pref.text.as_deref(),
-                param.and_then(|p| p.text.as_deref()),
-                param.and_then(|p| p.name.as_deref()),
-            ]
-            .into_iter()
-            .flatten()
-            .find_map(strip_tokens)
-        })
-        .unwrap_or_default();
-    format!("{}@{reference}", slug(&head))
-}
-
-/// `text` without its `{{…}}` tokens, `None` when nothing remains.
-fn strip_tokens(text: &str) -> Option<String> {
-    let stub = ApplicationProgram::default();
-    resolve_placeholders(text, &stub, None, &HashMap::new())
-}
-
-/// The enum `(code, text)` pairs of the parameter a device-form ref points
-/// at, empty for other kinds.
-fn enum_labels_of_ref(app: &ApplicationProgram, reference: &str) -> Vec<(i64, String)> {
-    let (_, rel) = bussard_ets::dynamic::split_selector(reference);
-    match parameter_kind(app, &rel) {
-        Some(ParameterType::Enum { values, .. }) => {
-            values.iter().map(|e| (e.value, e.text.clone())).collect()
-        }
-        _ => Vec::new(),
-    }
-}
 
 /// The memory base offset of each reached module instance, from its
 /// `<Module>` argument named by the module's `BaseOffset` parameters.

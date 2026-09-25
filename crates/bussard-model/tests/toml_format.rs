@@ -576,3 +576,62 @@ fn test_device_generated_security_facts_stay_in_the_lock() -> TestResult {
     fs::remove_dir_all(&dir)?;
     Ok(())
 }
+
+/// The values ETS stores for refs the configuration does not show live in the
+/// lock's `hidden[]`: they load into the parameter map next to the shown
+/// values (so a flash writes them), never reach the device file, and come
+/// back out of the lock unchanged.
+#[test]
+fn test_hidden_values_round_trip_through_the_lock_only() -> TestResult {
+    let dir = tmp("hidden")?;
+    write(&dir, "groups.toml", GROUPS)?;
+    let lock = format!(
+        "{LOCK}hidden = [\n  {{ ref = \"MD-3_M-18_MI-1_P-103_R-160\", value = \"1\" }},\n  \
+         {{ ref = \"P-19_R-39\", value = \"0\" }},\n]\n"
+    );
+    write(&dir, "bussard.lock", &lock)?;
+    write(&dir, "devices/1.1.47.toml", DEVICE)?;
+    let model = Model::load(&dir)?;
+    let d = &model.devices[&ia("1.1.47")?].device;
+    assert_eq!(
+        d.parameters
+            .get("hidden@MD-3_M-18_MI-1_P-103_R-160")
+            .map(String::as_str),
+        Some("1")
+    );
+    assert_eq!(
+        d.parameters.get("hidden@P-19_R-39").map(String::as_str),
+        Some("0")
+    );
+    let hidden = d
+        .parameters
+        .keys()
+        .filter(|k| bussard_model::is_hidden_mem_key(k))
+        .count();
+    assert_eq!(hidden, 2);
+    assert!(d.parameters.len() > 2, "{:?}", d.parameters);
+
+    // Split again: the file shows only what ETS shows, the lock keeps the rest.
+    let texts = model.to_texts()?;
+    let dev = &texts["devices/1.1.47.toml"];
+    assert!(
+        !dev.contains("hidden") && !dev.contains("R-160") && !dev.contains("R-39"),
+        "{dev}"
+    );
+    let lock = &texts["bussard.lock"];
+    assert!(
+        lock.contains(
+            "hidden = [\n  { ref = \"MD-3_M-18_MI-1_P-103_R-160\", value = \"1\" },\n  \
+             { ref = \"P-19_R-39\", value = \"0\" },\n]\n"
+        ),
+        "{lock}"
+    );
+    assert_eq!(Model::from_texts(&texts)?, model);
+
+    // A format-preserving save leaves the device file untouched.
+    model.save(&dir)?;
+    assert_eq!(fs::read_to_string(dir.join("devices/1.1.47.toml"))?, DEVICE);
+    assert_eq!(Model::load(&dir)?, model);
+    fs::remove_dir_all(&dir)?;
+    Ok(())
+}

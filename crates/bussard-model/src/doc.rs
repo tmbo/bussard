@@ -636,6 +636,9 @@ fn device_doc(
     let parameters: Vec<ParameterDoc> = device
         .parameters
         .iter()
+        // A hidden value (the lock's `hidden[]`) is not part of the user's
+        // configuration.
+        .filter(|(key, _)| !crate::files::is_hidden_mem_key(key))
         .map(|(key, value)| ParameterDoc {
             label: key
                 .split_once('@')

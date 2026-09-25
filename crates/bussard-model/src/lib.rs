@@ -49,7 +49,7 @@ pub use declare::{DeclaredGroup, declare_used_groups};
 pub use doc::{DocError, DocFile, DocFormat, InstallationDoc};
 pub use dpt::{ApduSize, Dpt, DptParseError};
 pub use ets_export::{to_ets_csv, to_ets_xml};
-pub use files::{label_mem_key, param_mem_key, slug};
+pub use files::{hidden_mem_key, is_hidden_mem_key, label_mem_key, param_mem_key, slug};
 pub use flags::{Flags, FlagsParseError};
 pub use history::{History, HistoryError, Snapshot, SnapshotId, SnapshotReason};
 pub use lint::{GroupsLint, LintConfig, TopologyLint, lint};
