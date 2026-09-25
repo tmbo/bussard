@@ -84,6 +84,10 @@ struct Report {
     /// The parameter read-back (issue #119), when a product file was available.
     #[serde(skip_serializing_if = "Option::is_none")]
     parameters: Option<crate::param_readback::Readback>,
+    /// The device's identity compared with `bussard.lock` (lock v2, issue
+    /// #228), when the device facts were read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    identity: Option<bussard_model::identity::IdentityCheck>,
 }
 
 /// A raw association table entry.
@@ -141,7 +145,7 @@ pub fn run(
     let product_ref = product.as_ref();
 
     let facts = crate::device_facts::cache(dir, model.is_some(), overrides.refresh_facts);
-    let (read_result, params) = crate::plan_cmd::read_device(
+    let (read_result, params, identity) = crate::plan_cmd::read_device(
         config,
         target,
         &overrides,
@@ -161,10 +165,21 @@ pub fn run(
 
     let mut report = build_report(target, read, model.as_ref());
     report.parameters = params.map(|p| p.readback);
+    report.identity = identity.map(|reported| {
+        bussard_model::identity::IdentityCheck::compare(
+            model_ref
+                .and_then(|m| m.devices.get(&target))
+                .map(|d| &d.device),
+            reported,
+        )
+    });
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         print_text(&report);
+        if let Some(identity) = &report.identity {
+            println!("identity: {}", identity.summary());
+        }
         match &report.parameters {
             Some(params) => crate::param_readback::print_text(params, target),
             None if no_parameters => {}
@@ -222,6 +237,7 @@ fn build_report(target: IndividualAddress, read: &DeviceTables, model: Option<&M
             .collect(),
         diff,
         parameters: None,
+        identity: None,
     }
 }
 

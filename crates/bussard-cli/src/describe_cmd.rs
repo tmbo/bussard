@@ -95,6 +95,10 @@ struct Report {
     /// key was used, or plain management was refused; absent for a plain device.
     #[serde(skip_serializing_if = "Option::is_none")]
     secure: Option<SecureReport>,
+    /// The device's identity compared with `bussard.lock` (lock v2, issue
+    /// #228): `match`, `drift` or `unmodelled`. Read-only, never refuses.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    identity: Option<bussard_model::identity::IdentityCheck>,
 }
 
 /// KNX Secure status, split into the imported model's claims and what this run
@@ -229,6 +233,18 @@ pub fn run(
         eprintln!("{note}");
     }
     let mut report = result.report;
+    if !refused {
+        report.identity = Some(bussard_model::identity::IdentityCheck::compare(
+            model
+                .as_ref()
+                .and_then(|m| m.devices.get(&target))
+                .map(|d| &d.device),
+            bussard_model::identity::ReportedIdentity {
+                mask: report.mask.clone(),
+                application_id: result.application_id.clone(),
+            },
+        ));
+    }
     let model_secure = model
         .as_ref()
         .and_then(|m| m.devices.get(&target))
@@ -330,6 +346,10 @@ async fn introspect<Ch: bussard_mgmt::L4Channel>(
         )),
         _ => None,
     };
+    let application_id = established
+        .record
+        .as_ref()
+        .and_then(|record| record.application_id.clone());
     let object_reports = established
         .record
         .map(|record| record.objects)
@@ -361,7 +381,9 @@ async fn introspect<Ch: bussard_mgmt::L4Channel>(
             objects: Some(object_reports),
             // Filled in by `run` from the model (introspect has no model handle).
             secure: None,
+            identity: None,
         },
+        application_id,
     })
 }
 
@@ -382,6 +404,8 @@ struct Introspection {
     mask_family: MaskFamily,
     /// The report, with `secure` still unset.
     report: Report,
+    /// The application id the device reported, when read.
+    application_id: Option<String>,
 }
 
 /// Builds a [`PropertyReport`] row from a [`PropertyDesc`].
@@ -430,6 +454,9 @@ fn print_text(report: &Report) {
             SecuredManagement::Unanswered => "unanswered",
         };
         println!("  KNX Secure (this run): plain management {plain}; secured management {secured}");
+    }
+    if let Some(identity) = &report.identity {
+        println!("  identity: {}", identity.summary());
     }
     let Some(objects) = &report.objects else {
         return;

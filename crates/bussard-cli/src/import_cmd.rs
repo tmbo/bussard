@@ -60,7 +60,7 @@ pub fn run_knxproj(
         Err(e) => return Err(e.into()),
     };
 
-    write_model(model, dir, choice, "project", Some(consent))
+    write_model(model, dir, choice, "project", Some(consent), Some(path))
 }
 
 /// Runs `bussard import --from-json`.
@@ -71,7 +71,7 @@ pub fn run_json(
     consent: crate::product_fetch::Consent,
 ) -> anyhow::Result<ExitCode> {
     let model = bussard_project::import_from_json(path)?;
-    write_model(model, dir, choice, "project", Some(consent))
+    write_model(model, dir, choice, "project", Some(consent), None)
 }
 
 /// Writes the freshly-imported `model` to `dir`.
@@ -87,13 +87,16 @@ pub fn run_json(
 /// `choice` settles hand-authored conflicts (see [`ConflictChoice`]); `source`
 /// names the incoming side in sentences (`"project"` or `"bundle"`).
 /// `fetch` runs the product-data download step for the devices' order
-/// numbers ([`crate::product_fetch`]); `None` skips it.
+/// numbers ([`crate::product_fetch`]); `None` skips it. `project` is the ETS
+/// export read, which `bussard.lock` pins as the devices' product source
+/// until a vendor archive serves them (lock v2, issue #228).
 pub(crate) fn write_model(
     model: Model,
     dir: &Path,
     choice: ConflictChoice,
     source: &str,
     fetch: Option<crate::product_fetch::Consent>,
+    project: Option<&Path>,
 ) -> anyhow::Result<ExitCode> {
     // History (issue #110): record an edit made outside bussard before the
     // import overwrites it, then snapshot the pre-import state so `bussard undo`
@@ -139,6 +142,9 @@ pub(crate) fn write_model(
             dir.display()
         );
         crate::import_bundle::print_changes(ours, &to_save);
+        if fetch.is_some() {
+            crate::lock_pin::pin_import(dir, project, &to_save);
+        }
         fetch_product_data(dir, &to_save, fetch)?;
         crate::validate_cmd::print_summary(dir);
         return Ok(report_merge(merge, *kept, choice));
@@ -162,6 +168,10 @@ pub(crate) fn write_model(
         println!("pruned {} stale device file(s)", report.pruned.len());
     }
 
+    // The lock pins where each device's product data comes from.
+    if fetch.is_some() {
+        crate::lock_pin::pin_import(dir, project, &to_save);
+    }
     // Product data fetches itself: every order number without it is looked up
     // in the pointer index, with one question for the whole list.
     fetch_product_data(dir, &to_save, fetch)?;

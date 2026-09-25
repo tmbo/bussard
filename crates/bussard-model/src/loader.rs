@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use crate::address::IndividualAddress;
 use crate::emit;
-use crate::files::{self, GroupsFile, LOCK_VERSION, LockDevice, LockFile};
+use crate::files::{self, GroupsFile, LOCK_VERSION, LOCK_VERSIONS_READ, LockDevice, LockFile};
 use crate::param_model::ProductModels;
 use crate::schema::{BussardConfig, Group, Groups, Link, Links, Range};
 use crate::toml_io::{self, ParseError};
@@ -79,8 +79,8 @@ pub enum LoadError {
     },
     /// `bussard.lock` carries a format version this build does not read.
     #[error(
-        "{path}: lock format version {version} is not supported (this bussard reads version \
-         {LOCK_VERSION}); regenerate it with `bussard import` or `bussard adopt`"
+        "{path}: lock format version {version} is not supported (this bussard reads versions 1 \
+         to {LOCK_VERSION}); regenerate it with `bussard import` or `bussard adopt`"
     )]
     LockVersion {
         /// The lock file.
@@ -236,9 +236,9 @@ fn list_device_files(devices_dir: &Path) -> Vec<String> {
 }
 
 /// Parses `bussard.lock` text.
-fn parse_lock(path: &Path, text: &str) -> Result<LockFile, LoadError> {
+pub(crate) fn parse_lock(path: &Path, text: &str) -> Result<LockFile, LoadError> {
     let lock: LockFile = toml_io::parse(path, text)?;
-    if lock.version != LOCK_VERSION {
+    if !LOCK_VERSIONS_READ.contains(&lock.version) {
         return Err(LoadError::LockVersion {
             path: path.to_path_buf(),
             version: lock.version,
@@ -415,6 +415,12 @@ fn assemble(sources: &Sources, models_dir: Option<&Path>) -> Result<Model, LoadE
         let (mut device, device_links) =
             files::join_device(&path, text, &lock_by_address, models.as_ref())?;
         device.lock.language = lock.language.clone();
+        device.lock.product_entry = device.lock.product_sha256.as_deref().and_then(|sha| {
+            lock.products
+                .iter()
+                .find(|p| p.sha256.eq_ignore_ascii_case(sha))
+                .cloned()
+        });
         if let Some(first) = source_file.get(&device.address) {
             return Err(LoadError::DuplicateDeviceAddress {
                 address: device.address,
@@ -567,7 +573,12 @@ impl Model {
                 existing.get(GROUPS_FILE).map(String::as_str),
             )?,
         );
-        let locks = self.lock_entries();
+        let mut locks = self.lock_entries();
+        let products = files::lock_products(
+            &mut locks,
+            self.devices.values().map(|l| &l.device),
+            existing.get(LOCK_FILE).map(String::as_str),
+        );
         let by_address: BTreeMap<IndividualAddress, &LockDevice> =
             locks.iter().map(|l| (l.address, l)).collect();
         out.insert(
@@ -575,6 +586,7 @@ impl Model {
             emit::render_lock(
                 self.groups.imported_from.as_deref(),
                 self.lock_language(),
+                &products,
                 &locks,
             ),
         );

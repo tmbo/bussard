@@ -62,6 +62,10 @@ struct PlanJson {
     /// The parameter read-back (issue #119), when a product file was available.
     #[serde(skip_serializing_if = "Option::is_none")]
     parameters: Option<crate::param_readback::Readback>,
+    /// The device's identity compared with `bussard.lock` (lock v2, issue
+    /// #228), when the device facts were read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    identity: Option<bussard_model::identity::IdentityCheck>,
 }
 
 // The live read, the desired-table computation and the plan rendering are
@@ -107,7 +111,11 @@ const SECURE_PLAIN_MASK: u16 = 0xFFFF;
 /// What one read-only management session returned: the live tables (or the
 /// unsupported-mask refusal) and, when a product file was given, the parameter
 /// read-back.
-pub(crate) type DeviceRead = (LiveRead, Option<crate::param_readback::ParamState>);
+pub(crate) type DeviceRead = (
+    LiveRead,
+    Option<crate::param_readback::ParamState>,
+    Option<bussard_model::identity::ReportedIdentity>,
+);
 
 /// Opens a read-only bus service, reads `target`'s live tables in one management
 /// session and, when `product` is given and the tables read, the parameter
@@ -151,7 +159,16 @@ pub(crate) fn read_device(
                     // The device facts (issue #209): a valid set seeds the
                     // connection so neither the table reader nor the parameter
                     // read-back walks the interface objects again.
-                    crate::device_facts::establish_table_facts(l4, &facts).await?;
+                    let established =
+                        crate::device_facts::establish_table_facts(l4, &facts).await?;
+                    // What the device says it is, for the lock comparison
+                    // (lock v2, issue #228).
+                    let identity = established.and_then(|e| e.record).map(|record| {
+                        bussard_model::identity::ReportedIdentity {
+                            mask: record.mask,
+                            application_id: record.application_id,
+                        }
+                    });
                     let read = read_live_tables(l4).await?;
                     let params = match (&read, product) {
                         (LiveRead::Tables(live), Some(product)) => Some(
@@ -166,7 +183,7 @@ pub(crate) fn read_device(
                         ),
                         _ => None,
                     };
-                    anyhow::Ok((read, params))
+                    anyhow::Ok((read, params, identity))
                 })
                 .await;
             // Close the bus cleanly (release the gateway tunnel slot), issue #31.
@@ -222,7 +239,7 @@ pub fn run(
     let model_ref = &model;
     let product_ref = product.as_ref();
 
-    let (read, params) = read_device(
+    let (read, params, identity) = read_device(
         config,
         target,
         &overrides,
@@ -250,11 +267,25 @@ pub fn run(
         &report,
         params.as_ref(),
     );
+    let identity = identity.map(|reported| {
+        bussard_model::identity::IdentityCheck::compare(
+            model.devices.get(&target).map(|d| &d.device),
+            reported,
+        )
+    });
     if json {
         let mut out = to_json(live, &report, built.plan.clone());
         out.parameters = params.map(|p| p.readback);
+        out.identity = identity;
         println!("{}", serde_json::to_string_pretty(&out)?);
     } else {
+        if let Some(check) = identity.as_ref().filter(|c| c.is_drift()) {
+            println!(
+                "warning: {target}: {}; `bussard apply` refuses until `bussard flash {target}` \
+                 loads the application the lock pins\n",
+                check.summary()
+            );
+        }
         print!("{}", built.plan.render_text());
         if let Some(refusal) = &built.refusal {
             println!("  note: {refusal}");
@@ -319,6 +350,7 @@ fn to_json(
         load_steps: report.load_steps.iter().map(|s| s.to_string()).collect(),
         noop: report.is_noop(),
         parameters: None,
+        identity: None,
     }
 }
 

@@ -316,6 +316,33 @@ pub(crate) fn apply_desired(
     let (read, established, params) = read?;
     let write_seed = crate::device_facts::seed_of(established.as_ref());
 
+    // Lock v2 (issue #228): a device that reports another application (or
+    // mask) than bussard.lock pins cannot take the model's parameters and
+    // tables; it needs a flash first. A restore writes a backup, not the
+    // model, so it is not held to the lock.
+    if matches!(origin, DesiredSource::Model)
+        && let Some(record) = established.as_ref().and_then(|e| e.record.as_ref())
+    {
+        let check = bussard_model::identity::IdentityCheck::compare(
+            model
+                .and_then(|m| m.devices.get(&target))
+                .map(|d| &d.device),
+            bussard_model::identity::ReportedIdentity {
+                mask: record.mask.clone(),
+                application_id: record.application_id.clone(),
+            },
+        );
+        if check.is_drift() {
+            eprintln!(
+                "refusing to apply to {target}: {}. The model's parameters and tables are for \
+                 the application the lock pins; run `bussard flash {target}` to load it, or \
+                 re-import the project if the lock is stale",
+                check.differences.join("; ")
+            );
+            return Ok(ExitCode::FAILURE);
+        }
+    }
+
     let live_tables = match read {
         plan_cmd::LiveRead::Tables(live) => live,
         plan_cmd::LiveRead::UnsupportedMask { address, mask } => {

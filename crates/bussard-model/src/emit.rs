@@ -19,7 +19,7 @@ use crate::files::{
 };
 use crate::loader::SaveError;
 use crate::param_model::ProductModels;
-use crate::schema::{BussardConfig, Device, Group, Groups, Link};
+use crate::schema::{BussardConfig, Device, Group, Groups, Link, ProductEntry, ProductOrigin};
 use crate::toml_io;
 
 // ---------------------------------------------------------------------------
@@ -474,10 +474,64 @@ pub(crate) fn render_groups(
 // bussard.lock
 // ---------------------------------------------------------------------------
 
+/// A TOML inline array of strings.
+fn string_array(items: &[String]) -> String {
+    let inner: Vec<String> = items.iter().map(|s| basic_string(s)).collect();
+    format!("[{}]", inner.join(", "))
+}
+
+/// Appends one `[[product]]` entry of `bussard.lock`.
+fn render_product(out: &mut String, p: &ProductEntry) {
+    out.push_str("\n[[product]]\n");
+    out.push_str(&format!("sha256 = {}\n", basic_string(&p.sha256)));
+    if let Some(file) = &p.file {
+        out.push_str(&format!("file = {}\n", basic_string(file)));
+    }
+    if let Some(name) = &p.filename {
+        out.push_str(&format!("filename = {}\n", basic_string(name)));
+    }
+    if let Some(size) = p.size {
+        out.push_str(&format!("size = {size}\n"));
+    }
+    let mut origin = vec![format!("kind = {}", basic_string(p.origin.kind()))];
+    match &p.origin {
+        ProductOrigin::Index { order_number, url } => {
+            if let Some(o) = order_number {
+                origin.push(format!("order_number = {}", basic_string(o)));
+            }
+            if let Some(u) = url {
+                origin.push(format!("url = {}", basic_string(u)));
+            }
+        }
+        ProductOrigin::File { path } => origin.push(format!("path = {}", basic_string(path))),
+        ProductOrigin::Knxproj { path, project_hash } => {
+            origin.push(format!("path = {}", basic_string(path)));
+            if let Some(h) = project_hash {
+                origin.push(format!("project_hash = {}", basic_string(h)));
+            }
+        }
+        ProductOrigin::Device => {}
+    }
+    out.push_str(&format!("origin = {{ {} }}\n", origin.join(", ")));
+    if !p.applications.is_empty() {
+        out.push_str(&format!(
+            "applications = {}\n",
+            string_array(&p.applications)
+        ));
+    }
+    if !p.order_numbers.is_empty() {
+        out.push_str(&format!(
+            "order_numbers = {}\n",
+            string_array(&p.order_numbers)
+        ));
+    }
+}
+
 /// Renders `bussard.lock`, always fresh (it is fully generated).
 pub(crate) fn render_lock(
     source: Option<&str>,
     language: Option<&str>,
+    products: &[ProductEntry],
     devices: &[LockDevice],
 ) -> String {
     let mut out = format!("{LOCK_HEADER}\nversion = {LOCK_VERSION}\n");
@@ -486,6 +540,9 @@ pub(crate) fn render_lock(
     }
     if let Some(l) = language {
         out.push_str(&format!("language = {}\n", basic_string(l)));
+    }
+    for p in products {
+        render_product(&mut out, p);
     }
     for d in devices {
         out.push_str("\n[[device]]\n");
@@ -496,6 +553,8 @@ pub(crate) fn render_lock(
         let strings = [
             ("product", &d.product),
             ("application", &d.application),
+            ("product_sha256", &d.product_sha256),
+            ("application_id", &d.application_id),
             ("manufacturer", &d.manufacturer),
             ("manufacturer_ref", &d.manufacturer_ref),
             ("hardware_ref", &d.hardware_ref),
@@ -505,6 +564,9 @@ pub(crate) fn render_lock(
             if let Some(v) = v {
                 out.push_str(&format!("{k} = {}\n", basic_string(v)));
             }
+        }
+        if let Some(v) = d.application_version {
+            out.push_str(&format!("application_version = {v}\n"));
         }
         if d.secure_capable {
             out.push_str("secure_capable = true\n");

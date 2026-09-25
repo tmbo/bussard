@@ -187,7 +187,11 @@ pub(crate) fn fetch_missing(
         let result =
             crate::import_product_cmd::fetch_to_vendor(entry, dir, DownloadConsent::granted())
                 .and_then(|path| {
-                    crate::import_product_cmd::generate_models(&path, dir)
+                    let origin = bussard_model::schema::ProductOrigin::Index {
+                        order_number: list.first().cloned(),
+                        url: Some(entry.url.clone()),
+                    };
+                    crate::import_product_cmd::generate_models_pinned(&path, dir, Some(origin))
                         .map(|models| (path, models))
                 });
         match result {

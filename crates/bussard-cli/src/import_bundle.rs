@@ -76,7 +76,7 @@ pub fn run_bundle(path: &Path, dir: &Path, choice: ConflictChoice) -> anyhow::Re
             dir.display()
         );
     }
-    crate::import_cmd::write_model(model, dir, choice, "bundle", None)
+    crate::import_cmd::write_model(model, dir, choice, "bundle", None, None)
 }
 
 /// Whether `dir` already holds a model to merge into (a `groups.toml`, a

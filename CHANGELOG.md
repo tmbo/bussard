@@ -351,6 +351,22 @@ entry supersedes it and is not a diff against it.
 
 ### Changed
 
+- `bussard.lock` is now version 2 (#228). It records every product-data
+  archive the model depends on as a `[[product]]` entry (content hash, file,
+  size, origin, applications, order numbers), and each device's
+  `product_sha256`, `application_id` (the `PID_PROGRAM_VERSION` it must
+  report) and `application_version`. `import`, `import-product`, the
+  product-data download and `adopt` pin what they read. A v1 lock still
+  loads and is written as v2 on the next save.
+- Device identity is compared with the lock: `describe` and `reconstruct`
+  report an `identity` verdict (`match`, `drift`, `unmodelled`), `plan` warns
+  on drift, `apply` refuses a device whose application id or mask differs
+  from the lock before any write, and `audit` gains a product-data section
+  (unpinned devices, missing or changed archives, drifted facts). `flash`
+  refuses a cached archive whose hash differs from the pinned one;
+  `--product` stays the explicit override (#228).
+- New validation warnings E032 (a product link without a `[[product]]`
+  entry) and E033 (a pinned archive missing from the model) (#228).
 - One global option group (#228): `--dir`, `--gateway`, `--routing`,
   `--keyring`, `--json`, `--allow-remote-gateway`, `--skip-address-check` and
   `--refresh-facts` are declared once, print once under "Global options" in
