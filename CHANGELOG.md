@@ -348,6 +348,24 @@ entry supersedes it and is not a diff against it.
   restart to its timing line. On the mock with the 1.1.5 reboot pattern the
   restart phase ends at +3.0 s instead of +9.7 s (#212).
 
+- Start-up before the first bus frame is cheaper (#214, #215). `flash`,
+  `plan`, `reconstruct` and `adopt` read the product archive's table of
+  contents and parse only the selected ApplicationProgram (by
+  `--application`, the model's application reference or the order number)
+  instead of every program in it; the order-number match against `vendor/`
+  parses none. The table of contents and each parsed program are cached
+  under `.bussard/products/`, keyed by the archive's SHA-256 and the bussard
+  build (`BUSSARD_PRODUCT_CACHE=off` bypasses it). The model is parsed once
+  per command, and a keyring is decrypted once per process or MCP server
+  (previously once per MCP tool call); an edited file is read again in both
+  cases. `--timing` lists the start-up phases (model load, product parse,
+  keyring, time to the tunnel request, tunnel) and the parse and decrypt
+  counts. The images and property writes are unchanged (offline oracle on
+  both row sets). On the mock with the 15 MB house export (30 programs, dev
+  build, best of 5): `flash --dry-run` 5.8 s to 0.74 s (0.43 s with the
+  cache), `reconstruct --product` start to first frame 5.6 s to 0.65 s
+  (0.34 s with the cache); `describe` is unchanged at 0.08 s.
+
 ### Fixed
 
 - Group writes: DPT-blind 6-bit APCI packing corrupted values on the live bus

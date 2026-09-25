@@ -37,7 +37,7 @@ use crate::error::{EtsError, Result};
 use crate::{LoadOp, LoadProcedure};
 
 /// One `<Procedure ProcedureType="Load">` template from a mask block.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct MaskLoadProcedure {
     /// The `ProcedureSubType`, e.g. `"all"`, `"ap1"`, `"grp"`, `"par"`. Absent
     /// on the rare untyped procedure.
@@ -56,7 +56,7 @@ pub struct MaskLoadProcedure {
 /// at `StandardMemory` `StartAddress=260` (`0x0104`), `Length=12`,
 /// `Flavour="LoadControl_M112"`, and the per-table load-status bytes at
 /// `0xB6EA`, `0xB6EB`, `0xB6EC` (one per LSM).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HawkResource {
     /// The resource name, e.g. `"GroupAddressTableLoadControl"`.
     pub name: String,
@@ -75,7 +75,7 @@ pub struct HawkResource {
 ///
 /// Keyed by resource name. Parsed from a `.knxprod`'s `knx_master.xml`
 /// (`[system7-spec §2.4]`); [`HawkConfig::resource`] looks one up by name.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HawkConfig {
     /// Resource name → its parsed record.
     pub resources: HashMap<String, HawkResource>,
@@ -106,7 +106,7 @@ impl HawkConfig {
 /// The load-procedure templates extracted from a `knx_master.xml`, keyed by the
 /// **`MV-`-stripped** mask id (e.g. `"07B0"`) to match
 /// [`crate::ApplicationProgram::mask_version`].
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct MasterTemplate {
     /// Mask id (`"07B0"`) → the mask's `Load` procedure templates, in document
     /// order.

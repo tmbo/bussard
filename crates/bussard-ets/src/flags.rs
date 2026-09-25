@@ -21,7 +21,7 @@ use bussard_model::Flags;
 
 /// One layer of com-object flags, where each flag may be unspecified (`None`)
 /// and therefore inherited from a lower-priority layer.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FlagSet {
     /// Communication flag, if specified at this layer.
     pub communication: Option<bool>,

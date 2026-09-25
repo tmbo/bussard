@@ -36,6 +36,7 @@ mod mcp_cmd;
 mod monitor_cmd;
 mod param_readback;
 mod plan_cmd;
+mod product_cache;
 mod product_fetch;
 mod progress;
 mod read_cmd;
@@ -46,6 +47,7 @@ mod restore_cmd;
 mod scan_cmd;
 mod secure_key;
 mod test_cmd;
+mod timing;
 mod validate_cmd;
 mod viz_cmd;
 mod write_cmd;
@@ -64,7 +66,8 @@ struct Cli {
     /// An explicit `RUST_LOG` overrides this. Default (no flag) is `warn`.
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
     verbose: u8,
-    /// Print the invocation's wall-clock time to stderr on exit.
+    /// Print the invocation's wall-clock time to stderr on exit, with the
+    /// start-up phases (model load, keyring, product parse, tunnel) before it.
     #[arg(long, global = true)]
     timing: bool,
     /// Never draw the live progress display on a terminal; print the plain
@@ -1668,6 +1671,7 @@ enum Command {
 const MAIN_THREAD_STACK_BYTES: usize = 64 * 1024 * 1024;
 
 fn main() -> ExitCode {
+    timing::start();
     let body = std::thread::Builder::new()
         .name("bussard-main".to_owned())
         .stack_size(MAIN_THREAD_STACK_BYTES)
@@ -1714,8 +1718,8 @@ fn cli_main() -> ExitCode {
     // Opt-in wall-clock telemetry (issue #78): `--timing` reports the
     // invocation's elapsed time on stderr. Speed is a project goal, so this stays
     // available for regression spotting, but a plain 0.1.0 run is quiet.
-    let started = std::time::Instant::now();
-    if let Err(err) = setup_secure_tunnel(&mut cli) {
+    let started = timing::start();
+    if let Err(err) = timing::time("tunnel creds", || setup_secure_tunnel(&mut cli)) {
         eprintln!("error: {err:#}");
         return ExitCode::FAILURE;
     }
@@ -1726,7 +1730,7 @@ fn cli_main() -> ExitCode {
     if let Some(fatal) = bussard_bus::fatal_connect_error() {
         eprintln!("error: {fatal}");
         if cli.timing {
-            eprintln!("took {:.2?}", started.elapsed());
+            print_timing(started);
         }
         return ExitCode::FAILURE;
     }
@@ -1745,9 +1749,18 @@ fn cli_main() -> ExitCode {
         }
     };
     if cli.timing {
-        eprintln!("took {:.2?}", started.elapsed());
+        print_timing(started);
     }
     code
+}
+
+/// Prints the `--timing` report: the start-up phases (issue #214), then the
+/// total.
+fn print_timing(started: std::time::Instant) {
+    for line in timing::report() {
+        eprintln!("{line}");
+    }
+    eprintln!("took {:.2?}", started.elapsed());
 }
 
 /// Maps a failed run to the no-free-tunnel exit code when the bus actor saw the

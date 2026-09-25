@@ -14,9 +14,40 @@ use bussard_model::IndividualAddress;
 use bussard_service::GroupKeys;
 
 pub use bussard_service::secure::{
-    KEYRING_PASSWORD_ENV, SecureMaterial, ToolKeySource, layer, model_activated, resolve,
-    resolve_material,
+    KEYRING_PASSWORD_ENV, SecureKeyError, SecureMaterial, ToolKeySource, layer, model_activated,
 };
+
+/// [`bussard_service::secure::resolve`], timed as the `--timing` phase
+/// `tool keys` (issue #214).
+///
+/// # Errors
+///
+/// As [`bussard_service::secure::resolve`].
+pub fn resolve(
+    target: IndividualAddress,
+    source: ToolKeySource<'_>,
+    activated: bool,
+) -> Result<Option<bussard_secure::Key16>, SecureKeyError> {
+    crate::timing::time("tool keys", || {
+        bussard_service::secure::resolve(target, source, activated)
+    })
+}
+
+/// [`bussard_service::secure::resolve_material`], timed as the `--timing`
+/// phase `tool keys` (issue #214).
+///
+/// # Errors
+///
+/// As [`bussard_service::secure::resolve_material`].
+pub fn resolve_material(
+    target: IndividualAddress,
+    source: ToolKeySource<'_>,
+    activated: bool,
+) -> Result<SecureMaterial, SecureKeyError> {
+    crate::timing::time("tool keys", || {
+        bussard_service::secure::resolve_material(target, source, activated)
+    })
+}
 
 /// The guidance for a device without a tool key that may be Data Secure-activated
 /// (issue #71, spec §6.4).

@@ -644,7 +644,11 @@ pub(crate) fn resolve_product_file(
         .collect();
     candidates.sort();
     for path in &candidates {
-        let Ok(product) = bussard_prod::read_knxprod(path) else {
+        // The hardware catalogue is all the match needs: no program is parsed
+        // (issue #214), and the parsed-product cache keeps it for next time.
+        let Ok(product) = crate::product_cache::read(path, None, dir, |_| {
+            bussard_prod::AppSelection::Exact(Vec::new())
+        }) else {
             continue;
         };
         if product

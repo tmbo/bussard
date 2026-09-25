@@ -22,3 +22,6 @@ base64 = { workspace = true }
 # `bussard-project` crate. MIT licensed. Version centralized in the root
 # `[workspace.dependencies]`.
 zip = { workspace = true }
+# Serialize/Deserialize on the parsed product types, for the parsed-product
+# cache (issue #214). Already a workspace dependency; MIT OR Apache-2.0.
+serde = { workspace = true }

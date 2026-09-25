@@ -42,6 +42,24 @@ their project export and verified against ETS captures (issue #135).
 A project export is not cached under `vendor/`: it is the owner's project, not vendor
 product data, and it is large. Keep it where it is and pass its path.
 
+### Reading product data at flash time
+
+`flash`, `plan`, `reconstruct` and `adopt` read an archive in two steps. First the
+table of contents: the ApplicationProgram ids from the entry names
+(`M-XXXX/M-XXXX_A-….xml`), every `Hardware.xml` and `knx_master.xml`. Then only the
+program the command selects, by `--application`, the model's application reference or
+the order number, together with the programs its `Hardware2Program` lists next to it.
+A 15 MB project export with 30 programs costs one program parse instead of 30. When the
+selection cannot be made from the ids alone, every program is parsed and the command
+decides as before.
+
+The table of contents and each parsed program are cached as JSON under
+`<dir>/.bussard/products/`, keyed by the SHA-256 of the archive and the bussard build, so
+the next command reads them back instead of inflating and parsing the XML. A cached
+program is the same value a fresh parse returns (floats travel as their bit pattern), so
+the images are byte-identical. See [reference.md](reference.md#bussardproducts) for the
+layout and `BUSSARD_PRODUCT_CACHE=off`.
+
 ## What is inside a `.knxprod`
 
 A `.knxprod` is a plain ZIP (no encryption, unlike a password-protected `.knxproj`). It

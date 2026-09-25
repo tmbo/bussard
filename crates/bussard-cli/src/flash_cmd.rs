@@ -39,7 +39,7 @@ use bussard_download::{
 use bussard_mgmt::load::WriteError;
 use bussard_mgmt::{Layer4Connection, LeaseChannel, MaskProfile, MgmtError, Timeouts};
 use bussard_model::IndividualAddress;
-use bussard_prod::{ApplicationProgram, ProductData, normalize_order_number};
+use bussard_prod::{AppSelection, ApplicationProgram, ProductData, normalize_order_number};
 use bussard_service::{Authorize, BusService, L4Options, ServiceError, SourcePolicy};
 
 use crate::conn_cmd::{
@@ -118,8 +118,19 @@ pub fn run(
         }
     };
     let product = product_path.as_path();
-    let product_data = bussard_prod::read_knxprod(product)
-        .with_context(|| format!("reading product data from {}", product.display()))?;
+    // Only the selected program is parsed (issue #214): by order number, by
+    // `--application`, else every program (the sole-application rule needs
+    // them all).
+    let product_data = crate::product_cache::read(product, None, dir, |catalog| {
+        match (order_number, application) {
+            (Some(order), _) => {
+                AppSelection::Only(crate::product_cache::order_refs(catalog, order))
+            }
+            (None, Some(wanted)) => crate::product_cache::by_application(catalog, wanted),
+            (None, None) => AppSelection::All,
+        }
+    })
+    .with_context(|| format!("reading product data from {}", product.display()))?;
 
     // Resolve the application program. Three modes, in precedence order:
     //   --order-number : look the order number up in the hardware catalogue and

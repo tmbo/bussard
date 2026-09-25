@@ -275,10 +275,112 @@ pub(crate) fn parse_groups(path: &Path, text: &str) -> Result<Groups, LoadError>
     Ok(groups)
 }
 
+/// The `models/` directory as `Model::load` sees it: every entry's name, size
+/// and modification time. The product models translate enum labels, so a
+/// change there must miss the memo even when the model files are unchanged.
+fn models_fingerprint(dir: &Path) -> ModelsFingerprint {
+    let Ok(entries) = fs::read_dir(dir.join("models")) else {
+        return Vec::new();
+    };
+    let mut out: ModelsFingerprint = entries
+        .flatten()
+        .map(|e| {
+            let meta = e.metadata().ok();
+            (
+                e.file_name().to_string_lossy().into_owned(),
+                meta.as_ref().map(fs::Metadata::len).unwrap_or_default(),
+                meta.and_then(|m| m.modified().ok()),
+            )
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// The process-wide memo behind [`Model::load`] (issue #214): one command
+/// used to parse the same model three to five times (the command, the
+/// history capture, the connection config). A load whose directory, file
+/// texts and `models/` fingerprint all equal a memoized one returns a clone
+/// of that model instead of parsing again; any edit to any file misses, so a
+/// command that saves and reloads sees its own write.
+mod memo {
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicUsize;
+
+    use super::Model;
+
+    /// Parses so far (see [`Model::parse_count`]).
+    pub(super) static PARSES: AtomicUsize = AtomicUsize::new(0);
+
+    #[cfg(test)]
+    thread_local! {
+        /// This thread's parses: what a unit test counts, unaffected by
+        /// tests running in parallel threads.
+        pub(super) static THREAD_PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    /// The memoized loads kept, most recent last: the working model plus a
+    /// history snapshot or two.
+    const KEEP: usize = 4;
+
+    /// One memoized load.
+    struct Entry {
+        dir: PathBuf,
+        files: BTreeMap<String, String>,
+        models: super::ModelsFingerprint,
+        model: Model,
+    }
+
+    static ENTRIES: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
+
+    /// The memoized model for exactly these inputs.
+    pub(super) fn get(
+        dir: &Path,
+        files: &BTreeMap<String, String>,
+        models: &super::ModelsFingerprint,
+    ) -> Option<Model> {
+        let entries = ENTRIES.lock().ok()?;
+        entries
+            .iter()
+            .find(|e| e.dir == dir && &e.files == files && &e.models == models)
+            .map(|e| e.model.clone())
+    }
+
+    /// Memoizes a freshly parsed model.
+    pub(super) fn put(
+        dir: &Path,
+        files: BTreeMap<String, String>,
+        models: super::ModelsFingerprint,
+        model: &Model,
+    ) {
+        let Ok(mut entries) = ENTRIES.lock() else {
+            return;
+        };
+        entries.retain(|e| e.dir != dir);
+        if entries.len() >= KEEP {
+            entries.remove(0);
+        }
+        entries.push(Entry {
+            dir: dir.to_path_buf(),
+            files,
+            models,
+            model: model.clone(),
+        });
+    }
+}
+
+/// See [`models_fingerprint`].
+type ModelsFingerprint = Vec<(String, u64, Option<std::time::SystemTime>)>;
+
 /// Builds the model from its sources. With `models_dir`, the product models
 /// of the applications the lock pins are read from its `models/` to translate
 /// enum labels to codes.
 fn assemble(sources: &Sources, models_dir: Option<&Path>) -> Result<Model, LoadError> {
+    memo::PARSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(test)]
+    memo::THREAD_PARSES.with(|n| n.set(n.get() + 1));
     let config: BussardConfig = match sources.files.get(CONFIG_FILE) {
         Some(text) => toml_io::parse(&sources.path(CONFIG_FILE), text)?,
         None => BussardConfig::default(),
@@ -373,13 +475,25 @@ impl Model {
                 dir: dir.to_path_buf(),
             });
         }
-        assemble(
-            &Sources {
-                base: dir.to_path_buf(),
-                files,
-            },
-            Some(dir),
-        )
+        let models = models_fingerprint(dir);
+        if let Some(model) = memo::get(dir, &files, &models) {
+            return Ok(model);
+        }
+        let sources = Sources {
+            base: dir.to_path_buf(),
+            files,
+        };
+        let model = assemble(&sources, Some(dir))?;
+        memo::put(dir, sources.files, models, &model);
+        Ok(model)
+    }
+
+    /// How many times this process has parsed a model from its files: the
+    /// loads [`Model::load`] could not answer from its memo, plus every
+    /// [`Model::from_texts`]. A debug counter for the start-up budget
+    /// (issue #214); `--timing` prints it.
+    pub fn parse_count() -> usize {
+        memo::PARSES.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Parses a model from in-memory file contents, keyed by model-relative path
@@ -790,6 +904,44 @@ mod tests {
         assert_eq!(first, fs::read_to_string(dir.join(GROUPS_FILE))?);
         // Nothing generated, so no lock is written.
         assert!(!dir.join(LOCK_FILE).exists());
+        fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    /// This thread's model parses so far.
+    fn thread_parses() -> usize {
+        memo::THREAD_PARSES.with(std::cell::Cell::get)
+    }
+
+    #[test]
+    fn test_load_memo_parses_once_and_misses_on_an_edit() -> R {
+        let dir = tmp_dir("memo")?;
+        let model = small_model()?;
+        model.save(&dir)?;
+        let before = thread_parses();
+        let first = Model::load(&dir)?;
+        let again = Model::load(&dir)?;
+        assert_eq!(first, again);
+        assert_eq!(thread_parses() - before, 1, "the second load is memoized");
+        // Any edit to a model file misses the memo.
+        let groups = dir.join(GROUPS_FILE);
+        let text = fs::read_to_string(&groups)?;
+        fs::write(&groups, format!("{text}\n# edited\n"))?;
+        Model::load(&dir)?;
+        assert_eq!(
+            thread_parses() - before,
+            2,
+            "an edited file is parsed again"
+        );
+        // So does a change under `models/` (the enum label translations).
+        fs::create_dir_all(dir.join("models"))?;
+        fs::write(dir.join("models").join("extra.yaml"), "# nothing\n")?;
+        Model::load(&dir)?;
+        assert_eq!(
+            thread_parses() - before,
+            3,
+            "a models/ change is parsed again"
+        );
         fs::remove_dir_all(&dir)?;
         Ok(())
     }
