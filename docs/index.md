@@ -35,8 +35,9 @@ $ cargo install --path crates/bussard-cli
 With an ETS export:
 
 ```console
-$ bussard import demo-house.knxproj
-imported 33 group addresses, 10 devices, 55 link entries → knx
+$ mkdir house && cd house
+$ bussard import ../demo-house.knxproj
+imported 33 group addresses, 10 devices, 55 link entries → the current directory /home/me/house
 $ bussard validate
 0 errors, 4 warnings
 $ bussard monitor
@@ -47,9 +48,10 @@ $ bussard monitor
 Without one, start empty and adopt devices as you go:
 
 ```console
+$ mkdir house && cd house
 $ bussard init
 Found gateway: KNX IP Interface (192.0.2.10:3671, IA 1.1.250)
-Created a fresh KNX model in knx.
+Created a fresh KNX model in the current directory /home/me/house.
 $ bussard adopt --product actuator.knxprod    # press the programming button
 adopted 15.15.255 → 1.1.5
 $ bussard flash 1.1.5 --product actuator.knxprod
@@ -64,16 +66,22 @@ $ bussard plan 1.1.5                 # diff the device's live tables against the
 $ bussard apply 1.1.5                # write them: confirm, backup, verify
 $ bussard viz                        # the whole network in a browser, live
 $ bussard ha-config --out ha.yaml    # Home Assistant config from the same model
-$ claude mcp add knx -- bussard mcp --dir knx    # let Claude debug your bus
+$ claude mcp add knx -- bussard mcp --dir "$PWD"    # let Claude debug your bus
 ```
 
 ## The model directory
 
-`import` and `init` create a `knx/` directory. Everything in it except the
-lock file is yours to edit, by hand or through an assistant over MCP:
+`import` and `init` create the model in the current directory (or `--dir`);
+in a directory that already holds other files they ask first. Every other
+command finds the model from wherever you are: the current directory, then
+`./knx`, then the parent directories. A `.env` next to the model (or in its
+parent) is read automatically, so `BUSSARD_PROJECT_PASSWORD` or
+`BUSSARD_KEYRING_PASSWORD` can live there instead of your shell. Everything in
+the model except the lock file is yours to edit, by hand or through an
+assistant over MCP:
 
 ```
-knx/
+house/
   bussard.toml          connection and lint settings
   groups.toml           the group-address plan
   devices/1.1.5.toml    one file per device: name, location, parameters, links

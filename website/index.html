@@ -1171,8 +1171,8 @@
       <div class="term" aria-label="Terminal session" data-aria-de="Terminalsitzung">
         <div class="term-bar"><i></i><i></i><i></i><span>bussard</span></div>
         <pre><span class="p">$</span> bussard import house.knxproj
-<span class="d">imported 318 group addresses, 72 devices → knx</span>
-<span class="p">$</span> claude mcp add knx -- bussard mcp --dir knx
+<span class="d">imported 318 group addresses, 72 devices → the current directory</span>
+<span class="p">$</span> claude mcp add knx -- bussard mcp --dir "$PWD"
 <span class="p">&gt;</span> <span data-lang="en">The hallway button should also switch the porch light.</span><span data-lang="de">Der Flurtaster soll auch das Terrassenlicht schalten.</span>
 <span class="g">✓</span> <span data-lang="en">Outdoor actuator, channel C, now listens to
   <span class="a">Hallway light (1/1/1)</span>. Config only, saved to history.</span><span data-lang="de">Außenaktor, Kanal C, hört jetzt auf

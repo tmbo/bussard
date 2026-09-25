@@ -35,9 +35,10 @@ New to KNX ownership? Read [the first weekend guide](https://bussard.tmbo.dev/do
 Have an ETS export? Import it and watch your bus decode itself:
 
 ```console
-$ bussard init demo-house.knxproj
+$ mkdir house && cd house
+$ bussard init ../demo-house.knxproj
 Found gateway: KNX IP Interface (192.0.2.10:3671, IA 1.1.250)
-imported 33 group addresses, 10 devices, 55 link entries → knx
+imported 33 group addresses, 10 devices, 55 link entries → the current directory /home/me/house
 validation: 0 error(s), 4 warning(s)
 $ bussard monitor
 12:03:44.809  1.1.1 Push Button Hallway → 0/0/0 Hallway Light Switch = On (1.001, obj "Rocker 1")
@@ -47,19 +48,20 @@ $ bussard monitor
 No ETS project? Start empty and adopt devices as you go:
 
 ```console
+$ mkdir house && cd house
 $ bussard init
 Found gateway: KNX IP Interface (192.0.2.10:3671, IA 1.1.250)
-Created a fresh KNX model in knx.
+Created a fresh KNX model in the current directory /home/me/house.
 $ bussard adopt                      # press the programming button
 adopted 15.15.255 → 1.1.5 (Jung 2304.16 REGHM; product data fetched by order number)
 $ bussard device 1.1.5 a-1 --toml    # the channel's parameters and objects, paste-ready
 $ bussard apply 1.1.5                # write what the file says: plan, confirm, backup, verify
 ```
 
-Either way you end up with a `knx/` directory you can commit:
+Either way you end up with a model directory you can commit:
 
 ```
-knx/
+house/
   bussard.toml          connection and lint settings
   groups.toml           the group-address plan
   devices/1.1.5.toml    one file per device: name, location, parameters, links
@@ -88,7 +90,7 @@ $ bussard apply 1.1.5                # tables and parameters: plan, confirm, bac
 $ bussard device 1.1.2 rtc-1         # a channel as ETS shows it, with choices and units
 $ bussard viz                        # the whole network in a browser, live
 $ bussard ha-config --out ha.yaml    # Home Assistant config from the same model
-$ claude mcp add knx -- bussard mcp --dir knx    # let Claude debug your bus
+$ claude mcp add knx -- bussard mcp --dir "$PWD"    # let Claude debug your bus
 ```
 
 ## Install
