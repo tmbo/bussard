@@ -40,7 +40,11 @@ hatch described below.
 
 Files are written with `toml_edit`, so comments and the formatting of
 untouched lines survive a save. Entries bussard adds or changes are
-re-formatted; everything else stays byte-identical.
+re-formatted; everything else stays byte-identical. An object key the model
+no longer links is removed when the lock written by this save or the lock it
+replaces resolves it; a key neither resolves was typed by hand and stays, so
+validation reports it (E023). A re-import also puts sections and entries in
+the order a fresh import writes them; comments move with their entries.
 
 ## `bussard.toml`
 
@@ -259,7 +263,8 @@ slug of exactly one parameter's text in the channel's scope (the module
 definition's parameters for a module channel, the application's own
 otherwise), that parameter must have exactly one ref in the model, and the
 next save adds the key to the lock. A key that resolves neither way is
-E023. A `<slug>@<ref>` escape key always resolves, lock or not. A key the
+E023. A `<slug>@<ref>` escape key always resolves, lock or not; once the
+lock names that parameter, the next save writes the lock's key instead. A key the
 lock lists for one channel does not resolve in another channel's table.
 A device whose lock entry is missing cannot resolve its parameters or
 object keys; validation reports E021 with the command that creates the
