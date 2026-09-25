@@ -999,7 +999,7 @@
       margin: 0;
     }
 
-    .files > div {
+    .files>div {
       min-width: 0;
     }
 
@@ -1130,8 +1130,7 @@
         bussard
       </a>
       <nav>
-        <a href="#how" class="hide-sm"><span data-lang="en">How it works</span><span data-lang="de">So funktioniert
-            es</span></a>
+        <a href="#features">Features</a>
         <a href="#download">Download</a>
         <a href="#docs"><span data-lang="en">Docs</span><span data-lang="de">Doku</span></a>
         <a href="https://github.com/tmbo/bussard">GitHub</a>
@@ -1151,10 +1150,9 @@
         <p class="lede"><span data-lang="en">Start from scratch or import your ETS project. bussard keeps your KNX
             configuration in TOML files
             that you edit by hand or with your favorite LLM. It flashes your devices, monitors the bus and rolls back
-            any change.</span><span data-lang="de">Starte von Null oder importiere dein ETS-Projekt. bussard hält deine
-            KNX-Konfiguration in
-            TOML-Dateien, die du von Hand oder mit deinem bevorzugten LLM bearbeitest. Es flasht deine Geräte,
-            überwacht den Bus und nimmt jede Änderung zurück.</span></p>
+            any change.</span><span data-lang="de">Starte ein neues Projekt oder importiere eine ETS Datei. Mit bussard
+            kannst du deine KNX Konfiguration in Textdateien per Hand oder mit einer LLM bearbeiten. Und wenn du fertig
+            bist, flasht es deine Geräte, überwacht den Bus und führt einen rollback bei Fehlern aus.</span></p>
         <div class="cta">
           <a class="btn primary" href="#download">Download</a>
           <a class="btn ghost" href="docs/"><span data-lang="en">Read the docs</span><span data-lang="de">Zur
@@ -1204,15 +1202,15 @@
       </svg>
     </div>
 
-    <section>
+    <section id="features">
       <div class="sec-head">
-        <div class="kicker"><span data-lang="en">What it does</span><span data-lang="de">Was es kann</span></div>
-        <h2><span data-lang="en">Day-to-day KNX work using Claude or ChatGPT.</span><span data-lang="de">Tägliche
-            KNX-Arbeit mit Claude oder ChatGPT.</span></h2>
+        <div class="kicker"><span data-lang="en">Features</span><span data-lang="de">Features</span></div>
+        <h2><span data-lang="en">Day-to-day KNX work using Claude or ChatGPT.</span><span data-lang="de">Arbeite an KNX
+            Projekten mit Claude oder ChatGPT.</span></h2>
         <p><span data-lang="en">Edit your project in your editor or ask Claude to do it. ETS stays in the drawer for
-            what only ETS can do: certification, planning and the odd exotic device.</span><span
-            data-lang="de">Bearbeite dein Projekt in deinem Editor oder bitte Claude darum. Die ETS bleibt in der
-            Schublade für das, was nur die ETS kann: Zertifizierung, Planung und das eine exotische Gerät.</span></p>
+            what only ETS can do: certification and the odd exotic device.</span><span data-lang="de">Bearbeite dein
+            Projekt in deinem Editor oder bitte Claude darum. Die ETS bleibt in der
+            Schublade für das, was nur die ETS kann: Zertifizierung und das eine exotische Gerät.</span></p>
       </div>
       <div class="grid">
         <div class="card">
@@ -1225,20 +1223,20 @@
           <h3><span data-lang="en">Import your ETS project</span><span data-lang="de">ETS-Projekt importieren</span>
           </h3>
           <p><span data-lang="en">One command turns a <code>.knxproj</code> into TOML files with named devices,
-              group addresses and links. Every later change can be undone.</span><span data-lang="de">Ein Befehl macht aus
-              einer <code>.knxproj</code> TOML-Dateien mit benannten Geräten, Gruppenadressen und Verknüpfungen. Jede
-              spätere Änderung lässt sich zurücknehmen.</span></p>
+              group addresses and links. Every later change can be undone.</span><span data-lang="de">Mit einem Befehl
+              kannst du eine
+              <code>.knxproj</code> Datei in ein bussard Projekt verwandeln. Alle benannten Geräte, Gruppenadressen und
+              Verknüpfungen werden importiert. </span></p>
         </div>
         <div class="card">
           <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
               stroke-linecap="round" stroke-linejoin="round">
               <path d="M3 12h3l2-6 4 12 3-8 2 2h4" />
             </svg></div>
-          <h3><span data-lang="en">Watch the bus, decoded</span><span data-lang="de">Den Bus beobachten,
-              decodiert</span></h3>
+          <h3><span data-lang="en">Watch the bus</span><span data-lang="de">Sehen was auf dem Bus passiert</span></h3>
           <p><span data-lang="en">Every telegram shows the sending device, the group address by name and the value with
               its unit. Filter by address or sender, or stream JSON to your own tools.</span><span data-lang="de">Jedes
-              Telegramm zeigt das sendende Gerät, die Gruppenadresse mit Namen und den Wert mit
+              Telegramm zeigt die beteiligten Geräte, die Gruppenadresse mit Namen und den Wert mit
               Einheit. Filtere nach Adresse oder Sender, oder streame JSON in deine eigenen Tools.</span></p>
         </div>
         <div class="card">
@@ -1248,11 +1246,11 @@
               <path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4" />
             </svg></div>
           <h3><span data-lang="en">Program devices</span><span data-lang="de">Geräte programmieren</span></h3>
-          <p><span data-lang="en">Adopt a new device, flash its application from the vendor <code>.knxprod</code>, write
+          <p><span data-lang="en">Adopt a new device or flash an application from the vendor <code>.knxprod</code>. You
+              can write
               its group and association tables. Every write is planned, confirmed and verified.</span><span
-              data-lang="de">Nimm ein neues Gerät in Betrieb, flashe seine Applikation aus der <code>.knxprod</code> des
-              Herstellers, schreibe seine Gruppen- und Assoziationstabellen. Jeder Schreibvorgang wird geplant,
-              bestätigt und verifiziert.</span></p>
+              data-lang="de">Nimm neue Geräte in Betrieb, oder ändere die Applikation aus der <code>.knxprod</code> des
+              Herstellers. Verändere die Funktion oder erstelle neue Gruppenadressen - alles mit Backup.</span></p>
         </div>
         <div class="card">
           <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
@@ -1265,9 +1263,8 @@
               and propose changes in plain sentences. Bus writes are off until you turn them on, protected group
               addresses stay out of reach, and only you program devices.</span><span
               data-lang="de"><code>bussard mcp</code> lässt Claude oder einen anderen Agenten die Konfiguration lesen,
-              den Bus beobachten und Änderungen in klaren Sätzen vorschlagen. Schreiben auf den Bus ist aus, bis du es
-              einschaltest, geschützte Gruppenadressen bleiben außer Reichweite, und Geräte programmierst nur
-              du.</span></p>
+              den Bus beobachten und Änderungen in klaren Sätzen vorschlagen. Geräte zu verändern ist opt-in -
+              geschützte Gruppenadressen können nicht verändert werden.</span></p>
         </div>
       </div>
     </section>
@@ -1275,16 +1272,15 @@
 
     <section id="how">
       <div class="sec-head">
-        <div class="kicker"><span data-lang="en">How it works</span><span data-lang="de">So funktioniert
-            es</span></div>
-        <h2><span data-lang="en">A KNX project, configured in TOML.</span><span data-lang="de">Ein KNX-Projekt,
+        <div class="kicker"><span data-lang="en">How it works</span><span data-lang="de">So funktionierts</span></div>
+        <h2><span data-lang="en">A KNX project, configured in TOML.</span><span data-lang="de">KNX-Projekte,
             konfiguriert in TOML.</span></h2>
-        <p><span data-lang="en">Everything bussard knows about your installation is a folder of TOML files. Edit them in
-            any editor, or let Claude or ChatGPT do it. Commands either write that config to devices or read the bus
+        <p><span data-lang="en">Everything bussard knows about your installation is stored in text files. Edit them in
+            any editor, or let Claude / ChatGPT do it. Commands either write that config to devices or read the bus
             and explain it with the same config. Every edit can be undone.</span><span data-lang="de">Alles, was
-            bussard über deine Anlage weiß, ist ein Ordner mit TOML-Dateien. Bearbeite sie in einem beliebigen Editor
-            oder lass Claude oder ChatGPT das machen. Befehle schreiben diese Konfiguration auf die Geräte oder lesen
-            den Bus und erklären ihn mit derselben Konfiguration. Jede Änderung lässt sich zurücknehmen.</span></p>
+            bussard über dein Projekt weiß, ist in Text Dateien gespeichert. Bearbeite sie in einem beliebigen Editor
+            oder lass das von Claude / ChatGPT erledigen. Mit Befehlen kannst du dann die Konfiguration auf die Geräte
+            schreiben oder den Bus lesen. Jede Änderung lässt sich zurücknehmen.</span></p>
       </div>
       <figure>
         <div class="diagram">
@@ -1324,17 +1320,17 @@
             <rect class="box hi" x="40" y="140" width="600" height="64" rx="10" />
             <text class="t" x="60" y="166" data-lang="en">Your KNX config as TOML files</text>
             <text class="t" x="60" y="166" data-lang="de">Deine KNX-Konfiguration als TOML-Dateien</text>
-            <text class="s" x="60" y="186" data-lang="en">groups.toml · devices/*.toml · bussard.lock · edited by hand
-              or by an assistant · history and undo built in</text>
-            <text class="s" x="60" y="186" data-lang="de">groups.toml · devices/*.toml · bussard.lock · von Hand oder
-              per Assistent bearbeitet · Historie und Undo eingebaut</text>
+            <text class="s" x="60" y="186" data-lang="en">groups.toml · devices/*.toml · bussard.lock · with history and
+              undo built in</text>
+            <text class="s" x="60" y="186" data-lang="de">groups.toml · devices/*.toml · bussard.lock · mit Historie und
+              Undo</text>
 
             <!-- llm -->
             <rect class="box" x="700" y="220" width="180" height="64" rx="10" />
             <text class="t" x="720" y="246" data-lang="en">Claude / ChatGPT</text>
             <text class="t" x="720" y="246" data-lang="de">Claude / ChatGPT</text>
-            <text class="s" x="720" y="266" data-lang="en">edits the files or uses MCP</text>
-            <text class="s" x="720" y="266" data-lang="de">bearbeitet Dateien oder nutzt MCP</text>
+            <text class="s" x="720" y="266" data-lang="en">files or MCP</text>
+            <text class="s" x="720" y="266" data-lang="de">Dateien oder MCP</text>
             <polyline class="edge" points="790,220 790,172 646,172" marker-end="url(#ar)" />
             <text class="lab" x="660" y="212" data-lang="en">edits the files</text>
             <text class="lab" x="660" y="212" data-lang="de">bearbeitet die Dateien</text>
@@ -1355,8 +1351,8 @@
             <!-- bussard -->
             <rect class="box dark" x="40" y="300" width="600" height="64" rx="10" />
             <text class="t inv" x="60" y="326" style="font-weight:700">bussard</text>
-            <text class="s inv" x="60" y="346" data-lang="en">one binary: CLI, MCP server, live network view</text>
-            <text class="s inv" x="60" y="346" data-lang="de">eine Binary: CLI, MCP-Server, Live-Netzwerkansicht</text>
+            <text class="s inv" x="60" y="346" data-lang="en">CLI, MCP server, live network view</text>
+            <text class="s inv" x="60" y="346" data-lang="de">CLI, MCP-Server, Live-Netzwerkansicht</text>
 
             <!-- gateway -->
             <line class="edge" x1="340" y1="364" x2="340" y2="396" marker-end="url(#ar)" />
@@ -1395,20 +1391,33 @@
             Konfiguration Gerätetabellen und lädt sie auf die Geräte. Gelb ist der Beobachtungsweg: Telegramme bekommen
             Gerätenamen, Gruppenadressnamen und typisierte Werte aus derselben Konfiguration.</span></figcaption>
       </figure>
+
+      <p class="note"><span data-lang="en">One line per group address (<code>groups.toml</code>) and one file per device
+          (<code>devices/1.1.47.toml</code>) including a table per channel.
+          Keys and values come from the vendor's product data, so a channel reads like its page in ETS. Vendor ids
+          and memory offsets live in the generated <code>bussard.lock</code>, which nobody edits.</span><span
+          data-lang="de">Die Gruppenadressen (<code>groups.toml</code>) und die Geräte (<code>devices/*.toml</code>)
+          werden jeweils in einer Datei mit Tabellen
+          für jeden Kanal konfiguriert.
+          Die Keys und Werte stammen aus den Produktdaten des Herstellers, daher liest sich ein Kanal wie seine
+          Seite in der ETS. <code>bussard</code> liest diese Konfugration ein, und erstellt
+          ein lock file. Das lock file wird von <code>bussard</code> verwendet um die Geräte live zu konfigurieren.
+        </span>
+      </p>
       <div class="two files">
         <div>
-          <div class="fname">knx/groups.toml</div>
+          <div class="fname">groups.toml</div>
           <pre class="sh">project = "Demo House"
 
 groups = [
-  { address = "1/1/1", name = "Hallway Light Switch", dpt = "1.001" },
-  { address = "1/1/7", name = "Porch Light Switch",   dpt = "1.001" },
-  { address = "1/1/8", name = "Porch Light Status",   dpt = "1.001" },
-  { address = "3/0/0", name = "Wind Alarm",           dpt = "1.005", protected = true },
+ {address="1/1/1", name="Hallway Light", dpt="1.001"},
+ {address="1/1/7", name="Porch Light", dpt="1.001"},
+ {address="1/1/8", name="Porch Status", dpt="1.001"},
+ {address="3/0/0", name="Alarm", protected=true, dpt="1.005"},
 ]</pre>
         </div>
         <div>
-          <div class="fname">knx/devices/1.1.47.toml</div>
+          <div class="fname">devices/1.1.47.toml</div>
           <pre class="sh">address = "1.1.47"
 name = "Switch actuator, 2-gang / blinds actuator, 1-gang"
 product = "230021SU"
@@ -1420,16 +1429,16 @@ room = "Kind 2 Süd"
 [channel.relaisausgaenge-1]
 betriebsart = "Lüftungsklappe / Dachfenster"
 langzeitbetrieb.listen = ["3/1/20"]
-rueckmeldung-lueftungsklappen-dachfensterposition.send = "3/1/23"</pre>
+rueckmeldung-lueftungsklappen.send = "3/1/23"</pre>
         </div>
       </div>
-      <p class="note"><span data-lang="en">One line per group address, one file per device, one table per channel.
-          Keys and values come from the vendor's product data, so a channel reads like its page in ETS. Vendor ids
-          and memory offsets live in the generated <code>bussard.lock</code>, which nobody edits.</span><span
-          data-lang="de">Eine Zeile pro Gruppenadresse, eine Datei pro Gerät, eine Tabelle pro Kanal. Schlüssel und
-          Werte stammen aus den Produktdaten des Herstellers, daher liest sich ein Kanal wie seine Seite in der ETS.
-          Hersteller-IDs und Speicheradressen stehen in der generierten <code>bussard.lock</code>, die niemand von
-          Hand bearbeitet.</span></p>
+      <p class="note"><span data-lang="en">Based on the project configuration,
+          Vendor ids and memory offsets <code>bussard</code> generates a <code>bussard.lock</code> file which is used
+          to apply the changes to the physical devices.</span><span data-lang="de"><code>bussard</code> liest diese
+          Konfugration ein, und erstellt
+          ein lock file. Das lock file wird von <code>bussard</code> verwendet um die Geräte live zu konfigurieren.
+        </span>
+      </p>
     </section>
 
     <section>
@@ -1440,36 +1449,32 @@ rueckmeldung-lueftungsklappen-dachfensterposition.send = "3/1/23"</pre>
             Schreibvorgang folgt denselben sechs Schritten.</span></h2>
         <p><span data-lang="en">You see what will change before anything is sent, and the previous state is saved so you
             can go back. An assistant edits the config; only a person runs <code>plan</code> and
-            <code>apply</code>.</span><span data-lang="de">Du siehst, was sich ändert, bevor etwas gesendet wird. Der
-            vorherige Zustand wird gesichert, damit du zurück kannst. Ein Assistent bearbeitet die Konfiguration; nur
-            ein Mensch führt <code>plan</code> und <code>apply</code> aus.</span></p>
+            <code>apply</code>.</span><span data-lang="de">Bevor etwas geschrieben wird, siehst du, was sich ändert. Der
+            vorherige Zustand wird gesichert, damit du jederzeit ein Backup einspielen kannst.</p>
       </div>
       <ol class="steps">
         <li><strong><span data-lang="en">Read</span><span data-lang="de">Lesen</span></strong><span><span
               data-lang="en">Fetch the live tables from the device.</span><span data-lang="de">Die aktuellen Tabellen
               vom Gerät holen.</span></span></li>
         <li><strong><span data-lang="en">Diff</span><span data-lang="de">Vergleichen</span></strong><span><span
-              data-lang="en">Compare them to your config files.</span><span data-lang="de">Mit deinen Konfigurationsdateien
+              data-lang="en">Compare them to your config files.</span><span data-lang="de">Mit deinen
+              Konfigurationsdateien
               abgleichen.</span></span></li>
         <li><strong><span data-lang="en">Confirm</span><span data-lang="de">Bestätigen</span></strong><span><span
               data-lang="en">The plan names the gateway and asks for a yes.</span><span data-lang="de">Der Plan nennt
-              das Gateway und fragt nach einem Ja.</span></span></li>
+              das Gateway und fragt nach einer Bestätigung.</span></span></li>
         <li><strong><span data-lang="en">Back up</span><span data-lang="de">Sichern</span></strong><span><span
-              data-lang="en">Save the current tables to disk.</span><span data-lang="de">Die aktuellen Tabellen auf die
+              data-lang="en">Save the current tables to disk.</span><span data-lang="de">Die aktuellen Geräte
+              Konfiguration
+              auf die
               Platte schreiben.</span></span></li>
         <li class="write"><strong><span data-lang="en">Write</span><span
               data-lang="de">Schreiben</span></strong><span><span data-lang="en">Download the new tables to the
-              device.</span><span data-lang="de">Die neuen Tabellen auf das Gerät laden.</span></span></li>
+              device.</span><span data-lang="de">Die neuen Konfiguration auf das Gerät laden.</span></span></li>
         <li><strong><span data-lang="en">Verify</span><span data-lang="de">Prüfen</span></strong><span><span
               data-lang="en">Read back and check every byte.</span><span data-lang="de">Zurücklesen und jedes Byte
               vergleichen.</span></span></li>
       </ol>
-      <p class="note" style="margin-top:1rem"><span data-lang="en"><code>flash</code> writes a whole application image
-          and is the one command that skips the backup. Writes to a gateway that is not on localhost are refused until
-          you pass <code>--allow-remote-gateway</code>.</span><span data-lang="de"><code>flash</code> schreibt ein
-          komplettes Applikations-Image und ist der einzige Befehl, der die Sicherung überspringt. Schreibvorgänge an
-          ein Gateway, das nicht auf localhost läuft, werden abgelehnt, bis du <code>--allow-remote-gateway</code>
-          übergibst.</span></p>
     </section>
 
     <section>
@@ -1479,7 +1484,8 @@ rueckmeldung-lueftungsklappen-dachfensterposition.send = "3/1/23"</pre>
             decodiert.</span></h2>
         <p><span data-lang="en">Raw KNX telegrams carry addresses and bytes. bussard resolves both against your config,
             so a line in <code>monitor</code> reads like a sentence.</span><span data-lang="de">Rohe KNX-Telegramme
-            enthalten Adressen und Bytes. bussard löst beides gegen deine Konfiguration auf, sodass sich eine Zeile in
+            enthalten Adressen und Bytes. <code>bussard</code> löst beides gegen deine Konfiguration auf, sodass sich
+            eine Zeile in
             <code>monitor</code> wie ein Satz liest.</span></p>
       </div>
       <figure>
@@ -1523,9 +1529,9 @@ rueckmeldung-lueftungsklappen-dachfensterposition.send = "3/1/23"</pre>
             <div class="kicker"><span data-lang="en">LLM access</span><span data-lang="de">LLM-Zugriff</span></div>
             <h2><span data-lang="en">Three tiers for the MCP server.</span><span data-lang="de">Drei Stufen für den
                 MCP-Server.</span></h2>
-            <p><span data-lang="en">An agent gets exactly the access you start the server with. Nothing an LLM says can
-                raise it.</span><span data-lang="de">Ein Agent bekommt genau den Zugriff, mit dem du den Server
-                startest. Nichts, was ein LLM sagt, kann ihn erweitern.</span>
+            <p><span data-lang="en">An agent gets exactly the access you start the server with:</span><span
+                data-lang="de">Ein Agent bekommt genau den Zugriff, mit dem du den Server
+                startest:</span>
             </p>
           </div>
           <pre class="sh"><span class="p">$</span> claude mcp add knx -- bussard mcp --dir knx</pre>
@@ -1538,20 +1544,21 @@ rueckmeldung-lueftungsklappen-dachfensterposition.send = "3/1/23"</pre>
           aria-label="Three MCP tiers: passive never transmits, read is the default with rate-limited group reads and config edits, write is opt-in and still refuses protected group addresses. Device programming is never an MCP tool."
           data-aria-de="Drei MCP-Stufen: passiv sendet nie, lesen ist Standard mit ratenbegrenzten Gruppen-Lesezugriffen und Konfigurationsänderungen, schreiben ist Opt-in und lehnt geschützte Gruppenadressen weiter ab. Geräteprogrammierung ist nie ein MCP-Tool.">
           <div class="tier t1">
-            <div class="bar" style="width:55%">passive</div>
+            <div class="bar" style="width:70%">passive</div>
             <div class="txt"><strong><span data-lang="en">Never transmits</span><span data-lang="de">Sendet
                   nie</span></strong><span><span data-lang="en">Reads the config, listens to the bus, answers
                   questions.</span><span data-lang="de">Liest die Konfiguration, hört den Bus mit, beantwortet
                   Fragen.</span></span></div>
           </div>
           <div class="tier t2">
-            <div class="bar" style="width:78%">read <span class="tag"><span data-lang="en">default</span><span
-                  data-lang="de">Standard</span></span></div>
-            <div class="txt"><strong><span data-lang="en">Group reads, rate-limited</span><span
-                  data-lang="de">Gruppen-Lesen, ratenbegrenzt</span></strong><span><span data-lang="en">Can ask devices
+            <div class="bar" style="width:80%">read</div>
+            <div class="txt"><span class="tag"><span data-lang="en">default</span><span
+                  data-lang="de">Standard</span></span><strong><span data-lang="en">Group reads</span><span
+                  data-lang="de">Gruppen-Lesen</span></strong><span><span data-lang="en">Can
+                  ask devices
                   for values and edit the config, each edit read back as a sentence. Cannot write to the bus or
                   program a device.</span><span data-lang="de">Kann Geräte nach Werten fragen und die Konfiguration
-                  bearbeiten, jede Änderung als Satz zurückgemeldet. Kann nicht auf den Bus schreiben und kein Gerät
+                  bearbeiten. Kann nicht auf den Bus schreiben und kein Gerät
                   programmieren.</span></span></div>
           </div>
           <div class="tier t3">
@@ -1564,7 +1571,7 @@ rueckmeldung-lueftungsklappen-dachfensterposition.send = "3/1/23"</pre>
                   data-lang="de">Opt-in mit <code>--allow-writes</code></span></strong><span><span data-lang="en">Group
                   writes and device changes. Group addresses marked <code>protected</code> are still refused, with no
                   override over MCP.</span><span data-lang="de">Gruppen-Schreiben und Geräteänderungen. Gruppenadressen
-                  mit <code>protected</code> werden weiter abgelehnt, ohne Ausnahme über MCP.</span></span></div>
+                  mit <code>protected</code> werden weiter abgelehnt.</span></span></div>
           </div>
         </div>
       </div>
@@ -1633,7 +1640,7 @@ rueckmeldung-lueftungsklappen-dachfensterposition.send = "3/1/23"</pre>
       <div class="two" style="margin-top:2rem">
         <div>
           <h3 style="margin:0 0 .6rem;font-size:1.1rem"><span data-lang="en">Or let an installer do it</span><span
-              data-lang="de">Oder ein Installer macht es</span></h3>
+              data-lang="de">Oder ein Installer macht's</span></h3>
           <pre class="sh"><span class="p"><span data-lang="en"># macOS and Linux</span><span data-lang="de"># macOS und Linux</span></span>
 curl -fsSL https://raw.githubusercontent.com/tmbo/bussard/main/install.sh | sh
 
@@ -1675,10 +1682,9 @@ cargo install --path crates/bussard-cli</pre>
             programming covers System B (mask 07B0) and System 7 (mask 0705) devices. Read the <a
               href="docs/SAFETY/">safety notes</a>
             before your first write, and try it on a spare device or the simulator first.</span><span
-            data-lang="de"><strong>Das ist frühe Software, die auf echte Gebäudetechnik schreibt.</strong>
+            data-lang="de"><strong>Das ist beta Software, die auf echte Gebäudetechnik schreibt.</strong>
             Geräteprogrammierung deckt System-B-Geräte (Maske 07B0) und System-7-Geräte (Maske 0705) ab. Lies die <a
-              href="docs/SAFETY/">Sicherheitshinweise</a> vor dem ersten Schreiben und probiere es zuerst an einem
-            Ersatzgerät oder im Simulator.</span></p>
+              href="docs/SAFETY/">Sicherheitshinweise</a> vor dem ersten Schreiben.</span></p>
       </div>
     </section>
 
