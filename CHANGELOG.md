@@ -130,6 +130,11 @@ entry supersedes it and is not a diff against it.
   answers re-opens the connection instead of leaving it closed, so the next
   request no longer fails with "disconnected". The flash write phase reuses
   the pre-flight's answered absence instead of reading it again (#215).
+- `bussard_mgmt::write_table`, a `PID_TABLE` property-array writer with fixed
+  8-octet chunks, is removed. Nothing called it since `apply` writes tables
+  into device-allocated segments with memory writes, as ETS does; the ETS
+  table downloads of 1.1.47 and 1.1.5 contain no `PID_TABLE` property write
+  (#215).
 - System B table read-back reads the address and association tables from
   memory at the negotiated chunk when that takes fewer requests than
   `PID_TABLE` property reads (#223). A 400-address, 1,333-association table

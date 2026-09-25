@@ -84,7 +84,7 @@ pub use load::{
     SegmentAllocation, WriteError, allocate_segment, compare_property, compare_rel_mem,
     crc16_ccitt, encode_rel_segment, is_connection_death, master_reset, mcb_entry, read_load_state,
     read_mcb_table, read_program_version, read_table_reference, restart_process_wait,
-    write_load_control, write_property, write_table,
+    write_load_control, write_property,
 };
 // The memory primitives moved out of `load` into their own module (issue #80);
 // every historical `bussard_mgmt::…` and `bussard_mgmt::load::…` path still
