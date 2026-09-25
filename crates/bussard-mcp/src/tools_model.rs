@@ -107,10 +107,15 @@ pub struct SetDeviceArgs {
 pub struct SetParameterArgs {
     /// The device's individual address, e.g. `"1.1.4"`.
     pub address: String,
-    /// The parameter key exactly as it appears in the device file's
-    /// `parameters:` block, e.g. `"nachtabsenkung@P-1312_R-2140"`.
+    /// The parameter key as the device file uses it (`knx_show_device` lists
+    /// them), e.g. `"betriebsart"`, `"sollwerte.komfort"`, or the escape-hatch
+    /// form `"nachtabsenkung@P-1312_R-2140"`.
     pub parameter: String,
-    /// The new value, as the string the model stores (e.g. `"17"`).
+    /// The channel handle the parameter sits in (`"a-1"`), when the key alone
+    /// is not unique on the device.
+    #[serde(default)]
+    pub channel: Option<String>,
+    /// The new value: an enum label (`"Jalousie"`) or code, a number, or text.
     pub value: String,
 }
 
@@ -523,12 +528,14 @@ impl BussardMcp {
 
     /// `knx_set_parameter`.
     #[tool(
-        description = "Change one device parameter value in its devices/*.toml `parameters:` \
-        block (e.g. a night setback temperature). Only parameters the device file already carries \
-        can be set, and the value is checked against the vendor's product model first; without a \
-        product model the edit is refused rather than guessed. This edits FILES ONLY — the device \
-        keeps its current settings until a human runs `bussard flash`/`bussard apply`. Returns the \
-        change as sentences: quote them to the human."
+        description = "Change one device parameter value in its device file, devices/<address>.toml \
+        (e.g. a night setback temperature). `parameter` is the key the file uses, as \
+        knx_show_device lists it (add `channel` when the key repeats across channels); any \
+        parameter the lock knows for the device can be set, and the value (an enum label or \
+        code, a number) is checked against the vendor's product model first; without a product \
+        model the edit is refused rather than guessed. This edits FILES ONLY — the device keeps \
+        its current settings until a human runs `bussard plan <ia>` and `bussard apply <ia>`. \
+        Returns the change as sentences: quote them to the human."
     )]
     async fn knx_set_parameter(
         &self,
@@ -544,27 +551,17 @@ impl BussardMcp {
             }
         };
         let dir = self.state().dir.clone();
-        let (key, value) = (args.parameter.clone(), args.value.clone());
-        let label = vec![ia.to_string(), key.clone(), value.clone()];
+        let (wanted, value) = (args.parameter.clone(), args.value.clone());
+        let channel = args.channel.clone();
+        let label = vec![ia.to_string(), wanted.clone(), value.clone()];
 
         self.edit("knx_set_parameter", label, move |model| {
             let Some(loaded) = model.devices.get_mut(&ia) else {
                 return Err(format!("{ia} is not a device in this model"));
             };
-            if loaded.device.parameters.is_empty() {
-                return Err(format!(
-                    "{ia} has no `parameters:` block, so there is no parameter to set. Re-import \
-                     the project (or the product data) first."
-                ));
-            }
-            if !loaded.device.parameters.contains_key(&key) {
-                return Err(format!(
-                    "{ia} has no parameter {key:?}. Read the device with knx_get_device to see the \
-                     keys it carries."
-                ));
-            }
-            check_parameter(&dir, loaded, &key, &value)?;
-            loaded.device.parameters.insert(key.clone(), value.clone());
+            let key = resolve_parameter_key(&loaded.device, &wanted, channel.as_deref())?;
+            let value = check_parameter(&dir, loaded, &key, &value)?;
+            loaded.device.parameters.insert(key, value);
             Ok(())
         })
     }
@@ -784,12 +781,74 @@ fn refuse_protected_ga(protected: bool, ga: GroupAddress) -> Result<(), String> 
 
 /// Validates a parameter value against the vendor product model, refusing when
 /// there is no model to check it against.
+/// The in-memory key (`<slug>@<ref>`) of the parameter a device file names
+/// `wanted` (in `channel`, when given): an in-memory key as is, else the one
+/// lock entry with that file key.
+fn resolve_parameter_key(
+    device: &bussard_model::schema::Device,
+    wanted: &str,
+    channel: Option<&str>,
+) -> Result<String, String> {
+    if device.parameters.contains_key(wanted) {
+        return Ok(wanted.to_string());
+    }
+    let hits: Vec<(&String, &bussard_model::schema::LockedParameter)> = device
+        .lock
+        .parameters
+        .iter()
+        .filter(|(_, p)| p.key == wanted)
+        .filter(|(_, p)| match channel {
+            Some(h) => {
+                p.channel
+                    .as_deref()
+                    .map(|id| device.channel_handle(id))
+                    .as_deref()
+                    == Some(h)
+            }
+            None => true,
+        })
+        .collect();
+    match hits.as_slice() {
+        [(reference, _)] => Ok(device
+            .parameters
+            .keys()
+            .find(|k| {
+                k.split_once('@')
+                    .is_some_and(|(_, r)| r == reference.as_str())
+            })
+            .cloned()
+            .unwrap_or_else(|| format!("{}@{reference}", bussard_model::slug(wanted)))),
+        [] => Err(format!(
+            "{} has no parameter {wanted:?}{}. knx_show_device lists the keys the device file \
+             accepts.",
+            device.address,
+            channel
+                .map(|c| format!(" in channel {c}"))
+                .unwrap_or_default()
+        )),
+        many => Err(format!(
+            "{wanted:?} names a parameter in several channels of {} ({}); pass `channel`",
+            device.address,
+            many.iter()
+                .map(|(_, p)| p
+                    .channel
+                    .as_deref()
+                    .map(|id| device.channel_handle(id))
+                    .unwrap_or_else(|| "device".to_string()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
+/// Checks `value` for the parameter `key` against the product model and
+/// returns it as the model stores it (an enum label becomes its code).
 fn check_parameter(
     dir: &Path,
     loaded: &bussard_model::LoadedDevice,
     key: &str,
     value: &str,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let app_ref = loaded
         .device
         .product
@@ -816,9 +875,12 @@ fn check_parameter(
     let def = product.parameters.get(&param_id).ok_or_else(|| {
         format!("{param_id:?} (from key {key:?}) is not a parameter of {app_ref}")
     })?;
-    match bussard_model::validate::parameter_value_error(&def.kind, value) {
+    let value = bussard_model::param_model::enum_code(&def.labels, value)
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| value.to_string());
+    match bussard_model::validate::parameter_value_error(&def.kind, &value) {
         Some(reason) => Err(reason),
-        None => Ok(()),
+        None => Ok(value),
     }
 }
 

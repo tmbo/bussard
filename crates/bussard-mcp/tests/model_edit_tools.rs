@@ -311,7 +311,8 @@ async fn test_set_parameter_refuses_without_a_product_model() -> TestResult {
         "the refusal says why the value could not be checked: {res}"
     );
 
-    // A device with no `[parameters]` table at all is refused too.
+    // A parameter neither the file nor the lock knows is refused too, with
+    // the tool that lists the keys.
     let res = call(
         &client,
         "knx_set_parameter",
@@ -322,7 +323,7 @@ async fn test_set_parameter_refuses_without_a_product_model() -> TestResult {
     assert!(
         res["reason"]
             .as_str()
-            .is_some_and(|r| r.contains("parameters")),
+            .is_some_and(|r| r.contains("has no parameter") && r.contains("knx_show_device")),
         "{res}"
     );
 
@@ -392,6 +393,110 @@ async fn test_show_device_lists_a_channel_and_its_toml() -> TestResult {
     let toml = res["toml"].as_str().unwrap_or_default();
     assert!(toml.contains("[channel.CH-2]"), "{toml}");
     assert!(toml.contains("# 12.send = \"\""), "{toml}");
+    client.cancel().await?;
+    task.abort();
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// The fixture of a keyed device with its product model (see
+/// `bussard-model/tests/device_view.rs`).
+const KEYED_LOCK: &str = r#"version = 1
+
+[[device]]
+address = "1.1.47"
+product = "230021SU"
+application = "M-0004_A-20DE-22-C7D8-O000A"
+mask = "07B0"
+channels = [
+  { key = "a-1", id = "MD-3_M-18_MI-1_CH-25", number = 1, text = "Jalousie 1", base = 2915 },
+]
+objects = [
+  { number = 138, key = "in-betrieb", text = "Allgemein", function = "In Betrieb", dpt = "1.002", flags = "CRT" },
+  { number = 144, key = "langzeitbetrieb", channel = "a-1", text = "Jalousie 1", function = "Langzeitbetrieb", dpt = "1.008", flags = "CWU" },
+  { number = 162, key = "status-position", channel = "a-1", dpt = "5.001", flags = "CRT" },
+]
+parameters = [
+  { key = "regenalarm", ref = "P-19_R-38", param = "P-19" },
+  { key = "betriebsart", channel = "a-1", ref = "MD-3_M-18_MI-1_P-14_R-14", param = "MD-3_P-14" },
+  { key = "fahrzeit", channel = "a-1", ref = "MD-3_M-18_MI-1_P-15_R-15", param = "MD-3_P-15" },
+]
+"#;
+
+const KEYED_DEVICE: &str = r#"address = "1.1.47"
+name = "Jalousieaktor Kind 2"
+product = "230021SU"
+
+[links]
+in-betrieb.send = "4/1/2"
+
+[channel.a-1]
+name = "Fenster Süd"
+betriebsart = "2"
+langzeitbetrieb.listen = ["0/1/3"]
+"#;
+
+const KEYED_PRODUCT: &str = r#"identity:
+  id: M-0004_A-20DE-22-C7D8-O000A
+parameters:
+  - id: M-0004_A-20DE-22-C7D8-O000A_MD-3_P-14
+    text: Betriebsart
+    type: !enum
+      values:
+        - { value: 1, text: Rollladen }
+        - { value: 2, text: Jalousie }
+    default: "1"
+  - id: M-0004_A-20DE-22-C7D8-O000A_MD-3_P-15
+    text: Fahrzeit
+    type: !int
+      min: 1
+      max: 600
+    default: "60"
+  - id: M-0004_A-20DE-22-C7D8-O000A_P-19
+    text: Regenalarm
+    type: !enum
+      values:
+        - { value: 0, text: Nein }
+        - { value: 1, text: Ja }
+    default: "0"
+"#;
+
+/// `knx_set_parameter` takes the key the device file uses and an enum label,
+/// and stores the code.
+#[tokio::test]
+async fn test_set_parameter_takes_the_file_key_and_a_label() -> TestResult {
+    let dir = model_dir("keyed")?;
+    let app = "M-0004_A-20DE-22-C7D8-O000A";
+    std::fs::create_dir_all(dir.join("models"))?;
+    std::fs::write(
+        dir.join("models").join(format!("{app}.yaml")),
+        KEYED_PRODUCT,
+    )?;
+    std::fs::write(dir.join("bussard.lock"), KEYED_LOCK)?;
+    std::fs::remove_file(dir.join("devices").join("1.1.4.toml"))?;
+    std::fs::write(dir.join("devices").join("1.1.47.toml"), KEYED_DEVICE)?;
+    let (client, task) = connect(server_over(&dir)?).await?;
+    let res = call(
+        &client,
+        "knx_set_parameter",
+        json!({"address": "1.1.47", "parameter": "fahrzeit", "channel": "a-1", "value": "90"}),
+    )
+    .await;
+    assert_eq!(res["ok"], true, "{res}");
+    let res = call(
+        &client,
+        "knx_set_parameter",
+        json!({"address": "1.1.47", "parameter": "betriebsart", "value": "Rollladen"}),
+    )
+    .await;
+    assert_eq!(res["ok"], true, "{res}");
+    let saved = Model::load(&dir)?;
+    let device = &saved.devices[&"1.1.47".parse()?].device;
+    assert_eq!(device.parameters["fahrzeit@MD-3_M-18_MI-1_P-15_R-15"], "90");
+    assert_eq!(
+        device.parameters["betriebsart@MD-3_M-18_MI-1_P-14_R-14"],
+        "1"
+    );
     client.cancel().await?;
     task.abort();
     std::fs::remove_dir_all(&dir)?;
