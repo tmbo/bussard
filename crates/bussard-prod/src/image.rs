@@ -1059,6 +1059,17 @@ fn binary_value_placement(bits: u32, bytes: &[u8]) -> Placement {
     }
 }
 
+/// The code of the enum member whose `Text` is exactly `text` (trimmed), when
+/// exactly one member has it.
+fn enum_member_by_text(values: &[bussard_ets::application::EnumValue], text: &str) -> Option<i64> {
+    let text = text.trim();
+    let mut hits = values.iter().filter(|e| e.text.trim() == text);
+    match (hits.next(), hits.next()) {
+        (Some(one), None) => Some(one.value),
+        _ => None,
+    }
+}
+
 /// Resolves the width/encoding of a value from its parameter type.
 ///
 /// `source` selects the enum-membership leniency (see [`ValueSource`]): a
@@ -1081,11 +1092,24 @@ fn encode_value(
         }) => encode_int(app, pname, *size_bits, *signed, *min, *max, value),
         Some(ParameterType::Enum { size_bits, values }) => {
             // Enum default is the raw numeric value; validate it is a declared
-            // member when it parses, but always encode the number.
+            // member when it parses, but always encode the number. A device
+            // file may also name the member by its vendor label (`import`
+            // writes labels): an exact, unique `Text` match is that member.
             let raw = value.unwrap_or("0");
-            let n: i64 = raw.trim().parse().map_err(|_| {
-                param_err(app, pname, &format!("enum value `{raw}` is not an integer"))
-            })?;
+            let n: i64 = match raw.trim().parse() {
+                Ok(n) => n,
+                Err(_) => enum_member_by_text(values, raw).ok_or_else(|| {
+                    let choices: Vec<&str> = values.iter().map(|e| e.text.as_str()).collect();
+                    param_err(
+                        app,
+                        pname,
+                        &format!(
+                            "`{raw}` is neither an enum code nor exactly one of its labels ({})",
+                            choices.join(" | ")
+                        ),
+                    )
+                })?,
+            };
             if !values.is_empty() && !values.iter().any(|e| e.value == n) {
                 match source {
                     // A user asking to write a value outside the declared enum is a
@@ -1974,6 +1998,31 @@ mod tests {
             0,
         )]);
         assert_eq!(image_of(&app)[0], 7);
+    }
+
+    #[test]
+    fn test_enum_override_by_label_encodes_the_member_code() -> Result<()> {
+        // `import` writes enum values as vendor labels; the encoder takes an
+        // exact, unique label as that member.
+        let app = app_with(&[(
+            "mode",
+            r#"<TypeRestriction Base="Value" SizeInBit="8"><Enumeration Text="Off" Value="0" Id="e0"/><Enumeration Text="On" Value="7" Id="e1"/></TypeRestriction>"#,
+            Some("0"),
+            0,
+            0,
+        )]);
+        let mut ov = BTreeMap::new();
+        ov.insert("P-0_R-1".to_string(), "On".to_string());
+        let img = compute_parameter_image(&app, &ov, &no_bases())?;
+        assert_eq!(img["M-1_A-1_RS-1"][0], 7);
+        // A text that is no label is refused with the choices.
+        ov.insert("P-0_R-1".to_string(), "Maybe".to_string());
+        let err = compute_parameter_image(&app, &ov, &no_bases())
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert!(err.contains("Off | On"), "{err}");
+        Ok(())
     }
 
     #[test]
