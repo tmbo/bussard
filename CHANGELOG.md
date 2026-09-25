@@ -141,6 +141,10 @@ entry supersedes it and is not a diff against it.
   the prompt and another after the download. The written octets and the
   verification are unchanged (mock: 6 to 4 `T_Connect`, 44 to 34 requests)
   (#215).
+- `BUSSARD_WIRE_TRACE=1` encodes each frame once and writes each line with a
+  single write to stderr; a 215-octet write's line takes 1.3 µs instead of
+  17 µs (release). With the trace off nothing is encoded or formatted: a
+  counting allocator sees zero allocations over 200,000 calls (#215).
 - System B table read-back reads the address and association tables from
   memory at the negotiated chunk when that takes fewer requests than
   `PID_TABLE` property reads (#223). A 400-address, 1,333-association table
