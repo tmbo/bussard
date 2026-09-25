@@ -49,7 +49,7 @@ re-formatted; everything else stays byte-identical.
 transport = "tunnel"            # "tunnel" | "routing"
 gateway = "192.168.1.74:3671"
 # multicast = "224.0.23.12:3671"
-# keyring = "house.knxkeys"
+# keyring = "house.knxkeys"   # deprecated: use the key store bussard.keys
 
 [lint]
 [lint.topology]
@@ -471,8 +471,11 @@ refused with the fix: `bussard import <export> --dir <dir>` regenerates it.
 
 ## `bussard.keys`
 
-The KNX Secure key store (issue #241), written only by `bussard keys import`
-(and later by the commands that activate a device). It is git-tracked by
+The KNX Secure key store (issue #241), written by `bussard keys import` and
+by `import`/`init` when a `.knxkeys` sits next to the project and
+`BUSSARD_KEYRING_PASSWORD` is set. Every bus command reads its keys from it
+unless `--keyring` or `BUSSARD_KEYRING` names an explicit file, and it wins
+over the deprecated `connection.keyring`. It is git-tracked by
 design: a checkout recovers the model and its keys together. `.bussard/`
 never holds keys.
 

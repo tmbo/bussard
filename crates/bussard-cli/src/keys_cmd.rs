@@ -7,6 +7,9 @@
 //! - `keys export <file.knxkeys>` writes a signed export ETS accepts.
 //! - `keys show` prints a redaction-safe summary.
 //!
+//! `import` and `init` also merge the one `.knxkeys` exported next to the
+//! project into the store ([`import_neighbour`], issue #241 item 2).
+//!
 //! The store and every `.knxkeys` it touches use one password, read from
 //! `BUSSARD_KEYRING_PASSWORD` (never a CLI argument). No key material is ever
 //! printed: the output is addresses, counts and presence flags.
@@ -30,21 +33,91 @@ fn password() -> anyhow::Result<String> {
     })
 }
 
-/// Loads the store in `dir`, failing with a hint when there is none.
-fn load_existing(dir: &Path, password: &str) -> anyhow::Result<KeyStore> {
-    let path = KeyStore::path(dir);
-    KeyStore::load(dir, password)
-        .with_context(|| format!("loading the key store {}", path.display()))?
-        .ok_or_else(|| {
-            anyhow!(
-                "no key store at {}; create it with `bussard keys import <file.knxkeys>`",
-                path.display()
-            )
+/// The `.knxkeys` exports in the directory of `project` (sorted).
+pub fn neighbour_keyrings(project: &Path) -> Vec<std::path::PathBuf> {
+    let parent = match project.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => std::path::PathBuf::from("."),
+    };
+    let mut found: Vec<std::path::PathBuf> = std::fs::read_dir(&parent)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.is_file()
+                        && p.extension()
+                            .and_then(|e| e.to_str())
+                            .is_some_and(|e| e.eq_ignore_ascii_case("knxkeys"))
+                })
+                .collect()
         })
+        .unwrap_or_default();
+    found.sort();
+    found
 }
 
-/// Runs `bussard keys import <file>`.
-pub fn run_import(dir: &Path, file: &Path, json: bool) -> anyhow::Result<ExitCode> {
+/// Whether the key store password is set (a store can be written).
+pub fn password_available() -> bool {
+    std::env::var_os(KEYRING_PASSWORD_ENV).is_some()
+}
+
+/// After an import of `project` into `dir`: merges the one `.knxkeys` next to
+/// the project into `bussard.keys` (issue #241 item 2). Several exports are
+/// listed and none is picked; without the password the command to run is
+/// printed. Never fails the import: a keyring that does not load is a
+/// warning.
+pub fn import_neighbour(project: &Path, dir: &Path) {
+    let mut found = neighbour_keyrings(project);
+    match found.len() {
+        0 => {}
+        1 => {
+            let file = found.remove(0);
+            if !password_available() {
+                println!(
+                    "Found the ETS keyring {}. To keep its keys in {}, set                      {KEYRING_PASSWORD_ENV} and run `bussard keys import {}` (the password is                      never stored).",
+                    file.display(),
+                    KeyStore::path(dir).display(),
+                    file.display()
+                );
+                return;
+            }
+            match import_quiet(dir, &file) {
+                Ok((report, outcome)) => {
+                    let what = match outcome {
+                        SaveOutcome::Written { backup: false } => "created",
+                        SaveOutcome::Written { backup: true } => "updated",
+                        SaveOutcome::Unchanged => "already up to date",
+                    };
+                    println!(
+                        "Imported the ETS keyring {} into {} ({what}: {} device(s) added, {} tool                          key(s) rotated, {} group key(s) added, {} rotated). It is encrypted                          with {KEYRING_PASSWORD_ENV}; keep that password, bussard never stores                          it.",
+                        file.display(),
+                        KeyStore::path(dir).display(),
+                        report.devices_added.len(),
+                        report.tool_keys_rotated.len(),
+                        report.group_keys_added.len(),
+                        report.group_keys_rotated.len(),
+                    );
+                }
+                Err(err) => eprintln!(
+                    "warning: the ETS keyring {} was not imported into the key store: {err:#}",
+                    file.display()
+                ),
+            }
+        }
+        _ => {
+            println!(
+                "Found several ETS keyrings next to the project; import the current one with                  `bussard keys import <file>`:"
+            );
+            for p in &found {
+                println!("  {}", p.display());
+            }
+        }
+    }
+}
+
+/// Merges `file` into the store in `dir` and saves it.
+fn import_quiet(dir: &Path, file: &Path) -> anyhow::Result<(ImportReport, SaveOutcome)> {
     let password = password()?;
     let xml = std::fs::read_to_string(file)
         .with_context(|| format!("reading keyring {}", file.display()))?;
@@ -62,6 +135,26 @@ pub fn run_import(dir: &Path, file: &Path, json: bool) -> anyhow::Result<ExitCod
     let outcome = store
         .save(dir, &password)
         .with_context(|| format!("writing the key store {}", path.display()))?;
+    Ok((report, outcome))
+}
+
+/// Loads the store in `dir`, failing with a hint when there is none.
+fn load_existing(dir: &Path, password: &str) -> anyhow::Result<KeyStore> {
+    let path = KeyStore::path(dir);
+    KeyStore::load(dir, password)
+        .with_context(|| format!("loading the key store {}", path.display()))?
+        .ok_or_else(|| {
+            anyhow!(
+                "no key store at {}; create it with `bussard keys import <file.knxkeys>`",
+                path.display()
+            )
+        })
+}
+
+/// Runs `bussard keys import <file>`.
+pub fn run_import(dir: &Path, file: &Path, json: bool) -> anyhow::Result<ExitCode> {
+    let path = KeyStore::path(dir);
+    let (report, outcome) = import_quiet(dir, file)?;
 
     if json {
         let value = serde_json::json!({

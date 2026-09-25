@@ -166,7 +166,7 @@ Manager was enabled.
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| Work on a Secure installation | Data Secure tool access via `--keyring` or `--tool-key` on `describe`, `apply`, `flash`; `bussard keyring` inspects an export; `audit --keyring` shows which Secure devices have a key (pending merge). KNXnet/IP Secure is not implemented. | IP Secure tunnelling, the one Secure feature integrators deploy. FDSK commissioning is further out. | existing #71 |
+| Work on a Secure installation | Data Secure tool access via `--keyring` or `--tool-key` on `describe`, `apply`, `flash`; `bussard keys show` summarizes the key store; `audit --keyring` shows which Secure devices have a key (pending merge). KNXnet/IP Secure is not implemented. | IP Secure tunnelling, the one Secure feature integrators deploy. FDSK commissioning is further out. | existing #71 |
 
 ## User stories
 

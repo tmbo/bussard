@@ -102,7 +102,10 @@ pub enum KeyringSource {
     Flag,
     /// `BUSSARD_KEYRING`.
     Env,
-    /// `connection.keyring` in `bussard.toml` (issue #189).
+    /// The key store `bussard.keys` in the model directory (issue #241).
+    Store,
+    /// `connection.keyring` in `bussard.toml` (issue #189). Deprecated: kept
+    /// for one release for models without a key store.
     Config,
 }
 
@@ -112,6 +115,7 @@ impl KeyringSource {
         match self {
             KeyringSource::Flag => "--keyring",
             KeyringSource::Env => KEYRING_ENV,
+            KeyringSource::Store => "the key store bussard.keys",
             KeyringSource::Config => "connection.keyring in bussard.toml",
         }
     }
@@ -126,10 +130,11 @@ pub struct ResolvedKeyring {
     pub source: KeyringSource,
 }
 
-/// The keyring of a bus command: `--keyring`, else `BUSSARD_KEYRING`, else
-/// `connection.keyring` in `dir/bussard.toml` (relative to `dir`). A
-/// `bussard.toml` that does not parse is left for the command's own model
-/// load to report.
+/// The keyring of a bus command: `--keyring`, else `BUSSARD_KEYRING` (an
+/// explicit file), else the key store `dir/bussard.keys` when it exists
+/// (issue #241), else the deprecated `connection.keyring` in
+/// `dir/bussard.toml` (relative to `dir`). A `bussard.toml` that does not
+/// parse is left for the command's own model load to report.
 pub fn resolve_keyring(
     flag: Option<&Path>,
     env: Option<&Path>,
@@ -147,14 +152,28 @@ pub fn resolve_keyring(
             source: KeyringSource::Env,
         });
     }
-    let config = bussard_model::load_config(dir).ok()?;
-    config
-        .connection
-        .keyring_path(dir)
-        .map(|path| ResolvedKeyring {
-            path,
-            source: KeyringSource::Config,
-        })
+    let config = bussard_model::load_config(dir)
+        .ok()
+        .and_then(|config| config.connection.keyring_path(dir));
+    let store = bussard_project::KeyStore::path(dir);
+    if store.is_file() {
+        if let Some(config) = &config {
+            tracing::warn!(
+                "the key store {} is used; connection.keyring ({}) in bussard.toml is ignored \
+                 and deprecated: remove it",
+                store.display(),
+                config.display()
+            );
+        }
+        return Some(ResolvedKeyring {
+            path: store,
+            source: KeyringSource::Store,
+        });
+    }
+    config.map(|path| ResolvedKeyring {
+        path,
+        source: KeyringSource::Config,
+    })
 }
 
 /// The source individual address for a **connection-oriented** device command,
@@ -908,24 +927,87 @@ mod tests {
         Ok(())
     }
 
+    /// The precedence table (issue #241): an explicit file (`--keyring`,
+    /// then `BUSSARD_KEYRING`) beats the key store, which beats the
+    /// deprecated `connection.keyring`.
     #[test]
-    fn test_resolve_keyring_flag_env_config_precedence() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_resolve_keyring_precedence_table() -> Result<(), Box<dyn std::error::Error>> {
         let dir = keyring_model("precedence")?;
-        let flag = resolve_keyring(
-            Some(Path::new("f.knxkeys")),
-            Some(Path::new("e.knxkeys")),
-            &dir,
-        )
-        .ok_or("expected a keyring")?;
-        assert_eq!(flag.path, PathBuf::from("f.knxkeys"));
-        assert_eq!(flag.source, KeyringSource::Flag);
-        let env = resolve_keyring(None, Some(Path::new("e.knxkeys")), &dir)
-            .ok_or("expected a keyring")?;
-        assert_eq!(env.path, PathBuf::from("e.knxkeys"));
-        assert_eq!(env.source, KeyringSource::Env);
-        let config = resolve_keyring(None, None, &dir).ok_or("expected a keyring")?;
-        assert_eq!(config.path, dir.join("site.knxkeys"));
-        assert_eq!(config.source, KeyringSource::Config);
+        let store = bussard_project::KeyStore::path(&dir);
+        let flag = Some(Path::new("f.knxkeys"));
+        let env = Some(Path::new("e.knxkeys"));
+        type Row<'a> = (
+            Option<&'a Path>,
+            Option<&'a Path>,
+            bool,
+            PathBuf,
+            KeyringSource,
+        );
+        let table: Vec<Row<'_>> = vec![
+            (
+                flag,
+                env,
+                true,
+                PathBuf::from("f.knxkeys"),
+                KeyringSource::Flag,
+            ),
+            (
+                flag,
+                None,
+                false,
+                PathBuf::from("f.knxkeys"),
+                KeyringSource::Flag,
+            ),
+            (
+                None,
+                env,
+                true,
+                PathBuf::from("e.knxkeys"),
+                KeyringSource::Env,
+            ),
+            (
+                None,
+                env,
+                false,
+                PathBuf::from("e.knxkeys"),
+                KeyringSource::Env,
+            ),
+            (None, None, true, store.clone(), KeyringSource::Store),
+            (
+                None,
+                None,
+                false,
+                dir.join("site.knxkeys"),
+                KeyringSource::Config,
+            ),
+        ];
+        for (flag, env, with_store, path, source) in table {
+            if with_store {
+                std::fs::write(&store, "placeholder")?;
+            } else if store.exists() {
+                std::fs::remove_file(&store)?;
+            }
+            let resolved = resolve_keyring(flag, env, &dir).ok_or("expected a keyring")?;
+            assert_eq!(
+                (&resolved.path, resolved.source),
+                (&path, source),
+                "flag {flag:?}, env {env:?}, store {with_store}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn test_resolve_keyring_store_without_config() -> Result<(), Box<dyn std::error::Error>> {
+        let dir =
+            std::env::temp_dir().join(format!("bussard-conn-store-only-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let store = bussard_project::KeyStore::path(&dir);
+        std::fs::write(&store, "placeholder")?;
+        let resolved = resolve_keyring(None, None, &dir).ok_or("expected the store")?;
+        assert_eq!(resolved.source, KeyringSource::Store);
+        assert_eq!(resolved.path, store);
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }

@@ -822,6 +822,60 @@ impl KeyStore {
         })
     }
 
+    /// The store as the [`Keyring`] shape the secure paths consume (tunnel
+    /// users, tool keys, group keys, ETS sequence numbers), so every consumer
+    /// of a `.knxkeys` reads the store unchanged (issue #241 item 4). A
+    /// device without a tool key is left out, as a keyring cannot list it.
+    pub fn to_keyring(&self) -> Keyring {
+        Keyring {
+            project: self.project.clone(),
+            created: self.created.clone(),
+            backbone: self.backbone.as_ref().map(|b| Backbone {
+                key: b.key.clone(),
+                multicast: b.multicast,
+                latency_ms: b.latency_ms,
+            }),
+            interfaces: self
+                .interfaces
+                .iter()
+                .map(|i| crate::keyring::Interface {
+                    interface_type: i.interface_type.clone(),
+                    ia: i.ia,
+                    host: i.host,
+                    user_id: i.user_id,
+                    password: i.password.clone(),
+                    authentication: i.authentication.clone(),
+                    gas: i.gas.iter().map(|(ga, _)| *ga).collect(),
+                    group_senders: i
+                        .gas
+                        .iter()
+                        .filter_map(|(ga, s)| s.clone().map(|s| (*ga, s)))
+                        .collect(),
+                })
+                .collect(),
+            devices: self
+                .devices
+                .iter()
+                .filter_map(|(ia, d)| {
+                    Some(crate::keyring::Device {
+                        ia: *ia,
+                        tool_key: d.tool_key.clone()?,
+                        seq: d.ets_sequence.unwrap_or(0),
+                        management_password: d.management_password.clone(),
+                        authentication: d.authentication.clone(),
+                        fdsk: d.fdsk.clone(),
+                        serial: d.serial,
+                    })
+                })
+                .collect(),
+            group_keys: self
+                .group_keys
+                .iter()
+                .map(|(ga, k)| (*ga, k.clone()))
+                .collect(),
+        }
+    }
+
     /// The redaction-safe summary (counts, addresses, presence flags).
     pub fn summary(&self) -> KeyStoreSummary {
         KeyStoreSummary {
@@ -967,6 +1021,27 @@ impl KeyStore {
             w.close("Devices");
         }
         Ok(())
+    }
+}
+
+/// Whether `xml` is a bussard key store (its root carries
+/// `Format="bussard.keys/..."`) rather than an ETS `.knxkeys` export. A cheap
+/// check before choosing the parser; the parser itself verifies everything.
+pub fn is_keystore(xml: &str) -> bool {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                return e.local_name().as_ref() == b"Keyring"
+                    && attr(&e, b"Format")
+                        .ok()
+                        .flatten()
+                        .is_some_and(|f| f.starts_with("bussard.keys/"));
+            }
+            Ok(Event::Eof) | Err(_) => return false,
+            _ => {}
+        }
     }
 }
 
@@ -1837,6 +1912,30 @@ mod tests {
                 .iter()
                 .any(|d| d.has_fdsk && !d.has_tool_key)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_to_keyring_matches_the_source_export() -> TestResult {
+        let store = sample()?;
+        let keyring = store.to_keyring();
+        let original = parse_keyring(SYNTHETIC, PASSWORD)?;
+        assert_eq!(keyring.devices.len(), 1, "the FDSK-only device is left out");
+        assert_eq!(
+            keyring.tool_key(ia("1.1.10")?),
+            original.tool_key(ia("1.1.10")?)
+        );
+        assert_eq!(keyring.devices[0].seq, 42);
+        assert_eq!(keyring.group_keys, original.group_keys);
+        assert_eq!(
+            keyring.interfaces[0].password,
+            original.interfaces[0].password
+        );
+        assert_eq!(keyring.interfaces[0].gas, original.interfaces[0].gas);
+        assert!(keyring.interfaces[0].is_secure_tunnel());
+        assert!(is_keystore(&store.to_xml(PASSWORD)?));
+        assert!(!is_keystore(SYNTHETIC));
+        assert!(!is_keystore("not xml <"));
         Ok(())
     }
 

@@ -157,3 +157,57 @@ fn test_validate_keyring_missing_file_is_an_error() -> TestResult {
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
+
+/// Creates `dir/bussard.keys` from the synthetic keyring with `bussard keys
+/// import`.
+fn import_store(dir: &Path) -> TestResult {
+    let out = Command::new(env!("CARGO_BIN_EXE_bussard"))
+        .args(["keys", "import"])
+        .arg(keyring_path())
+        .arg("--dir")
+        .arg(dir)
+        .env_remove("BUSSARD_KEYRING")
+        .env("BUSSARD_KEYRING_PASSWORD", PASSWORD)
+        .stdin(Stdio::null())
+        .output()?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Ok(())
+}
+
+/// Issue #241: the rules read the key store first. With `bussard.keys` in the
+/// model the same codes fire from it, and a stale `connection.keyring` that
+/// points nowhere no longer matters (the store wins).
+#[test]
+fn test_validate_keyring_reads_the_key_store_first() -> TestResult {
+    let dir = model("store", Path::new("/nonexistent/bussard/stale.knxkeys"))?;
+    import_store(&dir)?;
+    let out = validate(&dir, Some(PASSWORD))?;
+    let diags = diagnostics(&out)?;
+    assert!(out.status.success(), "{diags:?}");
+    let w028: Vec<_> = diags.iter().filter(|d| d.0 == "W028").collect();
+    assert_eq!(w028.len(), 1, "{diags:?}");
+    assert!(w028[0].1.contains("1.1.13"), "{diags:?}");
+    assert!(w028[0].2.contains("bussard.keys"), "{diags:?}");
+    let w029: Vec<_> = diags.iter().filter(|d| d.0 == "W029").collect();
+    assert_eq!(w029.len(), 1, "{diags:?}");
+    assert!(!diags.iter().any(|d| d.0 == "E027"), "{diags:?}");
+
+    // Without the password: one I031 line naming the store.
+    let out = validate(&dir, None)?;
+    let diags = diagnostics(&out)?;
+    let i031: Vec<_> = diags.iter().filter(|d| d.0 == "I031").collect();
+    assert_eq!(i031.len(), 1, "{diags:?}");
+    assert!(i031[0].2.contains("bussard.keys"), "{diags:?}");
+
+    // A wrong password: W030, no key checks.
+    let out = validate(&dir, Some("not-the-password"))?;
+    let diags = diagnostics(&out)?;
+    assert!(diags.iter().any(|d| d.0 == "W030"), "{diags:?}");
+    assert!(!diags.iter().any(|d| d.0 == "W028"), "{diags:?}");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}

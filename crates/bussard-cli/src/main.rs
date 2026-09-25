@@ -30,7 +30,6 @@ mod import_bundle;
 mod import_cmd;
 mod import_product_cmd;
 mod init_cmd;
-mod keyring_cmd;
 mod keys_cmd;
 mod learn_cmd;
 mod line_cmd;
@@ -256,7 +255,6 @@ impl Command {
                 | Command::Scan { .. }
                 | Command::Reconstruct { .. }
                 | Command::Describe { .. }
-                | Command::Keyring { .. }
                 | Command::Keys { .. }
                 | Command::Flash { .. }
                 | Command::Plan { .. }
@@ -363,7 +361,7 @@ fn resolve_globals(global: &Global, command: &Command) -> anyhow::Result<Resolve
     // `products/` and regenerate `.bussard/models/` when it is missing, before
     // the command reads the model. `init` creates, `import` does this itself.
     if role != Role::Creates
-        && !matches!(command, Command::Diff { .. } | Command::Keyring { .. })
+        && !matches!(command, Command::Diff { .. } | Command::Keys { .. })
         && dir.is_dir()
     {
         timing::time("product store", || product_store::prepare(&dir));
@@ -743,17 +741,6 @@ enum Command {
         /// other users on the machine.
         #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
         tool_key: Option<String>,
-    },
-    /// Inspect a KNX Secure keyring (`.knxkeys`): list the devices, interfaces
-    /// and group addresses it carries (issue #71). Key material is NEVER printed.
-    ///
-    /// The keyring password is read from the `BUSSARD_KEYRING_PASSWORD`
-    /// environment variable (mirroring `BUSSARD_PROJECT_PASSWORD`), never a CLI
-    /// argument (spec §2.2).
-    Keyring {
-        /// The `.knxkeys` file to inspect.
-        #[arg(value_name = "FILE")]
-        file: PathBuf,
     },
     /// Manage the KNX Secure key store, `bussard.keys` next to
     /// `bussard.lock`: import an ETS `.knxkeys`, export one for ETS, show a
@@ -1520,7 +1507,6 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
             g.tool_keys(tool_key.as_deref()),
             g.mgmt(),
         ),
-        Command::Keyring { file } => keyring_cmd::run(&file, json),
         Command::Keys { command } => match command {
             KeysCommand::Import { file } => keys_cmd::run_import(dir, &file, json),
             KeysCommand::Export { file, force } => keys_cmd::run_export(dir, &file, force, json),

@@ -1,5 +1,10 @@
 //! The keyring rules of `bussard validate` (issue #205).
 //!
+//! The keys checked are those of the resolved key source (issue #241): an
+//! explicit `BUSSARD_KEYRING` file, else the key store `bussard.keys`, else
+//! the deprecated `connection.keyring`. The store and an ETS export yield the
+//! same [`KeyringFacts`], so the codes are the same for both.
+//!
 //! The model never holds key material, and this crate cannot decrypt an ETS
 //! `.knxkeys` export. The caller (the CLI's `validate`, the MCP server's
 //! `knx_validate`) resolves the keyring, decrypts it at most once and passes
@@ -84,9 +89,9 @@ pub fn validate_keyring(model: &Model, keyring: Option<&KeyringFacts>) -> Vec<Di
                 Severity::Warning,
                 location.clone(),
                 format!(
-                    "{ia} is KNX Data Secure-activated but no keyring is configured; export the \
-                     project's keyring (.knxkeys) from ETS and set `connection.keyring` in \
-                     bussard.toml (or BUSSARD_KEYRING) so bussard can manage it secured"
+                    "{ia} is KNX Data Secure-activated but there is no key store; export the \
+                     project's keyring (.knxkeys) from ETS and run `bussard keys import \
+                     <file.knxkeys>` so bussard can manage it secured"
                 ),
             ));
         }
@@ -148,7 +153,8 @@ pub fn validate_keyring(model: &Model, keyring: Option<&KeyringFacts>) -> Vec<Di
                         format!(
                             "{ia} is KNX Data Secure-activated but the keyring {file} has no \
                              tool key for it; re-export the keyring from ETS (it lists a device \
-                             only after its security was commissioned there)"
+                             only after its security was commissioned there) and `bussard keys \
+                             import` it"
                         ),
                     ));
                 }
@@ -282,7 +288,10 @@ mod tests {
                 ("W028", "devices/1.1.13.toml security.activated".to_string()),
             ]
         );
-        assert!(diags[0].message.contains("connection.keyring"), "{diags:?}");
+        assert!(
+            diags[0].message.contains("bussard keys import"),
+            "{diags:?}"
+        );
         Ok(())
     }
 

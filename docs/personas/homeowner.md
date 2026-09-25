@@ -71,7 +71,7 @@ result.
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
 | Turn the project into something legible | `bussard import house.knxproj`, then the assistant calls `knx_audit` and summarises: devices per mask, GAs without a DPT or name, devices without a room, one-sided links, Secure devices (pending merge). `bussard viz` shows the house by floor and room. | The audit does not report BCU key status per device. | D1 |
-| Handle the keyring | `bussard keyring house.knxkeys` inspects the export; `--keyring` unlocks tool access on `describe`, `apply`, `flash`; `audit --keyring` reports which Secure devices have a tool key in it (pending merge). | KNXnet/IP Secure interfaces are unsupported. | existing #71 |
+| Handle the keyring | `bussard keys import house.knxkeys` keeps the export in the key store and `bussard keys show` summarizes it; `--keyring` unlocks tool access on `describe`, `apply`, `flash`; `audit --keyring` reports which Secure devices have a tool key in it (pending merge). | KNXnet/IP Secure interfaces are unsupported. | existing #71 |
 | Compare the file to the house (scenario B) | `bussard plan --line 1.1` diffs every model device on the line against its live tables in one run, with a summary table. `audit --live` adds the scan delta. | None. | D8 |
 
 ### Stage 3. Reconstruct from the bus (scenario C)
