@@ -145,8 +145,8 @@ pub(crate) fn load_model_optional(
             return Ok(None);
         }
         return Err(anyhow!(
-            "model directory {} not found\n\
-             {command} needs the model to allocate a free address; {missing_hint}",
+            "no model in {}: {command} picks a free address from the devices the model \
+             lists; {missing_hint}",
             dir.display()
         ));
     }

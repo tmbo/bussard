@@ -77,8 +77,8 @@ pub fn run(
 
     let Some(model) = load_model_required(dir)? else {
         bail!(
-            "`bussard replace` needs the model: the device file for {target} says which product \
-             belongs at that address. None was loaded from {}",
+            "no model in {}: `bussard replace` reads which product belongs at {target} from \
+             its device file; run `bussard import` first",
             dir.display()
         );
     };

@@ -63,8 +63,8 @@ pub fn run(dir: &Path, options: TestOptions, overrides: ConnOverrides) -> anyhow
     // error: a parse failure must never fail the protected-GA gate open.
     let model = load_model_required(dir)?.ok_or_else(|| {
         anyhow::anyhow!(
-            "model directory {} not found; `bussard test` needs the model to resolve DPTs and \
-             protected group addresses",
+            "no model in {}: `bussard test` reads the DPTs and protected group addresses from \
+             groups.toml; run `bussard init` or `bussard import` first",
             dir.display()
         )
     })?;

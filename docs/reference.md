@@ -29,7 +29,7 @@ An interface with KNXnet/IP Secure enabled and no plain tunnel refuses an ordina
 
 - **From a keyring (automatic).** A command that takes `--keyring <file.knxkeys>` also uses the keyring's tunnelling users (`Interface Type="Tunneling"` entries, see [`bussard keyring`](#bussard-keyring-file)). bussard asks the gateway for its extended description; when a keyring interface names the gateway's individual address as its host and the gateway advertises KNXnet/IP Secure, the tunnel goes secure as the user whose tunnel address is free. The keyring also carries the interface's device authentication code, so bussard checks the interface's identity before it authenticates. A plain gateway stays on the plain tunnel.
 - **One keyring, two jobs (issue #189).** The keyring opens the tunnel, and its `Device` entries carry the tool keys. A device the keyring lists is managed over KNX Data Secure with its tool key. A device it does not list is managed in the clear through the secure tunnel, so the plain devices behind a secure-only interface stay reachable. The exception: a device whose model file says `security.activated: true` but that the keyring does not list is refused with `the keyring ... has no tool key for <IA>`, because plain access cannot reach it. This holds for `describe`, `reconstruct`, `plan`, `flash`, `apply`, `commission`, `replace`, `backup`, `restore`, the `--line` walks, and the MCP device tools. `scan`, `assign` and `audit --live` identify devices with the same rule but never refuse: a Data Secure-activated device that answers a plain descriptor read with mask `FFFF` and has no tool key is labelled "Data Secure activated (mask hidden), no tool key in the keyring" (issue #203).
-- **The config default.** `connection.keyring` in [`bussard.yaml`](#bussardyaml) names the keyring every bus command uses when `--keyring` is not given (`adopt` and `test` use it for the tunnel only). The flag overrides it. The password still comes from `BUSSARD_KEYRING_PASSWORD`.
+- **The config default.** `connection.keyring` in [`bussard.toml`](#bussardtoml) names the keyring every bus command uses when `--keyring` is not given (`adopt` and `test` use it for the tunnel only). The flag overrides it. The password still comes from `BUSSARD_KEYRING_PASSWORD`.
 - **Explicit.** `--secure-user <ID> --secure-password-env <VAR>` on any command always opens a secure session as that user. Without a keyring the interface's identity is not verified (a warning says so).
 - **TCP or UDP (issue #197).** bussard opens the session over TCP first, as ETS does with the Jung interface. When the TCP connect is refused and the interface's extended search advertises KNXnet/IP Secure, it opens the session over UDP instead: one UDP socket for the session and the tunnel, TUNNELING_ACKs inside the wrappers, the real local endpoint in every HPAI. `--secure-transport tcp` or `udp` forces one carrier. The UDP path follows the KNX specification and is verified against knx-sim only; no UDP-only interface has been tested.
 - **Neither.** Against a secure-only interface the command fails at once, with no retries: `interface <gateway> requires KNXnet/IP Secure (secure tunnelling only) and no tunnelling credentials were given ...`. `bussard init --gateway <ip>` prints `KNXnet/IP Secure: tunnelling is secure-only` for such an interface.
@@ -118,7 +118,7 @@ product data still missing:
 
 A re-import always takes the generated sections (com-object tables, link wiring, parameters) from the incoming side. Hand-authored fields (names, rooms, descriptions, DPTs, `protected:`, channel names) that differ are conflicts: each is printed as a sentence, e.g. `Group address Light Kitchen (1/0/1): the name is "Light Kitchen" here and "Kitchen ceiling" in the bundle. Kept this model's value.` Without a flag the local value is kept and the command exits `3` so a script notices; `--mine`, `--theirs` and `--interactive` settle the conflicts and exit 0. After the write, `import` prints what it changed in the model as the same sentences `bussard status` uses, then validates the written model and prints `validation: N error(s), M warning(s)` with each error (an error does not undo the import; it is what to fix next). A group address a device uses but the project does not define is added to `groups.toml` (see [`groups reserve`](#bussard-groups-reserve-floor-room-function)). Every import into an existing model snapshots it first, so `bussard undo` reverts it.
 
-A bundle imported into a directory without a model (no `groups.yaml`, no device file) is extracted byte for byte, history included: the copy is identical to the exported model. An existing `bussard.yaml`, for example from `bussard init`, is kept. A bundle imported into an existing model runs the merge above; the local history stays and the bundle's snapshots are not merged into it.
+A bundle imported into a directory without a model (no `groups.toml`, no device file) is extracted byte for byte, history included: the copy is identical to the exported model. An existing `bussard.toml`, for example from `bussard init`, is kept. A bundle imported into an existing model runs the merge above; the local history stays and the bundle's snapshots are not merged into it.
 
 ### `bussard export [FILE]`
 
@@ -303,7 +303,7 @@ Product data fetches itself. Without `--product`, adopt reads the order number o
 
 ### `bussard flash <ADDRESS>`
 
-Download the full application program from vendor product data into a device (the ETS-free application download): for a fresh device, or one whose application changes. Everyday changes to links and parameters go through [`apply`](#bussard-apply-address), which writes only what differs. The product data is the archive in `<dir>/vendor/` whose catalogue carries the device's order number (`import` and `adopt` fetch it), and the application is the one the lock pins; `--product` and `--application` override both. Supports System B (`07B0` and the `57B0`/`27B0` variants) and System 7 (`0705`/`0701`/`0700`). Pre-flight plan first; refuses before any write on an unsupported mask family, a mask mismatch, or an unsupported load-procedure operation. The parameter memory image is computed from the vendor defaults plus the device file's `parameters:` overrides, so a flash also carries parameter changes. No backup exists for a flash; recovery is re-running `flash`.
+Download the full application program from vendor product data into a device (the ETS-free application download): for a fresh device, or one whose application changes. Everyday changes to links and parameters go through [`apply`](#bussard-apply-address), which writes only what differs. The product data is the archive in `<dir>/vendor/` whose catalogue carries the device's order number (`import` and `adopt` fetch it), and the application is the one the lock pins; `--product` and `--application` override both. Supports System B (`07B0` and the `57B0`/`27B0` variants) and System 7 (`0705`/`0701`/`0700`). Pre-flight plan first; refuses before any write on an unsupported mask family, a mask mismatch, or an unsupported load-procedure operation. The parameter memory image is computed from the vendor defaults plus the parameter values in the device file, so a flash also carries parameter changes. No backup exists for a flash; recovery is re-running `flash`.
 
 The same pre-flight also checks the device is factory-fresh (issue #79), read-only, before anything is written: it reads each object's load state and, on System B, the resident application id (`PID_PROGRAM_VERSION`). A device carrying a **different** application, one it cannot identify, or a load state it cannot read at all is **refused**; `--force` overrides. Re-flashing the **same** application is allowed without `--force` (it is the documented recovery path after an interrupted flash) and prints a notice, because it still resets the parameters to the vendor defaults plus the model's overrides and rewrites the tables from the model's links. See [the flash section in SAFETY.md](SAFETY.md#what-each-write-command-does-and-its-rails) for the full table.
 
@@ -672,7 +672,7 @@ Render the handover documentation folder the KNX guidelines prescribe, straight 
 | `devices.md` | Individual address, name, location, manufacturer, order number, application, mask, Secure status. |
 | `groups.md` | Address, name, DPT, description, protected flag, senders and listeners (device and com-object names). |
 | `rooms/<floor>-<room>.md` | Every device in the room with its channels, and one plain-language line per com object: `Rocker 1 switches Kitchen ceiling light (1/0/10); status from 1/0/12.` Unnamed items fall back to their addresses. Devices without a `location:` get no room sheet. |
-| `connection.md` | Transport and gateway or multicast endpoint from `bussard.yaml`. Never credentials. |
+| `connection.md` | Transport and gateway or multicast endpoint from `bussard.toml`. Never credentials. |
 | `changelog.md` | The last 50 commits touching the model directory, from `git log`. Empty when the directory is not a git repository or `git` is missing. |
 
 The output is deterministic: two runs on the same model write identical bytes (no timestamps), so the folder can be committed and its diff reviewed after every change.
@@ -718,13 +718,13 @@ Read a group value from the bus: send a GroupValueRead, print the typed response
 |---|---|---|
 | `<GA>` | | The group address to read, e.g. `3/2/0`. |
 | `--dir <DIR>` | `knx` | The model directory. |
-| `--keyring <FILE>` | | Group keys for secured GAs (password in `BUSSARD_KEYRING_PASSWORD`). A GA with a key, or `secure: true` in `groups.yaml`, is read with a secured GroupValueRead, and only a response whose MAC verifies under the group key is accepted; stderr says `secured: …`. A secured GA without a key is refused before anything is sent. |
+| `--keyring <FILE>` | | Group keys for secured GAs (password in `BUSSARD_KEYRING_PASSWORD`). A GA with a key, or `secure = true` in `groups.toml`, is read with a secured GroupValueRead, and only a response whose MAC verifies under the group key is accepted; stderr says `secured: …`. A secured GA without a key is refused before anything is sent. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
 
 ### `bussard write <GA> <VALUE>`
 
-Write a group value to the bus. The value is human-typed (`on`/`off`, `up`/`down`, a number, a percentage like `75%`) and encoded against the GA's DPT from `groups.yaml`. Confirms on a terminal, naming the GA, value and resolved gateway; a non-TTY needs `--yes`.
+Write a group value to the bus. The value is human-typed (`on`/`off`, `up`/`down`, a number, a percentage like `75%`) and encoded against the GA's DPT from `groups.toml`. Confirms on a terminal, naming the GA, value and resolved gateway; a non-TTY needs `--yes`.
 
 | Flag / arg | Default | Meaning |
 |---|---|---|
@@ -734,14 +734,14 @@ Write a group value to the bus. The value is human-typed (`on`/`off`, `up`/`down
 | `--force` | off | Write even if the GA is marked `protected: true` in the model. |
 | `--yes` | off | Skip the confirmation prompt (required for a non-TTY write). |
 | `--dir <DIR>` | `knx` | The model directory. |
-| `--keyring <FILE>` | | Group keys for secured GAs. A GA with a key, or `secure: true` in `groups.yaml`, is written as a secured group telegram (SCF `0x10`, the group key, a sequence above the last one sent); a secured GA without a key is refused. A plain GA is sent byte for byte as without a keyring. A receiver accepts it only if bussard's tunnel address is in its security individual address table (PID 54): program the device with `flash`/`apply --keyring --secure-sender <tunnel IA>`, otherwise it drops the telegram silently. After a secured write bussard prints a note naming its tunnel address and the receivers the model links to the GA, because it does not record which devices got `--secure-sender`. See [SAFETY.md](SAFETY.md#secured-group-writes-from-bussard). |
+| `--keyring <FILE>` | | Group keys for secured GAs. A GA with a key, or `secure = true` in `groups.toml`, is written as a secured group telegram (SCF `0x10`, the group key, a sequence above the last one sent); a secured GA without a key is refused. A plain GA is sent byte for byte as without a keyring. A receiver accepts it only if bussard's tunnel address is in its security individual address table (PID 54): program the device with `flash`/`apply --keyring --secure-sender <tunnel IA>`, otherwise it drops the telegram silently. After a secured write bussard prints a note naming its tunnel address and the receivers the model links to the GA, because it does not record which devices got `--secure-sender`. See [SAFETY.md](SAFETY.md#secured-group-writes-from-bussard). |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
 | `--allow-remote-gateway` | off | Permit a write to a non-loopback gateway (or set `BUSSARD_ALLOW_REAL_GATEWAY=1`). |
 
 ### `bussard learn`
 
-Name and type group addresses from live traffic. Learn mode prompts you to trigger an object, waits for the telegram, and shows the sender, its channel and com object, the payload, ranked DPT candidates with a reason for each, and a proposed name built from the device's room, channel and com-object function. Accept, edit the name, change the DPT, skip, or quit. Accepted answers go into `groups.yaml`; when the sending com object can be pinned down (an existing link, or exactly one free transmit-capable object on the sending device), `links.yaml` gets the `send:` entry too.
+Name and type group addresses from live traffic. Learn mode prompts you to trigger an object, waits for the telegram, and shows the sender, its channel and com object, the payload, ranked DPT candidates with a reason for each, and a proposed name built from the device's room, channel and com-object function. Accept, edit the name, change the DPT, skip, or quit. Accepted answers go into `groups.toml`; when the sending com object can be pinned down (an existing link, or exactly one free transmit-capable object on the sending device), the sending device's file gets the `send` link too.
 
 Learn mode never transmits. It listens on the same connection `monitor` uses and never calls a send path. A DPT candidate is ranked `high` only when the sending com object declares that DPT in the model; payload shape alone gives `medium` at most, because most payload lengths fit several DPTs. Repeated telegrams on one GA narrow the candidates.
 
@@ -763,13 +763,13 @@ Secured group telegrams (KNX Data Secure, issue #204) go through the same decode
 
 ### `bussard test`
 
-Run the acceptance tests in [`tests.yaml`](#testsyaml) against the bus and print a pass/fail report. Each test writes a group value (or prints a `manual:` instruction and waits for Enter), then waits for the expected telegram. A failing expectation reports the value that did arrive on the expected GA. The text report contains no timestamps, so two runs over a healthy installation are byte-identical; the JSON report adds only `started_at`. Exits non-zero when any test fails; skipped and refused tests do not fail the run.
+Run the acceptance tests in [`tests.toml`](#teststoml) against the bus and print a pass/fail report. Each test writes a group value (or prints a `manual` instruction and waits for Enter), then waits for the expected telegram. A failing expectation reports the value that did arrive on the expected GA. The text report contains no timestamps, so two runs over a healthy installation are byte-identical; the JSON report adds only `started_at`. Exits non-zero when any test fails; skipped and refused tests do not fail the run.
 
 A test run writes to the bus, so it goes through the same rails as `bussard write`: the non-loopback gateway gate and a confirmation naming the gateway. A test that writes to a `protected: true` GA needs both `allow_protected: true` in the file and `--force`; with either missing it is reported as refused and nothing is sent to that GA.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--file <FILE>` | `<dir>/tests.yaml` | The test file to run. |
+| `--file <FILE>` | `<dir>/tests.toml` | The test file to run. |
 | `--json` | off | Print the report as JSON: `started_at`, `tests[]` (`name`, `status` of `pass`/`fail`/`skipped`/`refused`, `detail`, `observed`), and `summary` counts. |
 | `--force` | off | Together with `allow_protected: true` in the file, permit tests that write to protected GAs. |
 | `--skip-manual` | off | Report `manual:` tests as skipped instead of prompting. Without a terminal they are skipped anyway. |
@@ -779,13 +779,13 @@ A test run writes to the bus, so it goes through the same rails as `bussard writ
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
 | `--allow-remote-gateway` | off | Permit a run against a non-loopback gateway (or set `BUSSARD_ALLOW_REAL_GATEWAY=1`). |
-| `--secure-idle <SECS>` | | Instead of running `tests.yaml`: measure the KNXnet/IP Secure session idle timeout (issue #197). See below. |
+| `--secure-idle <SECS>` | | Instead of running `tests.toml`: measure the KNXnet/IP Secure session idle timeout (issue #197). See below. |
 
 **`--secure-idle <SECS>`** opens a KNXnet/IP Secure session with the interface (credentials from `connection.keyring`, or `--secure-user`/`--secure-password-env`), sends nothing for `SECS` seconds (no keepalive, no heartbeat, no tunnel), then sends one wrapped CONNECTIONSTATE_REQUEST for a channel it does not hold and prints one line: `ALIVE` (the interface answered), `DROPPED after <t> s (<reason>)` (it sent a SESSION_STATUS or closed the TCP connection) or `SILENT` (no answer). `--json` prints the same as an object (`outcome`, `after_ms`, `reason`, `answered_ms`, `transport`, `user_id`). It is read-only: no CONNECT, so no tunnel slot, and nothing reaches the bus, which is why it needs neither `--yes` nor `--allow-remote-gateway`. Run it with growing `SECS` (say 45, 65, 90, 125) to bracket the interface's timeout; `--secure-transport` picks the carrier.
 
 ### `bussard ha-config`
 
-Generate the Home Assistant KNX integration YAML from the model. Derivation rules and the `ha.yaml` override file are documented in [ha-config.md](ha-config.md).
+Generate the Home Assistant KNX integration YAML from the model. Derivation rules and the `ha.toml` override file are documented in [ha-config.md](ha-config.md).
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -809,7 +809,7 @@ Report what the installation holds and what bussard can do with it. Read-only. T
 
 Static sections (JSON keys in brackets):
 
-- **Model** (`model`): device count per line, devices without a name or a location, GAs without a DPT or a name (including GAs that exist only in `links.yaml`), links to com-objects the device file does not declare, links for addresses with no device file, protected GAs, project name and import source.
+- **Model** (`model`): device count per line, devices without a name or a location, GAs without a DPT or a name (including GAs that only device files link), links to com-objects the device file does not declare, links for addresses with no device file, protected GAs, project name and import source.
 - **Findings** (`model.findings`): one-sided links only, a GA with senders but no listener or listeners but no sender. Unlinked com-objects and unused GAs are counted in `model.info` as neutral information. The viz Problems panel renders this same analysis.
 - **Devices per mask** (`masks`): devices grouped by the `product.mask` their file records, with what bussard can do (`plan_apply`, `flash`, `reconstruct`, `describe`). The column comes from the same table the `plan`, `apply`, `flash` and `reconstruct` refusals use ([SAFETY.md](SAFETY.md#supported-device-masks)).
 - **KNX Secure** (`secure`): Secure-capable and activated devices, and with `--keyring` whether the keyring holds each one's tool key.
@@ -862,7 +862,7 @@ Serve the network-visualization website: an HTTP server that renders the model a
 | Variable | Meaning |
 |---|---|
 | `BUSSARD_PROJECT_PASSWORD` | Password for a protected `.knxproj` when `--password` is not given. Keep it in an untracked `.env`, never in the repo. |
-| `BUSSARD_KEYRING_PASSWORD` | Password for a `.knxkeys` keyring read by `bussard keyring`, passed with `--keyring`, or named by `connection.keyring` in `bussard.yaml`. There is deliberately no flag for it, so it never lands in shell history or a process listing. |
+| `BUSSARD_KEYRING_PASSWORD` | Password for a `.knxkeys` keyring read by `bussard keyring`, passed with `--keyring`, or named by `connection.keyring` in `bussard.toml`. There is deliberately no flag for it, so it never lands in shell history or a process listing. |
 | *(the `--secure-password-env` variable)* | The KNXnet/IP Secure tunnelling user's password for `--secure-user`. You choose the variable's name; bussard reads only that variable. |
 | `BUSSARD_ALLOW_REAL_GATEWAY` | Set to `1` to permit a write command against a non-loopback (real) gateway, equivalent to `--allow-remote-gateway`. Loopback gateways never need it. |
 | `RUST_LOG` | Log filter (e.g. `debug`, `bussard_transport=trace`). Overrides `-v`/`--verbose` when set. |
@@ -883,14 +883,17 @@ Test-harness variables (`BUSSARD_VIRTUAL_DEVICE*`, `BUSSARD_TEST_MULTICAST`, `BU
 
 ## The model directory
 
+The file contract, field by field, is [model-format.md](model-format.md). In short:
+
 ```
 knx/
-  bussard.yaml      # connection config
-  groups.yaml       # the group-address plan
-  links.yaml        # com-object → GA assignments
-  devices/          # one file per device, e.g. 1.1.4-jalousieaktor-wohnen.yaml
-  ha.yaml           # optional ha-config overrides (see ha-config.md)
-  tests.yaml        # optional acceptance tests for `bussard test`
+  bussard.toml      # connection and lint settings
+  groups.toml       # the group-address plan
+  devices/          # one file per device, devices/<address>.toml: name, location,
+                    # parameter values and links, keyed by the lock's handles
+  bussard.lock      # generated by import and adopt: the vendor facts behind the device files
+  ha.toml           # optional ha-config overrides (see ha-config.md)
+  tests.toml        # optional acceptance tests for `bussard test`
   models/           # generated from .knxprod; git-ignored
   vendor/           # cached .knxprod originals; git-ignored
   captures/         # local captures, apply backups and apply-line-<line>.json resume state; git-ignored
@@ -904,15 +907,17 @@ bussard keeps its own history so undo works without git:
 ```
 knx/.bussard/history/20260922T101112Z-001/
   manifest.json     # {"reason": {"command", "args"}, "gateway", "result", "bussard_version", "created_at"}
-  bussard.yaml
-  groups.yaml
-  links.yaml
-  devices/*.yaml
+  bussard.toml
+  groups.toml
+  bussard.lock
+  devices/*.toml
+  tests.toml        # when present
+  ha.toml           # when present
 ```
 
-One directory per snapshot, named by a UTC timestamp plus a sequence number, so a listing is already a timeline. A snapshot is a full copy of the four model inputs, since a house model is well under a megabyte. Nothing else is ever copied: `models/`, `vendor/`, `captures/`, keyrings, `.knxproj` and `.knxprod` files stay out (see [product-data.md](product-data.md)).
+One directory per snapshot, named by a UTC timestamp plus a sequence number, so a listing is already a timeline. A snapshot is a full copy of the model files, since a house model is well under a megabyte. Nothing else is ever copied: `models/`, `vendor/`, `captures/`, keyrings, `.knxproj` and `.knxprod` files stay out (see [product-data.md](product-data.md)).
 
-`import`, `apply`, `flash`, `adopt`, `reconstruct` and every MCP model edit snapshot before they write. `plan` and those commands also record an `external edit` snapshot first when the working files differ from the last one, so an edit made in an editor or by an assistant writing YAML is never lost. `bussard status`, `history`, `show` and `undo` read this directory; `bussard init` git-ignores it.
+`import`, `apply`, `flash`, `adopt`, `reconstruct` and every MCP model edit snapshot before they write. `plan` and those commands also record an `external edit` snapshot first when the working files differ from the last one, so an edit made in an editor or by an assistant writing TOML is never lost. `bussard status`, `history`, `show` and `undo` read this directory; `bussard init` git-ignores it.
 
 #### `.bussard/facts`
 
@@ -954,7 +959,7 @@ Every bus command that uses the facts first reads the device descriptor and the 
 
 The facts live here, not in `devices/*.toml` or `bussard.lock`, because an ETS re-import rewrites those and never touches `.bussard/`, because the device files hold intent to review while the facts are observations, and because the lock is written by `import` and `adopt` only and is covered by snapshots and the model fingerprint, which a read-only bus command must not change. They are not part of a [bundle](#the-bundle-format). Without a model directory no facts are stored and every command reads the device as before.
 
-`bussard.yaml`, `groups.yaml`, `links.yaml`, `devices/` and `tests.yaml` belong in git; the first four are the source of truth. `models/`, `vendor/` and `captures/` are local-only; `init` and `import-product` plant the `.gitignore` entries. All YAML is parsed strictly: unknown fields and duplicate keys are errors. Emission is deterministic and sorted, so re-imports and hand edits produce minimal diffs. Every generated file carries a banner naming what generated it and what is hand-editable.
+`bussard.toml`, `groups.toml`, `devices/`, `bussard.lock`, `tests.toml` and `ha.toml` belong in git; the device files and `groups.toml` are the source of truth, the lock is what `import` and `adopt` derived from the product data. `models/`, `vendor/` and `captures/` are local-only; `init` and `import-product` plant the `.gitignore` entries. All TOML is parsed strictly: unknown fields and duplicate keys are errors, with a `help:` line where the raw parser message misleads. Saves edit the files in place (`toml_edit`): comments and the formatting of untouched lines survive, and only the entries bussard adds or changes are re-formatted. `bussard device <address> [<channel>]` shows the keys a device file accepts.
 
 ### The bundle format
 
@@ -962,10 +967,12 @@ A `.bussard` file is a zip archive:
 
 ```
 manifest.json                      # always the first entry
-bussard.yaml
-groups.yaml
-links.yaml
-devices/*.yaml
+bussard.toml
+groups.toml
+bussard.lock
+devices/*.toml
+tests.toml                         # when present
+ha.toml                            # when present
 .bussard/history/<id>/...          # unless exported with --no-history
 ```
 
@@ -974,10 +981,10 @@ Entries are sorted, with a fixed timestamp and permissions, so two exports of th
 | Field | Meaning |
 |---|---|
 | `format`, `format_version` | `"bussard-bundle"`, `1`. |
-| `model_version` | The YAML model schema version, `1`. A reader refuses a newer one. |
+| `model_version` | The model schema version. A reader refuses a newer one. |
 | `bussard_version` | The bussard that wrote the bundle. |
 | `exported_at` | RFC3339 in UTC. |
-| `project` | The project name from `groups.yaml`, when set. |
+| `project` | The project name from `groups.toml`, when set. |
 | `devices`, `group_addresses`, `links`, `history_snapshots` | Counts. |
 | `files` | The SHA-256 of each model file, by path. |
 | `model_sha256` | SHA-256 over the lines `<file sha256>  <path>\n`, sorted by path (the `sha256sum` output format). |
@@ -985,186 +992,148 @@ Entries are sorted, with a fixed timestamp and permissions, so two exports of th
 
 A bundle never contains `models/`, `vendor/`, `captures/`, keyrings, `.knxproj` or `.knxprod` files, or `.env`: the export copies an allow-list of model files and nothing else. A reader rejects any entry outside the layout above, any model file whose hash does not match, and any entry larger than 64 MiB.
 
-### `bussard.yaml`
+### `bussard.toml`
 
-```yaml
-connection:
-  transport: tunnel          # tunnel | routing
-  gateway: "192.0.2.10:3671"   # host:port for tunneling (optional)
-  multicast: "224.0.23.12:3671"  # addr:port for routing (optional; this is the default)
-  keyring: ../secrets/site.knxkeys  # default for --keyring (optional; relative to this directory)
+```toml
+[connection]
+transport = "tunnel"                # "tunnel" | "routing"
+gateway = "192.0.2.10:3671"         # host:port for tunneling (optional)
+# multicast = "224.0.23.12:3671"    # addr:port for routing (optional; this is the default)
+# keyring = "../secrets/site.knxkeys"  # default for --keyring (optional; relative to this directory)
 ```
 
 | Field | Type | Meaning |
 |---|---|---|
-| `connection.transport` | `tunnel` \| `routing` | The transport used to reach the bus. |
+| `connection.transport` | `"tunnel"` \| `"routing"` | The transport used to reach the bus. |
 | `connection.gateway` | string, optional | Gateway `host:port` for tunneling. |
 | `connection.multicast` | string, optional | Multicast `addr:port` for routing; defaults to `224.0.23.12:3671`. |
 | `connection.keyring` | path, optional | The ETS `.knxkeys` keyring every bus command uses when `--keyring` is not given: for the [KNXnet/IP Secure tunnel](#knxnetip-secure-tunnelling), the tool keys of the devices it lists, and the group keys. A relative path is resolved against the model directory. `--keyring` overrides it. The password comes from `BUSSARD_KEYRING_PASSWORD`. Keep the keyring file itself out of git. |
 
-An optional `lint:` block turns on the topology and convention rules (`L001`-`L008` in [the diagnostics table](#validation-diagnostics)). Without it nothing extra is reported, so adding the feature cannot change an existing project. `bussard groups reserve` writes the block for you.
+An optional `[lint]` table turns on the topology and convention rules (`L001`-`L008` in [the diagnostics table](#validation-diagnostics)). Without it nothing extra is reported, so adding the feature cannot change an existing project. `bussard groups reserve` writes the table, with the scheme, the first time it runs.
 
-```yaml
-lint:
-  topology:
-    max_devices_per_line: 64
-    supply_ma: { "1.1": 640 }
-  groups:
-    scheme: floor-trade-block    # or function-floor
-    blocks: { light: 5, blind: 10, heating: 10 }
-    feedback_pairing: true
-    name_pattern: "* * *"
+```toml
+[lint.topology]
+max_devices_per_line = 64
+[lint.topology.supply_ma]
+"1.1" = 640
+[lint.groups]
+scheme = "floor-trade-block"    # or "function-floor"
+feedback_pairing = true
+name_pattern = "* * *"
+[lint.groups.blocks]
+light = 5
+blind = 10
+heating = 10
 ```
 
 | Field | Type | Meaning |
 |---|---|---|
 | `lint.topology.max_devices_per_line` | integer, optional | The most devices one line may carry (the KNX TP limit is 64). Drives `L001`. |
-| `lint.topology.supply_ma` | map line -> mA, optional | Each line's power-supply budget. Drives `L002`, and declaring a line here also declares that it exists, which drives `L003`. |
-| `lint.groups.scheme` | `floor-trade-block` \| `function-floor`, optional | Which address level carries the floor and which the trade. The convention lints need it. |
-| `lint.groups.blocks` | map trade -> size, optional | How many consecutive sub addresses each trade reserves per room. A trade that is absent is not part of the plan. |
+| `lint.topology.supply_ma` | table line -> mA, optional | Each line's power-supply budget. Drives `L002`, and declaring a line here also declares that it exists, which drives `L003`. |
+| `lint.groups.scheme` | `"floor-trade-block"` \| `"function-floor"`, optional | Which address level carries the floor and which the trade. The convention lints and `groups reserve` follow it. |
+| `lint.groups.blocks` | table trade -> size, optional | How many consecutive sub addresses each trade reserves per room. A trade that is absent is not part of the plan. |
 | `lint.groups.feedback_pairing` | bool, default false | Require the feedback address the block layout reserves for each command address. |
 | `lint.groups.name_pattern` | string, optional | A glob every GA name must match: `*` is any run of characters (including none), `?` exactly one, everything else literal. |
 
 Bus current for `L002` comes from the cached product data (`models/*.yaml`, written by `import-product` from the `.knxprod` `Hardware.xml` `BusCurrent`). Devices with no cached product contribute nothing and are counted in the warning.
 
-### `groups.yaml`
+### `groups.toml`
 
-```yaml
-project: "Demo House"                 # optional metadata
-imported_from: "demo-house.knxproj"   # optional provenance
-ranges:
-  "3": { name: "Central" }            # a main group
-  "3/2": { name: "Alarms" }           # a middle group
-groups:
-  "3/0/4":
-    name: "Living Room Blind Move"
-    dpt: "1.008"
-  "3/2/0":
-    name: "Wind Alarm"
-    dpt: "1.005"
-    description: "weather station -> every blind channel"
-    protected: true
+```toml
+project = "Demo House"
+
+ranges = [
+  { address = "3",   name = "Central" },
+  { address = "3/2", name = "Alarms" },
+]
+
+groups = [
+  { address = "3/0/4", name = "Living Room Blind Move", dpt = "1.008" },
+  { address = "3/2/0", name = "Wind Alarm",             dpt = "1.005", protected = true, description = "weather station -> every blind channel" },
+]
 ```
 
 | Field | Type | Meaning |
 |---|---|---|
 | `project` | string, optional | Project name metadata. |
-| `imported_from` | string, optional | Provenance (the source `.knxproj`). |
-| `ranges` | map, optional | Named main/middle ranges, keyed by `"3"` (main) or `"3/2"` (middle); each has a `name`. |
-| `groups.<ga>.name` | string | Display name. Hand-editable; survives re-import. |
-| `groups.<ga>.dpt` | string, optional | Datapoint type, e.g. `"1.008"`. Without it, `monitor` cannot decode the value (W011). |
-| `groups.<ga>.description` | string, optional | Free text. |
-| `groups.<ga>.protected` | bool, default `false` | Safety-critical GA: the CLI refuses writes without `--force`, MCP refuses outright. Serialized only when `true`. |
-| `groups.<ga>.secure` | bool, default `false` | ETS runs the GA with KNX Data Secure: the project stores a group key for it (the `Key` attribute of its `GroupAddress`, or `Security="On"`). Imported from the project and replaced on re-import; the key itself lives only in the `.knxkeys` keyring. A secured `flash`/`apply` refuses when the keyring has no key for a linked `secure` GA. Serialized only when `true`. |
+| `ranges[]` | `address`, `name` | Named main (`"3"`) and middle (`"3/2"`) ranges. |
+| `groups[].address` | string | The group address. A duplicate is E020. |
+| `groups[].name` | string | Display name. Hand-editable; survives re-import. |
+| `groups[].dpt` | string, optional | Datapoint type, e.g. `"1.008"` (quoted: a bare `1.008` is refused with a fix-it hint). Without it, `monitor` cannot decode the value (W011). |
+| `groups[].description` | string, optional | Free text. |
+| `groups[].protected` | bool, default `false` | Safety-critical GA: the CLI refuses writes without `--force`, MCP refuses outright. |
+| `groups[].secure` | bool, default `false` | ETS runs the GA with KNX Data Secure. Imported from the project; the key itself lives only in the `.knxkeys` keyring. A secured `flash`/`apply` refuses when the keyring has no key for a linked `secure` GA. |
 
-### `links.yaml`
+A group address a device file uses but `groups.toml` does not define is declared here by `import`, `apply` and the MCP edit tools (see [`groups reserve`](#bussard-groups-reserve-floor-room-function)).
 
-```yaml
-links:
-  "1.1.4":
-    - object: 12
-      name: "A: Blind Up/Down"      # informational; refreshed on import
-      listen: ["3/0/4"]
-  "1.1.30":
-    - object: 3
-      name: "Wind Alarm 1"
-      send: "3/2/0"
+### `devices/<address>.toml`
+
+One file per device, named by its individual address, user-owned in full. Parameters and objects sit in the table of the channel they belong to, keyed by the handles `bussard.lock` assigns; `bussard device <address> <channel>` lists them.
+
+```toml
+address = "1.1.47"
+name = "Jalousieaktor Kind 2"
+product = "230021SU"                    # order number, printed on the device
+
+[location]
+floor = "DG"
+room = "Kind 2 Süd"
+
+[security]
+activated = true                        # intent; device facts live in the lock
+
+[links]                                 # device-level objects
+in-betrieb.send = "4/1/2"
+
+[channel.a-1]
+name = "Fenster Süd"
+betriebsart = "Jalousie"                # a parameter: an enum label, a code, a number or text
+langzeitbetrieb.listen = ["0/1/3"]      # a command object: listens
+status-position.send = "0/1/4"          # a status object: sends
 ```
 
 | Field | Type | Meaning |
 |---|---|---|
-| `links.<ia>` | list | The device's links, keyed by individual address. |
-| `object` | number | The ETS com-object number, the stable handle. |
-| `name` | string, optional | The informational com-object name. This file is its single home; it appears nowhere else. |
-| `send` | GA, optional | The single sending GA (at most one, mirroring KNX association semantics). |
-| `listen` | list of GAs | The listening GAs (any number). |
-
-### `devices/*.yaml`
-
-`address:` is the device identity; the filename slug is cosmetic (but must start with the address, E002). Everything above the `GENERATED` marker is hand-editable; `module_bases:` and `com_objects:` below it are regenerated on re-import.
-
-```yaml
-address: "1.1.4"
-name: "Blind Actuator 4-fold"
-location: { floor: "Ground Floor", room: "Utility Room" }
-replaced: 2026-09-22T10:15:00Z   # written by `bussard replace`; absent otherwise
-product:
-  manufacturer: "Northwind Controls"
-  order_number: "BA-4"
-  application_ref: "M-0004_A-20D6-25-D965"
-  mask: "07B0"
-channels:
-  A: { name: "Blind 1 - Living Room" }
-parameters:
-  "wind-alarm-1@MD-1_M-3_MI-1_P-3_R-45": "1"
-# --- GENERATED: regenerated on re-import; hand edits here are lost. ---
-module_bases:
-  MD-1_M-3_MI-1: 1797
-com_objects:
-  12: { dpt: "1.008", flags: "CW", channel: "A" }
-  14: { dpt: "9.001", flags: "CRT", secure: true }   # Data Secure group object
-security:                    # only for a Data-Secure-capable device
-  secure_capable: true
-  activated: true
-  secure_commissioning: true
-  sequence_number: 275080325586
-```
-
-| Field | Type | Meaning |
-|---|---|---|
-| `address` | IA | The device identity. |
+| `address` | string | The device identity; must match the file name (E002). |
 | `name` | string | Display name. |
 | `description` | string, optional | Free text. |
-| `location.floor`, `location.room` | strings, optional | Physical location. |
-| `product.manufacturer` | string, optional | Manufacturer name. |
-| `product.manufacturer_ref` | string, optional | Manufacturer reference id. |
-| `product.order_number` | string, optional | Catalogue order number; the join key into product-data models. |
-| `product.hardware_ref` | string, optional | Hardware reference id. |
-| `product.application_ref` | string, optional | Application-program id; matches a `models/*.yaml` identity. |
-| `product.mask` | string, optional | Mask version, e.g. `"07B0"`; decides property- vs memory-based links. |
-| `channels.<key>.name` | string | Human channel label. The block is emitted only when real labels are known. |
-| `parameters.<key>` | map string → string, optional | Parameter values that differ from the vendor default, keyed `<name-slug>@<ref-id>` (the ref id disambiguates repeated module-instance parameters). Imported from the ETS project and replaced wholesale on re-import; hand-editable between imports. Validated against the product model in `models/` (E016/E017); `flash` writes them into parameter memory. |
-| `module_bases.<ref>` | map string → number, generated | Per-module-instance memory base offsets from the ETS project. A module parameter's effective offset is its declared offset plus the instance base; `flash` needs this to place per-channel parameters. Do not edit. |
-| `com_objects.<n>.dpt` | string, optional | Datapoint type. |
-| `com_objects.<n>.size` | string, optional | Declared size like `"1 bit"`; serialized only when there is no DPT (otherwise the size follows from the DPT). |
-| `com_objects.<n>.flags` | string | Compact `CRWTUI` flag string. W = accepts writes (a command input), T = transmits (a status output). |
-| `com_objects.<n>.ref` | string, optional | Cross-reference id from the product data. |
-| `com_objects.<n>.channel` | string, optional | Owning channel key. |
-| `com_objects.<n>.secure` | bool, generated, default `false` | The group object communicates with KNX Data Secure: its ETS `Security` setting is `On`, or `Auto` (the default, also when the attribute is absent) with a `secure` GA linked. A secured download writes flag `0x03` for it into the security object's `PID_GO_SECURITY_FLAGS`; a linked GA with a keyring key flags the object too. Serialized only when `true`. |
-| `security.secure_capable` | bool, generated | The application can run KNX Data Secure (`IsSecureEnabled`). Capability, not activation. |
-| `security.activated` | bool, generated | ETS has loaded the device's tool key (`LoadedToolKey` in the device's `<Security>` element): all management access must use `--keyring`. A sequence number alone is not this signal. |
-| `security.secure_commissioning` | bool, generated | Secure commissioning is enabled in the project (`ToolKey` present), whether or not ETS has downloaded it yet. |
-| `security.has_fdsk_certificate` | bool, generated | The project holds the device's factory certificate (FDSK). Presence only. |
-| `security.sequence_number` | number, generated | The Data Secure sequence number ETS last recorded for the device. |
+| `product` | string, optional | The order number; the join key into the lock and the product data. |
+| `application` | string, optional | Override of the program the lock pins. |
+| `replaced` | string, optional | RFC 3339, written by `bussard replace`. |
+| `[location]` | `floor`, `room` | Physical location. |
+| `[security]` | `activated`, `secure_commissioning` | Intent only. What the device and project generated (`secure_capable`, `has_fdsk_certificate`, `sequence_number`) lives in the lock; key material never appears in either. |
+| `[parameters]`, `[links]` | tables | Device-level parameters and objects. |
+| `[channel.<handle>]` | table | `name` (your label), parameters (`key = value`), objects (`key.send = "GA"`, `key.listen = ["GA", …]`, `key.name`) and parameter pages (`[channel.<handle>.<page>]`) where the lock defines them. An object is named by its key or its number. |
 
-The `security:` block never carries key material: tool keys, group keys and the FDSK stay in the keyring.
+The details (key derivation, value normalization, the escape hatch for repeated parameter texts, the lock format) are in [model-format.md](model-format.md).
 
-Com-object entries carry no `name` (it lives in `links.yaml`).
-
-### `tests.yaml`
+### `tests.toml`
 
 The acceptance tests `bussard test` and the `knx_run_tests` MCP tool run. Optional; parsed as strictly as the rest of the model.
 
-```yaml
-allow_protected: false      # opt-in for tests that write protected GAs (also needs --force)
-tests:
-  - name: Kitchen ceiling light switches and reports
-    write: { ga: "1/0/10", value: "on" }
-    expect: { ga: "1/0/12", value: "on", within: 2s }
-  - name: Wind alarm raises the blinds
-    manual: "Trigger the wind alarm on the weather station"
-    expect: { ga: "3/1/0", value: "up", within: 5s }
+```toml
+allow_protected = false      # opt-in for tests that write protected GAs (also needs --force)
+
+[[tests]]
+name = "Kitchen ceiling light switches and reports"
+write = { ga = "1/0/10", value = "on" }
+expect = { ga = "1/0/12", value = "on", within = "2s" }
+
+[[tests]]
+name = "Wind alarm raises the blinds"
+manual = "Trigger the wind alarm on the weather station"
+expect = { ga = "3/1/0", value = "up", within = "5s" }
 ```
 
 | Field | Type | Meaning |
 |---|---|---|
-| `allow_protected` | bool, default `false` | Half of the opt-in for writing a `protected: true` GA. The CLI also needs `--force`; the MCP tool ignores this flag and always refuses. |
+| `allow_protected` | bool, default `false` | Half of the opt-in for writing a `protected = true` GA. The CLI also needs `--force`; the MCP tool ignores this flag and always refuses. |
 | `tests[].name` | string | Reported name, and the key for `--only`. |
 | `tests[].write` | `{ga, value, dpt?}` | The stimulus: a group write. `value` is human-typed and encoded against the GA's DPT, or `dpt` when given. |
 | `tests[].manual` | string | The stimulus instead of a write: an instruction for a human. Exactly one of `write` or `manual`. |
 | `tests[].expect.ga` | GA | The group address the proof must appear on. |
 | `tests[].expect.value` | scalar, optional | The value it must carry, encoded against the GA's DPT and compared byte for byte. Omit to accept any value. On a GA without a DPT, give the payload as hex (`"0x01"`). |
-| `tests[].expect.within` | duration, default `3s` | How long to wait: `2s`, `500ms`, `1m`, or a bare number of seconds. |
+| `tests[].expect.within` | duration, default `3s` | How long to wait: `"2s"`, `"500ms"`, `"1m"`, or a bare number of seconds. |
 
 A manual test must have an `expect`. The runner ignores the gateway's echo of its own write and anything sent from its own address, so a test may write and expect the same GA.
 
@@ -1178,8 +1147,8 @@ One file per application program, generated by `import-product` and never hand-e
 
 | Code | Rule | Severity |
 |---|---|---|
-| E001 | link references a GA not defined in `groups.yaml` | error |
-| E002 | device file name does not start with its `address:` | error |
+| E001 | link references a GA not defined in `groups.toml` (`import`, `apply` and the MCP edit tools declare it; `validate` alone warns) | warning |
+| E002 | device file name does not match its `address` | error |
 | E003 | link references a com object the device doesn't have (a warning when the device has no com-object table at all, because nothing can be checked without product data) | error |
 | E004 | conflicting object/DPT sizes on one GA | error |
 | W005 | same size but different DPT subtypes on one GA | warning |
@@ -1189,16 +1158,23 @@ One file per application program, generated by `import-product` and never hand-e
 | I009 | orphaned com object (T or W, never linked) | info |
 | I010 | GA defined but never linked | info |
 | W011 | GA without a DPT (monitor can't decode it) | warning |
-| E012 | reserved GA `0/0/0` defined in `groups.yaml` | error |
+| E012 | reserved GA `0/0/0` defined in `groups.toml` | error |
 | E013 | link for a device that has no device file | error |
 | E014 | the same object linked more than once on one device | error |
 | I015 | GA marked `protected: true` (listed so a reviewer sees the guarded set) | info |
 | E016 | parameter key malformed (no `@`) or not in the product model | error |
 | E017 | parameter value invalid (unparseable, out of range, not an enum member) | error |
 | I017 | parameter value equals the vendor default (redundant) | info |
-| I018 | device has `parameters:` but no product model in `models/` to validate against | info |
+| I018 | device has parameters but no product model in `models/` to validate against | info |
+| E020 | duplicate GA in `groups.toml` (both lines), duplicate object in a device file | error |
+| E021 | device has channels, parameters or keyed objects but no lock entry | error |
+| E022 | device `product` differs from the lock entry | error |
+| E023 | unknown parameter or object key in a channel; lists the channel's keys | error |
+| E024 | object linked to a GA whose main DPT number differs from the object's | error |
+| E025 | `send` on an object without the T flag, `listen` on one without the W flag (command objects `listen`, status objects `send`) | error |
+| E026 | parameter values could not be checked because the product model is missing | warning |
 
-These rules are opt-in and run only when `bussard.yaml` carries a [`lint:` block](#bussardyaml):
+These rules are opt-in and run only when `bussard.toml` carries a [`[lint]` table](#bussardtoml):
 
 | Code | Rule | Severity |
 |---|---|---|
@@ -1221,13 +1197,13 @@ These rules are opt-in and run only when `bussard.yaml` carries a [`lint:` block
 | `source` | Sender IA. |
 | `source_name` | The sending device's name from the model. |
 | `destination` | Destination GA. |
-| `destination_name` | The GA's name from `groups.yaml`. |
+| `destination_name` | The GA's name from `groups.toml`. |
 | `dest_type` | Destination address type. |
 | `apci` | The APCI (e.g. GroupValueWrite). |
 | `payload` | Raw payload, hex. |
 | `value` | The decoded, typed value. |
 | `dpt` | The DPT used to decode. |
-| `object_name` | The sending com-object's informational name from `links.yaml`. |
+| `object_name` | The sending com-object's text, from the lock or the link's `name` in the device file. |
 | `note` | Decode diagnostics, e.g. a size mismatch. |
 
 With `--keyring`, a KNX Data Secure group telegram adds five fields (plain telegrams carry none of them, so their records are unchanged):
@@ -1294,7 +1270,7 @@ Bus operations share one rate limiter (minimum 250 ms between operations, at mos
 | `knx_describe_device` | `address` | Introspects a device: enumerates its interface objects and each property's description (PID, type, element count, access levels). Read-only on the bus. With `--keyring`, a KNX Data Secure device is addressed with its tool key. Omitted in `--passive` mode. |
 | `knx_infer_group` | `ga`, `payload_hex` (optional) | What the traffic on a GA says it is: ranked DPT candidates (`dpt`, `confidence` of `low`/`medium`/`high`, `reason`), the sender (address, name, location), its channel and com object (index, name, declared DPT, flags), the GA's current model entry, a proposed name, and a `next_step` telling the assistant to confirm with the human before calling `knx_set_group` and `knx_add_link`. Uses every telegram seen on the GA, or `payload_hex` when given. Reads only; also registered in `--passive`. |
 | `knx_write_group` | `ga`, `value` (human-typed), `dpt` (optional override) | A GroupValueWrite. Registered only with `--allow-writes`; refuses protected GAs outright, and refuses a `dpt` that contradicts the GA's DPT in the model (the override is for GAs the model does not type). |
-| `knx_run_tests` | `only` (list of test names, optional) | Runs `tests.yaml` and returns the same report as `bussard test --json`, plus `refused_protected`. Registered only with `--allow-writes`. A test that writes a protected GA is refused whatever the file says; `manual:` tests are skipped. |
+| `knx_run_tests` | `only` (list of test names, optional) | Runs `tests.toml` and returns the same report as `bussard test --json`, plus `refused_protected`. Registered only with `--allow-writes`. A test that writes a protected GA is refused whatever the file says; `manual` tests are skipped. |
 | `knx_describe_change` | `from`, `to` (snapshot ids, optional) | The change as plain sentences. With no arguments: the pending changes, i.e. the working model against the last snapshot. Files only. |
 | `knx_history` | `limit` (default 50, max 500) | The history snapshots with id, time, command, gateway and a one-line summary each. |
 | `knx_set_group` | `ga`, `name`, `dpt`, `description` (all but `ga` optional) | Creates or updates a group address. Creating one needs `name`. Refuses to rename or retype a `protected: true` GA; there is no parameter that sets or clears `protected`. |
@@ -1320,7 +1296,7 @@ Bus operations share one rate limiter (minimum 250 ms between operations, at mos
 
 An apply writes the pre-state backup to `captures/backups/` before anything else, records a history snapshot `mcp knx_apply_device <address> <digest>` naming the gateway (the audit line `bussard history` shows), writes, and verifies by reading back. One device per call. `flash` stays CLI-only.
 
-The model is not frozen at startup: the server re-reads the model directory when its files change (and immediately after one of its own model edits), so a `protected: true` or a corrected `dpt:` added to `groups.yaml` mid-session is in force on the next tool call. A model that fails to parse is not swapped in; the server keeps the last good one and warns on stderr.
+The model is not frozen at startup: the server re-reads the model directory when its files change (and immediately after one of its own model edits), so a `protected = true` or a corrected `dpt` added to `groups.toml` mid-session is in force on the next tool call. A model that fails to parse is not swapped in; the server keeps the last good one and warns on stderr.
 
 ## The viz server
 

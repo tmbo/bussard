@@ -191,8 +191,14 @@ fn test_init_with_a_project_file_imports_it() -> TestResult {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{stdout}\n{stderr}");
     assert!(stdout.contains("Importing"), "{stdout}");
-    assert!(stdout.contains("imported 2 group addresses, 1 devices"), "{stdout}");
-    assert!(!stdout.contains("re-import"), "a fresh import, not a merge: {stdout}");
+    assert!(
+        stdout.contains("imported 2 group addresses, 1 devices"),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("re-import"),
+        "a fresh import, not a merge: {stdout}"
+    );
     assert!(stdout.contains("validation: 0 error(s)"), "{stdout}");
     assert!(stdout.contains("bussard device <address>"), "{stdout}");
     let config = std::fs::read_to_string(dir.join("bussard.toml"))?;

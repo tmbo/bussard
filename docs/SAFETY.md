@@ -28,7 +28,7 @@ transmit and neither is gated.
 ## The one rule: know which bus you are hitting
 
 The single most dangerous mistake is running a write against your live house
-when you meant a test bus. `bussard.yaml` can carry a `connection.gateway`
+when you meant a test bus. `bussard.toml` can carry a `connection.gateway`
 pointing at the real gateway, and that value is used by default, so a bare
 `bussard write ...` can reach the real bus without you naming it.
 
@@ -58,7 +58,7 @@ Two things protect you:
 
 Point at a test bus by giving a loopback gateway explicitly, either
 `--gateway 127.0.0.1` on the command or `connection.gateway: 127.0.0.1:3671`
-in `bussard.yaml`. The [`knx-sim`](../knx-sim/README.md) simulator is the
+in `bussard.toml`. The [`knx-sim`](../knx-sim/README.md) simulator is the
 easiest safe target: from the `knx-sim/` directory run
 `cargo run -- examples/da_tp.yaml`, which listens on `127.0.0.1:3671`, then
 point `bussard` at it. Because it is loopback, no opt-in flag is needed.
@@ -96,7 +96,7 @@ decoded value, and the gateway.
 secured group object ignores a plain telegram on its GA. `write`, `read` (and
 MCP `knx_write_group` / `knx_read_group`, and viz) send such a GA as an
 `A_SecureData` group telegram when it has a group key in `--keyring` or is
-marked `secure: true` in `groups.yaml`; a secured GA without a key is refused
+marked `secure = true` in `groups.toml`; a secured GA without a key is refused
 before anything is sent, and a plain GA goes out byte for byte as before. A
 secured `read` accepts only a response whose MAC verifies under the group key.
 The sequence number is milliseconds since 2018-01-05, and never below the last
@@ -159,8 +159,9 @@ unless `--force`. After one confirmation naming the gateway it runs the
 `assign`, `flash` and `apply` write paths in turn (no write of its own), then
 records `replaced: <date>` in the device file.
 
-**`flash --product <FILE> <ADDRESS>`** downloads an application program from
-vendor product data (the ETS-free application download). It runs a pre-flight
+**`flash <ADDRESS>`** downloads an application program from vendor product
+data (the archive cached under `vendor/` for the device's order number, or
+`--product`; the ETS-free application download). It runs a pre-flight
 plan, then writes, then verifies the application reads back as `Loaded` and
 spot-checks written segments. Each load-state change (unload, open, segment
 allocation, completion) is confirmed by the state the device returns in its
@@ -443,7 +444,7 @@ the model links to the GA, and the command above.
 
 ## Protected group addresses
 
-A GA marked `protected: true` in `groups.yaml` (wind alarms, central functions,
+A GA marked `protected = true` in `groups.toml` (wind alarms, central functions,
 anything safety-critical) is refused by default. The three entry points do not
 treat the override the same way:
 
@@ -460,15 +461,15 @@ dangerous GAs marked `protected: true` so the MCP path can never touch them.
 
 The same refusal covers the MCP model-edit tools: a protected GA cannot be
 renamed or retyped, and no link to it can be added or removed, over MCP. There is
-also no tool parameter that sets or clears `protected:`; only a human editing
-`groups.yaml` can. Any change that touches a protected GA is rendered with the
+also no tool parameter that sets or clears `protected`; only a human editing
+`groups.toml` can. Any change that touches a protected GA is rendered with the
 sentence "This group address is protected." and sorted to the top of
 `bussard status`, so it is the first thing anyone reads.
 
 `bussard test` runs scripted writes, so it takes the same rails as `bussard
 write` (the non-loopback gateway gate and a confirmation naming the gateway),
-and a protected GA needs two opt-ins instead of one: `allow_protected: true` in
-`tests.yaml` and `--force` on the command line. With either missing, the test
+and a protected GA needs two opt-ins instead of one: `allow_protected = true` in
+`tests.toml` and `--force` on the command line. With either missing, the test
 is reported as refused and nothing is written to that GA. The `knx_run_tests`
 MCP tool refuses such a test whatever the file says. `bussard learn` never
 transmits at all.
@@ -501,7 +502,7 @@ transmits at all.
    in the conversation. The digest makes this checkable: an apply can only
    write what a plan showed.
 5. **Protected GAs.** A plan whose additions or removals touch a
-   `protected: true` GA is refused. There is no override over MCP.
+   `protected = true` GA is refused. There is no override over MCP.
 
 An apply then runs exactly the CLI rails: the pre-apply backup to
 `captures/backups/` (no backup, no write), a history snapshot
@@ -523,8 +524,8 @@ before. The restored model reaches a device only when a human runs
 `bussard plan <ia>` and then `bussard apply <ia>`, behind the usual
 confirmation. An undo is itself snapshotted first, so it can be undone.
 
-Snapshots carry the four model inputs (`bussard.yaml`, `groups.yaml`,
-`links.yaml`, `devices/*.yaml`) and nothing else. Product data, captures,
+Snapshots carry the model files (`bussard.toml`, `groups.toml`, `bussard.lock`,
+`devices/*.toml`, and `tests.toml` and `ha.toml` when present) and nothing else. Product data, captures,
 keyrings and project files are never copied into them, so a snapshot cannot
 leak a key, a password or vendor data.
 
@@ -532,9 +533,9 @@ A `.bussard` bundle from `bussard export` (or `knx_export_bundle`) holds those
 same model files, the history snapshots and a manifest, and nothing else. It
 never contains `models/`, `vendor/`, `captures/`, keyrings, `.knxproj` or
 `.knxprod` files, or `.env`, because the export copies an allow-list rather
-than skipping a deny-list. The manifest names these exclusions. `bussard.yaml`
+than skipping a deny-list. The manifest names these exclusions. `bussard.toml`
 does travel with it, so the recipient sees your gateway address; an import into
-an existing model keeps the recipient's own `bussard.yaml`. Importing a bundle
+an existing model keeps the recipient's own `bussard.toml`. Importing a bundle
 writes files only and snapshots first; nothing reaches a device until someone
 runs `plan` and `apply`.
 
@@ -689,7 +690,7 @@ exactly as through a plain interface. A device whose model file says
 entry the command refuses before anything is sent to it. A device the model
 does not mark activated but that is activated on the bus refuses the plain
 access; the command fails with the hint to export a current keyring from ETS.
-`connection.keyring` in `bussard.yaml` sets the keyring once for every
+`connection.keyring` in `bussard.toml` sets the keyring once for every
 command; the password stays in `BUSSARD_KEYRING_PASSWORD` and the keyring file
 stays out of git.
 
@@ -771,7 +772,7 @@ export BUSSARD_ALLOW_REAL_GATEWAY=1
 
 It has the same effect as passing `--allow-remote-gateway` to every write command, and to `mcp --allow-writes` and `viz --allow-writes` at startup. It removes nothing else: every confirmation still names the gateway, protected group addresses still need `--force`, and the MCP server still has no path to `plan`, `apply` or `flash`.
 
-The opt-in is per machine on purpose. The question it answers is "is this computer meant to write to real buses?", and only the machine knows that. A setting in `bussard.yaml` would travel with the model: into every bundle handed to a customer, every repository clone, and every assistant session started on that model. The owner who imports the handover bundle would receive an armed tool without choosing it. Keep the variable out of `.env` files that live next to a model for the same reason.
+The opt-in is per machine on purpose. The question it answers is "is this computer meant to write to real buses?", and only the machine knows that. A setting in `bussard.toml` would travel with the model: into every bundle handed to a customer, every repository clone, and every assistant session started on that model. The owner who imports the handover bundle would receive an armed tool without choosing it. Keep the variable out of `.env` files that live next to a model for the same reason.
 
 ### Share the interface with ETS
 

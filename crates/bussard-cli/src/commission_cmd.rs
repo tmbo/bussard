@@ -193,8 +193,8 @@ pub fn run(
 
     let Some(model) = load_model_required(dir)? else {
         bail!(
-            "`bussard commission` needs the model (devices/) to know which devices belong on \
-             line {line}; none was loaded from {}",
+            "no model in {}: `bussard commission` walks the devices the model has on line \
+             {line}; run `bussard import` first",
             dir.display()
         );
     };

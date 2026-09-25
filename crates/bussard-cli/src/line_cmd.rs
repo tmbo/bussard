@@ -376,10 +376,10 @@ fn run_line(
 
     let Some(mut model) = load_model_required(dir)? else {
         bail!(
-            "`bussard {} --line` needs the model (devices/<address>.toml) to know which \
-             devices are on the line; none was loaded from {}",
-            mode.verb(),
-            dir.display()
+            "no model in {}: `bussard {} --line` visits the devices the model has on the \
+             line; run `bussard init` or `bussard import` first",
+            dir.display(),
+            mode.verb()
         );
     };
     let config = resolve_config(Some(&model), &overrides)?;

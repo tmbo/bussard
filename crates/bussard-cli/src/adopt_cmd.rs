@@ -702,9 +702,17 @@ fn print_links_snippet(
         println!("    {{ address = \"0/0/1\", name = \"{name}\", dpt = \"{dpt}\" }},");
         println!("    # ---8<--- devices/{address}.toml");
         println!("    {table}");
-        println!(
-            "    {key}.send = \"0/0/1\"     # or `{key}.listen = [\"0/0/1\"]` for a receiving object"
-        );
+        // The direction follows the flags, as E025 requires: a reporting object
+        // (T) sends, a command object listens.
+        if co.flags.contains(Flags::TRANSMIT) {
+            println!(
+                "    {key}.send = \"0/0/1\"     # or `{key}.listen = [\"0/0/1\"]` for a receiving object"
+            );
+        } else {
+            println!(
+                "    {key}.listen = [\"0/0/1\"]     # or `{key}.send = \"0/0/1\"` for a reporting object"
+            );
+        }
         println!("    # --->8---");
     }
 }

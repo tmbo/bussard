@@ -863,8 +863,9 @@ enum Command {
         #[arg(long)]
         refresh_facts: bool,
     },
-    /// Read a device's live tables and show what `apply` would change, or (with
-    /// `--line`) plan every model device on a whole line.
+    /// Show what `apply` would write to a device (links and, with product
+    /// data, parameters) without writing; or (with `--line`) plan every model
+    /// device on a line. Read-only on the bus.
     Plan {
         /// The device to plan for, e.g. `1.1.4` (mutually exclusive with
         /// `--line`).
@@ -1595,7 +1596,8 @@ enum Command {
         #[arg(long)]
         skip_address_check: bool,
     },
-    /// Run the read-only MCP server over stdio.
+    /// Run the MCP server over stdio: model tools and bus reads by default;
+    /// bus writes and device programming only when their flags allow it.
     Mcp {
         /// The directory containing the model (required for the MCP server).
         #[arg(long, default_value = "knx")]
@@ -1616,7 +1618,8 @@ enum Command {
         allow_writes: bool,
         /// Programming tier: registers `knx_plan_device` and
         /// `knx_apply_device`, which write one device's link tables after a
-        /// plan the human approved (issue #118). Off by default. Mutually
+        /// plan the human approved (issue #118); parameters stay with
+        /// `bussard apply`. Off by default. Mutually
         /// exclusive with `--passive`; a non-loopback gateway also needs
         /// `--allow-remote-gateway` or BUSSARD_ALLOW_REAL_GATEWAY=1.
         #[arg(long, conflicts_with = "passive")]
@@ -1636,8 +1639,9 @@ enum Command {
         #[arg(long)]
         allow_remote_gateway: bool,
         /// Refuse model edits: omits the `knx_set_group`, `knx_add_link`,
-        /// `knx_remove_link`, `knx_set_device`, `knx_set_parameter`, `knx_undo`
-        /// and `knx_scaffold_groups` tools. The read tools stay available. Model edits only
+        /// `knx_remove_link`, `knx_set_device`, `knx_set_parameter`, `knx_undo`,
+        /// `knx_scaffold_groups` and `knx_reserve_groups` tools. The read tools
+        /// stay available. Model edits only
         /// touch the model files (never the bus), so they are on by default.
         #[arg(long)]
         no_model_edits: bool,

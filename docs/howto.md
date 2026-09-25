@@ -4,9 +4,9 @@ Recipes for everyday bussard work. Each assumes a model directory (default `knx/
 
 Three KNX terms the recipes rely on:
 
-- A group address (GA, `3/2/0`) is the bus's pub/sub topic: a telegram sent to a GA carries one value, and every device listening on it reacts. `groups.yaml` names each GA and records its datapoint type (DPT), which tells bussard how to decode the value.
+- A group address (GA, `3/2/0`) is the bus's pub/sub topic: a telegram sent to a GA carries one value, and every device listening on it reacts. `groups.toml` names each GA and records its datapoint type (DPT), which tells bussard how to decode the value.
 - An individual address (IA, `1.1.4`, area.line.device) is a device's unique bus address, used for commissioning and diagnosis.
-- A com object is one input or output slot of a device, such as "channel A: move up/down" on a blind actuator. Linking it to a GA in `links.yaml` makes the device send on or listen to that address. In the compact `CRWTUI` flag string, W means the object accepts writes (a command input) and T means it transmits (a status output).
+- A com object is one input or output slot of a device, such as "channel A: move up/down" on a blind actuator. Linking it to a GA in the device's file (`devices/<address>.toml`) makes the device send on or listen to that address. In the compact `CRWTUI` flag string, W means the object accepts writes (a command input) and T means it transmits (a status output).
 
 A word on safety before the writing recipes: every bus-writing command reads the live state first, shows a plan, confirms on a terminal (`y/N`), writes, then verifies by reading back. `apply` also backs up first. `plan`, `apply`, `reconstruct` and `flash` support the System B (`07B0`, `27B0`, `57B0`) and System 7 (`0705`, `0701`, `0700`) masks and refuse anything else before writing; [SAFETY.md](SAFETY.md#supported-device-masks) has the table, and `bussard audit` shows it per device. A write to a non-loopback gateway is refused unless you opt in with `--allow-remote-gateway`. Do the first real writes against a spare device or the simulator, not a live installation. Read [SAFETY.md](SAFETY.md) once before you start writing.
 
@@ -19,7 +19,7 @@ $ bussard monitor
 12:03:44.981  1.1.3 Switch Actuator     → 0/0/1 Hallway Light Status = On (1.001)
 ```
 
-Every telegram resolves to its GA name, the sending device, and a typed value. Flip a switch and watch it name itself. Narrow the stream with `--filter 3/2/0,1/0/` (GAs, GA prefixes, or sender IAs); `--json` emits one JSON object per line for tooling. GAs missing from the model show as raw hex; add them to `groups.yaml` with a `dpt:` and re-run.
+Every telegram resolves to its GA name, the sending device, and a typed value. Flip a switch and watch it name itself. Narrow the stream with `--filter 3/2/0,1/0/` (GAs, GA prefixes, or sender IAs); `--json` emits one JSON object per line for tooling. GAs missing from the model show as raw hex; add them to `groups.toml` with a `dpt` and re-run.
 
 ## ... see the whole network in a browser?
 
@@ -93,7 +93,7 @@ Generated 1 model file in knx/models:
 Then run the wizard and press the device's programming button when it asks:
 
 ```console
-$ bussard adopt --product knx/vendor/MDT_KP_AKK_03_Switch_Actuator_V23.knxprod
+$ bussard adopt
 bussard adopt — the guided new-device flow
   step 1/5  product data
   step 2/5  assign an address
@@ -101,18 +101,15 @@ device in programming mode: 15.15.255 (its current address)
 adopt 15.15.255 → 1.1.5? [y/N] y
 wrote 1.1.5; verifying…
   step 3/5  write the device file
-  wrote knx/devices/1.1.5-mdt-switch-actuator-akk.yaml
+  wrote knx/devices/1.1.5.toml
   step 4/5  wire the group objects
   ready-to-paste snippets (edit the group address to a free one):
-    # ---8<--- groups.yaml (under `groups:`)
-    "0/0/1":
-      name: "Switch channel A"
-      dpt: "1.001"
-    # ---8<--- links.yaml (under `links:`)
-    "1.1.5":
-      - object: 0
-        name: "Switch channel A"
-        send: "0/0/1"     # or `listen: ["0/0/1"]` for a receiving object
+    # ---8<--- groups.toml (inside `groups = [ … ]`)
+    { address = "0/0/1", name = "Status channel A", dpt = "1.001" },
+    # ---8<--- devices/1.1.5.toml
+    [channel.a]
+    status.send = "0/0/1"     # or `status.listen = ["0/0/1"]` for a receiving object
+    # --->8---
   step 5/5  summary
 
 adopted 15.15.255 → 1.1.5
@@ -122,7 +119,7 @@ adopted 15.15.255 → 1.1.5
 
 ## ... change what a button does?
 
-Edit `links.yaml`: point the button's com object at the new GA (and define the GA in `groups.yaml` if it is new). Then validate, preview, and write:
+Edit the button's device file (`devices/<address>.toml`; `bussard device <address> <channel> --toml` prints the lines to paste): point its com object at the new GA. A GA that `groups.toml` does not define yet is declared there by `apply`. Then validate, preview, and write:
 
 ```console
 $ bussard validate
@@ -209,7 +206,7 @@ model sha256 3f1c…
 never included: models/ (cached vendor product models), vendor/ (vendor product data), captures/ (bus recordings), keyrings (*.knxkeys and tool keys), *.knxproj (ETS projects), *.knxprod (vendor product files), .env (passwords and local settings)
 ```
 
-The `.bussard` file is a zip holding `bussard.yaml`, `groups.yaml`, `links.yaml`, `devices/`, the history snapshots and a manifest with counts and a SHA-256 of the model. Passwords, keyrings, vendor data and ETS files stay on your machine. Leave out the history with `--no-history`. Without a file name, `export` writes `<dir>-<date>.bussard` next to the model directory.
+The `.bussard` file is a zip holding `bussard.toml`, `groups.toml`, `bussard.lock`, `devices/`, the history snapshots and a manifest with counts and a SHA-256 of the model. Passwords, keyrings, vendor data and ETS files stay on your machine. Leave out the history with `--no-history`. Without a file name, `export` writes `<dir>-<date>.bussard` next to the model directory.
 
 The integrator runs `bussard import house.bussard --dir knx` into an empty directory and gets your model back byte for byte, history included. Keep a copy as your backup too: export at the end of the first working weekend and after every change you want to keep. `apply` reminds you on stderr when the last export is older than the model you just pushed.
 
@@ -238,7 +235,7 @@ Generated data (com-object tables, links, parameters) follows the bundle. Names,
 
 ## ... clean stale links off a device?
 
-Same pair. A link left on the device by an earlier ETS download but absent from `links.yaml` shows up in the plan as a removal:
+Same pair. A link left on the device by an earlier ETS download but absent from its device file shows up in the plan as a removal:
 
 ```console
 $ bussard plan 1.1.5
@@ -288,7 +285,7 @@ replace 1.1.4: address 15.15.255 → 1.1.4, flash the application and apply the 
 replaced 1.1.4 via 192.0.2.10:3671
 ```
 
-`replace` refuses when the old device still answers or when the new one reports a different order number or mask than `devices/1.1.4-*.yaml`; `--force` overrides both, for when the model is out of date. It assigns the address, flashes the application with the model's parameters, applies the model's links, and writes `replaced: <date>` into the device file. Pass `--no-flash` for a spare that already carries the right application.
+`replace` refuses when the old device still answers or when the new one reports a different order number or mask than `devices/1.1.4.toml`; `--force` overrides both, for when the model is out of date. It assigns the address, flashes the application with the model's parameters, applies the model's links, and writes `replaced = <date>` into the device file. Pass `--no-flash` for a spare that already carries the right application.
 
 ## ... generate the Home Assistant config?
 
@@ -296,7 +293,7 @@ replaced 1.1.4 via 192.0.2.10:3671
 $ bussard ha-config --out ha-knx.yaml
 ```
 
-The output is a complete `knx:` document; `!include` it or paste it into your Home Assistant configuration. Read the footer: it counts the derived entities and lists every unmapped GA by DPT, so nothing is silently dropped. Tune the result with an `ha.yaml` next to the model (rename entities, promote a switch to a light, exclude GAs, merge extra state addresses). Derivation rules and `ha.yaml` fields are in [ha-config.md](ha-config.md).
+The output is a complete `knx:` document; `!include` it or paste it into your Home Assistant configuration. Read the footer: it counts the derived entities and lists every unmapped GA by DPT, so nothing is silently dropped. Tune the result with an `ha.toml` next to the model (rename entities, promote a switch to a light, exclude GAs, merge extra state addresses). Derivation rules and `ha.toml` fields are in [ha-config.md](ha-config.md).
 
 ## ... generate the handover documentation?
 
@@ -331,7 +328,7 @@ reconstructed line 1.1 into fresh
 synthesized 9 group address(es) and 5 link(s)
 ```
 
-The synthesized model is a scaffold, not ground truth, and every file carries a banner saying so: names and DPTs are placeholders (`validate` warns W011, honestly), directions are recorded as `listen:`, and non-System-B devices become stubs. Watch the bus with `monitor --dir fresh` and annotate `groups.yaml` as you identify traffic; decoding fills in as the model grows.
+The synthesized model is a scaffold, not ground truth, and every file carries a banner saying so: names and DPTs are placeholders (`validate` warns W011, honestly), directions are recorded as `listen`, and non-System-B devices become stubs. Watch the bus with `monitor --dir fresh` and annotate `groups.toml` as you identify traffic; decoding fills in as the model grows.
 
 ## ... commission a whole line?
 
@@ -462,20 +459,22 @@ $ bussard learn --untyped --gateway 192.0.2.10
   accept as "Kitchen ceiling light, schalten" / 1.001? [a]ccept, [e]dit name, [d]pt, [s]kip, [q]uit:
 ```
 
-`--unnamed` picks placeholder names instead of missing DPTs, `--ga` names specific addresses, and a bare `bussard learn` takes whatever appears on the bus. Accepted answers land in `groups.yaml` and, when the com object is clear, `links.yaml`; review the diff and run `validate`, which stops reporting W011 for every GA you typed.
+`--unnamed` picks placeholder names instead of missing DPTs, `--ga` names specific addresses, and a bare `bussard learn` takes whatever appears on the bus. Accepted answers land in `groups.toml` and, when the com object is clear, the sending device's file; review the diff and run `validate`, which stops reporting W011 for every GA you typed.
 
 ## ... write an acceptance test?
 
-Put a `tests.yaml` next to `groups.yaml`. Each test is a stimulus and the telegram that proves the installation reacted:
+Put a `tests.toml` next to `groups.toml`. Each test is a stimulus and the telegram that proves the installation reacted:
 
-```yaml
-tests:
-  - name: Kitchen ceiling light switches and reports
-    write: { ga: "1/0/10", value: "on" }
-    expect: { ga: "1/0/12", value: "on", within: 2s }
-  - name: Wind alarm raises the blinds
-    manual: "Press the test button on the weather station"
-    expect: { ga: "3/1/0", value: "up", within: 5s }
+```toml
+[[tests]]
+name = "Kitchen ceiling light switches and reports"
+write = { ga = "1/0/10", value = "on" }
+expect = { ga = "1/0/12", value = "on", within = "2s" }
+
+[[tests]]
+name = "Wind alarm raises the blinds"
+manual = "Press the test button on the weather station"
+expect = { ga = "3/1/0", value = "up", within = "5s" }
 ```
 
 The assistant can draft the file from the model (switch objects with a status GA are the obvious first tests) and run it over MCP with `knx_run_tests` when the server has `--allow-writes`. At a terminal:
@@ -502,7 +501,7 @@ $ claude mcp add knx -- bussard mcp --dir knx
 
 Then ask in plain language: "What devices are on my bus?", "Watch for telegrams while I press the kitchen switch", "Read the wind speed". The server exposes the model, live telegrams, a "press the button now" wait tool, and rate-limited bus reads ([the full tool list](reference.md#the-mcp-server)). Add `--passive` for a server that never transmits, or `--allow-writes` to let Claude write group values. `--allow-writes` goes through the same real-gateway gate as `bussard write`: against a non-loopback gateway the server refuses to start without `--allow-remote-gateway`. Protected GAs are refused over MCP with no override either way, and a `dpt` that contradicts the model is refused too.
 
-The payoff is closing the loop between an intent and a reviewed change. "I added a presence detector in the hall, it should switch the hall light": Claude finds the detector's GA from recent telegrams, reads the light state, checks the model, and proposes the `links.yaml` edit. You review the diff, then run `plan` and `apply` yourself.
+The payoff is closing the loop between an intent and a reviewed change. "I added a presence detector in the hall, it should switch the hall light": Claude finds the detector's GA from recent telegrams, reads the light state, checks the model, and proposes the device-file edit. You review the diff, then run `plan` and `apply` yourself.
 
 ## ... plan the group addresses for a new house?
 
@@ -563,7 +562,7 @@ $ claude mcp add knx -- bussard mcp --dir knx --capture-db knx/captures/bus.db
 
 ## What goes in git?
 
-Git is optional: `bussard history` and `bussard undo` work without it. If you do use git, `bussard.yaml`, `groups.yaml`, `links.yaml`, and `devices/` are the source of truth and belong in the repo. Keep out: `.bussard/` (bussard's own history, local to the machine; `init` git-ignores it), `vendor/` and `models/` (derived from copyrighted `.knxprod` files; `import-product` plants a `.gitignore`), `captures/` (`init` git-ignores it), and `.env` (secrets like `BUSSARD_PROJECT_PASSWORD`).
+Git is optional: `bussard history` and `bussard undo` work without it. If you do use git, `bussard.toml`, `groups.toml`, `devices/` and `bussard.lock` belong in the repo; the device files and `groups.toml` are the source of truth. Keep out: `.bussard/` (bussard's own history, local to the machine; `init` git-ignores it), `vendor/` and `models/` (derived from copyrighted `.knxprod` files; `import-product` plants a `.gitignore`), `captures/` (`init` git-ignores it), and `.env` (secrets like `BUSSARD_PROJECT_PASSWORD`).
 
 ### ETS with git
 
