@@ -359,10 +359,13 @@ importing again rewrites the keys in the new language.
 - **Channel handle:** a stem, then `-<n>`. The stem is the slug of the
   channel `Name` when that is a plain label: only letters (umlauts
   included), digits and spaces, at most 24 characters as a slug, and
-  contained in the slug of the channel's text when there is one. Vendors
+  contained in the slug of the channel's text when there is one, as a whole
+  `-`-separated word (`regler` is not contained in `raumtemperaturregler`, a
+  longer word it happens to end with, but is in `heizung-regler`). Vendors
   that use `Name` for an internal id (`SMOD0_MotionDetector1_MP_CT_1`,
-  `LICHTAUSGANG_1`, `W1 - TSM - Wippe 1`) or for an untranslated word
-  (`Manual operation` next to `Manuelle Bedienung`) fail that test, and the
+  `LICHTAUSGANG_1`, `W1 - TSM - Wippe 1`), for an untranslated word
+  (`Manual operation` next to `Manuelle Bedienung`), or for a word the text
+  merely ends with, fail that test, and the
   stem is then the slug of the channel's `Text` in the import language, with
   module arguments filled in and the label placeholder stripped (a
   placeholder's default text, as in `{{0: Eingang g+h}}`, stays). `n` is the
