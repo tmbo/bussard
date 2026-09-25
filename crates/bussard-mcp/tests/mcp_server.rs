@@ -137,10 +137,11 @@ async fn tools_list_default_mode() -> TestResult {
     expected.sort();
     assert_eq!(
         names, expected,
-        "default mode with --no-model-edits exposes 11 bus/model tools, the 2 \
+        "default mode with --no-model-edits exposes 12 bus/model tools, the 2 \
          history read tools and the 2 bundle/diff tools"
     );
-    assert_eq!(tools.len(), 15);
+    assert_eq!(tools.len(), 16);
+    assert!(names.contains(&"knx_show_device".to_string()));
     assert!(names.contains(&"knx_describe_change".to_string()));
     assert!(names.contains(&"knx_infer_group".to_string()));
     assert!(!names.contains(&"knx_run_tests".to_string()));
@@ -165,7 +166,7 @@ async fn tools_list_with_allow_writes() -> TestResult {
         names, expected,
         "--allow-writes adds knx_write_group and knx_run_tests"
     );
-    assert_eq!(tools.len(), 17);
+    assert_eq!(tools.len(), 18);
     assert!(names.contains(&"knx_run_tests".to_string()));
     assert!(names.contains(&"knx_write_group".to_string()));
     assert!(names.contains(&"knx_read_group".to_string()));
@@ -182,7 +183,7 @@ async fn tools_list_in_passive_mode() -> TestResult {
     let names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
     assert_eq!(
         tools.len(),
-        13,
+        14,
         "passive mode omits knx_read_group and knx_describe_device, and keeps the \
          file-only history, bundle and diff tools"
     );

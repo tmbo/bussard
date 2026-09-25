@@ -367,3 +367,33 @@ async fn test_add_link_declares_an_undefined_group_address() -> TestResult {
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
+
+/// `knx_show_device` lists a channel's objects in the device file's words and
+/// hands back the paste-ready TOML; without product data it says so.
+#[tokio::test]
+async fn test_show_device_lists_a_channel_and_its_toml() -> TestResult {
+    let dir = model_dir("show")?;
+    let (client, task) = connect(server_over(&dir)?).await?;
+    let res = call(
+        &client,
+        "knx_show_device",
+        json!({"address": "1.1.4", "channel": "CH-2", "toml": true}),
+    )
+    .await;
+    assert_eq!(res["channels"][0]["handle"], "CH-2", "{res}");
+    assert_eq!(res["scope"]["objects"][0]["number"], 12, "{res}");
+    assert_eq!(res["scope"]["objects"][0]["flags"], "CRT", "{res}");
+    assert!(
+        res["notes"][0]
+            .as_str()
+            .is_some_and(|n| n.contains("no product data")),
+        "{res}"
+    );
+    let toml = res["toml"].as_str().unwrap_or_default();
+    assert!(toml.contains("[channel.CH-2]"), "{toml}");
+    assert!(toml.contains("# 12.send = \"\""), "{toml}");
+    client.cancel().await?;
+    task.abort();
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}

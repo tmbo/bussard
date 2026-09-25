@@ -139,6 +139,22 @@ pub struct DeviceArgs {
     pub address: String,
 }
 
+/// Arguments for `knx_show_device`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ShowDeviceArgs {
+    /// An individual (physical) address like `"1.1.47"`.
+    pub address: String,
+    /// A channel handle (`"a-1"`), channel id or vendor number to list in
+    /// detail, or `"device"` for the device-level parameters and objects.
+    /// Omit it to list the channels only.
+    #[serde(default)]
+    pub channel: Option<String>,
+    /// Also return `toml`: the paste-ready device-file snippet, with
+    /// commented lines for what the file does not set yet.
+    #[serde(default)]
+    pub toml: bool,
+}
+
 /// Arguments for `knx_describe_device`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DescribeArgs {
@@ -263,6 +279,49 @@ impl BussardMcp {
             .parse()
             .map_err(|_| invalid(format!("invalid individual address {:?}", args.address)))?;
         ok(tools::get_device(&self.state.model.current(), ia))
+    }
+
+    /// `knx_show_device`.
+    #[tool(
+        description = "Show what one device offers, in its device file's words, from the lock and \
+        the product model under models/ (no bus access): its channels (handle, vendor text, the \
+        user's name, counts); with `channel` (a handle like \"a-1\", or \"device\" for the \
+        device level), that scope's parameters (key, current value, enum choices or range, \
+        whether at the vendor default) and objects (key, number, text/function, DPT, flags, \
+        what it sends and listens on). With `toml: true` also the paste-ready TOML for \
+        devices/<address>.toml. Use it before editing a device file: the keys it prints are the \
+        ones the file accepts. Without product data it says so and lists what the lock has."
+    )]
+    async fn knx_show_device(
+        &self,
+        Parameters(args): Parameters<ShowDeviceArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let ia: IndividualAddress = args
+            .address
+            .parse()
+            .map_err(|_| invalid(format!("invalid individual address {:?}", args.address)))?;
+        let model = self.state.model.current();
+        let app = model
+            .devices
+            .get(&ia)
+            .and_then(|d| d.device.product.as_ref())
+            .and_then(|p| p.application_ref.clone());
+        let products = bussard_model::ProductModels::load_apps(
+            &self.state.dir,
+            app.iter().map(String::as_str),
+        );
+        let view =
+            bussard_model::device_view::device_view(&model, &products, ia, args.channel.as_deref())
+                .map_err(|e| invalid(e.to_string()))?;
+        let mut value = serde_json::to_value(&view).map_err(|e| {
+            ErrorData::internal_error(format!("serializing the device view: {e}"), None)
+        })?;
+        if args.toml
+            && let Some(map) = value.as_object_mut()
+        {
+            map.insert("toml".to_string(), Value::String(view.render_toml()));
+        }
+        ok(value)
     }
 
     /// `knx_recent_telegrams`.

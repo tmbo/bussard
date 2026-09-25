@@ -16,6 +16,7 @@ pub mod bundle;
 pub mod change;
 pub mod codec;
 pub mod declare;
+pub mod device_view;
 pub mod doc;
 pub mod dpt;
 mod emit;

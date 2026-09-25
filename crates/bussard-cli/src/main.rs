@@ -12,6 +12,7 @@ mod commission_cmd;
 mod confirm;
 mod conn_cmd;
 mod describe_cmd;
+mod device_cmd;
 mod device_facts;
 mod device_plan;
 mod diff_cmd;
@@ -1065,6 +1066,27 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Show what a device offers, in its device file's words: its channels,
+    /// and for one channel its parameters (value, choices, default) and objects.
+    Device {
+        /// The device, e.g. `1.1.47`.
+        #[arg(value_name = "ADDRESS")]
+        address: String,
+        /// The channel to list in detail: its handle (`a-1`), id or number, or
+        /// `device` for the device-level parameters and objects.
+        #[arg(value_name = "CHANNEL")]
+        channel: Option<String>,
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Print the paste-ready device-file TOML, with commented lines for
+        /// what the file does not set yet.
+        #[arg(long, conflicts_with = "json")]
+        toml: bool,
+        /// Emit the view as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Show what one snapshot changed (or the change between two snapshots).
     Show {
         /// The snapshot: its id, or its number from `bussard history`.
@@ -2104,6 +2126,13 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
         ),
         Command::Status { dir, json, raw } => history_cmd::run_status(&dir, json, raw),
         Command::History { dir, json } => history_cmd::run_history(&dir, json),
+        Command::Device {
+            address,
+            channel,
+            dir,
+            toml,
+            json,
+        } => device_cmd::run(&address, channel.as_deref(), &dir, toml, json),
         Command::Show { snapshot, to, dir } => {
             history_cmd::run_show(&dir, &snapshot, to.as_deref())
         }

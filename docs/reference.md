@@ -486,6 +486,32 @@ List the snapshots under `<dir>/.bussard/history`, oldest first: number, id, the
 | `--dir <DIR>` | `knx` | The model directory. |
 | `--json` | off | Emit the list as JSON. |
 
+### `bussard device <ADDRESS> [CHANNEL]`
+
+Show what a device offers, in its device file's words. Without a channel it lists the device's channels: the handle the file uses (`[channel.<handle>]`), the vendor's number and text, the name you gave it, and how many parameters and objects each has. With a channel (its handle, id or number, or `device` for the device-level `[parameters]` and `[links]`) it lists that channel's parameters (key, current value, the enum choices or the range, whether it is at the vendor default, the vendor's text) and objects (key, number, text and function, DPT, flags, what it sends and listens on). Files only: the data comes from `bussard.lock` and the product model under `models/`; without product data it says so and lists what the lock has.
+
+```
+$ bussard device 1.1.47 a-1 --toml
+# devices/1.1.47.toml: Jalousieaktor Kind 2; uncomment what you want to set
+
+[channel.a-1]   # Jalousie 1
+name = "Fenster Süd"
+betriebsart = "Jalousie"   # Betriebsart: Rollladen | Jalousie
+# fahrzeit = "60"   # Fahrzeit: 1..600
+langzeitbetrieb.listen = ["0/1/3"]   # CWU Langzeitbetrieb, Jalousie 1, 1.008
+# status-position.send = ""   # CRT 5.001
+```
+
+Lines for what the file sets are live; everything else is commented with the vendor default and the choices, ready to uncomment. An object without links is suggested as `listen` when it takes commands (W flag) and as `send` when it reports (T flag).
+
+| Flag / arg | Default | Meaning |
+|---|---|---|
+| `<ADDRESS>` | | The device, e.g. `1.1.47`. |
+| `[CHANNEL]` | | The channel to list in detail, or `device`. |
+| `--dir <DIR>` | `knx` | The model directory. |
+| `--toml` | off | Print the paste-ready device-file TOML instead of the table. |
+| `--json` | off | Emit the view as JSON (`channels`, `device_level`, `scope` with `parameters` and `objects`, `notes`). |
+
 ### `bussard show <SNAPSHOT> [SNAPSHOT]`
 
 Render what one snapshot changed (against the one before it), or the change between two snapshots. A snapshot is named by its id or by its number from `bussard history`.
@@ -1240,7 +1266,7 @@ CREATE INDEX idx_telegrams_dest_ts ON telegrams (destination, ts_utc);
 
 The model tools (`knx_describe_change`, `knx_history`, the six that edit, `knx_scaffold_groups` and `knx_reserve_groups`) touch files under the model directory and nothing else. `knx_export_bundle` and `knx_diff_project` only read the model (the export writes one bundle file) and are registered in every tier, `--no-model-edits` included. Every edit snapshots the model first, validates after, and returns the change as sentences for the caller to quote to the human. Nothing reaches a device until a human runs `bussard plan` and `bussard apply`, or approves a plan in the conversation on a server started with `--allow-programming`.
 
-Tool counts: 20 in `--passive`, 22 by default, 24 with `--allow-writes`. `--no-model-edits` takes seven away from each (13, 15 and 17). `--allow-programming` adds two to any non-passive tier.
+Tool counts: 22 in `--passive`, 24 by default, 26 with `--allow-writes`. `--no-model-edits` takes eight away from each (14, 16 and 18). `--allow-programming` adds two to any non-passive tier.
 
 Bus operations share one rate limiter (minimum 250 ms between operations, at most two in flight). A GA marked `protected: true` is hard-refused by `knx_write_group` and `knx_run_tests` with no MCP override; the LLM must ask a human, who can run `bussard write ... --force` from the CLI. Download (`flash`) and batch programming (`apply --line`) are CLI-only. Single-device table programming is exposed only through the programming tier below.
 
@@ -1252,6 +1278,7 @@ Bus operations share one rate limiter (minimum 250 ms between operations, at mos
 | `knx_model_lookup` | `query` (substring), `limit` (default 50, max 500) | Case-insensitive matches across GA names/addresses, device names/IAs, room names, com-object names, grouped by kind. |
 | `knx_get_group` | `ga` | The GA's definition, every link sending to or listening on it, and the last telegram seen on it. |
 | `knx_get_device` | `address` | One device's identity, product, location, channels, com-object table, and links. |
+| `knx_show_device` | `address`, `channel` (optional; a handle, or `device`), `toml` (optional) | What [`bussard device`](#bussard-device-address-channel) shows, as JSON: the channels, and for `channel` its parameters and objects; with `toml: true` also the paste-ready snippet. Files only. |
 | `knx_recent_telegrams` | `limit` (default 50, max 1000), `ga` (GA or prefix), `source` (IA), `since` (RFC3339), all optional | Recent decoded telegrams, oldest first. With `--capture-db`, windows that predate the in-memory ring are topped up from the capture database. |
 | `knx_wait_for_telegram` | `timeout_seconds` (max 300), `ga`, `source` (optional) | Blocks until a matching telegram arrives or the timeout elapses. A timeout is a normal result, not an error. Enables "press the button now" debugging. |
 | `knx_validate` | none | Every diagnostic (code, severity, message, location) plus counts. |

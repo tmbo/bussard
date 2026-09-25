@@ -20,6 +20,7 @@
 //! | `knx_model_lookup` | Case-insensitive substring search over the model. |
 //! | `knx_get_group` | A GA's definition, links touching it, and its last telegram. |
 //! | `knx_get_device` | A device's full definition plus its links. |
+//! | `knx_show_device` | A device's channels, and one channel's parameters (choices, defaults) and objects, in its device file's words; optionally as paste-ready TOML. |
 //! | `knx_recent_telegrams` | Recent telegrams from the ring (and capture DB). |
 //! | `knx_wait_for_telegram` | Block for the next matching telegram ("press the button now"). |
 //! | `knx_validate` | Model validation diagnostics as JSON. |
@@ -61,9 +62,9 @@
 //! started with `--allow-writes` (which conflicts with `--passive`); both write
 //! to the physical bus, and both hard-refuse `protected` GAs.
 //!
-//! Tool counts per tier: `--passive` 21, default 23, `--allow-writes` 25. With
+//! Tool counts per tier: `--passive` 22, default 24, `--allow-writes` 26. With
 //! `--no-model-edits` the eight model-edit tools (the six above plus the two
-//! reservation tools) are withheld, giving 13, 15 and 17.
+//! reservation tools) are withheld, giving 14, 16 and 18.
 //!
 //! `--allow-programming` (issue #118) adds the two programming tools
 //! ([`tools_program::PROGRAMMING_TOOLS`]) to any non-passive tier. They write
@@ -267,15 +268,15 @@ pub async fn run(config: &McpConfig) -> anyhow::Result<()> {
 
 /// The set of tool names exposed, in registration order. Used by tests and docs.
 ///
-/// - passive mode: 21 tools (no bus-touching tools: no `knx_read_group`, no
+/// - passive mode: 22 tools (no bus-touching tools: no `knx_read_group`, no
 ///   `knx_describe_device`, no `knx_write_group`, no `knx_run_tests`).
 ///   `knx_infer_group` is there: it only reads the telegram ring. `knx_audit`
 ///   is there too, but refuses `live: true`.
-/// - default mode: 23 tools (adds `knx_read_group` and `knx_describe_device`).
-/// - `--allow-writes`: 25 tools (adds `knx_write_group` and `knx_run_tests`).
+/// - default mode: 24 tools (adds `knx_read_group` and `knx_describe_device`).
+/// - `--allow-writes`: 26 tools (adds `knx_write_group` and `knx_run_tests`).
 /// - `--no-model-edits` removes the eight model-edit tools
 ///   ([`tools_model::MODEL_EDIT_TOOLS`], including the two reservation tools) from
-///   any of those (13, 15 and 17 tools).
+///   any of those (14, 16 and 18 tools).
 ///
 /// The two model/history read tools (`knx_describe_change`, `knx_history`),
 /// the two bundle/diff tools (`knx_export_bundle`, `knx_diff_project`) and the
@@ -298,6 +299,7 @@ pub fn tool_names_for(
         "knx_model_lookup",
         "knx_get_group",
         "knx_get_device",
+        "knx_show_device",
         "knx_recent_telegrams",
         "knx_wait_for_telegram",
         "knx_validate",
