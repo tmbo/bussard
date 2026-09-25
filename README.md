@@ -4,6 +4,8 @@ A buzzard circles the field and sees everything move. `bussard` does that for a 
 
 All the configuration for your KNX setup is stored in TOML files, ready for your chat agent to modify them, creating reviewable diffs. `bussard` pushes the changes to the devices over your KNXnet/IP gateway. ETS stays in the drawer for the things only ETS can do (certification, planning, the odd exotic device).
 
+Project page: [bussard.tmbo.dev](https://bussard.tmbo.dev/).
+
 ![How bussard fits together](docs/assets/overview.svg)
 
 <details>
@@ -30,7 +32,7 @@ All the configuration for your KNX setup is stored in TOML files, ready for your
 
 ## Quickstart
 
-New to KNX ownership? Read [the first weekend guide](docs/getting-started-owner.md).
+New to KNX ownership? Read [the first weekend guide](https://bussard.tmbo.dev/docs/getting-started-owner/).
 
 Have an ETS export? Import it and watch your bus decode itself:
 
@@ -75,7 +77,7 @@ langzeitbetrieb.listen = ["0/1/3"]
 status-position.send = "0/1/4"
 ```
 
-The keys come from the vendor's product data; [the model format](docs/model-format.md) specifies every file.
+The keys come from the vendor's product data; [the model format](https://bussard.tmbo.dev/docs/model-format/) specifies every file.
 
 From there you can explore all the functionality of bussard:
 
@@ -111,23 +113,14 @@ Windows, in PowerShell:
 > irm https://raw.githubusercontent.com/tmbo/bussard/main/install.ps1 | iex
 ```
 
-The installers download the binary for your machine, verify the published
-SHA-256 checksum, and put `bussard` on your PATH. Set `BUSSARD_VERSION` to pin a
-version and `BUSSARD_INSTALL_DIR` to choose where it lands.
-
-Prefer to do it yourself? Grab a binary from the
-[latest release](https://github.com/tmbo/bussard/releases/latest)
-(Linux x64, Linux arm64, macOS arm64, macOS x64, Windows x64, each with a
-`.sha256` checksum), or build from source:
-
-```console
-$ cargo install --path crates/bussard-cli
-```
+See [the install docs](https://bussard.tmbo.dev/docs/#install) for checksum
+verification, pinning a version, downloading a release binary directly, and
+building from source.
 
 ## Safety
 
 `bussard` writes to physical building infrastructure. **Read
-[docs/SAFETY.md](docs/SAFETY.md) before your first write**. It is the single
+[docs/SAFETY.md](https://bussard.tmbo.dev/docs/SAFETY/) before your first write**. It is the single
 read-before-your-first-write guide (which bus you are hitting, the real-gateway
 gate, backups, flash recovery, protected GAs, supported masks). The essentials:
 
@@ -139,22 +132,22 @@ gate, backups, flash recovery, protected GAs, supported masks). The essentials:
 
 ## Documentation
 
-- [Safety](docs/SAFETY.md): read this before your first write.
-- [Reference](docs/reference.md): every command, flag, and MCP tool.
-- [Model format](docs/model-format.md): every file in `knx/`, its keys, and its errors.
-- [How do I ...](docs/howto.md): recipes, from watching the bus to flashing a device.
-- [The first weekend](docs/getting-started-owner.md): the owner's guide, from install to a backup on a USB stick.
-- [Handover checklist](docs/handover-checklist.md): what an owner demands and an integrator delivers.
-- [Working with an integrator](docs/collaboration.md): exchanging changes by bundle or by repository.
-- [Design](docs/DESIGN.md): architecture, feasibility, roadmap.
-- [Home Assistant](docs/ha-config.md): how `ha-config` derives entities.
-- [Product data](docs/product-data.md): `.knxprod` handling and the pointer index.
-- [Personas](docs/personas/README.md): who bussard is for, their journeys step by step, and the gaps as issue drafts.
-- [Test campaign](docs/testing-campaign.md): the runbook for proving `bussard` against real hardware.
+- [Safety](https://bussard.tmbo.dev/docs/SAFETY/): read this before your first write.
+- [Reference](https://bussard.tmbo.dev/docs/reference/): every command, flag, and MCP tool.
+- [Model format](https://bussard.tmbo.dev/docs/model-format/): every file in `knx/`, its keys, and its errors.
+- [How do I ...](https://bussard.tmbo.dev/docs/howto/): recipes, from watching the bus to flashing a device.
+- [The first weekend](https://bussard.tmbo.dev/docs/getting-started-owner/): the owner's guide, from install to a backup on a USB stick.
+- [Handover checklist](https://bussard.tmbo.dev/docs/handover-checklist/): what an owner demands and an integrator delivers.
+- [Working with an integrator](https://bussard.tmbo.dev/docs/collaboration/): exchanging changes by bundle or by repository.
+- [Design](https://bussard.tmbo.dev/docs/DESIGN/): architecture, feasibility, roadmap.
+- [Home Assistant](https://bussard.tmbo.dev/docs/ha-config/): how `ha-config` derives entities.
+- [Product data](https://bussard.tmbo.dev/docs/product-data/): `.knxprod` handling and the pointer index.
+- [Personas](https://bussard.tmbo.dev/docs/personas/): who bussard is for, their journeys step by step, and the gaps as issue drafts.
+- [Test campaign](https://bussard.tmbo.dev/docs/testing-campaign/): the runbook for proving `bussard` against real hardware.
 
 ## Legal notes
 
-Never commit `.knxproj` or `.knxprod` files: the application XML is the manufacturer's copyrighted work. You supply your own product files, free from manufacturer sites or the MyKNX catalogue ([details](docs/product-data.md)). `bussard` is an independent project, not affiliated with or certified by the KNX Association. KNX is a registered trademark of the KNX Association.
+Never commit `.knxproj` or `.knxprod` files: the application XML is the manufacturer's copyrighted work. You supply your own product files, free from manufacturer sites or the MyKNX catalogue ([details](https://bussard.tmbo.dev/docs/product-data/)). `bussard` is an independent project, not affiliated with or certified by the KNX Association. KNX is a registered trademark of the KNX Association.
 
 ## License
 
