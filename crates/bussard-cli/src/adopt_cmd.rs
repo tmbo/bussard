@@ -53,8 +53,9 @@ use crate::import_product_cmd::{VENDOR_GITIGNORE, is_project_export, order_numbe
 
 /// Documented test hook: a non-interactive `adopt` reads its target individual
 /// address from this variable. `adopt` is a wizard, so it refuses to run without
-/// a TTY unless both `--product` and this variable are supplied — the variable
-/// stands in for the address the wizard would otherwise prompt for.
+/// a TTY unless this variable is supplied — it stands in for the address the
+/// wizard would otherwise prompt for. The product data comes from `--product`,
+/// or is fetched for the order number the device reports.
 pub const ADOPT_ADDRESS_ENV: &str = "BUSSARD_ADOPT_ADDRESS";
 
 /// Runs `bussard adopt`.
@@ -62,24 +63,27 @@ pub fn run(
     product: Option<&Path>,
     dir: &Path,
     yes: bool,
+    no_download: bool,
     allow_remote_gateway: bool,
     overrides: ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
     let interactive = std::io::stdin().is_terminal();
 
     // Non-TTY gate: a wizard needs inputs. We allow exactly one scripted shape —
-    // a product file plus an explicit address via the documented env hook, AND an
-    // explicit `--yes` (issue #74: a re-address in a script must opt in, an
-    // explicit address is not itself consent).
+    // an explicit address via the documented env hook, AND an explicit `--yes`
+    // (issue #74: a re-address in a script must opt in, an explicit address is
+    // not itself consent). The product data may come from `--product` or be
+    // fetched for the order number the device reports.
     let scripted_address = std::env::var(ADOPT_ADDRESS_ENV)
         .ok()
         .filter(|s| !s.is_empty());
-    if !interactive && (product.is_none() || scripted_address.is_none()) {
+    if !interactive && scripted_address.is_none() {
         bail!(
             "`bussard adopt` is an interactive wizard and needs a terminal.\n\
-             To drive it non-interactively (e.g. from a test or a script), supply BOTH a product \
-             file (`--product <file.knxprod>`) and an explicit target address via the {ADOPT_ADDRESS_ENV} \
-             environment variable."
+             To drive it non-interactively (e.g. from a test or a script), supply the target \
+             address via the {ADOPT_ADDRESS_ENV} environment variable (and --yes); pass \
+             `--product <file.knxprod>` or let adopt fetch the product data for the order number \
+             the device reports."
         );
     }
     if !interactive && !yes {
@@ -141,6 +145,7 @@ pub fn run(
                 scripted_address.as_deref(),
                 interactive,
                 &gateway,
+                crate::product_fetch::Consent { yes, no_download },
             ) => result,
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\ninterrupted; closing the bus connection");
@@ -350,6 +355,7 @@ async fn adopt_flow(
     scripted_address: Option<&str>,
     interactive: bool,
     gateway: &str,
+    fetch: crate::product_fetch::Consent,
 ) -> anyhow::Result<ExitCode> {
     println!("  step 2/5  assign an address");
 
@@ -395,6 +401,15 @@ async fn adopt_flow(
     // real device with a stuck button would not either). See the helper docs.
     warn_if_still_in_programming_mode(service, source, target).await;
 
+    // Product data fetches itself: without a product from step 1, the order
+    // number the device reported is looked up in the vendor cache, then in the
+    // pointer index (one question), downloaded and imported.
+    let fetched = match (selected, verified.order.as_deref()) {
+        (None, Some(order)) => fetch_product_for(order, dir, fetch),
+        _ => None,
+    };
+    let selected = selected.or(fetched.as_ref());
+
     // Cross-check the read-back order number against the product's order numbers.
     let mut mismatch = false;
     if let (Some(sel), Some(read_order)) = (selected, verified.order.as_deref())
@@ -435,6 +450,56 @@ async fn adopt_flow(
     print_summary(current, target, &verified, &path, selected, mismatch);
 
     Ok(ExitCode::SUCCESS)
+}
+
+/// The product data for the order number a device reported: the cached
+/// archive under `<dir>/vendor/`, else the pointer index's download (asked
+/// once), imported like `--product` would be. `None` (with the reason on the
+/// console) continues product-less.
+fn fetch_product_for(
+    order: &str,
+    dir: &Path,
+    fetch: crate::product_fetch::Consent,
+) -> Option<SelectedProduct> {
+    let path = match crate::commission_cmd::resolve_product_file(dir, None, order) {
+        Ok(path) => path,
+        Err(_) => {
+            println!("  no product data cached for {order}; looking it up");
+            let outcome =
+                match crate::product_fetch::fetch_missing(dir, &[order.to_string()], fetch) {
+                    Ok(outcome) => outcome,
+                    Err(err) => {
+                        eprintln!("  product data for {order}: {err:#}");
+                        return None;
+                    }
+                };
+            match outcome.fetched.first() {
+                Some((_, path)) => path.clone(),
+                None => {
+                    crate::product_fetch::print_missing(&outcome, dir);
+                    println!("  continuing product-less for {order}");
+                    return None;
+                }
+            }
+        }
+    };
+    let data = match import_product(&path, dir) {
+        Ok(data) => data,
+        Err(err) => {
+            eprintln!("  product data for {order}: {err:#}; continuing product-less");
+            return None;
+        }
+    };
+    let app = crate::flash_cmd::resolve_by_order_number(&data, order)
+        .ok()
+        .cloned()
+        .or_else(|| choose_application(&data, false).ok())?;
+    println!(
+        "  using application {} ({}) for {order}",
+        app.id,
+        app.name.as_deref().unwrap_or(&app.id)
+    );
+    Some(shape_selected(&app, &data))
 }
 
 /// Whether a read-back order number matches one of the product's order numbers.

@@ -35,6 +35,7 @@ mod mcp_cmd;
 mod monitor_cmd;
 mod param_readback;
 mod plan_cmd;
+mod product_fetch;
 mod progress;
 mod read_cmd;
 mod reconstruct_cmd;
@@ -390,6 +391,13 @@ enum Command {
         /// On a re-import, ask per conflict (needs a terminal).
         #[arg(long)]
         interactive: bool,
+        /// Download the missing product data without asking (the order
+        /// numbers the pointer index knows).
+        #[arg(long, conflicts_with = "no_download")]
+        yes: bool,
+        /// Do not look up or download missing product data; list it instead.
+        #[arg(long)]
+        no_download: bool,
     },
     /// Write the model and its history as one `.bussard` file to hand over.
     Export {
@@ -685,9 +693,15 @@ enum Command {
         /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
-        /// Skip the interactive confirmation (dangerous; for scripts).
+        /// Skip the interactive confirmation (dangerous; for scripts). Also
+        /// consents to downloading the product data the device's order number
+        /// needs.
         #[arg(long)]
         yes: bool,
+        /// Do not download product data for the device's order number; adopt
+        /// it without (identity and links by number) and say where to get it.
+        #[arg(long)]
+        no_download: bool,
         /// Override the gateway `host[:port]` for tunneling.
         #[arg(long, value_name = "HOST")]
         gateway: Option<String>,
@@ -1873,6 +1887,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             product,
             dir,
             yes,
+            no_download,
             gateway,
             routing,
             skip_address_check,
@@ -1881,6 +1896,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             product.as_deref(),
             &dir,
             yes,
+            no_download,
             allow_remote_gateway,
             conn_cmd::ConnOverrides {
                 gateway,
@@ -2212,15 +2228,18 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             mine,
             theirs,
             interactive,
+            yes,
+            no_download,
         } => {
             let choice = import_bundle::ConflictChoice::from_flags(mine, theirs, interactive);
+            let consent = product_fetch::Consent { yes, no_download };
             if let Some(json) = from_json {
-                import_cmd::run_json(&json, &dir, choice)
+                import_cmd::run_json(&json, &dir, choice, consent)
             } else if let Some(project) = project {
                 if bussard_model::bundle::is_bundle_path(&project) {
                     import_bundle::run_bundle(&project, &dir, choice)
                 } else {
-                    import_cmd::run_knxproj(&project, &dir, password, choice)
+                    import_cmd::run_knxproj(&project, &dir, password, choice, consent)
                 }
             } else {
                 anyhow::bail!("provide a .knxproj path or --from-json <file>")

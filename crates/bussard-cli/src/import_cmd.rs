@@ -38,6 +38,7 @@ pub fn run_knxproj(
     dir: &Path,
     password_flag: Option<String>,
     choice: ConflictChoice,
+    consent: crate::product_fetch::Consent,
 ) -> anyhow::Result<ExitCode> {
     let password = resolve_password(password_flag);
 
@@ -58,13 +59,18 @@ pub fn run_knxproj(
         Err(e) => return Err(e.into()),
     };
 
-    write_model(model, dir, choice, "project")
+    write_model(model, dir, choice, "project", Some(consent))
 }
 
 /// Runs `bussard import --from-json`.
-pub fn run_json(path: &Path, dir: &Path, choice: ConflictChoice) -> anyhow::Result<ExitCode> {
+pub fn run_json(
+    path: &Path,
+    dir: &Path,
+    choice: ConflictChoice,
+    consent: crate::product_fetch::Consent,
+) -> anyhow::Result<ExitCode> {
     let model = bussard_project::import_from_json(path)?;
-    write_model(model, dir, choice, "project")
+    write_model(model, dir, choice, "project", Some(consent))
 }
 
 /// Writes the freshly-imported `model` to `dir`.
@@ -79,11 +85,14 @@ pub fn run_json(path: &Path, dir: &Path, choice: ConflictChoice) -> anyhow::Resu
 ///
 /// `choice` settles hand-authored conflicts (see [`ConflictChoice`]); `source`
 /// names the incoming side in sentences (`"project"` or `"bundle"`).
+/// `fetch` runs the product-data download step for the devices' order
+/// numbers ([`crate::product_fetch`]); `None` skips it.
 pub(crate) fn write_model(
     model: Model,
     dir: &Path,
     choice: ConflictChoice,
     source: &str,
+    fetch: Option<crate::product_fetch::Consent>,
 ) -> anyhow::Result<ExitCode> {
     // History (issue #110): record an edit made outside bussard before the
     // import overwrites it, then snapshot the pre-import state so `bussard undo`
@@ -129,6 +138,7 @@ pub(crate) fn write_model(
             dir.display()
         );
         crate::import_bundle::print_changes(ours, &to_save);
+        fetch_product_data(dir, &to_save, fetch)?;
         crate::validate_cmd::print_summary(dir);
         return Ok(report_merge(merge, *kept, choice));
     }
@@ -151,6 +161,9 @@ pub(crate) fn write_model(
         println!("pruned {} stale device file(s)", report.pruned.len());
     }
 
+    // Product data fetches itself: every order number without it is looked up
+    // in the pointer index, with one question for the whole list.
+    fetch_product_data(dir, &to_save, fetch)?;
     // Validation is part of import: the summary says what to fix next.
     crate::validate_cmd::print_summary(dir);
     if let Some((ours, merge, kept)) = merge_report {
@@ -158,6 +171,52 @@ pub(crate) fn write_model(
         return Ok(report_merge(&merge, kept, choice));
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The download step of `import`: fetch what is missing, then say how many
+/// devices are written without product data and where to get it.
+fn fetch_product_data(
+    dir: &Path,
+    model: &Model,
+    fetch: Option<crate::product_fetch::Consent>,
+) -> anyhow::Result<()> {
+    let Some(consent) = fetch else {
+        return Ok(());
+    };
+    let orders: Vec<String> = model
+        .devices
+        .values()
+        .filter_map(|d| d.device.product.as_ref()?.order_number.clone())
+        .collect();
+    let outcome = crate::product_fetch::fetch_missing(dir, &orders, consent)?;
+    let missing: std::collections::BTreeSet<String> = outcome
+        .missing()
+        .iter()
+        .map(|o| bussard_prod::normalize_order_number(o))
+        .collect();
+    let without = model
+        .devices
+        .values()
+        .filter(|d| {
+            match d
+                .device
+                .product
+                .as_ref()
+                .and_then(|p| p.order_number.as_deref())
+            {
+                Some(order) => missing.contains(&bussard_prod::normalize_order_number(order)),
+                None => true,
+            }
+        })
+        .count();
+    if without > 0 {
+        println!(
+            "{without} device(s) written without product data: their files carry identity, \
+             location and links by number; `apply` writes their links, not their parameters"
+        );
+    }
+    crate::product_fetch::print_missing(&outcome, dir);
+    Ok(())
 }
 
 /// Loads an existing model from `dir`, or `None` if the directory holds no

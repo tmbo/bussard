@@ -82,3 +82,90 @@ fn test_import_declares_a_group_address_the_project_uses_but_does_not_define() -
     std::fs::remove_dir_all(&tmp)?;
     Ok(())
 }
+
+/// Writes a pointer index with the given entries.
+fn index(dir: &Path, entries: serde_json::Value) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let path = dir.join("index.json");
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&serde_json::json!({ "entries": entries }))?,
+    )?;
+    Ok(path)
+}
+
+#[test]
+fn test_import_names_the_order_numbers_it_found_no_product_data_for() -> TestResult {
+    let tmp = tmp("missing")?;
+    let dir = tmp.join("knx");
+    let empty = index(&tmp, serde_json::json!([]))?;
+    let out = bussard(
+        &[
+            "import",
+            "--from-json",
+            fixture().to_str().ok_or("path")?,
+            "--dir",
+            dir.to_str().ok_or("path")?,
+        ],
+        &[("BUSSARD_PRODUCT_INDEX", empty.to_str().ok_or("path")?)],
+    )?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}");
+    // The device still gets its file.
+    assert!(dir.join("devices/1.1.1.toml").is_file());
+    assert!(
+        stdout.contains("1 device(s) written without product data"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains(
+            "TST-1: not in bussard's product index. Download the product data (.knxprod) from \
+             the manufacturer's website"
+        ),
+        "{stdout}"
+    );
+    assert!(stdout.contains("bussard import-product <file>"), "{stdout}");
+    std::fs::remove_dir_all(&tmp)?;
+    Ok(())
+}
+
+#[test]
+fn test_import_no_download_lists_what_the_index_could_fetch() -> TestResult {
+    let tmp = tmp("no-download")?;
+    let dir = tmp.join("knx");
+    let known = index(
+        &tmp,
+        serde_json::json!([{
+            "manufacturer": "Test Manufacturer",
+            "manufacturer_id": "M-9999",
+            "order_numbers": ["TST-1"],
+            "name": "Test Switch Actuator",
+            "url": "file:///nonexistent/never-read.knxprod",
+            "sha256": "00",
+            "size": 1,
+            "filename": "never-read.knxprod",
+        }]),
+    )?;
+    let out = bussard(
+        &[
+            "import",
+            "--from-json",
+            fixture().to_str().ok_or("path")?,
+            "--dir",
+            dir.to_str().ok_or("path")?,
+            "--no-download",
+        ],
+        &[("BUSSARD_PRODUCT_INDEX", known.to_str().ok_or("path")?)],
+    )?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}");
+    assert!(
+        stdout.contains(
+            "TST-1: in bussard's product index but --no-download; run `bussard import-product \
+             --order-number TST-1"
+        ),
+        "{stdout}"
+    );
+    assert!(!dir.join("vendor").exists(), "nothing downloaded");
+    std::fs::remove_dir_all(&tmp)?;
+    Ok(())
+}

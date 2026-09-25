@@ -161,9 +161,80 @@ fn confirm_download(yes_download: bool) -> anyhow::Result<bool> {
     Ok(ans == "y" || ans == "yes")
 }
 
-/// Loads and parses the committed pointer index.
-fn load_index() -> anyhow::Result<ProductIndex> {
+/// The environment variable that points bussard at another pointer index (a
+/// JSON file of the same shape), for a private mirror or a test. Unset uses
+/// the index baked into the binary.
+pub(crate) const PRODUCT_INDEX_ENV: &str = "BUSSARD_PRODUCT_INDEX";
+
+/// Loads and parses the pointer index: the file [`PRODUCT_INDEX_ENV`] names,
+/// else the committed one.
+pub(crate) fn load_index() -> anyhow::Result<ProductIndex> {
+    if let Some(path) = std::env::var_os(PRODUCT_INDEX_ENV).filter(|p| !p.is_empty()) {
+        let path = std::path::PathBuf::from(path);
+        let bytes = std::fs::read(&path)
+            .with_context(|| format!("reading the product index {}", path.display()))?;
+        return ProductIndex::from_json_bytes(&bytes)
+            .with_context(|| format!("parsing the product index {}", path.display()));
+    }
     ProductIndex::from_json_str(PRODUCT_INDEX_JSON).context("parsing the product-data index")
+}
+
+/// Downloads (or, for a `file://` pointer, reads) the `.knxprod` an index
+/// entry names, verifies its size and SHA-256 against the entry, and caches it
+/// under `<dir>/vendor/`. Returns the cached path.
+///
+/// `consent` is the caller's proof that the human agreed to the download.
+pub(crate) fn fetch_to_vendor(
+    entry: &bussard_prod::IndexEntry,
+    dir: &Path,
+    consent: DownloadConsent,
+) -> anyhow::Result<std::path::PathBuf> {
+    let bytes = match entry.url.strip_prefix("file://") {
+        Some(local) => {
+            let bytes = std::fs::read(local).with_context(|| format!("reading {}", entry.url))?;
+            bussard_prod::fetch::verify(entry, &bytes)?;
+            bytes
+        }
+        None => bussard_prod::fetch_entry(entry, consent)
+            .with_context(|| format!("downloading {}", entry.url))?,
+    };
+    let vendor_dir = dir.join("vendor");
+    ensure_vendor_dir(&vendor_dir)?;
+    let cached = vendor_dir.join(&entry.filename);
+    std::fs::write(&cached, &bytes).with_context(|| format!("writing {}", cached.display()))?;
+    Ok(cached)
+}
+
+/// Generates the product models of a `.knxprod` already cached under
+/// `<dir>/vendor/`, quietly. Returns the model file names written.
+pub(crate) fn generate_models(file: &Path, dir: &Path) -> anyhow::Result<Vec<String>> {
+    let product = bussard_prod::read_knxprod(file)
+        .with_context(|| format!("reading product data from {}", file.display()))?;
+    if product.applications.is_empty() {
+        bail!(
+            "no application programs found in {} (is it a valid .knxprod?)",
+            file.display()
+        );
+    }
+    write_models(&product, dir)
+}
+
+/// Writes one model file per application program under `<dir>/models/`.
+fn write_models(product: &ProductData, dir: &Path) -> anyhow::Result<Vec<String>> {
+    let models_dir = dir.join("models");
+    std::fs::create_dir_all(&models_dir)
+        .with_context(|| format!("creating {}", models_dir.display()))?;
+    let mut written: Vec<String> = Vec::new();
+    for app in &product.applications {
+        let model = build_model(app, product);
+        let yaml = serialize_model(&model)?;
+        let file_name = format!("{}.yaml", app.id);
+        let path = models_dir.join(&file_name);
+        std::fs::write(&path, yaml).with_context(|| format!("writing {}", path.display()))?;
+        written.push(file_name);
+    }
+    written.sort();
+    Ok(written)
 }
 
 /// Where a to-be-imported file came from, for the report line.
@@ -252,19 +323,7 @@ fn import_from_file(
 
     // Generate one model YAML per application program.
     let models_dir = dir.join("models");
-    std::fs::create_dir_all(&models_dir)
-        .with_context(|| format!("creating {}", models_dir.display()))?;
-
-    let mut written: Vec<String> = Vec::new();
-    for app in &product.applications {
-        let model = build_model(app, &product);
-        let yaml = serialize_model(&model)?;
-        let file_name = format!("{}.yaml", app.id);
-        let path = models_dir.join(&file_name);
-        std::fs::write(&path, yaml).with_context(|| format!("writing {}", path.display()))?;
-        written.push(file_name);
-    }
-    written.sort();
+    let written = write_models(&product, dir)?;
 
     // Report.
     println!("{cached_note}");

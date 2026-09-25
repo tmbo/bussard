@@ -98,6 +98,18 @@ Import an existing `.knxproj`, a `.bussard` bundle (see [`export`](#bussard-expo
 | `--mine` | off | On a re-import, keep this model's value for every hand-edited conflict and exit 0. |
 | `--theirs` | off | On a re-import, take the incoming value for every hand-edited conflict. |
 | `--interactive` | off | On a re-import, ask per conflict (`m` keeps mine, `t` takes theirs). Needs a terminal. |
+| `--yes` | off | Download the missing product data without asking. |
+| `--no-download` | off | Do not look up or download missing product data; list it instead. |
+
+Product data fetches itself. After the write, `import` collects the order numbers of the project's devices, and every one whose product data is not under `<dir>/models/` yet is looked up in bussard's pointer index (the one `import-product --order-number` uses). The downloads it finds are listed with their size and origin and fetched after one confirmation for the whole list (`--yes` for scripts; without a terminal and without `--yes` nothing is downloaded); each is verified against the index checksum, cached under `<dir>/vendor/` and turned into models under `<dir>/models/`. Devices without product data still get their file (identity, location, links by number), and the summary says how many were written that way and, per order number, where to get the file and which command imports it:
+
+```
+1 device(s) written without product data: their files carry identity, location and links by number; `apply` writes their links, not their parameters
+product data still missing:
+  TST-1: not in bussard's product index. Download the product data (.knxprod) from the manufacturer's website (or export it from ETS's catalog), then run `bussard import-product <file> --dir knx`.
+```
+
+`BUSSARD_PRODUCT_INDEX=<file.json>` points at another index of the same shape (a mirror, or a test with `file://` URLs). A bundle import runs no download step.
 
 A re-import always takes the generated sections (com-object tables, link wiring, parameters) from the incoming side. Hand-authored fields (names, rooms, descriptions, DPTs, `protected:`, channel names) that differ are conflicts: each is printed as a sentence, e.g. `Group address Light Kitchen (1/0/1): the name is "Light Kitchen" here and "Kitchen ceiling" in the bundle. Kept this model's value.` Without a flag the local value is kept and the command exits `3` so a script notices; `--mine`, `--theirs` and `--interactive` settle the conflicts and exit 0. After the write, `import` prints what it changed in the model as the same sentences `bussard status` uses, then validates the written model and prints `validation: N error(s), M warning(s)` with each error (an error does not undo the import; it is what to fix next). A group address a device uses but the project does not define is added to `groups.toml` (see [`groups reserve`](#bussard-groups-reserve-floor-room-function)). Every import into an existing model snapshots it first, so `bussard undo` reverts it.
 
@@ -269,12 +281,15 @@ Downloads are verified against the index by byte size and SHA-256; a mismatch is
 
 ### `bussard adopt`
 
-Guide a new device from programming mode into the model: product data, address assignment with order-number cross-check, a rich device file, and ready-to-paste `groups.yaml` / `links.yaml` snippets. Interactive; needs a terminal (or `BUSSARD_ADOPT_ADDRESS` plus `--product` for scripted runs).
+Guide a new device from programming mode into the model: product data, address assignment with order-number cross-check, a rich device file with its `bussard.lock` entry, and ready-to-paste `groups.toml` / device-file snippets. Interactive; needs a terminal (or `BUSSARD_ADOPT_ADDRESS` plus `--yes` for scripted runs).
+
+Product data fetches itself. Without `--product`, adopt reads the order number off the device and uses the archive cached under `<dir>/vendor/` for it; when there is none, it looks the order number up in bussard's pointer index (the one `import-product --order-number` uses), asks once, downloads and verifies the file, imports it and continues with it. An order number the index does not know is adopted without product data (identity and links by number), with the sentence that says where to get the file. `BUSSARD_PRODUCT_INDEX=<file.json>` points at another index of the same shape (a mirror, or a test with `file://` URLs).
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--product <FILE>` | cached model | The vendor `.knxprod` for the new device. |
-| `--yes` | off | Skip the confirmation prompt (required for a non-TTY, scripted adopt). |
+| `--product <FILE>` | cached or fetched | The vendor `.knxprod` for the new device. |
+| `--yes` | off | Skip the confirmation prompt (required for a non-TTY, scripted adopt); also consents to the product-data download. |
+| `--no-download` | off | Never download product data; adopt without it and say where to get it. |
 | `--dir <DIR>` | `knx` | The model directory. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |

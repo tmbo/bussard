@@ -541,3 +541,87 @@ fn knxprod_cached(dir: &std::path::Path) -> bool {
         .flatten()
         .any(|e| e.file_name().to_string_lossy().ends_with(".knxprod"))
 }
+
+/// Writes a one-entry pointer index serving `order` from `knxprod` over a
+/// `file://` URL (size and SHA-256 of the real file), for the download step.
+fn stub_index(path: &std::path::Path, order: &str, knxprod: &std::path::Path) -> TestResult {
+    use sha2::Digest as _;
+    let bytes = std::fs::read(knxprod)?;
+    let sha: String = sha2::Sha256::digest(&bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let index = serde_json::json!({"entries": [{
+        "manufacturer": "MDT",
+        "manufacturer_id": "M-0083",
+        "order_numbers": [order],
+        "name": "Taster BE (test fixture)",
+        "url": format!("file://{}", knxprod.display()),
+        "sha256": sha,
+        "size": bytes.len(),
+        "filename": "fixture.knxprod",
+        "redistributable": false,
+    }]});
+    std::fs::write(path, serde_json::to_vec_pretty(&index)?)?;
+    Ok(())
+}
+
+/// Without `--product`, adopt looks the order number the device reports up in
+/// the pointer index, downloads the archive (consented by `--yes`), imports it
+/// and adopts with it.
+#[test]
+fn adopt_fetches_the_product_data_for_the_reported_order_number() -> TestResult {
+    let (_rt, gw) = start_gateway(vec![factory_device(b"MDT-BE-04001.02")?])?;
+    let port = gw.port();
+
+    let tmp = std::env::temp_dir().join(format!("bussard-adopt-fetch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let model_dir = tmp.join("knx");
+    write_model(&model_dir)?;
+    let knxprod = tmp.join("download.knxprod");
+    build_knxprod(&knxprod)?;
+    let index = tmp.join("index.json");
+    stub_index(&index, "MDT-BE-04001.02", &knxprod)?;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bussard"))
+        .args([
+            "adopt",
+            "--yes",
+            "--dir",
+            model_dir.to_str().ok_or("temp path is not UTF-8")?,
+            "--gateway",
+            &format!("127.0.0.1:{port}"),
+        ])
+        .env("BUSSARD_ASSIGN_WAIT_MS", "200")
+        .env("BUSSARD_ADOPT_ADDRESS", "1.1.7")
+        .env("BUSSARD_PRODUCT_INDEX", &index)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()?;
+    drop(gw);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let lock = std::fs::read_to_string(model_dir.join("bussard.lock")).unwrap_or_default();
+    let cached = model_dir.join("vendor").join("fixture.knxprod").is_file();
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("no product data cached for MDT-BE-04001.02; looking it up"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("using application M-0083_A-1234-11-ABCD-O000A"),
+        "{stdout}"
+    );
+    assert!(cached, "the download is cached under vendor/");
+    assert!(
+        lock.contains("application = \"M-0083_A-1234-11-ABCD-O000A\""),
+        "lock:\n{lock}"
+    );
+    Ok(())
+}
