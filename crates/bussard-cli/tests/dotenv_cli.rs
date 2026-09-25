@@ -172,9 +172,11 @@ fn test_bussard_dir_from_cwd_dotenv_then_lookup_from_model() -> TestResult {
     assert!(found.iter().any(|c| c == "W028"), "{found:?}");
     assert!(!found.iter().any(|c| c == "W030"), "{found:?}");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    // `BUSSARD_DIR` is relative, so the file is named `../project/.env`.
+    // `BUSSARD_DIR` is relative, so the file is named `../project/.env`
+    // (`../project\.env` on Windows: compare with one separator).
+    let normalized = stderr.replace('\\', "/");
     assert!(
-        stderr.contains("dotenv") && stderr.contains("project/.env"),
+        normalized.contains("dotenv") && normalized.contains("project/.env"),
         "--timing names the file: {stderr}"
     );
     assert!(!stderr.contains(PASSWORD), "never print a value: {stderr}");
