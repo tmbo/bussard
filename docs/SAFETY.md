@@ -511,8 +511,12 @@ manage every secured device and read and forge every secured group telegram.
   sequence from the clock, so restoring an old store never replays a
   sequence a device has already accepted.
 
-Today the store is written by `bussard keys import` and read by `keys show`
-and `keys export`; the bus commands still take their keys from `--keyring`.
+The store is written by `bussard keys import` and by `import`/`init` (which
+merge the `.knxkeys` next to the project when the password is set). Every bus
+command reads it unless `--keyring` or `BUSSARD_KEYRING` names an explicit
+file; `connection.keyring` in `bussard.toml` is deprecated and ignored (with
+a warning) when a store exists. `bussard validate` checks the model's
+secured devices and groups against it.
 
 ## Protected group addresses
 
@@ -804,7 +808,7 @@ stays out of git.
   device through its tool key (`--keyring <file.knxkeys>` with
   `BUSSARD_KEYRING_PASSWORD`, or `--tool-key` for tests) on `flash` and
   `apply`, and read one back with `describe`, `plan` and `reconstruct`;
-  `bussard keyring` inspects an ETS export. Each secured
+  `bussard keys show` summarizes the key store. Each secured
   connection starts with the same S-A_Sync handshake ETS uses, and a secured
   `flash` or `apply` also programs the security object (group key table,
   group-object security flags). The crypto, the handshake and the

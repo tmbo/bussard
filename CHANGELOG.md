@@ -215,9 +215,9 @@ entry supersedes it and is not a diff against it.
 
 **KNX Data Secure**
 
-- `bussard keyring` inspects an ETS `.knxkeys` export: it verifies the
-  signature and decrypts the tool and group keys (#84, #148). The password
-  comes from `BUSSARD_KEYRING_PASSWORD`, never a flag.
+- The `.knxkeys` reader verifies an ETS export's signature and decrypts the
+  tool and group keys (#84, #148). The password comes from
+  `BUSSARD_KEYRING_PASSWORD`, never a flag.
 - `flash`, `apply`, `describe`, `restore`, `plan` and `reconstruct` take
   `--keyring` (or `--tool-key` for a bench device) and run over KNX Data
   Secure. Every secured connection starts with the S-A_Sync handshake ETS uses
@@ -297,8 +297,16 @@ entry supersedes it and is not a diff against it.
   for ETS; `bussard keys show [--json]` prints a redaction-safe summary. The
   keyring reader now also reads the `FDSK` and `SerialNumber` an ETS 6 export
   carries per device. `init` writes `*.knxkeys` into the model's
-  `.gitignore`. The bus commands still read `--keyring`; the switch to the
-  store follows.
+  `.gitignore`.
+- Store-first key resolution (#241 items 2 and 4): every bus command takes
+  its tunnelling users, tool keys and group keys from `bussard.keys` unless
+  `--keyring` or `BUSSARD_KEYRING` names an explicit file; `connection.keyring`
+  is the fallback for a model without a store (deprecated, kept for one
+  release, ignored with a warning when a store exists). `import` and `init`
+  merge the one `.knxkeys` next to the project into the store when the
+  password is set (without it `init` records `connection.keyring` and prints
+  the `keys import` command). `validate` runs E027 to I031 against the same
+  source, the store included.
 - Data Secure send sequences are clock-seeded without persistence (#241 item
   3): 48-bit milliseconds since 2018-01-05, issued by a process-wide monotonic
   guard that never repeats or goes below a value already issued or sent, even
@@ -399,6 +407,10 @@ entry supersedes it and is not a diff against it.
   collaboration guide and a website (#76, #94, #108, #114).
 
 ### Changed
+
+- **Breaking:** the `bussard keyring <FILE>` subcommand is removed;
+  `bussard keys show` summarizes the key store, and `bussard keys import`
+  brings an ETS export into it (#241).
 
 - Product data is retained model data in `<dir>/products/` (#228): vendor
   `.knxprod` files as downloaded or supplied, and each application program

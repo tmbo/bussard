@@ -7,7 +7,8 @@
 //! [`Key16`] a management session hands to
 //! [`bussard_mgmt::SecureLayer`]:
 //!
-//! - a **keyring**: the ETS `.knxkeys` export, decrypted with the password in
+//! - a **keyring**: the key store `bussard.keys` (issue #241) or an ETS
+//!   `.knxkeys` export, decrypted with the password in
 //!   [`KEYRING_PASSWORD_ENV`] (never a command-line argument, spec §2.2), and the
 //!   tool key looked up by the target's individual address. This is the real
 //!   flow, available to every surface (the CLI's `--keyring`, the MCP server's
@@ -95,6 +96,16 @@ pub enum SecureKeyError {
         /// The parse error.
         #[source]
         source: bussard_project::KeyringError,
+    },
+    /// The key store (`bussard.keys`) did not decrypt or parse (a wrong
+    /// password, a hand-edited file).
+    #[error("loading the key store {}", path.display())]
+    Store {
+        /// The store path.
+        path: PathBuf,
+        /// The store error.
+        #[source]
+        source: bussard_project::KeyStoreError,
     },
     /// The keyring has no tool key for a target the model records as
     /// security-activated (a device the model does not mark activated is
@@ -506,12 +517,23 @@ fn load_keyring_with(
         return Ok(keyring);
     }
     let started = std::time::Instant::now();
-    let parsed = bussard_project::parse_keyring(&xml, password);
+    // The key store (issue #241) is the same format with a `Format` marker;
+    // it is served in the keyring shape, so every consumer reads it unchanged.
+    let parsed = if bussard_project::keystore::is_keystore(&xml) {
+        bussard_project::KeyStore::parse(&xml, password)
+            .map(|store| store.to_keyring())
+            .map_err(|source| SecureKeyError::Store {
+                path: path.to_path_buf(),
+                source,
+            })
+    } else {
+        bussard_project::parse_keyring(&xml, password).map_err(|source| SecureKeyError::Parse {
+            path: path.to_path_buf(),
+            source,
+        })
+    };
     keyring_memo::record_decrypt(started.elapsed());
-    let keyring = Arc::new(parsed.map_err(|source| SecureKeyError::Parse {
-        path: path.to_path_buf(),
-        source,
-    })?);
+    let keyring = Arc::new(parsed?);
     keyring_memo::put(path, key, &keyring);
     Ok(keyring)
 }
@@ -789,6 +811,31 @@ mod tests {
             "an edited keyring is decrypted again"
         );
         assert_eq!(changed.group_keys.len(), first.group_keys.len());
+        std::fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    /// The key store `bussard.keys` loads through the same path and serves
+    /// the same tool keys, group keys and tunnelling users (issue #241).
+    #[test]
+    fn test_load_keyring_with_reads_the_key_store() -> Result<(), Box<dyn std::error::Error>> {
+        let dir =
+            std::env::temp_dir().join(format!("bussard-keystore-load-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let keyring = bussard_project::parse_keyring(KEYRING, KEYRING_PASSWORD)?;
+        let mut store = bussard_project::KeyStore::new("");
+        store.merge_keyring(&keyring);
+        store.save(&dir, KEYRING_PASSWORD)?;
+        let path = bussard_project::KeyStore::path(&dir);
+        let loaded = load_keyring_with(&path, KEYRING_PASSWORD)?;
+        let ia: IndividualAddress = "1.1.10".parse()?;
+        assert_eq!(loaded.tool_key(ia), keyring.tool_key(ia));
+        assert_eq!(loaded.group_keys, keyring.group_keys);
+        assert_eq!(loaded.interfaces.len(), keyring.interfaces.len());
+        assert!(matches!(
+            load_keyring_with(&path, "wrong-password"),
+            Err(SecureKeyError::Store { .. })
+        ));
         std::fs::remove_dir_all(&dir)?;
         Ok(())
     }

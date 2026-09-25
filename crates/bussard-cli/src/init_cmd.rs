@@ -11,10 +11,11 @@
 //! one, on a terminal it offers to scan the gateway's line and lists what
 //! answers; `--scan <LINE>` does that without asking, for scripts.
 //!
-//! A `.knxkeys` keyring exported next to the project (issue #205) is recorded
-//! as `connection.keyring`, so every bus command finds it without
-//! `--keyring`; `init` prints the `BUSSARD_KEYRING_PASSWORD` reminder, since
-//! the password is never written anywhere.
+//! A `.knxkeys` keyring exported next to the project is merged into the key
+//! store `bussard.keys` by the import (issue #241). Without
+//! `BUSSARD_KEYRING_PASSWORD` no store can be written, so `init` records the
+//! keyring as the deprecated `connection.keyring` instead (issue #205) and
+//! the import prints the command that creates the store.
 //!
 //! The `bussard.toml` content is constructed here by hand (three simple keys)
 //! rather than via `Model::save`, so this command is decoupled from the model's
@@ -130,44 +131,12 @@ fn find_project(dir: &Path) -> Option<std::path::PathBuf> {
     }
 }
 
-/// The one `.knxkeys` keyring in the project's directory, if there is exactly
-/// one. Several are listed and none is picked (the owner names one with
-/// `connection.keyring`).
+/// The one `.knxkeys` keyring in the project's directory, to record as
+/// `connection.keyring` when no key store can be written (no password).
+/// Several are left to the import's message.
 fn find_keyring(project: &Path) -> Option<std::path::PathBuf> {
-    let parent = match project.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
-        _ => std::path::PathBuf::from("."),
-    };
-    let mut found: Vec<std::path::PathBuf> = std::fs::read_dir(&parent)
-        .ok()?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.is_file()
-                && p.extension()
-                    .and_then(|e| e.to_str())
-                    .is_some_and(|e| e.eq_ignore_ascii_case("knxkeys"))
-        })
-        .collect();
-    found.sort();
-    match found.len() {
-        0 => None,
-        1 => {
-            let keyring = found.remove(0);
-            println!("Found the ETS keyring {}.", keyring.display());
-            Some(keyring)
-        }
-        _ => {
-            println!(
-                "Found several ETS keyrings next to the project; set connection.keyring in \
-                 bussard.toml to the current one:"
-            );
-            for p in &found {
-                println!("  {}", p.display());
-            }
-            None
-        }
-    }
+    let mut found = crate::keys_cmd::neighbour_keyrings(project);
+    (found.len() == 1).then(|| found.remove(0))
 }
 
 /// The `connection.keyring` value for `keyring`, as `bussard.toml` in `dir`
@@ -214,10 +183,12 @@ fn run_with(
 
     // 3. Write the skeleton. With a project to import, `groups.toml` is the
     // import's to write, so the import is a fresh one, not a merge. A keyring
-    // exported next to the project is recorded as `connection.keyring`.
+    // exported next to the project goes into the key store (the import does
+    // it); only without the password is it recorded as `connection.keyring`.
     let keyring = first
         .project
         .as_deref()
+        .filter(|_| !crate::keys_cmd::password_available())
         .and_then(find_keyring)
         .map(|path| keyring_setting(dir, &path));
     write_skeleton(
@@ -228,14 +199,9 @@ fn run_with(
     )?;
     if let Some(keyring) = &keyring {
         println!(
-            "Recorded the keyring as connection.keyring = {keyring:?} in {}.",
+            "Recorded the keyring as connection.keyring = {keyring:?} in {} (deprecated; \
+             `bussard keys import` moves it into the key store).",
             dir.join("bussard.toml").display()
-        );
-        println!(
-            "Its password is never stored: set {} before a secured bus command \
-             (export {}=...).",
-            crate::secure_key::KEYRING_PASSWORD_ENV,
-            crate::secure_key::KEYRING_PASSWORD_ENV
         );
     }
 

@@ -89,8 +89,8 @@ fn test_keys_import_show_export_round_trip() -> TestResult {
     assert!(text.contains("1.1.10: tool key"), "{text}");
     assert_no_secrets(&text);
 
-    // Export, then read the export back with `bussard keyring` (signature
-    // verified by the reader).
+    // Export, then import the export into a second store (the reader
+    // verifies its signature) and compare the summaries.
     let out = model.parent().ok_or("no parent")?.join("export.knxkeys");
     let out_s = out.to_string_lossy().to_string();
     let exported = ok(&keys(&model, &["export", &out_s])?)?;
@@ -98,19 +98,19 @@ fn test_keys_import_show_export_round_trip() -> TestResult {
         exported.contains("1 device(s), 1 group key(s), 1 interface(s)"),
         "{exported}"
     );
-    let read = Command::new(env!("CARGO_BIN_EXE_bussard"))
-        .args(["--json", "keyring"])
-        .arg(&out)
-        .env("BUSSARD_KEYRING_PASSWORD", PASSWORD)
-        .output()?;
-    let v: serde_json::Value = serde_json::from_str(&ok(&read)?)?;
-    assert_eq!(v["devices"], serde_json::json!(["1.1.10"]));
+    let second = model.parent().ok_or("no parent")?.join("knx2");
+    std::fs::create_dir_all(&second)?;
+    ok(&keys(&second, &["import", &out_s])?)?;
+    let v: serde_json::Value = serde_json::from_str(&ok(&keys(&second, &["--json", "show"])?)?)?;
+    assert_eq!(v["devices"][0]["address"], "1.1.10");
     assert_eq!(v["group_key_count"], 1);
     assert_eq!(v["has_backbone_key"], true);
+    assert_eq!(v["interfaces"][0]["has_password"], true);
 
     // Refuses to overwrite without --force.
     assert!(!keys(&model, &["export", &out_s])?.status.success());
     ok(&keys(&model, &["export", "--force", &out_s])?)?;
+    std::fs::remove_dir_all(model.parent().ok_or("no parent")?)?;
     Ok(())
 }
 
@@ -128,6 +128,7 @@ fn test_keys_wrong_password_is_refused() -> TestResult {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("wrong keyring password"), "{stderr}");
     assert!(!model.join("bussard.keys").exists());
+    std::fs::remove_dir_all(model.parent().ok_or("no parent")?)?;
     Ok(())
 }
 
@@ -138,5 +139,6 @@ fn test_keys_show_without_a_store_hints_at_import() -> TestResult {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("bussard keys import"), "{stderr}");
+    std::fs::remove_dir_all(model.parent().ok_or("no parent")?)?;
     Ok(())
 }

@@ -17,7 +17,7 @@ Precedence, for every option that has more than one source: the flag, then the e
 
 | Option | Environment | `bussard.toml` | Default | Meaning |
 |---|---|---|---|---|
-| `--keyring <FILE>` | `BUSSARD_KEYRING` | `connection.keyring` | none | An ETS `.knxkeys` keyring: its tunnelling users open the [KNXnet/IP Secure tunnel](#knxnetip-secure-tunnelling), its device entries carry the KNX Data Secure tool keys for management, and its group keys secure and decrypt group telegrams. A relative `connection.keyring` is relative to the model directory; a relative flag or variable is relative to the working directory. The password comes from `BUSSARD_KEYRING_PASSWORD`, never a flag. Only commands that talk to the bus read it; `adopt` and `test` use it for the tunnel only. A keyring from the environment or `bussard.toml` serves the tunnel only when `--tool-key` is given; `--keyring` itself conflicts with `--tool-key`. |
+| `--keyring <FILE>` | `BUSSARD_KEYRING` | `connection.keyring` (deprecated) | the key store `bussard.keys` | The KNX Secure keys a bus command uses: their tunnelling users open the [KNXnet/IP Secure tunnel](#knxnetip-secure-tunnelling), their device entries carry the KNX Data Secure tool keys for management, and their group keys secure and decrypt group telegrams. Precedence (issue #241): an explicit `.knxkeys` file from `--keyring`, then `BUSSARD_KEYRING`; else the key store `bussard.keys` in the model directory (see [`bussard keys`](#bussard-keys-verb)); else `connection.keyring` in `bussard.toml`, which is deprecated, kept for one release for models without a store, and ignored with a warning when a store exists. `--keyring` stays as the explicit-file override (a keyring that is not the model's, a bench keyring). A relative `connection.keyring` is relative to the model directory; a relative flag or variable is relative to the working directory. The password comes from `BUSSARD_KEYRING_PASSWORD`, never a flag. Only commands that talk to the bus read it; `adopt` and `test` use it for the tunnel only. A key source other than `--keyring` serves the tunnel only when `--tool-key` is given; `--keyring` itself conflicts with `--tool-key`. |
 | `--json` | | | text | Machine-readable output: one JSON document, or JSON Lines for `monitor`. Refused by a command that has no JSON output. `apply --json` needs `--line`. |
 | `--allow-remote-gateway` | `BUSSARD_ALLOW_REAL_GATEWAY=1` (exactly `1`) | deliberately none | off | Permit a transmitting command (a write, programming, an armed `viz` or `mcp`) against a non-loopback gateway. Read-only commands ignore it. No other environment variable can enable a transmit. |
 | `--skip-address-check` | | | off | On the commands that open a connection to a device, skip the pre-flight probe that no bus device answers at bussard's own source individual address. See [SAFETY.md](SAFETY.md#source-address-check). |
@@ -45,9 +45,9 @@ The remaining global options:
 
 An interface with KNXnet/IP Secure enabled and no plain tunnel refuses an ordinary connection. bussard then needs a tunnelling user's credentials and opens an authenticated, encrypted session (issue #71 Phase B): X25519 key agreement, the interface proves its device authentication code, bussard proves the user password, and every frame after that travels in a SECURE_WRAPPER.
 
-- **From a keyring (automatic).** A command that takes `--keyring <file.knxkeys>` also uses the keyring's tunnelling users (`Interface Type="Tunneling"` entries, see [`bussard keyring`](#bussard-keyring-file)). bussard asks the gateway for its extended description; when a keyring interface names the gateway's individual address as its host and the gateway advertises KNXnet/IP Secure, the tunnel goes secure as the user whose tunnel address is free. The keyring also carries the interface's device authentication code, so bussard checks the interface's identity before it authenticates. A plain gateway stays on the plain tunnel.
+- **From a keyring (automatic).** A command that takes `--keyring <file.knxkeys>` also uses the keyring's tunnelling users (`Interface Type="Tunneling"` entries, see [`bussard keys show`](#bussard-keys-verb)). The key store `bussard.keys` serves the same way when no file is given. bussard asks the gateway for its extended description; when a keyring interface names the gateway's individual address as its host and the gateway advertises KNXnet/IP Secure, the tunnel goes secure as the user whose tunnel address is free. The keyring also carries the interface's device authentication code, so bussard checks the interface's identity before it authenticates. A plain gateway stays on the plain tunnel.
 - **One keyring, two jobs (issue #189).** The keyring opens the tunnel, and its `Device` entries carry the tool keys. A device the keyring lists is managed over KNX Data Secure with its tool key. A device it does not list is managed in the clear through the secure tunnel, so the plain devices behind a secure-only interface stay reachable. The exception: a device whose model file says `security.activated: true` but that the keyring does not list is refused with `the keyring ... has no tool key for <IA>`, because plain access cannot reach it. This holds for `describe`, `reconstruct`, `plan`, `flash`, `apply`, `commission`, `replace`, `backup`, `restore`, the `--line` walks, and the MCP device tools. `scan`, `assign` and `audit --live` identify devices with the same rule but never refuse: a Data Secure-activated device that answers a plain descriptor read with mask `FFFF` and has no tool key is labelled "Data Secure activated (mask hidden), no tool key in the keyring" (issue #203).
-- **The config default.** `connection.keyring` in [`bussard.toml`](#bussardtoml) names the keyring every bus command uses when `--keyring` is not given (`test` uses it for the tunnel only; `adopt` takes the tool key of a Data Secure device from it too). `BUSSARD_KEYRING` overrides it, and `--keyring` overrides both. The password still comes from `BUSSARD_KEYRING_PASSWORD`.
+- **The key store default.** Without `--keyring` or `BUSSARD_KEYRING`, every bus command uses the key store `bussard.keys` in the model directory (issue #241); a model without one falls back to the deprecated `connection.keyring` in [`bussard.toml`](#bussardtoml). `test` uses it for the tunnel only; `adopt` takes the tool key of a Data Secure device from it too. The password still comes from `BUSSARD_KEYRING_PASSWORD`.
 - **Explicit.** `--secure-user <ID> --secure-password-env <VAR>` on any command always opens a secure session as that user. Without a keyring the interface's identity is not verified (a warning says so).
 - **TCP, or UDP on request (issue #197).** bussard opens the session over TCP, as ETS does with the Jung interface. When the TCP connect is refused and the interface's extended search advertises KNXnet/IP Secure, the interface may serve secure sessions over UDP only; bussard does not switch on its own but fails with a message that names `--secure-transport udp`. With that flag the session runs over UDP: one UDP socket for the session and the tunnel, TUNNELING_ACKs inside the wrappers, the real local endpoint in every HPAI, every frame to the control endpoint. The UDP path follows the KNX specification and is verified against knx-sim and the testkit mock only; no real interface has been tested over UDP.
 - **Neither.** Against a secure-only interface the command fails at once, with no retries: `interface <gateway> requires KNXnet/IP Secure (secure tunnelling only) and no tunnelling credentials were given ...`. `bussard init --gateway <ip>` prints `KNXnet/IP Secure: tunnelling is secure-only` for such an interface.
@@ -246,24 +246,6 @@ The `--json` output has these fields:
 
 The text output prints the same split as `KNX Secure (model):` and `KNX Secure (this run):` lines. No key material appears in either form.
 
-### `bussard keyring <FILE>`
-
-Inspect an ETS KNX Secure keyring export (`.knxkeys`): print what it carries — the device individual addresses, the tunnel/management interface addresses, whether a backbone key is present, how many group keys there are, the KNXnet/IP Secure tunnelling users (user id, tunnel address, interface, and whether the password and the device authentication code are present) and the devices with KNXnet/IP Secure device credentials. **No key material or password is ever printed**, in text or JSON (`tunnelling_users`, `ip_secure_devices`).
-
-```
-  KNXnet/IP Secure tunnelling users (2):
-    user 2 -> 1.1.22 (host 1.1.200)
-    user 3 -> 1.1.23 (host 1.1.200)
-```
-
-A user line notes a missing password or device authentication code; a keyring without tunnelling users prints `KNXnet/IP Secure tunnelling users: none`.
-
-| Flag / arg | Default | Meaning |
-|---|---|---|
-| `<FILE>` | | The `.knxkeys` file to inspect. |
-
-The keyring password comes from `BUSSARD_KEYRING_PASSWORD` and is deliberately **not** a flag, so it never lands in shell history or a process listing. Reading a keyring changes nothing on the bus; to program or read back a Data Secure device, pass the same file to `flash`, `apply`, `describe`, `plan` or `reconstruct` with `--keyring`. See [SAFETY.md](SAFETY.md#known-limitations).
-
 ### `bussard keys <VERB>`
 
 Manage the KNX Secure key store, `bussard.keys` next to `bussard.lock` (issue #241). The store is bussard's own copy of the key material: the backbone key, the KNXnet/IP Secure interfaces and their credentials, per-device tool keys, serial numbers, factory keys (FDSK), management passwords and authentication codes, and the group keys. It is encrypted with the password in `BUSSARD_KEYRING_PASSWORD` by the same scheme as an ETS `.knxkeys` export, and meant to be committed with the model (see [model-format.md](model-format.md#bussardkeys) and [SAFETY.md](SAFETY.md#the-key-store)). **No key material or password is ever printed**, in text or JSON.
@@ -278,7 +260,7 @@ Manage the KNX Secure key store, `bussard.keys` next to `bussard.lock` (issue #2
 | `export <FILE>` | | The `.knxkeys` file to write. |
 | `export --force` | off | Overwrite FILE if it exists. |
 
-The store and every export it reads or writes share one password, `BUSSARD_KEYRING_PASSWORD`; there is no flag for it. The bus commands still read the keyring given by `--keyring`, `BUSSARD_KEYRING` or `connection.keyring`; switching them to the store is the next step of #241. The model's `.gitignore` (from `init`) lists `*.knxkeys`, so an export dropped into the model directory is not committed by accident.
+The store and every export it reads or writes share one password, `BUSSARD_KEYRING_PASSWORD`; there is no flag for it. Every bus command reads the store unless `--keyring` or `BUSSARD_KEYRING` names an explicit file (see [Global options](#global-options)), and `validate` checks the model against it. `import` and `init` merge the one `.knxkeys` exported next to the project into the store (with the password set; without it they print the `keys import` command, and `init` records the deprecated `connection.keyring` instead). `keys show` replaces the former `bussard keyring` subcommand. The model's `.gitignore` (from `init`) lists `*.knxkeys`, so an export dropped into the model directory is not committed by accident.
 
 ### `bussard import-product [FILE]`
 
@@ -582,7 +564,7 @@ Put a new device of the same product in place of a dead one. The steps:
 
 Validate the model and report diagnostics (see [the diagnostics table](#validation-diagnostics)). Exits non-zero on errors.
 
-`validate` also checks the configured keyring, `BUSSARD_KEYRING` or else `connection.keyring` (E027 to I031 below). It decrypts the keyring once with `BUSSARD_KEYRING_PASSWORD`; without the password it prints one info line (I031) and skips the key checks. It stays offline and never prompts.
+`validate` also checks the model's keys (E027 to I031 below): the explicit file `BUSSARD_KEYRING` names, else the key store `bussard.keys`, else the deprecated `connection.keyring`. It decrypts the keyring once with `BUSSARD_KEYRING_PASSWORD`; without the password it prints one info line (I031) and skips the key checks. It stays offline and never prompts.
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -806,8 +788,8 @@ Serve the network-visualization website: an HTTP server that renders the model a
 | `BUSSARD_PROJECT_PASSWORD` | Password for a protected `.knxproj` when `--password` is not given. Keep it in an untracked `.env`, never in the repo. |
 | `BUSSARD_DIR` | The model directory when `--dir` is not given; beats [discovery](#global-options). |
 | `BUSSARD_GATEWAY` | The gateway `host[:port]` when `--gateway` is not given; beats `connection.gateway` in `bussard.toml`. It only selects a gateway: a non-loopback one still needs `--allow-remote-gateway` for a write. |
-| `BUSSARD_KEYRING` | The `.knxkeys` keyring when `--keyring` is not given; beats `connection.keyring` in `bussard.toml`. The password still comes from `BUSSARD_KEYRING_PASSWORD`. |
-| `BUSSARD_KEYRING_PASSWORD` | Password for a `.knxkeys` keyring read by `bussard keyring`, passed with `--keyring`, named by `BUSSARD_KEYRING`, or named by `connection.keyring` in `bussard.toml`, and for the key store `bussard.keys` and the exports `bussard keys` reads and writes. There is deliberately no flag for it, so it never lands in shell history or a process listing. |
+| `BUSSARD_KEYRING` | An explicit `.knxkeys` keyring when `--keyring` is not given; beats the key store `bussard.keys` and `connection.keyring` in `bussard.toml`. The password still comes from `BUSSARD_KEYRING_PASSWORD`. |
+| `BUSSARD_KEYRING_PASSWORD` | Password for the key store `bussard.keys` and for every `.knxkeys` export: passed with `--keyring`, named by `BUSSARD_KEYRING` or `connection.keyring`, found next to the project by `import`/`init`, or read and written by `bussard keys`. There is deliberately no flag for it, so it never lands in shell history or a process listing. |
 | *(the `--secure-password-env` variable)* | The KNXnet/IP Secure tunnelling user's password for `--secure-user`. You choose the variable's name; bussard reads only that variable. |
 | `BUSSARD_ALLOW_REAL_GATEWAY` | Set to `1` to permit a write command against a non-loopback (real) gateway, equivalent to `--allow-remote-gateway`. Loopback gateways never need it. |
 | `RUST_LOG` | Log filter (e.g. `debug`, `bussard_transport=trace`). Overrides `-v`/`--verbose` when set. |
@@ -1152,12 +1134,12 @@ One file per application program, generated from the archives in `products/` by 
 | E032 | a device's lock entry names a product (`product_sha256`) the lock has no `[[product]]` entry for | warning |
 | E033 | a `[[product]]` entry names an archive (`file`) the model directory does not hold; the message names the recovery command for its origin | warning |
 | E027 | the configured keyring (`BUSSARD_KEYRING` or `connection.keyring`) points at a file that does not exist | error |
-| W028 | a device file says `security.activated = true`, but no keyring is configured, the keyring is missing, or it has no tool key for the device; re-export the keyring from ETS | warning |
+| W028 | a device file says `security.activated = true`, but there is no key store or keyring, the keyring is missing, or it has no tool key for the device; re-export the keyring from ETS and `bussard keys import` it | warning |
 | W029 | a group's `secure` flag disagrees with the keyring: marked secure without a group key, or keyed in the keyring but not marked secure | warning |
 | W030 | the keyring does not read or decrypt; the key checks are skipped | warning |
 | I031 | `BUSSARD_KEYRING_PASSWORD` is not set; the key checks are skipped | info |
 
-`validate` runs E027 to I031 with the keyring `BUSSARD_KEYRING` or `connection.keyring` names; `knx_validate` runs them with the server's keyring. The rules see addresses only, never a key.
+`validate` runs E027 to I031 with `BUSSARD_KEYRING`, else the key store `bussard.keys`, else `connection.keyring` (the same codes for a store and an export); `knx_validate` runs them with the server's keyring. The rules see addresses only, never a key.
 
 These rules are opt-in and run only when `bussard.toml` carries a [`[lint]` table](#bussardtoml):
 

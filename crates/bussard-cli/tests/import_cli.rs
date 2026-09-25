@@ -348,6 +348,9 @@ fn test_init_records_the_keyring_next_to_the_project() -> TestResult {
     assert!(out.status.success(), "{stdout}\n{stderr}");
     assert!(stdout.contains("Found the ETS keyring"), "{stdout}");
     assert!(stdout.contains("BUSSARD_KEYRING_PASSWORD"), "{stdout}");
+    assert!(stdout.contains("bussard keys import"), "{stdout}");
+    // Without the password no store can be written.
+    assert!(!dir.join("bussard.keys").exists());
     // The recorded path resolves to the keyring (compared as paths, not
     // strings, so the check holds on Windows too).
     let config = bussard_model::load_config(&dir)?;
@@ -385,6 +388,84 @@ fn test_init_records_the_keyring_next_to_the_project() -> TestResult {
     assert!(!out.status.success(), "{stdout}");
     assert!(stdout.contains("error[E027]"), "{stdout}");
     assert!(stdout.contains("Site.knxkeys"), "{stdout}");
+    std::fs::remove_dir_all(&tmp)?;
+    Ok(())
+}
+
+/// Issue #241 item 2: with the password set, `init` (through its import)
+/// merges the `.knxkeys` next to the project into `bussard.keys` and records
+/// no `connection.keyring`; a re-import with a newer export merges again.
+#[test]
+fn test_init_and_import_create_the_key_store_from_a_neighbouring_keyring() -> TestResult {
+    let tmp = tmp("init-keystore")?;
+    let project = tmp.join("project.json");
+    std::fs::copy(fixture(), &project)?;
+    let synthetic = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../knx-sim/examples/secure/synthetic.knxkeys");
+    std::fs::copy(&synthetic, tmp.join("Site.knxkeys"))?;
+    let dir = tmp.join("knx");
+    let password = [("BUSSARD_KEYRING_PASSWORD", "synthetic-keyring-pw")];
+    let out = bussard(
+        &[
+            "init",
+            project.to_str().ok_or("path")?,
+            "--dir",
+            dir.to_str().ok_or("path")?,
+            "--routing",
+            "--no-download",
+        ],
+        &password,
+    )?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stdout}\n{stderr}");
+    assert!(stdout.contains("Imported the ETS keyring"), "{stdout}");
+    assert!(stdout.contains("created"), "{stdout}");
+    assert_eq!(
+        stdout.matches("BUSSARD_KEYRING_PASSWORD").count(),
+        1,
+        "one password reminder: {stdout}"
+    );
+    assert!(dir.join("bussard.keys").exists());
+    let config = bussard_model::load_config(&dir)?;
+    assert!(
+        config.connection.keyring_path(&dir).is_none(),
+        "no connection.keyring with a store"
+    );
+    let gitignore = std::fs::read_to_string(dir.join(".gitignore"))?;
+    assert!(gitignore.contains("*.knxkeys"), "{gitignore}");
+
+    // A plain re-import finds the same export: nothing changes.
+    let out = bussard(
+        &[
+            "import",
+            "--from-json",
+            project.to_str().ok_or("path")?,
+            "--dir",
+            dir.to_str().ok_or("path")?,
+            "--no-download",
+        ],
+        &password,
+    )?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("already up to date"), "{stdout}");
+    assert!(!dir.join("bussard.keys.bak").exists());
+
+    // A wrong password warns and leaves the import (and the store) alone.
+    let out = bussard(
+        &[
+            "import",
+            "--from-json",
+            project.to_str().ok_or("path")?,
+            "--dir",
+            dir.to_str().ok_or("path")?,
+            "--no-download",
+        ],
+        &[("BUSSARD_KEYRING_PASSWORD", "wrong")],
+    )?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(stderr.contains("was not imported"), "{stderr}");
     std::fs::remove_dir_all(&tmp)?;
     Ok(())
 }

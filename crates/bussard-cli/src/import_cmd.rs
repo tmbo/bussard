@@ -9,6 +9,9 @@
 //! locations, DPTs, `protected:` flags), **reporting** any hand-authored field
 //! the fresh import disagrees with rather than overwriting it. See
 //! [`bussard_model::merge`].
+//!
+//! The one `.knxkeys` exported next to the project is merged into the key
+//! store `bussard.keys` (issue #241, [`crate::keys_cmd::import_neighbour`]).
 
 use std::io::IsTerminal;
 use std::path::Path;
@@ -60,7 +63,9 @@ pub fn run_knxproj(
         Err(e) => return Err(e.into()),
     };
 
-    write_model(model, dir, choice, "project", Some(consent), Some(path))
+    let code = write_model(model, dir, choice, "project", Some(consent), Some(path))?;
+    crate::keys_cmd::import_neighbour(path, dir);
+    Ok(code)
 }
 
 /// Runs `bussard import --from-json`.
@@ -71,7 +76,9 @@ pub fn run_json(
     consent: crate::product_fetch::Consent,
 ) -> anyhow::Result<ExitCode> {
     let model = bussard_project::import_from_json(path)?;
-    write_model(model, dir, choice, "project", Some(consent), None)
+    let code = write_model(model, dir, choice, "project", Some(consent), None)?;
+    crate::keys_cmd::import_neighbour(path, dir);
+    Ok(code)
 }
 
 /// Writes the freshly-imported `model` to `dir`.
