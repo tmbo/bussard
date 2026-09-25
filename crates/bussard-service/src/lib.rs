@@ -27,12 +27,15 @@
 //!   ([`BusService::read_group`]) and the sealing behind the secured write.
 //! - [`ModelHandle`]: a shared model that reloads itself when the files on disk
 //!   change, used by the long-lived MCP and viz servers.
+//! - [`adopt`]: what `bussard adopt` records for a KNX Data Secure-activated
+//!   device (links, `secure` flags, the security intent and lock facts).
 //! - [`describe`]: the interface-object walk and the PID / object-type name
 //!   tables shared by `bussard describe` and `knx_describe_device`.
 //!
 //! The crate never prints. Terminal prompts, JSON shapes and HTTP status codes
 //! stay with the surfaces.
 
+pub mod adopt;
 pub mod bus;
 pub mod describe;
 pub mod error;

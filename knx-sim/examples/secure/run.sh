@@ -34,6 +34,11 @@
 #   POSITIVE  scan --keyring (issue #203) -> 1.1.10 read secured (mask 07B0,
 #             secure: activated), 1.1.2 labelled activated_no_key (mask FFFF),
 #             the plain 1.1.3 row unchanged
+#   POSITIVE  adopt 1.1.10 (issue #201; a sim restarted with 1.1.10 in
+#             programming mode, commissioned by `flash --keyring`) -> keeps its
+#             address, reads tables, parameters, PID 61 and PID 54 over
+#             A_SecureData into a scratch model, writes nothing; `plan` then
+#             reports no change
 #   POSITIVE  assign 1.1.10 -> 1.1.11 --keyring (issue #203; a sim restarted with
 #             1.1.10 in programming mode) -> verified over A_SecureData with the
 #             old address's keyring entry, keyring re-export hint printed
@@ -575,6 +580,82 @@ unset BUSSARD_KEYRING_PASSWORD
 unset BUSSARD_FLASH_L4_TIMEOUT_MS
 kill "$SIM_PID" 2>/dev/null
 
+# --- adopt a commissioned Data Secure device (issue #201, tier 1) --------------
+# A fresh sim with 1.1.10 in programming mode. `flash --keyring` commissions it
+# the way ETS would (tables, parameters, security object with the PID 61 flag of
+# object 1 and the PID 54 sender 1.1.20). `adopt` then finds it in programming
+# mode, sees the keyring lists it, keeps its address, reads everything back over
+# A_SecureData into a scratch model and writes nothing to the device; `plan`
+# against the scratch model reports no change.
+say "adopt: a commissioned Data Secure device"
+sleep 1
+SIM_LOG="$(mktemp -t knxsimadopt.XXXXXX)"
+KNX_SIM_PROG_MODE="1.1.10" RUST_LOG=${RUST_LOG:-info,knx_sim=debug} \
+  "$SERVE" "$SIM_YAML" >"$SIM_LOG" 2>&1 &
+SIM_PID=$!
+trap 'kill "$SIM_PID" 2>/dev/null; exit 130' INT TERM
+sleep 2
+if ! kill -0 "$SIM_PID" 2>/dev/null; then
+  echo "simulator did not start:"; cat "$SIM_LOG"; exit 1
+fi
+export BUSSARD_KEYRING_PASSWORD="synthetic-keyring-pw"   # SYNTHETIC
+out="$(flash 1.1.10 --keyring "$KEYRING")"
+if grep -q "is Loaded on 1.1.10" <<<"$out"; then
+  ok "adopt setup: 1.1.10 commissioned with --keyring (still in programming mode)"
+else
+  bad "adopt setup: keyring flash of 1.1.10 failed"; tail -8 <<<"$out" | sed 's/^/      /'
+fi
+ADOPT_MODEL="$(mktemp -d -t bussardadopt.XXXXXX)"
+printf '[connection]\ntransport = "tunnel"\ngateway = "%s"\nkeyring = "%s"\n' \
+  "$GATEWAY" "$KEYRING" > "$ADOPT_MODEL/bussard.toml"
+mark=$(log_mark)
+out="$(BUSSARD_ADOPT_ADDRESS=1.1.10 "$BUSSARD" adopt --yes --product "$PRODUCT" \
+  --dir "$ADOPT_MODEL" --gateway "$GATEWAY" </dev/null 2>&1)"
+rc=$?
+if [[ $rc -eq 0 ]] && grep -q "verified (secured): mask 0x07b0" <<<"$out" \
+   && grep -q "1.1.10 already has the address 1.1.10; no address write" <<<"$out"; then
+  ok "adopt 1.1.10: kept its address, verified over A_SecureData"
+else
+  bad "adopt 1.1.10 failed (exit $rc)"; tail -12 <<<"$out" | sed 's/^/      /'
+fi
+if grep -q "secure objects (the device's GO security flags (PID 61)): 1$" <<<"$out" \
+   && grep -q "secured senders (PID 54, kept in the lock): 1.1.20 (sequence 0)" <<<"$out" \
+   && grep -q "secure groups (keyed in the keyring): 1/2/3" <<<"$out"; then
+  ok "adopt read PID 61 (object 1 secured) and PID 54 (sender 1.1.20)"
+else
+  bad "adopt did not report the security object read-back"
+  grep -iE "secure|PID" <<<"$out" | sed 's/^/      /'
+fi
+dev_file="$ADOPT_MODEL/devices/1.1.10.toml"
+if grep -q "activated = true" "$dev_file" 2>/dev/null \
+   && grep -q "secure_commissioning = true" "$dev_file" \
+   && grep -q '"1/2/3"' "$dev_file" \
+   && grep -q 'address = "1.1.20", sequence = 0' "$ADOPT_MODEL/bussard.lock"; then
+  ok "adopt wrote [security] activated, the links and the lock's secure_senders"
+else
+  bad "adopt's model lacks the Data Secure state"; cat "$dev_file" 2>/dev/null | sed 's/^/      /'
+fi
+if log_has "$mark" "SECOBJ ValueRead iot=17/1 pid=61" && log_has "$mark" "SECOBJ ValueRead iot=17/1 pid=54"; then
+  ok "adopt: the sim served the PID 61 and PID 54 reads"
+else
+  bad "adopt: the sim saw no security-object reads"
+fi
+if log_has "$mark" "SECOBJ WriteCon" || log_has "$mark" "SECOBJ FunctionCommand" || log_has "$mark" "REJECTED"; then
+  bad "adopt wrote to the security object or had a frame refused"
+  log_since "$mark" | grep -E "SECOBJ (WriteCon|FunctionCommand)|REJECTED" | head -3 | sed 's/^/      /'
+else
+  ok "adopt: nothing written to the security object, no frame refused"
+fi
+out="$("$BUSSARD" plan 1.1.10 --dir "$ADOPT_MODEL" --gateway "$GATEWAY" </dev/null 2>&1)"
+if grep -q "1.1.10 matches the model; nothing to write" <<<"$out"; then
+  ok "plan 1.1.10 against the adopted model: no change"
+else
+  bad "plan after adopt reports changes"; tail -12 <<<"$out" | sed 's/^/      /'
+fi
+unset BUSSARD_KEYRING_PASSWORD
+rm -rf "$ADOPT_MODEL"
+kill "$SIM_PID" 2>/dev/null
+
 # --- assign a Data Secure device (issue #203) -----------------------------------
 # A fresh sim with 1.1.10 in programming mode. The keyring lists 1.1.10 (its old
 # address) only, so `assign 1.1.11` verifies with that entry's tool key over
@@ -789,5 +870,6 @@ rm -f "$SIM_LOG"
 echo "  KNX Data Secure conformance loop OK: tool-access flash to verified Loaded,"
 echo "  both CCM modes, negatives refused on both sides, plain path unchanged,"
 echo "  secured group read/write/monitor on 1/2/3, PID 54 secured senders,"
+echo "  adopt of a commissioned Data Secure device (read-only, plan clean),"
 echo "  KNXnet/IP Secure tunnelling (keyring and explicit user, secure-only"
 echo "  refusal, wrong password), over UDP (fallback, explicit, idle probe)"

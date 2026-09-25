@@ -106,6 +106,31 @@ impl SecureSenderEntry {
         out[2..].copy_from_slice(&self.sequence.min(MAX_SEQUENCE).to_be_bytes()[2..]);
         out
     }
+
+    /// Parses one 8-octet element as [`encode`](Self::encode) writes it, or
+    /// `None` for a short slice.
+    pub fn decode(element: &[u8]) -> Option<SecureSenderEntry> {
+        let e = element.get(..Self::LEN)?;
+        let mut seq = [0u8; 8];
+        seq[2..].copy_from_slice(&e[2..]);
+        Some(SecureSenderEntry {
+            address: IndividualAddress::from_raw(u16::from_be_bytes([e[0], e[1]])),
+            sequence: u64::from_be_bytes(seq),
+        })
+    }
+}
+
+/// Parses the octets PID 54 answers from element 1 into entries, the inverse
+/// of [`sender_table_bytes`]. A trailing partial element is ignored, and so is
+/// an all-zero element (individual address 0.0.0 never sends).
+pub fn decode_sender_table(bytes: &[u8]) -> Vec<SecureSenderEntry> {
+    bytes
+        .as_chunks::<{ SecureSenderEntry::LEN }>()
+        .0
+        .iter()
+        .filter_map(|element| SecureSenderEntry::decode(element))
+        .filter(|e| e.address.raw() != 0)
+        .collect()
 }
 
 /// The security individual address table as the octets PID 54 receives from
@@ -128,6 +153,9 @@ pub fn sender_table_bytes(entries: &[SecureSenderEntry]) -> Vec<u8> {
 ///   value of the activated 1.1.5, and 0 for 1.1.10, which is only configured
 ///   for Secure (`secure_commissioning`, not `activated`) and whose keyring
 ///   value is a stale project value;
+/// - the device's recorded table (`security.secure_senders` in the lock, what
+///   `bussard adopt` read back from PID 54) adds every sender the links do not
+///   imply, with its recorded sequence;
 /// - `extra` adds more senders with sequence 0 (bussard's own tunnel address
 ///   via `--secure-sender`), unless already listed or equal to `device`.
 ///
@@ -174,6 +202,19 @@ pub fn secured_senders(
                     0
                 };
                 senders.insert(*peer, sequence);
+            }
+        }
+    }
+    // The table the device held when it was adopted (issue #201): a sender
+    // the links above do not imply keeps its recorded sequence, so a download
+    // does not drop a sender the model does not describe.
+    if let Some(recorded) = model
+        .and_then(|m| m.devices.get(&device))
+        .and_then(|d| d.device.security.as_ref())
+    {
+        for sender in &recorded.secure_senders {
+            if sender.address != device {
+                senders.entry(sender.address).or_insert(sender.sequence);
             }
         }
     }
@@ -530,6 +571,86 @@ pub async fn write_go_security_flags<Ch: L4Channel>(
     Ok(())
 }
 
+/// What the security object of an activated device holds, read back over the
+/// secured session (issue #201). Not key material: the key tables (PID 53,
+/// PID 56) are write-only and never read.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SecurityReadback {
+    /// The group-object security flags (PID 61), element 1 first (index 0 is
+    /// group object 1); `None` when the device refused the read.
+    pub go_flags: Option<Vec<u8>>,
+    /// The security individual address table (PID 54); `None` when the device
+    /// refused the read.
+    pub senders: Option<Vec<SecureSenderEntry>>,
+    /// Why a property is missing, one line each (no value octets).
+    pub notes: Vec<String>,
+}
+
+impl SecurityReadback {
+    /// The group objects the device flags secured (a non-zero PID 61 octet),
+    /// ascending; `None` when PID 61 was not read.
+    pub fn secured_objects(&self) -> Option<BTreeSet<u16>> {
+        self.go_flags.as_ref().map(|flags| {
+            flags
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| **f != 0)
+                .filter_map(|(i, _)| u16::try_from(i + 1).ok())
+                .collect()
+        })
+    }
+}
+
+/// Reads the group-object security flags (PID 61) and the security individual
+/// address table (PID 54) of the security object, the read-side twin of
+/// [`program_security_object`]. Read-only: only `A_PropertyExtValue_Read` is
+/// sent, in chunks sized to the negotiated APDU budget (the element counts
+/// first, as the writer does).
+///
+/// Best effort per property: a device that refuses one (count 0, a malformed
+/// answer) leaves that field `None` with a note, and the other is still read.
+/// A transport failure (disconnect, timeout) ends the read with the error.
+///
+/// # Errors
+///
+/// A transport-level management error.
+pub async fn read_security_object<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+) -> Result<SecurityReadback, MgmtError> {
+    let mut readback = SecurityReadback::default();
+    let flags = property_ext::read_property_ext_table(
+        l4,
+        PropertyExtAddress::security(property_ext::PID_GO_SECURITY_FLAGS),
+        1,
+    )
+    .await;
+    match flags {
+        Ok(bytes) => readback.go_flags = Some(bytes),
+        Err(err @ (MgmtError::ServiceRejected { .. } | MgmtError::MalformedResponse { .. })) => {
+            readback
+                .notes
+                .push(format!("GO security flags (PID 61) not read: {err}"));
+        }
+        Err(err) => return Err(err),
+    }
+    let table = property_ext::read_property_ext_table(
+        l4,
+        PropertyExtAddress::security(property_ext::PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE),
+        SecureSenderEntry::LEN,
+    )
+    .await;
+    match table {
+        Ok(bytes) => readback.senders = Some(decode_sender_table(&bytes)),
+        Err(err @ (MgmtError::ServiceRejected { .. } | MgmtError::MalformedResponse { .. })) => {
+            readback.notes.push(format!(
+                "security individual address table (PID 54) not read: {err}"
+            ));
+        }
+        Err(err) => return Err(err),
+    }
+    Ok(readback)
+}
+
 /// Reprograms the whole security object for the address table `addresses`, as
 /// `apply --keyring` does next to the link tables: `Unload`, `StartLoading`,
 /// the IA-table clear and entries, the group key table, the group-object flags,
@@ -871,6 +992,74 @@ mod tests {
         assert_eq!(addrs, vec!["1.0.0", "1.1.16", "1.1.200"]);
         assert!(s.iter().all(|e| e.sequence == 0));
         assert_eq!(sender_table_bytes(&s).len(), 24);
+        Ok(())
+    }
+
+    #[test]
+    fn test_decode_sender_table_inverts_the_writer() -> TestResult {
+        // The confirmed element of 1.1.16 (sender 1.1.5), then a zero element
+        // (unused slot) and a partial trailing element: both are ignored.
+        let mut bytes = vec![0x11, 0x05, 0x00, 0x40, 0x10, 0x2e, 0xa9, 0xce];
+        bytes.extend_from_slice(&[0; 8]);
+        bytes.extend_from_slice(&[0x11, 0x10, 0x00]);
+        let entries = decode_sender_table(&bytes);
+        assert_eq!(
+            entries,
+            vec![SecureSenderEntry {
+                address: ia("1.1.5")?,
+                sequence: 275_149_400_526
+            }]
+        );
+        assert_eq!(sender_table_bytes(&entries), bytes[..8].to_vec());
+        Ok(())
+    }
+
+    #[test]
+    fn test_secured_senders_keeps_the_recorded_table() -> TestResult {
+        let mut model = s3_model()?;
+        // 1.1.5 was adopted with 1.1.16 (derived from the links too) and 1.1.77
+        // (a sender the model does not describe) in its PID 54.
+        let device = model
+            .devices
+            .get_mut(&ia("1.1.5")?)
+            .ok_or("1.1.5 in the model")?;
+        let security = device.device.security.as_mut().ok_or("security")?;
+        security.secure_senders = vec![
+            bussard_model::schema::SecureSender {
+                address: ia("1.1.77")?,
+                sequence: 99,
+            },
+            bussard_model::schema::SecureSender {
+                address: ia("1.1.16")?,
+                sequence: 12,
+            },
+            bussard_model::schema::SecureSender {
+                address: ia("1.1.5")?,
+                sequence: 1,
+            },
+        ];
+        let s = secured_senders(
+            Some(&model),
+            ia("1.1.5")?,
+            &HashMap::new(),
+            &HashMap::new(),
+            &[],
+        );
+        assert_eq!(
+            s,
+            vec![
+                // Derived from the links: the derived sequence wins.
+                SecureSenderEntry {
+                    address: ia("1.1.16")?,
+                    sequence: 0
+                },
+                // Recorded only: kept with its recorded sequence.
+                SecureSenderEntry {
+                    address: ia("1.1.77")?,
+                    sequence: 99
+                },
+            ]
+        );
         Ok(())
     }
 }

@@ -1040,6 +1040,20 @@ test GA between two secured push buttons. bussard derives the table in
 `BUSSARD_SECURE_MODEL` set (and `BUSSARD_SECURE_UNKNOWN_SENDERS=1.1.16` for the
 1.1.5 capture).
 
+**Reading the security object back** `[bussard + knx-sim; the real device is
+INFERRED until the owner's live adopt of 1.1.12, issue #201]`. `bussard adopt`
+of an activated device reads PID 61 and PID 54 with
+`A_PropertyExtValue_Read` on object type 17, instance 1: element 0 (count 1)
+for the element count as 2 octets, then the elements from 1 in chunks of
+`PID_MAX_APDU_LENGTH - 13 - 9` elements (the write chunk size; the response
+carries the same 9-octet overhead as a write-con request), halving a chunk the
+device answers with count 0. A PID 54 element reads back in the layout it is
+written (`[IA:2][sequence:6]`); PID 61 reads one flag octet per group object.
+The key tables (PID 53, PID 56) are never read: knx-sim refuses those reads
+with count 0, as a real device is expected to. Whether a real device serves
+multi-element reads of PID 61 and PID 54 has not been observed yet; the halving
+falls back to single elements if it does not.
+
 ---
 
 ## 12. Test plan

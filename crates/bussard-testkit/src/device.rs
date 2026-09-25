@@ -30,12 +30,13 @@ use crate::consts::{
     A_INDIVIDUAL_ADDRESS_SERIAL_WRITE, A_INDIVIDUAL_ADDRESS_WRITE, A_MEMORY_EXTENDED_READ,
     A_MEMORY_EXTENDED_READ_RESPONSE, A_MEMORY_EXTENDED_WRITE, A_MEMORY_EXTENDED_WRITE_RESPONSE,
     A_MEMORY_READ, A_MEMORY_RESPONSE, A_MEMORY_WRITE, A_PROPERTY_DESCRIPTION_READ,
-    A_PROPERTY_DESCRIPTION_RESPONSE, A_PROPERTY_VALUE_READ, A_PROPERTY_VALUE_RESPONSE,
-    A_PROPERTY_VALUE_WRITE, A_RESTART, APCI_SELECTOR, LE_ADDITIONAL, LE_LOAD_COMPLETED,
-    LE_START_LOADING, LE_UNLOAD, LS_LOADED, LS_LOADING, LS_UNLOADED, OT_ADDRESS_TABLE,
-    OT_ASSOCIATION_TABLE, OT_DEVICE, OT_GROUP_OBJECT_TABLE, PID_IO_LIST, PID_LOAD_STATE_CONTROL,
-    PID_MANUFACTURER_ID, PID_OBJECT_TYPE, PID_ORDER_INFO, PID_PROGMODE, PID_SERIAL_NUMBER,
-    PID_TABLE, PID_TABLE_REFERENCE, SUB_REL_SEGMENT,
+    A_PROPERTY_DESCRIPTION_RESPONSE, A_PROPERTY_EXT_VALUE_READ, A_PROPERTY_EXT_VALUE_RESPONSE,
+    A_PROPERTY_VALUE_READ, A_PROPERTY_VALUE_RESPONSE, A_PROPERTY_VALUE_WRITE, A_RESTART,
+    APCI_SELECTOR, LE_ADDITIONAL, LE_LOAD_COMPLETED, LE_START_LOADING, LE_UNLOAD, LS_LOADED,
+    LS_LOADING, LS_UNLOADED, OT_ADDRESS_TABLE, OT_ASSOCIATION_TABLE, OT_DEVICE,
+    OT_GROUP_OBJECT_TABLE, PID_IO_LIST, PID_LOAD_STATE_CONTROL, PID_MANUFACTURER_ID,
+    PID_OBJECT_TYPE, PID_ORDER_INFO, PID_PROGMODE, PID_SERIAL_NUMBER, PID_TABLE,
+    PID_TABLE_REFERENCE, SUB_REL_SEGMENT,
 };
 
 /// The Data Secure SCF octet of an `S-A_Sync_Req` (tool access).
@@ -201,6 +202,15 @@ pub struct MockDevice {
     /// object index, in property-index order.
     pub descriptions: HashMap<u8, Vec<MockPropertyDescription>>,
     properties: HashMap<(u8, u8), Property>,
+    /// Array properties served to `A_PropertyExtValue_Read`, keyed by
+    /// `(object type, property id)` of instance 1 (the security object of a
+    /// Data Secure device, issue #201).
+    ext_properties: HashMap<(u16, u16), Property>,
+    /// Refuse (answer count 0) an `A_PropertyExtValue_Read` of more elements
+    /// than this, as a device with a smaller read budget would.
+    pub ext_read_limit: Option<u8>,
+    /// Every `A_PropertyExtValue_Read` served, as `(property id, count, start)`.
+    pub ext_reads: Vec<(u16, u8, u16)>,
     hook: Option<Hook>,
     control_hook: Option<ControlHook>,
     data_secure: Option<Arc<Mutex<DataSecureSession>>>,
@@ -307,6 +317,9 @@ impl MockDevice {
             response_delay: None,
             descriptions: HashMap::new(),
             properties: HashMap::new(),
+            ext_properties: HashMap::new(),
+            ext_read_limit: None,
+            ext_reads: Vec::new(),
             hook: None,
             control_hook: None,
             data_secure: None,
@@ -394,6 +407,35 @@ impl MockDevice {
                 writable: false,
             },
         );
+        self
+    }
+
+    /// Serves a read-only array property of instance 1 of `object_type` to
+    /// `A_PropertyExtValue_Read`: `data` holds elements of `elem_size` octets,
+    /// and a start-0 read returns the element count (2 octets). Use it for the
+    /// security object's GO security flags (PID 61) and security individual
+    /// address table (PID 54).
+    pub fn with_property_ext(
+        mut self,
+        object_type: u16,
+        pid: u16,
+        elem_size: usize,
+        data: &[u8],
+    ) -> Self {
+        self.ext_properties.insert(
+            (object_type, pid),
+            Property {
+                elem_size: elem_size.max(1),
+                data: data.to_vec(),
+                writable: false,
+            },
+        );
+        self
+    }
+
+    /// Refuses an `A_PropertyExtValue_Read` of more than `limit` elements.
+    pub fn with_ext_read_limit(mut self, limit: u8) -> Self {
+        self.ext_read_limit = Some(limit);
         self
     }
 
@@ -755,6 +797,7 @@ impl MockDevice {
             A_MEMORY_EXTENDED_READ => self.memory_extended_read(data),
             A_MEMORY_EXTENDED_WRITE => self.memory_extended_write(data),
             A_PROPERTY_VALUE_READ => self.property_read(data),
+            A_PROPERTY_EXT_VALUE_READ => self.property_ext_read(data),
             A_PROPERTY_VALUE_WRITE => self.property_write(data),
             A_PROPERTY_DESCRIPTION_READ => {
                 if let Some(payload) = self.description(data) {
@@ -848,6 +891,48 @@ impl MockDevice {
             A_MEMORY_EXTENDED_WRITE_RESPONSE,
             vec![0x00, data[1], data[2], data[3]],
         )
+    }
+
+    /// `A_PropertyExtValue_Read`: `[type:16][instance:12|pid:12][count][start:16]`,
+    /// answered with the same header, the served count, the start and the
+    /// elements; count 0 refuses (unknown property, a range past the end, or
+    /// more than [`ext_read_limit`](Self::ext_read_limit)).
+    fn property_ext_read(&mut self, data: &[u8]) -> Reaction {
+        let Some(h) = data.get(..8) else {
+            return Reaction::Nak;
+        };
+        let object_type = u16::from_be_bytes([h[0], h[1]]);
+        let packed = (u32::from(h[2]) << 16) | (u32::from(h[3]) << 8) | u32::from(h[4]);
+        let instance = (packed >> 12) as u16;
+        let pid = (packed & 0x0FFF) as u16;
+        let count = h[5];
+        let start = u16::from_be_bytes([h[6], h[7]]);
+        self.ext_reads.push((pid, count, start));
+        let answer = |n: u8, bytes: &[u8]| {
+            let mut out = h[..5].to_vec();
+            out.push(n);
+            out.extend_from_slice(&start.to_be_bytes());
+            out.extend_from_slice(bytes);
+            Reaction::Answer(A_PROPERTY_EXT_VALUE_RESPONSE, out)
+        };
+        let Some(prop) = self.ext_properties.get(&(object_type, pid)) else {
+            return answer(0, &[]);
+        };
+        if instance != 1 || count == 0 {
+            return answer(0, &[]);
+        }
+        let total = prop.data.len() / prop.elem_size;
+        if start == 0 {
+            return answer(1, &(total as u16).to_be_bytes());
+        }
+        let idx = usize::from(start);
+        let last = idx + usize::from(count) - 1;
+        if last > total || self.ext_read_limit.is_some_and(|limit| count > limit) {
+            return answer(0, &[]);
+        }
+        let from = (idx - 1) * prop.elem_size;
+        let bytes = prop.data[from..from + usize::from(count) * prop.elem_size].to_vec();
+        answer(count, &bytes)
     }
 
     fn property_read(&self, data: &[u8]) -> Reaction {

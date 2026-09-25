@@ -515,6 +515,18 @@ pub(crate) fn render_lock(
         if let Some(n) = d.sequence_number {
             out.push_str(&format!("sequence_number = {n}\n"));
         }
+        let senders: Vec<String> = d
+            .secure_senders
+            .iter()
+            .map(|s| {
+                format!(
+                    "address = {}, sequence = {}",
+                    basic_string(&s.address.to_string()),
+                    s.sequence
+                )
+            })
+            .collect();
+        push_array(&mut out, "secure_senders", &senders);
         let channels: Vec<String> = d
             .channels
             .iter()

@@ -23,7 +23,7 @@ use crate::param_model::{
 };
 use crate::schema::{
     Channel, ComObject, Device, DeviceLock, DeviceSecurity, Link, Location, LockedParameter,
-    Product, Spelling,
+    Product, SecureSender, Spelling,
 };
 use crate::toml_io::{self, ParseError};
 
@@ -102,6 +102,8 @@ pub(crate) struct LockDevice {
     #[serde(default)]
     pub has_fdsk_certificate: bool,
     pub sequence_number: Option<u64>,
+    #[serde(default)]
+    pub secure_senders: Vec<SecureSender>,
     #[serde(default)]
     pub channels: Vec<LockChannel>,
     #[serde(default)]
@@ -954,6 +956,7 @@ pub(crate) fn join_device(
         secure_commissioning: intent.secure_commissioning,
         has_fdsk_certificate: lock.is_some_and(|l| l.has_fdsk_certificate),
         sequence_number: lock.and_then(|l| l.sequence_number),
+        secure_senders: lock.map(|l| l.secure_senders.clone()).unwrap_or_default(),
     };
     let security =
         (top.security.is_some() || security != DeviceSecurity::default()).then_some(security);
@@ -1209,6 +1212,7 @@ pub(crate) fn lock_entry(device: &Device) -> Option<LockDevice> {
         secure_capable: security.secure_capable,
         has_fdsk_certificate: security.has_fdsk_certificate,
         sequence_number: security.sequence_number,
+        secure_senders: security.secure_senders.clone(),
         channels,
         module_bases,
         objects,
@@ -1224,6 +1228,7 @@ pub(crate) fn lock_entry(device: &Device) -> Option<LockDevice> {
         && !entry.secure_capable
         && !entry.has_fdsk_certificate
         && entry.sequence_number.is_none()
+        && entry.secure_senders.is_empty()
         && entry.channels.is_empty()
         && entry.module_bases.is_empty()
         && entry.objects.is_empty()

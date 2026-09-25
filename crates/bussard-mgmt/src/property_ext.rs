@@ -506,6 +506,75 @@ pub async fn read_property_ext_element_count<Ch: L4Channel>(
     }
 }
 
+/// The largest element count one `A_PropertyExtValue_Read` asks for when
+/// elements are `element_size` octets: the response carries the same 9-octet
+/// overhead as a write-con request (see [`PROPERTY_EXT_WRITE_OVERHEAD`]), so
+/// the budget is [`max_write_elements`]'s. At least 1, at most 255.
+pub fn max_read_elements<Ch: L4Channel>(l4: &Layer4Connection<Ch>, element_size: usize) -> usize {
+    max_write_elements(l4, element_size)
+}
+
+/// Reads a whole array property of `element_size`-octet elements: the element
+/// count (element 0), then the elements from 1 in chunks sized to the
+/// connection's APDU budget ([`max_read_elements`]).
+///
+/// A chunk the device refuses (count 0) is retried at half the size down to one
+/// element, so a device that serves fewer elements per read than its APDU
+/// budget suggests is still read completely; a single element it refuses ends
+/// the read with [`MgmtError::ServiceRejected`]. An empty property (count 0)
+/// returns no octets. The value octets are never logged or formatted into an
+/// error (the property may be a key table).
+///
+/// # Errors
+///
+/// A refused count or element, a malformed response, or a transport failure.
+pub async fn read_property_ext_table<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    addr: PropertyExtAddress,
+    element_size: usize,
+) -> Result<Vec<u8>> {
+    let count = read_property_ext_element_count(l4, addr).await?;
+    let element_size = element_size.max(1);
+    let mut out = Vec::with_capacity(usize::from(count) * element_size);
+    let mut chunk = max_read_elements(l4, element_size);
+    let mut next: u32 = 1;
+    while next <= u32::from(count) {
+        // `next` is at most `count`, a u16.
+        let start = u16::try_from(next).unwrap_or(u16::MAX);
+        let remaining = usize::from(count - start) + 1;
+        let want = chunk.min(remaining).clamp(1, usize::from(u8::MAX));
+        // `want` is at most 255 by the clamp above.
+        let want_u8 = u8::try_from(want).unwrap_or(u8::MAX);
+        match read_property_ext(l4, addr, want_u8, start).await {
+            Ok(resp) => {
+                let got = usize::from(resp.count).min(want);
+                let octets = got * element_size;
+                if got == 0 || resp.data.len() < octets {
+                    return Err(malformed(
+                        l4.target(),
+                        format!(
+                            "{addr} start {start}: {} value octet(s) for {got} element(s) of \
+                             {element_size}",
+                            resp.data.len()
+                        ),
+                    ));
+                }
+                out.extend_from_slice(&resp.data[..octets]);
+                // `got` is at most 255.
+                next += u32::try_from(got).unwrap_or(u32::from(u8::MAX));
+            }
+            Err(MgmtError::ServiceRejected { .. }) if want > 1 => {
+                chunk = want / 2;
+                tracing::debug!(
+                    "{addr} refused a {want}-element read at {start}; retrying with {chunk}"
+                );
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(out)
+}
+
 /// Writes `count` elements from `start` with `A_PropertyExtValue_WriteCon` and
 /// checks the device's confirmation: the echoed header, count and start, and a
 /// zero return code. A non-zero return code is [`MgmtError::ServiceRejected`].

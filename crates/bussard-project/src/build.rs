@@ -430,6 +430,9 @@ pub fn build_model(
                 secure_commissioning: raw_dev.has_tool_key,
                 has_fdsk_certificate: raw_dev.has_device_certificate,
                 sequence_number: raw_dev.secure_sequence_number,
+                // The project export carries no read-back table; PID 54 is
+                // derived from the links at download time.
+                secure_senders: Vec::new(),
             })
         } else {
             None
