@@ -1,4 +1,4 @@
 # Changes to the public-facing texts need the owner's review (ruleset: require code owner review).
-/README.md            @tmbo
-/docs/                @tmbo
-/website/index.html   @tmbo
+README.md            @tmbo
+docs/                @tmbo
+website/index.html   @tmbo
