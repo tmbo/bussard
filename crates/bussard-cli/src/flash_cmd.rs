@@ -584,14 +584,19 @@ pub fn run(
         &restart_started,
     ));
     if output.verbose > 0 {
+        let readiness = outcome
+            .as_ref()
+            .map(|o| o.reboot_readiness.as_slice())
+            .unwrap_or_default();
         eprintln!(
-            "{}",
+            "{}{}",
             phase_timings(
                 preflight_elapsed,
                 download_started,
                 restart_started.get(),
                 std::time::Instant::now()
-            )
+            ),
+            readiness_summary(&plan.identity.id, readiness)
         );
     }
 
@@ -1517,6 +1522,32 @@ fn phase_timings(
     }
 }
 
+/// The readiness part of the `flash -v` timing line (issue #212): per restart
+/// the device confirmed, the time from its `A_Restart_Response` to the first
+/// answered readiness probe and the process time it reported, keyed by the
+/// application id so the waits can be tuned per product. Empty when the flash
+/// confirmed no restart.
+fn readiness_summary(app_id: &str, readiness: &[bussard_download::RebootReadiness]) -> String {
+    if readiness.is_empty() {
+        return String::new();
+    }
+    let parts: Vec<String> = readiness
+        .iter()
+        .map(|r| {
+            let ready = r.ready_after.map_or("no probe answered".to_string(), |d| {
+                format!("{:.1} s", d.as_secs_f64())
+            });
+            format!(
+                "{} {} (process time {} s)",
+                r.kind,
+                ready,
+                r.process_time.as_secs()
+            )
+        })
+        .collect();
+    format!("; readiness {app_id}: {}", parts.join(", "))
+}
+
 /// Prints the parameter-level plan: what changes, in the vendor's own words.
 fn print_param_plan(params: &ParamPlan) {
     if let Some(note) = &params.note {
@@ -2175,6 +2206,30 @@ mod tests {
             resident: Some("M-0083 A-0007 v35".to_string()),
             objects: vec!["object 3 (application program)".to_string()],
         }
+    }
+
+    #[test]
+    fn test_readiness_summary_names_each_confirmed_restart() {
+        use bussard_download::{RebootReadiness, RestartKind};
+        use std::time::Duration;
+        assert_eq!(readiness_summary("M-1_A-1", &[]), "");
+        let readiness = [
+            RebootReadiness {
+                kind: RestartKind::FactoryReset,
+                process_time: Duration::from_secs(8),
+                ready_after: Some(Duration::from_millis(3050)),
+            },
+            RebootReadiness {
+                kind: RestartKind::Restart,
+                process_time: Duration::ZERO,
+                ready_after: None,
+            },
+        ];
+        assert_eq!(
+            readiness_summary("M-1_A-1", &readiness),
+            "; readiness M-1_A-1: factory reset 3.0 s (process time 8 s), \
+             restart no probe answered (process time 0 s)"
+        );
     }
 
     #[test]

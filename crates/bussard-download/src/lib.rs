@@ -66,9 +66,10 @@ pub use compute_sys7::{
 };
 pub use flash::{
     AppIdentity, Connector, DeviceFacts, FlashOptions, FlashOutcome, FlashPlan, FlashStep,
-    ImageKind, ImageRef, PartialPlanError, PlanError, Progress, Session, SingleConnector,
-    Sys7Context, discover_application_object, flash, plan_flash, plan_flash_sys7_with_hawk,
-    plan_flash_with_object_flags, same_program, select_application, sys7_profile_from_hawk, trace,
+    ImageKind, ImageRef, PartialPlanError, PlanError, Progress, RebootReadiness, RestartKind,
+    Session, SingleConnector, Sys7Context, discover_application_object, flash, plan_flash,
+    plan_flash_sys7_with_hawk, plan_flash_with_object_flags, same_program, select_application,
+    sys7_profile_from_hawk, trace,
 };
 pub use param_decode::{DecodedParameters, decode_parameters};
 pub use param_plan::{

@@ -152,7 +152,10 @@ records `replaced: <date>` in the device file.
 **`flash --product <FILE> <ADDRESS>`** downloads an application program from
 vendor product data (the ETS-free application download). It runs a pre-flight
 plan, then writes, then verifies the application reads back as `Loaded` and
-spot-checks written segments. A flash takes **no backup**, because a
+spot-checks written segments. Each load-state change (unload, open, segment
+allocation, completion) is confirmed by the state the device returns in its
+answer to the write, as ETS does; when that answer carries no state octet or
+not the expected state, `flash` reads the state back instead (issue #211). A flash takes **no backup**, because a
 factory-fresh device has no prior application to save. The command states this
 plainly before it writes:
 
@@ -252,15 +255,27 @@ factory reset, a load procedure's master reset, the terminal restart before the
 post-restart check), the device can answer at the transport layer before its
 security layer is ready, and then drops the first S-A_Sync_Req without an
 answer (issue #166, seen on 1.1.12). `flash` waits like ETS instead: it probes
-the rebooted device with a plain `A_DeviceDescriptor_Read`, backing off 1, 2,
-4 and then 8 s between probes for up to 30 s (ETS's capture shows the device
-back about 14 s after the reset; a probe that answers earlier ends the wait),
-keeps that connection and sends the Sync_Req on it. A Sync_Req the device
+the rebooted device with a plain `A_DeviceDescriptor_Read` every 500 ms for up
+to 30 s (ETS's capture shows the device back about 14 s after the reset; a
+probe that answers earlier ends the wait), keeps that connection and sends the
+Sync_Req on it. A Sync_Req the device
 acknowledges but does not answer is repeated on the same connection, up to
 five attempts with a 1, 2, 4, 8 s backoff after a restart and three attempts
 (1, 2 s) on any other secured connection, before the flash stops with "did not
 answer the Data Secure sync request". Plain devices keep the shorter reboot
-poll and see no extra frames. If the flash still stops right after the factory
+poll and see no extra frames.
+
+How long `flash` waits after a restart (issue #212): after a restart the
+device confirmed (the factory reset, the terminal confirmed restart) it waits
+the process time the device reported, never less, and probes from 0.5 s after
+that; after a bare `A_Restart` it stays quiet for 1.5 s first. A probe waits
+500 ms for the device's acknowledgement and then up to 2 s for its answer,
+because 1.1.5 answered 1.3 to 1.9 s late while it sent its power-up
+telegrams. A probe the interface confirms negatively (`L_Data.con` with the
+error bit) counts as "not up yet", never as absent: the same device answered
+such a probe 1.3 s later. After the factory reset `flash` also probes from
++3 s, only to measure when the device answers; `flash -v` prints that
+readiness per restart on its timing line. If the flash still stops right after the factory
 reset, the device is left unloaded: re-run the same `flash`.
 
 Activation itself (turning Data Secure on, writing the tool key and the

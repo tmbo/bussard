@@ -2412,16 +2412,14 @@ async fn run_parity_flash(
 async fn test_flash_sys7_property_reads_state_only_as_the_verdict()
 -> Result<(), Box<dyn std::error::Error>> {
     // The Jung 0705 captures never read PID_LOAD_STATE_CONTROL back: the answer
-    // to each PID 5 write carries the state. bussard reads it once per LSM after
-    // LoadCompleted (the verdict) and once per LSM after the terminal restart
-    // (the persisted-load verify): 3 + 3, where every event used to add one.
+    // to each PID 5 write carries the state, `01` (Loaded) after LoadCompleted
+    // too (issue #211). bussard reads it once per LSM after the terminal
+    // restart (the persisted-load verify): 3, where every event used to add
+    // one and LoadCompleted another (3 + 3 before #211).
     let (outcome, state) = run_parity_flash(LsmMode::Property, 0x00).await?;
     assert!(outcome.ok(), "flash should reach Loaded: {outcome:?}");
     let s = lock(&state);
-    assert_eq!(
-        s.lsm_state_reads, 6,
-        "LoadCompleted verdicts + post-restart verify"
-    );
+    assert_eq!(s.lsm_state_reads, 3, "post-restart verify only");
     Ok(())
 }
 

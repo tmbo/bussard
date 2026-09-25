@@ -83,6 +83,13 @@ pub enum Step {
     /// Wait this long before the next step. The gateway task sleeps inline, as
     /// a slow device would hold up its interface.
     Pause(Duration),
+    /// Emit these steps this long from now, without holding up the gateway:
+    /// a device that answers late while the interface keeps serving (issue
+    /// #212, 1.1.5 answered its readiness probes 1.4-1.9 s late while the tool
+    /// had moved on). The frames are built now (a [`Step::Data`] takes its
+    /// sequence number at once) and pushed when the delay is up; a nested
+    /// [`Step::Pause`] or [`Step::After`] is ignored.
+    After(Duration, Vec<Step>),
 }
 
 /// Where `A_Memory_Write` / `A_MemoryExtended_Write` may land.

@@ -275,10 +275,12 @@ read-compare-writes it instead (section 4.2 amendment).
   on the order). The connection drains the echoes, and `read_memory` skips a
   late echo whose address is not the one it asked for.
 - **State read-backs follow the realisation.** On the property realisation
-  (0705) the state comes from each PID 5 write's answer, as for ETS; bussard
-  adds one separate read per LSM after `LoadCompleted` (the verdict) and the
-  post-restart verify reads. On the memory-mapped realisation (0701) the
-  status octet is read after every event, as ETS does.
+  (0705) the state comes from each PID 5 write's answer, as for ETS, including
+  the verdict after `LoadCompleted` when the answer is `01` (Loaded, issue
+  #211); an answer without a state octet, or with another state after
+  `LoadCompleted`, is confirmed by a separate read. The post-restart verify
+  reads each LSM once. On the memory-mapped realisation (0701) the status
+  octet is read after every event, as ETS does.
 - **One connection.** ETS holds a single L4 connection for the whole
   procedure. bussard cycles the connection proactively only for KNX Virtual
   (manufacturer `0x00FA`, the device class that drops long connections,

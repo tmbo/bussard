@@ -210,6 +210,7 @@ pub(super) async fn verify_outcome<C: Connector>(
         object_states,
         spot_checks_match,
         warnings: Vec::new(),
+        reboot_readiness: Vec::new(),
     })
 }
 

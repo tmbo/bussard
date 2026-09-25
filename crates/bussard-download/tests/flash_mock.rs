@@ -188,6 +188,37 @@ struct RestartOutage {
     duration: Duration,
 }
 
+/// How a device comes back after a restart it confirmed (issue #212),
+/// measured from its `A_Restart_Response`.
+#[derive(Clone, Copy, Debug)]
+struct RebootProfile {
+    /// Silent (and negatively confirmed by the interface) for this long.
+    silent: Duration,
+    /// Then answering every request `slow_answer` late until this point.
+    slow_until: Duration,
+    /// How late an answer comes during the slow phase.
+    slow_answer: Duration,
+}
+
+impl RebootProfile {
+    /// Ready at `ready`, prompt from then on.
+    fn ready_at(ready: Duration) -> RebootProfile {
+        RebootProfile {
+            silent: ready,
+            slow_until: ready,
+            slow_answer: Duration::ZERO,
+        }
+    }
+}
+
+/// Where the device is in its reboot, per [`DeviceState::reboot`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RebootPhase {
+    Silent,
+    Slow(Duration),
+    Up,
+}
+
 /// Arms `s.restart_outage` when it waits for a restart of `kind`.
 fn arm_restart_outage(s: &mut DeviceState, kind: RestartKind) {
     if s.restart_outage.is_some_and(|o| o.kind == kind) {
@@ -395,6 +426,33 @@ struct DeviceState {
     booting_until: Option<std::time::Instant>,
     /// Negative `L_Data.con`s the gateway reported for the booting device.
     negative_cons: usize,
+    /// How the device comes back after its confirmed restart (erase code 1)
+    /// and after its factory reset (erase code 7); `None` answers at once.
+    restart_profile: Option<RebootProfile>,
+    factory_profile: Option<RebootProfile>,
+    /// The process time the factory reset answers (seconds).
+    factory_process_time: u16,
+    /// The profile of the restart the device is coming back from, and when it
+    /// accepted it.
+    reboot: Option<(std::time::Instant, RebootProfile)>,
+    /// Every answered request is delayed by `fixed + per_octet * request
+    /// payload octets`, without holding up the gateway: the ~200 ms plus
+    /// ~1.7 ms per octet request cycle of the 2026-09-24 Data Secure flashes
+    /// (issue #210).
+    latency: Option<(Duration, Duration)>,
+    /// Numbered requests answered, across the whole flash.
+    answered_requests: usize,
+    /// Per restart with a profile: from its acceptance to the first answer
+    /// the device sent afterwards (as the tool receives it).
+    reboot_answers: Vec<Duration>,
+    /// Whether the current [`DeviceState::reboot`] was answered yet.
+    reboot_answered: bool,
+    /// Per restart with a profile: from its acceptance to the first request
+    /// other than a readiness probe (the tool moved on: Sync_Req, authorize
+    /// or the first read).
+    reboot_proceeded: Vec<Duration>,
+    /// Whether the tool moved on from the current reboot yet.
+    reboot_moved_on: bool,
     /// Count of factory resets (master-reset `A_Restart`, erase code 7) seen.
     factory_resets_seen: usize,
     /// `control_writes` at the moment the first factory reset arrived, so a test
@@ -586,7 +644,13 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
         s.last_segment_base = 0;
         s.last_segment_size = 0;
         s.next_segment_base = 0x4000;
-        return Reaction::Answer(A_RESTART_RESPONSE, vec![0x00, 0x00, 0x00]);
+        s.reboot = s
+            .factory_profile
+            .map(|profile| (std::time::Instant::now(), profile));
+        s.reboot_answered = false;
+        s.reboot_moved_on = false;
+        let [hi, lo] = s.factory_process_time.to_be_bytes();
+        return Reaction::Answer(A_RESTART_RESPONSE, vec![0x00, hi, lo]);
     }
     // Erase code 1 (confirmed restart, the ETS close of a System B download):
     // confirm and reboot, erasing nothing.
@@ -595,6 +659,11 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
         s.l4_dead_after_master_reset = true;
         s.sync_drops_pending = s.sync_drops_after_restart;
         arm_restart_outage(&mut s, RestartKind::ConfirmedRestart);
+        s.reboot = s
+            .restart_profile
+            .map(|profile| (std::time::Instant::now(), profile));
+        s.reboot_answered = false;
+        s.reboot_moved_on = false;
         return Reaction::Answer(A_RESTART_RESPONSE, vec![0x00, 0x00, 0x00]);
     }
     if req_apci == A_RESTART_MASTER_RESET {
@@ -1330,6 +1399,7 @@ fn on_numbered(
         // Still booting (issue #45): nothing answers yet.
         if s.booting_until
             .is_some_and(|until| std::time::Instant::now() < until)
+            || reboot_phase(&s) == RebootPhase::Silent
         {
             return Tk::Silent;
         }
@@ -1364,6 +1434,18 @@ fn on_numbered(
             }
             s.write_phase_exchanges = Some(seen + 1);
         }
+    }
+    // Issue #212 measurement: the first request after a restart that is not
+    // a readiness probe marks when the tool moved on.
+    if wire_apci & APCI_SELECTOR != A_DEVICE_DESCRIPTOR_READ_SEL
+        && let Ok(mut s) = state.lock()
+        && let Some((accepted, _)) = s.reboot
+        && !s.reboot_moved_on
+        && reboot_phase(&s) != RebootPhase::Silent
+    {
+        s.reboot_moved_on = true;
+        let moved_on = accepted.elapsed();
+        s.reboot_proceeded.push(moved_on);
     }
     // KNX Data Secure S-A_Sync (spec §6.3): an activated
     // device answers the tool's Sync_Req with a Sync_Res, as
@@ -1448,6 +1530,45 @@ fn on_numbered(
     }
 }
 
+/// Delays an answer by the device's request latency ([`DeviceState::latency`])
+/// and, while it comes back from a restart slowly, by the profile's late
+/// answer ([`RebootPhase::Slow`]), without holding up the gateway.
+fn delay_answer(
+    state: &Shared,
+    reaction: bussard_testkit::Reaction,
+    payload_len: usize,
+) -> bussard_testkit::Reaction {
+    use bussard_testkit::Reaction as Tk;
+    let Ok(mut s) = state.lock() else {
+        return reaction;
+    };
+    let steps = match reaction {
+        Tk::Answer(apci, data) => vec![Step::Ack, Step::Data(apci, data)],
+        Tk::Ack => vec![Step::Ack],
+        other => return other,
+    };
+    s.answered_requests += 1;
+    let mut delay = Duration::ZERO;
+    if let Some((fixed, per_octet)) = s.latency {
+        delay += fixed + per_octet * u32::try_from(payload_len).unwrap_or(u32::MAX);
+    }
+    if let RebootPhase::Slow(late) = reboot_phase(&s) {
+        delay += late;
+    }
+    if let Some((accepted, _)) = s.reboot
+        && !s.reboot_answered
+        && reboot_phase(&s) != RebootPhase::Silent
+    {
+        s.reboot_answered = true;
+        let answered = accepted.elapsed() + delay;
+        s.reboot_answers.push(answered);
+    }
+    if delay.is_zero() {
+        return Tk::Script(steps);
+    }
+    Tk::Script(vec![Step::After(delay, steps)])
+}
+
 /// The mock gateway in front of the device modelled by `state` at 1.1.4: the
 /// testkit gateway with this suite's faults (see [`intercept`]) and device
 /// model (see [`on_numbered`], [`on_control`]).
@@ -1467,6 +1588,21 @@ async fn start_gateway_booting(state: &Shared) -> TestResult<MockGateway> {
     start_gateway_with(state, true).await
 }
 
+/// Where the device is in the reboot [`DeviceState::reboot`] describes.
+fn reboot_phase(s: &DeviceState) -> RebootPhase {
+    let Some((accepted, profile)) = s.reboot else {
+        return RebootPhase::Up;
+    };
+    let since = accepted.elapsed();
+    if since < profile.silent {
+        RebootPhase::Silent
+    } else if since < profile.slow_until {
+        RebootPhase::Slow(profile.slow_answer)
+    } else {
+        RebootPhase::Up
+    }
+}
+
 /// The negative-con decision of [`start_gateway_booting`] for one client frame.
 fn boot_confirmation(
     state: &Shared,
@@ -1484,7 +1620,7 @@ fn boot_confirmation(
     {
         s.booting_until = Some(now + boot);
     }
-    if s.booting_until.is_some_and(|until| now < until) {
+    if s.booting_until.is_some_and(|until| now < until) || reboot_phase(&s) == RebootPhase::Silent {
         s.negative_cons += 1;
         return Some(false);
     }
@@ -1497,7 +1633,10 @@ async fn start_gateway_with(state: &Shared, booting: bool) -> TestResult<MockGat
     let control_state = Arc::clone(state);
     let intercept_state = Arc::clone(state);
     let device = MockDevice::new(address)
-        .with_hook(move |dev, apci, data| Some(on_numbered(&hook_state, dev, apci, data)))
+        .with_hook(move |dev, apci, data| {
+            let reaction = on_numbered(&hook_state, dev, apci, data);
+            Some(delay_answer(&hook_state, reaction, data.len()))
+        })
         .with_control_hook(move |_, kind| on_control(&control_state, kind));
     let builder = MockGateway::builder()
         .channel(CHANNEL)
@@ -1580,6 +1719,16 @@ fn fresh_device(fault: Fault) -> Shared {
         boot_silence: None,
         booting_until: None,
         negative_cons: 0,
+        restart_profile: None,
+        factory_profile: None,
+        factory_process_time: 0,
+        reboot: None,
+        latency: None,
+        answered_requests: 0,
+        reboot_answers: Vec::new(),
+        reboot_answered: false,
+        reboot_proceeded: Vec::new(),
+        reboot_moved_on: false,
         saw_basic_restart: false,
         revert_app_on_next_connect: false,
         wipe_app_on_master_reset: false,
@@ -3732,7 +3881,9 @@ async fn flash_resumes_when_connection_drops_inside_a_write() -> TestResult {
     // the multi-chunk write trips it — the drop lands inside the write. On the fresh
     // window the preamble is not re-run (only the write step replays), so the budget
     // comfortably covers finishing the segment.
-    lock(&state)?.die_after_exchanges = Some(10);
+    // 7 since the load-control writes trust the echoed state (issue #211):
+    // StartLoading and the allocation send three requests fewer.
+    lock(&state)?.die_after_exchanges = Some(7);
     let source = bussard_bus::ops::group_source(&handle);
     let app = fabricated_app_big()?;
     let plan = plan_flash(
@@ -6432,5 +6583,263 @@ async fn test_flash_resumes_tunnel_loss_during_master_reset_reconnect() -> TestR
     assert_resumed_across_outage(outcome, &state)?;
     let s = lock(&state)?;
     assert_eq!(s.master_resets_seen, 1, "the master reset was not repeated");
+    Ok(())
+}
+
+// ===========================================================================
+// Issue #212: reboot readiness after a confirmed restart and a factory reset
+// ===========================================================================
+
+/// A single-object 07B0 app whose parameter segment holds `image` over a zero
+/// fill: the plan opens with the factory reset and ends with the confirmed
+/// restart, like the 1.1.5 and 1.1.12 downloads.
+fn app_with_filled_segment(image: &[u8]) -> TestResult<ApplicationProgram> {
+    let size = image.len();
+    let b64 = base64_encode(image);
+    let xml = format!(
+        r#"<KNX xmlns="http://knx.org/xml/project/23">
+     <ApplicationProgram Id="M-2_A-9" ApplicationNumber="9" ApplicationVersion="1"
+        MaskVersion="MV-07B0" Name="Filled" LoadProcedureStyle="MergedProcedure">
+      <Static>
+       <Code>
+        <RelativeSegment Id="M-2_A-9_RS-1" Size="{size}" LoadStateMachine="4" Offset="0"><Data>{b64}</Data></RelativeSegment>
+       </Code>
+       <LoadProcedures>
+        <LoadProcedure MergeId="1">
+         <LdCtrlConnect />
+         <LdCtrlUnload LsmIdx="4" />
+         <LdCtrlLoad LsmIdx="4" />
+         <LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="{size}" Mode="1" Fill="0" />
+         <LdCtrlWriteRelMem AppliesTo="full,par" ObjIdx="4" Offset="0" Size="{size}" Verify="true" />
+         <LdCtrlLoadCompleted LsmIdx="4" />
+         <LdCtrlRestart />
+         <LdCtrlDisconnect />
+        </LoadProcedure>
+       </LoadProcedures>
+      </Static>
+     </ApplicationProgram></KNX>"#
+    );
+    Ok(parse_application_program("M-2_A-9", xml.as_bytes())?)
+}
+
+/// What one reboot-profile flash observed.
+struct TimedFlash {
+    outcome: bussard_download::FlashOutcome,
+    state: Shared,
+    /// From the start of the flash to its end.
+    elapsed: Duration,
+}
+
+/// Flashes [`app_with_filled_segment`] onto a Data Secure mock (1.1.5 and
+/// 1.1.12 are Data Secure) behind an interface that reports negative
+/// `L_Data.con`s while the device is silent. `configure` sets the device's
+/// reboot profiles, process time and latency.
+async fn timed_secure_flash(
+    image: &[u8],
+    configure: impl FnOnce(&mut DeviceState),
+) -> TestResult<TimedFlash> {
+    let state = secure_device(Fault::None)?;
+    configure(&mut *lock(&state)?);
+    let gw = start_gateway_booting(&state).await?;
+    let (handle, _actor) = bussard_bus::Bus::connect(ConnectionConfig::tunnel(gw.addr()));
+    handle.wait_connected(Duration::from_secs(5)).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source = bussard_bus::ops::group_source(&handle);
+    let plan = plan_flash(
+        &app_with_filled_segment(image)?,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    let connector = LeaseConnector::secure(handle.clone(), target, source, None, MOCK_TOOL_KEY);
+    let started = std::time::Instant::now();
+    let mut session = Session::open_with_key(connector, Some(0xFFFF_FFFF)).await?;
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions {
+            verify_after_restart: true,
+            ..Default::default()
+        },
+        |_| {},
+    )
+    .await?;
+    let elapsed = started.elapsed();
+    let _ = session.into_disconnect().await;
+    let _ = handle.close().await;
+    drop(gw);
+    Ok(TimedFlash {
+        outcome,
+        state,
+        elapsed,
+    })
+}
+
+/// A small sparse image: three runs over a zero fill.
+fn small_sparse_image() -> Vec<u8> {
+    let mut image = vec![0u8; 64];
+    image[2] = 1;
+    image[30] = 2;
+    image[60] = 3;
+    image
+}
+
+fn readiness_of(
+    outcome: &bussard_download::FlashOutcome,
+    kind: bussard_download::RestartKind,
+) -> TestResult<bussard_download::RebootReadiness> {
+    Ok(*outcome
+        .reboot_readiness
+        .iter()
+        .find(|r| r.kind == kind)
+        .ok_or("no readiness recorded for the restart")?)
+}
+
+/// The 1.1.5 pattern (issue #212, wire log 203822): after the confirmed
+/// restart the device is silent and negatively confirmed, then answers its
+/// probes 1.5 s late while it sends its power-up telegrams, then promptly.
+/// The 2 s answer window accepts the late answer instead of discarding it.
+#[tokio::test]
+async fn test_flash_reboot_probe_accepts_a_late_answer() -> TestResult {
+    let run = timed_secure_flash(&small_sparse_image(), |s| {
+        s.restart_profile = Some(RebootProfile {
+            silent: Duration::from_millis(1500),
+            slow_until: Duration::from_secs(4),
+            slow_answer: Duration::from_millis(1500),
+        });
+    })
+    .await?;
+    assert!(run.outcome.ok(), "the flash must verify: {:?}", run.outcome);
+    let restart = readiness_of(&run.outcome, bussard_download::RestartKind::Restart)?;
+    let ready = restart.ready_after.ok_or("a probe must have answered")?;
+    // The probe at +1.5 s is acknowledged and answered 1.5 s late; the next
+    // probe, sent with the same sequence number, accepts that answer at
+    // +3.0 s. The 1, 2, 4 s backoff with a 400 ms window discarded such
+    // answers and waited for the prompt phase (+4 s here, +9.7 s on 1.1.5).
+    assert!(
+        ready >= Duration::from_millis(3000) && ready < Duration::from_millis(4500),
+        "ready after {ready:?}"
+    );
+    let s = lock(&run.state)?;
+    assert!(
+        s.negative_cons >= 1,
+        "the silent phase was negatively confirmed"
+    );
+    Ok(())
+}
+
+/// A device that is back 1 s after its confirmed restart: the first probe
+/// goes out at +0.5 s (no fixed 1.5 s any more), is negatively confirmed and
+/// unanswered, and the poll finds the device within one more interval.
+#[tokio::test]
+async fn test_flash_reboot_probe_polls_from_half_a_second() -> TestResult {
+    let run = timed_secure_flash(&small_sparse_image(), |s| {
+        s.restart_profile = Some(RebootProfile::ready_at(Duration::from_millis(1000)));
+    })
+    .await?;
+    assert!(run.outcome.ok(), "the flash must verify: {:?}", run.outcome);
+    let restart = readiness_of(&run.outcome, bussard_download::RestartKind::Restart)?;
+    let ready = restart.ready_after.ok_or("a probe must have answered")?;
+    assert!(
+        ready >= Duration::from_millis(1000) && ready < Duration::from_millis(1700),
+        "ready after {ready:?}"
+    );
+    assert!(lock(&run.state)?.negative_cons >= 1);
+    Ok(())
+}
+
+/// A device that answers its first probe at once: ready at +0.5 s.
+#[tokio::test]
+async fn test_flash_reboot_probe_first_probe_at_half_a_second() -> TestResult {
+    let run = timed_secure_flash(&small_sparse_image(), |_| {}).await?;
+    assert!(run.outcome.ok(), "the flash must verify: {:?}", run.outcome);
+    let restart = readiness_of(&run.outcome, bussard_download::RestartKind::Restart)?;
+    let ready = restart.ready_after.ok_or("a probe must have answered")?;
+    assert!(
+        ready >= Duration::from_millis(500) && ready < Duration::from_millis(900),
+        "ready after {ready:?}"
+    );
+    Ok(())
+}
+
+/// The factory reset's process time is never shortened: the device answers
+/// the measurement probes from +3 s on, the readiness records that, and the
+/// download still starts only after the reported 4 s.
+#[tokio::test]
+async fn test_flash_factory_reset_measures_readiness_but_waits_the_process_time() -> TestResult {
+    let run = timed_secure_flash(&small_sparse_image(), |s| {
+        s.factory_process_time = 4;
+        s.factory_profile = Some(RebootProfile::ready_at(Duration::from_millis(3200)));
+    })
+    .await?;
+    assert!(run.outcome.ok(), "the flash must verify: {:?}", run.outcome);
+    let reset = readiness_of(&run.outcome, bussard_download::RestartKind::FactoryReset)?;
+    assert_eq!(reset.process_time, Duration::from_secs(4));
+    let ready = reset
+        .ready_after
+        .ok_or("a measurement probe must have answered")?;
+    assert!(
+        ready >= Duration::from_millis(3200) && ready < Duration::from_millis(3900),
+        "ready after {ready:?}"
+    );
+    // 4 s process time + 0.5 s quiet + the confirmed restart's 0.5 s.
+    assert!(
+        run.elapsed >= Duration::from_millis(5000),
+        "the flash waited out the process time ({:?})",
+        run.elapsed
+    );
+    Ok(())
+}
+
+/// Measurement harness for the PR (issue #210/#211/#212), not a regression
+/// test: flashes a 1.1.5-like or 1.1.12-like Data Secure device with the
+/// 200 ms + 1.7 ms/octet request latency and the reboot pattern of the
+/// 2026-09-24 wire logs, and prints requests and wall clock.
+///
+/// `BUSSARD_SPEED_IMAGE` names the parameter image (`.bin`, over a zero fill),
+/// `BUSSARD_SPEED_PROFILE` is `1.1.5` or `1.1.12`.
+#[tokio::test]
+#[ignore = "measurement harness; run by hand"]
+async fn measure_flash_speed_profile() -> TestResult {
+    let image = std::fs::read(std::env::var("BUSSARD_SPEED_IMAGE")?)?;
+    let profile = std::env::var("BUSSARD_SPEED_PROFILE")?;
+    let restart = match profile.as_str() {
+        // 203822: silent until ~+2.9 s, answers 1.3-1.9 s late until ~+8 s.
+        "1.1.5" => RebootProfile {
+            silent: Duration::from_millis(2900),
+            slow_until: Duration::from_secs(8),
+            slow_answer: Duration::from_millis(1500),
+        },
+        // 202407 / ETS: answered at +1.4 s; assume ready at +1.2 s.
+        _ => RebootProfile::ready_at(Duration::from_millis(1200)),
+    };
+    let run = timed_secure_flash(&image, |s| {
+        s.latency = Some((Duration::from_millis(200), Duration::from_micros(1700)));
+        // PID 56 of the 07B0 actuators: 233, a 215-octet Data Secure chunk
+        // of the extended service, which a segment above 0xFFFF uses (1.1.5's
+        // parameters sit at 0x17C56).
+        s.max_apdu = Some(233);
+        s.segment_base_override = Some(0x1_7C56);
+        s.factory_process_time = 8;
+        // No capture shows the factory reset readiness; ETS answered at 8.9 s.
+        s.factory_profile = Some(RebootProfile::ready_at(Duration::from_millis(8000)));
+        s.restart_profile = Some(restart);
+    })
+    .await?;
+    let s = lock(&run.state)?;
+    println!(
+        "profile {profile}: ok={} requests={} memory_writes={} elapsed={:.1} s \
+         first answers after the reset / restart={:?} tool moved on at={:?} readiness={:?}",
+        run.outcome.ok(),
+        s.answered_requests,
+        s.memory_writes_seen,
+        run.elapsed.as_secs_f64(),
+        s.reboot_answers,
+        s.reboot_proceeded,
+        run.outcome.reboot_readiness
+    );
     Ok(())
 }

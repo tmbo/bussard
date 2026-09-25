@@ -120,7 +120,7 @@ pub use plan_sys7::{
     Sys7PlanTables, Sys7TableImage, linked_flags_from_system_b, plan_flash_sys7_with_hawk,
     sys7_profile_from_hawk, sys7_tables_from_system_b,
 };
-pub use session::{Connector, DeviceFacts, Session, SingleConnector};
+pub use session::{Connector, DeviceFacts, RebootReadiness, RestartKind, Session, SingleConnector};
 
 /// The KNX manufacturer id of the KNX Association, which KNX Virtual devices
 /// report (`M-00FA_…` application ids).
@@ -1163,6 +1163,10 @@ pub struct FlashOutcome {
     /// match (see [`FlashStep::LoadImageProp::advisory`]). Empty when every
     /// check passed.
     pub warnings: Vec<String>,
+    /// How long the device took to answer again after each restart it
+    /// confirmed (issue #212), for `flash -v`'s timing line. Empty when the
+    /// plan restarts nothing the device confirms.
+    pub reboot_readiness: Vec<RebootReadiness>,
 }
 
 impl FlashOutcome {
