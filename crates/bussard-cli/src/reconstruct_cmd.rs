@@ -120,6 +120,7 @@ pub fn run(
     json: bool,
     overrides: ConnOverrides,
     selection: crate::param_readback::Selection<'_>,
+    no_parameters: bool,
     tool_key_source: crate::secure_key::ToolKeySource<'_>,
 ) -> anyhow::Result<ExitCode> {
     let target: IndividualAddress = address
@@ -129,7 +130,13 @@ pub fn run(
     let model = load_model_required(dir)?;
     let config = resolve_config(model.as_ref(), &overrides)?;
     // The product file the parameter read-back decodes with (issue #119).
-    let product = crate::param_readback::resolve(dir, selection, model.as_ref(), target)?;
+    // `--no-parameters` (issue #215) wants the links and tables only: no
+    // product is resolved or parsed, so no parameter memory is read.
+    let product = if no_parameters {
+        None
+    } else {
+        crate::param_readback::resolve(dir, selection, model.as_ref(), target)?
+    };
     let model_ref = model.as_ref();
     let product_ref = product.as_ref();
 
@@ -160,6 +167,7 @@ pub fn run(
         print_text(&report);
         match &report.parameters {
             Some(params) => crate::param_readback::print_text(params, target),
+            None if no_parameters => {}
             None => crate::param_readback::print_missing_product_note(model.as_ref(), target),
         }
     }

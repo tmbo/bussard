@@ -270,7 +270,12 @@ impl BussardMcp {
 
         let tool_key = self.plan_tool_key(target, &model)?;
         let _guard = tier.bus_lock.lock().await;
+        // Management calls are sequential (issue #215): this read opens its own
+        // lease, so the warm connection is released first.
+        let mut warm = self.warm().lock().await;
+        warm.release().await;
         let (_, live) = read_live(&handle, target, &tool_key).await?;
+        drop(warm);
         let tables = live.tables();
         let report = plan(tables, &desired);
         refuse_protected(&model, &report)?;
@@ -442,6 +447,10 @@ impl BussardMcp {
         let _guard = tier.bus_lock.lock().await;
         let model = self.state().model.reload();
         let desired = desired_tables_for(&model, target).map_err(|e| e.to_string())?;
+        // Held until the write is done: management calls are sequential and
+        // this one leases the bus itself (issue #215).
+        let mut warm = self.warm().lock().await;
+        warm.release().await;
         let (source, live) = read_live(&handle, target, &None).await?;
 
         // Re-derive the digest from what is true now; anything that moved since

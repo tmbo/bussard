@@ -156,6 +156,17 @@ entry supersedes it and is not a diff against it.
   200 ms per request: pre-flight 19 to 12 requests (3.9 s to 2.5 s) with
   facts, 25 to 18 without; `flash --yes` 4 to 3 `T_Connect` on the System B
   mock, 6 to 5 on the DA.tp and System 7 mocks (#213).
+- `bussard reconstruct --no-parameters` reads the links and tables only: no
+  product parse and no parameter read-back (mock: 18 to 14 requests, no
+  memory read) (#215).
+- The MCP server keeps a device's management connection for 3 s after
+  `knx_describe_device`, so a following call to the same device reuses it
+  instead of connecting again (mock, two consecutive calls at 200 ms per
+  answer: 46 to 44 requests, 9.35 s to 8.97 s; a Data Secure device also
+  skips the second `S-A_Sync`). One device at a time: a call to another
+  device, a programming-tier call or a lost gateway link closes it first,
+  the idle close runs before the device's own 6 s timeout, and a call that
+  fails on the kept connection is repeated on a fresh one (#215).
 - `BUSSARD_WIRE_TRACE=1` encodes each frame once and writes each line with a
   single write to stderr; a 215-octet write's line takes 1.3 µs instead of
   17 µs (release). With the trace off nothing is encoded or formatted: a
