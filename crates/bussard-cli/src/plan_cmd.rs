@@ -39,10 +39,15 @@ struct ObjectGaJson {
     ga: String,
 }
 
-/// The stable JSON shape of a plan.
+/// The stable JSON shape of a plan: the device plan (changes in the model's
+/// words, unchanged counts, writes, backup, `state_hash`) plus the table
+/// detail the plan has always carried.
 #[derive(Debug, serde::Serialize)]
 struct PlanJson {
-    address: String,
+    #[serde(flatten)]
+    plan: bussard_download::DevicePlan,
+    /// The one question `apply` asks, `None` for an empty plan.
+    question: Option<String>,
     mask: String,
     system_type: String,
     unchanged: Vec<ObjectGaJson>,
@@ -102,7 +107,7 @@ const SECURE_PLAIN_MASK: u16 = 0xFFFF;
 /// What one read-only management session returned: the live tables (or the
 /// unsupported-mask refusal) and, when a product file was given, the parameter
 /// read-back.
-pub(crate) type DeviceRead = (LiveRead, Option<crate::param_readback::Readback>);
+pub(crate) type DeviceRead = (LiveRead, Option<crate::param_readback::ParamState>);
 
 /// Opens a read-only bus service, reads `target`'s live tables in one management
 /// session and, when `product` is given and the tables read, the parameter
@@ -150,7 +155,7 @@ pub(crate) fn read_device(
                     let read = read_live_tables(l4).await?;
                     let params = match (&read, product) {
                         (LiveRead::Tables(live), Some(product)) => Some(
-                            crate::param_readback::read(
+                            crate::param_readback::read_state(
                                 l4,
                                 product,
                                 model,
@@ -179,21 +184,22 @@ pub fn run(
     overrides: ConnOverrides,
     selection: crate::param_readback::Selection<'_>,
     tool_key_source: ToolKeySource<'_>,
+    verbose: u8,
 ) -> anyhow::Result<ExitCode> {
     let target: IndividualAddress = address
         .parse()
         .with_context(|| format!("parsing device address {address:?}"))?;
 
-    // A parse error is a hard failure here (surfaced with the file detail); an
-    // absent model still bails, since `plan` needs the links in the device files.
+    // A parse error is a hard failure here (surfaced with the file detail).
     let Some(model) = load_model_required(dir)? else {
         bail!(
-            "`bussard plan` needs the model (the links in devices/<address>.toml) to compute the desired tables; \
-             none was loaded from {}",
+            "no model in {}: `bussard plan` compares a device with its devices/<address>.toml; \
+             run `bussard init` or `bussard import` first",
             dir.display()
         );
     };
     let config = resolve_config(Some(&model), &overrides)?;
+    let gateway = crate::conn_cmd::gateway_display(&config);
 
     // Issue #112: say in plain sentences what the model now asks for that the
     // last snapshot did not, before the com-object table below says it in
@@ -225,25 +231,50 @@ pub fn run(
         Some(model_ref),
         crate::device_facts::cache(dir, true, overrides.refresh_facts),
     )?;
-    let live = match read {
+    let live_tables = match read {
         LiveRead::Tables(live) => live,
         LiveRead::UnsupportedMask { address, mask } => {
             report_unsupported_mask("plan", address, mask);
             return Ok(ExitCode::FAILURE);
         }
     };
-    let live = live.tables();
+    let live = live_tables.tables();
 
     let report = plan(live, &desired);
+    let built = crate::device_plan::build(
+        &model,
+        target,
+        &gateway,
+        dir,
+        &live_tables,
+        &report,
+        params.as_ref(),
+    );
     if json {
-        let mut out = to_json(target, live, &report);
-        out.parameters = params;
+        let mut out = to_json(live, &report, built.plan.clone());
+        out.parameters = params.map(|p| p.readback);
         println!("{}", serde_json::to_string_pretty(&out)?);
     } else {
-        print_text(target, live, &report);
-        match &params {
-            Some(params) => crate::param_readback::print_text(params, target),
-            None => crate::param_readback::print_missing_product_note(Some(&model), target),
+        print!("{}", built.plan.render_text());
+        if let Some(refusal) = &built.refusal {
+            println!("  note: {refusal}");
+        }
+        if verbose > 0 {
+            println!();
+            print!(
+                "{}",
+                bussard_download::render_plan_text(target, live, &report)
+            );
+            if let Some(params) = &params {
+                crate::param_readback::print_text(&params.readback, target);
+            }
+        }
+        if !built.plan.is_empty() && built.refusal.is_none() {
+            println!(
+                "\nrun `bussard apply {target}` to write these changes (it asks once), or \
+                 `bussard apply {target} --plan {}` to refuse if the device changes first.",
+                built.plan.state_hash
+            );
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -258,7 +289,11 @@ pub(crate) fn compute_desired(
     Ok(bussard_download::desired_tables_for(model, target)?)
 }
 
-fn to_json(target: IndividualAddress, live: &DeviceTables, report: &PlanReport) -> PlanJson {
+fn to_json(
+    live: &DeviceTables,
+    report: &PlanReport,
+    device_plan: bussard_download::DevicePlan,
+) -> PlanJson {
     let map = |pairs: &[bussard_download::ObjectGa]| {
         pairs
             .iter()
@@ -268,8 +303,10 @@ fn to_json(target: IndividualAddress, live: &DeviceTables, report: &PlanReport) 
             })
             .collect()
     };
+    let question = (!device_plan.is_empty()).then(|| device_plan.question());
     PlanJson {
-        address: target.to_string(),
+        plan: device_plan,
+        question,
         mask: format!("{:04X}", live.mask),
         system_type: system_type(live.mask).to_string(),
         unchanged: map(&report.unchanged),

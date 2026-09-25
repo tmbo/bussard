@@ -17,8 +17,8 @@
 use std::path::Path;
 
 use bussard_download::{
-    DecodedParameters, ParamValue, decode_parameters, probe_resident_state, read_parameter_regions,
-    regions_memory,
+    DecodedParameters, FlashPlan, ParamRegions, ParamValue, ResidentState, decode_parameters,
+    group_object_change, probe_resident_state, read_parameter_regions, regions_memory,
 };
 use bussard_mgmt::{L4Channel, Layer4Connection};
 use bussard_model::{IndividualAddress, Model};
@@ -42,7 +42,8 @@ pub(crate) struct ProductSource {
 }
 
 impl ProductSource {
-    fn app(&self) -> Option<&ApplicationProgram> {
+    /// The selected application program, when the archive has it.
+    pub(crate) fn app(&self) -> Option<&ApplicationProgram> {
         self.product.application_by_id(&self.app_id)
     }
 }
@@ -157,7 +158,7 @@ pub(crate) struct Readback {
     device_managed: Vec<ReadingJson>,
     /// Why the read-back is partial or absent.
     #[serde(skip_serializing_if = "Option::is_none")]
-    note: Option<String>,
+    pub(crate) note: Option<String>,
 }
 
 impl Readback {
@@ -170,16 +171,53 @@ impl Readback {
     }
 }
 
-/// Reads and decodes the parameter memory over an open, authorized session.
-pub(crate) async fn read<Ch: L4Channel>(
+/// Everything a parameter read-back learned that a parameter write needs: the
+/// full flash plan (which locates the memory), the regions as read, the
+/// decoded values and the resident state the identity gate checked.
+pub(crate) struct ParamDetail {
+    /// The full flash plan for the device's mask.
+    pub plan: FlashPlan,
+    /// The parameter regions as the device holds them.
+    pub regions: ParamRegions,
+    /// The decoded memory against the model's overrides.
+    pub decoded: DecodedParameters,
+    /// What the probe found resident.
+    pub resident: ResidentState,
+    /// Why writing the model's values needs a full flash: they show or hide
+    /// a com-object (the group-object table changes). `None` when they do not.
+    pub needs_flash: Option<String>,
+}
+
+/// A parameter read-back: the report, and the detail when the memory was
+/// read and decoded.
+pub(crate) struct ParamState {
+    /// The report `plan` and `reconstruct` print.
+    pub readback: Readback,
+    /// The memory and its decoding; `None` when the read was refused (see
+    /// the report's note).
+    pub detail: Option<ParamDetail>,
+}
+
+impl ParamState {
+    fn noted(application: &str, note: String) -> ParamState {
+        ParamState {
+            readback: Readback::noted(application, note),
+            detail: None,
+        }
+    }
+}
+
+/// Reads and decodes the parameter memory over an open, authorized session,
+/// keeping the memory and its decoding for a parameter write.
+pub(crate) async fn read_state<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     source: &ProductSource,
     model: Option<&Model>,
     target: IndividualAddress,
     device_mask: u16,
-) -> Readback {
+) -> ParamState {
     let Some(app) = source.app() else {
-        return Readback::noted(
+        return ParamState::noted(
             &source.app_id,
             "the application is not in the product data".into(),
         );
@@ -189,7 +227,7 @@ pub(crate) async fn read<Ch: L4Channel>(
         {
             Ok(plan) => plan,
             Err(err) => {
-                return Readback::noted(
+                return ParamState::noted(
                     &app.id,
                     format!("the parameter memory cannot be located: {err}"),
                 );
@@ -200,33 +238,45 @@ pub(crate) async fn read<Ch: L4Channel>(
     // The parameter-only download's rule: the same program (any build hash)
     // on System B, every driven LSM Loaded and the product's code on System 7.
     if let Err(why) = crate::flash_params::identity_gate(&plan, Some(&resident)) {
-        return Readback::noted(&app.id, format!("parameters not decoded: {why}"));
+        return ParamState::noted(&app.id, format!("parameters not decoded: {why}"));
     }
     if plan.is_sys7()
         && let Some(why) = crate::flash_params::sys7_code_mismatch(l4, &plan).await
     {
-        return Readback::noted(&app.id, format!("parameters not decoded: {why}"));
+        return ParamState::noted(&app.id, format!("parameters not decoded: {why}"));
     }
     let regions = read_parameter_regions(l4, &plan).await;
     if regions.is_empty() {
-        return Readback::noted(&app.id, "the parameter memory could not be read".into());
+        return ParamState::noted(&app.id, "the parameter memory could not be read".into());
     }
     let current = regions_memory(&regions);
     let (overrides, bases) = crate::flash_cmd::model_parameters(model, target);
     let decoded = decode_parameters(app, &overrides, &bases, &current);
+    let change = group_object_change(app, &decoded.values, &overrides);
+    let needs_flash =
+        (!change.is_empty()).then(|| crate::flash_params::describe_group_object_change(&change));
     let device_managed = decoded
         .device_managed
         .iter()
         .cloned()
         .map(reading_json)
         .collect();
-    let (non_default, differences) = report(decoded);
-    Readback {
-        application: app.id.clone(),
-        non_default,
-        differences,
-        device_managed,
-        note: None,
+    let (non_default, differences) = report(decoded.clone());
+    ParamState {
+        readback: Readback {
+            application: app.id.clone(),
+            non_default,
+            differences,
+            device_managed,
+            note: None,
+        },
+        detail: Some(ParamDetail {
+            plan,
+            regions,
+            decoded,
+            resident,
+            needs_flash,
+        }),
     }
 }
 
@@ -320,8 +370,8 @@ pub(crate) fn print_text(readback: &Readback, target: IndividualAddress) {
         );
     }
     println!(
-        "  run `bussard flash --parameters-only {target} --product <FILE>` to write the model's \
-         values (a value that shows or hides a com-object needs a full `bussard flash`)"
+        "  run `bussard apply {target}` to write the model's values (a value that shows or \
+         hides a com-object needs a full `bussard flash`)"
     );
 }
 
@@ -333,8 +383,8 @@ pub(crate) fn print_missing_product_note(model: Option<&Model>, target: Individu
         .is_some_and(|d| !d.device.parameters.is_empty());
     if has_params {
         println!(
-            "\nparameters: not read back (no product file; pass --product <FILE> or run \
-             `bussard import-product` to cache it)"
+            "\nparameters: not read back (no product data under vendor/ for this device; pass \
+             --product <FILE> or run `bussard import-product` to cache it)"
         );
     }
 }

@@ -276,7 +276,7 @@ Field notes:
   what the parameter phase needs to place the value into the device's parameter memory.
 - `load_procedure`: the ordered op summary, a faithful view of the download script.
   `bussard flash` executes the supported subset
-  ([reference.md](reference.md#bussard-flash---product-file-address)).
+  ([reference.md](reference.md#bussard-flash-address)).
 
 ## The never-redistribute rule
 

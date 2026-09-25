@@ -89,5 +89,6 @@ pub fn run(
         &DesiredSource::Backup(path),
         &overrides,
         model.as_ref(),
+        apply_cmd::ModelWrite::default(),
     )
 }

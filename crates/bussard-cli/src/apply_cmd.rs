@@ -1,17 +1,31 @@
-//! The `bussard apply` subcommand — write the model's link tables to a device.
+//! The `bussard apply` subcommand — write the model to one device.
 //!
-//! The flow, in order:
-//! 1. Load the model, compute the desired tables, read the device's live tables.
-//! 2. Refuse a mask outside the two supported families — the same gate as
+//! One verb writes a device. The flow, in order:
+//! 1. Load the model, declare the group addresses the device files use first,
+//!    and validate: an error stops here, before the bus is touched.
+//! 2. Read the device's live tables and, when product data is at hand (the
+//!    `.knxprod` in `<dir>/vendor/` for the device's order number, or
+//!    `--product`), its parameter memory, over one management session.
+//! 3. Refuse a mask outside the two supported families — the same gate as
 //!    `reconstruct`.
-//! 3. Show the plan (reconstruct-style diff). If nothing changes, print
-//!    "nothing to do" and exit 0 **without touching any load state**.
-//! 4. Confirm on a TTY (`y/N`) unless `--yes`.
-//! 5. **Back up** the pre-state tables to `<dir>/captures/backups/<ia>-<ts>.json`.
-//! 6. Execute the load sequence (see [`bussard_download::apply`]) and verify by
-//!    reading the tables back byte-for-byte.
-//! 7. On any failure, print the backup path and recovery guidance loudly and
+//! 4. Show the plan in the model's words ([`crate::device_plan`]): the objects
+//!    and parameters that change, what stays, what is written, where the
+//!    backup goes. An empty plan prints `<ia> matches the model; nothing to
+//!    write` and exits 0 **without touching any load state**. With
+//!    `--plan <hash>`, a device whose state no longer hashes to what the
+//!    approved plan read is refused.
+//! 5. Ask once (`y/N`) on a TTY unless `--yes`.
+//! 6. **Back up** the pre-state tables to `<dir>/captures/backups/<ia>-<ts>.json`
+//!    and, when parameters change, the parameter memory.
+//! 7. Write the minimum: the tables when a link changes (see
+//!    [`bussard_download::apply`]), and only the parameter octets that differ
+//!    (the `flash --parameters-only` download), each verified by reading back.
+//! 8. On any failure, print the backup path and recovery guidance loudly and
 //!    exit non-zero.
+//!
+//! A parameter change that shows or hides a com-object changes the
+//! group-object table, which a parameter download does not rewrite: that
+//! device is refused with the `bussard flash` it needs.
 //!
 //! # Two device families
 //!
@@ -90,7 +104,19 @@ impl DesiredSource {
     }
 }
 
-/// Applies the model's link tables to a device (plan, confirm, write, verify).
+/// What `apply <ADDRESS>` takes beyond the connection: the product data
+/// selection for the parameter half, and the approved plan's hash.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ApplyInputs<'a> {
+    /// `--product` / `--application`.
+    pub selection: crate::param_readback::Selection<'a>,
+    /// `--plan <hash>`: the `state_hash` of the plan the human approved.
+    pub plan_hash: Option<&'a str>,
+}
+
+/// Writes the model to a device: validate, plan, ask once, back up, write the
+/// minimum, verify.
+#[allow(clippy::too_many_arguments)] // mirrors the subcommand's flags 1:1
 pub fn run(
     address: &str,
     dir: &Path,
@@ -99,17 +125,17 @@ pub fn run(
     tool_key_source: crate::secure_key::ToolKeySource<'_>,
     secure_sender: Option<IndividualAddress>,
     overrides: ConnOverrides,
+    inputs: ApplyInputs<'_>,
 ) -> anyhow::Result<ExitCode> {
     let target: IndividualAddress = address
         .parse()
         .with_context(|| format!("parsing device address {address:?}"))?;
 
-    // A parse error is a hard failure here (surfaced with the file detail); an
-    // absent model still bails, since `apply` needs the links in the device files.
+    // A parse error is a hard failure here (surfaced with the file detail).
     let Some(mut model) = load_model_required(dir)? else {
         bail!(
-            "`bussard apply` needs the model (the links in devices/<address>.toml) to compute the desired tables; \
-             none was loaded from {}",
+            "no model in {}: `bussard apply` writes a device's devices/<address>.toml to it; \
+             run `bussard init` or `bussard import` first",
             dir.display()
         );
     };
@@ -125,6 +151,8 @@ pub fn run(
         return Ok(ExitCode::FAILURE);
     }
     let desired = plan_cmd::compute_desired(&model, target)?;
+    // The product data the parameter half decodes with, when it is at hand.
+    let product = crate::param_readback::resolve(dir, inputs.selection, Some(&model), target)?;
     hint_installation_backup(dir);
     apply_desired(
         target,
@@ -138,7 +166,22 @@ pub fn run(
         &DesiredSource::Model,
         &overrides,
         Some(&model),
+        ModelWrite {
+            product: product.as_ref(),
+            plan_hash: inputs.plan_hash,
+        },
     )
+}
+
+/// The model half of [`apply_desired`]: the product data to read and write
+/// the parameter memory with, and the approved plan's hash. Empty for
+/// `restore`, which writes tables out of a backup.
+#[derive(Default, Clone, Copy)]
+pub(crate) struct ModelWrite<'a> {
+    /// The product data for the parameter half, when at hand.
+    pub product: Option<&'a crate::param_readback::ProductSource>,
+    /// `--plan <hash>`.
+    pub plan_hash: Option<&'a str>,
 }
 
 /// Prints the one-line nudge when the model has no installation-wide backup.
@@ -175,6 +218,7 @@ pub(crate) fn apply_desired(
     origin: &DesiredSource,
     overrides: &ConnOverrides,
     model: Option<&bussard_model::Model>,
+    write: ModelWrite<'_>,
 ) -> anyhow::Result<ExitCode> {
     // KNX Data Secure (issue #71, spec §6.2): every management APDU below —
     // the read pre-pass and the table writes — rides A_SecureData when the device
@@ -242,27 +286,42 @@ pub(crate) fn apply_desired(
     // they spare the table reader its object walk, and the write phase below
     // gets them as a seed so its discovery and read-back do not walk again.
     let facts = crate::device_facts::cache(dir, model.is_some(), overrides.refresh_facts);
+    // The parameter memory rides the same session when product data is at
+    // hand (the plan's read-back, issue #119).
     let read = runtime.block_on(async {
         service
             .with_l4(target, &read_options, async |l4| {
                 let established = crate::device_facts::establish_table_facts(l4, &facts).await?;
-                let live = plan_cmd::read_live_tables(l4).await?;
-                anyhow::Ok((live, established))
+                let read = plan_cmd::read_live_tables(l4).await?;
+                let params = match (&read, write.product) {
+                    (plan_cmd::LiveRead::Tables(live), Some(product)) => Some(
+                        crate::param_readback::read_state(
+                            l4,
+                            product,
+                            model,
+                            target,
+                            live.tables().mask,
+                        )
+                        .await,
+                    ),
+                    _ => None,
+                };
+                anyhow::Ok((read, established, params))
             })
             .await
     });
-    let (read, established) = read?;
+    let (read, established, params) = read?;
     let write_seed = crate::device_facts::seed_of(established.as_ref());
 
-    let live = match read {
+    let live_tables = match read {
         plan_cmd::LiveRead::Tables(live) => live,
         plan_cmd::LiveRead::UnsupportedMask { address, mask } => {
             plan_cmd::report_unsupported_mask(origin.verb(), address, mask);
             return Ok(ExitCode::FAILURE);
         }
     };
-    let sys7_live = live.sys7().cloned();
-    let live = live.tables();
+    let sys7_live = live_tables.sys7().cloned();
+    let live = live_tables.tables();
 
     // The family gate is enforced by the readers (UnsupportedMask above), but
     // assert it here too as a belt-and-braces guard before any write. Routed
@@ -279,10 +338,49 @@ pub(crate) fn apply_desired(
     }
 
     let report = plan(live, &desired);
-    if matches!(origin, DesiredSource::Backup(_)) {
-        println!("restoring {} to {target}", origin.origin());
+    // The model's plan, in its own words: the objects and parameters that
+    // change. `restore` keeps the table rendering (its truth is a backup).
+    let built = match (origin, model) {
+        (DesiredSource::Model, Some(model)) => Some(crate::device_plan::build(
+            model,
+            target,
+            &gateway,
+            dir,
+            &live_tables,
+            &report,
+            params.as_ref(),
+        )),
+        _ => None,
+    };
+    match &built {
+        Some(built) => {
+            if let Some(hash) = write.plan_hash
+                && !hash.trim().eq_ignore_ascii_case(&built.plan.state_hash)
+            {
+                eprintln!(
+                    "refusing to apply to {target}: the device state no longer matches the plan \
+                     (plan {}, device now {}). Run `bussard plan {target}` again and approve \
+                     the new plan.",
+                    hash.trim(),
+                    built.plan.state_hash
+                );
+                return Ok(ExitCode::FAILURE);
+            }
+            print!("{}", built.plan.render_text());
+            if let Some(refusal) = &built.refusal {
+                eprintln!("refusing to apply to {target}: {refusal}");
+                return Ok(ExitCode::FAILURE);
+            }
+        }
+        None => {
+            if matches!(origin, DesiredSource::Backup(_)) {
+                println!("restoring {} to {target}", origin.origin());
+            }
+            plan_cmd::print_text(target, live, &report);
+        }
     }
-    plan_cmd::print_text(target, live, &report);
+    let partial = built.as_ref().and_then(|b| b.partial.as_ref());
+    let param_detail = params.as_ref().and_then(|p| p.detail.as_ref());
 
     // Compute the System 7 region images up front: an image that would not fit
     // its memory region must refuse here, before anything is confirmed, backed up
@@ -297,7 +395,8 @@ pub(crate) fn apply_desired(
     };
 
     // Zero-change: print nothing-to-do and exit 0 WITHOUT touching load states.
-    if report.is_noop() {
+    let tables_change = !report.is_noop();
+    if !tables_change && partial.is_none() {
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -341,8 +440,9 @@ pub(crate) fn apply_desired(
         );
     }
 
-    // Confirm unless --yes.
-    if !confirm(target, &gateway, yes, &report, origin)? {
+    // Confirm unless --yes: one question for the whole write.
+    let question = built.as_ref().map(|b| b.plan.question());
+    if !confirm(target, &gateway, yes, &report, origin, question.as_deref())? {
         eprintln!("aborted — no changes written.");
         return Ok(ExitCode::FAILURE);
     }
@@ -354,7 +454,11 @@ pub(crate) fn apply_desired(
         bussard_model::history::SnapshotReason::new(origin.verb())
             .with_args([target.to_string()])
             .with_gateway(Some(gateway.clone()))
-            .with_result("before writing the device tables"),
+            .with_result(if partial.is_some() {
+                "before writing the device tables and parameters"
+            } else {
+                "before writing the device tables"
+            }),
     );
 
     // Back up the pre-state tables before writing anything. A restore takes one
@@ -367,6 +471,30 @@ pub(crate) fn apply_desired(
         )
     })?;
     println!("backup written to {}", backup_path.display());
+    let param_backup = match (partial, param_detail) {
+        (Some(_), Some(detail)) => {
+            let path =
+                crate::flash_params::write_backup(dir, target, &detail.plan, &detail.regions)
+                    .context("writing the parameter backup (refusing to write without a backup)")?;
+            println!("parameter backup written to {}", path.display());
+            Some(path)
+        }
+        _ => None,
+    };
+    if !tables_change {
+        return write_parameters(
+            &runtime,
+            service,
+            target,
+            source,
+            partial,
+            param_detail,
+            &tool_key,
+            &secure_seq,
+            &read_options,
+            param_backup.as_deref(),
+        );
+    }
 
     if let Some((_, images)) = &sys7
         && let Some((from, to)) = images.group_object_moved
@@ -421,6 +549,23 @@ pub(crate) fn apply_desired(
                 summary.association_state,
                 report.resulting_association_count,
             );
+            if partial.is_some() {
+                let code = write_parameters(
+                    &runtime,
+                    service,
+                    target,
+                    source,
+                    partial,
+                    param_detail,
+                    &tool_key,
+                    &secure_seq,
+                    &read_options,
+                    param_backup.as_deref(),
+                )?;
+                if code != ExitCode::SUCCESS {
+                    return Ok(code);
+                }
+            }
             if let Some(hint) = crate::export_cmd::stale_export_hint(dir) {
                 eprintln!("{hint}");
             }
@@ -477,30 +622,122 @@ pub(crate) async fn execute(
         .await
 }
 
+/// Writes the parameter octets that differ (the `flash --parameters-only`
+/// download) and verifies them by reading the memory back.
+///
+/// A no-op when `partial` is `None`.
+#[allow(clippy::too_many_arguments)] // one write phase's context
+fn write_parameters(
+    runtime: &tokio::runtime::Runtime,
+    service: &bussard_service::BusService,
+    target: IndividualAddress,
+    source: IndividualAddress,
+    partial: Option<&bussard_download::FlashPlan>,
+    detail: Option<&crate::param_readback::ParamDetail>,
+    tool_key: &Option<bussard_secure::Key16>,
+    secure_seq: &bussard_secure::SequenceHighWater,
+    read_options: &L4Options,
+    backup: Option<&Path>,
+) -> anyhow::Result<ExitCode> {
+    let (Some(partial), Some(detail)) = (partial, detail) else {
+        return Ok(ExitCode::SUCCESS);
+    };
+    let backup_note = |target: IndividualAddress| {
+        if let Some(path) = backup {
+            eprintln!(
+                "The pre-apply parameter memory was backed up to:\n    {}\nRe-running \
+                 `bussard apply {target}` rewrites only the octets that still differ.",
+                path.display()
+            );
+        }
+    };
+    let facts = bussard_download::DeviceFacts {
+        object_table: detail.resident.object_table.clone(),
+        ..bussard_download::DeviceFacts::default()
+    };
+    let options = bussard_download::FlashOptions {
+        bcu_key: None,
+        verify_after_restart: true,
+        skip_matching_mcb: false,
+    };
+    let outcome = runtime.block_on(crate::flash_cmd::execute(
+        service,
+        target,
+        source,
+        partial,
+        options,
+        facts,
+        tool_key.clone(),
+        secure_seq.clone(),
+        false,
+        &std::cell::Cell::new(None),
+    ));
+    match outcome {
+        Ok(outcome) if outcome.ok() => {}
+        Ok(outcome) => {
+            eprintln!("\nERROR: the parameter download did not verify: {outcome:?}");
+            backup_note(target);
+            return Ok(ExitCode::FAILURE);
+        }
+        Err(err) => {
+            eprintln!("\nERROR: the parameter download failed: {err}");
+            backup_note(target);
+            return Ok(ExitCode::FAILURE);
+        }
+    }
+    let after = runtime.block_on(async {
+        service
+            .with_l4(target, read_options, async |l4| {
+                anyhow::Ok(bussard_download::read_parameter_regions(l4, &detail.plan).await)
+            })
+            .await
+    })?;
+    match crate::flash_params::verify_readback(
+        partial,
+        &after,
+        &crate::flash_params::runtime_segments(&detail.plan),
+    ) {
+        Ok(octets) => {
+            println!(
+                "parameters verified: {octets} changed octet(s) read back from {target}; the \
+                 application is Loaded"
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(reason) => {
+            eprintln!("\nERROR: the parameter read-back does not match: {reason}");
+            backup_note(target);
+            Ok(ExitCode::FAILURE)
+        }
+    }
+}
+
 /// Confirms on a TTY (y/N), naming the resolved gateway (issue #74).
-/// Non-interactive without `--yes` is refused.
+/// Non-interactive without `--yes` is refused. `question` is the model plan's
+/// one question; `restore` builds its own from the table plan.
 fn confirm(
     target: IndividualAddress,
     gateway: &str,
     yes: bool,
     report: &PlanReport,
     origin: &DesiredSource,
+    question: Option<&str>,
 ) -> anyhow::Result<bool> {
     let changes = report.additions.len() + report.removals.len();
-    crate::confirm::confirm(
-        yes,
-        &format!(
+    let prompt = match question {
+        Some(q) => q.to_string(),
+        None => format!(
             "{} {changes} change(s) to {target} via {gateway}?",
             origin.verb()
         ),
-        || {
-            format!(
-                "refusing to write to {target} without a terminal to confirm on; \
+    };
+    crate::confirm::confirm(yes, &prompt, || {
+        format!(
+            "refusing to write to {target} without a terminal to confirm on; \
                  pass --yes to {} non-interactively",
-                origin.verb()
-            )
-        },
-    )
+            origin.verb()
+        )
+    })
 }
 
 /// Serialises the live pre-state tables to a JSON backup under

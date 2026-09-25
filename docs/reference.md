@@ -281,17 +281,17 @@ Guide a new device from programming mode into the model: product data, address a
 | `--skip-address-check` | off | Skip the pre-flight check that no bus device answers at bussard's own source address. See [SAFETY.md](SAFETY.md#source-address-check). |
 | `--allow-remote-gateway` | off | Permit a write to a non-loopback gateway (or set `BUSSARD_ALLOW_REAL_GATEWAY=1`). |
 
-### `bussard flash --product <FILE> <ADDRESS>`
+### `bussard flash <ADDRESS>`
 
-Flash an application program from vendor product data into a device (the ETS-free application download). Supports System B (`07B0` and the `57B0`/`27B0` variants) and System 7 (`0705`/`0701`/`0700`). Pre-flight plan first; refuses before any write on an unsupported mask family, a mask mismatch, or an unsupported load-procedure operation. The parameter memory image is computed from the vendor defaults plus the device file's `parameters:` overrides, so a flash also carries parameter changes. No backup exists for a flash; recovery is re-running `flash`.
+Download the full application program from vendor product data into a device (the ETS-free application download): for a fresh device, or one whose application changes. Everyday changes to links and parameters go through [`apply`](#bussard-apply-address), which writes only what differs. The product data is the archive in `<dir>/vendor/` whose catalogue carries the device's order number (`import` and `adopt` fetch it), and the application is the one the lock pins; `--product` and `--application` override both. Supports System B (`07B0` and the `57B0`/`27B0` variants) and System 7 (`0705`/`0701`/`0700`). Pre-flight plan first; refuses before any write on an unsupported mask family, a mask mismatch, or an unsupported load-procedure operation. The parameter memory image is computed from the vendor defaults plus the device file's `parameters:` overrides, so a flash also carries parameter changes. No backup exists for a flash; recovery is re-running `flash`.
 
 The same pre-flight also checks the device is factory-fresh (issue #79), read-only, before anything is written: it reads each object's load state and, on System B, the resident application id (`PID_PROGRAM_VERSION`). A device carrying a **different** application, one it cannot identify, or a load state it cannot read at all is **refused**; `--force` overrides. Re-flashing the **same** application is allowed without `--force` (it is the documented recovery path after an interrupted flash) and prints a notice, because it still resets the parameters to the vendor defaults plus the model's overrides and rewrites the tables from the model's links. See [the flash section in SAFETY.md](SAFETY.md#what-each-write-command-does-and-its-rails) for the full table.
 
 | Flag / arg | Default | Meaning |
 |---|---|---|
 | `<ADDRESS>` | | The device to program, e.g. `1.0.10`. |
-| `--product <FILE>` | required | The vendor `.knxprod` containing the application program. |
-| `--application <REF>` | sole/matching application | The application program id. Mutually exclusive with `--order-number`. |
+| `--product <FILE>` | cached archive | The vendor `.knxprod` containing the application program. Default: the archive in `<dir>/vendor/` whose catalogue carries the device's order number. |
+| `--application <REF>` | the lock's program | The application program id (default: the program the lock pins, else the order number's, else the sole one). Mutually exclusive with `--order-number`. |
 | `--order-number <ORDER>` | | Select the application by hardware order number (e.g. `AKK-0216.03`), resolved through the product's hardware catalogue. Exactly one match is required. |
 | `--dir <DIR>` | `knx` | The model directory. |
 | `--yes` | off | Skip the interactive confirmation (dangerous; for scripts). |
@@ -348,18 +348,35 @@ The confirmation, `--yes` and the gateway gate are the same as for `apply`. The 
 
 ### `bussard plan <ADDRESS>`
 
-Read a device's live tables and show what `apply` would change. With `--line`, plan every device the model has on that line instead. Read-only on the bus. Refuses to compute an empty table set for a device with no links in the model (that would wipe it). System B (`x7B0`) and System 7 (`0705` / `0701`); on System 7 the tables are read straight out of the `0x4000` / `0x4201` memory regions, bounded by the region size.
+Show what `apply` would write, without writing anything: the same plan `apply` prints before it asks. With `--line`, plan every device the model has on that line instead. Read-only on the bus. Refuses to compute an empty table set for a device with no links in the model (that would wipe it). System B (`x7B0`) and System 7 (`0705` / `0701`); on System 7 the tables are read straight out of the `0x4000` / `0x4201` memory regions, bounded by the region size.
+
+The plan speaks the device file's words, grouped by channel:
+
+```
+1.1.47 Jalousieaktor Kind 2
+  channel a-1 (Fenster Süd)
+    + langzeitbetrieb now listens on 0/1/3 (Jalousie Auf/Ab)
+    ~ status-position sends 0/1/4, was 0/1/9
+    ~ betriebsart = Jalousie, was Rollladen
+  unchanged: 3 objects, 41 parameters
+  writes: address table (4 entries), association table (5 entries), 1 parameter octet
+  backup: knx/captures/backups (tables) and knx/captures/backups/parameters (parameter memory)
+```
+
+`+` is a link the device gains (`now listens on`, or `now sends` for the object's sending address), `~` a sending address or a parameter that takes another value, `-` an address only the device has (`no longer uses`). Parameters are compared when product data is at hand: the `.knxprod` in `<dir>/vendor/` for the device's order number (fetched by `import` and `adopt`), or `--product`; without it a `note:` says so. A device that already matches prints `<ia> matches the model; nothing to write`. `-v` adds the table-level detail (every object and address, the load operations, the full parameter read-back).
+
+`--json` prints the same plan as data: `address`, `name`, `gateway`, `changes` (`mark`, `subject`, `channel`, `key`, `object`, `sentence`), `unchanged_objects`, `unchanged_parameters`, `writes` (`address_table`, `association_table`, `parameter_octets`), `backup_dir`, `notes`, `question`, and `state_hash`, the SHA-256 of the device state read (the raw tables, plus the parameter memory when it was read). `apply --plan <hash>` refuses when the device no longer hashes to it. The table detail (`additions`, `removals`, `unchanged`, the table counts, `load_steps`, `noop`) and the parameter read-back (`parameters`) are there too.
 
 | Flag / arg | Default | Meaning |
 |---|---|---|
 | `<ADDRESS>` | | The device to plan for, e.g. `1.1.4`. Omit with `--line`. |
 | `--line <LINE>` | | Plan every model device on this line, e.g. `1.1`, in address order (see [whole-line runs](#whole-line-runs)). |
 | `--dir <DIR>` | `knx` | The model directory. |
-| `--product <FILE>` | cached archive | Also read back the parameter memory and list the parameters that differ from the model, next to the link differences (see [parameter read-back](#parameter-read-back)). Without it the archive in `<dir>/vendor/` whose catalogue carries the model's order number is used, when cached. |
-| `--application <REF>` | model's application | The application program id to decode with. |
+| `--product <FILE>` | cached archive | The product data to compare the parameter memory with (see [parameter read-back](#parameter-read-back)). Without it the archive in `<dir>/vendor/` whose catalogue carries the model's order number is used, when cached. |
+| `--application <REF>` | the lock's program | The application program id to decode with. |
 | `--keyring <FILE>` | | The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool key, as for [`reconstruct`](#bussard-reconstruct-address). With `--line`, each device's key is looked up in it. |
 | `--tool-key <HEX>` | | The raw 32-hex-character tool key, for a simulator or bench device. Conflicts with `--keyring`. |
-| `--json` | off | Emit JSON instead of the report format. |
+| `--json` | off | Emit the plan as JSON (above), with `state_hash`. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
 | `--skip-address-check` | off | Skip the pre-flight check that no bus device answers at bussard's own source address. See [SAFETY.md](SAFETY.md#source-address-check). |
@@ -367,7 +384,17 @@ Read a device's live tables and show what `apply` would change. With `--line`, p
 
 ### `bussard apply <ADDRESS>`
 
-Apply the model's link tables to a device: validate, plan, confirm, back up, write, verify. Validation comes first: a model with errors is refused with the diagnostics and nothing is written (warnings do not block). The pre-state tables are written to `<dir>/captures/backups/<ia>-<timestamp>.json` before any write (the format `backup` and `restore` share), and `apply` prints a hint when no installation-wide `backup` run exists yet; tables are rewritten wholesale, so re-running `apply` is idempotent. System B (`x7B0`) and System 7 (`0705` / `0701`). On System B each table is written into a segment the device allocates for it: StartLoading, `LdCtrlRelSegment`, read the placement from `PID_TABLE_REFERENCE`, memory-write the count word plus the elements, LoadCompleted. The `PID_TABLE` property array is never written, because real devices refuse it (see the finding in [testing-campaign.md](testing-campaign.md#findings)). On System 7 only the two table load-state machines are driven (Unload, StartLoading, allocate, 12-octet writes with read-back verify, TaskSegment, LoadCompleted) — parameters are untouched and the device is not restarted, so a link change costs no downtime.
+Write the model to one device. `apply` is the one verb for everyday changes, links and parameters alike:
+
+1. Validate the model. An error stops here with the diagnostics and nothing is written (warnings do not block). A group address the device files use but `groups.toml` does not define is declared there first.
+2. Read the device's live tables and, when product data is at hand, its parameter memory, over one management session.
+3. Print the [plan](#bussard-plan-address) and ask once: `apply these 3 changes to 1.1.47 through 192.168.1.74:3671? [y/N]`. An empty plan prints `1.1.47 matches the model; nothing to write` and asks nothing. `--yes` answers for a script; without a terminal and without `--yes` the write is refused. With `--plan <hash>` (the `state_hash` from `plan --json`), a device whose state no longer hashes to it is refused before the question.
+4. Back up the pre-state tables to `<dir>/captures/backups/<ia>-<timestamp>.json` (the format `backup` and `restore` share) and, when parameters change, the parameter memory to `<dir>/captures/backups/parameters/`.
+5. Write the minimum: the tables when a link changes, and only the parameter octets that differ (the [parameter-only download](#parameter-only-download): no unload, no segment allocation, then the load completes and the device restarts). Each is verified by reading it back.
+
+A parameter change that shows or hides a com-object changes the group-object table, which a parameter download does not rewrite: `apply` refuses that device and names the full [`flash`](#bussard-flash-address) it needs. A device that runs another application than the product data describes gets its links written and its parameters left alone, with a note that a full `flash` is the way to change the application. `apply` prints a hint when no installation-wide `backup` run exists yet. Tables are rewritten wholesale, so re-running `apply` is idempotent.
+
+On the wire: System B (`x7B0`) and System 7 (`0705` / `0701`). On System B each table is written into a segment the device allocates for it: StartLoading, `LdCtrlRelSegment`, read the placement from `PID_TABLE_REFERENCE`, memory-write the count word plus the elements, LoadCompleted. The `PID_TABLE` property array is never written, because real devices refuse it (see the finding in [testing-campaign.md](testing-campaign.md#findings)). On System 7 a link change drives only the two table load-state machines (Unload, StartLoading, allocate, 12-octet writes with read-back verify, TaskSegment, LoadCompleted): parameters are untouched and the device is not restarted, so a link change costs no downtime.
 
 | Flag / arg | Default | Meaning |
 |---|---|---|
@@ -377,6 +404,9 @@ Apply the model's link tables to a device: validate, plan, confirm, back up, wri
 | `--json` | off | Line mode only: emit the summary as JSON. |
 | `--dir <DIR>` | `knx` | The model directory. |
 | `--yes` | off | Skip the interactive confirmation (dangerous; for scripts). |
+| `--plan <HASH>` | | Single-device mode: refuse unless the device state still hashes to this `state_hash` from `bussard plan --json`. |
+| `--product <FILE>` | cached archive | Single-device mode: the product data to compare and write the parameter memory with. Default: the archive in `<dir>/vendor/` whose catalogue carries the device's order number. |
+| `--application <REF>` | the lock's program | Single-device mode: the application program id to decode the parameters with. |
 | `--keyring <FILE>` | | The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool key. Required for a security-activated device; the password comes from `BUSSARD_KEYRING_PASSWORD`. |
 | `--tool-key <HEX>` | | The raw 32-hex-character tool key, for a simulator or bench device. Conflicts with `--keyring`. |
 | `--secure-sender <IA>` | off | Single-device mode, Data Secure: add this address (bussard's tunnel address) with sequence 0 to the security individual address table (PID 54) the security object is reprogrammed with, as for `flash`. Conflicts with `--line`. |
@@ -1228,8 +1258,8 @@ Bus operations share one rate limiter (minimum 250 ms between operations, at mos
 | `knx_undo` | `snapshot_id` (optional) | Restores the model files to a snapshot (default: the newest one that differs from the working files, i.e. undo the last change). Files only. |
 | `knx_export_bundle` | `path`, `include_history` (default true), both optional | Writes the model and its history as one `.bussard` file (default: next to the model directory) and returns the path and manifest. Available in every tier. |
 | `knx_diff_project` | `path` (a `.knxproj` or `.bussard`) | What that file would change compared with the working model: `{count, summary, touches_protected, sentences, changes, source}`. The assistant quotes the sentences before the human imports. A password-protected `.knxproj` needs `BUSSARD_PROJECT_PASSWORD` in the server's environment. Read-only; available in every tier. |
-| `knx_plan_device` | `address` | Reads the device's live tables (read-only on the bus) and returns `plan` (the text `bussard plan` prints: additions, removals, unchanged count, table sizes, load operations), `pending_model_changes` (sentences), the same lists as JSON, `backup_dir`, `plan_digest`, `planned_at` and `expires_at`. A plan with nothing to do has no digest. Refuses a change that touches a protected GA. With the server's `--keyring`, a Data Secure device the keyring lists is read over KNX Data Secure (`secured: true`). Registered only with `--allow-programming`. |
-| `knx_apply_device` | `address`, `plan_digest` | Writes the planned tables: backup first, then the `bussard apply` write, then a read-back verify. Returns `verified`, the final load states, `backup`, `gateway` and the history `snapshot`. Refused unless the digest is fresh and a new read still reproduces it (see below), and for a device the server's `--keyring` holds a Data Secure tool key for (use `bussard apply --keyring`). Registered only with `--allow-programming`. |
+| `knx_plan_device` | `address` | Reads the device's live tables (read-only on the bus) and returns the plan `bussard plan --json` has for the tables: `sentences` (the text rendering in the device file's words), `changes`, `unchanged_objects`, `writes`, `question`, `state_hash`, plus `plan` (the table-level detail: additions, removals, unchanged count, table sizes, load operations), `pending_model_changes` (sentences), the same lists as JSON, `backup_dir`, `plan_digest`, `planned_at` and `expires_at`. Parameters are not compared over MCP. A plan with nothing to do has no digest. Refuses a change that touches a protected GA. With the server's `--keyring`, a Data Secure device the keyring lists is read over KNX Data Secure (`secured: true`). Registered only with `--allow-programming`. |
+| `knx_apply_device` | `address`, `plan_digest`, `plan_hash` (optional) | Writes the planned tables: backup first, then the `bussard apply` write, then a read-back verify. Returns `verified`, the final load states, `backup`, `gateway` and the history `snapshot`. Refused unless the digest is fresh and a new read still reproduces it (see below), when `plan_hash` is given and a fresh read no longer hashes to it, and for a device the server's `--keyring` holds a Data Secure tool key for (use `bussard apply --keyring`). Registered only with `--allow-programming`. |
 
 ### The programming tier
 

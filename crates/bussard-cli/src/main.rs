@@ -13,6 +13,7 @@ mod confirm;
 mod conn_cmd;
 mod describe_cmd;
 mod device_facts;
+mod device_plan;
 mod diff_cmd;
 mod doc_cmd;
 mod export_cmd;
@@ -707,15 +708,19 @@ enum Command {
         #[arg(long)]
         allow_remote_gateway: bool,
     },
-    /// Flash an application program from vendor product data into a device.
+    /// Download the full application program into a device (a fresh device, or
+    /// one whose application changes). Everyday changes go through `apply`.
     Flash {
         /// The device to program, e.g. `1.0.10`.
         #[arg(value_name = "ADDRESS")]
         address: String,
-        /// The vendor `.knxprod` containing the application program.
+        /// The vendor `.knxprod` containing the application program. Default:
+        /// the archive in `<dir>/vendor/` whose catalogue carries the device's
+        /// order number.
         #[arg(long, value_name = "FILE")]
-        product: PathBuf,
-        /// The application program id (default: sole/matching application).
+        product: Option<PathBuf>,
+        /// The application program id (default: the program the lock pins,
+        /// else the order number's, else the sole application).
         #[arg(long, value_name = "REF", conflicts_with = "order_number")]
         application: Option<String>,
         /// Select the application program by hardware order number (e.g.
@@ -883,10 +888,11 @@ enum Command {
         #[arg(long)]
         refresh_facts: bool,
     },
-    /// Apply the model's link tables to a device (plan, confirm, write, verify),
-    /// or (with `--line`) to every model device on a whole line.
+    /// Write the model to a device: validate, read the device, show the plan,
+    /// ask once, back up, write only what differs (links and parameter
+    /// octets), verify. With `--line`, every model device on a line.
     Apply {
-        /// The device to program, e.g. `1.1.4` (mutually exclusive with
+        /// The device to write, e.g. `1.1.4` (mutually exclusive with
         /// `--line`).
         #[arg(value_name = "ADDRESS", required_unless_present = "line")]
         address: Option<String>,
@@ -909,6 +915,20 @@ enum Command {
         /// Skip the interactive confirmation (dangerous; for scripts).
         #[arg(long)]
         yes: bool,
+        /// Refuse unless the device state still hashes to this `state_hash`
+        /// from `bussard plan --json`: the plan a human approved is the plan
+        /// written.
+        #[arg(long = "plan", value_name = "HASH", conflicts_with = "line")]
+        plan_hash: Option<String>,
+        /// The device's vendor `.knxprod`, to compare and write its parameter
+        /// memory. Without it the archive in `<dir>/vendor/` whose catalogue
+        /// carries the device's order number is used, when cached.
+        #[arg(long, value_name = "FILE", conflicts_with = "line")]
+        product: Option<PathBuf>,
+        /// The application program id to decode the parameters with (default:
+        /// the program the lock pins, else the order number, else the sole one).
+        #[arg(long, value_name = "REF", conflicts_with = "line")]
+        application: Option<String>,
         /// The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool
         /// key (issue #71). Required for a security-activated device; the keyring
         /// password comes from `BUSSARD_KEYRING_PASSWORD`, never a CLI argument.
@@ -1894,7 +1914,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             dump_images,
         } => flash_cmd::run(
             &address,
-            &product,
+            product.as_deref(),
             application.as_deref(),
             order_number.as_deref(),
             &dir,
@@ -1961,6 +1981,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                             application: application.as_deref(),
                         },
                         tool_key_source,
+                        verbose,
                     )
                 }
             }
@@ -1972,6 +1993,9 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             resume,
             dir,
             yes,
+            plan_hash,
+            product,
+            application,
             keyring,
             tool_key,
             secure_sender,
@@ -2013,6 +2037,13 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                         tool_key_source,
                         secure_sender,
                         overrides,
+                        apply_cmd::ApplyInputs {
+                            selection: param_readback::Selection {
+                                product: product.as_deref(),
+                                application: application.as_deref(),
+                            },
+                            plan_hash: plan_hash.as_deref(),
+                        },
                     )
                 }
             }

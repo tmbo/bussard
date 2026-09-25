@@ -27,6 +27,7 @@ pub mod apply_sys7;
 pub mod backup;
 pub mod compute;
 pub mod compute_sys7;
+pub mod device_plan;
 pub mod flash;
 pub mod param_decode;
 pub mod param_plan;
@@ -63,6 +64,10 @@ pub use compute_sys7::{
     SYS7_ASSOCIATION_TABLE_ADDR, Sys7DecodeError, Sys7GroupObject, decode_sys7_address_table,
     decode_sys7_association_table, decode_sys7_group_object_table, sys7_address_table,
     sys7_association_table, sys7_config_byte, sys7_group_object_table, sys7_group_objects,
+};
+pub use device_plan::{
+    ChangeMark, ChangeSubject, DevicePlan, PlanChange, PlanWrites, object_changes, sort_changes,
+    state_hash,
 };
 pub use flash::{
     AppIdentity, Connector, DeviceFacts, FlashOptions, FlashOutcome, FlashPlan, FlashStep,

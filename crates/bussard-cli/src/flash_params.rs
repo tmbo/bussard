@@ -466,7 +466,7 @@ pub(crate) async fn sys7_table_change<Ch: bussard_mgmt::L4Channel>(
 }
 
 /// Names what a group-object change shows and hides.
-fn describe_group_object_change(change: &bussard_download::GroupObjectChange) -> String {
+pub(crate) fn describe_group_object_change(change: &bussard_download::GroupObjectChange) -> String {
     let list = |v: &[u16]| v.iter().map(u16::to_string).collect::<Vec<_>>().join(", ");
     let mut parts = Vec::new();
     if !change.shown.is_empty() {
@@ -643,7 +643,7 @@ fn confirm(
 
 /// Writes the pre-download parameter memory to
 /// `<dir>/captures/backups/parameters/<ia>-<ts>.json`.
-fn write_backup(
+pub(crate) fn write_backup(
     dir: &Path,
     target: IndividualAddress,
     plan: &FlashPlan,
@@ -675,7 +675,7 @@ fn write_backup(
 /// The System 7 segments the running application rewrites after the restart
 /// (`checksum_ctrl == 0`, the Jung `0x4916` region, issue #89): their
 /// read-back proves nothing, so the verify skips them.
-fn runtime_segments(plan: &FlashPlan) -> std::collections::BTreeSet<String> {
+pub(crate) fn runtime_segments(plan: &FlashPlan) -> std::collections::BTreeSet<String> {
     plan.steps
         .iter()
         .filter_map(|step| match step {
@@ -692,7 +692,7 @@ fn runtime_segments(plan: &FlashPlan) -> std::collections::BTreeSet<String> {
 /// Compares the read-back against every octet the download meant to change,
 /// except in the segments the application rewrites at run time (`skip`).
 /// Returns how many octets were checked.
-fn verify_readback(
+pub(crate) fn verify_readback(
     partial: &FlashPlan,
     after: &ParamRegions,
     skip: &std::collections::BTreeSet<String>,

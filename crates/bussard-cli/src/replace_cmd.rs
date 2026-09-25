@@ -135,7 +135,7 @@ pub fn run(
         println!("\nflashing the application from {}…", product.display());
         let code = crate::flash_cmd::run(
             address,
-            product,
+            Some(product),
             None,
             None,
             dir,
@@ -177,6 +177,7 @@ pub fn run(
         tool_key_source,
         None,
         overrides,
+        crate::apply_cmd::ApplyInputs::default(),
     )?;
     if code != ExitCode::SUCCESS {
         eprintln!(

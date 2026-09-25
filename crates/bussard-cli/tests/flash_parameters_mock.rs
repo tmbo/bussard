@@ -1146,3 +1146,152 @@ fn test_flash_verbose_reports_phase_timings() -> TestResult {
     }
     Ok(())
 }
+
+/// `apply` is the one verb that writes a device: with product data it compares
+/// the parameter memory too, and writes only the octet that differs. The
+/// tables already match the model, so no table object is touched.
+#[test]
+fn test_apply_writes_only_the_differing_parameter_octet() -> TestResult {
+    let Some(bench) = Bench::start(
+        "apply-params",
+        MockDevice::running([7, 0]),
+        "\"thr@P-0_R-1\" = \"12\"\n",
+    )?
+    else {
+        return Ok(());
+    };
+    let out = bench.bussard(&["apply", "1.1.4", "--product", bench.product()?, "--yes"])?;
+    let (stdout, stderr) = text(&out);
+    assert!(out.status.success(), "stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert!(stdout.contains("1.1.4 Parameter test\n"), "{stdout}");
+    assert!(stdout.contains("  ~ thr@P-0_R-1 = 12, was 7\n"), "{stdout}");
+    assert!(
+        stdout.contains("  unchanged: 1 object, 0 parameters\n"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("  writes: 1 parameter octet\n"), "{stdout}");
+    assert!(stdout.contains("parameters verified"), "{stdout}");
+
+    let dev = bench.device();
+    assert_eq!(dev.memory_writes, vec![(PARAM_BASE, 1)], "{stderr}");
+    assert_eq!(dev.memory.get(&PARAM_BASE).copied(), Some(12));
+    // Only the application object loads: the link tables are left alone.
+    assert_eq!(
+        dev.load_events,
+        vec![
+            (APP_OBJECT, LE_START_LOADING),
+            (APP_OBJECT, LE_LOAD_COMPLETED)
+        ],
+        "{stderr}"
+    );
+    assert!(dev.property_writes.is_empty(), "{:?}", dev.property_writes);
+    // Both backups are written before the first write.
+    assert!(bench.tmp.join("knx/captures/backups/parameters").is_dir());
+    Ok(())
+}
+
+/// A device that already holds what the model says gets no question and no
+/// write.
+#[test]
+fn test_apply_with_an_empty_plan_writes_nothing() -> TestResult {
+    let Some(bench) = Bench::start(
+        "apply-noop",
+        MockDevice::running([12, 0]),
+        "\"thr@P-0_R-1\" = \"12\"\n",
+    )?
+    else {
+        return Ok(());
+    };
+    // No --yes and no terminal: an empty plan must not even ask.
+    let out = bench.bussard(&["apply", "1.1.4", "--product", bench.product()?])?;
+    let (stdout, stderr) = text(&out);
+    assert!(out.status.success(), "stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert!(
+        stdout.contains("1.1.4 matches the model; nothing to write"),
+        "{stdout}"
+    );
+    let dev = bench.device();
+    assert!(dev.load_events.is_empty() && dev.memory_writes.is_empty());
+    assert!(dev.property_writes.is_empty());
+    Ok(())
+}
+
+/// `plan --json` carries the plan and the `state_hash` of the state it read;
+/// `apply --plan <hash>` refuses once the device has moved on.
+#[test]
+fn test_apply_refuses_when_the_plan_hash_no_longer_matches() -> TestResult {
+    let Some(bench) = Bench::start(
+        "apply-hash",
+        MockDevice::running([7, 0]),
+        "\"thr@P-0_R-1\" = \"12\"\n",
+    )?
+    else {
+        return Ok(());
+    };
+    let out = bench.bussard(&["plan", "1.1.4", "--product", bench.product()?, "--json"])?;
+    let (stdout, stderr) = text(&out);
+    assert!(out.status.success(), "stdout:\n{stdout}\nstderr:\n{stderr}");
+    let json: serde_json::Value = serde_json::from_str(&stdout)?;
+    let hash = json["state_hash"]
+        .as_str()
+        .ok_or("no state_hash in the plan")?
+        .to_string();
+    assert_eq!(hash.len(), 64, "{json}");
+    assert_eq!(json["changes"][0]["mark"], "~", "{json}");
+    assert_eq!(json["changes"][0]["subject"], "parameter", "{json}");
+    assert_eq!(
+        json["changes"][0]["sentence"], "thr@P-0_R-1 = 12, was 7",
+        "{json}"
+    );
+    assert_eq!(json["writes"]["parameter_octets"], 1, "{json}");
+    assert_eq!(
+        json["question"],
+        format!(
+            "apply this change to 1.1.4 through 127.0.0.1:{}?",
+            bench.port
+        ),
+        "{json}"
+    );
+
+    // Someone else writes the device in between.
+    lock(&bench.shared).memory.insert(PARAM_BASE, 9);
+    let out = bench.bussard(&[
+        "apply",
+        "1.1.4",
+        "--product",
+        bench.product()?,
+        "--plan",
+        &hash,
+        "--yes",
+    ])?;
+    let (stdout, stderr) = text(&out);
+    assert!(!out.status.success(), "must refuse:\n{stdout}\n{stderr}");
+    assert!(
+        stderr.contains("the device state no longer matches the plan"),
+        "{stderr}"
+    );
+    let dev = bench.device();
+    assert!(dev.load_events.is_empty() && dev.memory_writes.is_empty());
+
+    // With the current hash the same apply goes through.
+    let out = bench.bussard(&["plan", "1.1.4", "--product", bench.product()?, "--json"])?;
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    let fresh = json["state_hash"]
+        .as_str()
+        .ok_or("no state_hash")?
+        .to_string();
+    assert_ne!(fresh, hash);
+    let out = bench.bussard(&[
+        "apply",
+        "1.1.4",
+        "--product",
+        bench.product()?,
+        "--plan",
+        &fresh,
+        "--yes",
+    ])?;
+    let (stdout, stderr) = text(&out);
+    assert!(out.status.success(), "stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert_eq!(bench.device().memory.get(&PARAM_BASE).copied(), Some(12));
+    Ok(())
+}

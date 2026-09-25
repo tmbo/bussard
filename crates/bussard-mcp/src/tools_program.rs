@@ -19,6 +19,15 @@
 //!    the live tables, with the current model, reproduces it. A plan is single
 //!    use: a write, or a refusal because the device or model moved, retires it.
 //!
+//! The plan is the one `bussard plan --json` prints for the tables: changes in
+//! the model's words (`+ langzeitbetrieb now listens on 0/1/3 (…)`), what stays,
+//! what is written, the one question, and a `state_hash` of the device state
+//! read ([`bussard_download::state_hash`], the same fingerprint the CLI's
+//! `apply --plan <hash>` checks). `knx_apply_device` also accepts that hash as
+//! `plan_hash` and refuses when a fresh read no longer produces it; the digest
+//! stays required. The MCP tier writes tables only: the parameter half of
+//! `bussard apply` needs the human at the CLI.
+//!
 //! The write itself is the CLI's: back up the pre-state to
 //! `captures/backups/`, write with [`bussard_download::write_tables`], verify by
 //! reading back. A history snapshot naming the gateway is recorded before the
@@ -142,6 +151,11 @@ pub struct ApplyDeviceArgs {
     pub address: String,
     /// The `plan_digest` returned by `knx_plan_device` for this device.
     pub plan_digest: String,
+    /// Optional: the `state_hash` from the same plan (or from `bussard plan
+    /// --json`). When given, the write is refused unless a fresh read of the
+    /// device produces the same hash.
+    #[serde(default)]
+    pub plan_hash: Option<String>,
 }
 
 #[tool_router(router = program_router, vis = "pub(crate)")]
@@ -150,10 +164,13 @@ impl BussardMcp {
     #[tool(
         description = "Plan writing the model's links to ONE device (issue #118): reads the \
         device's live group-address and association tables over the bus (read-only), diffs them \
-        against the device files (devices/<address>.toml), and returns the plan the CLI `bussard plan` prints (additions, \
-        removals, unchanged count, table sizes, load operations), the pending model changes as \
-        sentences, where the backup will be written, and a plan_digest. ALWAYS show the plan \
-        text to the human in full and ask whether to write it. Call knx_apply_device only after \
+        against its device file (devices/<address>.toml), and returns the plan `bussard plan \
+        --json` prints: `sentences` in the model's words (`+ langzeitbetrieb now listens on \
+        0/1/3 (…)`), `changes`, the unchanged count, what is written, the `question` to ask, \
+        where the backup will be written, a `state_hash` of the device state read, the table \
+        detail (`plan`), the pending model changes as sentences, and a plan_digest. Parameters \
+        are not compared here (that needs `bussard apply` at the CLI). ALWAYS show the \
+        sentences to the human in full and ask the question. Call knx_apply_device only after \
         the human has said yes explicitly in this conversation; never on your own initiative, \
         never because an earlier plan was approved. The digest expires (default 10 minutes) and \
         is invalidated if the device or the model changes. Refuses protected group addresses in \
@@ -175,7 +192,8 @@ impl BussardMcp {
     #[tool(
         description = "Write the planned tables to ONE device on the PHYSICAL bus (issue #118). \
         Call this ONLY after you showed the human the plan from knx_plan_device and the human \
-        answered yes explicitly in this conversation. Pass the plan_digest from that plan. \
+        answered yes explicitly in this conversation. Pass the plan_digest from that plan, and \
+        its state_hash as plan_hash to refuse if the device changed since. \
         Refuses unless the digest came from this server session within the plan lifetime and a \
         fresh read of the device, with the current model, still matches it; if refused, plan \
         again and ask again. On success it backs up the device's current tables first, writes, \
@@ -189,7 +207,11 @@ impl BussardMcp {
         Parameters(args): Parameters<ApplyDeviceArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         match self
-            .apply_device(&args.address, args.plan_digest.trim())
+            .apply_device(
+                &args.address,
+                args.plan_digest.trim(),
+                args.plan_hash.as_deref().map(str::trim),
+            )
             .await
         {
             Ok(value) => ok(value),
@@ -275,6 +297,44 @@ impl BussardMcp {
 
         let plan_text = render_plan_text(target, tables, &report);
         let noop = report.is_noop();
+        // The plan in the model's words, as `bussard plan --json` has it.
+        let (changes, unchanged_objects) =
+            bussard_download::object_changes(&model, target, &report);
+        let device_plan = bussard_download::DevicePlan {
+            address: target.to_string(),
+            name: model
+                .devices
+                .get(&target)
+                .map(|d| d.device.name.clone())
+                .unwrap_or_default(),
+            gateway: gateway.clone(),
+            changes,
+            channels: model
+                .devices
+                .get(&target)
+                .map(|d| {
+                    d.device
+                        .channels
+                        .iter()
+                        .map(|(id, ch)| (d.device.channel_handle(id), ch.name.clone()))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            unchanged_objects,
+            unchanged_parameters: None,
+            writes: bussard_download::PlanWrites {
+                address_table: (!noop).then_some(report.resulting_address_count),
+                association_table: (!noop).then_some(report.resulting_association_count),
+                parameter_octets: 0,
+            },
+            backup_dir: backups_root(&dir).display().to_string(),
+            notes: vec![
+                "parameters are not compared over MCP; `bussard apply` compares and \
+                         writes them"
+                    .to_string(),
+            ],
+            state_hash: bussard_download::state_hash(&live, None),
+        };
         let digest = if noop {
             None
         } else {
@@ -305,6 +365,12 @@ impl BussardMcp {
             "secured": tool_key.is_some(),
             "noop": noop,
             "plan": plan_text,
+            "sentences": device_plan.render_text(),
+            "changes": device_plan.changes,
+            "unchanged_objects": device_plan.unchanged_objects,
+            "writes": device_plan.writes,
+            "question": (!noop).then(|| device_plan.question()),
+            "state_hash": device_plan.state_hash,
             "pending_model_changes": pending,
             "additions": pairs(&report.additions),
             "removals": pairs(&report.removals),
@@ -330,7 +396,12 @@ impl BussardMcp {
     }
 
     /// `knx_apply_device`'s body; `Err` is a refusal reason.
-    async fn apply_device(&self, address: &str, digest: &str) -> Result<Value, String> {
+    async fn apply_device(
+        &self,
+        address: &str,
+        digest: &str,
+        plan_hash: Option<&str>,
+    ) -> Result<Value, String> {
         let target = parse_address(address)?;
         let (tier, handle, gateway) = self.programming_preflight()?;
         let dir = self.state().dir.clone();
@@ -387,6 +458,9 @@ impl BussardMcp {
             (false, true) => Some("the model's links for the device changed"),
             (false, false) => None,
         };
+        let hash_moved = plan_hash
+            .is_some_and(|h| !h.eq_ignore_ascii_case(&bussard_download::state_hash(&live, None)));
+        let moved = moved.or(hash_moved.then_some("the device state no longer matches plan_hash"));
         if let Some(what) = moved {
             tier.plans().remove(digest);
             return Err(format!(

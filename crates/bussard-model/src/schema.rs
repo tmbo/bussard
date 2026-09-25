@@ -312,6 +312,28 @@ pub struct Device {
     pub security: Option<DeviceSecurity>,
 }
 
+impl Device {
+    /// The handle channel `id` goes by in the device file (`[channel.<handle>]`):
+    /// the key `bussard.lock` assigns, else the id itself.
+    pub fn channel_handle(&self, id: &str) -> String {
+        crate::files::handle_of(self, id)
+    }
+
+    /// Where the device file keeps the parameter with app-relative
+    /// `ParameterRef` id `reference` (`MD-3_M-18_MI-1_P-14_R-14`): the owning
+    /// channel id (`None` at device level) and the key the file uses for it.
+    /// `None` when neither the lock nor the file knows the parameter.
+    pub fn parameter_place(&self, reference: &str) -> Option<(Option<String>, String)> {
+        if let Some(p) = self.lock.parameters.get(reference) {
+            return Some((p.channel.clone(), p.key.clone()));
+        }
+        self.parameters
+            .keys()
+            .find(|k| k.split_once('@').is_some_and(|(_, r)| r == reference))
+            .map(|k| (None, k.clone()))
+    }
+}
+
 /// The KNX Secure status of a device, recorded as flags-only in the committed
 /// model (issue #71, spec §11 / §2.2).
 ///

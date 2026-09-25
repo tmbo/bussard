@@ -54,7 +54,7 @@ use crate::conn_cmd::{
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     address: &str,
-    product: &Path,
+    product: Option<&Path>,
     application: Option<&str>,
     order_number: Option<&str>,
     dir: &Path,
@@ -98,7 +98,26 @@ pub fn run(
         None => None,
     };
 
-    // Load the product data and pick the application program.
+    // Load the product data and pick the application program. Without
+    // `--product`, the archive in `<dir>/vendor/` whose catalogue carries the
+    // device's order number (the one `import` and `adopt` fetched).
+    let device_product = model
+        .as_ref()
+        .and_then(|m| m.devices.get(&target))
+        .and_then(|d| d.device.product.clone());
+    let product_path = match product {
+        Some(path) => path.to_path_buf(),
+        None => {
+            let Some(order) = device_product.as_ref().and_then(|p| p.order_number.clone()) else {
+                bail!(
+                    "no --product given and the model names no product for {target} (the \
+                     `product` order number in devices/{target}.toml); pass --product <FILE>"
+                );
+            };
+            crate::commission_cmd::resolve_product_file(dir, None, &order)?
+        }
+    };
+    let product = product_path.as_path();
     let product_data = bussard_prod::read_knxprod(product)
         .with_context(|| format!("reading product data from {}", product.display()))?;
 
@@ -118,6 +137,21 @@ pub fn run(
         }
     } else {
         let candidates: Vec<&ApplicationProgram> = product_data.applications.iter().collect();
+        // Without a selector, the program the lock pins (or the device file
+        // overrides) when the archive has it, else the order number's.
+        let pinned = device_product
+            .as_ref()
+            .and_then(|p| p.application_ref.as_deref())
+            .filter(|id| select_application(&candidates, Some(id)).is_ok());
+        let by_order = device_product
+            .as_ref()
+            .and_then(|p| p.order_number.as_deref())
+            .and_then(|order| resolve_by_order_number(&product_data, order).ok())
+            .map(|app| app.id.as_str());
+        let application =
+            application
+                .or(pinned)
+                .or(if candidates.len() > 1 { by_order } else { None });
         match select_application(&candidates, application) {
             Ok(app) => app,
             Err(err) => {

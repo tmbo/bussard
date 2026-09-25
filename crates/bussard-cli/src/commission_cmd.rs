@@ -395,7 +395,7 @@ fn commission_one(
         eprintln!("  flashing from {}", product.display());
         let flashed = crate::flash_cmd::run(
             &target.address.to_string(),
-            &product,
+            Some(&product),
             None,
             Some(&order),
             dir,
@@ -428,6 +428,7 @@ fn commission_one(
             tool_key_source,
             None,
             overrides.clone(),
+            crate::apply_cmd::ApplyInputs::default(),
         );
         match applied {
             Ok(code) if exited_ok(&code) => {}

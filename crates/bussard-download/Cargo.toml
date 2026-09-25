@@ -25,6 +25,7 @@ tracing = { workspace = true }
 # env-gated corpus test and any tooling that regenerates the checked-in baseline.
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 
 [dev-dependencies]
 bussard-testkit = { workspace = true }

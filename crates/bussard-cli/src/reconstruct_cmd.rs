@@ -153,7 +153,7 @@ pub fn run(
     let read = live.tables();
 
     let mut report = build_report(target, read, model.as_ref());
-    report.parameters = params;
+    report.parameters = params.map(|p| p.readback);
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {

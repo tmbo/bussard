@@ -72,7 +72,7 @@ live installation. Two safe practice targets:
   accepts the same programming a real System B or System 7 device does and
   rejects out-of-order or out-of-bounds operations, so a mistake fails on the
   sim instead of on your wall. See the [flash walk-through](howto.md#-flash-a-factory-fresh-device)
-  and the [`bussard flash` reference](reference.md#bussard-flash---product-file-address).
+  and the [`bussard flash` reference](reference.md#bussard-flash-address).
 - **A spare device on the bench**, powered and reachable but not wired into
   anything that moves.
 
@@ -113,13 +113,23 @@ it widens who the device trusts; the next ETS download of the device removes
 it again. `monitor --keyring` is read-only on the bus. See [Secured group
 writes from bussard](#secured-group-writes-from-bussard) for the workflow.
 
-**`apply <ADDRESS>`** writes the model's link tables (group address and
-association tables) to a device. It backs up first: the device's pre-apply
-tables are written to `<dir>/captures/backups/<ia>-<timestamp>.json` before any
-write, and the apply refuses if the backup cannot be written. Tables are
-rewritten wholesale, so re-running `apply` is idempotent. To go back, re-apply
-from the model, or `bussard restore <dir>/captures/backups <ADDRESS>` to write
-the backed-up tables through the same path.
+**`apply <ADDRESS>`** writes the model to a device: its link tables (group
+address and association tables) and, when the product data is cached (or
+`--product` is given), the parameter octets that differ. It validates the model
+first and refuses on an error, before the bus is touched. It shows the plan in
+the device file's words and asks once (`apply these N changes to <ia> through
+<gateway>? [y/N]`); a device that already matches is not asked about and not
+written. With `--plan <hash>` it refuses when the device state no longer
+hashes to the `state_hash` of the plan a human approved (`plan --json`). It
+backs up first: the device's pre-apply tables are written to
+`<dir>/captures/backups/<ia>-<timestamp>.json`, and the parameter memory to
+`<dir>/captures/backups/parameters/` when parameters change, before any write;
+the apply refuses if a backup cannot be written. The parameter half is the
+parameter-only download below, with its rails; a parameter change that shows or
+hides a com-object is refused and needs a full `flash`. Tables are rewritten
+wholesale, so re-running `apply` is idempotent. To go back, re-apply from the
+model, or `bussard restore <dir>/captures/backups <ADDRESS>` to write the
+backed-up tables through the same path.
 
 **Installation-wide backup (`backup`, `restore`).** The per-device backup above
 covers only the device `apply` is about to touch. Take a snapshot of the whole
@@ -341,7 +351,8 @@ fall back to downloading it with ETS. Do not assume a device is functional until
 a flash reports the application `Loaded` and verified.
 
 **`flash --parameters-only <ADDRESS>`** rewrites only the parameter memory of
-a device that already runs the application (issue #119). Unlike a full flash
+a device that already runs the application (issue #119); `apply` runs the same
+download for the parameters that differ, after the tables. Unlike a full flash
 it has something to lose, the parameters the device holds, so it works like
 `apply`: it reads the parameter memory first, shows the parameters that change,
 confirms (or needs `--yes`), backs the memory up to
@@ -481,7 +492,10 @@ transmits at all.
    server session within `--plan-ttl-minutes` (default 10), and a fresh read of
    the device, with the current model, reproduces it. If the device was changed
    by ETS or another tool, or the model was edited, the apply is refused and the
-   digest is retired. A digest is single use.
+   digest is retired. A digest is single use. The plan also carries a
+   `state_hash` of the device state read (the same fingerprint `bussard plan
+   --json` prints); `knx_apply_device` with `plan_hash` refuses when a fresh
+   read no longer produces it. The digest stays required either way.
 4. **Human approval.** Both tool descriptions tell the assistant to show the
    plan to the human and to call `knx_apply_device` only after an explicit yes
    in the conversation. The digest makes this checkable: an apply can only
@@ -493,8 +507,8 @@ An apply then runs exactly the CLI rails: the pre-apply backup to
 `captures/backups/` (no backup, no write), a history snapshot
 `mcp knx_apply_device <address> <digest>` that names the gateway (the audit
 line in `bussard history`), the write, and a read-back verify. The result
-carries the verify outcome and the backup path. One device per call; `flash`
-and `apply --line` stay CLI-only.
+carries the verify outcome and the backup path. One device per call, tables
+only: the parameter half of `apply`, `flash` and `apply --line` stay CLI-only.
 
 ## History and undo
 

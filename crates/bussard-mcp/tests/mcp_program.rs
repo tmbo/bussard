@@ -441,3 +441,61 @@ async fn test_programming_tools_registered_only_with_the_tier() -> anyhow::Resul
     server_task.abort();
     Ok(())
 }
+
+/// The plan carries the model's sentences and a `state_hash`; an apply whose
+/// `plan_hash` does not match a fresh read is refused and writes nothing.
+#[tokio::test]
+async fn test_knx_apply_device_refuses_a_mismatched_plan_hash() -> anyhow::Result<()> {
+    let h = Harness::start(Duration::from_secs(600)).await?;
+    let plan = h
+        .call("knx_plan_device", json!({"address": "1.1.4"}))
+        .await?;
+    let sentences = plan["sentences"].as_str().unwrap_or_default();
+    assert!(
+        sentences.contains("+ object 22 now listens on 1/2/2"),
+        "{plan}"
+    );
+    assert!(
+        sentences.contains("- object 59 no longer uses 4/2/12"),
+        "{plan}"
+    );
+    let hash = plan["state_hash"].as_str().unwrap_or_default().to_string();
+    assert_eq!(hash.len(), 64, "{plan}");
+    assert!(
+        plan["question"]
+            .as_str()
+            .is_some_and(|q| q.starts_with("apply these 2 changes to 1.1.4 through")),
+        "{plan}"
+    );
+    let digest = digest_of(&plan)?;
+    let refused = h
+        .call(
+            "knx_apply_device",
+            json!({"address": "1.1.4", "plan_digest": digest, "plan_hash": "00".repeat(32)}),
+        )
+        .await?;
+    assert_eq!(refused["refused"], true, "{refused}");
+    assert!(
+        refused["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("plan_hash"),
+        "{refused}"
+    );
+    assert_eq!(h.writes()?, 0, "a refused apply must not write");
+
+    // The matching hash goes through (with a fresh digest: the refusal retired
+    // the old one).
+    let plan = h
+        .call("knx_plan_device", json!({"address": "1.1.4"}))
+        .await?;
+    let digest = digest_of(&plan)?;
+    let applied = h
+        .call(
+            "knx_apply_device",
+            json!({"address": "1.1.4", "plan_digest": digest, "plan_hash": hash}),
+        )
+        .await?;
+    assert_eq!(applied["ok"], true, "{applied}");
+    h.stop().await
+}
