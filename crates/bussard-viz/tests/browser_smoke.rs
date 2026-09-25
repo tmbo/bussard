@@ -175,49 +175,58 @@ fn dump_dom(chrome: &Path, url: &str) -> Result<String, Box<dyn Error + Send + S
         .stderr(std::process::Stdio::null())
         .spawn()?;
 
-    // Read stdout on a helper thread so the timeout applies even if Chrome never
-    // produces output. The thread reads to EOF (or until the pipe is closed when
-    // we kill Chrome) and sends the bytes back.
+    // Read stdout on a helper thread, chunk by chunk, so the timeout applies
+    // even if Chrome never produces output. The thread forwards every chunk
+    // and ends at EOF (Chrome exited, or we killed it).
     let mut stdout = child
         .stdout
         .take()
         .ok_or("chrome child had no stdout pipe")?;
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     let reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = stdout.read_to_end(&mut buf);
-        let _ = tx.send(buf);
-    });
-
-    // A page with no open connections (e.g. test.html) makes Chrome exit on its
-    // own, closing stdout, so the reader returns quickly. The index page holds
-    // its EventSource open even after `--dump-dom` has flushed the full document,
-    // so Chrome never exits; for that case we kill it after a short grace window
-    // (the dump is emitted well within it) which closes stdout and lets the
-    // reader return the complete buffer. The hard [`CHROME_TIMEOUT`] guards a
-    // Chrome that produces nothing at all.
-    let start = Instant::now();
-    let grace = Duration::from_secs(8);
-    let dom = loop {
-        match rx.recv_timeout(Duration::from_millis(200)) {
-            Ok(bytes) => break String::from_utf8_lossy(&bytes).into_owned(),
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                let over_grace = start.elapsed() > grace;
-                let over_hard = start.elapsed() > CHROME_TIMEOUT;
-                if over_grace || over_hard {
-                    // Kill Chrome; the reader then hits EOF and delivers the
-                    // buffered dump (Chrome flushes the DOM before it hangs).
-                    let _ = child.kill();
-                    let bytes = rx.recv().unwrap_or_default();
-                    break String::from_utf8_lossy(&bytes).into_owned();
+        let mut chunk = [0u8; 8192];
+        loop {
+            match stdout.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if tx.send(chunk[..n].to_vec()).is_err() {
+                        break;
+                    }
                 }
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => break String::new(),
         }
-    };
+    });
+
+    // Return as soon as the complete document is in: some pages (the index
+    // page with its EventSource, and on some Chrome builds the self-test page)
+    // keep Chrome running after `--dump-dom` has flushed, so waiting for exit
+    // or for a fixed grace window races a slow runner (issue #252: CI killed
+    // Chrome at 8 s before the self-test page was dumped). A Chrome that exits
+    // ends the stream; [`CHROME_TIMEOUT`] bounds one that never dumps.
+    let start = Instant::now();
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        match rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(bytes) => {
+                buf.extend_from_slice(&bytes);
+                if String::from_utf8_lossy(&buf).contains("</html>") {
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if start.elapsed() > CHROME_TIMEOUT {
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    let _ = child.kill();
     let _ = child.wait();
-    let _ = reader.join();
-    Ok(dom)
+    // Not joined: a Chrome helper process can hold the pipe open a little
+    // longer; the thread ends on its own at EOF.
+    drop(reader);
+    Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
 /// Counts non-overlapping occurrences of `needle` in `haystack`.
@@ -271,9 +280,17 @@ async fn browser_smoke_dom_renders() -> Result<(), Box<dyn Error + Send + Sync>>
     let chrome_1 = chrome.clone();
     let test_dom = tokio::task::spawn_blocking(move || dump_dom(&chrome_1, &test_url)).await??;
     let title = title_snippet(&test_dom);
+    let failures: Vec<&str> = test_dom
+        .split("<li class=\"bad\">")
+        .skip(1)
+        .filter_map(|rest| rest.split('<').next())
+        .collect();
     assert!(
         title.contains("FAIL 0"),
-        "self-test title should report FAIL 0; got: {title}"
+        "self-test title should report FAIL 0; got: {title} (RUNNING means the page \
+         was dumped before it finished, ERROR a script error); failures: {failures:?}; \
+         {} bytes of DOM",
+        test_dom.len()
     );
     // The page-shell checks (issue #252) need the server; over HTTP they must
     // have run, not been skipped. They lay index.html out 1600px wide and render

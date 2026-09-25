@@ -19,6 +19,20 @@
   <div id="result">running…</div>
   <ul id="details"></ul>
 
+  <script>
+    // Before the module runs: a title that tells "still running" apart from
+    // "crashed", and any uncaught error or rejection written into the title
+    // and the page, so the browser smoke test can say what failed.
+    document.title = "RUNNING";
+    function reportCrash(msg) {
+      document.title = "ERROR: " + msg;
+      const r = document.getElementById("result");
+      if (r) { r.textContent = "ERROR: " + msg; r.className = "fail"; }
+    }
+    window.addEventListener("error", (e) => reportCrash(e.message || String(e.error)));
+    window.addEventListener("unhandledrejection", (e) =>
+      reportCrash(e.reason && e.reason.message ? e.reason.message : String(e.reason)));
+  </script>
   <script type="module">
     // Relative imports so this page runs from the crate (/assets/test.html or
     // /test) AND when opened directly via file:// next to its imports.
