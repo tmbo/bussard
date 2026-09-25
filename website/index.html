@@ -1408,21 +1408,19 @@ groups = [
 ]</pre>
         </div>
         <div>
-          <div class="fname">knx/devices/1.1.7.toml</div>
-          <pre class="sh">address = "1.1.7"
-name = "Outdoor Actuator"
-product = "SA-0416"
+          <div class="fname">knx/devices/1.1.47.toml</div>
+          <pre class="sh">address = "1.1.47"
+name = "Switch actuator, 2-gang / blinds actuator, 1-gang"
+product = "230021SU"
 
 [location]
-floor = "Outdoor"
-room = "Porch"
+floor = "DG"
+room = "Kind 2 Süd"
 
-[channel.c-3]
-name = "Porch Light"
-operating-mode = "Switching"
-switch-on-delay = "0 s"
-switch.listen = ["1/1/7", "1/1/1"]
-status.send = "1/1/8"</pre>
+[channel.relaisausgaenge-1]
+betriebsart = "Lüftungsklappe / Dachfenster"
+langzeitbetrieb.listen = ["3/1/20"]
+rueckmeldung-lueftungsklappen-dachfensterposition.send = "3/1/23"</pre>
         </div>
       </div>
       <p class="note"><span data-lang="en">One line per group address, one file per device, one table per channel.

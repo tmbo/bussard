@@ -446,3 +446,191 @@ fn test_reimport_takes_hidden_values_from_the_import() -> anyhow::Result<()> {
     assert!(!dev.contains("hidden"), "{dev}");
     Ok(())
 }
+
+/// Regression: product data arriving on a re-import derives a real handle for
+/// a channel that used to be id-keyed (its device file used the vendor's
+/// channel id as the `[channel.*]` table name, its object numeric). Before the
+/// fix, the old id-keyed table survived the save next to the new derived one,
+/// linking every one of its objects twice (a real import saw 164 such
+/// duplicates). The channel and object *sets* come from the import; only the
+/// channel's hand-set `name` carries over.
+#[test]
+fn test_reimport_gives_an_id_keyed_channel_its_derived_handle() -> anyhow::Result<()> {
+    let dir = tmp("id-keyed-channel");
+
+    // ours: unkeyed channel "MD-3_M-18_MI-1_CH-25", numeric object key 144,
+    // with a hand-set channel name.
+    let mut ours_dev = device_with_comobject("1.1.47", "Heizungsaktor", Dpt::new(1, Some(8)));
+    ours_dev.device.channels.insert(
+        "MD-3_M-18_MI-1_CH-25".to_string(),
+        Channel {
+            name: "Süd".to_string(),
+            key: None,
+            number: None,
+            text: None,
+        },
+    );
+    ours_dev.device.com_objects.insert(
+        144u16,
+        ComObject {
+            dpt: Some(Dpt::new(1, Some(8))),
+            size: None,
+            flags: Flags::default(),
+            reference: None,
+            channel: Some("MD-3_M-18_MI-1_CH-25".to_string()),
+            secure: false,
+            function: None,
+            key: None,
+            text: None,
+        },
+    );
+    let mut ours = model(vec![ours_dev], Groups::default());
+    ours.links.links.insert(
+        ia("1.1.47"),
+        vec![bussard_model::schema::Link {
+            object: 144,
+            name: None,
+            send: None,
+            listen: vec![ga("0/1/3")],
+        }],
+    );
+    ours.save(&dir)?;
+
+    // theirs: same channel id, now with a derived handle and a named object.
+    let mut fresh_dev = device_with_comobject("1.1.47", "Heizungsaktor", Dpt::new(1, Some(8)));
+    fresh_dev.device.channels.insert(
+        "MD-3_M-18_MI-1_CH-25".to_string(),
+        Channel {
+            name: "Relaisausgänge 1/2".to_string(),
+            key: Some("relaisausgaenge-1".to_string()),
+            number: Some(1),
+            text: Some("Relaisausgänge 1/2".to_string()),
+        },
+    );
+    fresh_dev.device.com_objects.insert(
+        144u16,
+        ComObject {
+            dpt: Some(Dpt::new(1, Some(8))),
+            size: None,
+            flags: Flags::default(),
+            reference: None,
+            channel: Some("MD-3_M-18_MI-1_CH-25".to_string()),
+            secure: false,
+            function: None,
+            key: Some("langzeitbetrieb".to_string()),
+            text: Some("Langzeitbetrieb".to_string()),
+        },
+    );
+    let mut fresh = model(vec![fresh_dev], Groups::default());
+    fresh.links.links.insert(
+        ia("1.1.47"),
+        vec![bussard_model::schema::Link {
+            object: 144,
+            name: None,
+            send: None,
+            listen: vec![ga("0/1/3")],
+        }],
+    );
+
+    let on_disk = Model::load(&dir)?;
+    let (merged, report) = bussard_model::merge(&on_disk, &fresh);
+
+    // The merged model has exactly one channel, under the id, with the
+    // derived handle and ours' name kept.
+    let dev = &merged.devices[&ia("1.1.47")].device;
+    assert_eq!(dev.channels.len(), 1, "{:?}", dev.channels);
+    let ch = &dev.channels["MD-3_M-18_MI-1_CH-25"];
+    assert_eq!(ch.key.as_deref(), Some("relaisausgaenge-1"));
+    assert_eq!(ch.name, "Süd");
+    assert!(
+        report
+            .conflicts
+            .iter()
+            .any(|c| c.field == "channels.MD-3_M-18_MI-1_CH-25.name"),
+        "the hand-set channel name differing from the fresh text should be reported: {:?}",
+        report.conflicts
+    );
+
+    // Saving must not leave the old id-keyed table behind: one channel table,
+    // its object linked once.
+    merged.save_pruning(&dir)?;
+    let text = fs::read_to_string(dir.join("devices/1.1.47.toml"))?;
+    assert_eq!(text.matches("[channel.").count(), 1, "{text}");
+    assert!(!text.contains("MD-3_M-18_MI-1_CH-25"), "{text}");
+    assert_eq!(text.matches("0/1/3").count(), 1, "{text}");
+
+    let _ = fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// A stored parameter's value is hand-authored and survives a re-import that
+/// gives the same ref a different key (a fresh derivation, or a page
+/// requalification): it is matched by ref, not by the key text, so a rename
+/// does not lose it or leave it duplicated under the old key.
+#[test]
+fn test_reimport_keeps_a_parameter_value_by_ref_across_a_key_rename() -> anyhow::Result<()> {
+    let mut ours = device_with_comobject("1.1.4", "Switch Actuator", Dpt::new(1, Some(1)));
+    ours.device
+        .parameters
+        .insert("windalarm@MD-1_P-3_R-45".to_string(), "1".to_string());
+
+    let mut fresh = device_with_comobject("1.1.4", "Switch Actuator", Dpt::new(1, Some(1)));
+    // Same ref, a different (freshly derived) key and a different value, as
+    // ETS's project currently states it.
+    fresh
+        .device
+        .parameters
+        .insert("windalarm-1@MD-1_P-3_R-45".to_string(), "0".to_string());
+
+    let (merged, _) = bussard_model::merge(
+        &model(vec![ours], Groups::default()),
+        &model(vec![fresh], Groups::default()),
+    );
+    let dev = &merged.devices[&ia("1.1.4")].device;
+    // The fresh key spelling is used...
+    assert!(!dev.parameters.contains_key("windalarm@MD-1_P-3_R-45"));
+    // ...but the hand-set value survived under it.
+    assert_eq!(
+        dev.parameters.get("windalarm-1@MD-1_P-3_R-45"),
+        Some(&"1".to_string())
+    );
+    Ok(())
+}
+
+/// A com-object the project no longer defines is dropped like a channel that
+/// left the project, and the drop is noted rather than silent.
+#[test]
+fn test_reimport_notes_a_dropped_com_object() -> anyhow::Result<()> {
+    let mut ours = device_with_comobject("1.1.4", "Switch Actuator", Dpt::new(1, Some(1)));
+    ours.device.com_objects.insert(
+        5u16,
+        ComObject {
+            dpt: Some(Dpt::new(1, Some(1))),
+            size: None,
+            flags: Flags::default(),
+            reference: None,
+            channel: None,
+            secure: false,
+            function: None,
+            key: None,
+            text: None,
+        },
+    );
+    let fresh = device_with_comobject("1.1.4", "Switch Actuator", Dpt::new(1, Some(1)));
+
+    let (merged, report) = bussard_model::merge(
+        &model(vec![ours], Groups::default()),
+        &model(vec![fresh], Groups::default()),
+    );
+    let dev = &merged.devices[&ia("1.1.4")].device;
+    assert!(!dev.com_objects.contains_key(&5));
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n| n.contains("com-object 5") && n.contains("dropped")),
+        "{:?}",
+        report.notes
+    );
+    Ok(())
+}

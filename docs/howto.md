@@ -193,7 +193,7 @@ $ bussard history --json | jq '.[-1]'
 }
 ```
 
-Nothing an assistant does over MCP reaches the bus: the model-edit tools write YAML files, and `plan`/`apply`/`flash` are CLI-only. A change touching a `protected: true` group address ends with "This group address is protected." and is sorted first, and the MCP tools refuse such a change outright. If you dislike what you see, `bussard undo`. To run the server without the edit tools at all, start it with `bussard mcp --no-model-edits`.
+Nothing an assistant does over MCP reaches the bus: the model-edit tools write the model files, and `plan`/`apply`/`flash` are CLI-only. A change touching a `protected = true` group address ends with "This group address is protected." and is sorted first, and the MCP tools refuse such a change outright. If you dislike what you see, `bussard undo`. To run the server without the edit tools at all, start it with `bussard mcp --no-model-edits`.
 
 ## ... send my configuration to an integrator?
 
@@ -489,7 +489,7 @@ FAIL Wind alarm raises the blinds
 2 test(s): 1 passed, 1 failed, 0 skipped, 0 refused
 ```
 
-The report has no timestamps, so rerunning it at the three-month visit gives a diffable protocol; `--json` feeds other tooling. The run exits non-zero on any failure. A test that writes a protected GA needs `allow_protected: true` in the file and `--force`, and the MCP tool never runs it.
+The report has no timestamps, so rerunning it at the three-month visit gives a diffable protocol; `--json` feeds other tooling. The run exits non-zero on any failure. A test that writes a protected GA needs `allow_protected = true` in the file and `--force`, and the MCP tool never runs it.
 
 ## ... let Claude debug the bus?
 

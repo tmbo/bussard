@@ -208,11 +208,12 @@ error; this section keeps only the decisions behind it.
   `send`, `listen` and `name` is an object, any other table is a parameter page.
 - **Keys come from vendor texts.** ETS never shows a ref id or an object number as the
   primary label, and neither does the file. Import derives the channel handle from the
-  channel name and number (`a-1`), object keys from the object function
+  channel name and number (`relaisausgaenge-1`), object keys from the object function
   (`langzeitbetrieb`) and parameter keys from the parameter text (`betriebsart`), and
-  records each mapping in the lock. Values are what the user means: `"Jalousie"`,
-  `"21 °C"`. The reader also accepts the vendor forms (object number, enum code). The
-  channel's label parameter (ETS `Bezeichnung`) becomes the channel `name`.
+  records each mapping in the lock. Values are what the user means: `"Lüftungsklappe /
+  Dachfenster"`, `"schließen"`. The reader also accepts the vendor forms (object number,
+  enum code). The channel's label parameter (ETS `Bezeichnung`) becomes the channel
+  `name`.
 - **One parameter per memory cell.** Vendors often point several parameter refs at one
   memory location and show whichever is visible. The file stores one value per
   parameter, the lock records the visible ref, and nine `konfiguration-rtr@R-…` lines
@@ -274,7 +275,7 @@ buffer. The tool list, parameters and tiers are in
 [reference.md](reference.md#the-mcp-server). The design stance:
 
 - Read-only by default; `--passive` for a server that never transmits; `knx_write_group`
-  only with `--allow-writes`, and it hard-refuses `protected: true` GAs with no MCP
+  only with `--allow-writes`, and it hard-refuses `protected = true` GAs with no MCP
   override. The LLM must ask a human, who can run `bussard write ... --force` from the
   CLI. The write tool's description states the consequences plainly for LLM callers
   (actuators move; prefer asking the human when uncertain).
@@ -316,7 +317,7 @@ verify) for System B devices. The workflows are documented in [howto.md](howto.m
 ETS-free application download from a `.knxprod` into a System B device: pre-flight plan
 (mask gate and unsupported-op refusal before any write), progress, `Loaded` + spot-check
 verification. The parameter image is computed from vendor defaults plus the device file's
-`parameters:` overrides, with `module_bases:` resolving per-channel placement. Hardening
+parameter values, with the lock's module bases resolving per-channel placement. Hardening
 shipped along the way: A_Authorize on every management connect (`flash --bcu-key` for
 keyed devices, free access otherwise, #52), per-chunk read-back verification, and strict
 load-state checking that fails fast when a device does not honour a segment allocation.

@@ -395,6 +395,102 @@ fn test_unkeyed_model_uses_numbers_and_the_ref_escape_hatch() -> TestResult {
     Ok(())
 }
 
+/// A module-instantiated device whose channel ids sort differently from the
+/// handles' natural order: `import` assigns ids in module-instance order but
+/// handles `ventilausgang-1`, `-2`, `-3`; the file and lock must read in
+/// handle order, not id order.
+fn module_instance_model() -> Result<Model, Box<dyn std::error::Error>> {
+    let addr = ia("1.1.2")?;
+    let mut channels = BTreeMap::new();
+    // Ids chosen so BTreeMap (id) order is 1, 3, 2 while the handles' natural
+    // order is 1, 2, 3.
+    for (id, handle) in [
+        ("MD-1_M-1_MI-1_CH-1", "ventilausgang-1"),
+        ("MD-1_M-1_MI-3_CH-1", "ventilausgang-3"),
+        ("MD-1_M-1_MI-2_CH-1", "ventilausgang-2"),
+    ] {
+        channels.insert(
+            id.to_string(),
+            bussard_model::schema::Channel {
+                name: handle.to_string(),
+                key: Some(handle.to_string()),
+                ..Default::default()
+            },
+        );
+    }
+    let device = Device {
+        address: addr,
+        name: "Heizungsaktor".to_string(),
+        description: None,
+        location: None,
+        replaced: None,
+        product: None,
+        channels,
+        parameters: BTreeMap::new(),
+        module_bases: BTreeMap::new(),
+        com_objects: BTreeMap::new(),
+        security: None,
+        application_override: None,
+        lock: Default::default(),
+    };
+    let mut devices = BTreeMap::new();
+    devices.insert(
+        addr,
+        LoadedDevice {
+            device,
+            file_stem: addr.to_string(),
+        },
+    );
+    Ok(Model {
+        config: Default::default(),
+        groups: Default::default(),
+        links: bussard_model::schema::Links {
+            links: BTreeMap::new(),
+        },
+        devices,
+    })
+}
+
+#[test]
+fn test_channels_render_in_handle_order_not_lock_id_order() -> TestResult {
+    let model = module_instance_model()?;
+    let texts = model.to_texts()?;
+    let dev = &texts["devices/1.1.2.toml"];
+    let positions: Vec<usize> = [
+        "[channel.ventilausgang-1]",
+        "[channel.ventilausgang-2]",
+        "[channel.ventilausgang-3]",
+    ]
+    .iter()
+    .map(|h| {
+        dev.find(h)
+            .unwrap_or_else(|| panic!("missing {h} in {dev}"))
+    })
+    .collect();
+    assert!(
+        positions.is_sorted(),
+        "channel headers not in handle order: {dev}"
+    );
+    let lock = &texts["bussard.lock"];
+    let key_positions: Vec<usize> = [
+        "key = \"ventilausgang-1\"",
+        "key = \"ventilausgang-2\"",
+        "key = \"ventilausgang-3\"",
+    ]
+    .iter()
+    .map(|k| {
+        lock.find(k)
+            .unwrap_or_else(|| panic!("missing {k} in {lock}"))
+    })
+    .collect();
+    assert!(
+        key_positions.is_sorted(),
+        "lock channels not in handle order: {lock}"
+    );
+    assert_eq!(Model::from_texts(&texts)?, model);
+    Ok(())
+}
+
 #[test]
 fn test_parameter_keys_resolve_through_the_lock() -> TestResult {
     let dir = keyed_model("params")?;

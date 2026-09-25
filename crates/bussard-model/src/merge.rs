@@ -2,38 +2,55 @@
 //!
 //! A first import writes the whole `knx/` model from the `.knxproj`. A
 //! *re-import* into an existing repo must not clobber the fields a human has
-//! since refined. The model has two kinds of content:
+//! since refined, and it must not leave vendor structure duplicated under two
+//! names. The model has two kinds of content:
 //!
-//! * **Generated** data, regenerated from ETS truth on every import: a device's
-//!   [`com_objects`](Device::com_objects), [`module_bases`](Device::module_bases)
-//!   and [`parameters`](Device::parameters), plus the *existence* of devices,
-//!   group addresses and links. These are refreshed (theirs wins) — the device
-//!   banner and the GENERATED marker say so.
+//! * **Generated** data, regenerated from ETS truth on every import: a
+//!   device's channel *set* and com-object *set* (which channels and objects
+//!   exist, their vendor id, key, text, function, dpt, flags — everything but
+//!   the two hand-authored overrides below), [`module_bases`](Device::module_bases),
+//!   and the *existence* of devices, group addresses and links. These always
+//!   come from `theirs`; a channel or object `ours` has that `theirs` does not
+//!   is dropped and noted in [`MergeReport::notes`] ([`overlay_device`]).
 //! * **Hand-authored** fields, owned by the human once written: a device's
 //!   `name`, `description`, `location`, its product's `manufacturer` and
-//!   `order_number`, and its channel *names*; a group's `name`, `dpt`,
-//!   `description` and `protected`; a link's `name`. These are **never**
-//!   overwritten by a re-import. Where the fresh import disagrees with the
-//!   existing value, the difference is **reported** (path, field, ours vs
-//!   theirs) and the existing value is kept.
+//!   `order_number`; a channel's `name` (matched by handle, then channel id);
+//!   a com-object link's `name`; a stored parameter's *value* (matched by
+//!   ref, never by key — a rename or requalification of the key must not lose
+//!   it); a group's `name`, `dpt`, `description` and `protected`. These are
+//!   **never** overwritten by a re-import. Where the fresh import disagrees
+//!   with the existing value, the difference is **reported** (path, field,
+//!   ours vs theirs) and the existing value is kept.
 //!
 //! The product's **identity** fields (`application_ref`, `mask`,
-//! `hardware_ref`, `manufacturer_ref`) and the **channel set** are generated,
-//! not hand-authored: they name the very application program the regenerated
-//! `parameters:`/`com_objects:` were read out of. Keeping them from `ours` while
-//! taking the tables from `theirs` produced a model that contradicted itself
-//! after an ETS application upgrade — new parameter keys under the old
-//! `application_ref`, so every key read E016 and the flasher resolved the wrong
-//! product model. They follow `theirs`, and a changed `application_ref`/`mask`
-//! is recorded in [`MergeReport::notes`].
+//! `hardware_ref`, `manufacturer_ref`) are generated, not hand-authored: they
+//! name the very application program the regenerated `parameters:`/
+//! `com_objects:` were read out of. Keeping them from `ours` while taking the
+//! tables from `theirs` produced a model that contradicted itself after an ETS
+//! application upgrade — new parameter keys under the old `application_ref`,
+//! so every key read E016 and the flasher resolved the wrong product model.
+//! They follow `theirs`, and a changed `application_ref`/`mask` is recorded in
+//! [`MergeReport::notes`].
+//!
+//! A parameter's stored *value* survives by ref because its *key* does not:
+//! product data arriving (or an application upgrade) can rename, qualify or
+//! escape-hatch the same ref's key. Carrying the value by key instead of by
+//! ref would silently lose it, or worse, leave the old key's table (and
+//! everything under it) sitting next to the new one — the same duplication a
+//! stale channel handle produces (see `bussard-model::files::Resolver::knows_channel`
+//! for the file-side half of that fix). Hidden values (the lock's `hidden[]`)
+//! and a channel's label-parameter value are generated and always come from
+//! `theirs`.
 //!
 //! [`merge`] takes the existing on-disk model (`ours`) and the freshly-imported
 //! model (`theirs`) and returns the merged model plus a [`MergeReport`]. The
 //! merged model is what should be saved: generated sections come from `theirs`,
 //! hand-authored fields from `ours`.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use crate::address::{GroupAddress, IndividualAddress};
-use crate::files::{channel_label, label_mem_key};
+use crate::files::{channel_label, is_hidden_mem_key, label_mem_key};
 use crate::schema::{Device, Group, Link};
 use crate::{LoadedDevice, Model};
 
@@ -91,17 +108,23 @@ impl MergeReport {
 /// * The set of devices, group addresses and links is taken from `theirs` (the
 ///   ETS project is authoritative on what *exists*). A device/group present in
 ///   `ours` but gone from `theirs` is dropped and counted as removed.
-/// * A device's generated tables (`com_objects`, `module_bases`, `parameters`)
-///   are taken from `theirs`.
+/// * A device's channel *set* and com-object *set* — everything about them but
+///   the two hand-authored overrides below — are taken from `theirs`; a
+///   channel or object only `ours` has is dropped and noted.
 /// * A device's hand-authored fields (`name`, `description`, `location`, the
-///   product's `manufacturer`/`order_number`, and channel *names*) are taken
-///   from `ours`; a differing fresh value is recorded as a [`Conflict`] and
-///   *not* applied.
+///   product's `manufacturer`/`order_number`, a channel's `name` and a
+///   com-object link's `name`) are taken from `ours`; a differing fresh value
+///   is recorded as a [`Conflict`] and *not* applied.
+/// * A stored parameter's *value* is taken from `ours`, matched to `theirs`'
+///   entry by ref (never by key, which a re-import can rename); a value
+///   `ours` has for a ref `theirs` no longer stores is dropped. Hidden values
+///   and a channel's label-parameter value are generated and taken from
+///   `theirs` as a whole.
 /// * A device's generated identity (`product.application_ref`, `product.mask`,
-///   `product.hardware_ref`, `product.manufacturer_ref`) and its channel *set*
-///   are taken from `theirs`, so they stay consistent with the regenerated
-///   `parameters:`/`com_objects:`; a changed application program or mask is
-///   recorded in [`MergeReport::notes`].
+///   `product.hardware_ref`, `product.manufacturer_ref`) is taken from
+///   `theirs`, so it stays consistent with the regenerated `parameters:`/
+///   `com_objects:`; a changed application program or mask is recorded in
+///   [`MergeReport::notes`].
 /// * A group's hand-authored fields (`name`, `dpt`, `description`, `protected`)
 ///   are taken from `ours`, with differences reported.
 /// * A link's generated wiring (`send`, `listen`) is taken from `theirs`; its
@@ -330,6 +353,7 @@ fn overlay_device(
     let derived = theirs.channels.values().any(|c| c.key.is_some())
         || theirs.com_objects.values().any(|c| c.key.is_some());
     let path = format!("devices/{ia}");
+    overlay_parameter_values(ours, theirs);
     report_opt(report, &path, "name", Some(&ours.name), Some(&theirs.name));
     report_opt(
         report,
@@ -374,10 +398,6 @@ fn overlay_device(
         let Some(their_ch) = theirs.channels.get_mut(&their_id) else {
             continue;
         };
-        // A handle the lock assigned survives until the import derives one.
-        if their_ch.key.is_none() {
-            their_ch.key = our_ch.key.clone();
-        }
         let hand_set = channel_label(ours, our_id).is_some()
             || (!our_ch.name.is_empty() && Some(&our_ch.name) != our_ch.text.as_ref());
         if !hand_set {
@@ -425,23 +445,20 @@ fn overlay_device(
             p.application_ref = Some(app.clone());
         }
     }
-    // Keys the lock assigned (objects, parameters) survive a re-import that
-    // derives none.
-    for (number, co) in &mut theirs.com_objects {
-        if let Some(our_co) = ours.com_objects.get(number) {
-            if co.key.is_none() {
-                co.key = our_co.key.clone();
-            }
-            if co.text.is_none() {
-                co.text = our_co.text.clone();
-            }
-            if co.function.is_none() {
-                co.function = our_co.function.clone();
-            }
-        }
-    }
     if theirs.lock.parameters.is_empty() && !derived {
         theirs.lock.parameters = ours.lock.parameters.clone();
+    }
+
+    // The com-object *set* is generated: it always comes from `theirs` (see the
+    // module banner). An object `ours` still lists but the fresh import no
+    // longer has is simply gone from the project; note it so a silent drop is
+    // not a surprise.
+    for number in ours.com_objects.keys() {
+        if !theirs.com_objects.contains_key(number) {
+            report.notes.push(format!(
+                "{path}: com-object {number} is gone from the project and was dropped"
+            ));
+        }
     }
 
     // A com-object may name the channel it belongs to; after the merge that name
@@ -455,6 +472,54 @@ fn overlay_device(
                      no longer defines; the reference was dropped"
             ));
             co.channel = None;
+        }
+    }
+}
+
+/// Overlays stored parameter *values* from `ours` onto `theirs`, matched by
+/// the parameter ref rather than the in-memory key: the key can change shape
+/// (a fresh key derivation, a page requalification, an escape hatch) between
+/// two imports of the same stored value, so matching by key would lose the
+/// hand-set value or, worse, leave it under a stale key next to the fresh
+/// one. Hidden values and a channel's label-parameter value are generated
+/// (handled elsewhere) and are left as `theirs`.
+fn overlay_parameter_values(ours: &Device, theirs: &mut Device) {
+    let our_labels: BTreeSet<&str> = ours
+        .lock
+        .channel_labels
+        .values()
+        .map(String::as_str)
+        .collect();
+    let their_labels: BTreeSet<&str> = theirs
+        .lock
+        .channel_labels
+        .values()
+        .map(String::as_str)
+        .collect();
+    let mut by_ref: BTreeMap<&str, &str> = BTreeMap::new();
+    for (key, value) in &ours.parameters {
+        if is_hidden_mem_key(key) {
+            continue;
+        }
+        if let Some((_, reference)) = key.split_once('@')
+            && !reference.is_empty()
+            && !our_labels.contains(reference)
+        {
+            by_ref.insert(reference, value.as_str());
+        }
+    }
+    for (key, value) in theirs.parameters.iter_mut() {
+        if is_hidden_mem_key(key) {
+            continue;
+        }
+        let Some((_, reference)) = key.split_once('@') else {
+            continue;
+        };
+        if reference.is_empty() || their_labels.contains(reference) {
+            continue;
+        }
+        if let Some(our_value) = by_ref.get(reference) {
+            *value = (*our_value).to_string();
         }
     }
 }

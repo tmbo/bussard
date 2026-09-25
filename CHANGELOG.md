@@ -44,8 +44,8 @@ entry supersedes it and is not a diff against it.
   object's flags, and parameters that cannot be checked without product
   data.
 - `bussard init` starts an empty model from a discovered gateway and reports
-  the interface's tunnel slots (#21, #105). `scaffold` writes a group-address
-  plan from a room and function list (#103).
+  the interface's tunnel slots (#21, #105). `groups reserve` allocates a
+  group-address plan from a room and function list (#103).
 - Built-in history: every model-changing command takes a snapshot, and
   `status`, `history`, `show` and `undo` work without git. Pending changes
   render as plain sentences (#110, #112).
@@ -336,14 +336,17 @@ entry supersedes it and is not a diff against it.
   in the device files. The YAML files are not read any more: bussard refuses a
   directory that holds only them and asks for a re-import. Product models
   under `models/` keep their YAML format.
-- In progress on top of the new format, each landing as its own change: `apply`
-  writes whatever differs (tables, parameters or both) after one plan and one
-  confirmation; `import` and `apply` run validation first; `adopt` and
-  `import` fetch missing product data through the pointer index;
-  `groups reserve` allocates group addresses for a room and function without
-  a plan file; `show` prints a device's channels with the options it can set;
-  and `init` accepts a project file. `docs/reference.md` describes each once it
-  has landed.
+- On top of the new format: `apply` is the one write verb, writing whatever
+  differs (tables, parameters or both) after one plan and one confirmation,
+  and refusing to run when `--plan <hash>` no longer matches the device's live
+  state; `import` and `apply` run validation first; `adopt` and `import` fetch
+  missing product data by order number through the pointer index; a group
+  address a device file uses that `groups.toml` does not define is declared
+  on first use, by `import`, `apply` and the MCP edit tools; `groups reserve`
+  allocates group addresses for a room and function without a plan file,
+  replacing `scaffold`; `bussard device` shows what a device offers, in its
+  device file's words; and `init` accepts a project file (`init [PROJECT]`).
+  `docs/reference.md` describes each of them.
 - The workspace is 16 crates on Rust edition 2024 with an MSRV of 1.88, checked
   in CI across all targets (#85, #87, #136).
 - The gateway gate, the protected-GA check and the checked group write live

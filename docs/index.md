@@ -81,14 +81,14 @@ knx/
 ```
 
 A device file reads like its ETS dialog, one table per channel with the
-parameters and the group addresses of that channel:
+parameters and the group addresses of that channel. From a real import (a
+Jung switch/blind actuator):
 
 ```toml
-[channel.a-1]
-name = "Fenster Süd"
-betriebsart = "Jalousie"
-langzeitbetrieb.listen = ["0/1/3"]
-status-position.send = "0/1/4"
+[channel.relaisausgaenge-1]
+betriebsart = "Lüftungsklappe / Dachfenster"
+langzeitbetrieb.listen = ["3/1/20"]
+rueckmeldung-lueftungsklappen-dachfensterposition.send = "3/1/23"
 ```
 
 [The model format](model-format.md) specifies every file and key.

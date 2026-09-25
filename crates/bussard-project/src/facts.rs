@@ -532,12 +532,14 @@ fn base_handle(
     {
         return stem.clone();
     }
-    // A plain Name the text does not contain is in another language than
-    // the texts (ABB's `Manual operation` next to `Manuelle Bedienung`).
+    // A plain Name the text does not contain as a whole word is in another
+    // language than the texts (ABB's `Manual operation` next to `Manuelle
+    // Bedienung`), or is a shorter word the text's happens to end with
+    // (`Regler` inside `Raumtemperaturregler`, not a channel of its own).
     let stem = name
         .filter(|n| is_plain_label(n))
         .map(slug)
-        .filter(|n| text_stem.as_ref().is_none_or(|t| t.contains(n.as_str())))
+        .filter(|n| text_stem.as_ref().is_none_or(|t| contains_whole_word(t, n)))
         .or(text_stem);
     match (stem, n) {
         (Some(stem), Some(n)) => {
@@ -551,6 +553,17 @@ fn base_handle(
         (Some(stem), None) => stem,
         (None, _) => format!("ch-{ordinal}"),
     }
+}
+
+/// Whether `needle` occurs in `haystack` as one or more whole `-`-separated
+/// segments, not merely as a substring: `"regler"` is not in
+/// `"raumtemperaturregler"` (a longer word it happens to end with), but is in
+/// `"heizung-regler"` and in `"regler-buero"`.
+fn contains_whole_word(haystack: &str, needle: &str) -> bool {
+    haystack == needle
+        || haystack.starts_with(&format!("{needle}-"))
+        || haystack.ends_with(&format!("-{needle}"))
+        || haystack.contains(&format!("-{needle}-"))
 }
 
 /// Whether a slug's last `-`-separated part is a number.
@@ -828,6 +841,15 @@ fn derive_parameters(
         let Some(param) = app.parameters.get(&pref.ref_id) else {
             continue;
         };
+        // ETS stores a value for a parameter whose effective access is
+        // `"None"` but never presents it as editable (the ref's `Access`
+        // overrides the parameter's own). Such a ref is generated data like a
+        // hidden one: its value goes to the lock's `hidden[]`, not the file,
+        // and it does not compete for a key with its visible siblings.
+        let access = pref.access.as_deref().or(param.access.as_deref());
+        if access == Some("None") {
+            continue;
+        }
         let kind = param
             .parameter_type
             .as_deref()
@@ -1194,16 +1216,28 @@ mod tests {
             ),
             "manuelle-bedienung-2"
         );
-        // A name the text contains is kept.
+        // A name the text contains as a whole word is kept.
+        assert_eq!(
+            base_handle(Some("Regler"), Some("Heizung Regler"), true, Some(12), 7),
+            "regler-12"
+        );
+    }
+
+    #[test]
+    fn test_base_handle_name_substring_of_text_yields_to_the_text() {
+        // "Regler" is a suffix of "Raumtemperaturregler", not a separate word:
+        // the plain-name rule must not fire, so the text rule is used instead.
+        // ("Raumtemperaturregler (Büro UG)" in the wild, one word per instance;
+        // this is the single-instance shape the caller passes in.)
         assert_eq!(
             base_handle(
                 Some("Regler"),
-                Some("Raumtemperaturregler"),
+                Some("Raumtemperaturregler (Büro UG)"),
                 true,
-                Some(12),
-                7
+                Some(2),
+                6
             ),
-            "regler-12"
+            "raumtemperaturregler-buero-ug-2"
         );
     }
 

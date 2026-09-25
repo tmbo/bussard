@@ -657,6 +657,15 @@ impl<'a> Resolver<'a> {
         self.param_ref(scope, key).is_some()
     }
 
+    /// Whether `handle` is one of the lock's current channel handles. A device
+    /// file's `[channel.<handle>]` table whose handle the lock no longer lists
+    /// (the channel was renamed or re-keyed, most often because product data
+    /// arrived) is stale: its entries must not be trusted as placements for a
+    /// save, or they keep a table alive next to the one under the new handle.
+    pub fn knows_channel(&self, handle: &str) -> bool {
+        self.selectors.contains_key(handle)
+    }
+
     /// The keys the lock assigns in `scope`, sorted.
     pub fn keys_in(&self, scope: Option<&str>) -> Vec<String> {
         self.keys
@@ -1027,6 +1036,57 @@ pub(crate) fn handle_of(device: &Device, id: &str) -> String {
         .unwrap_or_else(|| id.to_string())
 }
 
+/// The device's channels in file order: by the vendor's channel number
+/// (channels without one last), then by handle with digit runs compared as
+/// numbers, so `ventilausgang-10` follows `ventilausgang-9`. The lock's
+/// `channels[]` and the device file's `[channel.*]` tables both use it.
+pub(crate) fn ordered_channels(device: &Device) -> Vec<(&String, &Channel)> {
+    let mut out: Vec<(&String, &Channel)> = device.channels.iter().collect();
+    out.sort_by(|(a_id, a), (b_id, b)| {
+        let number = |c: &Channel| c.number.map_or(u64::from(u32::MAX) + 1, u64::from);
+        number(a)
+            .cmp(&number(b))
+            .then_with(|| natural_cmp(&handle_of(device, a_id), &handle_of(device, b_id)))
+            .then_with(|| a_id.cmp(b_id))
+    });
+    out
+}
+
+/// Orders two strings with each run of digits compared by value, other
+/// characters by code point.
+fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < b.len() {
+        if a[i].is_ascii_digit() && b[j].is_ascii_digit() {
+            let (ai, bj) = (i, j);
+            while i < a.len() && a[i].is_ascii_digit() {
+                i += 1;
+            }
+            while j < b.len() && b[j].is_ascii_digit() {
+                j += 1;
+            }
+            let (ra, rb) = (
+                a[ai..i].iter().skip_while(|d| **d == b'0'),
+                b[bj..j].iter().skip_while(|d| **d == b'0'),
+            );
+            let (ra, rb): (Vec<u8>, Vec<u8>) = (ra.copied().collect(), rb.copied().collect());
+            let by_value = ra.len().cmp(&rb.len()).then_with(|| ra.cmp(&rb));
+            if by_value != Ordering::Equal {
+                return by_value;
+            }
+        } else {
+            if a[i] != b[j] {
+                return a[i].cmp(&b[j]);
+            }
+            i += 1;
+            j += 1;
+        }
+    }
+    (a.len() - i).cmp(&(b.len() - j))
+}
+
 /// The lock entry for a device, or `None` when it has nothing generated.
 pub(crate) fn lock_entry(device: &Device) -> Option<LockDevice> {
     let product = device.product.clone().unwrap_or(Product {
@@ -1040,9 +1100,8 @@ pub(crate) fn lock_entry(device: &Device) -> Option<LockDevice> {
     let security = device.security.clone().unwrap_or_default();
 
     let mut channel_selectors: BTreeSet<String> = BTreeSet::new();
-    let channels: Vec<LockChannel> = device
-        .channels
-        .iter()
+    let channels: Vec<LockChannel> = ordered_channels(device)
+        .into_iter()
         .map(|(id, ch)| {
             let base = channel_selector(id).and_then(|sel| {
                 let base = device.module_bases.get(sel).copied();
@@ -1198,6 +1257,17 @@ pub(crate) fn existing_placements(
     let mut out = BTreeMap::new();
     let mut seen: BTreeMap<u16, usize> = BTreeMap::new();
     for entry in &entries.entries {
+        if let TableRef::Channel(h) = &entry.table
+            && !resolver.knows_channel(h)
+        {
+            // The file still has this channel table under a handle the lock no
+            // longer lists (most often a re-import that derived a real handle
+            // for a channel that used to be id-keyed). Its entries are not a
+            // placement for anything any more: keeping them would echo the old
+            // table back into the save next to the one under the new handle,
+            // linking every object it holds twice.
+            continue;
+        }
         let scope = entry.table.scope();
         let id = match &entry.value {
             EntryValue::Param(_) => {
