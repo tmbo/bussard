@@ -73,7 +73,7 @@ use crate::conn_cmd::{
     ConnOverrides, checked_source_or_close, enforce_write_gate, gateway_display, open_service,
     resolve_config,
 };
-use crate::import_product_cmd::{VENDOR_GITIGNORE, is_project_export, order_numbers_for};
+use crate::import_product_cmd::{is_project_export, order_numbers_for};
 
 /// Documented test hook: a non-interactive `adopt` reads its target individual
 /// address from this variable. `adopt` is a wizard, so it refuses to run without
@@ -263,7 +263,7 @@ fn resolve_product(
     if models.is_empty() {
         println!(
             "  no --product given and no cached models under {} — continuing product-less.",
-            dir.join("models").display()
+            dir.join(bussard_model::param_model::MODELS_DIR).display()
         );
         return Ok(None);
     }
@@ -280,7 +280,7 @@ fn resolve_product(
 
     println!(
         "  cached product models under {}:",
-        dir.join("models").display()
+        dir.join(bussard_model::param_model::MODELS_DIR).display()
     );
     for (i, name) in models.iter().enumerate() {
         println!("    [{}] {name}", i + 1);
@@ -591,9 +591,9 @@ fn fetch_product_for(
     dir: &Path,
     fetch: crate::product_fetch::Consent,
 ) -> Option<SelectedProduct> {
-    let path = match crate::commission_cmd::resolve_product_file(dir, None, order) {
-        Ok(path) => path,
-        Err(_) => {
+    let path = match crate::product_store::archive_for_order(dir, order) {
+        Ok(Some(path)) => path,
+        Ok(None) | Err(_) => {
             println!("  no product data cached for {order}; looking it up");
             let outcome =
                 match crate::product_fetch::fetch_missing(dir, &[order.to_string()], fetch) {
@@ -706,27 +706,9 @@ fn build_device(
     device
 }
 
-/// The application program `app_ref` from a `.knxprod` cached under
-/// `<dir>/vendor/`, if one carries it.
+/// The application program `app_ref` from an archive `bussard.lock` pins.
 fn vendor_application(dir: &Path, app_ref: &str) -> Option<ApplicationProgram> {
-    let entries = std::fs::read_dir(dir.join("vendor")).ok()?;
-    entries.flatten().find_map(|e| {
-        let path = e.path();
-        let is_knxprod = path
-            .extension()
-            .is_some_and(|x| x.eq_ignore_ascii_case("knxprod"));
-        if !is_knxprod {
-            return None;
-        }
-        // Only `app_ref` is parsed, and only from an archive that holds it
-        // (issue #214).
-        let language = crate::product_cache::model_language(None, dir);
-        let product = crate::product_cache::read(&path, None, dir, language.as_deref(), |_| {
-            bussard_prod::AppSelection::Exact(vec![app_ref.to_string()])
-        })
-        .ok()?;
-        product.applications.into_iter().find(|a| a.id == app_ref)
-    })
+    crate::product_store::pinned_application(dir, app_ref)
 }
 
 /// The device's product block: identity from the matched application where we
@@ -1012,14 +994,19 @@ async fn read_secured(
         product,
         application: selected.map(|s| s.application_ref.as_str()),
     };
-    let product_source =
-        match crate::param_readback::resolve(dir, selection, Some(&with_device), target) {
-            Ok(found) => found,
-            Err(err) => {
-                notes.push(format!("parameters not read: {err:#}"));
-                None
-            }
-        };
+    let product_source = match crate::param_readback::resolve(
+        dir,
+        selection,
+        Some(&with_device),
+        target,
+        crate::param_readback::MissingProduct::Warn,
+    ) {
+        Ok(found) => found,
+        Err(err) => {
+            notes.push(format!("parameters not read: {err:#}"));
+            None
+        }
+    };
     let options = L4Options {
         source: SourcePolicy::Known(source),
         tool_key: material.tool_key.clone(),
@@ -1346,63 +1333,31 @@ fn import_product(file: &Path, dir: &Path) -> anyhow::Result<ProductData> {
         );
     }
 
-    // An ETS project export is the owner's project, not vendor product data:
-    // read it in place and never copy it under vendor/.
+    // An ETS project export is the owner's project: read in place here.
+    // `bussard import-product <export>` extracts its programs into products/.
     if is_project_export(file, &product) {
         println!(
-            "  read the ETS project export in place (not cached under vendor/): {}",
+            "  read the ETS project export in place: {} (run `bussard import-product` on it \
+             to store its product data under products/)",
             file.display()
         );
-        let models_dir = dir.join("models");
-        std::fs::create_dir_all(&models_dir)
-            .with_context(|| format!("creating {}", models_dir.display()))?;
         return Ok(product);
     }
 
-    // Cache the source file verbatim under <dir>/vendor/.
-    let vendor_dir = dir.join("vendor");
-    let vendor_created = !vendor_dir.exists();
-    std::fs::create_dir_all(&vendor_dir)
-        .with_context(|| format!("creating {}", vendor_dir.display()))?;
-    if vendor_created {
-        std::fs::write(vendor_dir.join(".gitignore"), VENDOR_GITIGNORE)
-            .with_context(|| format!("writing {}", vendor_dir.join(".gitignore").display()))?;
-    }
-    let original_name = file
-        .file_name()
-        .context("product file has no file name")?
-        .to_owned();
-    let vendor_target = vendor_dir.join(&original_name);
-    let src_bytes = std::fs::read(file).with_context(|| format!("reading {}", file.display()))?;
-    let already = vendor_target.exists()
-        && std::fs::read(&vendor_target)
-            .map(|b| b == src_bytes)
-            .unwrap_or(false);
-    if !already {
-        std::fs::write(&vendor_target, &src_bytes)
-            .with_context(|| format!("writing {}", vendor_target.display()))?;
-        println!("  cached vendor file: {}", vendor_target.display());
-    } else {
-        println!("  vendor file already cached: {}", vendor_target.display());
-    }
-    // bussard.lock pins the archive (lock v2, issue #228); the device save
-    // that follows links the device to it. An archive already under vendor/
-    // was pinned when it was cached there.
-    if file != vendor_target {
+    // Store the archive under <dir>/products/ (retained model data) and pin
+    // it in bussard.lock (issue #228); the device save that follows links the
+    // device to it. An archive already in the store was pinned when it was
+    // stored.
+    let stored = crate::product_store::store_file(dir, file)?;
+    if stored != file {
+        println!("  stored vendor file: {}", stored.display());
         let origin = bussard_model::schema::ProductOrigin::File {
             path: file.display().to_string(),
         };
-        let entry = crate::lock_pin::archive_entry(&vendor_target, dir, &product, origin)?;
+        let entry = crate::lock_pin::archive_entry(&stored, dir, &product, origin)?;
         crate::lock_pin::pin(dir, &[entry]);
     }
-
-    // Note: adopt writes the device file (step 3) rather than the generated
-    // models/*.yaml. We still ensure models/ exists so `import-product` and
-    // `adopt` present the same directory layout; a full model dump is left to
-    // `bussard import-product` proper.
-    let models_dir = dir.join("models");
-    std::fs::create_dir_all(&models_dir)
-        .with_context(|| format!("creating {}", models_dir.display()))?;
+    crate::import_product_cmd::write_product_models(&product, dir)?;
 
     Ok(product)
 }
@@ -1413,7 +1368,7 @@ fn import_product(file: &Path, dir: &Path) -> anyhow::Result<ProductData> {
 
 /// The cached model file names under `<dir>/models/`, sorted.
 fn cached_models(dir: &Path) -> Vec<String> {
-    let mut out: Vec<String> = std::fs::read_dir(dir.join("models"))
+    let mut out: Vec<String> = std::fs::read_dir(dir.join(bussard_model::param_model::MODELS_DIR))
         .into_iter()
         .flatten()
         .flatten()

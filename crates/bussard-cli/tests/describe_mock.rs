@@ -134,7 +134,7 @@ impl TempModel {
                 std::fs::write(
                     dir.join("bussard.lock"),
                     format!(
-                        "version = 1\n\n[[device]]\naddress = \"1.1.12\"\n{}\n",
+                        "version = 2\n\n[[device]]\naddress = \"1.1.12\"\n{}\n",
                         facts.join("\n")
                     ),
                 )?;

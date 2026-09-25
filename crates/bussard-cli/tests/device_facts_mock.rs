@@ -137,7 +137,7 @@ impl Bench {
         )?;
         std::fs::write(
             dir.join("bussard.lock"),
-            "version = 1\n\n[[device]]\naddress = \"1.1.12\"\napplication = \"M-00FA_A-0002\"\nmask = \"07B0\"\n",
+            "version = 2\n\n[[device]]\naddress = \"1.1.12\"\napplication = \"M-00FA_A-0002\"\nmask = \"07B0\"\n",
         )?;
         std::fs::write(
             dir.join("devices").join("1.1.12.toml"),

@@ -124,7 +124,7 @@ Import an existing `.knxproj`, a `.bussard` bundle (see [`export`](#bussard-expo
 | `--yes` | off | Download the missing product data without asking. |
 | `--no-download` | off | Do not look up or download missing product data; list it instead. |
 
-Product data fetches itself. After the write, `import` collects the order numbers of the project's devices, and every one whose product data is not under `<dir>/models/` yet is looked up in bussard's pointer index (the one `import-product --order-number` uses). The downloads it finds are listed with their size and origin and fetched after one confirmation for the whole list (`--yes` for scripts; without a terminal and without `--yes` nothing is downloaded); each is verified against the index checksum, cached under `<dir>/vendor/` and turned into models under `<dir>/models/`. Devices without product data still get their file (identity, location, links by number), and the summary says how many were written that way and, per order number, where to get the file and which command imports it:
+Product data fetches itself. After the write, `import` collects the order numbers of the project's devices, and every one whose product data `bussard.lock` does not pin in `<dir>/products/` yet is looked up in bussard's pointer index (the one `import-product --order-number` uses). The downloads it finds are listed with their size and origin and fetched after one confirmation for the whole list (`--yes` for scripts; without a terminal and without `--yes` nothing is downloaded); each is verified against the index checksum, stored under `<dir>/products/`, pinned in the lock and turned into product models under `<dir>/.bussard/models/`. Each application program the imported devices use that no stored archive carries is extracted once from the `.knxproj` into `<dir>/products/<application-id>.knxprod` (see [product-data.md](product-data.md#the-product-store-products)). Devices without product data still get their file (identity, location, links by number), and the summary says how many were written that way and, per order number, where to get the file and which command imports it:
 
 ```
 1 device(s) written without product data: their files carry identity, location and links by number; `apply` writes their links, not their parameters
@@ -162,7 +162,7 @@ Explain what changes from `A` to `B`, as the plain sentences `bussard status` pr
 | `--password <PASSWORD>` | | Password for both `.knxproj` sides. Falls back to `BUSSARD_PROJECT_PASSWORD`. |
 | `--password-b <PASSWORD>` | | Password for the second side, when it differs. |
 
-Group addresses are matched by address and devices by individual address, so a GA renamed in a newer export is one rename, not a removal and an addition. Two exports of the same project give an empty diff. A parameter change is named by the parameter's text from the cached product model (`models/*.yaml`) when a model-directory side has one, and by its key otherwise.
+Group addresses are matched by address and devices by individual address, so a GA renamed in a newer export is one rename, not a removal and an addition. Two exports of the same project give an empty diff. A parameter change is named by the parameter's text from the product model (`.bussard/models/*.yaml`) when a model-directory side has one, and by its key otherwise.
 
 ### `bussard scan [LINE]`
 
@@ -205,7 +205,7 @@ Read a device's tables back over the bus and diff them against the model, or (wi
 | `--from <N>` | `0` | First device number to probe in line mode (0-255). |
 | `--to <N>` | `255` | Last device number to probe in line mode (0-255). |
 | `--out <DIR>` | | Line mode only: the fresh model directory. Must be absent or empty; reconstruction never merges into an existing model. |
-| `--product <FILE>` | cached archive | Single-device mode: the device's `.knxprod`, to read back and decode its parameter memory too (see [parameter read-back](#parameter-read-back)). Without it the archive in `<dir>/vendor/` whose catalogue carries the model's order number is used, when cached. |
+| `--product <FILE>` | cached archive | Single-device mode: the device's `.knxprod`, to read back and decode its parameter memory too (see [parameter read-back](#parameter-read-back)). Without it the archive `bussard.lock` pins for the device in `<dir>/products/` is used; a pinned archive that is missing or changed prints a warning and the parameters are not read. |
 | `--application <REF>` | model's application | The application program id to decode with (default: the model's `application_ref`, else the order number, else the sole application). |
 | `--no-parameters` | off | Single-device mode: read the links and tables only. No product is parsed and no parameter memory is read, which on a device with a large parameter segment is most of the command's time. Conflicts with `--product` and `--application`. |
 | `--keyring <FILE>` | | Single-device mode: the ETS `.knxkeys` keyring holding the target's KNX Data Secure tool key. Required for a security-activated device; the password comes from `BUSSARD_KEYRING_PASSWORD`. |
@@ -266,7 +266,7 @@ The keyring password comes from `BUSSARD_KEYRING_PASSWORD` and is deliberately *
 
 ### `bussard import-product [FILE]`
 
-Import vendor product data (`.knxprod`): cache it under `<dir>/vendor/` and generate one model file per application program under `<dir>/models/`. An ETS project export (`.knxproj`) works as a source too; it is read in place and not copied under `vendor/`, since it is your project, not vendor data. Three modes: a local file (positional), `--order-number` to look the file up in the pointer index and download it, or `--list` to show the index. Details in [product-data.md](product-data.md).
+Import vendor product data (`.knxprod`): store it under `<dir>/products/`, pin it in `bussard.lock` and generate one product model per application program under `<dir>/.bussard/models/`. An ETS project export (`.knxproj`) works as a source too: each application program is extracted once into `<dir>/products/<application-id>.knxprod`, and the export itself is not copied. Three modes: a local file (positional), `--order-number` to look the file up in the pointer index and download it, or `--list` to show the index. Details in [product-data.md](product-data.md).
 
 | Flag / arg | Default | Meaning |
 |---|---|---|
@@ -282,7 +282,7 @@ Downloads are verified against the index by byte size and SHA-256; a mismatch is
 
 Guide a new device from programming mode into the model: product data, address assignment with order-number cross-check, a rich device file with its `bussard.lock` entry, and ready-to-paste `groups.toml` / device-file snippets. Interactive; needs a terminal (or `BUSSARD_ADOPT_ADDRESS` plus `--yes` for scripted runs).
 
-Product data fetches itself. Without `--product`, adopt reads the order number off the device and uses the archive cached under `<dir>/vendor/` for it; when there is none, it looks the order number up in bussard's pointer index (the one `import-product --order-number` uses), asks once, downloads and verifies the file, imports it and continues with it. An order number the index does not know is adopted without product data (identity and links by number), with the sentence that says where to get the file. `BUSSARD_PRODUCT_INDEX=<file.json>` points at another index of the same shape (a mirror, or a test with `file://` URLs).
+Product data fetches itself. Without `--product`, adopt reads the order number off the device and uses the archive `bussard.lock` pins for it in `<dir>/products/`; when there is none, it looks the order number up in bussard's pointer index (the one `import-product --order-number` uses), asks once, downloads and verifies the file, imports it and continues with it. An order number the index does not know is adopted without product data (identity and links by number), with the sentence that says where to get the file. `BUSSARD_PRODUCT_INDEX=<file.json>` points at another index of the same shape (a mirror, or a test with `file://` URLs).
 
 A device already at the target address gets no address write.
 
@@ -303,7 +303,7 @@ A device that hides its mask from the unsecured read (mask `FFFF`) but is not in
 
 ### `bussard flash <ADDRESS>`
 
-Download the full application program from vendor product data into a device (the ETS-free application download): for a fresh device, or one whose application changes. Everyday changes to links and parameters go through [`apply`](#bussard-apply-address), which writes only what differs. The product data is the archive in `<dir>/vendor/` whose catalogue carries the device's order number (`import` and `adopt` fetch it), and the application is the one the lock pins; `--product` and `--application` override both. Supports System B (`07B0` and the `57B0`/`27B0` variants) and System 7 (`0705`/`0701`/`0700`). Pre-flight plan first; refuses before any write on an unsupported mask family, a mask mismatch, or an unsupported load-procedure operation. The parameter memory image is computed from the vendor defaults plus the parameter values in the device file, so a flash also carries parameter changes. No backup exists for a flash; recovery is re-running `flash`.
+Download the full application program from vendor product data into a device (the ETS-free application download): for a fresh device, or one whose application changes. Everyday changes to links and parameters go through [`apply`](#bussard-apply-address), which writes only what differs. The product data is the archive `bussard.lock` pins for the device in `<dir>/products/` (`import`, `import-product` and `adopt` store and pin it), verified by its SHA-256, and the application is the one the lock pins; `--product` and `--application` override both. A pinned archive that is missing or changed refuses the flash before any bus access, naming the recovery step (see [product-data.md](product-data.md#the-product-store-products)); with `--force`, `--product <FILE>` also becomes the device's pinned product data. Supports System B (`07B0` and the `57B0`/`27B0` variants) and System 7 (`0705`/`0701`/`0700`). Pre-flight plan first; refuses before any write on an unsupported mask family, a mask mismatch, or an unsupported load-procedure operation. The parameter memory image is computed from the vendor defaults plus the parameter values in the device file, so a flash also carries parameter changes. No backup exists for a flash; recovery is re-running `flash`.
 
 The same pre-flight also checks the device is factory-fresh (issue #79), read-only, before anything is written: it reads the load state and, on System B, the resident application id (`PID_PROGRAM_VERSION`) of the application objects, whose state decides; the other objects are read only when no application object answers. System 7 reads every load-state machine. A device carrying a **different** application, one it cannot identify, or a load state it cannot read at all is **refused**; `--force` overrides. Re-flashing the **same** application is allowed without `--force` (it is the documented recovery path after an interrupted flash) and prints a notice, because it still resets the parameters to the vendor defaults plus the model's overrides and rewrites the tables from the model's links. See [the flash section in SAFETY.md](SAFETY.md#what-each-write-command-does-and-its-rails) for the full table.
 
@@ -312,7 +312,7 @@ The pre-flight and the write phase share one tunnel. With `--yes` they also shar
 | Flag / arg | Default | Meaning |
 |---|---|---|
 | `<ADDRESS>` | | The device to program, e.g. `1.0.10`. |
-| `--product <FILE>` | cached archive | The vendor `.knxprod` containing the application program. Default: the archive in `<dir>/vendor/` whose catalogue carries the device's order number. |
+| `--product <FILE>` | pinned archive | The vendor `.knxprod` containing the application program. Default: the archive `bussard.lock` pins for the device in `<dir>/products/`. With `--force` it becomes the pinned one. |
 | `--application <REF>` | the lock's program | The application program id (default: the program the lock pins, else the order number's, else the sole one). Mutually exclusive with `--order-number`. |
 | `--order-number <ORDER>` | | Select the application by hardware order number (e.g. `AKK-0216.03`), resolved through the product's hardware catalogue. Exactly one match is required. |
 | `--yes` | off | Skip the interactive confirmation (dangerous; for scripts). |
@@ -378,7 +378,7 @@ The plan speaks the device file's words, grouped by channel:
   backup: knx/captures/backups (tables) and knx/captures/backups/parameters (parameter memory)
 ```
 
-`+` is a link the device gains (`now listens on`, or `now sends` for the object's sending address), `~` a sending address or a parameter that takes another value, `-` an address only the device has (`no longer uses`). Parameters are compared when product data is at hand: the `.knxprod` in `<dir>/vendor/` for the device's order number (fetched by `import` and `adopt`), or `--product`; without it a `note:` says so. A device that already matches prints `<ia> matches the model; nothing to write`. `-v` adds the table-level detail (every object and address, the load operations, the full parameter read-back).
+`+` is a link the device gains (`now listens on`, or `now sends` for the object's sending address), `~` a sending address or a parameter that takes another value, `-` an address only the device has (`no longer uses`). Parameters are compared when product data is at hand: the archive `bussard.lock` pins for the device in `<dir>/products/`, or `--product`; without it a `note:` says so. A device that already matches prints `<ia> matches the model; nothing to write`. `-v` adds the table-level detail (every object and address, the load operations, the full parameter read-back).
 
 `--json` prints the same plan as data: `address`, `name`, `gateway`, `changes` (`mark`, `subject`, `channel`, `key`, `object`, `sentence`), `unchanged_objects`, `unchanged_parameters`, `writes` (`address_table`, `association_table`, `parameter_octets`), `backup_dir`, `notes`, `question`, and `state_hash`, the SHA-256 of the device state read (the raw tables, plus the parameter memory when it was read). `apply --plan <hash>` refuses when the device no longer hashes to it. The table detail (`additions`, `removals`, `unchanged`, the table counts, `load_steps`, `noop`) and the parameter read-back (`parameters`) are there too.
 
@@ -386,7 +386,7 @@ The plan speaks the device file's words, grouped by channel:
 |---|---|---|
 | `<ADDRESS>` | | The device to plan for, e.g. `1.1.4`. Omit with `--line`. |
 | `--line <LINE>` | | Plan every model device on this line, e.g. `1.1`, in address order (see [whole-line runs](#whole-line-runs)). |
-| `--product <FILE>` | cached archive | The product data to compare the parameter memory with (see [parameter read-back](#parameter-read-back)). Without it the archive in `<dir>/vendor/` whose catalogue carries the model's order number is used, when cached. |
+| `--product <FILE>` | cached archive | The product data to compare the parameter memory with (see [parameter read-back](#parameter-read-back)). Without it the archive `bussard.lock` pins for the device in `<dir>/products/` is used; a pinned archive that is missing or changed prints a warning and the parameters are not read. |
 | `--application <REF>` | the lock's program | The application program id to decode with. |
 | `--keyring <FILE>` | | The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool key, as for [`reconstruct`](#bussard-reconstruct-address). With `--line`, each device's key is looked up in it. |
 | `--tool-key <HEX>` | | The raw 32-hex-character tool key, for a simulator or bench device. Conflicts with `--keyring`. |
@@ -414,7 +414,7 @@ On the wire: System B (`x7B0`) and System 7 (`0705` / `0701`). On System B each 
 | `--json` | off | Line mode only: emit the summary as JSON. |
 | `--yes` | off | Skip the interactive confirmation (dangerous; for scripts). |
 | `--plan <HASH>` | | Single-device mode: refuse unless the device state still hashes to this `state_hash` from `bussard plan --json`. |
-| `--product <FILE>` | cached archive | Single-device mode: the product data to compare and write the parameter memory with. Default: the archive in `<dir>/vendor/` whose catalogue carries the device's order number. |
+| `--product <FILE>` | pinned archive | Single-device mode: the product data to compare and write the parameter memory with. Default: the archive `bussard.lock` pins for the device in `<dir>/products/`; a pinned archive that is missing or changed refuses the apply before any bus access. |
 | `--application <REF>` | the lock's program | Single-device mode: the application program id to decode the parameters with. |
 | `--tool-key <HEX>` | | The raw 32-hex-character tool key, for a simulator or bench device. Conflicts with `--keyring`. |
 | `--secure-sender <IA>` | off | Single-device mode, Data Secure: add this address (bussard's tunnel address) with sequence 0 to the security individual address table (PID 54) the security object is reprogrammed with, as for `flash`. Conflicts with `--line`. |
@@ -434,7 +434,7 @@ Bench mode: commission the devices the model has on a line. It first checks whic
 1. Prompts `press the programming button on <name> (<order number>)` and waits for exactly one device in programming mode, as `assign` does.
 2. Reads that device's order number and compares it with the model's `product.order_number` (case and surrounding space ignored). A mismatch, or an unreadable order number while the model names one, is a hard stop for that device: nothing is written and the run moves on to the next device. A model device without an order number is assigned with a warning.
 3. Writes the address, verifies it with a descriptor read, and clears programming mode.
-4. With `--flash`, runs `flash` on the new address, selecting the application by the model's order number from `--product`, or from the first archive in `<dir>/vendor/` that carries it. With `--apply`, runs `apply`.
+4. With `--flash`, runs `flash` on the new address, selecting the application by the model's order number from `--product`, or from the archive `bussard.lock` pins for the device. Every device's archive is resolved before the run starts: a missing or changed one refuses the whole run before any bus access. With `--apply`, runs `apply`.
 5. Prints a label line, e.g. `1.1.7  Blind actuator  MDT JAL-0810.03  Ground floor / Living room`, and with `--labels` appends a row to the CSV.
 
 The summary table lists each device as `commissioned`, `present` or `failed: <reason>`. The exit code is non-zero if any device failed.
@@ -468,7 +468,7 @@ List the snapshots under `<dir>/.bussard/history`, oldest first: number, id, the
 
 ### `bussard device <ADDRESS> [CHANNEL]`
 
-Show what a device offers, in its device file's words. Without a channel it lists the device's channels: the handle the file uses (`[channel.<handle>]`), the vendor's number and text, the name you gave it, and how many parameters and objects each has. With a channel (its handle, id or number, or `device` for the device-level `[parameters]` and `[links]`) it lists that channel's parameters (key, current value, the enum choices or the range, whether it is at the vendor default, the vendor's text) and objects (key, number, text and function, DPT, flags, what it sends and listens on). Files only: the data comes from `bussard.lock` and the product model under `models/`; without product data it says so and lists what the lock has.
+Show what a device offers, in its device file's words. Without a channel it lists the device's channels: the handle the file uses (`[channel.<handle>]`), the vendor's number and text, the name you gave it, and how many parameters and objects each has. With a channel (its handle, id or number, or `device` for the device-level `[parameters]` and `[links]`) it lists that channel's parameters (key, current value, the enum choices or the range, whether it is at the vendor default, the vendor's text) and objects (key, number, text and function, DPT, flags, what it sends and listens on). Files only: the data comes from `bussard.lock` and the product model under `.bussard/models/`; without product data it says so and lists what the lock has.
 
 ```
 $ bussard device 1.1.47 a-1 --toml
@@ -620,7 +620,7 @@ Write the group-address plan in a format ETS's *Group Addresses -> Import* accep
 
 ### `bussard doc`
 
-Render the handover documentation folder the KNX guidelines prescribe, straight from the model (issue #97). Offline: it reads the model and, when present, the cached product models in `models/`, and never touches the bus.
+Render the handover documentation folder the KNX guidelines prescribe, straight from the model (issue #97). Offline: it reads the model and, when present, the product models in `.bussard/models/`, and never touches the bus.
 
 | File | Contents |
 |---|---|
@@ -825,11 +825,25 @@ knx/
   bussard.lock      # generated by import and adopt: the vendor facts behind the device files
   ha.toml           # optional ha-config overrides (see ha-config.md)
   tests.toml        # optional acceptance tests for `bussard test`
-  models/           # generated from .knxprod; git-ignored
-  vendor/           # cached .knxprod originals; git-ignored
+  products/         # the product archives bussard.lock pins; retained, not git-ignored by bussard
   captures/         # local captures, apply backups and apply-line-<line>.json resume state; git-ignored
-  .bussard/         # bussard's own history, device facts and last_export.json; git-ignored
+  .bussard/         # regenerable: history, device facts, product models, last_export.json; git-ignored
 ```
+
+#### `products/` and a missing `.bussard/`
+
+`products/` is retained: nothing in it regenerates (see [product-data.md](product-data.md#the-product-store-products)). Everything under `.bussard/` does, so deleting it loses the history and nothing else. What each command does without `.bussard/`:
+
+| Command | `.bussard/` absent |
+|---|---|
+| `init`, `import`, `import-product`, `adopt` | Create it and write `.bussard/models/` and the first history snapshot. `products/` is written next to it, never inside. |
+| `status`, `history`, `show`, `undo`, `export` | The history is empty: `status` says there is no snapshot yet, `history` lists nothing, `show` and `undo` find no snapshot, `export` writes the bundle without snapshots. |
+| `validate`, `groups`, `export-groups`, `doc`, `ha-config`, `device` | Regenerate `.bussard/models/` from the archives the lock pins, then run as usual. `diff` and `keyring` read no model directory. |
+| `scan`, `monitor`, `capture`, `read`, `write`, `learn`, `test` | Unaffected (the product models regenerate first, as above). |
+| `describe`, `plan`, `reconstruct`, `audit --live`, `backup` | Read the device facts from the device and write `.bussard/facts/<ia>.toml`; `plan` and `reconstruct` decode parameters when the archive is in `products/`. |
+| `flash`, `apply` (parameters), `commission --flash`, `replace` | Unaffected by `.bussard/`; they refuse before any bus write only when the archive the lock pins is missing from `products/` or changed. |
+| `restore` | Unaffected (the tables come from the backup directory). |
+| `mcp`, `viz` | Start as usual. |
 
 #### `.bussard/history`
 
@@ -846,7 +860,7 @@ knx/.bussard/history/20260922T101112Z-001/
   ha.toml           # when present
 ```
 
-One directory per snapshot, named by a UTC timestamp plus a sequence number, so a listing is already a timeline. A snapshot is a full copy of the model files, since a house model is well under a megabyte. Nothing else is ever copied: `models/`, `vendor/`, `captures/`, keyrings, `.knxproj` and `.knxprod` files stay out (see [product-data.md](product-data.md)).
+One directory per snapshot, named by a UTC timestamp plus a sequence number, so a listing is already a timeline. A snapshot is a full copy of the model files, since a house model is well under a megabyte. Nothing else is ever copied: `products/`, `.bussard/models/`, `captures/`, keyrings, `.knxproj` and `.knxprod` files stay out (see [product-data.md](product-data.md)).
 
 `import`, `apply`, `flash`, `adopt`, `reconstruct` and every MCP model edit snapshot before they write. `plan` and those commands also record an `external edit` snapshot first when the working files differ from the last one, so an edit made in an editor or by an assistant writing TOML is never lost. `bussard status`, `history`, `show` and `undo` read this directory; `bussard init` git-ignores it.
 
@@ -892,7 +906,7 @@ The facts live here, not in `devices/*.toml` or `bussard.lock`, because an ETS r
 
 #### `.bussard/products`
 
-The parsed-product cache (issue #214). A `.knxproj` carries the ApplicationProgram of every device in the project and a `.knxprod` often a whole product family, while `flash`, `plan`, `reconstruct` and `adopt` need one program. bussard reads the archive's table of contents first (the program ids from the entry names, the `Hardware.xml` order numbers, `knx_master.xml`) and then parses only the program the command selects: by `--application`, by the model's application reference or by the order number. When that does not settle the choice, every program is parsed, so a refusal reads as before. The order-number match against `vendor/` needs no program at all.
+The parsed-product cache (issue #214). A `.knxproj` carries the ApplicationProgram of every device in the project and a `.knxprod` often a whole product family, while `flash`, `plan`, `reconstruct` and `adopt` need one program. bussard reads the archive's table of contents first (the program ids from the entry names, the `Hardware.xml` order numbers, `knx_master.xml`) and then parses only the program the command selects: by `--application`, by the model's application reference or by the order number. When that does not settle the choice, every program is parsed, so a refusal reads as before. A lookup by order number reads the lock's `[[product]]` entries and parses nothing.
 
 What was parsed is stored here as JSON, one directory per archive:
 
@@ -905,7 +919,7 @@ The key is the SHA-256 of the archive bytes, the selected inner archive, the cac
 
 Two other start-up costs are paid once per process: the model is parsed once per command (a later load of unchanged files returns the same model; any edit is parsed again), and a keyring is decrypted once per process or MCP server for the same file bytes and password (an edited keyring or another password is decrypted again).
 
-`bussard.toml`, `groups.toml`, `devices/`, `bussard.lock`, `tests.toml` and `ha.toml` belong in git; the device files and `groups.toml` are the source of truth, the lock is what `import` and `adopt` derived from the product data. `models/`, `vendor/` and `captures/` are local-only; `init` and `import-product` plant the `.gitignore` entries. All TOML is parsed strictly: unknown fields and duplicate keys are errors, with a `help:` line where the raw parser message misleads. Saves edit the files in place (`toml_edit`): comments and the formatting of untouched lines survive, and only the entries bussard adds or changes are re-formatted. `bussard device <address> [<channel>]` shows the keys a device file accepts.
+`bussard.toml`, `groups.toml`, `devices/`, `bussard.lock`, `tests.toml` and `ha.toml` belong in git; the device files and `groups.toml` are the source of truth, the lock is what `import` and `adopt` derived from the product data. `captures/` and `.bussard/` are local-only (`init` git-ignores `.bussard/`). `products/` holds the product archives the lock pins: retained data bussard cannot regenerate, and copyrighted, so committing it is your decision (see [product-data.md](product-data.md#the-product-store-products)). All TOML is parsed strictly: unknown fields and duplicate keys are errors, with a `help:` line where the raw parser message misleads. Saves edit the files in place (`toml_edit`): comments and the formatting of untouched lines survive, and only the entries bussard adds or changes are re-formatted. `bussard device <address> [<channel>]` shows the keys a device file accepts.
 
 ### The bundle format
 
@@ -936,7 +950,7 @@ Entries are sorted, with a fixed timestamp and permissions, so two exports of th
 | `model_sha256` | SHA-256 over the lines `<file sha256>  <path>\n`, sorted by path (the `sha256sum` output format). |
 | `excluded` | What a bundle never contains (below). |
 
-A bundle never contains `models/`, `vendor/`, `captures/`, keyrings, `.knxproj` or `.knxprod` files, or `.env`: the export copies an allow-list of model files and nothing else. A reader rejects any entry outside the layout above, any model file whose hash does not match, and any entry larger than 64 MiB.
+A bundle never contains `products/`, `.bussard/models/`, `captures/`, keyrings, `.knxproj` or `.knxprod` files, or `.env`: the export copies an allow-list of model files and nothing else. A reader rejects any entry outside the layout above, any model file whose hash does not match, and any entry larger than 64 MiB.
 
 ### `bussard.toml`
 
@@ -981,7 +995,7 @@ heating = 10
 | `lint.groups.feedback_pairing` | bool, default false | Require the feedback address the block layout reserves for each command address. |
 | `lint.groups.name_pattern` | string, optional | A glob every GA name must match: `*` is any run of characters (including none), `?` exactly one, everything else literal. |
 
-Bus current for `L002` comes from the cached product data (`models/*.yaml`, written by `import-product` from the `.knxprod` `Hardware.xml` `BusCurrent`). Devices with no cached product contribute nothing and are counted in the warning.
+Bus current for `L002` comes from the product models (`.bussard/models/*.yaml`, written by `import-product` from the `.knxprod` `Hardware.xml` `BusCurrent`). Devices with no product model contribute nothing and are counted in the warning.
 
 ### `groups.toml`
 
@@ -1083,9 +1097,9 @@ expect = { ga = "3/1/0", value = "up", within = "5s" }
 
 A manual test must have an `expect`. The runner ignores the gateway's echo of its own write and anything sent from its own address, so a test may write and expect the same GA.
 
-### Generated model files (`models/*.yaml`)
+### Generated model files (`.bussard/models/*.yaml`)
 
-One file per application program, generated by `import-product` and never hand-edited. The field-by-field description lives in [product-data.md](product-data.md#the-model-file-format).
+One file per application program, generated from the archives in `products/` by `import-product` (and by any command that finds `.bussard/models/` missing) and never hand-edited. The field-by-field description lives in [product-data.md](product-data.md#the-model-file-format).
 
 ## Validation diagnostics
 
@@ -1111,7 +1125,7 @@ One file per application program, generated by `import-product` and never hand-e
 | E016 | parameter key malformed (no `@`) or not in the product model | error |
 | E017 | parameter value invalid (unparseable, out of range, not an enum member) | error |
 | I017 | parameter value equals the vendor default (redundant) | info |
-| I018 | device has parameters but no product model in `models/` to validate against | info |
+| I018 | device has parameters but no product model in `.bussard/models/` to validate against | info |
 | E020 | duplicate GA in `groups.toml` (both lines), duplicate object in a device file | error |
 | E021 | device has channels, parameters or keyed objects but no lock entry | error |
 | E022 | device `product` differs from the lock entry | error |

@@ -373,7 +373,7 @@ fn bilingual_image(tag: &str, language: Option<&str>, label: &str) -> Result<Vec
     std::fs::write(
         model.join("bussard.lock"),
         format!(
-            "version = 1\n{language}\n[[device]]\naddress = \"1.0.10\"\n\
+            "version = 2\n{language}\n[[device]]\naddress = \"1.0.10\"\n\
              application = \"M-00FA_A-0003\"\nmask = \"07B0\"\n"
         ),
     )

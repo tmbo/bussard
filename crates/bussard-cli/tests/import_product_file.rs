@@ -1,7 +1,9 @@
-//! CLI tests for `import-product <FILE>`: a vendor `.knxprod` is cached
-//! byte-identical under `<dir>/vendor/`, while an ETS project export
-//! (`.knxproj`, detected by extension or by its `P-XXXX` project folder) is read
-//! in place and never copied there. Both write the generated model.
+//! CLI tests for `import-product <FILE>`: a vendor `.knxprod` is stored
+//! byte-identical under `<dir>/products/`, while from an ETS project export
+//! (`.knxproj`, detected by extension or by its `P-XXXX` project folder) each
+//! application program is extracted once into its own archive there; the
+//! export itself is never copied. Both pin the archive in `bussard.lock` and
+//! write the product models under `.bussard/models/`.
 //!
 //! The fixtures are tiny fabricated archives (no vendor data committed).
 
@@ -104,8 +106,8 @@ fn import(cwd: &Path, file: &Path, dir: &Path) -> std::io::Result<(bool, String,
     ))
 }
 
-/// Imports a project export and checks the model is written and nothing
-/// lands under `vendor/`.
+/// Imports a project export and checks its program is extracted into
+/// `products/` while the export itself is not copied.
 fn assert_project_export_not_cached(name: &str, file_name: &str) -> TestResult {
     let tmp = scratch(name)?;
     let file = tmp.join(file_name);
@@ -118,17 +120,26 @@ fn assert_project_export_not_cached(name: &str, file_name: &str) -> TestResult {
         "import should succeed; stdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
-        stdout.contains("Read the ETS project export in place"),
-        "expected the in-place note; stdout:\n{stdout}"
+        stdout.contains("Extracted 1 application program(s) from the ETS project export"),
+        "expected the extraction note; stdout:\n{stdout}"
     );
     assert!(
-        dir.join("models").join(format!("{APP_ID}.yaml")).is_file(),
+        dir.join(".bussard/models")
+            .join(format!("{APP_ID}.yaml"))
+            .is_file(),
         "expected the generated model; stdout:\n{stdout}"
     );
+    let extracted = dir.join("products").join(format!("{APP_ID}.knxprod"));
+    assert!(extracted.is_file(), "expected the extracted archive");
     assert!(
-        !dir.join("vendor").exists(),
-        "a project export must not be cached under vendor/"
+        !dir.join("products").join(file_name).exists(),
+        "the export itself must not be copied"
     );
+    assert!(!dir.join("vendor").exists());
+    // The extracted archive reads as a plain product archive.
+    let product = bussard_prod::read_knxprod(&extracted)?;
+    assert!(!product.is_project_export);
+    assert!(product.application_by_id(APP_ID).is_some());
     std::fs::remove_dir_all(&tmp)?;
     Ok(())
 }
@@ -157,17 +168,23 @@ fn test_import_product_knxprod_is_cached_byte_identical() -> TestResult {
         "import should succeed; stdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
-        stdout.contains("Cached vendor file:"),
-        "expected the cache note; stdout:\n{stdout}"
+        stdout.contains("Stored vendor file (supplied):"),
+        "expected the store note; stdout:\n{stdout}"
     );
-    let cached = std::fs::read(dir.join("vendor").join("taster.knxprod"))?;
+    let cached = std::fs::read(dir.join("products").join("taster.knxprod"))?;
     assert_eq!(
         cached,
         std::fs::read(&file)?,
         "cache must be byte-identical"
     );
-    assert!(dir.join("vendor").join(".gitignore").is_file());
-    assert!(dir.join("models").join(format!("{APP_ID}.yaml")).is_file());
+    // Retained data: bussard plants no .gitignore.
+    assert!(!dir.join("products").join(".gitignore").exists());
+    assert!(!dir.join("vendor").exists());
+    assert!(
+        dir.join(".bussard/models")
+            .join(format!("{APP_ID}.yaml"))
+            .is_file()
+    );
     std::fs::remove_dir_all(&tmp)?;
     Ok(())
 }
@@ -201,7 +218,7 @@ fn test_import_product_pins_the_archive_and_links_the_device() -> TestResult {
     std::fs::write(
         dir.join("bussard.lock"),
         format!(
-            "version = 1\n\n[[device]]\naddress = \"1.1.4\"\nproduct = \"MDT-BE-04001.02\"\n\
+            "version = 2\n\n[[device]]\naddress = \"1.1.4\"\nproduct = \"MDT-BE-04001.02\"\n\
              application = \"{APP_ID}\"\n"
         ),
     )?;
@@ -216,7 +233,10 @@ fn test_import_product_pins_the_archive_and_links_the_device() -> TestResult {
     let lock = lock_text(&dir)?;
     assert!(lock.contains("version = 2\n"), "{lock}");
     assert!(lock.contains(&format!("sha256 = \"{sha}\"")), "{lock}");
-    assert!(lock.contains("file = \"vendor/taster.knxprod\""), "{lock}");
+    assert!(
+        lock.contains("file = \"products/taster.knxprod\""),
+        "{lock}"
+    );
     assert!(lock.contains("origin = { kind = \"file\""), "{lock}");
     assert!(
         lock.contains("order_numbers = [\"MDT-BE-04001.02\"]"),
@@ -248,17 +268,29 @@ fn test_import_product_project_export_is_pinned_by_its_hash() -> TestResult {
     let dir = tmp.join("knx");
     let (ok, stdout, stderr) = import(&tmp, &file, &dir)?;
     assert!(ok, "stdout:\n{stdout}\nstderr:\n{stderr}");
-    let sha = sha256_hex(&file)?;
+    let project_sha = sha256_hex(&file)?;
+    let extracted = dir.join("products").join(format!("{APP_ID}.knxprod"));
+    let sha = sha256_hex(&extracted)?;
     let lock = lock_text(&dir)?;
     assert!(lock.contains("origin = { kind = \"knxproj\""), "{lock}");
     assert!(
-        lock.contains(&format!("project_hash = \"{sha}\"")),
+        lock.contains(&format!("project_hash = \"{project_sha}\"")),
         "{lock}"
     );
+    assert!(lock.contains(&format!("sha256 = \"{sha}\"")), "{lock}");
     assert!(
-        !lock.contains("file = "),
-        "an export is not held in the model: {lock}"
+        lock.contains(&format!("file = \"products/{APP_ID}.knxprod\"")),
+        "{lock}"
     );
+    // A second import of the same export extracts the same bytes.
+    let (ok, _, _) = import(&tmp, &file, &dir)?;
+    assert!(ok);
+    assert_eq!(sha256_hex(&extracted)?, sha);
+    let names: Vec<_> = std::fs::read_dir(dir.join("products"))?
+        .flatten()
+        .map(|e| e.file_name())
+        .collect();
+    assert_eq!(names.len(), 1, "{names:?}");
     std::fs::remove_dir_all(&tmp)?;
     Ok(())
 }

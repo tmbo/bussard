@@ -316,7 +316,7 @@ fn validate_1000_plus_gas_is_fast() -> Result<(), Box<dyn std::error::Error>> {
 
     // A device with many com-objects (in the lock) and links (in its file).
     let mut dev = String::from("address = \"1.1.4\"\nname = \"Big\"\n\n[links]\n");
-    let mut lock = String::from("version = 1\n\n[[device]]\naddress = \"1.1.4\"\nobjects = [\n");
+    let mut lock = String::from("version = 2\n\n[[device]]\naddress = \"1.1.4\"\nobjects = [\n");
     for obj in 0..500u16 {
         lock.push_str(&format!(
             "  {{ number = {obj}, dpt = \"1.001\", flags = \"CW\" }},\n"

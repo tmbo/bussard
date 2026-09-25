@@ -590,7 +590,7 @@ fn write_model(dir: &Path, params: &str) -> TestResult {
     )?;
     std::fs::write(
         dir.join("bussard.lock"),
-        "version = 1\n\n[[device]]\naddress = \"1.1.4\"\napplication = \"M-00FA_A-0002\"\nmask = \"07B0\"\n",
+        "version = 2\n\n[[device]]\naddress = \"1.1.4\"\napplication = \"M-00FA_A-0002\"\nmask = \"07B0\"\n",
     )?;
     let block = if params.is_empty() {
         String::new()

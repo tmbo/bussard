@@ -167,7 +167,7 @@ fn test_import_no_download_lists_what_the_index_could_fetch() -> TestResult {
         ),
         "{stdout}"
     );
-    assert!(!dir.join("vendor").exists(), "nothing downloaded");
+    assert!(!dir.join("products").exists(), "nothing downloaded");
     std::fs::remove_dir_all(&tmp)?;
     Ok(())
 }
@@ -287,7 +287,7 @@ fn test_import_pins_the_downloaded_product_data_in_the_lock() -> TestResult {
     assert!(lock.contains("version = 2\n"), "{lock}");
     assert!(lock.contains("[[product]]"), "{lock}");
     assert!(lock.contains(&format!("sha256 = \"{sha}\"")), "{lock}");
-    assert!(lock.contains("file = \"vendor/tst.knxprod\""), "{lock}");
+    assert!(lock.contains("file = \"products/tst.knxprod\""), "{lock}");
     assert!(
         lock.contains("origin = { kind = \"index\", order_number = \"TST-1\""),
         "{lock}"

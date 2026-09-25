@@ -152,7 +152,13 @@ pub fn run(
     }
     let desired = plan_cmd::compute_desired(&model, target)?;
     // The product data the parameter half decodes with, when it is at hand.
-    let product = crate::param_readback::resolve(dir, inputs.selection, Some(&model), target)?;
+    let product = crate::param_readback::resolve(
+        dir,
+        inputs.selection,
+        Some(&model),
+        target,
+        crate::param_readback::MissingProduct::Refuse,
+    )?;
     hint_installation_backup(dir);
     apply_desired(
         target,

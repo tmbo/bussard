@@ -164,8 +164,10 @@ unless `--force`. After one confirmation naming the gateway it runs the
 records `replaced: <date>` in the device file.
 
 **`flash <ADDRESS>`** downloads an application program from vendor product
-data (the archive cached under `vendor/` for the device's order number, or
-`--product`; the ETS-free application download). It runs a pre-flight
+data (the archive `bussard.lock` pins for the device under `products/`,
+verified by its SHA-256, or `--product`; the ETS-free application download).
+A pinned archive that is missing or changed refuses the flash before any bus
+access, with the recovery step (see product-data.md). It runs a pre-flight
 plan, then writes, then verifies the application reads back as `Loaded` and
 spot-checks written segments. After the terminal restart it re-reads the
 application object's type and load state; the other objects' `Loaded` comes
@@ -593,7 +595,7 @@ leak a key, a password or vendor data.
 
 A `.bussard` bundle from `bussard export` (or `knx_export_bundle`) holds those
 same model files, the history snapshots and a manifest, and nothing else. It
-never contains `models/`, `vendor/`, `captures/`, keyrings, `.knxproj` or
+never contains `products/`, `.bussard/models/`, `captures/`, keyrings, `.knxproj` or
 `.knxprod` files, or `.env`, because the export copies an allow-list rather
 than skipping a deny-list. The manifest names these exclusions. `bussard.toml`
 does travel with it, so the recipient sees your gateway address; an import into

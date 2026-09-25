@@ -118,6 +118,48 @@ pub fn pin_products(dir: &Path, entries: &[ProductEntry]) -> Result<PinReport, P
     Ok(PinReport { written, ..report })
 }
 
+/// Records `entry` in `<dir>/bussard.lock` and links `address` to it,
+/// replacing whatever link the device had: the explicit override of `flash
+/// --product <file> --force`. Returns whether the lock changed.
+///
+/// # Errors
+///
+/// As [`pin_products`].
+pub fn pin_device(
+    dir: &Path,
+    address: IndividualAddress,
+    entry: &ProductEntry,
+) -> Result<bool, PinError> {
+    let report = pin_products(dir, std::slice::from_ref(entry))?;
+    let path = dir.join(LOCK_FILE);
+    let text = std::fs::read_to_string(&path).map_err(|source| PinError::Io {
+        path: path.clone(),
+        source,
+    })?;
+    let mut lock = parse_lock(&path, &text)?;
+    let sha = entry.sha256.to_ascii_lowercase();
+    let mut changed = false;
+    for device in lock.devices.iter_mut().filter(|d| d.address == address) {
+        if device.product_sha256.as_deref() != Some(sha.as_str()) {
+            device.product_sha256 = Some(sha.clone());
+            changed = true;
+        }
+    }
+    if changed {
+        let text = emit::render_lock(
+            lock.source.as_deref(),
+            lock.language.as_deref(),
+            &lock.products,
+            &lock.devices,
+        );
+        std::fs::write(&path, text).map_err(|source| PinError::Io {
+            path: path.clone(),
+            source,
+        })?;
+    }
+    Ok(changed || report.written)
+}
+
 /// [`pin_products`] on a parsed lock.
 pub(crate) fn pin_into(lock: &mut LockFile, entries: &[ProductEntry]) -> PinReport {
     let mut linked = BTreeSet::new();
@@ -211,27 +253,24 @@ pub fn lock_entries(dir: &Path) -> Vec<ProductEntry> {
 
 /// How to get a pinned archive back, from its origin: the command to run.
 pub fn recovery_hint(entry: &ProductEntry) -> String {
+    const RESTORE: &str = "restore it from your backup or version control";
     match &entry.origin {
         ProductOrigin::Index { order_number, .. } => match order_number
             .as_deref()
             .or_else(|| entry.order_numbers.first().map(String::as_str))
         {
-            Some(order) => {
-                format!(
-                    "restore it from your backup, or run: bussard import-product --order-number {order}"
-                )
-            }
-            None => "restore it from your backup or version control".to_string(),
+            Some(order) => format!(
+                "{RESTORE}, or re-download it: bussard import-product --order-number {order}"
+            ),
+            None => RESTORE.to_string(),
         },
         ProductOrigin::File { path } => {
-            format!(
-                "restore it from your backup, or re-import the file: bussard import-product {path}"
-            )
+            format!("{RESTORE}, or re-import the file: bussard import-product {path}")
         }
         ProductOrigin::Knxproj { path, .. } => {
-            format!("re-import the ETS export: bussard import {path}")
+            format!("{RESTORE}, or re-import the ETS export: bussard import {path}")
         }
-        ProductOrigin::Device => "read it back again: bussard reconstruct --line".to_string(),
+        ProductOrigin::Device => format!("{RESTORE}, or read it back: bussard reconstruct --line"),
     }
 }
 
@@ -268,7 +307,7 @@ mod tests {
         Ok(parse_lock(Path::new("bussard.lock"), text)?)
     }
 
-    const V1: &str = r#"version = 1
+    const LOCK: &str = r#"version = 2
 source = "house.knxproj"
 
 [[device]]
@@ -298,7 +337,7 @@ product = "OTHER-1"
 
     #[test]
     fn test_pin_into_links_matching_devices_only() -> Result<(), Box<dyn std::error::Error>> {
-        let mut lock = lock(V1)?;
+        let mut lock = lock(LOCK)?;
         let report = pin_into(&mut lock, &[vendor_entry("AB12")]);
         assert_eq!(report.linked, vec!["1.1.4".parse()?]);
         assert_eq!(lock.version, 2);
@@ -310,7 +349,7 @@ product = "OTHER-1"
     #[test]
     fn test_pin_into_prefers_an_archive_over_a_project_export()
     -> Result<(), Box<dyn std::error::Error>> {
-        let mut lock = lock(V1)?;
+        let mut lock = lock(LOCK)?;
         let project = knxproj_entry(
             Path::new("../house.knxproj"),
             "ff00".to_string(),
@@ -334,7 +373,7 @@ product = "OTHER-1"
 
     #[test]
     fn test_pin_into_replaces_a_redownloaded_file() -> Result<(), Box<dyn std::error::Error>> {
-        let mut lock = lock(V1)?;
+        let mut lock = lock(LOCK)?;
         pin_into(&mut lock, &[vendor_entry("ab12")]);
         pin_into(&mut lock, &[vendor_entry("cd34")]);
         assert_eq!(lock.products.len(), 1);

@@ -40,6 +40,7 @@ mod param_readback;
 mod plan_cmd;
 mod product_cache;
 mod product_fetch;
+mod product_store;
 mod progress;
 mod read_cmd;
 mod reconstruct_cmd;
@@ -356,6 +357,15 @@ fn resolve_globals(global: &Global, command: &Command) -> anyhow::Result<Resolve
         env.dir.as_deref(),
         role == Role::Creates,
     );
+    // The product store (issue #228): move an earlier `vendor/` into
+    // `products/` and regenerate `.bussard/models/` when it is missing, before
+    // the command reads the model. `init` creates, `import` does this itself.
+    if role != Role::Creates
+        && !matches!(command, Command::Diff { .. } | Command::Keyring { .. })
+        && dir.is_dir()
+    {
+        timing::time("product store", || product_store::prepare(&dir));
+    }
     let gateway = conn_cmd::resolve_gateway(global.gateway.as_deref(), env.gateway.as_deref());
     let keyring = match role {
         // A keyring only ever serves a command that talks to the bus; a files

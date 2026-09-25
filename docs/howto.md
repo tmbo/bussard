@@ -85,9 +85,9 @@ Found in the product-data index:
   ...
 Download this file? [y/N] y
 Downloaded and verified 334088 bytes.
-Cached vendor file (downloaded): knx/vendor/MDT_KP_AKK_03_Switch_Actuator_V23.knxprod
-Generated 1 model file in knx/models:
-  models/M-0083_A-000D-23-5BFD.yaml
+Stored vendor file (downloaded): knx/products/MDT_KP_AKK_03_Switch_Actuator_V23.knxprod
+Generated 1 product model in knx/.bussard/models:
+  .bussard/models/M-0083_A-000D-23-5BFD.yaml
 ```
 
 Then run the wizard and press the device's programming button when it asks:
@@ -203,7 +203,7 @@ Export the model as one file and send that:
 $ bussard export house.bussard
 exported 4 device(s), 11 group address(es), 6 history snapshot(s) → house.bussard
 model sha256 3f1c…
-never included: models/ (cached vendor product models), vendor/ (vendor product data), captures/ (bus recordings), keyrings (*.knxkeys and tool keys), *.knxproj (ETS projects), *.knxprod (vendor product files), .env (passwords and local settings)
+never included: .bussard/models/ (product models, regenerated from products/), products/ (vendor product data), captures/ (bus recordings), keyrings (*.knxkeys and tool keys), *.knxproj (ETS projects), *.knxprod (vendor product files), .env (passwords and local settings)
 ```
 
 The `.bussard` file is a zip holding `bussard.toml`, `groups.toml`, `bussard.lock`, `devices/`, the history snapshots and a manifest with counts and a SHA-256 of the model. Passwords, keyrings, vendor data and ETS files stay on your machine. Leave out the history with `--no-history`. Without a file name, `export` writes `<dir>-<date>.bussard` next to the model directory.
@@ -439,7 +439,7 @@ parameters (application M-0083_A-0042-10-1234):
   the device matches the model's parameters: block
 ```
 
-Without `--product` they use the archive `import-product` cached in `<dir>/vendor/` for the model's order number, when there is one.
+Without `--product` they use the archive `bussard.lock` pins for the device in `<dir>/products/`, when there is one.
 
 ## ... name the group addresses of a house without a project file?
 
@@ -562,7 +562,7 @@ $ claude mcp add knx -- bussard mcp --dir knx --capture-db knx/captures/bus.db
 
 ## What goes in git?
 
-Git is optional: `bussard history` and `bussard undo` work without it. If you do use git, `bussard.toml`, `groups.toml`, `devices/` and `bussard.lock` belong in the repo; the device files and `groups.toml` are the source of truth. Keep out: `.bussard/` (bussard's own history, local to the machine; `init` git-ignores it), `vendor/` and `models/` (derived from copyrighted `.knxprod` files; `import-product` plants a `.gitignore`), `captures/` (`init` git-ignores it), and `.env` (secrets like `BUSSARD_PROJECT_PASSWORD`).
+Git is optional: `bussard history` and `bussard undo` work without it. If you do use git, `bussard.toml`, `groups.toml`, `devices/` and `bussard.lock` belong in the repo; the device files and `groups.toml` are the source of truth. Keep out: `.bussard/` (bussard's own history and regenerated data, local to the machine; `init` git-ignores it), `captures/` (`init` git-ignores it), and `.env` (secrets like `BUSSARD_PROJECT_PASSWORD`). `products/` is your call: it holds the copyrighted `.knxprod` archives the lock pins, which bussard cannot regenerate, so a private repository usually commits it and a public one leaves it out.
 
 ### ETS with git
 

@@ -139,7 +139,13 @@ pub fn run(
     let product = if no_parameters {
         None
     } else {
-        crate::param_readback::resolve(dir, selection, model.as_ref(), target)?
+        crate::param_readback::resolve(
+            dir,
+            selection,
+            model.as_ref(),
+            target,
+            crate::param_readback::MissingProduct::Warn,
+        )?
     };
     let model_ref = model.as_ref();
     let product_ref = product.as_ref();

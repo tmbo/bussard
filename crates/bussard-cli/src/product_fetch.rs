@@ -50,36 +50,15 @@ impl Outcome {
     }
 }
 
-/// The normalized order numbers the product models under `<dir>/models/`
-/// cover (what `import-product` generated them for).
+/// The normalized order numbers the archives `bussard.lock` pins cover,
+/// where the archive is in the model's product store.
 pub(crate) fn cached_orders(dir: &Path) -> BTreeSet<String> {
-    #[derive(serde::Deserialize)]
-    struct Orders {
-        #[serde(default)]
-        order_numbers: Vec<String>,
-    }
-    let mut out = BTreeSet::new();
-    let Ok(entries) = std::fs::read_dir(dir.join("models")) else {
-        return out;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
-            continue;
-        }
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        if let Ok(orders) = serde_norway::from_str::<Orders>(&text) {
-            out.extend(
-                orders
-                    .order_numbers
-                    .iter()
-                    .map(|o| normalize_order_number(o)),
-            );
-        }
-    }
-    out
+    bussard_model::lock_products::lock_entries(dir)
+        .into_iter()
+        .filter(|e| e.file.as_deref().is_some_and(|f| dir.join(f).is_file()))
+        .flat_map(|e| e.order_numbers)
+        .map(|o| normalize_order_number(&o))
+        .collect()
 }
 
 /// The sentence for an order number bussard could not find product data for.
@@ -163,8 +142,9 @@ pub(crate) fn fetch_missing(
         );
     }
     println!(
-        "These are copyrighted vendor files; they are cached under {} and never committed.",
-        dir.join("vendor").display()
+        "These are copyrighted vendor files; they are stored under {} (committing them is \
+         your decision).",
+        dir.join(crate::product_store::PRODUCTS_DIR).display()
     );
     let question = format!(
         "download {} file(s) ({:.1} MB) now?",
@@ -185,7 +165,7 @@ pub(crate) fn fetch_missing(
     }
     for (entry, list) in downloads {
         let result =
-            crate::import_product_cmd::fetch_to_vendor(entry, dir, DownloadConsent::granted())
+            crate::import_product_cmd::fetch_to_store(entry, dir, DownloadConsent::granted())
                 .and_then(|path| {
                     let origin = bussard_model::schema::ProductOrigin::Index {
                         order_number: list.first().cloned(),

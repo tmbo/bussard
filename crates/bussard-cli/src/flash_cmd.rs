@@ -101,33 +101,37 @@ pub fn run(
     };
 
     // Load the product data and pick the application program. Without
-    // `--product`, the archive in `<dir>/vendor/` whose catalogue carries the
-    // device's order number (the one `import` and `adopt` fetched).
+    // `--product`, the archive bussard.lock pins for the device in
+    // `<dir>/products/`, verified by its SHA-256 (issue #228); a pinned
+    // archive that is missing or changed refuses here, before any bus access.
     let device_product = model
         .as_ref()
         .and_then(|m| m.devices.get(&target))
         .and_then(|d| d.device.product.clone());
+    let model_device = model
+        .as_ref()
+        .and_then(|m| m.devices.get(&target))
+        .map(|d| &d.device);
+    let explicit_product = product;
     let product_path = match product {
         Some(path) => path.to_path_buf(),
-        None => {
-            let Some(order) = device_product.as_ref().and_then(|p| p.order_number.clone()) else {
-                bail!(
-                    "no --product given and the model names no product for {target} (the \
-                     `product` order number in devices/{target}.toml); pass --product <FILE>"
-                );
-            };
-            let path = crate::commission_cmd::resolve_product_file(dir, None, &order)?;
-            // Lock v2 (issue #228): the archive found must be the one the
-            // lock pins; `--product` stays the explicit override.
-            let pinned = model
-                .as_ref()
-                .and_then(|m| m.devices.get(&target))
-                .and_then(|d| d.device.lock.product_entry.as_ref());
-            if let Some(entry) = pinned {
-                crate::lock_pin::verify_archive(&path, entry)?;
+        None => match model_device
+            .map(|d| crate::product_store::device_archive(dir, d))
+            .transpose()?
+            .flatten()
+        {
+            Some(path) => path,
+            None => {
+                let Some(order) = device_product.as_ref().and_then(|p| p.order_number.clone())
+                else {
+                    bail!(
+                        "no --product given and the model names no product for {target} (the \
+                         `product` order number in devices/{target}.toml); pass --product <FILE>"
+                    );
+                };
+                crate::product_store::resolve(dir, None, model_device, &order)?
             }
-            path
-        }
+        },
     };
     let product = product_path.as_path();
     // Only the selected program is parsed (issue #214): by order number, by
@@ -223,6 +227,11 @@ pub fn run(
             secure_sender,
             &output,
         );
+    }
+    // `--product <file> --force` also makes the file the device's pinned
+    // product data (issue #228); without `--force` the lock is left alone.
+    if let (Some(explicit), true) = (explicit_product, force) {
+        crate::lock_pin::pin_explicit(dir, target, explicit)?;
     }
 
     let config = resolve_config(model.as_ref(), &overrides)?;

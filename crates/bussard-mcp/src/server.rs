@@ -296,7 +296,7 @@ impl BussardMcp {
     /// `knx_show_device`.
     #[tool(
         description = "Show what one device offers, in its device file's words, from the lock and \
-        the product model under models/ (no bus access): its channels (handle, vendor text, the \
+        the product model under .bussard/models/ (no bus access): its channels (handle, vendor text, the \
         user's name, counts); with `channel` (a handle like \"a-1\", or \"device\" for the \
         device level), that scope's parameters (key, current value, enum choices or range, \
         whether at the vendor default) and objects (key, number, text/function, DPT, flags, \

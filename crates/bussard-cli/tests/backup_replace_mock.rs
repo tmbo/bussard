@@ -507,7 +507,7 @@ fn write_model(dir: &Path, extra: &[(&str, &str)]) -> TestResult {
          [links]\n20.send = \"1/2/0\"\n21.listen = [\"1/2/1\"]\n",
     )?;
     let mut lock = String::from(
-        "version = 1\n\n[[device]]\naddress = \"1.1.4\"\nproduct = \"MDT-JAL0410\"\nmask = \"07B0\"\n",
+        "version = 2\n\n[[device]]\naddress = \"1.1.4\"\nproduct = \"MDT-JAL0410\"\nmask = \"07B0\"\n",
     );
     for (addr, order) in extra {
         std::fs::write(

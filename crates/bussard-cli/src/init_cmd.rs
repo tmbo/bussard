@@ -670,13 +670,10 @@ const CAPTURES_GITIGNORE: &str = "\
 /// user keeps one history in git and one in `.bussard/`, and `bussard undo`
 /// reads bussard's.
 const GITIGNORE: &str = "\
-# bussard's own history and undo data. Local to this machine; `bussard history`
-# and `bussard undo` read it. Never commit it.
+# bussard's own history and undo data, and data it regenerates (device facts,
+# product models). Local to this machine; `bussard history` and `bussard undo`
+# read it. Never commit it.
 .bussard/
-
-# Local, vendor-derived or generated data (see docs/product-data.md).
-models/
-vendor/
 ";
 
 /// `knx/README.md`: onboarding orientation.
@@ -742,14 +739,19 @@ is saved to the history first. Only you program devices, with `plan` and `apply`
   edit it by hand.
 - `tests.toml`: optional acceptance tests for `bussard test`.
 - `captures/`: local telegram captures and device backups.
-- `.bussard/`: bussard's history (`bussard undo` reads it).
+- `products/`: the product data (vendor `.knxprod` files, and programs
+  extracted once from your ETS export) that `bussard.lock` pins. Keep it:
+  bussard cannot regenerate it.
+- `.bussard/`: bussard's history (`bussard undo` reads it) and data it
+  regenerates.
 
 ## If you use git
 
 You do not have to. If you do: commit `bussard.toml`, `groups.toml`,
 `bussard.lock`, `devices/` and `tests.toml`. The generated `.gitignore` already
-excludes `.bussard/`, `models/`, `vendor/` and `captures/`, which are local to
-this machine. A git user then has two histories, one in git and one in bussard;
+excludes `.bussard/`, which is local to this machine. `products/` holds
+copyrighted vendor data: committing it is your decision (a private repository
+is the usual case), and a clone without it cannot flash until it is restored. A git user then has two histories, one in git and one in bussard;
 `bussard undo` reads bussard's.
 
 Guide for new owners: https://github.com/tmbo/bussard/blob/main/docs/getting-started-owner.md
