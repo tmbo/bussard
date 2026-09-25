@@ -87,7 +87,12 @@ async fn test_read_property_ext_table_reads_1333_flags_in_ets_sized_chunks() -> 
 async fn test_read_property_ext_table_halves_a_refused_chunk() -> TestResult {
     let table: Vec<u8> = (1u8..=24).collect(); // three 8-octet elements
     let dev = device()?
-        .with_property_ext(OT_SECURITY, PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE, 8, &table)
+        .with_property_ext(
+            OT_SECURITY,
+            PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE,
+            8,
+            &table,
+        )
         .with_ext_read_limit(1);
     let run = read(dev, PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE, 8).await?;
     assert_eq!(run.result?, table);
@@ -99,7 +104,8 @@ async fn test_read_property_ext_table_halves_a_refused_chunk() -> TestResult {
 
 #[tokio::test]
 async fn test_read_property_ext_table_empty_and_refused() -> TestResult {
-    let dev = device()?.with_property_ext(OT_SECURITY, PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE, 8, &[]);
+    let dev =
+        device()?.with_property_ext(OT_SECURITY, PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE, 8, &[]);
     let run = read(dev, PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE, 8).await?;
     assert!(run.result?.is_empty());
     // A property the device does not serve is refused.

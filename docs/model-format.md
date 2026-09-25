@@ -329,7 +329,15 @@ the join between the user's words and the vendor's ids:
   show them, and every import replaces them.
 - The product facts (program, manufacturer, hardware, mask) and the device
   state of KNX Secure (`secure_capable`, `has_fdsk_certificate`,
-  `sequence_number`) live here; the device file keeps only the intent.
+  `sequence_number`, `secure_senders`) live here; the device file keeps only
+  the intent.
+- `secure_senders` is the security individual address table (PID 54) that
+  `bussard adopt` read back from a Data Secure device, one
+  `{ address = "1.1.5", sequence = 275149400526 }` row per sender the device
+  accepts secured group telegrams from. A secured `flash` or `apply` writes
+  these rows back next to the senders the model's links imply (a sender the
+  links imply takes the derived sequence), so a device keeps accepting senders
+  the model does not describe. An import never writes it. Not key material.
 
 ### Text language
 

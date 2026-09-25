@@ -412,6 +412,30 @@ lists it there. Without any key, `assign` still verifies that the device
 answers at the new address, reports "Data Secure activated (mask hidden), no
 tool key in the keyring", and records no mask in the stub device file.
 
+**Adopting a Data Secure device reads only (issue #201).** When the keyring
+(`--keyring`, `BUSSARD_KEYRING` or `connection.keyring`) lists the device in programming mode, `adopt` treats it
+as a device ETS has commissioned. It refuses a target address other than the
+device's own before anything is sent (the keyring's tool key is keyed by that
+address), sends no address write, no `PID_PROGMODE` write and nothing to the
+security object, and reads the device over `A_SecureData`: the descriptor and
+identity, the link tables, the parameter memory, and the security object's
+group-object security flags (PID 61) and security individual address table
+(PID 54). The key tables (PID 53, PID 56) are write-only and never read. The
+only bus traffic is the programming-mode broadcast, the free-access
+`A_Authorize_Request` every read-only session sends, and these reads; the
+device stays in programming mode until its button is pressed. An activated device
+the keyring does not list (mask `FFFF` in the clear) fails before any device
+file is written, with a hint to re-export the keyring. Activating a Secure
+device, re-keying it or turning Data Secure off stays with ETS; tier 2 of
+#201 (activation from the FDSK certificate) is not implemented.
+
+The PID 54 table read back is kept in the lock (`secure_senders`). A later
+secured `flash` or `apply` of that device writes those senders back next to
+the ones the links imply, so the download does not silently drop a sender the
+model does not describe (a device outside the model, for example). Without
+that record, a download from a model that lacks the device's peers would clear
+them from PID 54 and the device would drop their secured telegrams.
+
 **Whole-line runs** (`apply --line`, `commission --line`) ask one confirmation
 for the run instead of one per device. The prompt names the resolved gateway
 and the number of devices it will touch, and the same `--yes` and non-loopback

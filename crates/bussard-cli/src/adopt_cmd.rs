@@ -19,7 +19,8 @@
 //!
 //! ## A KNX Data Secure-activated device (issue #201, tier 1)
 //!
-//! When the keyring (`connection.keyring` in `bussard.toml`, password in
+//! When the keyring (the global `--keyring`, else `BUSSARD_KEYRING`, else
+//! `connection.keyring` in `bussard.toml`; password in
 //! `BUSSARD_KEYRING_PASSWORD`) holds a tool key for the device in programming
 //! mode, adopt treats it as a device ETS has commissioned: it keeps the device
 //! at its address (no address write), verifies it over `A_SecureData`, and
@@ -88,6 +89,7 @@ pub fn run(
     yes: bool,
     no_download: bool,
     allow_remote_gateway: bool,
+    keyring: Option<&Path>,
     overrides: ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
     let interactive = std::io::stdin().is_terminal();
@@ -152,16 +154,15 @@ pub fn run(
     // The keyring's tool keys (issue #201): a device it lists is adopted as a
     // Data Secure device. Loaded before the bus is touched, so a wrong
     // password fails fast.
-    let keyring = configured_keyring(dir);
     let keys = ToolKeys::load(ToolKeySource {
-        keyring: keyring.as_deref(),
+        keyring,
         tool_key: None,
     })
     .context("loading the keyring for adopt")?;
 
     let adopt_keys = AdoptKeys {
         keys: &keys,
-        keyring: keyring.as_deref(),
+        keyring,
         product,
     };
     let runtime = tokio::runtime::Runtime::new()?;
@@ -193,14 +194,6 @@ pub fn run(
         service.close().await;
         result
     })
-}
-
-/// The keyring `adopt` uses for tool keys: `connection.keyring` from the
-/// model's `bussard.toml`, resolved against `dir` (the same file the tunnel
-/// uses, issue #189). `None` without a config or a keyring entry.
-fn configured_keyring(dir: &Path) -> Option<std::path::PathBuf> {
-    let config = bussard_model::load_config(dir).ok()?;
-    config.connection.keyring_path(dir)
 }
 
 /// The key material and inputs of one adopt run that the bus flow needs.
@@ -906,7 +899,7 @@ fn print_summary(
         println!("  1. edit the name/room in {}", path.display());
         println!(
             "  2. `bussard plan {target}`   — should report no change (the model now holds what \
-             the device holds; the tool key comes from connection.keyring)"
+             the device holds; it uses the same keyring)"
         );
         return;
     }
@@ -959,12 +952,12 @@ fn activated_without_key(
                 "{target} is KNX Data Secure-activated (it hides its mask from an unsecured read) \
                  and cannot be adopted: {no_entry} Re-export the keyring from ETS after the \
                  device's secure commissioning, so it lists {target}, and point \
-                 connection.keyring in bussard.toml at it. No device file was written.{moved}"
+                 --keyring (or connection.keyring in bussard.toml) at it. No device file was written.{moved}"
             )
         }
         None => anyhow!(
             "{target} is KNX Data Secure-activated (it hides its mask from an unsecured read) and \
-             cannot be adopted without its tool key: set connection.keyring in bussard.toml to \
+             cannot be adopted without its tool key: pass --keyring (or set connection.keyring in bussard.toml) with \
              the project's ETS keyring export (password in {}). No device file was written.{moved}",
             bussard_service::secure::KEYRING_PASSWORD_ENV
         ),
@@ -999,10 +992,14 @@ async fn read_secured(
     product: Option<&Path>,
     material: &SecureMaterial,
 ) -> anyhow::Result<SecuredRead> {
-    println!("  reading the Data Secure device over A_SecureData (tables, security object, parameters)");
+    println!(
+        "  reading the Data Secure device over A_SecureData (tables, security object, parameters)"
+    );
     // The product the parameter read-back decodes with, found through the
     // device file being written (its order number and application).
-    let mut with_device = model.cloned().unwrap_or_else(crate::assign_cmd::empty_model);
+    let mut with_device = model
+        .cloned()
+        .unwrap_or_else(crate::assign_cmd::empty_model);
     with_device.devices.insert(
         target,
         bussard_model::LoadedDevice {
@@ -1067,7 +1064,9 @@ async fn read_secured(
         })?;
     let (tables, security, params) = read;
     if tables.is_none() {
-        notes.push("the link tables were not read: bussard has no table reader for this mask".into());
+        notes.push(
+            "the link tables were not read: bussard has no table reader for this mask".into(),
+        );
     }
     if product_source.is_none() && notes.is_empty() {
         notes.push(
@@ -1118,10 +1117,8 @@ fn record_secured(
     let mut parameters = 0;
     // The parameters the device holds: the lock facts (visible objects,
     // channels, keys) follow its values, and the file keeps the non-defaults.
-    if let (Some(app), Some(state)) = (
-        selected.and_then(|s| s.app.as_ref()),
-        read.params.as_ref(),
-    ) {
+    if let (Some(app), Some(state)) = (selected.and_then(|s| s.app.as_ref()), read.params.as_ref())
+    {
         match &state.detail {
             Some(detail) => {
                 let keys: std::collections::BTreeSet<&str> = detail
@@ -1170,7 +1167,9 @@ fn record_secured(
             .or_insert_with(|| bussard_service::adopt::placeholder_object(link));
     }
 
-    let mut out = model.cloned().unwrap_or_else(crate::assign_cmd::empty_model);
+    let mut out = model
+        .cloned()
+        .unwrap_or_else(crate::assign_cmd::empty_model);
     let placeholder = |ga: GroupAddress| format!("GA {ga} (adopted from {target})");
     for link in &links {
         for ga in link.send.iter().chain(link.listen.iter()) {

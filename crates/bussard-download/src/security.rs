@@ -125,8 +125,10 @@ impl SecureSenderEntry {
 /// an all-zero element (individual address 0.0.0 never sends).
 pub fn decode_sender_table(bytes: &[u8]) -> Vec<SecureSenderEntry> {
     bytes
-        .chunks_exact(SecureSenderEntry::LEN)
-        .filter_map(SecureSenderEntry::decode)
+        .as_chunks::<{ SecureSenderEntry::LEN }>()
+        .0
+        .iter()
+        .filter_map(|element| SecureSenderEntry::decode(element))
         .filter(|e| e.address.raw() != 0)
         .collect()
 }
@@ -1036,7 +1038,13 @@ mod tests {
                 sequence: 1,
             },
         ];
-        let s = secured_senders(Some(&model), ia("1.1.5")?, &HashMap::new(), &HashMap::new(), &[]);
+        let s = secured_senders(
+            Some(&model),
+            ia("1.1.5")?,
+            &HashMap::new(),
+            &HashMap::new(),
+            &[],
+        );
         assert_eq!(
             s,
             vec![

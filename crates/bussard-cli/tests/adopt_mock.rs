@@ -826,7 +826,8 @@ fn test_adopt_secure_device_reads_everything_over_secure_data() -> TestResult {
     let out = format!("stdout:\n{}\nstderr:\n{}", run.stdout, run.stderr);
     assert!(run.success, "{out}");
     assert!(
-        run.stderr.contains("1.1.10 already has the address 1.1.10; no address write"),
+        run.stderr
+            .contains("1.1.10 already has the address 1.1.10; no address write"),
         "{out}"
     );
     assert!(
@@ -836,15 +837,18 @@ fn test_adopt_secure_device_reads_everything_over_secure_data() -> TestResult {
     assert!(run.secured_requests > 0, "the reads rode A_SecureData");
     assert_eq!(run.writes, 0, "nothing written to the device");
     assert!(
-        run.stdout.contains("secure objects (the device's GO security flags (PID 61)): 1"),
+        run.stdout
+            .contains("secure objects (the device's GO security flags (PID 61)): 1"),
         "{out}"
     );
     assert!(
-        run.stdout.contains("secure groups (keyed in the keyring): 1/2/3"),
+        run.stdout
+            .contains("secure groups (keyed in the keyring): 1/2/3"),
         "{out}"
     );
     assert!(
-        run.stdout.contains("secured senders (PID 54, kept in the lock): 1.1.20 (sequence 7)"),
+        run.stdout
+            .contains("secured senders (PID 54, kept in the lock): 1.1.20 (sequence 7)"),
         "{out}"
     );
     assert!(run.stdout.contains("recorded the 2 link(s)"), "{out}");
@@ -859,7 +863,10 @@ fn test_adopt_secure_device_reads_everything_over_secure_data() -> TestResult {
     assert!(body.contains("\"1/2/3\""), "{body}");
     assert!(body.contains("\"1/2/4\""), "{body}");
     for generated in ["secure_capable", "secure_senders", "sequence_number"] {
-        assert!(!body.contains(generated), "{generated} belongs in the lock:\n{body}");
+        assert!(
+            !body.contains(generated),
+            "{generated} belongs in the lock:\n{body}"
+        );
     }
     assert!(
         run.validate.starts_with("exit Some(0)"),
@@ -868,7 +875,9 @@ fn test_adopt_secure_device_reads_everything_over_secure_data() -> TestResult {
     );
     assert!(
         run.plan.starts_with("exit Some(0)")
-            && run.plan.contains("1.1.10 matches the model; nothing to write"),
+            && run
+                .plan
+                .contains("1.1.10 matches the model; nothing to write"),
         "plan after adopt: {}",
         run.plan
     );
@@ -901,7 +910,10 @@ fn test_adopt_activated_device_without_keyring_entry_fails_cleanly() -> TestResu
     let out = format!("stdout:\n{}\nstderr:\n{}", run.stdout, run.stderr);
     assert!(!run.success, "{out}");
     assert!(run.stderr.contains("has no tool key for 1.1.13"), "{out}");
-    assert!(run.stderr.contains("Re-export the keyring from ETS"), "{out}");
+    assert!(
+        run.stderr.contains("Re-export the keyring from ETS"),
+        "{out}"
+    );
     assert!(run.stderr.contains("No device file was written"), "{out}");
     assert!(run.device_file.is_none(), "no device file");
     assert_eq!(run.writes, 0, "nothing written to the device");

@@ -229,8 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn test_links_from_tables_sends_on_the_first_address_of_a_transmitting_object() -> TestResult
-    {
+    fn test_links_from_tables_sends_on_the_first_address_of_a_transmitting_object() -> TestResult {
         let resolved = vec![
             (1, ga("1/2/3")?),
             (2, ga("1/2/4")?),
@@ -258,8 +257,8 @@ mod tests {
     }
 
     #[test]
-    fn test_derive_secure_adoption_prefers_the_device_flags_and_lists_disagreements()
-    -> TestResult {
+    fn test_derive_secure_adoption_prefers_the_device_flags_and_lists_disagreements() -> TestResult
+    {
         let links = vec![
             Link {
                 object: 1,
@@ -284,7 +283,10 @@ mod tests {
         // Keyring only.
         let a = derive_secure_adoption(&links, &keys, None);
         assert_eq!(a.secure_objects, BTreeSet::from([1, 3]));
-        assert_eq!(a.secure_groups, BTreeSet::from([ga("1/2/3")?, ga("1/2/5")?]));
+        assert_eq!(
+            a.secure_groups,
+            BTreeSet::from([ga("1/2/3")?, ga("1/2/5")?])
+        );
         assert!(!a.from_device_flags);
         // The device flags 1 and 2: 2 links no keyed GA, 3 is keyed but not
         // flagged.

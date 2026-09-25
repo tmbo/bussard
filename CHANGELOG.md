@@ -220,6 +220,20 @@ entry supersedes it and is not a diff against it.
   tunnel address, so the device accepts `write --keyring`; without it the
   device drops bussard's secured group telegrams. knx-sim enforces the table
   (#181).
+- `adopt` of a Data Secure-activated device whose tool key is in the keyring
+  (`--keyring`, `BUSSARD_KEYRING` or `connection.keyring`) (#201 tier 1). adopt keeps the device at its address,
+  verifies it and reads its link tables, parameters and security object (the
+  group-object security flags, PID 61, and the security individual address
+  table, PID 54) over `A_SecureData`, and writes nothing to the device. The
+  model records the links, the non-default parameters, `[security] activated
+  = true, secure_commissioning = true`, `secure` on the flagged objects and on
+  the linked group addresses the keyring has a key for, and, in the lock,
+  `secure_capable`, the keyring sequence and the PID 54 table as
+  `secure_senders`, which a later secured download writes back. `plan` right
+  after reports no change. An activated device the keyring does not list fails
+  with the "no tool key" message and a hint to re-export the keyring, and no
+  device file is written. Activation from the FDSK certificate (tier 2) stays
+  open.
 
 **KNXnet/IP Secure**
 

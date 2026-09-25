@@ -214,8 +214,10 @@ impl Command {
             | Command::Viz { .. }
             | Command::Audit { .. }
             | Command::Learn { .. }
-            | Command::Mcp { .. } => Role::Bus { slot: true },
-            Command::Adopt { .. } | Command::Test { .. } => Role::Bus { slot: false },
+            | Command::Mcp { .. }
+            // adopt takes a Data Secure device's tool key from it (#201).
+            | Command::Adopt { .. } => Role::Bus { slot: true },
+            Command::Test { .. } => Role::Bus { slot: false },
             _ => Role::Files,
         }
     }
@@ -1482,6 +1484,7 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
             yes,
             no_download,
             g.allow_remote_gateway,
+            g.keyring.as_deref(),
             g.mgmt(),
         ),
         Command::Flash {
