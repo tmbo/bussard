@@ -1327,7 +1327,7 @@ mod tests {
     use super::*;
 
     fn dpt(s: &str) -> Dpt {
-        s.parse().unwrap()
+        s.parse().expect("test fixture")
     }
 
     #[test]
@@ -1428,15 +1428,16 @@ mod tests {
     }
 
     #[test]
-    fn float16_roundtrip() {
+    fn float16_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
         // DPT 9 quantizes more coarsely as magnitude grows (the exponent scales
         // the 0.01 resolution), so the tolerance is proportional to the value.
         for &t in &[0.0f32, 21.0, -30.0, 0.5, 100.0, -273.15] {
-            let bytes = encode_float16(t).unwrap();
+            let bytes = encode_float16(t)?;
             let back = decode_float16(bytes[0], bytes[1]);
             let tol = 0.1_f32.max(t.abs() * 0.001);
             assert!((back - t).abs() <= tol, "roundtrip {t} -> {back}");
         }
+        Ok(())
     }
 
     #[test]
@@ -1569,21 +1570,22 @@ mod tests {
     }
 
     #[test]
-    fn encode_roundtrips() {
+    fn encode_roundtrips() -> Result<(), Box<dyn std::error::Error>> {
         let v = TypedValue::Bool {
             value: true,
             label: "On",
         };
-        assert_eq!(encode(&dpt("1.001"), &v).unwrap(), vec![1]);
+        assert_eq!(encode(&dpt("1.001"), &v)?, vec![1]);
 
         let v = TypedValue::Percent(100.0);
-        assert_eq!(encode(&dpt("5.001"), &v).unwrap(), vec![255]);
+        assert_eq!(encode(&dpt("5.001"), &v)?, vec![255]);
 
         let v = TypedValue::Scene(3);
-        assert_eq!(encode(&dpt("17.001"), &v).unwrap(), vec![3]);
+        assert_eq!(encode(&dpt("17.001"), &v)?, vec![3]);
 
         let v = TypedValue::Rgb { r: 1, g: 2, b: 3 };
-        assert_eq!(encode(&dpt("232.600"), &v).unwrap(), vec![1, 2, 3]);
+        assert_eq!(encode(&dpt("232.600"), &v)?, vec![1, 2, 3]);
+        Ok(())
     }
 
     #[test]
@@ -1607,7 +1609,7 @@ mod tests {
     // ---- parse_value ------------------------------------------------------
 
     #[test]
-    fn parse_bool_universal_and_subtype_words() {
+    fn parse_bool_universal_and_subtype_words() -> Result<(), Box<dyn std::error::Error>> {
         // Universal on/off/true/false/1/0.
         for (input, expect) in [
             ("on", true),
@@ -1620,7 +1622,7 @@ mod tests {
             ("0", false),
             ("no", false),
         ] {
-            match parse_value(&dpt("1.001"), input).unwrap() {
+            match parse_value(&dpt("1.001"), input)? {
                 TypedValue::Bool { value, .. } => assert_eq!(value, expect, "{input}"),
                 other => panic!("expected bool for {input}, got {other:?}"),
             }
@@ -1628,69 +1630,70 @@ mod tests {
 
         // Subtype words carry the right label.
         assert_eq!(
-            parse_value(&dpt("1.008"), "down").unwrap(),
+            parse_value(&dpt("1.008"), "down")?,
             TypedValue::Bool {
                 value: true,
                 label: "Down"
             }
         );
         assert_eq!(
-            parse_value(&dpt("1.008"), "up").unwrap(),
+            parse_value(&dpt("1.008"), "up")?,
             TypedValue::Bool {
                 value: false,
                 label: "Up"
             }
         );
         assert_eq!(
-            parse_value(&dpt("1.009"), "closed").unwrap(),
+            parse_value(&dpt("1.009"), "closed")?,
             TypedValue::Bool {
                 value: true,
                 label: "Closed"
             }
         );
         assert_eq!(
-            parse_value(&dpt("1.010"), "start").unwrap(),
+            parse_value(&dpt("1.010"), "start")?,
             TypedValue::Bool {
                 value: true,
                 label: "Start"
             }
         );
         assert_eq!(
-            parse_value(&dpt("1.003"), "enable").unwrap(),
+            parse_value(&dpt("1.003"), "enable")?,
             TypedValue::Bool {
                 value: true,
                 label: "Enable"
             }
         );
         assert_eq!(
-            parse_value(&dpt("1.005"), "no-alarm").unwrap(),
+            parse_value(&dpt("1.005"), "no-alarm")?,
             TypedValue::Bool {
                 value: false,
                 label: "No Alarm"
             }
         );
+        Ok(())
     }
 
     #[test]
-    fn parse_bool_rejects_garbage() {
-        let err = parse_value(&dpt("1.001"), "maybe").unwrap_err();
+    fn parse_bool_rejects_garbage() -> Result<(), Box<dyn std::error::Error>> {
+        let err = parse_value(&dpt("1.001"), "maybe")
+            .err()
+            .ok_or("expected an error")?;
         assert!(matches!(err, ParseValueError::Invalid { .. }));
         // The wrong subtype word does not leak across subtypes.
         assert!(parse_value(&dpt("1.001"), "down").is_err());
+        Ok(())
     }
 
     #[test]
-    fn parse_percent_forms_and_range() {
+    fn parse_percent_forms_and_range() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(
-            parse_value(&dpt("5.001"), "75%").unwrap(),
+            parse_value(&dpt("5.001"), "75%")?,
             TypedValue::Percent(75.0)
         );
+        assert_eq!(parse_value(&dpt("5.001"), "0")?, TypedValue::Percent(0.0));
         assert_eq!(
-            parse_value(&dpt("5.001"), "0").unwrap(),
-            TypedValue::Percent(0.0)
-        );
-        assert_eq!(
-            parse_value(&dpt("5.001"), "100 %").unwrap(),
+            parse_value(&dpt("5.001"), "100 %")?,
             TypedValue::Percent(100.0)
         );
         assert!(matches!(
@@ -1701,13 +1704,14 @@ mod tests {
             parse_value(&dpt("5.001"), "abc"),
             Err(ParseValueError::Invalid { .. })
         ));
+        Ok(())
     }
 
     #[test]
-    fn parse_scaling_and_angle() {
+    fn parse_scaling_and_angle() -> Result<(), Box<dyn std::error::Error>> {
         // 5.x generic scaling byte.
         assert_eq!(
-            parse_value(&dpt("5.010"), "200").unwrap(),
+            parse_value(&dpt("5.010"), "200")?,
             TypedValue::Unsigned {
                 value: 200,
                 unit: None
@@ -1716,18 +1720,19 @@ mod tests {
         assert!(parse_value(&dpt("5.010"), "300").is_err());
         // 5.003 angle with a stray degree sign.
         assert_eq!(
-            parse_value(&dpt("5.003"), "180°").unwrap(),
+            parse_value(&dpt("5.003"), "180°")?,
             TypedValue::Unsigned {
                 value: 180,
                 unit: Some("°")
             }
         );
+        Ok(())
     }
 
     #[test]
-    fn parse_signed_and_unsigned_ints() {
+    fn parse_signed_and_unsigned_ints() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(
-            parse_value(&dpt("6.010"), "-5").unwrap(),
+            parse_value(&dpt("6.010"), "-5")?,
             TypedValue::Signed {
                 value: -5,
                 unit: None
@@ -1735,7 +1740,7 @@ mod tests {
         );
         assert!(parse_value(&dpt("6.010"), "200").is_err());
         assert_eq!(
-            parse_value(&dpt("7.001"), "1000").unwrap(),
+            parse_value(&dpt("7.001"), "1000")?,
             TypedValue::Unsigned {
                 value: 1000,
                 unit: None
@@ -1743,26 +1748,27 @@ mod tests {
         );
         assert!(parse_value(&dpt("7.001"), "70000").is_err());
         assert_eq!(
-            parse_value(&dpt("8.001"), "-1000").unwrap(),
+            parse_value(&dpt("8.001"), "-1000")?,
             TypedValue::Signed {
                 value: -1000,
                 unit: None
             }
         );
         assert_eq!(
-            parse_value(&dpt("12.001"), "4000000000").unwrap(),
+            parse_value(&dpt("12.001"), "4000000000")?,
             TypedValue::Unsigned {
                 value: 4_000_000_000,
                 unit: None
             }
         );
+        Ok(())
     }
 
     #[test]
-    fn parse_float_with_unit_suffix() {
+    fn parse_float_with_unit_suffix() -> Result<(), Box<dyn std::error::Error>> {
         // Bare decimal.
         assert_eq!(
-            parse_value(&dpt("9.001"), "21.5").unwrap(),
+            parse_value(&dpt("9.001"), "21.5")?,
             TypedValue::Float {
                 value: 21.5,
                 unit: Some("°C")
@@ -1770,7 +1776,7 @@ mod tests {
         );
         // With the exact unit suffix.
         assert_eq!(
-            parse_value(&dpt("9.001"), "21.5°C").unwrap(),
+            parse_value(&dpt("9.001"), "21.5°C")?,
             TypedValue::Float {
                 value: 21.5,
                 unit: Some("°C")
@@ -1778,14 +1784,14 @@ mod tests {
         );
         // With the bare unit letter.
         assert_eq!(
-            parse_value(&dpt("9.001"), "21.5C").unwrap(),
+            parse_value(&dpt("9.001"), "21.5C")?,
             TypedValue::Float {
                 value: 21.5,
                 unit: Some("°C")
             }
         );
         // IEEE float (14.x).
-        match parse_value(&dpt("14.056"), "1500 W").unwrap() {
+        match parse_value(&dpt("14.056"), "1500 W")? {
             TypedValue::Float { value, unit } => {
                 assert!((value - 1500.0).abs() < 0.001);
                 assert_eq!(unit, Some("W"));
@@ -1793,44 +1799,44 @@ mod tests {
             other => panic!("expected float, got {other:?}"),
         }
         assert!(parse_value(&dpt("9.001"), "hot").is_err());
+        Ok(())
     }
 
     #[test]
-    fn parse_energy_with_unit() {
+    fn parse_energy_with_unit() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(
-            parse_value(&dpt("13.013"), "10 kWh").unwrap(),
+            parse_value(&dpt("13.013"), "10 kWh")?,
             TypedValue::Signed {
                 value: 10,
                 unit: Some("kWh")
             }
         );
+        Ok(())
     }
 
     #[test]
-    fn parse_scene_and_scene_control() {
+    fn parse_scene_and_scene_control() -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(parse_value(&dpt("17.001"), "5")?, TypedValue::Scene(5));
         assert_eq!(
-            parse_value(&dpt("17.001"), "5").unwrap(),
-            TypedValue::Scene(5)
-        );
-        assert_eq!(
-            parse_value(&dpt("17.001"), "scene 5").unwrap(),
+            parse_value(&dpt("17.001"), "scene 5")?,
             TypedValue::Scene(5)
         );
         assert!(parse_value(&dpt("17.001"), "64").is_err());
         assert_eq!(
-            parse_value(&dpt("18.001"), "3").unwrap(),
+            parse_value(&dpt("18.001"), "3")?,
             TypedValue::SceneControl {
                 learn: false,
                 scene: 3
             }
         );
         assert_eq!(
-            parse_value(&dpt("18.001"), "learn 3").unwrap(),
+            parse_value(&dpt("18.001"), "learn 3")?,
             TypedValue::SceneControl {
                 learn: true,
                 scene: 3
             }
         );
+        Ok(())
     }
 
     /// Regression: every DPT 20.x used to decode/parse/encode as the 20.102
@@ -1899,20 +1905,21 @@ mod tests {
     }
 
     #[test]
-    fn parse_hvac_modes() {
+    fn parse_hvac_modes() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(
-            parse_value(&dpt("20.102"), "comfort").unwrap(),
+            parse_value(&dpt("20.102"), "comfort")?,
             TypedValue::HvacMode(HvacMode::Comfort)
         );
         assert_eq!(
-            parse_value(&dpt("20.102"), "building-protection").unwrap(),
+            parse_value(&dpt("20.102"), "building-protection")?,
             TypedValue::HvacMode(HvacMode::BuildingProtection)
         );
         assert_eq!(
-            parse_value(&dpt("20.102"), "Frost").unwrap(),
+            parse_value(&dpt("20.102"), "Frost")?,
             TypedValue::HvacMode(HvacMode::BuildingProtection)
         );
         assert!(parse_value(&dpt("20.102"), "tropical").is_err());
+        Ok(())
     }
 
     #[test]
@@ -1978,16 +1985,16 @@ mod tests {
     }
 
     #[test]
-    fn dpt5003_angle_encode_scaling_and_roundtrip() {
+    fn dpt5003_angle_encode_scaling_and_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
         // Angles above 255 now encode (previously Mismatch).
-        let v = parse_value(&dpt("5.003"), "360").unwrap();
-        assert_eq!(encode(&dpt("5.003"), &v).unwrap(), vec![255]);
+        let v = parse_value(&dpt("5.003"), "360")?;
+        assert_eq!(encode(&dpt("5.003"), &v)?, vec![255]);
         assert_eq!(
-            encode(&dpt("5.003"), &parse_value(&dpt("5.003"), "0").unwrap()).unwrap(),
+            encode(&dpt("5.003"), &parse_value(&dpt("5.003"), "0")?)?,
             vec![0]
         );
         assert_eq!(
-            encode(&dpt("5.003"), &parse_value(&dpt("5.003"), "180").unwrap()).unwrap(),
+            encode(&dpt("5.003"), &parse_value(&dpt("5.003"), "180")?)?,
             vec![128]
         );
         // Out of range still rejected.
@@ -2011,8 +2018,7 @@ mod tests {
                         value: deg,
                         unit: Some("°"),
                     },
-                )
-                .unwrap();
+                )?;
                 assert!(
                     (back[0] as i16 - raw as i16).abs() <= 1,
                     "raw {raw} -> {deg}° -> {}",
@@ -2022,6 +2028,7 @@ mod tests {
                 panic!("expected unsigned angle");
             }
         }
+        Ok(())
     }
 
     #[test]
@@ -2102,7 +2109,7 @@ mod tests {
     }
 
     #[test]
-    fn dpt19_datetime_reference_vector() {
+    fn dpt19_datetime_reference_vector() -> Result<(), Box<dyn std::error::Error>> {
         // Reference vector per KNX 03/07/02 DPT 19.001 layout:
         // 2019-01-30 (Wed) 08:30:45, no flags, quality clear.
         //   year 2019 -> 119 (0x77), month 1, day 30, weekday Wed=3,
@@ -2122,13 +2129,14 @@ mod tests {
         assert_eq!(dt.second, 45);
         assert!(!dt.fault && !dt.no_time && !dt.no_date && !dt.summer_time);
         // Round-trips byte-for-byte.
-        assert_eq!(encode(&dpt("19.001"), &decoded).unwrap(), payload);
+        assert_eq!(encode(&dpt("19.001"), &decoded)?, payload);
         // Display shows both date and time with the weekday.
         assert_eq!(dt.to_string(), "2019-01-30 Wed 08:30:45");
+        Ok(())
     }
 
     #[test]
-    fn dpt19_datetime_flags_roundtrip() {
+    fn dpt19_datetime_flags_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
         // Fault + summer time + working day set, quality + sync set.
         let payload = [0x7D, 0x0C, 0x19, 0xB0, 0x3B, 0x3B, 0xC1, 0xC0];
         let decoded = decode(&dpt("19.001"), &payload);
@@ -2147,7 +2155,8 @@ mod tests {
         assert_eq!(dt.month, 12);
         assert_eq!(dt.day, 25);
         // Byte-exact round-trip.
-        assert_eq!(encode(&dpt("19.001"), &decoded).unwrap(), payload);
+        assert_eq!(encode(&dpt("19.001"), &decoded)?, payload);
+        Ok(())
     }
 
     #[test]
@@ -2186,7 +2195,7 @@ mod tests {
     }
 
     #[test]
-    fn dpt251_rgbw_reference_vector() {
+    fn dpt251_rgbw_reference_vector() -> Result<(), Box<dyn std::error::Error>> {
         // R=0x11 G=0x22 B=0x33 W=0x44, reserved=0x00, validity=0x0F (all valid).
         let payload = [0x11, 0x22, 0x33, 0x44, 0x00, 0x0F];
         let decoded = decode(&dpt("251.600"), &payload);
@@ -2196,12 +2205,13 @@ mod tests {
         };
         assert_eq!((c.r, c.g, c.b, c.w), (0x11, 0x22, 0x33, 0x44));
         assert!(c.r_valid && c.g_valid && c.b_valid && c.w_valid);
-        assert_eq!(encode(&dpt("251.600"), &decoded).unwrap(), payload);
+        assert_eq!(encode(&dpt("251.600"), &decoded)?, payload);
         assert_eq!(c.to_string(), "RGBW(11,22,33,44)");
+        Ok(())
     }
 
     #[test]
-    fn dpt251_rgbw_partial_validity() {
+    fn dpt251_rgbw_partial_validity() -> Result<(), Box<dyn std::error::Error>> {
         // Only red and white valid: validity nibble = bit3|bit0 = 0x09.
         let payload = [0xFF, 0x00, 0x00, 0x80, 0x00, 0x09];
         let decoded = decode(&dpt("251.600"), &payload);
@@ -2213,7 +2223,8 @@ mod tests {
         // Invalid channels render as `--`.
         assert_eq!(c.to_string(), "RGBW(FF,--,--,80)");
         // Round-trips byte-for-byte (reserved octet preserved as 0).
-        assert_eq!(encode(&dpt("251.600"), &decoded).unwrap(), payload);
+        assert_eq!(encode(&dpt("251.600"), &decoded)?, payload);
+        Ok(())
     }
 
     #[test]

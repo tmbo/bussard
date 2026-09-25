@@ -373,7 +373,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_model_yaml_indexed_app_relative() {
+    fn parses_model_yaml_indexed_app_relative() -> Result<(), Box<dyn std::error::Error>> {
         let app = "M-00FA_A-1";
         let yaml = "\
 identity:
@@ -395,7 +395,7 @@ parameters:
           text: On
     default: '0'
 ";
-        let m = ProductModel::from_yaml(yaml, app).unwrap();
+        let m = ProductModel::from_yaml(yaml, app)?;
         assert!(m.parameters.contains_key("MD-1_P-3"));
         let p = &m.parameters["MD-1_P-3"];
         assert!(matches!(
@@ -415,6 +415,7 @@ parameters:
             m.parameters["P-9"].labels,
             vec![(0, "Off".to_string()), (7, "On".to_string())]
         );
+        Ok(())
     }
 
     fn labels(pairs: &[(i64, &str)]) -> Vec<(i64, String)> {

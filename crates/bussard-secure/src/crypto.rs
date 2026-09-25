@@ -360,9 +360,9 @@ mod tests {
     /// print(ct[-16:].hex())
     /// ```
     #[test]
-    fn test_cbc_mac_worked_vector_zero_key() {
+    fn test_cbc_mac_worked_vector_zero_key() -> Result<(), Box<dyn std::error::Error>> {
         let key = Key16::new([0u8; 16]);
-        let mac = cbc_mac(&key, &[0x11], &[], &[0u8; 16]).unwrap();
+        let mac = cbc_mac(&key, &[0x11], &[], &[0u8; 16])?;
         assert_eq!(
             mac,
             [
@@ -370,6 +370,7 @@ mod tests {
                 0x2f, 0x5f,
             ]
         );
+        Ok(())
     }
 
     #[test]
@@ -464,7 +465,7 @@ mod tests {
 
     /// AES-CBC decrypt inverts an independently-encrypted CBC ciphertext.
     #[test]
-    fn test_aes_cbc_decrypt_round_trip() {
+    fn test_aes_cbc_decrypt_round_trip() -> Result<(), Box<dyn std::error::Error>> {
         use aes::cipher::{BlockEncryptMut, KeyIvInit};
         let key = Key16::new([0x33; 16]);
         let iv = [0x07u8; 16];
@@ -473,21 +474,23 @@ mod tests {
         let mut enc = Aes128CbcEnc::new(key.bytes().into(), &iv.into());
         let ga = aes::cipher::generic_array::GenericArray::from_mut_slice(&mut ct);
         enc.encrypt_block_mut(ga);
-        let dec = aes_cbc_decrypt(&key, &iv, &ct).unwrap();
+        let dec = aes_cbc_decrypt(&key, &iv, &ct)?;
         assert_eq!(dec, plaintext);
+        Ok(())
     }
 
     /// `aes_cbc_encrypt` and `aes_cbc_decrypt` round-trip a multi-block message.
     #[test]
-    fn test_aes_cbc_encrypt_decrypt_round_trip() {
+    fn test_aes_cbc_encrypt_decrypt_round_trip() -> Result<(), Box<dyn std::error::Error>> {
         let key = Key16::new([0x5A; 16]);
         let iv = [0x11u8; 16];
         let plaintext = b"thirty-two bytes across 2 blocks".to_vec();
         assert_eq!(plaintext.len() % BLOCK, 0);
-        let ct = aes_cbc_encrypt(&key, &iv, &plaintext).unwrap();
+        let ct = aes_cbc_encrypt(&key, &iv, &plaintext)?;
         assert_ne!(ct, plaintext);
-        let dec = aes_cbc_decrypt(&key, &iv, &ct).unwrap();
+        let dec = aes_cbc_decrypt(&key, &iv, &ct)?;
         assert_eq!(dec, plaintext);
+        Ok(())
     }
 
     #[test]

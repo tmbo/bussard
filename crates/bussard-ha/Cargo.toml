@@ -12,3 +12,6 @@ bussard-model = { workspace = true }
 serde = { workspace = true }
 serde_norway = { workspace = true }
 thiserror = { workspace = true }
+
+[lints]
+workspace = true

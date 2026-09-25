@@ -12,16 +12,16 @@ use bussard_model::schema::{BussardConfig, ComObject, Device, Group, Groups, Lin
 use bussard_model::{Dpt, Flags, GroupAddress, IndividualAddress};
 
 fn ga(s: &str) -> GroupAddress {
-    s.parse().unwrap()
+    s.parse().expect("test fixture")
 }
 fn ia(s: &str) -> IndividualAddress {
-    s.parse().unwrap()
+    s.parse().expect("test fixture")
 }
 fn dpt(s: &str) -> Dpt {
-    s.parse().unwrap()
+    s.parse().expect("test fixture")
 }
 fn flags(s: &str) -> Flags {
-    s.parse().unwrap()
+    s.parse().expect("test fixture")
 }
 
 /// Builds a model with many devices, each a listen-only switch on its own GA,
@@ -116,15 +116,16 @@ fn colliding_switch_model(n: u16) -> Model {
 }
 
 #[test]
-fn dedup_under_mass_name_collision_is_deterministic() {
+fn dedup_under_mass_name_collision_is_deterministic() -> Result<(), Box<dyn std::error::Error>> {
     let model = colliding_switch_model(60);
     // Derive many times; output must be byte-identical every run despite the
     // internal HashMap used for counting collisions.
-    let first = generate(&model, &Overrides::default()).unwrap();
+    let first = generate(&model, &Overrides::default())?;
     for _ in 0..25 {
-        let again = generate(&model, &Overrides::default()).unwrap();
+        let again = generate(&model, &Overrides::default())?;
         assert_eq!(again, first, "HA output not deterministic across runs");
     }
+    Ok(())
 }
 
 #[test]
@@ -269,7 +270,8 @@ platform = "light"
 }
 
 #[test]
-fn override_rename_and_platform_applied_when_not_excluded() {
+fn override_rename_and_platform_applied_when_not_excluded() -> Result<(), Box<dyn std::error::Error>>
+{
     let model = one_switch_model();
     let overrides_toml = r#"
 [[entity]]
@@ -282,7 +284,8 @@ platform = "light"
     assert_eq!(d.entities.len(), 1);
     assert_eq!(d.entities[0].name(), "Renamed Light");
     // Determinism preserved with overrides.
-    let a = generate(&model, &overrides).unwrap();
-    let b = generate(&model, &overrides).unwrap();
+    let a = generate(&model, &overrides)?;
+    let b = generate(&model, &overrides)?;
     assert_eq!(a, b);
+    Ok(())
 }

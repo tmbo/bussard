@@ -174,31 +174,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_with_sub() {
-        let d: Dpt = "1.001".parse().unwrap();
+    fn parse_with_sub() -> Result<(), Box<dyn std::error::Error>> {
+        let d: Dpt = "1.001".parse()?;
         assert_eq!(d.main, 1);
         assert_eq!(d.sub, Some(1));
         assert_eq!(d.to_string(), "1.001");
+        Ok(())
     }
 
     #[test]
-    fn parse_without_sub() {
-        let d: Dpt = "9".parse().unwrap();
+    fn parse_without_sub() -> Result<(), Box<dyn std::error::Error>> {
+        let d: Dpt = "9".parse()?;
         assert_eq!(d.main, 9);
         assert_eq!(d.sub, None);
         assert_eq!(d.to_string(), "9");
+        Ok(())
     }
 
     #[test]
-    fn parse_large_sub() {
-        let d: Dpt = "20.102".parse().unwrap();
+    fn parse_large_sub() -> Result<(), Box<dyn std::error::Error>> {
+        let d: Dpt = "20.102".parse()?;
         assert_eq!(d.to_string(), "20.102");
+        Ok(())
     }
 
     #[test]
-    fn zero_pads_sub() {
-        let d: Dpt = "5.1".parse().unwrap();
+    fn zero_pads_sub() -> Result<(), Box<dyn std::error::Error>> {
+        let d: Dpt = "5.1".parse()?;
         assert_eq!(d.to_string(), "5.001");
+        Ok(())
     }
 
     #[test]
@@ -209,43 +213,45 @@ mod tests {
     }
 
     #[test]
-    fn sizes() {
+    fn sizes() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(
-            "1.001".parse::<Dpt>().unwrap().expected_size(),
+            "1.001".parse::<Dpt>()?.expected_size(),
             Some(ApduSize::Bits(1))
         );
         assert_eq!(
-            "3.007".parse::<Dpt>().unwrap().expected_size(),
+            "3.007".parse::<Dpt>()?.expected_size(),
             Some(ApduSize::Bits(4))
         );
         assert_eq!(
-            "9.001".parse::<Dpt>().unwrap().expected_size(),
+            "9.001".parse::<Dpt>()?.expected_size(),
             Some(ApduSize::Bytes(2))
         );
         assert_eq!(
-            "16.000".parse::<Dpt>().unwrap().expected_size(),
+            "16.000".parse::<Dpt>()?.expected_size(),
             Some(ApduSize::Bytes(14))
         );
-        assert_eq!("99".parse::<Dpt>().unwrap().expected_size(), None);
+        assert_eq!("99".parse::<Dpt>()?.expected_size(), None);
+        Ok(())
     }
 
     #[test]
-    fn packability_follows_dpt_width_not_value() {
+    fn packability_follows_dpt_width_not_value() -> Result<(), Box<dyn std::error::Error>> {
         // Only sub-byte DPTs (main 1/2/3) may pack into the 6-bit APDU (issue #59).
         for dpt in ["1.001", "2.001", "3.007"] {
             assert!(
-                dpt.parse::<Dpt>().unwrap().is_packable(),
+                dpt.parse::<Dpt>()?.is_packable(),
                 "{dpt} is sub-byte and packable"
             );
         }
         // Byte-sized-or-larger DPTs are never packable, even with small values.
         for dpt in ["5.001", "6.010", "9.001", "17.001", "18.001", "20.102"] {
             assert!(
-                !dpt.parse::<Dpt>().unwrap().is_packable(),
+                !dpt.parse::<Dpt>()?.is_packable(),
                 "{dpt} is byte-sized and must NOT pack"
             );
         }
         // An unmodeled DPT is treated as not packable (send whole).
-        assert!(!"99".parse::<Dpt>().unwrap().is_packable());
+        assert!(!"99".parse::<Dpt>()?.is_packable());
+        Ok(())
     }
 }

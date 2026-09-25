@@ -33,3 +33,6 @@ serde_json = { workspace = true }
 # tests, proving the hand-written XML is well-formed. Test-only; the exporter
 # itself has no XML dependency.
 quick-xml = { workspace = true }
+
+[lints]
+workspace = true

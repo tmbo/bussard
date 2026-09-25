@@ -374,17 +374,18 @@ mod tests {
     }
 
     #[test]
-    fn test_wrap_advances_sequence() {
+    fn test_wrap_advances_sequence() -> Result<(), Box<dyn std::error::Error>> {
         let mut sess =
             DataSecureSession::new(Key16::new([0u8; 16])).with_send_sequence(Sequence::new(100));
         let start = sess.send_sequence();
-        let (apci, _) = sess.wrap(&addr(0x1101), 0x280, &[0x00, 0x10]).unwrap();
+        let (apci, _) = sess.wrap(&addr(0x1101), 0x280, &[0x00, 0x10])?;
         assert_eq!(apci, asdu::A_SECURE_DATA);
         assert_eq!(sess.send_sequence(), start.next());
+        Ok(())
     }
 
     #[test]
-    fn test_wrap_unwrap_round_trip() {
+    fn test_wrap_unwrap_round_trip() -> Result<(), Box<dyn std::error::Error>> {
         // A "device" session and a "tool" session sharing the tool key.
         let key_bytes = [0x24; 16];
         let mut tool =
@@ -392,42 +393,46 @@ mod tests {
         let mut device = DataSecureSession::new(Key16::new(key_bytes));
 
         let a = addr(0x1101);
-        let (apci, asdu_bytes) = tool
-            .wrap(&a, 0x3D1, &[0x00, 0xFF, 0xFF, 0xFF, 0xFF])
-            .unwrap();
+        let (apci, asdu_bytes) = tool.wrap(&a, 0x3D1, &[0x00, 0xFF, 0xFF, 0xFF, 0xFF])?;
         // The device sees the frame from source 1.1.1.
-        match device.unwrap(&a, apci, &asdu_bytes).unwrap() {
+        match device.unwrap(&a, apci, &asdu_bytes)? {
             UnwrapOutcome::Secured { apci, data } => {
                 assert_eq!(apci, 0x3D1);
                 assert_eq!(data, vec![0x00, 0xFF, 0xFF, 0xFF, 0xFF]);
             }
             other => panic!("expected Secured, got {other:?}"),
         }
+        Ok(())
     }
 
     #[test]
-    fn test_unwrap_rejects_replay() {
+    fn test_unwrap_rejects_replay() -> Result<(), Box<dyn std::error::Error>> {
         let key_bytes = [0x24; 16];
         let mut tool =
             DataSecureSession::new(Key16::new(key_bytes)).with_send_sequence(Sequence::new(500));
         let mut device = DataSecureSession::new(Key16::new(key_bytes));
         let a = addr(0x1101);
 
-        let (apci, asdu_bytes) = tool.wrap(&a, 0x280, &[0x00, 0x10]).unwrap();
-        device.unwrap(&a, apci, &asdu_bytes).unwrap();
+        let (apci, asdu_bytes) = tool.wrap(&a, 0x280, &[0x00, 0x10])?;
+        device.unwrap(&a, apci, &asdu_bytes)?;
         // Replaying the exact same frame is stale (not strictly greater).
-        let err = device.unwrap(&a, apci, &asdu_bytes).unwrap_err();
+        let err = device
+            .unwrap(&a, apci, &asdu_bytes)
+            .err()
+            .ok_or("expected an error")?;
         assert!(
             matches!(err, AsduError::StaleSequence { .. }),
             "got {err:?}"
         );
+        Ok(())
     }
 
     #[test]
-    fn test_unwrap_passes_through_plain() {
+    fn test_unwrap_passes_through_plain() -> Result<(), Box<dyn std::error::Error>> {
         let mut device = DataSecureSession::new(Key16::new([0u8; 16]));
-        let outcome = device.unwrap(&addr(0x1101), 0x340, &[0x07, 0xB0]).unwrap();
+        let outcome = device.unwrap(&addr(0x1101), 0x340, &[0x07, 0xB0])?;
         assert_eq!(outcome, UnwrapOutcome::Plain);
+        Ok(())
     }
 
     /// Spec §5.9: a second session for the same device continues above the first

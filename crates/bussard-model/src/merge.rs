@@ -548,10 +548,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn ia(s: &str) -> IndividualAddress {
-        s.parse().unwrap()
+        s.parse().expect("test fixture")
     }
     fn ga(s: &str) -> GroupAddress {
-        s.parse().unwrap()
+        s.parse().expect("test fixture")
     }
 
     fn device(addr: &str, name: &str) -> Device {
@@ -594,7 +594,7 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_preserves_hand_edited_device_name() {
+    fn test_merge_preserves_hand_edited_device_name() -> Result<(), Box<dyn std::error::Error>> {
         let ours = model_with(
             vec![device("1.1.4", "Hand Named Switch")],
             Groups::default(),
@@ -609,7 +609,12 @@ mod tests {
         let (merged, report) = merge(&ours, &theirs);
         // The hand-edited name survives.
         assert_eq!(
-            merged.devices.get(&ia("1.1.4")).unwrap().device.name,
+            merged
+                .devices
+                .get(&ia("1.1.4"))
+                .ok_or("device 1.1.4 missing")?
+                .device
+                .name,
             "Hand Named Switch"
         );
         // ...and the difference is reported.
@@ -619,10 +624,11 @@ mod tests {
         assert_eq!(c.field, "name");
         assert_eq!(c.ours, "Hand Named Switch");
         assert_eq!(c.theirs, "Switch Actuator");
+        Ok(())
     }
 
     #[test]
-    fn test_merge_refreshes_generated_com_objects() {
+    fn test_merge_refreshes_generated_com_objects() -> Result<(), Box<dyn std::error::Error>> {
         let mut our_dev = device("1.1.4", "Switch");
         our_dev.com_objects.insert(
             0,
@@ -678,7 +684,7 @@ mod tests {
             merged
                 .devices
                 .get(&ia("1.1.4"))
-                .unwrap()
+                .ok_or("device 1.1.4 missing")?
                 .device
                 .com_objects
                 .len(),
@@ -686,10 +692,11 @@ mod tests {
         );
         // No hand-authored conflict (names match).
         assert!(!report.has_conflicts());
+        Ok(())
     }
 
     #[test]
-    fn test_merge_reports_location_and_group_conflicts() {
+    fn test_merge_reports_location_and_group_conflicts() -> Result<(), Box<dyn std::error::Error>> {
         let mut our_dev = device("1.1.4", "Switch");
         our_dev.location = Some(Location {
             floor: Some("EG".to_string()),
@@ -729,18 +736,22 @@ mod tests {
         let (merged, report) = merge(&ours, &theirs);
 
         // Hand edits survive.
-        let g = merged.groups.groups.get(&ga("3/2/0")).unwrap();
+        let g = merged
+            .groups
+            .groups
+            .get(&ga("3/2/0"))
+            .ok_or("group 3/2/0 missing")?;
         assert_eq!(g.name, "Hand Named GA");
         assert!(g.protected);
         assert_eq!(
             merged
                 .devices
                 .get(&ia("1.1.4"))
-                .unwrap()
+                .ok_or("device 1.1.4 missing")?
                 .device
                 .location
                 .as_ref()
-                .unwrap()
+                .ok_or("location missing")?
                 .room
                 .as_deref(),
             Some("Wohnzimmer")
@@ -755,6 +766,7 @@ mod tests {
         assert!(fields.contains(&("devices/1.1.4", "location.room")));
         assert!(fields.contains(&("groups/3/2/0", "name")));
         assert!(fields.contains(&("groups/3/2/0", "protected")));
+        Ok(())
     }
 
     #[test]
@@ -778,7 +790,7 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_preserves_link_name() {
+    fn test_merge_preserves_link_name() -> Result<(), Box<dyn std::error::Error>> {
         let mut our_links = Links::default();
         our_links.links.insert(
             ia("1.1.4"),
@@ -804,7 +816,11 @@ mod tests {
         let theirs = model_with(vec![device("1.1.4", "d")], Groups::default(), their_links);
 
         let (merged, report) = merge(&ours, &theirs);
-        let link = &merged.links.links.get(&ia("1.1.4")).unwrap()[0];
+        let link = &merged
+            .links
+            .links
+            .get(&ia("1.1.4"))
+            .ok_or("links for 1.1.4 missing")?[0];
         // Name preserved from ours; wiring refreshed from theirs.
         assert_eq!(link.name.as_deref(), Some("Hand Named Link"));
         assert_eq!(link.send, Some(ga("1/0/2")));
@@ -815,5 +831,6 @@ mod tests {
                 .iter()
                 .any(|c| c.field == "name" && c.path == "links/1.1.4#0")
         );
+        Ok(())
     }
 }

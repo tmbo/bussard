@@ -118,8 +118,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn roundtrip_order() {
-        let f: Flags = "CWTU".parse().unwrap();
+    fn roundtrip_order() -> Result<(), Box<dyn std::error::Error>> {
+        let f: Flags = "CWTU".parse()?;
         assert!(f.contains(Flags::COMMUNICATION));
         assert!(f.contains(Flags::WRITE));
         assert!(f.contains(Flags::TRANSMIT));
@@ -127,26 +127,30 @@ mod tests {
         assert!(!f.contains(Flags::READ));
         // Display is always in canonical CRWTUI order.
         assert_eq!(f.to_string(), "CWTU");
+        Ok(())
     }
 
     #[test]
-    fn reorders_on_display() {
-        let f: Flags = "UTWC".parse().unwrap();
+    fn reorders_on_display() -> Result<(), Box<dyn std::error::Error>> {
+        let f: Flags = "UTWC".parse()?;
         assert_eq!(f.to_string(), "CWTU");
+        Ok(())
     }
 
     #[test]
-    fn all_flags() {
-        let f: Flags = "CRWTUI".parse().unwrap();
+    fn all_flags() -> Result<(), Box<dyn std::error::Error>> {
+        let f: Flags = "CRWTUI".parse()?;
         assert_eq!(f, Flags::all());
         assert_eq!(f.to_string(), "CRWTUI");
+        Ok(())
     }
 
     #[test]
-    fn empty() {
-        let f: Flags = "".parse().unwrap();
+    fn empty() -> Result<(), Box<dyn std::error::Error>> {
+        let f: Flags = "".parse()?;
         assert!(f.is_empty());
         assert_eq!(f.to_string(), "");
+        Ok(())
     }
 
     #[test]

@@ -264,20 +264,21 @@ mod tests {
     use super::*;
 
     fn ga(s: &str) -> GroupAddress {
-        s.parse().unwrap()
+        s.parse().expect("test fixture")
     }
 
     #[test]
-    fn absent_file_is_default() {
+    fn absent_file_is_default() -> Result<(), Box<dyn std::error::Error>> {
         let dir = std::env::temp_dir().join(format!("bussard-ha-no-ha-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
-        let ov = Overrides::load(&dir).unwrap();
+        let ov = Overrides::load(&dir)?;
         assert_eq!(ov, Overrides::default());
         let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
     }
 
     #[test]
-    fn parses_full_example() {
+    fn parses_full_example() -> Result<(), Box<dyn std::error::Error>> {
         let text = r#"
 [global]
 default_platform_for_switches = "light"
@@ -293,7 +294,7 @@ device_class = "outlet"
 address = "3/1/5"
 merge = ["3/1/6"]
 "#;
-        let ov = Overrides::parse("ha.toml", text).unwrap();
+        let ov = Overrides::parse("ha.toml", text)?;
         assert_eq!(
             ov.global.default_platform_for_switches,
             SwitchPlatform::Light
@@ -301,12 +302,13 @@ merge = ["3/1/6"]
         assert!(ov.is_excluded(ga("0/0/1")));
         assert!(ov.is_excluded(ga("8/0/5")));
         assert!(!ov.is_excluded(ga("9/0/0")));
-        let e = ov.entity(ga("1/0/1")).unwrap();
+        let e = ov.entity(ga("1/0/1")).ok_or("entity 1/0/1 missing")?;
         assert_eq!(e.platform, Some(PlatformOverride::Light));
         assert_eq!(e.name.as_deref(), Some("Kitchen"));
         assert_eq!(e.device_class.as_deref(), Some("outlet"));
-        let m = ov.entity(ga("3/1/5")).unwrap();
+        let m = ov.entity(ga("3/1/5")).ok_or("entity 3/1/5 missing")?;
         assert_eq!(m.merge, vec![ga("3/1/6")]);
+        Ok(())
     }
 
     #[test]
@@ -333,12 +335,13 @@ merge = ["3/1/6"]
     }
 
     #[test]
-    fn prefix_exclusion_respects_boundaries() {
+    fn prefix_exclusion_respects_boundaries() -> Result<(), Box<dyn std::error::Error>> {
         let text = "[global]\nexclude = [\"1/\"]\n";
-        let ov = Overrides::parse("ha.toml", text).unwrap();
+        let ov = Overrides::parse("ha.toml", text)?;
         assert!(ov.is_excluded(ga("1/0/0")));
         assert!(ov.is_excluded(ga("1/7/255")));
         // main group 10 must not be caught by the "1/" prefix.
         assert!(!ov.is_excluded(ga("10/0/0")));
+        Ok(())
     }
 }

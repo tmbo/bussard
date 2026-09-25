@@ -287,26 +287,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn group_address_roundtrip() {
-        let ga: GroupAddress = "3/0/4".parse().unwrap();
+    fn group_address_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
+        let ga: GroupAddress = "3/0/4".parse()?;
         assert_eq!(ga.main(), 3);
         assert_eq!(ga.middle(), 0);
         assert_eq!(ga.sub(), 4);
         assert_eq!(ga.to_string(), "3/0/4");
         assert_eq!(ga.raw(), (3 << 11) | 4);
+        Ok(())
     }
 
     #[test]
-    fn group_address_max_values() {
-        let ga: GroupAddress = "31/7/255".parse().unwrap();
+    fn group_address_max_values() -> Result<(), Box<dyn std::error::Error>> {
+        let ga: GroupAddress = "31/7/255".parse()?;
         assert_eq!(ga.raw(), 0xffff);
         assert_eq!(ga.to_string(), "31/7/255");
+        Ok(())
     }
 
     #[test]
-    fn group_address_reserved() {
-        let ga: GroupAddress = "0/0/0".parse().unwrap();
+    fn group_address_reserved() -> Result<(), Box<dyn std::error::Error>> {
+        let ga: GroupAddress = "0/0/0".parse()?;
         assert!(ga.is_reserved());
+        Ok(())
     }
 
     #[test]
@@ -324,25 +327,28 @@ mod tests {
     }
 
     #[test]
-    fn group_address_ordering() {
-        let a: GroupAddress = "1/0/0".parse().unwrap();
-        let b: GroupAddress = "2/0/0".parse().unwrap();
+    fn group_address_ordering() -> Result<(), Box<dyn std::error::Error>> {
+        let a: GroupAddress = "1/0/0".parse()?;
+        let b: GroupAddress = "2/0/0".parse()?;
         assert!(a < b);
+        Ok(())
     }
 
     #[test]
-    fn individual_address_roundtrip() {
-        let ia: IndividualAddress = "1.1.4".parse().unwrap();
+    fn individual_address_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
+        let ia: IndividualAddress = "1.1.4".parse()?;
         assert_eq!(ia.area(), 1);
         assert_eq!(ia.line(), 1);
         assert_eq!(ia.device(), 4);
         assert_eq!(ia.to_string(), "1.1.4");
+        Ok(())
     }
 
     #[test]
-    fn individual_address_max() {
-        let ia: IndividualAddress = "15.15.255".parse().unwrap();
+    fn individual_address_max() -> Result<(), Box<dyn std::error::Error>> {
+        let ia: IndividualAddress = "15.15.255".parse()?;
         assert_eq!(ia.raw(), 0xffff);
+        Ok(())
     }
 
     #[test]
