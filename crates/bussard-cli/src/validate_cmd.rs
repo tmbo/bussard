@@ -3,6 +3,12 @@
 //! Loads the model and prints diagnostics either as rustc-style coloured text
 //! (respecting `NO_COLOR`) or as a JSON array. Exits with a failure code if any
 //! diagnostic is an error.
+//!
+//! Besides the model's own rules it checks the configured keyring (issue
+//! #205, [`bussard_model::validate_keyring`]): the keyring `BUSSARD_KEYRING`
+//! or `connection.keyring` names is decrypted at most once, with the password
+//! from `BUSSARD_KEYRING_PASSWORD`; without it one info line says the key
+//! checks were skipped. `validate` stays offline and never prompts.
 
 use std::io::IsTerminal;
 use std::path::Path;
@@ -14,7 +20,9 @@ use owo_colors::OwoColorize;
 /// Runs the validate command over the model in `dir`.
 pub fn run(dir: &Path, json: bool) -> anyhow::Result<ExitCode> {
     let model = Model::load(dir)?;
-    let diagnostics = validate_in_dir(&model, dir);
+    let mut diagnostics = validate_in_dir(&model, dir);
+    diagnostics.extend(keyring_diagnostics(&model, dir));
+    diagnostics.sort_by(|a, b| a.location.cmp(&b.location).then(a.code.cmp(b.code)));
 
     if json {
         print_json(&diagnostics);
@@ -28,6 +36,18 @@ pub fn run(dir: &Path, json: bool) -> anyhow::Result<ExitCode> {
     } else {
         ExitCode::SUCCESS
     })
+}
+
+/// The keyring rules for the model in `dir`: the keyring `BUSSARD_KEYRING`
+/// or `connection.keyring` names (the bus commands' resolver without a
+/// `--keyring` flag), checked by [`bussard_model::validate_keyring`].
+fn keyring_diagnostics(model: &Model, dir: &Path) -> Vec<Diagnostic> {
+    let env = crate::conn_cmd::EnvGlobals::from_process();
+    let facts =
+        crate::conn_cmd::resolve_keyring(None, env.keyring.as_deref(), dir).map(|resolved| {
+            bussard_service::secure::keyring_facts(&resolved.path, resolved.source.describe())
+        });
+    bussard_model::validate_keyring(model, facts.as_ref())
 }
 
 /// Whether colour should be used: enabled on a terminal unless `NO_COLOR` is set.

@@ -441,6 +441,47 @@ pub fn load_group_keys(path: &Path) -> Result<crate::group::GroupKeys, SecureKey
     Ok(load_keyring(path)?.group_keys.clone())
 }
 
+/// What `bussard validate` and `knx_validate` check against the model for the
+/// keyring at `path` (issue #205): missing, locked (no
+/// [`KEYRING_PASSWORD_ENV`]; never prompts), unreadable, or the devices and
+/// group addresses it holds keys for. Decrypts at most once (the process memo
+/// applies) and returns addresses only, never a key. `source` names where the
+/// path came from, for the messages.
+pub fn keyring_facts(path: &Path, source: &str) -> bussard_model::KeyringFacts {
+    use bussard_model::KeyringStatus;
+    let status = if !path.is_file() {
+        KeyringStatus::Missing
+    } else if std::env::var_os(KEYRING_PASSWORD_ENV).is_none() {
+        KeyringStatus::Locked
+    } else {
+        match load_keyring(path) {
+            Ok(keyring) => KeyringStatus::Loaded {
+                tool_keys: keyring
+                    .devices
+                    .iter()
+                    .filter(|d| keyring.tool_key(d.ia).is_some())
+                    .map(|d| d.ia)
+                    .collect(),
+                group_keys: keyring.group_keys.keys().copied().collect(),
+            },
+            Err(err) => {
+                let mut reason = err.to_string();
+                let mut next = std::error::Error::source(&err);
+                while let Some(cause) = next {
+                    reason.push_str(&format!(": {cause}"));
+                    next = cause.source();
+                }
+                KeyringStatus::Unreadable(reason)
+            }
+        }
+    };
+    bussard_model::KeyringFacts {
+        path: path.to_path_buf(),
+        source: source.to_string(),
+        status,
+    }
+}
+
 /// Loads and decrypts `path` with the env password, once per process for the
 /// same file bytes and password (see [`keyring_memo`]).
 fn load_keyring(path: &Path) -> Result<Arc<bussard_project::Keyring>, SecureKeyError> {

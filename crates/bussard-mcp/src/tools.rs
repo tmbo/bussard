@@ -284,7 +284,15 @@ pub fn recent_telegrams(
 
 /// `knx_validate`: diagnostics as JSON plus counts.
 pub fn validate_result(model: &Model) -> Value {
-    let diags = bussard_model::validate(model);
+    validate_result_with(model, Vec::new())
+}
+
+/// [`validate_result`] with `extra` diagnostics merged in and sorted like
+/// the model's own (the keyring rules of issue #205).
+pub fn validate_result_with(model: &Model, extra: Vec<bussard_model::Diagnostic>) -> Value {
+    let mut diags = bussard_model::validate(model);
+    diags.extend(extra);
+    diags.sort_by(|a, b| a.location.cmp(&b.location).then(a.code.cmp(b.code)));
     let mut errors = 0usize;
     let mut warnings = 0usize;
     let mut infos = 0usize;

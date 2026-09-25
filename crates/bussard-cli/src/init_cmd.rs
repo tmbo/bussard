@@ -11,6 +11,11 @@
 //! one, on a terminal it offers to scan the gateway's line and lists what
 //! answers; `--scan <LINE>` does that without asking, for scripts.
 //!
+//! A `.knxkeys` keyring exported next to the project (issue #205) is recorded
+//! as `connection.keyring`, so every bus command finds it without
+//! `--keyring`; `init` prints the `BUSSARD_KEYRING_PASSWORD` reminder, since
+//! the password is never written anywhere.
+//!
 //! The `bussard.toml` content is constructed here by hand (three simple keys)
 //! rather than via `Model::save`, so this command is decoupled from the model's
 //! emission format.
@@ -125,6 +130,61 @@ fn find_project(dir: &Path) -> Option<std::path::PathBuf> {
     }
 }
 
+/// The one `.knxkeys` keyring in the project's directory, if there is exactly
+/// one. Several are listed and none is picked (the owner names one with
+/// `connection.keyring`).
+fn find_keyring(project: &Path) -> Option<std::path::PathBuf> {
+    let parent = match project.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => std::path::PathBuf::from("."),
+    };
+    let mut found: Vec<std::path::PathBuf> = std::fs::read_dir(&parent)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_file()
+                && p.extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("knxkeys"))
+        })
+        .collect();
+    found.sort();
+    match found.len() {
+        0 => None,
+        1 => {
+            let keyring = found.remove(0);
+            println!("Found the ETS keyring {}.", keyring.display());
+            Some(keyring)
+        }
+        _ => {
+            println!(
+                "Found several ETS keyrings next to the project; set connection.keyring in \
+                 bussard.toml to the current one:"
+            );
+            for p in &found {
+                println!("  {}", p.display());
+            }
+            None
+        }
+    }
+}
+
+/// The `connection.keyring` value for `keyring`, as `bussard.toml` in `dir`
+/// resolves it: relative to `dir` when the keyring sits in `dir`'s parent
+/// (the usual layout: the ETS exports next to `knx/`), else absolute.
+fn keyring_setting(dir: &Path, keyring: &Path) -> String {
+    let absolute = |p: &Path| std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
+    let keyring = absolute(keyring);
+    let dir = absolute(dir);
+    match (keyring.parent(), dir.parent(), keyring.file_name()) {
+        (Some(from), Some(parent), Some(name)) if from == parent => {
+            Path::new("..").join(name).to_string_lossy().into_owned()
+        }
+        _ => keyring.to_string_lossy().into_owned(),
+    }
+}
+
 /// The testable core: same as [`run`] but with injectable discovery and probe
 /// sources.
 fn run_with(
@@ -151,8 +211,31 @@ fn run_with(
     let resolution = resolve_gateway(gateway, routing, discover, probe)?;
 
     // 3. Write the skeleton. With a project to import, `groups.toml` is the
-    // import's to write, so the import is a fresh one, not a merge.
-    write_skeleton(dir, &resolution, first.project.is_none())?;
+    // import's to write, so the import is a fresh one, not a merge. A keyring
+    // exported next to the project is recorded as `connection.keyring`.
+    let keyring = first
+        .project
+        .as_deref()
+        .and_then(find_keyring)
+        .map(|path| keyring_setting(dir, &path));
+    write_skeleton(
+        dir,
+        &resolution,
+        first.project.is_none(),
+        keyring.as_deref(),
+    )?;
+    if let Some(keyring) = &keyring {
+        println!(
+            "Recorded the keyring as connection.keyring = {keyring:?} in {}.",
+            dir.join("bussard.toml").display()
+        );
+        println!(
+            "Its password is never stored: set {} before a secured bus command \
+             (export {}=...).",
+            crate::secure_key::KEYRING_PASSWORD_ENV,
+            crate::secure_key::KEYRING_PASSWORD_ENV
+        );
+    }
 
     // 4. The first run is one command: import the project, or scan the line.
     if let Some(project) = &first.project {
@@ -469,10 +552,25 @@ fn real_discover() -> anyhow::Result<Vec<GatewayInfo>> {
 }
 
 /// Writes the full `knx/` skeleton for the resolved transport.
-fn write_skeleton(dir: &Path, resolution: &Resolution, groups: bool) -> anyhow::Result<()> {
+fn write_skeleton(
+    dir: &Path,
+    resolution: &Resolution,
+    groups: bool,
+    keyring: Option<&str>,
+) -> anyhow::Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
 
-    write_file(&dir.join("bussard.toml"), &bussard_toml(resolution))?;
+    let mut config = bussard_toml(resolution);
+    if let Some(keyring) = keyring {
+        // `[connection]` is the file's only table, so the key lands in it. The
+        // path is written as a TOML basic string (escapes included).
+        config.push_str(&format!(
+            "# The ETS keyring export; its password goes in {}, never here.\nkeyring = {}\n",
+            crate::secure_key::KEYRING_PASSWORD_ENV,
+            toml_basic_string(keyring)
+        ));
+    }
+    write_file(&dir.join("bussard.toml"), &config)?;
     if groups {
         write_file(&dir.join("groups.toml"), GROUPS_TOML)?;
     }
@@ -491,6 +589,23 @@ fn write_skeleton(dir: &Path, resolution: &Resolution, groups: bool) -> anyhow::
     write_file(&dir.join("README.md"), README_MD)?;
 
     Ok(())
+}
+
+/// `value` as a TOML basic string: quoted, with `\\` and `"` escaped (a
+/// Windows path keeps its backslashes).
+fn toml_basic_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for c in value.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            c if c.is_control() => out.push_str(&format!("\\u{:04X}", u32::from(c))),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// Writes `content` to `path`, erroring with the path for context.

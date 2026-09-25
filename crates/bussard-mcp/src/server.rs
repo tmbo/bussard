@@ -406,7 +406,7 @@ impl BussardMcp {
 
     /// `knx_wait_for_telegram`.
     #[tool(
-        description = "Block until the next telegram matching the given group address and/or source arrives, or the timeout elapses. This is the 'ask the human to press the button now, then call this' workflow: tell the user which switch to press, then call this and read the resulting telegram. A timeout is a normal result (not an error)."
+        description = "Block until the next telegram matching the given group address and/or source arrives, or the timeout elapses. This is the 'ask the human to press the button now, then call this' workflow: tell the user which switch to press, then call this and read the resulting telegram. A timeout is a normal result (not an error). With the server's --keyring, a secured (KNX Data Secure) group telegram arrives decrypted and carries secured: true; one the keyring has no group key for keeps its ciphertext with secure_status no_key."
     )]
     async fn knx_wait_for_telegram(
         &self,
@@ -430,10 +430,20 @@ impl BussardMcp {
 
     /// `knx_validate`.
     #[tool(
-        description = "Run the bussard model validator and return every diagnostic as JSON (code, severity, message, location) plus counts of errors/warnings/infos. Use this to check whether the model (bussard.toml, groups.toml, devices/*.toml, bussard.lock) is internally consistent."
+        description = "Run the bussard model validator and return every diagnostic as JSON (code, severity, message, location) plus counts of errors/warnings/infos. Use this to check whether the model (bussard.toml, groups.toml, devices/*.toml, bussard.lock) is internally consistent, and, with the server's keyring, whether security-activated devices have a tool key and the groups' secure flags match the keyring's group keys (addresses only, never a key)."
     )]
     async fn knx_validate(&self) -> Result<CallToolResult, ErrorData> {
-        ok(tools::validate_result(&self.state.model.current()))
+        let model = self.state.model.current();
+        // The keyring rules (issue #205) against the server's keyring: never
+        // prompts; without BUSSARD_KEYRING_PASSWORD one info line says the
+        // key checks were skipped.
+        let facts = self
+            .state
+            .keyring
+            .as_deref()
+            .map(|path| bussard_service::secure::keyring_facts(path, "the server's keyring"));
+        let extra = bussard_model::validate_keyring(&model, facts.as_ref());
+        ok(tools::validate_result_with(&model, extra))
     }
 
     /// `knx_read_group` (omitted in passive mode).

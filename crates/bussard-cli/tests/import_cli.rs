@@ -31,6 +31,8 @@ fn bussard(args: &[&str], envs: &[(&str, &str)]) -> std::io::Result<Output> {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_bussard"));
     cmd.args(args)
         .env_remove("BUSSARD_PRODUCT_INDEX")
+        .env_remove("BUSSARD_KEYRING")
+        .env_remove("BUSSARD_KEYRING_PASSWORD")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -313,6 +315,63 @@ fn test_import_pins_the_downloaded_product_data_in_the_lock() -> TestResult {
         lock.contains(&format!("product_sha256 = \"{sha}\"")),
         "{lock}"
     );
+    std::fs::remove_dir_all(&tmp)?;
+    Ok(())
+}
+
+/// Issue #205: a `.knxkeys` exported next to the project is recorded as
+/// `connection.keyring` (relative to the model directory), `init` prints the
+/// password reminder, and `validate` resolves the recorded path. The keyring
+/// is the committed synthetic one; nothing decrypts it here.
+#[test]
+fn test_init_records_the_keyring_next_to_the_project() -> TestResult {
+    let tmp = tmp("init-keyring")?;
+    let project = tmp.join("project.json");
+    std::fs::copy(fixture(), &project)?;
+    let synthetic = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../knx-sim/examples/secure/synthetic.knxkeys");
+    std::fs::copy(&synthetic, tmp.join("Site.knxkeys"))?;
+    let dir = tmp.join("knx");
+    let out = bussard(
+        &[
+            "init",
+            project.to_str().ok_or("path")?,
+            "--dir",
+            dir.to_str().ok_or("path")?,
+            "--routing",
+            "--no-download",
+        ],
+        &[],
+    )?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stdout}\n{stderr}");
+    assert!(stdout.contains("Found the ETS keyring"), "{stdout}");
+    assert!(stdout.contains("BUSSARD_KEYRING_PASSWORD"), "{stdout}");
+    let config = std::fs::read_to_string(dir.join("bussard.toml"))?;
+    assert!(config.contains("keyring = \"../Site.knxkeys\""), "{config}");
+
+    // `validate` resolves it: present, and without the password one info line.
+    let out = bussard(
+        &[
+            "validate",
+            "--dir",
+            dir.to_str().ok_or("path")?,
+            "--format",
+            "json",
+        ],
+        &[],
+    )?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.contains("E027"), "{stdout}");
+
+    // A keyring that went away is an error naming the file.
+    std::fs::remove_file(tmp.join("Site.knxkeys"))?;
+    let out = bussard(&["validate", "--dir", dir.to_str().ok_or("path")?], &[])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!out.status.success(), "{stdout}");
+    assert!(stdout.contains("error[E027]"), "{stdout}");
+    assert!(stdout.contains("Site.knxkeys"), "{stdout}");
     std::fs::remove_dir_all(&tmp)?;
     Ok(())
 }
