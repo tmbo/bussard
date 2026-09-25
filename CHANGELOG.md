@@ -637,6 +637,11 @@ directory or a script from before these changes needs:
 
 ### Fixed
 
+- The product models a command regenerates from `products/` are parsed in
+  the lock's `language`, so a German model no longer reports E017 ("enum
+  value ... is not an integer") on every German label after a fresh import.
+  `import` writes `.bussard/models/` itself, and `device` writes a missing
+  model on demand (#255).
 - A re-import with `--theirs` writes the files a fresh import of the same
   project writes. Link keys the project dropped (a link that moved to another
   channel, an object that went away with its parameter) no longer survive in

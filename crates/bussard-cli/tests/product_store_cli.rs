@@ -399,3 +399,226 @@ fn test_flash_from_an_export_needs_no_application_when_the_lock_pins_it() -> Tes
     cleanup(&dir);
     Ok(())
 }
+
+/// A synthetic program (bussard's own work, MIT; no vendor data) whose enum
+/// labels differ between its default language (en-US) and its de-DE layer:
+/// `Cooling` is `Kühlen` in German. The same program as `flash_dry_run.rs`
+/// uses for issue #231, here as manufacturer `M-9999`, application
+/// `M-9999_A-0001-1-0000` and order number `TST-1`, the identity the small
+/// xknxproject fixture's device carries.
+const BILINGUAL_APP_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<KNX xmlns="http://knx.org/xml/project/23">
+  <ManufacturerData>
+    <Manufacturer RefId="M-9999">
+      <ApplicationPrograms>
+        <ApplicationProgram Id="M-9999_A-0001-1-0000" ApplicationNumber="3" ApplicationVersion="1"
+            MaskVersion="MV-07B0" Name="bussard label test app" LoadProcedureStyle="ProductDefault"
+            DefaultLanguage="en-US">
+          <Static>
+            <Options DownloadInvisibleParameters="None" />
+            <Code>
+              <RelativeSegment Id="M-9999_A-0001-1-0000_RS-1" Size="2" LoadStateMachine="4" Offset="0"><Data>AAA=</Data></RelativeSegment>
+            </Code>
+            <ParameterTypes>
+              <ParameterType Id="M-9999_A-0001-1-0000_PT-1" Name="mode"><TypeRestriction Base="Value" SizeInBit="8">
+                <Enumeration Text="Heating" Value="0" Id="M-9999_A-0001-1-0000_PT-1_EN-0" />
+                <Enumeration Text="Cooling" Value="1" Id="M-9999_A-0001-1-0000_PT-1_EN-1" />
+                <Enumeration Text="Both" Value="2" Id="M-9999_A-0001-1-0000_PT-1_EN-2" />
+                <Enumeration Text="Heating and cooling" Value="3" Id="M-9999_A-0001-1-0000_PT-1_EN-3" />
+              </TypeRestriction></ParameterType>
+              <ParameterType Id="M-9999_A-0001-1-0000_PT-2" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType>
+            </ParameterTypes>
+            <Parameters>
+              <Parameter Id="M-9999_A-0001-1-0000_P-1" Name="mode" Text="Mode" ParameterType="M-9999_A-0001-1-0000_PT-1" Value="0"><Memory CodeSegment="M-9999_A-0001-1-0000_RS-1" Offset="0" BitOffset="0" /></Parameter>
+              <Parameter Id="M-9999_A-0001-1-0000_P-2" Name="extra" Text="Extra" ParameterType="M-9999_A-0001-1-0000_PT-2" Value="5"><Memory CodeSegment="M-9999_A-0001-1-0000_RS-1" Offset="1" BitOffset="0" /></Parameter>
+            </Parameters>
+            <ParameterRefs>
+              <ParameterRef Id="M-9999_A-0001-1-0000_P-1_R-1" RefId="M-9999_A-0001-1-0000_P-1" />
+              <ParameterRef Id="M-9999_A-0001-1-0000_P-2_R-2" RefId="M-9999_A-0001-1-0000_P-2" />
+            </ParameterRefs>
+            <LoadProcedures>
+              <LoadProcedure>
+                <LdCtrlConnect />
+                <LdCtrlUnload LsmIdx="4" />
+                <LdCtrlLoad LsmIdx="4" />
+                <LdCtrlRelSegment LsmIdx="4" Size="2" AppliesTo="full" />
+                <LdCtrlWriteRelMem ObjIdx="0" Offset="0" Size="2" AppliesTo="full" />
+                <LdCtrlLoadCompleted LsmIdx="4" />
+                <LdCtrlRestart />
+                <LdCtrlDisconnect />
+              </LoadProcedure>
+            </LoadProcedures>
+          </Static>
+          <Dynamic>
+            <ChannelIndependentBlock>
+              <ParameterBlock Id="M-9999_A-0001-1-0000_PB-1" Name="main">
+                <ParameterRefRef RefId="M-9999_A-0001-1-0000_P-1_R-1" />
+                <choose ParamRefId="M-9999_A-0001-1-0000_P-1_R-1">
+                  <when test="3"><ParameterRefRef RefId="M-9999_A-0001-1-0000_P-2_R-2" /></when>
+                </choose>
+              </ParameterBlock>
+            </ChannelIndependentBlock>
+          </Dynamic>
+          <Languages>
+            <Language Identifier="de-DE">
+              <TranslationUnit RefId="M-9999_A-0001-1-0000">
+                <TranslationElement RefId="M-9999_A-0001-1-0000_PT-1_EN-0"><Translation AttributeName="Text" Text="Heizen" /></TranslationElement>
+                <TranslationElement RefId="M-9999_A-0001-1-0000_PT-1_EN-1"><Translation AttributeName="Text" Text="K&#252;hlen" /></TranslationElement>
+                <TranslationElement RefId="M-9999_A-0001-1-0000_PT-1_EN-2"><Translation AttributeName="Text" Text="Beides" /></TranslationElement>
+                <TranslationElement RefId="M-9999_A-0001-1-0000_PT-1_EN-3"><Translation AttributeName="Text" Text="Both" /></TranslationElement>
+              </TranslationUnit>
+            </Language>
+          </Languages>
+        </ApplicationProgram>
+      </ApplicationPrograms>
+    </Manufacturer>
+  </ManufacturerData>
+</KNX>
+"#;
+
+/// The bilingual program's application id.
+const BILINGUAL_APP: &str = "M-9999_A-0001-1-0000";
+
+/// Writes the bilingual program as a `.knxprod` whose catalogue lists it for
+/// order number `TST-1`.
+fn write_bilingual_knxprod(path: &Path) -> TestResult {
+    let hardware = format!(
+        r#"<KNX xmlns="http://knx.org/xml/project/23"><ManufacturerData><Manufacturer RefId="M-9999"><Hardware>
+<Products><Product OrderNumber="TST-1" /></Products>
+<Hardware2Programs><Hardware2Program><ApplicationProgramRef RefId="{BILINGUAL_APP}" /></Hardware2Program></Hardware2Programs>
+</Hardware></Manufacturer></ManufacturerData></KNX>"#
+    );
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(path)?);
+    for (name, body) in [
+        ("knx_master.xml", "<KNX/>".to_string()),
+        ("M-9999/Hardware.xml", hardware),
+        (
+            &format!("M-9999/{BILINGUAL_APP}.xml") as &str,
+            BILINGUAL_APP_XML.to_string(),
+        ),
+    ] {
+        zip.start_file(name, SimpleFileOptions::default())?;
+        zip.write_all(body.as_bytes())?;
+    }
+    zip.finish()?;
+    Ok(())
+}
+
+/// The E017 diagnostics of a `validate --json` run.
+fn e017(out: &Output) -> Result<Vec<serde_json::Value>, Box<dyn std::error::Error>> {
+    let report: serde_json::Value =
+        serde_json::from_slice(&out.stdout).map_err(|e| format!("{e}: {}", text(out)))?;
+    let list = report
+        .get("diagnostics")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| format!("no diagnostics in {report}"))?;
+    Ok(list
+        .iter()
+        .filter(|d| d.get("code").and_then(serde_json::Value::as_str) == Some("E017"))
+        .cloned()
+        .collect())
+}
+
+/// Issue #255: the product models a command regenerates at start are parsed
+/// in the lock's language, so a German enum label in a device file resolves
+/// (before the fix they were English and `Kühlen` read as E017).
+#[test]
+fn test_regenerated_models_follow_the_lock_language() -> TestResult {
+    let dir = std::env::temp_dir()
+        .join(format!("bussard-store-regen-de-{}", std::process::id()))
+        .join("knx");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("devices"))?;
+    std::fs::create_dir_all(dir.join("products"))?;
+    let archive = dir.join("products/labels.knxprod");
+    write_bilingual_knxprod(&archive)?;
+    let sha = sha256_hex(&archive)?;
+    std::fs::write(
+        dir.join("bussard.toml"),
+        "[connection]\ntransport = \"tunnel\"\ngateway = \"127.0.0.1:9\"\n",
+    )?;
+    std::fs::write(
+        dir.join("bussard.lock"),
+        format!(
+            "version = 2\nlanguage = \"de-DE\"\n\n[[product]]\nsha256 = \"{sha}\"\n\
+             file = \"products/labels.knxprod\"\nfilename = \"labels.knxprod\"\n\
+             origin = {{ kind = \"file\", path = \"labels.knxprod\" }}\n\
+             applications = [\"{BILINGUAL_APP}\"]\norder_numbers = [\"TST-1\"]\n\n\
+             [[device]]\naddress = \"1.0.10\"\nproduct = \"TST-1\"\n\
+             application = \"{BILINGUAL_APP}\"\nproduct_sha256 = \"{sha}\"\nmask = \"07B0\"\n"
+        ),
+    )?;
+    std::fs::write(
+        dir.join("devices/1.0.10.toml"),
+        "address = \"1.0.10\"\nname = \"Label test\"\nproduct = \"TST-1\"\n\n\
+         [parameters]\n\"mode@P-1_R-1\" = \"K\u{fc}hlen\"\n",
+    )?;
+
+    let out = bussard(&dir, &["validate", "--json"])?;
+    let model = std::fs::read_to_string(dir.join(format!(".bussard/models/{BILINGUAL_APP}.yaml")))?;
+    assert!(model.contains("K\u{fc}hlen"), "{model}");
+    assert!(!model.contains("Cooling"), "{model}");
+    let errors = e017(&out)?;
+    assert!(errors.is_empty(), "{errors:?}");
+    cleanup(&dir);
+    Ok(())
+}
+
+/// Issue #255: a fresh import into a model whose `[import] language` is
+/// de-DE leaves `.bussard/models/` written in German, and the next
+/// `validate` reports no E017.
+#[test]
+fn test_fresh_import_writes_the_models_in_the_lock_language() -> TestResult {
+    let root = std::env::temp_dir().join(format!("bussard-store-import-de-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let dir = root.join("knx");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(
+        dir.join("bussard.toml"),
+        "[connection]\ntransport = \"tunnel\"\ngateway = \"127.0.0.1:9\"\n\n\
+         [import]\nlanguage = \"de-DE\"\n",
+    )?;
+    let archive = root.join("labels.knxprod");
+    write_bilingual_knxprod(&archive)?;
+    let bytes = std::fs::read(&archive)?;
+    let index = root.join("index.json");
+    std::fs::write(
+        &index,
+        serde_json::to_string(&serde_json::json!({ "entries": [{
+            "manufacturer": "Test Manufacturer",
+            "manufacturer_id": "M-9999",
+            "order_numbers": ["TST-1"],
+            "name": "Label test",
+            "url": format!("file://{}", archive.display()),
+            "sha256": sha256_hex(&archive)?,
+            "size": bytes.len(),
+            "filename": "labels.knxprod",
+        }] }))?,
+    )?;
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../bussard-project/tests/fixtures/tiny.xknxproject.json");
+    let out = Command::new(env!("CARGO_BIN_EXE_bussard"))
+        .args(["import", "--from-json"])
+        .arg(&fixture)
+        .arg("--dir")
+        .arg(&dir)
+        .arg("--yes-download")
+        .env("BUSSARD_PRODUCT_INDEX", &index)
+        .env_remove("BUSSARD_KEYRING")
+        .env_remove("BUSSARD_KEYRING_PASSWORD")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()?;
+    assert!(out.status.success(), "{}", text(&out));
+    // An xknxproject dump records no lock language; the model's language is
+    // then `[import] language` (`product_cache::model_language`).
+    let model = std::fs::read_to_string(dir.join(format!(".bussard/models/{BILINGUAL_APP}.yaml")))?;
+    assert!(model.contains("K\u{fc}hlen"), "{model}");
+
+    let out = bussard(&dir, &["validate", "--json"])?;
+    let errors = e017(&out)?;
+    assert!(errors.is_empty(), "{errors:?}");
+    let _ = std::fs::remove_dir_all(&root);
+    Ok(())
+}

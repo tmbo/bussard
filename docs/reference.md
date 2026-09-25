@@ -879,7 +879,7 @@ knx/
 |---|---|
 | `init`, `import`, `import-product`, `adopt` | Create it and write `.bussard/models/` and the first history snapshot. `products/` is written next to it, never inside. |
 | `status`, `history`, `show`, `undo`, `export` | The history is empty: `status` says there is no snapshot yet, `history` lists nothing, `show` and `undo` find no snapshot, `export` writes the bundle without snapshots. |
-| `validate`, `groups`, `export-groups`, `doc`, `ha-config`, `device` | Regenerate `.bussard/models/` from the archives the lock pins, then run as usual. `diff` and `keyring` read no model directory. |
+| `validate`, `groups`, `export-groups`, `doc`, `ha-config`, `device` | Regenerate `.bussard/models/` from the archives the lock pins, in the lock's `language`, then run as usual. `device` also writes a single missing model on demand. `diff` and `keyring` read no model directory. |
 | `scan`, `monitor`, `capture`, `read`, `write`, `learn`, `test` | Unaffected (the product models regenerate first, as above). |
 | `describe`, `plan`, `reconstruct`, `audit --live`, `backup` | Read the device facts from the device and write `.bussard/facts/<ia>.toml`; `plan` and `reconstruct` decode parameters when the archive is in `products/`. |
 | `flash`, `apply` (parameters), `commission --flash`, `replace` | Unaffected by `.bussard/`; they refuse before any bus write only when the archive the lock pins is missing from `products/` or changed. |
