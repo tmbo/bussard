@@ -303,9 +303,12 @@ entry supersedes it and is not a diff against it.
   `BUSSARD_KEYRING_PASSWORD`). The campaign wrapper passes
   `--keyring "$BUSSARD_KEYRING"` to its probes and the step when that variable
   is set (#189).
-- KNXnet/IP Secure over UDP for an interface without a TCP endpoint: TCP is
-  tried first, UDP follows when the TCP connect is refused and the interface
-  advertises Secure; `--secure-transport auto|tcp|udp` forces one. The
+- KNXnet/IP Secure over UDP for an interface without a TCP endpoint, as an
+  explicit opt-in: `--secure-transport udp`. The default `auto` stays on TCP,
+  the only carrier tested against a real interface; an interface that refuses
+  TCP but advertises Secure fails with a message naming the opt-in instead of
+  switching to UDP on its own. A secure UDP handshake skips an authenticated
+  frame that arrives before the CONNECT_RESPONSE, as the TCP one does. The
   session keepalive is configurable (`BUSSARD_SECURE_KEEPALIVE_SECS`), and
   `bussard test --secure-idle <secs>` measures the interface's idle timeout
   read-only. `write --keyring` prints a note on sender admission (PID 54,

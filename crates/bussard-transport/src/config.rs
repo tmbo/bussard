@@ -231,17 +231,23 @@ pub enum SecureSource {
 /// Which carrier a KNXnet/IP Secure session runs over (issue #197).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SecureTransport {
-    /// TCP first, as ETS does with the tested interface; UDP when the TCP
-    /// connect is refused and the interface's extended search advertises
-    /// KNXnet/IP Secure.
+    /// TCP, the carrier ETS uses with the tested interface and the only one
+    /// verified against a real interface. When the TCP connect is refused and
+    /// the interface's extended search advertises KNXnet/IP Secure, the
+    /// connect fails with [`TransportError::SecureTcpRefused`] naming
+    /// `--secure-transport udp`; it never switches to UDP on its own
+    /// (issue #197).
+    ///
+    /// [`TransportError::SecureTcpRefused`]: crate::TransportError::SecureTcpRefused
     #[default]
     Auto,
     /// TCP only: no TUNNELING_ACK, route-back HPAIs (CONFIRMED against the
     /// Jung interface).
     Tcp,
-    /// UDP only: the session and the tunnel on one UDP socket, TUNNELING_ACK
-    /// inside SECURE_WRAPPERs, the real local endpoint in every HPAI.
-    /// INFERRED from the KNX specification, verified against knx-sim only.
+    /// UDP only, an explicit opt-in: the session and the tunnel on one UDP
+    /// socket, TUNNELING_ACK inside SECURE_WRAPPERs, the real local endpoint
+    /// in every HPAI. INFERRED from the KNX specification, verified against
+    /// knx-sim and the testkit mock only; no real interface has been tested.
     Udp,
 }
 
@@ -264,7 +270,7 @@ pub struct SecureTunnelConfig {
     pub users: Vec<SecureUser>,
     /// Where the users came from.
     pub source: SecureSource,
-    /// TCP, UDP, or TCP with a UDP fallback (the default).
+    /// TCP (the default, `Auto`), or UDP when explicitly asked for.
     pub transport: SecureTransport,
     /// How often the tunnel sends a wrapped `STATUS_KEEPALIVE`
     /// ([`SECURE_KEEPALIVE_INTERVAL`] by default). [`Duration::ZERO`] sends

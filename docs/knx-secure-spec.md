@@ -852,11 +852,16 @@ the wrapped SESSION_AUTHENTICATE, so the session never authenticates.
   socket's real HPAI (`08 01 <ip> <port>`), CONNECT names it as control and
   data endpoint, and the tunnelling layer keeps its TUNNELING_ACKs (wrapped).
   A reordered datagram fails the strictly-increasing replay check and is
-  dropped; the ACK/retransmit layer recovers it. Selection: `--secure-transport
-  auto` (default) tries TCP and falls back to UDP only when the TCP connect is
-  refused and the extended search advertises the security family;
-  `--secure-transport tcp|udp` forces one. Stays INFERRED until a real
-  UDP-only interface is captured.
+  dropped; the ACK/retransmit layer recovers it. Every frame goes to the
+  control endpoint; the CONNECT_RESPONSE data endpoint is not used (as on the
+  plain UDP tunnel). Frames that precede the CONNECT_RESPONSE inside the
+  session (a TUNNELLING_FEATURE_INFO, say) are skipped, as over TCP.
+  Selection: `--secure-transport auto` (default) is TCP only; when the TCP
+  connect is refused and the extended search advertises the security family,
+  it fails with `SecureTcpRefused`, which names `--secure-transport udp`, and
+  never switches to UDP on its own. `--secure-transport udp` is the explicit
+  opt-in. No real interface has been tested over UDP; it stays INFERRED until
+  a UDP-only interface is captured.
 - The wrapper sits at the `frame()`/`do_send` seam in
   `crates/bussard-transport/src/tunnel.rs:279` - the plain tunnelling frame is
   built as today, then wrapped in a SecureWrapper before the socket write, and
@@ -1164,10 +1169,13 @@ greppable.
 4. **SecureWrapper `additional_data` MAC input** (§8.2): the first live
    bussard session against the interface settles it (the capture cannot).
 5. **KNXnet/IP Secure over UDP** (§8.3, #197): implemented from the KNX
-   specification and verified against knx-sim only; a UDP-only interface
-   capture settles the HPAIs and whether the interface ACKs inside the session.
-6. **The interface's session idle timeout** (§8.3, #197): measured read-only
-   with `bussard test --secure-idle <secs>`; the 30 s keepalive is INFERRED.
+   specification and verified against knx-sim only, reachable only through
+   `--secure-transport udp`; a UDP-only interface capture settles the HPAIs,
+   the data endpoint and whether the interface ACKs inside the session.
+6. ~~**The interface's session idle timeout** (§8.3, #197)~~ **Settled**
+   2026-09-25: 60 s on the Jung interface (idle probe, alive at 45 s,
+   `STATUS_TIMEOUT` at 59.97 s, 3 of 3); the 30 s keepalive is CONFIRMED
+   adequate.
 7. **`A_PropertyExtDescription_Response` layout**: not in any capture; bussard
    follows KNX 3/3/7 (`crates/bussard-mgmt/src/property_ext.rs`), INFERRED.
 8. **FDSK QR/label string encoding** - only if commissioning from a scanned label

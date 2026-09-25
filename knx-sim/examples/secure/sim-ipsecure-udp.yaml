@@ -1,6 +1,7 @@
 # knx-sim installation for the KNXnet/IP Secure over UDP loop (bussard issue
-# #197): a secure-only interface WITHOUT a TCP endpoint, so bussard's default
-# `--secure-transport auto` falls back to a UDP session. The UDP mode is
+# #197): a secure-only interface WITHOUT a TCP endpoint. bussard's default
+# `--secure-transport auto` refuses it with a hint; `--secure-transport udp`
+# opens a UDP session. The UDP mode is
 # INFERRED from the KNX specification; no real UDP-only interface has been
 # captured yet. run.sh drives it after the TCP cases.
 #
