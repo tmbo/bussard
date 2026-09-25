@@ -78,5 +78,7 @@ pub(crate) fn seed_of(established: Option<&Established>) -> Option<ConnectionSee
         mask: record.mask_value(),
         object_table: record.object_table(),
         max_apdu: record.max_apdu,
+        authorize_unanswered: record.authorize
+            == Some(bussard_model::facts::AuthorizeVerdict::Unsupported),
     })
 }

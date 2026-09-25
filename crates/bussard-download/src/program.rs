@@ -265,16 +265,21 @@ pub async fn write_system_b_seeded<Ch: L4Channel>(
     )
     .await
     .map_err(WriteError::Mgmt)?;
+    if let Some(seed) = seed {
+        l4.seed(seed);
+    }
     // Authorize the write session with the free-access key before any table
     // write, exactly as ETS does (issue #52 finding #1). This is the mutating
     // path, so fail loudly on an explicit access-denied (a keyed device needs its
     // BCU key) rather than proceeding into writes that the device would drop; a
     // device that does not implement authorize is tolerated and continues.
-    l4.authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY)
-        .await
-        .map_err(WriteError::Mgmt)?;
-    if let Some(seed) = seed {
-        l4.seed(seed);
+    // A device the read phase (or its checked facts) saw stay silent is not
+    // asked again: the unanswered request costs the full 3 s response timeout
+    // (issue #215). A device that answered is always asked.
+    if !l4.seeded_authorize_unanswered() {
+        l4.authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY)
+            .await
+            .map_err(WriteError::Mgmt)?;
     }
     // Negotiate PID_MAX_APDU_LENGTH once, right after authorize, like ETS's
     // opening property read (#116); the table writes then use its chunk size.

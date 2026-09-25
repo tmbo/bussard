@@ -1,6 +1,5 @@
 //! System B (mask `07B0`) table **write** side: property writes with read-back
-//! validation, the load-state machine for loadable table objects, and chunked
-//! `PID_TABLE` element writes.
+//! validation and the load-state machine for loadable table objects.
 //!
 //! This is the inverse of [`crate::tables`] (the read side). Where that module
 //! reads a device's group-address and association tables through interface-object
@@ -64,7 +63,7 @@
 use crate::apci::{self, RestartResponse};
 use crate::connection::{L4Channel, Layer4Connection, property_request, property_write_request};
 use crate::error::MgmtError;
-use crate::tables::{PID_TABLE, PID_TABLE_REFERENCE};
+use crate::tables::PID_TABLE_REFERENCE;
 use bussard_model::IndividualAddress;
 
 /// `PID_LOAD_STATE_CONTROL` (5) — the load-state property of a loadable
@@ -1408,60 +1407,15 @@ pub async fn read_mcb_table<Ch: L4Channel>(
     Ok(entries)
 }
 
-/// How many table elements to write per `A_PropertyValue_Write`, sized so the
-/// request (4-octet header + data) fits the conservative 15-octet APDU every
-/// System B device supports. 4-octet association elements are the largest, so
-/// chunk by octets and derive the element count per table.
-const MAX_PROPERTY_WRITE_OCTETS: usize = 8;
-
-/// Writes a whole `PID_TABLE` property array: the element count into element 0,
-/// then the elements from index 1 upward in APDU-sized chunks.
-///
-/// Mirrors the read side ([`crate::tables`]): element 0 holds the big-endian
-/// `u16` count, elements are 1-based. Each chunk is written with
-/// [`write_property`] and validated by the device's echo. `elem_size` is the
-/// octet width of one element (2 for the address table, 4 for the association
-/// table). The object must already be in [`LoadState::Loading`].
-///
-/// Every write is confirmed via the response echo, so a device that silently
-/// drops or truncates a chunk fails loudly rather than leaving a half-written
-/// table.
-pub async fn write_table<Ch: L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
-    object_index: u8,
-    elem_size: usize,
-    elements: &[u8],
-) -> Result<()> {
-    debug_assert!(elem_size > 0 && elements.len().is_multiple_of(elem_size));
-    let count = elements.len() / elem_size;
-
-    // Element 0: the big-endian u16 element count. Writing element 0 sets the
-    // array length (mirrors the read side, where element 0 *is* the count).
-    let count_bytes = (count as u16).to_be_bytes();
-    write_property(l4, object_index, PID_TABLE, 1, 0, &count_bytes, None).await?;
-
-    // Elements 1..=count in chunks.
-    let chunk_elems = (MAX_PROPERTY_WRITE_OCTETS / elem_size).max(1);
-    let mut next: usize = 1; // 1-based
-    while next <= count {
-        let take = chunk_elems.min(count - next + 1);
-        let byte_start = (next - 1) * elem_size;
-        let byte_end = byte_start + take * elem_size;
-        let chunk = &elements[byte_start..byte_end];
-        write_property(
-            l4,
-            object_index,
-            PID_TABLE,
-            take as u8,
-            next as u16,
-            chunk,
-            None,
-        )
-        .await?;
-        next += take;
-    }
-    Ok(())
-}
+// Tables are written the way ETS writes them: allocate the segment, stream
+// the image with memory writes at the negotiated chunk, complete the load. A
+// `PID_TABLE` property-array writer (fixed 8-octet chunks) existed here and had
+// no caller since the memory path replaced it (issue #89: the Jung F50 refuses
+// `PID_TABLE` writes). It was removed in issue #215: the ETS captures of the
+// table downloads (`schaltaktor-2-fach-1-1-47-new.pcapng`, 1.1.47, and
+// `secure-1-1-5.pcapng`, 1.1.5 with the keyring) contain no `PID_TABLE`
+// property write at all, only memory writes and 8-octet `PID_MCB_TABLE`
+// element writes, so there is no evidence for any `PID_TABLE` chunk size.
 
 // --- Memory read/write on a Layer4Connection --------------------------------
 //

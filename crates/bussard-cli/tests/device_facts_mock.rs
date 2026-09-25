@@ -454,6 +454,178 @@ fn test_plan_uses_facts_and_ignores_a_corrupt_file() -> TestResult {
     Ok(())
 }
 
+const A_AUTHORIZE_REQUEST: u16 = 0x3D1;
+
+/// [`device`] that acknowledges `A_Authorize_Request` and never answers it,
+/// as 1.1.30, 1.1.39, 1.1.45, 1.1.51 and 1.1.202 do (speed deep dive
+/// 2026-09-24): every session that asks waits out the 3 s response timeout.
+fn unanswered_authorize_device() -> Result<MockDevice, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(device()?.with_hook(|_, apci, _| {
+        (apci == A_AUTHORIZE_REQUEST).then_some(bussard_testkit::Reaction::Ack)
+    }))
+}
+
+/// Issue #215: `apply` skips the authorize a device's facts record as never
+/// answered, in its read phase and in its write phase; the write happens and
+/// verifies as before.
+#[test]
+fn test_apply_skips_the_authorize_the_facts_record_as_unanswered() -> TestResult {
+    let bench = Bench::start("apply-authorize", unanswered_authorize_device()?)?;
+    // The first run learns the verdict (and pays the timeout once).
+    ok_stdout(&bench.run(&["plan", "1.1.12", "--json"])?)?;
+    assert_eq!(count(&bench.take_requests()?, A_AUTHORIZE_REQUEST), 1);
+    assert_eq!(
+        bench.facts()?.authorize,
+        Some(bussard_model::facts::AuthorizeVerdict::Unsupported)
+    );
+    let started = Instant::now();
+    let out = ok_stdout(&bench.run(&["apply", "1.1.12", "--yes"])?)?;
+    let elapsed = started.elapsed();
+    let requests = bench.take_requests()?;
+    println!(
+        "apply with a cached unanswered authorize: {} requests, {} authorize, {:.2} s",
+        requests.len(),
+        count(&requests, A_AUTHORIZE_REQUEST),
+        elapsed.as_secs_f64()
+    );
+    assert!(out.contains("apply verified"), "{out}");
+    assert_eq!(count(&requests, A_AUTHORIZE_REQUEST), 0, "{requests:x?}");
+    Ok(())
+}
+
+/// Issue #215: `--refresh-facts` asks again, in both phases.
+#[test]
+fn test_apply_refresh_facts_presents_the_authorize_again() -> TestResult {
+    let bench = Bench::start("apply-authorize-refresh", unanswered_authorize_device()?)?;
+    ok_stdout(&bench.run(&["plan", "1.1.12", "--json"])?)?;
+    bench.take_requests()?;
+    ok_stdout(&bench.run(&["apply", "1.1.12", "--yes", "--refresh-facts"])?)?;
+    // The read phase asks (refresh), and learns the verdict again; the write
+    // phase of the same command then relies on it.
+    assert_eq!(count(&bench.take_requests()?, A_AUTHORIZE_REQUEST), 1);
+    Ok(())
+}
+
+/// Issue #215: a device that answers `A_Authorize` asking for a key is never
+/// skipped: both phases present the key and the write refuses loudly.
+#[test]
+fn test_apply_never_skips_the_authorize_of_a_device_that_wants_a_key() -> TestResult {
+    let bench = Bench::start("apply-authorize-keyed", device()?.with_authorize_level(2))?;
+    ok_stdout(&bench.run(&["plan", "1.1.12", "--json"])?)?;
+    assert_eq!(
+        bench.facts()?.authorize,
+        Some(bussard_model::facts::AuthorizeVerdict::Denied)
+    );
+    bench.take_requests()?;
+    let out = bench.run(&["apply", "1.1.12", "--yes"])?;
+    assert!(!out.status.success(), "a denied write session must fail");
+    assert_eq!(count(&bench.take_requests()?, A_AUTHORIZE_REQUEST), 2);
+    Ok(())
+}
+
+/// Issue #215: the flash pre-flight skips the authorize the facts record as
+/// unanswered (the write phase already took the pre-flight's verdict).
+#[test]
+fn test_flash_preflight_skips_the_authorize_the_facts_record_as_unanswered() -> TestResult {
+    let bench = Bench::start("flash-authorize", unanswered_authorize_device()?)?;
+    let Some(product) = build_knxprod(&bench.tmp)? else {
+        return Ok(());
+    };
+    let product = product.to_str().ok_or("non-UTF-8 temp path")?.to_string();
+    // No --yes and no TTY: the pre-flight runs and stops at the confirmation.
+    let args = ["flash", "1.1.12", "--product", product.as_str()];
+    let _ = bench.run(&args)?;
+    assert_eq!(count(&bench.take_requests()?, A_AUTHORIZE_REQUEST), 1);
+    let _ = bench.run(&args)?;
+    assert_eq!(count(&bench.take_requests()?, A_AUTHORIZE_REQUEST), 0);
+    assert_eq!(bench.gw.with_device(target()?, |d| d.writes)?, 0);
+    Ok(())
+}
+
+/// Issue #215: a cold `apply` (no facts yet) discovers the interface objects
+/// once, in its read phase; the write phase's table discovery and read-back
+/// use that table (the #209 seed), and a warm run reads none of it. The
+/// deep dive of 2026-09-24 counted three walks per apply before #209.
+#[test]
+fn test_apply_discovers_the_objects_at_most_once() -> TestResult {
+    // PID_IO_LIST confirms its list with three PID_OBJECT_TYPE reads (the last
+    // object, the first application object, the index after the last); the
+    // walk reads every index and the one after the last.
+    for (tag, device, discovery_reads) in [
+        ("apply-io-list", device()?, 3),
+        ("apply-walk", device()?.without_io_list(), TYPES.len() + 1),
+    ] {
+        let bench = Bench::start(tag, device)?;
+        let out = ok_stdout(&bench.run(&["apply", "1.1.12", "--yes"])?)?;
+        assert!(out.contains("apply verified"), "{out}");
+        let cold = bench.take_requests()?;
+        // The tables match now: a no-op apply.
+        ok_stdout(&bench.run(&["apply", "1.1.12", "--yes"])?)?;
+        let warm = bench.take_requests()?;
+        println!(
+            "{tag}: cold {} requests, {} PID_OBJECT_TYPE, {} PID 56; no-op warm {} requests, \
+             {} PID_OBJECT_TYPE, {} PID 56",
+            cold.len(),
+            object_type_reads(&cold),
+            max_apdu_reads(&cold),
+            warm.len(),
+            object_type_reads(&warm),
+            max_apdu_reads(&warm),
+        );
+        assert_eq!(object_type_reads(&cold), discovery_reads, "{tag}");
+        assert_eq!(max_apdu_reads(&cold), 1, "{tag}");
+        assert_eq!(
+            (object_type_reads(&warm), max_apdu_reads(&warm)),
+            (0, 0),
+            "{tag}"
+        );
+    }
+    Ok(())
+}
+
+/// `PID_MAX_APDU_LENGTH` reads in a request log.
+fn max_apdu_reads(requests: &[(u16, Vec<u8>)]) -> usize {
+    requests
+        .iter()
+        .filter(|(a, d)| {
+            *a == A_PROPERTY_VALUE_READ
+                && d.first() == Some(&0)
+                && d.get(1) == Some(&PID_MAX_APDU_LENGTH)
+        })
+        .count()
+}
+
+/// Issue #215: on a device without `PID_MAX_APDU_LENGTH`, the flash
+/// pre-flight reads it once (the facts' read and the pre-flight's own
+/// negotiation used to read it twice).
+#[test]
+fn test_flash_preflight_reads_an_absent_max_apdu_once() -> TestResult {
+    let device = device()?.with_hook(|_, apci, data| {
+        (apci == A_PROPERTY_VALUE_READ
+            && data.first() == Some(&0)
+            && data.get(1) == Some(&PID_MAX_APDU_LENGTH))
+        .then(|| {
+            bussard_testkit::Reaction::Answer(
+                0x3D6,
+                bussard_testkit::device::prop_response(0, PID_MAX_APDU_LENGTH, 0, 1, &[]),
+            )
+        })
+    });
+    let bench = Bench::start("flash-max-apdu", device)?;
+    let Some(product) = build_knxprod(&bench.tmp)? else {
+        return Ok(());
+    };
+    let product = product.to_str().ok_or("non-UTF-8 temp path")?.to_string();
+    let _ = bench.run(&["flash", "1.1.12", "--product", product.as_str()])?;
+    let requests = bench.take_requests()?;
+    println!(
+        "flash pre-flight PID_MAX_APDU_LENGTH reads: {}",
+        max_apdu_reads(&requests)
+    );
+    assert_eq!(max_apdu_reads(&requests), 1);
+    Ok(())
+}
+
 // --- Measurement (ignored; run with --ignored --nocapture) -----------------
 
 /// One timed run: requests the device saw and the wall-clock.

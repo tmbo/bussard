@@ -71,9 +71,9 @@ pub use broadcast::{
 };
 pub use connection::{
     AuthorizeOutcome, ConnectionSeed, L4Channel, Layer4Connection, LeaseChannel, MAX_OBJECT_INDEX,
-    PID_OBJECT_TYPE, PROBE_TIMEOUT, PropertyDesc, SECURE_APDU_OVERHEAD, STANDARD_FRAME_APDU,
-    SyncRetry, Timeouts, describe_object_properties, probe_object_type, probe_object_types,
-    read_device_descriptor, read_device_descriptor_unsecured,
+    MaxApduAbsence, PID_OBJECT_TYPE, PROBE_TIMEOUT, PropertyDesc, SECURE_APDU_OVERHEAD,
+    STANDARD_FRAME_APDU, SyncRetry, Timeouts, describe_object_properties, probe_object_type,
+    probe_object_types, read_device_descriptor, read_device_descriptor_unsecured,
 };
 pub use device::DeviceConnection;
 pub use error::{MgmtError, Result, SilenceKind};
@@ -84,7 +84,7 @@ pub use load::{
     SegmentAllocation, WriteError, allocate_segment, compare_property, compare_rel_mem,
     crc16_ccitt, encode_rel_segment, is_connection_death, master_reset, mcb_entry, read_load_state,
     read_mcb_table, read_program_version, read_table_reference, restart_process_wait,
-    write_load_control, write_property, write_table,
+    write_load_control, write_property,
 };
 // The memory primitives moved out of `load` into their own module (issue #80);
 // every historical `bussard_mgmt::…` and `bussard_mgmt::load::…` path still

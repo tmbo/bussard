@@ -117,6 +117,34 @@ entry supersedes it and is not a diff against it.
   `PID_IO_LIST` where a System B device offers it, with a fallback to the
   walk. `describe --full` walks the property descriptions again;
   `--refresh-facts` re-reads everything.
+- A device whose facts record that it never answers `A_Authorize` (1.1.30,
+  1.1.39, 1.1.45, 1.1.51, 1.1.202 in the reference installation) is no longer
+  asked in the `flash` pre-flight or in either phase of `apply`, which saves
+  the 3 s response timeout per session (mock: `apply` 2 authorize requests to
+  0). A device that answers, granted or asking for a key, is always asked;
+  stale facts present the key on the same connection (#215).
+- `PID_MAX_APDU_LENGTH` is read once per connection, its absence included:
+  a device without the property was asked again by the facts, the table
+  reader, the parameter read-back and the flash pre-flight (mock: 3 calls on
+  one connection, 3 reads to 1). A read the device acknowledges and never
+  answers re-opens the connection instead of leaving it closed, so the next
+  request no longer fails with "disconnected". The flash write phase reuses
+  the pre-flight's answered absence instead of reading it again (#215).
+- `bussard_mgmt::write_table`, a `PID_TABLE` property-array writer with fixed
+  8-octet chunks, is removed. Nothing called it since `apply` writes tables
+  into device-allocated segments with memory writes, as ETS does; the ETS
+  table downloads of 1.1.47 and 1.1.5 contain no `PID_TABLE` property write
+  (#215).
+- `flash --parameters-only` reads the parameter memory on the pre-flight
+  connection and reads it back after the restart on the write session's
+  post-restart connection, instead of opening a read-only session before
+  the prompt and another after the download. The written octets and the
+  verification are unchanged (mock: 6 to 4 `T_Connect`, 44 to 34 requests)
+  (#215).
+- `BUSSARD_WIRE_TRACE=1` encodes each frame once and writes each line with a
+  single write to stderr; a 215-octet write's line takes 1.3 µs instead of
+  17 µs (release). With the trace off nothing is encoded or formatted: a
+  counting allocator sees zero allocations over 200,000 calls (#215).
 - System B table read-back reads the address and association tables from
   memory at the negotiated chunk when that takes fewer requests than
   `PID_TABLE` property reads (#223). A 400-address, 1,333-association table
@@ -365,6 +393,18 @@ entry supersedes it and is not a diff against it.
   build, best of 5): `flash --dry-run` 5.8 s to 0.74 s (0.43 s with the
   cache), `reconstruct --product` start to first frame 5.6 s to 0.65 s
   (0.34 s with the cache); `describe` is unchanged at 0.08 s.
+
+- The verification after the terminal restart reads what decides: the
+  application object's type and its load state. The other objects keep the
+  `Loaded` their `LoadCompleted` confirmed before the restart, and a written
+  segment's memory sample is skipped when its MCB check (`PID_MCB_TABLE` CRC
+  over the streamed image) passed before the restart. A segment without a
+  passed MCB check, such as an absolute `WriteMem` or an advisory check, is
+  still sampled, and an application that is not `Loaded` after the reboot
+  gets the full verification as before. On a 4-object System B flash with
+  MCB checks this is 2 reads instead of 9. On System 7 `0701` the LSM status
+  octets are read with one memory read instead of one per LSM, falling back
+  to per-LSM reads when the device refuses it (#215).
 
 ### Fixed
 

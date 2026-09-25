@@ -60,8 +60,8 @@ impl DesiredTables {
     }
 
     /// The address table serialised as `PID_TABLE` element octets (big-endian
-    /// `u16` per GA), ready for [`bussard_mgmt::write_table`]. Excludes the
-    /// element-count word (the writer prepends it).
+    /// `u16` per GA). Excludes the element-count word (the table image
+    /// prepends it).
     pub fn address_elements(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.addresses.len() * 2);
         for ga in &self.addresses {

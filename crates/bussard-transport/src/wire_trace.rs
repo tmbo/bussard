@@ -67,24 +67,42 @@ fn enabled() -> bool {
 /// log alone, `apdu` is the transport/application octets (the TPCI/APCI byte and any
 /// following data) and `cemi` is the full raw frame as it appears on the wire.
 pub fn trace_frame(direction: Direction, frame: &CemiFrame) {
+    // Nothing is encoded or formatted while the trace is off: one cached
+    // flag load (issue #215, `wire_trace_off` counts zero allocations).
     if !enabled() {
         return;
     }
+    let line = format_line(std::time::SystemTime::now(), direction, frame);
+    // One write per line: `eprintln!` on the unbuffered stderr issues a write
+    // per formatted piece.
+    use std::io::Write as _;
+    let _ = std::io::stderr().lock().write_all(line.as_bytes());
+}
+
+/// The trace line for `frame` at `ts`, newline included. The frame is encoded
+/// once; the TPDU is a slice of that encoding.
+fn format_line(ts: std::time::SystemTime, direction: Direction, frame: &CemiFrame) -> String {
+    use std::fmt::Write as _;
     let raw = frame.encode();
-    let dst = match &frame.destination {
-        Destination::Individual(ia) => ia.to_string(),
-        Destination::Group(ga) => ga.to_string(),
-    };
-    eprintln!(
-        "[wire] {} {} {} -> {}  {}  apdu=[{}]  cemi={}",
-        utc_millis(std::time::SystemTime::now()),
+    let tpdu = transport_octets(frame, &raw);
+    let mut line = String::with_capacity(96 + 3 * (raw.len() + tpdu.len()));
+    let _ = write!(
+        line,
+        "[wire] {} {} {} -> ",
+        utc_millis(ts),
         direction.marker(),
         frame.source,
-        dst,
-        summarize(frame),
-        hex(&transport_octets(frame)),
-        hex(&raw),
     );
+    let _ = match &frame.destination {
+        Destination::Individual(ia) => write!(line, "{ia}"),
+        Destination::Group(ga) => write!(line, "{ga}"),
+    };
+    let _ = write!(line, "  {}  apdu=[", summarize(frame));
+    push_hex(&mut line, tpdu);
+    line.push_str("]  cemi=");
+    push_hex(&mut line, &raw);
+    line.push('\n');
+    line
 }
 
 /// `ts` as ISO-8601 UTC with milliseconds, e.g. `2026-09-24T10:15:00.123Z`.
@@ -123,14 +141,13 @@ fn utc_millis(ts: std::time::SystemTime) -> String {
 /// This is exactly what appears after the NPDU length byte on the wire, i.e. the
 /// TPDU the KNX transport + application layers exchange — the octets a reference
 /// capture shows as the frame's payload.
-fn transport_octets(frame: &CemiFrame) -> Vec<u8> {
-    let raw = frame.encode();
+fn transport_octets<'a>(frame: &CemiFrame, raw: &'a [u8]) -> &'a [u8] {
     // The cEMI layout up to and including the NPDU length byte is:
     //   msgcode(1) ai_len(1) ai(ai_len) ctl1(1) ctl2(1) src(2) dst(2) npdu_len(1)
     // so the TPDU begins at that fixed offset once the additional-info length is
     // known. Slicing the encoded frame keeps this in lockstep with the codec.
     let tpdu_start = 1 + 1 + frame.additional_info.len() + 1 + 1 + 2 + 2 + 1;
-    raw.get(tpdu_start..).unwrap_or(&[]).to_vec()
+    raw.get(tpdu_start..).unwrap_or(&[])
 }
 
 /// A short human summary of the transport/application service the frame carries,
@@ -192,13 +209,24 @@ fn apci_name(apci: u16) -> &'static str {
     }
 }
 
+/// Appends `bytes` as lowercase space-separated hex (nothing for no bytes).
+fn push_hex(out: &mut String, bytes: &[u8]) {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    for (i, b) in bytes.iter().enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        out.push(char::from(DIGITS[usize::from(b >> 4)]));
+        out.push(char::from(DIGITS[usize::from(b & 0x0F)]));
+    }
+}
+
 /// Renders bytes as lowercase space-separated hex (empty string for no bytes).
+#[cfg(test)]
 fn hex(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<Vec<_>>()
-        .join(" ")
+    let mut out = String::new();
+    push_hex(&mut out, bytes);
+    out
 }
 
 #[cfg(test)]
@@ -227,9 +255,9 @@ mod tests {
         // A_PropertyValue_Read for obj 0 PID 0x0c: the transport octets are the
         // raw TPDU (the tail of the encoded frame after the NPDU length byte).
         let frame = mgmt_frame(0x03D5, vec![0x00, 0x0c, 0x10, 0x01]);
-        let octets = transport_octets(&frame);
         let raw = frame.encode();
-        assert_eq!(octets.as_slice(), &raw[raw.len() - octets.len()..]);
+        let octets = transport_octets(&frame, &raw);
+        assert_eq!(octets, &raw[raw.len() - octets.len()..]);
         // The APDU tail carries the property-read operands.
         assert!(octets.ends_with(&[0x00, 0x0c, 0x10, 0x01]));
     }
@@ -275,6 +303,72 @@ mod tests {
             utc_millis(at(1_709_208_000_007)),
             "2024-02-29T12:00:00.007Z"
         );
+    }
+
+    #[test]
+    fn test_format_line_is_the_documented_line() {
+        // The line the trace printed before issue #215 changed how it is
+        // built (one encode, one buffer), byte for byte.
+        let frame = mgmt_frame(0x03D5, vec![0x00, 0x0c, 0x10, 0x01]);
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_millis(1_790_244_900_123);
+        let raw = frame.encode();
+        let expected = format!(
+            "[wire] 2026-09-24T10:15:00.123Z TX >> 1.0.255 -> 1.0.30  A_PropertyValue_Read  \
+             APCI=0x3D5  apdu=[{}]  cemi={}\n",
+            hex(transport_octets(&frame, &raw)),
+            hex(&raw),
+        );
+        assert_eq!(format_line(at, Direction::Outbound, &frame), expected);
+        assert!(expected.contains("apdu=[4b d5 00 0c 10 01]"), "{expected}");
+    }
+
+    /// Measurement for issue #215, not a regression test: the line as it was
+    /// built before (two encodes, a `String` per octet, a `Vec` join) against
+    /// [`format_line`], on a 215-octet memory write.
+    #[test]
+    #[ignore = "measurement; run by hand"]
+    fn measure_format_line_cost() {
+        let frame = mgmt_frame(0x01FB, vec![0xA5; 219]);
+        let old_line = |frame: &CemiFrame| {
+            let raw = frame.encode();
+            let again = frame.encode();
+            let tpdu = transport_octets(frame, &again).to_vec();
+            let old_hex = |bytes: &[u8]| {
+                bytes
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            format!(
+                "[wire] {} {} {} -> {}  {}  apdu=[{}]  cemi={}\n",
+                utc_millis(std::time::SystemTime::now()),
+                Direction::Outbound.marker(),
+                frame.source,
+                frame.source,
+                summarize(frame),
+                old_hex(&tpdu),
+                old_hex(&raw),
+            )
+        };
+        let rounds = 20_000u32;
+        let started = std::time::Instant::now();
+        let mut total = 0usize;
+        for _ in 0..rounds {
+            total += old_line(std::hint::black_box(&frame)).len();
+        }
+        let old = started.elapsed() / rounds;
+        let started = std::time::Instant::now();
+        for _ in 0..rounds {
+            total += format_line(
+                std::time::SystemTime::now(),
+                Direction::Outbound,
+                std::hint::black_box(&frame),
+            )
+            .len();
+        }
+        let new = started.elapsed() / rounds;
+        println!("wire trace line, 215-octet write: before {old:?}, after {new:?} ({total})");
     }
 
     #[test]
