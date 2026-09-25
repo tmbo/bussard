@@ -666,6 +666,10 @@ directory or a script from before these changes needs:
 
 ### Fixed
 
+- The `.gitignore` that `init` writes lists `.env`, and `init` adds the line
+  to an existing `.gitignore` that lacks it, so the passwords bussard reads
+  from `.env` are not committed by accident. An `import` into a directory
+  without a model writes or merges the same `.gitignore`.
 - The product models a command regenerates from `products/` are parsed in
   the lock's `language`, so a German model no longer reports E017 ("enum
   value ... is not an integer") on every German label after a fresh import.

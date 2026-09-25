@@ -696,8 +696,9 @@ fn write_new(path: &Path, content: &str) -> anyhow::Result<()> {
 }
 
 /// Writes the model's `.gitignore`, or appends the lines of it an existing
-/// `.gitignore` lacks, so `.bussard/` and `*.knxkeys` are always ignored.
-fn merge_gitignore(path: &Path) -> anyhow::Result<()> {
+/// `.gitignore` lacks, so `.bussard/`, `*.knxkeys` and `.env` are always
+/// ignored. `init` and an `import` into a fresh directory both call it.
+pub(crate) fn merge_gitignore(path: &Path) -> anyhow::Result<()> {
     let Ok(existing) = std::fs::read_to_string(path) else {
         return write_file(path, GITIGNORE);
     };
@@ -713,7 +714,9 @@ fn merge_gitignore(path: &Path) -> anyhow::Result<()> {
     if !text.is_empty() && !text.ends_with('\n') {
         text.push('\n');
     }
-    text.push_str("\n# bussard: its local data and ETS keyring exports stay out of git.\n");
+    text.push_str(
+        "\n# bussard: its local data, ETS keyring exports and .env passwords stay out of git.\n",
+    );
     for line in &missing {
         text.push_str(line);
         text.push('\n');
@@ -791,6 +794,9 @@ const GITIGNORE: &str = "\
 # store bussard.keys is encrypted and meant to be committed; a .knxkeys dropped
 # here is not (import it with `bussard keys import`).
 *.knxkeys
+
+# passwords for bussard, read automatically; never commit
+.env
 ";
 
 /// `knx/README.md`: onboarding orientation.
@@ -1032,6 +1038,52 @@ mod tests {
         assert!(ignore.starts_with("target/\n*.knxkeys\n"), "{ignore}");
         assert!(ignore.contains("\n.bussard/\n"), "{ignore}");
         assert_eq!(ignore.matches("*.knxkeys").count(), 1, "{ignore}");
+        std::fs::remove_dir_all(&dir).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn test_run_with_fresh_dir_ignores_env() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = temp_dir("fresh-env");
+        run_with(&dir, None, true, no_gateways, no_probe, FirstRun::default())?;
+        let ignore = std::fs::read_to_string(dir.join(".gitignore"))?;
+        assert!(
+            ignore.contains("# passwords for bussard, read automatically; never commit\n.env\n"),
+            "{ignore}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn test_merge_gitignore_adds_env_once() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = temp_dir("merge-env");
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join(".gitignore");
+        std::fs::write(&path, "target/\n.bussard/\n*.knxkeys\n")?;
+        merge_gitignore(&path)?;
+        let once = std::fs::read_to_string(&path)?;
+        assert!(
+            once.starts_with("target/\n.bussard/\n*.knxkeys\n"),
+            "{once}"
+        );
+        assert_eq!(once.lines().filter(|l| *l == ".env").count(), 1, "{once}");
+        merge_gitignore(&path)?;
+        assert_eq!(std::fs::read_to_string(&path)?, once);
+        std::fs::remove_dir_all(&dir).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn test_merge_gitignore_with_env_present_is_unchanged() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = temp_dir("merge-env-present");
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join(".gitignore");
+        let before = "node_modules/\n.env\n.bussard/\n*.knxkeys\n";
+        std::fs::write(&path, before)?;
+        merge_gitignore(&path)?;
+        assert_eq!(std::fs::read_to_string(&path)?, before);
         std::fs::remove_dir_all(&dir).ok();
         Ok(())
     }
