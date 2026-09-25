@@ -576,7 +576,11 @@ entry supersedes it and is not a diff against it.
 - ETS3-era products shipped only as encrypted `.vd4` files need the ETS
   project export as product source (#135).
 - Some Data Secure memory layouts are still inferred rather than confirmed by
-  a capture (#71).
+  a capture (#71): the order of several entries in the security individual
+  address table (PID 54; every capture holds at most one), the meaning of the
+  group-object flag bits beyond the two values ETS writes (`0x00`, `0x03`),
+  and the `A_PropertyExtDescription_Response` layout (#197). `adopt` notes a
+  flag value other than those two.
 - System 1 and System 2 masks are classified but not programmable; program
   them with ETS. bussard never activates or deactivates Data Secure on a
   device.

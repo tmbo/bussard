@@ -43,9 +43,10 @@
 //! 19; 198 octets, the most that fits the 211-octet budget) and 5 from element
 //! 12 (20, 23, 24, 25, 26); 1.1.7 got 8 in one telegram, 1.1.9 3, 1.1.16 4,
 //! 1.1.47 and 1.1.48 2, always ascending.
-//! The flag value `0x03` sets bit 0 and bit 1, read as authentication and
-//! confidentiality (ETS secures group objects with both): INFERRED from the one
-//! value seen.
+//! The flag octets: only `0x00` ([`GO_FLAGS_PLAIN`]) and `0x03`
+//! ([`GO_FLAGS_SECURE`]) occur in those captures, and bussard writes only
+//! those. Reading `0x03` as bit 0 authentication and bit 1 confidentiality is
+//! INFERRED; [`read_security_object`] reports any other value it reads back.
 //!
 //! Key material: [`SecurityProgram`] holds group keys as [`Key16`], whose
 //! `Debug` is redacted; nothing here prints a key.
@@ -59,7 +60,20 @@ use bussard_mgmt::property_ext::{self, PropertyExtAddress};
 use bussard_model::{GroupAddress, IndividualAddress, Model};
 use bussard_secure::Key16;
 
-/// The ETS flag octet for a secured group object (see the module docs).
+/// The ETS flag octet for a group object that is not secured.
+///
+/// CONFIRMED: every PID 61 element of the eight decrypted ETS downloads
+/// (`secure-1-1-{5,7,9,12,16,47,48}.pcapng`, `secure-1-1-12-group.pcapng`;
+/// 9013 group-object elements in all) is `0x00` or [`GO_FLAGS_SECURE`].
+pub const GO_FLAGS_PLAIN: u8 = 0x00;
+
+/// The ETS flag octet for a secured group object.
+///
+/// CONFIRMED as a value: the 42 secured objects of the eight ETS downloads
+/// (1.1.5: 16, 1.1.7: 8, 1.1.9: 6, 1.1.12: 1 and 3, 1.1.16: 4, 1.1.47: 2,
+/// 1.1.48: 2) are all `0x03`, and no other non-zero value occurs. INFERRED:
+/// the meaning of the bits (bit 0 authentication, bit 1 confidentiality), and
+/// so what `0x01` or `0x02` would do. bussard writes only these two values.
 pub const GO_FLAGS_SECURE: u8 = 0x03;
 
 /// One element of the group key table (`PID_GRP_KEY_TABLE`).
@@ -603,6 +617,21 @@ pub struct SecurityReadback {
 }
 
 impl SecurityReadback {
+    /// The group objects whose PID 61 octet is neither [`GO_FLAGS_PLAIN`] nor
+    /// [`GO_FLAGS_SECURE`], with the octet, ascending. No ETS download has
+    /// written such a value; [`secured_objects`](Self::secured_objects)
+    /// counts them as secured, and a secured download rewrites them as `0x03`.
+    pub fn unconfirmed_flags(&self) -> Vec<(u16, u8)> {
+        self.go_flags
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| **f != GO_FLAGS_PLAIN && **f != GO_FLAGS_SECURE)
+            .filter_map(|(i, f)| u16::try_from(i + 1).ok().map(|object| (object, *f)))
+            .collect()
+    }
+
     /// The group objects the device flags secured (a non-zero PID 61 octet),
     /// ascending; `None` when PID 61 was not read.
     pub fn secured_objects(&self) -> Option<BTreeSet<u16>> {
@@ -641,7 +670,12 @@ pub async fn read_security_object<Ch: L4Channel>(
     )
     .await;
     match flags {
-        Ok(bytes) => readback.go_flags = Some(bytes),
+        Ok(bytes) => {
+            readback.go_flags = Some(bytes);
+            if let Some(note) = unconfirmed_flags_note(&readback.unconfirmed_flags()) {
+                readback.notes.push(note);
+            }
+        }
         Err(err @ (MgmtError::ServiceRejected { .. } | MgmtError::MalformedResponse { .. })) => {
             readback
                 .notes
@@ -665,6 +699,32 @@ pub async fn read_security_object<Ch: L4Channel>(
         Err(err) => return Err(err),
     }
     Ok(readback)
+}
+
+/// The note for group objects whose PID 61 octet is not one ETS writes, or
+/// `None` when there are none. Lists the first eight.
+fn unconfirmed_flags_note(unconfirmed: &[(u16, u8)]) -> Option<String> {
+    if unconfirmed.is_empty() {
+        return None;
+    }
+    let shown: Vec<String> = unconfirmed
+        .iter()
+        .take(8)
+        .map(|(object, flag)| format!("{object}: 0x{flag:02x}"))
+        .collect();
+    let more = unconfirmed.len() - shown.len();
+    let more = if more > 0 {
+        format!(" and {more} more")
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "GO security flags (PID 61): {} group object(s) carry a value ETS has not been seen to \
+         write (only 0x00 and 0x03 are confirmed): {}{more}. They count as secured; a secured \
+         download rewrites them as 0x03",
+        unconfirmed.len(),
+        shown.join(", ")
+    ))
 }
 
 /// Reprograms the whole security object for the address table `addresses`, as
@@ -1085,6 +1145,59 @@ mod tests {
         );
         // One telegram holds 26 entries at PID_MAX_APDU_LENGTH 233.
         assert_eq!(211 / SecureSenderEntry::LEN, 26);
+        Ok(())
+    }
+
+    #[test]
+    fn test_unconfirmed_flags_lists_values_ets_never_wrote() {
+        let mut readback = SecurityReadback {
+            go_flags: Some(vec![0x00, 0x03, 0x01, 0x00, 0x02, 0x83]),
+            ..Default::default()
+        };
+        assert_eq!(
+            readback.unconfirmed_flags(),
+            vec![(3, 0x01), (5, 0x02), (6, 0x83)]
+        );
+        // They still count as secured (any non-zero octet).
+        assert_eq!(
+            readback.secured_objects(),
+            Some(BTreeSet::from([2, 3, 5, 6]))
+        );
+        let note = unconfirmed_flags_note(&readback.unconfirmed_flags()).unwrap_or_default();
+        assert!(note.contains("3 group object(s)"), "{note}");
+        assert!(note.contains("3: 0x01, 5: 0x02, 6: 0x83"), "{note}");
+        assert!(!note.contains("more"), "{note}");
+
+        // Only confirmed values: no note. Not read: nothing to report.
+        readback.go_flags = Some(vec![0x00, 0x03, 0x03]);
+        assert!(readback.unconfirmed_flags().is_empty());
+        assert_eq!(unconfirmed_flags_note(&readback.unconfirmed_flags()), None);
+        readback.go_flags = None;
+        assert!(readback.unconfirmed_flags().is_empty());
+
+        // Long lists are cut at eight.
+        let many: Vec<(u16, u8)> = (1..=10).map(|o| (o, 0x01)).collect();
+        let note = unconfirmed_flags_note(&many).unwrap_or_default();
+        assert!(note.contains("8: 0x01 and 2 more"), "{note}");
+    }
+
+    #[test]
+    fn test_build_security_program_writes_only_confirmed_flag_values() -> TestResult {
+        let program = build_security_program(
+            "1.1.1".parse()?,
+            &[],
+            6,
+            &BTreeSet::from([2, 5]),
+            &BTreeSet::new(),
+            &HashMap::new(),
+        )?;
+        assert_eq!(program.go_flags, vec![0x00, 0x03, 0x00, 0x00, 0x03, 0x00]);
+        assert!(
+            program
+                .go_flags
+                .iter()
+                .all(|f| *f == GO_FLAGS_PLAIN || *f == GO_FLAGS_SECURE)
+        );
         Ok(())
     }
 

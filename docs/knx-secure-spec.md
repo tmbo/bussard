@@ -1014,10 +1014,20 @@ written in ascending address-table index, packed to the budget `[CONFIRMED: S3
 captures, 2026-09-24, address-table indices only]`: 1.1.5 got 16 entries as 11
 from element 1 (indices 1 2 6 8 9 10 12 14 17 18 19, 198 octets) and 5 from
 element 12 (20 23 24 25 26); 1.1.7 got 8, 1.1.9 3, 1.1.16 4, 1.1.47 and 1.1.48
-2, each in one telegram. INFERRED: the meaning of the flag bits
-(bit 0/1 = authentication/confidentiality). Only `0x00` and `0x03` have been
-observed; `0x01` (authentication only) and other combinations stay INFERRED
-(#197).
+2, each in one telegram.
+
+The PID 61 flag values `[CONFIRMED as values: the eight decrypted downloads
+secure-1-1-{5,7,9,12,16,47,48} and secure-1-1-12-group, 9013 flag octets]`:
+every octet is `0x00` or `0x03`; the 42 secured objects (1.1.5: 16, 1.1.7: 8,
+1.1.9: 6, 1.1.12: 1, then 3 in the group capture, 1.1.16: 4, 1.1.47 and
+1.1.48: 2 each) are all `0x03`. The ETS 6 security setting of a group address
+is Automatic, On or Off, with no authentication-only choice (the ETS dialog,
+not a capture), so another value is not expected from ETS. bussard writes only
+`0x00` and `0x03` (`GO_FLAGS_PLAIN`, `GO_FLAGS_SECURE`). INFERRED: the meaning
+of the bits (bit 0 authentication, bit 1 confidentiality), and so what `0x01`
+or `0x02` would do. A read-back (`bussard adopt`) that finds another value
+counts the object as secured and adds a note naming the objects and values;
+a later secured download rewrites them as `0x03`.
 
 **The security individual address table (PID 54)** `[CONFIRMED: S3 captures
 secure-1-1-{5,7,9,16,47,48} and secure-1-1-12-group, 2026-09-24, issue #181]`.
