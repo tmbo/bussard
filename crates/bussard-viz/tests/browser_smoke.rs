@@ -29,8 +29,13 @@
 //!    (3 devices, a small GA tree), with NO bus (model-only mode).
 //! 2. Loads `/assets/test.html` and asserts the store self-test reports
 //!    `FAIL 0` in the document title.
-//! 3. Loads `/` and asserts the expected number of device cards rendered and
-//!    that the GA tree has rows.
+//! 3. Asserts the self-test ran its page-shell checks (issue #252): the
+//!    inspector's default width, no horizontal overflow of any synthetic-fixture
+//!    channel table at the default and minimum widths, and no endpoint in the
+//!    reload help.
+//! 4. Loads `/` and asserts the expected number of device cards rendered, that
+//!    the GA tree has rows, and that the reload tooltip and help text name no
+//!    endpoint or method.
 //!
 //! It **skips gracefully** (prints a note and returns `Ok`) when no Chrome /
 //! Chromium binary is found, so it is a no-op on machines without one.
@@ -270,6 +275,25 @@ async fn browser_smoke_dom_renders() -> Result<(), Box<dyn Error + Send + Sync>>
         title.contains("FAIL 0"),
         "self-test title should report FAIL 0; got: {title}"
     );
+    // The page-shell checks (issue #252) need the server; over HTTP they must
+    // have run, not been skipped. They lay index.html out 1600px wide and render
+    // every synthetic-fixture device into the inspector.
+    for line in [
+        "PASS inspector default width is 780px",
+        "PASS inspector: no fixture channel table overflows at the default width",
+        "PASS inspector: tables wrap instead of overflowing at the minimum width",
+        "PASS reload help text has no endpoint or method",
+    ] {
+        assert!(
+            test_dom.contains(line),
+            "self-test should report `{line}`\nDOM:\n{test_dom}"
+        );
+    }
+    assert!(
+        // The rendered `<li>`, not the script source that also holds the text.
+        !test_dom.contains(">SKIP page shell checks"),
+        "page-shell checks must run when served over HTTP"
+    );
 
     // --- 2) the main page renders cards and a GA tree -----------------------
     let index_url = format!("{base}/");
@@ -295,6 +319,24 @@ async fn browser_smoke_dom_renders() -> Result<(), Box<dyn Error + Send + Sync>>
         "GA tree should have rendered rows beyond the 3 templates, found {ga_rows}\nDOM:\n{index_dom}"
     );
 
+    // Reload help (issue #252): the tooltip and the help panel describe what a
+    // reload does for the user and never name the HTTP endpoint or method.
+    let reload_help = [
+        attr_of_id(&index_dom, "reload-btn", "title"),
+        element_text_by_id(&index_dom, "help-reload"),
+    ];
+    for text in reload_help {
+        let text = text.ok_or("reload tooltip or help text missing from the page")?;
+        assert!(
+            !text.contains("/api") && !text.contains("POST"),
+            "reload help must not name the endpoint: {text}"
+        );
+        assert!(
+            text.contains("import") && text.contains("apply"),
+            "reload help should say when to use it: {text}"
+        );
+    }
+
     // A boot that threw before rendering would leave both empty; asserting both
     // rendered is our (reduced) stand-in for the CDP "no console errors" check
     // that the subprocess path cannot observe.
@@ -310,4 +352,30 @@ fn title_snippet(dom: &str) -> String {
         (Some(a), Some(b)) if b > a => dom[a + "<title>".len()..b].to_string(),
         _ => "<no <title> found>".to_string(),
     }
+}
+
+/// The value of attribute `attr` on the element with `id="<id>"` in a dumped
+/// DOM, or `None` when either is absent. Chrome serializes attributes with
+/// double quotes, so a plain scan is enough for this test.
+fn attr_of_id(dom: &str, id: &str, attr: &str) -> Option<String> {
+    let at = dom.find(&format!("id=\"{id}\""))?;
+    let start = dom[..at].rfind('<')?;
+    let end = at + dom[at..].find('>')?;
+    let tag = &dom[start..end];
+    let key = format!(" {attr}=\"");
+    let v = tag.find(&key)? + key.len();
+    let len = tag[v..].find('"')?;
+    Some(tag[v..v + len].to_string())
+}
+
+/// The raw inner HTML of the element with `id="<id>"`, up to its first closing
+/// tag of the same name. Good enough for the flat help paragraphs checked here.
+fn element_text_by_id(dom: &str, id: &str) -> Option<String> {
+    let at = dom.find(&format!("id=\"{id}\""))?;
+    let start = dom[..at].rfind('<')?;
+    let name_end = start + 1 + dom[start + 1..].find(|c: char| c.is_whitespace())?;
+    let name = &dom[start + 1..name_end];
+    let open_end = at + dom[at..].find('>')? + 1;
+    let close = open_end + dom[open_end..].find(&format!("</{name}>"))?;
+    Some(dom[open_end..close].to_string())
 }

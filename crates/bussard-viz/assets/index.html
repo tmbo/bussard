@@ -37,16 +37,56 @@
           id="reload-btn"
           class="reload-btn"
           type="button"
-          title="Reload the model from disk (POST /api/reload)"
+          title="Reload the model: re-reads the model directory and the device facts, and keeps the traffic view. Use it after an import or apply."
           aria-label="Reload model"
         >⟳</button>
         <span id="reload-error" class="reload-error" role="alert" hidden></span>
+      </div>
+      <button
+        id="help-btn"
+        class="help-btn"
+        type="button"
+        title="Help: actions and keyboard shortcuts ( ? )"
+        aria-label="Help"
+        aria-expanded="false"
+        aria-controls="help-panel"
+      >?</button>
+      <div id="help-panel" class="help-panel" role="dialog" aria-label="Help" hidden>
+        <h2 class="help-title">Help</h2>
+        <dl class="help-list">
+          <dt>⟳ Reload</dt>
+          <dd id="help-reload">Re-reads the model directory and the device facts, and keeps the traffic view. Use it after an <code>import</code> or <code>apply</code>. A broken model is not loaded; the page keeps the last good one and shows the error next to the button.</dd>
+          <dt>Problems</dt>
+          <dd>Lists group addresses that have senders but no listener, or listeners but no sender. Unlinked com objects and unused group addresses are information, not problems.</dd>
+          <dt>⚡ Highlights</dt>
+          <dd>Turns the live-traffic highlights in the diagram on or off. The log keeps appending either way.</dd>
+          <dt>Inspector width</dt>
+          <dd>Drag the bar between the diagram and the right panel, or focus it and use the arrow keys. Double-click it to go back to the default width. The width is remembered in this browser.</dd>
+        </dl>
+        <h3 class="help-subtitle">Keyboard</h3>
+        <dl class="help-list help-keys">
+          <dt><kbd>/</kbd></dt><dd>Search devices, groups and rooms</dd>
+          <dt><kbd>Esc</kbd></dt><dd>Clear the selection, close this help</dd>
+          <dt><kbd>p</kbd></dt><dd>Pause or resume the log</dd>
+          <dt><kbd>?</kbd></dt><dd>Show or hide this help</dd>
+        </dl>
       </div>
     </div>
   </header>
 
   <main id="app-main">
     <section id="topology" class="pane topology-pane" aria-label="Topology"></section>
+
+    <div
+      id="panel-resizer"
+      class="panel-resizer"
+      role="separator"
+      aria-orientation="vertical"
+      aria-controls="right-panel"
+      aria-label="Resize the inspector panel"
+      title="Drag to resize the inspector; double-click for the default width"
+      tabindex="0"
+    ></div>
 
     <aside id="right-panel" class="pane right-panel">
       <nav class="tabs" role="tablist">

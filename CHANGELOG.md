@@ -252,6 +252,12 @@ directory or a script from before these changes needs:
 - `bussard viz` serves the network as a live bus-spine diagram in the browser,
   with a problems panel, model reload and programming-mode highlighting
   (`--watch-prog`) (#65, #67).
+- viz: the inspector opens wide enough for a device's channel tables (780 px),
+  resizes with a drag handle between the diagram and the panel (360 px minimum,
+  the diagram keeps 480 px), remembers the width in the browser, and wraps long
+  labels instead of scrolling sideways. A help panel (`?`) explains the header
+  actions; the reload tooltip and help describe what a reload does instead of
+  naming the HTTP endpoint (#252).
 
 **KNX Data Secure**
 
