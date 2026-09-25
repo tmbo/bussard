@@ -14,7 +14,8 @@ use toml_edit::{Array, DocumentMut, InlineTable, Item, Table, TableLike, Value};
 
 use crate::files::{
     DeviceEntries, EntryValue, LOCK_HEADER, LOCK_VERSION, LockDevice, Placement, Resolver,
-    TableRef, channel_label, device_entries, existing_placements, handle_of, scope_entries,
+    TableRef, channel_label, device_entries, existing_placements, handle_of, ordered_channels,
+    scope_entries,
 };
 use crate::loader::SaveError;
 use crate::param_model::ProductModels;
@@ -749,11 +750,11 @@ fn desired_device(device: &Device, entries: &[(Placement, EntryValue)]) -> Docum
         }
     }
 
-    // Channels: the device's own (in id order), then any handle an entry names
-    // that the device does not define.
+    // Channels: the device's own, in file order (see `ordered_channels`), then
+    // any handle an entry names that the device does not define.
     let mut order: Vec<String> = Vec::new();
     let mut names: BTreeMap<String, String> = BTreeMap::new();
-    for (id, ch) in &device.channels {
+    for (id, ch) in ordered_channels(device) {
         let handle = handle_of(device, id);
         // A renamed channel writes its name; a labelled one otherwise writes
         // its label parameter's value (the two agree after a load).
