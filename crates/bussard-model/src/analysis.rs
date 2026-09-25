@@ -565,6 +565,7 @@ mod tests {
             has_fdsk_certificate: false,
             sequence_number: None,
             secure_commissioning: false,
+            secure_senders: Vec::new(),
         });
         let model = model_with(vec![("9/0/1", protected)], vec![("1.1.4", secure)], vec![]);
 

@@ -389,6 +389,26 @@ pub struct DeviceSecurity {
     /// value; not a secret.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sequence_number: Option<u64>,
+    /// The device's security individual address table (PID 54) as read back
+    /// from the device by `bussard adopt` (issue #201): the secured senders
+    /// it accepts and the sequence number recorded for each. Device-generated
+    /// state, kept in the lock only; a secured download writes these entries
+    /// back next to the senders the model's links imply, so the device keeps
+    /// accepting senders the model does not describe. Not key material.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secure_senders: Vec<SecureSender>,
+}
+
+/// One entry of a device's security individual address table (PID 54): a
+/// sender whose secured group telegrams the device accepts, and the last
+/// sequence number recorded for it (48 bits). Not key material.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SecureSender {
+    /// The sender's individual address.
+    pub address: IndividualAddress,
+    /// The sender's sequence number as the device holds it.
+    pub sequence: u64,
 }
 
 /// A device's physical location.

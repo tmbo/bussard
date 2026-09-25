@@ -42,6 +42,11 @@ pub const A_PROPERTY_VALUE_RESPONSE: u16 = 0x3D6;
 pub const A_PROPERTY_VALUE_WRITE: u16 = 0x3D7;
 /// `A_PropertyDescription_Read`.
 pub const A_PROPERTY_DESCRIPTION_READ: u16 = 0x3D8;
+/// `A_PropertyExtValue_Read` (extended property services, object addressed by
+/// type and instance).
+pub const A_PROPERTY_EXT_VALUE_READ: u16 = 0x1CC;
+/// `A_PropertyExtValue_Response`.
+pub const A_PROPERTY_EXT_VALUE_RESPONSE: u16 = 0x1CD;
 /// `A_PropertyDescription_Response`.
 pub const A_PROPERTY_DESCRIPTION_RESPONSE: u16 = 0x3D9;
 /// `A_IndividualAddressSerialNumber_Read` (broadcast).
