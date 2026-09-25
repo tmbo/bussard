@@ -455,8 +455,8 @@ fn print_text(report: &Report) {
         };
         println!("  KNX Secure (this run): plain management {plain}; secured management {secured}");
     }
-    if let Some(identity) = &report.identity {
-        println!("  identity: {}", identity.summary());
+    if let (Some(identity), Ok(target)) = (&report.identity, report.address.parse()) {
+        println!("  {}", crate::device_facts::identity_line(target, identity));
     }
     let Some(objects) = &report.objects else {
         return;

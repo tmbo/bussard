@@ -367,7 +367,7 @@ fn test_describe_identity_reports_drift_without_refusing() -> TestResult {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "describe is read-only: {stdout}");
     assert!(
-        stdout.contains("identity: drift from bussard.lock")
+        stdout.contains("identity of 1.1.12: drift from bussard.lock")
             && stdout.contains("0004D14123")
             && stdout.contains("0004D14122"),
         "{stdout}"

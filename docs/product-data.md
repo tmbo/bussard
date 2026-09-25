@@ -144,8 +144,17 @@ for origin `index`, `bussard import-product --order-number <ORDER>`; for origin
 `file`, `bussard import-product <file>`; for origin `knxproj`, `bussard import
 <export>`. An archive whose SHA-256 differs from the lock's is refused naming both
 hashes; `bussard import-product <file>` re-pins it, which is a reviewable lock change.
-`flash --product <file>` uses a file explicitly; with `--force` it also becomes the
-device's pinned product data. `plan` and `reconstruct` warn and read the links only.
+`plan` and `reconstruct` warn and read the links only.
+
+**Overrides.** Every command that needs product data (`flash`, `apply`, `plan`,
+`reconstruct`, `commission --flash`, `replace`, `adopt`) resolves it from the lock
+and the store; `--product` and `--application` stay as overrides. One that
+contradicts the lock (another archive hash, another application) is refused by
+`flash`, `apply` and `replace` unless `--force`, which uses it and pins the archive
+for the device; `plan` and `reconstruct` warn. `replace` needs no `--product`: the
+device's order number comes from the model and its application from the lock.
+`flash --product <export>.knxproj` needs no `--application` when the lock pins the
+device's program. `adopt` given an export stores it the way `import-product` does.
 
 **Migration.** A model directory from an earlier bussard kept its archives in
 `vendor/`. The first command that reads the model moves every `vendor/*.knxprod` into

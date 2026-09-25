@@ -113,6 +113,7 @@ pub fn run(
         .and_then(|m| m.devices.get(&target))
         .map(|d| &d.device);
     let explicit_product = product;
+    let model_device_for_override = model_device.cloned();
     let product_path = match product {
         Some(path) => path.to_path_buf(),
         None => match model_device
@@ -140,6 +141,9 @@ pub fn run(
     // Texts in the lock's language: the device file names enum members by
     // the labels `import` wrote in it (issue #231).
     let language = crate::product_cache::model_language(model.as_ref(), dir);
+    let pinned_app = device_product
+        .as_ref()
+        .and_then(|p| p.application_ref.clone());
     let product_data =
         crate::product_cache::read(product, None, dir, language.as_deref(), |catalog| {
             match (order_number, application) {
@@ -147,7 +151,12 @@ pub fn run(
                     AppSelection::Only(crate::product_cache::order_refs(catalog, order))
                 }
                 (None, Some(wanted)) => crate::product_cache::by_application(catalog, wanted),
-                (None, None) => AppSelection::All,
+                // Without a selector, the program the lock pins (issue #228):
+                // an ETS export needs no --application when the lock names it.
+                (None, None) => match pinned_app.as_deref() {
+                    Some(app) => crate::product_cache::by_application(catalog, app),
+                    None => AppSelection::All,
+                },
             }
         })
         .with_context(|| format!("reading product data from {}", product.display()))?;
@@ -212,6 +221,12 @@ pub fn run(
     // application's own mask and stop. No gateway is resolved, no connection is
     // opened, nothing is recorded in the history.
     if let Some(dry) = &output.dry_run {
+        if let Some(device) = model_device_for_override.as_ref()
+            && let Some(conflict) =
+                crate::lock_pin::override_conflict(device, explicit_product, application)?
+        {
+            eprintln!("warning: {conflict} (a dry run writes nothing, so it is not refused)");
+        }
         return dry_run(
             target,
             address,
@@ -228,10 +243,19 @@ pub fn run(
             &output,
         );
     }
-    // `--product <file> --force` also makes the file the device's pinned
-    // product data (issue #228); without `--force` the lock is left alone.
-    if let (Some(explicit), true) = (explicit_product, force) {
-        crate::lock_pin::pin_explicit(dir, target, explicit)?;
+    // An override that contradicts the lock (another archive, another
+    // application) is refused unless `--force`, which pins the archive for the
+    // device (issue #228, item 4). The dry run above only warns: it writes
+    // nothing.
+    if let Some(device) = model_device_for_override.as_ref() {
+        crate::lock_pin::enforce_override(
+            dir,
+            device,
+            explicit_product,
+            application,
+            force,
+            "flash",
+        )?;
     }
 
     let config = resolve_config(model.as_ref(), &overrides)?;
@@ -587,6 +611,26 @@ pub fn run(
     // also shapes the plan: a device that is not factory-fresh gets a factory
     // reset before the download (issue #117), on top of the one the planner adds
     // for a sparse, filled-segment download.
+    // The one identity verdict (issue #228, item 5): what the device runs
+    // against what the lock pins. A flash is how drift is fixed, so it is not
+    // refused here; a device carrying another application meets the freshness
+    // gate below (`--force`).
+    if !output.json {
+        let check = bussard_model::identity::IdentityCheck::compare(
+            model
+                .as_ref()
+                .and_then(|m| m.devices.get(&target))
+                .map(|d| &d.device),
+            bussard_model::identity::ReportedIdentity {
+                mask: bussard_model::facts::format_mask(device_mask),
+                application_id: resident
+                    .as_ref()
+                    .and_then(|state| state.app_id.as_deref())
+                    .map(bussard_model::facts::format_application_id),
+            },
+        );
+        eprintln!("{}", crate::device_facts::identity_line(target, &check));
+    }
     let freshness = match &resident {
         Some(state) => assess_freshness(state, &plan.identity),
         // Unreachable in practice: the descriptor read succeeded above, so the

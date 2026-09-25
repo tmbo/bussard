@@ -112,6 +112,9 @@ pub(crate) struct ApplyInputs<'a> {
     pub selection: crate::param_readback::Selection<'a>,
     /// `--plan <hash>`: the `state_hash` of the plan the human approved.
     pub plan_hash: Option<&'a str>,
+    /// `--force`: use a `--product` / `--application` that contradicts
+    /// `bussard.lock`, and pin the product archive for the device.
+    pub force: bool,
 }
 
 /// Writes the model to a device: validate, plan, ask once, back up, write the
@@ -151,6 +154,18 @@ pub fn run(
         return Ok(ExitCode::FAILURE);
     }
     let desired = plan_cmd::compute_desired(&model, target)?;
+    // An override that contradicts the lock is refused unless --force (issue
+    // #228, item 4), before anything reaches the bus.
+    if let Some(loaded) = model.devices.get(&target) {
+        crate::lock_pin::enforce_override(
+            dir,
+            &loaded.device,
+            inputs.selection.product,
+            inputs.selection.application,
+            inputs.force,
+            "apply to",
+        )?;
+    }
     // The product data the parameter half decodes with, when it is at hand.
     let product = crate::param_readback::resolve(
         dir,
@@ -295,12 +310,16 @@ pub(crate) fn apply_desired(
         ..L4Options::default()
     };
     let facts = facts;
+    let model_device = model
+        .and_then(|m| m.devices.get(&target))
+        .map(|d| &d.device);
     // The parameter memory rides the same session when product data is at
     // hand (the plan's read-back, issue #119).
     let read = runtime.block_on(async {
         service
             .with_l4(target, &read_options, async |l4| {
-                let established = crate::device_facts::establish_table_facts(l4, &facts).await?;
+                // The facts and the identity verdict (issue #228, item 5).
+                let identified = crate::device_facts::identify(l4, &facts, model_device).await?;
                 let read = plan_cmd::read_live_tables(l4).await?;
                 let params = match (&read, write.product) {
                     (plan_cmd::LiveRead::Tables(live), Some(product)) => Some(
@@ -315,36 +334,24 @@ pub(crate) fn apply_desired(
                     ),
                     _ => None,
                 };
-                anyhow::Ok((read, established, params))
+                anyhow::Ok((read, identified, params))
             })
             .await
     });
-    let (read, established, params) = read?;
+    let (read, identified, params) = read?;
+    let established = identified.established;
     let write_seed = crate::device_facts::seed_of(established.as_ref());
 
-    // Lock v2 (issue #228): a device that reports another application (or
-    // mask) than bussard.lock pins cannot take the model's parameters and
-    // tables; it needs a flash first. A restore writes a backup, not the
-    // model, so it is not held to the lock.
-    if matches!(origin, DesiredSource::Model)
-        && let Some(record) = established.as_ref().and_then(|e| e.record.as_ref())
-    {
-        let check = bussard_model::identity::IdentityCheck::compare(
-            model
-                .and_then(|m| m.devices.get(&target))
-                .map(|d| &d.device),
-            bussard_model::identity::ReportedIdentity {
-                mask: record.mask.clone(),
-                application_id: record.application_id.clone(),
-            },
-        );
-        if check.is_drift() {
-            eprintln!(
-                "refusing to apply to {target}: {}. The model's parameters and tables are for \
-                 the application the lock pins; run `bussard flash {target}` to load it, or \
-                 re-import the project if the lock is stale",
-                check.differences.join("; ")
-            );
+    // One identity verdict (issue #228, item 5): a device that reports
+    // another application (or mask) than bussard.lock pins cannot take the
+    // model's parameters and tables; it needs a flash first. A restore writes
+    // a backup, not the model, so it only reports the verdict.
+    if let Some(check) = &identified.check {
+        eprintln!("{}", crate::device_facts::identity_line(target, check));
+        if matches!(origin, DesiredSource::Model)
+            && let Err(err) = crate::device_facts::refuse_drift(target, check, "apply to")
+        {
+            eprintln!("{err}");
             return Ok(ExitCode::FAILURE);
         }
     }

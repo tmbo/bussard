@@ -239,6 +239,17 @@ async fn assign_flow(
     //     no-op; the warning remains the backstop for a device that ignored both.
     warn_if_still_in_programming_mode(service, source, target).await;
 
+    // The identity verdict at the new address (issue #228, item 5): the
+    // device the model has there, if any, against what answered; facts
+    // stored under another mask are dropped.
+    if let Some(mask) = verified.mask {
+        let modelled = model
+            .and_then(|m| m.devices.get(&target))
+            .map(|d| &d.device);
+        let check = crate::device_facts::observe(dir, model.is_some(), target, mask, modelled);
+        println!("  {}", crate::device_facts::identity_line(target, &check));
+    }
+
     // 6. Create the stub device file.
     let device = build_stub_device(target, &verified);
     let path = write_stub_device_file(model, dir, device)?;

@@ -316,7 +316,7 @@ A device that hides its mask from the unsecured read (mask `FFFF`) but is not in
 
 ### `bussard flash <ADDRESS>`
 
-Download the full application program from vendor product data into a device (the ETS-free application download): for a fresh device, or one whose application changes. Everyday changes to links and parameters go through [`apply`](#bussard-apply-address), which writes only what differs. The product data is the archive `bussard.lock` pins for the device in `<dir>/products/` (`import`, `import-product` and `adopt` store and pin it), verified by its SHA-256, and the application is the one the lock pins; `--product` and `--application` override both. A pinned archive that is missing or changed refuses the flash before any bus access, naming the recovery step (see [product-data.md](product-data.md#the-product-store-products)); with `--force`, `--product <FILE>` also becomes the device's pinned product data. Supports System B (`07B0` and the `57B0`/`27B0` variants) and System 7 (`0705`/`0701`/`0700`). Pre-flight plan first; refuses before any write on an unsupported mask family, a mask mismatch, or an unsupported load-procedure operation. The parameter memory image is computed from the vendor defaults plus the parameter values in the device file, so a flash also carries parameter changes. No backup exists for a flash; recovery is re-running `flash`.
+Download the full application program from vendor product data into a device (the ETS-free application download): for a fresh device, or one whose application changes. Everyday changes to links and parameters go through [`apply`](#bussard-apply-address), which writes only what differs. The product data is the archive `bussard.lock` pins for the device in `<dir>/products/` (`import`, `import-product` and `adopt` store and pin it), verified by its SHA-256, and the application is the one the lock pins; `--product` and `--application` override both; an override that contradicts the lock needs `--force` (see [one identity verdict](#one-identity-verdict)). A pinned archive that is missing or changed refuses the flash before any bus access, naming the recovery step (see [product-data.md](product-data.md#the-product-store-products)); with `--force`, `--product <FILE>` also becomes the device's pinned product data. Supports System B (`07B0` and the `57B0`/`27B0` variants) and System 7 (`0705`/`0701`/`0700`). Pre-flight plan first; refuses before any write on an unsupported mask family, a mask mismatch, or an unsupported load-procedure operation. The parameter memory image is computed from the vendor defaults plus the parameter values in the device file, so a flash also carries parameter changes. No backup exists for a flash; recovery is re-running `flash`.
 
 The same pre-flight also checks the device is factory-fresh (issue #79), read-only, before anything is written: it reads the load state and, on System B, the resident application id (`PID_PROGRAM_VERSION`) of the application objects, whose state decides; the other objects are read only when no application object answers. System 7 reads every load-state machine. A device carrying a **different** application, one it cannot identify, or a load state it cannot read at all is **refused**; `--force` overrides. Re-flashing the **same** application is allowed without `--force` (it is the documented recovery path after an interrupted flash) and prints a notice, because it still resets the parameters to the vendor defaults plus the model's overrides and rewrites the tables from the model's links. See [the flash section in SAFETY.md](SAFETY.md#what-each-write-command-does-and-its-rails) for the full table.
 
@@ -326,7 +326,7 @@ The pre-flight and the write phase share one tunnel. With `--yes` they also shar
 |---|---|---|
 | `<ADDRESS>` | | The device to program, e.g. `1.0.10`. |
 | `--product <FILE>` | pinned archive | The vendor `.knxprod` containing the application program. Default: the archive `bussard.lock` pins for the device in `<dir>/products/`. With `--force` it becomes the pinned one. |
-| `--application <REF>` | the lock's program | The application program id (default: the program the lock pins, else the order number's, else the sole one). Mutually exclusive with `--order-number`. |
+| `--application <REF>` | the lock's program | The application program id (default: the program the lock pins, else the order number's, else the sole one). Not needed for an ETS export when the lock pins the program. One other than the lock's needs `--force`. Mutually exclusive with `--order-number`. |
 | `--order-number <ORDER>` | | Select the application by hardware order number (e.g. `AKK-0216.03`), resolved through the product's hardware catalogue. Exactly one match is required. |
 | `--yes` | off | Skip the confirmation prompt. Without a terminal the command is refused unless this is given. |
 | `--force` | off | Override the not-factory-fresh refusal: flash a device that is **not** factory-fresh: it already carries a different (or unidentifiable) application, or its load state could not be read. Destructive: the resident application, its parameters and its links are overwritten with no backup. Not needed to re-flash the same application. |
@@ -350,6 +350,22 @@ The confirmation names the resolved gateway (`flash <app> to <target> via <host:
 Supported load-procedure operations on System B: `Unload`, `Load`, `LoadCompleted`, `RelSegment`, `WriteRelMem`, `WriteMem`, `WriteProp`, `CompareProp`, `LoadImageProp`, `Restart`. On System 7 the procedure runs on its own absolute-addressed lowering: `Unload`, `Load`, `AbsSegment` (allocate and stream), `TaskSegment`, `TaskCtrl1`, `LoadCompleted`, the obj0/PID78 `CompareProp`, `CompareMem`, `LoadImageProp` and `Restart`. Procedures with unrecognized ops (e.g. `LdCtrlCompareRelMem`) are refused whole, before any write. After writing, `flash` verifies the application reads back as `Loaded` and spot-checks written segments byte-for-byte. After the terminal restart it reads the application object's type and load state, plus a sample of each segment whose MCB check did not pass before the restart; an application that is not `Loaded` gets every object's state and every sample read. On a System 7 mask whose product data declares no `VerifyMode` (Theben `0700`/`0701`), `flash` streams each segment the way ETS does: it reads every chunk first, writes only the chunks that differ from the image, and reads written chunks back, so a re-flash of an unchanged device writes nothing but the load-state records. The plan shows these segments as `stream segment (read-compare, N octets)`, and `plan.json` from `--dump-images` marks them `"write_mode": "read-compare"` (a `VerifyMode` mask such as Jung `0705` stays `"blind"`).
 
 Only `flash` takes `--bcu-key`; `plan`, `apply` and `reconstruct` always authorize with the free-access key, so a device with a BCU key set denies them.
+
+#### One identity verdict
+
+Every management command that reads a device compares what it reports with what `bussard.lock` pins for that address (lock v2, issue #228) and prints the same line on stderr (on stdout in `describe`, `plan` and `reconstruct`, whose report it belongs to):
+
+```
+identity of 1.1.4: matches bussard.lock (application id 0004D14122, mask 07B0)
+identity of 1.1.4: drift from bussard.lock: the device reports application id 0004D14123 but the lock pins 0004D14122 (M-0004_A-D141-22-151B)
+identity of 1.1.9: not pinned in bussard.lock
+```
+
+The application id comes from the device facts (System B) or the pre-flight; outside System B the mask alone is compared. A hidden mask (`FFFF`, a Data Secure device read in the clear) and an unread application id compare as unknown, never as drift. In JSON the same verdict is an `identity` object (`lock`, `device`, `verdict` of `match`, `drift` or `unmodelled`, `differences`): `describe`, `plan`, `reconstruct`, the rows of `scan` and `audit --live`, and each device of the `backup` manifest.
+
+What a verdict does: `describe`, `plan`, `reconstruct`, `scan`, `assign`, `backup`, `restore` and `audit` report it. `apply` refuses a drifted device before any write, naming the `bussard flash` it needs; `commission --apply` and `replace` apply through it, and `replace --no-flash` refuses a replacement that runs another application. The `flash` pre-flight reports it but does not refuse on it: a flash is how drift is fixed, and a device carrying another application meets the factory-freshness gate (`--force`).
+
+**Product overrides.** Every command that needs product data takes it from the lock and the store; `--product` and `--application` are overrides. One that contradicts the lock (an archive with another SHA-256 than the pinned one, another application than the lock's) is refused by `flash`, `apply` and `replace` unless `--force`, which uses it and pins the archive for the device. `plan` and `reconstruct` use it with a warning, and `flash --dry-run` only warns. An ETS export given as `--product` is compared by application only, and `flash --product <export>.knxproj` needs no `--application` when the lock pins the device's program.
 
 #### Parameter-only download
 
@@ -427,6 +443,7 @@ On the wire: System B (`x7B0`) and System 7 (`0705` / `0701`). On System B each 
 | `--json` | off | Line mode only: emit the summary as JSON. |
 | `--yes` | off | Skip the confirmation prompt. Without a terminal the command is refused unless this is given. |
 | `--plan <HASH>` | | Single-device mode: refuse unless the device state still hashes to this `state_hash` from `bussard plan --json`. |
+| `--force` | off | Single-device mode: use a `--product` / `--application` that contradicts `bussard.lock` (another archive hash, another application). The archive is then pinned for the device. Without it such an override is refused before any bus access. |
 | `--product <FILE>` | pinned archive | Single-device mode: the product data to compare and write the parameter memory with. Default: the archive `bussard.lock` pins for the device in `<dir>/products/`; a pinned archive that is missing or changed refuses the apply before any bus access. |
 | `--application <REF>` | the lock's program | Single-device mode: the application program id to decode the parameters with. |
 | `--tool-key <HEX>` | | The raw 32-hex-character tool key, for a simulator or bench device. Conflicts with `--keyring`. |
@@ -557,12 +574,12 @@ Write one device's backed-up link tables back. `restore` picks the newest `<ia>-
 | `--yes` | off | Skip the confirmation prompt. Without a terminal the command is refused unless this is given. |
 | `--tool-key <HEX>` | | A raw 32-hex-character KNX Data Secure tool key, for a simulator or bench device. Conflicts with `--keyring`. |
 
-### `bussard replace <ADDRESS> --product <FILE>`
+### `bussard replace <ADDRESS>`
 
 Put a new device of the same product in place of a dead one. The steps:
 
 1. Check that nothing answers at `ADDRESS`. A device that still answers is refused unless `--force`.
-2. Wait for the programming button and read the pressed device's order number, mask and application id. A mismatch with the model's device file (`product.order_number`, `product.mask`) is refused unless `--force`. A field the model states but the device does not report counts as a mismatch.
+2. Wait for the programming button and read the pressed device's order number, mask and application id, and print its [identity line](#one-identity-verdict). A mismatch with the model's device file (`product.order_number`, `product.mask`) is refused unless `--force`. A field the model states but the device does not report counts as a mismatch. With `--no-flash` the device keeps its application, so an application id other than the one `bussard.lock` pins is refused the same way (drop `--no-flash` to flash it).
 3. Ask once for confirmation, naming the gateway. Then assign the address (as `assign` does), flash the application with the model's parameters (as `flash` does; skipped with `--no-flash`), and apply the model's tables (as `apply` does).
 4. Record `replaced: <RFC3339>` in the device file with a one-line edit; the rest of the file is kept as it is.
 
@@ -571,9 +588,9 @@ Put a new device of the same product in place of a dead one. The steps:
 | Flag / arg | Default | Meaning |
 |---|---|---|
 | `<ADDRESS>` | | The address of the device being replaced. |
-| `--product <FILE>` | | The vendor `.knxprod` for the new device. |
+| `--product <FILE>` | pinned archive | The product data to flash the new device with. Default: the archive `bussard.lock` pins for the device in `<dir>/products/`, resolved before anything reaches the bus (a missing or changed one refuses the run with its recovery step). One that contradicts the lock needs `--force`, which also pins it. |
 | `--yes` | off | Skip the confirmation prompt. Without a terminal the command is refused unless this is given. |
-| `--force` | off | Override the replacement-identity refusals: proceed although the old device answers or the identity does not match. |
+| `--force` | off | Override the replacement-identity refusals: proceed although the old device answers or the identity does not match, and use a `--product` that contradicts the lock (pinning it). |
 | `--no-flash` | off | Leave the application image alone (a spare that already carries it). |
 | `--bcu-key <HEX>` | free access | BCU key for the flash step. |
 | `--tool-key <HEX>` | | A raw 32-hex-character KNX Data Secure tool key, for a simulator or bench device. Conflicts with `--keyring`. |
@@ -883,7 +900,7 @@ One directory per snapshot, named by a UTC timestamp plus a sequence number, so 
 
 #### `.bussard/facts`
 
-What bussard reads off a device that does not change while the device keeps its application: the mask, `PID_MAX_APDU_LENGTH`, the interface-object table, the property descriptions (once `describe` has walked them) and how the device answered `A_Authorize`. One generated file per device, written by the first `describe`, `reconstruct`, `plan`, `apply` or `flash` that reads it:
+What bussard reads off a device that does not change while the device keeps its application: the mask, `PID_MAX_APDU_LENGTH`, the interface-object table, the property descriptions (once `describe` has walked them) and how the device answered `A_Authorize`. One generated file per device, written by the first management command that reads it: `describe`, `reconstruct`, `plan`, `apply`, `restore`, `backup` and the `flash` pre-flight read or refresh it on their connection; `commission` and `replace` drop the file of the address they re-assign (a new box answers there) and their flash and apply read the new one; `scan`, `assign` and `audit --live` read only the mask, compare it with the file and drop a file stored under another mask:
 
 ```toml
 # This file is @generated by bussard from reads of the device (issue #209). Do not edit it by hand.

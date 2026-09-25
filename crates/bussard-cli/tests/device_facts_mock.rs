@@ -863,3 +863,76 @@ fn test_apply_refuses_a_device_that_drifted_from_the_lock() -> TestResult {
     assert_eq!(drift.len(), 1, "{json}");
     Ok(())
 }
+
+/// The management commands that read a device, with their arguments: each
+/// reads or refreshes the facts and prints the one identity line (issue
+/// #228, item 5).
+const IDENTITY_COMMANDS: &[&[&str]] = &[
+    &["describe", "1.1.12"],
+    &["reconstruct", "1.1.12"],
+    &["plan", "1.1.12"],
+    &["backup", "1.1.12"],
+];
+
+#[test]
+fn test_identity_verdict_and_facts_across_the_management_commands() -> TestResult {
+    let bench = Bench::start("verdict-table", device()?)?;
+    pin_application(&bench)?;
+    let facts_file = facts_path(&bench.dir(), target()?);
+
+    for args in IDENTITY_COMMANDS {
+        let _ = std::fs::remove_file(&facts_file);
+        let out = bench.run(args)?;
+        let said = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(out.status.success(), "{args:?}: {said}");
+        assert!(
+            said.contains(
+                "identity of 1.1.12: matches bussard.lock (application id 00FA000201, mask 07B0)"
+            ),
+            "{args:?}: {said}"
+        );
+        assert_eq!(
+            bench.facts()?.application_id.as_deref(),
+            Some("00FA000201"),
+            "{args:?} writes the facts"
+        );
+    }
+
+    // The device now runs another application: every command says so in the
+    // same words and refreshes the facts it had.
+    bench.set_app_id(&[0x00, 0xFA, 0x00, 0x02, 0x02])?;
+    for args in IDENTITY_COMMANDS {
+        pin_application(&bench)?;
+        let out = bench.run(args)?;
+        let said = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            said.contains(
+                "identity of 1.1.12: drift from bussard.lock: the device reports application id \
+                 00FA000202 but the lock pins 00FA000201"
+            ),
+            "{args:?}: {said}"
+        );
+        assert_eq!(
+            bench.facts()?.application_id.as_deref(),
+            Some("00FA000202"),
+            "{args:?} refreshes the facts"
+        );
+    }
+
+    // `scan` reads only the mask: its JSON row carries the verdict with the
+    // application id the facts hold.
+    let out = bench.run(&["scan", "1.1", "--from", "12", "--to", "12", "--json"])?;
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    let row = &json["found"][0];
+    assert_eq!(row["identity"]["verdict"], "drift", "{json}");
+    assert_eq!(row["identity"]["device"]["application_id"], "00FA000202");
+    Ok(())
+}

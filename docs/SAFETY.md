@@ -138,9 +138,13 @@ it again. `monitor --keyring` is read-only on the bus. See [Secured group
 writes from bussard](#secured-group-writes-from-bussard) for the workflow.
 
 **`apply <ADDRESS>`** writes the model to a device: its link tables (group
-address and association tables) and, when the product data is cached (or
-`--product` is given), the parameter octets that differ. It validates the model
-first and refuses on an error, before the bus is touched. It shows the plan in
+address and association tables) and, when `bussard.lock` pins the product
+data (or `--product` is given), the parameter octets that differ. It validates
+the model first and refuses on an error, before the bus is touched; a pinned
+archive that is missing or changed, and a `--product` / `--application` that
+contradicts the lock without `--force`, are refused there too. A device whose
+application id or mask differs from what the lock pins is refused before any
+write, naming the `bussard flash` it needs. It shows the plan in
 the device file's words and asks once (`apply these N changes to <ia> through
 <gateway>? [y/N]`); a device that already matches is not asked about and not
 written. With `--plan <hash>` it refuses when the device state no longer
@@ -176,10 +180,13 @@ non-loopback gate. Restoring a fresh backup onto an unchanged device plans empty
 and writes nothing. `restore` writes link tables only; parameters come back with
 `flash`.
 
-**`replace <ADDRESS> --product <FILE>`** swaps a dead device for a new one of
-the same product. It refuses when the old device still answers, and when the
-pressed device's order number or mask differs from the model's device file,
-unless `--force`. After one confirmation naming the gateway it runs the
+**`replace <ADDRESS>`** swaps a dead device for a new one of the same
+product, flashing it from the archive `bussard.lock` pins (or `--product`).
+It refuses when the old device still answers, when the pressed device's order
+number or mask differs from the model's device file, and with `--no-flash`
+when the pressed device runs another application than the lock pins, unless
+`--force`. A missing pinned archive refuses the run before the bus is
+touched. After one confirmation naming the gateway it runs the
 `assign`, `flash` and `apply` write paths in turn (no write of its own), then
 records `replaced: <date>` in the device file.
 
@@ -187,7 +194,11 @@ records `replaced: <date>` in the device file.
 data (the archive `bussard.lock` pins for the device under `products/`,
 verified by its SHA-256, or `--product`; the ETS-free application download).
 A pinned archive that is missing or changed refuses the flash before any bus
-access, with the recovery step (see product-data.md). It runs a pre-flight
+access, with the recovery step (see product-data.md).
+A `--product` or `--application` that contradicts the lock is refused unless
+`--force`, which also pins the archive for the device. The pre-flight prints
+the device's identity line against the lock; drift is not refused here (a
+flash is how it is fixed), the factory-freshness gate below decides. It runs a pre-flight
 plan, then writes, then verifies the application reads back as `Loaded` and
 spot-checks written segments. After the terminal restart it re-reads the
 application object's type and load state; the other objects' `Loaded` comes

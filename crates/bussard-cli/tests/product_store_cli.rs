@@ -290,3 +290,112 @@ fn test_commission_flash_refuses_a_missing_archive_before_the_bus() -> TestResul
     cleanup(&dir);
     Ok(())
 }
+
+/// Another archive for the same product: same catalogue, different bytes.
+fn write_other_knxprod(path: &Path) -> TestResult {
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(path)?);
+    for (name, body) in [
+        ("knx_master.xml", "<KNX/>"),
+        ("M-0083/Hardware.xml", HARDWARE_XML),
+        (&format!("M-0083/{APP_ID}.xml") as &str, APP_XML),
+        ("M-0083/Catalog.xml", "<KNX/>"),
+    ] {
+        zip.start_file(name, SimpleFileOptions::default())?;
+        zip.write_all(body.as_bytes())?;
+    }
+    zip.finish()?;
+    Ok(())
+}
+
+#[test]
+fn test_override_that_contradicts_the_lock_is_refused_unless_force() -> TestResult {
+    let dir = pinned_model("override", false, true)?;
+    let other = dir.parent().ok_or("root")?.join("other.knxprod");
+    write_other_knxprod(&other)?;
+    let other_str = other.to_str().ok_or("path")?;
+
+    // flash and apply refuse, before any bus access.
+    let out = bussard(&dir, &["flash", "1.1.4", "--product", other_str, "--yes"])?;
+    assert_refused(&out, "refusing to flash 1.1.4: --product");
+    assert_refused(&out, "but bussard.lock pins");
+    let out = bussard(&dir, &["apply", "1.1.4", "--product", other_str, "--yes"])?;
+    assert_refused(&out, "refusing to apply to 1.1.4: --product");
+    let out = bussard(
+        &dir,
+        &[
+            "apply",
+            "1.1.4",
+            "--application",
+            "M-0083_A-9999-10-0000",
+            "--yes",
+        ],
+    )?;
+    assert_refused(&out, "is not the application bussard.lock pins for 1.1.4");
+
+    // A dry run only warns.
+    let out = bussard(
+        &dir,
+        &["flash", "1.1.4", "--product", other_str, "--dry-run"],
+    )?;
+    assert!(
+        text(&out).contains("a dry run writes nothing"),
+        "{}",
+        text(&out)
+    );
+
+    // --force uses it and pins it (the closed loopback port then fails the
+    // connection, after the lock changed).
+    let _ = bussard(
+        &dir,
+        &["flash", "1.1.4", "--product", other_str, "--force", "--yes"],
+    )?;
+    let sha = sha256_hex(&other)?;
+    let lock = std::fs::read_to_string(dir.join("bussard.lock"))?;
+    assert!(
+        lock.contains(&format!("product_sha256 = \"{sha}\"")),
+        "{lock}"
+    );
+    assert!(lock.contains("file = \"products/other.knxprod\""), "{lock}");
+    cleanup(&dir);
+    Ok(())
+}
+
+#[test]
+fn test_flash_from_an_export_needs_no_application_when_the_lock_pins_it() -> TestResult {
+    let dir = pinned_model("export-app", false, true)?;
+    let export = dir.parent().ok_or("root")?.join("home.knxproj");
+    let second = APP_XML.replace("A-1234-11-ABCD", "A-5678-11-ABCD");
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&export)?);
+    for (name, body) in [
+        ("knx_master.xml", "<KNX/>"),
+        ("M-0083/Hardware.xml", HARDWARE_XML),
+        (&format!("M-0083/{APP_ID}.xml") as &str, APP_XML),
+        ("M-0083/M-0083_A-5678-11-ABCD-O000A.xml", second.as_str()),
+        ("P-048B/project.xml", "<KNX/>"),
+    ] {
+        zip.start_file(name, SimpleFileOptions::default())?;
+        zip.write_all(body.as_bytes())?;
+    }
+    zip.finish()?;
+    let out = bussard(
+        &dir,
+        &[
+            "flash",
+            "1.1.4",
+            "--product",
+            export.to_str().ok_or("path")?,
+            "--dry-run",
+        ],
+    )?;
+    let said = text(&out);
+    assert!(
+        !said.contains("cannot select an application program"),
+        "{said}"
+    );
+    assert!(
+        !said.contains("but bussard.lock pins"),
+        "an export is compared by application: {said}"
+    );
+    cleanup(&dir);
+    Ok(())
+}

@@ -788,14 +788,8 @@ fn test_replace_no_flash_restores_the_pre_failure_tables() -> TestResult {
     spare.programming = true;
     bench.swap_line(vec![spare])?;
 
-    let out = bench.bussard(&[
-        "replace",
-        "1.1.4",
-        "--product",
-        "unused.knxprod",
-        "--no-flash",
-        "--yes",
-    ])?;
+    // No --product: with --no-flash nothing is flashed (issue #228, item 4).
+    let out = bench.bussard(&["replace", "1.1.4", "--no-flash", "--yes"])?;
     let (stdout, stderr) = text(&out);
     assert!(out.status.success(), "stdout:\n{stdout}\nstderr:\n{stderr}");
 
@@ -891,5 +885,63 @@ fn test_apply_refuses_a_model_with_validation_errors() -> TestResult {
     );
     assert!(stderr.contains("E020"), "{stderr}");
     assert_eq!(bench.total_writes(), 0, "nothing is written");
+    Ok(())
+}
+
+/// Pins application `app` for 1.1.4 in the lock `write_model` wrote.
+fn pin_application(dir: &Path, app: &str) -> TestResult {
+    let lock = std::fs::read_to_string(dir.join("bussard.lock"))?;
+    std::fs::write(
+        dir.join("bussard.lock"),
+        lock.replacen(
+            "product = \"MDT-JAL0410\"\n",
+            &format!("product = \"MDT-JAL0410\"\napplication = \"{app}\"\n"),
+            1,
+        ),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn test_replace_no_flash_refuses_a_spare_with_another_application() -> TestResult {
+    // The spare runs M-0083 A-0042 v0x10; the lock pins v0x11.
+    let mut spare = MockDevice::system_b("15.15.255", "MDT-JAL0410", &[], &[]);
+    spare.programming = true;
+    let bench = Bench::start("replace-drift", vec![spare])?;
+    write_model(&bench.model(), &[])?;
+    pin_application(&bench.model(), "M-0083_A-0042-11-ABCD")?;
+
+    let out = bench.bussard(&["replace", "1.1.4", "--no-flash", "--yes"])?;
+    let (stdout, stderr) = text(&out);
+    assert!(!out.status.success(), "must refuse; stdout:\n{stdout}");
+    assert!(
+        stderr.contains("with --no-flash the device keeps its application")
+            && stderr.contains("0083004211"),
+        "stderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("identity of 1.1.4: drift from bussard.lock"),
+        "stdout:\n{stdout}"
+    );
+    assert_eq!(bench.total_writes(), 0, "a refused replace writes nothing");
+    Ok(())
+}
+
+#[test]
+fn test_replace_without_product_refuses_before_the_bus_when_nothing_is_pinned() -> TestResult {
+    let mut spare = MockDevice::system_b("15.15.255", "MDT-JAL0410", &[], &[]);
+    spare.programming = true;
+    let bench = Bench::start("replace-unpinned", vec![spare])?;
+    write_model(&bench.model(), &[])?;
+
+    let out = bench.bussard(&["replace", "1.1.4", "--yes"])?;
+    let (_, stderr) = text(&out);
+    assert!(!out.status.success());
+    assert!(
+        stderr.contains("bussard.lock pins no product data for order number \"MDT-JAL0410\""),
+        "stderr:\n{stderr}"
+    );
+    assert!(bench.device("15.15.255").is_some(), "nothing was assigned");
+    assert_eq!(bench.total_writes(), 0);
     Ok(())
 }

@@ -51,7 +51,7 @@ use crate::conn_cmd::{
 #[allow(clippy::too_many_arguments)] // the subcommand's flags, 1:1
 pub fn run(
     address: &str,
-    product: &Path,
+    product: Option<&Path>,
     dir: &Path,
     yes: bool,
     force: bool,
@@ -82,7 +82,24 @@ pub fn run(
             dir.display()
         );
     };
-    let expected = Expected::from_model(&loaded.device);
+    let mut expected = Expected::from_model(&loaded.device);
+    expected.hold_application = no_flash;
+    // The product data comes from the lock and the store (issue #228, item
+    // 4): `--product` overrides, and one that contradicts the lock needs
+    // `--force`. Resolved before anything reaches the bus, so a missing
+    // archive refuses the run with its recovery step.
+    let product_path = if no_flash {
+        None
+    } else {
+        crate::lock_pin::enforce_override(dir, &loaded.device, product, None, force, "replace")?;
+        let order = expected.order_number.clone().unwrap_or_default();
+        Some(crate::product_store::resolve(
+            dir,
+            product,
+            Some(&loaded.device),
+            &order,
+        )?)
+    };
     let device_file = dir
         .join("devices")
         .join(format!("{}.toml", loaded.file_stem));
@@ -119,12 +136,13 @@ pub fn run(
     let Some(pressed) = assigned else {
         return Ok(ExitCode::FAILURE);
     };
+    // The stored device facts describe the old box: drop them, so the flash
+    // and apply below read the replacement's (issue #209, #228 item 5).
+    let _ = std::fs::remove_file(bussard_model::facts::facts_path(dir, target));
 
     // Phase 2: the application image, through `bussard flash`.
     let mut flashed = false;
-    if no_flash {
-        println!("\n--no-flash: leaving the application image alone");
-    } else {
+    if let Some(product) = product_path.as_deref() {
         println!("\nflashing the application from {}…", product.display());
         let code = crate::flash_cmd::run(
             address,
@@ -158,6 +176,8 @@ pub fn run(
             return Ok(ExitCode::FAILURE);
         }
         flashed = true;
+    } else {
+        println!("\n--no-flash: leaving the application image alone");
     }
 
     // Phase 3: the link tables, through `bussard apply`.
@@ -198,6 +218,13 @@ struct Expected {
     mask: Option<u16>,
     /// The raw `product.mask` text, for the message when it does not parse.
     mask_text: Option<String>,
+    /// The application id `bussard.lock` pins (lock v2, issue #228).
+    application_id: Option<String>,
+    /// `--no-flash`: the pressed device keeps its application, so it must
+    /// already run the one the lock pins.
+    hold_application: bool,
+    /// The model's device at the address, for the identity verdict.
+    device: Option<bussard_model::schema::Device>,
 }
 
 impl Expected {
@@ -211,6 +238,9 @@ impl Expected {
                 .as_deref()
                 .and_then(|m| u16::from_str_radix(m.trim_start_matches("0x"), 16).ok()),
             mask_text,
+            application_id: bussard_model::identity::LockIdentity::of(device).application_id,
+            hold_application: false,
+            device: Some(device.clone()),
         }
     }
 }
@@ -226,6 +256,8 @@ struct Pressed {
     order: Option<String>,
     /// Its resident application id (`PID_PROGRAM_VERSION`), rendered.
     application: Option<String>,
+    /// The same id as ten hex digits, as `bussard.lock` spells it.
+    application_id: Option<String>,
     /// Its serial number.
     serial: Option<Vec<u8>>,
 }
@@ -268,6 +300,16 @@ async fn swap_flow(
     };
     let pressed = identify(service, source, current).await;
     print_identity(&pressed);
+    if let Some(mask) = pressed.mask {
+        let check = bussard_model::identity::IdentityCheck::compare(
+            expected.device.as_ref(),
+            bussard_model::identity::ReportedIdentity {
+                mask: bussard_model::facts::format_mask(mask),
+                application_id: pressed.application_id.clone(),
+            },
+        );
+        println!("  {}", crate::device_facts::identity_line(target, &check));
+    }
 
     // 3. Cross-check against the model's device file.
     if let Some(problem) = mismatch(expected, &pressed) {
@@ -309,6 +351,7 @@ async fn swap_flow(
         mask: verified.mask.or(pressed.mask),
         order: verified.order.clone().or(pressed.order),
         application: pressed.application,
+        application_id: pressed.application_id,
         serial: verified.serial.clone().or(pressed.serial),
     }))
 }
@@ -349,6 +392,7 @@ async fn identify(
         mask: None,
         order: None,
         application: None,
+        application_id: None,
         serial: None,
     };
     // Authorize comes after the descriptor read (below), so the session opens
@@ -376,11 +420,14 @@ async fn identify(
                 .ok()
                 .filter(|v| !v.is_empty());
             if let Ok(obj) = bussard_download::discover_application_object(dev.l4_mut()).await {
-                pressed.application = bussard_mgmt::read_program_version(dev.l4_mut(), obj)
+                let id = bussard_mgmt::read_program_version(dev.l4_mut(), obj)
                     .await
                     .ok()
-                    .flatten()
-                    .map(|id| bussard_download::format_app_id(&id));
+                    .flatten();
+                pressed.application = id.as_deref().map(bussard_download::format_app_id);
+                pressed.application_id = id
+                    .as_deref()
+                    .map(bussard_model::facts::format_application_id);
             }
             Ok::<_, ServiceError>(())
         })
@@ -454,6 +501,23 @@ fn mismatch(expected: &Expected, pressed: &Pressed) -> Option<String> {
     } else if let Some(text) = &expected.mask_text {
         return Some(format!(
             "the model's device file has an unparseable mask {text:?}; fix it before replacing"
+        ));
+    }
+    // With --no-flash the pressed device keeps its application, which must be
+    // the one bussard.lock pins (issue #228, item 5).
+    if expected.hold_application
+        && let Some(want) = &expected.application_id
+        && pressed
+            .application_id
+            .as_deref()
+            .is_none_or(|got| !got.eq_ignore_ascii_case(want))
+    {
+        return Some(format!(
+            "with --no-flash the device keeps its application ({}), but bussard.lock pins \
+             application id {want}; drop --no-flash so the replacement is flashed (it runs \
+             `bussard flash {}`)",
+            pressed.application_id.as_deref().unwrap_or("none resident"),
+            pressed.address
         ));
     }
     None
@@ -580,6 +644,7 @@ mod tests {
             mask,
             order: order.map(|s| s.to_string()),
             application: None,
+            application_id: None,
             serial: None,
         }
     }
@@ -589,7 +654,30 @@ mod tests {
             order_number: order.map(|s| s.to_string()),
             mask: mask.and_then(|m| u16::from_str_radix(m, 16).ok()),
             mask_text: mask.map(|s| s.to_string()),
+            application_id: None,
+            hold_application: false,
+            device: None,
         }
+    }
+
+    #[test]
+    fn test_mismatch_no_flash_needs_the_pinned_application() {
+        let mut want = expected(Some("MDT-JAL0410"), Some("07B0"));
+        want.application_id = Some("0083004210".to_string());
+        want.hold_application = true;
+        let mut got = pressed(Some("MDT-JAL0410"), Some(0x07B0));
+        got.application_id = Some("0083004211".to_string());
+        let problem = mismatch(&want, &got).unwrap_or_default();
+        assert!(
+            problem.contains("--no-flash") && problem.contains("0083004210"),
+            "{problem}"
+        );
+        got.application_id = Some("0083004210".to_string());
+        assert_eq!(mismatch(&want, &got), None);
+        // A flashing replacement is not held to the resident application.
+        want.hold_application = false;
+        got.application_id = Some("0083004211".to_string());
+        assert_eq!(mismatch(&want, &got), None);
     }
 
     #[test]

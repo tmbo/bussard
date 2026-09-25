@@ -117,12 +117,15 @@ pub fn run(
         out_dir.display()
     );
 
+    // The device facts (issue #209) and the identity verdict (issue #228,
+    // item 5) of every device read.
+    let facts = crate::device_facts::cache(dir, true, overrides.refresh_facts);
     let runtime = tokio::runtime::Runtime::new()?;
-    let captured = runtime.block_on(async move {
+    let captured = runtime.block_on(async {
         let service = open_service(config, WritePolicy::ReadOnly).await?;
         let source = checked_source_or_close(&service, &overrides).await?;
         let captured = tokio::select! {
-            captured = capture_all(&service, source, &targets, &activated, tool_key_source) => captured,
+            captured = capture_all(&service, source, &targets, &activated, tool_key_source, &facts, &model) => captured,
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\ninterrupted; closing the bus connection");
                 Vec::new()
@@ -227,12 +230,28 @@ async fn capture_all(
     targets: &[IndividualAddress],
     activated: &std::collections::BTreeSet<IndividualAddress>,
     tool_key_source: crate::secure_key::ToolKeySource<'_>,
+    facts: &bussard_service::FactsCache,
+    model: &Model,
 ) -> Vec<Capture> {
     let mut out = Vec::with_capacity(targets.len());
     for (n, &target) in targets.iter().enumerate() {
         eprintln!("[{}/{}] reading {target}…", n + 1, targets.len());
         let is_activated = activated.contains(&target);
-        out.push(capture_one(service, source, target, is_activated, tool_key_source).await);
+        let device = model.devices.get(&target).map(|d| &d.device);
+        let capture = capture_one(
+            service,
+            source,
+            target,
+            is_activated,
+            tool_key_source,
+            facts,
+            device,
+        )
+        .await;
+        if let Some(check) = &capture.entry.identity {
+            eprintln!("  {}", crate::device_facts::identity_line(target, check));
+        }
+        out.push(capture);
     }
     out
 }
@@ -244,6 +263,8 @@ async fn capture_one(
     target: IndividualAddress,
     activated: bool,
     tool_key_source: crate::secure_key::ToolKeySource<'_>,
+    facts: &bussard_service::FactsCache,
+    device: Option<&bussard_model::schema::Device>,
 ) -> Capture {
     let tool_key = match crate::secure_key::resolve(target, tool_key_source, activated) {
         Ok(key) => key,
@@ -270,7 +291,18 @@ async fn capture_one(
     };
     let session = service
         .with_device(target, &options, async |dev| {
-            Ok::<_, ServiceError>(read_one(dev, target).await)
+            // The facts seed the connection, so the table reader skips its
+            // walk, and give the identity verdict.
+            let check = match crate::device_facts::identify(dev.l4_mut(), facts, device).await {
+                Ok(identified) => identified.check,
+                Err(err) => {
+                    tracing::debug!("{target} device facts: {err:#}");
+                    None
+                }
+            };
+            let mut capture = read_one(dev, target).await;
+            capture.entry.identity = check;
+            Ok::<_, ServiceError>(capture)
         })
         .await;
     match session {
@@ -312,6 +344,7 @@ async fn read_one(dev: &mut Device, target: IndividualAddress) -> Capture {
                      (x7B0) and System 7 (0705 / 0701) families",
                     system_type(mask)
                 )),
+                identity: None,
             },
             backup: None,
         },
@@ -333,6 +366,7 @@ async fn read_one(dev: &mut Device, target: IndividualAddress) -> Capture {
                     file: None,
                     parameters: Some(parameter_status),
                     detail: None,
+                    identity: None,
                 },
                 backup: Some(backup),
             }
@@ -403,6 +437,7 @@ impl Capture {
                 file: None,
                 parameters: None,
                 detail: Some(detail),
+                identity: None,
             },
             backup: None,
         }

@@ -159,16 +159,12 @@ pub(crate) fn read_device(
                     // The device facts (issue #209): a valid set seeds the
                     // connection so neither the table reader nor the parameter
                     // read-back walks the interface objects again.
-                    let established =
-                        crate::device_facts::establish_table_facts(l4, &facts).await?;
-                    // What the device says it is, for the lock comparison
-                    // (lock v2, issue #228).
-                    let identity = established.and_then(|e| e.record).map(|record| {
-                        bussard_model::identity::ReportedIdentity {
-                            mask: record.mask,
-                            application_id: record.application_id,
-                        }
-                    });
+                    // The facts and what the device says it is, for the lock
+                    // comparison (issue #228, item 5).
+                    let identity = crate::device_facts::identify(l4, &facts, None)
+                        .await?
+                        .check
+                        .map(|check| check.device);
                     let read = read_live_tables(l4).await?;
                     let params = match (&read, product) {
                         (LiveRead::Tables(live), Some(product)) => Some(
@@ -235,6 +231,17 @@ pub fn run(
     let desired = compute_desired(&model, target)?;
     // The product file the parameter read-back decodes with (issue #119), when
     // one is given or cached.
+    // A read-only command only warns about an override that contradicts the
+    // lock (issue #228, item 4).
+    if let Some(device) = model.devices.get(&target)
+        && let Some(conflict) = crate::lock_pin::override_conflict(
+            &device.device,
+            selection.product,
+            selection.application,
+        )?
+    {
+        eprintln!("warning: {conflict}");
+    }
     let product = crate::param_readback::resolve(
         dir,
         selection,
@@ -285,12 +292,16 @@ pub fn run(
         out.identity = identity;
         crate::output::print(crate::output::schema::PLAN, &out)?;
     } else {
-        if let Some(check) = identity.as_ref().filter(|c| c.is_drift()) {
-            println!(
-                "warning: {target}: {}; `bussard apply` refuses until `bussard flash {target}` \
-                 loads the application the lock pins\n",
-                check.summary()
-            );
+        if let Some(check) = &identity {
+            let line = crate::device_facts::identity_line(target, check);
+            if check.is_drift() {
+                println!(
+                    "{line}; `bussard apply` refuses until `bussard flash {target}` loads the \
+                     application the lock pins\n"
+                );
+            } else {
+                println!("{line}\n");
+            }
         }
         print!("{}", built.plan.render_text());
         if let Some(refusal) = &built.refusal {

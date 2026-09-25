@@ -412,6 +412,24 @@ entry supersedes it and is not a diff against it.
   `bussard keys show` summarizes the key store, and `bussard keys import`
   brings an ETS export into it (#241).
 
+- Product data is resolved from the lock and the store everywhere (#228):
+  `replace` no longer requires `--product`, `flash --product <export>` needs
+  no `--application` when the lock pins the program, and `adopt` stores an
+  export it is given. A `--product` / `--application` that contradicts the
+  lock (another archive hash, another application) is refused by `flash`,
+  `apply` (new `--force`) and `replace` unless `--force`, which pins the
+  archive; `plan`, `reconstruct` and `flash --dry-run` warn.
+- One identity verdict across the management commands (#228): `describe`,
+  `plan`, `reconstruct`, `apply`, `restore`, `backup` (manifest `identity`),
+  `replace`, the `flash` pre-flight, `scan`, `assign` and `audit --live` print
+  the same `identity of <ia>: …` line (and JSON object) against the lock.
+  `apply` refuses a drifted device, `replace --no-flash` refuses a
+  replacement with another application, and `commission --apply` refuses
+  through `apply`.
+- All management commands read or refresh the device facts through one
+  helper: `backup` now seeds its connection from them, `commission` and
+  `replace` drop the facts of the address they re-assign, and `scan`,
+  `assign` and `audit --live` drop facts stored under another mask (#228).
 - Product data is retained model data in `<dir>/products/` (#228): vendor
   `.knxprod` files as downloaded or supplied, and each application program
   `import` and `import-product` extract once from an ETS export into

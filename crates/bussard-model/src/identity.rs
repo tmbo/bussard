@@ -8,7 +8,7 @@
 //! `D141`, version `22` (hex), so the lock can name the id every device must
 //! report without reading the product data.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::schema::Device;
 
@@ -36,7 +36,8 @@ pub fn application_id_from_ref(application_ref: &str) -> Option<(String, u32)> {
 }
 
 /// The identity `bussard.lock` pins for a device.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct LockIdentity {
     /// The mask version, four hex digits.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -83,7 +84,8 @@ impl LockIdentity {
 }
 
 /// What a device reported about itself.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct ReportedIdentity {
     /// The mask version from the device descriptor, four hex digits.
     pub mask: String,
@@ -93,7 +95,7 @@ pub struct ReportedIdentity {
 }
 
 /// The verdict of comparing a device with its lock entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IdentityVerdict {
     /// Everything the lock pins and the device reported agrees.
@@ -105,7 +107,7 @@ pub enum IdentityVerdict {
 }
 
 /// A device's identity compared with its lock entry.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IdentityCheck {
     /// What the lock pins (`None` for a device the model does not hold).
     pub lock: Option<LockIdentity>,
@@ -114,7 +116,7 @@ pub struct IdentityCheck {
     /// The verdict.
     pub verdict: IdentityVerdict,
     /// One sentence per disagreement.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub differences: Vec<String>,
 }
 
