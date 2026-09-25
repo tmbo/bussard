@@ -289,10 +289,22 @@ the user's words and the vendor's ids:
 
 ### Key derivation (done by import and adopt, recorded in the lock)
 
-- **Channel handle:** `<slug of channel Name>-<Number>` when the vendor gives
-  a `Name` and a `Number`; for a module-instantiated channel the module's
-  channel `Name` plus the instance ordinal (1-based, in `M-<m>` order);
-  otherwise `ch-<ordinal>`. Unique per device; a collision appends the
+- **Channel handle:** a stem, then `-<n>`. The stem is the slug of the
+  channel `Name` when that is a plain label: only letters (umlauts
+  included), digits and spaces, at most 24 characters as a slug, and
+  contained in the slug of the channel's text when there is one. Vendors
+  that use `Name` for an internal id (`SMOD0_MotionDetector1_MP_CT_1`,
+  `LICHTAUSGANG_1`, `W1 - TSM - Wippe 1`) or for an untranslated word
+  (`Manual operation` next to `Manuelle Bedienung`) fail that test, and the
+  stem is then the slug of the channel's `Text` in the import language, with
+  module arguments filled in and the label placeholder stripped (a
+  placeholder's default text, as in `{{0: Eingang g+h}}`, stays). `n` is the
+  channel `Number`, or for a module-instantiated channel the instance
+  ordinal (1-based, in `M-<m>` order); it is not appended when the stem
+  already ends with `-<n>`. A module channel whose text ends with a number
+  after its arguments are filled in (`Ventilausgang 3`) takes that text as
+  its handle, since the number is the instance's own. Without a stem the
+  handle is `ch-<ordinal>`. Unique per device; a collision appends the
   ordinal.
 - **Object key:** the shortest of these that is unique within the channel
   (or within the device-level scope): slug of `FunctionText`; slug of

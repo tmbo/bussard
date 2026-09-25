@@ -11,10 +11,13 @@
 //!
 //! The rules, in short:
 //!
-//! * **Channel handle:** `<slug of Name>-<Number>`; for a channel of a module
-//!   instance the channel `Name` plus the instance ordinal; otherwise
-//!   `ch-<ordinal>`, the ordinal being the channel's 1-based position in walk
-//!   order. Handles that collide get `-<ordinal>` appended.
+//! * **Channel handle:** the slug of the channel `Name` when it is a plain
+//!   label (letters, digits, spaces; at most 24 characters as a slug), else
+//!   the slug of the channel's translated `Text` without its label; then
+//!   `-<Number>` (for a channel of a module instance, the instance ordinal)
+//!   unless the slug already ends with it; otherwise `ch-<ordinal>`, the
+//!   ordinal being the channel's 1-based position in walk order. Handles that
+//!   collide get `-<ordinal>` appended.
 //! * **Object key:** the first of slug(`FunctionText`), slug(`Text` +
 //!   `FunctionText`) and those two with `-<number>` that no other object of
 //!   the same scope (channel, or the device level) also yields. No key when the
@@ -459,7 +462,19 @@ fn derive_channels(ctx: &Ctx<'_>) -> Vec<ChannelFact> {
         let module_ordinal = module
             .and_then(|m| ctx.config.modules.get(m))
             .map(|m| m.ordinal);
-        handles.push(base_handle(name, module_ordinal, channel.number, ordinal));
+        // The handle reads the text without its label (a placeholder's
+        // default text stays), so renaming the channel does not move it.
+        let handle_text = channel
+            .text
+            .as_deref()
+            .and_then(|t| ctx.clean(&placeholder_defaults(t), *module));
+        handles.push(base_handle(
+            name,
+            handle_text.as_deref(),
+            module_ordinal.is_some(),
+            module_ordinal.or(channel.number),
+            ordinal,
+        ));
 
         let label_ref = channel
             .text_parameter_ref
@@ -492,20 +507,100 @@ fn derive_channels(ctx: &Ctx<'_>) -> Vec<ChannelFact> {
     out
 }
 
-/// A channel's handle before collisions: `<slug of Name>-<module ordinal>`
-/// for a module channel, `<slug of Name>-<Number>` for an application
-/// channel, else `ch-<ordinal>`.
+/// A channel's handle before collisions: the slug of the channel `Name` when
+/// it is a plain label (see [`is_plain_label`]) that the text, if any,
+/// contains, else the slug of its `Text`
+/// (label placeholder stripped), followed by `-<n>` unless the slug already
+/// ends with it; `ch-<ordinal>` when neither gives a slug. `n` is the module
+/// instance ordinal for a module channel and the channel `Number` otherwise.
+///
+/// A module channel's `Name` is shared by every instance, while its `Text`
+/// is filled in from the instance's arguments: when that text ends with a
+/// number (`Ventilausgang 3`), it is the instance's own number, so the text
+/// is the handle as is.
 fn base_handle(
     name: Option<&str>,
-    module_ordinal: Option<u32>,
-    number: Option<u32>,
+    text: Option<&str>,
+    in_module: bool,
+    n: Option<u32>,
     ordinal: usize,
 ) -> String {
-    match (name, module_ordinal, number) {
-        (Some(name), Some(m), _) => format!("{}-{m}", slug(name)),
-        (Some(name), None, Some(number)) => format!("{}-{number}", slug(name)),
-        _ => format!("ch-{ordinal}"),
+    let text_stem = text.map(slug).filter(|s| s != "x");
+    if in_module
+        && let Some(stem) = &text_stem
+        && ends_with_number(stem)
+    {
+        return stem.clone();
     }
+    // A plain Name the text does not contain is in another language than
+    // the texts (ABB's `Manual operation` next to `Manuelle Bedienung`).
+    let stem = name
+        .filter(|n| is_plain_label(n))
+        .map(slug)
+        .filter(|n| text_stem.as_ref().is_none_or(|t| t.contains(n.as_str())))
+        .or(text_stem);
+    match (stem, n) {
+        (Some(stem), Some(n)) => {
+            let n = n.to_string();
+            if stem == n || stem.ends_with(&format!("-{n}")) {
+                stem
+            } else {
+                format!("{stem}-{n}")
+            }
+        }
+        (Some(stem), None) => stem,
+        (None, _) => format!("ch-{ordinal}"),
+    }
+}
+
+/// Whether a slug's last `-`-separated part is a number.
+fn ends_with_number(stem: &str) -> bool {
+    stem.rsplit('-')
+        .next()
+        .is_some_and(|last| !last.is_empty() && last.bytes().all(|b| b.is_ascii_digit()))
+        && stem.contains('-')
+}
+
+/// `text` with each numbered placeholder that carries a default text
+/// (`{{0: Eingang g+h}}`) replaced by that text; placeholders without one
+/// (`{{0}}`, `{{0:...}}`) are left for [`Ctx::clean`] to strip.
+fn placeholder_defaults(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find("{{") {
+        let Some(close) = rest[open..].find("}}").map(|c| open + c) else {
+            break;
+        };
+        out.push_str(&rest[..open]);
+        let token = &rest[open + 2..close];
+        let default = token
+            .split_once(':')
+            .filter(|(n, _)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+            .map(|(_, d)| d.trim())
+            .filter(|d| !d.is_empty() && !d.chars().all(|c| c == '.' || c == '…'));
+        match default {
+            Some(d) => out.push_str(d),
+            None => out.push_str(&rest[open..close + 2]),
+        }
+        rest = &rest[close + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The longest slug a channel `Name` may have to count as a plain label.
+const PLAIN_LABEL_MAX: usize = 24;
+
+/// Whether a channel `Name` reads as a label rather than an internal id:
+/// only letters (umlauts included), digits and spaces, at least one letter,
+/// and a slug of at most [`PLAIN_LABEL_MAX`] characters. `SMOD0_Motion_MP`,
+/// `LICHTAUSGANG_1` and `W1 - TSM - Wippe 1` are not.
+fn is_plain_label(name: &str) -> bool {
+    name.chars().any(char::is_alphabetic)
+        && name
+            .chars()
+            .all(|c| c.is_alphabetic() || c.is_ascii_digit() || c == ' ')
+        && slug(name).len() <= PLAIN_LABEL_MAX
 }
 
 /// The handles made unique: every handle that repeats gets `-<ordinal>` (the
@@ -1047,15 +1142,150 @@ mod tests {
     }
 
     #[test]
-    fn test_base_handle_name_number_module_ordinal_and_fallback() {
+    fn test_base_handle_plain_name_takes_the_number() {
         assert_eq!(
-            base_handle(Some("Relaisausgänge"), None, Some(1), 3),
+            base_handle(Some("Dimmkanal"), Some("Dimmkanal"), false, Some(1), 3),
+            "dimmkanal-1"
+        );
+        // A module channel counts instances, which the caller passes as `n`.
+        assert_eq!(
+            base_handle(Some("Output"), None, true, Some(2), 1),
+            "output-2"
+        );
+        assert_eq!(base_handle(Some("Output"), None, false, None, 4), "output");
+    }
+
+    #[test]
+    fn test_base_handle_module_text_with_its_own_number_wins() {
+        // The instance's argument says which valve it is, not the ordinal.
+        assert_eq!(
+            base_handle(
+                Some("Ventilausgang"),
+                Some("Ventilausgang 1"),
+                true,
+                Some(6),
+                1
+            ),
+            "ventilausgang-1"
+        );
+        assert_eq!(
+            base_handle(
+                Some("Relaisausgänge"),
+                Some("Relaisausgänge"),
+                true,
+                Some(1),
+                3
+            ),
             "relaisausgaenge-1"
         );
-        // A module channel counts instances, not its (shared) Number.
-        assert_eq!(base_handle(Some("Output"), Some(2), Some(1), 1), "output-2");
-        assert_eq!(base_handle(Some("Output"), None, None, 4), "ch-4");
-        assert_eq!(base_handle(None, None, Some(7), 2), "ch-2");
+    }
+
+    #[test]
+    fn test_base_handle_internal_name_uses_the_text() {
+        assert_eq!(
+            base_handle(
+                Some("SMOD0_MotionDetector1_MP_CT_1"),
+                Some("Bewegungsmelder 1:"),
+                false,
+                Some(2),
+                2
+            ),
+            "bewegungsmelder-1-2"
+        );
+        assert_eq!(
+            base_handle(
+                Some("LICHTAUSGANG_1"),
+                Some("Lichtausgang 1"),
+                false,
+                Some(1),
+                1
+            ),
+            "lichtausgang-1"
+        );
+        assert_eq!(
+            base_handle(
+                Some("Relaisausgänge 1+2"),
+                Some("Relaisausgänge 1/2"),
+                false,
+                Some(1),
+                1
+            ),
+            "relaisausgaenge-1-2-1"
+        );
+        assert_eq!(
+            base_handle(
+                Some("W1 - TSM - Wippe 1"),
+                Some("TSM - Wippe 1"),
+                false,
+                Some(17),
+                5
+            ),
+            "tsm-wippe-1-17"
+        );
+    }
+
+    #[test]
+    fn test_base_handle_name_in_another_language_yields_to_the_text() {
+        assert_eq!(
+            base_handle(
+                Some("Manual operation"),
+                Some("Manuelle Bedienung"),
+                false,
+                Some(2),
+                2
+            ),
+            "manuelle-bedienung-2"
+        );
+        // A name the text contains is kept.
+        assert_eq!(
+            base_handle(
+                Some("Regler"),
+                Some("Raumtemperaturregler"),
+                true,
+                Some(12),
+                7
+            ),
+            "regler-12"
+        );
+    }
+
+    #[test]
+    fn test_base_handle_falls_back_to_the_ordinal() {
+        assert_eq!(base_handle(None, None, false, Some(7), 2), "ch-2");
+        assert_eq!(base_handle(Some("A_B"), None, false, Some(7), 2), "ch-2");
+        assert_eq!(
+            base_handle(Some("A_B"), Some("()"), false, Some(7), 3),
+            "ch-3"
+        );
+    }
+
+    #[test]
+    fn test_placeholder_defaults_keep_a_default_text_only() {
+        assert_eq!(placeholder_defaults("{{0: Eingang g+h}}"), "Eingang g+h");
+        assert_eq!(placeholder_defaults("Eingang f: {{0}}"), "Eingang f: {{0}}");
+        assert_eq!(
+            placeholder_defaults("Relais ({{0:...}}) {{ArgX}}"),
+            "Relais ({{0:...}}) {{ArgX}}"
+        );
+        assert_eq!(placeholder_defaults("open {{0: x"), "open {{0: x");
+    }
+
+    #[test]
+    fn test_ends_with_number_needs_a_numeric_last_part() {
+        assert!(ends_with_number("ventilausgang-3"));
+        assert!(!ends_with_number("relaisausgaenge"));
+        assert!(!ends_with_number("12"));
+    }
+
+    #[test]
+    fn test_is_plain_label_accepts_words_and_rejects_ids() {
+        assert!(is_plain_label("Relaisausgänge"));
+        assert!(is_plain_label("Dimmkanal 1"));
+        assert!(!is_plain_label("LICHTAUSGANG_1"));
+        assert!(!is_plain_label("E - Eingang"));
+        assert!(!is_plain_label("Funktionsblock 1 (FB1)"));
+        assert!(!is_plain_label("12"));
+        assert!(!is_plain_label("Sehr langer Kanalname mit vielen Worten"));
     }
 
     #[test]
