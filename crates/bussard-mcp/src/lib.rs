@@ -260,8 +260,8 @@ pub async fn run(config: &McpConfig) -> anyhow::Result<()> {
     let service = BusService::open(config.connection.clone(), config.write_policy())?;
     if service.gate() == Some(bussard_transport::write_gate::WriteGate::OptedIn) {
         tracing::warn!(
-            "writing to non-loopback gateway {} (opt-in acknowledged)",
-            service.gateway_display()
+            "{}",
+            bussard_service::guidance::opt_in_warning(&service.gateway_display())
         );
     }
     run::serve_stdio(state, service).await

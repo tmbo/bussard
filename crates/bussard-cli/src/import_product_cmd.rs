@@ -15,7 +15,6 @@
 //! copied.
 
 use std::collections::BTreeMap;
-use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -142,26 +141,16 @@ fn run_order_number(
     )
 }
 
-/// Prompts for download confirmation on a TTY; requires `--yes-download`
-/// otherwise.
+/// Asks the download question on a TTY; without one it needs
+/// `--yes-download` (the one download-consent flag, `crate::confirm`).
 fn confirm_download(yes_download: bool) -> anyhow::Result<bool> {
-    if yes_download {
-        return Ok(true);
+    match crate::confirm::download(yes_download, "Download this file?")? {
+        crate::confirm::Download::Yes => Ok(true),
+        crate::confirm::Download::No => Ok(false),
+        crate::confirm::Download::NoTerminal => {
+            bail!("{}", crate::confirm::download_refusal("this file"))
+        }
     }
-    if !std::io::stdin().is_terminal() {
-        bail!(
-            "refusing to download without confirmation: pass --yes-download to \
-             consent non-interactively"
-        );
-    }
-    print!("Download this file? [y/N] ");
-    std::io::stdout().flush().ok();
-    let mut line = String::new();
-    std::io::stdin()
-        .read_line(&mut line)
-        .context("reading confirmation")?;
-    let ans = line.trim().to_lowercase();
-    Ok(ans == "y" || ans == "yes")
 }
 
 /// The environment variable that points bussard at another pointer index (a

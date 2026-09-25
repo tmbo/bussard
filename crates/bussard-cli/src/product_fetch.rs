@@ -20,8 +20,8 @@ use bussard_prod::{DownloadConsent, normalize_order_number};
 /// How the caller answers the one download question.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct Consent {
-    /// `--yes`: download without asking.
-    pub yes: bool,
+    /// `--yes-download`: download without asking.
+    pub yes_download: bool,
     /// `--no-download`: never download; report what is missing.
     pub no_download: bool,
 }
@@ -151,13 +151,16 @@ pub(crate) fn fetch_missing(
         downloads.len(),
         total as f64 / 1_000_000.0
     );
-    let agreed = if consent.yes {
-        true
-    } else if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-        crate::confirm::ask(&question)?
-    } else {
-        println!("no terminal to ask on: pass --yes to download, --no-download to skip");
-        false
+    let agreed = match crate::confirm::download(consent.yes_download, &question)? {
+        crate::confirm::Download::Yes => true,
+        crate::confirm::Download::No => false,
+        crate::confirm::Download::NoTerminal => {
+            println!(
+                "{}",
+                crate::confirm::download_refusal(&format!("{} file(s)", downloads.len()))
+            );
+            false
+        }
     };
     if !agreed {
         not_fetched("not downloaded", &mut outcome, &downloads);

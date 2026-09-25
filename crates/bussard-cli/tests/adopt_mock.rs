@@ -1,9 +1,8 @@
 //! End-to-end tests of `bussard adopt` against an in-process mock KNX gateway.
 //!
-//! `adopt` is a wizard, so its non-interactive shape is gated: it runs only when
-//! BOTH a `--product` file and the documented `BUSSARD_ADOPT_ADDRESS` env hook
-//! are supplied (the env var stands in for the address the wizard would prompt
-//! for). These tests assemble a tiny fabricated `.knxprod` in a temp dir — the
+//! Without a terminal `adopt` follows the one confirmation rule: it runs only
+//! with `--yes`; the target address is the optional `ADDRESS` argument. These
+//! tests assemble a tiny fabricated `.knxprod` in a temp dir — the
 //! same technique `bussard-prod`'s own tests use — and drive the built binary as
 //! a subprocess against a `bussard-testkit` mock gateway hosting one device in programming mode.
 //!
@@ -12,8 +11,8 @@
 //!   * order-number mismatch — device reports an order the product doesn't list,
 //!     so a loud warning prints but the run still succeeds;
 //!   * no-device timeout — nothing in programming mode → clean failure;
-//!   * product-less stub path — no `--product` and a non-TTY → refused (the
-//!     wizard needs inputs), documenting the gate.
+//!   * no `--yes` and a non-TTY → refused with the one refusal text, before
+//!     any connection.
 
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -292,6 +291,7 @@ fn adopt_happy_path_writes_rich_device_file() -> TestResult {
     let output = Command::new(env!("CARGO_BIN_EXE_bussard"))
         .args([
             "adopt",
+            "1.1.7",
             "--yes",
             "--product",
             knxprod.to_str().ok_or("temp path is not UTF-8")?,
@@ -301,7 +301,6 @@ fn adopt_happy_path_writes_rich_device_file() -> TestResult {
             &format!("127.0.0.1:{port}"),
         ])
         .env("BUSSARD_ASSIGN_WAIT_MS", "200")
-        .env("BUSSARD_ADOPT_ADDRESS", "1.1.7")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -408,6 +407,7 @@ fn adopt_warns_on_order_number_mismatch() -> TestResult {
     let output = Command::new(env!("CARGO_BIN_EXE_bussard"))
         .args([
             "adopt",
+            "1.1.7",
             "--yes",
             "--product",
             knxprod.to_str().ok_or("temp path is not UTF-8")?,
@@ -417,7 +417,6 @@ fn adopt_warns_on_order_number_mismatch() -> TestResult {
             &format!("127.0.0.1:{port}"),
         ])
         .env("BUSSARD_ASSIGN_WAIT_MS", "200")
-        .env("BUSSARD_ADOPT_ADDRESS", "1.1.7")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -460,6 +459,7 @@ fn adopt_times_out_with_no_device() -> TestResult {
     let output = Command::new(env!("CARGO_BIN_EXE_bussard"))
         .args([
             "adopt",
+            "1.1.7",
             "--yes",
             "--product",
             knxprod.to_str().ok_or("temp path is not UTF-8")?,
@@ -469,7 +469,6 @@ fn adopt_times_out_with_no_device() -> TestResult {
             &format!("127.0.0.1:{port}"),
         ])
         .env("BUSSARD_ASSIGN_WAIT_MS", "300")
-        .env("BUSSARD_ADOPT_ADDRESS", "1.1.7")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -526,8 +525,9 @@ fn adopt_refuses_product_less_non_tty() -> TestResult {
         "product-less non-TTY adopt must be refused; stderr:\n{stderr}"
     );
     assert!(
-        stderr.contains("interactive wizard") && stderr.contains("BUSSARD_ADOPT_ADDRESS"),
-        "expected the wizard-needs-inputs refusal; stderr:\n{stderr}"
+        stderr.contains("refusing to adopt")
+            && stderr.contains("without a terminal to confirm on; pass --yes"),
+        "expected the confirmation refusal; stderr:\n{stderr}"
     );
     Ok(())
 }
@@ -585,14 +585,15 @@ fn adopt_fetches_the_product_data_for_the_reported_order_number() -> TestResult 
     let output = Command::new(env!("CARGO_BIN_EXE_bussard"))
         .args([
             "adopt",
+            "1.1.7",
             "--yes",
+            "--yes-download",
             "--dir",
             model_dir.to_str().ok_or("temp path is not UTF-8")?,
             "--gateway",
             &format!("127.0.0.1:{port}"),
         ])
         .env("BUSSARD_ASSIGN_WAIT_MS", "200")
-        .env("BUSSARD_ADOPT_ADDRESS", "1.1.7")
         .env("BUSSARD_PRODUCT_INDEX", &index)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -738,6 +739,7 @@ fn secure_adopt(tag: &str, device: MockDevice, address: &str) -> TestResult<Secu
     let output = Command::new(env!("CARGO_BIN_EXE_bussard"))
         .args([
             "adopt",
+            address,
             "--yes",
             "--product",
             knxprod.to_str().ok_or("temp path is not UTF-8")?,
@@ -747,7 +749,6 @@ fn secure_adopt(tag: &str, device: MockDevice, address: &str) -> TestResult<Secu
             &format!("127.0.0.1:{port}"),
         ])
         .env("BUSSARD_ASSIGN_WAIT_MS", "200")
-        .env("BUSSARD_ADOPT_ADDRESS", address)
         .env("BUSSARD_KEYRING_PASSWORD", KEYRING_PASSWORD)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

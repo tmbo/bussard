@@ -734,13 +734,11 @@ fn confirm(
             origin.verb()
         ),
     };
-    crate::confirm::confirm(yes, &prompt, || {
-        format!(
-            "refusing to write to {target} without a terminal to confirm on; \
-                 pass --yes to {} non-interactively",
-            origin.verb()
-        )
-    })
+    crate::confirm::confirm(
+        yes,
+        &prompt,
+        &format!("{} {target} via {gateway}", origin.verb()),
+    )
 }
 
 /// Serialises the live pre-state tables to a JSON backup under

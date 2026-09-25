@@ -459,6 +459,26 @@ entry supersedes it and is not a diff against it.
   `--dry-run` and `--plan` stay per command. A command without JSON output now
   refuses `--json` with a message instead of a clap error; read-only commands
   accept and ignore `--allow-remote-gateway`.
+- One confirmation rule and one output contract (#228). Breaking:
+  - `validate --format text|json` is removed; use the global `--json`. The
+    JSON is now `{"schema", "diagnostics": [...]}` instead of a bare array.
+  - `init --yes` and `import --yes` are renamed `--yes-download`. `adopt --yes`
+    no longer consents to the product-data download; pass `--yes-download`.
+    `--yes` now means only "skip the confirmation prompt" on every command.
+  - `adopt` takes its target address as an optional `ADDRESS` argument
+    (default: the next free one, as for `assign`); `BUSSARD_ADOPT_ADDRESS` is
+    gone. A non-interactive `adopt` needs `--yes` and nothing else.
+  - Every `--json` document is an object whose first field is `"schema": <n>`;
+    each `monitor --json` line carries it. `history --json` is now
+    `{"schema", "snapshots": [...]}`. Other shapes only gain the field.
+  - Every non-TTY refusal reads `refusing to <action> without a terminal to
+    confirm on; pass --yes to confirm non-interactively`, from one helper.
+  - `read`, `write`, `assign`, `show` and `undo` gain `--json`.
+  - The missing-keyring, missing-password and real-gateway opt-in messages
+    have one wording each, shared by the CLI, the MCP server, `viz` and the
+    libraries (`bussard_service::guidance`).
+  - The `--force` and `--full` help texts name the refusal they override or
+    say "skip nothing", with the same words where two commands mean the same.
 - Without `--dir`, a command finds the model directory itself: `.` when it
   holds `bussard.toml`, else `./knx`, else the nearest parent holding
   `bussard.toml` or `knx/bussard.toml`, else `knx` as before. Commands now work

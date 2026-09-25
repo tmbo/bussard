@@ -458,9 +458,8 @@ fn probe_reachability(endpoint: SocketAddrV4) {
         if description.tunnelling_secure_only() {
             println!(
                 "Reachability check skipped: a plain tunnel is refused by this interface. \
-                 Commands need its tunnelling credentials: --keyring <file.knxkeys> \
-                 (password in BUSSARD_KEYRING_PASSWORD) or --secure-user <id> \
-                 --secure-password-env <VAR>."
+                 Commands need its tunnelling credentials: {}.",
+                bussard_service::guidance::tunnel_credentials_hint()
             );
             return;
         }

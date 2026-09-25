@@ -104,7 +104,7 @@ pub fn run(dir: &Path, options: TestOptions, overrides: ConnOverrides) -> anyhow
     let report = execute(&suite, &model, &options, allow_protected, config)?;
 
     if options.json {
-        println!("{}", serde_json::to_string_pretty(&report.to_json())?);
+        crate::output::print(crate::output::schema::TEST, &report.to_json())?;
     } else {
         print!("{}", report.text());
     }
@@ -129,9 +129,8 @@ pub fn run_secure_idle(
     let config = resolve_config(model.as_ref(), &overrides)?;
     if config.secure.is_none() {
         bail!(
-            "--secure-idle needs KNXnet/IP Secure tunnelling credentials: pass --secure-user <id> \
-             --secure-password-env <VAR>, or set connection.keyring in bussard.toml (password in \
-             BUSSARD_KEYRING_PASSWORD)"
+            "--secure-idle needs KNXnet/IP Secure tunnelling credentials: {}",
+            bussard_service::guidance::tunnel_credentials_hint()
         );
     }
     eprintln!("gateway: {}", gateway_display(&config));
@@ -142,7 +141,7 @@ pub fn run_secure_idle(
     let runtime = tokio::runtime::Runtime::new()?;
     let report = runtime.block_on(bussard_transport::probe_secure_idle(&config, idle))?;
     if json {
-        println!("{}", serde_json::to_string_pretty(&idle_json(&report))?);
+        crate::output::print(crate::output::schema::TEST_SECURE_IDLE, &idle_json(&report))?;
     } else {
         println!("{}", idle_text(&report));
     }
@@ -319,12 +318,7 @@ fn confirm(count: usize, gateway: &str, yes: bool) -> anyhow::Result<bool> {
     crate::confirm::confirm(
         yes,
         &format!("run {count} acceptance test(s) against {gateway}? actuators will move."),
-        || {
-            format!(
-                "refusing to run {count} acceptance test(s) against {gateway} without a terminal \
-                 to confirm on; pass --yes to run non-interactively"
-            )
-        },
+        &format!("run {count} acceptance test(s) via {gateway}"),
     )
 }
 

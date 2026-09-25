@@ -36,6 +36,7 @@ mod line_cmd;
 mod lock_pin;
 mod mcp_cmd;
 mod monitor_cmd;
+mod output;
 mod param_readback;
 mod plan_cmd;
 mod product_cache;
@@ -246,6 +247,38 @@ impl Command {
         }
     }
 
+    /// The consent a command needs before it starts: its `--yes` and the
+    /// action a refusal names (issue #228). These commands refuse before the
+    /// model loads because their first bus action already acts on whatever is
+    /// in programming mode (`assign`, `adopt`, `replace`, `commission`), or
+    /// because every step asks (`learn`). `flash`, `apply`, `restore`, `write`
+    /// and `test` first read and show what they will change, so they refuse at
+    /// their prompt, through the same `confirm::confirm` and the same text.
+    fn early_consent(&self) -> Option<(bool, String)> {
+        match self {
+            Command::Assign { yes, address, .. } => Some((
+                *yes,
+                match address {
+                    Some(address) => format!("assign {address}"),
+                    None => "assign the next free address".to_string(),
+                },
+            )),
+            Command::Adopt { yes, address, .. } => Some((
+                *yes,
+                match address {
+                    Some(address) => format!("adopt the device in programming mode as {address}"),
+                    None => "adopt the device in programming mode".to_string(),
+                },
+            )),
+            Command::Replace { yes, address, .. } => Some((*yes, format!("replace {address}"))),
+            Command::Commission { yes, line, .. } => {
+                Some((*yes, format!("commission line {line}")))
+            }
+            Command::Learn { yes, .. } => Some((*yes, "learn group addresses".to_string())),
+            _ => None,
+        }
+    }
+
     /// Whether the subcommand has a machine-readable output for `--json`.
     fn supports_json(&self) -> bool {
         matches!(
@@ -270,6 +303,11 @@ impl Command {
                 | Command::Monitor { .. }
                 | Command::Test { .. }
                 | Command::Audit { .. }
+                | Command::Read { .. }
+                | Command::Write { .. }
+                | Command::Show { .. }
+                | Command::Undo { .. }
+                | Command::Assign { .. }
         )
     }
 }
@@ -388,8 +426,8 @@ fn resolve_globals(global: &Global, command: &Command) -> anyhow::Result<Resolve
     if keyring.is_none() && global.secure_user.is_none() && global.secure_password_env.is_none() {
         if global.secure_transport.is_some() {
             anyhow::bail!(
-                "--secure-transport needs KNXnet/IP Secure tunnelling credentials: pass --keyring \
-                 <file.knxkeys> or --secure-user <id> --secure-password-env <VAR>"
+                "--secure-transport needs KNXnet/IP Secure tunnelling credentials: {}",
+                bussard_service::guidance::tunnel_credentials_hint()
             );
         }
     } else {
@@ -472,15 +510,6 @@ fn verbosity_filter(verbose: u8) -> tracing_subscriber::EnvFilter {
         _ => "trace",
     };
     tracing_subscriber::EnvFilter::new(level)
-}
-
-/// The output format for machine-readable commands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum Format {
-    /// Human-readable, rustc-style diagnostics.
-    Text,
-    /// A JSON array.
-    Json,
 }
 
 /// The group-address addressing scheme, as a CLI value.
@@ -586,9 +615,11 @@ enum Command {
         /// Project password (else `BUSSARD_PROJECT_PASSWORD`, else prompt).
         #[arg(long)]
         password: Option<String>,
-        /// Download the missing product data without asking.
+        /// Download missing vendor product data without asking. Without a
+        /// terminal and without this flag nothing is downloaded; the missing
+        /// order numbers are listed.
         #[arg(long, conflicts_with = "no_download")]
-        yes: bool,
+        yes_download: bool,
         /// Do not download missing product data; list it instead.
         #[arg(long)]
         no_download: bool,
@@ -618,10 +649,11 @@ enum Command {
         /// On a re-import, ask per conflict (needs a terminal).
         #[arg(long)]
         interactive: bool,
-        /// Download the missing product data without asking (the order
-        /// numbers the pointer index knows).
+        /// Download missing vendor product data without asking. Without a
+        /// terminal and without this flag nothing is downloaded; the missing
+        /// order numbers are listed.
         #[arg(long, conflicts_with = "no_download")]
-        yes: bool,
+        yes_download: bool,
         /// Do not look up or download missing product data; list it instead.
         #[arg(long)]
         no_download: bool,
@@ -672,7 +704,8 @@ enum Command {
         /// The address to assign, e.g. `1.1.47` (default: next free on the line).
         #[arg(value_name = "ADDRESS")]
         address: Option<String>,
-        /// Skip the interactive confirmation (dangerous; for scripts).
+        /// Skip the confirmation prompt. Without a terminal the command is
+        /// refused unless this is given.
         #[arg(long)]
         yes: bool,
         /// A raw KNX Data Secure tool key (32 hex characters) to verify a
@@ -731,8 +764,9 @@ enum Command {
         /// The device to introspect, e.g. `1.1.4`.
         #[arg(value_name = "ADDRESS")]
         address: String,
-        /// Walk every object's property descriptions again, even when the
-        /// device facts (`<dir>/.bussard/facts/<ia>.toml`) already hold them.
+        /// Skip nothing: walk every object's property descriptions again, even
+        /// when the device facts (`<dir>/.bussard/facts/<ia>.toml`) already
+        /// hold them.
         #[arg(long)]
         full: bool,
         /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
@@ -766,8 +800,9 @@ enum Command {
         /// download it from the vendor (with confirmation).
         #[arg(long, value_name = "ORDER", conflicts_with = "file")]
         order_number: Option<String>,
-        /// Skip the download confirmation prompt (assume yes). Only meaningful
-        /// with `--order-number`.
+        /// Download the vendor product data without asking. Without a
+        /// terminal and without this flag the download is refused. Only
+        /// meaningful with `--order-number`.
         #[arg(long)]
         yes_download: bool,
         /// When the `.knxprod` is a ZIP wrapping several inner `.knxprod` files,
@@ -782,14 +817,22 @@ enum Command {
     /// Guide a new device from programming mode into the model (assign +
     /// product data + links scaffolding).
     Adopt {
+        /// The address to give the device, e.g. `1.1.47` (default: next free on
+        /// the line; a KNX Data Secure device keeps the address ETS gave it).
+        #[arg(value_name = "ADDRESS")]
+        address: Option<String>,
         /// The vendor `.knxprod` for the new device (else the cached model is used).
         #[arg(long, value_name = "FILE")]
         product: Option<PathBuf>,
-        /// Skip the interactive confirmation (dangerous; for scripts). Also
-        /// consents to downloading the product data the device's order number
-        /// needs.
+        /// Skip the confirmation prompt. Without a terminal the command is
+        /// refused unless this is given.
         #[arg(long)]
         yes: bool,
+        /// Download missing vendor product data without asking. Without a
+        /// terminal and without this flag nothing is downloaded; the missing
+        /// order numbers are listed.
+        #[arg(long, conflicts_with = "no_download")]
+        yes_download: bool,
         /// Do not download product data for the device's order number; adopt
         /// it without (identity and links by number) and say where to get it.
         #[arg(long)]
@@ -815,20 +858,20 @@ enum Command {
         /// product's hardware catalogue; exactly one match is required.
         #[arg(long, value_name = "ORDER")]
         order_number: Option<String>,
-        /// Skip the interactive confirmation (dangerous; for scripts).
+        /// Skip the confirmation prompt. Without a terminal the command is
+        /// refused unless this is given.
         #[arg(long)]
         yes: bool,
-        /// Flash a device that is NOT factory-fresh (issue #79). A flash takes no
-        /// backup, so a device that already carries a different application is
-        /// refused by default; this overrides that refusal and destroys the
-        /// resident application, its parameters and its links. Re-flashing the
-        /// same application does not need it.
+        /// Override the not-factory-fresh refusal (issue #79): flash a device
+        /// that already carries a different application. A flash takes no
+        /// backup, so this destroys the resident application, its parameters
+        /// and its links. Re-flashing the same application does not need it.
         #[arg(long)]
         force: bool,
-        /// Re-stream every object. By default an object whose resident image
-        /// already matches (MCB size and CRC, object `Loaded`) is skipped when
-        /// re-flashing the same application, so a parameter-only change does
-        /// not re-download the code segment.
+        /// Skip nothing: re-stream every object. By default an object whose
+        /// resident image already matches (MCB size and CRC, object `Loaded`)
+        /// is skipped when re-flashing the same application, so a
+        /// parameter-only change does not re-download the code segment.
         #[arg(long)]
         full: bool,
         /// Skip the factory reset before the download. By default a System B
@@ -926,7 +969,8 @@ enum Command {
         /// already finished.
         #[arg(long, requires = "line")]
         resume: bool,
-        /// Skip the interactive confirmation (dangerous; for scripts).
+        /// Skip the confirmation prompt. Without a terminal the command is
+        /// refused unless this is given.
         #[arg(long)]
         yes: bool,
         /// Refuse unless the device state still hashes to this `state_hash`
@@ -979,7 +1023,8 @@ enum Command {
         /// `<dir>/vendor/` for an archive carrying the device's order number.
         #[arg(long, value_name = "FILE", requires = "flash")]
         product: Option<PathBuf>,
-        /// Skip the interactive confirmation (dangerous; for scripts).
+        /// Skip the confirmation prompt. Without a terminal the command is
+        /// refused unless this is given.
         #[arg(long)]
         yes: bool,
         /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
@@ -1062,7 +1107,8 @@ enum Command {
         /// The device to restore, e.g. `1.1.4`.
         #[arg(value_name = "ADDRESS")]
         address: String,
-        /// Skip the interactive confirmation (dangerous; for scripts).
+        /// Skip the confirmation prompt. Without a terminal the command is
+        /// refused unless this is given.
         #[arg(long)]
         yes: bool,
         /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
@@ -1079,12 +1125,13 @@ enum Command {
         /// The vendor `.knxprod` for the replacement device.
         #[arg(long, value_name = "FILE")]
         product: PathBuf,
-        /// Skip the interactive confirmation (dangerous; for scripts).
+        /// Skip the confirmation prompt. Without a terminal the command is
+        /// refused unless this is given.
         #[arg(long)]
         yes: bool,
-        /// Proceed although the old device still answers, or although the
-        /// pressed device's order number, mask or application does not match the
-        /// model's device file.
+        /// Override the replacement-identity refusals: proceed although the old
+        /// device still answers, or although the pressed device's order number,
+        /// mask or application does not match the model's device file.
         #[arg(long)]
         force: bool,
         /// Assign and apply, but leave the application image alone — for a spare
@@ -1100,12 +1147,9 @@ enum Command {
         #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
         tool_key: Option<String>,
     },
-    /// Validate the model and report diagnostics.
-    Validate {
-        /// Output format.
-        #[arg(long, value_enum, default_value_t = Format::Text)]
-        format: Format,
-    },
+    /// Validate the model and report diagnostics (`--json` for the
+    /// machine-readable report).
+    Validate {},
     /// Work with the group-address plan (`groups.toml`): reserve the
     /// conventional addresses for a room.
     Groups {
@@ -1164,10 +1208,12 @@ enum Command {
         /// The DPT to encode as (default: the GA's DPT from `groups.toml`).
         #[arg(long, value_name = "DPT")]
         dpt: Option<String>,
-        /// Write even if the GA is marked `protected: true` in the model.
+        /// Override the protected-group-address refusal: write to a group
+        /// address marked `protected = true` in `groups.toml`.
         #[arg(long)]
         force: bool,
-        /// Skip the interactive confirmation (dangerous; for scripts).
+        /// Skip the confirmation prompt. Without a terminal the command is
+        /// refused unless this is given.
         #[arg(long)]
         yes: bool,
     },
@@ -1212,8 +1258,9 @@ enum Command {
         /// Learn every group address in the model that has no DPT.
         #[arg(long)]
         untyped: bool,
-        /// Accept the top DPT candidate and the proposed name without asking
-        /// (for scripted sessions).
+        /// Skip the confirmation prompt: accept the top DPT candidate and the
+        /// proposed name. Without a terminal the command is refused unless
+        /// this is given.
         #[arg(long)]
         yes: bool,
         /// How long to wait for each telegram, in seconds.
@@ -1225,8 +1272,9 @@ enum Command {
         /// The test file to run (default: `<dir>/tests.toml`).
         #[arg(long, value_name = "FILE")]
         file: Option<PathBuf>,
-        /// Together with `allow_protected: true` in the file, permit tests that
-        /// write to a protected group address.
+        /// Override the protected-group-address refusal: write to a group
+        /// address marked `protected = true` in `groups.toml`. A test also
+        /// needs `allow_protected = true` in the test file.
         #[arg(long)]
         force: bool,
         /// Report `manual:` steps as skipped instead of carrying them out.
@@ -1235,7 +1283,8 @@ enum Command {
         /// Run only the named test (repeatable).
         #[arg(long, value_name = "NAME")]
         only: Vec<String>,
-        /// Skip the confirmation prompt (required for a non-TTY run).
+        /// Skip the confirmation prompt. Without a terminal the command is
+        /// refused unless this is given.
         #[arg(long)]
         yes: bool,
         /// Instead of running `tests.toml`: open a KNXnet/IP Secure session,
@@ -1358,6 +1407,15 @@ fn cli_main() -> ExitCode {
     // invocation's elapsed time on stderr. Speed is a project goal, so this stays
     // available for regression spotting, but a plain 0.1.0 run is quiet.
     let started = timing::start();
+    // One confirmation rule (issue #228): these commands, run without a
+    // terminal and without --yes, are refused here, before the model loads, a
+    // keyring is decrypted or a connection opens.
+    if let Some((yes, action)) = cli.command.early_consent()
+        && let Err(err) = confirm::require_terminal_or_yes(yes, &action)
+    {
+        eprintln!("error: {err:#}");
+        return ExitCode::FAILURE;
+    }
     let globals = match timing::time("tunnel creds", || {
         resolve_globals(&cli.global, &cli.command)
     }) {
@@ -1450,6 +1508,7 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
             dir,
             yes,
             g.allow_remote_gateway,
+            json,
             // `--tool-key` overrides the keyring's device entries; the keyring
             // still opens a KNXnet/IP Secure tunnel (issue #203).
             secure_key::ToolKeySource {
@@ -1527,14 +1586,22 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
             list,
         ),
         Command::Adopt {
+            address,
             product,
             yes,
+            yes_download,
             no_download,
         } => adopt_cmd::run(
-            product.as_deref(),
+            adopt_cmd::AdoptOptions {
+                address: address.as_deref(),
+                product: product.as_deref(),
+                yes,
+                consent: product_fetch::Consent {
+                    yes_download,
+                    no_download,
+                },
+            },
             dir,
-            yes,
-            no_download,
             g.allow_remote_gateway,
             g.keyring.as_deref(),
             g.mgmt(),
@@ -1687,8 +1754,10 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
             channel,
             toml,
         } => device_cmd::run(&address, channel.as_deref(), dir, toml, json),
-        Command::Show { snapshot, to } => history_cmd::run_show(dir, &snapshot, to.as_deref()),
-        Command::Undo { snapshot } => history_cmd::run_undo(dir, snapshot.as_deref()),
+        Command::Show { snapshot, to } => {
+            history_cmd::run_show(dir, &snapshot, to.as_deref(), json)
+        }
+        Command::Undo { snapshot } => history_cmd::run_undo(dir, snapshot.as_deref(), json),
         Command::Backup {
             addresses,
             line,
@@ -1737,7 +1806,7 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
             g.tool_keys(tool_key.as_deref()),
             g.mgmt(),
         ),
-        Command::Validate { format } => validate_cmd::run(dir, json || format == Format::Json),
+        Command::Validate {} => validate_cmd::run(dir, json),
         Command::Groups { command } => match command {
             GroupsCommand::Reserve {
                 room,
@@ -1750,7 +1819,7 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
         Command::Init {
             project,
             password,
-            yes,
+            yes_download,
             no_download,
             scan,
         } => init_cmd::run(
@@ -1760,7 +1829,10 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
             init_cmd::FirstRun {
                 project,
                 password,
-                consent: product_fetch::Consent { yes, no_download },
+                consent: product_fetch::Consent {
+                    yes_download,
+                    no_download,
+                },
                 scan,
             },
         ),
@@ -1771,11 +1843,14 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
             mine,
             theirs,
             interactive,
-            yes,
+            yes_download,
             no_download,
         } => {
             let choice = import_bundle::ConflictChoice::from_flags(mine, theirs, interactive);
-            let consent = product_fetch::Consent { yes, no_download };
+            let consent = product_fetch::Consent {
+                yes_download,
+                no_download,
+            };
             if let Some(json) = from_json {
                 import_cmd::run_json(&json, dir, choice, consent)
             } else if let Some(project) = project {
@@ -1808,7 +1883,7 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
         Command::Capture { to, filter } => {
             capture_cmd::run(&to, dir, filter.as_deref(), g.keyring.as_deref(), g.group())
         }
-        Command::Read { ga } => read_cmd::run(&ga, dir, g.keyring.as_deref(), g.group()),
+        Command::Read { ga } => read_cmd::run(&ga, dir, g.keyring.as_deref(), json, g.group()),
         Command::Write {
             ga,
             value,
@@ -1824,6 +1899,7 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
             g.allow_remote_gateway,
             dir,
             g.keyring.as_deref(),
+            json,
             g.group(),
         ),
         Command::HaConfig { out } => ha_config_cmd::run(dir, out.as_deref()),

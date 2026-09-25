@@ -148,7 +148,7 @@ pub fn run(
     let manifest_path = write_manifest(&out_dir, &manifest).context("writing the manifest")?;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&manifest)?);
+        crate::output::print(crate::output::schema::BACKUP, &manifest)?;
     } else {
         print_text(&manifest, &out_dir, &manifest_path);
     }

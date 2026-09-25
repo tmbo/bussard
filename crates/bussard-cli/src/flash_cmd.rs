@@ -1424,9 +1424,8 @@ fn descriptor_read_error(
             return anyhow::anyhow!(
                 "{target} accepted the connection but never answered the plain management \
                  access. If this device is KNX Data Secure-activated it refuses unsecured \
-                 management: pass its tool key with --keyring <file.knxkeys> (password in \
-                 BUSSARD_KEYRING_PASSWORD), or --tool-key <32 hex> for a test device. Nothing \
-                 was written."
+                 management: {}. Nothing was written.",
+                bussard_service::guidance::tool_key_hint()
             );
         }
     }
@@ -1438,8 +1437,8 @@ fn descriptor_read_error(
              reads while their `*.tp` siblings answer). Flash targets the application download, \
              which this device is not accepting management for over this connection. It is also \
              what a KNX Data Secure-activated device does to unsecured management: if this \
-             device is activated, pass its tool key with --keyring <file.knxkeys> (password in \
-             BUSSARD_KEYRING_PASSWORD), or --tool-key <32 hex> for a test device."
+             device is activated, {}.",
+            bussard_service::guidance::tool_key_hint()
         );
     }
     anyhow::Error::new(err).context("reading the device descriptor")
@@ -1849,7 +1848,7 @@ fn print_plan_json(
         },
         "procedure": trace(plan),
     });
-    println!("{}", serde_json::to_string_pretty(&value)?);
+    crate::output::print(crate::output::schema::FLASH, &value)?;
     Ok(())
 }
 
@@ -2105,12 +2104,7 @@ fn confirm(
         Some(note) => format!("{note}\n{question}"),
         None => question,
     };
-    crate::confirm::confirm(yes, &prompt, || {
-        format!(
-            "refusing to flash {target} without a terminal to confirm on; \
-             pass --yes to flash non-interactively"
-        )
-    })
+    crate::confirm::confirm(yes, &prompt, &format!("flash {target} via {gateway}"))
 }
 
 /// Prints loud recovery guidance on any flash failure.

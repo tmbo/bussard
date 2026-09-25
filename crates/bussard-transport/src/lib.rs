@@ -53,6 +53,7 @@ pub mod config;
 mod conn;
 pub mod discovery;
 mod error;
+pub mod guidance;
 pub mod knxnet;
 mod router;
 mod secure;

@@ -14,7 +14,7 @@
 //! allocation when there is no TTY to confirm on.
 
 use std::collections::BTreeSet;
-use std::io::{IsTerminal, Write};
+use std::io::Write;
 use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -59,19 +59,12 @@ pub fn run(
     dir: &Path,
     yes: bool,
     allow_remote_gateway: bool,
+    json: bool,
     tool_key_source: crate::secure_key::ToolKeySource<'_>,
     overrides: ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
-    // Safety envelope (issue #74): a non-TTY assign must opt in with --yes; an
-    // explicit address is not consent. Refuse up front, before touching the bus,
-    // so a scripted re-address fails fast rather than after the discovery wait.
-    if !yes && !std::io::stdin().is_terminal() {
-        bail!(
-            "refusing to assign without a terminal to confirm on; pass --yes to assign \
-             non-interactively (an explicit address is not itself consent — issue #74)"
-        );
-    }
-
+    // A non-TTY run without --yes was refused before this (issue #74), by
+    // `confirm::require_terminal_or_yes` in `main`.
     // 1. Load the model. Address allocation needs it; an explicit --address on an
     //    empty/missing model is allowed with a warning.
     let model = load_model_for_assign(dir, address.is_some())?;
@@ -97,7 +90,7 @@ pub fn run(
         // clean `service.close()` so the gateway tunnel slot is released rather
         // than leaked — see issue #31.
         let result = tokio::select! {
-            result = assign_flow(&service, source, address, yes, &gateway, model.as_ref(), dir, &keys) => result,
+            result = assign_flow(&service, source, address, AssignRun { yes, json, gateway: &gateway }, model.as_ref(), dir, &keys) => result,
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\ninterrupted; closing the bus connection");
                 Err(anyhow!("assign interrupted by Ctrl-C"))
@@ -106,6 +99,17 @@ pub fn run(
         service.close().await;
         result
     })
+}
+
+/// The per-run choices `assign_flow` needs besides the bus and the model.
+#[derive(Clone, Copy)]
+struct AssignRun<'a> {
+    /// `--yes`: skip the confirmation prompt.
+    yes: bool,
+    /// `--json`: print the result as a JSON document.
+    json: bool,
+    /// The resolved gateway, for the prompt.
+    gateway: &'a str,
 }
 
 /// Loads the model for an assign run.
@@ -171,12 +175,12 @@ async fn assign_flow(
     service: &BusService,
     source: IndividualAddress,
     address: Option<&str>,
-    yes: bool,
-    gateway: &str,
+    run: AssignRun<'_>,
     model: Option<&Model>,
     dir: &Path,
     keys: &ToolKeys,
 ) -> anyhow::Result<ExitCode> {
+    let AssignRun { yes, json, gateway } = run;
     // 2. Find exactly one device in programming mode.
     let current = match wait_for_single_device(service, source).await? {
         Some(addr) => addr,
@@ -240,6 +244,23 @@ async fn assign_flow(
     let path = write_stub_device_file(model, dir, device)?;
 
     // 7. Next steps.
+    if json {
+        crate::output::print(
+            crate::output::schema::ASSIGN,
+            &serde_json::json!({
+                "from": current.to_string(),
+                "to": target.to_string(),
+                "gateway": gateway,
+                "mask": verified.mask.map(|m| format!("{m:04X}")),
+                "manufacturer_id": verified.manufacturer_id,
+                "serial": verified.serial.as_deref().map(hex),
+                "secure": verified.secure.as_str(),
+                "programming_mode_cleared": verified.programming_mode_cleared,
+                "device_file": path.display().to_string(),
+            }),
+        )?;
+        return Ok(ExitCode::SUCCESS);
+    }
     println!("assigned {current} → {target}");
     match (verified.secure, verified.mask) {
         (SecureStatus::ActivatedNoKey, _) => println!(
@@ -477,12 +498,7 @@ fn confirm_assignment(
     crate::confirm::confirm(
         yes,
         &format!("assign {current} → {target} via {gateway}?"),
-        || {
-            format!(
-                "refusing to assign {current} → {target} via {gateway} without a terminal to \
-                 confirm on; pass --yes to assign non-interactively"
-            )
-        },
+        &format!("assign {current} → {target} via {gateway}"),
     )
 }
 

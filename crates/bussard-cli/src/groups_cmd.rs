@@ -85,7 +85,7 @@ pub fn run_reserve(
             "lint_config_written": lint_written,
             "validation": { "errors": errors, "warnings": warnings },
         });
-        println!("{}", serde_json::to_string_pretty(&value)?);
+        crate::output::print(crate::output::schema::GROUPS_RESERVE, &value)?;
     } else {
         if report.added.is_empty() {
             println!(

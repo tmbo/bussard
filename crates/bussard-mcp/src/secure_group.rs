@@ -61,8 +61,8 @@ pub(crate) fn no_key_reason(err: &SecureGroupError) -> String {
             ga,
             keyring_given: false,
         } => format!(
-            "GA {ga} is secured (KNX Data Secure); the server needs `bussard mcp --keyring \
-             <file.knxkeys>` (password in BUSSARD_KEYRING_PASSWORD) to read or write it"
+            "GA {ga} is secured (KNX Data Secure): {} (restart `bussard mcp` with it)",
+            bussard_service::guidance::group_key_hint()
         ),
     }
 }

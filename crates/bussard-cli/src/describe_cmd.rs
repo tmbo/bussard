@@ -273,7 +273,7 @@ pub fn run(
         }
         report.error = Some(message.clone());
         if json {
-            println!("{}", serde_json::to_string_pretty(&report)?);
+            crate::output::print(crate::output::schema::DESCRIBE, &report)?;
         } else {
             print_text(&report);
         }
@@ -282,7 +282,7 @@ pub fn run(
     }
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        crate::output::print(crate::output::schema::DESCRIBE, &report)?;
     } else {
         print_text(&report);
     }

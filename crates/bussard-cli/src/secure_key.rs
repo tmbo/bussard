@@ -51,11 +51,12 @@ pub fn resolve_material(
 
 /// The guidance for a device without a tool key that may be Data Secure-activated
 /// (issue #71, spec §6.4).
-pub(crate) fn no_key_guidance() -> &'static str {
-    "if this device is KNX Data Secure-activated it refuses unsecured management — pass its \
-     tool key with --keyring <file.knxkeys> (password in BUSSARD_KEYRING_PASSWORD; a keyring \
-     that does not list the device only opens the tunnel, so export a current one from ETS), \
-     or --tool-key <32 hex> for a test device"
+pub(crate) fn no_key_guidance() -> String {
+    format!(
+        "if this device is KNX Data Secure-activated it refuses unsecured management: {} (a \
+         keyring that does not list the device only opens the tunnel)",
+        bussard_service::guidance::tool_key_hint()
+    )
 }
 
 /// Adds KNX Data Secure guidance to a failed management session (issue #71,
@@ -101,8 +102,8 @@ pub fn no_group_key_hint(ga: bussard_model::GroupAddress, keyring_given: bool) -
         )
     } else {
         format!(
-            "GA {ga} is secured (KNX Data Secure, `secure: true` in groups.toml); pass \
-             --keyring <file.knxkeys> with {KEYRING_PASSWORD_ENV} set to send it secured"
+            "GA {ga} is secured (KNX Data Secure, `secure = true` in groups.toml): {}",
+            bussard_service::guidance::group_key_hint()
         )
     }
 }

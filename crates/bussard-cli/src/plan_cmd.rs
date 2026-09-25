@@ -283,7 +283,7 @@ pub fn run(
         let mut out = to_json(live, &report, built.plan.clone());
         out.parameters = params.map(|p| p.readback);
         out.identity = identity;
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        crate::output::print(crate::output::schema::PLAN, &out)?;
     } else {
         if let Some(check) = identity.as_ref().filter(|c| c.is_drift()) {
             println!(

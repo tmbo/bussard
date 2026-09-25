@@ -183,7 +183,7 @@ $ bussard status
 1 pending change(s) since snapshot 20260922T104500Z-001 (2026-09-22T10:45:00Z):
 
 Living room blind actuator, channel B, now listens to Central down (3/0/1).
-$ bussard history --json | jq '.[-1]'
+$ bussard history --json | jq '.snapshots[-1]'
 {
   "index": 7,
   "id": "20260922T104500Z-001",

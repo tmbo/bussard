@@ -25,12 +25,9 @@ const KEYRING_PASSWORD_ENV: &str = "BUSSARD_KEYRING_PASSWORD";
 
 /// Reads the keyring password from the environment.
 fn password() -> anyhow::Result<String> {
-    std::env::var(KEYRING_PASSWORD_ENV).map_err(|_| {
-        anyhow!(
-            "the key store password must be set in the {KEYRING_PASSWORD_ENV} environment \
-             variable (never passed as a CLI argument)"
-        )
-    })
+    // The one missing-password wording (issue #228).
+    std::env::var(KEYRING_PASSWORD_ENV)
+        .map_err(|_| bussard_service::secure::SecureKeyError::MissingPassword.into())
 }
 
 /// The `.knxkeys` exports in the directory of `project` (sorted).
@@ -165,7 +162,7 @@ pub fn run_import(dir: &Path, file: &Path, json: bool) -> anyhow::Result<ExitCod
             "changed": report.changed(),
             "report": report,
         });
-        println!("{}", serde_json::to_string_pretty(&value)?);
+        crate::output::print(crate::output::schema::KEYS_IMPORT, &value)?;
     } else {
         print_report(&path, file, &report, outcome);
     }
@@ -308,7 +305,7 @@ pub fn run_export(dir: &Path, file: &Path, force: bool, json: bool) -> anyhow::R
             "interfaces": export.interfaces,
             "skipped_devices": skipped,
         });
-        println!("{}", serde_json::to_string_pretty(&value)?);
+        crate::output::print(crate::output::schema::KEYS_EXPORT, &value)?;
     } else {
         println!(
             "wrote {}: {} device(s), {} group key(s), {} interface(s), signed with {KEYRING_PASSWORD_ENV}",
@@ -334,7 +331,7 @@ pub fn run_show(dir: &Path, json: bool) -> anyhow::Result<ExitCode> {
     let store = load_existing(dir, &password)?;
     let s = store.summary();
     if json {
-        println!("{}", serde_json::to_string_pretty(&s)?);
+        crate::output::print(crate::output::schema::KEYS_SHOW, &s)?;
         return Ok(ExitCode::SUCCESS);
     }
     println!(

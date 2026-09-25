@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-use anyhow::{Context, anyhow, bail};
+use anyhow::{Context, anyhow};
 use bussard_model::schema::{BussardConfig, Groups, Link, Links};
 use bussard_model::{Dpt, Flags, GroupAddress, IndividualAddress, Model};
 use bussard_monitor::infer::{self, DptCandidate};
@@ -75,13 +75,9 @@ pub fn run(
     // project we are about to populate.
     let mut model = load_model_required(dir)?.unwrap_or_else(empty_model);
 
+    // A run without a terminal and without --yes was refused before this, by
+    // `confirm::require_terminal_or_yes` in `main`.
     let interactive = std::io::stdin().is_terminal();
-    if !interactive && !options.yes {
-        bail!(
-            "learn is interactive and there is no terminal to prompt on; pass --yes to accept the \
-             top candidate and the proposed name for every group address"
-        );
-    }
 
     let targets = resolve_targets(&model, &options)?;
     let timeout = Duration::from_secs(options.timeout_seconds.clamp(1, 3600));
@@ -336,9 +332,8 @@ fn secure_block(telegram: &DecodedTelegram) -> Option<String> {
             ),
         },
         None if telegram.apci == ApciKind::Other(APCI_SECURE_DATA) => Some(format!(
-            "secured telegram (KNX Data Secure); pass --keyring <file.knxkeys> or set \
-             connection.keyring in bussard.toml, with {} set, to decrypt it",
-            crate::secure_key::KEYRING_PASSWORD_ENV
+            "secured telegram (KNX Data Secure), not decrypted: {}",
+            bussard_service::guidance::group_key_hint()
         )),
         None => None,
     }

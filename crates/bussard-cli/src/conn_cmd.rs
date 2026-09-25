@@ -541,8 +541,8 @@ pub fn enforce_write_gate(config: &ConnectionConfig, allow_flag: bool) -> anyhow
     match BusService::check(config, WritePolicy::transmit(allow_flag))? {
         Some(WriteGate::OptedIn) => {
             eprintln!(
-                "warning: writing to non-loopback gateway {} (opt-in acknowledged)",
-                gateway_display(config)
+                "warning: {}",
+                bussard_service::guidance::opt_in_warning(&gateway_display(config))
             );
             Ok(())
         }

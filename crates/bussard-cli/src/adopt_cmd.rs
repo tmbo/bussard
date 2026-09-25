@@ -11,11 +11,12 @@
 //! ## Conversational-first, LLM-drivable
 //!
 //! Every prompt is written to be clear both to a human at a TTY and to an LLM
-//! driving over the CLI. The bus writes are irreversible-ish, so the flow is
-//! conservative: it refuses to run non-interactively *except* when both a
-//! product file (`--product`) and an explicit target address (via the
-//! documented [`ADOPT_ADDRESS_ENV`] test hook) are supplied. A wizard needs
-//! inputs; without a terminal to gather them on we would otherwise be guessing.
+//! driving over the CLI. The address write follows the one confirmation rule
+//! of every write command (`crate::confirm`): `--yes` skips the prompt, and a
+//! run without a terminal and without `--yes` is refused before it starts. The
+//! target address is the optional `ADDRESS` argument, else the next free one,
+//! exactly as for `assign`. Downloading product data is a separate consent,
+//! `--yes-download`.
 //!
 //! ## A KNX Data Secure-activated device (issue #201, tier 1)
 //!
@@ -44,9 +45,8 @@
 //! device-file write and hex helpers come from `assign_cmd`, and the
 //! order-number lookup and vendor `.gitignore` from `import_product_cmd`
 //! (issue #86 removed the copies). The few `// DUP:` blocks left differ from
-//! their source in behaviour, not just wording (the confirmation has adopt's
-//! own non-interactive gate, the com-object shaping feeds a device file rather
-//! than a product model, the product import writes no model file), so they
+//! their source in behaviour, not just wording (the com-object shaping feeds a
+//! device file rather than a product model, the product import writes no model file), so they
 //! stay local until the two flows converge.
 
 use std::collections::BTreeMap;
@@ -75,48 +75,38 @@ use crate::conn_cmd::{
 };
 use crate::import_product_cmd::{is_project_export, order_numbers_for};
 
-/// Documented test hook: a non-interactive `adopt` reads its target individual
-/// address from this variable. `adopt` is a wizard, so it refuses to run without
-/// a TTY unless this variable is supplied — it stands in for the address the
-/// wizard would otherwise prompt for. The product data comes from `--product`,
-/// or is fetched for the order number the device reports.
-pub const ADOPT_ADDRESS_ENV: &str = "BUSSARD_ADOPT_ADDRESS";
+/// What one `bussard adopt` run was asked to do.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AdoptOptions<'a> {
+    /// The target individual address (`ADDRESS`); `None` takes the next free
+    /// one on the line, or keeps a Data Secure device's address.
+    pub(crate) address: Option<&'a str>,
+    /// `--product`: the vendor `.knxprod` for the new device.
+    pub(crate) product: Option<&'a Path>,
+    /// `--yes`: skip the confirmation prompt.
+    pub(crate) yes: bool,
+    /// How the product-data download question is answered.
+    pub(crate) consent: crate::product_fetch::Consent,
+}
 
 /// Runs `bussard adopt`.
-pub fn run(
-    product: Option<&Path>,
+pub(crate) fn run(
+    options: AdoptOptions<'_>,
     dir: &Path,
-    yes: bool,
-    no_download: bool,
     allow_remote_gateway: bool,
     keyring: Option<&Path>,
     overrides: ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
+    let AdoptOptions {
+        address: scripted_address,
+        product,
+        yes,
+        consent,
+    } = options;
+    // A run without a terminal and without --yes was refused before this, by
+    // `confirm::require_terminal_or_yes` in `main` (issue #74). Without a
+    // terminal the wizard's choices take their documented defaults.
     let interactive = std::io::stdin().is_terminal();
-
-    // Non-TTY gate: a wizard needs inputs. We allow exactly one scripted shape —
-    // an explicit address via the documented env hook, AND an explicit `--yes`
-    // (issue #74: a re-address in a script must opt in, an explicit address is
-    // not itself consent). The product data may come from `--product` or be
-    // fetched for the order number the device reports.
-    let scripted_address = std::env::var(ADOPT_ADDRESS_ENV)
-        .ok()
-        .filter(|s| !s.is_empty());
-    if !interactive && scripted_address.is_none() {
-        bail!(
-            "`bussard adopt` is an interactive wizard and needs a terminal.\n\
-             To drive it non-interactively (e.g. from a test or a script), supply the target \
-             address via the {ADOPT_ADDRESS_ENV} environment variable (and --yes); pass \
-             `--product <file.knxprod>` or let adopt fetch the product data for the order number \
-             the device reports."
-        );
-    }
-    if !interactive && !yes {
-        bail!(
-            "refusing to adopt non-interactively without --yes: an explicit address is not \
-             consent to write to the bus. Re-run with --yes to confirm."
-        );
-    }
 
     // History (issue #110): capture an edit made outside bussard before the
     // wizard starts writing device files.
@@ -144,7 +134,7 @@ pub fn run(
         dir,
         have_explicit,
         "adopt",
-        &format!("supply {ADOPT_ADDRESS_ENV} or run in a project directory"),
+        "pass the target ADDRESS or run in a project directory",
     )?;
     let config = resolve_config(model.as_ref(), &overrides)?;
     // Safety envelope (issue #74): refuse a write to a real (non-loopback)
@@ -180,10 +170,10 @@ pub fn run(
                 dir,
                 model.as_ref(),
                 selected.as_ref(),
-                scripted_address.as_deref(),
-                interactive,
+                scripted_address,
+                yes,
                 &gateway,
-                crate::product_fetch::Consent { yes, no_download },
+                consent,
                 &adopt_keys,
             ) => result,
             _ = tokio::signal::ctrl_c() => {
@@ -402,7 +392,7 @@ async fn adopt_flow(
     model: Option<&Model>,
     selected: Option<&SelectedProduct>,
     scripted_address: Option<&str>,
-    interactive: bool,
+    yes: bool,
     gateway: &str,
     fetch: crate::product_fetch::Consent,
     adopt_keys: &AdoptKeys<'_>,
@@ -419,7 +409,6 @@ async fn adopt_flow(
     // Decide the target address. A device the keyring lists is Data Secure
     // (issue #201): it stays at the address ETS gave it, since the keyring
     // looks its tool key up by that address.
-    let explicit = scripted_address.is_some();
     let keys = adopt_keys.keys;
     let secured = keys.lists(current);
     let target = match scripted_address {
@@ -429,7 +418,7 @@ async fn adopt_flow(
             Some(addr) => addr,
             None => bail!(
                 "could not allocate a free address automatically; re-run with a modelled line \
-                 or set {ADOPT_ADDRESS_ENV}"
+                 or pass the target ADDRESS"
             ),
         },
     };
@@ -437,7 +426,7 @@ async fn adopt_flow(
         bail!(
             "{current} is KNX Data Secure-activated and the keyring holds its tool key under \
              {current}: adopt reads a secured device at the address ETS gave it and never \
-             re-addresses it. Adopt it at {current} ({ADOPT_ADDRESS_ENV}={current}), or \
+             re-addresses it. Adopt it at {current} (`bussard adopt {current}`), or \
              re-address it first with `bussard assign {target} --keyring <file.knxkeys>` and \
              re-export the keyring from ETS. Nothing was written."
         );
@@ -451,7 +440,11 @@ async fn adopt_flow(
     };
 
     // Confirm.
-    if !confirm_assignment(current, target, explicit, interactive, gateway)? {
+    if !crate::confirm::confirm(
+        yes,
+        &format!("adopt {current} → {target} via {gateway}?"),
+        &format!("adopt {current} → {target} via {gateway}"),
+    )? {
         eprintln!("aborted; no address was written.");
         return Ok(ExitCode::FAILURE);
     }
@@ -939,9 +932,8 @@ fn activated_without_key(
         }
         None => anyhow!(
             "{target} is KNX Data Secure-activated (it hides its mask from an unsecured read) and \
-             cannot be adopted without its tool key: pass --keyring (or set connection.keyring in bussard.toml) with \
-             the project's ETS keyring export (password in {}). No device file was written.{moved}",
-            bussard_service::secure::KEYRING_PASSWORD_ENV
+             cannot be adopted without its tool key: {}. No device file was written.{moved}",
+            bussard_service::guidance::tool_key_hint()
         ),
     }
 }
@@ -1273,39 +1265,6 @@ fn print_secure_summary(target: IndividualAddress, s: &SecureSummary) {
         println!("  note: {note}");
     }
     println!("  nothing was written to {target}; activation and keys stay with ETS");
-}
-
-// ---------------------------------------------------------------------------
-// Duplicated assign helpers (private in `assign_cmd`)
-// ---------------------------------------------------------------------------
-
-/// Confirms the assignment on a TTY (y/N). Under the scripted non-TTY shape the
-/// address was explicit, so it is accepted without prompting.
-// DUP: mirrors `assign_cmd::confirm_assignment`, adapted to the adopt gate.
-fn confirm_assignment(
-    current: IndividualAddress,
-    target: IndividualAddress,
-    explicit: bool,
-    interactive: bool,
-    gateway: &str,
-) -> anyhow::Result<bool> {
-    if !interactive {
-        if explicit {
-            // The run() gate already required --yes for this non-interactive path
-            // (issue #74), so an explicit address here is genuinely confirmed.
-            eprintln!(
-                "non-interactive: adopting {current} → {target} via {gateway} (confirmed with --yes)."
-            );
-            return Ok(true);
-        }
-        // Unreachable given the run() gate, but fail loudly rather than guess.
-        bail!(
-            "refusing to adopt an automatically-chosen address ({target}) without a terminal; \
-             set {ADOPT_ADDRESS_ENV}"
-        );
-    }
-
-    crate::confirm::ask(&format!("adopt {current} → {target} via {gateway}?"))
 }
 
 // ---------------------------------------------------------------------------

@@ -601,7 +601,7 @@ fn print_json(
         })).collect::<Vec<_>>(),
         "procedure": bussard_download::trace(partial),
     });
-    println!("{}", serde_json::to_string_pretty(&value)?);
+    crate::output::print(crate::output::schema::FLASH_PARAMETERS, &value)?;
     Ok(())
 }
 
@@ -632,7 +632,7 @@ pub(crate) fn dry_run(
             "application": partial.identity.id,
             "procedure": bussard_download::trace(&partial),
         });
-        println!("{}", serde_json::to_string_pretty(&value)?);
+        crate::output::print(crate::output::schema::FLASH_PARAMETERS, &value)?;
     } else {
         println!("Parameter-only download for {target} (offline plan)");
         println!(
@@ -664,12 +664,7 @@ fn confirm(
     crate::confirm::confirm(
         yes,
         &format!("download the parameters ({octets} octet(s)) to {target} via {gateway}?"),
-        || {
-            format!(
-                "refusing to write to {target} without a terminal to confirm on; \
-                 pass --yes to download the parameters non-interactively"
-            )
-        },
+        &format!("flash the parameters of {target} via {gateway}"),
     )
 }
 

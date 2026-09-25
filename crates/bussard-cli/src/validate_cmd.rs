@@ -119,7 +119,7 @@ fn print_text(diagnostics: &[Diagnostic]) {
     }
 }
 
-/// Prints diagnostics as a JSON array.
+/// Prints diagnostics as a JSON document: `{ "schema", "diagnostics": [...] }`.
 fn print_json(diagnostics: &[Diagnostic]) {
     let items: Vec<serde_json::Value> = diagnostics
         .iter()
@@ -132,8 +132,8 @@ fn print_json(diagnostics: &[Diagnostic]) {
             })
         })
         .collect();
-    // Pretty-print for readability; the shape is a stable array of objects.
-    match serde_json::to_string_pretty(&items) {
+    let doc = serde_json::json!({ "diagnostics": items });
+    match crate::output::render(crate::output::schema::VALIDATE, &doc) {
         Ok(s) => println!("{s}"),
         Err(e) => eprintln!("error: failed to serialize diagnostics: {e}"),
     }

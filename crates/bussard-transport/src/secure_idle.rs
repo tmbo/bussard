@@ -89,9 +89,11 @@ pub async fn probe_secure_idle(
             return Err(TransportError::SecureNotSelected {
                 gateway,
                 reason: keyring_note.unwrap_or_else(|| {
-                    "no tunnelling credentials were given, or the interface does not advertise \
-                     KNXnet/IP Secure (pass --keyring or --secure-user)"
-                        .to_string()
+                    format!(
+                        "no tunnelling credentials were given, or the interface does not \
+                         advertise KNXnet/IP Secure ({})",
+                        crate::guidance::tunnel_credentials_hint()
+                    )
                 }),
             });
         }

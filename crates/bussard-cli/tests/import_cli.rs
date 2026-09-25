@@ -273,7 +273,7 @@ fn test_import_pins_the_downloaded_product_data_in_the_lock() -> TestResult {
             fixture().to_str().ok_or("path")?,
             "--dir",
             dir.to_str().ok_or("path")?,
-            "--yes",
+            "--yes-download",
         ],
         &[("BUSSARD_PRODUCT_INDEX", known.to_str().ok_or("path")?)],
     )?;
