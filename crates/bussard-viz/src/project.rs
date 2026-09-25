@@ -17,6 +17,11 @@
 //! * `senders`/`listeners` on a group are derived from the links: a device is a
 //!   sender of `ga` if one of its objects has `send == ga`, and a listener if
 //!   `ga` is in that object's `listen` list.
+//! * KNX Data Secure, read-only (issue #205): a device carries its model
+//!   `security` block (`activated`, `secure_commissioning`, `secure_capable`,
+//!   `has_fdsk_certificate`; `null` without one), a group its `secure` flag,
+//!   and a com-object `secure` when it is marked secure or linked to a secure
+//!   group. Flags only: the model holds no key material.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -141,6 +146,17 @@ fn project_device(model: &Model, addr: IndividualAddress, device: &Device) -> Va
 
     let com_objects = project_com_objects(model, addr, device);
 
+    // KNX Data Secure (issue #205), read-only: the device's security state as
+    // the model records it. Flags and counts only; the model holds no key.
+    let security = device.security.as_ref().map(|s| {
+        json!({
+            "activated": s.activated,
+            "secure_commissioning": s.secure_commissioning,
+            "secure_capable": s.secure_capable,
+            "has_fdsk_certificate": s.has_fdsk_certificate,
+        })
+    });
+
     json!({
         "address": addr.to_string(),
         "name": device.name,
@@ -148,6 +164,7 @@ fn project_device(model: &Model, addr: IndividualAddress, device: &Device) -> Va
         "floor": floor,
         "room": room,
         "product": product,
+        "security": security,
         "channels": channels,
         "com_objects": com_objects,
     })
@@ -193,6 +210,14 @@ fn project_com_objects(model: &Model, addr: IndividualAddress, device: &Device) 
 
             let dpt = com.and_then(|c| c.dpt).map(|d| d.to_string());
             let flags = com.map(|c| c.flags.to_string());
+            // Secured: the object is marked secure, or one of its linked GAs is.
+            let secure = com.is_some_and(|c| c.secure)
+                || link.is_some_and(|l| {
+                    l.send
+                        .iter()
+                        .chain(&l.listen)
+                        .any(|ga| model.groups.groups.get(ga).is_some_and(|g| g.secure))
+                });
             let channel = com.and_then(|c| c.channel.clone());
             let send = link.and_then(|l| l.send).map(|g| g.to_string());
             let listen: Vec<String> = link
@@ -207,6 +232,7 @@ fn project_com_objects(model: &Model, addr: IndividualAddress, device: &Device) 
                 "channel": channel,
                 "send": send,
                 "listen": listen,
+                "secure": secure,
             })
         })
         .collect()
@@ -289,6 +315,7 @@ fn project_groups(model: &Model) -> Vec<Value> {
                 .map(Value::from)
                 .unwrap_or(Value::Null);
             let protected = group.map(|g| g.protected).unwrap_or(false);
+            let secure = group.is_some_and(|g| g.secure);
 
             let range_main = model
                 .groups
@@ -318,6 +345,7 @@ fn project_groups(model: &Model) -> Vec<Value> {
                 "dpt": dpt,
                 "description": description,
                 "protected": protected,
+                "secure": secure,
                 "main": ga.main(),
                 "middle": ga.middle(),
                 "sub": ga.sub(),
@@ -557,6 +585,47 @@ mod tests {
         assert_eq!(meteo["product"]["order_number"], "WS-3");
         assert_eq!(meteo["channels"][0]["key"], "CH-1");
         assert_eq!(meteo["channels"][0]["name"], "Channel 1");
+    }
+
+    #[test]
+    fn test_project_model_surfaces_data_secure_read_only() {
+        let plain = project_model(&fixture_model());
+        assert_eq!(plain["devices"][1]["security"], Value::Null);
+        assert_eq!(plain["groups"][0]["secure"], false);
+
+        let mut model = fixture_model();
+        let ga_wind = ga("3/2/0");
+        if let Some(group) = model.groups.groups.get_mut(&ga_wind) {
+            group.secure = true;
+        }
+        if let Some(loaded) = model.devices.get_mut(&ia("1.1.30")) {
+            loaded.device.security = Some(bussard_model::schema::DeviceSecurity {
+                activated: true,
+                secure_capable: true,
+                sequence_number: Some(42),
+                ..Default::default()
+            });
+        }
+        let v = project_model(&model);
+        let meteo = &v["devices"][1];
+        assert_eq!(meteo["address"], "1.1.30");
+        assert_eq!(meteo["security"]["activated"], true);
+        assert_eq!(meteo["security"]["secure_capable"], true);
+        assert_eq!(meteo["security"]["secure_commissioning"], false);
+        // Flags only: no sequence number, nothing key-like.
+        assert!(meteo["security"].get("sequence_number").is_none());
+        let wind = v["groups"]
+            .as_array()
+            .and_then(|g| g.iter().find(|g| g["address"] == "3/2/0"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        assert_eq!(wind["secure"], true);
+        // The com object linked to the secure GA is secured too.
+        let secured: Vec<&Value> = meteo["com_objects"]
+            .as_array()
+            .map(|objs| objs.iter().filter(|o| o["secure"] == true).collect())
+            .unwrap_or_default();
+        assert!(!secured.is_empty(), "{meteo}");
     }
 
     #[test]

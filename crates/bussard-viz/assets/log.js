@@ -49,6 +49,21 @@ function apciGlyph(apci) {
 }
 
 /**
+ * The traffic-view marker for a telegram's KNX Data Secure fields (issue
+ * #205): `[secured]` when the MAC verified, `[secured, no key]` or
+ * `[secured, MAC failed]` when it did not, null for plain traffic.
+ * @param {{secured?:boolean, secure_status?:string}} t
+ * @returns {string|null}
+ */
+export function secureMarker(t) {
+  if (!t || t.secured == null) return null;
+  if (t.secured) return "[secured]";
+  if (t.secure_status === "no_key") return "[secured, no key]";
+  if (t.secure_status === "mac_failed") return "[secured, MAC failed]";
+  return "[secured, not verified]";
+}
+
+/**
  * The log drawer controller. Owns the RingBuffer + rendered rows and wires the
  * toolbar controls from index.html.
  */
@@ -260,8 +275,18 @@ class Log {
     apci.textContent = apciGlyph(t.apci);
     apci.title = t.apci || "";
 
-    row.querySelector("[data-field=value]").textContent =
-      t.value != null && t.value !== "" ? String(t.value) : t.payload || "";
+    const valueEl = row.querySelector("[data-field=value]");
+    valueEl.textContent = t.value != null && t.value !== "" ? String(t.value) : t.payload || "";
+    // KNX Data Secure (issue #205): the same `[secured]` marker the CLI
+    // monitor prints; a telegram that did not verify says why.
+    const secureText = secureMarker(t);
+    if (secureText) {
+      const mark = document.createElement("span");
+      mark.className = t.secured ? "lr-secure" : "lr-secure lr-secure-bad";
+      mark.textContent = ` ${secureText}`;
+      valueEl.appendChild(mark);
+      row.classList.add("secured");
+    }
     row.querySelector("[data-field=dpt]").textContent = t.dpt || "";
 
     if (t.__suspicious) row.classList.add("suspicious");

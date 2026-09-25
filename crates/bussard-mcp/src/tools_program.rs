@@ -34,12 +34,21 @@
 //! write, so `bussard history` shows every MCP apply (the audit line). Protected
 //! group addresses in the change are refused with no override.
 //!
-//! KNX Data Secure (issue #170): with `bussard mcp --keyring`, `knx_plan_device`
-//! reads a device the keyring holds a tool key for over `A_SecureData`, the way
-//! `knx_describe_device` and `bussard plan --keyring` do; a device the keyring
-//! does not list is read in the clear. `knx_apply_device` refuses such a device:
-//! rewriting its tables also means reprogramming its security object, which only
-//! `bussard apply --keyring` does.
+//! KNX Data Secure (issues #170, #205): with the server's keyring (`bussard mcp
+//! --keyring`, `BUSSARD_KEYRING` or `connection.keyring`, the same resolver
+//! every bus command uses), `knx_plan_device` reads a device the keyring holds
+//! a tool key for over `A_SecureData`, the way `knx_describe_device` and
+//! `bussard plan --keyring` do; a device the keyring does not list is read in
+//! the clear. For such a device `knx_apply_device` does what `bussard apply
+//! --keyring` does: every APDU rides `A_SecureData`, and a System B write also
+//! reprograms the security object through [`bussard_download`] (the security
+//! individual address table, PID 54; the group key table, PID 53; the
+//! group-object security flags, PID 61), in the ETS order. The plan says what
+//! the security object receives (addresses and object numbers, never a key),
+//! a group address the model marks secure without a key in the keyring refuses
+//! at plan time, and the digest binds that part too, so a keyring or `secure`
+//! flag that moves between plan and apply retires the plan. The gates above
+//! are unchanged.
 
 use std::collections::HashMap;
 use std::error::Error as StdError;
@@ -47,16 +56,15 @@ use std::time::{Duration, Instant, SystemTime};
 
 use bussard_bus::BusHandle;
 use bussard_download::{
-    DesiredTables, LiveRead, LiveTables, PlanReport, backups_root, desired_tables_for, plan,
-    render_plan_text, sys7_table_images, write_pre_write_backup, write_tables,
+    DesiredTables, LiveRead, LiveTables, PlanReport, SecurityInputs, backups_root,
+    desired_tables_for, plan, render_plan_text, sys7_table_images, write_pre_write_backup,
+    write_tables_secured,
 };
-use bussard_mgmt::{
-    Layer4Connection, LeaseChannel, MaskProfile, SecureLayer, Timeouts, system_type,
-};
+use bussard_mgmt::{Layer4Connection, LeaseChannel, MaskProfile, Timeouts, system_type};
 use bussard_model::history::{History, SnapshotReason};
 use bussard_model::{IndividualAddress, Model};
 use bussard_secure::{Key16, SequenceHighWater};
-use bussard_service::secure::ToolKeySource;
+use bussard_service::secure::{SecureMaterial, ToolKeySource};
 use bussard_transport::ConnectionConfig;
 use bussard_transport::write_gate::{check_write_gate, gateway_display};
 use rmcp::ErrorData;
@@ -174,9 +182,11 @@ impl BussardMcp {
         the human has said yes explicitly in this conversation; never on your own initiative, \
         never because an earlier plan was approved. The digest expires (default 10 minutes) and \
         is invalidated if the device or the model changes. Refuses protected group addresses in \
-        the change. With the server's --keyring, a KNX Data Secure device the keyring lists is \
-        read over A_SecureData (the result says \"secured\": true). Only available with \
-        --allow-programming."
+        the change. With the server's keyring, a KNX Data Secure device the keyring lists is \
+        read over A_SecureData (the result says \"secured\": true) and `security_object` says \
+        what its security object receives with the write (secured senders, keyed group \
+        addresses, secured objects; never a key): show that line to the human too. Only \
+        available with --allow-programming."
     )]
     async fn knx_plan_device(
         &self,
@@ -198,9 +208,9 @@ impl BussardMcp {
         fresh read of the device, with the current model, still matches it; if refused, plan \
         again and ask again. On success it backs up the device's current tables first, writes, \
         reads back to verify, and returns the verify outcome and the backup path. Tell the human \
-        the outcome and the backup path. Refuses a device the server's --keyring holds a KNX \
-        Data Secure tool key for (that write needs `bussard apply --keyring`). Only available \
-        with --allow-programming."
+        the outcome and the backup path. A KNX Data Secure device the server's keyring lists is \
+        written over A_SecureData and its security object is reprogrammed with the tables, \
+        exactly as `bussard apply --keyring` does. Only available with --allow-programming."
     )]
     async fn knx_apply_device(
         &self,
@@ -242,22 +252,25 @@ impl BussardMcp {
         Ok((tier, handle.clone(), gateway))
     }
 
-    /// The tool key for `target` from the server's `--keyring`, or `None` for
-    /// the plain path: no keyring, or a keyring that does not list the device
-    /// (ETS only lists a device once its security is commissioned). A device
-    /// the model records as security-activated but the keyring lacks is a
-    /// refusal (issue #189): plain access cannot reach it.
-    fn plan_tool_key(
+    /// The Data Secure material for `target` from the server's keyring: its
+    /// tool key, the group keys and the senders' sequence numbers, or the
+    /// plain path (no tool key) without a keyring or for a device the keyring
+    /// does not list (ETS only lists a device once its security is
+    /// commissioned). A device the model records as security-activated but
+    /// the keyring lacks is a refusal (issue #189): plain access cannot reach
+    /// it. The same rule `bussard apply --keyring` resolves with.
+    fn plan_material(
         &self,
         target: IndividualAddress,
         model: &bussard_model::Model,
-    ) -> Result<Option<Key16>, String> {
+    ) -> Result<SecureMaterial, String> {
         let source = ToolKeySource {
             keyring: self.state().keyring.as_deref(),
             tool_key: None,
         };
         let activated = bussard_service::secure::model_activated(Some(model), target);
-        bussard_service::secure::resolve(target, source, activated).map_err(|err| chain(&err))
+        bussard_service::secure::resolve_material(target, source, activated)
+            .map_err(|err| chain(&err))
     }
 
     /// `knx_plan_device`'s body; `Err` is a refusal reason.
@@ -268,17 +281,19 @@ impl BussardMcp {
         let model = self.state().model.reload();
         let desired = desired_tables_for(&model, target).map_err(|e| e.to_string())?;
 
-        let tool_key = self.plan_tool_key(target, &model)?;
+        let material = self.plan_material(target, &model)?;
+        let tool_key = material.tool_key.clone();
         let _guard = tier.bus_lock.lock().await;
         // Management calls are sequential (issue #215): this read opens its own
         // lease, so the warm connection is released first.
         let mut warm = self.warm().lock().await;
         warm.release().await;
-        let (_, live) = read_live(&handle, target, &tool_key).await?;
+        let (_, live) = read_live(&handle, target, &tool_key, &SequenceHighWater::new()).await?;
         drop(warm);
         let tables = live.tables();
         let report = plan(tables, &desired);
         refuse_protected(&model, &report)?;
+        let security = security_inputs(&model, target, &desired, &material, &live)?;
         // A System 7 image that would not fit its memory region must refuse at
         // plan time, before the human is asked anything.
         if let Some(s7) = live.sys7() {
@@ -333,11 +348,17 @@ impl BussardMcp {
                 parameter_octets: 0,
             },
             backup_dir: backups_root(&dir).display().to_string(),
-            notes: vec![
-                "parameters are not compared over MCP; `bussard apply` compares and \
-                         writes them"
+            notes: std::iter::once(
+                "parameters are not compared over MCP; `bussard apply` compares and writes them"
                     .to_string(),
-            ],
+            )
+            .chain(
+                security
+                    .as_ref()
+                    .filter(|_| !noop)
+                    .map(|s| s.describe(&desired.addresses)),
+            )
+            .collect(),
             state_hash: bussard_download::state_hash(&live, None),
         };
         let digest = if noop {
@@ -347,7 +368,7 @@ impl BussardMcp {
                 target,
                 created: Instant::now(),
                 live: live_digest(&live),
-                model: model_digest(&model, target, &desired),
+                model: model_digest(&model, target, &desired, security.as_ref()),
             };
             let digest = plan_digest(&pending_plan);
             let mut plans = tier.plans();
@@ -368,6 +389,7 @@ impl BussardMcp {
             "mask": format!("{:04X}", tables.mask),
             "system_type": system_type(tables.mask),
             "secured": tool_key.is_some(),
+            "security_object": security_json(security.as_ref(), &desired, noop),
             "noop": noop,
             "plan": plan_text,
             "sentences": device_plan.render_text(),
@@ -433,17 +455,6 @@ impl BussardMcp {
             ));
         }
 
-        if self
-            .plan_tool_key(target, &self.state().model.current())?
-            .is_some()
-        {
-            return Err(format!(
-                "{target} has a Data Secure tool key in the keyring: writing its tables also \
-                 reprograms its security object (group key table, group-object flags), which \
-                 the MCP programming tier does not do. Use `bussard apply {target} --keyring \
-                 <file>` with the human at the keyboard."
-            ));
-        }
         let _guard = tier.bus_lock.lock().await;
         let model = self.state().model.reload();
         let desired = desired_tables_for(&model, target).map_err(|e| e.to_string())?;
@@ -451,7 +462,14 @@ impl BussardMcp {
         // this one leases the bus itself (issue #215).
         let mut warm = self.warm().lock().await;
         warm.release().await;
-        let (source, live) = read_live(&handle, target, &None).await?;
+        // KNX Data Secure: the same material the plan resolved, one
+        // high-water mark for the read and the write so the send sequence
+        // stays monotonic across both connections (spec §5.9).
+        let material = self.plan_material(target, &model)?;
+        let tool_key = material.tool_key.clone();
+        let high_water = SequenceHighWater::new();
+        let (source, live) = read_live(&handle, target, &tool_key, &high_water).await?;
+        let security = security_inputs(&model, target, &desired, &material, &live)?;
 
         // Re-derive the digest from what is true now; anything that moved since
         // the plan retires it.
@@ -459,12 +477,14 @@ impl BussardMcp {
             target,
             created: planned.created,
             live: live_digest(&live),
-            model: model_digest(&model, target, &desired),
+            model: model_digest(&model, target, &desired, security.as_ref()),
         };
         let moved = match (now.live != planned.live, now.model != planned.model) {
             (true, true) => Some("the device's live tables and the model both changed"),
             (true, false) => Some("the device's live tables changed"),
-            (false, true) => Some("the model's links for the device changed"),
+            (false, true) => {
+                Some("the model's links for the device (or its Data Secure inputs) changed")
+            }
             (false, false) => None,
         };
         let hash_moved = plan_hash
@@ -529,14 +549,15 @@ impl BussardMcp {
             .lease()
             .await
             .map_err(|e| format!("could not lease the bus: {e}"))?;
-        let outcome = write_tables(
+        let outcome = write_tables_secured(
             LeaseChannel::new(lease),
             target,
             source,
             tables.mask,
             &desired,
             images.as_ref(),
-            SecureLayer::plain(),
+            bussard_service::secure::layer(&tool_key, &high_water),
+            security.as_ref(),
         )
         .await;
 
@@ -558,6 +579,8 @@ impl BussardMcp {
                 "verified": summary.ok,
                 "address": target.to_string(),
                 "gateway": gateway,
+                "secured": tool_key.is_some(),
+                "security_object": security_json(security.as_ref(), &desired, false),
                 "backup": backup_path,
                 "snapshot": snapshot,
                 "address_state": summary.address_state.to_string(),
@@ -572,12 +595,81 @@ impl BussardMcp {
                 "verified": false,
                 "address": target.to_string(),
                 "gateway": gateway,
+                "secured": tool_key.is_some(),
                 "backup": backup_path,
                 "snapshot": snapshot,
                 "reason": format!("the write failed: {err}"),
                 "recovery": recovery,
             }),
         })
+    }
+}
+
+/// The security-object inputs for writing `desired` to `target`, as `bussard
+/// apply --keyring` derives them: `None` on the plain path (no tool key) and
+/// for a System 7 device (its tables are written secured, its security object
+/// is not reprogrammed, as in the CLI). The security individual address
+/// table holds the secured senders the model's links imply, with the
+/// keyring's sequence numbers. A group address the model marks `secure`
+/// without a key in the keyring refuses here, before anything is asked or
+/// written.
+fn security_inputs(
+    model: &Model,
+    target: IndividualAddress,
+    desired: &DesiredTables,
+    material: &SecureMaterial,
+    live: &LiveTables,
+) -> Result<Option<SecurityInputs>, String> {
+    if material.tool_key.is_none() || live.sys7().is_some() {
+        return Ok(None);
+    }
+    let empty = HashMap::new();
+    let keys = material.group_keys.as_ref().unwrap_or(&empty);
+    let mut inputs = bussard_download::security_inputs_for(Some(model), target, desired, keys);
+    inputs.senders = bussard_download::secured_senders(
+        Some(model),
+        target,
+        keys,
+        &material.device_sequences,
+        &[],
+    );
+    bussard_download::build_security_program(
+        target,
+        &desired.addresses,
+        inputs.fallback_go_count,
+        &inputs.secure_objects,
+        &inputs.secure_gas,
+        &inputs.group_keys,
+    )
+    .map_err(|e| {
+        format!(
+            "{target}'s security object cannot be programmed: {e}; export a current keyring \
+             from ETS or fix the group's `secure` flag in groups.toml"
+        )
+    })?;
+    Ok(Some(inputs))
+}
+
+/// The `security_object` field of a plan or apply result: what the security
+/// object receives, or `null` on the plain path and for a plan with nothing
+/// to write. Addresses and object numbers only, never a key.
+fn security_json(security: Option<&SecurityInputs>, desired: &DesiredTables, noop: bool) -> Value {
+    match security {
+        Some(inputs) if !noop => json!({
+            "summary": inputs.describe(&desired.addresses),
+            "secure_senders": inputs
+                .senders
+                .iter()
+                .map(|e| json!({"address": e.address.to_string(), "sequence": e.sequence}))
+                .collect::<Vec<_>>(),
+            "keyed_groups": inputs
+                .keyed(&desired.addresses)
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            "secured_objects": inputs.secure_objects.iter().collect::<Vec<_>>(),
+        }),
+        _ => Value::Null,
     }
 }
 
@@ -624,6 +716,7 @@ async fn read_live(
     handle: &BusHandle,
     target: IndividualAddress,
     tool_key: &Option<Key16>,
+    high_water: &SequenceHighWater,
 ) -> Result<(IndividualAddress, LiveTables), String> {
     let source = bussard_mgmt::checked_source(handle, false)
         .await
@@ -632,7 +725,7 @@ async fn read_live(
         .lease()
         .await
         .map_err(|e| format!("could not lease the bus: {e}"))?;
-    let secure = bussard_service::secure::layer(tool_key, &SequenceHighWater::new());
+    let secure = bussard_service::secure::layer(tool_key, high_water);
     let mut l4 = Layer4Connection::connect_with_secure(
         LeaseChannel::new(lease),
         target,
@@ -719,9 +812,17 @@ fn live_digest(live: &LiveTables) -> [u8; 32] {
     h.finalize().into()
 }
 
-/// SHA-256 over the model's links for the device (its fingerprint) and the
-/// desired tables computed from them.
-fn model_digest(model: &Model, target: IndividualAddress, desired: &DesiredTables) -> [u8; 32] {
+/// SHA-256 over the model's links for the device (its fingerprint), the
+/// desired tables computed from them and, for a secured write, what the
+/// security object receives (its [`SecurityInputs::describe`] line and the
+/// secure group addresses: addresses, object numbers and sequence numbers,
+/// no key material).
+fn model_digest(
+    model: &Model,
+    target: IndividualAddress,
+    desired: &DesiredTables,
+    security: Option<&SecurityInputs>,
+) -> [u8; 32] {
     let mut h = Sha256::new();
     put(&mut h, b"model-v1");
     // The Debug rendering is stable within one build, which is all a digest
@@ -746,6 +847,19 @@ fn model_digest(model: &Model, target: IndividualAddress, desired: &DesiredTable
         })
         .collect();
     put(&mut h, &associations);
+    match security {
+        Some(inputs) => {
+            put(&mut h, b"secure-v1");
+            put(&mut h, inputs.describe(&desired.addresses).as_bytes());
+            let secure_gas: Vec<u8> = inputs
+                .secure_gas
+                .iter()
+                .flat_map(|ga| ga.raw().to_be_bytes())
+                .collect();
+            put(&mut h, &secure_gas);
+        }
+        None => put(&mut h, b"plain"),
+    }
     h.finalize().into()
 }
 

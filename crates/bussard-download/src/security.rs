@@ -497,6 +497,60 @@ pub fn security_inputs_for(
     inputs
 }
 
+impl SecurityInputs {
+    /// The keyed group addresses of `addresses` (the address table being
+    /// written), in table order: the ones the group key table will index.
+    pub fn keyed(&self, addresses: &[GroupAddress]) -> Vec<GroupAddress> {
+        addresses
+            .iter()
+            .filter(|ga| self.group_keys.contains_key(ga))
+            .copied()
+            .collect()
+    }
+
+    /// One line saying what the security object receives next to the
+    /// address table `addresses`: the secured senders with their sequence
+    /// numbers, the keyed group addresses and the secured group objects. It
+    /// names addresses and object numbers only, never a key; `bussard apply
+    /// --keyring` prints it and `knx_plan_device` returns it (issue #205).
+    pub fn describe(&self, addresses: &[GroupAddress]) -> String {
+        let keyed: Vec<String> = self
+            .keyed(addresses)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let objects: Vec<String> = self
+            .secure_objects
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let senders: Vec<String> = self
+            .senders
+            .iter()
+            .map(|e| format!("{} seq {}", e.address, e.sequence))
+            .collect();
+        format!(
+            "Data Secure: the security object is reprogrammed too (unload, security individual \
+             address table: {}, group key table: {}, group-object flags: {}, complete)",
+            if senders.is_empty() {
+                "no secured senders".to_string()
+            } else {
+                format!("{} secured sender(s) {}", senders.len(), senders.join(", "))
+            },
+            if keyed.is_empty() {
+                "no keys".to_string()
+            } else {
+                keyed.join(", ")
+            },
+            if objects.is_empty() {
+                "none secured".to_string()
+            } else {
+                format!("secured {}", objects.join(", "))
+            },
+        )
+    }
+}
+
 /// Sends a load-control event to the security object and checks the state it
 /// reports (`Unload` → `Unloaded`, `StartLoading` → `Loading`,
 /// `LoadCompleted` → `Loaded`).

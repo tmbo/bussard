@@ -433,41 +433,7 @@ pub(crate) fn apply_desired(
     // Data Secure: say what the security object will receive (never a key).
     let security = if sys7.is_none() { security } else { None };
     if let Some(inputs) = &security {
-        let keyed: Vec<String> = desired
-            .addresses
-            .iter()
-            .filter(|ga| inputs.group_keys.contains_key(ga))
-            .map(ToString::to_string)
-            .collect();
-        let objects: Vec<String> = inputs
-            .secure_objects
-            .iter()
-            .map(ToString::to_string)
-            .collect();
-        let senders: Vec<String> = inputs
-            .senders
-            .iter()
-            .map(|e| format!("{} seq {}", e.address, e.sequence))
-            .collect();
-        println!(
-            "Data Secure: the security object is reprogrammed too (unload, security individual \
-             address table: {}, group key table: {}, group-object flags: {}, complete)",
-            if senders.is_empty() {
-                "no secured senders".to_string()
-            } else {
-                format!("{} secured sender(s) {}", senders.len(), senders.join(", "))
-            },
-            if keyed.is_empty() {
-                "no keys".to_string()
-            } else {
-                keyed.join(", ")
-            },
-            if objects.is_empty() {
-                "none secured".to_string()
-            } else {
-                format!("secured {}", objects.join(", "))
-            },
-        );
+        println!("{}", inputs.describe(&desired.addresses));
     }
 
     // Confirm unless --yes: one question for the whole write.

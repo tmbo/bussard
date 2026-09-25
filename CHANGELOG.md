@@ -260,6 +260,30 @@ entry supersedes it and is not a diff against it.
   with the "no tool key" message and a hint to re-export the keyring, and no
   device file is written. Activation from the FDSK certificate (tier 2) stays
   open.
+- MCP `knx_apply_device` programs a device the server's keyring lists, as
+  `bussard apply --keyring` does: the tables over `A_SecureData` plus the
+  security object (PID 54, 53, 61). `knx_plan_device` returns what the
+  security object receives as `security_object` (addresses and object
+  numbers, never a key), refuses a secure GA without a group key, and binds
+  it into the plan digest. The write gate, the digest and the human approval
+  are unchanged (#205).
+- MCP `knx_wait_for_telegram`, `knx_recent_telegrams` and `knx_infer_group`
+  see secured group telegrams decrypted with the server's keyring; the
+  inference leaves out telegrams that did not verify and counts them (#205).
+- `validate` checks the configured keyring (`BUSSARD_KEYRING` or
+  `connection.keyring`): E027 for a missing file, W028 for a
+  security-activated device without a tool key (re-export the keyring from
+  ETS), W029 for a group whose `secure` flag disagrees with the keyring's
+  group keys, W030 for a keyring that does not decrypt. Without
+  `BUSSARD_KEYRING_PASSWORD` it prints one I031 line and skips the key checks;
+  it never prompts. `knx_validate` runs the same rules with the server's
+  keyring (#205).
+- `init` records a `.knxkeys` exported next to the project as
+  `connection.keyring` and prints the `BUSSARD_KEYRING_PASSWORD` reminder
+  (#205).
+- viz shows the model's Data Secure state read-only: a device's `security`
+  block, the groups' and com objects' `secure` flags, and `[secured]` on
+  secured telegrams in the traffic view (#205).
 
 **KNXnet/IP Secure**
 

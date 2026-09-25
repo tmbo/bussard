@@ -64,7 +64,14 @@
       "3/0/0",
       "3/0/1"
     ],
-    "secure_devices": []
+    "secure_devices": [
+      {
+        "activated": true,
+        "address": "1.1.6",
+        "name": "Heating Actuator 6-fold",
+        "secure_capable": false
+      }
+    ]
   },
   "devices": [
     {
@@ -87,6 +94,7 @@
           "listen": [],
           "name": "Hallway Light - Switch",
           "number": 0,
+          "secure": false,
           "send": "0/0/0"
         },
         {
@@ -98,6 +106,7 @@
           ],
           "name": "Hallway Light - Status LED",
           "number": 1,
+          "secure": false,
           "send": null
         },
         {
@@ -107,6 +116,7 @@
           "listen": [],
           "name": "Central Off",
           "number": 2,
+          "secure": false,
           "send": "3/0/1"
         },
         {
@@ -116,6 +126,7 @@
           "listen": [],
           "name": "Bedroom Blind - Move",
           "number": 3,
+          "secure": false,
           "send": "1/1/0"
         },
         {
@@ -125,6 +136,7 @@
           "listen": [],
           "name": "Rocker 2 - Central",
           "number": 4,
+          "secure": false,
           "send": null
         },
         {
@@ -134,6 +146,7 @@
           "listen": [],
           "name": "Spare Output",
           "number": 40,
+          "secure": false,
           "send": "3/1/0"
         }
       ],
@@ -144,7 +157,8 @@
         "manufacturer": "Acme Automation",
         "order_number": "PB-4F"
       },
-      "room": "Hallway"
+      "room": "Hallway",
+      "security": null
     },
     {
       "address": "1.1.2",
@@ -170,6 +184,7 @@
           "listen": [],
           "name": "Living Room Light - Switch",
           "number": 0,
+          "secure": false,
           "send": "0/0/2"
         },
         {
@@ -181,6 +196,7 @@
           ],
           "name": "Living Room Light - Status LED",
           "number": 1,
+          "secure": false,
           "send": null
         },
         {
@@ -190,6 +206,7 @@
           "listen": [],
           "name": "Living Room Light - Dim",
           "number": 2,
+          "secure": false,
           "send": "0/0/3"
         },
         {
@@ -199,6 +216,7 @@
           "listen": [],
           "name": "Living Room Blind - Move",
           "number": 3,
+          "secure": false,
           "send": "0/1/0"
         },
         {
@@ -208,6 +226,7 @@
           "listen": [],
           "name": "Living Room Blind - Stop",
           "number": 4,
+          "secure": false,
           "send": "0/1/1"
         },
         {
@@ -217,6 +236,7 @@
           "listen": [],
           "name": "Scene Central",
           "number": 5,
+          "secure": false,
           "send": "3/0/3"
         },
         {
@@ -226,6 +246,7 @@
           "listen": [],
           "name": "Kitchen Light - Switch",
           "number": 6,
+          "secure": false,
           "send": "0/0/6"
         },
         {
@@ -235,6 +256,7 @@
           "listen": [],
           "name": "Living Room Light - Brightness",
           "number": 7,
+          "secure": false,
           "send": "0/0/4"
         },
         {
@@ -244,6 +266,7 @@
           "listen": [],
           "name": "Living Room - Operating Mode",
           "number": 8,
+          "secure": false,
           "send": "0/2/3"
         },
         {
@@ -253,6 +276,7 @@
           "listen": [],
           "name": "Living Room - Measured Temperature",
           "number": 9,
+          "secure": false,
           "send": "0/2/0"
         },
         {
@@ -262,6 +286,7 @@
           "listen": [],
           "name": "Living Room - Setpoint",
           "number": 10,
+          "secure": true,
           "send": "0/2/1"
         },
         {
@@ -273,6 +298,7 @@
           ],
           "name": "Living Room Blind - Position (display)",
           "number": 11,
+          "secure": false,
           "send": null
         },
         {
@@ -284,6 +310,7 @@
           ],
           "name": "Living Room - Valve Position (display)",
           "number": 12,
+          "secure": false,
           "send": null
         }
       ],
@@ -294,7 +321,8 @@
         "manufacturer": "Acme Automation",
         "order_number": "PB-6F"
       },
-      "room": "Living Room"
+      "room": "Living Room",
+      "security": null
     },
     {
       "address": "1.1.3",
@@ -327,6 +355,7 @@
           ],
           "name": "Hallway Light - Switch",
           "number": 1,
+          "secure": false,
           "send": null
         },
         {
@@ -336,6 +365,7 @@
           "listen": [],
           "name": "Hallway Light - Status",
           "number": 2,
+          "secure": false,
           "send": "0/0/1"
         },
         {
@@ -348,6 +378,7 @@
           ],
           "name": "Kitchen Light - Switch",
           "number": 3,
+          "secure": false,
           "send": null
         },
         {
@@ -360,6 +391,7 @@
           ],
           "name": "Bedroom Light - Switch",
           "number": 4,
+          "secure": false,
           "send": null
         },
         {
@@ -369,6 +401,7 @@
           "listen": [],
           "name": "Bedroom Light - Status",
           "number": 5,
+          "secure": false,
           "send": "1/0/1"
         },
         {
@@ -378,6 +411,7 @@
           "listen": [],
           "name": "Output D - Study Light",
           "number": 6,
+          "secure": false,
           "send": null
         },
         {
@@ -387,6 +421,7 @@
           "listen": [],
           "name": "Output D - Study Light",
           "number": 7,
+          "secure": false,
           "send": null
         },
         {
@@ -396,6 +431,7 @@
           "listen": [],
           "name": "Output A - Hallway Light",
           "number": 8,
+          "secure": false,
           "send": null
         },
         {
@@ -405,6 +441,7 @@
           "listen": [],
           "name": "Output B - Kitchen Light",
           "number": 9,
+          "secure": false,
           "send": null
         },
         {
@@ -416,6 +453,7 @@
           ],
           "name": "Scene Central",
           "number": 30,
+          "secure": false,
           "send": null
         }
       ],
@@ -426,7 +464,8 @@
         "manufacturer": "Northwind Controls",
         "order_number": "SA-8-16A"
       },
-      "room": "Utility Room"
+      "room": "Utility Room",
+      "security": null
     },
     {
       "address": "1.1.4",
@@ -454,6 +493,7 @@
           ],
           "name": "Living Room Blind - Move",
           "number": 1,
+          "secure": false,
           "send": null
         },
         {
@@ -465,6 +505,7 @@
           ],
           "name": "Living Room Blind - Stop",
           "number": 2,
+          "secure": false,
           "send": null
         },
         {
@@ -474,6 +515,7 @@
           "listen": [],
           "name": "Living Room Blind - Position",
           "number": 3,
+          "secure": false,
           "send": "0/1/2"
         },
         {
@@ -485,6 +527,7 @@
           ],
           "name": "Living Room Blind - Wind Alarm",
           "number": 4,
+          "secure": false,
           "send": null
         },
         {
@@ -496,6 +539,7 @@
           ],
           "name": "Kitchen Blind - Move",
           "number": 5,
+          "secure": false,
           "send": null
         },
         {
@@ -507,6 +551,7 @@
           ],
           "name": "Bedroom Blind - Move",
           "number": 6,
+          "secure": false,
           "send": null
         },
         {
@@ -516,6 +561,7 @@
           "listen": [],
           "name": "Bedroom Blind - Position",
           "number": 7,
+          "secure": false,
           "send": "1/1/1"
         },
         {
@@ -527,6 +573,7 @@
           ],
           "name": "Bedroom Blind - Wind Alarm",
           "number": 8,
+          "secure": false,
           "send": null
         },
         {
@@ -538,6 +585,7 @@
           ],
           "name": "Wind Speed",
           "number": 9,
+          "secure": false,
           "send": null
         },
         {
@@ -549,6 +597,7 @@
           ],
           "name": "Brightness East",
           "number": 10,
+          "secure": false,
           "send": null
         }
       ],
@@ -559,7 +608,8 @@
         "manufacturer": "Northwind Controls",
         "order_number": "BA-4"
       },
-      "room": "Utility Room"
+      "room": "Utility Room",
+      "security": null
     },
     {
       "address": "1.1.5",
@@ -580,6 +630,7 @@
           ],
           "name": "Living Room Light - Switch",
           "number": 1,
+          "secure": false,
           "send": null
         },
         {
@@ -591,6 +642,7 @@
           ],
           "name": "Living Room Light - Dim",
           "number": 2,
+          "secure": false,
           "send": null
         },
         {
@@ -602,6 +654,7 @@
           ],
           "name": "Living Room Light - Brightness",
           "number": 3,
+          "secure": false,
           "send": null
         },
         {
@@ -611,6 +664,7 @@
           "listen": [],
           "name": "Living Room Light - Status",
           "number": 4,
+          "secure": false,
           "send": "0/0/5"
         }
       ],
@@ -621,7 +675,8 @@
         "manufacturer": "Northwind Controls",
         "order_number": "DA-2"
       },
-      "room": "Utility Room"
+      "room": "Utility Room",
+      "security": null
     },
     {
       "address": "1.1.6",
@@ -645,6 +700,7 @@
           ],
           "name": "Living Room - Measured Temperature",
           "number": 1,
+          "secure": false,
           "send": null
         },
         {
@@ -656,6 +712,7 @@
           ],
           "name": "Living Room - Setpoint",
           "number": 2,
+          "secure": true,
           "send": null
         },
         {
@@ -665,6 +722,7 @@
           "listen": [],
           "name": "Living Room - Valve Position",
           "number": 3,
+          "secure": false,
           "send": "0/2/2"
         },
         {
@@ -676,6 +734,7 @@
           ],
           "name": "Living Room - Operating Mode",
           "number": 4,
+          "secure": false,
           "send": null
         },
         {
@@ -687,6 +746,7 @@
           ],
           "name": "Bedroom - Measured Temperature",
           "number": 5,
+          "secure": false,
           "send": null
         },
         {
@@ -698,6 +758,7 @@
           ],
           "name": "Bedroom - Setpoint",
           "number": 6,
+          "secure": false,
           "send": null
         }
       ],
@@ -708,7 +769,13 @@
         "manufacturer": "Northwind Controls",
         "order_number": "HA-6"
       },
-      "room": "Utility Room"
+      "room": "Utility Room",
+      "security": {
+        "activated": true,
+        "has_fdsk_certificate": false,
+        "secure_capable": false,
+        "secure_commissioning": false
+      }
     },
     {
       "address": "1.1.7",
@@ -726,6 +793,7 @@
           "listen": [],
           "name": "Outside Temperature",
           "number": 1,
+          "secure": false,
           "send": "2/0/0"
         },
         {
@@ -735,6 +803,7 @@
           "listen": [],
           "name": "Wind Speed",
           "number": 2,
+          "secure": false,
           "send": "2/0/1"
         },
         {
@@ -744,6 +813,7 @@
           "listen": [],
           "name": "Brightness East",
           "number": 3,
+          "secure": false,
           "send": "2/0/2"
         },
         {
@@ -753,6 +823,7 @@
           "listen": [],
           "name": "Wind Alarm",
           "number": 4,
+          "secure": false,
           "send": "3/0/0"
         },
         {
@@ -762,6 +833,7 @@
           "listen": [],
           "name": "Weather",
           "number": 5,
+          "secure": false,
           "send": null
         }
       ],
@@ -772,7 +844,8 @@
         "manufacturer": "Meridian Sensors",
         "order_number": "WS-3"
       },
-      "room": "Roof"
+      "room": "Roof",
+      "security": null
     },
     {
       "address": "1.1.8",
@@ -785,6 +858,7 @@
           "listen": [],
           "name": "Presence",
           "number": 1,
+          "secure": false,
           "send": "2/0/3"
         },
         {
@@ -794,6 +868,7 @@
           "listen": [],
           "name": "Hallway Light - Switch",
           "number": 2,
+          "secure": false,
           "send": "0/0/0"
         },
         {
@@ -803,6 +878,7 @@
           "listen": [],
           "name": "Presence Detector Hallway",
           "number": 3,
+          "secure": false,
           "send": null
         }
       ],
@@ -813,7 +889,8 @@
         "manufacturer": "Meridian Sensors",
         "order_number": "PD-1"
       },
-      "room": "Hallway"
+      "room": "Hallway",
+      "security": null
     },
     {
       "address": "1.1.9",
@@ -831,6 +908,7 @@
           "listen": [],
           "name": "Bedroom - Measured Temperature",
           "number": 1,
+          "secure": false,
           "send": "1/2/0"
         },
         {
@@ -840,6 +918,7 @@
           "listen": [],
           "name": "Bedroom - Setpoint",
           "number": 2,
+          "secure": false,
           "send": "1/2/1"
         },
         {
@@ -851,6 +930,7 @@
           ],
           "name": "Outside Temperature",
           "number": 3,
+          "secure": false,
           "send": null
         },
         {
@@ -860,6 +940,7 @@
           "listen": [],
           "name": "Bedroom Light - Switch",
           "number": 4,
+          "secure": false,
           "send": "1/0/0"
         },
         {
@@ -871,6 +952,7 @@
           ],
           "name": "Bedroom Light - Status LED",
           "number": 5,
+          "secure": false,
           "send": null
         }
       ],
@@ -881,7 +963,8 @@
         "manufacturer": "Acme Automation",
         "order_number": "RT-1"
       },
-      "room": "Bedroom"
+      "room": "Bedroom",
+      "security": null
     },
     {
       "address": "1.1.10",
@@ -891,7 +974,8 @@
       "floor": null,
       "name": "IP Interface",
       "product": null,
-      "room": null
+      "room": null,
+      "security": null
     }
   ],
   "groups": [
@@ -915,6 +999,7 @@
         "main": "Ground Floor",
         "middle": "Lighting"
       },
+      "secure": false,
       "senders": [
         {
           "device": "1.1.1",
@@ -951,6 +1036,7 @@
         "main": "Ground Floor",
         "middle": "Lighting"
       },
+      "secure": false,
       "senders": [
         {
           "device": "1.1.3",
@@ -981,6 +1067,7 @@
         "main": "Ground Floor",
         "middle": "Lighting"
       },
+      "secure": false,
       "senders": [
         {
           "device": "1.1.2",
@@ -1011,6 +1098,7 @@
         "main": "Ground Floor",
         "middle": "Lighting"
       },
+      "secure": false,
       "senders": [
         {
           "device": "1.1.2",
@@ -1041,6 +1129,7 @@
         "main": "Ground Floor",
         "middle": "Lighting"
       },
+      "secure": false,
       "senders": [
         {
           "device": "1.1.2",
@@ -1071,6 +1160,7 @@
         "main": "Ground Floor",
         "middle": "Lighting"
       },
+      "secure": false,
       "senders": [
         {
           "device": "1.1.5",
@@ -1101,6 +1191,7 @@
         "main": "Ground Floor",
         "middle": "Lighting"
       },
+      "secure": false,
       "senders": [
         {
           "device": "1.1.2",
@@ -1124,6 +1215,7 @@
         "main": "Ground Floor",
         "middle": "Lighting"
       },
+      "secure": false,
       "senders": [],
       "sub": 7
     },
@@ -1147,6 +1239,7 @@
         "main": "Ground Floor",
         "middle": "Blinds"
       },
+      "secure": false,
       "senders": [
         {
           "device": "1.1.2",
@@ -1177,6 +1270,7 @@
         "main": "Ground Floor",
         "middle": "Blinds"
       },
+      "secure": false,
       "senders": [
         {
           "device": "1.1.2",
@@ -1207,6 +1301,7 @@
         "main": "Ground Floor",
         "middle": "Blinds"
       },
+      "secure": false,
       "senders": [
         {
           "device": "1.1.4",
@@ -1237,6 +1332,7 @@
         "main": "Ground Floor",
         "middle": "Blinds"
       },
+      "secure": false,
       "senders": [],
       "sub": 3
     },
@@ -1260,6 +1356,7 @@
         "main": "Ground Floor",
         "middle": "Climate"
       },
+      "secure": false,
       "senders": [
         {
           "device": "1.1.2",
@@ -1290,6 +1387,7 @@
         "main": "Ground Floor",
         "middle": "Climate"
       },
+      "secure": true,
       "senders": [
         {
           "device": "1.1.2",
@@ -1320,6 +1418,7 @@
         "main": "Ground Floor",
         "middle": "Climate"
       },
+      "secure": false,
       "senders": [
         {
           "device": "1.1.6",
@@ -1350,6 +1449,7 @@
         "main": "Ground Floor",
         "middle": "Climate"
       },
+      "secure": false,
       "senders": [
         {
           "device": "1.1.2",
@@ -1380,6 +1480,7 @@
         "main": "First Floor",
         "middle": "Lighting"
       },
+      "secure": false,
       "senders": [
         {
           "device": "1.1.9",
@@ -1410,6 +1511,7 @@
         "main": "First Floor",
         "middle": "Lighting"
       },
+      "secure": false,
       "senders": [
         {
           "device": "1.1.3",
@@ -1433,6 +1535,7 @@
         "main": "First Floor",
         "middle": "Lighting"
       },
+      "secure": false,
       "senders": [],
       "sub": 2
     },
@@ -1449,6 +1552,7 @@
         "main": "First Floor",
         "middle": "Lighting"
       },
+      "secure": false,
       "senders": [],
       "sub": 3
     },
@@ -1472,6 +1576,7 @@
         "main": "First Floor",
         "middle": "Blinds"
       },
+      "secure": false,
       "senders": [
         {
           "device": "1.1.1",
@@ -1495,6 +1600,7 @@
         "main": "First Floor",
         "middle": "Blinds"
       },
+      "secure": false,
       "senders": [
         {
           "device": "1.1.4",
@@ -1525,6 +1631,7 @@
         "main": "First Floor",
         "middle": null
       },
+      "secure": false,
       "senders": [
         {
           "device": "1.1.9",
@@ -1555,6 +1662,7 @@
         "main": "First Floor",
         "middle": null
       },
+      "secure": false,
       "senders": [
         {
           "device": "1.1.9",
@@ -1585,6 +1693,7 @@
         "main": "Outdoor",
         "middle": null
       },
+      "secure": false,
       "senders": [
         {
           "device": "1.1.7",
@@ -1615,6 +1724,7 @@
         "main": "Outdoor",
         "middle": null
       },
+      "secure": false,
       "senders": [
         {
           "device": "1.1.7",
@@ -1645,6 +1755,7 @@
         "main": "Outdoor",
         "middle": null
       },
+      "secure": false,
       "senders": [
         {
           "device": "1.1.7",
@@ -1668,6 +1779,7 @@
         "main": "Outdoor",
         "middle": null
       },
+      "secure": false,
       "senders": [
         {
           "device": "1.1.8",
@@ -1691,6 +1803,7 @@
         "main": "Outdoor",
         "middle": null
       },
+      "secure": false,
       "senders": [],
       "sub": 4
     },
@@ -1720,6 +1833,7 @@
         "main": "Central",
         "middle": "Alarms"
       },
+      "secure": false,
       "senders": [
         {
           "device": "1.1.7",
@@ -1768,6 +1882,7 @@
         "main": "Central",
         "middle": "Alarms"
       },
+      "secure": false,
       "senders": [
         {
           "device": "1.1.1",
@@ -1791,6 +1906,7 @@
         "main": "Central",
         "middle": "Alarms"
       },
+      "secure": false,
       "senders": [],
       "sub": 2
     },
@@ -1814,6 +1930,7 @@
         "main": "Central",
         "middle": "Alarms"
       },
+      "secure": false,
       "senders": [
         {
           "device": "1.1.2",
@@ -1837,6 +1954,7 @@
         "main": "Central",
         "middle": null
       },
+      "secure": false,
       "senders": [
         {
           "device": "1.1.1",

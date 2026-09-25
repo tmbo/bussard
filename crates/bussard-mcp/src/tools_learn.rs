@@ -10,7 +10,10 @@
 //!   loop: the assistant asks the human to press a button, calls
 //!   `knx_wait_for_telegram`, then calls this to get DPT candidates, the sending
 //!   device, channel and com object, and a proposed name. The human confirms in
-//!   chat and the assistant writes the result into the model.
+//!   chat and the assistant writes the result into the model. A secured group
+//!   telegram (KNX Data Secure) reaches the ring decrypted when the server has
+//!   a keyring (issue #205); one that did not verify carries ciphertext, so it
+//!   is counted and left out of the inference.
 //! - `knx_run_tests` is a **write-tier** tool, registered only with
 //!   `--allow-writes`, and it refuses any test that writes to a protected group
 //!   address whatever `tests.toml` says. There is no MCP override for a
@@ -85,7 +88,9 @@ impl BussardMcp {
         call knx_wait_for_telegram, then call this. It reads the telegram buffer and the model \
         only and NEVER transmits, so it works in --passive mode. Confidence is never 'high' \
         unless the sending com object declares the DPT. Pass payload_hex to ask about a specific \
-        payload instead of the buffered ones."
+        payload instead of the buffered ones. Secured (KNX Data Secure) telegrams count only when \
+        the server's --keyring decrypted them (`secured`: true); `undecrypted_secured` counts the \
+        ones left out."
     )]
     async fn knx_infer_group(
         &self,
@@ -105,6 +110,19 @@ impl BussardMcp {
         let seen: Vec<_> = seen
             .into_iter()
             .filter(|t| t.destination.group() == Some(ga))
+            .collect();
+        // A secured telegram that did not verify (no group key, MAC failure)
+        // still carries the A_SecureData ciphertext: never infer from it.
+        let undecrypted = seen
+            .iter()
+            .filter(|t| t.secure.as_ref().is_some_and(|s| !s.verified()))
+            .count();
+        let secured = seen
+            .iter()
+            .any(|t| t.secure.as_ref().is_some_and(|s| s.verified()));
+        let seen: Vec<_> = seen
+            .into_iter()
+            .filter(|t| t.secure.as_ref().is_none_or(|s| s.verified()))
             .collect();
 
         let payloads: Vec<Vec<u8>> = match &args.payload_hex {
@@ -190,6 +208,13 @@ impl BussardMcp {
                 "reason": c.reason,
             })).collect::<Vec<_>>(),
             "proposed_name": proposed_name,
+            "secured": secured,
+            "undecrypted_secured": undecrypted,
+            "secure_note": (undecrypted > 0).then(|| format!(
+                "{undecrypted} secured telegram(s) on {ga} did not decrypt and were left out; \
+                 start the server with --keyring <file.knxkeys> (password in \
+                 BUSSARD_KEYRING_PASSWORD) holding the group key of {ga}"
+            )),
             "next_step": NEXT_STEP,
         }))
     }

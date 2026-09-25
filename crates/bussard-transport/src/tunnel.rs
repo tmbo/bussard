@@ -796,10 +796,18 @@ impl TaskState {
     /// issue #82). A send that fails means the handle is gone; the task still
     /// runs until its command channel closes, so there is nothing to report.
     fn deliver(&mut self, item: Result<TimestampedFrame>) {
+        // Count the item BEFORE it becomes visible to the consumer: counting
+        // after the send let a fast `recv` decrement first, wrapping the
+        // counter below zero and overflowing the `+ 1` below (a debug-build
+        // panic seen on the Windows CI runner, PR #242).
+        let depth = self
+            .queued
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
         if self.frames.send(item).is_err() {
+            self.queued.fetch_sub(1, Ordering::Relaxed);
             return;
         }
-        let depth = self.queued.fetch_add(1, Ordering::Relaxed) + 1;
         if depth == 1 {
             // The queue had been drained: re-arm the warning for a future stall.
             self.warned_depth = 0;
