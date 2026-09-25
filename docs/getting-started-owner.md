@@ -32,14 +32,15 @@ Without a package manager, use the install script from the [README](../README.md
 ## Step 2. Create the model with `bussard init`
 
 ```console
+$ mkdir house && cd house
 $ bussard init
 Searching for KNXnet/IP gateways on the local network...
 Found gateway: IP Interface (192.0.2.10:3671, IA 1.1.250, 4 tunnels, 1 in use)
 
-Created a fresh KNX model in knx.
+Created a fresh KNX model in the current directory /Users/nadia/house.
 ```
 
-`init` finds the interface, writes its address into `knx/bussard.toml` and creates an empty model in the `knx` directory. If discovery finds nothing, pass the address: `bussard init --gateway 192.0.2.10`.
+`init` finds the interface, writes its address into `bussard.toml` and creates an empty model in the current directory. In a directory that already holds other files it asks first. Every later command finds the model from this directory or any directory below it, so there is no `--dir` to remember. Keep passwords in a `.env` file here (for example `BUSSARD_PROJECT_PASSWORD=...`): bussard reads it automatically. Add `.env` to `.gitignore` if the model goes into git. `BUSSARD_ALLOW_REAL_GATEWAY` is never taken from it: arming writes to the real bus stays a flag or an exported variable. If discovery finds nothing, pass the address: `bussard init --gateway 192.0.2.10`.
 
 The tunnel count matters. An interface has a fixed number of connection slots, often one to five. Home Assistant holds one permanently, ETS holds one while a project is online, and every running bussard command holds one, including the assistant's server. "4 tunnels, 1 in use" leaves room for the assistant and a command at the same time. With a one-tunnel interface and Home Assistant running, bussard gets no slot; it says so and exits with code 4 instead of hanging. [The tunnel budget](SAFETY.md#the-tunnel-budget) has the details.
 
@@ -47,10 +48,10 @@ Safety rail: `init` only reads from the network.
 
 ## Step 3. Connect the assistant
 
-For Claude Code, run this once in the directory that holds `knx`:
+For Claude Code, run this once in the model directory:
 
 ```console
-$ claude mcp add knx -- bussard mcp --dir knx
+$ claude mcp add knx -- bussard mcp --dir "$PWD"
 ```
 
 Other MCP clients take a JSON entry. Use the absolute path to the model directory, because the client may start the server from anywhere:
@@ -60,7 +61,7 @@ Other MCP clients take a JSON entry. Use the absolute path to the model director
   "mcpServers": {
     "knx": {
       "command": "bussard",
-      "args": ["mcp", "--dir", "/Users/nadia/house/knx"]
+      "args": ["mcp", "--dir", "/Users/nadia/house"]
     }
   }
 }
@@ -68,13 +69,13 @@ Other MCP clients take a JSON entry. Use the absolute path to the model director
 
 The default server reads the model, watches the bus, sends rate-limited read requests, and edits the model files. It cannot program a device and cannot write a value to the bus.
 
-Safety rails: every model edit the assistant makes is saved to the history first and comes back as a plain sentence for the assistant to quote. Group addresses marked `protected = true` cannot be changed or linked over MCP at all. Device programming (`plan`, `apply`, `flash`) exists only on the command line.
+Safety rails: every model edit the assistant makes is saved to the history first and comes back as a plain sentence for the assistant to quote. Group addresses marked `protected = true` cannot be changed or linked over MCP at all. Device programming (`plan`, `apply`, `flash`) is on the command line; the server can write one device's link tables only when you start it with `--allow-programming` and approve the plan.
 
 ## Saturday morning: how good is my project file?
 
 First get the installation into the model.
 
-With a project file, import it. bussard asks for the project password:
+With a project file, import it. bussard takes the project password from `BUSSARD_PROJECT_PASSWORD` (the `.env` works) or asks for it:
 
 ```console
 $ bussard import house.knxproj
@@ -84,10 +85,11 @@ Without one, find the devices and read back what they carry. `reconstruct` write
 
 ```console
 $ bussard scan 1.1
-$ bussard reconstruct --line 1.1 --out house
+$ bussard reconstruct --line 1.1 --out ../house-read
+$ cd ../house-read
 ```
 
-Then point the assistant at the new directory (`claude mcp remove knx`, then `claude mcp add knx -- bussard mcp --dir house`) and use `--dir house` on the commands below. A house with several lines needs one scan per line.
+Then point the assistant at the new directory (`claude mcp remove knx`, then `claude mcp add knx -- bussard mcp --dir "$PWD"`) and run the commands below from there. A house with several lines needs one scan per line.
 
 Now ask:
 
@@ -142,7 +144,7 @@ Before the first change, read every device's tables into a backup:
 
 ```console
 $ bussard backup
-backing up 72 device(s) via 192.0.2.10:3671 into knx/captures/backups/20260926T180000Z
+backing up 72 device(s) via 192.0.2.10:3671 into captures/backups/20260926T180000Z
 ...
 64 backed up, 8 skipped, 0 unreachable, 0 failed
 ```
@@ -196,7 +198,7 @@ Then program it:
 $ bussard apply 1.1.7 --allow-remote-gateway
 ...
 apply 1 change(s) to 1.1.7 via 192.0.2.10:3671? [y/N] y
-backup written to knx/captures/backups/1.1.7-1790445600.json
+backup written to captures/backups/1.1.7-1790445600.json
 
 apply verified: address table Loaded (6 entries), association table Loaded (6 entries)
 ```
@@ -240,7 +242,7 @@ model sha256 3f1c…
 
 The `.bussard` file holds the model, the history and a checksum of the model. It never holds the `.knxproj`, the `.knxkeys` keyring, vendor product files or passwords; keep those next to it on the stick, or in a password manager. Put the stick in the cabinet with the handover papers. After every `apply`, bussard reminds you when the last export is older than the model you just programmed.
 
-`bussard import house.bussard --dir knx` on a new laptop brings everything back, history included. The same file is what to send to an integrator; [the collaboration guide](collaboration.md) describes that exchange.
+`bussard import house.bussard` in an empty directory on a new laptop brings everything back, history included. The same file is what to send to an integrator; [the collaboration guide](collaboration.md) describes that exchange.
 
 ## The rails at a glance
 
