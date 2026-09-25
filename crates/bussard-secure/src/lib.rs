@@ -9,7 +9,7 @@
 //! - [`crypto`]: the decomposed AES-CCM (AES-CBC-MAC + AES-CTR) and the PBKDF2
 //!   key schedule with the KNX Secure salts (spec §3).
 //! - [`sequence`]: the 6-byte "milliseconds since 2018-01-05" Data Secure
-//!   sequence number (spec §5.8).
+//!   sequence number and its clock-seeded, monotonic issuer (spec §5.8).
 //! - [`asdu`]: the A_SecureData (`0x03F1`) wire codec — SCF, nonce assembly,
 //!   MAC-only and MAC+encrypt modes (spec §5).
 //! - [`group`]: secured **group** communication (S-A_Data on a group
@@ -44,8 +44,11 @@ pub mod session;
 pub use asdu::{
     A_SECURE_DATA, AsduError, DecodedInner, Scf, SecureService, SecurityAlgorithm, TpAddressing,
 };
-pub use crypto::{CryptoError, aes_cbc_decrypt, aes_cbc_encrypt, pbkdf2_key, pbkdf2_sha256, salt};
+pub use crypto::{
+    CryptoError, aes_cbc_decrypt, aes_cbc_encrypt, keyring_encrypt_key, keyring_encrypt_password,
+    keyring_iv, keyring_password_prefix, pbkdf2_key, pbkdf2_sha256, random_bytes, salt,
+};
 pub use group::{Freshness, GroupPlain, decode_group, encode_group, is_group_data, peek_header};
 pub use key::{Key16, Password};
-pub use sequence::{Sequence, SequenceHighWater};
+pub use sequence::{Sequence, SequenceClock, SequenceHighWater, process_clock};
 pub use session::{DataSecureSession, UnwrapOutcome};
