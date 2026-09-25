@@ -289,8 +289,8 @@ class Inspector {
   /**
    * A compact clickable remote-device reference (selects the device on click).
    * Address-first to match the viz cards (item 4): a direction arrow + the
-   * monospace address on the first line, the device name below it capped with an
-   * ellipsis (the full name lives on the title attribute). e.g. "→ 1.1.1" /
+   * monospace address on the first line, the device name below it, wrapping to
+   * at most two lines (the full name lives on the title attribute). e.g. "→ 1.1.1" /
    * "Switch Actuator 8-fold".
    * @param {{device:string, device_name?:string}} ref
    * @param {string} [arrow] — direction glyph shown before the address.

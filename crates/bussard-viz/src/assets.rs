@@ -45,6 +45,7 @@ pub fn asset(name: &str) -> Option<Asset> {
         "gatree.js" => (include_str!("../assets/gatree.js"), JS),
         "inspector.js" => (include_str!("../assets/inspector.js"), JS),
         "log.js" => (include_str!("../assets/log.js"), JS),
+        "layout.js" => (include_str!("../assets/layout.js"), JS),
         "fixture-model.json" => (
             include_str!("../assets/fixture-model.json"),
             "application/json; charset=utf-8",
@@ -74,6 +75,7 @@ mod tests {
             "gatree.js",
             "inspector.js",
             "log.js",
+            "layout.js",
             "fixture-model.json",
         ] {
             assert!(asset(name).is_some(), "asset {name} should resolve");
@@ -119,6 +121,7 @@ mod tests {
         "gatree.js",
         "inspector.js",
         "log.js",
+        "layout.js",
         "fixture-model.json",
     ];
 
@@ -191,6 +194,30 @@ mod tests {
                      the page must work offline (only W3C namespaces and loopback are allowed)"
                 );
             }
+        }
+    }
+
+    /// The reload tooltip and help text are written for the user (issue #252):
+    /// no HTTP endpoint and no method in them.
+    #[test]
+    fn test_index_html_reload_help_names_no_endpoint() {
+        let tooltip_at = INDEX_HTML.find("id=\"reload-btn\"");
+        let help_at = INDEX_HTML.find("id=\"help-reload\"");
+        assert!(
+            tooltip_at.is_some() && help_at.is_some(),
+            "reload button and help text present"
+        );
+        for at in [tooltip_at, help_at].into_iter().flatten() {
+            // The element's markup up to the end of its first line of content.
+            let chunk: String = INDEX_HTML[at..].chars().take(400).collect();
+            assert!(
+                !chunk.contains("/api"),
+                "reload help names an endpoint: {chunk}"
+            );
+            assert!(
+                !chunk.contains("POST"),
+                "reload help names a method: {chunk}"
+            );
         }
     }
 }

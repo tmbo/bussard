@@ -1338,7 +1338,10 @@ The page shows:
 - **Problems.** Com objects with no link and GAs with no sender or no listener are surfaced for the P5 review.
 - **Test writes.** Per-DPT widgets send a GroupValueWrite from the page. A `protected` GA is disabled until you arm a force checkbox. The confirmation is the echoed telegram on the live stream.
 
-Structure is read-only: devices, groups, and links are edited in the model files. An edit does not need a restart; `POST /api/reload` (the ⟳ button next to the bus status) re-reads the directory and swaps the model in place; see [reloading the model](#reloading-the-model).
+- **Inspector.** The right-hand panel shows the selected device's com objects grouped by channel (object name, DPT, flags, the send and listen GAs and the devices on the other end), or the selected GA's senders and listeners. It opens 780 px wide, enough for the widest device in the synthetic fixture with room for longer names; longer labels wrap inside the table rather than scroll sideways. Drag the bar between the diagram and the panel to resize it (or focus it and use the arrow keys, double-click for the default). It stays between 360 px and the window width minus 480 px for the diagram, and the browser remembers the width.
+- **Help.** The `?` button (or the `?` key) explains the header actions and lists the keyboard shortcuts.
+
+Structure is read-only: devices, groups, and links are edited in the model files. An edit does not need a restart. The ⟳ button next to the bus status re-reads the model directory and the device facts (`bussard.lock`) and keeps the traffic view, so use it after an `import` or `apply`; it calls `POST /api/reload`, see [reloading the model](#reloading-the-model).
 
 Writes are off by default. Without `--allow-writes` the send widgets are there but `POST /api/group-write` answers `403 writes_disabled`, so a bare `bussard viz` cannot put anything on the bus. With writes armed, every send asks for an explicit confirmation naming the GA and the resolved gateway before it goes out, and a `protected` GA additionally needs the force checkbox.
 

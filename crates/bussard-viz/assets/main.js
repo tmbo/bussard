@@ -18,6 +18,7 @@
 import { Store } from "./store.js";
 import { fetchModel, fetchState, connectTraffic, reloadModel } from "./api.js";
 import { GaTree } from "./gatree.js";
+import { initPanelResizer } from "./layout.js";
 
 const SEARCH_DEBOUNCE_MS = 100;
 
@@ -40,6 +41,8 @@ async function boot() {
   initKeyboard();
   initTabs();
   initReloadButton();
+  initHelp();
+  initPanelResizer();
   initFlashToggle();
 
   // Load the initial state snapshot (last values + bus status).
@@ -273,6 +276,38 @@ function initReloadButton() {
   });
 }
 
+// --- help panel ------------------------------------------------------------
+
+/**
+ * Show, hide or flip the help panel.
+ * @param {boolean} [show] - force a state; omit to flip.
+ * @returns {boolean} true when the call changed the panel's visibility.
+ */
+function toggleHelp(show) {
+  const panel = document.getElementById("help-panel");
+  const btn = document.getElementById("help-btn");
+  if (!panel) return false;
+  const next = show === undefined ? panel.hidden : show;
+  if (next === !panel.hidden) return false;
+  panel.hidden = !next;
+  if (btn) btn.setAttribute("aria-expanded", String(next));
+  return true;
+}
+
+function initHelp() {
+  const btn = document.getElementById("help-btn");
+  const panel = document.getElementById("help-panel");
+  if (!btn || !panel) return;
+  btn.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    toggleHelp();
+  });
+  // A click anywhere outside the panel closes it.
+  document.addEventListener("click", (ev) => {
+    if (!panel.hidden && !panel.contains(ev.target)) toggleHelp(false);
+  });
+}
+
 // --- flash-effects toggle --------------------------------------------------
 
 // The live-traffic highlight toggle. Reflects and mutates store.flashEnabled,
@@ -363,7 +398,11 @@ function initKeyboard() {
       ev.preventDefault();
       const input = document.getElementById("search-input");
       if (input) input.focus();
+    } else if (ev.key === "?" && !inField) {
+      ev.preventDefault();
+      toggleHelp();
     } else if (ev.key === "Escape") {
+      if (toggleHelp(false)) return;
       app.store.deselect();
       const input = document.getElementById("search-input");
       if (input && document.activeElement === input) input.blur();

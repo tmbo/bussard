@@ -10,7 +10,7 @@
  */
 export async function fetchModel() {
   const res = await fetch("/api/model", { headers: { Accept: "application/json" } });
-  if (!res.ok) throw new Error(`/api/model returned ${res.status}`);
+  if (!res.ok) throw new Error(`could not load the model (server status ${res.status})`);
   return res.json();
 }
 
@@ -20,7 +20,7 @@ export async function fetchModel() {
  */
 export async function fetchState() {
   const res = await fetch("/api/state", { headers: { Accept: "application/json" } });
-  if (!res.ok) throw new Error(`/api/state returned ${res.status}`);
+  if (!res.ok) throw new Error(`could not load the bus state (server status ${res.status})`);
   return res.json();
 }
 
@@ -46,7 +46,7 @@ export async function reloadModel() {
     // Non-JSON error body; fall through with a generic message.
   }
   const info = (payload && payload.error) || {};
-  const err = new Error(info.message || `reload failed (${res.status})`);
+  const err = new Error(info.message || `reload failed (server status ${res.status})`);
   err.code = info.code || null;
   err.status = res.status;
   throw err;
@@ -85,7 +85,7 @@ export async function groupWrite(address, value, opts = {}) {
     // Non-JSON error body; fall through with a generic message.
   }
   const info = (payload && payload.error) || {};
-  const err = new Error(info.message || `group-write failed (${res.status})`);
+  const err = new Error(info.message || `send failed (server status ${res.status})`);
   err.code = info.code || null;
   err.status = res.status;
   throw err;
