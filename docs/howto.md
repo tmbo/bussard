@@ -31,7 +31,7 @@ read-only: group writes return 403 (pass --allow-writes to enable them)
 
 Open the address to get a bus-spine diagram of every device by floor and room, the group-address tree, and live telegrams pulsing along the spine as they happen. Select a device or GA to see its links, senders, and listeners. With no reachable gateway the page still shows the model, just without live traffic. See [the viz server](reference.md#the-viz-server) for the endpoints.
 
-A bare `bussard viz` is a viewer: it never transmits, so it is safe to point at the live installation. Add `--allow-writes` to arm the per-DPT test-write widgets, and then the same real-gateway gate as `bussard write` applies — against a non-loopback gateway the server refuses to start without `--allow-remote-gateway`. Every armed write asks for an explicit confirmation naming the GA and the gateway, and a `protected` GA needs the force checkbox on top of that.
+A bare `bussard viz` is a viewer: it never transmits, so it is safe to point at the live installation. Add `--allow-writes` to arm the per-DPT test-write widgets, and then the same real-gateway gate as `bussard write` applies; against a non-loopback gateway the server refuses to start without `--allow-remote-gateway`. Every armed write asks for an explicit confirmation naming the GA and the gateway, and a `protected` GA needs the force checkbox on top of that.
 
 ## ... find out what I have?
 
@@ -170,7 +170,7 @@ Rocker 1 on Hallway push button no longer switches Porch light (0/0/4).
 Run `bussard plan 1.1.5` and `bussard apply 1.1.5` to push this to devices.
 ```
 
-`undo` changes files only: the devices keep working exactly as before until you run `plan` and `apply`. The state before the undo is snapshotted too, so an undo can be undone. `bussard show 2` renders what one snapshot changed; `bussard status --raw` prints the file-level diff for anyone who does want to read YAML.
+`undo` changes files only: the devices keep working exactly as before until you run `plan` and `apply`. The state before the undo is snapshotted too, so an undo can be undone. `bussard show 2` renders what one snapshot changed; `bussard status --raw` prints the file-level diff for anyone who does want to read TOML.
 
 An edit you make in an editor is not lost either: the next command records it as an `external edit` snapshot before doing anything else.
 
@@ -223,7 +223,7 @@ $ bussard diff knx integrator-2026-10-01.bussard
   Night setback on Living room thermostat (1.0.4): 2 to 3.
 ```
 
-Each side can be a model directory, a `.bussard` bundle or a `.knxproj` (`--password`, `--password-b`, or `BUSSARD_PROJECT_PASSWORD`). A renamed group address is one rename. `--json` gives the structured changes, `--raw` a file-level YAML diff. With an assistant, `knx_diff_project` returns the same sentences, and the assistant reads them to you before you import.
+Each side can be a model directory, a `.bussard` bundle or a `.knxproj` (`--password`, `--password-b`, or `BUSSARD_PROJECT_PASSWORD`). A renamed group address is one rename. `--json` gives the structured changes, `--raw` a file-level TOML diff. With an assistant, `knx_diff_project` returns the same sentences, and the assistant reads them to you before you import.
 
 Then import:
 
@@ -385,15 +385,16 @@ flash verified: application program M-0083_A-000D-23-5BFD is Loaded on 1.1.5
 
 The safety story is the pre-flight plan: `flash` refuses before any write when the device is not System B, the application's mask does not match, or the load procedure contains an operation it cannot execute (see [the supported-operations list](reference.md#bussard-flash-address)). Unlike `apply` there is no backup, because a fresh device has no prior application to save; recovery from a failed flash is re-running it, or falling back to ETS. For the same reason the pre-flight also checks the device really is fresh: a device already carrying a different application is refused unless you pass `--force`, while re-flashing the same application (the recovery path above) needs no flag. [SAFETY.md](SAFETY.md) has the full table. After writing, `flash` verifies the application reads back as `Loaded` and spot-checks the written segments byte-for-byte.
 
-One special case: a device with a BCU access key set needs `--bcu-key <HEX>`; without it bussard presents the free-access key, which is correct for an unkeyed device. The download runs over a single management connection for its whole duration, exactly as ETS does; if that connection genuinely dies mid-flash, re-run `flash` — the download is idempotent (it re-unloads and rewrites the application wholesale).
+One special case: a device with a BCU access key set needs `--bcu-key <HEX>`; without it bussard presents the free-access key, which is correct for an unkeyed device. The download runs over a single management connection for its whole duration, exactly as ETS does; if that connection genuinely dies mid-flash, re-run `flash`; the download is idempotent (it re-unloads and rewrites the application wholesale).
 
 ## ... change a device parameter?
 
-Device parameters (channel modes, run times, alarm behaviour) live in the device file's `parameters:` block, imported from the ETS project. Only values that differ from the vendor default are stored, keyed `<name-slug>@<ref-id>`:
+Device parameters (channel modes, run times, alarm behaviour) live in the device file, imported from the ETS project: device-level ones in `[parameters]`, the others in their channel's `[channel.<handle>]` table, keyed by the parameter's text (`bussard device <address> <channel>` lists the keys and choices). Only values that differ from the vendor default are stored, and an enum takes its label:
 
-```yaml
-parameters:
-  "windalarm-1@MD-1_M-3_MI-1_P-3_R-45": "1"
+```toml
+[channel.a-1]
+betriebsart = "Jalousie"
+windalarm = "1"
 ```
 
 Edit the value, then validate: with the device's product model generated (`import-product`), `validate` checks that the key exists and the value is in range (E016/E017). The new value reaches the device via `flash`, which recomputes the full parameter memory image from the vendor defaults plus your overrides. Objects whose resident image is unchanged (typically the code segment) are skipped, so a parameter change streams only what differs; pass `--full` to re-stream everything. Its pre-flight names each change in the vendor's words, with the value the device holds now:
@@ -408,7 +409,7 @@ Flash plan for 1.1.12
   procedure   : 9 step(s); re-run with -v for the memory-level plan
 ```
 
-On a factory-fresh device there is nothing to read back, so the line reads `Night setback: unknown current value, will be 17 °C`. `--json` puts the same lines in a `parameters` array. One caveat: a `.knxproj` re-import replaces the whole `parameters:` block with ETS truth, so make the change in ETS too if you still re-import.
+On a factory-fresh device there is nothing to read back, so the line reads `Night setback: unknown current value, will be 17 °C`. `--json` puts the same lines in a `parameters` array. One caveat: a `.knxproj` re-import takes the parameter values from ETS, so make the change in ETS too if you still re-import.
 
 For a device that already runs the application, `--parameters-only` does what ETS's partial download does: it rewrites only the parameter memory, octet by octet where it differs, and restarts. No unload, no tables, no factory reset:
 
@@ -538,7 +539,7 @@ Import it in ETS: Group Addresses -> Import, then pick this file.
 
 In ETS, open the project, select *Group Addresses* in the project tree, and use *Import* on the toolbar. The CSV is the three-level form ETS itself exports (UTF-8 with a BOM, semicolon separated); `--format ets-xml` writes the `GroupAddress-Export` XML instead, which keeps the main and middle range names as a tree.
 
-Names, descriptions and DPTs cross over as they are. ETS has no equivalent of bussard's `protected:` flag, so a guarded address carries a leading `[protected]` marker in its description and stays recognisable on the other side.
+Names, descriptions and DPTs cross over as they are. ETS has no equivalent of bussard's `protected` flag, so a guarded address carries a leading `[protected]` marker in its description and stays recognisable on the other side.
 
 ## ... capture history and query it?
 
@@ -566,4 +567,4 @@ Git is optional: `bussard history` and `bussard undo` work without it. If you do
 
 ### ETS with git
 
-If ETS stays the tool of record, keep git as the review log: after every ETS session, export the `.knxproj`, run `bussard import project.knxproj --dir knx`, and commit. Before committing, `bussard diff <last-export>.knxproj project.knxproj` explains the session in sentences; that is the review. The commit then holds the YAML diff for anyone who reads it.
+If ETS stays the tool of record, keep git as the review log: after every ETS session, export the `.knxproj`, run `bussard import project.knxproj --dir knx`, and commit. Before committing, `bussard diff <last-export>.knxproj project.knxproj` explains the session in sentences; that is the review. The commit then holds the TOML diff for anyone who reads it.

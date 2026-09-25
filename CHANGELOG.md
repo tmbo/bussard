@@ -10,6 +10,46 @@ The first release, planned as 0.1.0 (#92). This section describes what `main`
 does today. A `0.1.0` tag from 2026-09-16 exists but was never released; this
 entry supersedes it and is not a diff against it.
 
+### Breaking changes
+
+bussard is pre-release and keeps no compatibility shims. What a model
+directory or a script from before these changes needs:
+
+- **Lock version 2 only** (#228): a `bussard.lock` of another version is
+  refused with the fix, `bussard import <export> --dir <dir>`, which
+  regenerates it.
+- **Product data moved** (#228): archives live in `<dir>/products/` (retained,
+  pinned in the lock, no longer git-ignored by bussard); the first command
+  moves an old `vendor/` there. Product models live in `.bussard/models/` and
+  regenerate; the old `<dir>/models/` is not read.
+- **The model is TOML**: the YAML model files are not read; re-import the ETS
+  project into an empty directory.
+- **Global options** (#228): `--dir`, `--gateway`, `--routing`, `--keyring`,
+  `--json`, `--allow-remote-gateway`, `--skip-address-check` and
+  `--refresh-facts` are one global group. Existing command lines keep
+  working; `--json` on a command without JSON output is now refused.
+- **`keyring` subcommand removed** (#241): `bussard keys show` summarizes
+  the key store, `bussard keys import` brings an ETS export into it and
+  `bussard keys export` writes one back. Keys resolve from an explicit
+  `--keyring` / `BUSSARD_KEYRING` file, else `bussard.keys`, else the
+  deprecated `connection.keyring`.
+- **`validate --format` removed** (#228): use the global `--json`; the
+  document is `{"schema", "diagnostics": [...]}` instead of a bare array.
+- **Download consent is `--yes-download`** (#228) on `init`, `import`,
+  `import-product` and `adopt`; `--yes` only skips the confirmation prompt,
+  on every command.
+- **`adopt [ADDRESS]`** (#228): the target address is an optional argument
+  (default: the next free one); `BUSSARD_ADOPT_ADDRESS` is gone. A
+  non-interactive `adopt` needs `--yes` and nothing else.
+- **JSON documents carry a schema** (#228): every `--json` document is an
+  object whose first field is `"schema": <n>` (each `monitor --json` line
+  too); `history --json` is `{"schema", "snapshots": [...]}`.
+- **One non-TTY refusal** (#228): `refusing to <action> without a terminal to
+  confirm on; pass --yes to confirm non-interactively`.
+- **`replace --product` is optional** (#228): the archive the lock pins is the
+  default. A `--product` or `--application` that contradicts the lock is
+  refused by `flash`, `apply` and `replace` unless `--force`.
+
 ### Added
 
 **The model and the ETS import**
@@ -408,10 +448,6 @@ entry supersedes it and is not a diff against it.
 
 ### Changed
 
-- **Breaking:** the `bussard keyring <FILE>` subcommand is removed;
-  `bussard keys show` summarizes the key store, and `bussard keys import`
-  brings an ETS export into it (#241).
-
 - Product data is resolved from the lock and the store everywhere (#228):
   `replace` no longer requires `--product`, `flash --product <export>` needs
   no `--application` when the lock pins the program, and `adopt` stores an
@@ -477,26 +513,12 @@ entry supersedes it and is not a diff against it.
   `--dry-run` and `--plan` stay per command. A command without JSON output now
   refuses `--json` with a message instead of a clap error; read-only commands
   accept and ignore `--allow-remote-gateway`.
-- One confirmation rule and one output contract (#228). Breaking:
-  - `validate --format text|json` is removed; use the global `--json`. The
-    JSON is now `{"schema", "diagnostics": [...]}` instead of a bare array.
-  - `init --yes` and `import --yes` are renamed `--yes-download`. `adopt --yes`
-    no longer consents to the product-data download; pass `--yes-download`.
-    `--yes` now means only "skip the confirmation prompt" on every command.
-  - `adopt` takes its target address as an optional `ADDRESS` argument
-    (default: the next free one, as for `assign`); `BUSSARD_ADOPT_ADDRESS` is
-    gone. A non-interactive `adopt` needs `--yes` and nothing else.
-  - Every `--json` document is an object whose first field is `"schema": <n>`;
-    each `monitor --json` line carries it. `history --json` is now
-    `{"schema", "snapshots": [...]}`. Other shapes only gain the field.
-  - Every non-TTY refusal reads `refusing to <action> without a terminal to
-    confirm on; pass --yes to confirm non-interactively`, from one helper.
-  - `read`, `write`, `assign`, `show` and `undo` gain `--json`.
-  - The missing-keyring, missing-password and real-gateway opt-in messages
-    have one wording each, shared by the CLI, the MCP server, `viz` and the
-    libraries (`bussard_service::guidance`).
-  - The `--force` and `--full` help texts name the refusal they override or
-    say "skip nothing", with the same words where two commands mean the same.
+- One confirmation rule and one output contract (#228): see Breaking changes
+  above. `read`, `write`, `assign`, `show` and `undo` gain `--json`; the
+  missing-keyring, missing-password and real-gateway opt-in messages have one
+  wording each, shared by the CLI, the MCP server, `viz` and the libraries
+  (`bussard_service::guidance`); the `--force` and `--full` help texts name
+  the refusal they override.
 - Without `--dir`, a command finds the model directory itself: `.` when it
   holds `bussard.toml`, else `./knx`, else the nearest parent holding
   `bussard.toml` or `knx/bussard.toml`, else `knx` as before. Commands now work

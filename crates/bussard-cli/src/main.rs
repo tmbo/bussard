@@ -744,7 +744,7 @@ enum Command {
         #[arg(long, value_name = "FILE", conflicts_with = "line")]
         product: Option<PathBuf>,
         /// The application program id to decode the parameters with (default:
-        /// the model's application ref, else the order number, else the sole one).
+        /// the program the lock pins, else the order number's, else the sole one).
         #[arg(long, value_name = "REF", conflicts_with = "line")]
         application: Option<String>,
         /// Read the links and tables only: skip the parameter read-back and the
@@ -945,7 +945,7 @@ enum Command {
         #[arg(long, value_name = "FILE", conflicts_with = "line")]
         product: Option<PathBuf>,
         /// The application program id to decode the parameters with (default:
-        /// the model's application ref, else the order number, else the sole one).
+        /// the program the lock pins, else the order number's, else the sole one).
         #[arg(long, value_name = "REF", conflicts_with = "line")]
         application: Option<String>,
         /// The raw 32-hex-character KNX Data Secure tool key — the test/bench

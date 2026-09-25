@@ -6,6 +6,10 @@ are draft identifiers used by the persona docs; they are not GitHub issue
 numbers. Drafts were filed on GitHub on 2026-09-21 and 2026-09-22; the table links the
 issue. Existing GitHub issues predating the drafts are written `#71`.
 
+The drafts describe the design at filing time; command names and flags in
+them (`scaffold`, `vendor/`, `models/`) may differ from today's CLI. The
+[reference](../reference.md) is authoritative.
+
 Priority reflects how many journey stages a draft unblocks and how far it is
 from existing code. P1 drafts compose existing commands; P2 add a subsystem; P3
 depend on platform work (mask coverage, Secure) or are planning-stage tooling.

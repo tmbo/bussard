@@ -104,7 +104,7 @@ read-before-your-first-write guide. In case you like living dangerously, TL;DR:
 - Every device write is plan-before-apply: bussard reads the live state, shows the diff, asks for confirmation, backs up, writes, and verifies.
 - Writes to a non local gateway are refused unless you opt in with `--allow-remote-gateway` (or `BUSSARD_ALLOW_REAL_GATEWAY=1`). Every write confirmation names the resolved gateway.
 - A group address marked `protected = true` (wind alarm or central functions) is refused. You can only write these by adding `--force` on the CLI. An LLM connecting to bussard over MCP has no override at all and cannot modify protected group addresses.
-- The MCP server has three tiers: passive (never transmits), read (default, rate-limited), write (opt-in via `--allow-writes`).
+- The MCP server has four tiers: passive (never transmits), read (default, rate-limited), write (opt-in via `--allow-writes`) and programming (opt-in via `--allow-programming`: one device's link tables after a plan the human approved).
 
 ## Documentation
 

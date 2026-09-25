@@ -3,7 +3,7 @@
 A data-driven gap analysis of the `LdCtrl*` LoadProcedure interpreter in
 `crates/bussard-download/src/flash.rs`. It answers: across real KNX product
 files, which LoadProcedure ops appear, how often, and which ones `bussard flash`
-does not yet execute — so we know what to implement next and in what order.
+does not yet execute; so we know what to implement next and in what order.
 
 ## Corpus
 
@@ -95,17 +95,17 @@ Ranked by number of distinct apps. "Blocked only by this op" = apps whose every
 
 What each would take to implement:
 
-- `abs_segment` — absolute-segment allocate (`LdCtrlAbsSegment`) plus absolute
+- `abs_segment`: absolute-segment allocate (`LdCtrlAbsSegment`) plus absolute
   `A_Memory` placement. `bussard-mgmt`'s allocate is a stub today.
-- `task_segment` / `task_ctrl1` / `LdCtrlTaskPtr` / `LdCtrlTaskCtrl2` — the
+- `task_segment` / `task_ctrl1` / `LdCtrlTaskPtr` / `LdCtrlTaskCtrl2`: the
   BCU1/BCU2 task-and-segment descriptor programming set. These co-occur:
   **52 of the 54 `abs_segment` apps also use `task_segment`**, and the task-ptr
   / task-ctrl2 ops only ever appear alongside them. They are the classic
   absolute-download machinery of the pre-System-B mask families, not independent
   features.
-- `LdCtrlCompareMem` — read absolute memory (`A_Memory_Read`) and byte-compare;
+- `LdCtrlCompareMem`: read absolute memory (`A_Memory_Read`) and byte-compare;
   one Zennio 0701 app.
-- `LdCtrlCompareRelMem` (issue #51) — **does not appear in any file in the
+- `LdCtrlCompareRelMem` (issue #51): **does not appear in any file in the
   corpus.**
 
 ## Master reset
@@ -113,36 +113,36 @@ What each would take to implement:
 **No real vendor device uses `LdCtrlMasterReset`.** It appears in zero of the 80
 apps across all 7 manufacturers. Its only known user is KNX Virtual's own apps,
 which are not vendor product files. bussard would currently refuse it (it parses
-as a `raw` op and `plan_flash` returns `UnsupportedOp`), and that gap is real —
+as a `raw` op and `plan_flash` returns `UnsupportedOp`), and that gap is real,
 but it is a KNX-Virtual-interop gap, not a real-device gap.
 
 ## Recommendation
 
 **The System B interpreter is complete for the products we can reach.** All 24
 System B apps flash end to end; no 07B0 app needs anything unimplemented. There
-is no highest-value single op to add for real System B hardware — that surface is
+is no highest-value single op to add for real System B hardware; that surface is
 done.
 
 The ranked table is dominated by `abs_segment` + `task_segment`, but those
 numbers are misleading in isolation: every one of those apps is a non-System-B
 device (0705/0701/0021) that `plan_flash` already refuses at the mask gate.
-Implementing `abs_segment` alone unlocks nothing — 52 of its 54 apps also need
+Implementing `abs_segment` alone unlocks nothing; 52 of its 54 apps also need
 the full task-segment set, and all of them need a BCU1/BCU2 absolute-download
 device layer bussard does not have.
 
 Priority order:
 
-1. **`LdCtrlMasterReset`** — smallest change, clears the known KNX-Virtual
+1. **`LdCtrlMasterReset`**: smallest change, clears the known KNX-Virtual
    interop blocker that motivated this analysis. It is one `A_Restart` variant
    (master-reset erase code), not a new device family. Do this first even though
    it has zero real-vendor frequency: it is cheap and it is the actual bug.
 2. **Absolute-download family as one unit** (`abs_segment` + `task_segment` +
-   `task_ctrl1` + `LdCtrlTaskPtr` + `LdCtrlTaskCtrl2`) — only worth starting once
+   `task_ctrl1` + `LdCtrlTaskPtr` + `LdCtrlTaskCtrl2`); only worth starting once
    bussard decides to support BCU2 (0705) devices, which is 44 apps / the single
    largest family in the field. This is a device-support project (a new mask
    family behind the `NotSystemB` gate), not an isolated op. Treat the five ops
    as one milestone; they never appear apart.
-3. **`LdCtrlCompareMem` / `LdCtrlCompareRelMem`** — lowest priority.
+3. **`LdCtrlCompareMem` / `LdCtrlCompareRelMem`**: lowest priority.
    `CompareMem` is one app; `CompareRelMem` (issue #51) appears in no file at
    all. Both are read-and-verify precondition checks, not writers, so their
-   absence never leaves a device half-flashed — they can stay refused safely.
+   absence never leaves a device half-flashed; they can stay refused safely.

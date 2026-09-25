@@ -253,7 +253,7 @@ the human reads the final plan, the tool executes.
 
 ### 5.3 Validation
 
-Strict parsing, then rule passes with rustc-style diagnostics and `--format json`. The
+Strict parsing, then rule passes with rustc-style diagnostics and `--json`. The
 diagnostic table lives in [reference.md](reference.md#validation-diagnostics); the
 rules tied to the file format (E020 to E026) are in
 [model-format.md](model-format.md#errors).
