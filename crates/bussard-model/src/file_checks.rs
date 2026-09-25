@@ -10,8 +10,9 @@
 //! * **E022** — a device file's `product` differs from its lock entry (or the
 //!   entry is missing).
 //! * **E023** — a key in a device file that the lock does not assign: an
-//!   unknown channel, parameter or object key. The message lists the keys the
-//!   lock does assign in that table.
+//!   unknown channel, parameter or object key. A parameter key the device's
+//!   product model (`models/`) resolves is known. The message lists the keys
+//!   the lock does assign in that table.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -23,6 +24,7 @@ use crate::files::{
     DeviceFileTop, EntryValue, LockDevice, LockFile, Resolver, TableRef, scope_entries,
 };
 use crate::loader::{DEVICES_DIR, GROUPS_FILE, LOCK_FILE};
+use crate::param_model::ProductModels;
 use crate::toml_io::{self, line_col};
 use crate::validate::{Diagnostic, Severity};
 
@@ -51,6 +53,10 @@ pub fn check_dir(dir: &Path) -> Vec<Diagnostic> {
         .unwrap_or_default();
     let locks: BTreeMap<IndividualAddress, &LockDevice> =
         lock.devices.iter().map(|d| (d.address, d)).collect();
+    let models = ProductModels::load_apps(
+        dir,
+        lock.devices.iter().filter_map(|d| d.application.as_deref()),
+    );
     let devices = dir.join(DEVICES_DIR);
     let mut names: Vec<String> = fs::read_dir(&devices)
         .map(|rd| {
@@ -63,7 +69,13 @@ pub fn check_dir(dir: &Path) -> Vec<Diagnostic> {
     names.sort();
     for name in names {
         if let Ok(text) = fs::read_to_string(devices.join(&name)) {
-            check_device(&format!("{DEVICES_DIR}/{name}"), &text, &locks, &mut diags);
+            check_device(
+                &format!("{DEVICES_DIR}/{name}"),
+                &text,
+                &locks,
+                &models,
+                &mut diags,
+            );
         }
     }
     diags
@@ -123,6 +135,7 @@ fn check_device(
     file: &str,
     text: &str,
     locks: &BTreeMap<IndividualAddress, &LockDevice>,
+    models: &ProductModels,
     diags: &mut Vec<Diagnostic>,
 ) {
     let path = Path::new(file);
@@ -204,7 +217,12 @@ fn check_device(
         return;
     }
 
-    let resolver = Resolver::new(lock);
+    let model = top
+        .application
+        .as_deref()
+        .or_else(|| lock.and_then(|l| l.application.as_deref()))
+        .and_then(|app| models.get(app));
+    let resolver = Resolver::with_model(lock, model);
     let handles: Vec<String> = lock
         .map(|l| l.channels.iter().map(|c| c.handle().to_string()).collect())
         .unwrap_or_default();

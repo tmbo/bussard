@@ -121,14 +121,20 @@ fn test_import_populates_the_lock() -> TestResult {
         r#"  { key = "output-2", id = "MD-1_M-2_MI-1_CH-1", number = 1, text = "Output (Garage)", label_ref = "MD-1_M-2_MI-1_P-1_R-1", base = 40 },"#,
         r#"  { key = "output-1", id = "MD-1_M-1_MI-1_CH-1", number = 1, text = "Output", label_ref = "MD-1_M-1_MI-1_P-1_R-1", base = 20 },"#,
         r#"  { number = 0, key = "on-off", channel = "heating-7", text = "Switch (Bath)", function = "On/Off", dpt = "1.001", flags = "CW", ref = "O-0_R-1" },"#,
-        r#"  { key = "hidden", ref = "P-5_R-7", param = "P-5" },"#,
-        r#"  { key = "cycle", channel = "heating-7", ref = "P-4_R-5", param = "P-4" },"#,
         r#"  { key = "heating-delay", channel = "heating-7", ref = "P-2_R-3", param = "P-2" },"#,
-        r#"  { key = "mode", channel = "heating-7", ref = "P-3_R-4", param = "P-3" },"#,
         r#"  { key = "output-mode", channel = "output-1", ref = "MD-1_M-1_MI-1_P-2_R-2", param = "MD-1_P-2" },"#,
-        r#"  { key = "output-mode", channel = "output-2", ref = "MD-1_M-2_MI-1_P-2_R-2", param = "MD-1_P-2" },"#,
     ] {
         assert!(lock.contains(line), "lock lacks {line}\n{lock}");
+    }
+    // Only the parameters the device file sets are listed; the others
+    // (vendor defaults) are in the product model.
+    for absent in [
+        r#"key = "hidden""#,
+        r#"key = "cycle""#,
+        r#"key = "mode""#,
+        r#"channel = "output-2", ref"#,
+    ] {
+        assert!(!lock.contains(absent), "lock lists {absent}\n{lock}");
     }
     // Without an override the one language the program offers is used.
     assert!(lock.contains("\nlanguage = \"en-US\"\n"), "{lock}");
@@ -223,6 +229,81 @@ fn test_import_load_save_round_trip_with_product_model() -> TestResult {
     Ok(())
 }
 
+/// The fixture's product model with the parameter refs listed, so a key the
+/// lock does not list resolves through it.
+const MODEL_WITH_REFS_YAML: &str = "parameters:
+  - id: M-00FA_A-00D1-10-0001_MD-1_P-2
+    text: Output mode
+    type: !enum
+      values:
+        - value: 0
+          text: Off
+        - value: 1
+          text: Heating
+    default: '0'
+    refs: [M-00FA_A-00D1-10-0001_MD-1_P-2_R-2]
+  - id: M-00FA_A-00D1-10-0001_P-3
+    text: Mode
+    type: !int
+      min: 0
+    refs: [M-00FA_A-00D1-10-0001_P-3_R-4]
+";
+
+#[test]
+fn test_unlisted_key_resolves_through_the_product_model_else_e023() -> TestResult {
+    let (dir, _) = imported()?;
+    let file = read(&dir, "devices/1.1.30.toml")?;
+    let edited = file
+        .replace(
+            "[channel.heating-7]\n",
+            "[channel.heating-7]\nmode = \"0\"\n",
+        )
+        .replace(
+            "[channel.output-2]\nname = \"Garage\"\n",
+            "[channel.output-2]\nname = \"Garage\"\noutput-mode = \"Heating\"\n",
+        );
+    assert_ne!(edited, file);
+    std::fs::write(dir.join("devices/1.1.30.toml"), &edited)?;
+
+    // Without a product model the keys are unknown.
+    let model = Model::load(&dir)?;
+    let e023 = bussard_model::validate::validate_in_dir(&model, &dir)
+        .into_iter()
+        .filter(|d| d.code == "E023")
+        .count();
+    assert_eq!(e023, 2);
+
+    // With one they resolve, and a save lists them in the lock.
+    std::fs::create_dir_all(dir.join("models"))?;
+    std::fs::write(
+        dir.join(format!("models/{APP_ID}.yaml")),
+        MODEL_WITH_REFS_YAML,
+    )?;
+    let model = Model::load(&dir)?;
+    let e023 = bussard_model::validate::validate_in_dir(&model, &dir)
+        .into_iter()
+        .filter(|d| d.code == "E023")
+        .count();
+    assert_eq!(e023, 0);
+    let ia: IndividualAddress = "1.1.30".parse()?;
+    let params = &model.devices[&ia].device.parameters;
+    assert_eq!(params.get("mode@P-3_R-4"), Some(&"0".to_string()));
+    assert_eq!(
+        params.get("output-mode@MD-1_M-2_MI-1_P-2_R-2"),
+        Some(&"1".to_string())
+    );
+    model.save(&dir)?;
+    let lock = read(&dir, "bussard.lock")?;
+    for line in [
+        r#"  { key = "mode", channel = "heating-7", ref = "P-3_R-4", param = "P-3" },"#,
+        r#"  { key = "output-mode", channel = "output-2", ref = "MD-1_M-2_MI-1_P-2_R-2", param = "MD-1_P-2" },"#,
+    ] {
+        assert!(lock.contains(line), "lock lacks {line}\n{lock}");
+    }
+    assert_eq!(read(&dir, "devices/1.1.30.toml")?, edited);
+    Ok(())
+}
+
 #[test]
 fn test_import_load_without_product_model_keeps_the_label() -> TestResult {
     let (dir, _) = imported()?;
@@ -295,7 +376,8 @@ fn test_derive_facts_with_vendor_defaults() -> TestResult {
     };
     apply_facts(&mut device, &app, &facts, &BTreeMap::new());
     assert!(device.parameters.is_empty());
-    assert_eq!(device.lock.parameters.len(), 6);
+    // Nothing stored, nothing listed.
+    assert!(device.lock.parameters.is_empty());
     assert_eq!(
         device.com_objects.get(&0).and_then(|c| c.key.as_deref()),
         Some("on-off")

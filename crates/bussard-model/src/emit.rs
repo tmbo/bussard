@@ -797,7 +797,11 @@ pub(crate) fn render_device(
     existing: Option<&str>,
     models: Option<&ProductModels>,
 ) -> String {
-    let resolver = Resolver::new(lock);
+    let app_ref = device
+        .product
+        .as_ref()
+        .and_then(|p| p.application_ref.as_deref());
+    let resolver = Resolver::with_model(lock, models.zip(app_ref).and_then(|(m, a)| m.get(a)));
     let parsed = existing.and_then(|text| {
         let doc = toml_io::parse_document(path, text).ok()?;
         let entries = scope_entries(path, text, &doc).ok()?;

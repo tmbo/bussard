@@ -48,6 +48,13 @@ pub struct ParamDef {
     /// labels a device file may write instead of the code (see
     /// [`enum_label`] and [`enum_code`]). Empty for other kinds.
     pub labels: Vec<(i64, String)>,
+    /// The parameter's `Name`, when the product model carries one.
+    pub name: Option<String>,
+    /// The parameter refs that point at this parameter, app-relative
+    /// (`MD-1_P-3_R-45` without the module-instance selector), when the
+    /// product model lists them (`refs:`). A device-file key the lock does not
+    /// list resolves through them (see [`ProductModel::resolve_key`]).
+    pub refs: Vec<String>,
 }
 
 /// A parameter's type, mirroring the `type:` tag in the model YAML.
@@ -101,6 +108,10 @@ struct RawParam {
     default: Option<String>,
     #[serde(default)]
     text: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    refs: Vec<String>,
 }
 
 // Some fields exist only to consume the YAML shape faithfully; the validator
@@ -175,6 +186,12 @@ impl ProductModel {
                     kind: p.param_type.into_kind(),
                     default: p.default,
                     text: p.text.filter(|t| !t.trim().is_empty()),
+                    name: p.name.filter(|n| !n.trim().is_empty()),
+                    refs: p
+                        .refs
+                        .iter()
+                        .map(|r| r.strip_prefix(&prefix).unwrap_or(r).to_string())
+                        .collect(),
                 },
             );
         }
@@ -182,6 +199,47 @@ impl ProductModel {
             bus_current_ma: raw.bus_current_ma,
             parameters,
         })
+    }
+
+    /// Resolves a device-file parameter key the lock does not list, in the
+    /// scope of module instance `selector` (`MD-3_M-18_MI-1`, `None` for an
+    /// application channel or the device level), to a device-form parameter
+    /// ref (`MD-3_M-18_MI-1_P-14_R-14`).
+    ///
+    /// The key's last `.`-separated part must equal the slug of exactly one
+    /// parameter's text (else its name) among the parameters of that scope
+    /// (the module definition's, or the application's own), and that
+    /// parameter must have exactly one ref. `None` otherwise: the model lacks
+    /// the refs, the key is unknown, or it is ambiguous.
+    pub fn resolve_key(&self, selector: Option<&str>, key: &str) -> Option<String> {
+        let wanted = key.rsplit('.').next().unwrap_or(key);
+        let module_def = selector.and_then(|s| s.split_once('_').map(|(md, _)| md));
+        let mut hits = self.parameters.iter().filter(|(id, def)| {
+            let in_scope = match module_def {
+                Some(md) => id.strip_prefix(md).is_some_and(|r| r.starts_with('_')),
+                None => !id.starts_with("MD-"),
+            };
+            in_scope
+                && def
+                    .text
+                    .as_deref()
+                    .or(def.name.as_deref())
+                    .is_some_and(|t| crate::slug(t) == wanted)
+        });
+        let (_, def) = hits.next()?;
+        if hits.next().is_some() {
+            return None;
+        }
+        let [reference] = def.refs.as_slice() else {
+            return None;
+        };
+        match (selector, module_def) {
+            (Some(sel), Some(md)) => {
+                let rest = reference.strip_prefix(md)?;
+                Some(format!("{sel}{rest}"))
+            }
+            _ => Some(reference.clone()),
+        }
     }
 }
 
@@ -370,6 +428,55 @@ mod tests {
         // Missing `@` or `_R-` is malformed.
         assert_eq!(key_to_param_id("noatsign_R-1"), None);
         assert_eq!(key_to_param_id("slug@P-1"), None);
+    }
+
+    const REFS_YAML: &str = "\
+parameters:
+  - id: M-1_A-1_MD-3_P-14
+    text: Betriebsart
+    type: !int
+      min: 0
+    refs: [M-1_A-1_MD-3_P-14_R-14]
+  - id: M-1_A-1_P-19
+    text: Regenalarm
+    type: !int
+      min: 0
+    refs: [M-1_A-1_P-19_R-38]
+  - id: M-1_A-1_P-20
+    text: Zwei Refs
+    type: !int
+      min: 0
+    refs: [M-1_A-1_P-20_R-1, M-1_A-1_P-20_R-2]
+  - id: M-1_A-1_P-21
+    name: OhneRefs
+    type: !int
+      min: 0
+";
+
+    #[test]
+    fn test_resolve_key_through_text_and_refs() -> Result<(), serde_norway::Error> {
+        let model = ProductModel::from_yaml(REFS_YAML, "M-1_A-1")?;
+        assert_eq!(
+            model
+                .resolve_key(Some("MD-3_M-18_MI-1"), "betriebsart")
+                .as_deref(),
+            Some("MD-3_M-18_MI-1_P-14_R-14")
+        );
+        assert_eq!(
+            model.resolve_key(None, "regenalarm").as_deref(),
+            Some("P-19_R-38")
+        );
+        // A page-qualified key resolves by its last part.
+        assert_eq!(
+            model.resolve_key(None, "allgemein.regenalarm").as_deref(),
+            Some("P-19_R-38")
+        );
+        // Out of scope, ambiguous refs, no refs, unknown.
+        assert_eq!(model.resolve_key(None, "betriebsart"), None);
+        assert_eq!(model.resolve_key(None, "zwei-refs"), None);
+        assert_eq!(model.resolve_key(None, "ohnerefs"), None);
+        assert_eq!(model.resolve_key(None, "unbekannt"), None);
+        Ok(())
     }
 
     #[test]

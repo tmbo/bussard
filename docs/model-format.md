@@ -231,8 +231,16 @@ checked against the range. Without the product model the string is kept as
 written and validation reports that the value could not be checked.
 
 The loader translates between the file key and the parameter ref through
-the lock. A device whose lock entry is missing cannot resolve its parameters
-or object keys; validation reports E021 with the command that creates the
+the lock. A parameter key the lock does not list (a value the user sets for
+the first time) resolves through the product model: the key must equal the
+slug of exactly one parameter's text in the channel's scope (the module
+definition's parameters for a module channel, the application's own
+otherwise), that parameter must have exactly one ref in the model, and the
+next save adds the key to the lock. A key that resolves neither way is
+E023. A `<slug>@<ref>` escape key always resolves, lock or not. A key the
+lock lists for one channel does not resolve in another channel's table.
+A device whose lock entry is missing cannot resolve its parameters or
+object keys; validation reports E021 with the command that creates the
 entry (`adopt`, `import`, or `import-product` plus `import`).
 
 ## `bussard.lock`
@@ -286,9 +294,12 @@ the join between the user's words and the vendor's ids:
   `key` is present when a key could be derived; `channel` names the channel
   handle; `text`, `function`, `dpt`, `size`, `flags`, `ref` and `secure` are
   the vendor's object definition.
-- `parameters[]` lists every parameter that is stored or storable for this
-  device with its file key, channel, ref (the visible ref) and parameter id
-  (the memory cell). Only one ref per parameter id appears.
+- `parameters[]` lists the parameters the device file holds a value for,
+  with the file key, channel, ref (the visible ref) and parameter id (the
+  memory cell). Only one ref per parameter id appears. The channel label
+  parameters are the channels' `label_ref`. The rest of the program's
+  parameters, with their texts, types and defaults, are in the product model
+  under `models/`.
 - The product facts (program, manufacturer, hardware, mask) and the device
   state of KNX Secure (`secure_capable`, `has_fdsk_certificate`,
   `sequence_number`) live here; the device file keeps only the intent.
@@ -436,7 +447,7 @@ with file, line and column from `toml_edit` spans:
 | E020 | duplicate GA in `groups.toml` (both lines), duplicate object in a device file |
 | E021 | device has channels, parameters or keyed objects but no lock entry |
 | E022 | device `product` differs from the lock entry |
-| E023 | unknown parameter or object key in a channel; lists the channel's keys |
+| E023 | parameter or object key in a channel that neither the lock nor the product model resolves; lists the channel's keys |
 | E024 | object linked to a GA whose main DPT number differs from the object's |
 | E025 | `send` on an object without the T flag; `listen` on an object without the W flag |
 | E026 | parameter values could not be checked because the product model is missing (warning) |

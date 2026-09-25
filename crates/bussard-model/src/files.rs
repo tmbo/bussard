@@ -18,7 +18,9 @@ use crate::address::{GroupAddress, IndividualAddress};
 use crate::dpt::Dpt;
 use crate::flags::Flags;
 use crate::loader::LoadError;
-use crate::param_model::{ParamDef, ProductModels, enum_code, enum_label, key_to_param_id};
+use crate::param_model::{
+    ParamDef, ProductModel, ProductModels, enum_code, enum_label, key_to_param_id,
+};
 use crate::schema::{
     Channel, ComObject, Device, DeviceLock, DeviceSecurity, Link, Location, LockedParameter,
     Product, Spelling,
@@ -509,28 +511,50 @@ fn object_value(
 // ---------------------------------------------------------------------------
 
 /// Resolves device-file keys to object numbers and parameter refs through a
-/// lock entry.
+/// lock entry, and parameter keys the lock does not list through the
+/// device's product model when one is loaded.
 #[derive(Debug, Default)]
-pub(crate) struct Resolver {
+pub(crate) struct Resolver<'a> {
     /// `(scope, key)` → object number.
     objects: BTreeMap<(Option<String>, String), u16>,
     /// key → the object number when the key is unique within the device.
     objects_any: BTreeMap<String, Option<u16>>,
     /// `(scope, key)` → parameter ref.
     params: BTreeMap<(Option<String>, String), String>,
-    /// key → the ref when the key is unique within the device.
+    /// key → the ref of a device-level parameter when the key is unique
+    /// within the device, so it resolves from a channel table too. A channel
+    /// parameter does not resolve from another table: the lock lists only
+    /// stored parameters, so the same key in another channel is most likely
+    /// that channel's own parameter (resolved through the product model).
     params_any: BTreeMap<String, Option<String>>,
     /// Every key per scope, for the E023 listing.
     keys: BTreeMap<Option<String>, BTreeSet<String>>,
+    /// The product model of the device's application, for parameter keys
+    /// the lock does not list.
+    model: Option<&'a ProductModel>,
+    /// Channel handle → the module-instance selector of the channel (`None`
+    /// for an application channel).
+    selectors: BTreeMap<String, Option<String>>,
 }
 
-impl Resolver {
-    /// Builds the resolver for a lock entry (an empty one without).
-    pub fn new(lock: Option<&LockDevice>) -> Self {
-        let mut r = Resolver::default();
+impl<'a> Resolver<'a> {
+    /// Builds the resolver for a lock entry (an empty one without) and the
+    /// device's product model, through which a parameter key the lock does
+    /// not list resolves.
+    pub fn with_model(lock: Option<&LockDevice>, model: Option<&'a ProductModel>) -> Self {
+        let mut r = Resolver {
+            model,
+            ..Resolver::default()
+        };
         let Some(lock) = lock else {
             return r;
         };
+        for ch in &lock.channels {
+            r.selectors.insert(
+                ch.handle().to_string(),
+                channel_selector(&ch.id).map(str::to_string),
+            );
+        }
         for object in &lock.objects {
             let scope = object.channel.clone();
             let key = object
@@ -552,12 +576,13 @@ impl Resolver {
                 .entry(scope.clone())
                 .or_default()
                 .insert(param.key.clone());
+            let device_level = scope.is_none();
             r.params
                 .insert((scope, param.key.clone()), param.reference.clone());
             r.params_any
                 .entry(param.key.clone())
                 .and_modify(|p| *p = None)
-                .or_insert(Some(param.reference.clone()));
+                .or_insert(device_level.then(|| param.reference.clone()));
         }
         r
     }
@@ -574,12 +599,35 @@ impl Resolver {
             .or_else(|| self.objects_any.get(key).copied().flatten())
     }
 
-    /// The parameter ref `key` names in `scope` through the lock.
-    pub fn param_ref(&self, scope: Option<&str>, key: &str) -> Option<&str> {
+    /// The parameter ref `key` names in `scope` through the lock, else
+    /// through the product model.
+    pub fn param_ref(&self, scope: Option<&str>, key: &str) -> Option<String> {
+        self.locked_param_ref(scope, key)
+            .map(str::to_string)
+            .or_else(|| self.model_param_ref(scope, key))
+    }
+
+    /// The parameter ref `key` names in `scope` through the lock alone.
+    pub fn locked_param_ref(&self, scope: Option<&str>, key: &str) -> Option<&str> {
         self.params
             .get(&(scope.map(str::to_string), key.to_string()))
             .map(String::as_str)
             .or_else(|| self.params_any.get(key).and_then(|r| r.as_deref()))
+    }
+
+    /// The parameter ref a key the lock does not list names in `scope`,
+    /// through the product model ([`ProductModel::resolve_key`]). A scope
+    /// the lock does not define resolves nothing.
+    pub fn model_param_ref(&self, scope: Option<&str>, key: &str) -> Option<String> {
+        let model = self.model?;
+        if key.contains('@') {
+            return None;
+        }
+        let selector = match scope {
+            Some(handle) => self.selectors.get(handle)?.as_deref(),
+            None => None,
+        };
+        model.resolve_key(selector, key)
     }
 
     /// The in-memory parameter key for a file key: `<slug>@<ref>` when the lock
@@ -587,7 +635,7 @@ impl Resolver {
     /// or an unknown key that validation reports).
     pub fn param_mem_key(&self, scope: Option<&str>, key: &str) -> String {
         match self.param_ref(scope, key) {
-            Some(reference) => param_mem_key(key, reference),
+            Some(reference) => param_mem_key(key, &reference),
             None => key.to_string(),
         }
     }
@@ -690,7 +738,11 @@ pub(crate) fn join_device(
     let lock = locks.get(&top.address).copied();
     let doc = toml_io::parse_document(path, text)?;
     let entries = scope_entries(path, text, &doc)?;
-    let resolver = Resolver::new(lock);
+    let pinned = top
+        .application
+        .as_deref()
+        .or_else(|| lock.and_then(|l| l.application.as_deref()));
+    let resolver = Resolver::with_model(lock, models.zip(pinned).and_then(|(m, a)| m.get(a)));
 
     // Channels: the lock's, named by the file.
     let mut handle_to_id: BTreeMap<String, String> = BTreeMap::new();
@@ -768,13 +820,28 @@ pub(crate) fn join_device(
         }
     }
 
-    // Parameters and links.
+    // Parameters and links. A key the product model resolves (the lock does
+    // not list it) gains a lock entry, so the next save records it.
     let mut links: Vec<Link> = Vec::new();
+    let mut via_model: Vec<(String, LockedParameter)> = Vec::new();
     for entry in &entries.entries {
         let scope = entry.table.scope();
         match &entry.value {
             EntryValue::Param(value) => {
-                let key = resolver.param_mem_key(scope, &entry.full_key());
+                let full_key = entry.full_key();
+                let key = resolver.param_mem_key(scope, &full_key);
+                if resolver.locked_param_ref(scope, &full_key).is_none()
+                    && let Some(reference) = resolver.model_param_ref(scope, &full_key)
+                {
+                    via_model.push((
+                        reference,
+                        LockedParameter {
+                            key: full_key,
+                            channel: scope.map(id_of),
+                            param: key_to_param_id(&key),
+                        },
+                    ));
+                }
                 if ref_of(&key).is_some_and(|r| channel_labels.values().any(|l| l == r)) {
                     // The label is the channel name; an escape-hatch spelling
                     // of it only counts when the channel sets no name.
@@ -883,6 +950,7 @@ pub(crate) fn join_device(
             }
         }
     }
+    extras.parameters.extend(via_model);
 
     let device = Device {
         address: top.address,

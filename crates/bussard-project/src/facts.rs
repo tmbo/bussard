@@ -183,7 +183,8 @@ pub fn derive_facts(
 }
 
 /// Writes `facts` into `device`: channel handles, texts and labels, object
-/// keys and texts, the lock's parameter index, and the parameter values.
+/// keys and texts, the lock's parameter index (the parameters `stored` holds
+/// a value for), and the parameter values.
 ///
 /// `stored` holds the values the device file keeps (the non-default ones),
 /// keyed by app-relative ref with the module-instance selector. Each is keyed
@@ -250,9 +251,12 @@ pub fn apply_facts(
         co.function = o.function.clone();
     }
 
+    // The lock lists the parameters the device file holds a value for; the
+    // rest of the program's parameters are in the product model.
     device.lock.parameters = facts
         .parameters
         .iter()
+        .filter(|p| stored.contains_key(&p.reference))
         .map(|p| {
             (
                 p.reference.clone(),
