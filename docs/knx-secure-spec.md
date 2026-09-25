@@ -701,7 +701,7 @@ addressed.
 The send sequence is seeded from the clock (§5.8) but advances **once per APDU**,
 so after a few hundred APDUs it is far ahead of the wall clock. A flash
 reconnects (a master reset, a dropped L4 link), and a session rebuilt from the
-clock therefore replays sequences the device has already accepted — the device
+clock therefore replays sequences the device has already accepted; the device
 refuses every one as stale. **A new session for the same device must seed from
 `max(clock, last_sent + 1)`**, i.e. the per-device high-water mark has to outlive
 the connection (`bussard_secure::SequenceHighWater`). Cross-*process*

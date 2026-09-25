@@ -48,16 +48,16 @@ standard frames, the three parallel load-state machines, verify by read-back.
   standard frame only (section 6) [research 5.3, CONFIRMED substance].
 
 0701 and 0705 share the resource model and op set, but the **LSM realisation is
-vendor / mask-family dependent** — they are NOT identical at the wire level. Two
+vendor / mask-family dependent**; they are NOT identical at the wire level. Two
 real-ETS download captures settle it (superseding the earlier "0701==0705"
 claim):
 
 - **Jung `0705`** (M2 issue #70, plus the binaereingang / automitschalter /
   schaltaktor 0705 analysis captures) drives load control **property-based** over
-  `PID_LOAD_STATE_CONTROL` (PID 5) — see §5.
+  `PID_LOAD_STATE_CONTROL` (PID 5); see §5.
 - **Theben `0701`** (Meteodata 1409207, IA 1.1.202) drives load control
   **memory-mapped**: 11-octet records written by `A_Memory_Write` to `0x0104`,
-  status read at `0xB6EA + (lsm - 1)`, with ZERO PID-5 traffic — see §5.
+  status read at `0xB6EA + (lsm - 1)`, with ZERO PID-5 traffic; see §5.
 
 So the download-path realisation branches on the mask family (0705 → property,
 0701 → memory-mapped) via `Sys7Profile::corpus_default_for_mask`. Any further
@@ -146,7 +146,7 @@ separate write op (section 4.2). Address families `[corpus §3]`:
 A segment with `<Data>` == `None` (e.g. 0x0700) is an **allocation-only** record:
 the LSM reserves/zeroes device-initialised RAM; no memory write is streamed.
 
-### 2.4 HawkConfigurationData — the load-bearing architecture decision
+### 2.4 HawkConfigurationData: the load-bearing architecture decision
 
 Do **not** hardcode per-mask addresses in Rust. Every `.knxprod`'s
 `knx_master.xml` carries a `HawkConfigurationData` block: the per-mask
@@ -174,7 +174,7 @@ the corpus shape is uniform enough to drive blind.
 carries a `LoadControl_M112 @ StandardMemory 0x0104` block, which pre-M2 was read
 as "this device's LSM is a 12-octet memory record". The M2 capture disproved that
 reading (control is property; see section 5). So bussard's normal flash path does
-**not** feed a parsed Hawk config to the planner — it plans with the property
+**not** feed a parsed Hawk config to the planner; it plans with the property
 corpus default. `sys7_profile_from_hawk` stays for the memory-mapped conformance
 harness only.
 
@@ -188,10 +188,10 @@ step. Ship the seam first.
 
 System 7 runs **three** LSMs in parallel (System B uses one) `[corpus: 49/49]`:
 
-- **LSM 1** — table region at 0x4000 (address table + com-object descriptors).
-- **LSM 2** — table region at 0x4201 (association + group-object).
-- **LSM 3** — parameters (0x0700 RAM alloc + 0x4400 param image).
-- **LSM 5** — named only by a tail some converted (pre-ETS4) procedures carry
+- **LSM 1**: table region at 0x4000 (address table + com-object descriptors).
+- **LSM 2**: table region at 0x4201 (association + group-object).
+- **LSM 3**: parameters (0x0700 RAM alloc + 0x4400 param image).
+- **LSM 5**: named only by a tail some converted (pre-ETS4) procedures carry
   *after* the restart (Theben FIX2 `M-0048_A-4947`, Jung 2308.16REGHM
   `M-0004_A-2088-11`: `LdCtrlRestart`, `LdCtrlTaskSegment LsmIdx="5"`,
   `LdCtrlLoad LsmIdx="5"`). ETS sends nothing after the restart (captures
@@ -390,7 +390,7 @@ endian, total 10 octets `[XKNX, CONFIRMED]`:
 `access`: bits 0–3 write level, bits 4–7 read level. `mem_type` bits 0–2: 1 =
 zero-page RAM, 2 = RAM, 3 = EEPROM. `mem_attr` bit 7 = checksum-control enable.
 
-### 4.2 AbsSegment — allocation record + payload
+### 4.2 AbsSegment: allocation record + payload
 
 `AbsSegment{lsm_idx, address, size}` lowers to two device actions:
 
@@ -399,7 +399,7 @@ zero-page RAM, 2 = RAM, 3 = EEPROM. `mem_attr` bit 7 = checksum-control enable.
    `[event=3][subtype=0][start:2 BE][length:2 BE][seg_flags][mem_type][checksum_ctrl][reserved]`.
    **M2 CONFIRMED** (cross-checked against the Jung app M-0004_A-A011's declared
    AbsSegment addresses/sizes): the opcode/subtype, the big-endian `start` and
-   `length` (= the declared segment size in octets), and `mem_type` at octet 7 —
+   `length` (= the declared segment size in octets), and `mem_type` at octet 7,
    `2` (RAM) for the `0x0700` low-RAM region, `3` (EEPROM) for the `0x4xxx`
    table/param regions. Every captured record's length equals the product's
    declared size (e.g. `0x43FF` size 811 = `0x032B`; `0x4743` size 260 = `0x0104`).
@@ -411,7 +411,7 @@ zero-page RAM, 2 = RAM, 3 = EEPROM. `mem_attr` bit 7 = checksum-control enable.
    checksum_ctrl (0x80/0x00) octets from product data`.
 2. **Stream payload:** if the segment carries `<Data>`, write those bytes to
    `address` via absolute `A_Memory_Write` in 12-octet chunks (section 6). **The
-   segment `<Data>` IS the payload** — there is no separate `WriteMem` op
+   segment `<Data>` IS the payload**; there is no separate `WriteMem` op
    `[corpus §2]`. A segment with no `<Data>` is allocate-only; skip the write.
 
 The 0x4000 segment carries a per-byte `<Mask>`: `0xFF` = this byte belongs to the
@@ -441,7 +441,7 @@ reads `stream segment (read-compare, N octets)`, and `plan.json` marks each
 segment image `write_mode: read-compare` (or `blind`). A re-flash of an unchanged
 device writes nothing but the load-state records.
 
-### 4.3 TaskSegment — per-LSM finalize
+### 4.3 TaskSegment: per-LSM finalize
 
 `TaskSegment{lsm_idx, address}` `[corpus: 47/49]` writes a task/segment
 descriptor pointing at the segment base, issued once per LSM immediately before
@@ -459,7 +459,7 @@ descriptor committed"; it is a precondition for the following `LoadCompleted`.
 
 ### 4.4 TaskCtrl1
 
-`TaskCtrl1{lsm_idx, address, count}` `[corpus: 3/49 — Theben, Steinel, Elsner;
+`TaskCtrl1{lsm_idx, address, count}` `[corpus: 3/49; Theben, Steinel, Elsner;
 plus Jung M-0004_A-A011]` is `AdditionalLoadControls` subtype 0x04,
 `[address:2][count]`. It writes a task-control table entry `count` times.
 
@@ -476,13 +476,13 @@ address/count fields with the captured all-zero record.`
 
 ### 4.5 CompareMem
 
-Raw `LdCtrlCompareMem{Address, InlineData, Size}` `[corpus: 1/49 — Zennio
+Raw `LdCtrlCompareMem{Address, InlineData, Size}` `[corpus: 1/49; Zennio
 LUMENTO]`: an absolute `A_Memory_Read(Address, Size)` + byte-compare against
 `InlineData`; mismatch fails the flash. No LSM interaction. Second-phase op.
 
-### 4.6 CompareProp obj0 / PID78 — the MDT preflight
+### 4.6 CompareProp obj0 / PID78: the MDT preflight
 
-`CompareProp{obj_idx=0, prop_id=78, inline_data}` `[corpus: 44/49 — all MDT]`
+`CompareProp{obj_idx=0, prop_id=78, inline_data}` `[corpus: 44/49; all MDT]`
 runs **before** any Unload: read object-0 property 78 (`PID_HARDWARE_TYPE` in
 `apci.rs`) and byte-compare against the 10-octet `InlineData`, e.g.
 `00000000 03 12 00000000`. Mismatch fails the flash (it guards against flashing
@@ -495,20 +495,20 @@ octets as opaque expected bytes from `InlineData`; do not synthesize it. The sim
 must serve object-0 PID78 as a readable 10-octet value that a correctly-targeted
 flash matches. `S7-CAL: PID78 value semantics and how the sim seeds it`.
 
-There is **no `WriteProp`** of the app id anywhere in System 7 — the device
+There is **no `WriteProp`** of the app id anywhere in System 7; the device
 derives run-state from the loaded tables, ETS only checks `[corpus §5]`.
 
 ---
 
-## 5. LSM realisation — RESOLVED: vendor / mask-family dependent
+## 5. LSM realisation, resolved: vendor / mask-family dependent
 
 **This was the single most important open question. Two real-ETS download
-captures settle it — and the answer is that the realisation depends on the mask
+captures settle it, and the answer is that the realisation depends on the mask
 family, NOT a single global default.**
 
 **Verdict (both captures CONFIRMED):**
 
-- **Jung `0705` — property-based.** The M2 live capture (issue #70, a real ETS 6
+- **Jung `0705`: property-based.** The M2 live capture (issue #70, a real ETS 6
   download to a Jung 3361-1M) and the 0705 analysis captures (binaereingang,
   automitschalter, schaltaktor) drive their LSMs **property-based**: every Unload
   / StartLoading / AbsSegment / TaskSegment / LoadCompleted is an
@@ -517,7 +517,7 @@ family, NOT a single global default.**
   `A_Memory_Write` to `0x0104`** anywhere; the only `0xB6EA+` touch is a single
   readable-status `A_Memory_Read`. So [`LsmAccess::Property`] is the `0705`
   default.
-- **Theben `0701` — memory-mapped.** The Theben Meteodata 1409207 (IA 1.1.202)
+- **Theben `0701`: memory-mapped.** The Theben Meteodata 1409207 (IA 1.1.202)
   capture drives its LSMs **memory-mapped**: **11-octet** records written by
   `A_Memory_Write` to `0x0104`, status read at `0xB6EA + (lsm - 1)` (returning
   `02` Loading … `01` Loaded), with **zero PID-5 traffic**. So
@@ -527,19 +527,19 @@ The download path selects the realisation by mask family
 (`Sys7Profile::corpus_default_for_mask`: `0701` → memory-mapped, everything else
 → property), overridable by `HawkConfigurationData` when a product carries a
 usable block. This corrects the earlier claim that property was the default for
-ALL System 7 — that regressed the memory-mapped Theben 0701.
+ALL System 7; that regressed the memory-mapped Theben 0701.
 
 The two research inputs that disagreed before M2:
 
 - **Standards/clean-room research** (`system7-research.md` 2.1): System 7 is a
-  BCU2 descendant; the KNX LSM is property-based — load events written to
+  BCU2 descendant; the KNX LSM is property-based; load events written to
   `PID_LOAD_STATE_CONTROL` (PID 5) via `A_PropertyValue_Write`, state read back
   via `A_PropertyValue_Read`. **M2 confirmed this is correct for 0705.**
 - **First-party evidence** (`[issue #49]`, from `.knxprod` HawkConfigurationData
   + ETS analysis): the `.knxprod` `HawkConfigurationData` carries a
   `LoadControl_M112 @ StandardMemory 0x0104` block with status at `0xB6EA+`, read
   as evidence the LSM is a **12-octet memory record**. **M2 disproved this
-  reading:** the `LoadControl_M112 @ 0x0104` Hawk block did NOT predict the wire —
+  reading:** the `LoadControl_M112 @ 0x0104` Hawk block did NOT predict the wire,
   control is property; `0xB6EA+` is a readable status region (the single read at
   `0xB6EC`), not a control-write target. `sys7_profile_from_hawk` no longer feeds
   the normal CLI flash path (it plans with the property corpus default); the
@@ -554,17 +554,17 @@ trait LsmAccess {
 }
 ```
 
-- **`LsmAccess::Property`** (the `0705` default) — `A_PropertyValue_Write(obj, PID
+- **`LsmAccess::Property`** (the `0705` default): `A_PropertyValue_Write(obj, PID
   5, 10-octet event)` / `A_PropertyValue_Read(obj, PID 5) -> 1 octet`. Confirmed
   by the M2 Jung 0705 capture.
-- **`LsmAccess::MemoryMapped`** (the `0701` default) — write the **11-octet**
+- **`LsmAccess::MemoryMapped`** (the `0701` default): write the **11-octet**
   record to the LSM control address (default 0x0104), poll status at
   `0xB6EA + (lsm - 1)`, both via `A_Memory_Write`/`_Read`. Confirmed by the Theben
   0701 Meteodata capture.
 
 The memory-mapped variant's **11-octet** record (Theben 0701 CONFIRMED) folds the
 LSM index into the high nibble of the event opcode byte and widens the address to
-3 octets — there is NO `[lsm][00]` prefix:
+3 octets; there is NO `[lsm][00]` prefix:
 ```
 [0] (lsm << 4) | event_opcode   [1] subtype   [2] 0x00 (addr high octet)
 [3..5] start:2 BE   [5..7] length:2 BE   [7..11] tail (alloc attrs or task marker)
@@ -611,20 +611,20 @@ last-EEPROM `checksum_ctrl 0x00`.
   in `apci.rs`. Do **not** use the 63-octet `MAX_MEMORY_*_LEN` ceiling (that is
   the System B extended-frame path). Fallback max-APDU when unreadable = 15
   `[XKNX PR#1834; M2 CONFIRMED]`. In the M2 capture, `PropRead(obj0, PID 56)`
-  returned count 0 (`47 d6 00 38 00 01`) — max-APDU absent — and ETS fell back to
+  returned count 0 (`47 d6 00 38 00 01`) (max-APDU absent) and ETS fell back to
   the 15-octet standard-frame floor exactly as bussard does.
 - **APDU byte layouts** `[research 5.2, CONFIRMED]`:
   - `A_Memory_Read` APCI 0x0200: `[TPCI|APCI-hi][APCI-lo|count&0x3F][addr-hi][addr-lo]`.
   - `A_Memory_Response` APCI 0x0240: same header + `count` data octets.
   - `A_Memory_Write` APCI 0x0280: same header + `count` data octets. No
-    application-layer ack — verify by read-back.
+    application-layer ack; verify by read-back.
 - **`A_Authorize` before memory access.** Sequence: `T_Connect → A_Authorize_Request
   → memory/load writes → A_Restart` `[corpus §5, research 5.4]`. APCIs
   (CONFIRMED, match `apci.rs`): Authorize_Request 0x3D1, Authorize_Response 0x3D2,
   Key_Write 0x3D3, Key_Response 0x3D4. Key-then-level model: device compares the
   4-octet key against its per-level table and returns the granted level
   (0 = highest privilege … 15 = failed). Unkeyed device → free-access key
-  `0xFFFFFFFF` (`FREE_ACCESS_KEY`). Field layout (INFERRED — verify against raw
+  `0xFFFFFFFF` (`FREE_ACCESS_KEY`). Field layout (INFERRED; verify against raw
   XKNX before wire use, `S7-CAL:`):
   ```
   Authorize_Request:  [APCI][reserved=0x00][key:4 BE]
@@ -632,9 +632,9 @@ last-EEPROM `checksum_ctrl 0x00`.
   Key_Write:          [APCI][level:1][key:4 BE]
   Key_Response:       [APCI][level:1]
   ```
-  **M2 CONFIRMED:** the Jung 0705 download authorized with the free-access key —
+  **M2 CONFIRMED:** the Jung 0705 download authorized with the free-access key,
   `Authorize_Request [d1 00 ff ff ff ff]` → `Authorize_Response [d2 00]` (level 0)
-  — exactly the `[APCI][reserved=0x00][key:4 BE]` / `[APCI][level:1]` layout above,
+ ; exactly the `[APCI][reserved=0x00][key:4 BE]` / `[APCI][level:1]` layout above,
   so `0xFFFFFFFF` suffices on an unkeyed device. The sim must accept the free-access
   key and grant a usable level, and (optionally) reject memory writes issued before
   a successful authorize so bussard's ordering is tested.
@@ -642,17 +642,17 @@ last-EEPROM `checksum_ctrl 0x00`.
   by `A_Memory_Read` + compare of echoed address, length, and bytes; a short
   response is an error `[research 3.1, AL 03.03.07 §3.5, CONFIRMED]`. MCB is
   app-dependent on System 7: absent from the MDT-era corpus but demanded by
-  Jung `A-A011` via `LoadImageProp` PID 27 — see the section 2 amendment. **M2
+  Jung `A-A011` via `LoadImageProp` PID 27; see the section 2 amendment. **M2
   CONFIRMED:** ETS verified the Jung MCB by *reading* `PID 27 (0x1B)` per object
   (`PropRead [d5 03 1b 10 01]` on objects 1/2/3, object 3 across start indices
-  1..6), never writing it — exactly `A_PropertyValue_Read(PID_MCB_TABLE)`. Note
+  1..6), never writing it; exactly `A_PropertyValue_Read(PID_MCB_TABLE)`. Note
   the `10` in that header: **one element per request**. A single `count=6` read
   is refused by the real device (see the section 2 amendment of 2026-09-22).
   Segment checksums (last byte of a checksum-enabled segment) exist on
   the BCU2 lineage but are not required for M1.
 - **Restart semantics** `[research 6.3; M2 Jung 0705 capture CONFIRMED]`. Basic
   Restart APCI 0x380, no payload, fire-and-forget, breaks the management
-  connection — bussard reconnects after the device reboots. The M2 capture shows
+  connection; bussard reconnects after the device reboots. The M2 capture shows
   exactly this: bare `[4f 80]` / `[6f 80]` restarts with no payload and no
   `RestartResponse`, no master-reset (0x381/0x3A1) variant anywhere in a normal
   download. Every load procedure ends with a restart `[corpus: 47/49]`.
@@ -730,7 +730,7 @@ flags/DPT) so a golden-byte test (section 9) can lock them without a device.
 
 Two constants in the existing bussard tree disagree with XKNX. Both are for
 services **not on the System 7 download hot path** (System 7 uses only basic
-Restart 0x380), so neither blocks M1 — but they are latent bugs to fix.
+Restart 0x380), so neither blocks M1; but they are latent bugs to fix.
 **Re-verify against the existing DA.tp captures before changing them**, because
 bussard's master-reset encoding was validated against a real capture, not GPL
 source, and the DA.tp captures are the tie-breaker.
@@ -746,7 +746,7 @@ source, and the DA.tp captures are the tie-breaker.
 2. **`master_reset_error_reason`.** `crates/bussard-mgmt/src/load.rs:496`
    maps `2` = access denied, `3` = unsupported erase code, `4` = invalid channel.
    XKNX's table is **`0x01` = access denied, `0x02` = unsupported erase code,
-   `0x03` = invalid channel** (`0x00` = success) `[research 6.3]` — bussard is
+   `0x03` = invalid channel** (`0x00` = success) `[research 6.3]`; bussard is
    off by one. The `apci.rs:104` doc comment carries the same off-by-one.
    `S7-CAL: master-reset error-code mapping against DA.tp`.
 
@@ -758,15 +758,15 @@ Not errata but adjacent unknowns to resolve at capture: process-time unit
 ## 9. Test plan
 
 **Corpus targets, in order:**
-1. **MDT `M-0083_A-000E`** (AKK-01UP.03, Switching 1-fold) — smallest canonical
+1. **MDT `M-0083_A-000E`** (AKK-01UP.03, Switching 1-fold): smallest canonical
    0705, 6 segments, ~740 B, no TaskCtrl1. Brings up AbsSegment + TaskSegment +
    multi-LSM + the object-0/PID78 preflight. First conformance target.
-2. **MDT `M-0083_A-0008`** (Switching 2-fold) — same shape, sanity-check the
+2. **MDT `M-0083_A-0008`** (Switching 2-fold): same shape, sanity-check the
    engine generalizes across sizes.
-3. **Theben `M-0048_A-4947`** (FIX2 DM 4 T, 0701) — exercises `TaskCtrl1` and the
+3. **Theben `M-0048_A-4947`** (FIX2 DM 4 T, 0701): exercises `TaskCtrl1` and the
    converted post-restart LSM-5 tail (§3, dropped since issue #178). Also
-   surfaces the orthogonal wide-integer parameter-image bug in `bussard-prod` (472-bit field) — track separately.
-4. **Jung `M-0004_A-A011`** (Präsenzmelder Mini Universal, 3361-1MWW) — 11 of the
+   surfaces the orthogonal wide-integer parameter-image bug in `bussard-prod` (472-bit field); track separately.
+4. **Jung `M-0004_A-A011`** (Präsenzmelder Mini Universal, 3361-1MWW): 11 of the
    user's 17 real System 7 devices; **not yet in the corpus, fetch this
    `.knxprod` first**. Expected to match the MDT canonical LSM 1/2/3 shape.
 
@@ -785,7 +785,7 @@ CONFIG/TYPE-synthesis and endianness regressions.
 
 **M2 live-capture milestone.** Capture an ETS re-download of a real Jung 0705
 device (the `.knxprod` from target 4). The plaintext memory-write frames resolve,
-in priority order, every `S7-CAL:` marker: (1) LSM realisation — memory vs
+in priority order, every `S7-CAL:` marker: (1) LSM realisation; memory vs
 property, the 0x0104 / 0xB6EA+ addresses, the 12-octet record layout and status
 protocol; (2) whether `A_Authorize` is mandatory on unkeyed 0705 and the request
 field order; (3) the AbsSegment alloc-record access/mem_type/mem_attr octets and
@@ -798,14 +798,14 @@ greppable.
 
 ## 10. Milestones
 
-- **M1** — MDT canonical shape against the sim: AbsSegment + TaskSegment +
+- **M1**: MDT canonical shape against the sim: AbsSegment + TaskSegment +
   3 parallel LSMs + object-0/PID78 preflight + `A_Authorize` + 12-octet absolute
   memory streaming + read-back verify. Default `LsmAccess::MemoryMapped`, hand-
   written default profile. Covers all 43 MDT apps and (by structure) the Jung
   sensors. Refuse TaskCtrl1 / CompareMem cleanly with a named message.
-- **M1.5** — parse `HawkConfigurationData` into the data-driven mask profile;
+- **M1.5**: parse `HawkConfigurationData` into the data-driven mask profile;
   drop the hand-written default to a fallback.
-- **M2** — live Jung capture resolves the `S7-CAL:` markers; fix any default that
+- **M2**: live Jung capture resolves the `S7-CAL:` markers; fix any default that
   was wrong; add `TaskCtrl1` + post-restart LSM-5 (Theben) and Zennio
   `CompareMem`; fix the two errata against DA.tp.
 ```

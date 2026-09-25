@@ -35,9 +35,9 @@ version a device runs. `bussard import-product <project>.knxproj` and `bussard i
 <project>.knxproj` extract each application program the model needs from that XML,
 once, into its own archive under `<dir>/products/` (see
 [the product store](#the-product-store-products)). After that no command reads the
-export again. `bussard flash <ia> --product <project>.knxproj --application
-<application-id>` still reads an export directly; `--application` is required because
-a project holds several application programs. The generated models are byte-for-byte the same as from the
+export again. `bussard flash <ia> --product <project>.knxproj` still reads an export directly;
+the program is the one the lock pins for the device, and `--application
+<application-id>` is needed only when the lock pins none. The generated models are byte-for-byte the same as from the
 vendor `.knxprod` when the versions match: two ETS3-era Jung devices were flashed from
 their project export and verified against ETS captures (issue #135).
 
@@ -266,7 +266,8 @@ Coverage by manufacturer:
 Mixed masks are deliberate. One MDT switch-actuator `.knxprod` commonly bundles a 07B0
 (System B) app alongside several 0705 (System 7) ones, and the corpus spans 07B0, 0705,
 0701, 0021, 0020 and 0012 families on purpose so the flashability sweep shows real
-family coverage: only the 07B0 apps produce an executable flash plan today.
+family coverage: the System B (07B0) and System 7 (0705, 0701, 0700) apps produce an
+executable flash plan; the older masks are parsed but not flashable.
 
 The fetch path deliberately handles only bare `.knxprod` files: the index points at
 direct `.knxprod` downloads, and the fetched bytes are imported as-is. This keeps the
@@ -276,8 +277,8 @@ read).
 ### Testing against the corpus
 
 The index also backs a repeatable flashability check and a wider one-off 220-file sweep
-(384 application programs, 0 parse failures; only System B apps produce an executable
-flash plan today, since System 7 and older masks are parsed but not yet flashable). The
+(384 application programs, 0 parse failures; the sweep predates System 7 flashing,
+which now plans too, while the older masks stay parse-only). The
 corpus mechanics, sweep findings, and per-op refusal analysis are maintainer material:
 see [the corpus findings in DESIGN.md](DESIGN.md#the-flashability-corpus-and-sweep-findings).
 

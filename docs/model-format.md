@@ -26,13 +26,19 @@ knx/
   .bussard/models/      @generated product models, rebuilt from products/ when missing
 ```
 
-A file is either fully user-owned or fully generated. `bussard.lock` is the
-only generated file: `import` and `adopt` write it and nothing else does.
-Commit it, as you would `Cargo.lock`. A snapshot, a bundle and the model-change fingerprint cover
+A file is either fully user-owned or fully generated. Of the model files
+(the ones snapshots, bundles and the fingerprint cover), `bussard.lock` is
+the only generated one: `import`, `import-product` and `adopt` write it. The
+generated files under `.bussard/` (device facts, product models) are
+regenerable caches outside the model. Commit the lock, as you would
+`Cargo.lock`. `bussard.keys` is written by `bussard keys` (and by `init` and
+`import` when they find a keyring export), is encrypted, and is committed with
+the model. A snapshot, a bundle and the model-change fingerprint cover
 `bussard.toml`, `groups.toml`, `devices/*.toml`, `bussard.lock`, `tests.toml`
 and `ha.toml`.
 
-All files are TOML 1.0 as written by bussard. The parser (the `toml` crate)
+All files except `bussard.keys` (the ETS `.knxkeys` XML shape, see below)
+are TOML 1.0 as written by bussard. The parser (the `toml` crate)
 accepts TOML 1.1 input; the emitter never relies on it. Every string is a
 basic string. Keys are bare wherever TOML allows it and quoted otherwise.
 No key in a file bussard writes needs quotes except the parameter escape
@@ -453,7 +459,7 @@ importing again rewrites the keys in the new language.
   hatch. Only a parameter the configuration shows *and* lets the user edit
   gets a key; the escape hatch is for such a parameter whose text still
   collides after page qualification, never for a hidden ref or one whose
-  effective `Access` is `"None"` (see `hidden[]`) — dropping it out of the
+  effective `Access` is `"None"` (see `hidden[]`); dropping it out of the
   key competition is what usually spares its same-named sibling the escape
   hatch. The channel's label parameter (`label_ref`) gets no key: its value
   is the channel `name`.

@@ -1,6 +1,6 @@
 # Reference
 
-The complete surface of `bussard`: every command and flag, the environment variables, the model directory and its YAML fields, the validation diagnostics, the JSON contracts, and the MCP tools. Verified against the code; `bussard <command> --help` is always authoritative for the build you run.
+The complete surface of `bussard`: every command and flag, the environment variables, the model directory and its TOML fields, the validation diagnostics, the JSON contracts, and the MCP tools. Verified against the code; `bussard <command> --help` is always authoritative for the build you run.
 
 ## Conventions
 
@@ -17,10 +17,14 @@ Precedence, for every option that has more than one source: the flag, then the e
 
 | Option | Environment | `bussard.toml` | Default | Meaning |
 |---|---|---|---|---|
+| `--dir <DIR>` | `BUSSARD_DIR` | | discovered (below) | The model directory. |
+| `--gateway <HOST[:PORT]>` | `BUSSARD_GATEWAY` | `connection.gateway` | none: a tunnel without a gateway is an error | The KNXnet/IP gateway (port defaults to 3671); implies tunnelling. For `init`: use this gateway instead of discovering one (flag or environment only). |
+| `--routing` | | `connection.transport = "routing"` | tunnelling | Use KNXnet/IP routing (multicast). No environment variable can select it, so a scripted multicast write is visible on the command line. For `init`: configure routing. |
 | `--keyring <FILE>` | `BUSSARD_KEYRING` | `connection.keyring` (deprecated) | the key store `bussard.keys` | The KNX Secure keys a bus command uses: their tunnelling users open the [KNXnet/IP Secure tunnel](#knxnetip-secure-tunnelling), their device entries carry the KNX Data Secure tool keys for management, and their group keys secure and decrypt group telegrams. Precedence (issue #241): an explicit `.knxkeys` file from `--keyring`, then `BUSSARD_KEYRING`; else the key store `bussard.keys` in the model directory (see [`bussard keys`](#bussard-keys-verb)); else `connection.keyring` in `bussard.toml`, which is deprecated, kept for one release for models without a store, and ignored with a warning when a store exists. `--keyring` stays as the explicit-file override (a keyring that is not the model's, a bench keyring). A relative `connection.keyring` is relative to the model directory; a relative flag or variable is relative to the working directory. The password comes from `BUSSARD_KEYRING_PASSWORD`, never a flag. Only commands that talk to the bus read it; `adopt` and `test` use it for the tunnel only. A key source other than `--keyring` serves the tunnel only when `--tool-key` is given; `--keyring` itself conflicts with `--tool-key`. |
 | `--json` | | | text | Machine-readable output: one JSON document with a top-level `"schema"`, or JSON Lines for `monitor`. Refused by a command that has no JSON output. `apply --json` needs `--line`. |
 | `--allow-remote-gateway` | `BUSSARD_ALLOW_REAL_GATEWAY=1` (exactly `1`) | deliberately none | off | Permit a transmitting command (a write, programming, an armed `viz` or `mcp`) against a non-loopback gateway. Read-only commands ignore it. No other environment variable can enable a transmit. |
 | `--skip-address-check` | | | off | On the commands that open a connection to a device, skip the pre-flight probe that no bus device answers at bussard's own source individual address. See [SAFETY.md](SAFETY.md#source-address-check). |
+| `--refresh-facts` | | | off | Ignore the stored [device facts](#bussardfacts) and read them from the device again. Consulted by every management command that reads the facts (see [one identity verdict](#one-identity-verdict)). |
 
 `--yes`, `--yes-download`, `--force`, `--dry-run` and `--plan` are not global: they stay on the command whose action they consent to, and never come from the environment or `bussard.toml`.
 
@@ -121,7 +125,7 @@ The count comes from the tunnelling-info DIB (KNXnet/IP Core v2). An interface t
 
 ### `bussard import [PROJECT]`
 
-Import an existing `.knxproj`, a `.bussard` bundle (see [`export`](#bussard-export-file)) or an xknxproject JSON dump into the model. Re-import is idempotent: hand edits to names, DPTs, descriptions and `protected:` flags survive where the address is unchanged; device files whose address left the project are pruned.
+Import an existing `.knxproj`, a `.bussard` bundle (see [`export`](#bussard-export-file)) or an xknxproject JSON dump into the model. Re-import is idempotent: hand edits to names, DPTs, descriptions and `protected` flags survive where the address is unchanged; device files whose address left the project are pruned.
 
 | Flag / arg | Default | Meaning |
 |---|---|---|
@@ -144,7 +148,7 @@ product data still missing:
 
 `BUSSARD_PRODUCT_INDEX=<file.json>` points at another index of the same shape (a mirror, or a test with `file://` URLs). A bundle import runs no download step.
 
-A re-import always takes the generated sections (com-object tables, link wiring, parameters) from the incoming side. Hand-authored fields (names, rooms, descriptions, DPTs, `protected:`, channel names) that differ are conflicts: each is printed as a sentence, e.g. `Group address Light Kitchen (1/0/1): the name is "Light Kitchen" here and "Kitchen ceiling" in the bundle. Kept this model's value.` Without a flag the local value is kept and the command exits `3` so a script notices; `--mine`, `--theirs` and `--interactive` settle the conflicts and exit 0. After the write, `import` prints what it changed in the model as the same sentences `bussard status` uses, then validates the written model and prints `validation: N error(s), M warning(s)` with each error (an error does not undo the import; it is what to fix next). A group address a device uses but the project does not define is added to `groups.toml` (see [`groups reserve`](#bussard-groups-reserve-floor-room-function)). Every import into an existing model snapshots it first, so `bussard undo` reverts it.
+A re-import always takes the generated sections (com-object tables, link wiring, parameters) from the incoming side. Hand-authored fields (names, rooms, descriptions, DPTs, `protected`, channel names) that differ are conflicts: each is printed as a sentence, e.g. `Group address Light Kitchen (1/0/1): the name is "Light Kitchen" here and "Kitchen ceiling" in the bundle. Kept this model's value.` Without a flag the local value is kept and the command exits `3` so a script notices; `--mine`, `--theirs` and `--interactive` settle the conflicts and exit 0. After the write, `import` prints what it changed in the model as the same sentences `bussard status` uses, then validates the written model and prints `validation: N error(s), M warning(s)` with each error (an error does not undo the import; it is what to fix next). A group address a device uses but the project does not define is added to `groups.toml` (see [`groups reserve`](#bussard-groups-reserve-floor-room-function)). Every import into an existing model snapshots it first, so `bussard undo` reverts it.
 
 Removals follow the same rules. A device, channel or com object the project no longer has is dropped with its links, and the device file loses the keys that named them. A send or listen address that the local model has and the incoming side lacks is a conflict: the model records no history for links, so bussard cannot tell a link you added by hand from one the project dropped. `--theirs` removes it, `--mine` keeps it, `--interactive` asks, and without a flag it is kept and the command exits `3`. A stored parameter value that differs from the incoming one is a conflict in the same way. With `--theirs`, the device files, `groups.toml` and `bussard.lock` of a re-import match a fresh import of the same project byte for byte, in the same order; `bussard.toml` is yours and stays as it is.
 
@@ -170,7 +174,7 @@ Explain what changes from `A` to `B`, as the plain sentences `bussard status` pr
 |---|---|---|
 | `<A>`, `<B>` | | The two sides. |
 | `--json` | off | Emit `{"a", "b", "summary", "touches_protected", "changes": [...]}`, the same change objects as `status --json`. |
-| `--raw` | off | Print a file-level YAML diff instead of the sentences. |
+| `--raw` | off | Print a file-level TOML diff instead of the sentences. |
 | `--password <PASSWORD>` | | Password for both `.knxproj` sides. Falls back to `BUSSARD_PROJECT_PASSWORD`. |
 | `--password-b <PASSWORD>` | | Password for the second side, when it differs. |
 
@@ -191,7 +195,7 @@ A Data Secure-activated device answers a plain descriptor read with mask `FFFF` 
 | `[LINE]` | `1.1` | The line to scan. |
 | `--from <N>` | `0` | The first device number to probe (0-255). |
 | `--to <N>` | `255` | The last device number to probe (0-255). |
-| `--keyring <FILE>` | `connection.keyring` | An ETS `.knxkeys` keyring: its tunnelling users open the [KNXnet/IP Secure tunnel](#knxnetip-secure-tunnelling), and a device it lists is identified over KNX Data Secure with its tool key (real mask, `secure: activated`). Unlisted devices are read in the clear. Password from `BUSSARD_KEYRING_PASSWORD`. |
+| `--keyring <FILE>` | the key store | An ETS `.knxkeys` keyring: its tunnelling users open the [KNXnet/IP Secure tunnel](#knxnetip-secure-tunnelling), and a device it lists is identified over KNX Data Secure with its tool key (real mask, `secure: activated`). Unlisted devices are read in the clear. Password from `BUSSARD_KEYRING_PASSWORD`. |
 
 ### `bussard assign [ADDRESS]`
 
@@ -204,7 +208,7 @@ The verification after the write reads the device at its new address. For a Data
 | `[ADDRESS]` | next free on the line | The address to assign, e.g. `1.1.47`. |
 | `--yes` | off | Skip the confirmation prompt. Without a terminal the command is refused unless this is given. |
 | `--json` | off | Print `{"schema", "from", "to", "gateway", "mask", "manufacturer_id", "serial", "secure", "programming_mode_cleared", "device_file"}`. |
-| `--keyring <FILE>` | `connection.keyring` | An ETS `.knxkeys` keyring: its tunnelling users open the [KNXnet/IP Secure tunnel](#knxnetip-secure-tunnelling), and its tool key for the new (else the old) address verifies a Data Secure-activated device. Password from `BUSSARD_KEYRING_PASSWORD`. |
+| `--keyring <FILE>` | the key store | An ETS `.knxkeys` keyring: its tunnelling users open the [KNXnet/IP Secure tunnel](#knxnetip-secure-tunnelling), and its tool key for the new (else the old) address verifies a Data Secure-activated device. Password from `BUSSARD_KEYRING_PASSWORD`. |
 | `--tool-key <HEX>` | | A raw 16-byte tool key (32 hex characters) for the verification of a Data Secure-activated device; overrides the keyring's device entries (the keyring still opens the tunnel). For test or bench devices: process arguments are visible to other users. |
 
 ### `bussard reconstruct [ADDRESS]`
@@ -219,7 +223,7 @@ Read a device's tables back over the bus and diff them against the model, or (wi
 | `--to <N>` | `255` | Last device number to probe in line mode (0-255). |
 | `--out <DIR>` | | Line mode only: the fresh model directory. Must be absent or empty; reconstruction never merges into an existing model. |
 | `--product <FILE>` | cached archive | Single-device mode: the device's `.knxprod`, to read back and decode its parameter memory too (see [parameter read-back](#parameter-read-back)). Without it the archive `bussard.lock` pins for the device in `<dir>/products/` is used; a pinned archive that is missing or changed prints a warning and the parameters are not read. |
-| `--application <REF>` | model's application | The application program id to decode with (default: the model's `application_ref`, else the order number, else the sole application). |
+| `--application <REF>` | the lock's program | The application program id to decode with (default: the program the lock pins, else the order number's, else the sole application). |
 | `--no-parameters` | off | Single-device mode: read the links and tables only. No product is parsed and no parameter memory is read, which on a device with a large parameter segment is most of the command's time. Conflicts with `--product` and `--application`. |
 | `--keyring <FILE>` | | Single-device mode: the ETS `.knxkeys` keyring holding the target's KNX Data Secure tool key. Required for a security-activated device; the password comes from `BUSSARD_KEYRING_PASSWORD`. |
 | `--tool-key <HEX>` | | Single-device mode: the raw 32-hex-character tool key, for a simulator or bench device. Conflicts with `--keyring`. |
@@ -230,13 +234,13 @@ On System B each table's entry count comes from its `PID_TABLE` property. The en
 
 ### `bussard describe <ADDRESS>`
 
-Introspect a device over the bus: discover its interface objects and, for each, enumerate every property's description (PID with a name when known, data type, element count, and read/write access levels) as a table. Read-only on the bus — it sends `A_DeviceDescriptor_Read`, `A_PropertyValue_Read` (object discovery) and `A_PropertyDescription_Read`, never a write. Unlike `reconstruct` it does not resolve group tables; it describes the device's raw property set, which is useful for commissioning and diagnostics on an unknown device.
+Introspect a device over the bus: discover its interface objects and, for each, enumerate every property's description (PID with a name when known, data type, element count, and read/write access levels) as a table. Read-only on the bus; it sends `A_DeviceDescriptor_Read`, `A_PropertyValue_Read` (object discovery) and `A_PropertyDescription_Read`, never a write. Unlike `reconstruct` it does not resolve group tables; it describes the device's raw property set, which is useful for commissioning and diagnostics on an unknown device.
 
 | Flag / arg | Default | Meaning |
 |---|---|---|
 | `<ADDRESS>` | | The device to introspect, e.g. `1.1.4`. |
 | `--full` | off | Skip nothing: walk every object's property descriptions again, even when the [device facts](#bussardfacts) hold them. |
-| `--keyring <FILE>` | `connection.keyring` | The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool key. Required for a security-activated device. A keyring that does not list the target only opens the [secure tunnel](#knxnetip-secure-tunnelling) and the device is read in the clear. The keyring password comes from `BUSSARD_KEYRING_PASSWORD`, never a flag. |
+| `--keyring <FILE>` | the key store | The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool key. Required for a security-activated device. A keyring that does not list the target only opens the [secure tunnel](#knxnetip-secure-tunnelling) and the device is read in the clear. The keyring password comes from `BUSSARD_KEYRING_PASSWORD`, never a flag. |
 | `--tool-key <HEX>` | | The raw 32-hex-character tool key, for a simulator or bench device with a synthetic key. Conflicts with `--keyring`. A process argument is visible to other users on the machine, so do not use it for a real installation. |
 
 The first `describe` of a device stores its interface objects and property descriptions as [device facts](#bussardfacts). A later `describe` checks the device's mask and application id (the descriptor read plus one property read) and, when both still match, prints the stored objects and descriptions instead of sending one `A_PropertyDescription_Read` per property: on a KNX Data Secure device about 4 requests instead of about 110. The report is the same either way; in text mode a note on stderr says the facts were reused. `--full` walks the descriptions again, `--refresh-facts` re-reads everything, and a changed mask or application id re-reads on its own.
@@ -388,7 +392,7 @@ The confirmation, `--yes` and the gateway gate are the same as for `apply`. The 
 
 #### Parameter read-back
 
-`plan <ADDRESS>` and `reconstruct <ADDRESS>` read the parameter memory too when they have the device's product file (`--product`, or the cached archive for the model's order number). The memory is located through the application's load procedure (System B: `PID_TABLE_REFERENCE` of the object plus the write offset; System 7: the `AbsSegment` addresses) and decoded as the exact inverse of the image `flash` writes: the same offsets, union members, module instances and parameter refs, so a device holding the model's image reports no difference. Only the parameters the configuration shows are decoded; a hidden parameter the application downloads at its default is never reported. The report lists the parameters whose value differs from the vendor default and those that differ from the model's `parameters:` block (`Threshold: device 9, model 12`), keyed like the model (`P-5_R-5`, `MD-1_M-2_MI-1_P-2_R-5` for a module instance); `--json` adds a `parameters` object with `non_default` and `differences`. Parameters the application owns at runtime (`Access="None"`, such as a download flag ETS writes and the application resets after the restart) are listed separately as device-managed, with no verdict (`device_managed` in `--json`). The memory is decoded only when the device runs the product's program, by the same rule `flash --parameters-only` applies: on System B the same manufacturer, application number and version (a product build with another hash counts as the same program); on System 7, which has no readable id, every load-state machine the procedure loads is `Loaded` and the code segments read back as the product's. Otherwise the section carries a note instead of decoded values. Both commands stay read-only.
+`plan <ADDRESS>` and `reconstruct <ADDRESS>` read the parameter memory too when they have the device's product file (`--product`, or the archive `bussard.lock` pins for the device in `products/`). The memory is located through the application's load procedure (System B: `PID_TABLE_REFERENCE` of the object plus the write offset; System 7: the `AbsSegment` addresses) and decoded as the exact inverse of the image `flash` writes: the same offsets, union members, module instances and parameter refs, so a device holding the model's image reports no difference. Only the parameters the configuration shows are decoded; a hidden parameter the application downloads at its default is never reported. The report lists the parameters whose value differs from the vendor default and those that differ from the device file's parameter values (`Threshold: device 9, model 12`), keyed like the model (`P-5_R-5`, `MD-1_M-2_MI-1_P-2_R-5` for a module instance); `--json` adds a `parameters` object with `non_default` and `differences`. Parameters the application owns at runtime (`Access="None"`, such as a download flag ETS writes and the application resets after the restart) are listed separately as device-managed, with no verdict (`device_managed` in `--json`). The memory is decoded only when the device runs the product's program, by the same rule `flash --parameters-only` applies: on System B the same manufacturer, application number and version (a product build with another hash counts as the same program); on System 7, which has no readable id, every load-state machine the procedure loads is `Loaded` and the code segments read back as the product's. Otherwise the section carries a note instead of decoded values. Both commands stay read-only.
 
 ### `bussard plan <ADDRESS>`
 
@@ -640,7 +644,7 @@ Floors and trades count from 1 (index 0 stays free for central functions, which 
 
 ### `bussard export-groups`
 
-Write the group-address plan in a format ETS's *Group Addresses -> Import* accepts. Names, descriptions and DPTs cross over; the `protected:` flag, which ETS has no field for, is carried into the description as a leading `[protected]` marker.
+Write the group-address plan in a format ETS's *Group Addresses -> Import* accepts. Names, descriptions and DPTs cross over; the `protected` flag, which ETS has no field for, is carried into the description as a leading `[protected]` marker.
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -729,7 +733,7 @@ Learn mode never transmits. It listens on the same connection `monitor` uses and
 | `--untyped` | off | Learn every GA in the model with no DPT (the ones `validate` reports as W011). |
 | `--yes` | off | Skip the confirmation prompt: accept the top candidate and the proposed name. Without a terminal the command is refused unless this is given. |
 | `--timeout <SECS>` | `30` | How long to wait for each telegram. |
-| `--keyring <FILE>` | `connection.keyring` | ETS `.knxkeys` keyring whose group keys decrypt secured group telegrams. The password comes from `BUSSARD_KEYRING_PASSWORD`. |
+| `--keyring <FILE>` | the key store | ETS `.knxkeys` keyring whose group keys decrypt secured group telegrams. The password comes from `BUSSARD_KEYRING_PASSWORD`. |
 
 With neither `--ga` nor `--unnamed`/`--untyped`, learn takes whatever appears on the bus next, one GA at a time, until a wait times out or you quit.
 
@@ -770,7 +774,7 @@ Report what the installation holds and what bussard can do with it. Read-only. T
 | `--json` | off | Emit one JSON object instead of the sectioned text report. The same object the `knx_audit` MCP tool returns. |
 | `--live` | off | Add the live part: gateway description, traffic sample, scan of the modelled devices. |
 | `--window <SECS>` | `30` | Traffic-sample window for `--live`. |
-| `--keyring <FILE>` | `connection.keyring` | An ETS `.knxkeys` keyring; each Secure device is reported with or without a tool-key entry, and with `--live` probed over KNX Data Secure with its tool key. Password from `BUSSARD_KEYRING_PASSWORD`. No key material is printed. |
+| `--keyring <FILE>` | the key store | An ETS `.knxkeys` keyring; each Secure device is reported with or without a tool-key entry, and with `--live` probed over KNX Data Secure with its tool key. Password from `BUSSARD_KEYRING_PASSWORD`. No key material is printed. |
 | `--skip-address-check` | off | With `--live`, skip the check that no bus device answers at bussard's own source address before the scan. See [SAFETY.md](SAFETY.md#source-address-check). |
 
 Static sections (JSON keys in brackets):
@@ -802,7 +806,7 @@ Run the MCP server over stdio (see [the MCP server](#the-mcp-server)).
 | `--allow-remote-gateway` | off | Permit `--allow-writes` or `--allow-programming` against a non-loopback (real) gateway. The same gate as `bussard write`; without it (or `BUSSARD_ALLOW_REAL_GATEWAY=1`) such a server pointed at a real gateway refuses to start. |
 | `--no-model-edits` | off | Withhold the model-edit tools (`knx_set_group`, `knx_add_link`, `knx_remove_link`, `knx_set_device`, `knx_set_parameter`, `knx_undo`, `knx_scaffold_groups`, `knx_reserve_groups`). They write the model's TOML files behind a history snapshot and never touch the bus, so they are registered by default. |
 | `--capture-db <PATH>` | | A `bussard capture` database to extend `knx_recent_telegrams` history beyond the in-memory ring. |
-| `--keyring <FILE>` | `connection.keyring` | ETS keyring export (`.knxkeys`) for KNX Data Secure management: `knx_describe_device` and `knx_plan_device` wrap their session with the target's tool key, as `bussard describe --keyring` and `bussard plan --keyring` do. Both read a device the keyring does not list in the clear, through the secure tunnel the keyring opens, unless the model marks it `security.activated` (then they refuse, issue #189); `knx_apply_device` writes a device the keyring lists over KNX Data Secure and reprograms its security object, as `bussard apply --keyring` does. Its group keys also secure `knx_read_group` and `knx_write_group` on a secured GA (issue #172; the results carry `secured`), and decrypt secured telegrams on the live bus (`knx_wait_for_telegram`, `knx_recent_telegrams`, `knx_infer_group`) and re-decoded from `--capture`; a secured GA without a key is refused. `knx_validate` checks the keyring against the model. The password comes from `BUSSARD_KEYRING_PASSWORD`. |
+| `--keyring <FILE>` | the key store | ETS keyring export (`.knxkeys`) for KNX Data Secure management: `knx_describe_device` and `knx_plan_device` wrap their session with the target's tool key, as `bussard describe --keyring` and `bussard plan --keyring` do. Both read a device the keyring does not list in the clear, through the secure tunnel the keyring opens, unless the model marks it `security.activated` (then they refuse, issue #189); `knx_apply_device` writes a device the keyring lists over KNX Data Secure and reprograms its security object, as `bussard apply --keyring` does. Its group keys also secure `knx_read_group` and `knx_write_group` on a secured GA (issue #172; the results carry `secured`), and decrypt secured telegrams on the live bus (`knx_wait_for_telegram`, `knx_recent_telegrams`, `knx_infer_group`) and re-decoded from `--capture`; a secured GA without a key is refused. `knx_validate` checks the keyring against the model. The password comes from `BUSSARD_KEYRING_PASSWORD`. |
 
 ### `bussard viz`
 
@@ -830,6 +834,9 @@ Serve the network-visualization website: an HTTP server that renders the model a
 | *(the `--secure-password-env` variable)* | The KNXnet/IP Secure tunnelling user's password for `--secure-user`. You choose the variable's name; bussard reads only that variable. |
 | `BUSSARD_ALLOW_REAL_GATEWAY` | Set to `1` to permit a write command against a non-loopback (real) gateway, equivalent to `--allow-remote-gateway`. Loopback gateways never need it. |
 | `RUST_LOG` | Log filter (e.g. `debug`, `bussard_transport=trace`). Overrides `-v`/`--verbose` when set. |
+| `BUSSARD_PRODUCT_INDEX` | Path to a pointer index (JSON of the shape of `data/product-index.json`) that replaces the one built into bussard: a private mirror, or a test with `file://` URLs. |
+| `BUSSARD_SECURE_ALGORITHM` | Test knob: `auth` wraps KNX Data Secure management APDUs authentication-only (in the clear under a MAC) instead of the default authentication + encryption. For the conformance loop against the simulator; a real flash never sets it. |
+| `BUSSARD_FLASH_SYS7_LSM` | Test knob: `memory` or `property` overrides the product-driven System 7 load-state-machine realisation (memory-mapped record or PID 5). For conformance tests against knx-sim; unset in normal use. |
 | `BUSSARD_ASSIGN_WAIT_MS` | Test knob: shrinks the programming-mode wait budget of `assign` and `adopt`. Unset in normal use. |
 | `BUSSARD_SCAN_DISCOVERY_MS` | Test knob: shrinks the per-address probe timeout of `scan` and `reconstruct --line`. Unset in normal use. |
 | `BUSSARD_ADDRESS_PROBE_MS` | Test knob: shrinks the per-attempt timeout of the source-address check (default 600 ms). Unset in normal use. |
@@ -1238,7 +1245,7 @@ CREATE INDEX idx_telegrams_dest_ts ON telegrams (destination, ts_utc);
 
 ## The MCP server
 
-`bussard mcp` serves the Model Context Protocol over stdio. Four tiers:
+`bussard mcp` serves the Model Context Protocol over stdio. Four bus tiers, plus a switch for the model edits:
 
 | Tier | Flag | On the bus |
 |---|---|---|
@@ -1313,7 +1320,7 @@ The page shows:
 - **Problems.** Com objects with no link and GAs with no sender or no listener are surfaced for the P5 review.
 - **Test writes.** Per-DPT widgets send a GroupValueWrite from the page. A `protected` GA is disabled until you arm a force checkbox. The confirmation is the echoed telegram on the live stream.
 
-Structure is read-only: devices, groups, and links are edited in the model files. An edit does not need a restart — `POST /api/reload` (the ⟳ button next to the bus status) re-reads the directory and swaps the model in place; see [reloading the model](#reloading-the-model).
+Structure is read-only: devices, groups, and links are edited in the model files. An edit does not need a restart; `POST /api/reload` (the ⟳ button next to the bus status) re-reads the directory and swaps the model in place; see [reloading the model](#reloading-the-model).
 
 Writes are off by default. Without `--allow-writes` the send widgets are there but `POST /api/group-write` answers `403 writes_disabled`, so a bare `bussard viz` cannot put anything on the bus. With writes armed, every send asks for an explicit confirmation naming the GA and the resolved gateway before it goes out, and a `protected` GA additionally needs the force checkbox.
 
@@ -1336,7 +1343,7 @@ The write policy matches `bussard write`: `403` `writes_disabled` for every writ
 
 ### Reloading the model
 
-The `knx/` YAML is meant to be edited by hand and by LLMs; `POST /api/reload` picks up those edits without restarting the server. It re-runs `Model::load` on the model directory and swaps the shared model plus its precomputed `/api/model` projection in one atomic move, bumping a `model_version` counter (the initial model is version 1). The reload button in the page header (next to the bus status dot) calls it and surfaces any error inline.
+The `knx/` TOML is meant to be edited by hand and by LLMs; `POST /api/reload` picks up those edits without restarting the server. It re-runs `Model::load` on the model directory and swaps the shared model plus its precomputed `/api/model` projection in one atomic move, bumping a `model_version` counter (the initial model is version 1). The reload button in the page header (next to the bus status dot) calls it and surfaces any error inline.
 
 The load-failure semantics are the point: a broken model never replaces a good one. On success the endpoint returns `200` with `{ok, model_version, stats}` (`stats` is `{devices, groups, links}`) and emits a `model` event on the SSE stream carrying `{model_version, stats}`, so every connected page refetches `/api/model` and rebuilds its views. On a load error it returns `422` `{"error": {"code": "model_invalid", "message": <the LoadError, naming the offending file>}}` and keeps serving the previous model unchanged, with no swap and no SSE event. The protected-GA write gate and the live decoder both read the current model, so a reload's newly protected GAs are enforced and its renamed addresses resolve on the very next write and telegram.
 

@@ -61,7 +61,7 @@ Two things protect you:
    `BUSSARD_ALLOW_REAL_GATEWAY` can permit a write.
 
 Point at a test bus by giving a loopback gateway explicitly, either
-`--gateway 127.0.0.1` on the command or `connection.gateway: 127.0.0.1:3671`
+`--gateway 127.0.0.1` on the command or `gateway = "127.0.0.1:3671"` under `[connection]`
 in `bussard.toml`. The [`knx-sim`](../knx-sim/README.md) simulator is the
 easiest safe target: from the `knx-sim/` directory run
 `cargo run -- examples/da_tp.yaml`, which listens on `127.0.0.1:3671`, then
@@ -249,7 +249,7 @@ than `Loaded`, because a write with no backup must not be what finds out. And
 **re-flashing the same application is deliberately allowed**, because the
 failure messages tell you to re-run `flash` after an interrupted one. It is
 still a full rewrite: the parameters are reset to the vendor defaults plus the
-device file's `parameters:` overrides, and the address, association and
+device file's parameter values, and the address, association and
 group-object tables are rewritten from the model's links. On System 7 there is
 no application-id property, so a loaded device can never be recognised as "the
 same application": any loaded System 7 device needs `--force`.
@@ -764,7 +764,7 @@ The details per command:
   outright). On System 7 the tables are the absolute memory
   regions at `0x4000` (address table + group-object descriptors) and `0x4201`
   (association table), and `apply` rewrites only those two table load-state
-  machines — the parameter LSM and the application image are never touched, and
+  machines; the parameter LSM and the application image are never touched, and
   the device is not restarted. Another mask is refused (in line-mode
   `reconstruct` it is recorded as a stub instead). The refusal names the mask,
   for example:
@@ -782,7 +782,7 @@ The details per command:
   These three commands run without a `.knxprod`, so the System 7 table bases are
   the corpus-wide defaults `0x4000` / `0x4201` rather than product-resolved
   addresses. A device that keeps its tables elsewhere reads back as an empty
-  table set — never as mis-decoded links — and must be programmed with
+  table set (never as mis-decoded links) and must be programmed with
   `bussard flash`, which does resolve the addresses from product data.
 
 Everything not on these lists is refused before a write, not attempted and
@@ -885,8 +885,8 @@ stays out of git.
 
 ## See also
 
-- [How do I ...](howto.md) — the writing recipes, with the safety note up front.
-- [Reference](reference.md) — every command, flag, and the exact refusal
+- [How do I ...](howto.md): the writing recipes, with the safety note up front.
+- [Reference](reference.md): every command, flag, and the exact refusal
   conditions.
 
 ## Private data (the maintainer's installation, and yours)
@@ -910,7 +910,7 @@ Set the real-gateway opt-in once, in the shell profile of the machine that commi
 export BUSSARD_ALLOW_REAL_GATEWAY=1
 ```
 
-It has the same effect as passing `--allow-remote-gateway` to every write command, and to `mcp --allow-writes` and `viz --allow-writes` at startup. It removes nothing else: every confirmation still names the gateway, protected group addresses still need `--force`, and the MCP server still has no path to `plan`, `apply` or `flash`.
+It has the same effect as passing `--allow-remote-gateway` to every write command, and to `mcp --allow-writes` and `viz --allow-writes` at startup. It removes nothing else: every confirmation still names the gateway, protected group addresses still need `--force`, and the MCP server reaches a device's tables only through the programming tier (`--allow-programming`, one approved plan at a time) and never flashes.
 
 The opt-in is per machine on purpose. The question it answers is "is this computer meant to write to real buses?", and only the machine knows that. A setting in `bussard.toml` would travel with the model: into every bundle handed to a customer, every repository clone, and every assistant session started on that model. The owner who imports the handover bundle would receive an armed tool without choosing it. Keep the variable out of `.env` files that live next to a model for the same reason.
 
