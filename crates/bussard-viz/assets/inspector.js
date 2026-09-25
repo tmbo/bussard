@@ -137,7 +137,14 @@ class Inspector {
     const coSection = view.querySelector("[data-field=comobjects]");
     const cos = d.com_objects || [];
     // "Communicates" framing parallels the GA view's senders/listeners block.
-    coSection.appendChild(el("h3", "insp-h3", `Communicates · com objects (${cos.length})`));
+    // Parameter values (issue #259) sit in the same table, under each channel.
+    const paramCount =
+      (d.parameters || []).length +
+      (d.channels || []).reduce((n, c) => n + (c.parameters || []).length, 0);
+    const heading = paramCount
+      ? `Communicates · com objects (${cos.length}) · parameters (${paramCount})`
+      : `Communicates · com objects (${cos.length})`;
+    coSection.appendChild(el("h3", "insp-h3", heading));
     coSection.appendChild(this._comObjectTable(d, cos));
 
     this.root.appendChild(view);
@@ -148,6 +155,8 @@ class Inspector {
    * group-header row (channel name, falling back to the channel key); com objects
    * without a channel fall under a trailing "General" group. Send/listen cells
    * show the GA chip plus a secondary line of the resolved remote devices.
+   * After a channel's com objects come its parameter values (issue #259),
+   * read-only; the device-level parameters go under "General".
    * @param {Object} d - device record.
    * @param {Array<Object>} cos - com objects.
    * @returns {HTMLElement}
@@ -162,9 +171,14 @@ class Inspector {
     thead.appendChild(hr);
     table.appendChild(thead);
 
-    // Map channel key -> display name for group headers.
+    // Map channel key -> display name for group headers, and -> parameters.
     const channelName = new Map();
-    for (const c of d.channels || []) channelName.set(c.key, c.name || c.key);
+    const channelParams = new Map();
+    for (const c of d.channels || []) {
+      channelName.set(c.key, c.name || c.key);
+      if (c.parameters && c.parameters.length) channelParams.set(c.key, c.parameters);
+    }
+    if (d.parameters && d.parameters.length) channelParams.set("", d.parameters);
 
     // Bucket com objects by channel key, preserving order. Objects with no
     // channel go into a trailing "General" bucket (key = "").
@@ -177,6 +191,14 @@ class Inspector {
         order.push(key);
       }
       buckets.get(key).push(co);
+    }
+    // A channel with parameters but no com objects still gets its group, in
+    // the device's channel order.
+    for (const key of channelParams.keys()) {
+      if (!buckets.has(key)) {
+        buckets.set(key, []);
+        order.push(key);
+      }
     }
     // Ensure the "General" (no-channel) group renders last.
     order.sort((a, b) => (a === "" ? 1 : 0) - (b === "" ? 1 : 0));
@@ -192,9 +214,53 @@ class Inspector {
       tbody.appendChild(hRow);
 
       for (const co of buckets.get(key)) this._appendComObjectRow(tbody, d, co);
+      const params = channelParams.get(key);
+      if (params) this._appendParameterRows(tbody, params, COL_COUNT);
     }
     table.appendChild(tbody);
     return table;
+  }
+
+  /**
+   * Append a channel's parameter values to a tbody: a small "Parameters"
+   * sub-header, then one row per value with the vendor label (the file key
+   * when the product model is missing) across the left columns and the value
+   * across the right ones. A value that differs from the vendor default is
+   * marked; the default is on the tooltip. Read-only.
+   * @param {HTMLElement} tbody
+   * @param {Array<{key:string, text:?string, value:?string, default:?string, non_default:?boolean}>} params
+   * @param {number} colCount - the table's column count.
+   */
+  _appendParameterRows(tbody, params, colCount) {
+    const LABEL_COLS = 3;
+    const sub = el("tr", "co-param-head");
+    const subCell = el("td", null, "Parameters");
+    subCell.colSpan = colCount;
+    sub.appendChild(subCell);
+    tbody.appendChild(sub);
+
+    for (const p of params) {
+      const tr = el("tr", "co-param");
+      if (p.non_default) tr.classList.add("non-default");
+      const label = el("td", "param-label", p.text || p.key);
+      label.colSpan = LABEL_COLS;
+      label.title = p.key;
+      tr.appendChild(label);
+
+      const shown = p.value != null ? p.value : p.default;
+      const valueTd = el("td", "param-value");
+      valueTd.colSpan = colCount - LABEL_COLS;
+      valueTd.appendChild(el("span", "param-value-text", shown != null ? shown : "—"));
+      if (p.non_default) {
+        const mark = el("span", "param-changed", "changed");
+        mark.title = p.default != null ? `Vendor default: ${p.default}` : "Differs from the vendor default";
+        valueTd.appendChild(mark);
+      } else if (p.non_default === false) {
+        valueTd.title = "Vendor default";
+      }
+      tr.appendChild(valueTd);
+      tbody.appendChild(tr);
+    }
   }
 
   /**

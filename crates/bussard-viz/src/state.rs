@@ -12,6 +12,7 @@
 //! Every reader (the model/state endpoints, the write gate, the decode feeder)
 //! reads through the handle, so a new model is picked up without a restart.
 
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use bussard_bus::{BusHandle, BusState};
@@ -164,7 +165,17 @@ impl ModelSnapshot {
 
     /// Builds a snapshot from a shared model, precomputing its projection.
     pub fn from_shared(model: Arc<Model>, version: u64) -> Self {
-        let json = Arc::new(project::project_model(&model));
+        Self::from_shared_in(model, version, None)
+    }
+
+    /// Builds a snapshot from a shared model loaded from `dir`, joining the
+    /// product models under `dir` (vendor texts, choice labels, defaults) onto
+    /// the parameter values of the projection. `None` projects without them.
+    pub fn from_shared_in(model: Arc<Model>, version: u64, dir: Option<&Path>) -> Self {
+        let products = dir
+            .map(|d| project::product_models_for(&model, d))
+            .unwrap_or_default();
+        let json = Arc::new(project::project_model_with(&model, &products));
         ModelSnapshot {
             model,
             json,
@@ -189,30 +200,36 @@ impl ModelSnapshot {
 pub struct ModelHandle {
     shared: bussard_service::ModelHandle,
     projection: Arc<RwLock<Arc<ModelSnapshot>>>,
+    /// The model directory, whose product models the projection reads;
+    /// `None` for an in-code model.
+    dir: Option<PathBuf>,
 }
 
 impl ModelHandle {
     /// A handle over a model that only changes through
     /// [`install`](Self::install) (version 1). For in-code models in tests.
     pub fn new(model: Model) -> Self {
-        Self::over(bussard_service::ModelHandle::fixed(model))
+        Self::over(bussard_service::ModelHandle::fixed(model), None)
     }
 
     /// A handle that also reloads by itself when the files under `dir` change,
     /// like the MCP server's model: a `protected: true` saved in an editor is in
     /// force on the next write without anyone pressing reload.
-    pub fn watching(dir: std::path::PathBuf, model: Model) -> Self {
-        Self::over(bussard_service::ModelHandle::new(dir, model))
+    pub fn watching(dir: PathBuf, model: Model) -> Self {
+        Self::over(
+            bussard_service::ModelHandle::new(dir.clone(), model),
+            Some(dir),
+        )
     }
 
     /// Wraps a shared service handle, projecting its current model.
-    fn over(shared: bussard_service::ModelHandle) -> Self {
+    fn over(shared: bussard_service::ModelHandle, dir: Option<PathBuf>) -> Self {
         let (model, version) = shared.snapshot();
+        let snapshot = ModelSnapshot::from_shared_in(model, version, dir.as_deref());
         ModelHandle {
             shared,
-            projection: Arc::new(RwLock::new(Arc::new(ModelSnapshot::from_shared(
-                model, version,
-            )))),
+            projection: Arc::new(RwLock::new(Arc::new(snapshot))),
+            dir,
         }
     }
 
@@ -228,7 +245,11 @@ impl ModelHandle {
                 return cached.clone();
             }
         }
-        let next = Arc::new(ModelSnapshot::from_shared(model, version));
+        let next = Arc::new(ModelSnapshot::from_shared_in(
+            model,
+            version,
+            self.dir.as_deref(),
+        ));
         let mut guard = self.projection.write().unwrap_or_else(|p| p.into_inner());
         if guard.version < next.version {
             *guard = next;

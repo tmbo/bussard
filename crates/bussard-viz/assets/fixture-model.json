@@ -79,11 +79,13 @@
       "channels": [
         {
           "key": "CH-1",
-          "name": "Rocker 1 - Hallway Light"
+          "name": "Rocker 1 - Hallway Light",
+          "parameters": []
         },
         {
           "key": "CH-2",
-          "name": "Rocker 2 - Central"
+          "name": "Rocker 2 - Central",
+          "parameters": []
         }
       ],
       "com_objects": [
@@ -153,6 +155,7 @@
       "description": "4-fold push button with status LEDs",
       "floor": "Ground Floor",
       "name": "Push Button Hallway",
+      "parameters": [],
       "product": {
         "manufacturer": "Acme Automation",
         "order_number": "PB-4F"
@@ -165,15 +168,18 @@
       "channels": [
         {
           "key": "CH-1",
-          "name": "Rocker 1 - Living Room Light"
+          "name": "Rocker 1 - Living Room Light",
+          "parameters": []
         },
         {
           "key": "CH-2",
-          "name": "Rocker 2 - Blind"
+          "name": "Rocker 2 - Blind",
+          "parameters": []
         },
         {
           "key": "CH-3",
-          "name": "Rocker 3 - Scenes"
+          "name": "Rocker 3 - Scenes",
+          "parameters": []
         }
       ],
       "com_objects": [
@@ -317,6 +323,7 @@
       "description": "6-fold push button",
       "floor": "Ground Floor",
       "name": "Push Button Living Room",
+      "parameters": [],
       "product": {
         "manufacturer": "Acme Automation",
         "order_number": "PB-6F"
@@ -329,19 +336,23 @@
       "channels": [
         {
           "key": "CH-A",
-          "name": "Output A - Hallway Light"
+          "name": "Output A - Hallway Light",
+          "parameters": []
         },
         {
           "key": "CH-B",
-          "name": "Output B - Kitchen Light"
+          "name": "Output B - Kitchen Light",
+          "parameters": []
         },
         {
           "key": "CH-C",
-          "name": "Output C - Bedroom Light"
+          "name": "Output C - Bedroom Light",
+          "parameters": []
         },
         {
           "key": "CH-D",
-          "name": "Output D - Study Light"
+          "name": "Output D - Study Light",
+          "parameters": []
         }
       ],
       "com_objects": [
@@ -460,6 +471,7 @@
       "description": "DIN-rail switch actuator driving the non-dimmed lights",
       "floor": "Ground Floor",
       "name": "Switch Actuator 8-fold",
+      "parameters": [],
       "product": {
         "manufacturer": "Northwind Controls",
         "order_number": "SA-8-16A"
@@ -472,15 +484,105 @@
       "channels": [
         {
           "key": "CH-1",
-          "name": "Blind 1 - Living Room"
+          "name": "Blind 1 - Living Room",
+          "parameters": [
+            {
+              "default": "Rollladen / Markise ohne Lamellenverstellung",
+              "key": "betriebsart",
+              "non_default": true,
+              "text": "Betriebsart",
+              "value": "Jalousie mit Lamellenverstellung"
+            },
+            {
+              "default": "60",
+              "key": "gesamtfahrzeit-auf-ab-in-sekunden",
+              "non_default": true,
+              "text": "Gesamtfahrzeit Auf/Ab in Sekunden",
+              "value": "90"
+            },
+            {
+              "default": "Keine Reaktion",
+              "key": "verhalten-bei-busspannungswiederkehr",
+              "non_default": true,
+              "text": "Verhalten bei Busspannungswiederkehr",
+              "value": "Position vor Busspannungsausfall wiederherstellen"
+            },
+            {
+              "default": "Auffahren und Bedienung sperren bis Windalarmende",
+              "key": "reaktion-bei-windalarm",
+              "non_default": false,
+              "text": "Reaktion bei Windalarm (Sicherheitsfunktion Prioritaet 1)",
+              "value": "Auffahren und Bedienung sperren bis Windalarmende"
+            }
+          ]
         },
         {
           "key": "CH-2",
-          "name": "Blind 2 - Kitchen"
+          "name": "Blind 2 - Kitchen",
+          "parameters": [
+            {
+              "default": "Rollladen / Markise ohne Lamellenverstellung",
+              "key": "betriebsart",
+              "non_default": false,
+              "text": "Betriebsart",
+              "value": "Rollladen / Markise ohne Lamellenverstellung"
+            },
+            {
+              "default": "60",
+              "key": "gesamtfahrzeit-auf-ab-in-sekunden",
+              "non_default": false,
+              "text": "Gesamtfahrzeit Auf/Ab in Sekunden",
+              "value": "60"
+            },
+            {
+              "default": "Keine Reaktion",
+              "key": "verhalten-bei-busspannungswiederkehr",
+              "non_default": false,
+              "text": "Verhalten bei Busspannungswiederkehr",
+              "value": "Keine Reaktion"
+            },
+            {
+              "default": "Auffahren und Bedienung sperren bis Windalarmende",
+              "key": "reaktion-bei-windalarm",
+              "non_default": false,
+              "text": "Reaktion bei Windalarm (Sicherheitsfunktion Prioritaet 1)",
+              "value": "Auffahren und Bedienung sperren bis Windalarmende"
+            }
+          ]
         },
         {
           "key": "CH-3",
-          "name": "Blind 3 - Bedroom"
+          "name": "Blind 3 - Bedroom",
+          "parameters": [
+            {
+              "default": "Rollladen / Markise ohne Lamellenverstellung",
+              "key": "betriebsart",
+              "non_default": true,
+              "text": "Betriebsart",
+              "value": "Jalousie mit Lamellenverstellung"
+            },
+            {
+              "default": "60",
+              "key": "gesamtfahrzeit-auf-ab-in-sekunden",
+              "non_default": true,
+              "text": "Gesamtfahrzeit Auf/Ab in Sekunden",
+              "value": "75"
+            },
+            {
+              "default": "Keine Reaktion",
+              "key": "verhalten-bei-busspannungswiederkehr",
+              "non_default": true,
+              "text": "Verhalten bei Busspannungswiederkehr",
+              "value": "Abfahren"
+            },
+            {
+              "default": "Auffahren und Bedienung sperren bis Windalarmende",
+              "key": "reaktion-bei-windalarm",
+              "non_default": true,
+              "text": "Reaktion bei Windalarm (Sicherheitsfunktion Prioritaet 1)",
+              "value": "Stopp"
+            }
+          ]
         }
       ],
       "com_objects": [
@@ -604,6 +706,22 @@
       "description": "DIN-rail blind actuator with wind-alarm inputs",
       "floor": "Ground Floor",
       "name": "Blind Actuator 4-fold",
+      "parameters": [
+        {
+          "default": "10",
+          "key": "sendeverzoegerung-nach-busspannungswiederkehr",
+          "non_default": true,
+          "text": "Sendeverzoegerung nach Busspannungswiederkehr in Sekunden",
+          "value": "30"
+        },
+        {
+          "default": "Keine Ueberwachung",
+          "key": "windalarm-ueberwachungszeitraum",
+          "non_default": true,
+          "text": "Windalarm Ueberwachungszeitraum der Sicherheitsfunktion",
+          "value": "Zyklische Ueberwachung alle 10 Minuten"
+        }
+      ],
       "product": {
         "manufacturer": "Northwind Controls",
         "order_number": "BA-4"
@@ -616,7 +734,8 @@
       "channels": [
         {
           "key": "CH-1",
-          "name": "Dimmer 1 - Living Room"
+          "name": "Dimmer 1 - Living Room",
+          "parameters": []
         }
       ],
       "com_objects": [
@@ -671,6 +790,7 @@
       "description": "Universal dimmer for the living-room light",
       "floor": "Ground Floor",
       "name": "Dimming Actuator 2-fold",
+      "parameters": [],
       "product": {
         "manufacturer": "Northwind Controls",
         "order_number": "DA-2"
@@ -683,11 +803,13 @@
       "channels": [
         {
           "key": "CH-1",
-          "name": "Valve 1 - Living Room"
+          "name": "Valve 1 - Living Room",
+          "parameters": []
         },
         {
           "key": "CH-2",
-          "name": "Valve 2 - Bedroom"
+          "name": "Valve 2 - Bedroom",
+          "parameters": []
         }
       ],
       "com_objects": [
@@ -765,6 +887,7 @@
       "description": "Valve actuator for the living-room and bedroom circuits",
       "floor": "Ground Floor",
       "name": "Heating Actuator 6-fold",
+      "parameters": [],
       "product": {
         "manufacturer": "Northwind Controls",
         "order_number": "HA-6"
@@ -782,7 +905,8 @@
       "channels": [
         {
           "key": "CH-1",
-          "name": "Weather"
+          "name": "Weather",
+          "parameters": []
         }
       ],
       "com_objects": [
@@ -840,6 +964,7 @@
       "description": "Combined temperature, wind and brightness sensor on the roof",
       "floor": "Outdoor",
       "name": "Weather Station",
+      "parameters": [],
       "product": {
         "manufacturer": "Meridian Sensors",
         "order_number": "WS-3"
@@ -885,6 +1010,7 @@
       "description": "Ceiling presence detector with a brightness output",
       "floor": "Ground Floor",
       "name": "Presence Detector Hallway",
+      "parameters": [],
       "product": {
         "manufacturer": "Meridian Sensors",
         "order_number": "PD-1"
@@ -897,7 +1023,8 @@
       "channels": [
         {
           "key": "CH-1",
-          "name": "Thermostat"
+          "name": "Thermostat",
+          "parameters": []
         }
       ],
       "com_objects": [
@@ -959,6 +1086,7 @@
       "description": "Wall thermostat, sends the measured value and the setpoint",
       "floor": "First Floor",
       "name": "Room Thermostat Bedroom",
+      "parameters": [],
       "product": {
         "manufacturer": "Acme Automation",
         "order_number": "RT-1"
@@ -973,6 +1101,7 @@
       "description": null,
       "floor": null,
       "name": "IP Interface",
+      "parameters": [],
       "product": null,
       "room": null,
       "security": null

@@ -69,6 +69,7 @@ objects = [
 address = "1.1.4"
 product = "BA-4"
 manufacturer = "Northwind Controls"
+application = "M-00FA_A-0B44-11-0001"
 channels = [
   { id = "CH-1" },
   { id = "CH-2" },
@@ -85,6 +86,22 @@ objects = [
   { number = 8, channel = "CH-3", dpt = "1.005", flags = "CW" },
   { number = 9, dpt = "9.005", flags = "CW" },
   { number = 10, dpt = "9.004", flags = "CW" },
+]
+parameters = [
+  { key = "sendeverzoegerung-nach-busspannungswiederkehr", ref = "P-1_R-1", param = "P-1" },
+  { key = "windalarm-ueberwachungszeitraum", ref = "P-2_R-2", param = "P-2" },
+  { key = "betriebsart", channel = "CH-1", ref = "P-11_R-11", param = "P-11" },
+  { key = "gesamtfahrzeit-auf-ab-in-sekunden", channel = "CH-1", ref = "P-12_R-12", param = "P-12" },
+  { key = "verhalten-bei-busspannungswiederkehr", channel = "CH-1", ref = "P-13_R-13", param = "P-13" },
+  { key = "reaktion-bei-windalarm", channel = "CH-1", ref = "P-14_R-14", param = "P-14" },
+  { key = "betriebsart", channel = "CH-2", ref = "P-21_R-21", param = "P-21" },
+  { key = "gesamtfahrzeit-auf-ab-in-sekunden", channel = "CH-2", ref = "P-22_R-22", param = "P-22" },
+  { key = "verhalten-bei-busspannungswiederkehr", channel = "CH-2", ref = "P-23_R-23", param = "P-23" },
+  { key = "reaktion-bei-windalarm", channel = "CH-2", ref = "P-24_R-24", param = "P-24" },
+  { key = "betriebsart", channel = "CH-3", ref = "P-31_R-31", param = "P-31" },
+  { key = "gesamtfahrzeit-auf-ab-in-sekunden", channel = "CH-3", ref = "P-32_R-32", param = "P-32" },
+  { key = "verhalten-bei-busspannungswiederkehr", channel = "CH-3", ref = "P-33_R-33", param = "P-33" },
+  { key = "reaktion-bei-windalarm", channel = "CH-3", ref = "P-34_R-34", param = "P-34" },
 ]
 
 [[device]]
