@@ -6,11 +6,19 @@
 //! ([`bussard_service::FactsCache`]); `reconstruct`, `plan`, `apply` and the
 //! flash pre-flight need only the object table, the max APDU and the
 //! application id, which [`establish_table_facts`] provides.
+//!
+//! It is also the one place a management command turns what a device reports
+//! into the identity verdict against `bussard.lock` (issue #228, item 5):
+//! [`identify`] on an open connection, [`observe`] for a probe that has only
+//! the mask (`scan`, `assign`, `audit --live`), and [`identity_line`], the one
+//! sentence every command prints.
 
 use std::path::Path;
 
 use bussard_mgmt::{ConnectionSeed, L4Channel, Layer4Connection, MaskProfile};
 use bussard_model::IndividualAddress;
+use bussard_model::identity::{IdentityCheck, ReportedIdentity};
+use bussard_model::schema::Device;
 use bussard_service::{Authorize, Established, FactsCache, FactsSource, FactsWant};
 
 /// The facts store of a command run against the model in `dir`: `None` for
@@ -81,4 +89,108 @@ pub(crate) fn seed_of(established: Option<&Established>) -> Option<ConnectionSee
         authorize_unanswered: record.authorize
             == Some(bussard_model::facts::AuthorizeVerdict::Unsupported),
     })
+}
+
+/// The one sentence every management command prints for a device's identity
+/// against `bussard.lock` (issue #228, item 5): `identity of 1.1.4: matches
+/// bussard.lock (application id 0004D14122, mask 07B0)`, `… drift from
+/// bussard.lock: …` or `… not pinned in bussard.lock`.
+pub(crate) fn identity_line(target: IndividualAddress, check: &IdentityCheck) -> String {
+    format!("identity of {target}: {}", check.summary())
+}
+
+/// What [`identify`] found on the connection.
+pub(crate) struct Identified {
+    /// The device facts in effect (System B), for seeding a later connection.
+    pub established: Option<Established>,
+    /// The identity verdict, when the descriptor answered.
+    pub check: Option<IdentityCheck>,
+}
+
+/// Checks (or reads, and stores) the device facts through
+/// [`establish_table_facts`] and compares what the device reports with what
+/// the lock pins for `device`. The one step every management command that
+/// opens a connection to a device runs first.
+///
+/// # Errors
+///
+/// A connection death from one of the facts reads.
+pub(crate) async fn identify<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    facts: &FactsCache,
+    device: Option<&Device>,
+) -> anyhow::Result<Identified> {
+    let established = establish_table_facts(l4, facts).await?;
+    let reported = match established.as_ref().and_then(|e| e.record.as_ref()) {
+        Some(record) => Some(ReportedIdentity {
+            mask: record.mask.clone(),
+            application_id: record.application_id.clone(),
+        }),
+        // Outside System B (or without facts) the mask alone.
+        None => bussard_mgmt::read_device_descriptor(l4)
+            .await
+            .ok()
+            .map(|mask| ReportedIdentity {
+                mask: bussard_model::facts::format_mask(mask),
+                application_id: None,
+            }),
+    };
+    Ok(Identified {
+        established,
+        check: reported.map(|r| IdentityCheck::compare(device, r)),
+    })
+}
+
+/// The identity verdict for a device a probe read only the mask of (`scan`,
+/// `assign`, `audit --live`), with the application id the stored facts carry
+/// for it. Stored facts under another mask are stale: they are removed, so
+/// the next connection reads them again (the facts refresh of a command that
+/// opens no management connection).
+pub(crate) fn observe(
+    dir: &Path,
+    model_loaded: bool,
+    target: IndividualAddress,
+    mask: u16,
+    device: Option<&Device>,
+) -> IdentityCheck {
+    let mask_text = bussard_model::facts::format_mask(mask);
+    let stored = if model_loaded {
+        bussard_model::facts::load_facts(dir, target).ok().flatten()
+    } else {
+        None
+    };
+    let application_id = match stored {
+        Some(record) if record.mask.eq_ignore_ascii_case(&mask_text) => record.application_id,
+        Some(_) if mask != bussard_service::identity::HIDDEN_MASK => {
+            let _ = std::fs::remove_file(bussard_model::facts::facts_path(dir, target));
+            None
+        }
+        _ => None,
+    };
+    IdentityCheck::compare(
+        device,
+        ReportedIdentity {
+            mask: mask_text,
+            application_id,
+        },
+    )
+}
+
+/// Refuses a write to a device whose identity drifted from the lock, naming
+/// the `bussard flash` it needs (`apply`, `commission --apply` through it,
+/// `replace --no-flash`).
+pub(crate) fn refuse_drift(
+    target: IndividualAddress,
+    check: &IdentityCheck,
+    verb: &str,
+) -> anyhow::Result<()> {
+    if check.is_drift() {
+        anyhow::bail!(
+            "refusing to {verb} {target}: {}. The model's parameters and tables are for the \
+             application the lock pins; run `bussard flash {target}` to load it, or re-import \
+             the project if the lock is stale",
+            check.differences.join("; ")
+        );
+    }
+    Ok(())
 }

@@ -390,7 +390,14 @@ fn commission_one(
         })
     };
     let identity = match assigned {
-        Ok(identity) => identity,
+        Ok(identity) => {
+            // A new box now answers at the address: facts stored for it
+            // describe whatever was there before (issue #228, item 5). The
+            // flash and apply below read the new device's and report its
+            // identity; apply refuses a device that drifted from the lock.
+            let _ = std::fs::remove_file(bussard_model::facts::facts_path(dir, target.address));
+            identity
+        }
         Err(err) => return fail(one_line(&format!("{err:#}"))),
     };
 

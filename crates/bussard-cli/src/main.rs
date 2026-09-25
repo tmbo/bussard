@@ -738,8 +738,9 @@ enum Command {
         #[arg(long, value_name = "DIR", requires = "line")]
         out: Option<PathBuf>,
         /// The device's vendor `.knxprod`, to read back and decode its parameter
-        /// memory too (issue #119). Without it the archive in `<dir>/vendor/`
-        /// whose catalogue carries the model's order number is used, when cached.
+        /// memory too (issue #119). Default: the archive `bussard.lock` pins for
+        /// the device in `<dir>/products/`. One that contradicts the lock is
+        /// used with a warning.
         #[arg(long, value_name = "FILE", conflicts_with = "line")]
         product: Option<PathBuf>,
         /// The application program id to decode the parameters with (default:
@@ -786,12 +787,13 @@ enum Command {
         #[command(subcommand)]
         command: KeysCommand,
     },
-    /// Import vendor product data (`.knxprod`): cache it and generate a model.
+    /// Import vendor product data (`.knxprod`): store it under `products/`,
+    /// pin it in `bussard.lock` and generate its product models.
     ///
     /// Give a local `.knxprod` FILE, or `--order-number` to look the file up in
     /// the pointer index and download it from the vendor, or `--list` to show
-    /// the index. An ETS project export (`.knxproj`) FILE is read in place and
-    /// not cached under `vendor/`.
+    /// the index. From an ETS project export (`.knxproj`) FILE every
+    /// application program is extracted once into `products/`.
     ImportProduct {
         /// The `.knxprod` or `.knxproj` file to import (positional mode).
         #[arg(value_name = "FILE")]
@@ -844,9 +846,10 @@ enum Command {
         /// The device to program, e.g. `1.0.10`.
         #[arg(value_name = "ADDRESS")]
         address: String,
-        /// The vendor `.knxprod` containing the application program. Default:
-        /// the archive in `<dir>/vendor/` whose catalogue carries the device's
-        /// order number.
+        /// The vendor `.knxprod` (or ETS export) containing the application
+        /// program. Default: the archive `bussard.lock` pins for the device in
+        /// `<dir>/products/`. One that contradicts the lock needs `--force`,
+        /// which also pins it.
         #[arg(long, value_name = "FILE")]
         product: Option<PathBuf>,
         /// The application program id (default: the program the lock pins,
@@ -936,8 +939,9 @@ enum Command {
         #[arg(long, value_name = "LINE", conflicts_with = "address")]
         line: Option<String>,
         /// The device's vendor `.knxprod`, to read back and decode its parameter
-        /// memory too (issue #119). Without it the archive in `<dir>/vendor/`
-        /// whose catalogue carries the model's order number is used, when cached.
+        /// memory too (issue #119). Default: the archive `bussard.lock` pins for
+        /// the device in `<dir>/products/`. One that contradicts the lock is
+        /// used with a warning.
         #[arg(long, value_name = "FILE", conflicts_with = "line")]
         product: Option<PathBuf>,
         /// The application program id to decode the parameters with (default:
@@ -978,9 +982,13 @@ enum Command {
         /// written.
         #[arg(long = "plan", value_name = "HASH", conflicts_with = "line")]
         plan_hash: Option<String>,
+        /// Use a `--product` / `--application` that contradicts `bussard.lock`
+        /// (the product archive is then pinned for the device).
+        #[arg(long, conflicts_with = "line")]
+        force: bool,
         /// The device's vendor `.knxprod`, to compare and write its parameter
-        /// memory. Without it the archive in `<dir>/vendor/` whose catalogue
-        /// carries the device's order number is used, when cached.
+        /// memory. Default: the archive `bussard.lock` pins for the device in
+        /// `<dir>/products/`. One that contradicts the lock needs `--force`.
         #[arg(long, value_name = "FILE", conflicts_with = "line")]
         product: Option<PathBuf>,
         /// The application program id to decode the parameters with (default:
@@ -1019,8 +1027,8 @@ enum Command {
         /// (columns `address;name;order_number;floor;room`).
         #[arg(long, value_name = "FILE")]
         labels: Option<PathBuf>,
-        /// The vendor `.knxprod` to flash from. Without it, `--flash` searches
-        /// `<dir>/vendor/` for an archive carrying the device's order number.
+        /// The vendor `.knxprod` to flash from. Default: the archive
+        /// `bussard.lock` pins for each device in `<dir>/products/`.
         #[arg(long, value_name = "FILE", requires = "flash")]
         product: Option<PathBuf>,
         /// Skip the confirmation prompt. Without a terminal the command is
@@ -1122,9 +1130,10 @@ enum Command {
         /// The address of the device being replaced, e.g. `1.1.4`.
         #[arg(value_name = "ADDRESS")]
         address: String,
-        /// The vendor `.knxprod` for the replacement device.
+        /// The vendor `.knxprod` to flash the replacement with. Default: the
+        /// archive `bussard.lock` pins for the device in `<dir>/products/`.
         #[arg(long, value_name = "FILE")]
-        product: PathBuf,
+        product: Option<PathBuf>,
         /// Skip the confirmation prompt. Without a terminal the command is
         /// refused unless this is given.
         #[arg(long)]
@@ -1678,6 +1687,7 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
             resume,
             yes,
             plan_hash,
+            force,
             product,
             application,
             tool_key,
@@ -1719,6 +1729,7 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
                                 application: application.as_deref(),
                             },
                             plan_hash: plan_hash.as_deref(),
+                            force,
                         },
                     )
                 }
@@ -1796,7 +1807,7 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
             tool_key,
         } => replace_cmd::run(
             &address,
-            &product,
+            product.as_deref(),
             dir,
             yes,
             force,

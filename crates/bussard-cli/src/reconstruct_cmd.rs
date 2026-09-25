@@ -136,6 +136,17 @@ pub fn run(
     // The product file the parameter read-back decodes with (issue #119).
     // `--no-parameters` (issue #215) wants the links and tables only: no
     // product is resolved or parsed, so no parameter memory is read.
+    // A read-only command only warns about an override that contradicts the
+    // lock (issue #228, item 4).
+    if let Some(device) = model.as_ref().and_then(|m| m.devices.get(&target))
+        && let Some(conflict) = crate::lock_pin::override_conflict(
+            &device.device,
+            selection.product,
+            selection.application,
+        )?
+    {
+        eprintln!("warning: {conflict}");
+    }
     let product = if no_parameters {
         None
     } else {
@@ -184,7 +195,7 @@ pub fn run(
     } else {
         print_text(&report);
         if let Some(identity) = &report.identity {
-            println!("identity: {}", identity.summary());
+            println!("{}", crate::device_facts::identity_line(target, identity));
         }
         match &report.parameters {
             Some(params) => crate::param_readback::print_text(params, target),

@@ -117,6 +117,9 @@ pub(crate) struct Found {
     /// How the device was identified with respect to KNX Data Secure
     /// (issue #203).
     pub(crate) secure: SecureStatus,
+    /// Its identity against `bussard.lock` (issue #228, item 5), filled in
+    /// after the sweep.
+    pub(crate) identity: Option<bussard_model::identity::IdentityCheck>,
 }
 
 impl Found {
@@ -129,6 +132,7 @@ impl Found {
             serial: identity.serial,
             order: identity.order,
             secure,
+            identity: None,
         }
     }
 }
@@ -229,7 +233,22 @@ pub fn run(
     })?;
 
     let timing = timing_json(&swept);
-    let report = cross_reference(swept.found, model.as_ref());
+    let mut report = cross_reference(swept.found, model.as_ref());
+    // The identity verdict per device, against the lock and the stored facts
+    // (issue #228, item 5); stale facts are dropped for the next connection.
+    for f in &mut report.found {
+        let device = model
+            .as_ref()
+            .and_then(|m| m.devices.get(&f.address))
+            .map(|d| &d.device);
+        f.identity = Some(crate::device_facts::observe(
+            dir,
+            model.is_some(),
+            f.address,
+            f.mask,
+            device,
+        ));
+    }
 
     if json {
         print_json(&report, timing)?;
@@ -470,6 +489,16 @@ fn print_table(report: &Report) {
 
     println!();
     println!("{} device(s) responded", report.found.len());
+    for f in &report.found {
+        if let Some(check) = f.identity.as_ref().filter(|c| c.is_drift()) {
+            println!("{}", crate::device_facts::identity_line(f.address, check));
+        }
+    }
+    for f in &report.found {
+        if let Some(check) = f.identity.as_ref().filter(|c| c.is_drift()) {
+            println!("{}", crate::device_facts::identity_line(f.address, check));
+        }
+    }
     if report.have_model {
         if report.model_device_count == 0 {
             // A model loaded but has no device inventory: the cross-reference is
@@ -520,6 +549,9 @@ fn print_json(report: &Report, timing: serde_json::Value) -> anyhow::Result<()> 
             // was read (issue #203).
             if f.secure.activated() {
                 row["secure"] = json!(f.secure.as_str());
+            }
+            if let Some(identity) = &f.identity {
+                row["identity"] = json!(identity);
             }
             row
         })
@@ -626,6 +658,7 @@ mod tests {
             serial: None,
             order: None,
             secure: SecureStatus::Plain,
+            identity: None,
         }
     }
 

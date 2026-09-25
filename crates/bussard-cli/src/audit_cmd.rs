@@ -72,6 +72,7 @@ pub fn run(
         let runtime = tokio::runtime::Runtime::new().context("starting the tokio runtime")?;
         report["live"] = runtime.block_on(live_report(
             &model,
+            dir,
             config,
             options.window,
             &overrides,
@@ -149,6 +150,7 @@ fn products_report(model: &Model, dir: &Path) -> Value {
 /// Gathers the live section: gateway description, traffic sample, scan delta.
 async fn live_report(
     model: &Model,
+    dir: &Path,
     config: ConnectionConfig,
     window: Duration,
     overrides: &ConnOverrides,
@@ -204,7 +206,7 @@ async fn live_report(
     //    runs after the sample, not before it, so listening starts as soon as
     //    the tunnel is up instead of after the probe's ~600 ms wait.
     let source = checked_source_or_close(&service, overrides).await?;
-    let (scan, secure) = scan_model_devices(&service, model, source, keys).await;
+    let (scan, secure) = scan_model_devices(&service, model, dir, source, keys).await;
     let _ = handle.close().await;
 
     Ok(json!({
@@ -264,6 +266,7 @@ async fn sample_traffic(handle: &BusHandle, window: Duration) -> Vec<SampledTele
 async fn scan_model_devices(
     service: &bussard_service::BusService,
     model: &Model,
+    dir: &Path,
     source: IndividualAddress,
     keys: &ToolKeys,
 ) -> (Value, Vec<SecureProbe>) {
@@ -335,6 +338,16 @@ async fn scan_model_devices(
             });
             if let Some(p) = &probe {
                 row["secure"] = json!(p.status());
+            }
+            // The identity verdict against the lock (issue #228, item 5).
+            if let Some(mask) = bus_mask {
+                row["identity"] = json!(crate::device_facts::observe(
+                    dir,
+                    true,
+                    *addr,
+                    mask,
+                    Some(&loaded.device),
+                ));
             }
             lines.entry(key).or_default().push(row);
         } else {
@@ -585,6 +598,17 @@ pub fn render_text(report: &Value) -> String {
                     mismatch,
                     secure
                 ));
+                if let (Ok(check), Ok(address)) = (
+                    serde_json::from_value::<bussard_model::identity::IdentityCheck>(
+                        d["identity"].clone(),
+                    ),
+                    text_or(&d["address"], "?").parse(),
+                ) {
+                    line(format!(
+                        "      {}",
+                        crate::device_facts::identity_line(address, &check)
+                    ));
+                }
             }
             for d in array(&l["not_answering"]) {
                 line(format!(

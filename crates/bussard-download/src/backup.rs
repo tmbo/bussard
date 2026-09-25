@@ -376,6 +376,9 @@ pub struct ManifestEntry {
     /// The skip or failure reason.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// The device's identity against `bussard.lock` (issue #228, item 5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<bussard_model::identity::IdentityCheck>,
 }
 
 /// The per-run manifest written beside the device backups.

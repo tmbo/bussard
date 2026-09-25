@@ -1292,14 +1292,24 @@ fn import_product(file: &Path, dir: &Path) -> anyhow::Result<ProductData> {
         );
     }
 
-    // An ETS project export is the owner's project: read in place here.
-    // `bussard import-product <export>` extracts its programs into products/.
+    // An ETS project export is stored the way `import-product` stores it:
+    // every application program extracted once into products/ and pinned
+    // (issue #228, item 4); the export itself is not copied.
     if is_project_export(file, &product) {
+        let apps: Vec<String> = product
+            .applications
+            .iter()
+            .filter(|a| !a.is_pei_program())
+            .map(|a| a.id.clone())
+            .collect();
+        let entries = crate::lock_pin::extract_and_entries(dir, file, &product, &apps)?;
         println!(
-            "  read the ETS project export in place: {} (run `bussard import-product` on it \
-             to store its product data under products/)",
+            "  extracted {} application program(s) from the ETS project export {} into products/",
+            entries.len(),
             file.display()
         );
+        crate::lock_pin::pin(dir, &entries);
+        crate::import_product_cmd::write_product_models(&product, dir)?;
         return Ok(product);
     }
 
