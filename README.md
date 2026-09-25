@@ -1,10 +1,8 @@
 # 🪽 bussard
 
-A buzzard circles the field and sees everything move. `bussard` does that for a KNX building: an open-source CLI that programs, watches, and decodes the bus. Built so an LLM can manage your KNX configuration with you. Project page and docs: [bussard.tmbo.dev](https://bussard.tmbo.dev/).
+A buzzard circles the field and sees everything move. `bussard` does that for a KNX building: an open-source CLI that programs, watches, and decodes the bus. Built so an LLM can manage your KNX configuration with you. [bussard.tmbo.dev](https://bussard.tmbo.dev/).
 
 All the configuration for your KNX setup is stored in TOML files, ready for your chat agent to modify them, creating reviewable diffs. `bussard` pushes the changes to the devices over your KNXnet/IP gateway. ETS stays in the drawer for the things only ETS can do (certification, planning, the odd exotic device).
-
-Project page: [bussard.tmbo.dev](https://bussard.tmbo.dev/).
 
 ![How bussard fits together](docs/assets/overview.svg)
 
@@ -73,12 +71,12 @@ import (a Jung switch/blind actuator):
 
 ```toml
 [channel.relaisausgaenge-1]
-betriebsart = "Lüftungsklappe / Dachfenster"
+betriebsart = "Lüftungsklappe"
 langzeitbetrieb.listen = ["3/1/20"]
-rueckmeldung-lueftungsklappen-dachfensterposition.send = "3/1/23"
+rueckmeldung-lueftungsklappen.send = "3/1/23"
 ```
 
-The keys come from the vendor's product data; [the model format](https://bussard.tmbo.dev/docs/model-format/) specifies every file.
+The keys come from the vendor's product data and can be found in the docs.
 
 From there you can explore all the functionality of bussard:
 
@@ -95,61 +93,26 @@ $ claude mcp add knx -- bussard mcp --dir knx    # let Claude debug your bus
 
 ## Install
 
-You will need a KNXnet/IP gateway (tunneling or routing). A KNXnet/IP Secure interface works too: bussard opens the encrypted tunnel with the tunnelling users of your ETS keyring (`--keyring`), KNX Data Secure devices are programmed with their tool keys from the same file, and plain devices are reached in the clear through that tunnel. Set `connection.keyring` in `knx/bussard.toml` to skip the flag on every command. Optional but nice: your ETS project export (`.knxproj`) for an instantly named model, and also optionally vendor product data (`.knxprod`, free downloads from manufacturer sites) for commissioning new devices.
-
-macOS and Linux:
-
-```console
-$ curl -fsSL https://raw.githubusercontent.com/tmbo/bussard/main/install.sh | sh
-```
-
-With Homebrew:
-
-```console
-$ brew install tmbo/tap/bussard
-```
-
-Windows, in PowerShell:
-
-```console
-> irm https://raw.githubusercontent.com/tmbo/bussard/main/install.ps1 | iex
-```
-
-See [the install docs](https://bussard.tmbo.dev/docs/#install) for checksum
-verification, pinning a version, downloading a release binary directly, and
-building from source.
+See [the install docs](https://bussard.tmbo.dev/docs/#install) on how to get bussard running on your system.
 
 ## Safety
 
 `bussard` writes to physical building infrastructure. **Read
 [docs/SAFETY.md](https://bussard.tmbo.dev/docs/SAFETY/) before your first write**. It is the single
-read-before-your-first-write guide (which bus you are hitting, the real-gateway
-gate, backups, flash recovery, protected GAs, supported masks). The essentials:
+read-before-your-first-write guide. In case you like living dangerously, TL;DR:
 
-- Writes to a non-loopback gateway are refused unless you opt in with `--allow-remote-gateway` (or `BUSSARD_ALLOW_REAL_GATEWAY=1`), and every write confirmation names the resolved gateway. Do your first real writes against a spare device or the simulator.
-- A GA marked `protected = true` (wind alarm or central functions) is refused: the CLI needs `--force`. An LLM connecting to bussard over MCP has no override at all and cannot modify protected GAs.
-- Every device write is plan-before-apply: bussard reads the live state, shows the diff, asks for confirmation, backs up (except `flash`), writes, and verifies.
+- Every device write is plan-before-apply: bussard reads the live state, shows the diff, asks for confirmation, backs up, writes, and verifies.
+- Writes to a non local gateway are refused unless you opt in with `--allow-remote-gateway` (or `BUSSARD_ALLOW_REAL_GATEWAY=1`). Every write confirmation names the resolved gateway.
+- A group address marked `protected = true` (wind alarm or central functions) is refused. You can only write these by adding `--force` on the CLI. An LLM connecting to bussard over MCP has no override at all and cannot modify protected group addresses.
 - The MCP server has three tiers: passive (never transmits), read (default, rate-limited), write (opt-in via `--allow-writes`).
-- The gateway gate and the protected-GA check are implemented once, in the `bussard-service` crate, which the CLI, the MCP server and the `viz` web server all call. A new surface gets both rules by construction.
 
 ## Documentation
 
-- [Safety](https://bussard.tmbo.dev/docs/SAFETY/): read this before your first write.
-- [Reference](https://bussard.tmbo.dev/docs/reference/): every command, flag, and MCP tool.
-- [Model format](https://bussard.tmbo.dev/docs/model-format/): every file in `knx/`, its keys, and its errors.
-- [How do I ...](https://bussard.tmbo.dev/docs/howto/): recipes, from watching the bus to flashing a device.
-- [The first weekend](https://bussard.tmbo.dev/docs/getting-started-owner/): the owner's guide, from install to a backup on a USB stick.
-- [Handover checklist](https://bussard.tmbo.dev/docs/handover-checklist/): what an owner demands and an integrator delivers.
-- [Working with an integrator](https://bussard.tmbo.dev/docs/collaboration/): exchanging changes by bundle or by repository.
-- [Design](https://bussard.tmbo.dev/docs/DESIGN/): architecture, feasibility, roadmap.
-- [Home Assistant](https://bussard.tmbo.dev/docs/ha-config/): how `ha-config` derives entities.
-- [Product data](https://bussard.tmbo.dev/docs/product-data/): `.knxprod` handling and the pointer index.
-- [Personas](https://bussard.tmbo.dev/docs/personas/): who bussard is for, their journeys step by step, and the gaps as issue drafts.
-- [Test campaign](https://bussard.tmbo.dev/docs/testing-campaign/): the runbook for proving `bussard` against real hardware.
+Full documentation can be found on [the projects website](https://bussard.tmbo.dev/docs).
 
 ## Legal notes
 
-Never commit `.knxproj` or `.knxprod` files: the application XML is the manufacturer's copyrighted work. You supply your own product files, free from manufacturer sites or the MyKNX catalogue ([details](https://bussard.tmbo.dev/docs/product-data/)). `bussard` is an independent project, not affiliated with or certified by the KNX Association. KNX is a registered trademark of the KNX Association.
+`bussard` will not ship product files, as these are the manufacturer's copyrighted work. Every project will download them directly from the manufacturer. `bussard` is an independent project, not affiliated with or certified by the KNX Association. KNX is a registered trademark of the KNX Association.
 
 ## License
 
