@@ -483,10 +483,45 @@
         german.com_objects = german.com_objects.map((co) => ({
           ...co, name: `${co.name} Rückmeldung Dauerbetriebszustandsüberwachung Kanal`,
         }));
+        german.channels = german.channels.map((c) => ({
+          ...c,
+          parameters: [
+            { key: "verhalten-bei-busspannungswiederkehr-und-nach-programmierung",
+              text: "Verhalten bei Busspannungswiederkehr und nach dem Programmiervorgang",
+              value: "Position vor Busspannungsausfall wiederherstellen und Rückmeldeobjekte senden",
+              default: "Keine Reaktion", non_default: true },
+            { key: "zwangsstellungsprioritaetsauswertung",
+              text: "Zwangsstellungsprioritätsauswertungsverfahren",
+              value: "Sicherheitsfunktionsverriegelungsprioritätsstufe", default: null, non_default: null },
+          ],
+        }));
         model.devices.push(german);
       }
       const store = new Store(model);
       initInspector(store, { container: fdoc.getElementById("inspector-panel") });
+
+      // Channel parameter values (issue #259): the fixture's blind actuator
+      // (1.1.4) carries device-level and per-channel parameters from its
+      // synthetic product model, with long German labels.
+      store.select("device", "1.1.4");
+      const paramRows = [...tabBody.querySelectorAll("tr.co-param")];
+      check(`inspector: channel parameters render (${paramRows.length} rows)`, paramRows.length === 14);
+      check("inspector: parameter rows show the vendor label and the choice label",
+        paramRows.some((r) => r.textContent.includes("Betriebsart") &&
+          r.textContent.includes("Jalousie mit Lamellenverstellung")));
+      const changed = tabBody.querySelectorAll("tr.co-param.non-default .param-changed");
+      check(`inspector: non-default values are marked (${changed.length})`, changed.length === 9);
+      const firstChanged = changed[0];
+      check("inspector: the marker names the vendor default",
+        !!firstChanged && /Vendor default: /.test(firstChanged.title));
+      // Order inside the table: channel header, its com objects, then its
+      // parameters; the device-level ones under the trailing "General".
+      const rowKinds = [...tabBody.querySelectorAll(".co-table tbody tr")].map((r) =>
+        r.classList.contains("co-group") ? "G" : r.classList.contains("co-param-head") ? "H"
+          : r.classList.contains("co-param") ? "P" : "O");
+      const seq = rowKinds.join("");
+      check(`inspector: parameters follow each channel's com objects (${seq})`,
+        /^GO+HP{4}GO+HP{4}GO+HP{4}GO+HP{2}$/.test(seq));
 
       const overflowing = (label) => {
         const bad = [];

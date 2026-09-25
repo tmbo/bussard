@@ -300,6 +300,8 @@ async fn browser_smoke_dom_renders() -> Result<(), Box<dyn Error + Send + Sync>>
         "PASS inspector: no fixture channel table overflows at the default width",
         "PASS inspector: tables wrap instead of overflowing at the minimum width",
         "PASS reload help text has no endpoint or method",
+        "PASS inspector: channel parameters render (14 rows)",
+        "PASS inspector: non-default values are marked (9)",
     ] {
         assert!(
             test_dom.contains(line),

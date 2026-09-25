@@ -258,6 +258,11 @@ directory or a script from before these changes needs:
   labels instead of scrolling sideways. A help panel (`?`) explains the header
   actions; the reload tooltip and help describe what a reload does instead of
   naming the HTTP endpoint (#252).
+- viz: the inspector shows each channel's parameter values under its header,
+  after the com objects, with the vendor label, the choice label and a marker
+  for values that differ from the vendor default (from the product model in
+  `.bussard/models/`). The same rows are in the model projection the page
+  loads (#259).
 
 **KNX Data Secure**
 

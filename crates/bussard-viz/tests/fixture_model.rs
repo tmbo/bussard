@@ -17,7 +17,7 @@ use std::path::PathBuf;
 
 use bussard_model::Model;
 use bussard_viz::assets;
-use bussard_viz::project::project_model;
+use bussard_viz::project::{product_models_for, project_model_with};
 
 /// The synthetic model directory the fixture is generated from.
 fn demo_model_dir() -> PathBuf {
@@ -35,10 +35,12 @@ fn embedded() -> &'static str {
 
 #[test]
 fn test_fixture_model_matches_demo_model_projection() -> Result<(), Box<dyn std::error::Error>> {
-    let model = Model::load(&demo_model_dir())?;
+    let dir = demo_model_dir();
+    let model = Model::load(&dir)?;
+    let products = product_models_for(&model, &dir);
     let expected = format!(
         "{}\n",
-        serde_json::to_string_pretty(&project_model(&model))?
+        serde_json::to_string_pretty(&project_model_with(&model, &products))?
     );
 
     assert_eq!(

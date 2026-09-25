@@ -22,11 +22,23 @@
 //!   `has_fdsk_certificate`; `null` without one), a group its `secure` flag,
 //!   and a com-object `secure` when it is marked secure or linked to a secure
 //!   group. Flags only: the model holds no key material.
+//! * Parameter values (issue #259), read-only: each channel carries the
+//!   `parameters` the device file sets in it, and the device carries its
+//!   device-level ones. A row has the file `key`, the vendor `text`, the
+//!   `value` (the choice label for an enumeration, when the product model
+//!   has one), the vendor `default` and `non_default`. The rows come from
+//!   [`bussard_model::device_view`], the same data `bussard device` prints;
+//!   without the product model (`.bussard/models/<application>.yaml`) `text`,
+//!   `default` and `non_default` are `null`.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
+use bussard_model::device_view::{DEVICE_SCOPE, ParamRow, device_view};
 use bussard_model::schema::{ComObject, Device, Link};
-use bussard_model::{GroupAddress, IndividualAddress, Model};
+use bussard_model::{
+    GroupAddress, IndividualAddress, Model, ProductModels, is_hidden_mem_key, label_mem_key,
+};
 use serde_json::{Value, json};
 
 /// Builds the canonical `/api/model` JSON projection from a loaded model.
@@ -37,8 +49,28 @@ use serde_json::{Value, json};
 /// Problems panel's findings and neutral info). See the module docs for the
 /// projection rules.
 pub fn project_model(model: &Model) -> Value {
+    project_model_with(model, &ProductModels::default())
+}
+
+/// The product models the devices of `model` pin, read from the model
+/// directory `dir` (`.bussard/models/<application>.yaml`). Missing or
+/// unreadable files are simply absent. `import-product` writes these files in
+/// the lock's language, so their texts and choice labels match the device
+/// files.
+pub fn product_models_for(model: &Model, dir: &Path) -> ProductModels {
+    let apps: BTreeSet<String> = model
+        .devices
+        .values()
+        .filter_map(|d| d.device.product.as_ref()?.application_ref.clone())
+        .collect();
+    ProductModels::load_apps(dir, apps.iter().map(String::as_str))
+}
+
+/// [`project_model`] with the vendor texts, choice labels and defaults of
+/// `products` joined onto the parameter values.
+pub fn project_model_with(model: &Model, products: &ProductModels) -> Value {
     let ranges = project_ranges(model);
-    let devices = project_devices(model);
+    let devices = project_devices(model, products);
     let groups = project_groups(model);
 
     let link_count: usize = model.links.links.values().map(Vec::len).sum();
@@ -104,17 +136,57 @@ fn parse_range_key(key: &str) -> Option<(u8, Option<u8>)> {
 }
 
 /// Projects every device, in address order, with its channels and com-objects.
-fn project_devices(model: &Model) -> Vec<Value> {
+fn project_devices(model: &Model, products: &ProductModels) -> Vec<Value> {
     model
         .devices
         .iter()
-        .map(|(addr, loaded)| project_device(model, *addr, &loaded.device))
+        .map(|(addr, loaded)| project_device(model, products, *addr, &loaded.device))
         .collect()
+}
+
+/// The parameter rows of one scope of a device: a channel id, or `None` for
+/// the device level. The channel's label parameter (its value is the channel
+/// name) and hidden values (never shown in ETS) are left out.
+fn project_parameters(
+    model: &Model,
+    products: &ProductModels,
+    addr: IndividualAddress,
+    channel: Option<&str>,
+) -> Vec<Value> {
+    let scope = channel.unwrap_or(DEVICE_SCOPE);
+    let Ok(view) = device_view(model, products, addr, Some(scope)) else {
+        return Vec::new();
+    };
+    let Some(scope) = view.scope else {
+        return Vec::new();
+    };
+    scope
+        .parameters
+        .iter()
+        .filter(|p| !is_hidden_mem_key(&p.key) && p.key != label_mem_key(&p.reference))
+        .map(project_parameter)
+        .collect()
+}
+
+/// One parameter row as the inspector shows it.
+fn project_parameter(p: &ParamRow) -> Value {
+    json!({
+        "key": p.key,
+        "text": p.text,
+        "value": p.value,
+        "default": p.default,
+        "non_default": p.at_default.map(|d| !d),
+    })
 }
 
 /// Projects a single device: identity, location, product, channels, and the
 /// union com-object list.
-fn project_device(model: &Model, addr: IndividualAddress, device: &Device) -> Value {
+fn project_device(
+    model: &Model,
+    products: &ProductModels,
+    addr: IndividualAddress,
+    device: &Device,
+) -> Value {
     let channels: Vec<Value> = device
         .channels
         .iter()
@@ -122,9 +194,11 @@ fn project_device(model: &Model, addr: IndividualAddress, device: &Device) -> Va
             json!({
                 "key": key,
                 "name": channel.name,
+                "parameters": project_parameters(model, products, addr, Some(key)),
             })
         })
         .collect();
+    let parameters = project_parameters(model, products, addr, None);
 
     let product = device.product.as_ref().and_then(|p| {
         // Emit product only when there is at least a manufacturer or order
@@ -166,6 +240,7 @@ fn project_device(model: &Model, addr: IndividualAddress, device: &Device) -> Va
         "product": product,
         "security": security,
         "channels": channels,
+        "parameters": parameters,
         "com_objects": com_objects,
     })
 }
@@ -723,5 +798,112 @@ mod tests {
         assert_eq!(parse_range_key("3/2"), Some((3, Some(2))));
         assert_eq!(parse_range_key("3/2/1"), None);
         assert_eq!(parse_range_key("x"), None);
+    }
+
+    const PARAM_APP: &str = "M-00FA_A-0001-01-0001";
+
+    /// A one-channel device with a device-level and a channel parameter, a
+    /// channel label parameter and a hidden value, from texts.
+    fn param_model() -> Result<Model, Box<dyn std::error::Error>> {
+        let lock = format!(
+            r#"version = 2
+
+[[device]]
+address = "1.1.9"
+product = "BA-1"
+application = "{PARAM_APP}"
+channels = [
+  {{ key = "k-1", id = "CH-1", text = "Kanal 1" }},
+]
+objects = [
+  {{ number = 1, key = "fahren", channel = "k-1", dpt = "1.008", flags = "CW" }},
+]
+parameters = [
+  {{ key = "sendeverzoegerung", ref = "P-1_R-1", param = "P-1" }},
+  {{ key = "betriebsart", channel = "k-1", ref = "P-2_R-2", param = "P-2" }},
+]
+"#
+        );
+        let device = r#"address = "1.1.9"
+name = "Blind"
+product = "BA-1"
+
+[parameters]
+sendeverzoegerung = "10"
+
+[channel.k-1]
+name = "Wohnzimmer"
+betriebsart = "Jalousie mit Lamellenverstellung"
+fahren.listen = ["0/1/0"]
+"#;
+        let files: BTreeMap<String, String> = [
+            ("bussard.lock".to_string(), lock),
+            ("devices/1.1.9.toml".to_string(), device.to_string()),
+        ]
+        .into_iter()
+        .collect();
+        Ok(Model::from_texts(&files)?)
+    }
+
+    fn param_products() -> Result<ProductModels, Box<dyn std::error::Error>> {
+        let yaml = format!(
+            r#"parameters:
+  - id: {PARAM_APP}_P-1
+    text: "Sendeverzoegerung"
+    type: !int
+      min: 0
+      max: 255
+    default: "10"
+  - id: {PARAM_APP}_P-2
+    text: "Betriebsart"
+    type: !enum
+      values:
+        - {{ value: 1, text: "Rollladen" }}
+        - {{ value: 2, text: "Jalousie mit Lamellenverstellung" }}
+    default: "1"
+"#
+        );
+        let mut products = ProductModels::default();
+        products.by_app_ref.insert(
+            PARAM_APP.to_string(),
+            bussard_model::ProductModel::from_yaml(&yaml, PARAM_APP)?,
+        );
+        Ok(products)
+    }
+
+    #[test]
+    fn test_project_model_with_parameters_grouped_by_channel()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let v = project_model_with(&param_model()?, &param_products()?);
+        let device = &v["devices"][0];
+        assert_eq!(device["channels"][0]["key"], "CH-1");
+        let channel = device["channels"][0]["parameters"]
+            .as_array()
+            .ok_or("channel parameters")?;
+        assert_eq!(channel.len(), 1, "{channel:?}");
+        assert_eq!(channel[0]["key"], "betriebsart");
+        assert_eq!(channel[0]["text"], "Betriebsart");
+        assert_eq!(channel[0]["value"], "Jalousie mit Lamellenverstellung");
+        assert_eq!(channel[0]["default"], "Rollladen");
+        assert_eq!(channel[0]["non_default"], true);
+        let top = device["parameters"].as_array().ok_or("device parameters")?;
+        assert_eq!(top.len(), 1, "{top:?}");
+        assert_eq!(top[0]["key"], "sendeverzoegerung");
+        assert_eq!(top[0]["value"], "10");
+        assert_eq!(top[0]["non_default"], false);
+        Ok(())
+    }
+
+    #[test]
+    fn test_project_model_parameters_without_product_model()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let v = project_model(&param_model()?);
+        let channel = &v["devices"][0]["channels"][0]["parameters"][0];
+        assert_eq!(channel["key"], "betriebsart");
+        assert_eq!(channel["value"], "Jalousie mit Lamellenverstellung");
+        assert_eq!(channel["text"], Value::Null);
+        assert_eq!(channel["default"], Value::Null);
+        assert_eq!(channel["non_default"], Value::Null);
+        Ok(())
     }
 }

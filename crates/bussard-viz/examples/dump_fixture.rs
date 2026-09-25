@@ -28,7 +28,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("crates/bussard-viz/fixtures/demo-model"));
     let model = Model::load(&dir)?;
-    let projection = bussard_viz::project::project_model(&model);
+    // The demo model ships its own synthetic product model under
+    // `.bussard/models/`, so the fixture carries vendor texts and defaults.
+    let products = bussard_viz::project::product_models_for(&model, &dir);
+    let projection = bussard_viz::project::project_model_with(&model, &products);
     println!("{}", serde_json::to_string_pretty(&projection)?);
     Ok(())
 }

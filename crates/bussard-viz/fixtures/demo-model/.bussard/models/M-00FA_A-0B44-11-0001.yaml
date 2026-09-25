@@ -1,0 +1,111 @@
+# Synthetic product model for the demo house (issue #259). Invented, not vendor data.
+identity:
+  id: M-00FA_A-0B44-11-0001
+parameters:
+  - id: M-00FA_A-0B44-11-0001_P-1
+    text: "Sendeverzoegerung nach Busspannungswiederkehr in Sekunden"
+    type: !int
+      min: 0
+      max: 255
+    default: "10"
+  - id: M-00FA_A-0B44-11-0001_P-2
+    text: "Windalarm Ueberwachungszeitraum der Sicherheitsfunktion"
+    type: !enum
+      values:
+        - { value: 0, text: "Keine Ueberwachung" }
+        - { value: 1, text: "Zyklische Ueberwachung alle 10 Minuten" }
+        - { value: 2, text: "Zyklische Ueberwachung alle 60 Minuten" }
+    default: "0"
+  - id: M-00FA_A-0B44-11-0001_P-11
+    text: "Betriebsart"
+    type: !enum
+      values:
+        - { value: 1, text: "Rollladen / Markise ohne Lamellenverstellung" }
+        - { value: 2, text: "Jalousie mit Lamellenverstellung" }
+        - { value: 3, text: "Lueftungsklappe / Dachfenster" }
+    default: "1"
+  - id: M-00FA_A-0B44-11-0001_P-12
+    text: "Gesamtfahrzeit Auf/Ab in Sekunden"
+    type: !int
+      min: 1
+      max: 600
+    default: "60"
+  - id: M-00FA_A-0B44-11-0001_P-13
+    text: "Verhalten bei Busspannungswiederkehr"
+    type: !enum
+      values:
+        - { value: 0, text: "Keine Reaktion" }
+        - { value: 1, text: "Auffahren" }
+        - { value: 2, text: "Abfahren" }
+        - { value: 3, text: "Position vor Busspannungsausfall wiederherstellen" }
+    default: "0"
+  - id: M-00FA_A-0B44-11-0001_P-14
+    text: "Reaktion bei Windalarm (Sicherheitsfunktion Prioritaet 1)"
+    type: !enum
+      values:
+        - { value: 0, text: "Keine Reaktion" }
+        - { value: 1, text: "Auffahren und Bedienung sperren bis Windalarmende" }
+        - { value: 2, text: "Stopp" }
+    default: "1"
+  - id: M-00FA_A-0B44-11-0001_P-21
+    text: "Betriebsart"
+    type: !enum
+      values:
+        - { value: 1, text: "Rollladen / Markise ohne Lamellenverstellung" }
+        - { value: 2, text: "Jalousie mit Lamellenverstellung" }
+        - { value: 3, text: "Lueftungsklappe / Dachfenster" }
+    default: "1"
+  - id: M-00FA_A-0B44-11-0001_P-22
+    text: "Gesamtfahrzeit Auf/Ab in Sekunden"
+    type: !int
+      min: 1
+      max: 600
+    default: "60"
+  - id: M-00FA_A-0B44-11-0001_P-23
+    text: "Verhalten bei Busspannungswiederkehr"
+    type: !enum
+      values:
+        - { value: 0, text: "Keine Reaktion" }
+        - { value: 1, text: "Auffahren" }
+        - { value: 2, text: "Abfahren" }
+        - { value: 3, text: "Position vor Busspannungsausfall wiederherstellen" }
+    default: "0"
+  - id: M-00FA_A-0B44-11-0001_P-24
+    text: "Reaktion bei Windalarm (Sicherheitsfunktion Prioritaet 1)"
+    type: !enum
+      values:
+        - { value: 0, text: "Keine Reaktion" }
+        - { value: 1, text: "Auffahren und Bedienung sperren bis Windalarmende" }
+        - { value: 2, text: "Stopp" }
+    default: "1"
+  - id: M-00FA_A-0B44-11-0001_P-31
+    text: "Betriebsart"
+    type: !enum
+      values:
+        - { value: 1, text: "Rollladen / Markise ohne Lamellenverstellung" }
+        - { value: 2, text: "Jalousie mit Lamellenverstellung" }
+        - { value: 3, text: "Lueftungsklappe / Dachfenster" }
+    default: "1"
+  - id: M-00FA_A-0B44-11-0001_P-32
+    text: "Gesamtfahrzeit Auf/Ab in Sekunden"
+    type: !int
+      min: 1
+      max: 600
+    default: "60"
+  - id: M-00FA_A-0B44-11-0001_P-33
+    text: "Verhalten bei Busspannungswiederkehr"
+    type: !enum
+      values:
+        - { value: 0, text: "Keine Reaktion" }
+        - { value: 1, text: "Auffahren" }
+        - { value: 2, text: "Abfahren" }
+        - { value: 3, text: "Position vor Busspannungsausfall wiederherstellen" }
+    default: "0"
+  - id: M-00FA_A-0B44-11-0001_P-34
+    text: "Reaktion bei Windalarm (Sicherheitsfunktion Prioritaet 1)"
+    type: !enum
+      values:
+        - { value: 0, text: "Keine Reaktion" }
+        - { value: 1, text: "Auffahren und Bedienung sperren bis Windalarmende" }
+        - { value: 2, text: "Stopp" }
+    default: "1"

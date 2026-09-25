@@ -971,6 +971,31 @@ body.query-active .ga-sub:not(.match) { opacity: 0.35; }
   border-bottom: 1px solid var(--border);
 }
 
+/* Parameter values under a channel (issue #259): read-only rows after the
+   channel's com objects. Labels and values wrap like the rest of the table. */
+.insp-table tr.co-param-head td {
+  padding-top: 6px;
+  color: var(--text-faint);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.insp-table tr.co-param td.param-label { color: var(--text-dim); }
+.insp-table tr.co-param td.param-value { color: var(--text); }
+.insp-table tr.co-param.non-default td.param-value .param-value-text { font-weight: 600; }
+.param-changed {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--accent-dim);
+  border-radius: 8px;
+  color: var(--accent);
+  font-size: 10px;
+  white-space: nowrap;
+  vertical-align: 1px;
+}
+
 /* Send/listen cells: a GA chip with a secondary line of remote devices. The
    cell is tinted by data-flow direction (item 6): send = outgoing (orange),
    listen = incoming (green). */

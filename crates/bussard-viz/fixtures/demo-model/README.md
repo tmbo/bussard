@@ -36,5 +36,10 @@ names and the full group-address plan of that building.
 * a `protected: true` GA (writes must be refused or confirmed);
 * KNX Data Secure, read-only: a security-activated device (1.1.6) and a
   `secure = true` GA (0/2/1), so the inspector and the projection show both;
+* parameter values (issue #259): the blind actuator 1.1.4 sets device-level
+  and per-channel parameters with long German labels, and
+  `.bussard/models/M-00FA_A-0B44-11-0001.yaml` is its invented product model
+  (vendor texts, enum choices, defaults), so the inspector shows choice
+  labels and non-default markers;
 * a spread of DPTs: 1.001, 1.005, 1.008, 1.011, 3.007, 5.001, 5.010, 9.001,
   9.004, 12.001, 20.102.
