@@ -368,6 +368,10 @@ pub struct Layer4Connection<Ch: L4Channel> {
     /// A device that does not expose the property leaves this `None`, and the
     /// chunk accessors fall back to the conservative standard-frame caps.
     max_apdu: Option<u16>,
+    /// What [`negotiate_max_apdu`](Self::negotiate_max_apdu) found when the
+    /// device offered no usable value, so a later call on this connection does
+    /// not read it again (issue #215). `None` until it ran without a value.
+    max_apdu_absent: Option<MaxApduAbsence>,
     /// Set once the peer disconnects or a protocol error occurs, so a stale
     /// `disconnect()` is a no-op.
     closed: bool,
@@ -389,6 +393,17 @@ pub struct Layer4Connection<Ch: L4Channel> {
     /// The outcome of the last [`authorize`](Self::authorize) on this
     /// connection, kept so the device facts can record the verdict.
     last_authorize: Option<AuthorizeOutcome>,
+}
+
+/// Why [`Layer4Connection::negotiate_max_apdu`] found no `PID_MAX_APDU_LENGTH`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaxApduAbsence {
+    /// The device answered without a usable value (no such property, a short
+    /// answer, or zero): a device-stable fact another connection may reuse.
+    Answered,
+    /// The device acknowledged the read and never answered it: remembered for
+    /// this connection only, so a later connection asks again.
+    Unanswered,
 }
 
 /// Device facts verified for one connection (issue #209), set with
@@ -476,6 +491,7 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
             numbered_exchanges: 0,
             pending_response: None,
             max_apdu: None,
+            max_apdu_absent: None,
             closed: false,
             secure,
             sync_retry: SyncRetry::default(),
@@ -1042,6 +1058,13 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
         if let Some(v) = self.max_apdu {
             return Ok(Some(v));
         }
+        // Negotiated once per connection, the absence included (issue #215):
+        // the table reader, the parameter read-back and the facts each ask,
+        // and a device without the property answered all of them the same.
+        if self.max_apdu_absent.is_some() {
+            return Ok(None);
+        }
+        let exchanges_before = self.numbered_exchanges;
         let resp = match crate::connection::property_request(
             self,
             crate::apci::DEVICE_OBJECT_INDEX,
@@ -1055,16 +1078,32 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
             // A device-level absence (no such property, a malformed/short answer,
             // or the device not answering the read) is tolerated: keep the
             // conservative defaults. A genuine transport death propagates.
-            Err(MgmtError::MalformedResponse { .. })
-            | Err(MgmtError::NoResponse { .. })
-            | Err(MgmtError::MidSessionSilence {
-                kind: SilenceKind::NoResponse,
-                ..
-            }) => {
+            Err(MgmtError::MalformedResponse { .. }) => {
                 tracing::debug!(
                     target = %self.target,
                     "PID_MAX_APDU_LENGTH not readable; using conservative chunk sizes"
                 );
+                self.max_apdu_absent = Some(MaxApduAbsence::Answered);
+                return Ok(None);
+            }
+            Err(MgmtError::NoResponse { .. })
+            | Err(MgmtError::MidSessionSilence {
+                kind: SilenceKind::NoResponse,
+                ..
+            }) => {
+                // The response timeout marked the connection closed. A device
+                // that T_ACKed the read is alive and the sequence numbers
+                // agree, so re-open it the way `authorize` does; otherwise the
+                // next request fails with `Disconnected` on a device that only
+                // lacks the property (issue #215).
+                if self.numbered_exchanges > exchanges_before {
+                    self.closed = false;
+                }
+                tracing::debug!(
+                    target = %self.target,
+                    "PID_MAX_APDU_LENGTH not answered; using conservative chunk sizes"
+                );
+                self.max_apdu_absent = Some(MaxApduAbsence::Unanswered);
                 return Ok(None);
             }
             Err(other) => return Err(other),
@@ -1090,8 +1129,25 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
                     target = %self.target,
                     "PID_MAX_APDU_LENGTH read empty/zero; using conservative chunk sizes"
                 );
+                self.max_apdu_absent = Some(MaxApduAbsence::Answered);
                 Ok(None)
             }
+        }
+    }
+
+    /// Why [`negotiate_max_apdu`](Self::negotiate_max_apdu) found no value on
+    /// this connection, or `None` when it found one or has not run.
+    pub fn max_apdu_absence(&self) -> Option<MaxApduAbsence> {
+        self.max_apdu_absent
+    }
+
+    /// Records that an earlier connection to the same device found no
+    /// `PID_MAX_APDU_LENGTH` in an answer ([`MaxApduAbsence::Answered`]), so
+    /// [`negotiate_max_apdu`](Self::negotiate_max_apdu) keeps the conservative
+    /// chunks without asking again (issue #215).
+    pub fn set_max_apdu_absent(&mut self) {
+        if self.max_apdu.is_none() {
+            self.max_apdu_absent = Some(MaxApduAbsence::Answered);
         }
     }
 

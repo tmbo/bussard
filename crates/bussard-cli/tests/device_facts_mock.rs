@@ -542,6 +542,49 @@ fn test_flash_preflight_skips_the_authorize_the_facts_record_as_unanswered() -> 
     Ok(())
 }
 
+/// `PID_MAX_APDU_LENGTH` reads in a request log.
+fn max_apdu_reads(requests: &[(u16, Vec<u8>)]) -> usize {
+    requests
+        .iter()
+        .filter(|(a, d)| {
+            *a == A_PROPERTY_VALUE_READ
+                && d.first() == Some(&0)
+                && d.get(1) == Some(&PID_MAX_APDU_LENGTH)
+        })
+        .count()
+}
+
+/// Issue #215: on a device without `PID_MAX_APDU_LENGTH`, the flash
+/// pre-flight reads it once (the facts' read and the pre-flight's own
+/// negotiation used to read it twice).
+#[test]
+fn test_flash_preflight_reads_an_absent_max_apdu_once() -> TestResult {
+    let device = device()?.with_hook(|_, apci, data| {
+        (apci == A_PROPERTY_VALUE_READ
+            && data.first() == Some(&0)
+            && data.get(1) == Some(&PID_MAX_APDU_LENGTH))
+        .then(|| {
+            bussard_testkit::Reaction::Answer(
+                0x3D6,
+                bussard_testkit::device::prop_response(0, PID_MAX_APDU_LENGTH, 0, 1, &[]),
+            )
+        })
+    });
+    let bench = Bench::start("flash-max-apdu", device)?;
+    let Some(product) = build_knxprod(&bench.tmp)? else {
+        return Ok(());
+    };
+    let product = product.to_str().ok_or("non-UTF-8 temp path")?.to_string();
+    let _ = bench.run(&["flash", "1.1.12", "--product", product.as_str()])?;
+    let requests = bench.take_requests()?;
+    println!(
+        "flash pre-flight PID_MAX_APDU_LENGTH reads: {}",
+        max_apdu_reads(&requests)
+    );
+    assert_eq!(max_apdu_reads(&requests), 1);
+    Ok(())
+}
+
 // --- Measurement (ignored; run with --ignored --nocapture) -----------------
 
 /// One timed run: requests the device saw and the wall-clock.

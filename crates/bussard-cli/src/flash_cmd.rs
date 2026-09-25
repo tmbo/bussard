@@ -380,6 +380,8 @@ pub fn run(
                     // instead of spending an exchange from its tight
                     // per-connection budget on it.
                     facts.max_apdu = dev.l4_mut().negotiate_max_apdu().await.ok().flatten();
+                    facts.max_apdu_absent = dev.l4_mut().max_apdu_absence()
+                        == Some(bussard_mgmt::MaxApduAbsence::Answered);
                     // The factory-freshness probe (issue #79): read the load
                     // state (and, on System B, the resident application id) of
                     // the objects this flash would unload and rewrite. Purely

@@ -361,6 +361,11 @@ pub struct DeviceFacts {
     /// Device-stable, so the session seeds it instead of spending an exchange
     /// re-reading it.
     pub max_apdu: Option<u16>,
+    /// The pre-flight's read of `PID_MAX_APDU_LENGTH` was answered without a
+    /// value (the device does not offer it), so the session keeps the
+    /// conservative chunks without reading it again (issue #215). An
+    /// unanswered read does not set this: the write phase asks once more.
+    pub max_apdu_absent: bool,
 }
 
 impl DeviceFacts {
@@ -517,6 +522,10 @@ impl<C: Connector> Session<C> {
             Some(known) => {
                 l4.set_max_apdu(Some(known));
                 Some(known)
+            }
+            None if facts.max_apdu_absent => {
+                l4.set_max_apdu_absent();
+                None
             }
             None => l4.negotiate_max_apdu().await.ok().flatten(),
         };

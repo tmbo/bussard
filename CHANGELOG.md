@@ -123,6 +123,13 @@ entry supersedes it and is not a diff against it.
   the 3 s response timeout per session (mock: `apply` 2 authorize requests to
   0). A device that answers, granted or asking for a key, is always asked;
   stale facts present the key on the same connection (#215).
+- `PID_MAX_APDU_LENGTH` is read once per connection, its absence included:
+  a device without the property was asked again by the facts, the table
+  reader, the parameter read-back and the flash pre-flight (mock: 3 calls on
+  one connection, 3 reads to 1). A read the device acknowledges and never
+  answers re-opens the connection instead of leaving it closed, so the next
+  request no longer fails with "disconnected". The flash write phase reuses
+  the pre-flight's answered absence instead of reading it again (#215).
 - System B table read-back reads the address and association tables from
   memory at the negotiated chunk when that takes fewer requests than
   `PID_TABLE` property reads (#223). A 400-address, 1,333-association table

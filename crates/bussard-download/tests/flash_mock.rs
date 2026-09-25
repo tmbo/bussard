@@ -3811,6 +3811,7 @@ async fn test_open_with_facts_reuses_the_preflight_table_and_authorize_verdict()
             detail: "pre-flight: no answer".to_string(),
         }),
         max_apdu: None,
+        max_apdu_absent: false,
     };
     let app = fabricated_app()?;
     let plan = plan_flash(
