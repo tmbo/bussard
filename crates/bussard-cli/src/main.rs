@@ -128,6 +128,7 @@ fn command_keyring_slot(command: &mut Command) -> Option<&mut Option<PathBuf>> {
         | Command::Write { keyring, .. }
         | Command::Viz { keyring, .. }
         | Command::Audit { keyring, .. }
+        | Command::Learn { keyring, .. }
         | Command::Mcp { keyring, .. } => Some(keyring),
         _ => None,
     }
@@ -188,7 +189,7 @@ fn command_has_tool_key(command: &Command) -> bool {
 ///
 /// A default from the config is written into the subcommand's `--keyring`
 /// slot, so every consumer (tool keys, group keys, the tunnel) sees one
-/// keyring. A subcommand without a slot (`adopt`, `learn`, `test`), or one
+/// keyring. A subcommand without a slot (`adopt`, `test`), or one
 /// given `--tool-key`, uses it for the tunnel only. A `bussard.toml` that does
 /// not parse is left for the subcommand's own model load to report.
 fn effective_keyring(command: &mut Command) -> Option<(PathBuf, bool)> {
@@ -1410,6 +1411,13 @@ enum Command {
         /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
+        /// An ETS `.knxkeys` keyring whose group keys verify and decrypt secured
+        /// group telegrams, so their values are learned and the group is marked
+        /// `secure` (KNX Data Secure, issue #204). Defaults to
+        /// `connection.keyring` in `bussard.toml`. The password is read from
+        /// `BUSSARD_KEYRING_PASSWORD`.
+        #[arg(long, value_name = "FILE")]
+        keyring: Option<PathBuf>,
         /// Override the gateway `host[:port]` for tunneling.
         #[arg(long, value_name = "HOST")]
         gateway: Option<String>,
@@ -2308,6 +2316,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             yes,
             timeout,
             dir,
+            keyring,
             gateway,
             routing,
         } => learn_cmd::run(
@@ -2318,6 +2327,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 untyped,
                 yes,
                 timeout_seconds: timeout,
+                keyring,
             },
             conn_cmd::ConnOverrides {
                 gateway,
