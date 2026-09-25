@@ -597,6 +597,14 @@ entry supersedes it and is not a diff against it.
 
 ### Fixed
 
+- A re-import with `--theirs` writes the files a fresh import of the same
+  project writes. Link keys the project dropped (a link that moved to another
+  channel, an object that went away with its parameter) no longer survive in
+  the device files and fail `validate` with E023. A send or listen address
+  only the local model has is now a conflict (`--theirs` removes it, `--mine`
+  keeps it), and so is a stored parameter value the project changed, which a
+  re-import used to keep silently. Sections, entries and escape-key
+  spellings follow the fresh import's order and keys (#235).
 - Enum labels in the project language resolve on the flash path: `flash`,
   `plan`, `apply`, `reconstruct` and `replace` read the product in the lock's
   `language`, so a German model's `Heizen und Kühlen` no longer fails with

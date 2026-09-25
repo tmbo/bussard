@@ -872,23 +872,74 @@ fn desired_device(device: &Device, entries: &[(Placement, EntryValue)]) -> Docum
     doc
 }
 
+/// The two lock entries a stale object key of an existing device file is
+/// checked against before a save drops it.
+///
+/// A key the lock this save writes resolves is generated. So is a key the
+/// lock the file was last written against (`prior`) resolved: an import put it
+/// there, and a model that no longer links it (a re-import whose project
+/// dropped or moved the link, issue #235) means it goes. A key neither
+/// resolves was typed by hand and stays, so validation reports it (E023).
+pub(crate) struct KeyLocks<'r, 'm> {
+    /// The lock entry this save writes.
+    current: &'r Resolver<'m>,
+    /// The lock entry on disk before this save, if any.
+    prior: &'r Resolver<'m>,
+}
+
+impl KeyLocks<'_, '_> {
+    /// Whether `key` in `scope` names a com object under either lock.
+    fn known_object(&self, scope: Option<&str>, key: &str) -> bool {
+        self.current.object(scope, key).is_some() || self.prior.object(scope, key).is_some()
+    }
+}
+
+/// A device's entries in the lock this save writes and in the lock on disk.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct DeviceLocks<'l> {
+    /// The entry this save writes.
+    pub current: Option<&'l LockDevice>,
+    /// The entry on disk before this save.
+    pub prior: Option<&'l LockDevice>,
+}
+
+/// The order of the keys and sections of a device file a save edits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeyOrder {
+    /// Keep the file's order; a new entry goes after the existing ones.
+    Keep,
+    /// The order a fresh render writes (a re-import, issue #235).
+    Fresh,
+}
+
 /// Renders a device file, editing `existing` in place when given.
 ///
-/// `lock` is the lock entry this save writes for the device; it resolves the
-/// keys of the existing file.
+/// `locks.current` is the lock entry this save writes for the device; it
+/// resolves the keys of the existing file. `locks.prior` is the device's
+/// entry in the lock on disk before this save (see [`KeyLocks`]). `order` picks the order of an
+/// edited file ([`KeyOrder`]).
 pub(crate) fn render_device(
     path: &Path,
     device: &Device,
     links: &[Link],
-    lock: Option<&LockDevice>,
+    locks: DeviceLocks<'_>,
     existing: Option<&str>,
     models: Option<&ProductModels>,
+    order: KeyOrder,
 ) -> String {
     let app_ref = device
         .product
         .as_ref()
         .and_then(|p| p.application_ref.as_deref());
-    let resolver = Resolver::with_model(lock, models.zip(app_ref).and_then(|(m, a)| m.get(a)));
+    let resolver = Resolver::with_model(
+        locks.current,
+        models.zip(app_ref).and_then(|(m, a)| m.get(a)),
+    );
+    let prior_resolver = Resolver::with_model(locks.prior, None);
+    let key_locks = KeyLocks {
+        current: &resolver,
+        prior: &prior_resolver,
+    };
     let parsed = existing.and_then(|text| {
         let doc = toml_io::parse_document(path, text).ok()?;
         let entries = scope_entries(path, text, &doc).ok()?;
@@ -902,7 +953,11 @@ pub(crate) fn render_device(
     match parsed {
         None => desired.to_string(),
         Some((_, mut doc)) => {
-            merge_device(doc.as_table_mut(), desired.as_table(), &resolver);
+            merge_device(doc.as_table_mut(), desired.as_table(), &key_locks);
+            if order == KeyOrder::Fresh {
+                order_like(doc.as_table_mut(), desired.as_table());
+                number_tables(doc.as_table_mut(), &mut 0);
+            }
             doc.to_string()
         }
     }
@@ -912,7 +967,7 @@ pub(crate) fn render_device(
 const SCOPE_TABLES: [&str; 2] = ["parameters", "links"];
 
 /// Merges the desired device document into the existing one.
-fn merge_device(existing: &mut Table, desired: &Table, resolver: &Resolver) {
+fn merge_device(existing: &mut Table, desired: &Table, resolver: &KeyLocks) {
     for (key, want) in desired.iter() {
         match key {
             "parameters" | "links" => merge_scope_slot(existing, key, want, None, resolver),
@@ -1031,7 +1086,7 @@ fn merge_scope_slot(
     key: &str,
     want: &Item,
     scope: Option<&str>,
-    resolver: &Resolver,
+    resolver: &KeyLocks,
 ) {
     let t: &mut dyn TableLike = existing;
     merge_scope_like(t, key, want, scope, resolver);
@@ -1044,7 +1099,7 @@ fn merge_scope_like(
     key: &str,
     want: &Item,
     scope: Option<&str>,
-    resolver: &Resolver,
+    resolver: &KeyLocks,
 ) {
     let Some(want_t) = want.as_table_like() else {
         return;
@@ -1064,7 +1119,7 @@ fn merge_entries(
     have: &mut dyn TableLike,
     want: &dyn TableLike,
     scope: Option<&str>,
-    resolver: &Resolver,
+    resolver: &KeyLocks,
     in_page: bool,
 ) {
     for (k, v) in want.iter() {
@@ -1140,8 +1195,9 @@ fn merge_entries(
             continue;
         }
         let removable = if is_object_item(item) {
-            // An object key the lock cannot resolve stays for validation.
-            resolver.object(scope, &k).is_some()
+            // An object key neither lock resolves was typed by hand: it stays
+            // for validation (E023) to report.
+            resolver.known_object(scope, &k)
         } else {
             true
         };
@@ -1157,7 +1213,7 @@ fn prune_scope_like(
     parent: &mut dyn TableLike,
     key: &str,
     scope: Option<&str>,
-    resolver: &Resolver,
+    resolver: &KeyLocks,
 ) {
     if let Some(have) = parent.get_mut(key).and_then(Item::as_table_like_mut) {
         let empty = Table::new();
@@ -1169,6 +1225,46 @@ fn prune_scope_like(
         .is_some_and(TableLike::is_empty)
     {
         parent.remove(key);
+    }
+}
+
+/// Puts the keys of `have` in the order `want` lists them, recursively, so an
+/// edited file reads in the same order a fresh render writes (issue #235).
+/// Keys `want` does not list (an unresolved key kept for validation) keep
+/// their relative order after the others. Each key's bytes and comments move
+/// with it.
+fn order_like(have: &mut Table, want: &Table) {
+    let rank: BTreeMap<&str, usize> = want.iter().enumerate().map(|(i, (k, _))| (k, i)).collect();
+    let pos = |k: &toml_edit::Key| rank.get(k.get()).copied().unwrap_or(usize::MAX);
+    // Only this level: a dotted object entry (`schalten.send`) keeps its own
+    // field order, which `merge_entries` already set.
+    let keys: Vec<String> = have.iter().map(|(k, _)| k.to_string()).collect();
+    let mut sorted = keys.clone();
+    sorted.sort_by_key(|k| rank.get(k.as_str()).copied().unwrap_or(usize::MAX));
+    if sorted != keys {
+        have.sort_values_by(|a, _, b, _| pos(a).cmp(&pos(b)));
+    }
+    for (key, item) in have.iter_mut() {
+        if let (Item::Table(h), Some(Item::Table(w))) = (item, want.get(key.get()))
+            && !h.is_dotted()
+        {
+            order_like(h, w);
+        }
+    }
+}
+
+/// Numbers every header table of a document in the order its map holds them,
+/// so they render in that order: a table a save added has no position and
+/// would otherwise print after the last table the file already had.
+fn number_tables(table: &mut Table, next: &mut isize) {
+    for (_, item) in table.iter_mut() {
+        if let Item::Table(t) = item
+            && !t.is_dotted()
+        {
+            t.set_position(Some(*next));
+            *next += 1;
+            number_tables(t, next);
+        }
     }
 }
 

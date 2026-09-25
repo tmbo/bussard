@@ -160,7 +160,9 @@ pub(crate) fn write_model(
         return Ok(report_merge(merge, *kept, choice));
     }
 
-    let report = to_save.save_pruning(dir)?;
+    // An import writes the files a fresh import would, in the same order,
+    // even over a model an older writer laid out differently (issue #235).
+    let report = to_save.save_pruning_as_import(dir)?;
     println!(
         "imported {} group addresses, {} devices, {} link entries → {}",
         to_save.groups.groups.len(),

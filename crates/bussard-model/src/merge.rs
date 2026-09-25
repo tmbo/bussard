@@ -116,8 +116,10 @@ impl MergeReport {
 ///   com-object link's `name`) are taken from `ours`; a differing fresh value
 ///   is recorded as a [`Conflict`] and *not* applied.
 /// * A stored parameter's *value* is taken from `ours`, matched to `theirs`'
-///   entry by ref (never by key, which a re-import can rename); a value
-///   `ours` has for a ref `theirs` no longer stores is dropped. Hidden values
+///   entry by ref (never by key, which a re-import can rename), and a
+///   differing fresh value is recorded as a [`Conflict`] (field
+///   `parameters.<key>`); a value `ours` has for a ref `theirs` no longer
+///   stores is dropped. Hidden values
 ///   and a channel's label-parameter value are generated and taken from
 ///   `theirs` as a whole.
 /// * A device's generated identity (`product.application_ref`, `product.mask`,
@@ -128,7 +130,12 @@ impl MergeReport {
 /// * A group's hand-authored fields (`name`, `dpt`, `description`, `protected`)
 ///   are taken from `ours`, with differences reported.
 /// * A link's generated wiring (`send`, `listen`) is taken from `theirs`; its
-///   hand-authored `name` is taken from `ours`, with differences reported.
+///   hand-authored `name` is taken from `ours`, with differences reported. A
+///   send or listen address only `ours` has is kept and reported as a
+///   [`Conflict`] (field `send` or `listen`), since nothing records whether a
+///   human added it or the project dropped it; `--theirs` removes it. One on
+///   a com object or device the project no longer has is dropped with it
+///   (issue #235).
 /// * A device's on-disk filename (`file_stem`) is preserved from `ours` so the
 ///   slug a human may have renamed does not churn.
 ///
@@ -138,7 +145,8 @@ pub fn merge(ours: &Model, theirs: &Model) -> (Model, MergeReport) {
     let mut report = MergeReport::default();
 
     let groups = merge_groups(ours, theirs, &mut report);
-    let links = merge_links(ours, theirs, &mut report);
+    let mut links = merge_links(ours, theirs, &mut report);
+    keep_dropped_links(ours, theirs, &mut links, &mut report);
     let devices = merge_devices(ours, theirs, &mut report);
 
     report
@@ -170,13 +178,28 @@ pub fn normalize_spellings(ours: &mut Model, theirs: &Model) {
             continue;
         };
         let device = &mut loaded.device;
-        for (key, spelling) in &fresh.device.lock.spellings {
-            if let Some(value) = device.parameters.get_mut(key)
-                && *value == spelling.text
-                && !device.lock.spellings.contains_key(key)
-            {
+        // Matched by ref, not by key: the on-disk key may be an older
+        // spelling of the same parameter (an escape key the import now names).
+        let by_ref: BTreeMap<&str, &crate::schema::Spelling> = fresh
+            .device
+            .lock
+            .spellings
+            .iter()
+            .filter_map(|(key, spelling)| Some((key.split_once('@')?.1, spelling)))
+            .collect();
+        for (key, value) in device.parameters.iter_mut() {
+            let Some(spelling) = key
+                .split_once('@')
+                .and_then(|(_, reference)| by_ref.get(reference))
+            else {
+                continue;
+            };
+            if *value == spelling.text && !device.lock.spellings.contains_key(key) {
                 *value = spelling.code.clone();
-                device.lock.spellings.insert(key.clone(), spelling.clone());
+                device
+                    .lock
+                    .spellings
+                    .insert(key.clone(), (*spelling).clone());
             }
         }
     }
@@ -293,6 +316,136 @@ fn merge_links(ours: &Model, theirs: &Model, report: &mut MergeReport) -> crate:
     links
 }
 
+/// The wiring `links` holds for com object `object`: its send address (the
+/// first entry's that has one) and every address it sends or listens to.
+fn wiring(links: &[Link], object: u16) -> (Option<GroupAddress>, BTreeSet<GroupAddress>) {
+    let mut send = None;
+    let mut all = BTreeSet::new();
+    for link in links.iter().filter(|l| l.object == object) {
+        if send.is_none() {
+            send = link.send;
+        }
+        all.extend(link.send);
+        all.extend(link.listen.iter().copied());
+    }
+    (send, all)
+}
+
+/// A list of group addresses as a conflict value: `"4/1/8, 4/1/9"`, or
+/// `(none)` when empty.
+fn ga_list<'a>(gas: impl IntoIterator<Item = &'a GroupAddress>) -> String {
+    let cells: Vec<String> = gas.into_iter().map(ToString::to_string).collect();
+    if cells.is_empty() {
+        "(none)".to_string()
+    } else {
+        cells.join(", ")
+    }
+}
+
+/// Keeps, as reported conflicts, the link wiring `ours` has and the incoming
+/// project (`theirs`) does not (issue #235).
+///
+/// The model records no provenance for a link: the lock lists a device's com
+/// objects, not what they were linked to at the last import. A send or listen
+/// address present on disk and absent from the incoming project is therefore
+/// either a hand-added link or a link the project dropped, and only the user
+/// can tell which. Each one is kept in `links` and reported as a [`Conflict`]
+/// on `links/<device>#<object>` (field `send` or `listen`), so `--mine` keeps
+/// it, `--theirs` removes it ([`take_theirs`](crate::reconcile::take_theirs))
+/// and `--interactive` asks.
+///
+/// Nothing is kept for a device the project no longer has, nor for a com
+/// object the device no longer has (its drop is noted by the device merge):
+/// such a link has nothing left to attach to. An address that moved between
+/// send and listen on the same object, or a send address the project replaced
+/// with another one, is a change of generated wiring, not a dropped link, and
+/// follows `theirs` without a conflict.
+fn keep_dropped_links(
+    ours: &Model,
+    theirs: &Model,
+    links: &mut crate::schema::Links,
+    report: &mut MergeReport,
+) {
+    let no_links: Vec<Link> = Vec::new();
+    for (ia, our_links) in &ours.links.links {
+        let Some(device) = theirs.devices.get(ia) else {
+            continue;
+        };
+        let objects = &device.device.com_objects;
+        let numbers: BTreeSet<u16> = our_links.iter().map(|l| l.object).collect();
+        let mut pushed = false;
+        for object in numbers {
+            if !objects.is_empty() && !objects.contains_key(&object) {
+                continue;
+            }
+            let (our_send, _) = wiring(our_links, object);
+            let their_links = links.links.get(ia).unwrap_or(&no_links);
+            let (their_send, their_all) = wiring(their_links, object);
+            let extra_send = our_send.filter(|g| their_send.is_none() && !their_all.contains(g));
+            let extra_listen: Vec<GroupAddress> = our_links
+                .iter()
+                .filter(|l| l.object == object)
+                .flat_map(|l| l.listen.iter().copied())
+                .filter(|g| !their_all.contains(g) && Some(*g) != extra_send)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            if extra_send.is_none() && extra_listen.is_empty() {
+                continue;
+            }
+            let path = format!("links/{ia}#{object}");
+            if let Some(send) = extra_send {
+                report.conflicts.push(Conflict {
+                    path: path.clone(),
+                    field: "send".to_string(),
+                    ours: send.to_string(),
+                    theirs: "(none)".to_string(),
+                });
+            }
+            let their_listen: Vec<GroupAddress> = their_links
+                .iter()
+                .filter(|l| l.object == object)
+                .flat_map(|l| l.listen.iter().copied())
+                .collect();
+            if !extra_listen.is_empty() {
+                let mut kept: Vec<GroupAddress> = their_listen.clone();
+                kept.extend(extra_listen.iter().copied());
+                report.conflicts.push(Conflict {
+                    path,
+                    field: "listen".to_string(),
+                    ours: ga_list(&kept),
+                    theirs: ga_list(&their_listen),
+                });
+            }
+            let entries = links.links.entry(*ia).or_default();
+            match entries.iter_mut().find(|l| l.object == object) {
+                Some(entry) => {
+                    if extra_send.is_some() {
+                        entry.send = extra_send;
+                    }
+                    entry.listen.extend(extra_listen);
+                }
+                None => {
+                    let name = our_links
+                        .iter()
+                        .find(|l| l.object == object)
+                        .and_then(|l| l.name.clone());
+                    entries.push(Link {
+                        object,
+                        name,
+                        send: extra_send,
+                        listen: extra_listen,
+                    });
+                    pushed = true;
+                }
+            }
+        }
+        if pushed && let Some(entries) = links.links.get_mut(ia) {
+            entries.sort_by_key(|l| l.object);
+        }
+    }
+}
+
 /// Overlays a link's hand-authored `name` from ours, reporting a difference.
 fn overlay_link(ia: IndividualAddress, ours: &Link, theirs: &mut Link, report: &mut MergeReport) {
     // Only report when ours carries a name (a human set it); an absent name on
@@ -353,7 +506,7 @@ fn overlay_device(
     let derived = theirs.channels.values().any(|c| c.key.is_some())
         || theirs.com_objects.values().any(|c| c.key.is_some());
     let path = format!("devices/{ia}");
-    overlay_parameter_values(ours, theirs);
+    overlay_parameter_values(&path, ours, theirs, report);
     report_opt(report, &path, "name", Some(&ours.name), Some(&theirs.name));
     report_opt(
         report,
@@ -483,7 +636,16 @@ fn overlay_device(
 /// hand-set value or, worse, leave it under a stale key next to the fresh
 /// one. Hidden values and a channel's label-parameter value are generated
 /// (handled elsewhere) and are left as `theirs`.
-fn overlay_parameter_values(ours: &Device, theirs: &mut Device) {
+///
+/// A kept value that differs from the incoming one is reported as a
+/// [`Conflict`] on field `parameters.<key>` (the incoming in-memory key), so
+/// `--theirs` takes the project's value like any other hand-authored field.
+fn overlay_parameter_values(
+    path: &str,
+    ours: &Device,
+    theirs: &mut Device,
+    report: &mut MergeReport,
+) {
     let our_labels: BTreeSet<&str> = ours
         .lock
         .channel_labels
@@ -518,7 +680,15 @@ fn overlay_parameter_values(ours: &Device, theirs: &mut Device) {
         if reference.is_empty() || their_labels.contains(reference) {
             continue;
         }
-        if let Some(our_value) = by_ref.get(reference) {
+        if let Some(our_value) = by_ref.get(reference)
+            && value != our_value
+        {
+            report.conflicts.push(Conflict {
+                path: path.to_string(),
+                field: format!("parameters.{key}"),
+                ours: (*our_value).to_string(),
+                theirs: value.clone(),
+            });
             *value = (*our_value).to_string();
         }
     }

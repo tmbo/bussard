@@ -1426,10 +1426,19 @@ pub(crate) fn device_entries(
         if is_hidden_mem_key(key) || ref_of(key).is_some_and(|r| is_label_ref(device, r)) {
             continue;
         }
-        let placement = existing
+        let mut placement = existing
             .get(&EntryId::Param(key.clone()))
             .cloned()
             .unwrap_or_else(|| default_param_placement(device, key));
+        // A `<slug>@<ref>` escape spelling is for a parameter the lock cannot
+        // name. Once the lock names it (a re-import derived a unique key), the
+        // file uses the lock's key, as a fresh import writes it (issue #235).
+        if placement.key.contains('@') {
+            let named = default_param_placement(device, key);
+            if !named.key.contains('@') {
+                placement = named;
+            }
+        }
         out.push((
             placement,
             EntryValue::Param(file_value(device, key, value, models)),

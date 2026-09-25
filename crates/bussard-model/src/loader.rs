@@ -15,7 +15,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::address::IndividualAddress;
-use crate::emit;
+use crate::emit::{self, KeyOrder};
 use crate::files::{self, GroupsFile, LOCK_VERSION, LockDevice, LockFile};
 use crate::param_model::ProductModels;
 use crate::schema::{BussardConfig, Group, Groups, Link, Links, Range};
@@ -554,6 +554,7 @@ impl Model {
         &self,
         existing: &BTreeMap<String, String>,
         models: Option<&ProductModels>,
+        order: KeyOrder,
     ) -> Result<BTreeMap<String, String>, SaveError> {
         self.check_orphan_links()?;
         let mut out = BTreeMap::new();
@@ -580,6 +581,16 @@ impl Model {
         );
         let by_address: BTreeMap<IndividualAddress, &LockDevice> =
             locks.iter().map(|l| (l.address, l)).collect();
+        // The lock on disk before this save: the keys it resolved were
+        // generated, so a device file may drop them (issue #235). Any version
+        // that still parses serves; a lock that does not parse resolves
+        // nothing and every unresolved key stays for validation.
+        let prior_lock: LockFile = existing
+            .get(LOCK_FILE)
+            .and_then(|text| toml::from_str(text).ok())
+            .unwrap_or_default();
+        let prior: BTreeMap<IndividualAddress, &LockDevice> =
+            prior_lock.devices.iter().map(|l| (l.address, l)).collect();
         out.insert(
             LOCK_FILE.to_string(),
             emit::render_lock(
@@ -597,9 +608,13 @@ impl Model {
                 Path::new(&rel),
                 &loaded.device,
                 links,
-                by_address.get(address).copied(),
+                emit::DeviceLocks {
+                    current: by_address.get(address).copied(),
+                    prior: prior.get(address).copied(),
+                },
                 existing.get(&rel).map(String::as_str),
                 models,
+                order,
             );
             out.insert(rel, text);
         }
@@ -610,7 +625,7 @@ impl Model {
     /// directory would write, keyed by model-relative path, without touching
     /// the disk. Used by `bussard diff --raw` and the bundle writer.
     pub fn to_texts(&self) -> Result<BTreeMap<String, String>, SaveError> {
-        self.render(&BTreeMap::new(), None)
+        self.render(&BTreeMap::new(), None, KeyOrder::Keep)
     }
 
     /// Saves the model to a directory.
@@ -623,6 +638,11 @@ impl Model {
     /// generated data or a lock already exists. Stale device files are left
     /// alone here; see [`Model::save_pruning`].
     pub fn save(&self, dir: &Path) -> Result<(), SaveError> {
+        self.save_ordered(dir, KeyOrder::Keep)
+    }
+
+    /// [`Model::save`] with the order an edited device file takes.
+    fn save_ordered(&self, dir: &Path, order: KeyOrder) -> Result<(), SaveError> {
         fs::create_dir_all(dir).map_err(|source| SaveError::Io {
             path: dir.to_path_buf(),
             source,
@@ -657,7 +677,7 @@ impl Model {
                     .and_then(|p| p.application_ref.as_deref())
             }),
         );
-        let rendered = self.render(&existing, Some(&models))?;
+        let rendered = self.render(&existing, Some(&models), order)?;
         let has_lock_data = self.groups.imported_from.is_some() || !self.lock_entries().is_empty();
         for (rel, text) in &rendered {
             if rel == LOCK_FILE && !has_lock_data && !existing.contains_key(LOCK_FILE) {
@@ -679,6 +699,20 @@ impl Model {
     /// device in the model (`1.1.4-old-name.toml`) it is reported as renamed,
     /// otherwise as pruned.
     pub fn save_pruning(&self, dir: &Path) -> Result<PruneReport, SaveError> {
+        self.save_pruning_ordered(dir, KeyOrder::Keep)
+    }
+
+    /// [`Model::save_pruning`] for a re-import: every device file it edits
+    /// takes the key and section order a fresh render writes, so a re-import
+    /// and a fresh import of the same project write the same bytes (issue
+    /// #235). Entries keep their bytes and comments; only their order moves.
+    /// Other saves keep the order a human gave the file.
+    pub fn save_pruning_as_import(&self, dir: &Path) -> Result<PruneReport, SaveError> {
+        self.save_pruning_ordered(dir, KeyOrder::Fresh)
+    }
+
+    /// The pruning save with the given device-file order.
+    fn save_pruning_ordered(&self, dir: &Path, order: KeyOrder) -> Result<PruneReport, SaveError> {
         let kept: std::collections::BTreeSet<String> = self
             .devices
             .keys()
@@ -687,7 +721,7 @@ impl Model {
         let devices_dir = dir.join(DEVICES_DIR);
         let existing = list_device_files(&devices_dir);
 
-        self.save(dir)?;
+        self.save_ordered(dir, order)?;
 
         let mut report = PruneReport::default();
         for name in &existing {

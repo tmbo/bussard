@@ -634,3 +634,331 @@ fn test_reimport_notes_a_dropped_com_object() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Issue #235: links the project dropped, and fresh vs re-import equality.
+// ---------------------------------------------------------------------------
+
+use bussard_model::reconcile::{Side, resolve_all};
+use bussard_model::schema::{DeviceSecurity, Link, LockedParameter};
+
+/// A push-button device (1.1.17) with three channels, each holding a
+/// `schalten` object, and a device-level `regenalarm` object (138). `drop`
+/// leaves out the listed object numbers, as a project whose parameters hide
+/// them would.
+fn push_button(drop: &[u16]) -> LoadedDevice {
+    let mut channels = BTreeMap::new();
+    let mut com_objects = BTreeMap::new();
+    for (n, (id, handle)) in [
+        ("CH-1", "tsm-taste-1"),
+        ("CH-2", "tsm-taste-2"),
+        ("CH-3", "tsm-taste-3"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let text = format!("Taste {}", n + 1);
+        channels.insert(
+            id.to_string(),
+            Channel {
+                name: text.clone(),
+                key: Some(handle.to_string()),
+                number: Some(n as u32 + 1),
+                text: Some(text),
+            },
+        );
+        let number = 65 + 8 * n as u16;
+        com_objects.insert(
+            number,
+            ComObject {
+                dpt: Some(Dpt::new(1, Some(1))),
+                channel: Some(id.to_string()),
+                key: Some("schalten".to_string()),
+                text: Some("Schalten".to_string()),
+                ..ComObject::default()
+            },
+        );
+    }
+    com_objects.insert(
+        138,
+        ComObject {
+            dpt: Some(Dpt::new(1, Some(5))),
+            key: Some("regenalarm".to_string()),
+            text: Some("Regenalarm".to_string()),
+            ..ComObject::default()
+        },
+    );
+    for n in drop {
+        com_objects.remove(n);
+    }
+    let device = Device {
+        address: ia("1.1.17"),
+        name: "Tastsensor".to_string(),
+        description: None,
+        location: None,
+        replaced: None,
+        product: Some(Product {
+            manufacturer: None,
+            order_number: Some("6108/07".to_string()),
+            manufacturer_ref: None,
+            hardware_ref: None,
+            application_ref: None,
+            mask: None,
+        }),
+        channels,
+        parameters: BTreeMap::new(),
+        module_bases: BTreeMap::new(),
+        com_objects,
+        security: Some(DeviceSecurity {
+            activated: true,
+            secure_commissioning: true,
+            ..DeviceSecurity::default()
+        }),
+        application_override: None,
+        lock: Default::default(),
+    };
+    LoadedDevice {
+        device,
+        file_stem: "1.1.17".to_string(),
+    }
+}
+
+/// A link entry.
+fn link(object: u16, send: Option<&str>, listen: &[&str]) -> Link {
+    Link {
+        object,
+        name: None,
+        send: send.map(ga),
+        listen: listen.iter().map(|g| ga(g)).collect(),
+    }
+}
+
+/// A model holding one device and its links.
+fn with_links(device: LoadedDevice, links: Vec<Link>) -> Model {
+    let address = device.device.address;
+    let mut m = model(vec![device], Groups::default());
+    if !links.is_empty() {
+        m.links.links.insert(address, links);
+    }
+    m
+}
+
+/// Every model file under `dir`, keyed by relative path (`.bussard/` and the
+/// product store are not model files).
+fn model_files(dir: &std::path::Path) -> anyhow::Result<BTreeMap<String, String>> {
+    let mut out = BTreeMap::new();
+    for rel in ["bussard.toml", "groups.toml", "bussard.lock"] {
+        if let Ok(text) = fs::read_to_string(dir.join(rel)) {
+            out.insert(rel.to_string(), text);
+        }
+    }
+    for entry in fs::read_dir(dir.join("devices"))? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        out.insert(format!("devices/{name}"), fs::read_to_string(entry.path())?);
+    }
+    Ok(out)
+}
+
+/// Runs the on-disk re-import of `fresh` into a model first written from
+/// `first` (and optionally hand-edited through `edit`), settling every
+/// conflict with `side`. Returns the re-import directory, the merge report
+/// and the files a fresh import of `fresh` writes.
+fn reimport(
+    tag: &str,
+    first: &Model,
+    edit: impl FnOnce(&std::path::Path) -> anyhow::Result<()>,
+    fresh: &Model,
+    side: Side,
+) -> anyhow::Result<(
+    PathBuf,
+    bussard_model::MergeReport,
+    BTreeMap<String, String>,
+)> {
+    let dir = tmp(tag);
+    first.save(&dir)?;
+    edit(&dir)?;
+    let mut ours = Model::load(&dir)?;
+    bussard_model::normalize_spellings(&mut ours, fresh);
+    let (mut merged, report) = bussard_model::merge(&ours, fresh);
+    resolve_all(&mut merged, fresh, &report.conflicts, side);
+    merged.save_pruning_as_import(&dir)?;
+
+    let fresh_dir = tmp(&format!("{tag}-fresh"));
+    fresh.save(&fresh_dir)?;
+    let fresh_files = model_files(&fresh_dir)?;
+    let _ = fs::remove_dir_all(&fresh_dir);
+    Ok((dir, report, fresh_files))
+}
+
+/// Asserts `dir` holds exactly `fresh`, byte for byte, and loads without an
+/// unknown-key error.
+fn assert_same_as_fresh(
+    dir: &std::path::Path,
+    fresh: &BTreeMap<String, String>,
+) -> anyhow::Result<()> {
+    let got = model_files(dir)?;
+    assert_eq!(
+        got.keys().collect::<Vec<_>>(),
+        fresh.keys().collect::<Vec<_>>()
+    );
+    for (rel, text) in fresh {
+        assert_eq!(
+            got.get(rel),
+            Some(text),
+            "{rel} differs from a fresh import"
+        );
+    }
+    let loaded = Model::load(dir)?;
+    let unknown: Vec<_> = bussard_model::validate::validate_in_dir(&loaded, dir)
+        .into_iter()
+        .filter(|d| d.code == "E023")
+        .collect();
+    assert!(unknown.is_empty(), "{unknown:?}");
+    Ok(())
+}
+
+/// A link that moves from one channel's object to another's, where the old
+/// object leaves the project, is gone from the old channel after a
+/// `--theirs` re-import: no stale `schalten.send` survives under the channel
+/// that lost it (the key no longer resolves there, it did in the old lock).
+#[test]
+fn test_reimport_link_moving_between_channels_leaves_no_stale_key() -> anyhow::Result<()> {
+    let first = with_links(push_button(&[]), vec![link(73, Some("4/2/20"), &[])]);
+    let fresh = with_links(push_button(&[73]), vec![link(81, Some("4/2/20"), &[])]);
+    let (dir, _, fresh_files) = reimport("moved", &first, |_| Ok(()), &fresh, Side::Theirs)?;
+    let text = fs::read_to_string(dir.join("devices/1.1.17.toml"))?;
+    assert_eq!(text.matches("4/2/20").count(), 1, "{text}");
+    assert_same_as_fresh(&dir, &fresh_files)?;
+    let _ = fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// A link the project dropped from an object it still has is a conflict (the
+/// model cannot tell it from a hand-added link); `--theirs` removes it and the
+/// result equals a fresh import.
+#[test]
+fn test_reimport_theirs_removes_a_dropped_link() -> anyhow::Result<()> {
+    let first = with_links(
+        push_button(&[]),
+        vec![
+            link(65, Some("0/0/3"), &["0/0/4"]),
+            link(73, Some("4/2/20"), &[]),
+        ],
+    );
+    let fresh = with_links(push_button(&[]), vec![link(73, Some("4/2/20"), &[])]);
+    let (dir, report, fresh_files) = reimport("dropped", &first, |_| Ok(()), &fresh, Side::Theirs)?;
+    let fields: Vec<(&str, &str)> = report
+        .conflicts
+        .iter()
+        .map(|c| (c.path.as_str(), c.field.as_str()))
+        .collect();
+    assert!(fields.contains(&("links/1.1.17#65", "send")), "{fields:?}");
+    assert!(
+        fields.contains(&("links/1.1.17#65", "listen")),
+        "{fields:?}"
+    );
+    assert_same_as_fresh(&dir, &fresh_files)?;
+    let _ = fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// A parameter going back to its default removes it from the project, and the
+/// object it enabled (with its `[links]` entry) goes with it.
+#[test]
+fn test_reimport_parameter_back_to_default_drops_its_link() -> anyhow::Result<()> {
+    let mut device = push_button(&[]);
+    device
+        .device
+        .parameters
+        .insert("regenalarm@P-9_R-9".to_string(), "1".to_string());
+    let first = with_links(device, vec![link(138, None, &["4/1/8"])]);
+    let fresh = with_links(push_button(&[138]), vec![]);
+    let (dir, report, fresh_files) = reimport("default", &first, |_| Ok(()), &fresh, Side::Theirs)?;
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n| n.contains("com-object 138") && n.contains("dropped")),
+        "{:?}",
+        report.notes
+    );
+    let text = fs::read_to_string(dir.join("devices/1.1.17.toml"))?;
+    assert!(!text.contains("regenalarm"), "{text}");
+    assert_same_as_fresh(&dir, &fresh_files)?;
+    let _ = fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// A link added by hand to an object the project has but does not link is
+/// kept with `--mine` (reported as a conflict) and removed with `--theirs`.
+#[test]
+fn test_reimport_mine_keeps_a_hand_added_link() -> anyhow::Result<()> {
+    let base = with_links(push_button(&[]), vec![link(73, Some("4/2/20"), &[])]);
+    let add = |dir: &std::path::Path| -> anyhow::Result<()> {
+        let path = dir.join("devices/1.1.17.toml");
+        let text = fs::read_to_string(&path)?;
+        anyhow::ensure!(!text.contains("[channel.tsm-taste-1]"), "{text}");
+        fs::write(
+            &path,
+            format!("{text}\n[channel.tsm-taste-1]\nschalten.send = \"1/2/3\"\n"),
+        )?;
+        Ok(())
+    };
+
+    let (dir, report, _) = reimport("mine", &base, add, &base, Side::Mine)?;
+    assert!(
+        report
+            .conflicts
+            .iter()
+            .any(|c| c.path == "links/1.1.17#65" && c.field == "send" && c.ours == "1/2/3"),
+        "{:?}",
+        report.conflicts
+    );
+    let text = fs::read_to_string(dir.join("devices/1.1.17.toml"))?;
+    assert!(text.contains("schalten.send = \"1/2/3\""), "{text}");
+    let _ = fs::remove_dir_all(&dir);
+
+    let (dir, _, fresh_files) = reimport("mine-theirs", &base, add, &base, Side::Theirs)?;
+    assert_same_as_fresh(&dir, &fresh_files)?;
+    let _ = fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// A re-import writes the same bytes as a fresh import of the same project,
+/// even when the file on disk came from an older writer: sections in another
+/// order (`[security]` after the channels) and a parameter under its
+/// `<slug>@<ref>` escape key that the lock now names.
+#[test]
+fn test_reimport_writes_the_same_bytes_as_a_fresh_import() -> anyhow::Result<()> {
+    let mut device = push_button(&[]);
+    device
+        .device
+        .parameters
+        .insert("regenalarm@P-9_R-9".to_string(), "1".to_string());
+    let first = with_links(device.clone(), vec![link(73, Some("4/2/20"), &[])]);
+    let mut named = device;
+    named.device.lock.parameters.insert(
+        "P-9_R-9".to_string(),
+        LockedParameter {
+            key: "regenalarm".to_string(),
+            channel: None,
+            param: None,
+        },
+    );
+    let fresh = with_links(named, vec![link(73, Some("4/2/20"), &[])]);
+    let older = |dir: &std::path::Path| -> anyhow::Result<()> {
+        let path = dir.join("devices/1.1.17.toml");
+        let text = fs::read_to_string(&path)?;
+        let security = "[security]\nactivated = true\nsecure_commissioning = true\n\n";
+        anyhow::ensure!(text.contains(security), "{text}");
+        let moved = format!("{}\n{}", text.replace(security, ""), security.trim_end());
+        fs::write(&path, format!("{moved}\n"))?;
+        Ok(())
+    };
+    let (dir, report, fresh_files) = reimport("bytes", &first, older, &fresh, Side::Theirs)?;
+    assert!(!report.has_conflicts(), "{:?}", report.conflicts);
+    assert_same_as_fresh(&dir, &fresh_files)?;
+    let _ = fs::remove_dir_all(&dir);
+    Ok(())
+}

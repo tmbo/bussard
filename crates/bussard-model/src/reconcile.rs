@@ -90,6 +90,9 @@ pub fn take_theirs(merged: &mut Model, theirs: &Model, conflict: &Conflict) -> b
         let (Ok(ia), Ok(object)) = (ia.parse::<IndividualAddress>(), object.parse::<u16>()) else {
             return false;
         };
+        if field == "send" || field == "listen" {
+            return take_their_wiring(merged, theirs, ia, object, field);
+        }
         let incoming = theirs
             .links
             .links
@@ -147,6 +150,13 @@ pub fn take_theirs(merged: &mut Model, theirs: &Model, conflict: &Conflict) -> b
                     product.order_number = incoming.and_then(|p| p.order_number.clone());
                 }
             }
+            other if other.starts_with("parameters.") => {
+                let key = &other["parameters.".len()..];
+                let Some(value) = incoming.parameters.get(key) else {
+                    return false;
+                };
+                mine.parameters.insert(key.to_string(), value.clone());
+            }
             other => {
                 let Some(key) = other
                     .strip_prefix("channels.")
@@ -165,6 +175,53 @@ pub fn take_theirs(merged: &mut Model, theirs: &Model, conflict: &Conflict) -> b
         return true;
     }
     false
+}
+
+/// Takes the incoming `send` or `listen` wiring of com object `object` on
+/// device `ia`: the merge kept a link the project no longer has (see
+/// [`merge`](crate::merge::merge)), and taking theirs removes it. Entries of
+/// the object are matched by position; one left with nothing linked that the
+/// project does not list either is dropped, and so is a device's link list
+/// left empty.
+fn take_their_wiring(
+    merged: &mut Model,
+    theirs: &Model,
+    ia: IndividualAddress,
+    object: u16,
+    field: &str,
+) -> bool {
+    let no_links = Vec::new();
+    let incoming: Vec<&crate::schema::Link> = theirs
+        .links
+        .links
+        .get(&ia)
+        .unwrap_or(&no_links)
+        .iter()
+        .filter(|l| l.object == object)
+        .collect();
+    let Some(entries) = merged.links.links.get_mut(&ia) else {
+        return false;
+    };
+    let mut index = 0;
+    let mut touched = false;
+    entries.retain_mut(|link| {
+        if link.object != object {
+            return true;
+        }
+        let counterpart = incoming.get(index).copied();
+        index += 1;
+        touched = true;
+        if field == "send" {
+            link.send = counterpart.and_then(|l| l.send);
+        } else {
+            link.listen = counterpart.map(|l| l.listen.clone()).unwrap_or_default();
+        }
+        counterpart.is_some() || link.send.is_some() || !link.listen.is_empty()
+    });
+    if entries.is_empty() && !theirs.links.links.contains_key(&ia) {
+        merged.links.links.remove(&ia);
+    }
+    touched
 }
 
 /// Applies `side` to every conflict: [`Side::Mine`] leaves `merged` as the
@@ -239,13 +296,21 @@ fn field_phrase(field: &str) -> String {
         "location.room" => "the room".to_string(),
         "product.manufacturer" => "the manufacturer".to_string(),
         "product.order_number" => "the order number".to_string(),
-        other => match other
-            .strip_prefix("channels.")
-            .and_then(|k| k.strip_suffix(".name"))
-        {
-            Some(key) => format!("the name of channel {key}"),
-            None => format!("`{other}`"),
-        },
+        "send" => "the send address".to_string(),
+        "listen" => "the listen addresses".to_string(),
+        other => {
+            if let Some(key) = other.strip_prefix("parameters.") {
+                let slug = key.split_once('@').map_or(key, |(slug, _)| slug);
+                return format!("the parameter `{slug}`");
+            }
+            match other
+                .strip_prefix("channels.")
+                .and_then(|k| k.strip_suffix(".name"))
+            {
+                Some(key) => format!("the name of channel {key}"),
+                None => format!("`{other}`"),
+            }
+        }
     }
 }
 
