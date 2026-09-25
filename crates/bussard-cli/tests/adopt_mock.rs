@@ -727,7 +727,9 @@ fn secure_adopt(tag: &str, device: MockDevice, address: &str) -> TestResult<Secu
     std::fs::write(
         model_dir.join("bussard.toml"),
         format!(
-            "[connection]\ntransport = \"tunnel\"\nkeyring = \"{}\"\n",
+            // A TOML literal string: a Windows path's backslashes are not
+            // escapes there.
+            "[connection]\ntransport = \"tunnel\"\nkeyring = '{}'\n",
             keyring.to_str().ok_or("keyring path is not UTF-8")?
         ),
     )?;
