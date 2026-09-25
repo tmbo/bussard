@@ -110,6 +110,7 @@ fn test_keys_import_show_export_round_trip() -> TestResult {
     // Refuses to overwrite without --force.
     assert!(!keys(&model, &["export", &out_s])?.status.success());
     ok(&keys(&model, &["export", "--force", &out_s])?)?;
+    std::fs::remove_dir_all(model.parent().ok_or("no parent")?)?;
     Ok(())
 }
 
@@ -127,6 +128,7 @@ fn test_keys_wrong_password_is_refused() -> TestResult {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("wrong keyring password"), "{stderr}");
     assert!(!model.join("bussard.keys").exists());
+    std::fs::remove_dir_all(model.parent().ok_or("no parent")?)?;
     Ok(())
 }
 
@@ -137,5 +139,6 @@ fn test_keys_show_without_a_store_hints_at_import() -> TestResult {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("bussard keys import"), "{stderr}");
+    std::fs::remove_dir_all(model.parent().ok_or("no parent")?)?;
     Ok(())
 }
