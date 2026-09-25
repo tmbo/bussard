@@ -520,3 +520,63 @@ fn test_access_none_parameter_value_goes_to_hidden_not_the_file() -> TestResult 
     assert!(!device.lock.parameters.contains_key("P-103_R-160"));
     Ok(())
 }
+
+/// Regression: an activated Data Secure device (ETS wrote `ToolKey` and
+/// `LoadedToolKey` into its `<Security>` element) must get `[security]` in
+/// its device file on a fresh import — `secure_capable` alone (no tool key at
+/// all) must not, and the device's product identity facts stay in the lock.
+/// No application program is needed: the security fields come straight off
+/// `RawDevice`, independent of product data.
+#[test]
+fn test_import_writes_security_for_an_activated_device() -> TestResult {
+    let dir = tmp("security-import")?;
+    let knxproj = dir.join("secure.knxproj");
+    let project_xml = r#"<KNX xmlns="http://knx.org/xml/project/21">
+ <Project Id="P-8888">
+  <Installations><Installation>
+   <Topology><Area Address="1"><Line Address="1">
+    <DeviceInstance Id="P-8888-0_DI-1" Address="47" Name="Heizungsaktor">
+     <Security ToolKey="cGxhY2Vob2xkZXI=" LoadedToolKey="cGxhY2Vob2xkZXI=" SequenceNumber="239362131378" />
+    </DeviceInstance>
+    <DeviceInstance Id="P-8888-0_DI-2" Address="30" Name="Nur faehig" />
+   </Line></Area></Topology>
+   <GroupAddresses><GroupRanges></GroupRanges></GroupAddresses>
+  </Installation></Installations>
+ </Project>
+</KNX>"#;
+    {
+        let mut zw = ZipWriter::new(std::fs::File::create(&knxproj)?);
+        let opts = SimpleFileOptions::default();
+        zw.start_file("knx_master.xml", opts)?;
+        zw.write_all(br#"<KNX xmlns="http://knx.org/xml/project/21"/>"#)?;
+        zw.start_file("P-8888/0.xml", opts)?;
+        zw.write_all(project_xml.as_bytes())?;
+        zw.finish()?;
+    }
+
+    let model = bussard_project::import(&knxproj, None)?;
+    let out = dir.join("knx");
+    model.save(&out)?;
+
+    let activated = read(&out, "devices/1.1.47.toml")?;
+    assert!(activated.contains("[security]"), "{activated}");
+    assert!(activated.contains("activated = true"), "{activated}");
+    // The product/security facts stay in the lock, not the file.
+    for generated in ["secure_capable", "has_fdsk_certificate", "sequence_number"] {
+        assert!(
+            !activated.contains(generated),
+            "{generated} in the device file:\n{activated}"
+        );
+    }
+    let lock = read(&out, "bussard.lock")?;
+    assert!(lock.contains("sequence_number = 239362131378"), "{lock}");
+
+    // A device with no tool key at all gets no `[security]` table: nothing
+    // to activate or commission yet, even though it may be secure-capable
+    // once its product data is known.
+    let capable = read(&out, "devices/1.1.30.toml")?;
+    assert!(!capable.contains("[security]"), "{capable}");
+
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
