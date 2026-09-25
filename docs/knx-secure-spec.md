@@ -693,8 +693,8 @@ pcap and keyring from the environment) re-checks every CONFIRMED row.
 | No TIMER_NOTIFY on unicast | CONFIRMED | none in the capture |
 | ETS sends DISCONNECT and closes TCP without a SESSION_STATUS close | CONFIRMED (bussard also sends `STATUS_CLOSE`, as XKNX does) | last frames of session 3 |
 | SESSION_AUTHENTICATE MAC (§7.5) and SecureWrapper `additional_data` (§8.2) | INFERRED (XKNX, which works against real interfaces; three independent implementations agree on vectors: bussard, knx-sim, a Python script) | not checkable without the session key |
-| Session keepalive every 30 s (wrapped `STATUS_KEEPALIVE`) | INFERRED (XKNX rate, inside the 60 s session timeout of the KNX spec); configurable since #197 (`SecureTunnelConfig::keepalive`, `BUSSARD_SECURE_KEEPALIVE_SECS`, `0` = none) | the capture's sessions last seconds; measure the interface's idle timeout read-only with `bussard test --secure-idle <secs>` (§8.3) |
-| Secure session over **UDP** (#197): SESSION_REQUEST with the client's UDP HPAI, the tunnel's control/data HPAIs as on a plain UDP tunnel, TUNNELING_ACK inside SECURE_WRAPPERs in both directions, TIMER_NOTIFY ignored on unicast | INFERRED (KNX specification), **sim-verified only** (knx-sim `udp: true`, bussard-testkit mock) | no UDP-only interface captured; the Jung interface serves TCP, which bussard tries first |
+| Session idle timeout 60 s; keepalive every 30 s (wrapped `STATUS_KEEPALIVE`) is adequate | CONFIRMED (live, read-only, 2026-09-25, #197): `bussard test --secure-idle` against 1.1.200 found the TCP session alive after 45 s idle and dropped with a wrapped `STATUS_TIMEOUT` at 59.97 s, 3 of 3 runs (`SECURE_SESSION_TIMEOUT`). Configurable (`SecureTunnelConfig::keepalive`, `BUSSARD_SECURE_KEEPALIVE_SECS`, `0` = none); an interval of 60 s or more is warned about at connect | the capture's sessions last seconds; the timeout was measured with the idle probe (§8.3) |
+| Secure session over **UDP** (#197): SESSION_REQUEST with the client's UDP HPAI, the tunnel's control/data HPAIs as on a plain UDP tunnel, TUNNELING_ACK inside SECURE_WRAPPERs in both directions, TIMER_NOTIFY ignored on unicast | INFERRED (KNX specification), **sim-verified only** (knx-sim `udp: true`, bussard-testkit mock); no real interface tested | no UDP-only interface captured; the Jung interface serves TCP. UDP runs only with `--secure-transport udp`: the default `auto` reports a TCP refusal from a Secure-advertising interface (`SecureTcpRefused`) instead of switching |
 
 What ETS did in session 3 was a **device management** connection to the
 interface (CRI `02 03`: 24-octet CONNECT_REQUEST, 18-octet response), not a
@@ -852,11 +852,16 @@ the wrapped SESSION_AUTHENTICATE, so the session never authenticates.
   socket's real HPAI (`08 01 <ip> <port>`), CONNECT names it as control and
   data endpoint, and the tunnelling layer keeps its TUNNELING_ACKs (wrapped).
   A reordered datagram fails the strictly-increasing replay check and is
-  dropped; the ACK/retransmit layer recovers it. Selection: `--secure-transport
-  auto` (default) tries TCP and falls back to UDP only when the TCP connect is
-  refused and the extended search advertises the security family;
-  `--secure-transport tcp|udp` forces one. Stays INFERRED until a real
-  UDP-only interface is captured.
+  dropped; the ACK/retransmit layer recovers it. Every frame goes to the
+  control endpoint; the CONNECT_RESPONSE data endpoint is not used (as on the
+  plain UDP tunnel). Frames that precede the CONNECT_RESPONSE inside the
+  session (a TUNNELLING_FEATURE_INFO, say) are skipped, as over TCP.
+  Selection: `--secure-transport auto` (default) is TCP only; when the TCP
+  connect is refused and the extended search advertises the security family,
+  it fails with `SecureTcpRefused`, which names `--secure-transport udp`, and
+  never switches to UDP on its own. `--secure-transport udp` is the explicit
+  opt-in. No real interface has been tested over UDP; it stays INFERRED until
+  a UDP-only interface is captured.
 - The wrapper sits at the `frame()`/`do_send` seam in
   `crates/bussard-transport/src/tunnel.rs:279` - the plain tunnelling frame is
   built as today, then wrapped in a SecureWrapper before the socket write, and
@@ -864,7 +869,15 @@ the wrapped SESSION_AUTHENTICATE, so the session never authenticates.
 - Keepalive: a wrapped SESSION_STATUS `STATUS_KEEPALIVE` every 30 s
   (`SECURE_KEEPALIVE_INTERVAL`, overridable per `SecureTunnelConfig::keepalive`
   and `BUSSARD_SECURE_KEEPALIVE_SECS`), plus the tunnel's own CONNECTIONSTATE
-  heartbeat every 60 s. `SEC-CAL: the idle timeout the Jung interface enforces`.
+  heartbeat every 60 s. The Jung interface drops a session idle for 60 s
+  `[CONFIRMED, live idle probe, 2026-09-25: alive at 45 s, STATUS_TIMEOUT at
+  59.97 s, 3 of 3]`, the session timeout of the KNX specification, so the
+  30 s keepalive leaves 30 s of margin over TCP. Over UDP (sim-verified only)
+  one lost keepalive leaves none; lower `BUSSARD_SECURE_KEEPALIVE_SECS` there.
+  A keepalive of 60 s or more is warned about when the tunnel connects
+  (`SecureTunnelConfig::keepalive_risk`); the heartbeat alone (keepalive `0`)
+  runs at the timeout itself and relies on the TCP read-deadline probe or
+  other traffic.
   The read-only measurement is `bussard test --secure-idle <secs>`: it opens a
   session (no CONNECT, no tunnel slot, nothing on the bus), sends nothing for
   `<secs>`, then one wrapped CONNECTIONSTATE_REQUEST for a channel it does not
@@ -996,11 +1009,25 @@ Chunks follow the inner APDU budget: `PID_MAX_APDU_LENGTH` minus 13 octets of
 Data Secure overhead (ETS: 233 → 215-octet `A_MemoryExtended_Write` chunks,
 211-element PID 61 chunks). The group key table and flags bussard builds from
 the keyring and the tables equal ETS's bytes (`secure_capture_oracle.rs`,
-`test_security_object_program_matches_ets`). INFERRED: the order and packing
-of several PID 53 entries (the capture has one), the meaning of the flag bits
-(bit 0/1 = authentication/confidentiality). Only `0x00` and `0x03` have been
-observed; `0x01` (authentication only) and other combinations stay INFERRED
-(#197).
+`test_security_object_program_matches_ets`). Several PID 53 entries are
+written in ascending address-table index, packed to the budget `[CONFIRMED: S3
+captures, 2026-09-24, address-table indices only]`: 1.1.5 got 16 entries as 11
+from element 1 (indices 1 2 6 8 9 10 12 14 17 18 19, 198 octets) and 5 from
+element 12 (20 23 24 25 26); 1.1.7 got 8, 1.1.9 3, 1.1.16 4, 1.1.47 and 1.1.48
+2, each in one telegram.
+
+The PID 61 flag values `[CONFIRMED as values: the eight decrypted downloads
+secure-1-1-{5,7,9,12,16,47,48} and secure-1-1-12-group, 9013 flag octets]`:
+every octet is `0x00` or `0x03`; the 42 secured objects (1.1.5: 16, 1.1.7: 8,
+1.1.9: 6, 1.1.12: 1, then 3 in the group capture, 1.1.16: 4, 1.1.47 and
+1.1.48: 2 each) are all `0x03`. The ETS 6 security setting of a group address
+is Automatic, On or Off, with no authentication-only choice (the ETS dialog,
+not a capture), so another value is not expected from ETS. bussard writes only
+`0x00` and `0x03` (`GO_FLAGS_PLAIN`, `GO_FLAGS_SECURE`). INFERRED: the meaning
+of the bits (bit 0 authentication, bit 1 confidentiality), and so what `0x01`
+or `0x02` would do. A read-back (`bussard adopt`) that finds another value
+counts the object as secured and adds a note naming the objects and values;
+a later secured download rewrites them as `0x03`.
 
 **The security individual address table (PID 54)** `[CONFIRMED: S3 captures
 secure-1-1-{5,7,9,16,47,48} and secure-1-1-12-group, 2026-09-24, issue #181]`.
@@ -1029,9 +1056,14 @@ before 1.1.16 and 1.1.12 were downloaded, so they got its keyring value.
 there; the keyring exported after all downloads marks it activated with a later
 sequence, and bussard's entry on 1.1.5 differs from that capture in the 6
 sequence octets (the IA matches). That is the only remaining difference.
-INFERRED: several entries in ascending IA order (every observed table has
-one), and whether a device's own send GA counts as listened (it made no
-difference in the reference installation). A multi-sender sample is not
+INFERRED: several entries in ascending IA order, packed like PID 53 (26
+entries per telegram at `PID_MAX_APDU_LENGTH` 233). Every observed table has at
+most one entry: all eight decrypted downloads (secure-1-1-{5,7,9,12,16,47,48}
+and secure-1-1-12-group) write the count-0 clear and then zero or one element
+at element 1, so the order of several cannot be read from a capture. ETS writes
+the other tables of the object (PID 53, PID 61) ascending and packed, and
+bussard follows that shape. Also INFERRED: whether a device's own send GA
+counts as listened (it made no difference in the reference installation). A multi-sender sample is not
 available in the reference installation (#197, 2026-09-24): 1.1.10 is secured,
 but the GA it shares with 1.1.5 also carries a device that is not
 Secure-capable, so ETS cannot secure it. It needs another installation or a
@@ -1141,7 +1173,8 @@ CONNECT_REQUEST against the gateway + a SEARCH_RESPONSE_EXTENDED):
 4. SEARCH_RESPONSE_EXTENDED Secure DIB type/layout + gateway secure-only mode
    (§8.4). **Settled** by the ipsecure-1-1-200 capture (2026-09-24).
 5. `message_tag` for tunnelling (**settled**: 0) + keepalive/idle timers
-   (`SEC-CAL:` open, §8.3).
+   (**settled** 2026-09-25 by the live idle probe: the session times out after
+   60 s idle, the 30 s keepalive is adequate, §8.3).
 
 The `.knxkeys` signature canonicalization (§4.4) is settled (#84), confirmed
 against a real ETS 6 export.
@@ -1164,10 +1197,13 @@ greppable.
 4. **SecureWrapper `additional_data` MAC input** (§8.2): the first live
    bussard session against the interface settles it (the capture cannot).
 5. **KNXnet/IP Secure over UDP** (§8.3, #197): implemented from the KNX
-   specification and verified against knx-sim only; a UDP-only interface
-   capture settles the HPAIs and whether the interface ACKs inside the session.
-6. **The interface's session idle timeout** (§8.3, #197): measured read-only
-   with `bussard test --secure-idle <secs>`; the 30 s keepalive is INFERRED.
+   specification and verified against knx-sim only, reachable only through
+   `--secure-transport udp`; a UDP-only interface capture settles the HPAIs,
+   the data endpoint and whether the interface ACKs inside the session.
+6. ~~**The interface's session idle timeout** (§8.3, #197)~~ **Settled**
+   2026-09-25: 60 s on the Jung interface (idle probe, alive at 45 s,
+   `STATUS_TIMEOUT` at 59.97 s, 3 of 3); the 30 s keepalive is CONFIRMED
+   adequate.
 7. **`A_PropertyExtDescription_Response` layout**: not in any capture; bussard
    follows KNX 3/3/7 (`crates/bussard-mgmt/src/property_ext.rs`), INFERRED.
 8. **FDSK QR/label string encoding** - only if commissioning from a scanned label

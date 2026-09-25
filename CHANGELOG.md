@@ -303,12 +303,17 @@ entry supersedes it and is not a diff against it.
   `BUSSARD_KEYRING_PASSWORD`). The campaign wrapper passes
   `--keyring "$BUSSARD_KEYRING"` to its probes and the step when that variable
   is set (#189).
-- KNXnet/IP Secure over UDP for an interface without a TCP endpoint: TCP is
-  tried first, UDP follows when the TCP connect is refused and the interface
-  advertises Secure; `--secure-transport auto|tcp|udp` forces one. The
+- KNXnet/IP Secure over UDP for an interface without a TCP endpoint, as an
+  explicit opt-in: `--secure-transport udp`. The default `auto` stays on TCP,
+  the only carrier tested against a real interface; an interface that refuses
+  TCP but advertises Secure fails with a message naming the opt-in instead of
+  switching to UDP on its own. A secure UDP handshake skips an authenticated
+  frame that arrives before the CONNECT_RESPONSE, as the TCP one does. The
   session keepalive is configurable (`BUSSARD_SECURE_KEEPALIVE_SECS`), and
   `bussard test --secure-idle <secs>` measures the interface's idle timeout
-  read-only. `write --keyring` prints a note on sender admission (PID 54,
+  read-only. It measured 60 s on the Jung interface (alive at 45 s, dropped at
+  59.97 s), so the 30 s default keepalive is confirmed; an interval of 60 s or
+  more prints a warning at connect. `write --keyring` prints a note on sender admission (PID 54,
   `--secure-sender`) after a secured write (#197).
 - The frame shapes, the Secure DIBs and the interface's SESSION_RESPONSE MAC
   are checked against an ETS capture of a Jung interface by an ignored oracle
@@ -566,12 +571,16 @@ entry supersedes it and is not a diff against it.
 ### Known limitations
 
 - KNXnet/IP Secure over UDP is implemented from the KNX specification and
-  verified against knx-sim only, and the 30 s keepalive interval is inferred
-  rather than confirmed (#71, #197).
+  verified against knx-sim and the testkit mock only; no real interface has
+  been tested, so it runs only with `--secure-transport udp` (#197).
 - ETS3-era products shipped only as encrypted `.vd4` files need the ETS
   project export as product source (#135).
 - Some Data Secure memory layouts are still inferred rather than confirmed by
-  a capture (#71).
+  a capture (#71): the order of several entries in the security individual
+  address table (PID 54; every capture holds at most one), the meaning of the
+  group-object flag bits beyond the two values ETS writes (`0x00`, `0x03`),
+  and the `A_PropertyExtDescription_Response` layout (#197). `adopt` notes a
+  flag value other than those two.
 - System 1 and System 2 masks are classified but not programmable; program
   them with ETS. bussard never activates or deactivates Data Secure on a
   device.

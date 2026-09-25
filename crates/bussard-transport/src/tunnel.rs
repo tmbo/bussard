@@ -364,6 +364,11 @@ impl Tunnel {
             .as_ref()
             .map(|s| s.keepalive)
             .unwrap_or(SECURE_KEEPALIVE_INTERVAL);
+        if secure_user.is_some()
+            && let Some(risk) = config.secure.as_ref().and_then(|s| s.keepalive_risk())
+        {
+            tracing::warn!("{risk}");
+        }
 
         let (cmd_tx, cmd_rx) = mpsc::channel(16);
         // Unbounded and never awaited: the task must not be able to block on
@@ -432,14 +437,16 @@ impl Tunnel {
             if parsed.service == ServiceType::ConnectResponse {
                 return accept_connect_response(parsed.body);
             }
-            if link.acks() {
+            if matches!(link, Link::Udp(_)) {
                 return Err(TransportError::InvalidField {
                     field: "expected CONNECT_RESPONSE",
                     value: 0,
                 });
             }
-            // Over a secure session other frames can precede the answer
-            // (a TUNNELLING_FEATURE_INFO, say): skip them.
+            // Over a secure session, TCP or UDP, other frames can precede the
+            // answer (a TUNNELLING_FEATURE_INFO, say): skip them. The session
+            // has already authenticated every one of them, so a stray frame is
+            // the interface's, not a spoof.
         }
     }
 }
@@ -577,11 +584,14 @@ pub(crate) async fn plan_connection(
 
 /// Opens the secure session of a tunnel over the carrier `requested` names.
 ///
-/// `Tcp` and `Udp` are taken literally. `Auto` tries TCP first, as ETS does
-/// with the tested interface, and falls back to UDP only when the TCP connect
-/// is refused and the interface's extended search (`probed`, or a fresh probe)
-/// advertises KNXnet/IP Secure: an interface without a TCP endpoint
-/// (issue #197). Any other TCP failure is returned as it is.
+/// `Tcp` and `Udp` are taken literally. `Auto` is TCP, as ETS uses with the
+/// tested interface. When that connect is refused and the interface's
+/// extended search (`probed`, or a fresh probe) advertises KNXnet/IP Secure,
+/// the interface may serve UDP only; `Auto` still does not switch, because the
+/// UDP carrier is verified against knx-sim and the testkit mock only, and
+/// returns [`TransportError::SecureTcpRefused`] so the operator can opt in with
+/// `--secure-transport udp` (issue #197). Any other TCP failure is returned as
+/// it is.
 pub(crate) async fn open_secure(
     gateway: SocketAddrV4,
     local: Ipv4Addr,
@@ -591,7 +601,12 @@ pub(crate) async fn open_secure(
     timeout: std::time::Duration,
 ) -> Result<SecureLink> {
     match requested {
-        SecureTransport::Tcp | SecureTransport::Udp => {
+        SecureTransport::Tcp => SecureLink::open(gateway, local, user, requested, timeout).await,
+        SecureTransport::Udp => {
+            tracing::warn!(
+                "KNXnet/IP Secure over UDP to {gateway}: verified against knx-sim only, \
+                 not against a real interface (issue #197)"
+            );
             SecureLink::open(gateway, local, user, requested, timeout).await
         }
         SecureTransport::Auto => {
@@ -606,14 +621,11 @@ pub(crate) async fn open_secure(
                         .await
                         .is_ok_and(|d| d.secure_capable()),
                     };
-                    if !secure_capable {
-                        return Err(err);
+                    if secure_capable {
+                        Err(TransportError::SecureTcpRefused { gateway })
+                    } else {
+                        Err(err)
                     }
-                    tracing::info!(
-                        "KNXnet/IP Secure: {gateway} refused TCP but advertises Secure; \
-                         opening the session over UDP"
-                    );
-                    SecureLink::open(gateway, local, user, SecureTransport::Udp, timeout).await
                 }
                 other => other,
             }

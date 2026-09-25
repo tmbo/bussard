@@ -149,8 +149,10 @@ struct Global {
     #[arg(long, global = true, value_name = "VAR")]
     secure_password_env: Option<String>,
     /// KNXnet/IP Secure: the carrier of the secure session. Default `auto`:
-    /// TCP, and UDP when the interface refuses TCP but advertises Secure
-    /// (issue #197). UDP is verified against knx-sim only.
+    /// TCP, the only carrier tested against a real interface; an interface
+    /// that refuses TCP but advertises Secure is reported, never switched to
+    /// UDP on its own. `udp` is an explicit opt-in, verified against knx-sim
+    /// only (issue #197).
     #[arg(long, global = true, value_enum, value_name = "TRANSPORT")]
     secure_transport: Option<SecureTransportArg>,
 }
@@ -158,11 +160,11 @@ struct Global {
 /// The `--secure-transport` values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum SecureTransportArg {
-    /// TCP first, UDP when TCP is refused and the interface advertises Secure.
+    /// TCP; names `udp` when TCP is refused and the interface advertises Secure.
     Auto,
     /// TCP only.
     Tcp,
-    /// UDP only.
+    /// UDP only (verified against knx-sim only).
     Udp,
 }
 

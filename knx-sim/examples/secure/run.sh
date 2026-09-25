@@ -55,10 +55,12 @@
 #
 # KNXnet/IP Secure over UDP (issue #197; sim-ipsecure-udp.yaml, a secure-only
 # interface WITHOUT a TCP endpoint on port 13695, 4 s session timeout):
-#   POSITIVE  describe 1.1.3 --keyring -> TCP refused, the secure session falls
-#             back to UDP (keepalive every 1 s via BUSSARD_SECURE_KEEPALIVE_SECS)
+#   NEGATIVE  describe 1.1.3 --keyring (default auto) -> TCP refused, fails
+#             naming --secure-transport udp: never switches to UDP on its own
+#   POSITIVE  describe 1.1.3 --keyring --secure-transport udp -> UDP session
+#             (keepalive every 1 s via BUSSARD_SECURE_KEEPALIVE_SECS)
 #   POSITIVE  describe 1.1.3 --secure-transport udp --secure-user 2 -> explicit UDP
-#   NEGATIVE  describe 1.1.3 --secure-transport tcp -> fails, no UDP fallback
+#   NEGATIVE  describe 1.1.3 --secure-transport tcp -> fails, no UDP
 #   POSITIVE  test --secure-idle 1 -> ALIVE; test --secure-idle 6 -> DROPPED
 #             (the sim's STATUS_TIMEOUT after 4 s), read-only
 #
@@ -807,14 +809,24 @@ ok "UDP-only secure simulator listening on $GATEWAY3 (pid $SIM_PID)"
 # describe sessions alive (and exercises the env override).
 export BUSSARD_SECURE_KEEPALIVE_SECS=1
 
+out="$(BUSSARD_TUNNEL_RECONNECT_SECS=0 "$BUSSARD" describe 1.1.3 --dir "$MODEL" \
+  --gateway "$GATEWAY3" --keyring "$KEYRING" 2>&1)"
+rc=$?
+if [[ $rc -ne 0 ]] && grep -q -- "--secure-transport udp" <<<"$out"; then
+  ok "describe 1.1.3 --keyring (auto): TCP refused, no UDP on its own, names --secure-transport udp"
+else
+  bad "describe 1.1.3 --keyring (auto) over the UDP-only interface did not refuse with the hint (exit $rc)"
+  tail -4 <<<"$out" | sed 's/^/      /'
+fi
+
 mark=$(log_mark)
 out="$("$BUSSARD" describe 1.1.3 --json --dir "$MODEL" --gateway "$GATEWAY3" \
-  --keyring "$KEYRING" 2>/dev/null)"
+  --keyring "$KEYRING" --secure-transport udp 2>/dev/null)"
 rc=$?
 if [[ $rc -eq 0 ]] && grep -q '"object_type"' <<<"$out"; then
-  ok "describe 1.1.3 --keyring: TCP refused, the secure tunnel fell back to UDP"
+  ok "describe 1.1.3 --keyring --secure-transport udp: secure tunnel over UDP"
 else
-  bad "describe 1.1.3 --keyring over the UDP-only interface failed (exit $rc)"
+  bad "describe 1.1.3 --keyring --secure-transport udp over the UDP-only interface failed (exit $rc)"
   tail -4 <<<"$out" | sed 's/^/      /'
 fi
 if log_has "$mark" "SECURE session authenticated" && log_has "$mark" "SecureUdp"; then
@@ -837,20 +849,20 @@ out="$(BUSSARD_TUNNEL_RECONNECT_SECS=0 "$BUSSARD" describe 1.1.3 --dir "$MODEL" 
   --secure-password-env SIM_TUNNEL_PW 2>&1)"
 rc=$?
 if [[ $rc -ne 0 ]]; then
-  ok "describe 1.1.3 --secure-transport tcp: fails without a UDP fallback (exit $rc)"
+  ok "describe 1.1.3 --secure-transport tcp: fails, no UDP (exit $rc)"
 else
   bad "--secure-transport tcp reached a UDP-only interface"
 fi
 
 out="$("$BUSSARD" test --secure-idle 1 --dir "$MODEL" --gateway "$GATEWAY3" \
-  --secure-user 2 --secure-password-env SIM_TUNNEL_PW 2>/dev/null)"
+  --secure-transport udp --secure-user 2 --secure-password-env SIM_TUNNEL_PW 2>/dev/null)"
 if grep -q "udp) idle 1 s: ALIVE" <<<"$out"; then
   ok "test --secure-idle 1: the session survived (UDP)"
 else
   bad "test --secure-idle 1 did not report ALIVE"; tail -3 <<<"$out" | sed 's/^/      /'
 fi
 out="$("$BUSSARD" test --secure-idle 6 --json --dir "$MODEL" --gateway "$GATEWAY3" \
-  --secure-user 2 --secure-password-env SIM_TUNNEL_PW 2>/dev/null)"
+  --secure-transport udp --secure-user 2 --secure-password-env SIM_TUNNEL_PW 2>/dev/null)"
 if grep -q '"outcome": "dropped"' <<<"$out" && grep -q "STATUS_TIMEOUT" <<<"$out"; then
   ok "test --secure-idle 6: the sim's 4 s session timeout was measured (dropped)"
 else
@@ -872,4 +884,4 @@ echo "  both CCM modes, negatives refused on both sides, plain path unchanged,"
 echo "  secured group read/write/monitor on 1/2/3, PID 54 secured senders,"
 echo "  adopt of a commissioned Data Secure device (read-only, plan clean),"
 echo "  KNXnet/IP Secure tunnelling (keyring and explicit user, secure-only"
-echo "  refusal, wrong password), over UDP (fallback, explicit, idle probe)"
+echo "  refusal, wrong password), over UDP (auto refusal, explicit, idle probe)"

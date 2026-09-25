@@ -110,9 +110,18 @@ pub struct SecureGatewayBuilder {
     udp_sessions: bool,
     tcp: bool,
     session_timeout: Option<Duration>,
+    feature_info_first: bool,
 }
 
 impl SecureGatewayBuilder {
+    /// Sends a wrapped TUNNELLING_FEATURE_INFO before each CONNECT_RESPONSE,
+    /// so the client's handshake must skip an unrelated authenticated frame
+    /// (issue #197: over TCP and UDP alike).
+    pub fn feature_info_before_connect_response(mut self) -> Self {
+        self.feature_info_first = true;
+        self
+    }
+
     /// Also accepts KNXnet/IP Secure sessions over UDP on the port
     /// (issue #197): SESSION_REQUEST with the client's UDP HPAI, then the
     /// wrapped tunnel with TUNNELING_ACKs.
@@ -244,6 +253,7 @@ struct Config {
     push_after_connect: Vec<CemiFrame>,
     udp_sessions: bool,
     session_timeout: Option<Duration>,
+    feature_info_first: bool,
 }
 
 /// A running mock secure interface. Dropping it stops the tasks.
@@ -275,6 +285,7 @@ impl MockSecureGateway {
             udp_sessions: false,
             tcp: true,
             session_timeout: None,
+            feature_info_first: false,
         }
     }
 
@@ -307,6 +318,7 @@ impl MockSecureGateway {
             push_after_connect: builder.push_after_connect,
             udp_sessions: builder.udp_sessions,
             session_timeout: builder.session_timeout,
+            feature_info_first: builder.feature_info_first,
         });
         let udp_task = tokio::spawn(serve_udp(udp, stats.clone(), config.clone()));
         if !serve_tcp_side {
@@ -695,6 +707,14 @@ fn tunnel_step(
         },
         ServiceType::ConnectRequest => {
             bump(stats, |s| s.connects += 1);
+            if config.feature_info_first {
+                // Connection header (4 octets), feature id 0x03 (bus
+                // connection status), reserved, value 1 (connected).
+                replies.push(knxnet::frame(
+                    ServiceType::TunnelingFeatureInfo,
+                    &[0x04, channel, side.tx_seq, 0x00, 0x03, 0x00, 0x01],
+                ));
+            }
             let mut body = vec![channel, 0x00, 0x08, 0x02, 0, 0, 0, 0, 0, 0, 0x04, 0x04];
             body.extend_from_slice(&side.tunnel_ia.to_be_bytes());
             replies.push(knxnet::frame(ServiceType::ConnectResponse, &body));

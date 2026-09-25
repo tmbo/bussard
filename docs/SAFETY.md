@@ -774,11 +774,14 @@ stays out of git.
   to come. Start with a read-only `monitor --keyring` against the interface
   before any write. What the wire cannot yet confirm: the MAC input of the
   wrapped frames (a mismatch shows as a refused authentication, never as a
-  wrong write) and the interface's idle timeout (bussard sends a keepalive
-  every 30 s, `BUSSARD_SECURE_KEEPALIVE_SECS` changes it; `bussard test
-  --secure-idle <secs>` measures the timeout read-only). An interface without
-  a TCP endpoint gets a UDP session ([#197](https://github.com/tmbo/bussard/issues/197)),
-  implemented from the KNX specification and verified against knx-sim only.
+  wrong write). The interface's idle timeout is measured: the Jung interface
+  drops a session idle for 60 s, and bussard sends a keepalive every 30 s
+  (`BUSSARD_SECURE_KEEPALIVE_SECS` changes it; `bussard test --secure-idle
+  <secs>` measures another interface read-only). An interface without
+  a TCP endpoint can get a UDP session with `--secure-transport udp`
+  ([#197](https://github.com/tmbo/bussard/issues/197)), implemented from the
+  KNX specification and verified against knx-sim only; bussard never picks UDP
+  on its own.
   Secure routing (multicast) is not implemented. The tunnel
   slots on a secure interface belong to users: each ETS tunnelling user has
   its own tunnel address, and bussard picks a free one from the keyring.

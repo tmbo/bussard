@@ -21,7 +21,12 @@
 //! connected UDP socket: SESSION_REQUEST carries that socket's real endpoint
 //! as its HPAI, the CONNECT_REQUEST names it as control and data endpoint (as
 //! the plain UDP tunnel does), and TUNNELING_ACK is back in the loop, wrapped
-//! like every other frame. No real UDP-only interface has been captured yet.
+//! like every other frame. Every frame goes to the control endpoint; the data
+//! endpoint of the CONNECT_RESPONSE is not used, as on the plain UDP tunnel.
+//! No real UDP-only interface has been captured or tested, so UDP is an
+//! explicit opt-in (`--secure-transport udp`): the default `auto` stays on TCP
+//! and reports an interface that refuses TCP but advertises Secure with
+//! [`TransportError::SecureTcpRefused`] instead of switching.
 //!
 //! # Handshake (as implemented)
 //!
@@ -279,7 +284,7 @@ pub(crate) struct SecureLink {
 impl SecureLink {
     /// Opens the carrier and runs the session handshake for `user` (module
     /// docs), bounded by `timeout` overall. `transport` must be `Tcp` or
-    /// `Udp`; `Auto` means TCP here (the fallback lives in the tunnel).
+    /// `Udp`; `Auto` means TCP here (the refusal check lives in the tunnel).
     pub(crate) async fn open(
         gateway: SocketAddrV4,
         local: Ipv4Addr,

@@ -1005,6 +1005,12 @@ mod tests {
         assert_eq!(crate::apci::extended_memory_chunk_for_apdu(233), 228);
         assert_eq!(crate::apci::extended_memory_chunk_for_apdu(inner), 215);
         assert_eq!(inner - PROPERTY_EXT_WRITE_OVERHEAD, 211);
+        // The group key table (18-octet elements): ETS wrote 1.1.5's 16 keys
+        // as 11 + 5 elements (secure-1-1-5.pcapng, issue #197).
+        assert_eq!((inner - PROPERTY_EXT_WRITE_OVERHEAD) / 18, 11);
+        // The security IA table (8-octet elements) packs the same way: 26
+        // per telegram (INFERRED, no capture has more than one entry).
+        assert_eq!((inner - PROPERTY_EXT_WRITE_OVERHEAD) / 8, 26);
     }
 
     #[test]
