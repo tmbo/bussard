@@ -15,10 +15,21 @@
 //! `GroupValueRead`, no write, no management traffic. `crates/bussard-cli/tests/
 //! learn_mock.rs` proves it by counting the tunnelling requests a mock gateway
 //! receives during a full scripted session (zero).
+//!
+//! # Secured group telegrams
+//!
+//! With a keyring (`--keyring`, or `connection.keyring` in `bussard.toml`)
+//! learn decodes like `monitor` does (issue #204): a KNX Data Secure group
+//! telegram is verified and decrypted with its GA's group key, the inner APDU
+//! feeds the inference, and the learned group is marked `secure`. The
+//! sequence-freshness warning is shown with the observation. A secured
+//! telegram that cannot be verified (no keyring, no key for the GA, a MAC
+//! failure) is reported and skipped, never guessed at. Decrypting is local; it
+//! sends nothing.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, IsTerminal, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -26,7 +37,7 @@ use anyhow::{Context, anyhow, bail};
 use bussard_model::schema::{BussardConfig, Groups, Link, Links};
 use bussard_model::{Dpt, Flags, GroupAddress, IndividualAddress, Model};
 use bussard_monitor::infer::{self, DptCandidate};
-use bussard_monitor::{DecodedTelegram, Filter, TelegramRing};
+use bussard_monitor::{ApciKind, DecodedTelegram, Filter, GroupKeyring, TelegramRing};
 use bussard_service::{BusService, WritePolicy};
 
 use crate::conn_cmd::{ConnOverrides, gateway_display, load_model_required, resolve_config};
@@ -45,7 +56,13 @@ pub struct LearnOptions {
     pub yes: bool,
     /// How long to wait for each telegram, in seconds.
     pub timeout_seconds: u64,
+    /// The `.knxkeys` keyring whose group keys decrypt secured group telegrams
+    /// (`--keyring`, else `connection.keyring`).
+    pub keyring: Option<PathBuf>,
 }
+
+/// The APCI of `A_SecureData`, the envelope of a KNX Data Secure telegram.
+const APCI_SECURE_DATA: u16 = 0x03F1;
 
 /// Runs `bussard learn`.
 pub fn run(
@@ -70,6 +87,16 @@ pub fn run(
     let timeout = Duration::from_secs(options.timeout_seconds.clamp(1, 3600));
 
     let config = resolve_config(Some(&model), &overrides)?;
+    // KNX Data Secure group telegrams (issue #204): the same group keys and
+    // decode path as `monitor`. Loaded before connecting so a wrong password
+    // fails fast.
+    let group_keys = crate::secure_key::group_keys(options.keyring.as_deref())?.map(|keys| {
+        eprintln!(
+            "keyring: {} group key(s) for secured group telegrams",
+            keys.len()
+        );
+        GroupKeyring::new(keys)
+    });
     eprintln!(
         "gateway: {} (listening only, never transmits)",
         gateway_display(&config)
@@ -86,14 +113,20 @@ pub fn run(
         let ring = TelegramRing::new();
 
         // Feed the ring from the inbound frames, decoded against the model as
-        // it was when the session started. Nothing here ever sends.
+        // it was when the session started, secured group telegrams unwrapped
+        // with the keyring. Nothing here ever sends.
         let feeder_ring = ring.clone();
         let feeder_model = model.clone();
         let feeder_handle = handle.clone();
+        let mut feeder_keys = group_keys;
         let feeder = tokio::spawn(async move {
             let mut sub = feeder_handle.subscribe();
             while let Some(inbound) = sub.recv().await {
-                let decoded = DecodedTelegram::from_frame(&inbound.frame, Some(&feeder_model));
+                let decoded = DecodedTelegram::from_frame_secured(
+                    &inbound.frame,
+                    Some(&feeder_model),
+                    feeder_keys.as_mut(),
+                );
                 feeder_ring.push_with_code(decoded, inbound.message_code);
             }
         });
@@ -241,6 +274,7 @@ async fn learn_loop(
             .recent(&filter, None)
             .into_iter()
             .rev()
+            .filter(|t| secure_block(t).is_none())
             .filter_map(|t| t.destination.group().map(|_| t.payload))
             .filter(|p| !p.is_empty())
             .collect();
@@ -263,6 +297,11 @@ async fn learn_loop(
         }
         handled.push(ga);
 
+        if let Some(reason) = secure_block(&telegram) {
+            eprintln!("  {ga} sender {}: {reason}; skipping.", telegram.source);
+            continue;
+        }
+
         match consider(model, ga, &telegram, &earlier, options, interactive)? {
             Decision::Quit => break,
             Decision::Skipped => continue,
@@ -275,6 +314,34 @@ async fn learn_loop(
         }
     }
     Ok(changes)
+}
+
+/// Why a secured telegram cannot be learned from, or `None` when its payload
+/// is usable: a plain telegram, or a secured one whose MAC verified (its
+/// payload is then the decrypted inner APDU's).
+fn secure_block(telegram: &DecodedTelegram) -> Option<String> {
+    use bussard_monitor::SecureStatus;
+    match &telegram.secure {
+        Some(info) => match info.status {
+            SecureStatus::Verified => None,
+            SecureStatus::NoKey => Some(
+                "secured telegram (KNX Data Secure) but the keyring has no group key for this GA; \
+                 export a current keyring from ETS"
+                    .to_string(),
+            ),
+            SecureStatus::MacFailed => Some(
+                "secured telegram whose MAC did not verify under the keyring's group key (a \
+                 stale keyring or a forged frame)"
+                    .to_string(),
+            ),
+        },
+        None if telegram.apci == ApciKind::Other(APCI_SECURE_DATA) => Some(format!(
+            "secured telegram (KNX Data Secure); pass --keyring <file.knxkeys> or set \
+             connection.keyring in bussard.toml, with {} set, to decrypt it",
+            crate::secure_key::KEYRING_PASSWORD_ENV
+        )),
+        None => None,
+    }
 }
 
 /// What the operator decided about one group address.
@@ -367,10 +434,18 @@ fn consider(
         }
     }
 
+    let secured = telegram.secure.as_ref().is_some_and(|s| s.verified());
     let entry = model.groups.groups.entry(ga).or_default();
     entry.name = name.clone();
     entry.dpt = Some(dpt);
-    println!("{ga} {name} ({dpt})");
+    if secured {
+        // The GA carries KNX Data Secure traffic; record it so `write`/`read`
+        // seal their telegrams and `flash`/`apply` program the group key.
+        entry.secure = true;
+        println!("{ga} {name} ({dpt}, secured)");
+    } else {
+        println!("{ga} {name} ({dpt})");
+    }
 
     let made_link = maybe_link(model, sender, ga, object.is_some(), options, interactive)?;
     Ok(Decision::Accepted { made_link })
@@ -500,6 +575,15 @@ fn print_observation(
                 .map(|d| format!(", declares {d}"))
                 .unwrap_or_default(),
         );
+    }
+    if let Some(info) = telegram.secure.as_ref().filter(|s| s.verified()) {
+        eprintln!(
+            "  secured (KNX Data Secure), verified and decrypted, sequence {}",
+            info.sequence
+        );
+        if let Some(warning) = &info.warning {
+            eprintln!("  warning: {warning}");
+        }
     }
     eprintln!(
         "  payload {} ({} byte(s))",

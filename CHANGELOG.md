@@ -181,6 +181,10 @@ entry supersedes it and is not a diff against it.
   `secured`; `read` and `write --keyring` (and MCP, viz) send a secured GA as
   `A_SecureData` and refuse one without a key; a keyless `flash` of an
   activated device names the missing key (#172).
+- `learn` decrypts secured group telegrams the same way (`--keyring`, else
+  `connection.keyring`): the inner value feeds the DPT inference, the learned
+  group gets `secure = true`, and a replayed sequence number is shown as a
+  warning. Without a key a secured telegram is reported and skipped (#204).
 - A secured `flash` or `apply` writes the security individual address table
   (PID 54) like ETS: one `[IA][sequence]` entry per device that sends on a
   secured group address the device listens to, with the sender's keyring
