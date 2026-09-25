@@ -172,16 +172,18 @@ fn find_keyring(project: &Path) -> Option<std::path::PathBuf> {
 
 /// The `connection.keyring` value for `keyring`, as `bussard.toml` in `dir`
 /// resolves it: relative to `dir` when the keyring sits in `dir`'s parent
-/// (the usual layout: the ETS exports next to `knx/`), else absolute.
+/// (the usual layout: the ETS exports next to `knx/`), else absolute. The
+/// separators are forward slashes on every platform, so the committed
+/// `bussard.toml` reads the same on Windows (which accepts `/`).
 fn keyring_setting(dir: &Path, keyring: &Path) -> String {
     let absolute = |p: &Path| std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
     let keyring = absolute(keyring);
     let dir = absolute(dir);
     match (keyring.parent(), dir.parent(), keyring.file_name()) {
         (Some(from), Some(parent), Some(name)) if from == parent => {
-            Path::new("..").join(name).to_string_lossy().into_owned()
+            format!("../{}", name.to_string_lossy())
         }
-        _ => keyring.to_string_lossy().into_owned(),
+        _ => keyring.to_string_lossy().replace('\\', "/"),
     }
 }
 

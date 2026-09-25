@@ -348,8 +348,21 @@ fn test_init_records_the_keyring_next_to_the_project() -> TestResult {
     assert!(out.status.success(), "{stdout}\n{stderr}");
     assert!(stdout.contains("Found the ETS keyring"), "{stdout}");
     assert!(stdout.contains("BUSSARD_KEYRING_PASSWORD"), "{stdout}");
-    let config = std::fs::read_to_string(dir.join("bussard.toml"))?;
-    assert!(config.contains("keyring = \"../Site.knxkeys\""), "{config}");
+    // The recorded path resolves to the keyring (compared as paths, not
+    // strings, so the check holds on Windows too).
+    let config = bussard_model::load_config(&dir)?;
+    let recorded = config
+        .connection
+        .keyring_path(&dir)
+        .ok_or("init recorded no connection.keyring")?;
+    assert_eq!(
+        std::fs::canonicalize(&recorded)?,
+        std::fs::canonicalize(tmp.join("Site.knxkeys"))?,
+        "recorded {}",
+        recorded.display()
+    );
+    let text = std::fs::read_to_string(dir.join("bussard.toml"))?;
+    assert!(!text.contains('\\'), "forward slashes only: {text}");
 
     // `validate` resolves it: present, and without the password one info line.
     let out = bussard(
