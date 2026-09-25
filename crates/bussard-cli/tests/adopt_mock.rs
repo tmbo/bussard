@@ -369,13 +369,12 @@ fn adopt_happy_path_writes_rich_device_file() -> TestResult {
         lock.contains("dpt = \"1.001\""),
         "expected a DPT; lock:\n{lock}"
     );
-    // Channel handle, object and parameter keys derived from the vendor
-    // defaults.
+    // Channel handle and object keys derived from the vendor defaults; the
+    // lock lists no parameter, since a fresh device stores no value.
     for line in [
         r#"  { key = "taste-1", id = "CH-1", number = 1, text = "Taste 1" },"#,
         r#"  { number = 0, key = "taste-1", channel = "taste-1", text = "Taste 1", dpt = "1.001""#,
         r#"  { number = 1, key = "led-1", channel = "taste-1", text = "LED 1", dpt = "1.001""#,
-        r#"  { key = "funktion", channel = "taste-1", ref = "P-1_R-1", param = "P-1" },"#,
     ] {
         assert!(lock.contains(line), "lock lacks {line}; lock:\n{lock}");
     }
