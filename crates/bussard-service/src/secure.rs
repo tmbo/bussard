@@ -203,7 +203,7 @@ pub fn tunnel_config(
     };
     match (source.user, source.password_env) {
         (Some(user_id), Some(var)) => {
-            let password = std::env::var(var)
+            let password = bussard_model::dotenv::var(var)
                 .map(bussard_secure::Password::new)
                 .map_err(|_| SecureKeyError::MissingTunnelPassword(var.to_string()))?;
             let from_keyring = keyring
@@ -462,7 +462,7 @@ pub fn keyring_facts(path: &Path, source: &str) -> bussard_model::KeyringFacts {
     use bussard_model::KeyringStatus;
     let status = if !path.is_file() {
         KeyringStatus::Missing
-    } else if std::env::var_os(KEYRING_PASSWORD_ENV).is_none() {
+    } else if bussard_model::dotenv::var_os(KEYRING_PASSWORD_ENV).is_none() {
         KeyringStatus::Locked
     } else {
         match load_keyring(path) {
@@ -496,8 +496,8 @@ pub fn keyring_facts(path: &Path, source: &str) -> bussard_model::KeyringFacts {
 /// Loads and decrypts `path` with the env password, once per process for the
 /// same file bytes and password (see [`keyring_memo`]).
 fn load_keyring(path: &Path) -> Result<Arc<bussard_project::Keyring>, SecureKeyError> {
-    let password =
-        std::env::var(KEYRING_PASSWORD_ENV).map_err(|_| SecureKeyError::MissingPassword)?;
+    let password = bussard_model::dotenv::var(KEYRING_PASSWORD_ENV)
+        .map_err(|_| SecureKeyError::MissingPassword)?;
     load_keyring_with(path, &password)
 }
 
@@ -683,7 +683,7 @@ pub fn layer(
 /// The CCM algorithm for wrapped management APDUs, honouring
 /// [`SECURE_ALGORITHM_ENV`]. Default: authentication + encryption (spec §6.2).
 fn algorithm() -> SecurityAlgorithm {
-    match std::env::var(SECURE_ALGORITHM_ENV)
+    match bussard_model::dotenv::var(SECURE_ALGORITHM_ENV)
         .as_deref()
         .map(str::trim)
     {

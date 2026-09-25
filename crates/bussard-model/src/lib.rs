@@ -19,6 +19,7 @@ pub mod declare;
 pub mod device_view;
 pub mod discover;
 pub mod doc;
+pub mod dotenv;
 pub mod dpt;
 mod emit;
 pub mod ets_export;

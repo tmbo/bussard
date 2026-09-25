@@ -35,6 +35,8 @@ PRODUCTS="$EX/products"
 GATEWAY="127.0.0.1:13671"
 
 BUSSARD="$REPO/target/debug/bussard"
+# Hermetic: never pick up the repository's .env (issue #251).
+export BUSSARD_NO_DOTENV=1
 SERVE="$SIM_DIR/target/debug/serve"
 
 pass=0

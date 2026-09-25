@@ -54,7 +54,7 @@ impl Gate {
             stdout_tty: std::io::stdout().is_terminal(),
             stderr_tty: std::io::stderr().is_terminal(),
             dumb_term: std::env::var("TERM").is_ok_and(|t| t == "dumb"),
-            wire_trace: std::env::var(WIRE_TRACE_ENV).is_ok_and(|v| v == "1"),
+            wire_trace: bussard_model::dotenv::var(WIRE_TRACE_ENV).is_ok_and(|v| v == "1"),
             no_progress,
         }
     }

@@ -47,7 +47,7 @@ impl Direction {
 fn enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
-        std::env::var(WIRE_TRACE_ENV)
+        bussard_model::dotenv::var(WIRE_TRACE_ENV)
             .map(|v| v == "1")
             .unwrap_or(false)
     })

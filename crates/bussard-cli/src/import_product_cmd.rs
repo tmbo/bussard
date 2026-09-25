@@ -161,7 +161,7 @@ pub(crate) const PRODUCT_INDEX_ENV: &str = "BUSSARD_PRODUCT_INDEX";
 /// Loads and parses the pointer index: the file [`PRODUCT_INDEX_ENV`] names,
 /// else the committed one.
 pub(crate) fn load_index() -> anyhow::Result<ProductIndex> {
-    if let Some(path) = std::env::var_os(PRODUCT_INDEX_ENV).filter(|p| !p.is_empty()) {
+    if let Some(path) = bussard_model::dotenv::var_os(PRODUCT_INDEX_ENV).filter(|p| !p.is_empty()) {
         let path = std::path::PathBuf::from(path);
         let bytes = std::fs::read(&path)
             .with_context(|| format!("reading the product index {}", path.display()))?;

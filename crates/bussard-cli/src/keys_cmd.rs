@@ -26,7 +26,7 @@ const KEYRING_PASSWORD_ENV: &str = "BUSSARD_KEYRING_PASSWORD";
 /// Reads the keyring password from the environment.
 fn password() -> anyhow::Result<String> {
     // The one missing-password wording (issue #228).
-    std::env::var(KEYRING_PASSWORD_ENV)
+    bussard_model::dotenv::var(KEYRING_PASSWORD_ENV)
         .map_err(|_| bussard_service::secure::SecureKeyError::MissingPassword.into())
 }
 
@@ -56,7 +56,7 @@ pub fn neighbour_keyrings(project: &Path) -> Vec<std::path::PathBuf> {
 
 /// Whether the key store password is set (a store can be written).
 pub fn password_available() -> bool {
-    std::env::var_os(KEYRING_PASSWORD_ENV).is_some()
+    bussard_model::dotenv::var_os(KEYRING_PASSWORD_ENV).is_some()
 }
 
 /// After an import of `project` into `dir`: merges the one `.knxkeys` next to

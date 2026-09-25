@@ -388,13 +388,19 @@ fn resolve_globals(global: &Global, command: &Command) -> anyhow::Result<Resolve
             cli_name(command)
         );
     }
-    let env = conn_cmd::EnvGlobals::from_process();
+    // The `.env` (issue #251), in two steps: `BUSSARD_DIR` may come from the
+    // working directory's `.env` and decides the model directory; the `.env`
+    // the lookup order then finds for that directory supplies every other
+    // `BUSSARD_*` variable, behind the process environment.
+    let cwd = std::path::Path::new(".");
     let role = command.role();
     let dir = conn_cmd::resolve_model_dir(
         global.dir.as_deref(),
-        env.dir.as_deref(),
+        conn_cmd::dir_before_dotenv(cwd).as_deref(),
         role == Role::Creates,
     );
+    conn_cmd::apply_dotenv(&dir, cwd);
+    let env = conn_cmd::EnvGlobals::from_process();
     // The product store (issue #228): move an earlier `vendor/` into
     // `products/` and regenerate `.bussard/models/` when it is missing, before
     // the command reads the model. `init` creates, `import` does this itself.

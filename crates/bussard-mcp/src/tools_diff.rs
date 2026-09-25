@@ -153,7 +153,7 @@ fn load_other(path: &Path) -> Result<(Model, Value), String> {
             json!({ "kind": "bundle", "manifest": bundle.manifest }),
         ));
     }
-    let password = std::env::var("BUSSARD_PROJECT_PASSWORD")
+    let password = bussard_model::dotenv::var("BUSSARD_PROJECT_PASSWORD")
         .ok()
         .filter(|s| !s.is_empty());
     match bussard_project::import(path, password.as_deref()) {

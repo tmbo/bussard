@@ -506,6 +506,15 @@ entry supersedes it and is not a diff against it.
   `BUSSARD_KEYRING`, with the precedence flag, then environment, then
   `bussard.toml`, then discovery. They only select; none of them can permit a
   write, and `BUSSARD_ALLOW_REAL_GATEWAY` is unchanged (#228).
+- bussard reads its `BUSSARD_*` variables from a `.env` file too, so the
+  passwords and the gateway no longer have to be exported before every
+  command, the MCP server included (#251). The first of `<model dir>/.env`,
+  the `.env` next to the model directory and `./.env` is read, never merged;
+  `BUSSARD_DIR` alone comes from `./.env` before the model directory is known.
+  An exported variable wins, even when empty. Only `BUSSARD_*` keys are read,
+  no value is printed (`-vv` and `--timing` name the file), and
+  `BUSSARD_NO_DOTENV=1` skips it. The campaign scripts apply the same file,
+  so `set -a; . ./.env` is no longer needed before them.
 - `--keyring` is now accepted by `adopt` and `test` (tunnel only, as
   `connection.keyring` already was), and `assign --keyring --tool-key` opens
   the secure tunnel with the given keyring as documented.
@@ -675,7 +684,9 @@ entry supersedes it and is not a diff against it.
 
 - Writes to a non-loopback gateway are refused unless the user opts in with
   `--allow-remote-gateway` or `BUSSARD_ALLOW_REAL_GATEWAY=1`, and every
-  confirmation names the resolved gateway (#74).
+  confirmation names the resolved gateway (#74). `BUSSARD_ALLOW_REAL_GATEWAY`
+  in a `.env` is ignored with a warning: only the flag or an exported
+  variable opens the gate (#251).
 - A `protected: true` group address needs `--force` on the CLI and cannot be
   written over MCP at all. The gate fails closed on a model parse error (#13,
   #55).

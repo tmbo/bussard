@@ -78,7 +78,7 @@ pub const ADDRESS_PROBE_MS_ENV: &str = "BUSSARD_ADDRESS_PROBE_MS";
 
 /// The source-address probe budget, honouring [`ADDRESS_PROBE_MS_ENV`] when set.
 pub fn probe_timeouts_from_env() -> Timeouts {
-    match std::env::var(ADDRESS_PROBE_MS_ENV)
+    match bussard_model::dotenv::var(ADDRESS_PROBE_MS_ENV)
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
     {

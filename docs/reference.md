@@ -13,7 +13,7 @@ The complete surface of `bussard`: every command and flag, the environment varia
 
 One option group serves every subcommand (issue #228). Each option is declared once, prints once under "Global options" in every `--help`, and goes before or after the subcommand (`bussard --dir site/knx status` and `bussard status --dir site/knx` are the same). A command with no use for an option accepts and ignores it; the one exception is `--json`, which a command without machine output refuses. The per-command tables below list only the options that belong to that command, plus what a global option means there when it means more than the text here.
 
-Precedence, for every option that has more than one source: the flag, then the environment variable, then `bussard.toml`, then discovery or the built-in default.
+Precedence, for every option that has more than one source: the flag, then the environment variable (exported, else from the [`.env` file](#the-env-file)), then `bussard.toml`, then discovery or the built-in default.
 
 | Option | Environment | `bussard.toml` | Default | Meaning |
 |---|---|---|---|---|
@@ -823,12 +823,13 @@ Serve the network-visualization website: an HTTP server that renders the model a
 | Variable | Meaning |
 |---|---|
 | `BUSSARD_PROJECT_PASSWORD` | Password for a protected `.knxproj` when `--password` is not given. Keep it in an untracked `.env`, never in the repo. |
-| `BUSSARD_DIR` | The model directory when `--dir` is not given; beats [discovery](#global-options). |
+| `BUSSARD_DIR` | The model directory when `--dir` is not given; beats [discovery](#global-options). From a `.env`, only the working directory's file counts (see [below](#the-env-file)). |
 | `BUSSARD_GATEWAY` | The gateway `host[:port]` when `--gateway` is not given; beats `connection.gateway` in `bussard.toml`. It only selects a gateway: a non-loopback one still needs `--allow-remote-gateway` for a write. |
 | `BUSSARD_KEYRING` | An explicit `.knxkeys` keyring when `--keyring` is not given; beats the key store `bussard.keys` and `connection.keyring` in `bussard.toml`. The password still comes from `BUSSARD_KEYRING_PASSWORD`. |
 | `BUSSARD_KEYRING_PASSWORD` | Password for the key store `bussard.keys` and for every `.knxkeys` export: passed with `--keyring`, named by `BUSSARD_KEYRING` or `connection.keyring`, found next to the project by `import`/`init`, or read and written by `bussard keys`. There is deliberately no flag for it, so it never lands in shell history or a process listing. |
 | *(the `--secure-password-env` variable)* | The KNXnet/IP Secure tunnelling user's password for `--secure-user`. You choose the variable's name; bussard reads only that variable. |
-| `BUSSARD_ALLOW_REAL_GATEWAY` | Set to `1` to permit a write command against a non-loopback (real) gateway, equivalent to `--allow-remote-gateway`. Loopback gateways never need it. |
+| `BUSSARD_ALLOW_REAL_GATEWAY` | Set to `1` to permit a write command against a non-loopback (real) gateway, equivalent to `--allow-remote-gateway`. Loopback gateways never need it. Only an exported variable counts: a `.env` that sets it is ignored with a warning. |
+| `BUSSARD_NO_DOTENV` | Set to `1` (exported) to skip the [`.env` file](#the-env-file) entirely, for hermetic scripts. The `knx-sim` example scripts set it. |
 | `RUST_LOG` | Log filter (e.g. `debug`, `bussard_transport=trace`). Overrides `-v`/`--verbose` when set. |
 | `BUSSARD_ASSIGN_WAIT_MS` | Test knob: shrinks the programming-mode wait budget of `assign` and `adopt`. Unset in normal use. |
 | `BUSSARD_SCAN_DISCOVERY_MS` | Test knob: shrinks the per-address probe timeout of `scan` and `reconstruct --line`. Unset in normal use. |
@@ -843,6 +844,19 @@ Serve the network-visualization website: an HTTP server that renders the model a
 | `BUSSARD_SPARSE_MERGE_GAP` | Flash knob: the largest gap, in octets, the sparse writer writes through to join two runs of a System B image (default `100`; `0` joins nothing). A gap is only joined when the joined run needs fewer memory-write requests than the two runs apart, and the octets written into it are the ones the device already holds (the segment's fill, or the read-back memory on a parameters-only download), so the device image is the same either way. The default sits under the ~115-octet break-even of a 200 ms request at 1.7 ms per octet (issue #210). System 7 parameter downloads keep a 4-octet gap. |
 | `BUSSARD_FLASH_RECONNECT_EXCHANGES` | Flash knob: cycle the L4 connection (disconnect, reconnect, re-authorize) once this many numbered exchanges have run on it, checked between steps. Unset: 10 for a KNX Virtual device (manufacturer `0x00FA`), off for every other device, which keeps one connection like ETS. `0` turns cycling off everywhere. |
 | `BUSSARD_FLASH_NO_HANDOVER` | Flash knob: set to `1` and `flash --yes` disconnects after the pre-flight and opens a fresh connection for the write phase, as it does without `--yes`, instead of taking the pre-flight's connection over (issue #213). |
+
+### The `.env` file
+
+bussard reads the `BUSSARD_*` variables above from a `.env` file too, so the passwords and the gateway do not have to be exported before every command (issue #251). This applies to every command, `bussard mcp` included.
+
+- **Which file.** The first that exists of: `<model dir>/.env`, the `.env` in the directory that holds the model directory (the repository root for `knx/`), and `./.env` in the working directory. Only that file is read; files are never merged.
+- **`BUSSARD_DIR` first.** The model directory decides the lookup, and `BUSSARD_DIR` can decide the model directory, so it is resolved in two steps: `--dir`, else an exported `BUSSARD_DIR`, else `BUSSARD_DIR` from `./.env`, else [discovery](#global-options). Then the lookup above runs from that model directory, and the file it picks supplies every other variable. When that is a different file, the working directory's `.env` contributed `BUSSARD_DIR` and nothing else.
+- **Precedence.** A flag beats everything. An exported variable beats the file, even when it is exported empty (`BUSSARD_KEYRING_PASSWORD= bussard validate` runs without a password whatever the file says). The file beats `bussard.toml` and the defaults.
+- **Keys.** Only `BUSSARD_*` keys are read; anything else in a shared `.env` (a Home Assistant token, say) is ignored and never enters bussard. `BUSSARD_ALLOW_REAL_GATEWAY` is never taken from the file: opening the write gate stays the flag or an explicit export (see [SAFETY.md](SAFETY.md#secrets-and-the-env-file)).
+- **Syntax.** One `KEY=value` per line, an optional `export ` prefix, `#` comment lines and blank lines. A value may be wrapped in single or double quotes, which keep everything inside (`#`, spaces, `=`) verbatim. An unquoted value ends at a ` #` trailing comment. No `$VAR` interpolation, no escapes. CRLF line ends are fine.
+- **Output.** No value is ever printed. `bussard -vv` logs which file was read and which keys it applied, and `--timing` names the file on its `dotenv` line. A `BUSSARD_ALLOW_REAL_GATEWAY` in the file gets a warning naming the key.
+
+`BUSSARD_NO_DOTENV=1`, exported, skips the file. The campaign scripts (`scripts/campaign/`) apply the same lookup and rules and export the file's `BUSSARD_*` variables for the tools bussard does not cover (`knxtrace` reads `BUSSARD_KEYRING_PASSWORD`), so `set -a; . ./.env` is no longer needed before them.
 
 Test-harness variables (`BUSSARD_VIRTUAL_DEVICE*`, `BUSSARD_TEST_MULTICAST`, `BUSSARD_PRODUCT_CORPUS`) gate the integration test suites, never the CLI; they are documented in the `tests-support/` READMEs.
 

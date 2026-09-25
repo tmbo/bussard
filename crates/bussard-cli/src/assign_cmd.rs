@@ -378,7 +378,7 @@ pub(crate) async fn wait_for_single_device_as(
 
 /// Reads [`WAIT_MS_ENV`] as a millisecond budget, if set and parseable.
 fn wait_ms_override() -> Option<Duration> {
-    std::env::var(WAIT_MS_ENV)
+    bussard_model::dotenv::var(WAIT_MS_ENV)
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .map(Duration::from_millis)

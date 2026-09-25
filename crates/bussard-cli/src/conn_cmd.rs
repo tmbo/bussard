@@ -44,12 +44,11 @@ pub const GATEWAY_ENV: &str = "BUSSARD_GATEWAY";
 /// not given; it beats `connection.keyring` in `bussard.toml`.
 pub const KEYRING_ENV: &str = "BUSSARD_KEYRING";
 
-/// The global-option environment variables of this process. An empty value
-/// counts as unset.
+/// The global-option environment variables of this process that are read
+/// after the model directory is known (`BUSSARD_DIR` is read earlier, by
+/// [`dir_before_dotenv`]). An empty value counts as unset.
 #[derive(Debug, Clone, Default)]
 pub struct EnvGlobals {
-    /// `BUSSARD_DIR`.
-    pub dir: Option<PathBuf>,
     /// `BUSSARD_GATEWAY`.
     pub gateway: Option<String>,
     /// `BUSSARD_KEYRING`.
@@ -57,14 +56,84 @@ pub struct EnvGlobals {
 }
 
 impl EnvGlobals {
-    /// Reads the three variables from the process environment.
+    /// Reads the variables from the process environment, with the
+    /// installed `.env` values ([`bussard_model::dotenv`]) as the fallback.
     pub fn from_process() -> Self {
-        let var = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
+        let var =
+            |name: &str| bussard_model::dotenv::var_os(name).filter(|value| !value.is_empty());
         Self {
-            dir: var(DIR_ENV).map(PathBuf::from),
             gateway: var(GATEWAY_ENV).map(|value| value.to_string_lossy().into_owned()),
             keyring: var(KEYRING_ENV).map(PathBuf::from),
         }
+    }
+}
+
+/// `BUSSARD_DIR` before the model directory is known (issue #251): the
+/// process environment when it sets the variable (an empty export counts as
+/// unset and still hides the file), else `BUSSARD_DIR` from `<cwd>/.env`.
+///
+/// This is the one key read from the working directory's `.env` ahead of the
+/// lookup order, because it decides the model directory the lookup starts
+/// from. The other keys of that file apply only when [`apply_dotenv`] picks
+/// the same file.
+pub fn dir_before_dotenv(cwd: &Path) -> Option<PathBuf> {
+    if let Some(value) = std::env::var_os(DIR_ENV) {
+        return (!value.is_empty()).then(|| PathBuf::from(value));
+    }
+    if bussard_model::dotenv::disabled() {
+        return None;
+    }
+    let file = cwd.join(bussard_model::dotenv::FILE_NAME);
+    if !file.is_file() {
+        return None;
+    }
+    let pairs = bussard_model::dotenv::read(&file).ok()?;
+    let value = pairs
+        .into_iter()
+        .rev()
+        .find_map(|(key, value)| (key == DIR_ENV).then_some(value))
+        .filter(|value| !value.is_empty())?;
+    tracing::debug!("{DIR_ENV} comes from {}", file.display());
+    Some(PathBuf::from(value))
+}
+
+/// Finds the `.env` for the model directory `dir` and installs its
+/// `BUSSARD_*` values as the fallback behind the process environment (issue
+/// #251). Lookup order: `<dir>/.env`, the `.env` next to `dir` (in its
+/// parent), then `<cwd>/.env`; the first file found is used.
+///
+/// Never prints a value. `-vv` and `--timing` name the file; a key the file
+/// may not set (`BUSSARD_ALLOW_REAL_GATEWAY`) gets a warning naming the key.
+pub fn apply_dotenv(dir: &Path, cwd: &Path) {
+    let started = std::time::Instant::now();
+    if bussard_model::dotenv::disabled() {
+        return;
+    }
+    let Some(file) = bussard_model::dotenv::find(dir, cwd) else {
+        crate::timing::record("dotenv", started.elapsed(), "no .env");
+        return;
+    };
+    let pairs = match bussard_model::dotenv::read(&file) {
+        Ok(pairs) => pairs,
+        Err(err) => {
+            tracing::warn!("cannot read {}: {err}; ignoring it", file.display());
+            return;
+        }
+    };
+    let report = bussard_model::dotenv::install(pairs);
+    crate::timing::record("dotenv", started.elapsed(), file.display().to_string());
+    tracing::debug!(
+        "read {}: applied {:?}, already exported {:?}",
+        file.display(),
+        report.applied,
+        report.shadowed
+    );
+    for key in &report.refused {
+        tracing::warn!(
+            "{key} in {} is ignored: a .env never opens the write gate; pass \
+             --allow-remote-gateway or export {key}=1",
+            file.display()
+        );
     }
 }
 
@@ -464,7 +533,9 @@ pub fn resolve_config(
         secure: secure_tunnel().map(|secure| {
             apply_secure_keepalive(
                 secure,
-                std::env::var(SECURE_KEEPALIVE_SECS_ENV).ok().as_deref(),
+                bussard_model::dotenv::var(SECURE_KEEPALIVE_SECS_ENV)
+                    .ok()
+                    .as_deref(),
             )
         }),
     })
@@ -498,10 +569,16 @@ fn apply_secure_keepalive(secure: SecureTunnelConfig, value: Option<&str>) -> Se
 /// The tunnel re-establish policy, honouring [`TUNNEL_RECONNECT_SECS_ENV`] and
 /// [`TCP_READ_DEADLINE_MS_ENV`].
 fn tunnel_reconnect() -> TunnelReconnect {
-    let policy = parse_reconnect_secs(std::env::var(TUNNEL_RECONNECT_SECS_ENV).ok().as_deref());
+    let policy = parse_reconnect_secs(
+        bussard_model::dotenv::var(TUNNEL_RECONNECT_SECS_ENV)
+            .ok()
+            .as_deref(),
+    );
     apply_tcp_read_deadline(
         policy,
-        std::env::var(TCP_READ_DEADLINE_MS_ENV).ok().as_deref(),
+        bussard_model::dotenv::var(TCP_READ_DEADLINE_MS_ENV)
+            .ok()
+            .as_deref(),
     )
 }
 

@@ -57,6 +57,8 @@ SERVE="$SIM_DIR/target/debug/serve"
 # A tiny reboot wait keeps the after-restart verify fast against the local sim;
 # in production the flash waits the full generous reboot interval.
 export BUSSARD_FLASH_REBOOT_WAIT_MS=200
+# Hermetic: never pick up the repository's .env (issue #251).
+export BUSSARD_NO_DOTENV=1
 
 pass=0
 fail=0

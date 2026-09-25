@@ -306,7 +306,7 @@ fn report_merge(report: &MergeReport, kept: usize, choice: ConflictChoice) -> Ex
 
 /// Resolves the password from the flag or the environment (no prompt here).
 fn resolve_password(flag: Option<String>) -> Option<String> {
-    flag.or_else(|| std::env::var("BUSSARD_PROJECT_PASSWORD").ok())
+    flag.or_else(|| bussard_model::dotenv::var("BUSSARD_PROJECT_PASSWORD").ok())
         .filter(|s| !s.is_empty())
 }
 

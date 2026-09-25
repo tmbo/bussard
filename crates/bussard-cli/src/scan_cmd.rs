@@ -41,7 +41,7 @@ const DISCOVERY_MS_ENV: &str = "BUSSARD_SCAN_DISCOVERY_MS";
 
 /// The discovery timeout budget, honouring [`DISCOVERY_MS_ENV`] when set.
 pub(crate) fn discovery_timeouts() -> Timeouts {
-    match std::env::var(DISCOVERY_MS_ENV)
+    match bussard_model::dotenv::var(DISCOVERY_MS_ENV)
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
     {

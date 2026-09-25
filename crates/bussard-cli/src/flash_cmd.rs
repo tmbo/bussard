@@ -1560,7 +1560,7 @@ const FLASH_L4_TIMEOUT_MS_ENV: &str = "BUSSARD_FLASH_L4_TIMEOUT_MS";
 
 /// The L4 timeout budget for a flash connection, honouring [`FLASH_L4_TIMEOUT_MS_ENV`].
 fn flash_l4_timeouts() -> Option<Timeouts> {
-    std::env::var(FLASH_L4_TIMEOUT_MS_ENV)
+    bussard_model::dotenv::var(FLASH_L4_TIMEOUT_MS_ENV)
         .ok()
         .and_then(|s| s.trim().parse::<u64>().ok())
         .map(|ms| Timeouts {
