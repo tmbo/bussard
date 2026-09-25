@@ -263,40 +263,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_from_version_maps_families() {
-        assert_eq!(
-            SchemaVersion::from_version(11).unwrap().family(),
-            EtsFamily::Ets4
-        );
-        assert_eq!(
-            SchemaVersion::from_version(12).unwrap().family(),
-            EtsFamily::Ets4
-        );
-        assert_eq!(
-            SchemaVersion::from_version(13).unwrap().family(),
-            EtsFamily::Ets5
-        );
-        assert_eq!(
-            SchemaVersion::from_version(14).unwrap().family(),
-            EtsFamily::Ets5
-        );
-        assert_eq!(
-            SchemaVersion::from_version(20).unwrap().family(),
-            EtsFamily::Ets57
-        );
-        assert_eq!(
-            SchemaVersion::from_version(21).unwrap().family(),
-            EtsFamily::Ets6
-        );
-        assert_eq!(
-            SchemaVersion::from_version(23).unwrap().family(),
-            EtsFamily::Ets6
-        );
+    fn test_from_version_maps_families() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(SchemaVersion::from_version(11)?.family(), EtsFamily::Ets4);
+        assert_eq!(SchemaVersion::from_version(12)?.family(), EtsFamily::Ets4);
+        assert_eq!(SchemaVersion::from_version(13)?.family(), EtsFamily::Ets5);
+        assert_eq!(SchemaVersion::from_version(14)?.family(), EtsFamily::Ets5);
+        assert_eq!(SchemaVersion::from_version(20)?.family(), EtsFamily::Ets57);
+        assert_eq!(SchemaVersion::from_version(21)?.family(), EtsFamily::Ets6);
+        assert_eq!(SchemaVersion::from_version(23)?.family(), EtsFamily::Ets6);
         // Future ETS 6 bump stays ETS 6.
-        assert_eq!(
-            SchemaVersion::from_version(30).unwrap().family(),
-            EtsFamily::Ets6
-        );
+        assert_eq!(SchemaVersion::from_version(30)?.family(), EtsFamily::Ets6);
+        Ok(())
     }
 
     #[test]
@@ -306,60 +283,57 @@ mod tests {
     }
 
     #[test]
-    fn test_encryption_and_link_forks() {
-        let ets4 = SchemaVersion::from_version(11).unwrap();
+    fn test_encryption_and_link_forks() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let ets4 = SchemaVersion::from_version(11)?;
         assert!(!ets4.uses_ets6_encryption());
         assert!(!ets4.uses_links_attribute());
         assert_eq!(ets4.project_info_filename(), "Project.xml");
 
-        let ets5 = SchemaVersion::from_version(14).unwrap();
+        let ets5 = SchemaVersion::from_version(14)?;
         assert!(!ets5.uses_ets6_encryption());
         assert!(!ets5.uses_links_attribute());
         assert_eq!(ets5.project_info_filename(), "project.xml");
 
-        let ets57 = SchemaVersion::from_version(20).unwrap();
+        let ets57 = SchemaVersion::from_version(20)?;
         assert!(!ets57.uses_ets6_encryption());
         assert!(ets57.uses_links_attribute());
 
-        let ets6 = SchemaVersion::from_version(21).unwrap();
+        let ets6 = SchemaVersion::from_version(21)?;
         assert!(ets6.uses_ets6_encryption());
         assert!(ets6.uses_links_attribute());
         assert_eq!(ets6.project_info_filename(), "project.xml");
+        Ok(())
     }
 
     #[test]
-    fn test_from_namespace_parses_trailing_integer() {
+    fn test_from_namespace_parses_trailing_integer()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         assert_eq!(
-            SchemaVersion::from_namespace("http://knx.org/xml/project/21")
-                .unwrap()
-                .version(),
+            SchemaVersion::from_namespace("http://knx.org/xml/project/21")?.version(),
             21
         );
         assert_eq!(
-            SchemaVersion::from_namespace("http://knx.org/xml/project/11")
-                .unwrap()
-                .family(),
+            SchemaVersion::from_namespace("http://knx.org/xml/project/11")?.family(),
             EtsFamily::Ets4
         );
         assert!(SchemaVersion::from_namespace("http://knx.org/xml/project/junk").is_err());
+        Ok(())
     }
 
     #[test]
-    fn test_detect_schema_version_from_master() {
+    fn test_detect_schema_version_from_master()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let ets6 = r#"<?xml version="1.0" encoding="utf-8"?>
 <KNX xmlns="http://knx.org/xml/project/21"><MasterData/></KNX>"#;
-        let v = detect_schema_version(ets6)
-            .unwrap()
-            .expect("version present");
+        let v = detect_schema_version(ets6)?.ok_or("version present")?;
         assert_eq!(v.version(), 21);
         assert_eq!(v.family(), EtsFamily::Ets6);
 
         // ETS 4.1 style: xmlns on the very first line.
         let ets4 = r#"<KNX xmlns="http://knx.org/xml/project/11"><MasterData/></KNX>"#;
-        let v = detect_schema_version(ets4)
-            .unwrap()
-            .expect("version present");
+        let v = detect_schema_version(ets4)?.ok_or("version present")?;
         assert_eq!(v.family(), EtsFamily::Ets4);
+        Ok(())
     }
 
     /// Regression: the scan read only the first four lines, so a namespace on
@@ -367,14 +341,14 @@ mod tests {
     /// went undetected and the import silently used the ETS 6 password scheme
     /// and link encoding for an ETS 4/5 file.
     #[test]
-    fn test_detect_schema_version_scans_past_the_first_lines() {
+    fn test_detect_schema_version_scans_past_the_first_lines()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let padded = format!(
             "{}\n<KNX xmlns=\"http://knx.org/xml/project/14\"><MasterData/></KNX>",
             "<!-- an exporter comment line -->\n".repeat(12)
         );
-        let v = detect_schema_version(&padded)
-            .expect("a well-formed header")
-            .expect("the namespace is found however far down it sits");
+        let v = detect_schema_version(&padded)?
+            .ok_or("the namespace is found however far down it sits")?;
         assert_eq!(v.version(), 14);
         assert_eq!(v.family(), EtsFamily::Ets5);
 
@@ -388,34 +362,36 @@ mod tests {
     xmlns="http://knx.org/xml/project/20">
   <MasterData/>
 </KNX>"#;
-        let v = detect_schema_version(split)
-            .expect("a well-formed header")
-            .expect("the namespace is found among other attributes");
+        let v =
+            detect_schema_version(split)?.ok_or("the namespace is found among other attributes")?;
         assert_eq!(v.version(), 20);
         assert_eq!(v.family(), EtsFamily::Ets57);
+        Ok(())
     }
 
     /// A truncated head (the root element runs past the scan window, or the
     /// document is malformed) still yields the namespace through the text-scan
     /// fallback.
     #[test]
-    fn test_detect_schema_version_survives_a_malformed_header() {
+    fn test_detect_schema_version_survives_a_malformed_header()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let truncated = r#"<KNX xmlns="http://knx.org/xml/project/11" Unclosed="#;
-        let v = detect_schema_version(truncated)
-            .expect("a namespace is present")
-            .expect("found by the text-scan fallback");
+        let v = detect_schema_version(truncated)?.ok_or("found by the text-scan fallback")?;
         assert_eq!(v.family(), EtsFamily::Ets4);
+        Ok(())
     }
 
     #[test]
-    fn test_detect_schema_version_missing_namespace_is_tolerated() {
+    fn test_detect_schema_version_missing_namespace_is_tolerated()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // No project namespace at all: tolerated as `None` (caller defaults to
         // ETS 6), not an error, so stripped-down archives still import.
         let no_ns = r#"<?xml version="1.0"?><KNX><MasterData/></KNX>"#;
-        assert_eq!(detect_schema_version(no_ns).unwrap(), None);
+        assert_eq!(detect_schema_version(no_ns)?, None);
 
         // But a *present* namespace with an unsupported (too-low) version errors.
         let too_low = r#"<KNX xmlns="http://knx.org/xml/project/9"><MasterData/></KNX>"#;
         assert!(detect_schema_version(too_low).is_err());
+        Ok(())
     }
 }

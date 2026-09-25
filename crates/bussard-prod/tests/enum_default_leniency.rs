@@ -21,14 +21,13 @@ fn test_compute_parameter_image_vendor_enum_default_passes_through()
     let xml = include_bytes!("fixtures/enum_default_not_a_member.app.xml");
     let app = parse_application_program("M-00FA_A-0006-11-ABCD-O000A", xml)?;
 
-    let images = compute_parameter_image(&app, &BTreeMap::new(), &BTreeMap::new())
-        .expect("a vendor's own out-of-enum default must not refuse the image build");
+    let images = compute_parameter_image(&app, &BTreeMap::new(), &BTreeMap::new())?;
 
     // The `Mode` parameter sits at offset 0 of the RS-4 segment; its raw default 3
     // is encoded verbatim.
     let seg = images
         .get("M-00FA_A-0006-11-ABCD-O000A_RS-4")
-        .expect("the segment image must be built");
+        .ok_or("the segment image must be built")?;
     assert_eq!(seg[0], 3, "the raw vendor default byte is passed through");
     Ok(())
 }

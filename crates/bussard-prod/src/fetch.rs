@@ -166,35 +166,48 @@ mod tests {
     }
 
     #[test]
-    fn verify_rejects_size_mismatch() {
+    fn verify_rejects_size_mismatch() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let bytes = b"hello knxprod";
         let mut e = entry_for(bytes);
         e.size += 1;
-        let err = verify(&e, bytes).unwrap_err().to_string();
+        let err = verify(&e, bytes)
+            .err()
+            .ok_or("expected an error")?
+            .to_string();
         assert!(err.contains("size mismatch"), "{err}");
+        Ok(())
     }
 
     #[test]
-    fn verify_rejects_sha_mismatch() {
+    fn verify_rejects_sha_mismatch() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let bytes = b"hello knxprod";
         let mut e = entry_for(bytes);
         e.sha256 = "0".repeat(64);
-        let err = verify(&e, bytes).unwrap_err().to_string();
+        let err = verify(&e, bytes)
+            .err()
+            .ok_or("expected an error")?
+            .to_string();
         assert!(err.contains("SHA-256 mismatch"), "{err}");
+        Ok(())
     }
 
     #[test]
-    fn read_capped_accepts_at_limit() {
+    fn read_capped_accepts_at_limit() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let data = vec![7u8; 100];
-        let out = read_capped(&data[..], 100, "u").unwrap();
+        let out = read_capped(&data[..], 100, "u")?;
         assert_eq!(out, data);
+        Ok(())
     }
 
     #[test]
-    fn read_capped_rejects_over_limit() {
+    fn read_capped_rejects_over_limit() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let data = [7u8; 101];
-        let err = read_capped(&data[..], 100, "u").unwrap_err().to_string();
+        let err = read_capped(&data[..], 100, "u")
+            .err()
+            .ok_or("expected an error")?
+            .to_string();
         assert!(err.contains("exceeds"), "{err}");
+        Ok(())
     }
 
     #[test]

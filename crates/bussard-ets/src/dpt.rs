@@ -85,33 +85,38 @@ mod tests {
     use bussard_model::ApduSize;
 
     #[test]
-    fn parses_dpst() {
-        let d = parse_ets_dpt("DPST-1-8").unwrap();
+    fn parses_dpst() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let d = parse_ets_dpt("DPST-1-8").ok_or("parse_ets_dpt(\"DPST-1-8\") missing")?;
         assert_eq!(d, Dpt::new(1, Some(8)));
         assert_eq!(d.to_string(), "1.008");
+        Ok(())
     }
 
     #[test]
-    fn parses_dpt_no_sub() {
-        let d = parse_ets_dpt("DPT-9").unwrap();
+    fn parses_dpt_no_sub() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let d = parse_ets_dpt("DPT-9").ok_or("parse_ets_dpt(\"DPT-9\") missing")?;
         assert_eq!(d, Dpt::new(9, None));
         assert_eq!(d.to_string(), "9");
+        Ok(())
     }
 
     #[test]
-    fn parses_large_numbers() {
+    fn parses_large_numbers() -> std::result::Result<(), Box<dyn std::error::Error>> {
         assert_eq!(
-            parse_ets_dpt("DPST-20-102").unwrap(),
+            parse_ets_dpt("DPST-20-102").ok_or("parse_ets_dpt(\"DPST-20-102\") missing")?,
             Dpt::new(20, Some(102))
         );
+        Ok(())
     }
 
     #[test]
-    fn takes_first_of_list() {
+    fn takes_first_of_list() -> std::result::Result<(), Box<dyn std::error::Error>> {
         assert_eq!(
-            parse_ets_dpt("DPST-1-1 DPST-1-2").unwrap(),
+            parse_ets_dpt("DPST-1-1 DPST-1-2")
+                .ok_or("parse_ets_dpt(\"DPST-1-1 DPST-1-2\") missing")?,
             Dpt::new(1, Some(1))
         );
+        Ok(())
     }
 
     #[test]

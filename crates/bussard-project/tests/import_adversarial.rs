@@ -17,17 +17,22 @@ use zip::write::SimpleFileOptions;
 // ---------------------------------------------------------------------------
 
 #[test]
-fn empty_json_object_yields_empty_model() {
-    let m = import_from_json_str("{}").expect("empty object is valid");
+fn empty_json_object_yields_empty_model() -> Result<(), Box<dyn std::error::Error>> {
+    let m = import_from_json_str("{}")?;
     assert!(m.groups.groups.is_empty());
     assert!(m.devices.is_empty());
+    Ok(())
 }
 
 #[test]
-fn malformed_json_is_clean_error() {
+fn malformed_json_is_clean_error() -> Result<(), Box<dyn std::error::Error>> {
     let r = std::panic::catch_unwind(|| import_from_json_str("{ not json"));
     assert!(r.is_ok(), "malformed JSON must not panic");
-    assert!(matches!(r.unwrap(), Err(ImportError::Json { .. })));
+    assert!(matches!(
+        r.map_err(|_| "import panicked")?,
+        Err(ImportError::Json { .. })
+    ));
+    Ok(())
 }
 
 #[test]
@@ -78,7 +83,8 @@ fn invalid_ga_in_com_object_link_is_malformed_error() {
 }
 
 #[test]
-fn com_object_for_unknown_device_is_dropped_not_crashed() {
+fn com_object_for_unknown_device_is_dropped_not_crashed() -> Result<(), Box<dyn std::error::Error>>
+{
     // A com-object whose device_address has no matching device: the com-object
     // table insert is skipped (device missing), and since it has GAs it still
     // creates a links entry for that IA. Must not panic.
@@ -93,10 +99,11 @@ fn com_object_for_unknown_device_is_dropped_not_crashed() {
     }"#;
     let r = std::panic::catch_unwind(|| import_from_json_str(json));
     assert!(r.is_ok(), "orphan com-object must not panic");
-    let m = r.unwrap().expect("imports");
+    let m = r.map_err(|_| "import panicked")??;
     // A link entry exists for the orphan device IA even though no device file
     // defines it (this is exactly what validation rule E013 later flags).
-    assert!(m.links.links.contains_key(&"9.9.9".parse().unwrap()));
+    assert!(m.links.links.contains_key(&"9.9.9".parse()?));
+    Ok(())
 }
 
 #[test]
@@ -131,34 +138,37 @@ fn huge_object_number_at_u16_boundary() {
 // Corrupt / hostile ZIP containers via the public `import`.
 // ---------------------------------------------------------------------------
 
-fn tmp_file(tag: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!(
+fn tmp_file(tag: &str) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    Ok(std::env::temp_dir().join(format!(
         "bussard-import-adv-{tag}-{}-{}.knxproj",
         std::process::id(),
         std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos()
-    ))
+    )))
 }
 
 #[test]
-fn not_a_zip_is_clean_error() {
-    let path = tmp_file("notzip");
-    std::fs::write(&path, b"this is definitely not a zip file").unwrap();
+fn not_a_zip_is_clean_error() -> Result<(), Box<dyn std::error::Error>> {
+    let path = tmp_file("notzip")?;
+    std::fs::write(&path, b"this is definitely not a zip file")?;
     let r = std::panic::catch_unwind(|| import(&path, None));
     assert!(r.is_ok(), "non-zip must not panic");
-    assert!(matches!(r.unwrap(), Err(ImportError::Zip { .. })));
+    assert!(matches!(
+        r.map_err(|_| "import panicked")?,
+        Err(ImportError::Zip { .. })
+    ));
     let _ = std::fs::remove_file(&path);
+    Ok(())
 }
 
 #[test]
-fn empty_zip_missing_project_entry_errors() {
-    let path = tmp_file("emptyzip");
+fn empty_zip_missing_project_entry_errors() -> Result<(), Box<dyn std::error::Error>> {
+    let path = tmp_file("emptyzip")?;
     {
-        let f = std::fs::File::create(&path).unwrap();
+        let f = std::fs::File::create(&path)?;
         let zw = ZipWriter::new(f);
-        zw.finish().unwrap();
+        zw.finish()?;
     }
     let r = import(&path, None);
     // No P-XXXX.zip or P-XXXX/0.xml -> MissingEntry.
@@ -167,33 +177,33 @@ fn empty_zip_missing_project_entry_errors() {
         "empty zip should be MissingEntry, got {r:?}"
     );
     let _ = std::fs::remove_file(&path);
+    Ok(())
 }
 
 #[test]
-fn zip_slip_entry_names_are_not_written_to_disk() {
+fn zip_slip_entry_names_are_not_written_to_disk() -> Result<(), Box<dyn std::error::Error>> {
     // A `.knxproj` whose entries carry path-traversal names. The container reads
     // entries by exact name into memory (never extracts to disk), so the sentinel
     // file the traversal would target must NOT appear. We assert the import fails
     // to find a project (the traversal entry is not a valid P-XXXX/0.xml) AND that
     // no file escaped to the parent directory.
-    let path = tmp_file("zipslip");
+    let path = tmp_file("zipslip")?;
     let sentinel = std::env::temp_dir().join("bussard-zipslip-sentinel-should-not-exist.txt");
     let _ = std::fs::remove_file(&sentinel);
     {
-        let f = std::fs::File::create(&path).unwrap();
+        let f = std::fs::File::create(&path)?;
         let mut zw = ZipWriter::new(f);
         let opts = SimpleFileOptions::default();
         // A classic zip-slip path.
         zw.start_file(
             "../../../../tmp/bussard-zipslip-sentinel-should-not-exist.txt",
             opts,
-        )
-        .unwrap();
-        zw.write_all(b"evil").unwrap();
+        )?;
+        zw.write_all(b"evil")?;
         // Also a plausible-looking but traversal-prefixed project entry.
-        zw.start_file("../P-9999/0.xml", opts).unwrap();
-        zw.write_all(b"<Project/>").unwrap();
-        zw.finish().unwrap();
+        zw.start_file("../P-9999/0.xml", opts)?;
+        zw.write_all(b"<Project/>")?;
+        zw.finish()?;
     }
     let r = std::panic::catch_unwind(|| import(&path, None));
     assert!(r.is_ok(), "zip-slip container must not panic");
@@ -204,73 +214,79 @@ fn zip_slip_entry_names_are_not_written_to_disk() {
     );
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(&sentinel);
+    Ok(())
 }
 
 #[test]
-fn unencrypted_project_xml_is_read_from_memory() {
+fn unencrypted_project_xml_is_read_from_memory() -> Result<(), Box<dyn std::error::Error>> {
     // A minimal valid-shape container: P-9999/0.xml directly in the outer zip.
     // The project XML is trivial and will fail later parsing, but the container
     // open + project_xml read path is exercised without touching disk.
-    let path = tmp_file("plainproj");
+    let path = tmp_file("plainproj")?;
     {
-        let f = std::fs::File::create(&path).unwrap();
+        let f = std::fs::File::create(&path)?;
         let mut zw = ZipWriter::new(f);
         let opts = SimpleFileOptions::default();
-        zw.start_file("P-9999/0.xml", opts).unwrap();
-        zw.write_all(b"<KNX><Project Id=\"P-9999\"/></KNX>")
-            .unwrap();
-        zw.start_file("knx_master.xml", opts).unwrap();
-        zw.write_all(b"<KNX/>").unwrap();
-        zw.finish().unwrap();
+        zw.start_file("P-9999/0.xml", opts)?;
+        zw.write_all(b"<KNX><Project Id=\"P-9999\"/></KNX>")?;
+        zw.start_file("knx_master.xml", opts)?;
+        zw.write_all(b"<KNX/>")?;
+        zw.finish()?;
     }
     // import will get past container open; it may fail later in project parsing,
     // but it must return a clean Result (no panic).
     let r = std::panic::catch_unwind(|| import(&path, None));
     assert!(r.is_ok(), "plain-project container must not panic");
     let _ = std::fs::remove_file(&path);
+    Ok(())
 }
 
 /// Writes a minimal unencrypted `.knxproj` with `P-9999/0.xml` and
 /// `P-9999/project.xml` (direct outer-archive form), returning its path.
-fn write_plain_knxproj_with_project_xml(tag: &str, project_xml: &str) -> std::path::PathBuf {
-    let path = tmp_file(tag);
-    let f = std::fs::File::create(&path).unwrap();
+fn write_plain_knxproj_with_project_xml(
+    tag: &str,
+    project_xml: &str,
+) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    let path = tmp_file(tag)?;
+    let f = std::fs::File::create(&path)?;
     let mut zw = ZipWriter::new(f);
     let opts = SimpleFileOptions::default();
     // A device-free topology so `build_model` needs no manufacturer resolution.
-    zw.start_file("P-9999/0.xml", opts).unwrap();
-    zw.write_all(b"<KNX><Project Id=\"P-9999\"/></KNX>")
-        .unwrap();
-    zw.start_file("P-9999/project.xml", opts).unwrap();
-    zw.write_all(project_xml.as_bytes()).unwrap();
-    zw.start_file("knx_master.xml", opts).unwrap();
-    zw.write_all(b"<KNX/>").unwrap();
-    zw.finish().unwrap();
-    path
+    zw.start_file("P-9999/0.xml", opts)?;
+    zw.write_all(b"<KNX><Project Id=\"P-9999\"/></KNX>")?;
+    zw.start_file("P-9999/project.xml", opts)?;
+    zw.write_all(project_xml.as_bytes())?;
+    zw.start_file("knx_master.xml", opts)?;
+    zw.write_all(b"<KNX/>")?;
+    zw.finish()?;
+    Ok(path)
 }
 
 #[test]
-fn three_level_project_xml_populates_name() {
+fn three_level_project_xml_populates_name() -> Result<(), Box<dyn std::error::Error>> {
     // A fabricated project.xml (ThreeLevel) must import cleanly and carry the
     // name onto the model (issue #62).
     let path = write_plain_knxproj_with_project_xml(
         "threelevel",
         r#"<KNX><Project Id="P-9999"><ProjectInformation Name="Fab Home" GroupAddressStyle="ThreeLevel"/></Project></KNX>"#,
-    );
-    let model = import(&path, None).expect("three-level project imports");
+    )?;
+    let model = import(&path, None)?;
     assert_eq!(model.groups.project.as_deref(), Some("Fab Home"));
     let _ = std::fs::remove_file(&path);
+    Ok(())
 }
 
 #[test]
-fn two_level_project_xml_is_refused_with_clear_error() {
+fn two_level_project_xml_is_refused_with_clear_error() -> Result<(), Box<dyn std::error::Error>> {
     // A 2-level style must be refused (not silently mis-parsed) with an error
     // that names the actual style (issue #62).
     let path = write_plain_knxproj_with_project_xml(
         "twolevel",
         r#"<KNX><Project Id="P-9999"><ProjectInformation Name="TwoLvl" GroupAddressStyle="TwoLevel"/></Project></KNX>"#,
-    );
-    let err = import(&path, None).expect_err("two-level must be refused");
+    )?;
+    let err = import(&path, None)
+        .err()
+        .ok_or("two-level must be refused")?;
     match &err {
         ImportError::UnsupportedGroupAddressStyle { style } => {
             assert_eq!(style, "TwoLevel");
@@ -283,38 +299,40 @@ fn two_level_project_xml_is_refused_with_clear_error() {
         "error should name the style: {err}"
     );
     let _ = std::fs::remove_file(&path);
+    Ok(())
 }
 
 #[test]
-fn free_style_project_xml_is_refused() {
+fn free_style_project_xml_is_refused() -> Result<(), Box<dyn std::error::Error>> {
     let path = write_plain_knxproj_with_project_xml(
         "freestyle",
         r#"<KNX><Project Id="P-9999"><ProjectInformation Name="F" GroupAddressStyle="Free"/></Project></KNX>"#,
-    );
+    )?;
     assert!(matches!(
         import(&path, None),
         Err(ImportError::UnsupportedGroupAddressStyle { .. })
     ));
     let _ = std::fs::remove_file(&path);
+    Ok(())
 }
 
 #[test]
-fn missing_project_xml_is_tolerated() {
+fn missing_project_xml_is_tolerated() -> Result<(), Box<dyn std::error::Error>> {
     // Older exports may omit project.xml entirely; import must still succeed
     // (name simply stays None), not error.
-    let path = tmp_file("noprojectxml");
+    let path = tmp_file("noprojectxml")?;
     {
-        let f = std::fs::File::create(&path).unwrap();
+        let f = std::fs::File::create(&path)?;
         let mut zw = ZipWriter::new(f);
         let opts = SimpleFileOptions::default();
-        zw.start_file("P-9999/0.xml", opts).unwrap();
-        zw.write_all(b"<KNX><Project Id=\"P-9999\"/></KNX>")
-            .unwrap();
-        zw.start_file("knx_master.xml", opts).unwrap();
-        zw.write_all(b"<KNX/>").unwrap();
-        zw.finish().unwrap();
+        zw.start_file("P-9999/0.xml", opts)?;
+        zw.write_all(b"<KNX><Project Id=\"P-9999\"/></KNX>")?;
+        zw.start_file("knx_master.xml", opts)?;
+        zw.write_all(b"<KNX/>")?;
+        zw.finish()?;
     }
-    let model = import(&path, None).expect("import without project.xml still works");
+    let model = import(&path, None)?;
     assert!(model.groups.project.is_none());
     let _ = std::fs::remove_file(&path);
+    Ok(())
 }

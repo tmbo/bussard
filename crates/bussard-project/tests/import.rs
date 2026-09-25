@@ -17,24 +17,23 @@ use bussard_model::{GroupAddress, IndividualAddress};
 use serde_json::Value;
 
 /// The repository root (two levels up from this crate).
-fn repo_root() -> PathBuf {
+fn repo_root() -> std::io::Result<PathBuf> {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
         .canonicalize()
-        .expect("canonicalize repo root")
 }
 
 #[test]
-fn from_json_tiny_fixture() {
+fn from_json_tiny_fixture() -> Result<(), Box<dyn std::error::Error>> {
     let fixture =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tiny.xknxproject.json");
-    let model = bussard_project::import_from_json(&fixture).expect("import tiny fixture");
+    let model = bussard_project::import_from_json(&fixture)?;
 
     // Group addresses.
     assert_eq!(model.groups.groups.len(), 2);
-    let ga1: GroupAddress = "1/0/1".parse().unwrap();
-    let g1 = model.groups.groups.get(&ga1).expect("1/0/1");
+    let ga1: GroupAddress = "1/0/1".parse()?;
+    let g1 = model.groups.groups.get(&ga1).ok_or("1/0/1")?;
     assert_eq!(g1.name, "Living room light switch");
     assert_eq!(g1.dpt.map(|d| d.to_string()).as_deref(), Some("1.001"));
 
@@ -49,8 +48,8 @@ fn from_json_tiny_fixture() {
     );
 
     // Device.
-    let ia: IndividualAddress = "1.1.1".parse().unwrap();
-    let dev = &model.devices.get(&ia).expect("device 1.1.1").device;
+    let ia: IndividualAddress = "1.1.1".parse()?;
+    let dev = &model.devices.get(&ia).ok_or("device 1.1.1")?.device;
     assert_eq!(dev.name, "Test Switch Actuator");
     assert_eq!(
         dev.product.as_ref().and_then(|p| p.manufacturer.as_deref()),
@@ -60,20 +59,30 @@ fn from_json_tiny_fixture() {
     // is not stored (issue #17); the informational name lives in the device files' links
     // only, not on the com-object (issue #19).
     assert_eq!(dev.com_objects.len(), 2);
-    let co0 = dev.com_objects.get(&0).unwrap();
+    let co0 = dev
+        .com_objects
+        .get(&0)
+        .ok_or("dev.com_objects.get(&0) missing")?;
     assert_eq!(co0.dpt.map(|d| d.to_string()).as_deref(), Some("1.001"));
     assert!(co0.size.is_none(), "size derived from dpt, not stored");
 
     // Links: object 0 has no transmit flag -> listen only; object 1 has
     // transmit -> send. The name lives here.
-    let links = model.links.links.get(&ia).expect("links for 1.1.1");
-    let obj0 = links.iter().find(|l| l.object == 0).unwrap();
+    let links = model.links.links.get(&ia).ok_or("links for 1.1.1")?;
+    let obj0 = links
+        .iter()
+        .find(|l| l.object == 0)
+        .ok_or("links.iter().find(|l| l.object == 0) missing")?;
     assert_eq!(obj0.name.as_deref(), Some("Switch output A"));
     assert!(obj0.send.is_none());
-    assert_eq!(obj0.listen, vec!["1/0/1".parse().unwrap()]);
-    let obj1 = links.iter().find(|l| l.object == 1).unwrap();
-    assert_eq!(obj1.send, Some("1/0/2".parse().unwrap()));
+    assert_eq!(obj0.listen, vec!["1/0/1".parse()?]);
+    let obj1 = links
+        .iter()
+        .find(|l| l.object == 1)
+        .ok_or("links.iter().find(|l| l.object == 1) missing")?;
+    assert_eq!(obj1.send, Some("1/0/2".parse()?));
     assert!(obj1.listen.is_empty());
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -81,15 +90,15 @@ fn from_json_tiny_fixture() {
 // ---------------------------------------------------------------------------
 
 /// Path to the real `.knxproj` under test, if present.
-fn real_knxproj() -> Option<PathBuf> {
-    let p = repo_root().join("home_test.knxproj");
-    p.exists().then_some(p)
+fn real_knxproj() -> std::io::Result<Option<PathBuf>> {
+    let p = repo_root()?.join("home_test.knxproj");
+    Ok(p.exists().then_some(p))
 }
 
 /// Path to the oracle JSON dump, if present.
-fn oracle_json() -> Option<PathBuf> {
-    let p = repo_root().join("fixtures/private/home_test.xknxproject.json");
-    p.exists().then_some(p)
+fn oracle_json() -> std::io::Result<Option<PathBuf>> {
+    let p = repo_root()?.join("fixtures/private/home_test.xknxproject.json");
+    Ok(p.exists().then_some(p))
 }
 
 /// The project password from the environment, if set.
@@ -110,31 +119,37 @@ fn project_password() -> Option<String> {
 /// this cache is scoped to this binary's oracle tests (which is all of them).
 ///
 /// The value is `Option`: `None` means a prerequisite (private fixture, oracle
-/// dump, or password) is missing, in which case every oracle test skips.
-type RealAndOracle = Option<(bussard_model::Model, Value)>;
+/// dump, or password) is missing, in which case every oracle test skips. An
+/// `Err` (import or oracle parse failed) fails every oracle test.
+type RealAndOracle = Result<Option<(bussard_model::Model, Value)>, String>;
 
 fn shared_real_and_oracle() -> &'static RealAndOracle {
     use std::sync::OnceLock;
     static CACHE: OnceLock<RealAndOracle> = OnceLock::new();
     CACHE.get_or_init(|| {
-        let knxproj = real_knxproj()?;
-        let oracle_path = oracle_json()?;
-        let password = project_password()?;
-        let model = bussard_project::import(&knxproj, Some(&password))
-            .expect("import real .knxproj with password");
-        let oracle: Value =
-            serde_json::from_str(&std::fs::read_to_string(oracle_path).expect("read oracle"))
-                .expect("parse oracle");
-        Some((model, oracle))
+        let load =
+            || -> Result<Option<(bussard_model::Model, Value)>, Box<dyn std::error::Error>> {
+                let (Some(knxproj), Some(oracle_path), Some(password)) =
+                    (real_knxproj()?, oracle_json()?, project_password())
+                else {
+                    return Ok(None);
+                };
+                let model = bussard_project::import(&knxproj, Some(&password))?;
+                let oracle: Value = serde_json::from_str(&std::fs::read_to_string(oracle_path)?)?;
+                Ok(Some((model, oracle)))
+            };
+        load().map_err(|e| e.to_string())
     })
 }
 
 /// Borrows the shared real import and oracle, or returns `None` (skipping the
 /// test) when any prerequisite is missing.
-fn load_real_and_oracle() -> Option<(&'static bussard_model::Model, &'static Value)> {
-    shared_real_and_oracle()
-        .as_ref()
-        .map(|(model, oracle)| (model, oracle))
+fn load_real_and_oracle()
+-> Result<Option<(&'static bussard_model::Model, &'static Value)>, Box<dyn std::error::Error>> {
+    match shared_real_and_oracle() {
+        Ok(loaded) => Ok(loaded.as_ref().map(|(model, oracle)| (model, oracle))),
+        Err(e) => Err(e.clone().into()),
+    }
 }
 
 /// A DPT string in the model's canonical form, from an oracle dpt object.
@@ -153,12 +168,13 @@ fn oracle_dpt_string(dpt: &Value) -> Option<String> {
 /// (~7.5s) and nextest isolates processes, so three separate tests paid it
 /// three times. One test, three assertion sections.
 #[test]
-fn oracle_matches() {
-    oracle_group_addresses_match();
-    oracle_devices_match();
-    oracle_com_object_links_match();
-    real_module_bases_match();
-    real_project_name_is_extracted();
+fn oracle_matches() -> Result<(), Box<dyn std::error::Error>> {
+    oracle_group_addresses_match()?;
+    oracle_devices_match()?;
+    oracle_com_object_links_match()?;
+    real_module_bases_match()?;
+    real_project_name_is_extracted()?;
+    Ok(())
 }
 
 /// The real project's name is read from `project.xml` and populated on the
@@ -166,16 +182,17 @@ fn oracle_matches() {
 /// `groups.project` was always `None`. The real `home_test.knxproj`'s
 /// `ProjectInformation@Name` is "Bocklisch / Alpha" with a `ThreeLevel`
 /// group-address style, so import must succeed and carry that name.
-fn real_project_name_is_extracted() {
-    let Some((model, _)) = load_real_and_oracle() else {
+fn real_project_name_is_extracted() -> Result<(), Box<dyn std::error::Error>> {
+    let Some((model, _)) = load_real_and_oracle()? else {
         eprintln!("skipping real_project_name_is_extracted: fixtures/password not available");
-        return;
+        return Ok(());
     };
     assert_eq!(
         model.groups.project.as_deref(),
         Some("Bocklisch / Alpha"),
         "project name should be read from project.xml"
     );
+    Ok(())
 }
 
 /// The per-module-instance memory base offsets (issue #48) resolve to the real
@@ -189,13 +206,13 @@ fn real_project_name_is_extracted() {
 /// module-instance selector `MD-1_M-<m>_MI-1`, exactly what `compute_parameter_image`
 /// looks up in its `base_offsets` and what a parameter key reduces to once its
 /// `_P-<p>_R-<r>` suffix is stripped.
-fn real_module_bases_match() {
-    let Some((model, _)) = load_real_and_oracle() else {
+fn real_module_bases_match() -> Result<(), Box<dyn std::error::Error>> {
+    let Some((model, _)) = load_real_and_oracle()? else {
         eprintln!("skipping real_module_bases_match: fixtures/password not available");
-        return;
+        return Ok(());
     };
-    let ia: IndividualAddress = "1.1.4".parse().unwrap();
-    let dev = &model.devices.get(&ia).expect("device 1.1.4 present").device;
+    let ia: IndividualAddress = "1.1.4".parse()?;
+    let dev = &model.devices.get(&ia).ok_or("device 1.1.4 present")?.device;
 
     // The full 12-channel progression (start 805, step 496).
     let expected: Vec<(String, u32)> = (1..=12)
@@ -216,22 +233,25 @@ fn real_module_bases_match() {
 
     // Round-trip: the map survives a save/load byte-for-byte and remains keyed by
     // the flasher's selector format.
-    let dir = tempfile::tempdir().unwrap();
-    model.save(dir.path()).unwrap();
-    let reloaded = bussard_model::Model::load(dir.path()).unwrap();
+    let dir = tempfile::tempdir()?;
+    model.save(dir.path())?;
+    let reloaded = bussard_model::Model::load(dir.path())?;
     assert_eq!(
         reloaded.devices[&ia].device.module_bases, dev.module_bases,
         "module_bases round-trips through save/load"
     );
+    Ok(())
 }
 
-fn oracle_group_addresses_match() {
-    let Some((model, oracle)) = load_real_and_oracle() else {
+fn oracle_group_addresses_match() -> Result<(), Box<dyn std::error::Error>> {
+    let Some((model, oracle)) = load_real_and_oracle()? else {
         eprintln!("skipping oracle_group_addresses_match: fixtures/password not available");
-        return;
+        return Ok(());
     };
 
-    let oga = oracle["group_addresses"].as_object().unwrap();
+    let oga = oracle["group_addresses"]
+        .as_object()
+        .ok_or("oracle[\"group_addresses\"].as_object() missing")?;
     assert_eq!(
         model.groups.groups.len(),
         oga.len(),
@@ -239,65 +259,82 @@ fn oracle_group_addresses_match() {
     );
 
     for (addr, ov) in oga {
-        let ga: GroupAddress = addr.parse().expect("parse oracle GA");
+        let ga: GroupAddress = addr.parse()?;
         let mine = model
             .groups
             .groups
             .get(&ga)
             .unwrap_or_else(|| panic!("missing GA {addr}"));
-        assert_eq!(&mine.name, ov["name"].as_str().unwrap(), "name for {addr}");
+        assert_eq!(
+            &mine.name,
+            ov["name"].as_str().ok_or("ov[\"name\"].as_str() missing")?,
+            "name for {addr}"
+        );
         assert_eq!(
             mine.dpt.map(|d| d.to_string()),
             oracle_dpt_string(&ov["dpt"]),
             "dpt for {addr}"
         );
     }
+    Ok(())
 }
 
-fn oracle_devices_match() {
-    let Some((model, oracle)) = load_real_and_oracle() else {
+fn oracle_devices_match() -> Result<(), Box<dyn std::error::Error>> {
+    let Some((model, oracle)) = load_real_and_oracle()? else {
         eprintln!("skipping oracle_devices_match: fixtures/password not available");
-        return;
+        return Ok(());
     };
 
-    let odev = oracle["devices"].as_object().unwrap();
+    let odev = oracle["devices"]
+        .as_object()
+        .ok_or("oracle[\"devices\"].as_object() missing")?;
     assert_eq!(model.devices.len(), odev.len(), "device count mismatch");
 
     for (addr, ov) in odev {
-        let ia: IndividualAddress = addr.parse().expect("parse oracle IA");
+        let ia: IndividualAddress = addr.parse()?;
         let mine = model
             .devices
             .get(&ia)
             .unwrap_or_else(|| panic!("missing device {addr}"));
         assert_eq!(
             mine.device.name,
-            ov["name"].as_str().unwrap(),
+            ov["name"].as_str().ok_or("ov[\"name\"].as_str() missing")?,
             "name for {addr}"
         );
     }
+    Ok(())
 }
 
-fn oracle_com_object_links_match() {
-    let Some((model, oracle)) = load_real_and_oracle() else {
+fn oracle_com_object_links_match() -> Result<(), Box<dyn std::error::Error>> {
+    let Some((model, oracle)) = load_real_and_oracle()? else {
         eprintln!("skipping oracle_com_object_links_match: fixtures/password not available");
-        return;
+        return Ok(());
     };
 
     // Oracle: device -> object number -> set of linked GAs.
     let mut oracle_links: BTreeMap<String, BTreeMap<u64, BTreeSet<String>>> = BTreeMap::new();
     for co in oracle["communication_objects"]
         .as_object()
-        .unwrap()
+        .ok_or("oracle[\"communication_objects\"].as_object() missing")?
         .values()
     {
-        let dev = co["device_address"].as_str().unwrap().to_string();
-        let num = co["number"].as_u64().unwrap();
+        let dev = co["device_address"]
+            .as_str()
+            .ok_or("co[\"device_address\"].as_str() missing")?
+            .to_string();
+        let num = co["number"]
+            .as_u64()
+            .ok_or("co[\"number\"].as_u64() missing")?;
         let gas: BTreeSet<String> = co["group_address_links"]
             .as_array()
-            .unwrap()
+            .ok_or("co[\"group_address_links\"].as_array() missing")?
             .iter()
-            .map(|g| g.as_str().unwrap().to_string())
-            .collect();
+            .map(|g| {
+                g.as_str()
+                    .map(str::to_string)
+                    .ok_or("GA link is not a string")
+            })
+            .collect::<Result<_, _>>()?;
         if !gas.is_empty() {
             oracle_links.entry(dev).or_default().insert(num, gas);
         }
@@ -349,4 +386,5 @@ fn oracle_com_object_links_match() {
         problems.len(),
         problems.join("\n")
     );
+    Ok(())
 }

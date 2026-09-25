@@ -296,7 +296,8 @@ mod tests {
     }
 
     #[test]
-    fn product_prefers_text_over_hardware_name() {
+    fn product_prefers_text_over_hardware_name()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
           <Hardware Id="H-1" Name="Hardware name">
             <Products>
@@ -304,14 +305,19 @@ mod tests {
             </Products>
           </Hardware>
         </KNX>"#;
-        let hw = parse_hardware(xml).unwrap();
-        let p = hw.products.get("H-1_P-2116REG").unwrap();
+        let hw = parse_hardware(xml)?;
+        let p = hw
+            .products
+            .get("H-1_P-2116REG")
+            .ok_or("hw.products.get(\"H-1_P-2116REG\") missing")?;
         assert_eq!(p.order_number.as_deref(), Some("2116REG"));
         assert_eq!(p.hardware_name.as_deref(), Some("Beispielaktor 4fach"));
+        Ok(())
     }
 
     #[test]
-    fn product_falls_back_to_hardware_name_without_text() {
+    fn product_falls_back_to_hardware_name_without_text()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
           <Hardware Id="H-1" Name="Hardware name">
             <Products>
@@ -319,15 +325,20 @@ mod tests {
             </Products>
           </Hardware>
         </KNX>"#;
-        let hw = parse_hardware(xml).unwrap();
+        let hw = parse_hardware(xml)?;
         assert_eq!(
-            hw.products.get("H-1_P-1").unwrap().hardware_name.as_deref(),
+            hw.products
+                .get("H-1_P-1")
+                .ok_or("hw.products.get(\"H-1_P-1\") missing")?
+                .hardware_name
+                .as_deref(),
             Some("Hardware name")
         );
+        Ok(())
     }
 
     #[test]
-    fn en_us_translation_overrides_text() {
+    fn en_us_translation_overrides_text() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
           <Hardware Id="H-1" Name="hw">
             <Products>
@@ -351,15 +362,20 @@ mod tests {
             </Language>
           </Languages>
         </KNX>"#;
-        let hw = parse_hardware(xml).unwrap();
+        let hw = parse_hardware(xml)?;
         assert_eq!(
-            hw.products.get("H-1_P-1").unwrap().hardware_name.as_deref(),
+            hw.products
+                .get("H-1_P-1")
+                .ok_or("hw.products.get(\"H-1_P-1\") missing")?
+                .hardware_name
+                .as_deref(),
             Some("Switch actuator")
         );
+        Ok(())
     }
 
     #[test]
-    fn parses_hardware2program_app_refs() {
+    fn parses_hardware2program_app_refs() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
           <Hardware Id="H-1" Name="hw">
             <Hardware2Programs>
@@ -370,7 +386,7 @@ mod tests {
             </Hardware2Programs>
           </Hardware>
         </KNX>"#;
-        let hw = parse_hardware(xml).unwrap();
+        let hw = parse_hardware(xml)?;
         assert_eq!(
             hw.hardware2program.get("H-1_HP-1").map(Vec::as_slice),
             Some(
@@ -381,10 +397,11 @@ mod tests {
                 .as_slice()
             )
         );
+        Ok(())
     }
 
     #[test]
-    fn maps_order_number_to_app_refs() {
+    fn maps_order_number_to_app_refs() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
           <Hardware Id="H-1" Name="hw">
             <Products>
@@ -397,15 +414,16 @@ mod tests {
             </Hardware2Programs>
           </Hardware>
         </KNX>"#;
-        let hw = parse_hardware(xml).unwrap();
+        let hw = parse_hardware(xml)?;
         assert_eq!(
             hw.order_to_apps.get("2116REG").map(Vec::as_slice),
             Some(["M-0004_A-20D7-26-053C-O000A".to_string()].as_slice())
         );
+        Ok(())
     }
 
     #[test]
-    fn separates_hardware_blocks() {
+    fn separates_hardware_blocks() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let xml = r#"<KNX>
           <Hardware Id="H-1">
             <Products><Product Id="H-1_P-1" OrderNumber="AAA" /></Products>
@@ -420,8 +438,19 @@ mod tests {
             </Hardware2Program></Hardware2Programs>
           </Hardware>
         </KNX>"#;
-        let hw = parse_hardware(xml).unwrap();
-        assert_eq!(hw.order_to_apps.get("AAA").unwrap(), &["M-1_A-1"]);
-        assert_eq!(hw.order_to_apps.get("BBB").unwrap(), &["M-1_A-2"]);
+        let hw = parse_hardware(xml)?;
+        assert_eq!(
+            hw.order_to_apps
+                .get("AAA")
+                .ok_or("hw.order_to_apps.get(\"AAA\") missing")?,
+            &["M-1_A-1"]
+        );
+        assert_eq!(
+            hw.order_to_apps
+                .get("BBB")
+                .ok_or("hw.order_to_apps.get(\"BBB\") missing")?,
+            &["M-1_A-2"]
+        );
+        Ok(())
     }
 }
