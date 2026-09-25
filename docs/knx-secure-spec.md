@@ -693,8 +693,8 @@ pcap and keyring from the environment) re-checks every CONFIRMED row.
 | No TIMER_NOTIFY on unicast | CONFIRMED | none in the capture |
 | ETS sends DISCONNECT and closes TCP without a SESSION_STATUS close | CONFIRMED (bussard also sends `STATUS_CLOSE`, as XKNX does) | last frames of session 3 |
 | SESSION_AUTHENTICATE MAC (§7.5) and SecureWrapper `additional_data` (§8.2) | INFERRED (XKNX, which works against real interfaces; three independent implementations agree on vectors: bussard, knx-sim, a Python script) | not checkable without the session key |
-| Session keepalive every 30 s (wrapped `STATUS_KEEPALIVE`) | INFERRED (XKNX rate, inside the 60 s session timeout of the KNX spec); configurable since #197 (`SecureTunnelConfig::keepalive`, `BUSSARD_SECURE_KEEPALIVE_SECS`, `0` = none) | the capture's sessions last seconds; measure the interface's idle timeout read-only with `bussard test --secure-idle <secs>` (§8.3) |
-| Secure session over **UDP** (#197): SESSION_REQUEST with the client's UDP HPAI, the tunnel's control/data HPAIs as on a plain UDP tunnel, TUNNELING_ACK inside SECURE_WRAPPERs in both directions, TIMER_NOTIFY ignored on unicast | INFERRED (KNX specification), **sim-verified only** (knx-sim `udp: true`, bussard-testkit mock) | no UDP-only interface captured; the Jung interface serves TCP, which bussard tries first |
+| Session idle timeout 60 s; keepalive every 30 s (wrapped `STATUS_KEEPALIVE`) is adequate | CONFIRMED (live, read-only, 2026-09-25, #197): `bussard test --secure-idle` against 1.1.200 found the TCP session alive after 45 s idle and dropped with a wrapped `STATUS_TIMEOUT` at 59.97 s, 3 of 3 runs (`SECURE_SESSION_TIMEOUT`). Configurable (`SecureTunnelConfig::keepalive`, `BUSSARD_SECURE_KEEPALIVE_SECS`, `0` = none); an interval of 60 s or more is warned about at connect | the capture's sessions last seconds; the timeout was measured with the idle probe (§8.3) |
+| Secure session over **UDP** (#197): SESSION_REQUEST with the client's UDP HPAI, the tunnel's control/data HPAIs as on a plain UDP tunnel, TUNNELING_ACK inside SECURE_WRAPPERs in both directions, TIMER_NOTIFY ignored on unicast | INFERRED (KNX specification), **sim-verified only** (knx-sim `udp: true`, bussard-testkit mock); no real interface tested | no UDP-only interface captured; the Jung interface serves TCP. UDP runs only with `--secure-transport udp`: the default `auto` reports a TCP refusal from a Secure-advertising interface (`SecureTcpRefused`) instead of switching |
 
 What ETS did in session 3 was a **device management** connection to the
 interface (CRI `02 03`: 24-octet CONNECT_REQUEST, 18-octet response), not a
@@ -869,7 +869,15 @@ the wrapped SESSION_AUTHENTICATE, so the session never authenticates.
 - Keepalive: a wrapped SESSION_STATUS `STATUS_KEEPALIVE` every 30 s
   (`SECURE_KEEPALIVE_INTERVAL`, overridable per `SecureTunnelConfig::keepalive`
   and `BUSSARD_SECURE_KEEPALIVE_SECS`), plus the tunnel's own CONNECTIONSTATE
-  heartbeat every 60 s. `SEC-CAL: the idle timeout the Jung interface enforces`.
+  heartbeat every 60 s. The Jung interface drops a session idle for 60 s
+  `[CONFIRMED, live idle probe, 2026-09-25: alive at 45 s, STATUS_TIMEOUT at
+  59.97 s, 3 of 3]`, the session timeout of the KNX specification, so the
+  30 s keepalive leaves 30 s of margin over TCP. Over UDP (sim-verified only)
+  one lost keepalive leaves none; lower `BUSSARD_SECURE_KEEPALIVE_SECS` there.
+  A keepalive of 60 s or more is warned about when the tunnel connects
+  (`SecureTunnelConfig::keepalive_risk`); the heartbeat alone (keepalive `0`)
+  runs at the timeout itself and relies on the TCP read-deadline probe or
+  other traffic.
   The read-only measurement is `bussard test --secure-idle <secs>`: it opens a
   session (no CONNECT, no tunnel slot, nothing on the bus), sends nothing for
   `<secs>`, then one wrapped CONNECTIONSTATE_REQUEST for a channel it does not
@@ -1146,7 +1154,8 @@ CONNECT_REQUEST against the gateway + a SEARCH_RESPONSE_EXTENDED):
 4. SEARCH_RESPONSE_EXTENDED Secure DIB type/layout + gateway secure-only mode
    (§8.4). **Settled** by the ipsecure-1-1-200 capture (2026-09-24).
 5. `message_tag` for tunnelling (**settled**: 0) + keepalive/idle timers
-   (`SEC-CAL:` open, §8.3).
+   (**settled** 2026-09-25 by the live idle probe: the session times out after
+   60 s idle, the 30 s keepalive is adequate, §8.3).
 
 The `.knxkeys` signature canonicalization (§4.4) is settled (#84), confirmed
 against a real ETS 6 export.

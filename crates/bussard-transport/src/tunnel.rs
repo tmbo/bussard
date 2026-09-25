@@ -364,6 +364,11 @@ impl Tunnel {
             .as_ref()
             .map(|s| s.keepalive)
             .unwrap_or(SECURE_KEEPALIVE_INTERVAL);
+        if secure_user.is_some()
+            && let Some(risk) = config.secure.as_ref().and_then(|s| s.keepalive_risk())
+        {
+            tracing::warn!("{risk}");
+        }
 
         let (cmd_tx, cmd_rx) = mpsc::channel(16);
         // Unbounded and never awaited: the task must not be able to block on

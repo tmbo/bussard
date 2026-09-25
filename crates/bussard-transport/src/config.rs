@@ -157,11 +157,25 @@ impl TunnelReconnect {
     }
 }
 
+/// The idle timeout of a KNXnet/IP Secure session: the interface drops a
+/// session that has carried no frame from the client for this long.
+///
+/// CONFIRMED on the reference interface (Jung IPS300SREG, issue #197, PR #217
+/// idle probe, live and read-only, 2026-09-25): `bussard test --secure-idle`
+/// found the TCP session alive after 45 s idle and dropped with a wrapped
+/// SESSION_STATUS `STATUS_TIMEOUT` at 59.97 s, three runs out of three. That
+/// is the 60 s session timeout of the KNX specification.
+pub const SECURE_SESSION_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Default interval of the KNXnet/IP Secure session keepalive (a wrapped
-/// SESSION_STATUS `STATUS_KEEPALIVE`). The server drops an idle session after
-/// its session timeout (60 s in the KNX specification); every 30 s keeps well
-/// inside that with one lost keepalive to spare. INFERRED (the XKNX rate);
-/// [`SecureTunnelConfig::keepalive`] overrides it (issue #197).
+/// SESSION_STATUS `STATUS_KEEPALIVE`).
+///
+/// Half of [`SECURE_SESSION_TIMEOUT`]: CONFIRMED adequate against the
+/// reference interface, which kept a session alive for 45 s idle and dropped
+/// it only at 60 s (issue #197). Over TCP a keepalive is delayed, never lost,
+/// so 30 s leaves 30 s of margin. Over UDP (sim-verified only) one lost
+/// keepalive leaves no margin; set a shorter interval there.
+/// [`SecureTunnelConfig::keepalive`] overrides it.
 pub const SECURE_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Timeout for the KNXnet/IP Secure probe (SEARCH_REQUEST_EXTENDED) that
@@ -302,6 +316,24 @@ impl SecureTunnelConfig {
         self.keepalive = keepalive;
         self
     }
+
+    /// Why this keepalive lets the interface drop an idle session, or `None`
+    /// when it does not: an interval at or above [`SECURE_SESSION_TIMEOUT`]
+    /// fires only after the session is gone. `Duration::ZERO` (no keepalive)
+    /// is a deliberate choice and returns `None`.
+    pub fn keepalive_risk(&self) -> Option<String> {
+        if self.keepalive.is_zero() || self.keepalive < SECURE_SESSION_TIMEOUT {
+            return None;
+        }
+        Some(format!(
+            "KNXnet/IP Secure keepalive every {} s is not shorter than the {} s session \
+             timeout measured on the reference interface; an idle session will be dropped \
+             (the default is {} s)",
+            self.keepalive.as_secs(),
+            SECURE_SESSION_TIMEOUT.as_secs(),
+            SECURE_KEEPALIVE_INTERVAL.as_secs()
+        ))
+    }
 }
 
 /// Which transport to use.
@@ -379,6 +411,39 @@ impl ConnectionConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_keepalive_risk_flags_an_interval_at_or_past_the_session_timeout() -> Result<(), String>
+    {
+        let config = SecureTunnelConfig::new(Vec::new(), SecureSource::Explicit);
+        // The default is half the measured timeout.
+        assert_eq!(SECURE_KEEPALIVE_INTERVAL * 2, SECURE_SESSION_TIMEOUT);
+        assert_eq!(config.keepalive_risk(), None);
+        assert_eq!(
+            config
+                .clone()
+                .with_keepalive(Duration::from_secs(59))
+                .keepalive_risk(),
+            None
+        );
+        assert_eq!(
+            config
+                .clone()
+                .with_keepalive(Duration::ZERO)
+                .keepalive_risk(),
+            None
+        );
+        for secs in [60, 90] {
+            let risk = config
+                .clone()
+                .with_keepalive(Duration::from_secs(secs))
+                .keepalive_risk();
+            let risk = risk.ok_or(format!("a {secs} s keepalive must be flagged"))?;
+            assert!(risk.contains(&format!("every {secs} s")), "{risk}");
+            assert!(risk.contains("60 s session timeout"), "{risk}");
+        }
+        Ok(())
+    }
 
     #[test]
     fn test_secure_tunnel_config_new_defaults_and_overrides() {

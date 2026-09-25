@@ -311,7 +311,9 @@ entry supersedes it and is not a diff against it.
   frame that arrives before the CONNECT_RESPONSE, as the TCP one does. The
   session keepalive is configurable (`BUSSARD_SECURE_KEEPALIVE_SECS`), and
   `bussard test --secure-idle <secs>` measures the interface's idle timeout
-  read-only. `write --keyring` prints a note on sender admission (PID 54,
+  read-only. It measured 60 s on the Jung interface (alive at 45 s, dropped at
+  59.97 s), so the 30 s default keepalive is confirmed; an interval of 60 s or
+  more prints a warning at connect. `write --keyring` prints a note on sender admission (PID 54,
   `--secure-sender`) after a secured write (#197).
 - The frame shapes, the Secure DIBs and the interface's SESSION_RESPONSE MAC
   are checked against an ETS capture of a Jung interface by an ignored oracle
@@ -569,8 +571,8 @@ entry supersedes it and is not a diff against it.
 ### Known limitations
 
 - KNXnet/IP Secure over UDP is implemented from the KNX specification and
-  verified against knx-sim only, and the 30 s keepalive interval is inferred
-  rather than confirmed (#71, #197).
+  verified against knx-sim and the testkit mock only; no real interface has
+  been tested, so it runs only with `--secure-transport udp` (#197).
 - ETS3-era products shipped only as encrypted `.vd4` files need the ETS
   project export as product source (#135).
 - Some Data Secure memory layouts are still inferred rather than confirmed by
