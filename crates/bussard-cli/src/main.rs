@@ -21,6 +21,7 @@ mod export_cmd;
 mod export_groups_cmd;
 mod flash_cmd;
 mod flash_dump;
+mod flash_handover;
 mod flash_params;
 mod groups_cmd;
 mod ha_config_cmd;

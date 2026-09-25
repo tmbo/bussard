@@ -21,11 +21,12 @@
 //! # The rule
 //!
 //! - **System B** — every interface object the device exposes is discovered by
-//!   its `PID_OBJECT_TYPE` and its load state read. A device is *not* fresh when
-//!   an **application** object (interface-object type 3 `application program` or
-//!   4 `interface program`) reports [`LoadState::Loaded`]. The resident
-//!   application id is read from `PID_PROGRAM_VERSION` (PID 13) of those
-//!   objects.
+//!   its `PID_OBJECT_TYPE` (or taken from the device facts). A device is *not*
+//!   fresh when an **application** object (interface-object type 3 `application
+//!   program` or 4 `interface program`) reports [`LoadState::Loaded`], so the
+//!   load state of those objects is read; the other objects are read only when
+//!   no application object answers (issue #213). The resident application id is
+//!   read from `PID_PROGRAM_VERSION` (PID 13) of the application objects.
 //! - **System 7** — the load-state machines (1, 2, 3 and 5) are read through the
 //!   plan's `LsmAccess` realisation. A device is not fresh when any LSM reports
 //!   `Loaded`. System 7 exposes no application-id property, so a resident
@@ -211,16 +212,57 @@ pub fn format_app_id(bytes: &[u8]) -> String {
     }
 }
 
+/// How much of a System B device the resident-state probe reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProbeScope {
+    /// The load state and `PID_PROGRAM_VERSION` of the application objects,
+    /// the only objects whose state decides the verdict (issue #213). Falls
+    /// back to [`Full`](ProbeScope::Full) when the table names no application
+    /// object or none of them reports a load state.
+    Decisive,
+    /// The load state of every interface object but the device object.
+    Full,
+}
+
 /// Reads what is resident on `l4`'s device, without writing anything.
 ///
 /// Never fails: a device that refuses the reads yields a [`ResidentState`] whose
 /// [`unreadable`](ResidentState::unreadable) names the failure, which the caller
 /// turns into [`Freshness::Unknown`]. `sys7_lsm` supplies the System 7 LSM
 /// realisation the planned flash will drive (`None` on System B).
+///
+/// On System B it reads what decides the verdict (issue #213): the load state
+/// and the application id of the application objects (interface-object types 3
+/// and 4). The other objects' states never change the verdict (see the module
+/// docs), so they are not read, unless the table names no application object or
+/// none of them reports a load state; the probe then reads every object, as
+/// [`probe_resident_state_full`] does, so the verdict is the same one the full
+/// walk gives. System 7 reads every load-state machine either way.
 pub async fn probe_resident_state<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     device_mask: u16,
     sys7_lsm: Option<&LsmAccess>,
+) -> ResidentState {
+    probe_with_scope(l4, device_mask, sys7_lsm, ProbeScope::Decisive).await
+}
+
+/// [`probe_resident_state`] reading the load state of every interface object
+/// (the probe before issue #213). Its verdict is the same; the extra states are
+/// for diagnostics and for the tests that prove the two agree.
+pub async fn probe_resident_state_full<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    device_mask: u16,
+    sys7_lsm: Option<&LsmAccess>,
+) -> ResidentState {
+    probe_with_scope(l4, device_mask, sys7_lsm, ProbeScope::Full).await
+}
+
+/// The probe behind [`probe_resident_state`] and [`probe_resident_state_full`].
+async fn probe_with_scope<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    device_mask: u16,
+    sys7_lsm: Option<&LsmAccess>,
+    scope: ProbeScope,
 ) -> ResidentState {
     let profile = MaskProfile::from_mask(device_mask);
     if profile.is_system_7() {
@@ -244,13 +286,25 @@ pub async fn probe_resident_state<Ch: L4Channel>(
         };
         probe_sys7(l4, access).await
     } else {
-        probe_system_b(l4).await
+        probe_system_b(l4, scope).await
     }
 }
 
-/// The System B probe: walk the interface objects, read each one's load state,
-/// and read `PID_PROGRAM_VERSION` off the application objects.
-async fn probe_system_b<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> ResidentState {
+/// An interface-object table: `(index, PID_OBJECT_TYPE)` pairs.
+type ObjectTable = Vec<(u8, u16)>;
+
+/// Whether an interface-object type carries an application program.
+fn is_application_type(object_type: u16) -> bool {
+    object_type == OT_APPLICATION_PROGRAM || object_type == OT_INTERFACE_PROGRAM
+}
+
+/// The System B probe: walk the interface objects, read the load state of the
+/// objects `scope` names, and read `PID_PROGRAM_VERSION` off the application
+/// objects.
+async fn probe_system_b<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    scope: ProbeScope,
+) -> ResidentState {
     let mut state = ResidentState::default();
     // The same tolerant `PID_OBJECT_TYPE` walk the flash's own discovery uses,
     // so the probe sees exactly the object table the download will act on.
@@ -272,40 +326,26 @@ async fn probe_system_b<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Residen
     state.object_table = objects.clone();
 
     let mut failures: Vec<String> = Vec::new();
-    for (index, object_type) in objects {
-        // The device object (type 0) carries no load-state machine; skip its
-        // read rather than spend an exchange proving it.
-        if object_type == OT_DEVICE {
-            continue;
-        }
-        match read_load_state(l4, index).await {
-            Ok(load_state) => state.objects.push(ResidentObject {
-                index,
-                object_type: Some(object_type),
-                state: load_state,
-            }),
-            // An object that does not expose a load-state property simply is not
-            // loadable; that is normal, not a probe failure. A dropped connection
-            // is different: every further read would burn its full timeout on a
-            // dead link, so stop and report what was read.
-            Err(err) => {
-                let dead = is_connection_death(&err);
-                failures.push(format!("object {index}: {err}"));
-                if dead {
-                    state.interrupted = true;
-                    break;
-                }
-            }
-        }
-        // The application id lives on the application objects. Read it
-        // best-effort: an object that does not carry one answers zero elements.
-        if (object_type == OT_APPLICATION_PROGRAM || object_type == OT_INTERFACE_PROGRAM)
-            && let Ok(Some(value)) = read_program_version(l4, index).await
-            && state.app_id.is_none()
-            && value.iter().any(|b| *b != 0)
-        {
-            state.app_id = Some(value);
-        }
+    // The device object (type 0) carries no load-state machine; its read is
+    // skipped rather than spending an exchange proving it.
+    let loadable: Vec<(u8, u16)> = objects
+        .iter()
+        .copied()
+        .filter(|(_, object_type)| *object_type != OT_DEVICE)
+        .collect();
+    let (first, rest): (ObjectTable, ObjectTable) = match scope {
+        ProbeScope::Full => (loadable, Vec::new()),
+        ProbeScope::Decisive => loadable
+            .into_iter()
+            .partition(|(_, object_type)| is_application_type(*object_type)),
+    };
+    read_objects(l4, &first, &mut state, &mut failures).await;
+    // The fallback to the full walk: no application object answered (or the
+    // table names none), so the verdict rests on the other objects, as it did
+    // before issue #213.
+    if state.objects.is_empty() && !state.interrupted && !rest.is_empty() {
+        read_objects(l4, &rest, &mut state, &mut failures).await;
+        state.objects.sort_by_key(|o| o.index);
     }
 
     if state.objects.is_empty() {
@@ -321,6 +361,46 @@ async fn probe_system_b<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Residen
         ));
     }
     state
+}
+
+/// Reads the load state of each of `objects` (and the application id of the
+/// application objects) into `state`, stopping at a connection death.
+async fn read_objects<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    objects: &[(u8, u16)],
+    state: &mut ResidentState,
+    failures: &mut Vec<String>,
+) {
+    for &(index, object_type) in objects {
+        match read_load_state(l4, index).await {
+            Ok(load_state) => state.objects.push(ResidentObject {
+                index,
+                object_type: Some(object_type),
+                state: load_state,
+            }),
+            // An object that does not expose a load-state property simply is not
+            // loadable; that is normal, not a probe failure. A dropped connection
+            // is different: every further read would burn its full timeout on a
+            // dead link, so stop and report what was read.
+            Err(err) => {
+                let dead = is_connection_death(&err);
+                failures.push(format!("object {index}: {err}"));
+                if dead {
+                    state.interrupted = true;
+                    return;
+                }
+            }
+        }
+        // The application id lives on the application objects. Read it
+        // best-effort: an object that does not carry one answers zero elements.
+        if is_application_type(object_type)
+            && let Ok(Some(value)) = read_program_version(l4, index).await
+            && state.app_id.is_none()
+            && value.iter().any(|b| *b != 0)
+        {
+            state.app_id = Some(value);
+        }
+    }
 }
 
 /// The System 7 probe: read each load-state machine through the `LsmAccess`

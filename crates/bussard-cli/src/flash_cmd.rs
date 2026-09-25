@@ -40,7 +40,9 @@ use bussard_mgmt::load::WriteError;
 use bussard_mgmt::{Layer4Connection, LeaseChannel, MaskProfile, MgmtError, Timeouts};
 use bussard_model::IndividualAddress;
 use bussard_prod::{AppSelection, ApplicationProgram, ProductData, normalize_order_number};
-use bussard_service::{Authorize, BusService, FactsSource, L4Options, ServiceError, SourcePolicy};
+use bussard_service::{
+    Authorize, BusService, FactsSource, L4Options, Management, ServiceError, SourcePolicy,
+};
 
 use crate::conn_cmd::{
     BusSession, ConnOverrides, enforce_write_gate, gateway_display, load_model_required,
@@ -298,6 +300,13 @@ pub fn run(
     }
     let device_facts = device_facts;
     let secure_probe = tool_key.is_some();
+    // Under `--yes` nothing waits between the pre-flight and the write phase,
+    // so the pre-flight's connection is kept here and handed over (issue
+    // #213); without it the prompt sits in between and the write phase
+    // reconnects. Declared after the bus session so an unused connection is
+    // disconnected before the tunnel closes.
+    let mut handover = crate::flash_handover::Handover::new(&runtime);
+    let keep_connection = crate::flash_handover::wanted(yes);
     // The phase is read-only, so a connection loss in the middle of it (the
     // gateway link or the device's Layer-4 connection, issue #177) simply
     // re-runs it on a fresh connection once the bus is back.
@@ -325,136 +334,166 @@ pub fn run(
             // outcome, the max APDU, and — filled in from the freshness probe
             // below — the interface-object table).
             let mut facts = bussard_download::DeviceFacts::default();
-            let session = service
-                .with_device(target, &probe_options, async |dev| {
-                    // Tolerate a device that does not implement authorize.
-                    let key = bcu_key.unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY);
-                    let r = if skip_authorize {
-                        dev.device_descriptor().await
-                    } else {
-                        match dev.authorize(key).await {
-                            Ok(outcome) => {
-                                // Remember the verdict: a device that does not
-                                // implement authorize must not be asked again in
-                                // the write phase, where the unanswered request
-                                // costs a full RESPONSE_TIMEOUT per connection
-                                // window.
-                                facts.authorize = Some(outcome);
-                                dev.device_descriptor().await
+            let session = match service.connect_device(target, &probe_options).await {
+                Ok(mut dev) => {
+                    let mut body = async |dev: &mut bussard_service::Device| {
+                        // Tolerate a device that does not implement authorize.
+                        let key = bcu_key.unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY);
+                        let r = if skip_authorize {
+                            dev.device_descriptor().await
+                        } else {
+                            match dev.authorize(key).await {
+                                Ok(outcome) => {
+                                    // Remember the verdict: a device that does not
+                                    // implement authorize must not be asked again in
+                                    // the write phase, where the unanswered request
+                                    // costs a full RESPONSE_TIMEOUT per connection
+                                    // window.
+                                    facts.authorize = Some(outcome);
+                                    dev.device_descriptor().await
+                                }
+                                Err(err) => Err(err),
                             }
-                            Err(err) => Err(err),
-                        }
-                    };
-                    // Check (or read) the stored device facts on System B, the
-                    // family whose freshness probe walks the objects: a valid
-                    // set seeds this connection, so the walk and the max-APDU
-                    // read below answer from it. A connection death surfaces
-                    // on the reads that follow, as before.
-                    let mut facts_cached = false;
-                    if let Ok(mask) = &r
-                        && MaskProfile::from_mask(*mask).tables_supported()
-                    {
-                        match device_facts
-                            .establish(dev.l4_mut(), *mask, bussard_service::FactsWant::Table)
-                            .await
+                        };
+                        // Check (or read) the stored device facts on System B, the
+                        // family whose freshness probe walks the objects: a valid
+                        // set seeds this connection, so the walk and the max-APDU
+                        // read below answer from it. A connection death surfaces
+                        // on the reads that follow, as before.
+                        let mut facts_cached = false;
+                        if let Ok(mask) = &r
+                            && MaskProfile::from_mask(*mask).tables_supported()
                         {
-                            Ok(established) => {
-                                facts_cached = established.source == FactsSource::Cached;
+                            match device_facts
+                                .establish(dev.l4_mut(), *mask, bussard_service::FactsWant::Table)
+                                .await
+                            {
+                                Ok(established) => {
+                                    facts_cached = established.source == FactsSource::Cached;
+                                }
+                                Err(err) => tracing::debug!("{target} device facts: {err}"),
                             }
-                            Err(err) => tracing::debug!("{target} device facts: {err}"),
                         }
-                    }
-                    // A skipped authorize stands only on facts that matched this
-                    // device; otherwise present the key now (stale facts already
-                    // did, on their re-read). The write phase takes the verdict
-                    // either way.
-                    if skip_authorize {
-                        if !facts_cached && dev.l4_mut().last_authorize().is_none() {
-                            let _ = dev.authorize(key).await;
+                        // A skipped authorize stands only on facts that matched this
+                        // device; otherwise present the key now (stale facts already
+                        // did, on their re-read). The write phase takes the verdict
+                        // either way.
+                        if skip_authorize {
+                            if !facts_cached && dev.l4_mut().last_authorize().is_none() {
+                                let _ = dev.authorize(key).await;
+                            }
+                            facts.authorize = Some(
+                                dev.l4_mut().last_authorize().cloned().unwrap_or(
+                                    bussard_mgmt::AuthorizeOutcome::Unsupported {
+                                        detail: "the device facts record no answer to A_Authorize"
+                                            .to_string(),
+                                    },
+                                ),
+                            );
                         }
-                        facts.authorize = Some(dev.l4_mut().last_authorize().cloned().unwrap_or(
-                            bussard_mgmt::AuthorizeOutcome::Unsupported {
-                                detail:
-                                    "the device facts record no answer to A_Authorize".to_string(),
-                            },
-                        ));
-                    }
-                    // PID_MAX_APDU_LENGTH is device-stable: negotiate it here, on
-                    // the read-only connection, so the write phase seeds it
-                    // instead of spending an exchange from its tight
-                    // per-connection budget on it.
-                    facts.max_apdu = dev.l4_mut().negotiate_max_apdu().await.ok().flatten();
-                    facts.max_apdu_absent = dev.l4_mut().max_apdu_absence()
-                        == Some(bussard_mgmt::MaxApduAbsence::Answered);
-                    // The factory-freshness probe (issue #79): read the load
-                    // state (and, on System B, the resident application id) of
-                    // the objects this flash would unload and rewrite. Purely
-                    // read-only, and only once the mask is known — it is the
-                    // mask that decides System B objects vs System 7 LSMs. It
-                    // rides the same (possibly secured) connection.
-                    let resident = match &r {
-                        Ok(mask) => Some(probe_resident_state(dev.l4_mut(), *mask, None).await),
-                        Err(_) => None,
-                    };
-                    if let Some(state) = &resident {
-                        facts.object_table = state.object_table.clone();
-                    }
-                    // The plan needs only the mask, so it is built here, and the
-                    // parameter read-back (issue #109) rides this same
-                    // connection: no second T_Connect, no second Data Secure
-                    // sync, and the reads are sized from the APDU negotiated
-                    // above (issue #194), not the 12-octet floor.
-                    let replanned;
-                    let planned = match (&r, &precomputed) {
-                        (Ok(mask), Some((declared, Ok(plan)))) if mask == declared => Some(plan),
-                        (Ok(mask), _) => {
-                            replanned = plan_for_mask(*mask);
-                            replanned.as_ref().ok()
+                        // PID_MAX_APDU_LENGTH is device-stable: negotiate it here, on
+                        // the read-only connection, so the write phase seeds it
+                        // instead of spending an exchange from its tight
+                        // per-connection budget on it.
+                        facts.max_apdu = dev.l4_mut().negotiate_max_apdu().await.ok().flatten();
+                        facts.max_apdu_absent = dev.l4_mut().max_apdu_absence()
+                            == Some(bussard_mgmt::MaxApduAbsence::Answered);
+                        // The factory-freshness probe (issue #79): read the load
+                        // state (and, on System B, the resident application id) of
+                        // the objects this flash would unload and rewrite. Purely
+                        // read-only, and only once the mask is known — it is the
+                        // mask that decides System B objects vs System 7 LSMs. It
+                        // rides the same (possibly secured) connection.
+                        let resident = match &r {
+                            Ok(mask) => Some(probe_resident_state(dev.l4_mut(), *mask, None).await),
+                            Err(_) => None,
+                        };
+                        if let Some(state) = &resident {
+                            facts.object_table = state.object_table.clone();
                         }
-                        (Err(_), _) => None,
-                    };
-                    let current = match (planned, &resident) {
-                        (Some(plan), Some(state))
-                            if wants_current_parameters(force, parameters_only, state)
-                                && !plan.is_sys7() =>
-                        {
-                            Some(
-                                read_current_parameter_memory_with_objects(
-                                    dev.l4_mut(),
-                                    plan,
-                                    &facts.object_table,
+                        // The plan needs only the mask, so it is built here, and the
+                        // parameter read-back (issue #109) rides this same
+                        // connection: no second T_Connect, no second Data Secure
+                        // sync, and the reads are sized from the APDU negotiated
+                        // above (issue #194), not the 12-octet floor.
+                        let replanned;
+                        let planned = match (&r, &precomputed) {
+                            (Ok(mask), Some((declared, Ok(plan)))) if mask == declared => {
+                                Some(plan)
+                            }
+                            (Ok(mask), _) => {
+                                replanned = plan_for_mask(*mask);
+                                replanned.as_ref().ok()
+                            }
+                            (Err(_), _) => None,
+                        };
+                        let current = match (planned, &resident) {
+                            (Some(plan), Some(state))
+                                if wants_current_parameters(force, parameters_only, state)
+                                    && !plan.is_sys7() =>
+                            {
+                                Some(
+                                    read_current_parameter_memory_with_objects(
+                                        dev.l4_mut(),
+                                        plan,
+                                        &facts.object_table,
+                                    )
+                                    .await,
                                 )
-                                .await,
-                            )
-                        }
-                        _ => None,
-                    };
-                    // `--parameters-only` reads the parameter regions (and the
-                    // System 7 code and table samples) on this connection too,
-                    // once the identity gate passes (issue #215): no second
-                    // session before the prompt.
-                    let preread = match (planned, &resident) {
-                        (Some(plan), Some(_))
-                            if parameters_only
-                                && crate::flash_params::identity_gate(plan, resident.as_ref())
+                            }
+                            _ => None,
+                        };
+                        // `--parameters-only` reads the parameter regions (and the
+                        // System 7 code and table samples) on this connection too,
+                        // once the identity gate passes (issue #215): no second
+                        // session before the prompt.
+                        let preread = match (planned, &resident) {
+                            (Some(plan), Some(_))
+                                if parameters_only
+                                    && crate::flash_params::identity_gate(
+                                        plan,
+                                        resident.as_ref(),
+                                    )
                                     .is_ok() =>
-                        {
-                            Some(crate::flash_params::read_parameters_on(dev.l4_mut(), plan).await)
-                        }
-                        _ => None,
+                            {
+                                Some(
+                                    crate::flash_params::read_parameters_on(dev.l4_mut(), plan)
+                                        .await,
+                                )
+                            }
+                            _ => None,
+                        };
+                        Ok::<_, ServiceError>((r, resident, current, preread))
                     };
-                    Ok::<_, ServiceError>((r, resident, current, preread))
-                })
-                .await;
+                    let outcome = body(&mut dev).await;
+                    // Keep a complete pre-flight's connection for the write
+                    // phase under `--yes` (issue #213); an interrupted or failed
+                    // one is closed, as before.
+                    let complete = matches!(
+                        &outcome,
+                        Ok((Ok(_), Some(state), _, _)) if !state.interrupted
+                    );
+                    let kept = if keep_connection && complete {
+                        Some(dev.into_l4())
+                    } else {
+                        let _ = dev.disconnect().await;
+                        None
+                    };
+                    outcome.map(|parts| (parts, kept))
+                }
+                Err(err) => Err(err),
+            };
             // Whether the T_Connect established before the first read: a
             // connect-then-disconnect on the descriptor read is the diagnostic
             // pattern (see `descriptor_read_error`).
-            let (connected, result, resident, current, preread) = match session {
-                Ok((r, resident, current, preread)) => (true, r, resident, current, preread),
-                Err(ServiceError::Mgmt(err)) => (false, Err(err), None, None, None),
+            let (connected, result, resident, current, preread, kept) = match session {
+                Ok(((r, resident, current, preread), kept)) => {
+                    (true, r, resident, current, preread, kept)
+                }
+                Err(ServiceError::Mgmt(err)) => (false, Err(err), None, None, None, None),
                 Err(err) => return Err(anyhow::Error::new(err)),
             };
-            anyhow::Ok((connected, result, resident, facts, current, preread))
+            anyhow::Ok((connected, result, resident, facts, current, preread, kept))
         })?;
         // A loss still being re-established counts too: over TCP the probe can
         // run into the silence before the tunnel has noticed it (issue #192).
@@ -473,7 +512,10 @@ pub fn run(
         runtime.block_on(handle.wait_connected(handle.reconnect_budget()));
     };
 
-    let (connected, device_mask, resident, facts, current, preread) = probe;
+    let (connected, device_mask, resident, facts, current, preread, kept) = probe;
+    if let Some(l4) = kept {
+        handover.keep(l4);
+    }
     let device_mask = match device_mask {
         Ok(mask) => mask,
         Err(err) => {
@@ -518,6 +560,7 @@ pub fn run(
             bcu_key,
             tool_key,
             secure_seq,
+            handover,
         });
     }
 
@@ -674,6 +717,9 @@ pub fn run(
     // The same tunnel phase A used: the pre-flight's L4 session and its bus lease
     // are both released by now, so the write phase simply takes the lease again.
     let restart_started = std::cell::Cell::new(None);
+    // Under `--yes` the pre-flight's connection, when it is still fresh
+    // (issue #213); otherwise the write phase opens its own.
+    let handed_over = handover.take();
     let download_started = std::time::Instant::now();
     let outcome = runtime.block_on(execute(
         service,
@@ -686,6 +732,7 @@ pub fn run(
         secure_seq,
         output.json,
         &restart_started,
+        handed_over,
     ));
     if output.verbose > 0 {
         let readiness = outcome
@@ -1510,6 +1557,7 @@ pub(crate) async fn execute(
     secure_seq: bussard_secure::SequenceHighWater,
     json: bool,
     restart_started: &std::cell::Cell<Option<std::time::Instant>>,
+    handover: Option<Management>,
 ) -> Result<bussard_download::FlashOutcome, WriteError> {
     let (result, _) = execute_then(
         service,
@@ -1522,6 +1570,7 @@ pub(crate) async fn execute(
         secure_seq,
         json,
         restart_started,
+        handover,
         async |_| {},
     )
     .await;
@@ -1533,6 +1582,10 @@ pub(crate) async fn execute(
 /// disconnect: `flash --parameters-only` reads its parameters back there
 /// instead of opening another session (issue #215). `after` gets `None`
 /// back when the flash failed or did not verify.
+///
+/// `handover` is the pre-flight's still-open connection under `--yes` (issue
+/// #213): the session takes it over instead of opening its own. `None`
+/// opens a fresh connection, seeded with `facts`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_then<R>(
     service: &BusService,
@@ -1545,6 +1598,7 @@ pub(crate) async fn execute_then<R>(
     secure_seq: bussard_secure::SequenceHighWater,
     json: bool,
     restart_started: &std::cell::Cell<Option<std::time::Instant>>,
+    handover: Option<Management>,
     after: impl AsyncFnOnce(&mut Layer4Connection<LeaseChannel>) -> R,
 ) -> (
     Result<bussard_download::FlashOutcome, WriteError>,
@@ -1565,11 +1619,18 @@ pub(crate) async fn execute_then<R>(
     // Opened with what the read-only pre-flight already learned (the object
     // table, the authorize verdict, the max APDU), so the write phase does not
     // rediscover any of it.
-    let mut session =
-        match bussard_download::Session::open_with_facts(connector, options.bcu_key, facts).await {
-            Ok(session) => session,
-            Err(err) => return (Err(err), None),
-        };
+    let opened = match handover {
+        Some(mut l4) => {
+            // The write phase's timeout budget, as its own connections get.
+            l4.set_timeouts(flash_l4_timeouts().unwrap_or_default());
+            bussard_download::Session::adopt_with_facts(connector, l4, options.bcu_key, facts).await
+        }
+        None => bussard_download::Session::open_with_facts(connector, options.bcu_key, facts).await,
+    };
+    let mut session = match opened {
+        Ok(session) => session,
+        Err(err) => return (Err(err), None),
+    };
     // The session owns the open connection; from here the flash body runs and its
     // result is captured, then the session is disconnected unconditionally below —
     // regardless of whether the flash succeeded or failed mid-procedure. `flash`

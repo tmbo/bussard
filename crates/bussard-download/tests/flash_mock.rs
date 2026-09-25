@@ -534,6 +534,10 @@ struct DeviceState {
     /// The connection-level events an activated device saw, in order: a
     /// readable log of the wire sequence around a restart.
     secure_log: Vec<String>,
+    /// Objects whose `PID_LOAD_STATE_CONTROL` read answers zero elements (the
+    /// property is absent), so the resident-state probe gets no state from
+    /// them (issue #213 fallback test).
+    load_state_absent: Vec<u8>,
 }
 
 type Shared = Arc<Mutex<DeviceState>>;
@@ -864,6 +868,12 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
                     prop_response(oi, pid, 0, start, &[]),
                 ),
             };
+        }
+        if pid == PID_LOAD_STATE_CONTROL && s.load_state_absent.contains(&oi) {
+            return Reaction::Answer(
+                A_PROPERTY_VALUE_RESPONSE,
+                prop_response(oi, pid, 0, start, &[]),
+            );
         }
         if pid == PID_LOAD_STATE_CONTROL {
             let st = if s.multi_object {
@@ -1779,6 +1789,7 @@ fn fresh_device(fault: Fault) -> Shared {
         sync_reqs_dropped: 0,
         plain_descriptor_reads: 0,
         secure_log: Vec::new(),
+        load_state_absent: Vec::new(),
     }))
 }
 
@@ -4716,31 +4727,24 @@ async fn test_flash_post_restart_verify_keeps_samples_without_mcb_checks() -> Te
     Ok(())
 }
 
-/// The DA.tp 4-object flash of [`flash_da_tp_programs_all_four_objects`],
-/// verified before (`false`) or after (`true`) the terminal restart, with or
-/// without the MergeId 7 MCB checks.
-async fn flash_da_tp_four_objects(
-    verify_after_restart: bool,
+/// Shapes `state` as the KNX-Virtual DA.tp device (obj1 address, obj2
+/// association, obj3 group-object table, obj4 application, a MasterReset that
+/// wipes the application) and plans its 4-object flash, with or without the
+/// MergeId 7 MCB checks. Returns the plan and the table images it writes.
+fn da_tp_four_object_plan(
+    state: &Shared,
     mcb_checks: bool,
-) -> TestResult<(bussard_download::FlashOutcome, Shared)> {
+) -> TestResult<(bussard_download::FlashPlan, BTreeMap<u32, Vec<u8>>)> {
     use bussard_download::compute::{
         GroupObjectDescriptor, compute_group_object_table, table_image_with_count,
     };
     use bussard_download::compute_tables;
     use bussard_model::schema::Link;
 
-    // DA.tp carries a MasterReset mid-procedure, so the flash must be able to
-    // reconnect — drive it over the bus actor + a leasing connector like the CLI.
-    // Shorten the reboot wait so the test does not stall.
-    // SAFETY: this test binds its own socket/actor; the var only shortens a sleep.
-    unsafe {
-        std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
-    }
-    let (handle, state, gw) = setup_bus(Fault::None).await?;
     // obj0 device, obj1 address(1), obj2 association(2), obj3 group-object(9),
     // obj4 application(3). No obj5 — the LSM5 template ops must be skipped.
     {
-        let mut s = lock(&state)?;
+        let mut s = lock(state)?;
         s.object_types = vec![
             OT_DEVICE,
             OT_ADDRESS_TABLE,       // 1
@@ -4751,8 +4755,6 @@ async fn flash_da_tp_four_objects(
         s.multi_object = true;
         s.wipe_app_on_master_reset = true; // DA.tp carries a MasterReset
     }
-    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
-    let source = bussard_bus::ops::group_source(&handle);
 
     // A couple of links so the tables are non-empty.
     let links = vec![
@@ -4811,6 +4813,28 @@ async fn flash_da_tp_four_objects(
         Some(&template),
         &table_images,
     )?;
+    Ok((plan, table_images))
+}
+
+/// The DA.tp 4-object flash of [`flash_da_tp_programs_all_four_objects`],
+/// verified before (`false`) or after (`true`) the terminal restart, with or
+/// without the MergeId 7 MCB checks.
+async fn flash_da_tp_four_objects(
+    verify_after_restart: bool,
+    mcb_checks: bool,
+) -> TestResult<(bussard_download::FlashOutcome, Shared)> {
+    // DA.tp carries a MasterReset mid-procedure, so the flash must be able to
+    // reconnect — drive it over the bus actor + a leasing connector like the CLI.
+    // Shorten the reboot wait so the test does not stall.
+    // SAFETY: this test binds its own socket/actor; the var only shortens a sleep.
+    unsafe {
+        std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
+    }
+    let (handle, state, gw) = setup_bus(Fault::None).await?;
+    let (plan, table_images) = da_tp_four_object_plan(&state, mcb_checks)?;
+    let obj3 = table_images.get(&3).cloned().ok_or("no obj3 image")?;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source = bussard_bus::ops::group_source(&handle);
 
     let connector = LeaseConnector::plain(handle.clone(), target, source, None);
     let mut session = Session::open_with_key(connector, None).await?;
@@ -4891,6 +4915,204 @@ async fn flash_da_tp_four_objects(
     let _ = handle.close().await;
     drop(gw);
     Ok((outcome, state))
+}
+
+/// How the write phase of [`da_tp_preflight_then_flash`] gets its connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WritePhase {
+    /// Disconnect after the pre-flight and open a fresh connection.
+    Reconnect,
+    /// Take the pre-flight's connection over (the `--yes` hand-over).
+    Adopt,
+    /// Take over a pre-flight connection that died in the meantime (the
+    /// device stopped answering): the session must fall back to a fresh one.
+    AdoptClosed,
+}
+
+/// What one pre-flight-then-flash run of the DA.tp device observed (issue
+/// #213).
+#[derive(Debug)]
+struct HandoverRun {
+    ok: bool,
+    connects: usize,
+    requests: usize,
+    authorizes: usize,
+    load_events: Vec<(u8, u8)>,
+    prop_writes: Vec<((u8, u8), Vec<u8>)>,
+    memory: Vec<(u32, u8)>,
+    elapsed: Duration,
+}
+
+/// The `bussard flash` sequence against the DA.tp device: the read-only
+/// pre-flight (authorize, descriptor, max APDU, resident-state probe) on one
+/// connection, then the 4-object flash, either on that same connection
+/// (`adopt`, the `--yes` hand-over of issue #213) or on a fresh one after a
+/// disconnect (the prompt path, and every flash before #213). `full_probe`
+/// runs the resident-state probe of before #213 (every object's load state).
+/// `latency` delays every answer, to measure wall-clock.
+async fn da_tp_preflight_then_flash(
+    phase: WritePhase,
+    full_probe: bool,
+    latency: Option<Duration>,
+) -> TestResult<HandoverRun> {
+    // SAFETY: nextest runs each test in its own process; the vars only shorten
+    // the reboot wait and switch off the KNX Virtual connection cycling (the
+    // DA.tp app is a KNX Virtual one), so the device is held on one connection
+    // like every real device.
+    unsafe {
+        std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
+        std::env::set_var("BUSSARD_FLASH_RECONNECT_EXCHANGES", "0");
+    }
+    let (handle, state, gw) = setup_bus(Fault::None).await?;
+    let (plan, _) = da_tp_four_object_plan(&state, true)?;
+    if let Some(latency) = latency {
+        lock(&state)?.latency = Some((latency, Duration::ZERO));
+    }
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source = bussard_bus::ops::group_source(&handle);
+    let started = std::time::Instant::now();
+    let mut connector = LeaseConnector::plain(handle.clone(), target, source, None);
+    let mut l4 = bussard_download::Connector::connect(&mut connector).await?;
+    let authorize = l4
+        .authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY)
+        .await?;
+    let mask = bussard_mgmt::read_device_descriptor(&mut l4).await?;
+    let max_apdu = l4.negotiate_max_apdu().await.ok().flatten();
+    let resident = if full_probe {
+        bussard_download::probe_resident_state_full(&mut l4, mask, None).await
+    } else {
+        bussard_download::probe_resident_state(&mut l4, mask, None).await
+    };
+    let facts = bussard_download::DeviceFacts {
+        object_table: resident.object_table.clone(),
+        authorize: Some(authorize),
+        max_apdu,
+        max_apdu_absent: l4.max_apdu_absence() == Some(bussard_mgmt::MaxApduAbsence::Answered),
+    };
+    if phase == WritePhase::AdoptClosed {
+        // The device goes silent on this connection; the next request times
+        // out and marks it closed.
+        let exchanges = lock(&state)?.exchanges_this_connection;
+        lock(&state)?.die_after_exchanges = Some(exchanges);
+        l4.set_timeouts(fast_timeouts());
+        let dead = bussard_mgmt::read_device_descriptor(&mut l4).await;
+        assert!(dead.is_err() && l4.is_closed(), "{dead:?}");
+        lock(&state)?.die_after_exchanges = None;
+    }
+    let mut session = match phase {
+        WritePhase::Adopt | WritePhase::AdoptClosed => {
+            Session::adopt_with_facts(connector, l4, None, facts).await?
+        }
+        WritePhase::Reconnect => {
+            let _ = l4.disconnect().await;
+            Session::open_with_facts(connector, None, facts).await?
+        }
+    };
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions {
+            verify_after_restart: true,
+            ..Default::default()
+        },
+        |_| {},
+    )
+    .await?;
+    let _ = session.into_disconnect().await;
+    let elapsed = started.elapsed();
+    let run = {
+        let s = lock(&state)?;
+        let mut prop_writes: Vec<((u8, u8), Vec<u8>)> =
+            s.prop_writes.iter().map(|(k, v)| (*k, v.clone())).collect();
+        prop_writes.sort();
+        let mut memory: Vec<(u32, u8)> = s.memory.iter().map(|(a, b)| (*a, *b)).collect();
+        memory.sort_unstable();
+        HandoverRun {
+            ok: outcome.ok(),
+            connects: s.connects,
+            requests: s.answered_requests,
+            authorizes: s.authorizes_seen,
+            load_events: s.load_events.clone(),
+            prop_writes,
+            memory,
+            elapsed,
+        }
+    };
+    let _ = handle.close().await;
+    drop(gw);
+    Ok(run)
+}
+
+/// Issue #213: the write phase that takes over the pre-flight's connection
+/// sends one `T_Connect` and one `A_Authorize_Request` fewer than the one that
+/// reconnects, and writes exactly the same (load events, property writes,
+/// resulting memory).
+#[tokio::test]
+async fn test_flash_da_tp_adopting_the_preflight_connection_writes_the_same() -> TestResult {
+    let reconnect = da_tp_preflight_then_flash(WritePhase::Reconnect, false, None).await?;
+    let adopt = da_tp_preflight_then_flash(WritePhase::Adopt, false, None).await?;
+    println!(
+        "DA.tp pre-flight + flash: T_Connect {} -> {}, requests {} -> {}, A_Authorize {} -> {}",
+        reconnect.connects,
+        adopt.connects,
+        reconnect.requests,
+        adopt.requests,
+        reconnect.authorizes,
+        adopt.authorizes
+    );
+    assert!(reconnect.ok && adopt.ok, "{reconnect:?} {adopt:?}");
+    assert_eq!(adopt.connects + 1, reconnect.connects);
+    assert_eq!(adopt.authorizes + 1, reconnect.authorizes);
+    assert_eq!(adopt.requests + 1, reconnect.requests);
+    assert_eq!(adopt.load_events, reconnect.load_events);
+    assert_eq!(adopt.prop_writes, reconnect.prop_writes);
+    assert_eq!(adopt.memory, reconnect.memory);
+    Ok(())
+}
+
+/// Issue #213 fallback: a pre-flight connection that died before the write
+/// phase took it over is replaced by a fresh one, and the flash goes on as if
+/// it had reconnected: the same `T_Connect`s, authorizes and writes.
+#[tokio::test]
+async fn test_flash_da_tp_adopting_a_dead_connection_reconnects() -> TestResult {
+    let reconnect = da_tp_preflight_then_flash(WritePhase::Reconnect, false, None).await?;
+    let fallback = da_tp_preflight_then_flash(WritePhase::AdoptClosed, false, None).await?;
+    assert!(fallback.ok, "{fallback:?}");
+    assert_eq!(fallback.connects, reconnect.connects);
+    assert_eq!(fallback.authorizes, reconnect.authorizes);
+    assert_eq!(fallback.load_events, reconnect.load_events);
+    assert_eq!(fallback.prop_writes, reconnect.prop_writes);
+    assert_eq!(fallback.memory, reconnect.memory);
+    Ok(())
+}
+
+/// Measurement for issue #213 (ignored): the DA.tp pre-flight and flash with
+/// 200 ms per answer (the median request time of the 2026-09-24 speed deep
+/// dive), reconnecting versus taking the connection over.
+#[tokio::test]
+#[ignore = "measurement: 200 ms per answer"]
+async fn measure_flash_da_tp_handover() -> TestResult {
+    // Before #213 (full probe, reconnect), the prompt path after it
+    // (decisive probe, reconnect), and `--yes` after it (decisive probe,
+    // hand-over).
+    for (phase, full_probe) in [
+        (WritePhase::Reconnect, true),
+        (WritePhase::Reconnect, false),
+        (WritePhase::Adopt, false),
+    ] {
+        let run =
+            da_tp_preflight_then_flash(phase, full_probe, Some(Duration::from_millis(200))).await?;
+        println!(
+            "MEASURE DA.tp {phase:?} full_probe={full_probe}: ok={} T_Connect {} requests {} \
+             A_Authorize {} {:.2} s",
+            run.ok,
+            run.connects,
+            run.requests,
+            run.authorizes,
+            run.elapsed.as_secs_f64()
+        );
+    }
+    Ok(())
 }
 
 /// A merged flash whose master template programs obj1/obj2/obj3 but the caller
@@ -5172,11 +5394,25 @@ fn identified_plan(app: &ApplicationProgram) -> TestResult<bussard_download::Fla
 /// Opens an authorized connection and runs the read-only pre-flight probe,
 /// exactly as `bussard flash`'s phase A does.
 async fn probe(bus: &mut Transport) -> TestResult<bussard_download::ResidentState> {
+    probe_scoped(bus, false).await
+}
+
+/// [`probe`], reading every object's load state when `full`
+/// ([`bussard_download::probe_resident_state_full`], the probe before issue
+/// #213).
+async fn probe_scoped(
+    bus: &mut Transport,
+    full: bool,
+) -> TestResult<bussard_download::ResidentState> {
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
     let mut l4 = Layer4Connection::connect(bus, target, source).await?;
     l4.authorize_or_fail(0xFFFF_FFFF).await?;
-    let resident = bussard_download::probe_resident_state(&mut l4, 0x07B0, None).await;
+    let resident = if full {
+        bussard_download::probe_resident_state_full(&mut l4, 0x07B0, None).await
+    } else {
+        bussard_download::probe_resident_state(&mut l4, 0x07B0, None).await
+    };
     let _ = l4.disconnect().await;
     Ok(resident)
 }
@@ -5199,9 +5435,11 @@ async fn test_probe_resident_state_factory_fresh_device_is_fresh() -> TestResult
     let resident = probe(&mut bus).await?;
 
     assert!(resident.unreadable.is_none(), "{resident:?}");
-    // The three loadable objects answered; the device object (type 0) carries no
-    // load-state machine and is not probed.
-    assert_eq!(resident.objects.len(), 3, "{resident:?}");
+    // Only the application object decides the verdict, so only its load state
+    // is read (issue #213; the two table objects were read before). The device
+    // object (type 0) carries no load-state machine and is never probed.
+    assert_eq!(resident.objects.len(), 1, "{resident:?}");
+    assert_eq!(resident.objects[0].index, 3, "{resident:?}");
     assert!(
         resident
             .objects
@@ -5219,6 +5457,79 @@ async fn test_probe_resident_state_factory_fresh_device_is_fresh() -> TestResult
     );
     assert_probe_wrote_nothing(&state)?;
     drop(handle);
+    Ok(())
+}
+
+/// One scenario of the decisive-versus-full probe comparison: the device state
+/// before the probe.
+type ProbeScenario = (&'static str, fn(&mut DeviceState));
+
+/// Issue #213: the pre-flight probe reads only the application object's load
+/// state and id, and its verdict is the one the full walk (every object's
+/// load state) gives, for a fresh device, another application, the same
+/// application and an unidentified one. Request counts are printed.
+#[tokio::test]
+async fn test_probe_resident_state_decisive_matches_full() -> TestResult {
+    let scenarios: [ProbeScenario; 5] = [
+        ("fresh", |_| {}),
+        ("other application", |s| {
+            s.app_load_state = LS_LOADED;
+            s.compare_props
+                .insert((3, 13), vec![0x00, 0x83, 0x00, 0x07, 0x23]);
+        }),
+        ("same application", |s| {
+            s.app_load_state = LS_LOADED;
+            s.compare_props
+                .insert((3, 13), vec![0x00, 0xFA, 0x25, 0x00, 0x10]);
+        }),
+        ("loaded without id", |s| s.app_load_state = LS_LOADED),
+        // No application object answers a load state: the probe falls back to
+        // reading the table objects, as the full walk does.
+        ("application load state absent", |s| {
+            s.load_state_absent = vec![3]
+        }),
+    ];
+    let app = identified_app()?;
+    let plan = identified_plan(&app)?;
+    for (name, prepare) in scenarios {
+        let mut verdicts = Vec::new();
+        let mut requests = Vec::new();
+        for full in [true, false] {
+            let (mut bus, state, handle) = setup(Fault::None).await?;
+            prepare(&mut *lock(&state)?);
+            let resident = probe_scoped(&mut bus, full).await?;
+            verdicts.push(bussard_download::assess_freshness(
+                &resident,
+                &plan.identity,
+            ));
+            requests.push(lock(&state)?.answered_requests);
+            assert_probe_wrote_nothing(&state)?;
+            drop(handle);
+        }
+        println!(
+            "{name}: full probe {} requests, decisive probe {} requests",
+            requests[0], requests[1]
+        );
+        assert_eq!(verdicts[0], verdicts[1], "{name}");
+        assert!(requests[1] <= requests[0], "{name}: {requests:?}");
+    }
+    Ok(())
+}
+
+/// Issue #213: a table that names no application object gives the decisive
+/// probe nothing to read first, so it reads every object, like the full walk.
+#[tokio::test]
+async fn test_probe_resident_state_without_application_object_reads_all() -> TestResult {
+    let mut results = Vec::new();
+    for full in [true, false] {
+        let (mut bus, state, handle) = setup(Fault::None).await?;
+        lock(&state)?.object_types = vec![OT_DEVICE, OT_ADDRESS_TABLE, OT_ASSOCIATION_TABLE];
+        let resident = probe_scoped(&mut bus, full).await?;
+        results.push((resident, lock(&state)?.answered_requests));
+        drop(handle);
+    }
+    assert_eq!(results[0], results[1]);
+    assert_eq!(results[1].0.objects.len(), 2, "{:?}", results[1]);
     Ok(())
 }
 

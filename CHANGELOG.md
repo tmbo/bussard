@@ -141,6 +141,21 @@ entry supersedes it and is not a diff against it.
   the prompt and another after the download. The written octets and the
   verification are unchanged (mock: 6 to 4 `T_Connect`, 44 to 34 requests)
   (#215).
+- The `flash` pre-flight reads what decides the factory-freshness verdict:
+  on System B the load state and application id of the application objects,
+  instead of the load state of every interface object. The other objects are
+  read only when no application object answers, so the verdict is the one
+  the full read gives (a test runs both against the same mock). Under
+  `--yes` the write phase takes over the pre-flight's connection instead of
+  disconnecting and connecting again: one `T_Connect`, `S-A_Sync` and
+  `A_Authorize_Request` fewer, the same frames written. A connection idle for
+  more than 3 s or closed by the device is replaced by a fresh one, and
+  `BUSSARD_FLASH_NO_HANDOVER=1` always reconnects. Without `--yes` the
+  prompt sits between the phases and the write phase reconnects as before,
+  seeded with the pre-flight's facts. Mock, 1.1.12-like Data Secure device at
+  200 ms per request: pre-flight 19 to 12 requests (3.9 s to 2.5 s) with
+  facts, 25 to 18 without; `flash --yes` 4 to 3 `T_Connect` on the System B
+  mock, 6 to 5 on the DA.tp and System 7 mocks (#213).
 - `BUSSARD_WIRE_TRACE=1` encodes each frame once and writes each line with a
   single write to stderr; a 215-octet write's line takes 1.3 µs instead of
   17 µs (release). With the trace off nothing is encoded or formatted: a

@@ -356,11 +356,32 @@ impl BusService {
         F: AsyncFnOnce(&mut Device) -> Result<T, E>,
         E: From<ServiceError>,
     {
-        let l4 = self.connect_l4_retrying(target, options).await?;
-        let mut dev = DeviceConnection::from_l4(l4);
+        let mut dev = self.connect_device(target, options).await?;
         let result = body(&mut dev).await;
         let _ = dev.disconnect().await;
         result
+    }
+
+    /// Opens a management session to `target` wrapped in the typed
+    /// [`DeviceConnection`] client, with the same connect, retry and authorize
+    /// as [`with_device`](Self::with_device), and hands it to the caller.
+    ///
+    /// For a caller that decides only after its reads whether the session ends
+    /// or is handed on (the `bussard flash` pre-flight under `--yes`, issue
+    /// #213). The caller owns the session and must `disconnect` it or pass it
+    /// to something that does; prefer [`with_device`](Self::with_device)
+    /// otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`connect_l4`](Self::connect_l4) returns.
+    pub async fn connect_device(
+        &self,
+        target: IndividualAddress,
+        options: &L4Options,
+    ) -> Result<Device, ServiceError> {
+        let l4 = self.connect_l4_retrying(target, options).await?;
+        Ok(DeviceConnection::from_l4(l4))
     }
 
     /// Takes the exclusive layer-4 lease as a frame channel, for a procedure

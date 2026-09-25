@@ -516,6 +516,11 @@ impl Bench {
 
     /// Runs `bussard <args> --dir <model> --gateway 127.0.0.1:<port>`.
     fn bussard(&self, args: &[&str]) -> Result<Output, Box<dyn Error>> {
+        self.bussard_env(args, &[])
+    }
+
+    /// [`Bench::bussard`] with extra environment variables.
+    fn bussard_env(&self, args: &[&str], env: &[(&str, &str)]) -> Result<Output, Box<dyn Error>> {
         let model = self.tmp.join("knx");
         let gateway = format!("127.0.0.1:{}", self.port);
         let mut full: Vec<&str> = args.to_vec();
@@ -532,6 +537,7 @@ impl Bench {
             .args(&full)
             .env_remove("BUSSARD_ALLOW_REAL_GATEWAY")
             .env("BUSSARD_FLASH_L4_TIMEOUT_MS", "300")
+            .envs(env.iter().copied())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -704,6 +710,115 @@ fn test_flash_parameters_only_reads_on_the_preflight_and_write_sessions() -> Tes
     // The pre-flight, the write session, and the write session's
     // reconnect after the restart (whose first probe finds the device up).
     assert_eq!(connects, 4, "{stderr}");
+    Ok(())
+}
+
+/// What one `flash --yes` run did to the device.
+#[derive(Debug)]
+struct FlashRun {
+    /// Whether the command succeeded. The mock's segment layout does not
+    /// survive a full re-flash's spot check, so a full flash fails the same way
+    /// on both paths; what matters here is that both paths agree.
+    success: bool,
+    /// The last line of stderr, for a failed run.
+    stderr_tail: String,
+    t_connects: usize,
+    requests: usize,
+    authorizes: usize,
+    memory_writes: Vec<(u32, usize)>,
+    load_events: Vec<(u8, u8)>,
+    property_writes: Vec<(u8, u8)>,
+    memory: Vec<(u32, u8)>,
+}
+
+/// Runs `flash 1.1.4 --yes <extra>` against a fresh bench and records what the
+/// device saw; `handover` false sets `BUSSARD_FLASH_NO_HANDOVER=1`.
+fn flash_yes_run(
+    tag: &str,
+    extra: &[&str],
+    handover: bool,
+) -> Result<Option<FlashRun>, Box<dyn Error>> {
+    let Some(bench) = Bench::start(
+        tag,
+        MockDevice::running([7, 0]),
+        "\"thr@P-0_R-1\" = \"12\"\n",
+    )?
+    else {
+        return Ok(None);
+    };
+    let mut args = vec!["flash", "1.1.4", "--product", bench.product()?, "--yes"];
+    args.extend_from_slice(extra);
+    // The synthetic application is a KNX Virtual one (M-00FA), whose flashes
+    // cycle the connection every 10 exchanges (issue #116); 0 holds one
+    // connection, as for every other device.
+    let mut env = vec![("BUSSARD_FLASH_RECONNECT_EXCHANGES", "0")];
+    if !handover {
+        env.push(("BUSSARD_FLASH_NO_HANDOVER", "1"));
+    }
+    let out = bench.bussard_env(&args, &env)?;
+    let t_connects = bench._gw.with_device("1.1.4".parse()?, |d| d.connects)?;
+    let dev = bench.device();
+    let mut memory: Vec<(u32, u8)> = dev.memory.iter().map(|(a, b)| (*a, *b)).collect();
+    memory.sort_unstable();
+    let (_, stderr) = text(&out);
+    Ok(Some(FlashRun {
+        success: out.status.success(),
+        stderr_tail: stderr
+            .lines()
+            .rev()
+            .find(|l| l.contains("ERROR"))
+            .unwrap_or_default()
+            .to_string(),
+        t_connects,
+        requests: dev.wire_apcis.len(),
+        authorizes: dev
+            .served_apcis
+            .iter()
+            .filter(|a| **a == apci::A_AUTHORIZE_REQUEST)
+            .count(),
+        memory_writes: dev.memory_writes,
+        load_events: dev.load_events,
+        property_writes: dev.property_writes,
+        memory,
+    }))
+}
+
+/// Issue #213: under `--yes` the write phase takes over the pre-flight's
+/// connection instead of disconnecting and connecting again: one `T_Connect`
+/// and one `A_Authorize_Request` fewer, and the device receives the same
+/// writes (memory, load events, property writes) and ends with the same
+/// memory. Checked for a full flash and for `--parameters-only`.
+#[test]
+fn test_flash_yes_takes_over_the_preflight_connection() -> TestResult {
+    for (tag, extra) in [("full", &[][..]), ("params", &["--parameters-only"][..])] {
+        let Some(before) = flash_yes_run(&format!("handover-{tag}-off"), extra, false)? else {
+            return Ok(());
+        };
+        let Some(after) = flash_yes_run(&format!("handover-{tag}-on"), extra, true)? else {
+            return Ok(());
+        };
+        println!(
+            "flash --yes {tag}: T_Connect {} -> {}, requests {} -> {}, A_Authorize {} -> {}",
+            before.t_connects,
+            after.t_connects,
+            before.requests,
+            after.requests,
+            before.authorizes,
+            after.authorizes
+        );
+        assert_eq!(after.success, before.success, "{tag}: {before:?} {after:?}");
+        assert_eq!(after.stderr_tail, before.stderr_tail, "{tag}");
+        if tag == "params" {
+            assert!(after.success, "{after:?}");
+        }
+        assert_eq!(after.t_connects + 1, before.t_connects, "{tag}");
+        assert_eq!(after.authorizes + 1, before.authorizes, "{tag}");
+        assert_eq!(after.requests + 1, before.requests, "{tag}");
+        assert_eq!(after.memory_writes, before.memory_writes, "{tag}");
+        assert_eq!(after.load_events, before.load_events, "{tag}");
+        assert_eq!(after.property_writes, before.property_writes, "{tag}");
+        assert_eq!(after.memory, before.memory, "{tag}");
+    }
     Ok(())
 }
 

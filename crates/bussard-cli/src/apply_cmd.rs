@@ -674,6 +674,7 @@ fn write_parameters(
         secure_seq.clone(),
         false,
         &std::cell::Cell::new(None),
+        None,
     ));
     match outcome {
         Ok(outcome) if outcome.ok() => {}

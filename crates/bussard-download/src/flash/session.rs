@@ -332,7 +332,7 @@ impl<Ch: L4Channel> Session<SingleConnector<Ch>> {
 ///
 /// `bussard flash` runs a read-only probe before it shows the plan (issue #79):
 /// it walks `PID_OBJECT_TYPE` over every interface object, presents
-/// `A_Authorize_Request`, and reads each object's load state. All three are
+/// `A_Authorize_Request`, and reads the application objects' load state. All three are
 /// device-stable facts, but the write phase used to rediscover them on its own
 /// connection: another full object-table walk, another authorize (a device that
 /// does not implement authorize burns a full `RESPONSE_TIMEOUT` answering
@@ -497,7 +497,66 @@ impl<C: Connector> Session<C> {
         bcu_key: Option<u32>,
         facts: DeviceFacts,
     ) -> Result<Session<C>, WriteError> {
-        let mut l4 = connector.connect().await?;
+        let l4 = connector.connect().await?;
+        Session::finish_open(connector, l4, bcu_key, facts, false).await
+    }
+
+    /// Takes over a connection a read-only pre-flight already opened and
+    /// authorized, instead of opening a new one (issue #213).
+    ///
+    /// Under `bussard flash --yes` nothing sits between the pre-flight and the
+    /// write phase, so the pre-flight's connection is still live: taking it over
+    /// saves the `T_Disconnect`, the `T_Connect`, the Data Secure `S-A_Sync` and
+    /// the `A_Authorize_Request` of a fresh open. What the download writes is
+    /// unchanged; only those connection-management frames go away.
+    ///
+    /// `l4` must have been opened to the same device through the same kind of
+    /// channel `connector` opens, and authorized (if at all) with `bcu_key` (or
+    /// the free-access key when `None`): the authorize verdict it recorded
+    /// ([`Layer4Connection::last_authorize`]) is applied with the policy a fresh
+    /// open applies, without sending the request again:
+    ///
+    /// * `Granted` stands, since authorization is per-connection state and this
+    ///   is the connection it was granted on;
+    /// * `Denied` fails as [`MgmtError::AccessDenied`], as the fresh open would;
+    /// * `Unsupported` is cached, so later reconnects skip the request as well;
+    /// * no verdict (the pre-flight skipped the request on the device facts'
+    ///   word) authorizes exactly as [`open_with_facts`](Session::open_with_facts)
+    ///   does on a fresh connection.
+    ///
+    /// The connector is kept, so the session reconnects after a restart and
+    /// resumes on a dropped connection as an opened session does. A connection
+    /// that is already known to be closed is dropped and a fresh one opened: the
+    /// previous behaviour, used as the fallback.
+    pub async fn adopt_with_facts(
+        mut connector: C,
+        l4: Layer4Connection<C::Channel>,
+        bcu_key: Option<u32>,
+        facts: DeviceFacts,
+    ) -> Result<Session<C>, WriteError> {
+        if l4.is_closed() {
+            tracing::debug!(
+                target = %l4.target(),
+                "the pre-flight connection is closed; opening a fresh one"
+            );
+            drop(l4);
+            let l4 = connector.connect().await?;
+            return Session::finish_open(connector, l4, bcu_key, facts, false).await;
+        }
+        Session::finish_open(connector, l4, bcu_key, facts, true).await
+    }
+
+    /// The shared tail of [`open_with_facts`](Session::open_with_facts) and
+    /// [`adopt_with_facts`](Session::adopt_with_facts): authorize (or, for an
+    /// `adopted` connection, apply the verdict it already recorded), seed the
+    /// max APDU, and build the session.
+    async fn finish_open(
+        connector: C,
+        mut l4: Layer4Connection<C::Channel>,
+        bcu_key: Option<u32>,
+        facts: DeviceFacts,
+        adopted: bool,
+    ) -> Result<Session<C>, WriteError> {
         let mut authorize_outcomes = BTreeMap::new();
         // Seed the pre-flight's verdict BEFORE authorizing: an "this device does
         // not implement authorize" finding is what makes `authorize` skip the
@@ -507,11 +566,30 @@ impl<C: Connector> Session<C> {
         {
             authorize_outcomes.insert(l4.target().raw(), outcome.clone());
         }
-        let losses = connector.link_losses();
-        Self::authorize(&mut l4, bcu_key, &mut authorize_outcomes, || {
-            connector.link_losses() != losses
-        })
-        .await?;
+        // An adopted connection already carries its own verdict: apply it with
+        // the fresh-open policy instead of asking again.
+        let recorded = if adopted {
+            l4.last_authorize().cloned()
+        } else {
+            None
+        };
+        match recorded {
+            Some(bussard_mgmt::AuthorizeOutcome::Denied { level }) => {
+                let address = l4.target();
+                let _ = l4.disconnect().await;
+                return Err(WriteError::Mgmt(MgmtError::AccessDenied { address, level }));
+            }
+            Some(outcome) => {
+                authorize_outcomes.insert(l4.target().raw(), outcome);
+            }
+            None => {
+                let losses = connector.link_losses();
+                Self::authorize(&mut l4, bcu_key, &mut authorize_outcomes, || {
+                    connector.link_losses() != losses
+                })
+                .await?;
+            }
+        }
         // Read PID_MAX_APDU_LENGTH once so memory/property chunks scale to the
         // device (issue #58). Best-effort: a failure leaves the conservative
         // standard-frame caps and never aborts the open. Cached at the session
