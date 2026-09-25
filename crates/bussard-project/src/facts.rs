@@ -841,6 +841,15 @@ fn derive_parameters(
         let Some(param) = app.parameters.get(&pref.ref_id) else {
             continue;
         };
+        // ETS stores a value for a parameter whose effective access is
+        // `"None"` but never presents it as editable (the ref's `Access`
+        // overrides the parameter's own). Such a ref is generated data like a
+        // hidden one: its value goes to the lock's `hidden[]`, not the file,
+        // and it does not compete for a key with its visible siblings.
+        let access = pref.access.as_deref().or(param.access.as_deref());
+        if access == Some("None") {
+            continue;
+        }
         let kind = param
             .parameter_type
             .as_deref()

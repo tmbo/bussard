@@ -431,3 +431,92 @@ fn test_derive_facts_with_vendor_defaults() -> TestResult {
     assert_eq!(device.module_bases.get("MD-1_M-1_MI-1"), Some(&20));
     Ok(())
 }
+
+/// A minimal application with two parameters sharing the same text: one
+/// visible (`P-94_R-94`), the other `Access="None"` (`P-103_R-160`), matching
+/// the Jung 230021SU shape that motivated this test (`MD-3_P-103`'s text
+/// equals `MD-3_P-94`'s).
+const ACCESS_NONE_APP_ID: &str = "M-0001_A-1-1-0001";
+const ACCESS_NONE_APP_XML: &[u8] = br#"<?xml version="1.0" encoding="utf-8"?>
+<KNX xmlns="http://knx.org/xml/project/21">
+ <ManufacturerData><Manufacturer RefId="M-0001"><ApplicationPrograms>
+  <ApplicationProgram Id="M-0001_A-1-1-0001" ApplicationNumber="1" ApplicationVersion="1" MaskVersion="MV-07B0" Name="Access Fixture" LoadProcedureStyle="MergedProcedure">
+   <Static>
+    <ParameterTypes>
+     <ParameterType Id="M-0001_A-1-1-0001_PT-Byte" Name="Byte"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+    </ParameterTypes>
+    <Parameters>
+     <Parameter Id="M-0001_A-1-1-0001_P-94" Name="Windalarm" Text="Freigabe Ueberwachungszeit Windalarme" ParameterType="M-0001_A-1-1-0001_PT-Byte" Value="10">
+      <Memory CodeSegment="M-0001_A-1-1-0001_RS-1" Offset="0" BitOffset="0" />
+     </Parameter>
+     <Parameter Id="M-0001_A-1-1-0001_P-103" Name="WindalarmHidden" Text="Freigabe Ueberwachungszeit Windalarme" ParameterType="M-0001_A-1-1-0001_PT-Byte" Value="10">
+      <Memory CodeSegment="M-0001_A-1-1-0001_RS-1" Offset="1" BitOffset="0" />
+     </Parameter>
+    </Parameters>
+    <ParameterRefs>
+     <ParameterRef Id="M-0001_A-1-1-0001_P-94_R-94" RefId="M-0001_A-1-1-0001_P-94" />
+     <ParameterRef Id="M-0001_A-1-1-0001_P-103_R-160" RefId="M-0001_A-1-1-0001_P-103" Access="None" />
+    </ParameterRefs>
+   </Static>
+   <Dynamic>
+    <Channel Id="M-0001_A-1-1-0001_CH-1" Name="Main" Text="Main" Number="1">
+     <ParameterBlock Id="M-0001_A-1-1-0001_PB-1" Name="Main" Text="Main">
+      <ParameterRefRef RefId="M-0001_A-1-1-0001_P-94_R-94" />
+      <ParameterRefRef RefId="M-0001_A-1-1-0001_P-103_R-160" />
+     </ParameterBlock>
+    </Channel>
+   </Dynamic>
+  </ApplicationProgram>
+ </ApplicationPrograms></Manufacturer></ManufacturerData>
+</KNX>"#;
+
+#[test]
+fn test_access_none_parameter_value_goes_to_hidden_not_the_file() -> TestResult {
+    let app = parse_application_program(ACCESS_NONE_APP_ID, ACCESS_NONE_APP_XML)?;
+    let mut values = BTreeMap::new();
+    values.insert("P-94_R-94".to_string(), "20".to_string());
+    values.insert("P-103_R-160".to_string(), "20".to_string());
+    let facts = derive_facts(&app, &values, &Default::default());
+
+    // The Access="None" ref never competes for a key: the visible sibling
+    // with the same text gets the plain key, not an escape hatch.
+    assert_eq!(facts.parameters.len(), 1, "{:?}", facts.parameters);
+    assert_eq!(facts.parameters[0].reference, "P-94_R-94");
+    assert_eq!(
+        facts.parameters[0].key,
+        "freigabe-ueberwachungszeit-windalarme"
+    );
+
+    let mut device = bussard_model::schema::Device {
+        address: "1.1.47".parse()?,
+        name: "fixture".into(),
+        description: None,
+        location: None,
+        replaced: None,
+        product: None,
+        channels: BTreeMap::new(),
+        parameters: BTreeMap::new(),
+        module_bases: BTreeMap::new(),
+        com_objects: BTreeMap::new(),
+        application_override: None,
+        lock: Default::default(),
+        security: None,
+    };
+    apply_facts(&mut device, &app, &facts, &values);
+
+    // The visible value is a normal file-keyed parameter...
+    assert_eq!(
+        device
+            .parameters
+            .get("freigabe-ueberwachungszeit-windalarme@P-94_R-94"),
+        Some(&"20".to_string())
+    );
+    // ...the Access="None" value stays in memory (for a flash) under the
+    // hidden key, and is never listed as a device-file parameter key.
+    assert_eq!(
+        device.parameters.get("hidden@P-103_R-160"),
+        Some(&"20".to_string())
+    );
+    assert!(!device.lock.parameters.contains_key("P-103_R-160"));
+    Ok(())
+}

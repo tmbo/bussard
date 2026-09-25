@@ -179,7 +179,8 @@ resolves through the lock.
 
 The file holds only what ETS shows. ETS also stores values for parameter
 refs the configuration does not show (an inactive branch, the alternative
-of a shown ref); those are the lock's `hidden[]`, not the file's.
+of a shown ref) or that it never lets the user edit (`Access="None"`);
+those are the lock's `hidden[]`, not the file's.
 
 ### Without product data
 
@@ -323,10 +324,11 @@ the join between the user's words and the vendor's ids:
   parameters, with their texts, types and defaults, are in the product model
   under `models/`.
 - `hidden[]` holds the values ETS stores for parameter refs the evaluated
-  configuration does not show: refs in an inactive branch, and the
-  alternatives of a shown ref. The user never sees them in ETS, so they are
-  generated data: a flash writes them as ETS would, the device file does not
-  show them, and every import replaces them.
+  configuration does not show: refs in an inactive branch, the alternatives
+  of a shown ref, and refs whose effective `Access` is `"None"` (ETS stores
+  a value but never presents them as editable). The user never sees them in
+  ETS, so they are generated data: a flash writes them as ETS would, the
+  device file does not show them, and every import replaces them.
 - The product facts (program, manufacturer, hardware, mask) and the device
   state of KNX Secure (`secure_capable`, `has_fdsk_certificate`,
   `sequence_number`) live here; the device file keeps only the intent.
@@ -383,11 +385,13 @@ importing again rewrites the keys in the new language.
 - **Parameter key:** slug of the parameter `Text` (falling back to `Name`)
   when unique within its scope; else `<page slug>.<slug>` using the
   `ParameterBlock` text the ref sits in; else `<slug>@<ref>` as the escape
-  hatch. Only a parameter the configuration shows gets a key; the escape
-  hatch is for such a parameter whose text still collides after page
-  qualification, never for a hidden ref (see `hidden[]`). The channel's
-  label parameter (`label_ref`) gets no key: its value is the channel
-  `name`.
+  hatch. Only a parameter the configuration shows *and* lets the user edit
+  gets a key; the escape hatch is for such a parameter whose text still
+  collides after page qualification, never for a hidden ref or one whose
+  effective `Access` is `"None"` (see `hidden[]`) — dropping it out of the
+  key competition is what usually spares its same-named sibling the escape
+  hatch. The channel's label parameter (`label_ref`) gets no key: its value
+  is the channel `name`.
 - **Slugs:** lowercase, `ä ö ü ß` to `ae oe ue ss`, everything not
   `[a-z0-9]` collapsed to `-`, trimmed; empty becomes `x`.
 
