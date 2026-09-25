@@ -208,11 +208,12 @@ error; this section keeps only the decisions behind it.
   `send`, `listen` and `name` is an object, any other table is a parameter page.
 - **Keys come from vendor texts.** ETS never shows a ref id or an object number as the
   primary label, and neither does the file. Import derives the channel handle from the
-  channel name and number (`a-1`), object keys from the object function
+  channel name and number (`relaisausgaenge-1`), object keys from the object function
   (`langzeitbetrieb`) and parameter keys from the parameter text (`betriebsart`), and
-  records each mapping in the lock. Values are what the user means: `"Jalousie"`,
-  `"21 °C"`. The reader also accepts the vendor forms (object number, enum code). The
-  channel's label parameter (ETS `Bezeichnung`) becomes the channel `name`.
+  records each mapping in the lock. Values are what the user means: `"Lüftungsklappe /
+  Dachfenster"`, `"schließen"`. The reader also accepts the vendor forms (object number,
+  enum code). The channel's label parameter (ETS `Bezeichnung`) becomes the channel
+  `name`.
 - **One parameter per memory cell.** Vendors often point several parameter refs at one
   memory location and show whichever is visible. The file stores one value per
   parameter, the lock records the visible ref, and nine `konfiguration-rtr@R-…` lines
