@@ -1,6 +1,6 @@
 # 🪽 bussard
 
-A buzzard circles the field and sees everything move. `bussard` does that for a KNX building: an open-source CLI that programs, watches, and decodes the bus. Built so an LLM can manage your KNX configuration with you.
+A buzzard circles the field and sees everything move. `bussard` does that for a KNX building: an open-source CLI that programs, watches, and decodes the bus. Built so an LLM can manage your KNX configuration with you. Project page and docs: [bussard.tmbo.dev](https://bussard.tmbo.dev/).
 
 All the configuration for your KNX setup is stored in TOML files, ready for your chat agent to modify them, creating reviewable diffs. `bussard` pushes the changes to the devices over your KNXnet/IP gateway. ETS stays in the drawer for the things only ETS can do (certification, planning, the odd exotic device).
 
@@ -37,10 +37,10 @@ New to KNX ownership? Read [the first weekend guide](https://bussard.tmbo.dev/do
 Have an ETS export? Import it and watch your bus decode itself:
 
 ```console
-$ bussard import demo-house.knxproj
+$ bussard init demo-house.knxproj
+Found gateway: KNX IP Interface (192.0.2.10:3671, IA 1.1.250)
 imported 33 group addresses, 10 devices, 55 link entries → knx
-$ bussard validate
-0 errors, 4 warnings
+validation: 0 error(s), 4 warning(s)
 $ bussard monitor
 12:03:44.809  1.1.1 Push Button Hallway → 0/0/0 Hallway Light Switch = On (1.001, obj "Rocker 1")
 12:03:44.981  1.1.3 Switch Actuator     → 0/0/1 Hallway Light Status = On (1.001)
@@ -52,9 +52,10 @@ No ETS project? Start empty and adopt devices as you go:
 $ bussard init
 Found gateway: KNX IP Interface (192.0.2.10:3671, IA 1.1.250)
 Created a fresh KNX model in knx.
-$ bussard adopt --product actuator.knxprod    # press the programming button
-adopted 15.15.255 → 1.1.5
-$ bussard flash 1.1.5 --product actuator.knxprod   # ETS-free application download
+$ bussard adopt                      # press the programming button
+adopted 15.15.255 → 1.1.5 (Jung 2304.16 REGHM; product data fetched by order number)
+$ bussard device 1.1.5 a-1 --toml    # the channel's parameters and objects, paste-ready
+$ bussard apply 1.1.5                # write what the file says: plan, confirm, backup, verify
 ```
 
 Either way you end up with a `knx/` directory you can commit:
@@ -84,8 +85,9 @@ From there you can explore all the functionality of bussard:
 ```console
 $ bussard read 4/1/11                # 21.4 °C (9.001)
 $ bussard write 3/0/4 down           # the blind moves
-$ bussard plan 1.1.5                 # diff the device's live tables vs the model
-$ bussard apply 1.1.5                # write them: confirm, backup, verify
+$ bussard plan 1.1.5                 # what apply would change on the device
+$ bussard apply 1.1.5                # tables and parameters: plan, confirm, backup, verify
+$ bussard device 1.1.2 rtc-1         # a channel as ETS shows it, with choices and units
 $ bussard viz                        # the whole network in a browser, live
 $ bussard ha-config --out ha.yaml    # Home Assistant config from the same model
 $ claude mcp add knx -- bussard mcp --dir knx    # let Claude debug your bus

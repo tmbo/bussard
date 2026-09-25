@@ -466,7 +466,7 @@ treat the override the same way:
 The asymmetry is deliberate: a human at the CLI or the viz page can force a
 protected write when they mean to, but an LLM driving `bussard` over MCP can
 never write a protected GA, with or without `--allow-writes`. Keep genuinely
-dangerous GAs marked `protected: true` so the MCP path can never touch them.
+dangerous GAs marked `protected = true` so the MCP path can never touch them.
 
 The same refusal covers the MCP model-edit tools: a protected GA cannot be
 renamed or retyped, and no link to it can be added or removed, over MCP. There is

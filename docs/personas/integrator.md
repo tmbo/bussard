@@ -34,7 +34,7 @@ forum users share home-grown sheets with GA generators because "nothing exists".
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| Capture rooms and functions in a form the rest of the pipeline reads | `bussard scaffold` turns a device-free room and function list into GA blocks in `groups.toml`; over MCP, `knx_scaffold_groups` does the same after the assistant confirms the room list with him. | No import of an existing Excel room book. | D11 |
+| Capture rooms and functions in a form the rest of the pipeline reads | `bussard groups reserve` turns a room and function into a GA block in `groups.toml`; over MCP, `knx_scaffold_groups` does the same after the assistant confirms the room list with him. | No import of an existing Excel room book. | D11 |
 
 ### Stage 2. Planning: topology, power, devices
 
@@ -62,7 +62,7 @@ the plan, the schematic and ETS, and keeps the ETS project log on.
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| Generate the GA plan from the room book | `bussard scaffold` reserves the conventional block per function under `floor-trade-block` or `function-floor`, names every address and fills the DPTs; re-running extends without renumbering. | None. | D11 |
+| Generate the GA plan from the room book | `bussard groups reserve` reserves the conventional block per function under `floor-trade-block` or `function-floor`, names every address and fills the DPTs; re-running extends without renumbering. | None. | D11 |
 | Enforce the convention across the project | Convention lints L005 to L008: block membership, feedback pairing, naming pattern, DPT per block role. | None. | D10 |
 | Version the project | `bussard diff a.knxproj b.knxproj` explains two ETS exports in sentences, a renamed GA as one rename; each side can also be a bundle or a model directory (pending merge). The "ETS with git" practice is documented in the how-to. `bussard history` records every import. | None. | D7 |
 
@@ -108,7 +108,7 @@ installation behaves.
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
 | Scripted acceptance test | `bussard test` runs `tests.toml` (write this GA, expect that one within two seconds; or a manual step) and prints a timestamp-free pass/fail report. The assistant drafts `tests.toml` from the model and runs it with `knx_run_tests` on a write-enabled server. | None. | D9 |
-| Protected functions during test | A test that writes a protected GA needs `allow_protected: true` in the file and `--force`; `knx_run_tests` refuses it whatever the file says. | None. | D9 |
+| Protected functions during test | A test that writes a protected GA needs `allow_protected = true` in the file and `--force`; `knx_run_tests` refuses it whatever the file says. | None. | D9 |
 
 ### Stage 7. Documentation and handover
 
