@@ -82,9 +82,8 @@ pub fn run(
 ) -> anyhow::Result<ExitCode> {
     let Some(model) = load_model_required(dir)? else {
         bail!(
-            "no model in {}: `bussard backup` reads the devices the model lists; run \
-             `bussard init` or `bussard import` first",
-            dir.display()
+            "{}",
+            crate::conn_cmd::no_model(dir, "`bussard backup` reads the devices the model lists")
         );
     };
     let targets = select_targets(&model, addresses, line)?;

@@ -499,9 +499,18 @@ entry supersedes it and is not a diff against it.
     say "skip nothing", with the same words where two commands mean the same.
 - Without `--dir`, a command finds the model directory itself: `.` when it
   holds `bussard.toml`, else `./knx`, else the nearest parent holding
-  `bussard.toml` or `knx/bussard.toml`, else `knx` as before. Commands now work
-  from inside the model and its subdirectories. `init` and `import` never
-  search upward (#228).
+  `bussard.toml` or `knx/bussard.toml`. Commands now work from inside the
+  model and its subdirectories. `init` and `import` never search upward
+  (#228).
+- Breaking: the default model directory is the current directory, not `knx`.
+  When discovery finds nothing, every command works in `.`, and a directory
+  without a model file reports `no model in the current directory <path>`
+  with `bussard init`, `bussard import <export>` or `--dir` as the way out.
+  `init` and `import` write into `.` without `--dir`; in a non-empty
+  directory that holds no model they ask first (naming the entry count and a
+  model in `knx/` below), `--yes` answers, and without a terminal they refuse
+  with the standard sentence. `init` there keeps existing files and extends an
+  existing `.gitignore`. Pass `--dir knx` (or `cd knx`) for the old layout.
 - New environment variables `BUSSARD_DIR`, `BUSSARD_GATEWAY` and
   `BUSSARD_KEYRING`, with the precedence flag, then environment, then
   `bussard.toml`, then discovery. They only select; none of them can permit a

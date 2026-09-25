@@ -39,9 +39,9 @@ Every `--json` document is one object whose first field is `"schema": <n>`, the 
 1. the working directory, when it holds `bussard.toml`;
 2. `./knx`, when it exists;
 3. each parent directory, nearest first: the parent when it holds `bussard.toml`, else its `knx/` when that holds `bussard.toml`;
-4. otherwise `knx`, the old default, so the errors for a missing model read as before.
+4. otherwise the current directory.
 
-`bussard -v` logs the directory it chose. `init` and `import` create or update the model in `--dir`, `BUSSARD_DIR` or `knx` and never search upward.
+`bussard -v` logs the directory it chose. A directory without a model file (`bussard.toml`, `groups.toml`, `bussard.lock` or `devices/`) is no model: a command that needs one says `no model in the current directory <path>: ...; run `bussard init` or `bussard import <export>` there, or pass --dir <model directory>`. `init` and `import` create or update the model in `--dir`, `BUSSARD_DIR` or the current directory and never search upward.
 
 The remaining global options:
 
@@ -101,8 +101,9 @@ Create a fresh model directory: discover the gateway, write the skeleton. The fi
 | `--yes-download` | off | Download missing vendor product data without asking. Without a terminal and without this flag nothing is downloaded; the missing order numbers are listed. |
 | `--no-download` | off | Do not download missing product data; list it instead. |
 | `--scan <LINE>` | | Without a project: scan this line after writing the skeleton, without asking. |
+| `--yes` | off | Skip the confirmation prompt for a non-empty directory. |
 
-The model directory is `--dir`, `BUSSARD_DIR` or `knx`; `init` never searches upward for an existing model. `--gateway` (or `BUSSARD_GATEWAY`) skips gateway discovery and writes that gateway into `bussard.toml`; `--routing` configures routing instead. Both are [global options](#global-options).
+The model directory is `--dir`, `BUSSARD_DIR` or the current directory; `init` never searches upward for an existing model. A directory that already holds `bussard.toml` is refused. A directory with anything else in it (other than `.git`, `.env`, `.gitignore` and `.bussard/`), or with a model one level down in `knx/`, gets a question first, e.g. `the current directory /home/me/house is not empty (12 entries, a model exists in knx/); initialise a model in the current directory? [y/N]`. `--yes` answers it; without a terminal and without `--yes`, `init` refuses with the standard sentence (see [confirmation](#confirmation-download-consent-and-json)). In a non-empty directory `init` keeps existing files (a repository's `README.md`, say) and adds its `.bussard/` and `*.knxkeys` lines to an existing `.gitignore`. `--gateway` (or `BUSSARD_GATEWAY`) skips gateway discovery and writes that gateway into `bussard.toml`; `--routing` configures routing instead. Both are [global options](#global-options).
 
 With a project, `init` also looks for an ETS keyring export (`.knxkeys`) in the project's directory. Exactly one is recorded as `connection.keyring` in `bussard.toml` (relative to the model directory when it sits next to it, else absolute), so every bus command uses it without `--keyring`, and `init` prints the reminder to set `BUSSARD_KEYRING_PASSWORD`; the password is never written anywhere. Several keyrings are listed and none is picked.
 
@@ -133,8 +134,11 @@ Import an existing `.knxproj`, a `.bussard` bundle (see [`export`](#bussard-expo
 | `--interactive` | off | On a re-import, ask per conflict (`m` keeps mine, `t` takes theirs). Needs a terminal. |
 | `--yes-download` | off | Download missing vendor product data without asking. Without a terminal and without this flag nothing is downloaded; the missing order numbers are listed. |
 | `--no-download` | off | Do not look up or download missing product data; list it instead. |
+| `--yes` | off | Skip the confirmation prompt for a non-empty directory that holds no model yet. |
 
-Product data fetches itself. After the write, `import` collects the order numbers of the project's devices, and every one whose product data `bussard.lock` does not pin in `<dir>/products/` yet is looked up in bussard's pointer index (the one `import-product --order-number` uses). The downloads it finds are listed with their size and origin and fetched after one confirmation for the whole list (`--yes` for scripts; without a terminal and without `--yes` nothing is downloaded); each is verified against the index checksum, stored under `<dir>/products/`, pinned in the lock and turned into product models under `<dir>/.bussard/models/`. Each application program the imported devices use that no stored archive carries is extracted once from the `.knxproj` into `<dir>/products/<application-id>.knxprod` (see [product-data.md](product-data.md#the-product-store-products)). Devices without product data still get their file (identity, location, links by number), and the summary says how many were written that way and, per order number, where to get the file and which command imports it:
+The model directory is `--dir`, `BUSSARD_DIR` or the current directory; `import` never searches upward. A directory that already holds a model is a re-import and asks nothing. Any other non-empty directory (entries other than `.git`, `.env`, `.gitignore` and `.bussard/`, or a model in `knx/` below it) gets the same question as [`init`](#bussard-init-project): `the current directory /home/me/house is not empty (3 entries); import into the current directory? [y/N]`. `--yes` answers it; without a terminal and without `--yes` the import is refused and nothing is written. To import into the usual `knx/` subdirectory, pass `--dir knx` or `cd knx` first.
+
+Product data fetches itself. After the write, `import` collects the order numbers of the project's devices, and every one whose product data `bussard.lock` does not pin in `<dir>/products/` yet is looked up in bussard's pointer index (the one `import-product --order-number` uses). The downloads it finds are listed with their size and origin and fetched after one confirmation for the whole list (`--yes-download` for scripts; without a terminal and without `--yes-download` nothing is downloaded); each is verified against the index checksum, stored under `<dir>/products/`, pinned in the lock and turned into product models under `<dir>/.bussard/models/`. Each application program the imported devices use that no stored archive carries is extracted once from the `.knxproj` into `<dir>/products/<application-id>.knxprod` (see [product-data.md](product-data.md#the-product-store-products)). Devices without product data still get their file (identity, location, links by number), and the summary says how many were written that way and, per order number, where to get the file and which command imports it:
 
 ```
 1 device(s) written without product data: their files carry identity, location and links by number; `apply` writes their links, not their parameters

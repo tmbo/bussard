@@ -191,9 +191,11 @@ pub fn run(
 
     let Some(model) = load_model_required(dir)? else {
         bail!(
-            "no model in {}: `bussard commission` walks the devices the model has on line \
-             {line}; run `bussard import` first",
-            dir.display()
+            "{}",
+            crate::conn_cmd::no_model(
+                dir,
+                &format!("`bussard commission` walks the devices the model has on line {line}")
+            )
         );
     };
     let config = resolve_config(Some(&model), &overrides)?;

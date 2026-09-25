@@ -140,18 +140,18 @@ pub(crate) fn load_model_optional(
     command: &str,
     missing_hint: &str,
 ) -> anyhow::Result<Option<Model>> {
-    if !dir.exists() {
+    if !bussard_model::discover::is_model_dir(dir) {
         if have_explicit_address {
             eprintln!(
-                "warning: model directory {} not found; continuing because an explicit address was given",
-                dir.display()
+                "warning: no model in {}; continuing because an explicit address was given",
+                crate::conn_cmd::describe_dir(dir)
             );
             return Ok(None);
         }
         return Err(anyhow!(
             "no model in {}: {command} picks a free address from the devices the model \
              lists; {missing_hint}",
-            dir.display()
+            crate::conn_cmd::describe_dir(dir)
         ));
     }
     match Model::load(dir) {

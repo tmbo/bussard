@@ -376,10 +376,14 @@ fn run_line(
 
     let Some(mut model) = load_model_required(dir)? else {
         bail!(
-            "no model in {}: `bussard {} --line` visits the devices the model has on the \
-             line; run `bussard init` or `bussard import` first",
-            dir.display(),
-            mode.verb()
+            "{}",
+            crate::conn_cmd::no_model(
+                dir,
+                &format!(
+                    "`bussard {} --line` visits the devices the model has on the line",
+                    mode.verb()
+                )
+            )
         );
     };
     let config = resolve_config(Some(&model), &overrides)?;

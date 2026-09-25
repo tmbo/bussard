@@ -139,8 +139,9 @@ pub fn apply_dotenv(dir: &Path, cwd: &Path) {
 
 /// The model directory of an invocation: `--dir`, else `BUSSARD_DIR`, else
 /// (for a command that reads an existing model) the directory
-/// [`bussard_model::discover`] finds from the working directory, else `knx`.
-/// A command that creates a model (`creates`) never searches: it uses `knx`.
+/// [`bussard_model::discover`] finds from the working directory, else the
+/// current directory. A command that creates a model (`creates`) never
+/// searches: it uses the current directory.
 pub fn resolve_model_dir(flag: Option<&Path>, env: Option<&Path>, creates: bool) -> PathBuf {
     if let Some(dir) = flag.or(env) {
         return dir.to_path_buf();
@@ -397,13 +398,33 @@ impl Drop for BusSession {
     }
 }
 
+/// `dir` for a message: `the current directory <absolute path>` when `dir` is
+/// the working directory (the default without `--dir`), else `dir` as given.
+pub fn describe_dir(dir: &Path) -> String {
+    let canonical = |p: &Path| std::fs::canonicalize(p).ok();
+    match (canonical(dir), canonical(Path::new("."))) {
+        (Some(d), Some(cwd)) if d == cwd => format!("the current directory {}", d.display()),
+        _ => dir.display().to_string(),
+    }
+}
+
+/// The one "no model" error: where bussard looked, what the command needed
+/// the model for (`why`), and how to get one there.
+pub fn no_model(dir: &Path, why: &str) -> String {
+    format!(
+        "no model in {}: {why}; run `bussard init` or `bussard import <export>` there, or pass \
+         --dir <model directory>",
+        describe_dir(dir)
+    )
+}
+
 /// Loads the model from `dir` for a **monitoring** command that may safely
 /// degrade to numeric addresses. An absent directory or a parse error both warn
 /// and return `None` (monitor still runs). Write and management commands must
 /// NOT use this: a model that is present but broken must be a hard error there,
 /// so they call [`load_model_required`] instead.
 pub fn load_model_optional(dir: &Path) -> Option<Model> {
-    if !dir.exists() {
+    if !bussard_model::discover::is_model_dir(dir) {
         tracing::warn!(
             "model directory {} not found; monitoring without decode (numeric addresses only)",
             dir.display()
@@ -427,7 +448,8 @@ pub fn load_model_optional(dir: &Path) -> Option<Model> {
 ///
 /// Distinguishes two cases the monitoring loader collapses together:
 ///
-/// * The model directory is **absent** — a fresh project. Returns `Ok(None)`;
+/// * The model directory is **absent**, or holds no model file
+///   ([`bussard_model::discover::is_model_dir`]) — a fresh project. Returns `Ok(None)`;
 ///   the caller proceeds unmodeled (a `write --dpt` still works, and there are
 ///   no protected GAs to enforce because there is no `groups.toml` yet).
 /// * The directory is **present but fails to parse** (malformed `groups.toml`,
@@ -435,11 +457,11 @@ pub fn load_model_optional(dir: &Path) -> Option<Model> {
 ///   the command aborts loudly rather than proceeding with `None` — which would
 ///   fail the protected-GA gate *open* exactly when the config is broken.
 ///
-/// An existing-but-empty project directory (no `groups.toml` yet) loads to the
-/// default empty model via [`Model::load`], so it is `Ok(Some(empty))` — still
-/// a fresh project with nothing to protect.
+/// A directory `bussard init` just created holds `bussard.toml` and loads to
+/// the empty model, so it is `Ok(Some(empty))`: still a fresh project with
+/// nothing to protect.
 pub fn load_model_required(dir: &Path) -> anyhow::Result<Option<Model>> {
-    if !dir.exists() {
+    if !bussard_model::discover::is_model_dir(dir) {
         tracing::warn!(
             "model directory {} not found; proceeding without a model (fresh project)",
             dir.display()
@@ -926,12 +948,16 @@ mod tests {
 
     #[test]
     fn load_model_required_empty_dir_is_fresh_project() -> Result<(), Box<dyn std::error::Error>> {
-        // An existing but empty project dir (no groups.toml) loads to the default
-        // empty model — a fresh project with nothing to protect.
+        // A directory without a model file is no model (the current directory
+        // is the default, so an unrelated one must not pass as a model); one
+        // with only `bussard.toml` (fresh from `init`) loads the empty model.
         let dir = tmp_dir("empty");
         std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join("README.md"), "unrelated")?;
+        assert!(load_model_required(&dir)?.is_none());
+        std::fs::write(dir.join("bussard.toml"), "")?;
         let out = load_model_required(&dir)?;
-        assert!(out.is_some(), "empty dir loads the default model");
+        assert!(out.is_some(), "a fresh init loads the default model");
         assert!(out.ok_or("expected a value")?.groups.groups.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
@@ -972,7 +998,7 @@ mod tests {
 
     #[test]
     fn test_resolve_model_dir_create_never_discovers() {
-        assert_eq!(resolve_model_dir(None, None, true), PathBuf::from("knx"));
+        assert_eq!(resolve_model_dir(None, None, true), PathBuf::from("."));
     }
 
     #[test]

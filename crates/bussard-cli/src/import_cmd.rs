@@ -168,7 +168,7 @@ pub(crate) fn write_model(
         to_save.groups.groups.len(),
         to_save.devices.len(),
         to_save.links.links.values().map(Vec::len).sum::<usize>(),
-        dir.display()
+        crate::conn_cmd::describe_dir(dir)
     );
     for d in &declared {
         println!("{}", d.sentence());

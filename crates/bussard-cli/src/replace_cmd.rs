@@ -70,9 +70,13 @@ pub fn run(
 
     let Some(model) = load_model_required(dir)? else {
         bail!(
-            "no model in {}: `bussard replace` reads which product belongs at {target} from \
-             its device file; run `bussard import` first",
-            dir.display()
+            "{}",
+            crate::conn_cmd::no_model(
+                dir,
+                &format!(
+                    "`bussard replace` reads which product belongs at {target} from its device file"
+                )
+            )
         );
     };
     let Some(loaded) = model.devices.get(&target) else {

@@ -633,6 +633,9 @@ enum Command {
         /// list what answers, without asking (for scripts).
         #[arg(long, value_name = "LINE", conflicts_with = "project")]
         scan: Option<String>,
+        /// Skip the confirmation prompt: initialise a non-empty directory.
+        #[arg(long)]
+        yes: bool,
     },
     /// Import a `.knxproj`, a `.bussard` bundle or an xknxproject JSON dump.
     Import {
@@ -663,6 +666,10 @@ enum Command {
         /// Do not look up or download missing product data; list it instead.
         #[arg(long)]
         no_download: bool,
+        /// Skip the confirmation prompt: import into a non-empty directory
+        /// that holds no model yet.
+        #[arg(long)]
+        yes: bool,
     },
     /// Write the model and its history as one `.bussard` file to hand over.
     Export {
@@ -1839,6 +1846,7 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
             yes_download,
             no_download,
             scan,
+            yes,
         } => init_cmd::run(
             dir,
             g.gateway.as_deref(),
@@ -1851,6 +1859,7 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
                     no_download,
                 },
                 scan,
+                yes,
             },
         ),
         Command::Import {
@@ -1862,7 +1871,12 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
             interactive,
             yes_download,
             no_download,
+            yes,
         } => {
+            if !init_cmd::confirm_target(dir, yes, init_cmd::TargetVerb::Import)? {
+                eprintln!("Not confirmed; nothing written.");
+                return Ok(ExitCode::FAILURE);
+            }
             let choice = import_bundle::ConflictChoice::from_flags(mine, theirs, interactive);
             let consent = product_fetch::Consent {
                 yes_download,
