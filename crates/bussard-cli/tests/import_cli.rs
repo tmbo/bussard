@@ -86,6 +86,34 @@ fn test_import_declares_a_group_address_the_project_uses_but_does_not_define() -
 }
 
 /// Writes a pointer index with the given entries.
+#[test]
+fn test_import_into_a_fresh_dir_writes_the_gitignore_with_env() -> TestResult {
+    let tmp = tmp("gitignore")?;
+    let dir = tmp.join("knx");
+    let out = bussard(
+        &[
+            "import",
+            "--from-json",
+            fixture().to_str().ok_or("path")?,
+            "--dir",
+            dir.to_str().ok_or("path")?,
+        ],
+        &[],
+    )?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stdout}\n{stderr}");
+    let ignore = std::fs::read_to_string(dir.join(".gitignore"))?;
+    assert_eq!(
+        ignore.lines().filter(|l| *l == ".env").count(),
+        1,
+        "{ignore}"
+    );
+    assert!(ignore.lines().any(|l| l == ".bussard/"), "{ignore}");
+    let _ = std::fs::remove_dir_all(&tmp);
+    Ok(())
+}
+
 fn index(dir: &Path, entries: serde_json::Value) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let path = dir.join("index.json");
     std::fs::write(

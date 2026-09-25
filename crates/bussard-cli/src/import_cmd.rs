@@ -164,6 +164,11 @@ pub(crate) fn write_model(
     // An import writes the files a fresh import would, in the same order,
     // even over a model an older writer laid out differently (issue #235).
     let report = to_save.save_pruning_as_import(dir)?;
+    // A fresh import writes the same `.gitignore` as `init`, so the `.env`
+    // with the project password is not committed by accident.
+    if merge_report.is_none() {
+        crate::init_cmd::merge_gitignore(&dir.join(".gitignore"))?;
+    }
     println!(
         "imported {} group addresses, {} devices, {} link entries → {}",
         to_save.groups.groups.len(),
