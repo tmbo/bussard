@@ -388,13 +388,19 @@ fn resolve_globals(global: &Global, command: &Command) -> anyhow::Result<Resolve
             cli_name(command)
         );
     }
-    let env = conn_cmd::EnvGlobals::from_process();
+    // The `.env` (issue #251), in two steps: `BUSSARD_DIR` may come from the
+    // working directory's `.env` and decides the model directory; the `.env`
+    // the lookup order then finds for that directory supplies every other
+    // `BUSSARD_*` variable, behind the process environment.
+    let cwd = std::path::Path::new(".");
     let role = command.role();
     let dir = conn_cmd::resolve_model_dir(
         global.dir.as_deref(),
-        env.dir.as_deref(),
+        conn_cmd::dir_before_dotenv(cwd).as_deref(),
         role == Role::Creates,
     );
+    conn_cmd::apply_dotenv(&dir, cwd);
+    let env = conn_cmd::EnvGlobals::from_process();
     // The product store (issue #228): move an earlier `vendor/` into
     // `products/` and regenerate `.bussard/models/` when it is missing, before
     // the command reads the model. `init` creates, `import` does this itself.
@@ -627,6 +633,9 @@ enum Command {
         /// list what answers, without asking (for scripts).
         #[arg(long, value_name = "LINE", conflicts_with = "project")]
         scan: Option<String>,
+        /// Skip the confirmation prompt: initialise a non-empty directory.
+        #[arg(long)]
+        yes: bool,
     },
     /// Import a `.knxproj`, a `.bussard` bundle or an xknxproject JSON dump.
     Import {
@@ -657,6 +666,10 @@ enum Command {
         /// Do not look up or download missing product data; list it instead.
         #[arg(long)]
         no_download: bool,
+        /// Skip the confirmation prompt: import into a non-empty directory
+        /// that holds no model yet.
+        #[arg(long)]
+        yes: bool,
     },
     /// Write the model and its history as one `.bussard` file to hand over.
     Export {
@@ -1833,6 +1846,7 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
             yes_download,
             no_download,
             scan,
+            yes,
         } => init_cmd::run(
             dir,
             g.gateway.as_deref(),
@@ -1845,6 +1859,7 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
                     no_download,
                 },
                 scan,
+                yes,
             },
         ),
         Command::Import {
@@ -1856,7 +1871,12 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
             interactive,
             yes_download,
             no_download,
+            yes,
         } => {
+            if !init_cmd::confirm_target(dir, yes, init_cmd::TargetVerb::Import)? {
+                eprintln!("Not confirmed; nothing written.");
+                return Ok(ExitCode::FAILURE);
+            }
             let choice = import_bundle::ConflictChoice::from_flags(mine, theirs, interactive);
             let consent = product_fetch::Consent {
                 yes_download,

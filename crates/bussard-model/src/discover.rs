@@ -3,16 +3,21 @@
 //! A command that reads an existing model and is given no `--dir` (and no
 //! `BUSSARD_DIR`) finds the model the way `git` and `cargo` find their roots:
 //! it looks in the working directory first, then walks up the parents.
-//! `bussard.toml` is the marker because `bussard init` always writes it.
+//! `bussard.toml` is the marker because `bussard init` always writes it. When
+//! nothing is found, every command works in the current directory
+//! ([`DEFAULT_MODEL_DIR`]).
 
 use std::path::{Path, PathBuf};
 
 use crate::loader::CONFIG_FILE;
 
-/// The model directory name every command used before discovery existed, and
-/// still the default when nothing is found (and for commands that create a
-/// model: `init`, `import`).
-pub const DEFAULT_MODEL_DIR: &str = "knx";
+/// The model directory when discovery finds nothing, and the one `init` and
+/// `import` create or update without `--dir`: the current directory.
+pub const DEFAULT_MODEL_DIR: &str = ".";
+
+/// The conventional model subdirectory of a repository root (`./knx`), which
+/// discovery also looks for.
+pub const NESTED_MODEL_DIR: &str = "knx";
 
 /// Finds the model directory for a command started in `start`.
 ///
@@ -26,7 +31,7 @@ pub const DEFAULT_MODEL_DIR: &str = "knx";
 ///    `bussard.toml`, else its `knx/` when that holds `bussard.toml`.
 ///
 /// Returns `None` when none matches; the caller then falls back to
-/// [`DEFAULT_MODEL_DIR`], so the "no model" errors stay as they were. The
+/// [`DEFAULT_MODEL_DIR`], the current directory. The
 /// first two answers are returned relative to `start` (`.` and `knx` when
 /// `start` is `.`); a parent is returned as an absolute path.
 #[must_use]
@@ -34,7 +39,7 @@ pub fn discover(start: &Path) -> Option<PathBuf> {
     if start.join(CONFIG_FILE).is_file() {
         return Some(start.to_path_buf());
     }
-    let knx = rel_join(start, DEFAULT_MODEL_DIR);
+    let knx = rel_join(start, NESTED_MODEL_DIR);
     if knx.is_dir() {
         return Some(knx);
     }
@@ -43,9 +48,30 @@ pub fn discover(start: &Path) -> Option<PathBuf> {
         if dir.join(CONFIG_FILE).is_file() {
             return Some(dir.to_path_buf());
         }
-        let nested = dir.join(DEFAULT_MODEL_DIR);
+        let nested = dir.join(NESTED_MODEL_DIR);
         nested.join(CONFIG_FILE).is_file().then_some(nested)
     })
+}
+
+/// Whether `dir` holds a model: `bussard.toml`, `groups.toml`, `bussard.lock`
+/// or a `devices/` directory (or the legacy YAML files, so their error still
+/// surfaces). An absent directory, or one with none of these, is no model:
+/// with the current directory as the default (issue #251 follow-up), a
+/// command started in an unrelated directory must say so rather than treat it
+/// as an empty model.
+#[must_use]
+pub fn is_model_dir(dir: &Path) -> bool {
+    [
+        CONFIG_FILE,
+        "groups.toml",
+        "bussard.lock",
+        "devices",
+        "bussard.yaml",
+        "groups.yaml",
+        "links.yaml",
+    ]
+    .iter()
+    .any(|name| dir.join(name).exists())
 }
 
 /// `start/name`, spelled `name` when `start` is the working directory, so a
@@ -72,6 +98,18 @@ mod tests {
         std::fs::create_dir_all(&dir)?;
         // Resolve symlinks (macOS /var -> /private/var) so answers compare.
         std::fs::canonicalize(&dir)
+    }
+
+    #[test]
+    fn test_is_model_dir_needs_a_model_file() -> TestResult {
+        let root = scratch("is-model")?;
+        assert!(!is_model_dir(&root.join("absent")));
+        std::fs::write(root.join("README.md"), "")?;
+        assert!(!is_model_dir(&root));
+        std::fs::write(root.join(CONFIG_FILE), "")?;
+        assert!(is_model_dir(&root));
+        std::fs::remove_dir_all(&root)?;
+        Ok(())
     }
 
     #[test]

@@ -95,7 +95,7 @@ else
 fi
 # A step against a Data Secure device carries `--keyring <file>`; the
 # before/after probes need the same keyring or they cannot sync with the device
-# (issue #166). BUSSARD_KEYRING_PASSWORD is already in the environment.
+# (issue #166). BUSSARD_KEYRING_PASSWORD is exported or comes from the .env (load_dotenv).
 # With BUSSARD_KEYRING set, every invocation gets `--keyring "$BUSSARD_KEYRING"`
 # unless the step already has one (see below).
 SNAP_KEYRING=()

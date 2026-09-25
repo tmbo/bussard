@@ -140,18 +140,18 @@ pub(crate) fn load_model_optional(
     command: &str,
     missing_hint: &str,
 ) -> anyhow::Result<Option<Model>> {
-    if !dir.exists() {
+    if !bussard_model::discover::is_model_dir(dir) {
         if have_explicit_address {
             eprintln!(
-                "warning: model directory {} not found; continuing because an explicit address was given",
-                dir.display()
+                "warning: no model in {}; continuing because an explicit address was given",
+                crate::conn_cmd::describe_dir(dir)
             );
             return Ok(None);
         }
         return Err(anyhow!(
             "no model in {}: {command} picks a free address from the devices the model \
              lists; {missing_hint}",
-            dir.display()
+            crate::conn_cmd::describe_dir(dir)
         ));
     }
     match Model::load(dir) {
@@ -378,7 +378,7 @@ pub(crate) async fn wait_for_single_device_as(
 
 /// Reads [`WAIT_MS_ENV`] as a millisecond budget, if set and parseable.
 fn wait_ms_override() -> Option<Duration> {
-    std::env::var(WAIT_MS_ENV)
+    bussard_model::dotenv::var(WAIT_MS_ENV)
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .map(Duration::from_millis)

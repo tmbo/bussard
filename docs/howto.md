@@ -309,12 +309,15 @@ $ bussard doc --format html --out handover/
 `init` discovers the gateway and writes an empty model; if discovery finds nothing (multicast does not cross subnets), pass `--gateway <ip>` directly:
 
 ```console
+$ mkdir knx && cd knx
 $ bussard init
 Searching for KNXnet/IP gateways on the local network...
 Found gateway: KNX IP Interface (192.0.2.10:3671, IA 1.1.250)
 
-Created a fresh KNX model in knx.
+Created a fresh KNX model in the current directory /home/me/house/knx.
 ```
+
+`init` works in the current directory (or `--dir`). In a directory that already holds other files it asks first; `--yes` answers for scripts.
 
 Then synthesize a model from what the devices already carry:
 

@@ -99,6 +99,8 @@ SERVE="$SIM_DIR/target/debug/serve"
 
 # A tiny reboot wait keeps the after-restart verify fast against the local sim.
 export BUSSARD_FLASH_REBOOT_WAIT_MS=200
+# Hermetic: never pick up the repository's .env (issue #251).
+export BUSSARD_NO_DOTENV=1
 # The negatives end in a device that deliberately says nothing; a short L4 budget
 # makes them fail in a second instead of the full 3 s ACK-retransmit wait.
 NEG_TIMEOUT_MS=400

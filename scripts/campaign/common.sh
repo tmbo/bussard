@@ -59,8 +59,46 @@ parse_common_args() {
     esac
     shift
   done
+  load_dotenv
   [ "${BUSSARD_ALLOW_REAL_GATEWAY:-0}" = "1" ] && ALLOW_REMOTE=1
   return 0
+}
+
+# --- The .env file (issue #251) ---------------------------------------------
+
+# Exports the BUSSARD_* variables of the model's .env, with bussard's own rules
+# (docs/reference.md, "Environment variables"): the first of $MODEL_DIR/.env,
+# the .env next to $MODEL_DIR, ./.env is read; a variable already exported
+# wins; only BUSSARD_* keys; KEY=value, optional `export `, # comments, single
+# or double quotes, no interpolation. BUSSARD_ALLOW_REAL_GATEWAY is never taken
+# from the file, so the gateway rule above stays an explicit act. bussard reads
+# the same file itself; the export is for the tools it does not cover
+# (knxtrace reads BUSSARD_KEYRING_PASSWORD) and for the scripts' own checks.
+# No value is printed. BUSSARD_NO_DOTENV=1 skips the file, as in bussard.
+load_dotenv() {
+  [ "${BUSSARD_NO_DOTENV:-}" = "1" ] && return 0
+  local file="" candidate line key value
+  for candidate in "$MODEL_DIR/.env" "$(dirname "$MODEL_DIR")/.env" "./.env"; do
+    if [ -f "$candidate" ]; then file="$candidate"; break; fi
+  done
+  [ -n "$file" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line#export }"
+    case "$line" in BUSSARD_*=*) ;; *) continue ;; esac
+    key="${line%%=*}"; key="${key%"${key##*[![:space:]]}"}"
+    value="${line#*=}"; value="${value#"${value%%[![:space:]]*}"}"
+    case "$key" in *[!A-Za-z0-9_]*|BUSSARD_ALLOW_REAL_GATEWAY|BUSSARD_NO_DOTENV) continue ;; esac
+    case "$value" in
+      \"*) value="${value#\"}"; value="${value%%\"*}" ;;
+      \'*) value="${value#\'}"; value="${value%%\'*}" ;;
+      *)   value="${value%%[[:space:]]#*}"; value="${value%"${value##*[![:space:]]}"}" ;;
+    esac
+    [ -n "${!key+set}" ] && continue
+    export "$key=$value"
+  done < "$file"
+  note "BUSSARD_* settings from $file (exported variables win)"
 }
 
 # --- The gateway, and the one rule ------------------------------------------

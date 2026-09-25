@@ -67,7 +67,7 @@ pub(super) const SYS7_LSM_OVERRIDE_ENV: &str = "BUSSARD_FLASH_SYS7_LSM";
 /// to keep the product-driven realisation. `memory` keeps the memory-mapped record
 /// at the profile's control/status addresses; `property` drives PID 5.
 pub(crate) fn sys7_lsm_override() -> Option<bussard_mgmt::LsmRealisation> {
-    match std::env::var(SYS7_LSM_OVERRIDE_ENV)
+    match bussard_model::dotenv::var(SYS7_LSM_OVERRIDE_ENV)
         .ok()?
         .trim()
         .to_ascii_lowercase()

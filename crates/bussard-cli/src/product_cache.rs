@@ -18,7 +18,7 @@ pub const CACHE_ENV: &str = "BUSSARD_PRODUCT_CACHE";
 /// The parsed-product cache directory for the model at `dir`, or `None` when
 /// there is no model directory or the cache is disabled.
 pub fn cache_dir(dir: &Path) -> Option<PathBuf> {
-    let disabled = std::env::var(CACHE_ENV).is_ok_and(|v| {
+    let disabled = bussard_model::dotenv::var(CACHE_ENV).is_ok_and(|v| {
         matches!(
             v.trim().to_ascii_lowercase().as_str(),
             "off" | "0" | "false"

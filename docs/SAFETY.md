@@ -530,7 +530,8 @@ manage every secured device and read and forge every secured group telegram.
   password. The `.knxkeys` exports are not committed: `init` lists
   `*.knxkeys` in the model's `.gitignore`.
 - **The password is never a flag** and never written anywhere by bussard. Keep
-  it in the environment (or a `.env` outside the repository).
+  it in the environment or in an untracked `.env` (see
+  [Secrets and the `.env` file](#secrets-and-the-env-file)).
 - **No key leaves in the clear.** `keys show`, `keys import` and their
   `--json` print addresses, counts and presence flags only; the store types
   redact themselves in logs and debug output.
@@ -548,6 +549,34 @@ command reads it unless `--keyring` or `BUSSARD_KEYRING` names an explicit
 file; `connection.keyring` in `bussard.toml` is deprecated and ignored (with
 a warning) when a store exists. `bussard validate` checks the model's
 secured devices and groups against it.
+
+## Secrets and the `.env` file
+
+bussard reads `BUSSARD_*` variables from one `.env` file (issue #251): the
+first of `<model dir>/.env`, the `.env` next to the model directory and
+`./.env`. The full rules are in
+[reference.md](reference.md#the-env-file). What matters for safety:
+
+- **The file stays out of git.** Keep `BUSSARD_KEYRING_PASSWORD` and
+  `BUSSARD_PROJECT_PASSWORD` there only if `.env` is in `.gitignore` (the
+  repository's own `.gitignore` lists it). `bussard export` never copies a
+  `.env` into a bundle.
+- **No value is printed.** `-vv` and `--timing` name the file that was read
+  and the keys it applied, never a value.
+- **Only `BUSSARD_*` keys enter bussard**, so a `.env` shared with other tools
+  does not leak their secrets into bussard's process.
+- **An export beats the file**, even an empty one, so a one-off
+  `BUSSARD_KEYRING_PASSWORD= bussard ...` still runs without a password.
+- **A `.env` never opens the write gate.** `BUSSARD_ALLOW_REAL_GATEWAY` in the
+  file is ignored with a warning: the gate in
+  `bussard_transport::write_gate` reads the process environment only, and the
+  loader drops the key before anything can read it. A write to a non-loopback
+  gateway still needs `--allow-remote-gateway` or an exported
+  `BUSSARD_ALLOW_REAL_GATEWAY=1` (see
+  [Arm the service laptop](#arm-the-service-laptop-not-the-project)).
+  `BUSSARD_GATEWAY` from the file does select the gateway, as an export
+  would; reads go there, and writes to it stay gated.
+- `BUSSARD_NO_DOTENV=1`, exported, skips the file for a hermetic run.
 
 ## Protected group addresses
 
@@ -912,7 +941,7 @@ export BUSSARD_ALLOW_REAL_GATEWAY=1
 
 It has the same effect as passing `--allow-remote-gateway` to every write command, and to `mcp --allow-writes` and `viz --allow-writes` at startup. It removes nothing else: every confirmation still names the gateway, protected group addresses still need `--force`, and the MCP server reaches a device's tables only through the programming tier (`--allow-programming`, one approved plan at a time) and never flashes.
 
-The opt-in is per machine on purpose. The question it answers is "is this computer meant to write to real buses?", and only the machine knows that. A setting in `bussard.toml` would travel with the model: into every bundle handed to a customer, every repository clone, and every assistant session started on that model. The owner who imports the handover bundle would receive an armed tool without choosing it. Keep the variable out of `.env` files that live next to a model for the same reason.
+The opt-in is per machine on purpose. The question it answers is "is this computer meant to write to real buses?", and only the machine knows that. A setting in `bussard.toml` would travel with the model: into every bundle handed to a customer, every repository clone, and every assistant session started on that model. The owner who imports the handover bundle would receive an armed tool without choosing it. A `.env` next to a model travels the same way, so bussard ignores the variable there (with a warning); only the shell profile or an explicit export arms the machine.
 
 ### Share the interface with ETS
 

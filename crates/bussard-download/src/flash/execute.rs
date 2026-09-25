@@ -1149,7 +1149,7 @@ pub(super) const SPARSE_MERGE_GAP_ENV: &str = "BUSSARD_SPARSE_MERGE_GAP";
 /// The sparse merge gap for this process: [`SPARSE_MERGE_GAP_ENV`] when it
 /// parses, else [`SPARSE_MERGE_GAP`].
 pub(super) fn sparse_merge_gap() -> usize {
-    std::env::var(SPARSE_MERGE_GAP_ENV)
+    bussard_model::dotenv::var(SPARSE_MERGE_GAP_ENV)
         .ok()
         .and_then(|v| v.trim().parse().ok())
         .unwrap_or(SPARSE_MERGE_GAP)

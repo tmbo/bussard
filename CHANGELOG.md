@@ -521,13 +521,31 @@ directory or a script from before these changes needs:
   the refusal they override.
 - Without `--dir`, a command finds the model directory itself: `.` when it
   holds `bussard.toml`, else `./knx`, else the nearest parent holding
-  `bussard.toml` or `knx/bussard.toml`, else `knx` as before. Commands now work
-  from inside the model and its subdirectories. `init` and `import` never
-  search upward (#228).
+  `bussard.toml` or `knx/bussard.toml`. Commands now work from inside the
+  model and its subdirectories. `init` and `import` never search upward
+  (#228).
+- Breaking: the default model directory is the current directory, not `knx`.
+  When discovery finds nothing, every command works in `.`, and a directory
+  without a model file reports `no model in the current directory <path>`
+  with `bussard init`, `bussard import <export>` or `--dir` as the way out.
+  `init` and `import` write into `.` without `--dir`; in a non-empty
+  directory that holds no model they ask first (naming the entry count and a
+  model in `knx/` below), `--yes` answers, and without a terminal they refuse
+  with the standard sentence. `init` there keeps existing files and extends an
+  existing `.gitignore`. Pass `--dir knx` (or `cd knx`) for the old layout.
 - New environment variables `BUSSARD_DIR`, `BUSSARD_GATEWAY` and
   `BUSSARD_KEYRING`, with the precedence flag, then environment, then
   `bussard.toml`, then discovery. They only select; none of them can permit a
   write, and `BUSSARD_ALLOW_REAL_GATEWAY` is unchanged (#228).
+- bussard reads its `BUSSARD_*` variables from a `.env` file too, so the
+  passwords and the gateway no longer have to be exported before every
+  command, the MCP server included (#251). The first of `<model dir>/.env`,
+  the `.env` next to the model directory and `./.env` is read, never merged;
+  `BUSSARD_DIR` alone comes from `./.env` before the model directory is known.
+  An exported variable wins, even when empty. Only `BUSSARD_*` keys are read,
+  no value is printed (`-vv` and `--timing` name the file), and
+  `BUSSARD_NO_DOTENV=1` skips it. The campaign scripts apply the same file,
+  so `set -a; . ./.env` is no longer needed before them.
 - `--keyring` is now accepted by `adopt` and `test` (tunnel only, as
   `connection.keyring` already was), and `assign --keyring --tool-key` opens
   the secure tunnel with the given keyring as documented.
@@ -702,7 +720,9 @@ directory or a script from before these changes needs:
 
 - Writes to a non-loopback gateway are refused unless the user opts in with
   `--allow-remote-gateway` or `BUSSARD_ALLOW_REAL_GATEWAY=1`, and every
-  confirmation names the resolved gateway (#74).
+  confirmation names the resolved gateway (#74). `BUSSARD_ALLOW_REAL_GATEWAY`
+  in a `.env` is ignored with a warning: only the flag or an exported
+  variable opens the gate (#251).
 - A `protected: true` group address needs `--force` on the CLI and cannot be
   written over MCP at all. The gate fails closed on a model parse error (#13,
   #55).

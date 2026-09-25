@@ -40,7 +40,7 @@ pub fn run(
     password: Option<String>,
     password_b: Option<String>,
 ) -> anyhow::Result<ExitCode> {
-    let env = std::env::var("BUSSARD_PROJECT_PASSWORD")
+    let env = bussard_model::dotenv::var("BUSSARD_PROJECT_PASSWORD")
         .ok()
         .filter(|s| !s.is_empty());
     let pw_a = password.clone().or_else(|| env.clone());

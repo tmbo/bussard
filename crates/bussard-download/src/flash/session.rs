@@ -107,7 +107,7 @@ const REBOOT_WAIT_MS_ENV: &str = "BUSSARD_FLASH_REBOOT_WAIT_MS";
 
 /// The upper bound on the post-restart wait, honouring [`REBOOT_WAIT_MS_ENV`].
 fn reboot_wait_bound() -> std::time::Duration {
-    std::env::var(REBOOT_WAIT_MS_ENV)
+    bussard_model::dotenv::var(REBOOT_WAIT_MS_ENV)
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .map(std::time::Duration::from_millis)
@@ -128,7 +128,7 @@ const SECURE_REBOOT_WAIT: std::time::Duration = std::time::Duration::from_secs(3
 /// The upper bound on the post-restart poll of a Data Secure device, honouring
 /// [`REBOOT_WAIT_MS_ENV`].
 fn secure_reboot_wait_bound() -> std::time::Duration {
-    std::env::var(REBOOT_WAIT_MS_ENV)
+    bussard_model::dotenv::var(REBOOT_WAIT_MS_ENV)
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .map(std::time::Duration::from_millis)
@@ -186,7 +186,7 @@ pub(super) const RECONNECT_THRESHOLD_ENV: &str = "BUSSARD_FLASH_RECONNECT_EXCHAN
 /// [`RECONNECT_EXCHANGE_THRESHOLD`] for a KNX Virtual target and 0 (no
 /// proactive cycling, one connection like ETS) for every other device.
 pub(super) fn reconnect_exchange_threshold(plan: &super::FlashPlan) -> u32 {
-    let env = std::env::var(RECONNECT_THRESHOLD_ENV).ok();
+    let env = bussard_model::dotenv::var(RECONNECT_THRESHOLD_ENV).ok();
     threshold_for(env.as_deref(), plan.targets_knx_virtual())
 }
 

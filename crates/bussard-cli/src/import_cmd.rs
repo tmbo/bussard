@@ -169,7 +169,7 @@ pub(crate) fn write_model(
         to_save.groups.groups.len(),
         to_save.devices.len(),
         to_save.links.links.values().map(Vec::len).sum::<usize>(),
-        dir.display()
+        crate::conn_cmd::describe_dir(dir)
     );
     for d in &declared {
         println!("{}", d.sentence());
@@ -310,7 +310,7 @@ fn report_merge(report: &MergeReport, kept: usize, choice: ConflictChoice) -> Ex
 
 /// Resolves the password from the flag or the environment (no prompt here).
 fn resolve_password(flag: Option<String>) -> Option<String> {
-    flag.or_else(|| std::env::var("BUSSARD_PROJECT_PASSWORD").ok())
+    flag.or_else(|| bussard_model::dotenv::var("BUSSARD_PROJECT_PASSWORD").ok())
         .filter(|s| !s.is_empty())
 }
 

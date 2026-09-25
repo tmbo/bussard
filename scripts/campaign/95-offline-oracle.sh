@@ -3,7 +3,7 @@
 #
 #   scripts/campaign/95-offline-oracle.sh --rows rows.txt [--dir knx] [--out DIR]
 #   scripts/campaign/95-offline-oracle.sh --row '1.1.5|ets.pcapng|vendor.knxprod|M-0001_A-...'
-#   BUSSARD_KEYRING_PASSWORD=... scripts/campaign/95-offline-oracle.sh \
+#   scripts/campaign/95-offline-oracle.sh \
 #       --keyring project.knxkeys --row '1.1.12|secure.pcapng|project.knxproj|M-0004_A-...'
 #
 # Before a real device is flashed, compare the memory images bussard WOULD
@@ -31,7 +31,8 @@
 # is passed to `knxtrace image`, which then verifies and decrypts the secured
 # frames (without it a Secure download composes to nothing), and to the
 # bussard dry run, which then plans the secured download. The password comes
-# from $BUSSARD_KEYRING_PASSWORD, never the command line. `knxtrace imgdiff`
+# from $BUSSARD_KEYRING_PASSWORD (exported, or from the model's .env, see
+# load_dotenv in common.sh), never the command line. `knxtrace imgdiff`
 # reads the already decrypted image directory and needs no keyring.
 #
 # Per device the result is identical / differs (octets, first differing
@@ -69,6 +70,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+load_dotenv
 [ -n "$ROWS_FILE" ] || [ -n "$SINGLE_ROW" ] || die "pass --rows FILE or --row 'device|capture|product[|application]'"
 [ -n "$OUT" ] || OUT="$(campaign_root)/offline-oracle"
 [ -x "$BUSSARD_BIN" ] || die "no bussard binary at $BUSSARD_BIN (cargo build, or export BUSSARD_BIN)"
@@ -77,7 +79,7 @@ ensure_dir "$OUT"
 KEYRING_ARGS=()
 if [ -n "$KEYRING" ]; then
   [ -f "$KEYRING" ] || die "no keyring at $KEYRING"
-  [ -n "${BUSSARD_KEYRING_PASSWORD:-}" ] || die "--keyring needs the keyring password in \$BUSSARD_KEYRING_PASSWORD"
+  [ -n "${BUSSARD_KEYRING_PASSWORD:-}" ] || die "--keyring needs the keyring password in \$BUSSARD_KEYRING_PASSWORD (export it or put it in the model's .env)"
   KEYRING_ARGS=(--keyring "$KEYRING")
 fi
 

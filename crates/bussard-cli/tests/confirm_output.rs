@@ -146,14 +146,23 @@ fn test_confirm_refusal_is_one_text_for_every_write_command() -> TestResult {
 
 #[test]
 fn test_yes_is_not_download_consent() -> TestResult {
-    // `--yes` is gone from the commands whose only question was the download.
+    // On `init` and `import`, `--yes` only skips the non-empty-directory
+    // prompt; the download has its own flag next to it.
     for command in ["init", "import"] {
-        let out = bussard(&[command, "--yes", "x.knxproj"], &[])?;
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(!out.status.success(), "{command} --yes must be refused");
+        let out = bussard(&[command, "--help"], &[])?;
+        let help = String::from_utf8_lossy(&out.stdout);
+        let lines: Vec<&str> = help.lines().collect();
+        let at = lines
+            .iter()
+            .position(|line| {
+                let line = line.trim();
+                line == "--yes" || line.starts_with("--yes ")
+            })
+            .ok_or("no --yes entry")?;
+        let yes = lines[at..(at + 3).min(lines.len())].join(" ");
         assert!(
-            stderr.contains("unexpected argument '--yes'"),
-            "{command}: {stderr}"
+            yes.contains("confirmation prompt") && !yes.contains("download"),
+            "{command} --yes: {yes}"
         );
     }
     // The download consent has one name on every command that downloads.

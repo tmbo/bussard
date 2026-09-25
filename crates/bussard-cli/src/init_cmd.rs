@@ -73,6 +73,8 @@ pub(crate) struct FirstRun {
     pub consent: crate::product_fetch::Consent,
     /// `--scan <LINE>`: scan this line after writing, without asking.
     pub scan: Option<String>,
+    /// `--yes`: initialise a non-empty directory without asking.
+    pub yes: bool,
 }
 
 /// Creates a fresh `knx/` model directory, then imports the project given (or
@@ -166,15 +168,23 @@ fn run_with(
     probe: ProbeFn,
     first: FirstRun,
 ) -> anyhow::Result<ExitCode> {
-    // 1. Refuse a non-empty target directory.
-    if dir_is_non_empty(dir)? {
-        eprintln!("error: {} already exists and is not empty.", dir.display());
-        eprintln!("It looks like a model already lives here. Try one of:");
+    // 1. Refuse a directory that already holds a model; ask before writing
+    // into any other non-empty one.
+    if dir.join(bussard_model::loader::CONFIG_FILE).is_file() {
+        eprintln!(
+            "error: {} already holds a model (bussard.toml).",
+            crate::conn_cmd::describe_dir(dir)
+        );
+        eprintln!("Try one of:");
         eprintln!("  bussard validate --dir {}", dir.display());
         eprintln!(
             "  bussard import <project.knxproj> --dir {}   (to (re)import from ETS)",
             dir.display()
         );
+        return Ok(ExitCode::FAILURE);
+    }
+    if !confirm_target(dir, first.yes, TargetVerb::Init)? {
+        eprintln!("Not confirmed; nothing written.");
         return Ok(ExitCode::FAILURE);
     }
 
@@ -266,18 +276,118 @@ fn run_with(
 /// another.
 const DEFAULT_SCAN_LINE: &str = "1.1";
 
-/// A directory is "non-empty" if it exists and contains at least one entry. An
-/// absent directory, or an existing empty one, is fine to initialise into.
-fn dir_is_non_empty(dir: &Path) -> anyhow::Result<bool> {
+/// Entries that do not make a target directory "non-empty" for `init` and
+/// `import`: a repository's own files and bussard's local data.
+const IGNORED_ENTRIES: &[&str] = &[".git", ".env", ".gitignore", ".bussard"];
+
+/// What is already in the target directory of `init` or `import`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct TargetState {
+    /// Entries other than [`IGNORED_ENTRIES`].
+    pub entries: usize,
+    /// `knx/bussard.toml` exists below it: a model lives one level down.
+    pub nested_model: bool,
+}
+
+impl TargetState {
+    /// Whether `init` or `import` must ask before writing here.
+    pub fn needs_confirmation(self) -> bool {
+        self.entries > 0 || self.nested_model
+    }
+
+    /// `12 entries, a model exists in knx/`.
+    fn describe(self) -> String {
+        let mut out = match self.entries {
+            1 => "1 entry".to_string(),
+            n => format!("{n} entries"),
+        };
+        if self.nested_model {
+            out.push_str(&format!(
+                ", a model exists in {}/",
+                bussard_model::NESTED_MODEL_DIR
+            ));
+        }
+        out
+    }
+}
+
+/// Reads what is in `dir`. An absent directory is empty.
+///
+/// # Errors
+///
+/// `dir` exists but is not a directory, or cannot be listed.
+pub(crate) fn target_state(dir: &Path) -> anyhow::Result<TargetState> {
     if !dir.exists() {
-        return Ok(false);
+        return Ok(TargetState::default());
     }
     if !dir.is_dir() {
         bail!("{} exists but is not a directory", dir.display());
     }
-    let mut entries =
-        std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))?;
-    Ok(entries.next().is_some())
+    let entries = std::fs::read_dir(dir)
+        .with_context(|| format!("reading {}", dir.display()))?
+        .flatten()
+        .filter(|e| !IGNORED_ENTRIES.contains(&e.file_name().to_string_lossy().as_ref()))
+        .count();
+    let nested_model = dir
+        .join(bussard_model::NESTED_MODEL_DIR)
+        .join(bussard_model::loader::CONFIG_FILE)
+        .is_file();
+    Ok(TargetState {
+        entries,
+        nested_model,
+    })
+}
+
+/// Which command asks [`confirm_target`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TargetVerb {
+    /// `bussard init`.
+    Init,
+    /// `bussard import`.
+    Import,
+}
+
+/// Asks before `init` or `import` writes a model into a non-empty `dir` that
+/// holds no model yet (a directory with `bussard.toml` is the caller's case:
+/// `init` refuses it; `import` re-imports into any model directory). `--yes` (`yes`) answers
+/// yes; without a terminal and without `--yes` this fails with the standard
+/// [`crate::confirm::refusal`]. Returns whether to go on.
+///
+/// # Errors
+///
+/// The refusal above, an unreadable `dir`, or a failure to read stdin.
+pub(crate) fn confirm_target(dir: &Path, yes: bool, verb: TargetVerb) -> anyhow::Result<bool> {
+    let existing = match verb {
+        TargetVerb::Init => dir.join(bussard_model::loader::CONFIG_FILE).is_file(),
+        // Any model file makes it the re-import path, which merges.
+        TargetVerb::Import => bussard_model::discover::is_model_dir(dir),
+    };
+    if existing {
+        return Ok(true);
+    }
+    let state = target_state(dir)?;
+    if !state.needs_confirmation() {
+        return Ok(true);
+    }
+    let place = crate::conn_cmd::describe_dir(dir);
+    // `the current directory /abs` or the directory as given.
+    let (here, non_empty) = match place.strip_prefix("the current directory ") {
+        Some(path) => (
+            "the current directory".to_string(),
+            format!("the non-empty current directory {path}"),
+        ),
+        None => (place.clone(), format!("the non-empty directory {place}")),
+    };
+    let question = match verb {
+        TargetVerb::Init => format!("initialise a model in {here}?"),
+        TargetVerb::Import => format!("import into {here}?"),
+    };
+    let prompt = format!("{place} is not empty ({}); {question}", state.describe());
+    let action = match verb {
+        TargetVerb::Init => format!("initialise a model in {non_empty} ({})", state.describe()),
+        TargetVerb::Import => format!("import into {non_empty} ({})", state.describe()),
+    };
+    crate::confirm::confirm(yes, &prompt, &action)
 }
 
 /// Decides which transport to emit, running discovery only when needed.
@@ -539,21 +649,21 @@ fn write_skeleton(
     }
     write_file(&dir.join("bussard.toml"), &config)?;
     if groups {
-        write_file(&dir.join("groups.toml"), GROUPS_TOML)?;
+        write_new(&dir.join("groups.toml"), GROUPS_TOML)?;
     }
 
     let devices_dir = dir.join("devices");
     std::fs::create_dir_all(&devices_dir)
         .with_context(|| format!("creating {}", devices_dir.display()))?;
-    write_file(&devices_dir.join(".gitkeep"), DEVICES_GITKEEP)?;
+    write_new(&devices_dir.join(".gitkeep"), DEVICES_GITKEEP)?;
 
     let captures_dir = dir.join("captures");
     std::fs::create_dir_all(&captures_dir)
         .with_context(|| format!("creating {}", captures_dir.display()))?;
-    write_file(&captures_dir.join(".gitignore"), CAPTURES_GITIGNORE)?;
+    write_new(&captures_dir.join(".gitignore"), CAPTURES_GITIGNORE)?;
 
-    write_file(&dir.join(".gitignore"), GITIGNORE)?;
-    write_file(&dir.join("README.md"), README_MD)?;
+    merge_gitignore(&dir.join(".gitignore"))?;
+    write_new(&dir.join("README.md"), README_MD)?;
 
     Ok(())
 }
@@ -573,6 +683,43 @@ fn toml_basic_string(value: &str) -> String {
     }
     out.push('"');
     out
+}
+
+/// Writes `content` to `path` unless a file is already there (`init` in a
+/// non-empty directory keeps the repository's own `README.md` and the like).
+fn write_new(path: &Path, content: &str) -> anyhow::Result<()> {
+    if path.exists() {
+        println!("Kept the existing {}.", path.display());
+        return Ok(());
+    }
+    write_file(path, content)
+}
+
+/// Writes the model's `.gitignore`, or appends the lines of it an existing
+/// `.gitignore` lacks, so `.bussard/` and `*.knxkeys` are always ignored.
+fn merge_gitignore(path: &Path) -> anyhow::Result<()> {
+    let Ok(existing) = std::fs::read_to_string(path) else {
+        return write_file(path, GITIGNORE);
+    };
+    let present: std::collections::BTreeSet<&str> = existing.lines().map(str::trim).collect();
+    let missing: Vec<&str> = GITIGNORE
+        .lines()
+        .filter(|l| !l.is_empty() && !l.starts_with('#') && !present.contains(l.trim()))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let mut text = existing;
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str("\n# bussard: its local data and ETS keyring exports stay out of git.\n");
+    for line in &missing {
+        text.push_str(line);
+        text.push('\n');
+    }
+    println!("Added {} to {}.", missing.join(", "), path.display());
+    write_file(path, &text)
 }
 
 /// Writes `content` to `path`, erroring with the path for context.
@@ -729,28 +876,30 @@ Guide for new owners: https://github.com/tmbo/bussard/blob/main/docs/getting-sta
 
 /// Prints crisp next steps to stdout.
 fn print_next_steps(dir: &Path, imported: bool) {
-    let d = dir.display();
+    let place = crate::conn_cmd::describe_dir(dir);
+    // In the current directory every command finds the model without `--dir`.
+    let d = if place.starts_with("the current directory") {
+        String::new()
+    } else {
+        format!(" --dir {}", dir.display())
+    };
     println!();
-    println!("Created a fresh KNX model in {d}.");
+    println!("Created a fresh KNX model in {place}.");
     println!();
     println!("Next steps:");
-    println!("  - Watch the bus:            bussard monitor --dir {d}");
+    println!("  - Watch the bus:            bussard monitor{d}");
     if imported {
-        println!("  - See one device:           bussard device <address> --dir {d}");
-        println!("  - Preview a device write:   bussard plan <address> --dir {d}");
+        println!("  - See one device:           bussard device <address>{d}");
+        println!("  - Preview a device write:   bussard plan <address>{d}");
     } else {
-        println!("  - Import an ETS export:     bussard import project.knxproj --dir {d}");
-        println!(
-            "  - Reserve group addresses:  bussard groups reserve \"EG Küche\" light --dir {d}"
-        );
+        println!("  - Import an ETS export:     bussard import project.knxproj{d}");
+        println!("  - Reserve group addresses:  bussard groups reserve \"EG Küche\" light{d}");
     }
-    println!("  - Connect Claude via MCP:   claude mcp add knx -- bussard mcp --dir {d}");
+    println!("  - Connect Claude via MCP:   claude mcp add knx -- bussard mcp{d}");
     println!();
-    println!("Check the model any time:     bussard validate --dir {d}");
-    println!("See what changed, and undo it: bussard status --dir {d} / bussard undo --dir {d}");
-    println!(
-        "When it works, keep a copy:   bussard export --dir {d} (one file to back up or hand over)"
-    );
+    println!("Check the model any time:     bussard validate{d}");
+    println!("See what changed, and undo it: bussard status{d} / bussard undo{d}");
+    println!("When it works, keep a copy:   bussard export{d} (one file to back up or hand over)");
 }
 
 #[cfg(test)]
@@ -809,23 +958,106 @@ mod tests {
     }
 
     #[test]
-    fn refuses_non_empty_dir() -> Result<(), Box<dyn std::error::Error>> {
-        let dir = temp_dir("nonempty");
+    fn refuses_a_dir_that_holds_a_model() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = temp_dir("has-model");
         std::fs::create_dir_all(&dir)?;
-        std::fs::write(dir.join("something.txt"), "hi")?;
-
+        std::fs::write(dir.join("bussard.toml"), "# mine\n")?;
         let code = run_with(
             &dir,
             None,
-            false,
+            true,
             no_gateways,
             no_probe,
-            FirstRun::default(),
+            FirstRun {
+                yes: true,
+                ..FirstRun::default()
+            },
         )?;
         assert_eq!(code, ExitCode::FAILURE);
-        // Original content untouched: we didn't write a skeleton.
-        assert!(!dir.join("bussard.toml").exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("bussard.toml"))?,
+            "# mine\n"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+        Ok(())
+    }
 
+    #[test]
+    fn test_run_with_non_empty_dir_without_terminal_refuses()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // nextest runs tests with stdin not a terminal.
+        let dir = temp_dir("nonempty");
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join("something.txt"), "hi")?;
+        let result = run_with(&dir, None, true, no_gateways, no_probe, FirstRun::default());
+        let err = result
+            .err()
+            .ok_or("a non-empty dir without --yes must be refused")?;
+        let text = format!("{err:#}");
+        assert!(
+            text.contains("refusing to initialise a model in the non-empty")
+                && text.contains("pass --yes to confirm non-interactively"),
+            "{text}"
+        );
+        assert!(!dir.join("bussard.toml").exists());
+        std::fs::remove_dir_all(&dir).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn test_run_with_non_empty_dir_yes_keeps_existing_files()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = temp_dir("nonempty-yes");
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join("README.md"), "repo readme\n")?;
+        std::fs::write(dir.join(".gitignore"), "target/\n*.knxkeys\n")?;
+        let code = run_with(
+            &dir,
+            None,
+            true,
+            no_gateways,
+            no_probe,
+            FirstRun {
+                yes: true,
+                ..FirstRun::default()
+            },
+        )?;
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert!(dir.join("bussard.toml").exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("README.md"))?,
+            "repo readme\n"
+        );
+        let ignore = std::fs::read_to_string(dir.join(".gitignore"))?;
+        assert!(ignore.starts_with("target/\n*.knxkeys\n"), "{ignore}");
+        assert!(ignore.contains("\n.bussard/\n"), "{ignore}");
+        assert_eq!(ignore.matches("*.knxkeys").count(), 1, "{ignore}");
+        std::fs::remove_dir_all(&dir).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn test_target_state_ignores_repo_files_and_sees_nested_model()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = temp_dir("state");
+        assert_eq!(target_state(&dir)?, TargetState::default());
+        std::fs::create_dir_all(dir.join(".git"))?;
+        std::fs::create_dir_all(dir.join(".bussard"))?;
+        std::fs::write(dir.join(".env"), "")?;
+        std::fs::write(dir.join(".gitignore"), "")?;
+        let state = target_state(&dir)?;
+        assert!(!state.needs_confirmation(), "{state:?}");
+        std::fs::create_dir_all(dir.join("knx"))?;
+        std::fs::write(dir.join("knx").join("bussard.toml"), "")?;
+        let state = target_state(&dir)?;
+        assert_eq!(
+            state,
+            TargetState {
+                entries: 1,
+                nested_model: true
+            }
+        );
+        assert_eq!(state.describe(), "1 entry, a model exists in knx/");
         std::fs::remove_dir_all(&dir).ok();
         Ok(())
     }

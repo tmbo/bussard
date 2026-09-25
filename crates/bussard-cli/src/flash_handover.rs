@@ -41,7 +41,7 @@ pub(crate) const NO_HANDOVER_ENV: &str = "BUSSARD_FLASH_NO_HANDOVER";
 /// Whether the pre-flight may keep its connection for the write phase: only
 /// under `--yes`, and not when [`NO_HANDOVER_ENV`] is `1`.
 pub(crate) fn wanted(yes: bool) -> bool {
-    yes && std::env::var(NO_HANDOVER_ENV)
+    yes && bussard_model::dotenv::var(NO_HANDOVER_ENV)
         .ok()
         .as_deref()
         .map(str::trim)

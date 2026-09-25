@@ -13,7 +13,7 @@ The complete surface of `bussard`: every command and flag, the environment varia
 
 One option group serves every subcommand (issue #228). Each option is declared once, prints once under "Global options" in every `--help`, and goes before or after the subcommand (`bussard --dir site/knx status` and `bussard status --dir site/knx` are the same). A command with no use for an option accepts and ignores it; the one exception is `--json`, which a command without machine output refuses. The per-command tables below list only the options that belong to that command, plus what a global option means there when it means more than the text here.
 
-Precedence, for every option that has more than one source: the flag, then the environment variable, then `bussard.toml`, then discovery or the built-in default.
+Precedence, for every option that has more than one source: the flag, then the environment variable (exported, else from the [`.env` file](#the-env-file)), then `bussard.toml`, then discovery or the built-in default.
 
 | Option | Environment | `bussard.toml` | Default | Meaning |
 |---|---|---|---|---|
@@ -43,9 +43,9 @@ Every `--json` document is one object whose first field is `"schema": <n>`, the 
 1. the working directory, when it holds `bussard.toml`;
 2. `./knx`, when it exists;
 3. each parent directory, nearest first: the parent when it holds `bussard.toml`, else its `knx/` when that holds `bussard.toml`;
-4. otherwise `knx`, the old default, so the errors for a missing model read as before.
+4. otherwise the current directory.
 
-`bussard -v` logs the directory it chose. `init` and `import` create or update the model in `--dir`, `BUSSARD_DIR` or `knx` and never search upward.
+`bussard -v` logs the directory it chose. A directory without a model file (`bussard.toml`, `groups.toml`, `bussard.lock` or `devices/`) is no model: a command that needs one says `no model in the current directory <path>: ...; run `bussard init` or `bussard import <export>` there, or pass --dir <model directory>`. `init` and `import` create or update the model in `--dir`, `BUSSARD_DIR` or the current directory and never search upward.
 
 The remaining global options:
 
@@ -105,8 +105,9 @@ Create a fresh model directory: discover the gateway, write the skeleton. The fi
 | `--yes-download` | off | Download missing vendor product data without asking. Without a terminal and without this flag nothing is downloaded; the missing order numbers are listed. |
 | `--no-download` | off | Do not download missing product data; list it instead. |
 | `--scan <LINE>` | | Without a project: scan this line after writing the skeleton, without asking. |
+| `--yes` | off | Skip the confirmation prompt for a non-empty directory. |
 
-The model directory is `--dir`, `BUSSARD_DIR` or `knx`; `init` never searches upward for an existing model. `--gateway` (or `BUSSARD_GATEWAY`) skips gateway discovery and writes that gateway into `bussard.toml`; `--routing` configures routing instead. Both are [global options](#global-options).
+The model directory is `--dir`, `BUSSARD_DIR` or the current directory; `init` never searches upward for an existing model. A directory that already holds `bussard.toml` is refused. A directory with anything else in it (other than `.git`, `.env`, `.gitignore` and `.bussard/`), or with a model one level down in `knx/`, gets a question first, e.g. `the current directory /home/me/house is not empty (12 entries, a model exists in knx/); initialise a model in the current directory? [y/N]`. `--yes` answers it; without a terminal and without `--yes`, `init` refuses with the standard sentence (see [confirmation](#confirmation-download-consent-and-json)). In a non-empty directory `init` keeps existing files (a repository's `README.md`, say) and adds its `.bussard/` and `*.knxkeys` lines to an existing `.gitignore`. `--gateway` (or `BUSSARD_GATEWAY`) skips gateway discovery and writes that gateway into `bussard.toml`; `--routing` configures routing instead. Both are [global options](#global-options).
 
 With a project, `init` also looks for an ETS keyring export (`.knxkeys`) in the project's directory. Exactly one is recorded as `connection.keyring` in `bussard.toml` (relative to the model directory when it sits next to it, else absolute), so every bus command uses it without `--keyring`, and `init` prints the reminder to set `BUSSARD_KEYRING_PASSWORD`; the password is never written anywhere. Several keyrings are listed and none is picked.
 
@@ -137,8 +138,11 @@ Import an existing `.knxproj`, a `.bussard` bundle (see [`export`](#bussard-expo
 | `--interactive` | off | On a re-import, ask per conflict (`m` keeps mine, `t` takes theirs). Needs a terminal. |
 | `--yes-download` | off | Download missing vendor product data without asking. Without a terminal and without this flag nothing is downloaded; the missing order numbers are listed. |
 | `--no-download` | off | Do not look up or download missing product data; list it instead. |
+| `--yes` | off | Skip the confirmation prompt for a non-empty directory that holds no model yet. |
 
-Product data fetches itself. After the write, `import` collects the order numbers of the project's devices, and every one whose product data `bussard.lock` does not pin in `<dir>/products/` yet is looked up in bussard's pointer index (the one `import-product --order-number` uses). The downloads it finds are listed with their size and origin and fetched after one confirmation for the whole list (`--yes` for scripts; without a terminal and without `--yes` nothing is downloaded); each is verified against the index checksum, stored under `<dir>/products/`, pinned in the lock and turned into product models under `<dir>/.bussard/models/`. Each application program the imported devices use that no stored archive carries is extracted once from the `.knxproj` into `<dir>/products/<application-id>.knxprod` (see [product-data.md](product-data.md#the-product-store-products)). Devices without product data still get their file (identity, location, links by number), and the summary says how many were written that way and, per order number, where to get the file and which command imports it:
+The model directory is `--dir`, `BUSSARD_DIR` or the current directory; `import` never searches upward. A directory that already holds a model is a re-import and asks nothing. Any other non-empty directory (entries other than `.git`, `.env`, `.gitignore` and `.bussard/`, or a model in `knx/` below it) gets the same question as [`init`](#bussard-init-project): `the current directory /home/me/house is not empty (3 entries); import into the current directory? [y/N]`. `--yes` answers it; without a terminal and without `--yes` the import is refused and nothing is written. To import into the usual `knx/` subdirectory, pass `--dir knx` or `cd knx` first.
+
+Product data fetches itself. After the write, `import` collects the order numbers of the project's devices, and every one whose product data `bussard.lock` does not pin in `<dir>/products/` yet is looked up in bussard's pointer index (the one `import-product --order-number` uses). The downloads it finds are listed with their size and origin and fetched after one confirmation for the whole list (`--yes-download` for scripts; without a terminal and without `--yes-download` nothing is downloaded); each is verified against the index checksum, stored under `<dir>/products/`, pinned in the lock and turned into product models under `<dir>/.bussard/models/`. Each application program the imported devices use that no stored archive carries is extracted once from the `.knxproj` into `<dir>/products/<application-id>.knxprod` (see [product-data.md](product-data.md#the-product-store-products)). Devices without product data still get their file (identity, location, links by number), and the summary says how many were written that way and, per order number, where to get the file and which command imports it:
 
 ```
 1 device(s) written without product data: their files carry identity, location and links by number; `apply` writes their links, not their parameters
@@ -827,12 +831,13 @@ Serve the network-visualization website: an HTTP server that renders the model a
 | Variable | Meaning |
 |---|---|
 | `BUSSARD_PROJECT_PASSWORD` | Password for a protected `.knxproj` when `--password` is not given. Keep it in an untracked `.env`, never in the repo. |
-| `BUSSARD_DIR` | The model directory when `--dir` is not given; beats [discovery](#global-options). |
+| `BUSSARD_DIR` | The model directory when `--dir` is not given; beats [discovery](#global-options). From a `.env`, only the working directory's file counts (see [below](#the-env-file)). |
 | `BUSSARD_GATEWAY` | The gateway `host[:port]` when `--gateway` is not given; beats `connection.gateway` in `bussard.toml`. It only selects a gateway: a non-loopback one still needs `--allow-remote-gateway` for a write. |
 | `BUSSARD_KEYRING` | An explicit `.knxkeys` keyring when `--keyring` is not given; beats the key store `bussard.keys` and `connection.keyring` in `bussard.toml`. The password still comes from `BUSSARD_KEYRING_PASSWORD`. |
 | `BUSSARD_KEYRING_PASSWORD` | Password for the key store `bussard.keys` and for every `.knxkeys` export: passed with `--keyring`, named by `BUSSARD_KEYRING` or `connection.keyring`, found next to the project by `import`/`init`, or read and written by `bussard keys`. There is deliberately no flag for it, so it never lands in shell history or a process listing. |
 | *(the `--secure-password-env` variable)* | The KNXnet/IP Secure tunnelling user's password for `--secure-user`. You choose the variable's name; bussard reads only that variable. |
-| `BUSSARD_ALLOW_REAL_GATEWAY` | Set to `1` to permit a write command against a non-loopback (real) gateway, equivalent to `--allow-remote-gateway`. Loopback gateways never need it. |
+| `BUSSARD_ALLOW_REAL_GATEWAY` | Set to `1` to permit a write command against a non-loopback (real) gateway, equivalent to `--allow-remote-gateway`. Loopback gateways never need it. Only an exported variable counts: a `.env` that sets it is ignored with a warning. |
+| `BUSSARD_NO_DOTENV` | Set to `1` (exported) to skip the [`.env` file](#the-env-file) entirely, for hermetic scripts. The `knx-sim` example scripts set it. |
 | `RUST_LOG` | Log filter (e.g. `debug`, `bussard_transport=trace`). Overrides `-v`/`--verbose` when set. |
 | `BUSSARD_PRODUCT_INDEX` | Path to a pointer index (JSON of the shape of `data/product-index.json`) that replaces the one built into bussard: a private mirror, or a test with `file://` URLs. |
 | `BUSSARD_SECURE_ALGORITHM` | Test knob: `auth` wraps KNX Data Secure management APDUs authentication-only (in the clear under a MAC) instead of the default authentication + encryption. For the conformance loop against the simulator; a real flash never sets it. |
@@ -850,6 +855,19 @@ Serve the network-visualization website: an HTTP server that renders the model a
 | `BUSSARD_SPARSE_MERGE_GAP` | Flash knob: the largest gap, in octets, the sparse writer writes through to join two runs of a System B image (default `100`; `0` joins nothing). A gap is only joined when the joined run needs fewer memory-write requests than the two runs apart, and the octets written into it are the ones the device already holds (the segment's fill, or the read-back memory on a parameters-only download), so the device image is the same either way. The default sits under the ~115-octet break-even of a 200 ms request at 1.7 ms per octet (issue #210). System 7 parameter downloads keep a 4-octet gap. |
 | `BUSSARD_FLASH_RECONNECT_EXCHANGES` | Flash knob: cycle the L4 connection (disconnect, reconnect, re-authorize) once this many numbered exchanges have run on it, checked between steps. Unset: 10 for a KNX Virtual device (manufacturer `0x00FA`), off for every other device, which keeps one connection like ETS. `0` turns cycling off everywhere. |
 | `BUSSARD_FLASH_NO_HANDOVER` | Flash knob: set to `1` and `flash --yes` disconnects after the pre-flight and opens a fresh connection for the write phase, as it does without `--yes`, instead of taking the pre-flight's connection over (issue #213). |
+
+### The `.env` file
+
+bussard reads the `BUSSARD_*` variables above from a `.env` file too, so the passwords and the gateway do not have to be exported before every command (issue #251). This applies to every command, `bussard mcp` included.
+
+- **Which file.** The first that exists of: `<model dir>/.env`, the `.env` in the directory that holds the model directory (the repository root for `knx/`), and `./.env` in the working directory. Only that file is read; files are never merged.
+- **`BUSSARD_DIR` first.** The model directory decides the lookup, and `BUSSARD_DIR` can decide the model directory, so it is resolved in two steps: `--dir`, else an exported `BUSSARD_DIR`, else `BUSSARD_DIR` from `./.env`, else [discovery](#global-options). Then the lookup above runs from that model directory, and the file it picks supplies every other variable. When that is a different file, the working directory's `.env` contributed `BUSSARD_DIR` and nothing else.
+- **Precedence.** A flag beats everything. An exported variable beats the file, even when it is exported empty (`BUSSARD_KEYRING_PASSWORD= bussard validate` runs without a password whatever the file says). The file beats `bussard.toml` and the defaults.
+- **Keys.** Only `BUSSARD_*` keys are read; anything else in a shared `.env` (a Home Assistant token, say) is ignored and never enters bussard. `BUSSARD_ALLOW_REAL_GATEWAY` is never taken from the file: opening the write gate stays the flag or an explicit export (see [SAFETY.md](SAFETY.md#secrets-and-the-env-file)).
+- **Syntax.** One `KEY=value` per line, an optional `export ` prefix, `#` comment lines and blank lines. A value may be wrapped in single or double quotes, which keep everything inside (`#`, spaces, `=`) verbatim. An unquoted value ends at a ` #` trailing comment. No `$VAR` interpolation, no escapes. CRLF line ends are fine.
+- **Output.** No value is ever printed. `bussard -vv` logs which file was read and which keys it applied, and `--timing` names the file on its `dotenv` line. A `BUSSARD_ALLOW_REAL_GATEWAY` in the file gets a warning naming the key.
+
+`BUSSARD_NO_DOTENV=1`, exported, skips the file. The campaign scripts (`scripts/campaign/`) apply the same lookup and rules and export the file's `BUSSARD_*` variables for the tools bussard does not cover (`knxtrace` reads `BUSSARD_KEYRING_PASSWORD`), so `set -a; . ./.env` is no longer needed before them.
 
 Test-harness variables (`BUSSARD_VIRTUAL_DEVICE*`, `BUSSARD_TEST_MULTICAST`, `BUSSARD_PRODUCT_CORPUS`) gate the integration test suites, never the CLI; they are documented in the `tests-support/` READMEs.
 

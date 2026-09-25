@@ -19,6 +19,7 @@ pub mod declare;
 pub mod device_view;
 pub mod discover;
 pub mod doc;
+pub mod dotenv;
 pub mod dpt;
 mod emit;
 pub mod ets_export;
@@ -50,7 +51,7 @@ pub use codec::{
     encode, encode_float16, parse_value,
 };
 pub use declare::{DeclaredGroup, declare_used_groups};
-pub use discover::{DEFAULT_MODEL_DIR, discover};
+pub use discover::{DEFAULT_MODEL_DIR, NESTED_MODEL_DIR, discover};
 pub use doc::{DocError, DocFile, DocFormat, InstallationDoc};
 pub use dpt::{ApduSize, Dpt, DptParseError};
 pub use ets_export::{to_ets_csv, to_ets_xml};

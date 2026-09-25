@@ -137,9 +137,11 @@ pub fn run(
     // A parse error is a hard failure here (surfaced with the file detail).
     let Some(mut model) = load_model_required(dir)? else {
         bail!(
-            "no model in {}: `bussard apply` writes a device's devices/<address>.toml to it; \
-             run `bussard init` or `bussard import` first",
-            dir.display()
+            "{}",
+            crate::conn_cmd::no_model(
+                dir,
+                "`bussard apply` writes a device's devices/<address>.toml to it"
+            )
         );
     };
     let config = resolve_config(Some(&model), &overrides)?;

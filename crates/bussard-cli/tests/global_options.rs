@@ -99,12 +99,12 @@ fn test_discovery_root_model_and_subdirectory_resolve_the_same_dir() -> TestResu
 }
 
 #[test]
-fn test_discovery_no_model_anywhere_falls_back_to_knx() -> TestResult {
+fn test_discovery_no_model_anywhere_falls_back_to_the_current_directory() -> TestResult {
     let root = scratch("nomodel")?;
     let out = bussard(&root, &["status"], &[])?;
     assert!(out.status.success(), "{}", text(&out));
     assert!(
-        text(&out).contains("No history yet for knx"),
+        text(&out).contains("No history yet for ."),
         "{}",
         text(&out)
     );
@@ -211,16 +211,17 @@ fn test_init_never_discovers_upward() -> TestResult {
     model(&root, "127.0.0.1:3671")?;
     let sub = root.join("site");
     std::fs::create_dir_all(&sub)?;
-    // Inside an existing model's subdirectory, init still creates ./knx.
-    // Without a project, and without a terminal to offer the scan on, it only
-    // writes the skeleton; nothing is sent to the (loopback) gateway.
+    // Inside an existing model's subdirectory, init still creates the model
+    // in the current directory. Without a project, and without a terminal to
+    // offer the scan on, it only writes the skeleton; nothing is sent to the
+    // (loopback) gateway.
     let out = bussard(
         &sub,
         &["init", "--gateway", "127.0.0.1:9", "--no-download"],
         &[],
     )?;
     assert!(out.status.success(), "{}", text(&out));
-    assert!(sub.join("knx").join("bussard.toml").exists());
+    assert!(sub.join("bussard.toml").exists());
     std::fs::remove_dir_all(&root)?;
     Ok(())
 }
