@@ -135,6 +135,12 @@ entry supersedes it and is not a diff against it.
   into device-allocated segments with memory writes, as ETS does; the ETS
   table downloads of 1.1.47 and 1.1.5 contain no `PID_TABLE` property write
   (#215).
+- `flash --parameters-only` reads the parameter memory on the pre-flight
+  connection and reads it back after the restart on the write session's
+  post-restart connection, instead of opening a read-only session before
+  the prompt and another after the download. The written octets and the
+  verification are unchanged (mock: 6 to 4 `T_Connect`, 44 to 34 requests)
+  (#215).
 - System B table read-back reads the address and association tables from
   memory at the negotiated chunk when that takes fewer requests than
   `PID_TABLE` property reads (#223). A 400-address, 1,333-association table

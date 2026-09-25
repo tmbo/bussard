@@ -425,18 +425,32 @@ pub fn run(
                         }
                         _ => None,
                     };
-                    Ok::<_, ServiceError>((r, resident, current))
+                    // `--parameters-only` reads the parameter regions (and the
+                    // System 7 code and table samples) on this connection too,
+                    // once the identity gate passes (issue #215): no second
+                    // session before the prompt.
+                    let preread = match (planned, &resident) {
+                        (Some(plan), Some(_))
+                            if parameters_only
+                                && crate::flash_params::identity_gate(plan, resident.as_ref())
+                                    .is_ok() =>
+                        {
+                            Some(crate::flash_params::read_parameters_on(dev.l4_mut(), plan).await)
+                        }
+                        _ => None,
+                    };
+                    Ok::<_, ServiceError>((r, resident, current, preread))
                 })
                 .await;
             // Whether the T_Connect established before the first read: a
             // connect-then-disconnect on the descriptor read is the diagnostic
             // pattern (see `descriptor_read_error`).
-            let (connected, result, resident, current) = match session {
-                Ok((r, resident, current)) => (true, r, resident, current),
-                Err(ServiceError::Mgmt(err)) => (false, Err(err), None, None),
+            let (connected, result, resident, current, preread) = match session {
+                Ok((r, resident, current, preread)) => (true, r, resident, current, preread),
+                Err(ServiceError::Mgmt(err)) => (false, Err(err), None, None, None),
                 Err(err) => return Err(anyhow::Error::new(err)),
             };
-            anyhow::Ok((connected, result, resident, facts, current))
+            anyhow::Ok((connected, result, resident, facts, current, preread))
         })?;
         // A loss still being re-established counts too: over TCP the probe can
         // run into the silence before the tunnel has noticed it (issue #192).
@@ -455,7 +469,7 @@ pub fn run(
         runtime.block_on(handle.wait_connected(handle.reconnect_budget()));
     };
 
-    let (connected, device_mask, resident, facts, current) = probe;
+    let (connected, device_mask, resident, facts, current, preread) = probe;
     let device_mask = match device_mask {
         Ok(mask) => mask,
         Err(err) => {
@@ -495,6 +509,7 @@ pub fn run(
             overrides: &overrides_map,
             base_offsets: &base_offsets,
             resident: resident.as_ref(),
+            preread,
             facts,
             bcu_key,
             tool_key,
@@ -1492,6 +1507,45 @@ pub(crate) async fn execute(
     json: bool,
     restart_started: &std::cell::Cell<Option<std::time::Instant>>,
 ) -> Result<bussard_download::FlashOutcome, WriteError> {
+    let (result, _) = execute_then(
+        service,
+        target,
+        source,
+        plan,
+        options,
+        facts,
+        secure_tool_key,
+        secure_seq,
+        json,
+        restart_started,
+        async |_| {},
+    )
+    .await;
+    result
+}
+
+/// [`execute`], then `after` on the session's last connection (the one the
+/// post-restart verification ran on) when the flash verified, before the
+/// disconnect: `flash --parameters-only` reads its parameters back there
+/// instead of opening another session (issue #215). `after` gets `None`
+/// back when the flash failed or did not verify.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn execute_then<R>(
+    service: &BusService,
+    target: IndividualAddress,
+    source: IndividualAddress,
+    plan: &FlashPlan,
+    options: bussard_download::FlashOptions,
+    facts: bussard_download::DeviceFacts,
+    secure_tool_key: Option<bussard_secure::Key16>,
+    secure_seq: bussard_secure::SequenceHighWater,
+    json: bool,
+    restart_started: &std::cell::Cell<Option<std::time::Instant>>,
+    after: impl AsyncFnOnce(&mut Layer4Connection<LeaseChannel>) -> R,
+) -> (
+    Result<bussard_download::FlashOutcome, WriteError>,
+    Option<R>,
+) {
     let connector = LeaseConnector {
         service,
         target,
@@ -1508,7 +1562,10 @@ pub(crate) async fn execute(
     // table, the authorize verdict, the max APDU), so the write phase does not
     // rediscover any of it.
     let mut session =
-        bussard_download::Session::open_with_facts(connector, options.bcu_key, facts).await?;
+        match bussard_download::Session::open_with_facts(connector, options.bcu_key, facts).await {
+            Ok(session) => session,
+            Err(err) => return (Err(err), None),
+        };
     // The session owns the open connection; from here the flash body runs and its
     // result is captured, then the session is disconnected unconditionally below —
     // regardless of whether the flash succeeded or failed mid-procedure. `flash`
@@ -1532,9 +1589,15 @@ pub(crate) async fn execute(
         display.on_progress(p)
     })
     .await;
+    let verified = result.as_ref().is_ok_and(|outcome| outcome.ok());
+    display.finish(verified);
+    let extra = if verified {
+        Some(after(session.l4()).await)
+    } else {
+        None
+    };
     let _ = session.into_disconnect().await;
-    display.finish(result.as_ref().is_ok_and(|outcome| outcome.ok()));
-    result
+    (result, extra)
 }
 
 /// Prints the pre-flight plan: application identity, mask compatibility, the

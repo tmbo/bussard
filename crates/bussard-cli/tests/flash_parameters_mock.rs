@@ -525,7 +525,10 @@ impl Bench {
             "--gateway",
             &gateway,
         ]);
-        Ok(Command::new(env!("CARGO_BIN_EXE_bussard"))
+        // `$BUSSARD_BIN` measures another build (before/after counts).
+        let bin = std::env::var("BUSSARD_BIN")
+            .unwrap_or_else(|_| env!("CARGO_BIN_EXE_bussard").to_string());
+        Ok(Command::new(bin)
             .args(&full)
             .env_remove("BUSSARD_ALLOW_REAL_GATEWAY")
             .env("BUSSARD_FLASH_L4_TIMEOUT_MS", "300")
@@ -658,6 +661,49 @@ fn test_flash_parameters_only_writes_only_the_changed_octet() -> TestResult {
     let backup: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&files[0])?)?;
     assert_eq!(backup["regions"][0]["bytes"], "0700");
     assert_eq!(backup["regions"][0]["base"], PARAM_BASE);
+    Ok(())
+}
+
+/// Issue #215: `--parameters-only` reads the parameters on the pre-flight
+/// connection and reads them back on the write session's post-restart
+/// connection, instead of a read-only session before the prompt and another
+/// after the flash. The written octet and the verdict are unchanged.
+#[test]
+fn test_flash_parameters_only_reads_on_the_preflight_and_write_sessions() -> TestResult {
+    let Some(bench) = Bench::start(
+        "params-sessions",
+        MockDevice::running([7, 0]),
+        "\"thr@P-0_R-1\" = \"12\"\n",
+    )?
+    else {
+        return Ok(());
+    };
+    let out = bench.bussard(&[
+        "flash",
+        "1.1.4",
+        "--product",
+        bench.product()?,
+        "--parameters-only",
+        "--yes",
+    ])?;
+    let (stdout, stderr) = text(&out);
+    assert!(out.status.success(), "stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert!(stdout.contains("parameters verified"), "{stdout}");
+    let connects = bench._gw.with_device("1.1.4".parse()?, |d| d.connects)?;
+    let dev = bench.device();
+    let memory_reads = dev
+        .wire_apcis
+        .iter()
+        .filter(|a| **a & 0x3C0 == 0x200 || **a == 0x1FD)
+        .count();
+    println!(
+        "parameters-only: {connects} T_Connect, {} requests, {memory_reads} memory reads",
+        dev.wire_apcis.len()
+    );
+    assert_eq!(dev.memory_writes, vec![(PARAM_BASE, 1)], "{stderr}");
+    // The pre-flight, the write session, and the write session's
+    // reconnect after the restart (whose first probe finds the device up).
+    assert_eq!(connects, 4, "{stderr}");
     Ok(())
 }
 

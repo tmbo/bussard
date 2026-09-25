@@ -69,6 +69,9 @@ pub(crate) struct Context<'a> {
     pub base_offsets: &'a BTreeMap<String, u32>,
     /// What the read-only pre-flight found resident.
     pub resident: Option<&'a ResidentState>,
+    /// The parameter read the pre-flight already made on its connection
+    /// ([`read_parameters_on`]); `None` reads them on a session of its own.
+    pub preread: Option<DeviceRead>,
     /// What the pre-flight learned about the device, for the write session.
     pub facts: bussard_download::DeviceFacts,
     /// The BCU key, if any.
@@ -80,16 +83,20 @@ pub(crate) struct Context<'a> {
 }
 
 /// Runs the parameter-only download (module docs).
-pub(crate) fn run(ctx: Context<'_>) -> anyhow::Result<ExitCode> {
+pub(crate) fn run(mut ctx: Context<'_>) -> anyhow::Result<ExitCode> {
     let target = ctx.target;
     if let Err(reason) = identity_gate(ctx.plan, ctx.resident) {
         eprintln!("refusing the parameter-only download to {target}: {reason}");
         return Ok(ExitCode::FAILURE);
     }
 
-    // Read the parameter memory (and, on System 7, sample the code segments that
-    // stand in for the application id) over one read-only session.
-    let read = ctx.runtime.block_on(read_device(&ctx))?;
+    // The parameter memory (and, on System 7, the code segments that stand in
+    // for the application id), read on the pre-flight connection (issue #215),
+    // or over a read-only session of its own when the pre-flight did not.
+    let read = match ctx.preread.take() {
+        Some(read) => read,
+        None => ctx.runtime.block_on(read_device(&ctx))?,
+    };
     if let Some(reason) = read.code_mismatch {
         eprintln!("refusing the parameter-only download to {target}: {reason}");
         return Ok(ExitCode::FAILURE);
@@ -173,7 +180,10 @@ pub(crate) fn run(ctx: Context<'_>) -> anyhow::Result<ExitCode> {
         verify_after_restart: true,
         skip_matching_mcb: false,
     };
-    let outcome = ctx.runtime.block_on(crate::flash_cmd::execute(
+    // Write, restart, verify, then read the parameters back on the same
+    // (post-restart) connection instead of a fourth session (issue #215).
+    let plan = ctx.plan;
+    let (outcome, after) = ctx.runtime.block_on(crate::flash_cmd::execute_then(
         ctx.service,
         target,
         ctx.source,
@@ -184,6 +194,7 @@ pub(crate) fn run(ctx: Context<'_>) -> anyhow::Result<ExitCode> {
         ctx.secure_seq.clone(),
         ctx.json,
         &std::cell::Cell::new(None),
+        async |l4| read_parameter_regions(l4, plan).await,
     ));
     match outcome {
         Ok(outcome) if outcome.ok() => {}
@@ -201,7 +212,10 @@ pub(crate) fn run(ctx: Context<'_>) -> anyhow::Result<ExitCode> {
 
     // Verify like `apply`: read the parameter memory back and compare every
     // octet the download meant to change.
-    let after = ctx.runtime.block_on(read_device(&ctx))?.regions;
+    let after = match after {
+        Some(regions) => regions,
+        None => ctx.runtime.block_on(read_device(&ctx))?.regions,
+    };
     match verify_readback(&partial, &after, &runtime_segments(ctx.plan)) {
         Ok(octets) => {
             println!(
@@ -291,7 +305,7 @@ pub(crate) fn identity_gate(
 }
 
 /// What one read-only pass learned.
-struct DeviceRead {
+pub(crate) struct DeviceRead {
     /// The parameter regions.
     regions: ParamRegions,
     /// Why the System 7 code comparison says this is another application.
@@ -319,23 +333,32 @@ async fn read_device(ctx: &Context<'_>) -> anyhow::Result<DeviceRead> {
             // read-back goes out in APDU-sized chunks without re-reading it
             // (issue #194).
             dev.l4_mut().set_max_apdu(ctx.facts.max_apdu);
-            let regions = read_parameter_regions(dev.l4_mut(), ctx.plan).await;
-            let (code_mismatch, table_change) = if ctx.plan.is_sys7() {
-                (
-                    sys7_code_mismatch(dev.l4_mut(), ctx.plan).await,
-                    sys7_table_change(dev.l4_mut(), ctx.plan).await,
-                )
-            } else {
-                (None, None)
-            };
-            Ok::<_, ServiceError>(DeviceRead {
-                regions,
-                code_mismatch,
-                table_change,
-            })
+            Ok::<_, ServiceError>(read_parameters_on(dev.l4_mut(), ctx.plan).await)
         })
         .await
         .with_context(|| format!("connecting to {} to read its parameters", ctx.target))
+}
+
+/// Reads the parameter regions (plus, on System 7, the code-segment samples
+/// and the link-table comparison) on an open connection.
+pub(crate) async fn read_parameters_on<Ch: bussard_mgmt::L4Channel>(
+    l4: &mut bussard_mgmt::Layer4Connection<Ch>,
+    plan: &FlashPlan,
+) -> DeviceRead {
+    let regions = read_parameter_regions(l4, plan).await;
+    let (code_mismatch, table_change) = if plan.is_sys7() {
+        (
+            sys7_code_mismatch(l4, plan).await,
+            sys7_table_change(l4, plan).await,
+        )
+    } else {
+        (None, None)
+    };
+    DeviceRead {
+        regions,
+        code_mismatch,
+        table_change,
+    }
 }
 
 /// How many leading octets of each System 7 code segment are compared.
