@@ -782,3 +782,74 @@ fn build_knxprod(dir: &Path) -> TestResult<Option<PathBuf>> {
     };
     Ok(status.success().then_some(archive))
 }
+
+/// Pins `M-00FA_A-0002-01-ABCD` (application id `00FA000201`, the mock's
+/// [`APP_ID`]) for 1.1.12 in a v2 lock (issue #228).
+fn pin_application(bench: &Bench) -> TestResult {
+    std::fs::write(
+        bench.dir().join("bussard.lock"),
+        "version = 2\n\n[[device]]\naddress = \"1.1.12\"\n\
+         application = \"M-00FA_A-0002-01-ABCD\"\nmask = \"07B0\"\n",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn test_plan_reports_identity_match_and_drift_against_the_lock() -> TestResult {
+    let bench = Bench::start("plan-identity", device()?)?;
+    pin_application(&bench)?;
+    let out = bench.run(&["plan", "1.1.12", "--json"])?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    assert_eq!(json["identity"]["verdict"], "match", "{json}");
+
+    bench.set_app_id(&[0x00, 0xFA, 0x00, 0x02, 0x02])?;
+    let out = bench.run(&["plan", "1.1.12", "--json"])?;
+    assert!(out.status.success(), "plan never refuses on drift");
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    assert_eq!(json["identity"]["verdict"], "drift", "{json}");
+    let out = bench.run(&["plan", "1.1.12"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("drift from bussard.lock") && stdout.contains("bussard flash 1.1.12"),
+        "{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_apply_refuses_a_device_that_drifted_from_the_lock() -> TestResult {
+    let bench = Bench::start("apply-drift", device()?)?;
+    pin_application(&bench)?;
+    bench.set_app_id(&[0x00, 0xFA, 0x00, 0x02, 0x02])?;
+    bench.take_requests()?;
+    let out = bench.run(&["apply", "1.1.12", "--yes"])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "apply must refuse: {stderr}");
+    assert!(
+        stderr.contains("refusing to apply to 1.1.12")
+            && stderr.contains("00FA000202")
+            && stderr.contains("bussard flash 1.1.12"),
+        "{stderr}"
+    );
+    let requests = bench.take_requests()?;
+    let writes = requests
+        .iter()
+        .filter(|(apci, _)| *apci & 0x3C0 == 0x280 || *apci == 0x3D7)
+        .count();
+    assert_eq!(writes, 0, "nothing may be written to a drifted device");
+
+    // The stored facts now say what the device runs: `audit` lists the drift
+    // offline.
+    let out = bench.run(&["audit", "--json"])?;
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    let drift = json["products"]["application_drift"]
+        .as_array()
+        .ok_or("application_drift array")?;
+    assert_eq!(drift.len(), 1, "{json}");
+    Ok(())
+}

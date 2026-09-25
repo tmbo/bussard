@@ -33,6 +33,7 @@ mod init_cmd;
 mod keyring_cmd;
 mod learn_cmd;
 mod line_cmd;
+mod lock_pin;
 mod mcp_cmd;
 mod monitor_cmd;
 mod param_readback;

@@ -13,7 +13,9 @@ use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
 use bussard_mgmt::apci;
-use bussard_mgmt::tables::{OT_ADDRESS_TABLE, OT_DEVICE, PID_OBJECT_TYPE};
+use bussard_mgmt::tables::{
+    OT_ADDRESS_TABLE, OT_APPLICATION_PROGRAM, OT_ASSOCIATION_TABLE, OT_DEVICE, PID_OBJECT_TYPE,
+};
 use bussard_model::IndividualAddress;
 use bussard_testkit::{MockGateway, Reaction};
 
@@ -29,6 +31,9 @@ struct MockDevice {
     /// security-activated device that refuses the plain walk: it answers every
     /// `PID_OBJECT_TYPE` read with a zero-element response.
     object_types: Vec<u16>,
+    /// The application id the application-program object reports in
+    /// `PID_PROGRAM_VERSION`, when it has one.
+    program_version: Option<[u8; 5]>,
 }
 
 fn property_response(object_index: u8, pid: u8, count: u8, start: u16, data: &[u8]) -> Vec<u8> {
@@ -55,6 +60,12 @@ fn device_response(dev: &MockDevice, req_apci: u16, data: &[u8]) -> Option<(u16,
             let resp = if pv.object_index == 0 && pv.property_id == apci::PID_MAX_APDU_LENGTH {
                 // Answered even by an activated device (the ETS capture in #155).
                 property_response(0, pv.property_id, 1, pv.start, &55u16.to_be_bytes())
+            } else if pv.property_id == 13
+                && dev.object_types.get(usize::from(pv.object_index))
+                    == Some(&OT_APPLICATION_PROGRAM)
+                && let Some(id) = dev.program_version
+            {
+                property_response(pv.object_index, pv.property_id, 1, pv.start, &id)
             } else if pv.property_id == PID_OBJECT_TYPE {
                 match dev.object_types.get(usize::from(pv.object_index)) {
                     Some(ot) => property_response(
@@ -179,6 +190,7 @@ fn test_describe_refused_plain_walk_fails_with_hint_and_json_field() -> TestResu
     let device = MockDevice {
         address: target()?,
         object_types: Vec::new(),
+        program_version: None,
     };
     let output = describe_against(device, &model.dir(), &["--json"])?;
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -229,6 +241,7 @@ fn test_describe_refused_plain_walk_without_model_security_still_fails() -> Test
     let device = MockDevice {
         address: target()?,
         object_types: Vec::new(),
+        program_version: None,
     };
     let output = describe_against(device, &model.dir(), &[])?;
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -252,6 +265,7 @@ fn test_describe_answering_device_succeeds_without_secure_block() -> TestResult 
     let device = MockDevice {
         address: target()?,
         object_types: vec![OT_DEVICE, OT_ADDRESS_TABLE],
+        program_version: None,
     };
     let output = describe_against(device, &model.dir(), &["--json"])?;
     assert!(
@@ -277,6 +291,7 @@ fn test_describe_answering_secure_capable_device_reports_answered() -> TestResul
     let device = MockDevice {
         address: target()?,
         object_types: vec![OT_DEVICE],
+        program_version: None,
     };
     let output = describe_against(device, &model.dir(), &["--json"])?;
     assert!(
@@ -296,5 +311,76 @@ fn test_describe_answering_secure_capable_device_reports_answered() -> TestResul
     );
     assert_eq!(json["secure"]["model"]["secure_capable"], true);
     assert!(json["secure"].get("sequence_number").is_none());
+    Ok(())
+}
+
+/// A model whose lock pins application `M-0004_A-D141-22-151B` (id
+/// `0004D14122`) and mask `07B0` for 1.1.12 (lock v2, issue #228).
+fn pinned_model(name: &str) -> std::io::Result<TempModel> {
+    let model = TempModel::new(name, None)?;
+    let dir = model.dir();
+    std::fs::create_dir_all(dir.join("devices"))?;
+    std::fs::write(
+        dir.join("devices/1.1.12.toml"),
+        "address = \"1.1.12\"\nname = \"Aktor\"\nproduct = \"X-1\"\n",
+    )?;
+    std::fs::write(
+        dir.join("bussard.lock"),
+        "version = 2\n\n[[device]]\naddress = \"1.1.12\"\nproduct = \"X-1\"\n\
+         application = \"M-0004_A-D141-22-151B\"\nmask = \"07B0\"\n",
+    )?;
+    Ok(model)
+}
+
+fn application_device(program_version: [u8; 5]) -> TestResult<MockDevice> {
+    Ok(MockDevice {
+        address: target()?,
+        object_types: vec![
+            OT_DEVICE,
+            OT_ADDRESS_TABLE,
+            OT_ASSOCIATION_TABLE,
+            OT_APPLICATION_PROGRAM,
+        ],
+        program_version: Some(program_version),
+    })
+}
+
+#[test]
+fn test_describe_identity_matches_the_lock() -> TestResult {
+    let model = pinned_model("bussard-describe-identity-match")?;
+    let device = application_device([0x00, 0x04, 0xD1, 0x41, 0x22])?;
+    let output = describe_against(device, &model.dir(), &["--json"])?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr:\n{stderr}");
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(json["identity"]["verdict"], "match", "{json}");
+    assert_eq!(json["identity"]["device"]["application_id"], "0004D14122");
+    assert_eq!(json["identity"]["lock"]["application_id"], "0004D14122");
+    Ok(())
+}
+
+#[test]
+fn test_describe_identity_reports_drift_without_refusing() -> TestResult {
+    let model = pinned_model("bussard-describe-identity-drift")?;
+    let device = application_device([0x00, 0x04, 0xD1, 0x41, 0x23])?;
+    let output = describe_against(device, &model.dir(), &[])?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "describe is read-only: {stdout}");
+    assert!(
+        stdout.contains("identity: drift from bussard.lock")
+            && stdout.contains("0004D14123")
+            && stdout.contains("0004D14122"),
+        "{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_describe_identity_unmodelled_device() -> TestResult {
+    let model = TempModel::new("bussard-describe-identity-none", None)?;
+    let device = application_device([0x00, 0x04, 0xD1, 0x41, 0x22])?;
+    let output = describe_against(device, &model.dir(), &["--json"])?;
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(json["identity"]["verdict"], "unmodelled", "{json}");
     Ok(())
 }

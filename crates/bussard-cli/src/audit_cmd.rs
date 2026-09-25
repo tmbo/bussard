@@ -65,6 +65,7 @@ pub fn run(
     .context("loading the keyring for audit")?;
     let keyring_devices = keys.keyring_given().then(|| keys.listed());
     let mut report = tools_audit::static_report(&model, keyring_devices.as_deref());
+    report["products"] = products_report(&model, dir);
 
     if options.live {
         let config = resolve_config(Some(&model), &overrides)?;
@@ -84,6 +85,65 @@ pub fn run(
         print!("{}", render_text(&report));
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The product-data section (lock v2, issue #228): devices whose product data
+/// the lock does not pin, pinned archives that are missing or changed, and
+/// devices whose stored facts (`.bussard/facts`) report another application
+/// id than the lock pins. Offline: reads the model directory only.
+fn products_report(model: &Model, dir: &Path) -> Value {
+    let unpinned: Vec<String> = model
+        .devices
+        .iter()
+        .filter(|(_, l)| {
+            l.device
+                .product
+                .as_ref()
+                .is_some_and(|p| p.order_number.is_some())
+                && l.device.lock.product_sha256.is_none()
+        })
+        .map(|(a, _)| a.to_string())
+        .collect();
+    let mut missing = Vec::new();
+    let mut mismatch = Vec::new();
+    for entry in bussard_model::lock_products::lock_entries(dir) {
+        let Some(file) = entry.file.as_deref() else {
+            continue;
+        };
+        match bussard_model::sha256_file(&dir.join(file)) {
+            Err(_) => missing.push(format!(
+                "{file} ({})",
+                bussard_model::lock_products::recovery_hint(&entry)
+            )),
+            Ok((sha, _)) if !sha.eq_ignore_ascii_case(&entry.sha256) => {
+                mismatch.push(format!("{file} (pinned {}, found {sha})", entry.sha256))
+            }
+            Ok(_) => {}
+        }
+    }
+    let drift: Vec<String> = model
+        .devices
+        .iter()
+        .filter_map(|(address, loaded)| {
+            let facts = bussard_model::facts::load_facts(dir, *address).ok()??;
+            let check = bussard_model::identity::IdentityCheck::compare(
+                Some(&loaded.device),
+                bussard_model::identity::ReportedIdentity {
+                    mask: facts.mask,
+                    application_id: facts.application_id,
+                },
+            );
+            check
+                .is_drift()
+                .then(|| format!("{address} ({})", check.differences.join("; ")))
+        })
+        .collect();
+    json!({
+        "unpinned": unpinned,
+        "missing_archives": missing,
+        "hash_mismatch": mismatch,
+        "application_drift": drift,
+    })
 }
 
 /// Gathers the live section: gateway description, traffic sample, scan delta.
@@ -451,6 +511,32 @@ pub fn render_text(report: &Value) -> String {
         "protected GAs",
         &model["protected_group_addresses"],
     );
+
+    let products = &report["products"];
+    if !products.is_null() {
+        line(String::new());
+        line("== Product data (bussard.lock) ==".to_string());
+        list_section(
+            &mut line,
+            "devices with a product but no pinned product data",
+            &products["unpinned"],
+        );
+        list_section(
+            &mut line,
+            "pinned archives missing from the model",
+            &products["missing_archives"],
+        );
+        list_section(
+            &mut line,
+            "pinned archives whose content changed (sha256 mismatch)",
+            &products["hash_mismatch"],
+        );
+        list_section(
+            &mut line,
+            "devices whose stored facts report another application than the lock pins",
+            &products["application_drift"],
+        );
+    }
 
     let live = &report["live"];
     if !live.is_null() {

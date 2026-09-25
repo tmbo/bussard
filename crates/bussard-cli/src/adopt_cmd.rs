@@ -1385,6 +1385,16 @@ fn import_product(file: &Path, dir: &Path) -> anyhow::Result<ProductData> {
     } else {
         println!("  vendor file already cached: {}", vendor_target.display());
     }
+    // bussard.lock pins the archive (lock v2, issue #228); the device save
+    // that follows links the device to it. An archive already under vendor/
+    // was pinned when it was cached there.
+    if file != vendor_target {
+        let origin = bussard_model::schema::ProductOrigin::File {
+            path: file.display().to_string(),
+        };
+        let entry = crate::lock_pin::archive_entry(&vendor_target, dir, &product, origin)?;
+        crate::lock_pin::pin(dir, &[entry]);
+    }
 
     // Note: adopt writes the device file (step 3) rather than the generated
     // models/*.yaml. We still ensure models/ exists so `import-product` and

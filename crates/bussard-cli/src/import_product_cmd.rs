@@ -135,7 +135,13 @@ fn run_order_number(
         &cached,
         dir,
         inner,
-        DownloadNote::Downloaded(entry.filename.clone()),
+        DownloadNote::Downloaded(
+            entry.filename.clone(),
+            bussard_model::schema::ProductOrigin::Index {
+                order_number: Some(order.to_string()),
+                url: Some(entry.url.clone()),
+            },
+        ),
     )
 }
 
@@ -206,8 +212,14 @@ pub(crate) fn fetch_to_vendor(
 }
 
 /// Generates the product models of a `.knxprod` already cached under
-/// `<dir>/vendor/`, quietly. Returns the model file names written.
-pub(crate) fn generate_models(file: &Path, dir: &Path) -> anyhow::Result<Vec<String>> {
+/// `<dir>/vendor/`, quietly, then pins the archive in `bussard.lock` under
+/// `origin` when one is given (lock v2, issue #228). Returns the model file
+/// names written.
+pub(crate) fn generate_models_pinned(
+    file: &Path,
+    dir: &Path,
+    origin: Option<bussard_model::schema::ProductOrigin>,
+) -> anyhow::Result<Vec<String>> {
     let product = read_in_model_language(file, dir, None)?;
     if product.applications.is_empty() {
         bail!(
@@ -215,7 +227,12 @@ pub(crate) fn generate_models(file: &Path, dir: &Path) -> anyhow::Result<Vec<Str
             file.display()
         );
     }
-    write_models(&product, dir)
+    let written = write_models(&product, dir)?;
+    if let Some(origin) = origin {
+        let entry = crate::lock_pin::archive_entry(file, dir, &product, origin)?;
+        crate::lock_pin::pin(dir, &[entry]);
+    }
+    Ok(written)
 }
 
 /// Reads every application program of `file` with its texts in the model's
@@ -258,8 +275,9 @@ enum DownloadNote {
     /// A local positional file (copied into the vendor cache).
     Local,
     /// Downloaded from the index and already written to `vendor/` (verified
-    /// against the index checksum); carries the cached filename for the note.
-    Downloaded(String),
+    /// against the index checksum); carries the cached filename for the note
+    /// and the lock's origin record.
+    Downloaded(String, bussard_model::schema::ProductOrigin),
 }
 
 /// Runs the normal import on a local `.knxprod` file (positional mode).
@@ -307,6 +325,23 @@ fn import_from_file(
     // Only a local file is read in place; an index download is vendor data.
     let project_export = matches!(note, DownloadNote::Local) && is_project_export(file, &product);
 
+    // The archive the lock pins, and where it came from (lock v2, issue #228).
+    let (pinned_file, origin) = match &note {
+        DownloadNote::Local if project_export => (
+            file.to_path_buf(),
+            bussard_model::schema::ProductOrigin::Knxproj {
+                path: file.display().to_string(),
+                project_hash: None,
+            },
+        ),
+        DownloadNote::Local => (
+            vendor_dir.join(file.file_name().context("product file has no file name")?),
+            bussard_model::schema::ProductOrigin::File {
+                path: file.display().to_string(),
+            },
+        ),
+        DownloadNote::Downloaded(filename, origin) => (vendor_dir.join(filename), origin.clone()),
+    };
     let cached_note = match note {
         // A project export is the owner's project, not vendor product data, and
         // large: read it in place and only write the generated models.
@@ -317,7 +352,7 @@ fn import_from_file(
         ),
         // A downloaded file already lives under vendor/ (verified against the
         // index checksum), so there is nothing to copy.
-        DownloadNote::Downloaded(filename) => {
+        DownloadNote::Downloaded(filename, _) => {
             ensure_vendor_dir(&vendor_dir)?;
             format!(
                 "Cached vendor file (downloaded): {}",
@@ -339,6 +374,11 @@ fn import_from_file(
     // Generate one model YAML per application program.
     let models_dir = dir.join("models");
     let written = write_models(&product, dir)?;
+    let mut entry = crate::lock_pin::archive_entry(&pinned_file, dir, &product, origin)?;
+    if let bussard_model::schema::ProductOrigin::Knxproj { project_hash, .. } = &mut entry.origin {
+        *project_hash = Some(entry.sha256.clone());
+    }
+    crate::lock_pin::pin(dir, &[entry]);
 
     // Report.
     println!("{cached_note}");

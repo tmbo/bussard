@@ -500,6 +500,90 @@ pub struct DeviceLock {
     /// top-level `language`), e.g. `de-DE`. Every device of a model carries
     /// the same value; the save writes it once.
     pub language: Option<String>,
+    /// The `sha256` of the lock's `[[product]]` entry that carries this
+    /// device's application (lock v2, issue #228).
+    pub product_sha256: Option<String>,
+    /// The joined `[[product]]` entry [`product_sha256`](Self::product_sha256)
+    /// names, when the lock has it.
+    pub product_entry: Option<ProductEntry>,
+    /// The application's `ApplicationVersion`, kept only when it differs from
+    /// what the application ref encodes (see [`crate::identity`]).
+    pub application_version: Option<u32>,
+    /// The `PID_PROGRAM_VERSION` hex the device must report, kept only when
+    /// it differs from what the application ref encodes.
+    pub application_id: Option<String>,
+}
+
+/// One `[[product]]` entry of `bussard.lock` (lock v2, issue #228): one
+/// product-data archive the model depends on, identified by its content hash.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProductEntry {
+    /// The SHA-256 of the archive, lowercase hex: its identity. For an entry
+    /// whose origin is an ETS project export and whose product has not been
+    /// extracted into the model yet, the hash of the export itself.
+    pub sha256: String,
+    /// The archive, relative to the model directory, when the model holds it
+    /// (for now under `vendor/`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// The archive's file name as supplied or downloaded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+    /// The archive's size in octets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    /// Where the archive came from, which names the way to get it back.
+    pub origin: ProductOrigin,
+    /// The application program ids the archive carries that the model uses
+    /// (or all of them, for an archive imported on its own).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub applications: Vec<String>,
+    /// The hardware order numbers the archive's catalogue carries.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub order_numbers: Vec<String>,
+}
+
+/// Where a [`ProductEntry`] came from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum ProductOrigin {
+    /// Downloaded through the product-data pointer index.
+    Index {
+        /// The order number it was looked up by.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        order_number: Option<String>,
+        /// The vendor URL it was downloaded from.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+    },
+    /// A local `.knxprod` file the user supplied.
+    File {
+        /// The path it was imported from, as given.
+        path: String,
+    },
+    /// An ETS project export (`.knxproj`) that carries the application.
+    Knxproj {
+        /// The project export's path, as given to `import`.
+        path: String,
+        /// The SHA-256 of the project export.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project_hash: Option<String>,
+    },
+    /// Read back from the device itself (`reconstruct --line`).
+    Device,
+}
+
+impl ProductOrigin {
+    /// The origin's `kind`, as the lock spells it.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            ProductOrigin::Index { .. } => "index",
+            ProductOrigin::File { .. } => "file",
+            ProductOrigin::Knxproj { .. } => "knxproj",
+            ProductOrigin::Device => "device",
+        }
+    }
 }
 
 /// The file spelling of one enum parameter value (see [`DeviceLock::spellings`]).

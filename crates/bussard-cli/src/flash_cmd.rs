@@ -116,7 +116,17 @@ pub fn run(
                      `product` order number in devices/{target}.toml); pass --product <FILE>"
                 );
             };
-            crate::commission_cmd::resolve_product_file(dir, None, &order)?
+            let path = crate::commission_cmd::resolve_product_file(dir, None, &order)?;
+            // Lock v2 (issue #228): the archive found must be the one the
+            // lock pins; `--product` stays the explicit override.
+            let pinned = model
+                .as_ref()
+                .and_then(|m| m.devices.get(&target))
+                .and_then(|d| d.device.lock.product_entry.as_ref());
+            if let Some(entry) = pinned {
+                crate::lock_pin::verify_archive(&path, entry)?;
+            }
+            path
         }
     };
     let product = product_path.as_path();

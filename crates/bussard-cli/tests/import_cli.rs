@@ -208,3 +208,111 @@ fn test_init_with_a_project_file_imports_it() -> TestResult {
     std::fs::remove_dir_all(&tmp)?;
     Ok(())
 }
+
+/// A tiny fabricated `.knxprod` whose catalogue maps `TST-1` to the fixture
+/// device's application (no vendor data committed).
+fn tst_knxprod(path: &Path) -> TestResult {
+    use std::io::Write as _;
+    const APP: &str = "M-9999_A-0001-1-0000";
+    let hardware = format!(
+        r#"<KNX xmlns="http://knx.org/xml/project/23"><ManufacturerData><Manufacturer RefId="M-9999"><Hardware>
+<Products><Product OrderNumber="TST-1" /></Products>
+<Hardware2Programs><Hardware2Program><ApplicationProgramRef RefId="{APP}" /></Hardware2Program></Hardware2Programs>
+</Hardware></Manufacturer></ManufacturerData></KNX>"#
+    );
+    let app = format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<KNX xmlns="http://knx.org/xml/project/23"><ManufacturerData><Manufacturer RefId="M-9999"><ApplicationPrograms>
+<ApplicationProgram Id="{APP}" ApplicationNumber="1" ApplicationVersion="1" MaskVersion="MV-07B0" Name="Test" LoadProcedureStyle="MergedProcedure"><Static /></ApplicationProgram>
+</ApplicationPrograms></Manufacturer></ManufacturerData></KNX>"#
+    );
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(path)?);
+    for (name, body) in [
+        ("knx_master.xml", "<KNX/>".to_string()),
+        ("M-9999/Hardware.xml", hardware),
+        (&format!("M-9999/{APP}.xml") as &str, app),
+    ] {
+        zip.start_file(name, zip::write::SimpleFileOptions::default())?;
+        zip.write_all(body.as_bytes())?;
+    }
+    zip.finish()?;
+    Ok(())
+}
+
+#[test]
+fn test_import_pins_the_downloaded_product_data_in_the_lock() -> TestResult {
+    use sha2::Digest as _;
+    let tmp = tmp("pin")?;
+    let dir = tmp.join("knx");
+    let knxprod = tmp.join("tst.knxprod");
+    tst_knxprod(&knxprod)?;
+    let bytes = std::fs::read(&knxprod)?;
+    let sha: String = sha2::Sha256::digest(&bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let known = index(
+        &tmp,
+        serde_json::json!([{
+            "manufacturer": "Test Manufacturer",
+            "manufacturer_id": "M-9999",
+            "order_numbers": ["TST-1"],
+            "name": "Test Switch Actuator",
+            "url": format!("file://{}", knxprod.display()),
+            "sha256": sha,
+            "size": bytes.len(),
+            "filename": "tst.knxprod",
+        }]),
+    )?;
+    let out = bussard(
+        &[
+            "import",
+            "--from-json",
+            fixture().to_str().ok_or("path")?,
+            "--dir",
+            dir.to_str().ok_or("path")?,
+            "--yes",
+        ],
+        &[("BUSSARD_PRODUCT_INDEX", known.to_str().ok_or("path")?)],
+    )?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let lock = std::fs::read_to_string(dir.join("bussard.lock"))?;
+    assert!(lock.contains("version = 2\n"), "{lock}");
+    assert!(lock.contains("[[product]]"), "{lock}");
+    assert!(lock.contains(&format!("sha256 = \"{sha}\"")), "{lock}");
+    assert!(lock.contains("file = \"vendor/tst.knxprod\""), "{lock}");
+    assert!(
+        lock.contains("origin = { kind = \"index\", order_number = \"TST-1\""),
+        "{lock}"
+    );
+    assert!(
+        lock.contains(&format!("product_sha256 = \"{sha}\"")),
+        "{lock}"
+    );
+
+    // A re-import keeps the device linked to the archive.
+    let again = bussard(
+        &[
+            "import",
+            "--from-json",
+            fixture().to_str().ok_or("path")?,
+            "--dir",
+            dir.to_str().ok_or("path")?,
+            "--no-download",
+        ],
+        &[("BUSSARD_PRODUCT_INDEX", known.to_str().ok_or("path")?)],
+    )?;
+    assert!(again.status.success());
+    let lock = std::fs::read_to_string(dir.join("bussard.lock"))?;
+    assert!(
+        lock.contains(&format!("product_sha256 = \"{sha}\"")),
+        "{lock}"
+    );
+    std::fs::remove_dir_all(&tmp)?;
+    Ok(())
+}

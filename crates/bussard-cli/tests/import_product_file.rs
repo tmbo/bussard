@@ -171,3 +171,94 @@ fn test_import_product_knxprod_is_cached_byte_identical() -> TestResult {
     std::fs::remove_dir_all(&tmp)?;
     Ok(())
 }
+
+/// The `[[product]]` block of `<dir>/bussard.lock`.
+fn lock_text(dir: &Path) -> std::io::Result<String> {
+    std::fs::read_to_string(dir.join("bussard.lock"))
+}
+
+/// The SHA-256 of a file, lowercase hex.
+fn sha256_hex(path: &Path) -> std::io::Result<String> {
+    use sha2::Digest as _;
+    let bytes = std::fs::read(path)?;
+    Ok(sha2::Sha256::digest(&bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
+}
+
+#[test]
+fn test_import_product_pins_the_archive_and_links_the_device() -> TestResult {
+    let tmp = scratch("pin")?;
+    let file = tmp.join("taster.knxprod");
+    write_zip(&file, &product_entries())?;
+    let dir = tmp.join("knx");
+    std::fs::create_dir_all(dir.join("devices"))?;
+    std::fs::write(
+        dir.join("devices/1.1.4.toml"),
+        "address = \"1.1.4\"\nname = \"Taster\"\nproduct = \"MDT-BE-04001.02\"\n",
+    )?;
+    std::fs::write(
+        dir.join("bussard.lock"),
+        format!(
+            "version = 1\n\n[[device]]\naddress = \"1.1.4\"\nproduct = \"MDT-BE-04001.02\"\n\
+             application = \"{APP_ID}\"\n"
+        ),
+    )?;
+
+    let (ok, stdout, stderr) = import(&tmp, &file, &dir)?;
+    assert!(ok, "stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert!(
+        stdout.contains("pinned the product data of 1 device(s)"),
+        "{stdout}"
+    );
+    let sha = sha256_hex(&file)?;
+    let lock = lock_text(&dir)?;
+    assert!(lock.contains("version = 2\n"), "{lock}");
+    assert!(lock.contains(&format!("sha256 = \"{sha}\"")), "{lock}");
+    assert!(lock.contains("file = \"vendor/taster.knxprod\""), "{lock}");
+    assert!(lock.contains("origin = { kind = \"file\""), "{lock}");
+    assert!(
+        lock.contains("order_numbers = [\"MDT-BE-04001.02\"]"),
+        "{lock}"
+    );
+    assert!(
+        lock.contains(&format!("product_sha256 = \"{sha}\"")),
+        "{lock}"
+    );
+    // The model still loads and validates with the pinned archive.
+    let model = bussard_model::Model::load(&dir)?;
+    let codes: Vec<&str> = bussard_model::validate_in_dir(&model, &dir)
+        .iter()
+        .map(|d| d.code)
+        .collect();
+    assert!(
+        !codes.iter().any(|c| *c == "E032" || *c == "E033"),
+        "{codes:?}"
+    );
+    std::fs::remove_dir_all(&tmp)?;
+    Ok(())
+}
+
+#[test]
+fn test_import_product_project_export_is_pinned_by_its_hash() -> TestResult {
+    let tmp = scratch("pin-knxproj")?;
+    let file = tmp.join("home.knxproj");
+    write_zip(&file, &project_entries())?;
+    let dir = tmp.join("knx");
+    let (ok, stdout, stderr) = import(&tmp, &file, &dir)?;
+    assert!(ok, "stdout:\n{stdout}\nstderr:\n{stderr}");
+    let sha = sha256_hex(&file)?;
+    let lock = lock_text(&dir)?;
+    assert!(lock.contains("origin = { kind = \"knxproj\""), "{lock}");
+    assert!(
+        lock.contains(&format!("project_hash = \"{sha}\"")),
+        "{lock}"
+    );
+    assert!(
+        !lock.contains("file = "),
+        "an export is not held in the model: {lock}"
+    );
+    std::fs::remove_dir_all(&tmp)?;
+    Ok(())
+}

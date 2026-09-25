@@ -13,6 +13,10 @@
 //!   unknown channel, parameter or object key. A parameter key the device's
 //!   product model (`models/`) resolves is known. The message lists the keys
 //!   the lock does assign in that table.
+//! * **E032** (warning) — a device's lock entry names a product
+//!   (`product_sha256`) that the lock has no `[[product]]` entry for.
+//! * **E033** (warning) — a `[[product]]` entry names an archive (`file`) the
+//!   model directory does not hold.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -57,6 +61,7 @@ pub fn check_dir(dir: &Path) -> Vec<Diagnostic> {
         dir,
         lock.devices.iter().filter_map(|d| d.application.as_deref()),
     );
+    check_products(dir, &lock, &mut diags);
     let devices = dir.join(DEVICES_DIR);
     let mut names: Vec<String> = fs::read_dir(&devices)
         .map(|rd| {
@@ -79,6 +84,49 @@ pub fn check_dir(dir: &Path) -> Vec<Diagnostic> {
         }
     }
     diags
+}
+
+/// E032 and E033 over the lock's product identity (lock v2, issue #228).
+fn check_products(dir: &Path, lock: &LockFile, diags: &mut Vec<Diagnostic>) {
+    for device in &lock.devices {
+        let Some(sha) = device.product_sha256.as_deref() else {
+            continue;
+        };
+        if !lock
+            .products
+            .iter()
+            .any(|p| p.sha256.eq_ignore_ascii_case(sha))
+        {
+            diags.push(Diagnostic::new(
+                "E032",
+                Severity::Warning,
+                LOCK_FILE.to_string(),
+                format!(
+                    "device {} names product {sha} but bussard.lock has no [[product]] entry \
+                     for it; re-run `bussard import` or `bussard import-product` to pin it",
+                    device.address
+                ),
+            ));
+        }
+    }
+    for product in &lock.products {
+        let Some(file) = product.file.as_deref() else {
+            continue;
+        };
+        if !dir.join(file).is_file() {
+            diags.push(Diagnostic::new(
+                "E033",
+                Severity::Warning,
+                LOCK_FILE.to_string(),
+                format!(
+                    "bussard.lock pins product {} ({}) but {file} is missing; {}",
+                    product.sha256,
+                    product.filename.as_deref().unwrap_or(file),
+                    crate::lock_products::recovery_hint(product)
+                ),
+            ));
+        }
+    }
 }
 
 /// E020 over `groups.toml`.
