@@ -42,7 +42,9 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
-use crate::application::{ApplicationProgram, DynamicNode, ParameterType, WhenTest};
+use crate::application::{
+    ApplicationProgram, DynamicNode, LabelMatch, ParameterType, WhenTest, enum_member_by_label,
+};
 pub use crate::application::{BlockRef, ChannelRef};
 
 /// How deep `<Module>` instantiations may nest before the walk stops (real
@@ -324,10 +326,11 @@ pub fn evaluate_dynamic(
     for (key, value) in overrides {
         let (instance, param_ref) = split_selector(key);
         match parameter_id(app, &param_ref) {
-            Some(_) => {
+            Some(param_id) => {
+                let value = enum_code_of(app, param_id, value);
                 let k = (instance.unwrap_or_default(), param_ref);
                 overridden.insert(k.clone());
-                values.insert(k, value.clone());
+                values.insert(k, value);
             }
             None => unresolved.push(key.clone()),
         }
@@ -688,6 +691,31 @@ fn parameter_id<'a>(app: &'a ApplicationProgram, param_ref_id: &str) -> Option<&
     app.parameter_refs
         .get(&format!("{}_{param_ref_id}", app.id))
         .map(|r| r.ref_id.as_str())
+}
+
+/// An override value as the evaluation compares it: an enumeration member
+/// named by its label (as `bussard import` writes it, in the lock's language)
+/// becomes its code, so a `<when test>` on the parameter selects the branch
+/// the member stands for (issue #231). Any other value, and a label no member
+/// uniquely carries (the image builder refuses it with the list of labels),
+/// is kept as written.
+fn enum_code_of(app: &ApplicationProgram, param_id: &str, value: &str) -> String {
+    if value.trim().parse::<i64>().is_ok() {
+        return value.to_string();
+    }
+    let kind = app
+        .parameters
+        .get(param_id)
+        .and_then(|p| p.parameter_type.as_deref())
+        .and_then(|t| app.parameter_types.get(t))
+        .map(|d| &d.kind);
+    match kind {
+        Some(ParameterType::Enum { values, .. }) => match enum_member_by_label(values, value) {
+            LabelMatch::Member(code) => code.to_string(),
+            LabelMatch::Ambiguous | LabelMatch::Unknown => value.to_string(),
+        },
+        _ => value.to_string(),
+    }
 }
 
 /// The effective value of an app-relative `ParameterRef` in one instance: an

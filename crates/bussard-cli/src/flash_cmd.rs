@@ -121,16 +121,20 @@ pub fn run(
     // Only the selected program is parsed (issue #214): by order number, by
     // `--application`, else every program (the sole-application rule needs
     // them all).
-    let product_data = crate::product_cache::read(product, None, dir, |catalog| {
-        match (order_number, application) {
-            (Some(order), _) => {
-                AppSelection::Only(crate::product_cache::order_refs(catalog, order))
+    // Texts in the lock's language: the device file names enum members by
+    // the labels `import` wrote in it (issue #231).
+    let language = crate::product_cache::model_language(model.as_ref(), dir);
+    let product_data =
+        crate::product_cache::read(product, None, dir, language.as_deref(), |catalog| {
+            match (order_number, application) {
+                (Some(order), _) => {
+                    AppSelection::Only(crate::product_cache::order_refs(catalog, order))
+                }
+                (None, Some(wanted)) => crate::product_cache::by_application(catalog, wanted),
+                (None, None) => AppSelection::All,
             }
-            (None, Some(wanted)) => crate::product_cache::by_application(catalog, wanted),
-            (None, None) => AppSelection::All,
-        }
-    })
-    .with_context(|| format!("reading product data from {}", product.display()))?;
+        })
+        .with_context(|| format!("reading product data from {}", product.display()))?;
 
     // Resolve the application program. Three modes, in precedence order:
     //   --order-number : look the order number up in the hardware catalogue and

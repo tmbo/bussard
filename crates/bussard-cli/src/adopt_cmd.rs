@@ -590,7 +590,8 @@ fn vendor_application(dir: &Path, app_ref: &str) -> Option<ApplicationProgram> {
         }
         // Only `app_ref` is parsed, and only from an archive that holds it
         // (issue #214).
-        let product = crate::product_cache::read(&path, None, dir, |_| {
+        let language = crate::product_cache::model_language(None, dir);
+        let product = crate::product_cache::read(&path, None, dir, language.as_deref(), |_| {
             bussard_prod::AppSelection::Exact(vec![app_ref.to_string()])
         })
         .ok()?;

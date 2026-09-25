@@ -6,7 +6,9 @@
 use std::io::Write;
 use std::path::Path;
 
-use bussard_prod::{AppSelection, ProductData, read_knxprod, read_knxprod_selected};
+use bussard_prod::{
+    AppSelection, ProductData, read_knxprod, read_knxprod_selected, read_knxprod_selected_in,
+};
 use zip::write::SimpleFileOptions;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -181,8 +183,8 @@ fn test_read_knxprod_selected_cache_round_trip_is_identical() -> TestResult {
     let entry = entries.first().ok_or("no entry")?.path();
     for name in [
         "catalog.json",
-        &format!("{APP_A}.json"),
-        &format!("{APP_B}.json"),
+        &format!("{APP_A}@en-US.json"),
+        &format!("{APP_B}@en-US.json"),
     ] {
         assert!(entry.join(name).is_file(), "{name} not cached");
     }
@@ -226,7 +228,7 @@ fn test_read_knxprod_selected_warm_read_comes_from_the_cache() -> TestResult {
         .path();
     // Mark the cached program: a warm read that shows the mark was served
     // from the cache, not parsed.
-    let file = entry.join(format!("{APP_B}.json"));
+    let file = entry.join(format!("{APP_B}@en-US.json"));
     let marked = std::fs::read_to_string(&file)?.replace("\"Other\"", "\"From cache\"");
     std::fs::write(&file, marked)?;
     let warm = read_knxprod_selected(&path, None, Some(&cache), only_b)?;
@@ -238,6 +240,30 @@ fn test_read_knxprod_selected_warm_read_comes_from_the_cache() -> TestResult {
     let reparsed = read_knxprod_selected(&path, None, Some(&cache), only_b)?;
     let b = reparsed.application_by_id(APP_B).ok_or("no B")?;
     assert_eq!(b.name.as_deref(), Some("Other"));
+    Ok(())
+}
+
+#[test]
+fn test_read_knxprod_selected_in_caches_each_language_apart() -> TestResult {
+    // Issue #231: a program's texts depend on the parse language, so a
+    // de-DE read never serves (or is served) the en-US parse.
+    let tmp = tempfile::tempdir()?;
+    let path = tmp.path().join("fixture.knxprod");
+    build(&path, "Fixture")?;
+    let cache = tmp.path().join("cache");
+    let only_b = |_: &bussard_prod::ProductCatalog| AppSelection::Only(vec![APP_B.to_string()]);
+    read_knxprod_selected(&path, None, Some(&cache), only_b)?;
+    let german = read_knxprod_selected_in(&path, None, Some(&cache), Some("de-DE"), only_b)?;
+    let entry = std::fs::read_dir(&cache)?
+        .flatten()
+        .next()
+        .ok_or("no entry")?
+        .path();
+    assert!(entry.join(format!("{APP_B}@en-US.json")).is_file());
+    assert!(entry.join(format!("{APP_B}@de-DE.json")).is_file());
+    // A program without a de-DE layer parses to the same data in either.
+    let english = read_knxprod_selected(&path, None, None, only_b)?;
+    assert_eq!(apps_json(&german)?, apps_json(&english)?);
     Ok(())
 }
 

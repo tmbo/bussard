@@ -22,7 +22,7 @@
 //! ETS/xknxproject resolve to by default; `bussard import` picks the
 //! project's language instead (see [`TranslationCollector::for_language`]).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::attrs::{Attrs, get};
 
@@ -41,6 +41,9 @@ pub struct TranslationCollector {
     cur_element: Option<String>,
     /// `(element id, attribute name)` → translated text.
     translations: HashMap<(String, String), String>,
+    /// Enumeration element id → language → translated `Text`, in every
+    /// language the file carries (see [`TranslationCollector::enum_labels`]).
+    enum_labels: HashMap<String, BTreeMap<String, String>>,
 }
 
 impl Default for TranslationCollector {
@@ -63,6 +66,7 @@ impl TranslationCollector {
             cur_lang: None,
             cur_element: None,
             translations: HashMap::new(),
+            enum_labels: HashMap::new(),
         }
     }
 
@@ -96,7 +100,24 @@ impl TranslationCollector {
     /// language is the collector's and it targets one of `wanted_attrs`.
     ///
     /// `m` is the parsed attribute map of the `<Translation>` tag.
+    ///
+    /// Independently of the language, the `Text` of an enumeration member
+    /// (an element id carrying the schema's `_EN-` member suffix) is kept in
+    /// every language, so a label written in another language still names
+    /// its member (see [`TranslationCollector::enum_labels`]).
     pub fn record(&mut self, m: &Attrs, wanted_attrs: &[&str]) {
+        if let (Some(lang), Some(element), Some("Text"), Some(text)) = (
+            self.cur_lang.as_deref(),
+            self.cur_element.as_deref(),
+            get(m, b"AttributeName"),
+            get(m, b"Text"),
+        ) && element.contains("_EN-")
+        {
+            self.enum_labels
+                .entry(element.to_string())
+                .or_default()
+                .insert(lang.to_string(), text.to_string());
+        }
         if !self
             .cur_lang
             .as_deref()
@@ -126,8 +147,14 @@ impl TranslationCollector {
             .map(String::as_str)
     }
 
+    /// The translated `Text` of enumeration member `element_id` in every
+    /// language the file carries, keyed by language identifier, if any.
+    pub fn enum_labels(&self, element_id: &str) -> Option<&BTreeMap<String, String>> {
+        self.enum_labels.get(element_id)
+    }
+
     /// Whether nothing was collected (lets the parser skip the apply pass).
     pub fn is_empty(&self) -> bool {
-        self.translations.is_empty()
+        self.translations.is_empty() && self.enum_labels.is_empty()
     }
 }

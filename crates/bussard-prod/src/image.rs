@@ -41,7 +41,9 @@
 
 use std::collections::BTreeMap;
 
-use bussard_ets::application::{ApplicationProgram, ParameterType};
+use bussard_ets::application::{
+    ApplicationProgram, LabelMatch, ParameterType, enum_member_by_label,
+};
 
 use crate::error::{ProdError, Result};
 
@@ -1059,17 +1061,6 @@ fn binary_value_placement(bits: u32, bytes: &[u8]) -> Placement {
     }
 }
 
-/// The code of the enum member whose `Text` is exactly `text` (trimmed), when
-/// exactly one member has it.
-fn enum_member_by_text(values: &[bussard_ets::application::EnumValue], text: &str) -> Option<i64> {
-    let text = text.trim();
-    let mut hits = values.iter().filter(|e| e.text.trim() == text);
-    match (hits.next(), hits.next()) {
-        (Some(one), None) => Some(one.value),
-        _ => None,
-    }
-}
-
 /// Resolves the width/encoding of a value from its parameter type.
 ///
 /// `source` selects the enum-membership leniency (see [`ValueSource`]): a
@@ -1098,17 +1089,24 @@ fn encode_value(
             let raw = value.unwrap_or("0");
             let n: i64 = match raw.trim().parse() {
                 Ok(n) => n,
-                Err(_) => enum_member_by_text(values, raw).ok_or_else(|| {
-                    let choices: Vec<&str> = values.iter().map(|e| e.text.as_str()).collect();
-                    param_err(
-                        app,
-                        pname,
-                        &format!(
-                            "`{raw}` is neither an enum code nor exactly one of its labels ({})",
-                            choices.join(" | ")
-                        ),
-                    )
-                })?,
+                Err(_) => match enum_member_by_label(values, raw) {
+                    LabelMatch::Member(n) => n,
+                    found => {
+                        // The labels in the language the program was parsed
+                        // in: the lock's language on the model paths.
+                        let choices: Vec<&str> = values.iter().map(|e| e.text.as_str()).collect();
+                        let why = if found == LabelMatch::Ambiguous {
+                            "names more than one of its members"
+                        } else {
+                            "is neither an enum code nor exactly one of its labels"
+                        };
+                        return Err(param_err(
+                            app,
+                            pname,
+                            &format!("`{raw}` {why} ({})", choices.join(" | ")),
+                        ));
+                    }
+                },
             };
             if !values.is_empty() && !values.iter().any(|e| e.value == n) {
                 match source {
@@ -2023,6 +2021,116 @@ mod tests {
             .unwrap_or_default();
         assert!(err.contains("Off | On"), "{err}");
         Ok(())
+    }
+
+    /// A one-parameter program whose enum labels differ between its default
+    /// language (en-US) and its de-DE layer, as the `_RE_Betriebsart_RSM` of
+    /// issue #231. `Both` is the English label of member 2 and, in the de-DE
+    /// layer, of member 3 (a label two languages give different members);
+    /// `Commun` is the fr-FR label of two members.
+    const BILINGUAL_XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/23">
+     <ApplicationProgram Id="M-1_A-1" Name="t" DefaultLanguage="en-US">
+      <Static>
+       <Code><RelativeSegment Id="M-1_A-1_RS-1" Size="8" LoadStateMachine="4" Offset="0" /></Code>
+       <ParameterTypes>
+        <ParameterType Id="M-1_A-1_PT-1" Name="mode"><TypeRestriction Base="Value" SizeInBit="8">
+         <Enumeration Text="Heating" Value="0" Id="M-1_A-1_PT-1_EN-0" />
+         <Enumeration Text="Cooling" Value="1" Id="M-1_A-1_PT-1_EN-1" />
+         <Enumeration Text="Both" Value="2" Id="M-1_A-1_PT-1_EN-2" />
+         <Enumeration Text="Auto" Value="3" Id="M-1_A-1_PT-1_EN-3" />
+         <Enumeration Text="Heating and cooling" Value="5" Id="M-1_A-1_PT-1_EN-5" />
+        </TypeRestriction></ParameterType>
+       </ParameterTypes>
+       <Parameters>
+        <Parameter Id="M-1_A-1_P-0" Name="_RE_Betriebsart_RSM" ParameterType="M-1_A-1_PT-1" Value="0">
+         <Memory CodeSegment="M-1_A-1_RS-1" Offset="0" BitOffset="0" /></Parameter>
+       </Parameters>
+      </Static>
+      <Languages>
+       <Language Identifier="de-DE"><TranslationUnit RefId="M-1_A-1">
+        <TranslationElement RefId="M-1_A-1_PT-1_EN-0"><Translation AttributeName="Text" Text="Heizen" /></TranslationElement>
+        <TranslationElement RefId="M-1_A-1_PT-1_EN-1"><Translation AttributeName="Text" Text="K&#252;hlen" /></TranslationElement>
+        <TranslationElement RefId="M-1_A-1_PT-1_EN-2"><Translation AttributeName="Text" Text="Beides alt" /></TranslationElement>
+        <TranslationElement RefId="M-1_A-1_PT-1_EN-3"><Translation AttributeName="Text" Text="Both" /></TranslationElement>
+        <TranslationElement RefId="M-1_A-1_PT-1_EN-5"><Translation AttributeName="Text" Text="Heizen und K&#252;hlen" /></TranslationElement>
+       </TranslationUnit></Language>
+       <Language Identifier="fr-FR"><TranslationUnit RefId="M-1_A-1">
+        <TranslationElement RefId="M-1_A-1_PT-1_EN-1"><Translation AttributeName="Text" Text="Refroidissement" /></TranslationElement>
+        <TranslationElement RefId="M-1_A-1_PT-1_EN-2"><Translation AttributeName="Text" Text="Commun" /></TranslationElement>
+        <TranslationElement RefId="M-1_A-1_PT-1_EN-5"><Translation AttributeName="Text" Text="Commun" /></TranslationElement>
+       </TranslationUnit></Language>
+      </Languages>
+     </ApplicationProgram>
+    </KNX>"#;
+
+    /// The byte [`BILINGUAL_XML`]'s parameter gets for `value`, the program
+    /// parsed in `language`.
+    fn bilingual_byte(language: &str, value: &str) -> Result<u8> {
+        let app = bussard_ets::application::parse_application_program_in(
+            "M-1_A-1",
+            BILINGUAL_XML.as_bytes(),
+            language,
+        )?;
+        let mut ov = BTreeMap::new();
+        ov.insert("P-0_R-1".to_string(), value.to_string());
+        let img = compute_parameter_image(&app, &ov, &no_bases())?;
+        img.get("M-1_A-1_RS-1")
+            .and_then(|seg| seg.first().copied())
+            .ok_or_else(|| ProdError::ParameterImage {
+                parameter: "_RE_Betriebsart_RSM".to_string(),
+                reason: "no image".to_string(),
+            })
+    }
+
+    #[test]
+    fn test_encode_value_enum_label_in_lock_language_resolves() -> Result<()> {
+        // Issue #231: the lock says de-DE, the device file carries the German
+        // label, the byte is the member's value.
+        assert_eq!(bilingual_byte("de-DE", "Heizen und Kühlen")?, 5);
+        assert_eq!(bilingual_byte("de-DE", "Kühlen")?, 1);
+        // The program's default-language (English) label still resolves.
+        assert_eq!(bilingual_byte("de-DE", "Heating and cooling")?, 5);
+        // A label from another layer resolves when it is unique there.
+        assert_eq!(bilingual_byte("de-DE", "Refroidissement")?, 1);
+        // Parsed in en-US (no lock language), the German label resolves too.
+        assert_eq!(bilingual_byte("en-US", "Heizen und Kühlen")?, 5);
+        Ok(())
+    }
+
+    #[test]
+    fn test_encode_value_enum_label_lock_language_wins_over_default() -> Result<()> {
+        // `Both` is member 2 in English and member 3 in German: the lock's
+        // language is matched first, so a German model means member 3 and
+        // an English one member 2.
+        assert_eq!(bilingual_byte("de-DE", "Both")?, 3);
+        assert_eq!(bilingual_byte("en-US", "Both")?, 2);
+        // A label only the default language knows falls back to it.
+        assert_eq!(bilingual_byte("de-DE", "Auto")?, 3);
+        assert_eq!(bilingual_byte("de-DE", "Cooling")?, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_encode_value_enum_label_unknown_lists_lock_language_labels() {
+        let err = bilingual_byte("de-DE", "Lüften")
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert!(
+            err.contains("Heizen | Kühlen | Beides alt | Both | Heizen und Kühlen"),
+            "{err}"
+        );
+        assert!(err.contains("neither an enum code"), "{err}");
+    }
+
+    #[test]
+    fn test_encode_value_enum_label_ambiguous_in_other_languages_is_refused() {
+        // `Commun` is two members' fr-FR label: ambiguity stays an error.
+        let err = bilingual_byte("de-DE", "Commun")
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert!(err.contains("more than one of its members"), "{err}");
     }
 
     #[test]

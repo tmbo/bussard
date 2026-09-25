@@ -16,7 +16,7 @@
 //! attributes, matching ETS behaviour: en-US for [`parse_application_program`],
 //! the caller's choice for [`parse_application_program_in`].
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
@@ -630,8 +630,18 @@ pub enum ParameterType {
 pub struct EnumValue {
     /// The numeric `Value`.
     pub value: i64,
-    /// The display `Text` (translation applied).
+    /// The display `Text` (translation applied): the label in the language
+    /// the program was parsed in (see [`parse_application_program_in`]).
     pub text: String,
+    /// The untranslated `Text`: the label in the program's
+    /// `DefaultLanguage`.
+    #[serde(default)]
+    pub default_text: String,
+    /// The member's label in every translation layer the program carries,
+    /// keyed by language identifier (e.g. `de-DE`). Lets a label written in
+    /// another language than the parse language still name its member.
+    #[serde(default)]
+    pub translations: BTreeMap<String, String>,
     /// The `Id`, which a translation refers to.
     pub id: Option<String>,
     /// The decoded `BinaryValue` of a `<TypeRestriction Base="BinaryValue">`
@@ -640,6 +650,56 @@ pub struct EnumValue {
     /// `BinaryValue="4AY="`, ETS writes `e0 06`). `None` for a `Base="Value"`
     /// enumeration.
     pub binary_value: Option<Vec<u8>>,
+}
+
+/// How [`enum_member_by_label`] settled a label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LabelMatch {
+    /// Exactly one member carries the label: its `Value`.
+    Member(i64),
+    /// Several members carry it in the first language that knows it.
+    Ambiguous,
+    /// No member carries it in any language.
+    Unknown,
+}
+
+/// The enumeration member a device file names by its label `text` (trimmed).
+///
+/// `bussard import` writes a member by its label in the project language
+/// (the `language` in `bussard.lock`), and the flash, plan and apply paths
+/// parse the product in that same language, so the label is matched against,
+/// in order:
+///
+/// 1. [`EnumValue::text`], the label in the language the program was parsed
+///    in,
+/// 2. [`EnumValue::default_text`], the program's untranslated label,
+/// 3. every translation layer ([`EnumValue::translations`]), so a device
+///    file edited from a catalogue in another language still loads.
+///
+/// The first tier with a hit decides: a label two members share there is
+/// [`LabelMatch::Ambiguous`] and never falls through to a later tier.
+pub fn enum_member_by_label(values: &[EnumValue], text: &str) -> LabelMatch {
+    let text = text.trim();
+    let tiers: [&dyn Fn(&EnumValue) -> bool; 3] = [
+        &|e| e.text.trim() == text,
+        &|e| e.default_text.trim() == text,
+        &|e| e.translations.values().any(|t| t.trim() == text),
+    ];
+    for matches in tiers {
+        let mut codes: Vec<i64> = values
+            .iter()
+            .filter(|e| matches(e))
+            .map(|e| e.value)
+            .collect();
+        codes.sort_unstable();
+        codes.dedup();
+        match codes.as_slice() {
+            [] => continue,
+            [one] => return LabelMatch::Member(*one),
+            _ => return LabelMatch::Ambiguous,
+        }
+    }
+    LabelMatch::Unknown
 }
 
 /// A named parameter type declaration (`<ParameterType>` wrapping one shape).
@@ -1801,6 +1861,8 @@ fn handle_empty(
                 values.push(EnumValue {
                     value,
                     text: text.to_string(),
+                    default_text: text.to_string(),
+                    translations: BTreeMap::new(),
                     id: get(m, b"Id").map(str::to_string),
                     binary_value,
                 });
@@ -1859,6 +1921,9 @@ fn apply_translations(app: &mut ApplicationProgram, translations: &TranslationCo
             for v in values {
                 if let Some(t) = v.id.as_deref().and_then(|id| translations.get(id, "Text")) {
                     v.text = t.to_string();
+                }
+                if let Some(all) = v.id.as_deref().and_then(|id| translations.enum_labels(id)) {
+                    v.translations = all.clone();
                 }
             }
         }
@@ -3307,6 +3372,33 @@ mod tests {
             object.and_then(|o| o.function_text.as_deref()),
             Some("Long-time operation")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_application_program_in_keeps_enum_labels_of_every_language() -> Result<()> {
+        // Issue #231: the image builder matches a label against the parse
+        // language, the default text and every layer, so each is kept.
+        for language in ["de-DE", "en-US"] {
+            let app =
+                parse_application_program_in("M-1_A-1", LANGUAGE_SAMPLE.as_bytes(), language)?;
+            let values = match app.parameter_types.get("M-1_A-1_PT-1").map(|d| &d.kind) {
+                Some(ParameterType::Enum { values, .. }) => values.clone(),
+                _ => Vec::new(),
+            };
+            assert_eq!(values.len(), 2, "parsed in {language}");
+            let shutter = values.iter().find(|v| v.value == 1);
+            assert_eq!(shutter.map(|v| v.default_text.as_str()), Some("Shutter"));
+            assert_eq!(
+                shutter
+                    .and_then(|v| v.translations.get("de-DE"))
+                    .map(String::as_str),
+                Some("Rollladen"),
+                "parsed in {language}"
+            );
+            let blind = values.iter().find(|v| v.value == 0);
+            assert!(blind.is_some_and(|v| v.translations.is_empty()));
+        }
         Ok(())
     }
 

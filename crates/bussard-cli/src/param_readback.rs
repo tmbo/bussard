@@ -87,8 +87,11 @@ pub(crate) fn resolve(
     let read_error = |e: bussard_prod::ProdError| {
         anyhow::anyhow!("reading product data from {}: {e}", path.display())
     };
+    // Texts in the lock's language, so the device file's enum labels resolve
+    // and read-back values render as `import` wrote them (issue #231).
+    let language = crate::product_cache::model_language(model, dir);
     let mut expected: Option<String> = None;
-    let narrowed = crate::product_cache::read(&path, None, dir, |catalog| {
+    let narrowed = crate::product_cache::read(&path, None, dir, language.as_deref(), |catalog| {
         expected = expected_app(catalog, application, app_ref, order.as_deref());
         match &expected {
             Some(id) => AppSelection::Only(vec![id.clone()]),
@@ -114,7 +117,8 @@ pub(crate) fn resolve(
         }));
     }
     let product =
-        crate::product_cache::read(&path, None, dir, |_| AppSelection::All).map_err(read_error)?;
+        crate::product_cache::read(&path, None, dir, language.as_deref(), |_| AppSelection::All)
+            .map_err(read_error)?;
     let app_id = select_app(&product, application, device_product, order.as_deref())
         .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
     Ok(Some(ProductSource { product, app_id }))

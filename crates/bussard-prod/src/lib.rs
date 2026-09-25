@@ -170,7 +170,13 @@ fn read_product(mut container: container::Container) -> Result<ProductData> {
         inner: None,
         opened: Some(container),
     };
-    assemble(&mut source, None, catalog, &ids)
+    assemble(
+        &mut source,
+        None,
+        catalog,
+        &ids,
+        bussard_ets::translation::DEFAULT_LANGUAGE,
+    )
 }
 
 /// The archive's table of contents: everything [`read_knxprod_selected`]
@@ -243,6 +249,30 @@ pub fn read_knxprod_selected(
     cache: Option<&Path>,
     select: impl FnOnce(&ProductCatalog) -> AppSelection,
 ) -> Result<ProductData> {
+    read_knxprod_selected_in(path, inner, cache, None, select)
+}
+
+/// [`read_knxprod_selected`] with the programs' texts in `language` (an ETS
+/// identifier such as `de-DE`, the `language` a model's `bussard.lock`
+/// records), as [`bussard_ets::application::parse_application_program_in`]
+/// parses them. `None` parses in the default language (en-US).
+///
+/// The texts include the enumeration labels, so a device file that names an
+/// enum member by its label in the lock's language resolves when the
+/// parameter image is computed from this product, and a refused label is
+/// reported with the labels in that language.
+///
+/// # Errors
+///
+/// As [`read_knxprod`].
+pub fn read_knxprod_selected_in(
+    path: &Path,
+    inner: Option<&str>,
+    cache: Option<&Path>,
+    language: Option<&str>,
+    select: impl FnOnce(&ProductCatalog) -> AppSelection,
+) -> Result<ProductData> {
+    let language = language.unwrap_or(bussard_ets::translation::DEFAULT_LANGUAGE);
     let store = cache.and_then(|dir| cache::Store::open(dir, path, inner));
     let mut source = Source::closed(path, inner);
     let catalog = match store.as_ref().and_then(cache::Store::catalog) {
@@ -276,7 +306,7 @@ pub fn read_knxprod_selected(
             with_companion_candidates(&catalog, held)
         }
     };
-    assemble(&mut source, store.as_ref(), catalog, &ids)
+    assemble(&mut source, store.as_ref(), catalog, &ids, language)
 }
 
 /// `ids` plus every program a `Hardware2Program` lists next to one of them,
@@ -367,18 +397,19 @@ fn read_catalog(container: &mut container::Container) -> Result<ProductCatalog> 
     })
 }
 
-/// Parses (or reads from the cache) the programs `ids`, attaches companions
-/// and assembles the [`ProductData`].
+/// Parses (or reads from the cache) the programs `ids` with their texts in
+/// `language`, attaches companions and assembles the [`ProductData`].
 fn assemble(
     source: &mut Source<'_>,
     store: Option<&cache::Store>,
     catalog: ProductCatalog,
     ids: &[String],
+    language: &str,
 ) -> Result<ProductData> {
     let mut applications = Vec::with_capacity(ids.len());
     let mut entries: Option<Vec<AppEntry>> = None;
     for id in ids {
-        if let Some(app) = store.and_then(|s| s.application(id)) {
+        if let Some(app) = store.and_then(|s| s.application(id, language)) {
             applications.push(app);
             continue;
         }
@@ -389,9 +420,13 @@ fn assemble(
             // Raw bytes straight from the inflater: no `String` copy of the
             // (up to ~28 MB) entry; the parser decodes UTF-8 event by event.
             let xml = container.read_raw(&entry.entry)?;
-            let app = parse_application_program(&entry.application_id, &xml)?;
+            let app = bussard_ets::application::parse_application_program_in(
+                &entry.application_id,
+                &xml,
+                language,
+            )?;
             if let Some(store) = store {
-                store.put_application(id, &app);
+                store.put_application(id, language, &app);
             }
             applications.push(app);
         }
