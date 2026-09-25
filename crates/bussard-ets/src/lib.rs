@@ -32,6 +32,7 @@ pub mod flags;
 pub mod hardware;
 pub mod label;
 pub mod master;
+mod serde_bits;
 pub mod translation;
 pub mod zip_util;
 

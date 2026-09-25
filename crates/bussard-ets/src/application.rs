@@ -29,7 +29,7 @@ use crate::translation::TranslationCollector;
 use bussard_model::Dpt;
 
 /// A base `<ComObject>` from the application program.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ComObject {
     /// The full XML `Id`.
     pub id: String,
@@ -54,7 +54,7 @@ pub struct ComObject {
 }
 
 /// A `<ComObjectRef>` from the application program.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ComObjectRef {
     /// The full XML `Id`.
     pub id: String,
@@ -85,7 +85,7 @@ pub struct ComObjectRef {
 ///
 /// All ids are app-relative. For a channel of a module definition the id is the
 /// definition's (`MD-1_CH-1`); the module instance is recorded next to it.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ChannelRef {
     /// The channel id, app-relative (e.g. `CH-2`, `MD-1_CH-1`).
     pub id: String,
@@ -104,7 +104,7 @@ pub struct ChannelRef {
 /// A `<ParameterBlock>` as a location in the Dynamic section: one level of the
 /// block path an active parameter or com-object sits in (see
 /// [`crate::dynamic::Placement::blocks`]).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct BlockRef {
     /// The block id, app-relative (e.g. `PB-13`, `MD-1_PB-2`).
     pub id: String,
@@ -122,7 +122,7 @@ pub struct BlockRef {
 }
 
 /// A `<Channel>` definition from the application program's Dynamic section.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ChannelDef {
     /// Channel `Name` (the manufacturer's short label, e.g. `"Relaisausgänge"`).
     pub name: Option<String>,
@@ -146,7 +146,7 @@ pub struct ChannelDef {
 /// The argument values are keyed by the **app-relative argument id** (with the
 /// program-id prefix stripped, e.g. `MD-1_A-2`), the same key
 /// [`ComObject::base_number_ref`] and [`Memory::base_offset`] carry.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ModuleInstance {
     /// The module instance id (its `Id`, app-relative, e.g. `MD-1_M-3`). A
     /// project's module-instance selector is this id plus `_MI-<n>`.
@@ -167,7 +167,7 @@ pub struct ModuleInstance {
 /// only when the named parameter takes the `when` value. The captured ids are
 /// **com-object-ref ids** (a `ComObjectRefRef`'s `RefId`), which resolve to a
 /// [`ComObjectRef`] and thence its base [`ComObject`].
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ChannelMembership {
     /// Com-object-ref ids always present on every channel (the unconditional
     /// `<ComObjectRefRef>`s directly under the parameter block).
@@ -185,7 +185,7 @@ pub struct ChannelMembership {
 }
 
 /// The comparison a `<when test="!=0">`-style branch makes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CompareOp {
     /// `!=`
     Ne,
@@ -225,7 +225,7 @@ impl CompareOp {
 ///   ([`WhenTest::Default`], 97 k).
 /// * anything else, preserved verbatim ([`WhenTest::Unknown`]) rather than
 ///   silently dropped.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum WhenTest {
     /// One or more exact values; the branch applies when the parameter takes any
     /// of them.
@@ -301,7 +301,7 @@ impl WhenTest {
 
 /// One `<when>` branch of a `<choose>`: its condition and the com-object-ref ids
 /// it contributes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WhenBranch {
     /// The branch condition.
     pub test: WhenTest,
@@ -310,7 +310,7 @@ pub struct WhenBranch {
 }
 
 /// One `<choose>/<when>` conditional group inside a [`ChannelMembership`].
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ConditionalGroup {
     /// The `ParameterRef` id (`ParamRefId`) whose value selects a `when` branch.
     pub param_ref_id: String,
@@ -361,7 +361,7 @@ impl ConditionalGroup {
 /// `<Rows>`/`<Columns>`, …) are flattened into their parent.
 /// [`flatten_containers`] gives the fully flattened view. All ids are
 /// app-relative (the program-id prefix stripped).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum DynamicNode {
     /// `<Channel>`: a labelled group of the configuration.
     Channel {
@@ -508,7 +508,7 @@ pub fn flatten_containers(nodes: &[DynamicNode]) -> Vec<DynamicNode> {
 }
 
 /// One `<when>` branch of a [`DynamicNode::Choose`].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DynamicWhen {
     /// The branch condition.
     pub test: WhenTest,
@@ -574,7 +574,7 @@ impl ResolvedComObject<'_> {
 }
 
 /// A parameter type: the shape (int/enum/text/float/none) plus its size.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum ParameterType {
     /// `<TypeNumber>`: a bounded integer.
     Int {
@@ -604,8 +604,10 @@ pub enum ParameterType {
         /// Encoding string, e.g. `"DPT 9"`.
         encoding: Option<String>,
         /// Inclusive minimum, if declared.
+        #[serde(with = "crate::serde_bits")]
         min: Option<f64>,
         /// Inclusive maximum, if declared.
+        #[serde(with = "crate::serde_bits")]
         max: Option<f64>,
     },
     /// `<TypeNone>`: a marker type carrying no memory value.
@@ -624,7 +626,7 @@ pub enum ParameterType {
 }
 
 /// One `<Enumeration>` in a `<TypeRestriction>`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EnumValue {
     /// The numeric `Value`.
     pub value: i64,
@@ -641,7 +643,7 @@ pub struct EnumValue {
 }
 
 /// A named parameter type declaration (`<ParameterType>` wrapping one shape).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ParameterTypeDecl {
     /// The full XML `Id`.
     pub id: String,
@@ -652,7 +654,7 @@ pub struct ParameterTypeDecl {
 }
 
 /// A `<Parameter>` definition.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Parameter {
     /// The full XML `Id`.
     pub id: String,
@@ -683,7 +685,7 @@ pub struct Parameter {
 }
 
 /// A parameter's memory location (`<Memory CodeSegment Offset BitOffset>`).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Memory {
     /// The code-segment id this offset is relative/absolute to.
     pub code_segment: Option<String>,
@@ -714,7 +716,7 @@ pub struct Memory {
 /// `DefaultUnionParameter` (falling back to the first member when none is
 /// marked). See [`UnionMember`] and `bussard_prod`'s image computation, which
 /// lays the default member down at `union_base + member_offset`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Union {
     /// The union's `SizeInBit` (the size of the shared region), if declared.
     pub size_bits: Option<u32>,
@@ -726,7 +728,7 @@ pub struct Union {
 }
 
 /// One member of a [`Union`]: a parameter plus its position within the block.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct UnionMember {
     /// The member parameter's full XML `Id` (also present in
     /// [`ApplicationProgram::parameters`], so its type/default resolve normally).
@@ -742,7 +744,7 @@ pub struct UnionMember {
 }
 
 /// A `<ParameterRef>`: a reference to a [`Parameter`] with optional overrides.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ParameterRef {
     /// The full XML `Id`.
     pub id: String,
@@ -767,7 +769,7 @@ pub struct ParameterRef {
 /// so holding them is cheap and lets the download engine and the parameter
 /// image builder read them directly. The binary never reaches the emitted YAML
 /// models; it is a download input only.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CodeSegment {
     /// The full XML `Id`.
     pub id: String,
@@ -788,7 +790,7 @@ pub struct CodeSegment {
 }
 
 /// Which flavour of code segment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SegmentKind {
     /// A `<RelativeSegment>`.
     Relative,
@@ -800,7 +802,7 @@ pub enum SegmentKind {
 /// `LdCtrl*` element. Known control ops get a typed variant carrying the
 /// attributes phase-3 (`bussard-download`) will need; unrecognized ops are kept
 /// verbatim as [`LoadOp::Raw`] so nothing is lost.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum LoadOp {
     /// `<LdCtrlConnect>`.
     Connect,
@@ -1041,7 +1043,7 @@ pub enum LoadOp {
 
 /// A named load procedure (`<LoadProcedure>`), a list of ordered ops. The
 /// `MergeId` groups merged procedures; bussard keeps it for later ordering.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct LoadProcedure {
     /// The `MergeId`, if this is part of a merged procedure.
     pub merge_id: Option<String>,
@@ -1050,7 +1052,7 @@ pub struct LoadProcedure {
 }
 
 /// One parsed ApplicationProgram.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ApplicationProgram {
     /// The application-program id (e.g. `M-0004_A-20D7-26-053C-O000A`).
     pub id: String,

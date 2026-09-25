@@ -198,7 +198,7 @@ pub fn load_model_optional(dir: &Path) -> Option<Model> {
         );
         return None;
     }
-    match Model::load(dir) {
+    match crate::timing::time("model load", || Model::load(dir)) {
         Ok(model) => Some(model),
         Err(err) => {
             tracing::warn!(
@@ -234,14 +234,16 @@ pub fn load_model_required(dir: &Path) -> anyhow::Result<Option<Model>> {
         );
         return Ok(None);
     }
-    Model::load(dir).map(Some).map_err(|err| {
-        anyhow!(
-            "failed to load model from {}: {err}. Refusing to run a write/management command \
+    crate::timing::time("model load", || Model::load(dir))
+        .map(Some)
+        .map_err(|err| {
+            anyhow!(
+                "failed to load model from {}: {err}. Refusing to run a write/management command \
              against a broken model (a parse error must not silently bypass the protected-GA \
              gate); fix the model files or pass an explicit path",
-            dir.display()
-        )
-    })
+                dir.display()
+            )
+        })
 }
 
 /// The KNXnet/IP Secure tunnelling credentials of this invocation (issue #71
@@ -415,11 +417,14 @@ pub async fn open_service(
     config: ConnectionConfig,
     policy: WritePolicy,
 ) -> anyhow::Result<BusService> {
+    crate::timing::record("to tunnel open", crate::timing::since_start(), "");
+    let tunnel_started = std::time::Instant::now();
     let service = BusService::open(config, policy)?;
-    if !service
+    let connected = service
         .wait_connected(std::time::Duration::from_secs(10))
-        .await
-    {
+        .await;
+    crate::timing::record("tunnel", tunnel_started.elapsed(), "");
+    if !connected {
         // A refusal retrying cannot fix (issue #182): stop here with that
         // cause, before any fallback-source warning or device hint.
         if let Some(fatal) = service.handle().fatal_error() {

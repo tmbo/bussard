@@ -294,6 +294,7 @@ dependencies = [
  "base64 0.22.1",
  "bussard-model",
  "quick-xml",
+ "serde",
  "thiserror",
  "zip",
 ]
@@ -447,6 +448,7 @@ dependencies = [
  "bussard-project",
  "bussard-secure",
  "bussard-transport",
+ "sha2",
  "thiserror",
  "tokio",
  "tracing",

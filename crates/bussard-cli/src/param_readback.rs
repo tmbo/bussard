@@ -22,7 +22,7 @@ use bussard_download::{
 };
 use bussard_mgmt::{L4Channel, Layer4Connection};
 use bussard_model::{IndividualAddress, Model};
-use bussard_prod::{ApplicationProgram, ProductData};
+use bussard_prod::{AppSelection, ApplicationProgram, ProductData};
 
 /// The `--product` / `--application` flags of `plan` and `reconstruct`.
 #[derive(Debug, Clone, Copy, Default)]
@@ -79,11 +79,71 @@ pub(crate) fn resolve(
         }
         (None, None) => return Ok(None),
     };
-    let product = bussard_prod::read_knxprod(&path)
-        .map_err(|e| anyhow::anyhow!("reading product data from {}: {e}", path.display()))?;
+    // Parse only the program `select_app` will pick (issue #214), judged on
+    // the catalogue's ids. The narrowed read is used only when `select_app`
+    // picks that very program from it; otherwise the full read decides, so
+    // every choice and every refusal reads as before.
+    let app_ref = device_product.and_then(|p| p.application_ref.as_deref());
+    let read_error = |e: bussard_prod::ProdError| {
+        anyhow::anyhow!("reading product data from {}: {e}", path.display())
+    };
+    let mut expected: Option<String> = None;
+    let narrowed = crate::product_cache::read(&path, None, dir, |catalog| {
+        expected = expected_app(catalog, application, app_ref, order.as_deref());
+        match &expected {
+            Some(id) => AppSelection::Only(vec![id.clone()]),
+            None => AppSelection::All,
+        }
+    })
+    .map_err(read_error)?;
+    let picked = select_app(&narrowed, application, device_product, order.as_deref());
+    if let (Ok(app_id), Some(want)) = (&picked, &expected)
+        && app_id == want
+    {
+        return Ok(Some(ProductSource {
+            product: narrowed,
+            app_id: app_id.clone(),
+        }));
+    }
+    if expected.is_none() {
+        // The narrowed read already parsed every program.
+        let app_id = picked.map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+        return Ok(Some(ProductSource {
+            product: narrowed,
+            app_id,
+        }));
+    }
+    let product =
+        crate::product_cache::read(&path, None, dir, |_| AppSelection::All).map_err(read_error)?;
     let app_id = select_app(&product, application, device_product, order.as_deref())
         .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
     Ok(Some(ProductSource { product, app_id }))
+}
+
+/// The program [`select_app`] picks under its first three rules, judged on
+/// the catalogue's ids alone: the `--application` match, else the model's
+/// `application_ref` match, else the one program the order number maps to.
+/// `None` when those rules do not settle it.
+fn expected_app(
+    catalog: &bussard_prod::ProductCatalog,
+    application: Option<&str>,
+    app_ref: Option<&str>,
+    order: Option<&str>,
+) -> Option<String> {
+    if let Some(wanted) = application {
+        return crate::product_cache::select_id(catalog, wanted);
+    }
+    if let Some(id) = app_ref.and_then(|wanted| crate::product_cache::select_id(catalog, wanted)) {
+        return Some(id);
+    }
+    let held: Vec<String> = crate::product_cache::order_refs(catalog, order?)
+        .into_iter()
+        .filter(|id| catalog.application_ids.contains(id))
+        .collect();
+    match held.as_slice() {
+        [only] => Some(only.clone()),
+        _ => None,
+    }
 }
 
 /// Picks the application: `--application`, else the model's `application_ref`

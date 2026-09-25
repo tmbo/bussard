@@ -588,7 +588,12 @@ fn vendor_application(dir: &Path, app_ref: &str) -> Option<ApplicationProgram> {
         if !is_knxprod {
             return None;
         }
-        let product = bussard_prod::read_knxprod(&path).ok()?;
+        // Only `app_ref` is parsed, and only from an archive that holds it
+        // (issue #214).
+        let product = crate::product_cache::read(&path, None, dir, |_| {
+            bussard_prod::AppSelection::Exact(vec![app_ref.to_string()])
+        })
+        .ok()?;
         product.applications.into_iter().find(|a| a.id == app_ref)
     })
 }

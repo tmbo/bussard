@@ -30,6 +30,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use bussard_model::{GroupAddress, IndividualAddress};
 use bussard_secure::{DataSecureSession, Key16, SecurityAlgorithm, SequenceHighWater};
@@ -167,7 +168,7 @@ pub fn tunnel_config(
         Some(path) => Some(load_keyring(path)?),
         None => None,
     };
-    let secure_users = |k: &bussard_project::Keyring| -> Vec<SecureUser> {
+    let secure_users = |k: &Arc<bussard_project::Keyring>| -> Vec<SecureUser> {
         k.interfaces
             .iter()
             .filter(|i| i.is_secure_tunnel())
@@ -304,7 +305,7 @@ pub fn resolve_material(
 #[derive(Default)]
 pub struct ToolKeys {
     /// The decrypted keyring and the path it came from.
-    keyring: Option<(PathBuf, bussard_project::Keyring)>,
+    keyring: Option<(PathBuf, Arc<bussard_project::Keyring>)>,
     /// A raw `--tool-key`.
     raw: Option<Key16>,
 }
@@ -437,21 +438,122 @@ impl ToolKeys {
 ///
 /// A missing password, an unreadable file, or a keyring that does not decrypt.
 pub fn load_group_keys(path: &Path) -> Result<crate::group::GroupKeys, SecureKeyError> {
-    Ok(load_keyring(path)?.group_keys)
+    Ok(load_keyring(path)?.group_keys.clone())
 }
 
-/// Loads and decrypts `path` with the env password.
-fn load_keyring(path: &Path) -> Result<bussard_project::Keyring, SecureKeyError> {
+/// Loads and decrypts `path` with the env password, once per process for the
+/// same file bytes and password (see [`keyring_memo`]).
+fn load_keyring(path: &Path) -> Result<Arc<bussard_project::Keyring>, SecureKeyError> {
     let password =
         std::env::var(KEYRING_PASSWORD_ENV).map_err(|_| SecureKeyError::MissingPassword)?;
+    load_keyring_with(path, &password)
+}
+
+/// [`load_keyring`] with the password given: reads `path` every time and
+/// decrypts it only when its bytes or the password differ from the memoized
+/// entry for that path.
+fn load_keyring_with(
+    path: &Path,
+    password: &str,
+) -> Result<Arc<bussard_project::Keyring>, SecureKeyError> {
     let xml = std::fs::read_to_string(path).map_err(|source| SecureKeyError::Read {
         path: path.to_path_buf(),
         source,
     })?;
-    bussard_project::parse_keyring(&xml, &password).map_err(|source| SecureKeyError::Parse {
+    let key = keyring_memo::key(&xml, password);
+    if let Some(keyring) = keyring_memo::get(path, &key) {
+        return Ok(keyring);
+    }
+    let started = std::time::Instant::now();
+    let parsed = bussard_project::parse_keyring(&xml, password);
+    keyring_memo::record_decrypt(started.elapsed());
+    let keyring = Arc::new(parsed.map_err(|source| SecureKeyError::Parse {
         path: path.to_path_buf(),
         source,
-    })
+    })?);
+    keyring_memo::put(path, key, &keyring);
+    Ok(keyring)
+}
+
+/// How many times this process has decrypted a keyring (one PBKDF2 each): a
+/// debug counter for the start-up budget (issue #214); `bussard --timing`
+/// prints it.
+pub fn keyring_decrypt_count() -> usize {
+    keyring_memo::DECRYPTS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The time this process spent decrypting keyrings (the sum over
+/// [`keyring_decrypt_count`] decrypts); `bussard --timing` prints it as the
+/// `keyring` phase.
+pub fn keyring_decrypt_time() -> std::time::Duration {
+    std::time::Duration::from_nanos(
+        keyring_memo::DECRYPT_NANOS.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
+/// The per-process memo of decrypted keyrings (issues #214, #215).
+///
+/// A CLI command resolved its keyring up to three times (the tunnel, the tool
+/// key, the group keys) and the MCP server once per tool call, each a PBKDF2
+/// with 65,536 iterations. The memo keeps the decrypted keyring of each file
+/// keyed by the SHA-256 of the file bytes and of the password: every load
+/// still reads the file, so an edited or replaced keyring (or another
+/// password) misses and is decrypted again. Neither the password nor the file
+/// is kept, only their digests and the decrypted keyring that commands held in
+/// memory anyway.
+mod keyring_memo {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use sha2::{Digest, Sha256};
+
+    /// Decrypts so far (see [`super::keyring_decrypt_count`]).
+    pub(super) static DECRYPTS: AtomicUsize = AtomicUsize::new(0);
+
+    /// Nanoseconds spent in those decrypts (see
+    /// [`super::keyring_decrypt_time`]).
+    pub(super) static DECRYPT_NANOS: AtomicU64 = AtomicU64::new(0);
+
+    /// Counts one decrypt that took `took`.
+    pub(super) fn record_decrypt(took: std::time::Duration) {
+        DECRYPTS.fetch_add(1, Ordering::Relaxed);
+        let nanos = u64::try_from(took.as_nanos()).unwrap_or(u64::MAX);
+        DECRYPT_NANOS.fetch_add(nanos, Ordering::Relaxed);
+    }
+
+    /// The memo key: SHA-256 over the password digest and the file bytes.
+    pub(super) type Key = [u8; 32];
+
+    /// One memoized keyring per path.
+    static ENTRIES: Mutex<Vec<(PathBuf, Key, Arc<bussard_project::Keyring>)>> =
+        Mutex::new(Vec::new());
+
+    /// The memo key for `xml` decrypted with `password`.
+    pub(super) fn key(xml: &str, password: &str) -> Key {
+        let mut hasher = Sha256::new();
+        hasher.update(Sha256::digest(password.as_bytes()));
+        hasher.update(xml.as_bytes());
+        hasher.finalize().into()
+    }
+
+    /// The memoized keyring for `path`, if its key still matches.
+    pub(super) fn get(path: &Path, key: &Key) -> Option<Arc<bussard_project::Keyring>> {
+        let entries = ENTRIES.lock().ok()?;
+        entries
+            .iter()
+            .find(|(p, k, _)| p == path && k == key)
+            .map(|(_, _, keyring)| Arc::clone(keyring))
+    }
+
+    /// Memoizes `keyring` for `path`, replacing an older entry for it.
+    pub(super) fn put(path: &Path, key: Key, keyring: &Arc<bussard_project::Keyring>) {
+        let Ok(mut entries) = ENTRIES.lock() else {
+            return;
+        };
+        entries.retain(|(p, _, _)| p != path);
+        entries.push((path.to_path_buf(), key, Arc::clone(keyring)));
+    }
 }
 
 /// Extracts `target`'s tool key (spec §2.1: the keyring `ToolKey` is the
@@ -602,6 +704,51 @@ mod tests {
         .map(|e| e.to_string())
         .unwrap_or_default();
         assert!(err.contains("mutually exclusive"), "{err}");
+        Ok(())
+    }
+
+    /// A synthetic keyring (the one `keyring_tunnel_only.rs` uses), made-up
+    /// keys and password only.
+    const KEYRING: &str = r#"<Keyring Project="Synthetic" CreatedBy="bussard-test" Created="2026-02-03T04:05:06" Signature="BwFnB3x3sq9qwzQsIIYDHQ==" xmlns="http://knx.org/xml/keyring/1">
+  <Backbone MulticastAddress="224.0.23.12" Latency="1000" Key="XXLSoIYX1PClHpjLLr06xw==" />
+  <Interface Type="Tunneling" Host="1.1.0" IndividualAddress="1.1.200" UserID="2" Password="CEuTO5HdZ/da1DOMrSJhAQZ94w6kq3rM2I2EFv/3fWw=" Authentication="fj0EBnFwaOJuRN85Aovn5Z8UU1ndm0p0F5tkraeg72Y=">
+    <Group Address="2563" Senders="1.1.10" />
+  </Interface>
+  <GroupAddresses>
+    <Group Address="2563" Key="9gsADI4+cx1p65cAhr5GDA==" />
+  </GroupAddresses>
+  <Devices>
+    <Device IndividualAddress="1.1.10" ToolKey="4KejWFAOVLtfuK2uo4tiyA==" ManagementPassword="v66sERBaqXzGcl6zuAsdsA==" Authentication="Qoy1wZsb3MhAe+PdJd6p4uHl3mt02IukjeAPcy2BWrE=" SequenceNumber="42" />
+  </Devices>
+</Keyring>"#;
+
+    /// The synthetic keyring's made-up password.
+    const KEYRING_PASSWORD: &str = "synthetic-keyring-pw";
+
+    #[test]
+    fn test_load_keyring_with_decrypts_once_and_misses_on_a_changed_file()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = std::env::temp_dir().join(format!("bussard-keyring-memo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("keys.knxkeys");
+        std::fs::write(&path, KEYRING)?;
+        let first = load_keyring_with(&path, KEYRING_PASSWORD)?;
+        let again = load_keyring_with(&path, KEYRING_PASSWORD)?;
+        assert!(
+            Arc::ptr_eq(&first, &again),
+            "the second load is the memoized keyring"
+        );
+        // Another password misses (and fails to decrypt), never the memo.
+        assert!(load_keyring_with(&path, "wrong-password").is_err());
+        // A changed file misses and is decrypted again.
+        std::fs::write(&path, format!("{KEYRING}\n"))?;
+        let changed = load_keyring_with(&path, KEYRING_PASSWORD)?;
+        assert!(
+            !Arc::ptr_eq(&first, &changed),
+            "an edited keyring is decrypted again"
+        );
+        assert_eq!(changed.group_keys.len(), first.group_keys.len());
+        std::fs::remove_dir_all(&dir)?;
         Ok(())
     }
 }

@@ -269,3 +269,32 @@ async fn test_describe_keyring_flag_overrides_the_config_keyring() -> TestResult
     assert_eq!(gw.stats()?.users, vec![2]);
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_describe_timing_decrypts_the_keyring_once() -> TestResult {
+    let gw = gateway().await?;
+    let scratch = Scratch::new("timing", "", None)?;
+    let keyring = scratch.keyring();
+    // The tunnel credentials and the tool key both come from the keyring; the
+    // process decrypts it once (issue #214).
+    let out = describe(
+        PLAIN,
+        &scratch.dir(),
+        gw.addr().to_string(),
+        &["--keyring", &keyring.to_string_lossy(), "--timing"],
+    )
+    .await?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(stderr.contains("keyring decrypts 1"), "{stderr}");
+    for phase in [
+        "tunnel creds",
+        "keyring",
+        "to tunnel open",
+        "tunnel",
+        "took ",
+    ] {
+        assert!(stderr.contains(phase), "missing `{phase}`: {stderr}");
+    }
+    Ok(())
+}

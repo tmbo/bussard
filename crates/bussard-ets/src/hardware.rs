@@ -34,7 +34,7 @@ use crate::error::{EtsError, Result};
 use crate::translation::TranslationCollector;
 
 /// Product identity looked up from `Hardware.xml`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ProductInfo {
     /// The catalogue order number, e.g. `"2116REG"`.
     pub order_number: Option<String>,
@@ -43,7 +43,7 @@ pub struct ProductInfo {
 }
 
 /// The parsed pieces of a `Hardware.xml`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Hardware {
     /// Product id → identity.
     pub products: HashMap<String, ProductInfo>,

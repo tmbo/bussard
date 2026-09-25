@@ -18,7 +18,7 @@ The complete surface of `bussard`: every command and flag, the environment varia
 These apply to every subcommand:
 
 - `-v` / `--verbose` (repeatable): raise log verbosity. `-v` = `info`, `-vv` = `debug`, `-vvv` = `trace`. The default (no flag) is `warn`. An explicit `RUST_LOG` overrides this entirely, so `RUST_LOG=bussard_transport=trace` still works for targeted tracing.
-- `--timing`: print the invocation's wall-clock time to stderr on exit (e.g. `took 1.23s`). Off by default.
+- `--timing`: print the invocation's wall-clock time to stderr on exit (e.g. `took 1.23s`), preceded by the start-up phases that ran: `tunnel creds` (the secure tunnel credentials), `model load`, `product parse` (programs parsed and whether the [parsed-product cache](#bussardproducts) was on), `tool keys`, `keyring` (the PBKDF2 keyring decrypt, part of the phase that needed it), `to tunnel open` (time from start to the tunnel request, the start-to-first-frame figure) and `tunnel`, plus how many times the process parsed the model and decrypted a keyring. Off by default.
 - `--no-progress`: never draw the live progress display; print the plain progress lines instead, as a piped run does.
 - `--secure-user <ID>` with `--secure-password-env <VAR>`: open a [KNXnet/IP Secure](#knxnetip-secure-tunnelling) tunnel as tunnelling user `ID`, with its password read from the environment variable `VAR` (never from the command line). Both flags go together.
 - `--secure-transport auto|tcp|udp`: the carrier of the KNXnet/IP Secure session (default `auto`: TCP, and UDP when the interface refuses TCP but advertises Secure). Needs tunnelling credentials.
@@ -870,6 +870,7 @@ Serve the network-visualization website: an HTTP server that renders the model a
 | `BUSSARD_ASSIGN_WAIT_MS` | Test knob: shrinks the programming-mode wait budget of `assign` and `adopt`. Unset in normal use. |
 | `BUSSARD_SCAN_DISCOVERY_MS` | Test knob: shrinks the per-address probe timeout of `scan` and `reconstruct --line`. Unset in normal use. |
 | `BUSSARD_ADDRESS_PROBE_MS` | Test knob: shrinks the per-attempt timeout of the source-address check (default 600 ms). Unset in normal use. |
+| `BUSSARD_PRODUCT_CACHE` | Set to `off` (or `0`, `false`) to bypass the parsed-product cache under `.bussard/products/`, so every command parses the product archive again. |
 | `BUSSARD_WIRE_TRACE` | Set to `1` to log every cEMI frame as hex on stderr, one `[wire] <UTC time, ms> TX >>`/`RX <<` line each, so per-frame timing can be read off the log. The diagnostic of last resort when a gateway behaves unexpectedly; very noisy. |
 | `BUSSARD_SECURE_KEEPALIVE_SECS` | The KNXnet/IP Secure session keepalive interval in seconds (default `30`; `0` sends none). A wrapped SESSION_STATUS `STATUS_KEEPALIVE` goes out this often. The default is inferred from the KNX specification's 60 s session timeout; `bussard test --secure-idle` measures the real one. |
 | `BUSSARD_TCP_READ_DEADLINE_MS` | The read deadline of a KNXnet/IP Secure (TCP) tunnel in milliseconds (default `5000`; `0` turns it off). After this long without any frame from the interface the tunnel sends a CONNECTIONSTATE_REQUEST; no answer within the shorter of the deadline and 2 s counts as a lost link and starts the re-establish. The plain UDP tunnel ignores it: its ACK timeout detects a loss within about 2 s. |
@@ -958,6 +959,21 @@ Every bus command that uses the facts first reads the device descriptor and the 
 `authorize = "unsupported"` lets the read-only commands (`describe`, `plan`, `reconstruct`) skip `A_Authorize_Request`, which such a device leaves unanswered for the full response timeout. `apply` and `flash` always present it. The written frames of `apply` and `flash` do not change; only reads are skipped.
 
 The facts live here, not in `devices/*.toml` or `bussard.lock`, because an ETS re-import rewrites those and never touches `.bussard/`, because the device files hold intent to review while the facts are observations, and because the lock is written by `import` and `adopt` only and is covered by snapshots and the model fingerprint, which a read-only bus command must not change. They are not part of a [bundle](#the-bundle-format). Without a model directory no facts are stored and every command reads the device as before.
+
+#### `.bussard/products`
+
+The parsed-product cache (issue #214). A `.knxproj` carries the ApplicationProgram of every device in the project and a `.knxprod` often a whole product family, while `flash`, `plan`, `reconstruct` and `adopt` need one program. bussard reads the archive's table of contents first (the program ids from the entry names, the `Hardware.xml` order numbers, `knx_master.xml`) and then parses only the program the command selects: by `--application`, by the model's application reference or by the order number. When that does not settle the choice, every program is parsed, so a refusal reads as before. The order-number match against `vendor/` needs no program at all.
+
+What was parsed is stored here as JSON, one directory per archive:
+
+```
+.bussard/products/<key>/catalog.json
+.bussard/products/<key>/<application-id>.json
+```
+
+The key is the SHA-256 of the archive bytes, the selected inner archive, the cache format and the running bussard build (its version and executable). An edited or replaced archive, or a rebuilt bussard, gets a new directory, so nothing is read from a stale entry. The 32 most recently written entries are kept. An unreadable or foreign file is a cache miss, never an error, and a program read back is the same value the parser returns, so the images `flash` writes are unchanged. `BUSSARD_PRODUCT_CACHE=off` turns the cache off. Deleting the directory is always safe.
+
+Two other start-up costs are paid once per process: the model is parsed once per command (a later load of unchanged files returns the same model; any edit is parsed again), and a keyring is decrypted once per process or MCP server for the same file bytes and password (an edited keyring or another password is decrypted again).
 
 `bussard.toml`, `groups.toml`, `devices/`, `bussard.lock`, `tests.toml` and `ha.toml` belong in git; the device files and `groups.toml` are the source of truth, the lock is what `import` and `adopt` derived from the product data. `models/`, `vendor/` and `captures/` are local-only; `init` and `import-product` plant the `.gitignore` entries. All TOML is parsed strictly: unknown fields and duplicate keys are errors, with a `help:` line where the raw parser message misleads. Saves edit the files in place (`toml_edit`): comments and the formatting of untouched lines survive, and only the entries bussard adds or changes are re-formatted. `bussard device <address> [<channel>]` shows the keys a device file accepts.
 
