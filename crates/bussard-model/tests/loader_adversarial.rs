@@ -17,20 +17,20 @@ fn tmp(tag: &str) -> PathBuf {
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("test fixture")
             .as_nanos()
     ));
     let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
+    fs::create_dir_all(&dir).expect("test fixture");
     dir
 }
 
 fn write(dir: &Path, name: &str, contents: &[u8]) {
     let path = dir.join(name);
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).unwrap();
+        fs::create_dir_all(parent).expect("test fixture");
     }
-    fs::write(path, contents).unwrap();
+    fs::write(path, contents).expect("test fixture");
 }
 
 // ---------------------------------------------------------------------------
@@ -38,7 +38,7 @@ fn write(dir: &Path, name: &str, contents: &[u8]) {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn duplicate_ga_key_rejected() {
+fn duplicate_ga_key_rejected() -> Result<(), Box<dyn std::error::Error>> {
     // Two entries for one GA parse (they are array elements); validation
     // reports both lines as E020.
     let dir = tmp("dupga");
@@ -47,17 +47,18 @@ fn duplicate_ga_key_rejected() {
         "groups.toml",
         b"groups = [\n  { address = \"1/0/0\", name = \"a\" },\n  { address = \"1/0/0\", name = \"b\" },\n]\n",
     );
-    let m = Model::load(&dir).unwrap();
+    let m = Model::load(&dir)?;
     let diags = bussard_model::validate_in_dir(&m, &dir);
     let e020: Vec<_> = diags.iter().filter(|d| d.code == "E020").collect();
     assert_eq!(e020.len(), 2, "one E020 per line: {diags:?}");
     assert!(e020[0].location.starts_with("groups.toml:2:"), "{e020:?}");
     assert!(e020[1].location.starts_with("groups.toml:3:"), "{e020:?}");
     let _ = fs::remove_dir_all(&dir);
+    Ok(())
 }
 
 #[test]
-fn duplicate_nested_field_rejected() {
+fn duplicate_nested_field_rejected() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tmp("dupnested");
     // Duplicate `name` inside one group entry.
     write(
@@ -65,22 +66,24 @@ fn duplicate_nested_field_rejected() {
         "groups.toml",
         b"groups = [{ address = \"1/0/0\", name = \"a\", name = \"b\" }]\n",
     );
-    let err = Model::load(&dir).unwrap_err();
+    let err = Model::load(&dir).err().ok_or("expected an error")?;
     assert!(err.to_string().contains("duplicate key"), "{err}");
     assert!(
         err.to_string().contains("groups.toml"),
         "path in error: {err}"
     );
     let _ = fs::remove_dir_all(&dir);
+    Ok(())
 }
 
 #[test]
-fn duplicate_top_level_key_rejected() {
+fn duplicate_top_level_key_rejected() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tmp("duptop");
     write(&dir, "groups.toml", b"project = \"a\"\nproject = \"b\"\n");
-    let err = Model::load(&dir).unwrap_err();
+    let err = Model::load(&dir).err().ok_or("expected an error")?;
     assert!(err.to_string().contains("first defined here"), "{err}");
     let _ = fs::remove_dir_all(&dir);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -96,18 +99,19 @@ fn unknown_field_rejected() {
 }
 
 #[test]
-fn wrong_type_for_dpt_rejected_with_path() {
+fn wrong_type_for_dpt_rejected_with_path() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tmp("wrongtype");
     write(
         &dir,
         "groups.toml",
         b"groups = [\n  { address = \"1/0/0\", name = \"a\", dpt = { nested = 1 } },\n]\n",
     );
-    let err = Model::load(&dir).unwrap_err();
+    let err = Model::load(&dir).err().ok_or("expected an error")?;
     let msg = err.to_string();
     assert!(msg.contains("groups.toml"), "path in error: {msg}");
     assert!(msg.contains("line 2"), "line in error: {msg}");
     let _ = fs::remove_dir_all(&dir);
+    Ok(())
 }
 
 #[test]
@@ -127,7 +131,7 @@ fn out_of_range_ga_key_rejected() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn utf8_bom_prefixed_file_handling() {
+fn utf8_bom_prefixed_file_handling() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tmp("bom");
     let mut bytes = vec![0xEF, 0xBB, 0xBF];
     bytes.extend_from_slice(b"groups = [{ address = \"1/0/0\", name = \"a\" }]\n");
@@ -136,9 +140,10 @@ fn utf8_bom_prefixed_file_handling() {
     // must return a clean Result.
     let r = Model::load(&dir);
     if let Ok(m) = &r {
-        assert!(m.groups.groups.contains_key(&"1/0/0".parse().unwrap()));
+        assert!(m.groups.groups.contains_key(&"1/0/0".parse()?));
     }
     let _ = fs::remove_dir_all(&dir);
+    Ok(())
 }
 
 #[test]
@@ -159,14 +164,18 @@ fn crlf_line_endings_load_fine() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn non_utf8_file_is_clean_error() {
+fn non_utf8_file_is_clean_error() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tmp("nonutf8");
     // Invalid UTF-8 sequence.
     write(&dir, "groups.toml", &[0xff, 0xfe, 0x00, 0x01, 0x80, 0x81]);
     let r = std::panic::catch_unwind(|| Model::load(&dir));
     assert!(r.is_ok(), "non-UTF8 file must not panic");
-    assert!(r.unwrap().is_err(), "non-UTF8 file must error");
+    assert!(
+        r.map_err(|_| "load panicked")?.is_err(),
+        "non-UTF8 file must error"
+    );
     let _ = fs::remove_dir_all(&dir);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -175,7 +184,7 @@ fn non_utf8_file_is_clean_error() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn deeply_nested_values_terminate_quickly() {
+fn deeply_nested_values_terminate_quickly() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tmp("deep");
     let depth = 5000;
     let text = format!(
@@ -188,9 +197,13 @@ fn deeply_nested_values_terminate_quickly() {
     let r = std::panic::catch_unwind(|| Model::load(&dir));
     let elapsed = start.elapsed();
     assert!(r.is_ok(), "deep nesting must not panic");
-    assert!(r.unwrap().is_err(), "description is a string, not an array");
+    assert!(
+        r.map_err(|_| "load panicked")?.is_err(),
+        "description is a string, not an array"
+    );
     assert!(elapsed.as_secs() < 5, "parse took too long: {elapsed:?}");
     let _ = fs::remove_dir_all(&dir);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -199,7 +212,8 @@ fn deeply_nested_values_terminate_quickly() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn duplicate_device_address_across_files_is_a_load_error() {
+fn duplicate_device_address_across_files_is_a_load_error() -> Result<(), Box<dyn std::error::Error>>
+{
     use bussard_model::loader::LoadError;
 
     let dir = tmp("dupdev");
@@ -221,7 +235,7 @@ fn duplicate_device_address_across_files_is_a_load_error() {
             first,
             second,
         } => {
-            assert_eq!(address, "1.1.4".parse().unwrap());
+            assert_eq!(address, "1.1.4".parse()?);
             // Sorted order: `1.1.4.toml` is first, `1.1.40.toml` second.
             assert!(first.ends_with("1.1.4.toml"), "first: {first:?}");
             assert!(second.ends_with("1.1.40.toml"), "second: {second:?}");
@@ -229,6 +243,7 @@ fn duplicate_device_address_across_files_is_a_load_error() {
         other => panic!("expected DuplicateDeviceAddress, got {other:?}"),
     }
     let _ = fs::remove_dir_all(&dir);
+    Ok(())
 }
 
 #[test]
@@ -278,7 +293,7 @@ fn a_yaml_only_directory_is_refused() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn validate_1000_plus_gas_is_fast() {
+fn validate_1000_plus_gas_is_fast() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tmp("perf");
     // Build a groups.toml with ~1500 GAs, and links referencing many of them.
     let mut groups = String::from("groups = [\n");
@@ -318,7 +333,7 @@ fn validate_1000_plus_gas_is_fast() {
 
     let m = Model::load(&dir).expect("load big model");
     assert!(m.groups.groups.len() >= 1000);
-    assert_eq!(m.links.links[&"1.1.4".parse().unwrap()].len(), 500);
+    assert_eq!(m.links.links[&"1.1.4".parse()?].len(), 500);
 
     let start = Instant::now();
     let diags = validate(&m);
@@ -331,4 +346,5 @@ fn validate_1000_plus_gas_is_fast() {
         m.groups.groups.len()
     );
     let _ = fs::remove_dir_all(&dir);
+    Ok(())
 }

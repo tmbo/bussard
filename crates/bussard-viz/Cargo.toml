@@ -52,3 +52,6 @@ http-body-util = "0.1"
 # futures-util drives the SSE response body stream in the framing test. MIT.
 futures-util = "0.3"
 tempfile = "3"
+
+[lints]
+workspace = true

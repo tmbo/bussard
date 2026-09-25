@@ -756,27 +756,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_scf_round_trip_data_frames() {
+    fn test_scf_round_trip_data_frames() -> Result<(), Box<dyn std::error::Error>> {
         // The three house-capture SCF bytes (spec §5.2).
         for byte in [0x90u8, 0x92, 0x93] {
-            let scf = Scf::from_byte(byte).unwrap();
+            let scf = Scf::from_byte(byte)?;
             assert_eq!(scf.to_byte(), byte);
         }
         // 0x90 = 1001_0000: tool-access data, auth+encrypt (algo bits 6-4 = 001).
-        let scf = Scf::from_byte(0x90).unwrap();
+        let scf = Scf::from_byte(0x90)?;
         assert!(scf.tool_access);
         assert_eq!(scf.algorithm, SecurityAlgorithm::AuthenticationEncryption);
         assert_eq!(scf.service, SecureService::Data);
         // 0x92 = tool-access Sync_Req.
-        assert_eq!(
-            Scf::from_byte(0x92).unwrap().service,
-            SecureService::SyncReq
-        );
+        assert_eq!(Scf::from_byte(0x92)?.service, SecureService::SyncReq);
         // 0x93 = tool-access Sync_Res.
-        assert_eq!(
-            Scf::from_byte(0x93).unwrap().service,
-            SecureService::SyncRes
-        );
+        assert_eq!(Scf::from_byte(0x93)?.service, SecureService::SyncRes);
+        Ok(())
     }
 
     #[test]
@@ -832,19 +827,20 @@ mod tests {
     }
 
     #[test]
-    fn test_inner_apdu_pack_unpack() {
+    fn test_inner_apdu_pack_unpack() -> Result<(), Box<dyn std::error::Error>> {
         let bytes = inner_apdu_bytes(0x3D1, &[0x00, 0xFF, 0xFF, 0xFF, 0xFF]);
         assert_eq!(bytes[0], 0x03);
         assert_eq!(bytes[1], 0xD1);
-        let (apci, data) = parse_inner_apdu(&bytes).unwrap();
+        let (apci, data) = parse_inner_apdu(&bytes)?;
         assert_eq!(apci, 0x3D1);
         assert_eq!(data, vec![0x00, 0xFF, 0xFF, 0xFF, 0xFF]);
+        Ok(())
     }
 
     /// Spec §5.7 worked round-trip, encrypt mode: encode then decode returns the
     /// inner APDU, with an all-zero tool key and a fixed sequence.
     #[test]
-    fn test_encode_decode_round_trip_encrypt() {
+    fn test_encode_decode_round_trip_encrypt() -> Result<(), Box<dyn std::error::Error>> {
         let key = Key16::new([0u8; 16]);
         let scf = Scf::tool_data(SecurityAlgorithm::AuthenticationEncryption);
         let seq = Sequence::new(0x0102_0304_0506);
@@ -852,7 +848,7 @@ mod tests {
         let inner_apci = 0x280; // A_Memory_Write
         let inner_data = [0x00, 0x10, 0xAB, 0xCD];
 
-        let asdu = encode(&key, scf, seq, &a, inner_apci, &inner_data).unwrap();
+        let asdu = encode(&key, scf, seq, &a, inner_apci, &inner_data)?;
         // Layout: SCF(1) + seq(6) + secured_apdu(2+4) + MAC(4).
         assert_eq!(asdu[0], scf.to_byte());
         assert_eq!(&asdu[1..7], &seq.to_bytes());
@@ -863,16 +859,17 @@ mod tests {
             &inner_apdu_bytes(inner_apci, &inner_data)[..]
         );
 
-        let decoded = decode(&key, &asdu, &a).unwrap();
+        let decoded = decode(&key, &asdu, &a)?;
         assert_eq!(decoded.apci, inner_apci);
         assert_eq!(decoded.data, inner_data);
         assert_eq!(decoded.sequence, seq);
         assert_eq!(decoded.scf, scf);
+        Ok(())
     }
 
     /// Auth-only mode: the inner APDU travels in the clear, the MAC verifies.
     #[test]
-    fn test_encode_decode_round_trip_auth_only() {
+    fn test_encode_decode_round_trip_auth_only() -> Result<(), Box<dyn std::error::Error>> {
         let key = Key16::new([0x11; 16]);
         let scf = Scf::tool_data(SecurityAlgorithm::AuthenticationOnly);
         let seq = Sequence::new(42);
@@ -880,14 +877,15 @@ mod tests {
         let inner_apci = 0x3D1; // A_Authorize_Request
         let inner_data = [0x00, 0xFF, 0xFF, 0xFF, 0xFF];
 
-        let asdu = encode(&key, scf, seq, &a, inner_apci, &inner_data).unwrap();
+        let asdu = encode(&key, scf, seq, &a, inner_apci, &inner_data)?;
         // Auth-only: the secured apdu is the plaintext apdu.
         let plain = inner_apdu_bytes(inner_apci, &inner_data);
         assert_eq!(&asdu[7..7 + plain.len()], &plain[..]);
 
-        let decoded = decode(&key, &asdu, &a).unwrap();
+        let decoded = decode(&key, &asdu, &a)?;
         assert_eq!(decoded.apci, inner_apci);
         assert_eq!(decoded.data, inner_data);
+        Ok(())
     }
 
     /// SHARED KNOWN-ANSWER VECTOR (spec §12.1).
@@ -991,27 +989,29 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_rejects_wrong_mac() {
+    fn test_decode_rejects_wrong_mac() -> Result<(), Box<dyn std::error::Error>> {
         let key = Key16::new([0u8; 16]);
         let scf = Scf::tool_data(SecurityAlgorithm::AuthenticationEncryption);
         let seq = Sequence::new(7);
         let a = addr();
-        let mut asdu = encode(&key, scf, seq, &a, 0x280, &[0x00, 0x10, 0x01]).unwrap();
+        let mut asdu = encode(&key, scf, seq, &a, 0x280, &[0x00, 0x10, 0x01])?;
         // Corrupt the last MAC byte.
         let last = asdu.len() - 1;
         asdu[last] ^= 0xFF;
         assert_eq!(decode(&key, &asdu, &a), Err(AsduError::MacMismatch));
+        Ok(())
     }
 
     #[test]
-    fn test_decode_rejects_wrong_key() {
+    fn test_decode_rejects_wrong_key() -> Result<(), Box<dyn std::error::Error>> {
         let key = Key16::new([0u8; 16]);
         let scf = Scf::tool_data(SecurityAlgorithm::AuthenticationEncryption);
         let seq = Sequence::new(7);
         let a = addr();
-        let asdu = encode(&key, scf, seq, &a, 0x280, &[0x00, 0x10, 0x01]).unwrap();
+        let asdu = encode(&key, scf, seq, &a, 0x280, &[0x00, 0x10, 0x01])?;
         let wrong = Key16::new([0x99; 16]);
         assert_eq!(decode(&wrong, &asdu, &a), Err(AsduError::MacMismatch));
+        Ok(())
     }
 
     /// Sync_Req round trip: serial in the clear, challenge encrypted.

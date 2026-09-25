@@ -18,16 +18,16 @@ use bussard_model::{Dpt, Flags, GroupAddress, IndividualAddress};
 // --- builders -------------------------------------------------------------
 
 fn ga(s: &str) -> GroupAddress {
-    s.parse().unwrap()
+    s.parse().expect("test fixture")
 }
 fn ia(s: &str) -> IndividualAddress {
-    s.parse().unwrap()
+    s.parse().expect("test fixture")
 }
 fn dpt(s: &str) -> Dpt {
-    s.parse().unwrap()
+    s.parse().expect("test fixture")
 }
 fn flags(s: &str) -> Flags {
-    s.parse().unwrap()
+    s.parse().expect("test fixture")
 }
 
 /// A minimal builder for a single-device model.
@@ -138,7 +138,7 @@ impl ModelBuilder {
 // --- tests ----------------------------------------------------------------
 
 #[test]
-fn cover_cluster_assembly() {
+fn cover_cluster_assembly() -> Result<(), Box<dyn std::error::Error>> {
     // A jalousie channel: 1.008 up/down (W), 1.007 step/stop (W),
     // 5.001 position setpoint (W), 5.001 position status (T).
     let model = ModelBuilder::new("1.1.4", "Aktor", Some("Wohnzimmer"))
@@ -154,7 +154,7 @@ fn cover_cluster_assembly() {
 
     let d = derive(&model, &Overrides::default());
     assert_eq!(d.entities.len(), 1, "one cover entity");
-    let yaml = generate(&model, &Overrides::default()).unwrap();
+    let yaml = generate(&model, &Overrides::default())?;
     assert!(yaml.contains("cover:"));
     assert!(yaml.contains("move_long_address: 1/2/0"));
     assert!(yaml.contains("move_short_address: 1/2/1"));
@@ -162,10 +162,11 @@ fn cover_cluster_assembly() {
     assert!(yaml.contains("position_state_address: 1/2/3"));
     // Raffstore -> blind device_class.
     assert!(yaml.contains("device_class: blind"));
+    Ok(())
 }
 
 #[test]
-fn switch_with_status() {
+fn switch_with_status() -> Result<(), Box<dyn std::error::Error>> {
     let model = ModelBuilder::new("1.1.5", "Schaltaktor", Some("Kitchen"))
         .group("0/0/1", "Licht Kitchen schalten", "1.001")
         .group("0/0/2", "Licht Kitchen Status", "1.001")
@@ -173,15 +174,16 @@ fn switch_with_status() {
         .object(2, "1.001", "CRTU", Some("A"), Some("0/0/2"), &[])
         .build();
 
-    let yaml = generate(&model, &Overrides::default()).unwrap();
+    let yaml = generate(&model, &Overrides::default())?;
     assert!(yaml.contains("switch:"));
     assert!(yaml.contains("address: 0/0/1"));
     assert!(yaml.contains("state_address: 0/0/2"));
     assert!(!yaml.contains("light:"));
+    Ok(())
 }
 
 #[test]
-fn dimmer_channel_becomes_light_with_brightness() {
+fn dimmer_channel_becomes_light_with_brightness() -> Result<(), Box<dyn std::error::Error>> {
     // 1.001 switch (W) + 1.001 status (T) + 5.001 brightness (W) + 5.001
     // brightness status (T) on one channel -> a light with brightness.
     let model = ModelBuilder::new("1.1.8", "Dimmaktor", Some("Living Room"))
@@ -195,15 +197,16 @@ fn dimmer_channel_becomes_light_with_brightness() {
         .object(36, "5.001", "CRTU", Some("CH-1"), Some("1/1/4"), &[])
         .build();
 
-    let yaml = generate(&model, &Overrides::default()).unwrap();
+    let yaml = generate(&model, &Overrides::default())?;
     assert!(yaml.contains("light:"));
     assert!(yaml.contains("brightness_address: 1/1/3"));
     assert!(yaml.contains("brightness_state_address: 1/1/4"));
     assert!(!yaml.contains("switch:"));
+    Ok(())
 }
 
 #[test]
-fn sensor_typing_by_dpt() {
+fn sensor_typing_by_dpt() -> Result<(), Box<dyn std::error::Error>> {
     let model = ModelBuilder::new("1.1.202", "Weather Station", Some("Attic"))
         .group("4/1/0", "Temperatur", "9.001")
         .group("4/1/1", "Helligkeit", "9.004")
@@ -215,15 +218,17 @@ fn sensor_typing_by_dpt() {
         .object(3, "9.007", "CRT", None, Some("4/1/3"), &[])
         .build();
 
-    let yaml = generate(&model, &Overrides::default()).unwrap();
+    let yaml = generate(&model, &Overrides::default())?;
     assert!(yaml.contains("type: temperature"));
     assert!(yaml.contains("type: illuminance"));
     assert!(yaml.contains("type: wind_speed_ms"));
     assert!(yaml.contains("type: humidity"));
+    Ok(())
 }
 
 #[test]
-fn test_sensor_type_for_two_byte_power_and_temperature_difference() {
+fn test_sensor_type_for_two_byte_power_and_temperature_difference()
+-> Result<(), Box<dyn std::error::Error>> {
     // Home Assistant's `power` type is the 4-byte DPT 14.056 and its
     // `temperature` type is an absolute value; 9.024 and 9.002 are the 2-byte
     // forms and need their own types, or HA decodes the wrong width / unit.
@@ -234,17 +239,18 @@ fn test_sensor_type_for_two_byte_power_and_temperature_difference() {
         .object(1, "9.002", "CRT", None, Some("4/3/1"), &[])
         .build();
 
-    let yaml = generate(&model, &Overrides::default()).unwrap();
+    let yaml = generate(&model, &Overrides::default())?;
     assert!(yaml.contains("type: power_2byte"), "{yaml}");
     assert!(
         yaml.contains("type: temperature_difference_2byte"),
         "{yaml}"
     );
     assert!(!yaml.contains("type: power\n"), "{yaml}");
+    Ok(())
 }
 
 #[test]
-fn test_try_sensor_skips_write_only_command_objects() {
+fn test_try_sensor_skips_write_only_command_objects() -> Result<(), Box<dyn std::error::Error>> {
     // A write-only input (CW) receives a setpoint; it never publishes one. A
     // `sensor` on it would sit permanently unknown in Home Assistant.
     let model = ModelBuilder::new("1.1.204", "Heizung", None)
@@ -254,16 +260,17 @@ fn test_try_sensor_skips_write_only_command_objects() {
         .object(1, "9.001", "CRT", None, Some("4/4/1"), &[])
         .build();
 
-    let yaml = generate(&model, &Overrides::default()).unwrap();
+    let yaml = generate(&model, &Overrides::default())?;
     assert!(yaml.contains("state_address: 4/4/1"), "{yaml}");
     assert!(
         !yaml.contains("state_address: 4/4/0"),
         "a write-only command object must not become a sensor:\n{yaml}"
     );
+    Ok(())
 }
 
 #[test]
-fn binary_sensor_device_class_from_dpt_and_name() {
+fn binary_sensor_device_class_from_dpt_and_name() -> Result<(), Box<dyn std::error::Error>> {
     let model = ModelBuilder::new("1.1.30", "Weather Station", None)
         .group("3/2/0", "Windalarm", "1.005")
         .group("4/2/0", "Fenster Bathroom", "1.019")
@@ -271,15 +278,16 @@ fn binary_sensor_device_class_from_dpt_and_name() {
         .object(4, "1.019", "CRT", None, Some("4/2/0"), &[])
         .build();
 
-    let yaml = generate(&model, &Overrides::default()).unwrap();
+    let yaml = generate(&model, &Overrides::default())?;
     assert!(yaml.contains("binary_sensor:"));
     // 1.005 alarm -> problem; 1.019 -> window.
     assert!(yaml.contains("device_class: problem"), "{yaml}");
     assert!(yaml.contains("device_class: window"), "{yaml}");
+    Ok(())
 }
 
 #[test]
-fn exclusions_skip_gas() {
+fn exclusions_skip_gas() -> Result<(), Box<dyn std::error::Error>> {
     let model = ModelBuilder::new("1.1.5", "Aktor", None)
         .group("0/0/1", "Licht schalten", "1.001")
         .group("8/0/0", "Zentral", "1.001")
@@ -288,17 +296,18 @@ fn exclusions_skip_gas() {
         .build();
 
     let text = "[global]\nexclude = [\"8/\"]\n";
-    let ov = Overrides::parse("ha.toml", text).unwrap();
+    let ov = Overrides::parse("ha.toml", text)?;
     let d = derive(&model, &ov);
     assert_eq!(d.entities.len(), 1, "the 8/ GA is excluded");
     // Excluded GAs are not counted as unmapped either.
     assert!(!d.unmapped.contains_key(&Some(1)) || d.unmapped[&Some(1)] == 0);
-    let yaml = generate(&model, &ov).unwrap();
+    let yaml = generate(&model, &ov)?;
     assert!(!yaml.contains("8/0/0"));
+    Ok(())
 }
 
 #[test]
-fn override_promotes_switch_to_light_and_renames() {
+fn override_promotes_switch_to_light_and_renames() -> Result<(), Box<dyn std::error::Error>> {
     let model = ModelBuilder::new("1.1.5", "Aktor", None)
         .group("0/0/1", "Licht schalten", "1.001")
         .object(1, "1.001", "CWU", None, None, &["0/0/1"])
@@ -311,15 +320,16 @@ platform = "light"
 name = "Kitchen ceiling"
 device_class = "outlet"
 "#;
-    let ov = Overrides::parse("ha.toml", text).unwrap();
-    let yaml = generate(&model, &ov).unwrap();
+    let ov = Overrides::parse("ha.toml", text)?;
+    let yaml = generate(&model, &ov)?;
     assert!(yaml.contains("light:"), "{yaml}");
     assert!(yaml.contains("name: Kitchen ceiling"));
     assert!(!yaml.contains("switch:"));
+    Ok(())
 }
 
 #[test]
-fn global_default_light_platform() {
+fn global_default_light_platform() -> Result<(), Box<dyn std::error::Error>> {
     let model = ModelBuilder::new("1.1.5", "Aktor", None)
         .group("0/0/1", "Licht schalten", "1.001")
         .object(1, "1.001", "CWU", None, None, &["0/0/1"])
@@ -328,15 +338,15 @@ fn global_default_light_platform() {
     let ov = Overrides::parse(
         "ha.toml",
         "[global]\ndefault_platform_for_switches = \"light\"\n",
-    )
-    .unwrap();
-    let yaml = generate(&model, &ov).unwrap();
+    )?;
+    let yaml = generate(&model, &ov)?;
     assert!(yaml.contains("light:"));
     assert!(!yaml.contains("switch:"));
+    Ok(())
 }
 
 #[test]
-fn unmapped_reporting() {
+fn unmapped_reporting() -> Result<(), Box<dyn std::error::Error>> {
     // A 20.102 HVAC-mode GA and an unnamed-DPT GA both unmap.
     let model = ModelBuilder::new("1.1.2", "Heizung", None)
         .group("0/3/1", "Betriebsart", "20.102")
@@ -346,13 +356,14 @@ fn unmapped_reporting() {
     let d = derive(&model, &Overrides::default());
     assert_eq!(d.entities.len(), 0);
     assert_eq!(d.unmapped.get(&Some(20)).copied(), Some(1));
-    let yaml = generate(&model, &Overrides::default()).unwrap();
+    let yaml = generate(&model, &Overrides::default())?;
     assert!(yaml.contains("# unmapped:"));
     assert!(yaml.contains("dpt 20: 1"));
+    Ok(())
 }
 
 #[test]
-fn determinism_two_runs_byte_equal() {
+fn determinism_two_runs_byte_equal() -> Result<(), Box<dyn std::error::Error>> {
     let model = ModelBuilder::new("1.1.5", "Aktor", Some("Kitchen"))
         .group("0/0/1", "Licht A", "1.001")
         .group("0/0/3", "Licht B", "1.001")
@@ -362,16 +373,17 @@ fn determinism_two_runs_byte_equal() {
         .object(5, "9.001", "CRT", None, Some("4/1/0"), &[])
         .build();
 
-    let a = generate(&model, &Overrides::default()).unwrap();
-    let b = generate(&model, &Overrides::default()).unwrap();
+    let a = generate(&model, &Overrides::default())?;
+    let b = generate(&model, &Overrides::default())?;
     assert_eq!(a, b, "output must be byte-identical across runs");
     // Header present, footer present.
     assert!(a.starts_with("# generated by bussard ha-config"));
     assert!(a.contains("# summary"));
+    Ok(())
 }
 
 #[test]
-fn no_duplicate_entity_for_shared_command_ga() {
+fn no_duplicate_entity_for_shared_command_ga() -> Result<(), Box<dyn std::error::Error>> {
     // An actuator switches 0/0/1 (W) and reports 0/0/2 (T). A push-button module
     // *sends* 0/0/1 (T). Only one switch entity should result, not a switch plus
     // a binary_sensor on 0/0/1.
@@ -434,13 +446,14 @@ fn no_duplicate_entity_for_shared_command_ga() {
 
     let d = derive(&model, &Overrides::default());
     assert_eq!(d.entities.len(), 1, "exactly one entity for the shared GA");
-    let yaml = generate(&model, &Overrides::default()).unwrap();
+    let yaml = generate(&model, &Overrides::default())?;
     assert!(yaml.contains("switch:"));
     assert!(!yaml.contains("binary_sensor:"));
+    Ok(())
 }
 
 #[test]
-fn yaml_round_trips() {
+fn yaml_round_trips() -> Result<(), Box<dyn std::error::Error>> {
     let model = ModelBuilder::new("1.1.4", "Aktor", Some("Living Room"))
         .group("1/2/0", "Raffstore Auf/Ab", "1.008")
         .group("1/2/1", "Raffstore Schritt", "1.007")
@@ -450,14 +463,15 @@ fn yaml_round_trips() {
         .object(5, "9.001", "CRT", None, Some("4/1/0"), &[])
         .build();
 
-    let yaml = generate(&model, &Overrides::default()).unwrap();
+    let yaml = generate(&model, &Overrides::default())?;
     // The emitted YAML must parse back cleanly (comments are ignored by YAML).
-    let value: serde_norway::Value = serde_norway::from_str(&yaml).unwrap();
+    let value: serde_norway::Value = serde_norway::from_str(&yaml)?;
     assert!(value.get("knx").is_some(), "top-level knx key present");
+    Ok(())
 }
 
 #[test]
-fn merge_attaches_ga_and_clears_unmapped() {
+fn merge_attaches_ga_and_clears_unmapped() -> Result<(), Box<dyn std::error::Error>> {
     // A switch on 0/0/1 with no derived state GA. An unmapped 1.001 status GA
     // 0/0/9 (belonging to no object) is merged onto the switch: it must become
     // the switch's state_address and drop out of the unmapped summary.
@@ -472,7 +486,7 @@ fn merge_attaches_ga_and_clears_unmapped() {
 address = "0/0/1"
 merge = ["0/0/9"]
 "#;
-    let ov = Overrides::parse("ha.toml", text).unwrap();
+    let ov = Overrides::parse("ha.toml", text)?;
     let d = derive(&model, &ov);
     // The merged GA is now consumed, so nothing 1.x remains unmapped.
     assert!(
@@ -480,14 +494,15 @@ merge = ["0/0/9"]
         "merged GA should not be unmapped: {:?}",
         d.unmapped
     );
-    let yaml = generate(&model, &ov).unwrap();
+    let yaml = generate(&model, &ov)?;
     assert!(yaml.contains("switch:"), "{yaml}");
     // 0/0/9 wired as the free state slot.
     assert!(yaml.contains("state_address: 0/0/9"), "{yaml}");
+    Ok(())
 }
 
 #[test]
-fn exclusion_wins_over_merge_and_warns_unmapped() {
+fn exclusion_wins_over_merge_and_warns_unmapped() -> Result<(), Box<dyn std::error::Error>> {
     // 0/0/9 is both listed in `merge` and excluded by prefix "0/0/9". Exclusion
     // wins: the merge is ignored. Because the GA is excluded it also does NOT
     // appear in the unmapped footer (exclusions are dropped from that summary),
@@ -506,8 +521,8 @@ exclude = ["0/0/9"]
 address = "0/0/1"
 merge = ["0/0/9"]
 "#;
-    let ov = Overrides::parse("ha.toml", text).unwrap();
-    let yaml = generate(&model, &ov).unwrap();
+    let ov = Overrides::parse("ha.toml", text)?;
+    let yaml = generate(&model, &ov)?;
     // Exclusion wins: the excluded GA is never wired.
     assert!(
         !yaml.contains("0/0/9"),
@@ -520,10 +535,11 @@ merge = ["0/0/9"]
         0,
         "excluded GA is neither mapped nor unmapped"
     );
+    Ok(())
 }
 
 #[test]
-fn cover_requires_command_ga_not_a_button_sender() {
+fn cover_requires_command_ga_not_a_button_sender() -> Result<(), Box<dyn std::error::Error>> {
     // An actuator owns the cover channel: 1.008 up/down command (W). A separate
     // push-button *sends* 1.008 on a different GA (T-only). The button must not
     // anchor a cover of its own; only the actuator's cover is produced.
@@ -601,14 +617,15 @@ fn cover_requires_command_ga_not_a_button_sender() {
         .filter(|e| matches!(e, bussard_ha::entities::Entity::Cover(_)))
         .collect();
     assert_eq!(covers.len(), 1, "only the actuator anchors a cover");
-    let yaml = generate(&model, &Overrides::default()).unwrap();
+    let yaml = generate(&model, &Overrides::default())?;
     assert!(yaml.contains("move_long_address: 1/2/0"), "{yaml}");
     // The button's send-only GA does not become a second cover.
     assert!(!yaml.contains("move_long_address: 1/2/5"), "{yaml}");
+    Ok(())
 }
 
 #[test]
-fn cover_wires_position_5001_and_angle_5003() {
+fn cover_wires_position_5001_and_angle_5003() -> Result<(), Box<dyn std::error::Error>> {
     // A jalousie channel with a 5.001 position (command + state) AND a 5.003 slat
     // angle (command + state). Position and angle must land in their own slots,
     // never cross-mapped.
@@ -625,13 +642,14 @@ fn cover_wires_position_5001_and_angle_5003() {
         .object(25, "5.003", "CRTU", Some("A"), Some("1/2/5"), &[])
         .build();
 
-    let yaml = generate(&model, &Overrides::default()).unwrap();
+    let yaml = generate(&model, &Overrides::default())?;
     assert!(yaml.contains("position_address: 1/2/2"), "{yaml}");
     assert!(yaml.contains("position_state_address: 1/2/3"), "{yaml}");
     assert!(yaml.contains("angle_address: 1/2/4"), "{yaml}");
     assert!(yaml.contains("angle_state_address: 1/2/5"), "{yaml}");
     // The 5.003 angle GAs must not have been mis-wired as position.
     assert!(!yaml.contains("position_address: 1/2/4"), "{yaml}");
+    Ok(())
 }
 
 // --- climate --------------------------------------------------------------
@@ -668,7 +686,7 @@ fn only_climate(model: &Model, ov: &Overrides) -> Vec<Climate> {
 }
 
 #[test]
-fn climate_full_cluster_central_heating_mapping() {
+fn climate_full_cluster_central_heating_mapping() -> Result<(), Box<dyn std::error::Error>> {
     // Central-heating installation: the operation mode (Betriebsmodus) is the
     // control; temperature and valve are read-only telemetry. Setpoint shift and
     // target temperature are deliberately NOT wired (no HA key that invites a
@@ -687,7 +705,7 @@ fn climate_full_cluster_central_heating_mapping() {
     assert_eq!(c.setpoint_shift_state_address, None);
     assert_eq!(c.setpoint_shift_mode, None);
     assert_eq!(c.target_temperature_state_address, None);
-    let yaml = generate(&model, &Overrides::default()).unwrap();
+    let yaml = generate(&model, &Overrides::default())?;
     assert!(yaml.contains("climate:"), "{yaml}");
     assert!(
         !yaml.contains("setpoint_shift"),
@@ -697,6 +715,7 @@ fn climate_full_cluster_central_heating_mapping() {
         !yaml.contains("target_temperature"),
         "no target temp: {yaml}"
     );
+    Ok(())
 }
 
 #[test]
@@ -712,7 +731,7 @@ fn climate_minimal_mode_only_anchors() {
 }
 
 #[test]
-fn climate_setpoint_shift_alone_does_not_anchor() {
+fn climate_setpoint_shift_alone_does_not_anchor() -> Result<(), Box<dyn std::error::Error>> {
     // Setpoint shift is not a control in a central-heating install, so a
     // setpoint-shift GA alone (no operation mode) does NOT anchor a climate
     // entity — it falls through to the sensor pass.
@@ -721,14 +740,15 @@ fn climate_setpoint_shift_alone_does_not_anchor() {
         .object(1, "9.002", "CRT", None, Some("0/3/5"), &[])
         .build();
     assert!(only_climate(&model, &Overrides::default()).is_empty());
-    let yaml = generate(&model, &Overrides::default()).unwrap();
+    let yaml = generate(&model, &Overrides::default())?;
     assert!(!yaml.contains("climate:"), "{yaml}");
     // It became a plain 2-byte-float sensor instead.
     assert!(yaml.contains("sensor:"), "{yaml}");
+    Ok(())
 }
 
 #[test]
-fn climate_lone_temperature_does_not_anchor() {
+fn climate_lone_temperature_does_not_anchor() -> Result<(), Box<dyn std::error::Error>> {
     // A room with only a temperature GA (no mode, no shift) is NOT a climate
     // entity; it falls through to the sensor pass.
     let model = ModelBuilder::new("1.1.2", "Fühler", None)
@@ -736,14 +756,15 @@ fn climate_lone_temperature_does_not_anchor() {
         .object(1, "9.001", "CRT", None, Some("0/3/0"), &[])
         .build();
     assert!(only_climate(&model, &Overrides::default()).is_empty());
-    let yaml = generate(&model, &Overrides::default()).unwrap();
+    let yaml = generate(&model, &Overrides::default())?;
     assert!(!yaml.contains("climate:"), "{yaml}");
     // It became a temperature sensor instead.
     assert!(yaml.contains("type: temperature"), "{yaml}");
+    Ok(())
 }
 
 #[test]
-fn climate_temperature_correlation_hit_and_miss() {
+fn climate_temperature_correlation_hit_and_miss() -> Result<(), Box<dyn std::error::Error>> {
     // Two rooms share one model. Room A has a mode command (anchors) and a
     // temperature that correlates by name. Room B has only a temperature (no
     // anchor) -> its temperature must NOT be pulled into room A.
@@ -760,12 +781,13 @@ fn climate_temperature_correlation_hit_and_miss() {
     // Correlation miss: Basement temperature is a different room -> not wired here.
     assert_ne!(cs[0].temperature_address, Some(ga("0/3/20")));
     // And it survives as its own sensor.
-    let yaml = generate(&model, &Overrides::default()).unwrap();
+    let yaml = generate(&model, &Overrides::default())?;
     assert!(yaml.contains("state_address: 0/3/20"), "{yaml}");
+    Ok(())
 }
 
 #[test]
-fn climate_zwang_recognised_unwired_and_noted() {
+fn climate_zwang_recognised_unwired_and_noted() -> Result<(), Box<dyn std::error::Error>> {
     // The forced-mode (Zwang) GA is recognised but has no HA schema key: it is
     // left unwired (still counted as unmapped dpt-20) and surfaced as a footer
     // note.
@@ -791,16 +813,17 @@ fn climate_zwang_recognised_unwired_and_noted() {
     );
     // Zwang remains unmapped (dpt 20) and a note is emitted.
     assert_eq!(d.unmapped.get(&Some(20)).copied(), Some(1));
-    let yaml = generate(&model, &Overrides::default()).unwrap();
+    let yaml = generate(&model, &Overrides::default())?;
     assert!(
         yaml.contains("# note: climate 'Study': forced-mode"),
         "{yaml}"
     );
     assert!(yaml.contains("dpt 20: 1"), "{yaml}");
+    Ok(())
 }
 
 #[test]
-fn climate_claims_valve_before_percent_sensor() {
+fn climate_claims_valve_before_percent_sensor() -> Result<(), Box<dyn std::error::Error>> {
     // The 5.001 valve GA is *sent* by a heating-actuator object, so without the
     // climate pass it would become a `percent` sensor. Climate runs first and
     // claims it — no percent sensor on that GA.
@@ -818,7 +841,7 @@ fn climate_claims_valve_before_percent_sensor() {
             Entity::Climate(c) => Some(c),
             _ => None,
         })
-        .unwrap();
+        .ok_or("no climate entity")?;
     assert_eq!(c.command_value_state_address, Some(ga("0/3/6")));
     // No sensor on 0/3/6.
     let has_percent_sensor = d
@@ -829,26 +852,28 @@ fn climate_claims_valve_before_percent_sensor() {
         !has_percent_sensor,
         "valve must not also be a percent sensor"
     );
-    let yaml = generate(&model, &Overrides::default()).unwrap();
+    let yaml = generate(&model, &Overrides::default())?;
     assert!(!yaml.contains("type: percent"), "{yaml}");
+    Ok(())
 }
 
 #[test]
-fn climate_determinism_multiple_rooms() {
+fn climate_determinism_multiple_rooms() -> Result<(), Box<dyn std::error::Error>> {
     let model = climate_room(
         climate_room(ModelBuilder::new("1.1.2", "Heizung", None), "Study", "0/3/"),
         "Bedroom",
         "1/4/",
     )
     .build();
-    let a = generate(&model, &Overrides::default()).unwrap();
-    let b = generate(&model, &Overrides::default()).unwrap();
+    let a = generate(&model, &Overrides::default())?;
+    let b = generate(&model, &Overrides::default())?;
     assert_eq!(a, b, "climate output must be byte-identical across runs");
     assert_eq!(only_climate(&model, &Overrides::default()).len(), 2);
+    Ok(())
 }
 
 #[test]
-fn climate_name_override_and_exclusion() {
+fn climate_name_override_and_exclusion() -> Result<(), Box<dyn std::error::Error>> {
     // Name override applies (keyed by the anchor / operation_mode GA). Excluding
     // the anchor GA drops the whole climate entity.
     let model = climate_room(ModelBuilder::new("1.1.2", "Heizung", None), "Study", "0/3/").build();
@@ -858,19 +883,20 @@ fn climate_name_override_and_exclusion() {
 address = "0/3/2"
 name = "Office climate"
 "#;
-    let ov = Overrides::parse("ha.toml", text).unwrap();
+    let ov = Overrides::parse("ha.toml", text)?;
     let cs = only_climate(&model, &ov);
     assert_eq!(cs.len(), 1);
     assert_eq!(cs[0].name, "Office climate");
 
     // Excluding the anchor (operation-mode) GA removes the whole climate entity:
     // the operation mode is the only anchor, so nothing is left to control.
-    let ov2 = Overrides::parse("ha.toml", "[global]\nexclude = [\"0/3/2\"]\n").unwrap();
+    let ov2 = Overrides::parse("ha.toml", "[global]\nexclude = [\"0/3/2\"]\n")?;
     assert!(only_climate(&model, &ov2).is_empty());
+    Ok(())
 }
 
 #[test]
-fn climate_merge_wires_extra_state_ga() {
+fn climate_merge_wires_extra_state_ga() -> Result<(), Box<dyn std::error::Error>> {
     // A mode-only room; merge an external target-temperature-state GA. It fills
     // the first free climate state slot (temperature) and drops from unmapped.
     let model = ModelBuilder::new("1.1.2", "Heizung", None)
@@ -882,7 +908,7 @@ fn climate_merge_wires_extra_state_ga() {
 address = "0/3/2"
 merge = ["0/3/99"]
 "#;
-    let ov = Overrides::parse("ha.toml", text).unwrap();
+    let ov = Overrides::parse("ha.toml", text)?;
     let cs = only_climate(&model, &ov);
     assert_eq!(cs.len(), 1);
     assert_eq!(cs[0].temperature_address, Some(ga("0/3/99")));
@@ -892,17 +918,19 @@ merge = ["0/3/99"]
         0,
         "merged GA claimed"
     );
+    Ok(())
 }
 
 #[test]
-fn status_only_object_is_not_a_switch() {
+fn status_only_object_is_not_a_switch() -> Result<(), Box<dyn std::error::Error>> {
     // A 1.001 object that only transmits status (T, no W) must not become a
     // switch — it is a binary_sensor.
     let model = ModelBuilder::new("1.1.30", "Melder", None)
         .group("4/4/0", "Bewegung", "1.001")
         .object(1, "1.001", "CRT", None, Some("4/4/0"), &[])
         .build();
-    let yaml = generate(&model, &Overrides::default()).unwrap();
+    let yaml = generate(&model, &Overrides::default())?;
     assert!(!yaml.contains("switch:"), "{yaml}");
     assert!(yaml.contains("binary_sensor:"), "{yaml}");
+    Ok(())
 }

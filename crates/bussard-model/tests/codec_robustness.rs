@@ -11,7 +11,7 @@ use bussard_model::codec::{EncodeError, ParseValueError, TypedValue, decode, enc
 use bussard_model::{Dpt, Flags, GroupAddress, IndividualAddress};
 
 fn dpt(s: &str) -> Dpt {
-    s.parse().unwrap()
+    s.parse().expect("test fixture")
 }
 
 /// Every DPT main type bussard claims to model, with a canonical sub.
@@ -346,10 +346,11 @@ fn parse_value_integer_ranges_reject_out_of_range() {
 }
 
 #[test]
-fn parse_value_percent_accepts_scientific_and_signed_zero() {
+fn parse_value_percent_accepts_scientific_and_signed_zero() -> Result<(), Box<dyn std::error::Error>>
+{
     // Robustness observation: "1e2" parses as 100 (valid), "-0" as -0.0 (valid).
     assert_eq!(
-        parse_value(&dpt("5.001"), "1e2").unwrap(),
+        parse_value(&dpt("5.001"), "1e2")?,
         TypedValue::Percent(100.0)
     );
     // -0 is within 0..=100.
@@ -357,6 +358,7 @@ fn parse_value_percent_accepts_scientific_and_signed_zero() {
         parse_value(&dpt("5.001"), "-0"),
         Ok(TypedValue::Percent(_))
     ));
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -562,13 +564,14 @@ fn individual_address_fromstr_hostile() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn flags_fromstr_hostile() {
+fn flags_fromstr_hostile() -> Result<(), Box<dyn std::error::Error>> {
     // Accepted; any order, display canonicalises.
-    assert_eq!("UTWC".parse::<Flags>().unwrap().to_string(), "CWTU");
-    assert_eq!("".parse::<Flags>().unwrap().to_string(), "");
-    assert_eq!("CRWTUI".parse::<Flags>().unwrap(), Flags::all());
+    assert_eq!("UTWC".parse::<Flags>()?.to_string(), "CWTU");
+    assert_eq!("".parse::<Flags>()?.to_string(), "");
+    assert_eq!("CRWTUI".parse::<Flags>()?, Flags::all());
     // Rejected: unknown char, lowercase, duplicate, unicode.
     for bad in ["CWZ", "cw", "CC", "C W", "C\tW", "Ç", "🚀", "CRWTUIX"] {
         assert!(bad.parse::<Flags>().is_err(), "{bad:?} should fail");
     }
+    Ok(())
 }

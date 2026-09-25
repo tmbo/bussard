@@ -671,13 +671,13 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn ga(s: &str) -> GroupAddress {
-        s.parse().unwrap()
+        s.parse().expect("test fixture")
     }
     fn ia(s: &str) -> crate::address::IndividualAddress {
-        s.parse().unwrap()
+        s.parse().expect("test fixture")
     }
     fn dpt(s: &str) -> crate::dpt::Dpt {
-        s.parse().unwrap()
+        s.parse().expect("test fixture")
     }
 
     fn group(name: &str, dpt_str: Option<&str>) -> Group {
@@ -696,7 +696,7 @@ mod tests {
         ComObject {
             dpt: dpt_str.map(dpt),
             size: None,
-            flags: flags.parse().unwrap(),
+            flags: flags.parse().expect("test fixture"),
             reference: None,
             channel: None,
             secure: false,
@@ -947,7 +947,7 @@ mod tests {
     }
 
     #[test]
-    fn protected_gas_emit_i015_deterministically() {
+    fn protected_gas_emit_i015_deterministically() -> Result<(), Box<dyn std::error::Error>> {
         let mut groups = BTreeMap::new();
         // Two protected GAs and one plain one; I015 must list only the protected
         // ones, in GA order.
@@ -955,7 +955,7 @@ mod tests {
             ga("3/2/0"),
             Group {
                 name: "Windalarm".to_string(),
-                dpt: Some("1.005".parse().unwrap()),
+                dpt: Some("1.005".parse()?),
                 description: None,
                 protected: true,
                 secure: false,
@@ -965,7 +965,7 @@ mod tests {
             ga("1/0/0"),
             Group {
                 name: "Zentral Aus".to_string(),
-                dpt: Some("1.001".parse().unwrap()),
+                dpt: Some("1.001".parse()?),
                 description: None,
                 protected: true,
                 secure: false,
@@ -995,6 +995,7 @@ mod tests {
         assert_eq!(i015[1].location, "groups.\"3/2/0\"");
         assert!(i015[0].message.contains("protected"));
         assert_eq!(i015[0].severity, Severity::Info);
+        Ok(())
     }
 
     #[test]
@@ -1033,11 +1034,11 @@ mod tests {
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .expect("test fixture")
                 .as_nanos()
         ));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&dir).expect("test fixture");
         dir
     }
 
@@ -1094,7 +1095,7 @@ mod tests {
     /// (`P-9`, {0,7}) and a text (`P-20`, 6 bytes) parameter.
     fn write_model(dir: &std::path::Path) {
         let models = dir.join("models");
-        std::fs::create_dir_all(&models).unwrap();
+        std::fs::create_dir_all(&models).expect("test fixture");
         let yaml = "\
 identity:
   id: M-00FA_A-1
@@ -1116,7 +1117,7 @@ parameters:
     type: !text
       size: 48
 ";
-        std::fs::write(models.join(format!("{APP_REF}.yaml")), yaml).unwrap();
+        std::fs::write(models.join(format!("{APP_REF}.yaml")), yaml).expect("test fixture");
     }
 
     fn codes_at<'a>(diags: &'a [Diagnostic], key_frag: &str) -> Vec<(&'a str, Severity)> {
