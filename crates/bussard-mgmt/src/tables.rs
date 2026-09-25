@@ -49,11 +49,13 @@
 //!   served through **memory**: element 1 of `PID_TABLE_REFERENCE` (7) answers
 //!   the table's memory address (the same address domain `A_Memory_Read`
 //!   serves) and the table blob starts with the big-endian `u16` entry count
-//!   followed by the entries. Reading `PID_TABLE` as a property array is
-//!   attempted first (standard semantics, some stacks expose it); a device that
-//!   does not expose it (e.g. one whose group object table registers no
-//!   `PID_TABLE`) falls back to the memory path, and [`DeviceTables::sources`]
-//!   reports which path worked.
+//!   followed by the entries. The element count is read from `PID_TABLE`
+//!   element 0 first. The entries then come from memory when one span read at
+//!   the negotiated memory chunk takes fewer requests than `PID_TABLE` reads of
+//!   15 elements (issue #223), with the memory count word checked against the
+//!   property count; a missing reference, a refused read or a mismatch falls back
+//!   to the property array. A device that exposes no `PID_TABLE` count reads the
+//!   count from memory too. [`DeviceTables::sources`] reports which path worked.
 //! - **Group object table** (object type 9, KNX 3/5/1): word 0 is the entry
 //!   count; word `asap` is a packed big-endian `u16` descriptor (low byte = DPT
 //!   size code, high bits = comm/read/write/transmit/update flags). Only the
@@ -92,7 +94,7 @@
 //! surfaces as [`TablesError::TableUnreadable`].
 
 use crate::connection::{L4Channel, Layer4Connection, property_request};
-use crate::error::MgmtError;
+use crate::error::{MgmtError, SilenceKind};
 use bussard_model::{GroupAddress, IndividualAddress};
 
 // --- Identifiers not (yet) in `apci.rs` ---
@@ -205,9 +207,10 @@ pub type Result<T> = std::result::Result<T, TablesError>;
 /// Reads the device descriptor first and refuses non-`07B0` masks with
 /// [`TablesError::UnsupportedMask`]. Discovery is dynamic: object indexes are
 /// probed for `PID_OBJECT_TYPE` to locate the tables — nothing is hardcoded to
-/// a fixed index. Each table is read via the `PID_TABLE` property array,
-/// falling back to `PID_TABLE_REFERENCE` + memory reads; `sources` records
-/// which path worked.
+/// a fixed index. Each table's count comes from `PID_TABLE`; its entries come
+/// from `PID_TABLE_REFERENCE` + memory when that takes fewer requests, from the
+/// `PID_TABLE` property array otherwise or when the memory read is refused (see
+/// `read_table`); `sources` records which path worked.
 pub async fn read_tables<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Result<DeviceTables> {
     let address = l4.target();
     let mask = device_descriptor(l4).await?;
@@ -469,8 +472,25 @@ async fn read_element_count<Ch: L4Channel>(
     Ok(Some(u16::from_be_bytes([data[0], data[1]])))
 }
 
-/// Reads a whole table, preferring the `PID_TABLE` property array and falling
-/// back to `PID_TABLE_REFERENCE` + memory reads.
+/// Reads a whole table: the element count from `PID_TABLE` element 0, then the
+/// elements from memory when that takes fewer requests, from the `PID_TABLE`
+/// property array otherwise (issue #223).
+///
+/// - **Memory path** ([`read_counted_table_via_memory`]): `PID_TABLE_REFERENCE`
+///   names the table's address and one span read at the negotiated memory chunk
+///   (the `A_MemoryExtended_Read`/`A_Memory_Read` helpers the flash read-compare
+///   uses) returns the count word and every entry. Taken only when it is
+///   estimated to need fewer requests than the property path, so a small table
+///   (the 1.1.12 address table has 3 entries) keeps its old frames exactly.
+/// - **Property path** ([`read_table_via_property`]): the elements from index 1
+///   upward, up to 15 per request.
+/// - A device without a readable `PID_TABLE` count goes to the memory path with
+///   the count read from memory ([`read_table_via_memory`]), as before.
+///
+/// The memory path falls back to the property path on a missing or zero
+/// reference, a refused, malformed or unanswered memory read, or a count word
+/// that disagrees with the `PID_TABLE` count, so the result is the one the
+/// property path returns whenever the two could differ.
 ///
 /// Returns the concatenated element octets (`count × elem_size`) and which
 /// path produced them.
@@ -480,37 +500,148 @@ async fn read_table<Ch: L4Channel>(
     elem_size: usize,
     what: &str,
 ) -> Result<(Vec<u8>, TableSource)> {
-    match read_table_via_property(l4, object_index, elem_size, what).await? {
-        Some(bytes) => Ok((bytes, TableSource::Property)),
-        None => {
-            let bytes = read_table_via_memory(l4, object_index, elem_size, what).await?;
-            Ok((bytes, TableSource::Memory))
-        }
+    let Some(count) = read_element_count(l4, object_index).await? else {
+        let bytes = read_table_via_memory(l4, object_index, elem_size, what).await?;
+        return Ok((bytes, TableSource::Memory));
+    };
+    let count = usize::from(count);
+    if let Some(bytes) =
+        read_counted_table_via_memory(l4, object_index, elem_size, count, what).await?
+    {
+        return Ok((bytes, TableSource::Memory));
     }
+    let bytes = read_table_via_property(l4, object_index, elem_size, count, what).await?;
+    Ok((bytes, TableSource::Property))
 }
 
-/// The property-array path: element count from element 0, then elements from
-/// index 1 upward in APDU-sized chunks.
+/// Elements per `PID_TABLE` read on this connection: the negotiated property
+/// octet budget over the element size, within the 4-bit count field.
+fn property_chunk_elements<Ch: L4Channel>(l4: &Layer4Connection<Ch>, elem_size: usize) -> usize {
+    (usize::from(l4.max_property_read_octets()) / elem_size.max(1))
+        .clamp(1, MAX_PROPERTY_READ_ELEMENTS)
+}
+
+/// The fast path for a table whose `PID_TABLE` count is known: resolve
+/// `PID_TABLE_REFERENCE`, read the count word and the `count × elem_size`
+/// entries in one span at the negotiated memory chunk, and check the count word
+/// against `count`.
 ///
-/// Returns `Ok(None)` when `PID_TABLE` is not readable at all (element-count
-/// read reports zero elements), signalling the caller to fall back.
+/// `Ok(None)` sends the caller to the property path: the memory read would not
+/// save a request, the reference is missing, zero or malformed, the device
+/// refused or did not answer a read, or the count word disagrees. Only a
+/// transport failure is an `Err`.
+async fn read_counted_table_via_memory<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    object_index: u8,
+    elem_size: usize,
+    count: usize,
+    what: &str,
+) -> Result<Option<Vec<u8>>> {
+    if count == 0 {
+        return Ok(None);
+    }
+    let span = 2 + count * elem_size;
+    let property_reads = count.div_ceil(property_chunk_elements(l4, elem_size));
+    // The best chunk either memory service could carry; the exact one depends on
+    // the address, known only after the reference read.
+    let best_chunk = usize::from(l4.max_memory_chunk())
+        .max(usize::from(l4.max_extended_memory_chunk()))
+        .clamp(1, usize::from(u8::MAX));
+    if 1 + span.div_ceil(best_chunk) >= property_reads {
+        return Ok(None);
+    }
+
+    let before = l4.numbered_exchanges();
+    let refbytes = match read_property(l4, object_index, PID_TABLE_REFERENCE, 1, 1).await {
+        Ok(bytes) => bytes,
+        Err(err) => return refusal(l4, before, err, what, "PID_TABLE_REFERENCE read"),
+    };
+    let Some(table_addr) = decode_table_reference(&refbytes).filter(|&a| a != 0) else {
+        tracing::debug!(
+            target = %l4.target(),
+            "{what}: no usable PID_TABLE_REFERENCE ({} octet(s)); reading PID_TABLE",
+            refbytes.len()
+        );
+        return Ok(None);
+    };
+    let chunk = crate::memory::chunk_for(l4, table_addr, span);
+    if span.div_ceil(chunk) >= property_reads {
+        return Ok(None);
+    }
+
+    let before = l4.numbered_exchanges();
+    let bytes = match crate::memory::read_memory_range(l4, table_addr, span).await {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            let err = memory_error(l4.target(), err);
+            return refusal(l4, before, err, what, "memory read");
+        }
+    };
+    let stored = bytes
+        .get(..2)
+        .map(|w| usize::from(u16::from_be_bytes([w[0], w[1]])));
+    if stored != Some(count) || bytes.len() != span {
+        tracing::debug!(
+            target = %l4.target(),
+            "{what}: memory count word {stored:?} disagrees with PID_TABLE count {count}; \
+             reading PID_TABLE"
+        );
+        return Ok(None);
+    }
+    Ok(Some(bytes[2..].to_vec()))
+}
+
+/// Folds a device-level refusal of a fast-path read into `Ok(None)` (the caller
+/// falls back to the property path) and passes a transport failure through.
+///
+/// A refusal is a malformed or off-service answer (a zero-octet memory
+/// response, a non-zero `A_MemoryExtended_Read` return code), an out-of-range
+/// span, or a request the device `T_ACK`ed but never answered: that one keeps
+/// the connection usable for the fallback, as [`Layer4Connection::authorize`]
+/// does. A disconnect, a NAK or a device that never acknowledged is an `Err`.
+fn refusal<Ch: L4Channel, T>(
+    l4: &mut Layer4Connection<Ch>,
+    before: u32,
+    err: TablesError,
+    what: &str,
+    step: &str,
+) -> Result<Option<T>> {
+    let fallback = match &err {
+        TablesError::Mgmt(MgmtError::MalformedResponse { .. })
+        | TablesError::TableUnreadable { .. } => true,
+        TablesError::Mgmt(
+            MgmtError::NoResponse { .. }
+            | MgmtError::MidSessionSilence {
+                kind: SilenceKind::NoResponse,
+                ..
+            },
+        ) if l4.numbered_exchanges() > before => {
+            l4.reopen_after_unanswered();
+            true
+        }
+        _ => false,
+    };
+    if !fallback {
+        return Err(err);
+    }
+    tracing::debug!(target = %l4.target(), "{what}: {step} refused ({err}); reading PID_TABLE");
+    Ok(None)
+}
+
+/// The property-array path for a table of `count` elements (read from element
+/// 0 by the caller): the elements from index 1 upward in APDU-sized chunks.
 async fn read_table_via_property<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     object_index: u8,
     elem_size: usize,
+    count: usize,
     what: &str,
-) -> Result<Option<Vec<u8>>> {
-    let Some(count) = read_element_count(l4, object_index).await? else {
-        return Ok(None);
-    };
-    let count = usize::from(count);
+) -> Result<Vec<u8>> {
     // Scale the per-read element count to the device's negotiated max APDU (issue
     // #58): a capable device reads more elements per round-trip, fewer round-trips
     // for a large table. Falls back to the conservative octet budget when
     // `PID_MAX_APDU_LENGTH` was never negotiated or was unreadable.
-    let read_octets = usize::from(l4.max_property_read_octets());
-    // The count field of `A_PropertyValue_Read` is 4 bits wide.
-    let mut chunk_elems = (read_octets / elem_size).clamp(1, MAX_PROPERTY_READ_ELEMENTS);
+    let mut chunk_elems = property_chunk_elements(l4, elem_size);
 
     let mut bytes = Vec::with_capacity(count * elem_size);
     let mut next: usize = 1; // property array elements are 1-based
@@ -545,7 +676,7 @@ async fn read_table_via_property<Ch: L4Channel>(
         bytes.extend_from_slice(&data);
         next += got;
     }
-    Ok(Some(bytes))
+    Ok(bytes)
 }
 
 /// The most elements one `A_PropertyValue_Read` can ask for: its count field is
