@@ -311,6 +311,26 @@ entry supersedes it and is not a diff against it.
 
 ### Changed
 
+- One global option group (#228): `--dir`, `--gateway`, `--routing`,
+  `--keyring`, `--json`, `--allow-remote-gateway`, `--skip-address-check` and
+  `--refresh-facts` are declared once, print once under "Global options" in
+  every `--help`, and go before or after the subcommand. They replace the
+  per-command copies (`--dir` alone was declared 39 times). `--yes`, `--force`,
+  `--dry-run` and `--plan` stay per command. A command without JSON output now
+  refuses `--json` with a message instead of a clap error; read-only commands
+  accept and ignore `--allow-remote-gateway`.
+- Without `--dir`, a command finds the model directory itself: `.` when it
+  holds `bussard.toml`, else `./knx`, else the nearest parent holding
+  `bussard.toml` or `knx/bussard.toml`, else `knx` as before. Commands now work
+  from inside the model and its subdirectories. `init` and `import` never
+  search upward (#228).
+- New environment variables `BUSSARD_DIR`, `BUSSARD_GATEWAY` and
+  `BUSSARD_KEYRING`, with the precedence flag, then environment, then
+  `bussard.toml`, then discovery. They only select; none of them can permit a
+  write, and `BUSSARD_ALLOW_REAL_GATEWAY` is unchanged (#228).
+- `--keyring` is now accepted by `adopt` and `test` (tunnel only, as
+  `connection.keyring` already was), and `assign --keyring --tool-key` opens
+  the secure tunnel with the given keyring as documented.
 - The model moved from YAML (`bussard.yaml`, `groups.yaml`, `links.yaml`,
   `devices/*.yaml`) to TOML plus the generated `bussard.lock`. Links now live
   in the device files. The YAML files are not read any more: bussard refuses a

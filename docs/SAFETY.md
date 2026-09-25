@@ -8,7 +8,8 @@ which bus you are pointed at.
 
 Read commands (`monitor`, `read`, `scan`, `plan`, `reconstruct`) never transmit
 device programming and are never gated. Everything below is about the write
-commands: `write`, `apply`, `flash`, `assign`, `adopt`.
+commands: `write`, `apply`, `flash`, `assign`, `adopt`, `commission`,
+`restore`, `replace` and `test`.
 
 Two long-running servers can also write, and they pass the same gate at
 startup rather than per command:
@@ -41,7 +42,7 @@ Two things protect you:
 
 2. **Non-loopback gateways are refused by default.** A write whose resolved
    gateway is *not* loopback (not `127.0.0.0/8`, not `::1`) refuses to run.
-   For the five write commands the check happens per invocation; for the two
+   For the write commands the check happens per invocation; for the two
    servers it happens once, at startup, so a write-enabled server pointed at a
    real gateway refuses to start at all:
 
@@ -55,6 +56,9 @@ Two things protect you:
    write to a real gateway you opt in explicitly, per command with
    `--allow-remote-gateway` or for a session with `BUSSARD_ALLOW_REAL_GATEWAY=1`.
    Treat setting the env var as arming the tool: unset it when you are done.
+   `BUSSARD_GATEWAY` and `BUSSARD_DIR` only choose which bus and model a
+   command uses; no environment variable other than
+   `BUSSARD_ALLOW_REAL_GATEWAY` can permit a write.
 
 Point at a test bus by giving a loopback gateway explicitly, either
 `--gateway 127.0.0.1` on the command or `connection.gateway: 127.0.0.1:3671`

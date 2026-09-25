@@ -221,6 +221,9 @@ fn run_reconstruct_line(
     args.extend_from_slice(extra);
     Ok(Command::new(env!("CARGO_BIN_EXE_bussard"))
         .args(&args)
+        // No --dir: run away from any checkout so model discovery (issue
+        // #228) finds nothing and the line sweep supplies its own defaults.
+        .current_dir(std::env::temp_dir())
         // Short discovery timeout so absent addresses do not stall the sweep.
         .env("BUSSARD_SCAN_DISCOVERY_MS", "150")
         .stdout(Stdio::piped())

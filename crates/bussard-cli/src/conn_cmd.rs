@@ -7,7 +7,7 @@
 //! ([`enforce_write_gate`]) and the source-address check ([`checked_source`]).
 
 use std::net::{Ipv4Addr, SocketAddrV4, ToSocketAddrs};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, anyhow};
 use bussard_model::IndividualAddress;
@@ -18,7 +18,7 @@ use bussard_transport::config::{DEFAULT_MULTICAST, DEFAULT_PORT};
 use bussard_transport::write_gate::WriteGate;
 use bussard_transport::{ConnectionConfig, SecureTunnelConfig, TransportKind, TunnelReconnect};
 
-/// Command-line connection overrides shared by `monitor` and `capture`.
+/// Connection overrides from the global options, shared by every bus command.
 #[derive(Debug, Clone, Default)]
 pub struct ConnOverrides {
     /// `--gateway host[:port]` for tunneling.
@@ -31,6 +31,130 @@ pub struct ConnOverrides {
     /// `--refresh-facts`: ignore the stored device facts
     /// (`<dir>/.bussard/facts/<ia>.toml`, issue #209) and read them again.
     pub refresh_facts: bool,
+}
+
+/// Environment variable that names the model directory when `--dir` is not
+/// given (issue #228).
+pub const DIR_ENV: &str = "BUSSARD_DIR";
+/// Environment variable that names the gateway `host[:port]` when `--gateway`
+/// is not given; it beats `connection.gateway` in `bussard.toml`. It only
+/// selects a gateway: the non-loopback write gate still applies.
+pub const GATEWAY_ENV: &str = "BUSSARD_GATEWAY";
+/// Environment variable that names the `.knxkeys` keyring when `--keyring` is
+/// not given; it beats `connection.keyring` in `bussard.toml`.
+pub const KEYRING_ENV: &str = "BUSSARD_KEYRING";
+
+/// The global-option environment variables of this process. An empty value
+/// counts as unset.
+#[derive(Debug, Clone, Default)]
+pub struct EnvGlobals {
+    /// `BUSSARD_DIR`.
+    pub dir: Option<PathBuf>,
+    /// `BUSSARD_GATEWAY`.
+    pub gateway: Option<String>,
+    /// `BUSSARD_KEYRING`.
+    pub keyring: Option<PathBuf>,
+}
+
+impl EnvGlobals {
+    /// Reads the three variables from the process environment.
+    pub fn from_process() -> Self {
+        let var = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
+        Self {
+            dir: var(DIR_ENV).map(PathBuf::from),
+            gateway: var(GATEWAY_ENV).map(|value| value.to_string_lossy().into_owned()),
+            keyring: var(KEYRING_ENV).map(PathBuf::from),
+        }
+    }
+}
+
+/// The model directory of an invocation: `--dir`, else `BUSSARD_DIR`, else
+/// (for a command that reads an existing model) the directory
+/// [`bussard_model::discover`] finds from the working directory, else `knx`.
+/// A command that creates a model (`creates`) never searches: it uses `knx`.
+pub fn resolve_model_dir(flag: Option<&Path>, env: Option<&Path>, creates: bool) -> PathBuf {
+    if let Some(dir) = flag.or(env) {
+        return dir.to_path_buf();
+    }
+    if creates {
+        return PathBuf::from(bussard_model::DEFAULT_MODEL_DIR);
+    }
+    match bussard_model::discover(Path::new(".")) {
+        Some(dir) => {
+            tracing::info!("using the model directory {}", dir.display());
+            dir
+        }
+        None => PathBuf::from(bussard_model::DEFAULT_MODEL_DIR),
+    }
+}
+
+/// The gateway override of an invocation: `--gateway`, else
+/// `BUSSARD_GATEWAY`. `None` leaves the choice to `bussard.toml` in
+/// [`resolve_config`].
+pub fn resolve_gateway(flag: Option<&str>, env: Option<&str>) -> Option<String> {
+    flag.or(env).map(str::to_string)
+}
+
+/// Where the keyring of an invocation comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyringSource {
+    /// `--keyring`.
+    Flag,
+    /// `BUSSARD_KEYRING`.
+    Env,
+    /// `connection.keyring` in `bussard.toml` (issue #189).
+    Config,
+}
+
+impl KeyringSource {
+    /// Where the keyring came from, for messages.
+    pub fn describe(self) -> &'static str {
+        match self {
+            KeyringSource::Flag => "--keyring",
+            KeyringSource::Env => KEYRING_ENV,
+            KeyringSource::Config => "connection.keyring in bussard.toml",
+        }
+    }
+}
+
+/// A resolved keyring path and where it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedKeyring {
+    /// The `.knxkeys` file.
+    pub path: PathBuf,
+    /// Where it came from.
+    pub source: KeyringSource,
+}
+
+/// The keyring of a bus command: `--keyring`, else `BUSSARD_KEYRING`, else
+/// `connection.keyring` in `dir/bussard.toml` (relative to `dir`). A
+/// `bussard.toml` that does not parse is left for the command's own model
+/// load to report.
+pub fn resolve_keyring(
+    flag: Option<&Path>,
+    env: Option<&Path>,
+    dir: &Path,
+) -> Option<ResolvedKeyring> {
+    if let Some(path) = flag {
+        return Some(ResolvedKeyring {
+            path: path.to_path_buf(),
+            source: KeyringSource::Flag,
+        });
+    }
+    if let Some(path) = env {
+        return Some(ResolvedKeyring {
+            path: path.to_path_buf(),
+            source: KeyringSource::Env,
+        });
+    }
+    let config = bussard_model::load_config(dir).ok()?;
+    config
+        .connection
+        .keyring_path(dir)
+        .map(|path| ResolvedKeyring {
+            path,
+            source: KeyringSource::Config,
+        })
 }
 
 /// The source individual address for a **connection-oriented** device command,
@@ -715,5 +839,100 @@ mod tests {
         assert!(out.ok_or("expected a value")?.groups.groups.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
+    }
+
+    /// A scratch model directory whose `bussard.toml` names a keyring.
+    fn keyring_model(tag: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let dir =
+            std::env::temp_dir().join(format!("bussard-conn-globals-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(
+            dir.join("bussard.toml"),
+            "[connection]\ntransport = \"tunnel\"\nkeyring = \"site.knxkeys\"\n",
+        )?;
+        Ok(dir)
+    }
+
+    #[test]
+    fn test_resolve_model_dir_flag_beats_env() {
+        let dir = resolve_model_dir(Some(Path::new("flag")), Some(Path::new("env")), false);
+        assert_eq!(dir, PathBuf::from("flag"));
+        let dir = resolve_model_dir(Some(Path::new("flag")), Some(Path::new("env")), true);
+        assert_eq!(dir, PathBuf::from("flag"));
+    }
+
+    #[test]
+    fn test_resolve_model_dir_env_beats_discovery() {
+        assert_eq!(
+            resolve_model_dir(None, Some(Path::new("env")), false),
+            PathBuf::from("env")
+        );
+        assert_eq!(
+            resolve_model_dir(None, Some(Path::new("env")), true),
+            PathBuf::from("env")
+        );
+    }
+
+    #[test]
+    fn test_resolve_model_dir_create_never_discovers() {
+        assert_eq!(resolve_model_dir(None, None, true), PathBuf::from("knx"));
+    }
+
+    #[test]
+    fn test_resolve_gateway_precedence() {
+        assert_eq!(
+            resolve_gateway(Some("127.0.0.1:1"), Some("127.0.0.1:2")).as_deref(),
+            Some("127.0.0.1:1")
+        );
+        assert_eq!(
+            resolve_gateway(None, Some("127.0.0.1:2")).as_deref(),
+            Some("127.0.0.1:2")
+        );
+        assert_eq!(resolve_gateway(None, None), None);
+    }
+
+    #[test]
+    fn test_resolve_gateway_env_beats_bussard_toml() -> Result<(), Box<dyn std::error::Error>> {
+        let mut model = crate::assign_cmd::empty_model();
+        model.config.connection.gateway = Some("127.0.0.1:3671".to_string());
+        let overrides = ConnOverrides {
+            gateway: resolve_gateway(None, Some("127.0.0.2:3700")),
+            ..Default::default()
+        };
+        let cfg = resolve_config(Some(&model), &overrides)?;
+        assert_eq!(
+            cfg.gateway.ok_or("expected a gateway")?.to_string(),
+            "127.0.0.2:3700"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_resolve_keyring_flag_env_config_precedence() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = keyring_model("precedence")?;
+        let flag = resolve_keyring(
+            Some(Path::new("f.knxkeys")),
+            Some(Path::new("e.knxkeys")),
+            &dir,
+        )
+        .ok_or("expected a keyring")?;
+        assert_eq!(flag.path, PathBuf::from("f.knxkeys"));
+        assert_eq!(flag.source, KeyringSource::Flag);
+        let env = resolve_keyring(None, Some(Path::new("e.knxkeys")), &dir)
+            .ok_or("expected a keyring")?;
+        assert_eq!(env.path, PathBuf::from("e.knxkeys"));
+        assert_eq!(env.source, KeyringSource::Env);
+        let config = resolve_keyring(None, None, &dir).ok_or("expected a keyring")?;
+        assert_eq!(config.path, dir.join("site.knxkeys"));
+        assert_eq!(config.source, KeyringSource::Config);
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn test_resolve_keyring_none_without_any_source() {
+        let missing = std::env::temp_dir().join("bussard-conn-globals-no-such-model");
+        assert_eq!(resolve_keyring(None, None, &missing), None);
     }
 }
