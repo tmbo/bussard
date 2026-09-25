@@ -126,13 +126,14 @@ fn mcp_stdio_handshake_is_pure_json_and_lists_the_passive_tools() -> TestResult 
         "knx_model_lookup",
         "knx_project_summary",
         "knx_recent_telegrams",
+        "knx_show_device",
         "knx_validate",
         "knx_wait_for_telegram",
     ];
     expected.sort_unstable();
     assert_eq!(
         tools, expected,
-        "passive mode exposes exactly 13 tools: no bus tools, and no model edits \
+        "passive mode exposes exactly 14 tools: no bus tools, and no model edits \
          because this server runs with --no-model-edits"
     );
 
