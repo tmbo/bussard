@@ -338,7 +338,8 @@ mod tests {
 </KNX>"#;
 
     #[test]
-    fn test_parse_master_template_extracts_load_procedures() -> Result<()> {
+    fn test_parse_master_template_extracts_load_procedures()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let t = parse_master_template(SAMPLE.as_bytes(), "test")?;
         // Both masks present, keyed MV-stripped.
         assert!(t.masks.contains_key("0705"));
@@ -346,15 +347,18 @@ mod tests {
         // 07B0 has two Load procedures (Unload is not captured).
         assert_eq!(t.masks["07B0"].len(), 2);
         // The full-download pick prefers `all` over `ap1`.
-        let full = t.full_load_procedure("07B0").expect("an all procedure");
+        let full = t.full_load_procedure("07B0").ok_or("an all procedure")?;
         assert_eq!(full.sub_type.as_deref(), Some("all"));
         Ok(())
     }
 
     #[test]
-    fn test_parse_master_template_preserves_merge_markers() -> Result<()> {
+    fn test_parse_master_template_preserves_merge_markers()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let t = parse_master_template(SAMPLE.as_bytes(), "test")?;
-        let full = t.full_load_procedure("07B0").unwrap();
+        let full = t
+            .full_load_procedure("07B0")
+            .ok_or("t.full_load_procedure(\"07B0\") missing")?;
         let merge_ids: Vec<&str> = full
             .ops
             .iter()
@@ -368,7 +372,8 @@ mod tests {
     }
 
     #[test]
-    fn test_full_load_procedure_falls_back_to_ap1() -> Result<()> {
+    fn test_full_load_procedure_falls_back_to_ap1()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // A mask with only an `ap1` Load procedure still resolves.
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
          <MaskVersion Id="MV-07B0">
@@ -377,7 +382,9 @@ mod tests {
           </Procedure>
          </MaskVersion></KNX>"#;
         let t = parse_master_template(xml.as_bytes(), "test")?;
-        let full = t.full_load_procedure("07B0").unwrap();
+        let full = t
+            .full_load_procedure("07B0")
+            .ok_or("t.full_load_procedure(\"07B0\") missing")?;
         assert_eq!(full.sub_type.as_deref(), Some("ap1"));
         Ok(())
     }
@@ -424,16 +431,17 @@ mod tests {
 </KNX>"#;
 
     #[test]
-    fn test_parse_hawk_configuration_data_for_system7() -> Result<()> {
+    fn test_parse_hawk_configuration_data_for_system7()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let t = parse_master_template(HAWK_SAMPLE.as_bytes(), "test")?;
-        let hawk = t.hawk_config("0705").expect("a Hawk config for 0705");
+        let hawk = t.hawk_config("0705").ok_or("a Hawk config for 0705")?;
 
         // The LoadControl is the 12-octet record at StandardMemory 260 = 0x0104,
         // Flavour LoadControl_M112 — the memory-mapped LSM control the spec §5
         // default names.
         let ctrl = hawk
             .resource("GroupAddressTableLoadControl")
-            .expect("a LoadControl resource");
+            .ok_or("a LoadControl resource")?;
         assert_eq!(ctrl.address_space.as_deref(), Some("StandardMemory"));
         assert_eq!(ctrl.start_address, Some(260)); // 0x0104
         assert_eq!(ctrl.length, Some(12));

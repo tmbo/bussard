@@ -17,6 +17,7 @@
 //! *write* a ZipCrypto entry, so the encrypted end-to-end case here uses the
 //! ETS 6 AES path.
 
+use anyhow::Context;
 use std::io::{Cursor, Write};
 
 use zip::write::{FileOptions, SimpleFileOptions};
@@ -72,46 +73,48 @@ fn project_info_xml(version: u32) -> String {
 /// project files stored directly under `P-0001/` (no inner archive).
 ///
 /// `info_filename` is `Project.xml` for ETS 4, `project.xml` otherwise.
-fn build_unprotected(version: u32, info_filename: &str) -> Vec<u8> {
+fn build_unprotected(version: u32, info_filename: &str) -> anyhow::Result<Vec<u8>> {
     let mut buf = Vec::new();
     {
         let mut zip = ZipWriter::new(Cursor::new(&mut buf));
         let opts = SimpleFileOptions::default();
-        let mut add = |name: &str, body: &str| {
-            zip.start_file(name, opts).expect("start_file");
-            zip.write_all(body.as_bytes()).expect("write");
+        let mut add = |name: &str, body: &str| -> anyhow::Result<()> {
+            zip.start_file(name, opts).context("start_file")?;
+            zip.write_all(body.as_bytes()).context("write")?;
+            Ok(())
         };
-        add("knx_master.xml", &knx_master(version));
-        add("P-0001/0.xml", &project_0_xml(version));
+        add("knx_master.xml", &knx_master(version))?;
+        add("P-0001/0.xml", &project_0_xml(version))?;
         add(
             &format!("P-0001/{info_filename}"),
             &project_info_xml(version),
-        );
-        zip.finish().expect("finish");
+        )?;
+        zip.finish().context("finish")?;
     }
-    buf
+    Ok(buf)
 }
 
 /// Builds an ETS 6 **AES-protected** `.knxproj` in memory: the project files are
 /// packed into an inner `P-0001.zip` encrypted with `zip_password` (the derived
 /// archive password), which the outer archive stores. This mirrors the real ETS
 /// 6 on-disk layout.
-fn build_ets6_protected(zip_password: &str) -> Vec<u8> {
+fn build_ets6_protected(zip_password: &str) -> anyhow::Result<Vec<u8>> {
     // Inner archive, AES-encrypted with the derived password.
     let mut inner = Vec::new();
     {
         let mut zip = ZipWriter::new(Cursor::new(&mut inner));
         let opts: FileOptions<'_, ()> =
             FileOptions::default().with_aes_encryption(AesMode::Aes256, zip_password);
-        zip.start_file("0.xml", opts).expect("inner 0.xml");
-        zip.write_all(project_0_xml(21).as_bytes()).expect("write");
+        zip.start_file("0.xml", opts).context("inner 0.xml")?;
+        zip.write_all(project_0_xml(21).as_bytes())
+            .context("write")?;
         let opts2: FileOptions<'_, ()> =
             FileOptions::default().with_aes_encryption(AesMode::Aes256, zip_password);
         zip.start_file("project.xml", opts2)
-            .expect("inner project.xml");
+            .context("inner project.xml")?;
         zip.write_all(project_info_xml(21).as_bytes())
-            .expect("write");
-        zip.finish().expect("inner finish");
+            .context("write")?;
+        zip.finish().context("inner finish")?;
     }
 
     // Outer archive: knx_master + the encrypted inner archive.
@@ -119,38 +122,38 @@ fn build_ets6_protected(zip_password: &str) -> Vec<u8> {
     {
         let mut zip = ZipWriter::new(Cursor::new(&mut outer));
         let opts = SimpleFileOptions::default();
-        zip.start_file("knx_master.xml", opts).expect("master");
-        zip.write_all(knx_master(21).as_bytes()).expect("write");
-        zip.start_file("P-0001.zip", opts).expect("inner entry");
-        zip.write_all(&inner).expect("write inner");
-        zip.finish().expect("outer finish");
+        zip.start_file("knx_master.xml", opts).context("master")?;
+        zip.write_all(knx_master(21).as_bytes()).context("write")?;
+        zip.start_file("P-0001.zip", opts).context("inner entry")?;
+        zip.write_all(&inner).context("write inner")?;
+        zip.finish().context("outer finish")?;
     }
-    outer
+    Ok(outer)
 }
 
 /// Writes `bytes` to a temp `.knxproj` and returns the temp file (kept alive by
 /// the caller so the path stays valid).
-fn temp_knxproj(bytes: &[u8]) -> tempfile::NamedTempFile {
+fn temp_knxproj(bytes: &[u8]) -> anyhow::Result<tempfile::NamedTempFile> {
     let mut f = tempfile::Builder::new()
         .suffix(".knxproj")
         .tempfile()
-        .expect("tempfile");
-    f.write_all(bytes).expect("write knxproj");
-    f.flush().expect("flush");
-    f
+        .context("tempfile")?;
+    f.write_all(bytes).context("write knxproj")?;
+    f.flush().context("flush")?;
+    Ok(f)
 }
 
 #[test]
 fn test_import_ets4_unprotected_project() -> anyhow::Result<()> {
     // ETS 4: schema 11, project info in `Project.xml` (capital P).
-    let bytes = build_unprotected(11, "Project.xml");
-    let f = temp_knxproj(&bytes);
+    let bytes = build_unprotected(11, "Project.xml")?;
+    let f = temp_knxproj(&bytes)?;
     let model = bussard_project::import(f.path(), None)?;
 
     // Project name from Project.xml, and the GA plan parsed.
     assert_eq!(model.groups.project.as_deref(), Some("Synthetic 11 Home"));
     let ga: bussard_model::GroupAddress = "1/0/1".parse()?;
-    let g = model.groups.groups.get(&ga).expect("GA 1/0/1 present");
+    let g = model.groups.groups.get(&ga).context("GA 1/0/1 present")?;
     assert_eq!(g.name, "Living room light");
     assert_eq!(g.dpt.map(|d| d.to_string()).as_deref(), Some("1.001"));
     // Range names flattened from the two-level tree.
@@ -164,8 +167,8 @@ fn test_import_ets4_unprotected_project() -> anyhow::Result<()> {
 #[test]
 fn test_import_ets5_unprotected_project() -> anyhow::Result<()> {
     // ETS 5: schema 14, project info in lowercase `project.xml`.
-    let bytes = build_unprotected(14, "project.xml");
-    let f = temp_knxproj(&bytes);
+    let bytes = build_unprotected(14, "project.xml")?;
+    let f = temp_knxproj(&bytes)?;
     let model = bussard_project::import(f.path(), None)?;
     assert_eq!(model.groups.project.as_deref(), Some("Synthetic 14 Home"));
     let ga: bussard_model::GroupAddress = "1/0/1".parse()?;
@@ -179,8 +182,8 @@ fn test_import_ets6_aes_protected_project() -> anyhow::Result<()> {
     // "test" via the ETS 6 PBKDF2 scheme; build the fixture with it so the
     // encrypted end-to-end path is exercised.
     let derived = bussard_project::derive_zip_password("test");
-    let bytes = build_ets6_protected(&derived);
-    let f = temp_knxproj(&bytes);
+    let bytes = build_ets6_protected(&derived)?;
+    let f = temp_knxproj(&bytes)?;
 
     // Wrong / missing password is rejected.
     let missing = bussard_project::import(f.path(), None);
@@ -198,14 +201,17 @@ fn test_import_ets6_aes_protected_project() -> anyhow::Result<()> {
 }
 
 #[test]
-fn test_import_rejects_unknown_schema_version() {
+fn test_import_rejects_unknown_schema_version() -> Result<(), Box<dyn std::error::Error>> {
     // A namespace below the earliest known version (11) is refused with a clear
     // diagnostic rather than silently mis-parsed.
-    let bytes = build_unprotected(9, "project.xml");
-    let f = temp_knxproj(&bytes);
-    let err = bussard_project::import(f.path(), None).expect_err("should reject schema 9");
+    let bytes = build_unprotected(9, "project.xml")?;
+    let f = temp_knxproj(&bytes)?;
+    let err = bussard_project::import(f.path(), None)
+        .err()
+        .ok_or("expected an error")?;
     assert!(matches!(
         err,
         bussard_project::ImportError::UnsupportedSchemaVersion { .. }
     ));
+    Ok(())
 }

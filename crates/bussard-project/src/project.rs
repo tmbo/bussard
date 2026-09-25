@@ -666,7 +666,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_project_info_extracts_name_and_three_level_style() {
+    fn parse_project_info_extracts_name_and_three_level_style()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Fabricated project.xml mirroring the real ETS layout (no real data).
         let xml = r#"<?xml version="1.0" encoding="utf-8"?>
 <KNX xmlns="http://knx.org/xml/project/23">
@@ -676,12 +677,13 @@ mod tests {
     </ProjectInformation>
   </Project>
 </KNX>"#;
-        let info = parse_project_info(xml).unwrap();
+        let info = parse_project_info(xml)?;
         assert_eq!(info.name.as_deref(), Some("Test Home"));
         assert_eq!(
             info.group_address_style,
             Some(GroupAddressStyle::ThreeLevel)
         );
+        Ok(())
     }
 
     #[test]
@@ -696,7 +698,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_project_info_detects_two_level_and_free_styles() {
+    fn parse_project_info_detects_two_level_and_free_styles()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         for (attr, expect) in [
             ("TwoLevel", GroupAddressStyle::TwoLevel),
             ("Free", GroupAddressStyle::Free),
@@ -704,37 +707,41 @@ mod tests {
             let xml = format!(
                 r#"<KNX><Project Id="P-1"><ProjectInformation Name="N" GroupAddressStyle="{attr}"/></Project></KNX>"#
             );
-            let info = parse_project_info(&xml).unwrap();
+            let info = parse_project_info(&xml)?;
             assert_eq!(info.group_address_style, Some(expect), "style {attr}");
         }
+        Ok(())
     }
 
     #[test]
-    fn parse_project_info_handles_empty_element_and_missing_fields() {
+    fn parse_project_info_handles_empty_element_and_missing_fields()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Self-closing ProjectInformation with no GroupAddressStyle.
         let xml = r#"<KNX><Project><ProjectInformation Name="Only Name"/></Project></KNX>"#;
-        let info = parse_project_info(xml).unwrap();
+        let info = parse_project_info(xml)?;
         assert_eq!(info.name.as_deref(), Some("Only Name"));
         assert_eq!(info.group_address_style, None);
 
         // No ProjectInformation at all -> empty info.
         let xml = r#"<KNX><Project Id="P-1"/></KNX>"#;
-        let info = parse_project_info(xml).unwrap();
+        let info = parse_project_info(xml)?;
         assert!(info.name.is_none());
         assert!(info.group_address_style.is_none());
 
         // Empty Name is treated as absent.
         let xml = r#"<KNX><ProjectInformation Name="" GroupAddressStyle="ThreeLevel"/></KNX>"#;
-        let info = parse_project_info(xml).unwrap();
+        let info = parse_project_info(xml)?;
         assert!(info.name.is_none());
         assert_eq!(
             info.group_address_style,
             Some(GroupAddressStyle::ThreeLevel)
         );
+        Ok(())
     }
 
     #[test]
-    fn test_parse_project_ets6_links_attribute() {
+    fn test_parse_project_ets6_links_attribute()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // ETS 5.7/6 form (schema >= 20): links in a space-separated `Links`
         // attribute on a self-closing ComObjectInstanceRef. Synthetic data.
         let xml = r#"<?xml version="1.0" encoding="utf-8"?>
@@ -753,11 +760,12 @@ mod tests {
     </Installation></Installations>
   </Project>
 </KNX>"#;
-        let schema = SchemaVersion::from_version(23).unwrap();
-        let project = parse_project(xml, schema).unwrap();
+        let schema = SchemaVersion::from_version(23)?;
+        let project = parse_project(xml, schema)?;
         let dev = &project.devices[0];
         assert_eq!(dev.com_objects.len(), 1);
         assert_eq!(dev.com_objects[0].links, vec!["GA-10", "GA-11"]);
+        Ok(())
     }
 
     #[test]
@@ -801,7 +809,7 @@ mod tests {
         let schema = SchemaVersion::from_version(23)?;
         let project = parse_project(xml, schema)?;
         let dev = |a: u8| project.devices.iter().find(|d| d.address.device() == a);
-        let activated = dev(12).ok_or("1.1.12")?;
+        let activated = dev(12).ok_or("dev(12) missing")?;
         assert!(activated.has_tool_key && activated.has_loaded_tool_key);
         assert_eq!(activated.secure_sequence_number, Some(42));
         assert_eq!(activated.com_objects[0].security, None);
@@ -810,9 +818,9 @@ mod tests {
             activated.com_objects[2].security,
             Some(SecuritySetting::Off)
         );
-        let configured = dev(10).ok_or("1.1.10")?;
+        let configured = dev(10).ok_or("dev(10) missing")?;
         assert!(configured.has_tool_key && !configured.has_loaded_tool_key);
-        let capable = dev(11).ok_or("1.1.11")?;
+        let capable = dev(11).ok_or("dev(11) missing")?;
         assert!(!capable.has_tool_key && !capable.has_loaded_tool_key);
         assert_eq!(capable.secure_sequence_number, Some(9));
         let secure: Vec<(u16, bool)> = project
@@ -828,7 +836,8 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_project_ets4_connectors_links() {
+    fn test_parse_project_ets4_connectors_links()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // ETS 4/5 form (schema < 20): links in Connectors/Send + Receive child
         // elements, each with a `<projectId>_<gaId>` GroupAddressRefId.
         // Synthetic hand-written data (no vendored fixtures).
@@ -854,17 +863,19 @@ mod tests {
     </Installation></Installations>
   </Project>
 </KNX>"#;
-        let schema = SchemaVersion::from_version(11).unwrap();
-        let project = parse_project(xml, schema).unwrap();
+        let schema = SchemaVersion::from_version(11)?;
+        let project = parse_project(xml, schema)?;
         let dev = &project.devices[0];
         assert_eq!(dev.com_objects.len(), 1);
         // Send GA leads; the two Receive GAs follow, in order.
         assert_eq!(dev.com_objects[0].links, vec!["GA-10", "GA-11", "GA-12"]);
         assert_eq!(dev.com_objects[0].ref_id, "O-1_R-1");
+        Ok(())
     }
 
     #[test]
-    fn test_parse_project_ets4_receive_only_com_object() {
+    fn test_parse_project_ets4_receive_only_com_object()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // A listen-only object in ETS 4/5 form: no Send, only Receive children.
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/14">
   <Project Id="P-0001"><Installations><Installation><Topology>
@@ -879,10 +890,11 @@ mod tests {
     </Line></Area>
   </Topology></Installation></Installations></Project>
 </KNX>"#;
-        let schema = SchemaVersion::from_version(14).unwrap();
-        let project = parse_project(xml, schema).unwrap();
+        let schema = SchemaVersion::from_version(14)?;
+        let project = parse_project(xml, schema)?;
         let dev = &project.devices[0];
         assert_eq!(dev.com_objects[0].links, vec!["GA-20"]);
+        Ok(())
     }
 
     #[test]

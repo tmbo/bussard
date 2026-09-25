@@ -1418,7 +1418,7 @@ mod tests {
           </ParameterRefs>
          </Static></ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-0004_A-1", xml.as_bytes())?;
-        let mut raw = raw_dev_with_module_instances(&[]);
+        let mut raw = raw_dev_with_module_instances(&[])?;
         raw.parameters = [
             ("M-0004_A-1_P-1_R-1", "1"),  // display-only, changed
             ("M-0004_A-1_P-2_R-2", "0"),  // equals R-2's default, but R-3 says 46
@@ -1439,7 +1439,8 @@ mod tests {
     /// An app whose module `MD-1` has one parameter carrying a `BaseOffset`
     /// naming `MD-1_A-1`, plus a plain (non-module) parameter that must not
     /// contribute any base. Mirrors the Jung 23024 shape.
-    fn app_with_base_offset() -> ApplicationProgram {
+    fn app_with_base_offset() -> std::result::Result<ApplicationProgram, Box<dyn std::error::Error>>
+    {
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
          <ApplicationProgram Id="M-0004_A-1" Name="Jung"><Static>
           <ParameterTypes><ParameterType Id="M-0004_A-1_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType></ParameterTypes>
@@ -1452,10 +1453,12 @@ mod tests {
            </Parameter>
           </Parameters>
          </Static></ApplicationProgram></KNX>"#;
-        parse_application_program("M-0004_A-1", xml.as_bytes()).unwrap()
+        Ok(parse_application_program("M-0004_A-1", xml.as_bytes())?)
     }
 
-    fn raw_dev_with_module_instances(instances: &[(&str, &[(&str, &str)])]) -> RawDevice {
+    fn raw_dev_with_module_instances(
+        instances: &[(&str, &[(&str, &str)])],
+    ) -> std::result::Result<RawDevice, Box<dyn std::error::Error>> {
         let mut module_instances: HashMap<String, HashMap<String, String>> = HashMap::new();
         for (mi_id, args) in instances {
             let map = args
@@ -1464,9 +1467,9 @@ mod tests {
                 .collect();
             module_instances.insert(mi_id.to_string(), map);
         }
-        RawDevice {
+        Ok(RawDevice {
             id: "P-1_DI-1".to_string(),
-            address: "1.1.4".parse().unwrap(),
+            address: "1.1.4".parse()?,
             name: "dev".to_string(),
             description: None,
             product_ref_id: None,
@@ -1478,36 +1481,41 @@ mod tests {
             has_device_certificate: false,
             has_tool_key: false,
             has_loaded_tool_key: false,
-        }
+        })
     }
 
     #[test]
-    fn base_offset_args_maps_module_to_its_argument() {
-        let app = app_with_base_offset();
+    fn base_offset_args_maps_module_to_its_argument()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = app_with_base_offset()?;
         let map = base_offset_args(&[&app]);
         assert_eq!(map.get("MD-1").map(String::as_str), Some("MD-1_A-1"));
         // The plain parameter contributes no module entry.
         assert_eq!(map.len(), 1);
+        Ok(())
     }
 
     #[test]
-    fn resolve_module_bases_reads_instance_values() {
+    fn resolve_module_bases_reads_instance_values()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Two channels of MD-1 with distinct ParamOffsBase (MD-1_A-1) values, and
         // an unrelated argument that must be ignored.
-        let app = app_with_base_offset();
+        let app = app_with_base_offset()?;
         let raw = raw_dev_with_module_instances(&[
             ("MD-1_M-1_MI-1", &[("MD-1_A-1", "805"), ("MD-1_A-6", "1")]),
             ("MD-1_M-3_MI-1", &[("MD-1_A-1", "1797"), ("MD-1_A-6", "3")]),
-        ]);
+        ])?;
         let bases = resolve_module_bases(&raw, &[&app]);
         assert_eq!(bases.get("MD-1_M-1_MI-1").copied(), Some(805));
         assert_eq!(bases.get("MD-1_M-3_MI-1").copied(), Some(1797));
         assert_eq!(bases.len(), 2);
+        Ok(())
     }
 
     #[test]
-    fn resolve_module_bases_skips_absent_or_non_numeric() {
-        let app = app_with_base_offset();
+    fn resolve_module_bases_skips_absent_or_non_numeric()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = app_with_base_offset()?;
         let raw = raw_dev_with_module_instances(&[
             // Missing the base argument entirely -> skipped.
             ("MD-1_M-1_MI-1", &[("MD-1_A-6", "1")]),
@@ -1515,13 +1523,15 @@ mod tests {
             ("MD-1_M-2_MI-1", &[("MD-1_A-1", "n/a")]),
             // Good one -> kept.
             ("MD-1_M-3_MI-1", &[("MD-1_A-1", "1797")]),
-        ]);
+        ])?;
         let bases = resolve_module_bases(&raw, &[&app]);
         assert_eq!(bases.keys().collect::<Vec<_>>(), vec!["MD-1_M-3_MI-1"]);
+        Ok(())
     }
 
     #[test]
-    fn resolve_module_bases_empty_without_base_offset_params() {
+    fn resolve_module_bases_empty_without_base_offset_params()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // An app with no BaseOffset-bearing parameter yields no bases even when the
         // device has module instances.
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
@@ -1529,21 +1539,23 @@ mod tests {
           <ParameterTypes><ParameterType Id="M-0004_A-1_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType></ParameterTypes>
           <Parameters><Parameter Id="M-0004_A-1_P-1" Name="p" ParameterType="M-0004_A-1_PT-0" Value="0"><Memory CodeSegment="M-0004_A-1_RS-1" Offset="0" BitOffset="0" /></Parameter></Parameters>
          </Static></ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-0004_A-1", xml.as_bytes()).unwrap();
-        let raw = raw_dev_with_module_instances(&[("MD-1_M-1_MI-1", &[("MD-1_A-1", "805")])]);
+        let app = parse_application_program("M-0004_A-1", xml.as_bytes())?;
+        let raw = raw_dev_with_module_instances(&[("MD-1_M-1_MI-1", &[("MD-1_A-1", "805")])])?;
         assert!(resolve_module_bases(&raw, &[&app]).is_empty());
+        Ok(())
     }
 
     #[test]
-    fn resolve_module_bases_is_deterministic() {
+    fn resolve_module_bases_is_deterministic() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
         // Re-resolving the same inputs yields byte-identical maps (BTreeMap key
         // order is stable), so a re-import is idempotent.
-        let app = app_with_base_offset();
+        let app = app_with_base_offset()?;
         let raw = raw_dev_with_module_instances(&[
             ("MD-1_M-3_MI-1", &[("MD-1_A-1", "1797")]),
             ("MD-1_M-1_MI-1", &[("MD-1_A-1", "805")]),
             ("MD-1_M-2_MI-1", &[("MD-1_A-1", "1301")]),
-        ]);
+        ])?;
         let a = resolve_module_bases(&raw, &[&app]);
         let b = resolve_module_bases(&raw, &[&app]);
         assert_eq!(a, b);
@@ -1551,5 +1563,6 @@ mod tests {
             a.keys().cloned().collect::<Vec<_>>(),
             vec!["MD-1_M-1_MI-1", "MD-1_M-2_MI-1", "MD-1_M-3_MI-1"]
         );
+        Ok(())
     }
 }

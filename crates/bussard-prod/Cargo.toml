@@ -34,3 +34,6 @@ ureq = { version = "2", default-features = false, features = ["tls"] }
 tempfile = "3"
 # Assemble a tiny `.knxprod` in-test; the write side needs the same crate.
 zip = { workspace = true }
+
+[lints]
+workspace = true

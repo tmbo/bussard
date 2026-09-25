@@ -33,7 +33,7 @@ fn test_parse_application_program_compare_rel_mem() -> Result<(), Box<dyn std::e
             } => Some((obj_idx, offset, size, inline_data, mask, invert)),
             _ => None,
         })
-        .expect("the fixture's LdCtrlCompareRelMem must parse as a typed CompareRelMem, not Raw");
+        .ok_or("the fixture's LdCtrlCompareRelMem must parse as a typed CompareRelMem, not Raw")?;
 
     let (obj_idx, offset, size, inline_data, mask, invert) = compare;
     assert_eq!(*obj_idx, Some(4));

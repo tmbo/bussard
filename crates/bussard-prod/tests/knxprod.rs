@@ -36,32 +36,32 @@ const APP_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
  </ApplicationPrograms></Manufacturer></ManufacturerData>
 </KNX>"#;
 
-fn build_knxprod(path: &std::path::Path) {
-    let f = std::fs::File::create(path).unwrap();
+fn build_knxprod(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let f = std::fs::File::create(path)?;
     let mut zip = zip::ZipWriter::new(f);
     let opts = SimpleFileOptions::default();
-    zip.start_file("knx_master.xml", opts).unwrap();
-    zip.write_all(b"<KNX/>").unwrap();
-    zip.start_file("M-00FA/Hardware.xml", opts).unwrap();
-    zip.write_all(HARDWARE_XML.as_bytes()).unwrap();
-    zip.start_file("M-00FA/M-00FA_A-0001-11-ABCD-O000A.xml", opts)
-        .unwrap();
-    zip.write_all(APP_XML.as_bytes()).unwrap();
+    zip.start_file("knx_master.xml", opts)?;
+    zip.write_all(b"<KNX/>")?;
+    zip.start_file("M-00FA/Hardware.xml", opts)?;
+    zip.write_all(HARDWARE_XML.as_bytes())?;
+    zip.start_file("M-00FA/M-00FA_A-0001-11-ABCD-O000A.xml", opts)?;
+    zip.write_all(APP_XML.as_bytes())?;
     // Non-application entries that must be ignored.
-    zip.start_file("M-00FA/Catalog.xml", opts).unwrap();
-    zip.write_all(b"<KNX/>").unwrap();
-    zip.start_file("M-00FA/M-00FA.signature", opts).unwrap();
-    zip.write_all(&[0u8, 1, 2, 3]).unwrap();
-    zip.finish().unwrap();
+    zip.start_file("M-00FA/Catalog.xml", opts)?;
+    zip.write_all(b"<KNX/>")?;
+    zip.start_file("M-00FA/M-00FA.signature", opts)?;
+    zip.write_all(&[0u8, 1, 2, 3])?;
+    zip.finish()?;
+    Ok(())
 }
 
 #[test]
-fn reads_knxprod_end_to_end() {
-    let tmp = tempfile::tempdir().unwrap();
+fn reads_knxprod_end_to_end() -> Result<(), Box<dyn std::error::Error>> {
+    let tmp = tempfile::tempdir()?;
     let path = tmp.path().join("fixture.knxprod");
-    build_knxprod(&path);
+    build_knxprod(&path)?;
 
-    let product = bussard_prod::read_knxprod(&path).unwrap();
+    let product = bussard_prod::read_knxprod(&path)?;
 
     assert_eq!(product.manufacturers, vec!["M-00FA".to_string()]);
     // Exactly one application (Catalog/signature ignored).
@@ -76,4 +76,5 @@ fn reads_knxprod_end_to_end() {
     assert_eq!(matched.len(), 1);
     assert_eq!(matched[0].id, app.id);
     assert!(product.application_for_order_number("NOPE").is_empty());
+    Ok(())
 }

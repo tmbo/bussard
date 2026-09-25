@@ -116,42 +116,51 @@ mod tests {
     }"#;
 
     #[test]
-    fn parses_entries() {
-        let idx = ProductIndex::from_json_str(SAMPLE).unwrap();
+    fn parses_entries() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let idx = ProductIndex::from_json_str(SAMPLE)?;
         assert_eq!(idx.entries.len(), 1);
         let e = &idx.entries[0];
         assert_eq!(e.manufacturer_id, "M-0083");
         assert_eq!(e.size, 334088);
         assert!(!e.redistributable);
         assert_eq!(e.order_numbers.len(), 2);
+        Ok(())
     }
 
     #[test]
-    fn lookup_exact() {
-        let idx = ProductIndex::from_json_str(SAMPLE).unwrap();
-        let e = idx.lookup("AKK-0216.03").unwrap();
+    fn lookup_exact() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let idx = ProductIndex::from_json_str(SAMPLE)?;
+        let e = idx
+            .lookup("AKK-0216.03")
+            .ok_or("idx.lookup(\"AKK-0216.03\") missing")?;
         assert_eq!(e.name, "MDT Switch Actuator AKK compact");
+        Ok(())
     }
 
     #[test]
-    fn lookup_normalizes_case_and_whitespace() {
-        let idx = ProductIndex::from_json_str(SAMPLE).unwrap();
+    fn lookup_normalizes_case_and_whitespace() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
+        let idx = ProductIndex::from_json_str(SAMPLE)?;
         assert!(idx.lookup("  akk-0216.03 ").is_some());
         assert!(idx.lookup("AKK-0416.03").is_some());
+        Ok(())
     }
 
     #[test]
-    fn lookup_preserves_interior_separators() {
-        let idx = ProductIndex::from_json_str(SAMPLE).unwrap();
+    fn lookup_preserves_interior_separators() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
+        let idx = ProductIndex::from_json_str(SAMPLE)?;
         // Stripping the dot/dash would be wrong: these are distinct order numbers.
         assert!(idx.lookup("AKK021603").is_none());
         assert!(idx.lookup("AKK-021603").is_none());
+        Ok(())
     }
 
     #[test]
-    fn lookup_miss_returns_none() {
-        let idx = ProductIndex::from_json_str(SAMPLE).unwrap();
+    fn lookup_miss_returns_none() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let idx = ProductIndex::from_json_str(SAMPLE)?;
         assert!(idx.lookup("NOPE-1").is_none());
+        Ok(())
     }
 
     #[test]

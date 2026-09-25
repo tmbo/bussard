@@ -426,6 +426,12 @@ entry supersedes it and is not a diff against it.
   octets are read with one memory read instead of one per LSM, falling back
   to per-LSM reads when the device refuses it (#215).
 
+- Every workspace crate now opts into the workspace lints, so
+  `clippy::unwrap_used` is denied everywhere. The tests of `bussard-project`,
+  `bussard-ets` and `bussard-prod` return `Result` and use `?` instead of
+  `.unwrap()` and `.expect()`; `Option`s and expected errors fail with a named
+  message (#208).
+
 ### Fixed
 
 - Enum labels in the project language resolve on the flash path: `flash`,

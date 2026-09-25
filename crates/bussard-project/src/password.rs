@@ -105,19 +105,21 @@ mod tests {
 
     /// The ETS 6 branch of the version switch matches [`derive_zip_password`].
     #[test]
-    fn test_archive_password_ets6_derives() {
-        let schema = SchemaVersion::from_version(21).unwrap();
+    fn test_archive_password_ets6_derives() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let schema = SchemaVersion::from_version(21)?;
         assert_eq!(
             archive_password("test", schema),
             derive_zip_password("test").into_bytes()
         );
+        Ok(())
     }
 
     /// The ETS 4/5 branch passes the raw UTF-8 password through, with no KDF.
     #[test]
-    fn test_archive_password_ets4_and_ets5_are_raw_utf8() {
+    fn test_archive_password_ets4_and_ets5_are_raw_utf8()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         for version in [11u32, 14, 20] {
-            let schema = SchemaVersion::from_version(version).unwrap();
+            let schema = SchemaVersion::from_version(version)?;
             // ETS 5.7 (20) still uses the ETS 4/5 ZipCrypto password path.
             assert_eq!(
                 archive_password("test", schema),
@@ -125,5 +127,6 @@ mod tests {
                 "schema {version} should use the raw password"
             );
         }
+        Ok(())
     }
 }

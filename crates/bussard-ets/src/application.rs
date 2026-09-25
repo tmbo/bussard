@@ -2772,13 +2772,13 @@ mod tests {
  </ApplicationPrograms></Manufacturer></ManufacturerData>
 </KNX>"#;
 
-    fn sample() -> ApplicationProgram {
-        parse_application_program_str("M-00FA_A-1", SAMPLE).unwrap()
+    fn sample() -> std::result::Result<ApplicationProgram, Box<dyn std::error::Error>> {
+        Ok(parse_application_program_str("M-00FA_A-1", SAMPLE)?)
     }
 
     #[test]
-    fn parses_identity_and_schema() {
-        let app = sample();
+    fn parses_identity_and_schema() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = sample()?;
         assert_eq!(app.application_number, Some(7));
         assert_eq!(app.application_version, Some(17));
         assert_eq!(app.version.as_deref(), Some("17"));
@@ -2786,6 +2786,7 @@ mod tests {
         assert_eq!(app.name.as_deref(), Some("Sample"));
         assert_eq!(app.load_procedure_style.as_deref(), Some("MergedProcedure"));
         assert_eq!(app.schema_version.as_deref(), Some("23"));
+        Ok(())
     }
 
     /// `<Options>` decides whether a download writes hidden parameters
@@ -2833,8 +2834,9 @@ mod tests {
     }
 
     #[test]
-    fn resolves_com_objects_with_dpt_and_flags() {
-        let app = sample();
+    fn resolves_com_objects_with_dpt_and_flags()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = sample()?;
         let cobs = app.resolved_com_objects();
         assert_eq!(cobs.len(), 2);
         // #0: base C W T + ref R  => CRWT, dpt from ref.
@@ -2846,23 +2848,32 @@ mod tests {
         assert_eq!(cobs[1].dpt(), Some(Dpt::new(9, Some(1))));
         assert_eq!(cobs[1].flags().to_string(), "C");
         assert_eq!(cobs[1].object_size(), Some("2 Bytes"));
+        Ok(())
     }
 
     #[test]
-    fn resolve_instance_ref() {
-        let app = sample();
-        let (base, cor) = app.resolve("O-0_R-1").unwrap();
+    fn resolve_instance_ref() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = sample()?;
+        let (base, cor) = app
+            .resolve("O-0_R-1")
+            .ok_or("app.resolve(\"O-0_R-1\") missing")?;
         assert_eq!(base.number, 0);
         assert_eq!(cor.dpt, Some(Dpt::new(1, Some(1))));
         assert_eq!(base.flags.merge(cor.flags).to_flags().to_string(), "CRWT");
+        Ok(())
     }
 
     #[test]
-    fn parses_all_parameter_type_kinds() {
-        let app = sample();
-        let kind = |id: &str| &app.parameter_types.get(id).unwrap().kind;
+    fn parses_all_parameter_type_kinds() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = sample()?;
+        let kind = |id: &str| {
+            app.parameter_types
+                .get(id)
+                .map(|t| &t.kind)
+                .ok_or(format!("parameter type {id} missing"))
+        };
         assert!(matches!(
-            kind("M-00FA_A-1_PT-int"),
+            kind("M-00FA_A-1_PT-int")?,
             ParameterType::Int {
                 min: Some(0),
                 max: Some(100),
@@ -2871,10 +2882,10 @@ mod tests {
             }
         ));
         assert!(matches!(
-            kind("M-00FA_A-1_PT-sint"),
+            kind("M-00FA_A-1_PT-sint")?,
             ParameterType::Int { signed: true, .. }
         ));
-        match kind("M-00FA_A-1_PT-enum") {
+        match kind("M-00FA_A-1_PT-enum")? {
             ParameterType::Enum { values, .. } => {
                 assert_eq!(values.len(), 2);
                 assert_eq!(values[0].value, 0);
@@ -2883,47 +2894,54 @@ mod tests {
             other => panic!("expected enum, got {other:?}"),
         }
         assert!(matches!(
-            kind("M-00FA_A-1_PT-txt"),
+            kind("M-00FA_A-1_PT-txt")?,
             ParameterType::Text {
                 size_bits: Some(112)
             }
         ));
         assert!(matches!(
-            kind("M-00FA_A-1_PT-flt"),
+            kind("M-00FA_A-1_PT-flt")?,
             ParameterType::Float {
                 min: Some(_),
                 max: Some(_),
                 ..
             }
         ));
-        assert!(matches!(kind("M-00FA_A-1_PT-none"), ParameterType::None));
-        match kind("M-00FA_A-1_PT-col") {
+        assert!(matches!(kind("M-00FA_A-1_PT-none")?, ParameterType::None));
+        match kind("M-00FA_A-1_PT-col")? {
             ParameterType::Other { kind, .. } => assert_eq!(kind, "TypeColor"),
             other => panic!("expected other, got {other:?}"),
         }
+        Ok(())
     }
 
     #[test]
-    fn parameter_ref_value_override_applies() {
-        let app = sample();
-        let rp = app.resolved_parameter("M-00FA_A-1_P-1_R-1").unwrap();
+    fn parameter_ref_value_override_applies() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
+        let app = sample()?;
+        let rp = app
+            .resolved_parameter("M-00FA_A-1_P-1_R-1")
+            .ok_or("app.resolved_parameter(\"M-00FA_A-1_P-1_R-1\") missing")?;
         // The parameter's own default is 50; the ref overrides it to 75.
         assert_eq!(rp.value(), Some("75"));
         // P-2's ref overrides Access to None.
-        let rp2 = app.resolved_parameter("M-00FA_A-1_P-2_R-1").unwrap();
+        let rp2 = app
+            .resolved_parameter("M-00FA_A-1_P-2_R-1")
+            .ok_or("app.resolved_parameter(\"M-00FA_A-1_P-2_R-1\") missing")?;
         assert_eq!(rp2.access(), Some("None"));
+        Ok(())
     }
 
     #[test]
-    fn parses_memory_location() {
-        let app = sample();
+    fn parses_memory_location() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = sample()?;
         let mem = app
             .parameters
             .get("M-00FA_A-1_P-1")
-            .unwrap()
+            .ok_or("app.parameters.get(\"M-00FA_A-1_P-1\") missing")?
             .memory
             .as_ref()
-            .unwrap();
+            .ok_or("app.parameters.get(\"M-00FA_A-1_P-1\").memory.as_ref() missing")?;
         assert_eq!(mem.code_segment.as_deref(), Some("M-00FA_A-1_RS-4"));
         assert_eq!(mem.offset, Some(3));
         assert_eq!(mem.bit_offset, Some(2));
@@ -2931,17 +2949,22 @@ mod tests {
         assert!(
             app.parameters
                 .get("M-00FA_A-1_P-2")
-                .unwrap()
+                .ok_or("app.parameters.get(\"M-00FA_A-1_P-2\") missing")?
                 .memory
                 .is_none()
         );
+        Ok(())
     }
 
     #[test]
-    fn parses_code_segments_with_inline_data() {
-        let app = sample();
+    fn parses_code_segments_with_inline_data() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
+        let app = sample()?;
         assert_eq!(app.code_segments.len(), 2);
-        let rel = app.code_segments.get("M-00FA_A-1_RS-4").unwrap();
+        let rel = app
+            .code_segments
+            .get("M-00FA_A-1_RS-4")
+            .ok_or("app.code_segments.get(\"M-00FA_A-1_RS-4\") missing")?;
         assert_eq!(rel.kind, SegmentKind::Relative);
         assert_eq!(rel.size, Some(10));
         assert_eq!(rel.load_state_machine, Some(4));
@@ -2951,16 +2974,20 @@ mod tests {
         assert_eq!(rel.data.as_deref(), Some([0u8; 10].as_slice()));
         assert_eq!(rel.mask.as_deref(), Some([0xFFu8; 12].as_slice()));
         // The self-closing absolute segment stays metadata-only.
-        let abs = app.code_segments.get("M-00FA_A-1_AS-1").unwrap();
+        let abs = app
+            .code_segments
+            .get("M-00FA_A-1_AS-1")
+            .ok_or("app.code_segments.get(\"M-00FA_A-1_AS-1\") missing")?;
         assert_eq!(abs.kind, SegmentKind::Absolute);
         assert_eq!(abs.address_or_offset, Some(16384));
         assert!(abs.data.is_none());
         assert!(abs.mask.is_none());
+        Ok(())
     }
 
     #[test]
-    fn parses_every_load_op_variant() {
-        let app = sample();
+    fn parses_every_load_op_variant() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = sample()?;
         assert_eq!(app.load_procedures.len(), 1);
         assert_eq!(app.load_procedures[0].merge_id.as_deref(), Some("1"));
         let ops = &app.load_procedures[0].ops;
@@ -3018,10 +3045,11 @@ mod tests {
                 ..
             }
         ));
+        Ok(())
     }
 
     #[test]
-    fn parses_load_image_prop_variants() {
+    fn parses_load_image_prop_variants() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Both the ObjIdx form (MDT A-0007, Jung 23024) and the ObjType +
         // Occurrence system-object form, plus a Count attribute.
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
@@ -3032,7 +3060,7 @@ mod tests {
            <LdCtrlLoadImageProp ObjType="6" Occurrence="1" PropId="27" />
           </LoadProcedure></LoadProcedures>
          </ApplicationProgram></KNX>"#;
-        let app = parse_application_program_str("M-1_A-1", xml).unwrap();
+        let app = parse_application_program_str("M-1_A-1", xml)?;
         let ops = &app.load_procedures[0].ops;
         assert!(matches!(
             ops[0],
@@ -3061,10 +3089,11 @@ mod tests {
                 ..
             }
         ));
+        Ok(())
     }
 
     #[test]
-    fn parses_master_reset() {
+    fn parses_master_reset() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // The KNX Virtual shape: an LdCtrlMasterReset carrying EraseCode and
         // ChannelNumber, mid-procedure between a RelSegment and a WriteRelMem.
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
@@ -3075,7 +3104,7 @@ mod tests {
            <LdCtrlWriteRelMem ObjIdx="0" Offset="0" Size="6" AppliesTo="full" />
           </LoadProcedure></LoadProcedures>
          </ApplicationProgram></KNX>"#;
-        let app = parse_application_program_str("M-1_A-1", xml).unwrap();
+        let app = parse_application_program_str("M-1_A-1", xml)?;
         let ops = &app.load_procedures[0].ops;
         assert!(matches!(ops[0], LoadOp::RelSegment { .. }));
         assert!(matches!(
@@ -3086,10 +3115,12 @@ mod tests {
             }
         ));
         assert!(matches!(ops[2], LoadOp::WriteRelMem { .. }));
+        Ok(())
     }
 
     #[test]
-    fn test_push_load_op_rel_segment_fill_flag() {
+    fn test_push_load_op_rel_segment_fill_flag()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // The Jung LED A-3030 shape: the code segment (obj4) sets Fill="1" so the
         // device pre-fills the allocation (obj4 alloc `030b000028c1 01 00 0000`),
         // while the table objects keep Fill="0". A procedure with no `Fill`
@@ -3104,7 +3135,7 @@ mod tests {
            <LdCtrlRelSegment LsmIdx="1" Size="2" AppliesTo="full" Fill="1" FillByte="0xAB" />
           </LoadProcedure></LoadProcedures>
          </ApplicationProgram></KNX>"#;
-        let app = parse_application_program_str("M-1_A-1", xml).unwrap();
+        let app = parse_application_program_str("M-1_A-1", xml)?;
         let ops = &app.load_procedures[0].ops;
         // Fill="1" with no FillByte → Some(0) (the Jung LED A-3030 code segment).
         assert!(matches!(
@@ -3127,6 +3158,7 @@ mod tests {
                 ..
             }
         ));
+        Ok(())
     }
 
     #[test]
@@ -3223,7 +3255,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_compare_prop_variants() {
+    fn parses_compare_prop_variants() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // The MDT SCN-DA64x DALI-gateway shape: InlineData (hex) + optional Mask,
         // addressed by ObjIdx, with OnError children; a self-closing form; an
         // ObjType-addressed form; and a Range-only form (no InlineData).
@@ -3238,7 +3270,7 @@ mod tests {
            <LdCtrlCompareProp Range="[2216203124736,]" ObjIdx="0" PropId="201" />
           </LoadProcedure></LoadProcedures>
          </ApplicationProgram></KNX>"#;
-        let app = parse_application_program_str("M-1_A-1", xml).unwrap();
+        let app = parse_application_program_str("M-1_A-1", xml)?;
         let ops = &app.load_procedures[0].ops;
         // Element with children (OnError) parses to a typed CompareProp, not Raw.
         match &ops[0] {
@@ -3291,10 +3323,11 @@ mod tests {
                 ..
             } if r == "[2216203124736,]"
         ));
+        Ok(())
     }
 
     #[test]
-    fn en_us_translation_overrides_text() {
+    fn en_us_translation_overrides_text() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
          <ApplicationProgram Id="M-1_A-1" Name="Deutsch">
           <Static><ComObjectTable>
@@ -3313,12 +3346,17 @@ mod tests {
           </Language></Languages>
          </ApplicationProgram>
         </KNX>"#;
-        let app = parse_application_program_str("M-1_A-1", xml).unwrap();
+        let app = parse_application_program_str("M-1_A-1", xml)?;
         assert_eq!(app.name.as_deref(), Some("English"));
         assert_eq!(
-            app.com_objects.get("M-1_A-1_O-0").unwrap().text.as_deref(),
+            app.com_objects
+                .get("M-1_A-1_O-0")
+                .ok_or("app.com_objects.get(\"M-1_A-1_O-0\") missing")?
+                .text
+                .as_deref(),
             Some("Switch")
         );
+        Ok(())
     }
 
     const LANGUAGE_SAMPLE: &str = r#"<KNX xmlns="http://knx.org/xml/project/23">
@@ -3438,7 +3476,8 @@ mod tests {
 </KNX>"#;
 
     #[test]
-    fn parses_module_parameter_base_offset() {
+    fn parses_module_parameter_base_offset() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
         // A module parameter's <Memory> carries a BaseOffset naming the argument
         // whose per-instance value is added to the declared offset; a plain
         // parameter has none.
@@ -3453,31 +3492,33 @@ mod tests {
            </Parameter>
           </Parameters>
          </Static></ApplicationProgram></KNX>"#;
-        let app = parse_application_program_str("M-0004_A-1", xml).unwrap();
+        let app = parse_application_program_str("M-0004_A-1", xml)?;
         let m = app
             .parameters
             .get("M-0004_A-1_MD-1_P-3")
-            .unwrap()
+            .ok_or("app.parameters.get(\"M-0004_A-1_MD-1_P-3\") missing")?
             .memory
             .as_ref()
-            .unwrap();
+            .ok_or("app.parameters.get(\"M-0004_A-1_MD-1_P-3\").memory.as_ref() missing")?;
         assert_eq!(m.offset, Some(1));
         assert_eq!(m.base_offset.as_deref(), Some("M-0004_A-1_MD-1_A-1"));
         // The plain parameter has no BaseOffset.
         assert!(
             app.parameters
                 .get("M-0004_A-1_P-9")
-                .unwrap()
+                .ok_or("app.parameters.get(\"M-0004_A-1_P-9\") missing")?
                 .memory
                 .as_ref()
-                .unwrap()
+                .ok_or("app.parameters.get(\"M-0004_A-1_P-9\").memory.as_ref() missing")?
                 .base_offset
                 .is_none()
         );
+        Ok(())
     }
 
     #[test]
-    fn parses_union_block_members_and_default() {
+    fn parses_union_block_members_and_default()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // A `<Union>` (shape taken from the Zennio FIX2 dimmer): one base
         // `<Memory>` then member `<Parameter>`s carrying union-relative
         // Offset/BitOffset. The `DefaultUnionParameter="1"` member is the default.
@@ -3490,11 +3531,11 @@ mod tests {
            <Parameter Id="M-1_A-1_UP-3" Name="c" ParameterType="M-1_A-1_PT-0" Value="9" Offset="1" BitOffset="1" />
           </Union>
          </Static></ApplicationProgram></KNX>"#;
-        let app = parse_application_program_str("M-1_A-1", xml).unwrap();
+        let app = parse_application_program_str("M-1_A-1", xml)?;
         assert_eq!(app.unions.len(), 1);
         let u = &app.unions[0];
         assert_eq!(u.size_bits, Some(8));
-        let mem = u.memory.as_ref().expect("union base memory");
+        let mem = u.memory.as_ref().ok_or("union base memory")?;
         assert_eq!(mem.code_segment.as_deref(), Some("M-1_A-1_RS-1"));
         assert_eq!(mem.offset, Some(56));
         // Three members captured with their union-relative positions.
@@ -3510,15 +3551,16 @@ mod tests {
         assert_eq!(
             app.parameters
                 .get("M-1_A-1_UP-1")
-                .unwrap()
+                .ok_or("app.parameters.get(\"M-1_A-1_UP-1\") missing")?
                 .default
                 .as_deref(),
             Some("75")
         );
+        Ok(())
     }
 
     #[test]
-    fn parses_union_default_true_spelling() {
+    fn parses_union_default_true_spelling() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // ETS files spell the default flag as `"1"` or `"true"`; both must count.
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
          <ApplicationProgram Id="M-1_A-1" MaskVersion="MV-07B0" Name="x"><Static>
@@ -3528,16 +3570,17 @@ mod tests {
            <Parameter Id="M-1_A-1_UP-2" Name="b" DefaultUnionParameter="true" ParameterType="M-1_A-1_PT-0" Value="7" Offset="0" BitOffset="0" />
           </Union>
          </Static></ApplicationProgram></KNX>"#;
-        let app = parse_application_program_str("M-1_A-1", xml).unwrap();
+        let app = parse_application_program_str("M-1_A-1", xml)?;
         let u = &app.unions[0];
         assert!(!u.members[0].is_default);
         assert!(u.members[1].is_default, "\"true\" counts as default");
+        Ok(())
     }
 
     #[test]
-    fn parses_channels_and_arguments() {
-        let app = parse_application_program_str("M-0004_A-1", MODULE_SAMPLE).unwrap();
-        let ch = app.channel("MD-1_CH-13").expect("channel def");
+    fn parses_channels_and_arguments() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = parse_application_program_str("M-0004_A-1", MODULE_SAMPLE)?;
+        let ch = app.channel("MD-1_CH-13").ok_or("channel def")?;
         assert_eq!(ch.name.as_deref(), Some("Relaisausgänge"));
         assert_eq!(
             ch.text.as_deref(),
@@ -3545,6 +3588,7 @@ mod tests {
         );
         assert_eq!(app.argument_id("ArgBeschriftung"), Some("MD-1_A-3"));
         assert_eq!(app.argument_id("ArgBeschriftungRelais"), Some("MD-1_A-5"));
+        Ok(())
     }
 
     /// A Dynamic section shaped like real product data: a channel parameter
@@ -3595,9 +3639,13 @@ mod tests {
     /// outer `</choose>` found nothing to attach. Each frame now keeps its own
     /// refs.
     #[test]
-    fn test_parse_application_program_nested_choose_keeps_frames_apart() -> Result<()> {
+    fn test_parse_application_program_nested_choose_keeps_frames_apart()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let app = parse_application_program_str("M-1_A-1", NESTED_CHOOSE_SAMPLE)?;
-        let mem = app.channel_membership.as_ref().expect("channel membership");
+        let mem = app
+            .channel_membership
+            .as_ref()
+            .ok_or("channel membership")?;
 
         // Only the ref written directly under the block is unconditional; no
         // branch member leaks up.
@@ -3621,7 +3669,7 @@ mod tests {
             .branches_all
             .iter()
             .find(|b| b.test == WhenTest::Values(vec![1]))
-            .expect("the test=\"1\" branch");
+            .ok_or("the test=\"1\" branch")?;
         assert_eq!(
             outer_branch_1.members,
             vec!["MD-1_O-1_R-1".to_string(), "MD-1_O-9_R-9".to_string()]
@@ -3634,9 +3682,13 @@ mod tests {
     /// `parse::<i64>()` and route its members to `unconditional` — "present on
     /// every channel" — which is the opposite of conditional.
     #[test]
-    fn test_parse_application_program_when_test_spellings() -> Result<()> {
+    fn test_parse_application_program_when_test_spellings()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let app = parse_application_program_str("M-1_A-1", NESTED_CHOOSE_SAMPLE)?;
-        let mem = app.channel_membership.as_ref().expect("channel membership");
+        let mem = app
+            .channel_membership
+            .as_ref()
+            .ok_or("channel membership")?;
         let outer = &mem.conditional[1];
 
         // The flattened exact-value view: `test="0 2"` contributes both values.
@@ -3719,7 +3771,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_base_number_ref() {
+    fn parses_base_number_ref() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
           <ApplicationProgram Id="M-1_A-1" Name="x">
             <Static><ComObjectTable>
@@ -3727,19 +3779,21 @@ mod tests {
             </ComObjectTable></Static>
           </ApplicationProgram>
         </KNX>"#;
-        let app = parse_application_program_str("M-1_A-1", xml).unwrap();
+        let app = parse_application_program_str("M-1_A-1", xml)?;
         assert_eq!(
             app.com_objects
                 .get("M-1_A-1_MD-1_O-2")
-                .unwrap()
+                .ok_or("app.com_objects.get(\"M-1_A-1_MD-1_O-2\") missing")?
                 .base_number_ref
                 .as_deref(),
             Some("M-1_A-1_MD-1_A-9")
         );
+        Ok(())
     }
 
     #[test]
-    fn invalid_segment_base64_reports_segment_decode() -> Result<()> {
+    fn invalid_segment_base64_reports_segment_decode()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // A corrupt `<Data>` payload must surface as the dedicated
         // SegmentDecode variant, naming the segment and the `Data` field, not
         // the vague stringly Malformed catch-all.
@@ -3752,8 +3806,9 @@ mod tests {
             </LoadProcedures></Static>
           </ApplicationProgram>
         </KNX>"#;
-        let err =
-            parse_application_program_str("M-1_A-1", xml).expect_err("corrupt base64 must fail");
+        let err = parse_application_program_str("M-1_A-1", xml)
+            .err()
+            .ok_or("corrupt base64 must fail")?;
         match err {
             EtsError::SegmentDecode { segment, field, .. } => {
                 assert_eq!(segment, "M-1_A-1_RS-4-1-0");
@@ -3763,7 +3818,8 @@ mod tests {
         }
         // The rendered message is actionable: it names the segment and field.
         let rendered = parse_application_program_str("M-1_A-1", xml)
-            .expect_err("corrupt base64 must fail")
+            .err()
+            .ok_or("corrupt base64 must fail")?
             .to_string();
         assert!(
             rendered.contains("M-1_A-1_RS-4-1-0") && rendered.contains("Data"),

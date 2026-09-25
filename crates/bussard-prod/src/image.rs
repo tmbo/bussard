@@ -1864,7 +1864,9 @@ mod tests {
     /// Builds a one-segment app whose parameters are described inline. `params`
     /// is a list of `(name, type_xml, value_attr, offset, bit_offset)`; the type
     /// xml is the `<Type…/>` element for a `<ParameterType>`.
-    fn app_with(params: &[(&str, &str, Option<&str>, u32, u8)]) -> ApplicationProgram {
+    fn app_with(
+        params: &[(&str, &str, Option<&str>, u32, u8)],
+    ) -> std::result::Result<ApplicationProgram, Box<dyn std::error::Error>> {
         let mut pts = String::new();
         let mut ps = String::new();
         for (i, (name, ty, val, off, bit)) in params.iter().enumerate() {
@@ -1888,28 +1890,31 @@ mod tests {
               </Static>
              </ApplicationProgram></KNX>"#
         );
-        parse_application_program("M-1_A-1", xml.as_bytes()).unwrap()
+        Ok(parse_application_program("M-1_A-1", xml.as_bytes())?)
     }
 
-    fn image_of(app: &ApplicationProgram) -> Vec<u8> {
-        let m = compute_parameter_image(app, &no_overrides(), &no_bases()).unwrap();
-        m.get("M-1_A-1_RS-1").cloned().unwrap_or_default()
+    fn image_of(
+        app: &ApplicationProgram,
+    ) -> std::result::Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let m = compute_parameter_image(app, &no_overrides(), &no_bases())?;
+        Ok(m.get("M-1_A-1_RS-1").cloned().unwrap_or_default())
     }
 
     #[test]
-    fn packs_full_byte_int() {
+    fn packs_full_byte_int() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let app = app_with(&[(
             "x",
             r#"<TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" />"#,
             Some("83"),
             0,
             0,
-        )]);
-        assert_eq!(image_of(&app)[0], 83);
+        )])?;
+        assert_eq!(image_of(&app)?[0], 83);
+        Ok(())
     }
 
     #[test]
-    fn packs_big_endian_16bit() {
+    fn packs_big_endian_16bit() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Default 500 must appear as 0x01 0xF4 (big-endian), confirmed against
         // real ETS segment images.
         let app = app_with(&[(
@@ -1918,26 +1923,29 @@ mod tests {
             Some("500"),
             2,
             0,
-        )]);
-        let img = image_of(&app);
+        )])?;
+        let img = image_of(&app)?;
         assert_eq!(&img[2..4], &[0x01, 0xF4]);
+        Ok(())
     }
 
     #[test]
-    fn packs_32bit_big_endian() {
+    fn packs_32bit_big_endian() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let app = app_with(&[(
             "x",
             r#"<TypeNumber SizeInBit="32" Type="unsignedInt" />"#,
             Some("66051"),
             0,
             0,
-        )]);
-        let img = image_of(&app);
+        )])?;
+        let img = image_of(&app)?;
         assert_eq!(&img[0..4], &[0x00, 0x01, 0x02, 0x03]);
+        Ok(())
     }
 
     #[test]
-    fn adjacent_sub_byte_fields_compose_msb_first() {
+    fn adjacent_sub_byte_fields_compose_msb_first()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Four 2-bit fields sharing byte 0 at bit offsets 0,2,4,6 with values
         // 3,2,1,0 -> MSB-first that is 11 10 01 00 = 0b1110_0100 = 0xE4.
         let ty = r#"<TypeNumber SizeInBit="2" Type="unsignedInt" maxInclusive="3" />"#;
@@ -1946,12 +1954,13 @@ mod tests {
             ("b", ty, Some("2"), 0, 2),
             ("c", ty, Some("1"), 0, 4),
             ("d", ty, Some("0"), 0, 6),
-        ]);
-        assert_eq!(image_of(&app)[0], 0b1110_0100);
+        ])?;
+        assert_eq!(image_of(&app)?[0], 0b1110_0100);
+        Ok(())
     }
 
     #[test]
-    fn one_bit_fields_pack_high_to_low() {
+    fn one_bit_fields_pack_high_to_low() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // 1-bit fields at bit offsets 4,5,6,7 set to 1 -> 0b0000_1111 = 0x0F.
         let ty = r#"<TypeNumber SizeInBit="1" Type="unsignedInt" maxInclusive="1" />"#;
         let app = app_with(&[
@@ -1959,12 +1968,13 @@ mod tests {
             ("b", ty, Some("1"), 0, 5),
             ("c", ty, Some("1"), 0, 6),
             ("d", ty, Some("1"), 0, 7),
-        ]);
-        assert_eq!(image_of(&app)[0], 0x0F);
+        ])?;
+        assert_eq!(image_of(&app)?[0], 0x0F);
+        Ok(())
     }
 
     #[test]
-    fn one_bit_then_three_bit_field() {
+    fn one_bit_then_three_bit_field() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // 1-bit at offset 0 (=1) then 3-bit at offset 1 (=5=0b101).
         // MSB-first: 1 101 0000 = 0b1101_0000 = 0xD0.
         let app = app_with(&[
@@ -1982,24 +1992,27 @@ mod tests {
                 0,
                 1,
             ),
-        ]);
-        assert_eq!(image_of(&app)[0], 0b1101_0000);
+        ])?;
+        assert_eq!(image_of(&app)?[0], 0b1101_0000);
+        Ok(())
     }
 
     #[test]
-    fn enum_encodes_by_value() {
+    fn enum_encodes_by_value() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let app = app_with(&[(
             "mode",
             r#"<TypeRestriction Base="Value" SizeInBit="8"><Enumeration Text="Off" Value="0" Id="e0"/><Enumeration Text="On" Value="7" Id="e1"/></TypeRestriction>"#,
             Some("7"),
             0,
             0,
-        )]);
-        assert_eq!(image_of(&app)[0], 7);
+        )])?;
+        assert_eq!(image_of(&app)?[0], 7);
+        Ok(())
     }
 
     #[test]
-    fn test_enum_override_by_label_encodes_the_member_code() -> Result<()> {
+    fn test_enum_override_by_label_encodes_the_member_code()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // `import` writes enum values as vendor labels; the encoder takes an
         // exact, unique label as that member.
         let app = app_with(&[(
@@ -2008,7 +2021,7 @@ mod tests {
             Some("0"),
             0,
             0,
-        )]);
+        )])?;
         let mut ov = BTreeMap::new();
         ov.insert("P-0_R-1".to_string(), "On".to_string());
         let img = compute_parameter_image(&app, &ov, &no_bases())?;
@@ -2134,7 +2147,8 @@ mod tests {
     }
 
     #[test]
-    fn enum_vendor_default_undeclared_value_passes_through() {
+    fn enum_vendor_default_undeclared_value_passes_through()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // A VENDOR DEFAULT (chain steps 1-3) whose value is not a declared enum
         // member is a real data-quality trap (Zennio Z40/Z70 v2 ship exactly this).
         // A default the vendor shipped is by definition what the device expects, so
@@ -2145,17 +2159,18 @@ mod tests {
             Some("9"),
             0,
             0,
-        )]);
-        let img = compute_parameter_image(&app, &no_overrides(), &no_bases())
-            .expect("a vendor's own out-of-enum default must not refuse the flash");
+        )])?;
+        let img = compute_parameter_image(&app, &no_overrides(), &no_bases())?;
         assert_eq!(
             img["M-1_A-1_RS-1"][0], 9,
             "the raw default byte is passed through"
         );
+        Ok(())
     }
 
     #[test]
-    fn enum_user_override_undeclared_value_is_refused() {
+    fn enum_user_override_undeclared_value_is_refused()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // A USER OVERRIDE (chain step 4) outside the declared enum is a genuine
         // mistake worth refusing — the strict membership check stands for overrides.
         let app = app_with(&[(
@@ -2164,38 +2179,45 @@ mod tests {
             Some("0"),
             0,
             0,
-        )]);
+        )])?;
         let mut ov = BTreeMap::new();
         ov.insert("P-0_R-1".to_string(), "9".to_string());
-        let err = compute_parameter_image(&app, &ov, &no_bases()).unwrap_err();
+        let err = compute_parameter_image(&app, &ov, &no_bases())
+            .err()
+            .ok_or("expected an error")?;
         let s = err.to_string();
         assert!(s.contains("mode"), "{s}");
         assert!(s.contains("not a declared enumeration member"), "{s}");
+        Ok(())
     }
 
     #[test]
-    fn text_is_padded_with_zeros() {
+    fn text_is_padded_with_zeros() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // 6-byte (48-bit) text "Hi" -> "Hi\0\0\0\0".
-        let app = app_with(&[("label", r#"<TypeText SizeInBit="48" />"#, Some("Hi"), 0, 0)]);
-        let img = image_of(&app);
+        let app = app_with(&[("label", r#"<TypeText SizeInBit="48" />"#, Some("Hi"), 0, 0)])?;
+        let img = image_of(&app)?;
         assert_eq!(&img[0..6], b"Hi\0\0\0\0");
+        Ok(())
     }
 
     #[test]
-    fn text_too_long_errors() {
+    fn text_too_long_errors() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let app = app_with(&[(
             "label",
             r#"<TypeText SizeInBit="16" />"#,
             Some("toolong"),
             0,
             0,
-        )]);
-        let err = compute_parameter_image(&app, &no_overrides(), &no_bases()).unwrap_err();
+        )])?;
+        let err = compute_parameter_image(&app, &no_overrides(), &no_bases())
+            .err()
+            .ok_or("expected an error")?;
         assert!(err.to_string().contains("label"), "{err}");
+        Ok(())
     }
 
     #[test]
-    fn signed_int_two_complement() {
+    fn signed_int_two_complement() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // -5 in an 8-bit signed field = 0xFB.
         let app = app_with(&[(
             "x",
@@ -2203,8 +2225,9 @@ mod tests {
             Some("-5"),
             0,
             0,
-        )]);
-        assert_eq!(image_of(&app)[0], 0xFB);
+        )])?;
+        assert_eq!(image_of(&app)?[0], 0xFB);
+        Ok(())
     }
 
     /// Regression: the signed bound was computed as `-(1i64 << (bits - 1))`
@@ -2213,7 +2236,8 @@ mod tests {
     /// signed field overflowed the shift. The width is settled first now, and a
     /// 64-bit signed field spans exactly `i64::MIN..=i64::MAX`.
     #[test]
-    fn test_encode_int_bits_signed_64_bit_field() {
+    fn test_encode_int_bits_signed_64_bit_field()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // i64::MIN is representable: two's complement 0x8000_0000_0000_0000.
         let app = app_with(&[(
             "sixtyfour",
@@ -2221,8 +2245,8 @@ mod tests {
             Some("-9223372036854775808"),
             0,
             0,
-        )]);
-        assert_eq!(image_of(&app), vec![0x80, 0, 0, 0, 0, 0, 0, 0]);
+        )])?;
+        assert_eq!(image_of(&app)?, vec![0x80, 0, 0, 0, 0, 0, 0, 0]);
 
         // -1 fills the whole field.
         let app = app_with(&[(
@@ -2231,8 +2255,8 @@ mod tests {
             Some("-1"),
             0,
             0,
-        )]);
-        assert_eq!(image_of(&app), vec![0xFF; 8]);
+        )])?;
+        assert_eq!(image_of(&app)?, vec![0xFF; 8]);
 
         // i64::MAX is the top of the range.
         let app = app_with(&[(
@@ -2241,27 +2265,29 @@ mod tests {
             Some("9223372036854775807"),
             0,
             0,
-        )]);
+        )])?;
         assert_eq!(
-            image_of(&app),
+            image_of(&app)?,
             vec![0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]
         );
+        Ok(())
     }
 
     /// A signed field wider than 64 bits takes the byte-blob path (as the
     /// unsigned wide "object link" parameters do), sign-extended.
     #[test]
-    fn test_encode_int_bits_signed_wide_field() {
+    fn test_encode_int_bits_signed_wide_field()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let app = app_with(&[(
             "wide",
             r#"<TypeNumber SizeInBit="96" Type="signedInt" />"#,
             Some("-2"),
             0,
             0,
-        )]);
+        )])?;
         let mut expect = vec![0xFFu8; 12];
         expect[11] = 0xFE;
-        assert_eq!(image_of(&app), expect);
+        assert_eq!(image_of(&app)?, expect);
 
         // A positive value in the same field is zero-extended.
         let app = app_with(&[(
@@ -2270,11 +2296,11 @@ mod tests {
             Some("258"),
             0,
             0,
-        )]);
+        )])?;
         let mut expect = vec![0x00u8; 12];
         expect[10] = 0x01;
         expect[11] = 0x02;
-        assert_eq!(image_of(&app), expect);
+        assert_eq!(image_of(&app)?, expect);
 
         // Not byte-aligned: still refused rather than guessed at.
         let app = app_with(&[(
@@ -2283,42 +2309,51 @@ mod tests {
             Some("-1"),
             0,
             0,
-        )]);
+        )])?;
         let err = compute_parameter_image(&app, &no_overrides(), &no_bases())
-            .expect_err("a 65-bit field is not byte-aligned");
+            .err()
+            .ok_or("a 65-bit field is not byte-aligned")?;
         assert!(err.to_string().contains("byte-aligned"), "{err}");
+        Ok(())
     }
 
     #[test]
-    fn value_exceeding_width_errors_naming_param() {
+    fn value_exceeding_width_errors_naming_param()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let app = app_with(&[(
             "level",
             r#"<TypeNumber SizeInBit="2" Type="unsignedInt" />"#,
             Some("9"),
             0,
             0,
-        )]);
-        let err = compute_parameter_image(&app, &no_overrides(), &no_bases()).unwrap_err();
+        )])?;
+        let err = compute_parameter_image(&app, &no_overrides(), &no_bases())
+            .err()
+            .ok_or("expected an error")?;
         let s = err.to_string();
         assert!(s.contains("level"), "{s}");
         assert!(s.contains("fit") || s.contains("maximum"), "{s}");
+        Ok(())
     }
 
     #[test]
-    fn min_max_enforced() {
+    fn min_max_enforced() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let app = app_with(&[(
             "t",
             r#"<TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="10" maxInclusive="20" />"#,
             Some("5"),
             0,
             0,
-        )]);
-        let err = compute_parameter_image(&app, &no_overrides(), &no_bases()).unwrap_err();
+        )])?;
+        let err = compute_parameter_image(&app, &no_overrides(), &no_bases())
+            .err()
+            .ok_or("expected an error")?;
         assert!(err.to_string().contains("minimum"), "{err}");
+        Ok(())
     }
 
     #[test]
-    fn float_dpt9_encoding() {
+    fn float_dpt9_encoding() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // 21.0 -> DPT9: mantissa 2100 -> halve to 1050 (exp 1) -> 0x0C1A? verify
         // by decoding is out of scope; just assert two bytes are written and the
         // top bit region is sane (non-zero).
@@ -2328,10 +2363,11 @@ mod tests {
             Some("21"),
             0,
             0,
-        )]);
-        let img = image_of(&app);
+        )])?;
+        let img = image_of(&app)?;
         // 21.0: mantissa=2100 needs exp=1 (1050), raw = (1<<11)|1050 = 0x0C1A.
         assert_eq!(&img[0..2], &[0x0C, 0x1A]);
+        Ok(())
     }
 
     /// Regression: every `<TypeFloat>` was written as two bytes of DPT 9 no
@@ -2339,7 +2375,8 @@ mod tests {
     /// (571 of them in the 495-product corpus) went into the device image at
     /// half its width with entirely wrong bytes.
     #[test]
-    fn test_encode_value_float_honours_declared_encoding() {
+    fn test_encode_value_float_honours_declared_encoding()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // DPT 9: the KNX 2-byte float. 21.0 -> mantissa 2100, halved to 1050 at
         // exponent 1 -> 0x0C1A.
         let app = app_with(&[(
@@ -2348,8 +2385,8 @@ mod tests {
             Some("21"),
             0,
             0,
-        )]);
-        assert_eq!(image_of(&app), vec![0x0C, 0x1A]);
+        )])?;
+        assert_eq!(image_of(&app)?, vec![0x0C, 0x1A]);
 
         // IEEE-754 Single: 4 bytes, big-endian f32.
         let app = app_with(&[(
@@ -2358,8 +2395,8 @@ mod tests {
             Some("21"),
             0,
             0,
-        )]);
-        assert_eq!(image_of(&app), 21.0f32.to_be_bytes().to_vec());
+        )])?;
+        assert_eq!(image_of(&app)?, 21.0f32.to_be_bytes().to_vec());
 
         // "DPT 14" is the same 4-byte IEEE-754 single on the wire.
         let app = app_with(&[(
@@ -2368,8 +2405,8 @@ mod tests {
             Some("21"),
             0,
             0,
-        )]);
-        assert_eq!(image_of(&app), 21.0f32.to_be_bytes().to_vec());
+        )])?;
+        assert_eq!(image_of(&app)?, 21.0f32.to_be_bytes().to_vec());
 
         // IEEE-754 Double: 8 bytes, big-endian f64.
         let app = app_with(&[(
@@ -2378,24 +2415,28 @@ mod tests {
             Some("21"),
             0,
             0,
-        )]);
-        assert_eq!(image_of(&app), 21.0f64.to_be_bytes().to_vec());
+        )])?;
+        assert_eq!(image_of(&app)?, 21.0f64.to_be_bytes().to_vec());
+        Ok(())
     }
 
     #[test]
-    fn test_encode_value_float_unknown_encoding_is_refused() {
+    fn test_encode_value_float_unknown_encoding_is_refused()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let app = app_with(&[(
             "weird",
             r#"<TypeFloat Encoding="Posit-16" minInclusive="0" maxInclusive="40" />"#,
             Some("21"),
             0,
             0,
-        )]);
+        )])?;
         let err = compute_parameter_image(&app, &no_overrides(), &no_bases())
-            .expect_err("an unknown float encoding is refused, never guessed");
+            .err()
+            .ok_or("an unknown float encoding is refused, never guessed")?;
         let s = err.to_string();
         assert!(s.contains("Encoding"), "{s}");
         assert!(s.contains("Posit-16"), "{s}");
+        Ok(())
     }
 
     /// Regression: `image.rs` carried its own copy of the DPT-9 encoder whose
@@ -2405,7 +2446,8 @@ mod tests {
     /// The copy is gone; prod now calls `bussard_model::codec::encode_float16`,
     /// so the marker is unreachable and the top of the old range is refused.
     #[test]
-    fn test_encode_value_float_dpt9_never_emits_the_invalid_marker() {
+    fn test_encode_value_float_dpt9_never_emits_the_invalid_marker()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // 670433.28 (mantissa 2046, exponent 15) is the largest valid DPT-9
         // value; it must encode to 0x7FFE, one step below the marker.
         let app = app_with(&[(
@@ -2414,8 +2456,8 @@ mod tests {
             Some("670433.28"),
             0,
             0,
-        )]);
-        let img = image_of(&app);
+        )])?;
+        let img = image_of(&app)?;
         assert_eq!(&img[0..2], &[0x7F, 0xFE]);
 
         // Anything above it (the old copy's 2047-mantissa range) is refused
@@ -2426,14 +2468,17 @@ mod tests {
             Some("670760.96"),
             0,
             0,
-        )]);
+        )])?;
         let err = compute_parameter_image(&app, &no_overrides(), &no_bases())
-            .expect_err("above the DPT-9 maximum");
+            .err()
+            .ok_or("above the DPT-9 maximum")?;
         assert!(err.to_string().contains("DPT-9 range"), "{err}");
+        Ok(())
     }
 
     #[test]
-    fn user_override_beats_ref_and_default() {
+    fn user_override_beats_ref_and_default() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
         // Default 50, ParameterRef Value 75, user override 90 -> 90 wins.
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
          <ApplicationProgram Id="M-1_A-1" Name="t"><Static>
@@ -2442,28 +2487,29 @@ mod tests {
           <Parameters><Parameter Id="M-1_A-1_P-0" Name="thr" ParameterType="M-1_A-1_PT-0" Value="50"><Memory CodeSegment="M-1_A-1_RS-1" Offset="0" BitOffset="0" /></Parameter></Parameters>
           <ParameterRefs><ParameterRef Id="M-1_A-1_P-0_R-1" RefId="M-1_A-1_P-0" Value="75" /></ParameterRefs>
          </Static></ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-1_A-1", xml.as_bytes()).unwrap();
+        let app = parse_application_program("M-1_A-1", xml.as_bytes())?;
 
         // No override: ref Value 75 wins over default 50.
-        let img = compute_parameter_image(&app, &no_overrides(), &no_bases()).unwrap();
+        let img = compute_parameter_image(&app, &no_overrides(), &no_bases())?;
         assert_eq!(img["M-1_A-1_RS-1"][0], 75);
 
         // User override 90 beats the ref. The override is keyed by the
         // app-relative ParameterRef id (P-0_R-1), NOT the parameter name.
         let mut ov = BTreeMap::new();
         ov.insert("P-0_R-1".to_string(), "90".to_string());
-        let img = compute_parameter_image(&app, &ov, &no_bases()).unwrap();
+        let img = compute_parameter_image(&app, &ov, &no_bases())?;
         assert_eq!(img["M-1_A-1_RS-1"][0], 90);
 
         // The fully-qualified ref id (app-prefixed) resolves identically.
         let mut ov = BTreeMap::new();
         ov.insert("M-1_A-1_P-0_R-1".to_string(), "13".to_string());
-        let img = compute_parameter_image(&app, &ov, &no_bases()).unwrap();
+        let img = compute_parameter_image(&app, &ov, &no_bases())?;
         assert_eq!(img["M-1_A-1_RS-1"][0], 13);
+        Ok(())
     }
 
     #[test]
-    fn override_by_name_no_longer_applies() {
+    fn override_by_name_no_longer_applies() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // The old (broken) behaviour keyed overrides by parameter NAME. A name
         // key must now be a no-op resolution failure — proving the contract flip
         // to ref-id keying. A name is not a valid `..._R-<r>` ref id, so it is
@@ -2474,16 +2520,20 @@ mod tests {
             Some("50"),
             0,
             0,
-        )]);
+        )])?;
         let mut ov = BTreeMap::new();
         ov.insert("thr".to_string(), "90".to_string());
-        let err = compute_parameter_image(&app, &ov, &no_bases()).unwrap_err();
+        let err = compute_parameter_image(&app, &ov, &no_bases())
+            .err()
+            .ok_or("expected an error")?;
         assert!(err.to_string().contains("thr"), "{err}");
         assert!(err.to_string().contains("ref suffix"), "{err}");
+        Ok(())
     }
 
     #[test]
-    fn module_instances_land_at_distinct_offsets() {
+    fn module_instances_land_at_distinct_offsets()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // One module parameter (MD-1_P-3, declared Offset 1, BaseOffset naming
         // MDA_P_Base) instantiated as two channels. Two overrides, keyed by their
         // distinct module-instance ref ids, must land at distinct effective
@@ -2500,7 +2550,7 @@ mod tests {
            </Parameter>
           </Parameters>
          </Static></ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-0004_A-1", xml.as_bytes()).unwrap();
+        let app = parse_application_program("M-0004_A-1", xml.as_bytes())?;
 
         let mut ov = BTreeMap::new();
         ov.insert("MD-1_M-1_MI-1_P-3_R-45".to_string(), "17".to_string());
@@ -2510,7 +2560,7 @@ mod tests {
         bases.insert("MD-1_M-1_MI-1".to_string(), 310u32);
         bases.insert("MD-1_M-3_MI-1".to_string(), 442u32);
 
-        let img = compute_parameter_image(&app, &ov, &bases).unwrap();
+        let img = compute_parameter_image(&app, &ov, &bases)?;
         let seg = &img["M-0004_A-1_RS-1"];
         // Instance 1 at 1 + 310 = 311 holds 17; instance 3 at 1 + 442 = 443 holds
         // 42. The two values do NOT collide — the old name-keyed builder would
@@ -2519,10 +2569,12 @@ mod tests {
         assert_eq!(seg[443], 42, "instance M-3_MI-1 at offset 443");
         // The declared offset 1 keeps the default (0), untouched by either.
         assert_eq!(seg[1], 0);
+        Ok(())
     }
 
     #[test]
-    fn module_override_without_base_offset_is_refused() {
+    fn module_override_without_base_offset_is_refused()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // A module-instance override whose per-instance base offset was not
         // supplied cannot be placed; it must error (never misplace a byte),
         // naming the offending key.
@@ -2536,20 +2588,23 @@ mod tests {
            </Parameter>
           </Parameters>
          </Static></ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-0004_A-1", xml.as_bytes()).unwrap();
+        let app = parse_application_program("M-0004_A-1", xml.as_bytes())?;
 
         let mut ov = BTreeMap::new();
         ov.insert("MD-1_M-3_MI-1_P-3_R-45".to_string(), "42".to_string());
 
         // No base offsets supplied: the module override cannot be placed.
-        let err = compute_parameter_image(&app, &ov, &no_bases()).unwrap_err();
+        let err = compute_parameter_image(&app, &ov, &no_bases())
+            .err()
+            .ok_or("expected an error")?;
         let s = err.to_string();
         assert!(s.contains("MD-1_M-3_MI-1_P-3_R-45"), "{s}");
         assert!(s.contains("base offset") || s.contains("MI-1"), "{s}");
+        Ok(())
     }
 
     #[test]
-    fn unknown_ref_id_override_is_refused() {
+    fn unknown_ref_id_override_is_refused() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // An override naming a parameter this application does not define is a
         // pre-flight error naming the key.
         let app = app_with(&[(
@@ -2558,15 +2613,19 @@ mod tests {
             Some("50"),
             0,
             0,
-        )]);
+        )])?;
         let mut ov = BTreeMap::new();
         ov.insert("P-999_R-1".to_string(), "1".to_string());
-        let err = compute_parameter_image(&app, &ov, &no_bases()).unwrap_err();
+        let err = compute_parameter_image(&app, &ov, &no_bases())
+            .err()
+            .ok_or("expected an error")?;
         assert!(err.to_string().contains("P-999"), "{err}");
+        Ok(())
     }
 
     #[test]
-    fn param_value_beats_type_default_when_no_ref() {
+    fn param_value_beats_type_default_when_no_ref()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Parameter Value present, no ref -> parameter Value used.
         let app = app_with(&[(
             "x",
@@ -2574,12 +2633,13 @@ mod tests {
             Some("42"),
             0,
             0,
-        )]);
-        assert_eq!(image_of(&app)[0], 42);
+        )])?;
+        assert_eq!(image_of(&app)?[0], 42);
+        Ok(())
     }
 
     #[test]
-    fn params_laid_over_segment_base_data() {
+    fn params_laid_over_segment_base_data() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Segment carries a base <Data> image; a parameter overwrites its byte
         // while bytes it does not touch keep the vendor's data.
         // Base image = [0xAA, 0xBB, 0xCC, 0xDD] (base64 "qrvM3Q==").
@@ -2589,14 +2649,16 @@ mod tests {
           <ParameterTypes><ParameterType Id="M-1_A-1_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType></ParameterTypes>
           <Parameters><Parameter Id="M-1_A-1_P-0" Name="x" ParameterType="M-1_A-1_PT-0" Value="1"><Memory CodeSegment="M-1_A-1_RS-1" Offset="2" BitOffset="0" /></Parameter></Parameters>
          </Static></ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-1_A-1", xml.as_bytes()).unwrap();
-        let img = compute_parameter_image(&app, &no_overrides(), &no_bases()).unwrap();
+        let app = parse_application_program("M-1_A-1", xml.as_bytes())?;
+        let img = compute_parameter_image(&app, &no_overrides(), &no_bases())?;
         // Byte 2 overwritten to 1; the rest keep the base image.
         assert_eq!(img["M-1_A-1_RS-1"], vec![0xAA, 0xBB, 0x01, 0xDD]);
+        Ok(())
     }
 
     #[test]
-    fn sub_byte_over_base_data_preserves_other_bits() {
+    fn sub_byte_over_base_data_preserves_other_bits()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Base byte 0xFF; a 2-bit field at bit offset 0 set to 0b01 must clear
         // only its two high bits: 0b01_111111 = 0x7F.
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
@@ -2605,17 +2667,19 @@ mod tests {
           <ParameterTypes><ParameterType Id="M-1_A-1_PT-0" Name="n"><TypeNumber SizeInBit="2" Type="unsignedInt" maxInclusive="3" /></ParameterType></ParameterTypes>
           <Parameters><Parameter Id="M-1_A-1_P-0" Name="x" ParameterType="M-1_A-1_PT-0" Value="1"><Memory CodeSegment="M-1_A-1_RS-1" Offset="0" BitOffset="0" /></Parameter></Parameters>
          </Static></ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-1_A-1", xml.as_bytes()).unwrap();
-        let img = compute_parameter_image(&app, &no_overrides(), &no_bases()).unwrap();
+        let app = parse_application_program("M-1_A-1", xml.as_bytes())?;
+        let img = compute_parameter_image(&app, &no_overrides(), &no_bases())?;
         assert_eq!(img["M-1_A-1_RS-1"][0], 0b0111_1111);
+        Ok(())
     }
 
     #[test]
-    fn type_none_occupies_no_memory() {
-        let app = app_with(&[("marker", r#"<TypeNone />"#, None, 0, 0)]);
+    fn type_none_occupies_no_memory() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = app_with(&[("marker", r#"<TypeNone />"#, None, 0, 0)])?;
         // No bytes placed -> empty image (segment had no base data).
-        let img = compute_parameter_image(&app, &no_overrides(), &no_bases()).unwrap();
+        let img = compute_parameter_image(&app, &no_overrides(), &no_bases())?;
         assert!(img["M-1_A-1_RS-1"].is_empty());
+        Ok(())
     }
 
     // ---------------------------------------------------------------------
@@ -2623,7 +2687,8 @@ mod tests {
     // ---------------------------------------------------------------------
 
     #[test]
-    fn parameter_offset_beyond_segment_size_errors_naming_it() {
+    fn parameter_offset_beyond_segment_size_errors_naming_it()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // The `app_with` segment declares Size=64. A byte parameter placed at
         // offset 100 ends at 101, past the segment; refuse and name the parameter
         // rather than resizing the image to an arbitrary length.
@@ -2633,8 +2698,10 @@ mod tests {
             Some("1"),
             100,
             0,
-        )]);
-        let err = compute_parameter_image(&app, &no_overrides(), &no_bases()).unwrap_err();
+        )])?;
+        let err = compute_parameter_image(&app, &no_overrides(), &no_bases())
+            .err()
+            .ok_or("expected an error")?;
         match err {
             ProdError::ParameterImage { parameter, reason } => {
                 assert_eq!(parameter, "toofar");
@@ -2642,10 +2709,12 @@ mod tests {
             }
             other => panic!("expected ParameterImage, got {other:?}"),
         }
+        Ok(())
     }
 
     #[test]
-    fn segment_data_longer_than_declared_size_errors() {
+    fn segment_data_longer_than_declared_size_errors()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // A <Data> payload longer than the segment's declared Size is corrupt
         // product data; refuse rather than seeding an over-sized base image.
         // Size=2 but the base64 `AAECAw==` decodes to 4 bytes.
@@ -2655,14 +2724,17 @@ mod tests {
           <ParameterTypes><ParameterType Id="M-1_A-1_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType></ParameterTypes>
           <Parameters><Parameter Id="M-1_A-1_P-0" Name="x" ParameterType="M-1_A-1_PT-0" Value="1"><Memory CodeSegment="M-1_A-1_RS-1" Offset="0" BitOffset="0" /></Parameter></Parameters>
          </Static></ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-1_A-1", xml.as_bytes()).unwrap();
-        let err = compute_parameter_image(&app, &no_overrides(), &no_bases()).unwrap_err();
+        let app = parse_application_program("M-1_A-1", xml.as_bytes())?;
+        let err = compute_parameter_image(&app, &no_overrides(), &no_bases())
+            .err()
+            .ok_or("expected an error")?;
         match err {
             ProdError::ParameterImage { reason, .. } => {
                 assert!(reason.contains("Size"), "reason names Size: {reason}");
             }
             other => panic!("expected ParameterImage, got {other:?}"),
         }
+        Ok(())
     }
 
     /// Regression: the 1 MiB image cap only applied when the segment declared no
@@ -2670,7 +2742,8 @@ mod tests {
     /// parameter near that offset drove `image.resize` toward a 4 GiB
     /// allocation. A declared `Size` above the cap is refused up front now.
     #[test]
-    fn test_compute_parameter_image_declared_size_above_cap_is_refused() {
+    fn test_compute_parameter_image_declared_size_above_cap_is_refused()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let xml = format!(
             r#"<KNX xmlns="http://knx.org/xml/project/23">
          <ApplicationProgram Id="M-1_A-1" Name="t"><Static>
@@ -2680,10 +2753,10 @@ mod tests {
          </Static></ApplicationProgram></KNX>"#,
             4_000_000_000u32
         );
-        let app = parse_application_program("M-1_A-1", xml.as_bytes())
-            .expect("the XML itself is well formed");
+        let app = parse_application_program("M-1_A-1", xml.as_bytes())?;
         let err = compute_parameter_image(&app, &no_overrides(), &no_bases())
-            .expect_err("a segment declaring 4 GiB is refused, not allocated");
+            .err()
+            .ok_or("a segment declaring 4 GiB is refused, not allocated")?;
         match err {
             ProdError::ParameterImage { parameter, reason } => {
                 assert_eq!(parameter, "M-1_A-1_RS-1");
@@ -2692,12 +2765,14 @@ mod tests {
             }
             other => panic!("expected ParameterImage, got {other:?}"),
         }
+        Ok(())
     }
 
     /// A declared `Size` at the cap still builds: real product data reaches
     /// within a byte of it (ABB i-bus declares `Size="1048575"`).
     #[test]
-    fn test_compute_parameter_image_declared_size_at_cap_is_accepted() {
+    fn test_compute_parameter_image_declared_size_at_cap_is_accepted()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let xml = format!(
             r#"<KNX xmlns="http://knx.org/xml/project/23">
          <ApplicationProgram Id="M-1_A-1" Name="t"><Static>
@@ -2707,15 +2782,15 @@ mod tests {
          </Static></ApplicationProgram></KNX>"#,
             MAX_SEGMENT_IMAGE - 1
         );
-        let app = parse_application_program("M-1_A-1", xml.as_bytes())
-            .expect("the XML itself is well formed");
-        let images = compute_parameter_image(&app, &no_overrides(), &no_bases())
-            .expect("a segment just under the cap is legitimate product data");
+        let app = parse_application_program("M-1_A-1", xml.as_bytes())?;
+        let images = compute_parameter_image(&app, &no_overrides(), &no_bases())?;
         assert_eq!(images["M-1_A-1_RS-1"], vec![0, 0, 0, 7]);
+        Ok(())
     }
 
     #[test]
-    fn parameter_end_past_cap_errors_when_segment_declares_no_size() {
+    fn parameter_end_past_cap_errors_when_segment_declares_no_size()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // With no declared Size, a parameter whose end exceeds the 1 MiB cap is
         // refused — no allocation of that size ever happens (a huge offset from
         // untrusted vendor XML would otherwise force a multi-MiB resize).
@@ -2728,12 +2803,15 @@ mod tests {
          </Static></ApplicationProgram></KNX>"#,
             MAX_SEGMENT_IMAGE + 10
         );
-        let app = parse_application_program("M-1_A-1", xml.as_bytes()).unwrap();
-        let err = compute_parameter_image(&app, &no_overrides(), &no_bases()).unwrap_err();
+        let app = parse_application_program("M-1_A-1", xml.as_bytes())?;
+        let err = compute_parameter_image(&app, &no_overrides(), &no_bases())
+            .err()
+            .ok_or("expected an error")?;
         assert!(
             matches!(err, ProdError::ParameterImage { .. }),
             "expected ParameterImage, got {err:?}"
         );
+        Ok(())
     }
 
     /// A self-contained ApplicationProgram XML reproducing the DA.tp module
@@ -2741,7 +2819,7 @@ mod tests {
     /// parameters (speed off0 default5, steps off1 default4, color off2 default1),
     /// all with `BaseOffset=argPar`; 8 module instances (argPar 0,16,…,112); and a
     /// channel parameter block that references only speed and steps (not color).
-    fn da_tp_param_app() -> ApplicationProgram {
+    fn da_tp_param_app() -> std::result::Result<ApplicationProgram, Box<dyn std::error::Error>> {
         // base64 of 256 bytes of 0xFF (the segment's `<Data>` base image).
         let ff256 = concat!(
             "////////////////////////////////////////////////////////////////////////////////",
@@ -2811,7 +2889,7 @@ mod tests {
             steps_ty = enum8("steps"),
             color_ty = enum8("color"),
         );
-        parse_application_program("APP", xml.as_bytes()).expect("da_tp param app parses")
+        Ok(parse_application_program("APP", xml.as_bytes())?)
     }
 
     /// The default parameter image for the DA.tp module app: a 256-byte 0xFF base
@@ -2824,10 +2902,11 @@ mod tests {
     /// which is that live **project**'s "16 steps" override — project data, not
     /// product data. See [`obj4_matches_ets_capture_with_ch1_override`].
     #[test]
-    fn obj4_default_expansion_writes_speed_and_steps_per_channel() {
-        let app = da_tp_param_app();
-        let images = compute_parameter_image(&app, &no_overrides(), &no_bases()).unwrap();
-        let image = images.get("APP_RS-04").expect("segment image present");
+    fn obj4_default_expansion_writes_speed_and_steps_per_channel()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = da_tp_param_app()?;
+        let images = compute_parameter_image(&app, &no_overrides(), &no_bases())?;
+        let image = images.get("APP_RS-04").ok_or("segment image present")?;
         assert_eq!(image.len(), 256);
 
         // Every non-0xFF byte and its value.
@@ -2844,14 +2923,16 @@ mod tests {
             })
             .collect();
         assert_eq!(non_ff, expected);
+        Ok(())
     }
 
     /// With channel 1's `steps` overridden to 5 ("16 steps"), the image matches
     /// ETS's exact 256-byte obj4 capture byte-for-byte: `05 05` on channel 1 and
     /// `05 04` on channels 2-8, everything else 0xFF.
     #[test]
-    fn obj4_matches_ets_capture_with_ch1_override() {
-        let app = da_tp_param_app();
+    fn obj4_matches_ets_capture_with_ch1_override()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = da_tp_param_app()?;
 
         // The channel-1 `steps` override (project "16 steps" = enum value 5),
         // keyed by app-relative ParameterRef id with the module-instance selector
@@ -2862,8 +2943,8 @@ mod tests {
         let mut base_offsets = BTreeMap::new();
         base_offsets.insert("MD-1_M-1_MI-1".to_string(), 0u32);
 
-        let images = compute_parameter_image(&app, &overrides, &base_offsets).unwrap();
-        let image = images.get("APP_RS-04").expect("segment image present");
+        let images = compute_parameter_image(&app, &overrides, &base_offsets)?;
+        let image = images.get("APP_RS-04").ok_or("segment image present")?;
 
         // Reconstruct ETS's exact 256-byte obj4: 0xFF base, ch1 = 05 05, ch2-8 =
         // 05 04, at argPar bases 0,16,…,112.
@@ -2874,6 +2955,7 @@ mod tests {
             ets[par + 1] = if ch == 0 { 0x05 } else { 0x04 }; // steps: ch1=5, else 4
         }
         assert_eq!(image, &ets);
+        Ok(())
     }
 
     /// A module-based app in the Jung F50 shape (issue #123): a display-only
@@ -3051,7 +3133,8 @@ mod tests {
     /// The Steinel ControlPro's packed durations (issue #89): seconds, minutes,
     /// hours, as ETS wrote them.
     #[test]
-    fn test_encode_value_packed_days_hours_minutes_seconds() -> Result<()> {
+    fn test_encode_value_packed_days_hours_minutes_seconds()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let ty = r#"<TypeTime SizeInBit="24" Unit="PackedDaysHoursMinutesAndSeconds" minInclusive="10" maxInclusive="65535" UIHint="Duration_hhmmss" />"#;
         for (value, bytes) in [
             ("30", [0x1E, 0x00, 0x00]),
@@ -3061,11 +3144,11 @@ mod tests {
             ("900", [0x00, 0x0F, 0x00]),
             ("65535", [0x0F, 0x0C, 0x12]),
         ] {
-            let app = app_with(&[("delay", ty, Some(value), 0, 0)]);
+            let app = app_with(&[("delay", ty, Some(value), 0, 0)])?;
             let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
             assert_eq!(&images["M-1_A-1_RS-1"][0..3], &bytes, "{value} s");
         }
-        let app = app_with(&[("delay", ty, Some("86400"), 0, 0)]);
+        let app = app_with(&[("delay", ty, Some("86400"), 0, 0)])?;
         assert!(compute_parameter_image(&app, &no_overrides(), &BTreeMap::new()).is_err());
         Ok(())
     }
