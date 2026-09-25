@@ -62,15 +62,20 @@ The view is off, and the output is the plain line-oriented text byte for byte, w
 
 ## Commands
 
-### `bussard init`
+### `bussard init [PROJECT]`
 
-Create a fresh model directory: discover the gateway, write the skeleton.
+Create a fresh model directory: discover the gateway, write the skeleton. The first run is one command: with an ETS project given (a `.knxproj`, or an xknxproject `.json` dump), or exactly one `.knxproj` found next to the model directory, `init` runs [`import`](#bussard-import-project) right after writing `bussard.toml`, product-data download and validation included. Without a project it offers, on a terminal, to scan line 1.1 and list the devices that answer ([`scan`](#bussard-scan-line)); `--scan <LINE>` does that without asking. Off a terminal and without flags, it writes the skeleton and stops, so scripts stay non-interactive.
 
-| Flag | Default | Meaning |
+| Flag / arg | Default | Meaning |
 |---|---|---|
+| `[PROJECT]` | the one `.knxproj` next to `--dir` | The ETS project to import right after writing the skeleton. |
 | `--dir <DIR>` | `knx` | The directory to create the model in. |
 | `--gateway <HOST>` | discover | Use this gateway `host[:port]` instead of discovering one. |
 | `--routing` | off | Configure KNXnet/IP routing (multicast) instead of tunneling. |
+| `--password <PASSWORD>` | | Project password, as for `import`. |
+| `--yes` | off | Download the project's missing product data without asking. |
+| `--no-download` | off | Do not download missing product data; list it instead. |
+| `--scan <LINE>` | | Without a project: scan this line after writing the skeleton, without asking. |
 
 Gateway discovery is multicast and does not cross subnets. If it finds nothing, `init` still writes a valid skeleton with a placeholder gateway.
 

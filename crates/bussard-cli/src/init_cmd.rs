@@ -4,6 +4,13 @@
 //! routing, or by KNXnet/IP discovery across every local interface), writes the
 //! TOML skeleton, and prints next steps. The result validates cleanly.
 //!
+//! The first run is one command. With a project (a `.knxproj`, or an
+//! xknxproject `.json` dump) given as the argument, or exactly one `.knxproj`
+//! found next to the model directory, `init` runs `import` right after
+//! writing `bussard.toml` (product data and validation included). Without
+//! one, on a terminal it offers to scan the gateway's line and lists what
+//! answers; `--scan <LINE>` does that without asking, for scripts.
+//!
 //! The `bussard.toml` content is constructed here by hand (three simple keys)
 //! rather than via `Model::save`, so this command is decoupled from the model's
 //! emission format.
@@ -49,9 +56,73 @@ type DiscoverFn = fn() -> anyhow::Result<Vec<GatewayInfo>>;
 /// budget against an unreachable endpoint.
 type ProbeFn = fn(SocketAddrV4);
 
-/// Creates a fresh `knx/` model directory.
-pub fn run(dir: &Path, gateway: Option<&str>, routing: bool) -> anyhow::Result<ExitCode> {
-    run_with(dir, gateway, routing, real_discover, probe_reachability)
+/// What `init` does after the skeleton: import a project, or scan a line.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct FirstRun {
+    /// The project to import (`.knxproj`, or an xknxproject `.json` dump).
+    pub project: Option<std::path::PathBuf>,
+    /// The project password (`--password`).
+    pub password: Option<String>,
+    /// The product-data download answer for the import.
+    pub consent: crate::product_fetch::Consent,
+    /// `--scan <LINE>`: scan this line after writing, without asking.
+    pub scan: Option<String>,
+}
+
+/// Creates a fresh `knx/` model directory, then imports the project given (or
+/// the one `.knxproj` found next to it) or offers a line scan.
+pub fn run(
+    dir: &Path,
+    gateway: Option<&str>,
+    routing: bool,
+    mut first: FirstRun,
+) -> anyhow::Result<ExitCode> {
+    if first.project.is_none() && first.scan.is_none() {
+        first.project = find_project(dir);
+    }
+    run_with(
+        dir,
+        gateway,
+        routing,
+        real_discover,
+        probe_reachability,
+        first,
+    )
+}
+
+/// The one `.knxproj` next to the model directory (in its parent), if there
+/// is exactly one. Several are listed and none is picked.
+fn find_project(dir: &Path) -> Option<std::path::PathBuf> {
+    let parent = match dir.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => std::path::PathBuf::from("."),
+    };
+    let mut found: Vec<std::path::PathBuf> = std::fs::read_dir(&parent)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("knxproj"))
+        })
+        .collect();
+    found.sort();
+    match found.len() {
+        0 => None,
+        1 => {
+            let project = found.remove(0);
+            println!("Found the ETS project {}; importing it.", project.display());
+            Some(project)
+        }
+        _ => {
+            println!("Found several ETS projects; name the one to import:");
+            for p in &found {
+                println!("  bussard init {} --dir {}", p.display(), dir.display());
+            }
+            None
+        }
+    }
 }
 
 /// The testable core: same as [`run`] but with injectable discovery and probe
@@ -62,6 +133,7 @@ fn run_with(
     routing: bool,
     discover: DiscoverFn,
     probe: ProbeFn,
+    first: FirstRun,
 ) -> anyhow::Result<ExitCode> {
     // 1. Refuse a non-empty target directory.
     if dir_is_non_empty(dir)? {
@@ -78,14 +150,70 @@ fn run_with(
     // 2. Resolve the gateway.
     let resolution = resolve_gateway(gateway, routing, discover, probe)?;
 
-    // 3. Write the skeleton.
-    write_skeleton(dir, &resolution)?;
+    // 3. Write the skeleton. With a project to import, `groups.toml` is the
+    // import's to write, so the import is a fresh one, not a merge.
+    write_skeleton(dir, &resolution, first.project.is_none())?;
 
-    // 4. Print next steps.
-    print_next_steps(dir);
+    // 4. The first run is one command: import the project, or scan the line.
+    if let Some(project) = &first.project {
+        println!();
+        println!("Importing {} into {}:", project.display(), dir.display());
+        let choice = crate::import_bundle::ConflictChoice::from_flags(false, false, false);
+        let is_json = project
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("json"));
+        let code = if is_json {
+            crate::import_cmd::run_json(project, dir, choice, first.consent)?
+        } else {
+            crate::import_cmd::run_knxproj(
+                project,
+                dir,
+                first.password.clone(),
+                choice,
+                first.consent,
+            )?
+        };
+        print_next_steps(dir, true);
+        return Ok(code);
+    }
+    let scan_line = match (&first.scan, &resolution) {
+        (Some(line), _) => Some(line.clone()),
+        (None, Resolution::Placeholder) => None,
+        (None, _) if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() => {
+            let line = DEFAULT_SCAN_LINE.to_string();
+            crate::confirm::ask(&format!(
+                "\nNo ETS project given. Scan line {line} now and list the devices that answer?"
+            ))?
+            .then_some(line)
+        }
+        (None, _) => None,
+    };
+    if let Some(line) = scan_line {
+        println!();
+        let code = crate::scan_cmd::run(
+            &line,
+            0,
+            255,
+            dir,
+            false,
+            None,
+            crate::conn_cmd::ConnOverrides::default(),
+        )?;
+        print_next_steps(dir, false);
+        return Ok(code);
+    }
+
+    // 5. Print next steps.
+    print_next_steps(dir, false);
 
     Ok(ExitCode::SUCCESS)
 }
+
+/// The line the first-run scan offers: the first line of the first area, where
+/// a single-line installation and most interfaces sit. `--scan <LINE>` names
+/// another.
+const DEFAULT_SCAN_LINE: &str = "1.1";
 
 /// A directory is "non-empty" if it exists and contains at least one entry. An
 /// absent directory, or an existing empty one, is fine to initialise into.
@@ -341,11 +469,13 @@ fn real_discover() -> anyhow::Result<Vec<GatewayInfo>> {
 }
 
 /// Writes the full `knx/` skeleton for the resolved transport.
-fn write_skeleton(dir: &Path, resolution: &Resolution) -> anyhow::Result<()> {
+fn write_skeleton(dir: &Path, resolution: &Resolution, groups: bool) -> anyhow::Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
 
     write_file(&dir.join("bussard.toml"), &bussard_toml(resolution))?;
-    write_file(&dir.join("groups.toml"), GROUPS_TOML)?;
+    if groups {
+        write_file(&dir.join("groups.toml"), GROUPS_TOML)?;
+    }
 
     let devices_dir = dir.join("devices");
     std::fs::create_dir_all(&devices_dir)
@@ -509,14 +639,22 @@ Guide for new owners: https://github.com/tmbo/bussard/blob/main/docs/getting-sta
 ";
 
 /// Prints crisp next steps to stdout.
-fn print_next_steps(dir: &Path) {
+fn print_next_steps(dir: &Path, imported: bool) {
     let d = dir.display();
     println!();
     println!("Created a fresh KNX model in {d}.");
     println!();
     println!("Next steps:");
     println!("  - Watch the bus:            bussard monitor --dir {d}");
-    println!("  - Import an ETS export:     bussard import project.knxproj --dir {d}");
+    if imported {
+        println!("  - See one device:           bussard device <address> --dir {d}");
+        println!("  - Preview a device write:   bussard plan <address> --dir {d}");
+    } else {
+        println!("  - Import an ETS export:     bussard import project.knxproj --dir {d}");
+        println!(
+            "  - Reserve group addresses:  bussard groups reserve \"EG Küche\" light --dir {d}"
+        );
+    }
     println!("  - Connect Claude via MCP:   claude mcp add knx -- bussard mcp --dir {d}");
     println!();
     println!("Check the model any time:     bussard validate --dir {d}");
@@ -587,7 +725,14 @@ mod tests {
         std::fs::create_dir_all(&dir)?;
         std::fs::write(dir.join("something.txt"), "hi")?;
 
-        let code = run_with(&dir, None, false, no_gateways, no_probe)?;
+        let code = run_with(
+            &dir,
+            None,
+            false,
+            no_gateways,
+            no_probe,
+            FirstRun::default(),
+        )?;
         assert_eq!(code, ExitCode::FAILURE);
         // Original content untouched: we didn't write a skeleton.
         assert!(!dir.join("bussard.toml").exists());
@@ -601,7 +746,7 @@ mod tests {
         let dir = temp_dir("empty");
         std::fs::create_dir_all(&dir)?;
 
-        let code = run_with(&dir, None, true, no_gateways, no_probe)?;
+        let code = run_with(&dir, None, true, no_gateways, no_probe, FirstRun::default())?;
         assert_eq!(code, ExitCode::SUCCESS);
         assert!(dir.join("bussard.toml").exists());
 
@@ -618,7 +763,14 @@ mod tests {
         fn boom() -> anyhow::Result<Vec<GatewayInfo>> {
             panic!("discovery must not run when --gateway is given");
         }
-        let code = run_with(&dir, Some("192.0.2.50"), false, boom, no_probe)?;
+        let code = run_with(
+            &dir,
+            Some("192.0.2.50"),
+            false,
+            boom,
+            no_probe,
+            FirstRun::default(),
+        )?;
         assert_eq!(code, ExitCode::SUCCESS);
 
         let text = std::fs::read_to_string(dir.join("bussard.toml"))?;
@@ -647,7 +799,14 @@ mod tests {
         }
 
         let dir = temp_dir("gateway-probe");
-        let code = run_with(&dir, Some("192.0.2.50:3671"), false, boom, record_probe)?;
+        let code = run_with(
+            &dir,
+            Some("192.0.2.50:3671"),
+            false,
+            boom,
+            record_probe,
+            FirstRun::default(),
+        )?;
         assert_eq!(code, ExitCode::SUCCESS);
         assert_eq!(
             PROBED.with(|p| p.get()),
@@ -662,7 +821,7 @@ mod tests {
     #[test]
     fn routing_writes_routing_config() -> Result<(), Box<dyn std::error::Error>> {
         let dir = temp_dir("routing");
-        let code = run_with(&dir, None, true, no_gateways, no_probe)?;
+        let code = run_with(&dir, None, true, no_gateways, no_probe, FirstRun::default())?;
         assert_eq!(code, ExitCode::SUCCESS);
 
         let text = std::fs::read_to_string(dir.join("bussard.toml"))?;
@@ -677,7 +836,14 @@ mod tests {
     #[test]
     fn single_discovered_gateway_is_used() -> Result<(), Box<dyn std::error::Error>> {
         let dir = temp_dir("discovered");
-        let code = run_with(&dir, None, false, one_gateway, no_probe)?;
+        let code = run_with(
+            &dir,
+            None,
+            false,
+            one_gateway,
+            no_probe,
+            FirstRun::default(),
+        )?;
         assert_eq!(code, ExitCode::SUCCESS);
 
         let text = std::fs::read_to_string(dir.join("bussard.toml"))?;
@@ -692,7 +858,14 @@ mod tests {
     #[test]
     fn no_gateway_writes_placeholder_and_validates() -> Result<(), Box<dyn std::error::Error>> {
         let dir = temp_dir("placeholder");
-        let code = run_with(&dir, None, false, no_gateways, no_probe)?;
+        let code = run_with(
+            &dir,
+            None,
+            false,
+            no_gateways,
+            no_probe,
+            FirstRun::default(),
+        )?;
         assert_eq!(code, ExitCode::SUCCESS);
 
         let text = std::fs::read_to_string(dir.join("bussard.toml"))?;
@@ -707,7 +880,7 @@ mod tests {
     #[test]
     fn skeleton_is_complete_and_validates() -> Result<(), Box<dyn std::error::Error>> {
         let dir = temp_dir("skeleton");
-        run_with(&dir, None, true, no_gateways, no_probe)?;
+        run_with(&dir, None, true, no_gateways, no_probe, FirstRun::default())?;
 
         for f in ["bussard.toml", "groups.toml", "README.md", ".gitignore"] {
             assert!(dir.join(f).exists(), "missing {f}");
@@ -731,7 +904,7 @@ mod tests {
         let dir = temp_dir("absent");
         // Deliberately do not create it.
         assert!(!dir.exists());
-        let code = run_with(&dir, None, true, no_gateways, no_probe)?;
+        let code = run_with(&dir, None, true, no_gateways, no_probe, FirstRun::default())?;
         assert_eq!(code, ExitCode::SUCCESS);
         assert!(dir.join("bussard.toml").exists());
 

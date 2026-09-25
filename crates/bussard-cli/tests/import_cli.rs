@@ -169,3 +169,36 @@ fn test_import_no_download_lists_what_the_index_could_fetch() -> TestResult {
     std::fs::remove_dir_all(&tmp)?;
     Ok(())
 }
+
+/// The first run is one command: `init <project>` writes `bussard.toml`, then
+/// imports the project into the fresh directory (not a re-import).
+#[test]
+fn test_init_with_a_project_file_imports_it() -> TestResult {
+    let tmp = tmp("init")?;
+    let dir = tmp.join("knx");
+    let out = bussard(
+        &[
+            "init",
+            fixture().to_str().ok_or("path")?,
+            "--dir",
+            dir.to_str().ok_or("path")?,
+            "--routing",
+            "--no-download",
+        ],
+        &[],
+    )?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stdout}\n{stderr}");
+    assert!(stdout.contains("Importing"), "{stdout}");
+    assert!(stdout.contains("imported 2 group addresses, 1 devices"), "{stdout}");
+    assert!(!stdout.contains("re-import"), "a fresh import, not a merge: {stdout}");
+    assert!(stdout.contains("validation: 0 error(s)"), "{stdout}");
+    assert!(stdout.contains("bussard device <address>"), "{stdout}");
+    let config = std::fs::read_to_string(dir.join("bussard.toml"))?;
+    assert!(config.contains("transport = \"routing\""), "{config}");
+    assert!(dir.join("devices/1.1.1.toml").is_file());
+    assert!(dir.join("groups.toml").is_file());
+    std::fs::remove_dir_all(&tmp)?;
+    Ok(())
+}

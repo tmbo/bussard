@@ -356,8 +356,15 @@ enum GroupsCommand {
 /// The top-level subcommands.
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Create a fresh model directory: discover the gateway, write the skeleton.
+    /// Create a fresh model directory: discover the gateway, write the
+    /// skeleton, then import the ETS project (the one given, or the one
+    /// `.knxproj` next to the directory) or offer to scan the line.
     Init {
+        /// The ETS project to import right away (`.knxproj`, or an
+        /// xknxproject `.json` dump). Default: the one `.knxproj` next to the
+        /// model directory, when there is exactly one.
+        #[arg(value_name = "PROJECT")]
+        project: Option<PathBuf>,
         /// The directory to create the model in.
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
@@ -367,6 +374,19 @@ enum Command {
         /// Configure KNXnet/IP routing (multicast) instead of tunneling.
         #[arg(long)]
         routing: bool,
+        /// Project password (else `BUSSARD_PROJECT_PASSWORD`, else prompt).
+        #[arg(long)]
+        password: Option<String>,
+        /// Download the missing product data without asking.
+        #[arg(long, conflicts_with = "no_download")]
+        yes: bool,
+        /// Do not download missing product data; list it instead.
+        #[arg(long)]
+        no_download: bool,
+        /// Without a project: scan this line after writing the skeleton and
+        /// list what answers, without asking (for scripts).
+        #[arg(long, value_name = "LINE", conflicts_with = "project")]
+        scan: Option<String>,
     },
     /// Import a `.knxproj`, a `.bussard` bundle or an xknxproject JSON dump.
     Import {
@@ -2245,10 +2265,25 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             json,
         } => doc_cmd::run(&dir, &out, format.into(), json),
         Command::Init {
+            project,
             dir,
             gateway,
             routing,
-        } => init_cmd::run(&dir, gateway.as_deref(), routing),
+            password,
+            yes,
+            no_download,
+            scan,
+        } => init_cmd::run(
+            &dir,
+            gateway.as_deref(),
+            routing,
+            init_cmd::FirstRun {
+                project,
+                password,
+                consent: product_fetch::Consent { yes, no_download },
+                scan,
+            },
+        ),
         Command::Import {
             project,
             from_json,
