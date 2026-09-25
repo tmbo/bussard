@@ -97,19 +97,21 @@ fn read(dir: &Path, rel: &str) -> Result<String, Box<dyn std::error::Error>> {
 fn test_import_writes_handles_keys_labels_and_enum_labels() -> TestResult {
     let (dir, _) = imported()?;
     let file = read(&dir, "devices/1.1.30.toml")?;
+    // Channel order is by vendor number (both module instances are 1, the
+    // device-level channel is 7), then handle.
     let expected = r#"address = "1.1.30"
 name = "Fixture actuator"
-
-[channel.heating-7]
-name = "Bath"
-heating-delay = "9"
-on-off.listen = ["1/0/1"]
 
 [channel.output-1]
 output-mode = "Heating"
 
 [channel.output-2]
 name = "Garage"
+
+[channel.heating-7]
+name = "Bath"
+heating-delay = "9"
+on-off.listen = ["1/0/1"]
 "#;
     assert_eq!(file, expected);
     Ok(())

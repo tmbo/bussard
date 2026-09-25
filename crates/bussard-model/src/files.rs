@@ -657,6 +657,15 @@ impl<'a> Resolver<'a> {
         self.param_ref(scope, key).is_some()
     }
 
+    /// Whether `handle` is one of the lock's current channel handles. A device
+    /// file's `[channel.<handle>]` table whose handle the lock no longer lists
+    /// (the channel was renamed or re-keyed, most often because product data
+    /// arrived) is stale: its entries must not be trusted as placements for a
+    /// save, or they keep a table alive next to the one under the new handle.
+    pub fn knows_channel(&self, handle: &str) -> bool {
+        self.selectors.contains_key(handle)
+    }
+
     /// The keys the lock assigns in `scope`, sorted.
     pub fn keys_in(&self, scope: Option<&str>) -> Vec<String> {
         self.keys
@@ -1248,6 +1257,17 @@ pub(crate) fn existing_placements(
     let mut out = BTreeMap::new();
     let mut seen: BTreeMap<u16, usize> = BTreeMap::new();
     for entry in &entries.entries {
+        if let TableRef::Channel(h) = &entry.table
+            && !resolver.knows_channel(h)
+        {
+            // The file still has this channel table under a handle the lock no
+            // longer lists (most often a re-import that derived a real handle
+            // for a channel that used to be id-keyed). Its entries are not a
+            // placement for anything any more: keeping them would echo the old
+            // table back into the save next to the one under the new handle,
+            // linking every object it holds twice.
+            continue;
+        }
         let scope = entry.table.scope();
         let id = match &entry.value {
             EntryValue::Param(_) => {
