@@ -486,7 +486,7 @@ mod tests {
     }
 
     #[test]
-    fn test_passthrough_flags_makes_path_values_absolute() {
+    fn test_passthrough_flags_makes_path_values_absolute() -> TestResult {
         let args = strings(&[
             "mcp",
             "--keyring",
@@ -494,10 +494,19 @@ mod tests {
             "--capture-db=rel.db",
         ]);
         let flags = passthrough_flags(&args);
+        // `std::path::absolute` gives a drive and backslashes on Windows, so
+        // the expected values are built the same way on every platform.
+        let keyring = std::path::absolute("/k/house.knxkeys")?;
+        let capture = std::path::absolute("rel.db")?;
+        assert_eq!(flags.len(), 3);
         assert_eq!(flags[0], "--keyring");
-        assert_eq!(flags[1], "/k/house.knxkeys");
-        assert!(flags[2].starts_with("--capture-db=/"), "{}", flags[2]);
-        assert!(flags[2].ends_with("rel.db"), "{}", flags[2]);
+        assert_eq!(PathBuf::from(&flags[1]), keyring);
+        let value = flags[2]
+            .strip_prefix("--capture-db=")
+            .ok_or("no --capture-db=")?;
+        assert_eq!(PathBuf::from(value), capture);
+        assert!(capture.is_absolute());
+        Ok(())
     }
 
     #[test]
