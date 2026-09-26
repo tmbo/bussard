@@ -198,6 +198,9 @@ pub type BuiltState = (
 ///
 /// Must be called from within a tokio runtime (it spawns the bus actor).
 pub fn build_state(config: &VizConfig) -> Result<BuiltState, VizError> {
+    // Missing product models regenerate from the pinned archives first
+    // (issue #267); the watched handle does the same on every reload.
+    bussard_service::complete_product_models(&config.dir);
     let model = Model::load(&config.dir).map_err(|source| VizError::ModelLoad {
         dir: config.dir.display().to_string(),
         source,

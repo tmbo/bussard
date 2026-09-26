@@ -666,6 +666,15 @@ directory or a script from before these changes needs:
 
 ### Fixed
 
+- Product models regenerate when `.bussard/models/` exists but is empty or
+  lacks the model of a pinned application, not only when the directory is
+  absent. Before, an empty directory left every consumer, the MCP server
+  included, reporting "no product data" for devices whose archives sit in
+  `products/`. Every command checks one file per pinned application and
+  writes only the missing models; the MCP and `viz` servers do the same at
+  start and on every model reload. E026 and the `device` note name
+  `bussard import-product` only when no stored archive carries the
+  application (#267).
 - The `.gitignore` that `init` writes lists `.env`, and `init` adds the line
   to an existing `.gitignore` that lacks it, so the passwords bussard reads
   from `.env` are not committed by accident. An `import` into a directory

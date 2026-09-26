@@ -262,7 +262,8 @@ pub async fn post_group_write(
 
 /// `POST /api/reload` — reload the model from disk and swap it atomically.
 ///
-/// Re-runs `Model::load` on the server's model directory. On success it installs
+/// Regenerates missing product models from the pinned archives (issue #267),
+/// then re-runs `Model::load` on the server's model directory. On success it installs
 /// the model into the shared [`ModelHandle`](crate::state::ModelHandle) as the
 /// next `model_version` in one move, emits a `model`
 /// SSE event so connected pages refetch `/api/model`, and returns `200` with the
@@ -274,6 +275,7 @@ pub async fn post_group_write(
 /// and keeps serving the previous model unchanged (no swap, no SSE event).
 pub async fn post_reload(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
     // Re-read the model directory. A failure leaves the current snapshot intact.
+    bussard_service::complete_product_models(&state.dir);
     let model = Model::load(&state.dir)
         .map_err(|e| ApiError::ModelInvalid(format!("model reload failed: {e}")))?;
 

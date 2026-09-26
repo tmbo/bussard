@@ -194,6 +194,7 @@ pub fn build_state(config: &McpConfig) -> anyhow::Result<Arc<SharedState>> {
             config.dir.display()
         );
     }
+    bussard_service::complete_product_models(&config.dir);
     let model = Model::load(&config.dir)
         .map_err(|e| anyhow::anyhow!("failed to load model from {}: {e}", config.dir.display()))?;
 

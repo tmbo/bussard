@@ -897,12 +897,12 @@ knx/
 |---|---|
 | `init`, `import`, `import-product`, `adopt` | Create it and write `.bussard/models/` and the first history snapshot. `products/` is written next to it, never inside. |
 | `status`, `history`, `show`, `undo`, `export` | The history is empty: `status` says there is no snapshot yet, `history` lists nothing, `show` and `undo` find no snapshot, `export` writes the bundle without snapshots. |
-| `validate`, `groups`, `export-groups`, `doc`, `ha-config`, `device` | Regenerate `.bussard/models/` from the archives the lock pins, in the lock's `language`, then run as usual. `device` also writes a single missing model on demand. `diff` and `keyring` read no model directory. |
+| `validate`, `groups`, `export-groups`, `doc`, `ha-config`, `device` | Regenerate `.bussard/models/` from the archives the lock pins, in the lock's `language`, then run as usual. The same happens when the directory exists but lacks the model of an application a stored archive carries (empty, partly deleted, or a device whose archive arrived later): every command checks one file per pinned application and writes only the missing ones. `device` also writes a single missing model on demand. `diff` and `keyring` read no model directory. |
 | `scan`, `monitor`, `capture`, `read`, `write`, `learn`, `test` | Unaffected (the product models regenerate first, as above). |
 | `describe`, `plan`, `reconstruct`, `audit --live`, `backup` | Read the device facts from the device and write `.bussard/facts/<ia>.toml`; `plan` and `reconstruct` decode parameters when the archive is in `products/`. |
 | `flash`, `apply` (parameters), `commission --flash`, `replace` | Unaffected by `.bussard/`; they refuse before any bus write only when the archive the lock pins is missing from `products/` or changed. |
 | `restore` | Unaffected (the tables come from the backup directory). |
-| `mcp`, `viz` | Start as usual. |
+| `mcp`, `viz` | Regenerate the missing product models as above at start and again on every model reload (an edit under `knx/`, or `POST /api/reload` in `viz`), so a server that runs for hours heals without a restart. |
 
 #### `.bussard/history`
 
@@ -1158,7 +1158,7 @@ A manual test must have an `expect`. The runner ignores the gateway's echo of it
 
 ### Generated model files (`.bussard/models/*.yaml`)
 
-One file per application program, generated from the archives in `products/` by `import-product` (and by any command that finds `.bussard/models/` missing) and never hand-edited. The field-by-field description lives in [product-data.md](product-data.md#the-model-file-format).
+One file per application program, generated from the archives in `products/` by `import-product` (and by any command, and the MCP and `viz` servers, that find a model missing) and never hand-edited. The field-by-field description lives in [product-data.md](product-data.md#the-model-file-format).
 
 ## Validation diagnostics
 
@@ -1191,7 +1191,7 @@ One file per application program, generated from the archives in `products/` by 
 | E023 | unknown parameter or object key in a channel; lists the channel's keys | error |
 | E024 | object linked to a GA whose main DPT number differs from the object's | error |
 | E025 | `send` on an object without the T flag, `listen` on one without the W flag (command objects `listen`, status objects `send`) | error |
-| E026 | parameter values could not be checked because the product model is missing | warning |
+| E026 | parameter values could not be checked because the product model is missing; the message names `bussard import-product` only when no stored archive carries the application (otherwise the model regenerates automatically) | warning |
 | E032 | a device's lock entry names a product (`product_sha256`) the lock has no `[[product]]` entry for | warning |
 | E033 | a `[[product]]` entry names an archive (`file`) the model directory does not hold; the message names the recovery command for its origin | warning |
 | E027 | the configured keyring (`BUSSARD_KEYRING` or `connection.keyring`) points at a file that does not exist | error |

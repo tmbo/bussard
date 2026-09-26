@@ -136,7 +136,7 @@ pub fn validate_in_dir(model: &Model, dir: &Path) -> Vec<Diagnostic> {
     check_protected_gas(model, &mut diags);
 
     let models = ProductModels::load(dir);
-    check_parameters(model, &models, &mut diags);
+    check_parameters(model, &models, dir, &mut diags);
     // Opt-in lints, with the product cache so L002 can total the bus current.
     diags.extend(crate::lint::lint(model, Some(&models)));
 
@@ -148,15 +148,23 @@ pub fn validate_in_dir(model: &Model, dir: &Path) -> Vec<Diagnostic> {
 /// the on-disk `models/`:
 ///
 /// * **E026** — a device carries parameters but its application has no model
-///   file under `models/`, so its values cannot be normalized or checked
-///   (warning).
+///   file under `.bussard/models/`, so its values cannot be normalized or
+///   checked (warning). The models regenerate automatically from the archives
+///   the lock pins; the message names `bussard import-product` only when no
+///   stored archive carries the application.
 /// * **E016** — a parameter key names a parameter absent from the model (a typo
 ///   or a stale key after a re-import that dropped the parameter).
 /// * **E017** — a value is not parseable for its type, is out of the declared
 ///   range, or is not a declared enumeration member.
 /// * **I017** — a value equals the vendor default and is therefore redundant
 ///   (the importer omits these, but a hand edit can reintroduce one).
-fn check_parameters(model: &Model, models: &ProductModels, diags: &mut Vec<Diagnostic>) {
+fn check_parameters(
+    model: &Model,
+    models: &ProductModels,
+    dir: &Path,
+    diags: &mut Vec<Diagnostic>,
+) {
+    let entries = crate::lock_products::lock_entries(dir);
     for (ia, loaded) in &model.devices {
         let dev = &loaded.device;
         if dev.parameters.is_empty() {
@@ -171,17 +179,27 @@ fn check_parameters(model: &Model, models: &ProductModels, diags: &mut Vec<Diagn
         // Locate the product model for this device's application.
         let product_model = app_ref.and_then(|r| models.get(r));
         let Some(product_model) = product_model else {
-            let reason = match app_ref {
-                Some(r) => format!("no model for {r}"),
-                None => "the lock pins no application for the device".to_string(),
+            let stored = app_ref.and_then(|r| {
+                crate::lock_products::archive_file_for(dev.lock.product_entry.as_ref(), &entries, r)
+                    .filter(|f| dir.join(f).is_file())
+            });
+            let hint = match (app_ref, stored) {
+                (Some(r), Some(archive)) => format!(
+                    "no model for {r}; it regenerates automatically from {archive}, so that \
+                     archive could not be read (the warning above says why)"
+                ),
+                (Some(r), None) => format!(
+                    "no model for {r} and no stored archive carries it; run `bussard \
+                     import-product` to fetch the product data"
+                ),
+                (None, _) => "the lock pins no application for the device".to_string(),
             };
             diags.push(Diagnostic::new(
                 "E026",
                 Severity::Warning,
                 format!("{file} parameters"),
                 format!(
-                    "{} parameter value(s) on {ia} could not be normalized or checked ({reason}); \
-                     run `bussard import-product` to fetch the product model",
+                    "{} parameter value(s) on {ia} could not be normalized or checked ({hint})",
                     dev.parameters.len()
                 ),
             ));

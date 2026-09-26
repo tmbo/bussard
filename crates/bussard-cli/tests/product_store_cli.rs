@@ -1,6 +1,7 @@
 //! The retained product store `<dir>/products/` (issue #228, item 3): the
 //! one-shot move of an earlier `vendor/`, the regeneration of
-//! `.bussard/models/` when it is absent, and the refusals when an archive the
+//! `.bussard/models/` when it is absent, empty or incomplete (#267), and the
+//! refusals when an archive the
 //! lock pins is missing or changed. No bus: every refusal happens before a
 //! connection is opened (the configured gateway is a closed loopback port).
 
@@ -184,6 +185,68 @@ fn test_absent_dot_bussard_regenerates_the_product_models() -> TestResult {
         assert!(model_file.is_file(), "{args:?} regenerates the models");
         std::fs::remove_dir_all(dir.join(".bussard"))?;
     }
+    cleanup(&dir);
+    Ok(())
+}
+
+/// Issue #267: an existing but empty `.bussard/models/` is filled by the
+/// next command, and E026 does not tell the user to fetch anything.
+#[test]
+fn test_empty_models_directory_is_filled_by_the_next_command() -> TestResult {
+    let dir = pinned_model("regen-empty", false, true)?;
+    std::fs::write(
+        dir.join("devices/1.1.4.toml"),
+        "address = \"1.1.4\"\nname = \"Taster\"\nproduct = \"MDT-BE-04001.02\"\n\n\
+         [parameters]\n\"x@P-1\" = \"1\"\n\n[links]\n0.send = \"1/0/0\"\n",
+    )?;
+    let models = dir.join(".bussard/models");
+    std::fs::create_dir_all(&models)?;
+    let out = bussard(&dir, &["validate"])?;
+    let said = text(&out);
+    assert!(
+        models.join(format!("{APP_ID}.yaml")).is_file(),
+        "validate fills the empty directory: {said}"
+    );
+    assert!(!said.contains("E026"), "{said}");
+    cleanup(&dir);
+    Ok(())
+}
+
+/// Issue #267: a single deleted model file is restored while the directory
+/// keeps its other content.
+#[test]
+fn test_deleted_model_file_is_restored() -> TestResult {
+    let dir = pinned_model("regen-one", false, true)?;
+    let model_file = dir.join(format!(".bussard/models/{APP_ID}.yaml"));
+    let out = bussard(&dir, &["validate"])?;
+    assert!(model_file.is_file(), "{}", text(&out));
+    let other = dir.join(".bussard/models/M-0001_A-0000-10-0000.yaml");
+    std::fs::write(&other, "# another application\n")?;
+    std::fs::remove_file(&model_file)?;
+    let out = bussard(&dir, &["status"])?;
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(model_file.is_file(), "status restores it: {}", text(&out));
+    assert!(other.is_file());
+    cleanup(&dir);
+    Ok(())
+}
+
+/// Issue #267: E026 names `bussard import-product` only when no stored
+/// archive carries the application.
+#[test]
+fn test_e026_names_import_product_only_without_an_archive() -> TestResult {
+    let dir = pinned_model("regen-e026", false, false)?;
+    std::fs::write(
+        dir.join("devices/1.1.4.toml"),
+        "address = \"1.1.4\"\nname = \"Taster\"\nproduct = \"MDT-BE-04001.02\"\n\n\
+         [parameters]\n\"x@P-1\" = \"1\"\n\n[links]\n0.send = \"1/0/0\"\n",
+    )?;
+    let said = text(&bussard(&dir, &["validate"])?);
+    assert!(said.contains("E026"), "{said}");
+    assert!(
+        said.contains("no stored archive carries it; run `bussard import-product`"),
+        "{said}"
+    );
     cleanup(&dir);
     Ok(())
 }

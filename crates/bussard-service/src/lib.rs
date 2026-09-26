@@ -26,7 +26,9 @@
 //!   ([`group_key_for`]), the secured `GroupValueRead`
 //!   ([`BusService::read_group`]) and the sealing behind the secured write.
 //! - [`ModelHandle`]: a shared model that reloads itself when the files on disk
-//!   change, used by the long-lived MCP and viz servers.
+//!   change, used by the long-lived MCP and viz servers, and
+//!   [`complete_product_models`], which fills in missing product models
+//!   before every load and reload.
 //! - [`adopt`]: what `bussard adopt` records for a KNX Data Secure-activated
 //!   device (links, `secure` flags, the security intent and lock facts).
 //! - [`describe`]: the interface-object walk and the PID / object-type name
@@ -56,7 +58,7 @@ pub use facts::{Established, FactsCache, FactsSource, FactsWant};
 pub use group::{
     GroupKeys, GroupRead, GroupSendError, SecureGroupError, SecuredSend, group_key_for,
 };
-pub use model_handle::ModelHandle;
+pub use model_handle::{ModelHandle, complete_product_models};
 pub use policy::WritePolicy;
 pub use write::{
     DptOverridePolicy, PreparedWrite, WriteCheck, WriteOutcome, WriteRefusal, WriteValue,

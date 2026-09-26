@@ -73,7 +73,8 @@ use crate::conn_cmd::{
     ConnOverrides, checked_source_or_close, enforce_write_gate, gateway_display, open_service,
     resolve_config,
 };
-use crate::import_product_cmd::{is_project_export, order_numbers_for};
+use crate::import_product_cmd::is_project_export;
+use bussard_prod::product_model::order_numbers_for;
 
 /// What one `bussard adopt` run was asked to do.
 #[derive(Debug, Clone, Copy)]

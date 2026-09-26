@@ -32,6 +32,7 @@ pub mod flag_map;
 pub mod hardware;
 pub mod image;
 pub mod index;
+pub mod product_model;
 
 use std::collections::HashMap;
 use std::path::Path;

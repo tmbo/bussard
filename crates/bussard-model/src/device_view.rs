@@ -404,11 +404,23 @@ pub fn device_view(
     let mut notes = Vec::new();
     if product.is_none() {
         notes.push(match &application {
-            Some(app) => format!(
-                "no product data: .bussard/models/{app}.yaml is not generated, so there are no choices, \
-                 ranges or defaults (run `bussard import-product --order-number <order>` or \
-                 re-run `bussard import`); showing what the lock has"
-            ),
+            Some(app) => match crate::lock_products::archive_file_for(
+                device.lock.product_entry.as_ref(),
+                [],
+                app,
+            ) {
+                Some(archive) => format!(
+                    "no product data: .bussard/models/{app}.yaml is missing, so there are no \
+                     choices, ranges or defaults. It regenerates automatically from {archive}; \
+                     if this note stays, that archive could not be read (bussard warns why). \
+                     Showing what the lock has"
+                ),
+                None => format!(
+                    "no product data: no stored archive carries {app}, so there are no choices, \
+                     ranges or defaults (run `bussard import-product --order-number <order>` or \
+                     re-run `bussard import`); showing what the lock has"
+                ),
+            },
             None => "no product data: the lock pins no application for this device; showing \
                      what the lock has"
                 .to_string(),
