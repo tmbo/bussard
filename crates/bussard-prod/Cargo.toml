@@ -15,6 +15,10 @@ bussard-ets = { workspace = true }
 base64 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# YAML for the generated product models (`product_model`), moved here from the
+# CLI so the MCP and viz servers regenerate them too (#267). Already in the
+# tree via bussard-model.
+serde_norway = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 # ZIP support for the `.knxprod` container. No AES feature: unlike `.knxproj`,

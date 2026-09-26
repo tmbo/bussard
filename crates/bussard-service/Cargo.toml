@@ -16,6 +16,9 @@ bussard-mgmt = { workspace = true }
 bussard-secure = { workspace = true }
 # `.knxkeys` keyring parsing for the tool-key resolver (`secure`).
 bussard-project = { workspace = true }
+# Regenerating missing product models under `.bussard/models/` from the
+# archives the lock pins, before a model load or reload (#267). First-party.
+bussard-prod = { workspace = true }
 # SHA-256 keys the per-process decrypted-keyring memo (issue #214/#215) by the
 # file bytes and the password, so neither is kept in the clear. Already in the
 # tree (bussard-project, bussard-secure). MIT OR Apache-2.0.

@@ -15,6 +15,11 @@
 //! (viz's `POST /api/reload`) loads the model itself and calls
 //! [`install`](ModelHandle::install).
 //!
+//! Before every reload the handle fills in the product models
+//! `.bussard/models/` lacks ([`complete_product_models`]), and the servers
+//! run the same completion before their first load, so an empty or partly
+//! deleted models directory heals without a restart (issue #267).
+//!
 //! The CLI loads the model once per invocation and does not need this.
 
 use std::path::{Path, PathBuf};
@@ -164,6 +169,7 @@ impl ModelHandle {
             return snapshot.model.clone();
         }
 
+        complete_product_models(dir);
         match Model::load(dir) {
             Ok(model) => {
                 snapshot.model = Arc::new(model);
@@ -196,6 +202,21 @@ impl ModelHandle {
         self.inner
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// Regenerates the product models under `<dir>/.bussard/models/` that an
+/// archive the lock pins carries but the directory lacks (see
+/// [`bussard_prod::product_model::complete_models`]). Cheap when nothing is
+/// missing: one `stat` per pinned application, no archive read. A pinned
+/// archive that is missing or changed is logged as a warning; the tools that
+/// need its product data say so themselves.
+pub fn complete_product_models(dir: &Path) {
+    if !bussard_prod::product_model::models_incomplete(dir) {
+        return;
+    }
+    for warning in bussard_prod::product_model::complete_models(dir, None) {
+        tracing::warn!("regenerating the product models: {warning}");
     }
 }
 

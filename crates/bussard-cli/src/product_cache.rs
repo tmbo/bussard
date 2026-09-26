@@ -6,26 +6,12 @@
 //! `BUSSARD_PRODUCT_CACHE=off` disables it (the archive is then parsed every
 //! time, as before).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use bussard_download::select_application;
 use bussard_prod::{AppSelection, ApplicationProgram, ProductCatalog, ProductData};
 
-/// The environment variable that disables the parsed-product cache (`off` or
-/// `0`).
-pub const CACHE_ENV: &str = "BUSSARD_PRODUCT_CACHE";
-
-/// The parsed-product cache directory for the model at `dir`, or `None` when
-/// there is no model directory or the cache is disabled.
-pub fn cache_dir(dir: &Path) -> Option<PathBuf> {
-    let disabled = bussard_model::dotenv::var(CACHE_ENV).is_ok_and(|v| {
-        matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "off" | "0" | "false"
-        )
-    });
-    (!disabled && dir.is_dir()).then(|| dir.join(".bussard").join("products"))
-}
+pub use bussard_prod::product_model::cache_dir;
 
 /// Reads `path` (a `.knxprod`, a wrapper with `inner`, or a `.knxproj`),
 /// parsing only what `select` picks, through the cache of the model at `dir`.
@@ -125,6 +111,7 @@ pub fn order_refs(catalog: &ProductCatalog, order: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bussard_prod::product_model::CACHE_ENV;
 
     fn catalog(ids: &[&str]) -> ProductCatalog {
         ProductCatalog {

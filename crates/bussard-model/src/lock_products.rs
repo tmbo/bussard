@@ -251,6 +251,25 @@ pub fn lock_entries(dir: &Path) -> Vec<ProductEntry> {
         .unwrap_or_default()
 }
 
+/// The archive file (relative to the model directory) the lock pins for the
+/// application `app`, out of `entries`: the first entry that names an
+/// archive in the model and lists `app` among its applications, or, for the
+/// device's own linked entry, names an archive at all. `None` when no stored
+/// archive carries the application, so its product model cannot regenerate
+/// and `bussard import-product` has to fetch it.
+pub fn archive_file_for<'a>(
+    linked: Option<&'a ProductEntry>,
+    entries: impl IntoIterator<Item = &'a ProductEntry>,
+    app: &str,
+) -> Option<&'a str> {
+    linked.and_then(|e| e.file.as_deref()).or_else(|| {
+        entries
+            .into_iter()
+            .find(|e| e.file.is_some() && e.applications.iter().any(|a| a == app))
+            .and_then(|e| e.file.as_deref())
+    })
+}
+
 /// How to get a pinned archive back, from its origin: the command to run.
 pub fn recovery_hint(entry: &ProductEntry) -> String {
     const RESTORE: &str = "restore it from your backup or version control";
