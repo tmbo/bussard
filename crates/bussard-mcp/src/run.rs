@@ -29,6 +29,16 @@ use crate::state::SharedState;
 /// write policy. Its actor reconnects on its own, so a bus that is down at
 /// startup does not prevent the server from serving model-only tools.
 pub async fn serve_stdio(state: Arc<SharedState>, service: BusService) -> anyhow::Result<()> {
+    serve_stdio_with_ready(state, service, || {}).await
+}
+
+/// [`serve_stdio`], calling `on_ready` right after the "serving on stdio" log
+/// line, before the server blocks waiting for the client's `initialize`.
+pub async fn serve_stdio_with_ready(
+    state: Arc<SharedState>,
+    service: BusService,
+    on_ready: impl FnOnce(),
+) -> anyhow::Result<()> {
     let handle = service.handle().clone();
     state.bus.wire(service);
 
@@ -36,7 +46,8 @@ pub async fn serve_stdio(state: Arc<SharedState>, service: BusService) -> anyhow
 
     // Serve MCP over stdio. `stdio()` returns (stdin, stdout).
     let server = BussardMcp::new(state);
-    tracing::info!("bussard MCP server ready on stdio");
+    tracing::info!("mcp: serving on stdio");
+    on_ready();
     let running = server
         .serve(stdio())
         .await

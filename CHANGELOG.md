@@ -249,6 +249,12 @@ directory or a script from before these changes needs:
 - `--allow-programming` adds `knx_plan_device` and `knx_apply_device`: the
   assistant writes one device's link tables only with the digest of a plan the
   human approved (#118).
+- `bussard mcp` started from a terminal prints how to register it: the
+  `claude mcp add` command and the `mcpServers` JSON entry for Claude Desktop
+  and other clients, built from the running binary, the resolved model
+  directory and the flags given, with where a password must come from (never
+  the password itself). A client that spawns the server with pipes gets only
+  the `mcp: serving on stdio` log line (`-v`).
 - `bussard viz` serves the network as a live bus-spine diagram in the browser,
   with a problems panel, model reload and programming-mode highlighting
   (`--watch-prog`) (#65, #67).

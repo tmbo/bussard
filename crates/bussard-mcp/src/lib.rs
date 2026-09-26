@@ -257,6 +257,14 @@ pub fn transport_tag(kind: &TransportKind) -> &'static str {
 /// write-enabled server against a non-loopback gateway refuses to start without
 /// the operator's opt-in, before any bus contact.
 pub async fn run(config: &McpConfig) -> anyhow::Result<()> {
+    run_with_ready(config, || {}).await
+}
+
+/// [`run`], calling `on_ready` once the server has started and is about to
+/// wait for a client on stdio (after the model loaded and the bus service
+/// opened, so a refused start never reaches it). The CLI uses it to print how
+/// to register the server with a client.
+pub async fn run_with_ready(config: &McpConfig, on_ready: impl FnOnce()) -> anyhow::Result<()> {
     let state = build_state(config)?;
     let service = BusService::open(config.connection.clone(), config.write_policy())?;
     if service.gate() == Some(bussard_transport::write_gate::WriteGate::OptedIn) {
@@ -265,7 +273,7 @@ pub async fn run(config: &McpConfig) -> anyhow::Result<()> {
             bussard_service::guidance::opt_in_warning(&service.gateway_display())
         );
     }
-    run::serve_stdio(state, service).await
+    run::serve_stdio_with_ready(state, service, on_ready).await
 }
 
 /// The set of tool names exposed, in registration order. Used by tests and docs.
