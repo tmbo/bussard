@@ -54,7 +54,9 @@ For Claude Code, run this once in the model directory:
 $ claude mcp add knx -- bussard mcp --dir "$PWD"
 ```
 
-Other MCP clients take a JSON entry. Use the absolute path to the model directory, because the client may start the server from anywhere:
+The server talks over stdin/stdout, so the client starts it; there is nothing to connect to. Run `bussard mcp` by hand in the model directory and it prints this command and the JSON entry below with your binary's full path, the model directory and the flags you gave, ready to paste.
+
+Claude Desktop and other MCP clients take a JSON entry. In Claude Desktop, Settings > Developer > Edit Config opens `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`). Paste the entry with absolute paths, because the client may start the server from anywhere, and restart Claude Desktop. The server then shows under the tools icon in a chat, not in the connector list: the custom connector dialog takes only the HTTPS URL of a remote server, which would need an HTTP transport that bussard does not offer yet.
 
 ```json
 {

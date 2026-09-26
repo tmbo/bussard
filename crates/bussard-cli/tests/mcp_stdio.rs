@@ -8,7 +8,9 @@
 //!   nine model/bus read tools, the two file-only history tools and the two
 //!   bundle/diff tools).
 //!
-//! This is the stdout-purity guard the design brief calls for.
+//! This is the stdout-purity guard the design brief calls for. It also checks
+//! that a server spawned with piped stderr (as a client spawns it) logs the
+//! plain "mcp: serving on stdio" line and not the terminal-only connect hint.
 //!
 //! A second test (issue #267) starts the server on a model whose
 //! `.bussard/models/` is empty although `bussard.lock` pins the archive in
@@ -47,6 +49,8 @@ fn mcp_stdio_handshake_is_pure_json_and_lists_the_passive_tools() -> TestResult 
         .arg(&knx)
         .arg("--passive")
         .arg("--no-model-edits")
+        .arg("-v")
+        .env("BUSSARD_NO_DOTENV", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -116,6 +120,19 @@ fn mcp_stdio_handshake_is_pure_json_and_lists_the_passive_tools() -> TestResult 
     drop(stdin);
     let _ = child.wait_timeout(Duration::from_millis(500));
     let _ = child.kill();
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        std::io::Read::read_to_string(&mut pipe, &mut stderr)?;
+    }
+    let _ = child.wait();
+    assert!(
+        stderr.contains("mcp: serving on stdio"),
+        "the info line is logged: {stderr}"
+    );
+    assert!(
+        !stderr.contains("claude mcp add") && !stderr.contains("mcpServers"),
+        "a piped stderr gets no connect hint: {stderr}"
+    );
 
     let mut tools = tools.ok_or("received no tools/list response")?;
     tools.sort();
