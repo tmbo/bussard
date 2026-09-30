@@ -542,9 +542,10 @@ impl BussardMcp {
         parameter the lock knows for the device can be set, and the value (an enum label or \
         code, a number) is checked against the vendor's product model first; without a product \
         model the edit is refused rather than guessed. This edits FILES ONLY: the device keeps \
-        its current settings until the change is pushed; knx_plan_device and knx_apply_device \
-        push links only, so the result's next_step says how a parameter value reaches the \
-        device at this server's tier. Returns the change as sentences: quote them to the human."
+        its current settings until the change is pushed with knx_plan_device and \
+        knx_apply_device (the plan lists the parameter by name); the result's next_step says how \
+        it reaches the device at this server's tier. Returns the change as sentences: quote them \
+        to the human."
     )]
     async fn knx_set_parameter(
         &self,

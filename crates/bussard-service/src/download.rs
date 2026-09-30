@@ -144,7 +144,7 @@ pub struct FlashRun<'a> {
 pub async fn flash_session<R>(
     run: FlashRun<'_>,
     plan: &FlashPlan,
-    observer: &mut dyn FlashObserver,
+    observer: &mut impl FlashObserver,
     after: impl AsyncFnOnce(&mut Layer4Connection<LeaseChannel>) -> R,
 ) -> (Result<FlashOutcome, WriteError>, Option<R>) {
     let connector = ServiceConnector {
@@ -239,7 +239,7 @@ pub async fn write_parameters(
     tool_key: Option<Key16>,
     high_water: SequenceHighWater,
     read_options: &L4Options,
-    observer: &mut dyn FlashObserver,
+    observer: &mut impl FlashObserver,
 ) -> Result<ParamWriteOutcome, ServiceError> {
     let facts = DeviceFacts {
         object_table: detail.resident.object_table.clone(),
