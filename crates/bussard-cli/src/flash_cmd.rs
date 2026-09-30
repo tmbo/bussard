@@ -32,14 +32,14 @@ use std::process::ExitCode;
 
 use anyhow::{Context, bail};
 use bussard_download::{
-    CurrentMemory, FlashPlan, FlashStep, Freshness, ParamPlan, ParamValue, assess_freshness, flash,
+    CurrentMemory, FlashPlan, FlashStep, Freshness, ParamPlan, ParamValue, assess_freshness,
     param_plan, plan_flash_with_object_flags, probe_resident_state,
     read_current_parameter_memory_with_objects, select_application, trace,
 };
 use bussard_mgmt::load::WriteError;
-use bussard_mgmt::{Layer4Connection, LeaseChannel, MaskProfile, MgmtError, Timeouts};
+use bussard_mgmt::{Layer4Connection, LeaseChannel, MaskProfile, MgmtError};
 use bussard_model::IndividualAddress;
-use bussard_prod::{AppSelection, ApplicationProgram, ProductData, normalize_order_number};
+use bussard_prod::{AppSelection, ApplicationProgram, ProductData};
 use bussard_service::{
     Authorize, BusService, FactsSource, L4Options, Management, ServiceError, SourcePolicy,
 };
@@ -295,9 +295,10 @@ pub fn run(
     // self-contained (thelsing) app's does not, so an empty map simply leaves
     // the single-object flash untouched. Computed before the pre-flight so the
     // plan can be built on its connection as soon as the mask is known.
-    let template_ops = template_ops_for(&product_data, app);
-    let table_images = build_table_images(model.as_ref(), target, app, &overrides_map);
-    let object_flags = linked_object_flags(model.as_ref(), target);
+    let template_ops = bussard_download::template_ops_for(&product_data, app);
+    let table_images =
+        bussard_download::build_table_images(model.as_ref(), target, app, &overrides_map);
+    let object_flags = bussard_download::linked_object_flags(model.as_ref(), target);
     let plan_for_mask = |mask: u16| {
         plan_flash_with_object_flags(
             app,
@@ -839,65 +840,6 @@ pub fn run(
     }
 }
 
-/// The master-template `Load` procedure for `app`'s mask, if the archive
-/// shipped a `knx_master.xml`. A merged application (e.g. KNX Virtual DA.tp)
-/// only carries its own app-segment blocks; the load-control ops for the table
-/// objects (obj1/obj2/obj3) live in the template and are spliced in.
-fn template_ops_for(
-    product_data: &ProductData,
-    app: &ApplicationProgram,
-) -> Option<Vec<bussard_prod::application::LoadOp>> {
-    app.mask_version
-        .as_deref()
-        .and_then(|mask| {
-            product_data
-                .master
-                .as_ref()
-                .and_then(|m| m.full_load_procedure(mask))
-        })
-        .map(|proc| proc.ops.clone())
-}
-
-/// The model's parameter inputs for `target`: the parameter overrides
-/// re-keyed to app-relative ParameterRef ids, and the module-instance bases.
-pub(crate) fn model_parameters(
-    model: Option<&bussard_model::Model>,
-    target: IndividualAddress,
-) -> (BTreeMap<String, String>, BTreeMap<String, u32>) {
-    let overrides = collect_parameter_overrides(model, target);
-    let bases = model
-        .and_then(|m| m.devices.get(&target))
-        .map(|d| d.device.module_bases.clone())
-        .unwrap_or_default();
-    (overrides, bases)
-}
-
-/// The full flash plan for `target` against `device_mask`, built offline the
-/// way `flash` builds it. `plan` and `reconstruct` use it to locate the
-/// parameter memory they read back (issue #119).
-pub(crate) fn plan_for_readback(
-    product_data: &ProductData,
-    app: &ApplicationProgram,
-    model: Option<&bussard_model::Model>,
-    target: IndividualAddress,
-    device_mask: u16,
-) -> Result<FlashPlan, bussard_download::PlanError> {
-    let (overrides, bases) = model_parameters(model, target);
-    let template_ops = template_ops_for(product_data, app);
-    let table_images = build_table_images(model, target, app, &overrides);
-    let object_flags = linked_object_flags(model, target);
-    plan_flash_with_object_flags(
-        app,
-        &target.to_string(),
-        device_mask,
-        &overrides,
-        &bases,
-        template_ops.as_deref(),
-        &table_images,
-        &object_flags,
-    )
-}
-
 /// `flash --dry-run`: build the pre-flight plan against the application's own
 /// mask, print it, and (with `--dump-images`) write the images it would
 /// stream. Opens no connection and resolves no gateway, so it runs with no
@@ -931,9 +873,9 @@ fn dry_run(
         );
         return Ok(ExitCode::FAILURE);
     };
-    let template_ops = template_ops_for(product_data, app);
-    let table_images = build_table_images(model, target, app, overrides_map);
-    let object_flags = linked_object_flags(model, target);
+    let template_ops = bussard_download::template_ops_for(product_data, app);
+    let table_images = bussard_download::build_table_images(model, target, app, overrides_map);
+    let object_flags = bussard_download::linked_object_flags(model, target);
     let plan = match plan_flash_with_object_flags(
         app,
         address,
@@ -1058,342 +1000,30 @@ fn add_security_steps(
     Ok(())
 }
 
-/// Collects the target device's parameter overrides from the model, re-keyed
-/// from the device-file `<slug>@<ref-id>` form to the bare app-relative
-/// `ParameterRef` id the flash engine consumes (the part after `@`).
-///
-/// The slug before `@` is a human aid and is dropped. A key with no `@` is
-/// malformed for this contract and skipped with a warning (rather than fed to the
-/// engine as a bogus ref id). Returns an empty map when the model is absent or
-/// the device has no parameter values.
+/// The device's parameter overrides re-keyed to app-relative `ParameterRef`
+/// ids ([`bussard_download::parameter_overrides`]), printing a warning for
+/// each malformed key.
 fn collect_parameter_overrides(
     model: Option<&bussard_model::Model>,
     target: IndividualAddress,
 ) -> BTreeMap<String, String> {
-    let mut out = BTreeMap::new();
-    let Some(model) = model else { return out };
-    let Some(loaded) = model.devices.get(&target) else {
-        return out;
-    };
-    for (key, value) in &loaded.device.parameters {
-        match key.split_once('@') {
-            Some((_slug, ref_id)) if !ref_id.is_empty() => {
-                out.insert(ref_id.to_string(), value.clone());
-            }
-            _ => {
-                eprintln!(
-                    "warning: ignoring parameter key {key:?} on {target}: it has no \
-                     `<slug>@<ref-id>` form, so its ETS-stable identity is undetermined"
-                );
-            }
-        }
+    let (out, malformed) = bussard_download::parameter_overrides(model, target);
+    for warning in malformed {
+        eprintln!("{warning}");
     }
     out
-}
-
-/// Builds the loadable table images (obj1 address, obj2 association, obj3
-/// group-object) a merged flash writes, keyed by device object index (1/2/3).
-///
-/// obj1 and obj2 come from the device's model links via
-/// [`bussard_download::compute_tables`] (the same tables `bussard apply`
-/// downloads); obj3 is the System B group-object descriptor table built from the
-/// app's com-objects (its byte layout is verified byte-for-byte against the
-/// ETS→KNX-Virtual DA.tp capture — see
-/// [`bussard_download::compute::compute_group_object_table`]). Each image
-/// includes its big-endian element-count word.
-///
-/// For a **module-based** application (the DA.tp shape), obj3 is
-/// **channel-expanded**: the module's com-objects are instantiated once per
-/// `<Module>` channel via
-/// [`bussard_download::expand_group_object_descriptors`], so the table carries
-/// every per-channel com-object instance ETS emits (73 entries for DA.tp), not
-/// just the 7 module base objects. Each channel's Communication flag is set when
-/// any of its com-objects is linked in the model, matching ETS (which registers a
-/// linked instance with Communication set and an unlinked one with it cleared).
-/// A non-module application keeps the flat per-com-object table.
-///
-/// An application with a Dynamic section (every real product; issue #123) is
-/// evaluated like ETS does instead: the device's parameter `overrides` decide
-/// which modules and com-objects the configuration shows, only those get
-/// descriptors (Communication set when linked, the model's per-object flags
-/// for a linked one), at ASAP `Number` + the module instance's `BaseNumber`
-/// argument, and the table is counted up to the application's highest own
-/// com-object number ([`bussard_download::dynamic_group_object_table`]). The
-/// two paths below remain for applications without one.
-///
-/// Returns an empty map when the model is absent or the device has no links —
-/// which leaves a self-contained (thelsing) single-object flash untouched.
-/// The model's flags of every com-object the device links, keyed by object
-/// number. A System 7 plan writes them into the linked descriptors; the System B
-/// group-object table image cannot carry object 0 (issue #126, 1.1.1).
-fn linked_object_flags(
-    model: Option<&bussard_model::Model>,
-    target: IndividualAddress,
-) -> BTreeMap<u16, bussard_model::Flags> {
-    let Some(model) = model else {
-        return BTreeMap::new();
-    };
-    let linked: std::collections::BTreeSet<u16> = model
-        .links
-        .links
-        .get(&target)
-        .map(|links| links.iter().map(|l| l.object).collect())
-        .unwrap_or_default();
-    model
-        .devices
-        .get(&target)
-        .map(|loaded| {
-            loaded
-                .device
-                .com_objects
-                .iter()
-                .filter(|(number, _)| linked.contains(number))
-                .map(|(number, co)| (*number, co.flags))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn build_table_images(
-    model: Option<&bussard_model::Model>,
-    target: IndividualAddress,
-    app: &ApplicationProgram,
-    overrides: &BTreeMap<String, String>,
-) -> BTreeMap<u32, Vec<u8>> {
-    use bussard_download::compute::{
-        GroupObjectDescriptor, Priority, compute_group_object_table,
-        descriptors_for_linked_objects, size_code_from_object_size, table_image_with_count,
-    };
-
-    let mut out = BTreeMap::new();
-
-    // The device's model links, if any. A `--dir` model that has no entry for
-    // this device (or an empty link list) is a *bare vendor-default* flash: the
-    // device is programmed with the application's out-of-box group objects but no
-    // group addresses (an empty address/association table), exactly as a
-    // factory-fresh ETS download of an unassigned device would.
-    let links: &[bussard_model::schema::Link] = model
-        .and_then(|m| m.links.links.get(&target))
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
-
-    // obj1 (address table) + obj2 (association table) from the model links. With
-    // no links these are the empty tables (count word 0), which a merged
-    // template still allocates and writes on a bare flash.
-    let desired = bussard_download::compute_tables(links);
-    out.insert(
-        1,
-        table_image_with_count(desired.address_count(), &desired.address_elements()),
-    );
-    out.insert(
-        2,
-        table_image_with_count(desired.association_count(), &desired.association_elements()),
-    );
-
-    // obj3 (group-object table).
-    let linked: std::collections::BTreeSet<u16> = links.iter().map(|l| l.object).collect();
-    // The flags ETS writes for a linked object are the project's, not the
-    // product's defaults: the model's `com_objects` carry them (1.1.46 in the
-    // campaign: object 7 is CRT in the model and ETS wrote T R C, the product
-    // default lacks T). Applied to every descriptor set below.
-    let model_flags: std::collections::BTreeMap<u16, bussard_model::Flags> = model
-        .and_then(|m| m.devices.get(&target))
-        .map(|loaded| {
-            loaded
-                .device
-                .com_objects
-                .iter()
-                .map(|(number, co)| (*number, co.flags))
-                .collect()
-        })
-        .unwrap_or_default();
-    let with_model_flags = |mut descriptors: Vec<GroupObjectDescriptor>| {
-        for d in &mut descriptors {
-            if linked.contains(&d.asap)
-                && let Some(flags) = model_flags.get(&d.asap)
-            {
-                d.flags = *flags;
-            }
-        }
-        descriptors
-    };
-    let obj3 = if bussard_prod::uses_dynamic_image(app) {
-        let model_objects = model
-            .and_then(|m| m.devices.get(&target))
-            .map(|d| &d.device.com_objects);
-        let linked_objects: BTreeMap<u16, bussard_download::LinkedObject> = linked
-            .iter()
-            .map(|&object| {
-                let info = model_objects.and_then(|objects| objects.get(&object));
-                let entry = bussard_download::LinkedObject {
-                    com_object_ref: info.and_then(|c| c.reference.clone()),
-                    flags: info.map(|c| c.flags),
-                };
-                (object, entry)
-            })
-            .collect();
-        bussard_download::dynamic_group_object_table(app, overrides, &linked_objects)
-    } else if !app.module_instances.is_empty() && app.channel_membership.is_some() {
-        // Module-based application: instantiate the com-objects across channels.
-        // Each channel is linked when any of the com-objects it carries appears
-        // in the model links; `<choose>` selectors fall back to their parameter
-        // defaults (the vendor-default channel objects on a bare flash).
-        let descriptors = with_model_flags(build_module_obj3_descriptors(app, &linked));
-        compute_group_object_table(&descriptors)
-    } else {
-        // Non-module application: a flat per-com-object table. With links, ETS
-        // registers a descriptor for each linked com-object (Communication set);
-        // on a bare flash it emits every declared com-object with Communication
-        // cleared.
-        let com_objects = app.resolved_com_objects();
-        if links.is_empty() {
-            let descriptors: Vec<GroupObjectDescriptor> = com_objects
-                .iter()
-                .map(|c| GroupObjectDescriptor {
-                    asap: c.number(),
-                    // Communication cleared: an unlinked com-object on a bare flash.
-                    flags: c.flags() - bussard_model::Flags::COMMUNICATION,
-                    size_code: size_code_from_object_size(c.object_size()),
-                    priority: Priority::default(),
-                })
-                .collect();
-            compute_group_object_table(&descriptors)
-        } else {
-            let descriptors =
-                with_model_flags(descriptors_for_linked_objects(&com_objects, &linked));
-            compute_group_object_table(&descriptors)
-        }
-    };
-    if let Some(obj3) = obj3 {
-        out.insert(3, obj3);
-    }
-
-    out
-}
-
-/// Builds the channel-expanded obj3 descriptors for a module-based application,
-/// marking each channel linked when any of its instantiated com-objects is bound
-/// to a group address in the model.
-///
-/// The channel's `<choose>` selectors use the parameters' declared defaults (the
-/// vendor-default per-channel object set), which is what a bare flash of an
-/// unconfigured device programs. Each channel's ASAPs are discovered by expanding
-/// that channel alone; a channel is linked when any of those ASAPs is in
-/// `linked`, and the full table is then expanded with those per-channel flags.
-fn build_module_obj3_descriptors(
-    app: &ApplicationProgram,
-    linked: &std::collections::BTreeSet<u16>,
-) -> Vec<bussard_download::compute::GroupObjectDescriptor> {
-    use bussard_download::compute::{ChannelConfig, expand_group_object_descriptors};
-
-    let channel_count = app.module_instances.len();
-    let mut configs = vec![ChannelConfig::default(); channel_count];
-    for (idx, config) in configs.iter_mut().enumerate() {
-        // Expand this one channel alone (others contribute no descriptors only if
-        // they too are default, but their ASAPs never collide — bases differ), so
-        // its descriptors are exactly this channel's ASAPs.
-        let mut solo = vec![ChannelConfig::default(); channel_count];
-        // Give the other channels an out-of-band selector so they stay default;
-        // the per-instance argObj bases already keep ASAP ranges disjoint, so we
-        // can filter this channel's ASAPs by expanding only it.
-        for (other_idx, other) in solo.iter_mut().enumerate() {
-            other.linked = other_idx == idx;
-        }
-        let descs = expand_group_object_descriptors(app, &solo);
-        // This channel's ASAPs are those whose descriptor has Communication set
-        // (only this channel was marked linked).
-        let channel_asaps: std::collections::BTreeSet<u16> = descs
-            .iter()
-            .filter(|d| d.flags.contains(bussard_model::Flags::COMMUNICATION))
-            .map(|d| d.asap)
-            .collect();
-        config.linked = channel_asaps.iter().any(|a| linked.contains(a));
-    }
-
-    expand_group_object_descriptors(app, &configs)
 }
 
 /// Resolves an application program from a hardware order number, requiring
-/// exactly one match.
-///
-/// Matching is index-style normalized (trim + upper-case, interior separators
-/// preserved — the same rule the product pointer index uses), so `akk-0216.03 `
-/// resolves to `AKK-0216.03`. Every order number in the archive's hardware
-/// catalogue is normalized and compared; the applications the matching order
-/// numbers map to are collected and de-duplicated by id.
-///
-/// - Exactly one distinct application → returned.
-/// - Zero → an error naming the order number and (up to a few) known order
-///   numbers as candidates.
-/// - More than one → an error listing the candidate application ids so the user
-///   can fall back to `--application`.
+/// exactly one match ([`bussard_download::resolve_by_order_number`]).
 pub(crate) fn resolve_by_order_number<'a>(
     product: &'a ProductData,
     order_number: &str,
 ) -> anyhow::Result<&'a ApplicationProgram> {
-    let want = normalize_order_number(order_number);
-
-    // Every order-number key that normalizes to the wanted value, and the
-    // application refs each maps to (joined, de-duplicated by ref).
-    let mut app_refs: Vec<&str> = Vec::new();
-    for (order, refs) in &product.hardware.order_to_apps {
-        if normalize_order_number(order) == want {
-            for r in refs {
-                if !app_refs.contains(&r.as_str()) {
-                    app_refs.push(r.as_str());
-                }
-            }
-        }
-    }
-
-    // Resolve refs to the parsed applications present in the archive, keeping
-    // them distinct by id (a ref may repeat across hardware rows).
-    let mut apps: Vec<&ApplicationProgram> = Vec::new();
-    for r in &app_refs {
-        if let Some(app) = product.application_by_id(r)
-            && !apps.iter().any(|a| a.id == app.id)
-        {
-            apps.push(app);
-        }
-    }
-
-    match apps.as_slice() {
-        [only] => Ok(only),
-        [] => {
-            let mut known: Vec<&str> = product
-                .hardware
-                .order_to_apps
-                .keys()
-                .map(String::as_str)
-                .collect();
-            known.sort_unstable();
-            let candidates = if known.is_empty() {
-                "the archive lists no order numbers".to_string()
-            } else {
-                let shown: Vec<&str> = known.iter().take(10).copied().collect();
-                let suffix = if known.len() > shown.len() {
-                    format!(", … ({} total)", known.len())
-                } else {
-                    String::new()
-                };
-                format!("known order numbers: {}{suffix}", shown.join(", "))
-            };
-            bail!(
-                "no application matches order number {order_number:?} in {}; {candidates}. \
-                 Pass --application <ref> to select by application id instead.",
-                product_display(product),
-            )
-        }
-        many => {
-            let ids: Vec<&str> = many.iter().map(|a| a.id.as_str()).collect();
-            bail!(
-                "order number {order_number:?} maps to {} applications ({}); \
-                 disambiguate with --application <ref>.",
-                many.len(),
-                ids.join(", "),
-            )
-        }
-    }
+    Ok(bussard_download::resolve_by_order_number(
+        product,
+        order_number,
+    )?)
 }
 
 /// Parses a `--bcu-key` value: a 32-bit access key in hex, with or without a
@@ -1513,99 +1143,6 @@ fn preflight_interrupted(
     }
 }
 
-/// A short label for the product in an error message: its manufacturer id(s).
-fn product_display(product: &ProductData) -> String {
-    if product.manufacturers.is_empty() {
-        "the product archive".to_string()
-    } else {
-        format!("the product archive ({})", product.manufacturers.join(", "))
-    }
-}
-
-/// Opens the L4 connection to the flash target by leasing the bus.
-///
-/// The download ([`bussard_download::Session`]) runs over this single connection
-/// for its whole duration, like ETS: the lease takes a [`bussard_bus::BusLease`]
-/// and builds a [`LeaseChannel`] over it, so the flash observes the bus without
-/// stealing frames from other subscribers.
-struct LeaseConnector<'a> {
-    service: &'a BusService,
-    target: IndividualAddress,
-    source: IndividualAddress,
-    /// The KNX Data Secure tool key for the target, when the device is
-    /// security-activated (issue #71, spec §6.2). `None` is the plain,
-    /// byte-identical path; `Some` wraps every management APDU behind
-    /// A_SecureData. The key is cloned to build a fresh `DataSecureSession` on
-    /// each (re)connect; the send sequence continues from `secure_seq` so a
-    /// reconnect after a master reset never replays a sequence the device has
-    /// already accepted.
-    secure_tool_key: Option<bussard_secure::Key16>,
-    /// The send-sequence high-water mark shared with every other session against
-    /// this device (spec §5.9). A flash reconnects — on a master reset, on a
-    /// dropped L4 — and an activated device refuses any sequence it has already
-    /// accepted, so each reconnect must continue the counter, not reseed it from
-    /// the clock.
-    secure_seq: bussard_secure::SequenceHighWater,
-}
-
-/// Environment variable that overrides the flash's per-attempt L4 ACK/response
-/// timeout (in milliseconds). Unset in normal use, so the standard 3 s budget
-/// applies. It exists so a stress run against a device that drops the L4
-/// connection extremely frequently (the local sim's tiny `KNX_SIM_L4_BUDGET`, or a
-/// pathologically flaky tunnel) detects each drop in milliseconds instead of the
-/// full 3 s ACK-retransmit wait — resume-on-drop then reconnects promptly. It does
-/// not change what the flash does, only how long it waits before treating a silent
-/// peer as a dropped connection.
-const FLASH_L4_TIMEOUT_MS_ENV: &str = "BUSSARD_FLASH_L4_TIMEOUT_MS";
-
-/// The L4 timeout budget for a flash connection, honouring [`FLASH_L4_TIMEOUT_MS_ENV`].
-fn flash_l4_timeouts() -> Option<Timeouts> {
-    bussard_model::dotenv::var(FLASH_L4_TIMEOUT_MS_ENV)
-        .ok()
-        .and_then(|s| s.trim().parse::<u64>().ok())
-        .map(|ms| Timeouts {
-            ack_timeout: std::time::Duration::from_millis(ms),
-            max_repetitions: 1,
-            response_timeout: std::time::Duration::from_millis(ms),
-            absent_on_negative_confirmation: false,
-        })
-}
-
-impl bussard_download::Connector for LeaseConnector<'_> {
-    type Channel = LeaseChannel;
-
-    async fn connect(&mut self) -> Result<Layer4Connection<LeaseChannel>, WriteError> {
-        // The service waits for a tunnel re-established after a gateway link
-        // loss (issue #177) before the fresh T_Connect; immediate when
-        // connected. KNX Data Secure seam (spec §6.1/§6.2): a plain connection
-        // when no tool key is set (byte-identical to today), or a wrapped one
-        // when the device is security-activated. The download session
-        // authorizes itself, so the service does not.
-        let options = L4Options {
-            source: SourcePolicy::Known(self.source),
-            tool_key: self.secure_tool_key.clone(),
-            high_water: self.secure_seq.clone(),
-            timeouts: flash_l4_timeouts().unwrap_or_default(),
-            authorize: Authorize::Skip,
-        };
-        match self.service.connect_l4(self.target, &options).await {
-            Ok(l4) => Ok(l4),
-            Err(ServiceError::Mgmt(err)) => Err(WriteError::Mgmt(err)),
-            // Leasing fails only if the bus actor is gone or the connection went
-            // stale; either way the L4 session is unusable.
-            Err(_) => Err(WriteError::Mgmt(MgmtError::Transport(
-                bussard_transport::TransportError::Closed,
-            ))),
-        }
-    }
-
-    fn link_losses(&self) -> u64 {
-        // Lets the session tell a failure the gateway caused (the count moved)
-        // from one the device caused, and retry the former (issue #192).
-        self.service.handle().link_losses()
-    }
-}
-
 /// Runs the on-bus flash sequence with a progress line.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute(
@@ -1666,65 +1203,55 @@ pub(crate) async fn execute_then<R>(
     Result<bussard_download::FlashOutcome, WriteError>,
     Option<R>,
 ) {
-    let connector = LeaseConnector {
+    // Progress (issue #147): the plain `  [k/n] label` / `n/m bytes` lines, or
+    // the live view on an interactive terminal. The terminal restart is the
+    // last step: from there on the flash waits out the reboot and verifies, so
+    // `flash -v` reports it as its own phase.
+    let mut observer = DisplayObserver {
+        display: Some(crate::progress::FlashDisplay::new(plan, json)),
+        restart_started,
+    };
+    // Authorize the management connect with the project BCU key (or free
+    // access when unset), issue #52 finding #1. Opened with what the read-only
+    // pre-flight already learned (the object table, the authorize verdict, the
+    // max APDU), so the write phase does not rediscover any of it. KNX Data
+    // Secure (issue #71, spec §6.2): `None` is the plain, byte-identical path.
+    let run = bussard_service::download::FlashRun {
         service,
         target,
         source,
-        secure_seq,
-        // KNX Data Secure (issue #71, spec §6.2): `None` is the plain,
-        // byte-identical path; `Some` wraps every management APDU behind
-        // A_SecureData with the target's tool key (`--keyring` / `--tool-key`).
-        secure_tool_key,
+        options,
+        facts,
+        tool_key: secure_tool_key,
+        high_water: secure_seq,
+        handover,
     };
-    // Authorize the management connect with the project BCU key (or free access
-    // when unset) — issue #52 finding #1.
-    // Opened with what the read-only pre-flight already learned (the object
-    // table, the authorize verdict, the max APDU), so the write phase does not
-    // rediscover any of it.
-    let opened = match handover {
-        Some(mut l4) => {
-            // The write phase's timeout budget, as its own connections get.
-            l4.set_timeouts(flash_l4_timeouts().unwrap_or_default());
-            bussard_download::Session::adopt_with_facts(connector, l4, options.bcu_key, facts).await
-        }
-        None => bussard_download::Session::open_with_facts(connector, options.bcu_key, facts).await,
-    };
-    let mut session = match opened {
-        Ok(session) => session,
-        Err(err) => return (Err(err), None),
-    };
-    // The session owns the open connection; from here the flash body runs and its
-    // result is captured, then the session is disconnected unconditionally below —
-    // regardless of whether the flash succeeded or failed mid-procedure. `flash`
-    // borrows the session (never consumes it), and there is no `?` between here and
-    // the disconnect, so a mid-flash WriteError can never skip the T_Disconnect that
-    // releases the L4 session. (finding 3: a stuck session after a failed flash
-    // traces to a skipped disconnect; keeping the disconnect on every arm is the
-    // guarantee.)
-    //
-    // Progress (issue #147): the plain `  [k/n] label` / `n/m bytes` lines, or
-    // the live view on an interactive terminal.
-    let mut display = crate::progress::FlashDisplay::new(plan, json);
-    let result = flash(&mut session, plan, options, |p| {
-        // The terminal restart is the last step: from here on the flash waits
-        // out the reboot and verifies, so `flash -v` reports it as its own phase.
+    bussard_service::download::flash_session(run, plan, &mut observer, after).await
+}
+
+/// The CLI's flash progress: the display, and the moment the restart began.
+struct DisplayObserver<'a> {
+    display: Option<crate::progress::FlashDisplay>,
+    restart_started: &'a std::cell::Cell<Option<std::time::Instant>>,
+}
+
+impl bussard_service::download::FlashObserver for DisplayObserver<'_> {
+    fn progress(&mut self, p: bussard_download::Progress) {
         if let bussard_download::Progress::Step { index, total, .. } = &p
             && index == total
         {
-            restart_started.set(Some(std::time::Instant::now()));
+            self.restart_started.set(Some(std::time::Instant::now()));
         }
-        display.on_progress(p)
-    })
-    .await;
-    let verified = result.as_ref().is_ok_and(|outcome| outcome.ok());
-    display.finish(verified);
-    let extra = if verified {
-        Some(after(session.l4()).await)
-    } else {
-        None
-    };
-    let _ = session.into_disconnect().await;
-    (result, extra)
+        if let Some(display) = &mut self.display {
+            display.on_progress(p);
+        }
+    }
+
+    fn finished(&mut self, verified: bool) {
+        if let Some(display) = self.display.take() {
+            display.finish(verified);
+        }
+    }
 }
 
 /// Prints the pre-flight plan: application identity, mask compatibility, the

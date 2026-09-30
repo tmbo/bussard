@@ -8,19 +8,15 @@
 
 use std::path::Path;
 
-use bussard_download::select_application;
-use bussard_prod::{AppSelection, ApplicationProgram, ProductCatalog, ProductData};
+use bussard_prod::{AppSelection, ProductCatalog, ProductData};
 
-pub use bussard_prod::product_model::cache_dir;
+#[cfg(test)]
+use bussard_prod::product_model::cache_dir;
 
 /// Reads `path` (a `.knxprod`, a wrapper with `inner`, or a `.knxproj`),
-/// parsing only what `select` picks, through the cache of the model at `dir`.
-/// The time it took is a `--timing` phase.
-///
-/// `language` is the language the programs' texts are parsed in: the
-/// `language` the model's `bussard.lock` records (see [`model_language`]),
-/// so enum labels a device file carries resolve in the language `import`
-/// wrote them in. `None` parses in the default language (en-US).
+/// parsing only what `select` picks, through the cache of the model at `dir`
+/// ([`bussard_service::params::read_product`]). The time it took is a
+/// `--timing` phase.
 ///
 /// # Errors
 ///
@@ -32,36 +28,15 @@ pub fn read(
     language: Option<&str>,
     select: impl FnOnce(&ProductCatalog) -> AppSelection,
 ) -> bussard_prod::Result<ProductData> {
-    let started = std::time::Instant::now();
-    let cache = cache_dir(dir);
-    let product =
-        bussard_prod::read_knxprod_selected_in(path, inner, cache.as_deref(), language, select);
-    let detail = match &product {
-        Ok(p) => format!(
-            "{} program(s), {}",
-            p.applications.len(),
-            if cache.is_some() {
-                "cache on"
-            } else {
-                "no cache"
-            }
-        ),
-        Err(_) => "failed".to_string(),
-    };
-    crate::timing::record("product parse", started.elapsed(), detail);
-    product
+    bussard_service::params::read_product(path, inner, dir, language, select, Some(record_parse))
 }
 
-/// The language a model's device files carry their texts and enum labels in:
-/// the `language` the loaded `model`'s lock records, else the language
-/// `bussard import` would use for `dir` ([`bussard_model::import_language`]:
-/// `[import] language` in `bussard.toml`, else the lock's `language`).
-/// `None` when nothing says.
-pub fn model_language(model: Option<&bussard_model::Model>, dir: &Path) -> Option<String> {
-    model
-        .and_then(|m| m.lock_language().map(str::to_string))
-        .or_else(|| bussard_model::import_language(dir))
+/// Records one product parse as the `product parse` `--timing` phase.
+pub fn record_parse(took: std::time::Duration, detail: String) {
+    crate::timing::record("product parse", took, detail);
 }
+
+pub use bussard_service::params::{model_language, order_refs, select_id};
 
 /// The selection of the one program `wanted` names, by the rule of
 /// [`select_application`] (the exact id, else the one program with the same
@@ -72,40 +47,6 @@ pub fn by_application(catalog: &ProductCatalog, wanted: &str) -> AppSelection {
         Some(id) => AppSelection::Only(vec![id]),
         None => AppSelection::All,
     }
-}
-
-/// The id [`select_application`] picks for `wanted` among the catalogue's
-/// programs, judged on the ids alone (all the rule reads).
-pub fn select_id(catalog: &ProductCatalog, wanted: &str) -> Option<String> {
-    let stubs: Vec<ApplicationProgram> = catalog
-        .application_ids
-        .iter()
-        .map(|id| ApplicationProgram {
-            id: id.clone(),
-            ..ApplicationProgram::default()
-        })
-        .collect();
-    let refs: Vec<&ApplicationProgram> = stubs.iter().collect();
-    select_application(&refs, Some(wanted))
-        .ok()
-        .map(|a| a.id.clone())
-}
-
-/// Every program the hardware catalogue maps an order number to that
-/// normalizes to `order` (what `resolve_by_order_number` considers).
-pub fn order_refs(catalog: &ProductCatalog, order: &str) -> Vec<String> {
-    let want = bussard_prod::normalize_order_number(order);
-    let mut refs: Vec<String> = Vec::new();
-    for (o, apps) in &catalog.hardware.order_to_apps {
-        if bussard_prod::normalize_order_number(o) == want {
-            for r in apps {
-                if !refs.contains(r) {
-                    refs.push(r.clone());
-                }
-            }
-        }
-    }
-    refs
 }
 
 #[cfg(test)]

@@ -23,6 +23,13 @@ bussard-prod = { workspace = true }
 # file bytes and the password, so neither is kept in the clear. Already in the
 # tree (bussard-project, bussard-secure). MIT OR Apache-2.0.
 sha2 = { workspace = true }
+# The parameter half of a device write (issue #274): the product
+# resolution, the read-back, the plan and the parameter-only download that
+# `bussard apply` and the MCP programming tier share. First-party.
+bussard-download = { workspace = true }
+# The parameter read-back report is serialized by `plan --json`. Already in
+# the tree. MIT OR Apache-2.0.
+serde = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }

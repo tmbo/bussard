@@ -269,6 +269,15 @@ async fn test_guidance_every_description_next_step_and_instruction_names_the_mcp
                 "knx_set_parameter" | "knx_undo" => {
                     assert!(next.contains("1.1.47"), "{tool}: {next}");
                     assert!(next.contains("knx_apply_device"), "{tool}: {next}");
+                    // Parameters are pushed over MCP (issue #274): with the
+                    // programming tier, no CLI step is named.
+                    if tier.programming {
+                        assert!(
+                            next.contains("knx_plan_device for 1.1.47"),
+                            "{tool}: {next}"
+                        );
+                        assert!(!next.contains("bussard apply"), "{tool}: {next}");
+                    }
                 }
                 _ => {}
             }
@@ -399,8 +408,9 @@ const READ_INSTRUCTIONS: &str = "bussard: KNX as code over MCP. The installation
     sentences: quote them to the human, and follow the result's next_step. Group writes are \
     off: restart with --allow-writes for knx_write_group. This server runs without \
     --allow-programming, so edits stay in the files. Restarted with that flag, \
-    knx_plan_device and knx_apply_device push a device's links; without it, the push is \
-    `bussard plan <ia>` and `bussard apply <ia>` at the CLI. Still needs the CLI: `bussard \
+    knx_plan_device and knx_apply_device push a device's links and parameter values; without \
+    it, the push is `bussard plan <ia>` and `bussard apply <ia>` at the CLI. Still needs the \
+    CLI: `bussard \
     flash` to load a new application program, `bussard adopt`, `bussard replace` and \
     `bussard commission`. Still needs ETS: the Secure activation of a fresh device, and any \
     setting the device's product model does not expose.";
@@ -422,10 +432,10 @@ const PROGRAMMING_INSTRUCTIONS: &str = "bussard: KNX as code over MCP. The insta
     next_step. Group writes are off: restart with --allow-writes for knx_write_group. Push a \
     device with knx_plan_device, show the plan to the human in full, and call \
     knx_apply_device only after an explicit yes in this conversation. It writes the device's \
-    links (group-address and association tables), over KNX Data Secure when the server's \
-    keyring lists the device. Parameter values are not written over MCP yet: \
-    knx_apply_device writes links only, and after knx_set_parameter the parameter write is \
-    `bussard apply <ia>` at the CLI. Still needs the CLI: `bussard flash` to load a new \
+    links (group-address and association tables) and the parameter values that differ from \
+    the model (one plan sentence each), over KNX Data Secure when the server's keyring lists \
+    the device. A plan without the device's product data writes the links only and says \
+    why. Still needs the CLI: `bussard flash` to load a new \
     application program, `bussard adopt`, `bussard replace` and `bussard commission`. Still \
     needs ETS: the Secure activation of a fresh device, and any setting the device's product \
     model does not expose.";

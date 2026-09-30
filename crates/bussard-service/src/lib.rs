@@ -40,6 +40,7 @@
 pub mod adopt;
 pub mod bus;
 pub mod describe;
+pub mod download;
 pub mod error;
 pub mod facts;
 pub mod group;
@@ -48,13 +49,17 @@ pub mod group;
 pub use bussard_transport::guidance;
 pub mod identity;
 pub mod model_handle;
+pub mod params;
 pub mod policy;
 pub mod secure;
 pub mod write;
 
 pub use bus::{Authorize, BusService, Device, L4Options, Management, SourcePolicy};
 pub use error::ServiceError;
-pub use facts::{Established, FactsCache, FactsSource, FactsWant};
+pub use facts::{
+    Established, FactsCache, FactsSource, FactsWant, Identified, drift_refusal,
+    establish_table_facts, identify, identity_line, seed_of,
+};
 pub use group::{
     GroupKeys, GroupRead, GroupSendError, SecureGroupError, SecuredSend, group_key_for,
 };

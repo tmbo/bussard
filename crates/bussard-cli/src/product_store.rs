@@ -17,7 +17,7 @@ use anyhow::{Context as _, bail};
 use bussard_model::schema::{Device, ProductEntry, ProductOrigin};
 
 /// The product store under a model directory.
-pub(crate) const PRODUCTS_DIR: &str = "products";
+pub(crate) const PRODUCTS_DIR: &str = bussard_service::params::PRODUCTS_DIR;
 
 /// The directory earlier versions cached vendor archives in; its archives
 /// move to [`PRODUCTS_DIR`] on the first command after the upgrade.
@@ -83,8 +83,8 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// The archive `entry` pins, verified: its path when the file is there and
-/// its SHA-256 is the pinned one.
+/// The archive `entry` pins, verified
+/// ([`bussard_service::params::verified_path`]).
 ///
 /// # Errors
 ///
@@ -94,45 +94,27 @@ pub(crate) fn verified_path(
     what: &str,
     entry: &ProductEntry,
 ) -> anyhow::Result<PathBuf> {
-    Ok(bussard_prod::product_model::verified_archive(
-        dir, what, entry,
-    )?)
+    Ok(bussard_service::params::verified_path(dir, what, entry)?)
 }
 
-/// The archive a model device's product data comes from: the entry its lock
-/// link names, verified. `Ok(None)` when the lock pins nothing for it.
+/// The archive a model device's product data comes from
+/// ([`bussard_service::params::device_archive`]).
 ///
 /// # Errors
 ///
-/// The pinned archive is missing or its content changed (the refusal names
-/// the recovery step).
+/// The pinned archive is missing or its content changed.
 pub(crate) fn device_archive(dir: &Path, device: &Device) -> anyhow::Result<Option<PathBuf>> {
-    let Some(entry) = &device.lock.product_entry else {
-        return Ok(None);
-    };
-    verified_path(dir, &device.address.to_string(), entry).map(Some)
+    Ok(bussard_service::params::device_archive(dir, device)?)
 }
 
-/// The archive the lock pins for an order number (the first entry holding
-/// an archive whose catalogue carries it), verified. `Ok(None)` when no
-/// entry carries it.
+/// The archive the lock pins for an order number
+/// ([`bussard_service::params::archive_for_order`]).
 ///
 /// # Errors
 ///
 /// A matching entry's archive is missing or changed.
 pub(crate) fn archive_for_order(dir: &Path, order: &str) -> anyhow::Result<Option<PathBuf>> {
-    let want = bussard_prod::normalize_order_number(order);
-    let entries = bussard_model::lock_products::lock_entries(dir);
-    let mut matching = entries.iter().filter(|e| {
-        e.file.is_some()
-            && e.order_numbers
-                .iter()
-                .any(|o| bussard_prod::normalize_order_number(o) == want)
-    });
-    match matching.next() {
-        Some(entry) => verified_path(dir, order, entry).map(Some),
-        None => Ok(None),
-    }
+    Ok(bussard_service::params::archive_for_order(dir, order)?)
 }
 
 /// The product archive for `order` on a device of the model (`device`, when

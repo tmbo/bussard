@@ -28,18 +28,32 @@ use std::process::ExitCode;
 
 use anyhow::Context as _;
 use bussard_bus::ops;
-use bussard_download::backup::{
-    ParameterBackup, ParameterMemory, encode_hex, parameter_backups_dir, rfc3339_utc, unix_seconds,
-    write_parameter_backup,
-};
 use bussard_download::{
-    FlashPlan, FlashStep, Freshness, ParamPlan, ParamRegions, ResidentState, assess_freshness,
-    decode_parameters, group_object_change, read_parameter_regions, regions_memory,
+    FlashPlan, FlashStep, ParamPlan, ParamRegions, ResidentState, decode_parameters,
+    group_object_change, read_parameter_regions, regions_memory,
 };
 use bussard_mgmt::memory::read_memory_range;
 use bussard_model::IndividualAddress;
 use bussard_prod::ApplicationProgram;
 use bussard_service::{Authorize, BusService, L4Options, ServiceError, SourcePolicy};
+
+pub(crate) use bussard_download::{
+    describe_group_object_change, identity_gate, region_rows, runtime_segments, sys7_code_mismatch,
+    verify_readback,
+};
+
+/// Writes the pre-download parameter memory to
+/// `<dir>/captures/backups/parameters/<ia>-<ts>.json`.
+pub(crate) fn write_backup(
+    dir: &Path,
+    target: IndividualAddress,
+    plan: &FlashPlan,
+    regions: &ParamRegions,
+) -> anyhow::Result<std::path::PathBuf> {
+    Ok(bussard_download::write_parameter_memory_backup(
+        dir, target, plan, regions,
+    )?)
+}
 
 /// Everything the parameter-only download needs from the `flash` pipeline.
 pub(crate) struct Context<'a> {
@@ -241,78 +255,6 @@ pub(crate) fn run(mut ctx: Context<'_>) -> anyhow::Result<ExitCode> {
     }
 }
 
-/// The resident-application rule: the device must run the application the
-/// product file describes, and it must be `Loaded`.
-///
-/// One rule for every caller that trusts the resident parameter layout (the
-/// parameter-only download and the `plan`/`reconstruct` read-back, issue
-/// #142). System B compares `PID_PROGRAM_VERSION` (manufacturer, application
-/// number and version: a product build with another hash is the same
-/// program). System 7 has no readable id: every load-state machine the
-/// application's procedure drives must be `Loaded`, and the caller samples the
-/// code segments with [`sys7_code_mismatch`].
-pub(crate) fn identity_gate(
-    plan: &FlashPlan,
-    resident: Option<&ResidentState>,
-) -> Result<(), String> {
-    let Some(state) = resident else {
-        return Err(
-            "the pre-flight probe did not run, so the resident application is unknown".into(),
-        );
-    };
-    let expected = &plan.identity.id;
-    match assess_freshness(state, &plan.identity) {
-        Freshness::SameApplication { .. } => Ok(()),
-        Freshness::Fresh => Err(format!(
-            "the device holds no loaded application (it is not Loaded); a parameter-only \
-             download needs {expected} in place. Run a full `bussard flash` first."
-        )),
-        Freshness::Unknown { reason } => Err(format!(
-            "the device's load state could not be read ({reason})"
-        )),
-        Freshness::Resident {
-            resident: Some(id), ..
-        } => Err(format!(
-            "the device runs application {id}, not {expected}; its parameter memory does not \
-             have this application's layout. Run a full `bussard flash` to replace it."
-        )),
-        Freshness::Resident { resident: None, .. } if plan.is_sys7() => {
-            // System 7 exposes no application id. Every load-state machine must
-            // be Loaded; the code-segment comparison in `read_device` stands in
-            // for the id.
-            let driven: std::collections::BTreeSet<u32> = plan
-                .steps
-                .iter()
-                .filter_map(|step| match step {
-                    FlashStep::Sys7StartLoading { lsm } => Some(*lsm),
-                    _ => None,
-                })
-                .collect();
-            let unloaded: Vec<String> = state
-                .objects
-                .iter()
-                // An LSM the application's procedure never loads (the probe
-                // reads every one the mask defines) says nothing about it.
-                .filter(|o| driven.is_empty() || driven.contains(&u32::from(o.index)))
-                .filter(|o| o.state != bussard_mgmt::load::LoadState::Loaded)
-                .map(|o| format!("{} is {}", o.label(), o.state))
-                .collect();
-            if unloaded.is_empty() {
-                Ok(())
-            } else {
-                Err(format!(
-                    "the device is not fully Loaded ({}); run a full `bussard flash`",
-                    unloaded.join(", ")
-                ))
-            }
-        }
-        Freshness::Resident { resident: None, .. } => Err(format!(
-            "the device runs an application whose id (PID_PROGRAM_VERSION) cannot be read, so \
-             it cannot be confirmed to be {expected}"
-        )),
-    }
-}
-
 /// What one read-only pass learned.
 pub(crate) struct DeviceRead {
     /// The parameter regions.
@@ -368,59 +310,6 @@ pub(crate) async fn read_parameters_on<Ch: bussard_mgmt::L4Channel>(
         code_mismatch,
         table_change,
     }
-}
-
-/// How many leading octets of each System 7 code segment are compared.
-const CODE_SAMPLE: usize = 32;
-
-/// Compares the leading octets of every System 7 code segment (a data-bearing
-/// segment no parameter targets) against the product's bytes. System 7 has no
-/// readable application id, so resident code that differs is the evidence of a
-/// different application. `None` when every sampled segment matches, or when
-/// there is none to sample.
-pub(crate) async fn sys7_code_mismatch<Ch: bussard_mgmt::L4Channel>(
-    l4: &mut bussard_mgmt::Layer4Connection<Ch>,
-    plan: &FlashPlan,
-) -> Option<String> {
-    for step in &plan.steps {
-        let FlashStep::Sys7AbsSegment {
-            address,
-            image: Some(image),
-            checksum_ctrl,
-            ..
-        } = step
-        else {
-            continue;
-        };
-        // Parameter segments are what changes; runtime-writable segments are
-        // rewritten by the running application; table segments are the links.
-        let carries_params = plan
-            .param_images
-            .get(&image.segment_id)
-            .is_some_and(|b| !b.is_empty());
-        if carries_params || *checksum_ctrl == 0 || image.kind == bussard_download::ImageKind::Table
-        {
-            continue;
-        }
-        let Some(expected) = plan.image_bytes(&image.segment_id) else {
-            continue;
-        };
-        let len = expected.len().min(CODE_SAMPLE);
-        let Ok(got) = read_memory_range(l4, *address, len).await else {
-            continue;
-        };
-        let mask = plan.segment_mask(&image.segment_id);
-        let differs = (0..len)
-            .any(|i| mask.is_none_or(|m| m.get(i) == Some(&0xFF)) && got.get(i) != expected.get(i));
-        if differs {
-            return Some(format!(
-                "the code at {address:#06X} ({}) does not match {}; the device runs another \
-                 application or version. Run a full `bussard flash` to replace it.",
-                image.segment_id, plan.identity.id
-            ));
-        }
-    }
-    None
 }
 
 /// Names the first System 7 link table (LSM 1 group addresses, LSM 2
@@ -495,42 +384,6 @@ pub(crate) async fn sys7_table_change<Ch: bussard_mgmt::L4Channel>(
         }
     }
     None
-}
-
-/// Names what a group-object change shows and hides.
-pub(crate) fn describe_group_object_change(change: &bussard_download::GroupObjectChange) -> String {
-    let list = |v: &[u16]| v.iter().map(u16::to_string).collect::<Vec<_>>().join(", ");
-    let mut parts = Vec::new();
-    if !change.shown.is_empty() {
-        parts.push(format!("shows object(s) {}", list(&change.shown)));
-    }
-    if !change.hidden.is_empty() {
-        parts.push(format!("hides object(s) {}", list(&change.hidden)));
-    }
-    if parts.is_empty() {
-        parts.push("changes an object's size or flags".to_string());
-    }
-    parts.join(", ")
-}
-
-/// The memory regions the download writes: `(segment, address, octets, changed)`.
-fn region_rows(partial: &FlashPlan, regions: &ParamRegions) -> Vec<(String, u32, usize, usize)> {
-    regions
-        .values()
-        .filter_map(|r| {
-            let current = partial.baseline(&r.segment_id)?;
-            let desired = partial.image_bytes(&r.segment_id)?;
-            let mask = partial.segment_mask(&r.segment_id);
-            let changed = desired
-                .iter()
-                .enumerate()
-                .filter(|(i, b)| {
-                    mask.is_none_or(|m| m.get(*i) == Some(&0xFF)) && current.get(*i) != Some(*b)
-                })
-                .count();
-            Some((r.segment_id.clone(), r.address, desired.len(), changed))
-        })
-        .collect()
 }
 
 /// Prints the parameter-only plan.
@@ -666,97 +519,6 @@ fn confirm(
         &format!("download the parameters ({octets} octet(s)) to {target} via {gateway}?"),
         &format!("flash the parameters of {target} via {gateway}"),
     )
-}
-
-/// Writes the pre-download parameter memory to
-/// `<dir>/captures/backups/parameters/<ia>-<ts>.json`.
-pub(crate) fn write_backup(
-    dir: &Path,
-    target: IndividualAddress,
-    plan: &FlashPlan,
-    regions: &ParamRegions,
-) -> anyhow::Result<std::path::PathBuf> {
-    let now = std::time::SystemTime::now();
-    let backup = ParameterBackup {
-        address: target.to_string(),
-        mask: format!("{:04X}", plan.device_mask),
-        application: plan.identity.id.clone(),
-        unix_timestamp: unix_seconds(now),
-        read_time: rfc3339_utc(now),
-        regions: regions
-            .values()
-            .map(|r| ParameterMemory {
-                base: r.address,
-                length: r.bytes.len(),
-                bytes: encode_hex(&r.bytes),
-                source: format!("parameter segment {}", r.segment_id),
-            })
-            .collect(),
-    };
-    Ok(write_parameter_backup(
-        &parameter_backups_dir(dir),
-        &backup,
-    )?)
-}
-
-/// The System 7 segments the running application rewrites after the restart
-/// (`checksum_ctrl == 0`, the Jung `0x4916` region, issue #89): their
-/// read-back proves nothing, so the verify skips them.
-pub(crate) fn runtime_segments(plan: &FlashPlan) -> std::collections::BTreeSet<String> {
-    plan.steps
-        .iter()
-        .filter_map(|step| match step {
-            FlashStep::Sys7AbsSegment {
-                checksum_ctrl: 0,
-                image: Some(image),
-                ..
-            } => Some(image.segment_id.clone()),
-            _ => None,
-        })
-        .collect()
-}
-
-/// Compares the read-back against every octet the download meant to change,
-/// except in the segments the application rewrites at run time (`skip`).
-/// Returns how many octets were checked.
-pub(crate) fn verify_readback(
-    partial: &FlashPlan,
-    after: &ParamRegions,
-    skip: &std::collections::BTreeSet<String>,
-) -> Result<usize, String> {
-    let mut checked = 0usize;
-    for (segment, _, _, _) in region_rows(partial, after) {
-        if skip.contains(&segment) {
-            continue;
-        }
-        let (Some(current), Some(desired)) =
-            (partial.baseline(&segment), partial.image_bytes(&segment))
-        else {
-            continue;
-        };
-        let read = after
-            .get(&segment)
-            .map(|r| r.bytes.as_slice())
-            .ok_or_else(|| format!("segment {segment} could not be read back"))?;
-        let mask = partial.segment_mask(&segment);
-        for (i, want) in desired.iter().enumerate() {
-            let writable = mask.is_none_or(|m| m.get(i) == Some(&0xFF));
-            if !writable || current.get(i) == Some(want) {
-                continue;
-            }
-            checked += 1;
-            if read.get(i) != Some(want) {
-                return Err(format!(
-                    "segment {segment} octet {i} reads {:?}, expected {want:#04X}",
-                    read.get(i)
-                ));
-            }
-        }
-    }
-    if after.is_empty() {
-        return Err("the parameter memory could not be read back".to_string());
-    }
-    Ok(checked)
 }
 
 /// Prints the recovery guidance after a failed parameter download.

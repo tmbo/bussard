@@ -465,14 +465,27 @@ directory or a script from before these changes needs:
 
 ### Changed
 
+- `knx_plan_device` and `knx_apply_device` push parameter values too (#274),
+  so a change made in a chat reaches the device without a terminal step. The
+  plan reads the parameter memory with the product data `bussard.lock` pins,
+  lists each differing parameter by key, vendor text, device value and model
+  value with one sentence, and its digest covers the parameter image; the
+  apply writes only the differing octets after the tables and reads them
+  back, over KNX Data Secure for a device the keyring lists. The gates are
+  the link write's, plus the identity verdict (a drifted device needs
+  `bussard flash`). Without the product data the plan says why, with the
+  recovery line, and writes the links only. The parameter engine (product
+  resolution, read-back, plan builder, parameter-only download) moved from
+  the CLI into `bussard-service` and `bussard-download`, so `bussard apply`
+  and the MCP tier run one implementation. The guidance, the tool
+  descriptions and the docs no longer send parameter writes to the CLI.
 - The MCP server's guidance follows its tiers (#272). The server
   instructions describe what it does at its tier, which tools push, and what
   still needs the CLI (`flash`, `adopt`, `replace`, `commission`) or ETS
   (Secure activation, settings the product model does not expose). A model
   edit's `next_step` names the device and, with `--allow-programming`, says to
   push the links with `knx_plan_device` and `knx_apply_device` instead of
-  "a human runs `bussard plan`"; parameter values still go through
-  `bussard apply` at the CLI, and the text says so. `knx_project_summary`
+  "a human runs `bussard plan`". `knx_project_summary`
   gains `server` and `capabilities`, `knx_show_device` gains `how_to_change`.
 - `knx_add_link` and `knx_remove_link` take the device's individual address
   as `address`, like every other MCP tool, instead of `device`. The Claude

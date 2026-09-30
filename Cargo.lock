@@ -445,12 +445,14 @@ name = "bussard-service"
 version = "0.1.0"
 dependencies = [
  "bussard-bus",
+ "bussard-download",
  "bussard-mgmt",
  "bussard-model",
  "bussard-prod",
  "bussard-project",
  "bussard-secure",
  "bussard-transport",
+ "serde",
  "sha2",
  "thiserror",
  "tokio",

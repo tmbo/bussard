@@ -10,12 +10,12 @@
 //! The tiers are cumulative: `passive` observes only; `read` (the default)
 //! also reads group values and introspects devices; `write`
 //! (`--allow-writes`) sends group values; `programming`
-//! (`--allow-programming`) writes a device's group-address and association
-//! tables through `knx_plan_device` and `knx_apply_device`. Parameter values
-//! are edited in the device files with `knx_set_parameter` at every tier, but
-//! no MCP tool writes them to a device yet: that half of a push is the CLI's
-//! `bussard apply`, and every string here says so next to the MCP tool that
-//! pushes the links.
+//! (`--allow-programming`) pushes a device through `knx_plan_device` and
+//! `knx_apply_device`: its group-address and association tables and the
+//! parameter values that differ from the model (issue #274). Parameter values
+//! are edited in the device files with `knx_set_parameter` at every tier; the
+//! push is the same pair of tools, or `bussard plan` and `bussard apply` at the
+//! CLI on a server without that tier.
 
 use std::collections::BTreeSet;
 
@@ -122,17 +122,16 @@ impl Tiers {
     /// and the capabilities sentence.
     fn push_paragraph(&self) -> String {
         if self.programming {
-            "It pushes a device's links: knx_plan_device reads the device and returns the \
-             plan, and knx_apply_device writes the group-address and association tables after \
-             the human said yes to that plan, over KNX Data Secure when the server's keyring \
-             lists the device. Parameter values are not written over MCP yet: knx_apply_device \
-             writes links only, and the parameter write is `bussard apply <ia>` at the CLI."
+            "It pushes a device's links and parameter values: knx_plan_device reads the \
+             device and returns the plan, and knx_apply_device writes the group-address and \
+             association tables and the parameter values that differ after the human said yes \
+             to that plan, over KNX Data Secure when the server's keyring lists the device."
                 .to_string()
         } else {
             "Nothing it edits reaches a device from here: this server runs without \
              --allow-programming. Restarted with that flag, knx_plan_device and \
-             knx_apply_device push a device's links; without it, the push is `bussard plan \
-             <ia>` and `bussard apply <ia>` at the CLI, which also write parameter values."
+             knx_apply_device push a device's links and parameter values; without it, the \
+             push is `bussard plan <ia>` and `bussard apply <ia>` at the CLI."
                 .to_string()
         }
     }
@@ -184,18 +183,18 @@ impl Tiers {
             out.push(
                 "Push a device with knx_plan_device, show the plan to the human in full, and \
                  call knx_apply_device only after an explicit yes in this conversation. It \
-                 writes the device's links (group-address and association tables), over KNX \
-                 Data Secure when the server's keyring lists the device. Parameter values are \
-                 not written over MCP yet: knx_apply_device writes links only, and after \
-                 knx_set_parameter the parameter write is `bussard apply <ia>` at the CLI."
+                 writes the device's links (group-address and association tables) and the \
+                 parameter values that differ from the model (one plan sentence each), over KNX \
+                 Data Secure when the server's keyring lists the device. A plan without the \
+                 device's product data writes the links only and says why."
                     .to_string(),
             );
         } else {
             out.push(
                 "This server runs without --allow-programming, so edits stay in the files. \
                  Restarted with that flag, knx_plan_device and knx_apply_device push a \
-                 device's links; without it, the push is `bussard plan <ia>` and `bussard \
-                 apply <ia>` at the CLI."
+                 device's links and parameter values; without it, the push is `bussard plan \
+                 <ia>` and `bussard apply <ia>` at the CLI."
                     .to_string(),
             );
         }
@@ -216,40 +215,27 @@ impl Tiers {
                 .to_string();
         }
         let mut out = vec!["Nothing has reached any device yet.".to_string()];
-        if !push.links.is_empty() {
-            let devices = list(&push.links);
-            out.push(if self.programming {
-                format!(
-                    "Push the links with knx_plan_device for {devices} (show the plan to the \
-                     human) and knx_apply_device after an explicit yes."
-                )
-            } else {
-                format!(
-                    "This server runs without --allow-programming: restart it with that flag \
-                     to push the links with knx_plan_device and knx_apply_device for \
-                     {devices}, or push from the CLI with {}.",
-                    cli(&push.links)
-                )
-            });
-        }
-        if !push.parameters.is_empty() {
-            let devices = list(&push.parameters);
-            out.push(if self.programming {
-                format!(
-                    "Parameter values are not written over MCP yet: knx_plan_device and \
-                     knx_apply_device push links only, so the parameter change on {devices} \
-                     reaches the device with {} at the CLI. Tell the human so.",
-                    cli(&push.parameters)
-                )
-            } else {
-                format!(
-                    "Parameter values are not written over MCP yet (knx_apply_device, with \
-                     --allow-programming, pushes links only): the parameter change on \
-                     {devices} reaches the device with {} at the CLI.",
-                    cli(&push.parameters)
-                )
-            });
-        }
+        let devices: BTreeSet<String> = push.links.union(&push.parameters).cloned().collect();
+        let what = match (push.links.is_empty(), push.parameters.is_empty()) {
+            (false, false) => "the links and parameter values",
+            (false, true) => "the links",
+            _ => "the parameter values",
+        };
+        let names = list(&devices);
+        out.push(if self.programming {
+            format!(
+                "Push {what} with knx_plan_device for {names} (show the plan to the human; it \
+                 lists every changed link and parameter) and knx_apply_device after an explicit \
+                 yes."
+            )
+        } else {
+            format!(
+                "This server runs without --allow-programming: restart it with that flag to \
+                 push {what} with knx_plan_device and knx_apply_device for {names}, or push \
+                 from the CLI with {}.",
+                cli(&devices)
+            )
+        });
         out.join(" ")
     }
 }
@@ -316,8 +302,7 @@ fn cli(devices: &BTreeSet<String>) -> String {
 /// edited over MCP yet, and the view's first note says what to run.
 pub fn how_to_change(product_model: bool, notes: &[String]) -> String {
     let push = "push: knx_plan_device then knx_apply_device (with --allow-programming) write \
-                the links; parameter values are written by `bussard apply <ia>` at the CLI, \
-                the MCP tier does not write them yet";
+                the links and the parameter values that differ";
     if product_model {
         format!(
             "parameters: knx_set_parameter with the key shown (add `channel` when the key \
@@ -387,6 +372,22 @@ mod tests {
         let off = tiers(false, false, false).next_step(&set);
         assert!(off.contains("--allow-programming"), "{off}");
         assert!(off.contains("`bussard plan 1.1.4`"), "{off}");
+    }
+
+    #[test]
+    fn test_next_step_pushes_parameters_with_the_mcp_tools() {
+        let set = ChangeSet {
+            changes: vec![change(ChangeKind::ParameterChanged, "1.1.18")],
+        };
+        let on = tiers(false, false, true).next_step(&set);
+        assert!(
+            on.contains("Push the parameter values with knx_plan_device for 1.1.18"),
+            "{on}"
+        );
+        assert!(!on.contains("bussard apply"), "{on}");
+        let off = tiers(false, false, false).next_step(&set);
+        assert!(off.contains("`bussard apply 1.1.18`"), "{off}");
+        assert!(off.contains("knx_apply_device"), "{off}");
     }
 
     #[test]
