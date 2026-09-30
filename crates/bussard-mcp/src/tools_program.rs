@@ -537,8 +537,7 @@ impl BussardMcp {
             ),
             (false, false) => None,
         };
-        let hash_moved =
-            plan_hash.is_some_and(|h| !h.eq_ignore_ascii_case(&built.plan.state_hash));
+        let hash_moved = plan_hash.is_some_and(|h| !h.eq_ignore_ascii_case(&built.plan.state_hash));
         let moved = moved.or(hash_moved.then_some("the device state no longer matches plan_hash"));
         if let Some(what) = moved {
             tier.plans().remove(digest);
@@ -580,7 +579,10 @@ impl BussardMcp {
             ),
             _ => None,
         };
-        let param_write = match (&built.partial, read.params.as_ref().and_then(|p| p.detail.as_ref())) {
+        let param_write = match (
+            &built.partial,
+            read.params.as_ref().and_then(|p| p.detail.as_ref()),
+        ) {
             (Some(partial), Some(detail)) => Some((partial, detail)),
             _ => None,
         };

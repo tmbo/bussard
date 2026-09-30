@@ -5,7 +5,10 @@
 //!   the tables are read and written over `A_SecureData`, and the security
 //!   object is reprogrammed next to them (group key table PID 53, security
 //!   individual address table PID 54, group-object flags PID 61, between the
-//!   security load-state transitions), as `bussard apply --keyring` does.
+//!   security load-state transitions), as `bussard apply --keyring` does. The
+//!   device also runs the synthetic parameter-test application, and the model
+//!   changes one parameter: the plan lists it and the apply writes the
+//!   differing octet over `A_SecureData` after the tables (issue #274).
 //! - `knx_wait_for_telegram` / `knx_infer_group` see a secured group telegram
 //!   decrypted, through the ring feeder's `from_frame_secured` path.
 //!
@@ -30,6 +33,10 @@ use bussard_mgmt::property_ext::{
 };
 use bussard_model::GroupAddress;
 use bussard_secure::{Key16, SecurityAlgorithm, Sequence, encode_group};
+use bussard_testkit::consts::{
+    OT_ADDRESS_TABLE, OT_APPLICATION_PROGRAM, OT_ASSOCIATION_TABLE, OT_DEVICE,
+    OT_GROUP_OBJECT_TABLE, PID_PROGRAM_VERSION,
+};
 use bussard_testkit::{MockDevice, MockGateway, Reaction, TestResult, ga, ia};
 use bussard_transport::cemi::{Apdu, CemiFrame, GroupData, MessageCode};
 use serde_json::{Value, json};
@@ -39,6 +46,31 @@ const PASSWORD: &str = "synthetic-keyring-pw";
 
 /// The group-object count the mock's security object reports.
 const GO_COUNT: u16 = 60;
+
+/// The interface object of the application program on the mock.
+const APP_OBJECT: u8 = 4;
+
+include!("support/param_app.rs");
+
+/// Zips the synthetic application into `<dir>/products/param-test.knxprod`
+/// and returns its SHA-256, for the lock to pin.
+fn store_product(dir: &Path) -> TestResult<String> {
+    use sha2::Digest as _;
+    let store = dir.join("products");
+    std::fs::create_dir_all(&store)?;
+    let path = store.join("param-test.knxprod");
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&path)?);
+    zip.start_file(
+        "M-00FA/M-00FA_A-0002.xml",
+        zip::write::SimpleFileOptions::default(),
+    )?;
+    zip.write_all(APP_XML.as_bytes())?;
+    zip.finish()?;
+    Ok(sha2::Sha256::digest(std::fs::read(&path)?)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
+}
 
 fn keyring_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../knx-sim/examples/secure/synthetic.knxkeys")
@@ -93,7 +125,20 @@ fn model_dir(tag: &str) -> TestResult<PathBuf> {
     std::fs::write(
         dir.join("devices").join("1.1.10.toml"),
         "address = \"1.1.10\"\nname = \"Secure actuator\"\n\n[security]\nactivated = true\n\n\
+         [parameters]\n\"thr@P-0_R-1\" = \"12\"\n\n\
          [links]\n20.send = \"1/2/0\"\n22.listen = [\"1/2/3\"]\n",
+    )?;
+    // The device runs the synthetic application; the lock pins its archive.
+    let sha = store_product(&dir)?;
+    std::fs::write(
+        dir.join("bussard.lock"),
+        format!(
+            "version = 2\n\n[[product]]\nsha256 = \"{sha}\"\nfile = \
+             \"products/param-test.knxprod\"\norigin = {{ kind = \"file\", path = \
+             \"param-test.knxprod\" }}\napplications = [\"M-00FA_A-0002\"]\n\n[[device]]\n\
+             address = \"1.1.10\"\napplication = \"M-00FA_A-0002\"\nproduct_sha256 = \
+             \"{sha}\"\nmask = \"07B0\"\n"
+        ),
     )?;
     Ok(dir)
 }
@@ -126,8 +171,24 @@ fn secure_device(log: Arc<Mutex<SecurityLog>>) -> TestResult<MockDevice> {
     let mut association_table = 1u16.to_be_bytes().to_vec();
     association_table.extend_from_slice(&[0, 1, 0, 20]);
     Ok(MockDevice::system_b(ia("1.1.10")?)
+        .with_object_types(&[
+            OT_DEVICE,
+            OT_ADDRESS_TABLE,
+            OT_ASSOCIATION_TABLE,
+            OT_GROUP_OBJECT_TABLE,
+            OT_APPLICATION_PROGRAM,
+        ])
         .with_table(1, &address_table)
         .with_table(2, &association_table)
+        // The synthetic application, Loaded, with its parameter segment
+        // holding threshold 7 (the model asks for 12) and the switch off.
+        .with_table(APP_OBJECT, &[7, 0])
+        .with_property(
+            APP_OBJECT,
+            PID_PROGRAM_VERSION,
+            5,
+            &[0x00, 0xFA, 0x00, 0x02, 0x01],
+        )
         .with_go_count(GO_COUNT)
         .with_data_secure(tool_key()?)
         .with_hook(move |_, apci, data| {
@@ -318,6 +379,12 @@ fn test_mcp_apply_on_a_keyring_listed_device_reprograms_the_security_object() ->
     );
     let sentences = plan["sentences"].as_str().unwrap_or_default();
     assert!(sentences.contains("Data Secure"), "{sentences}");
+    // The parameter half, read over A_SecureData (issue #274).
+    assert!(
+        sentences.contains("  ~ thr@P-0_R-1 = 12, was 7\n"),
+        "{sentences}"
+    );
+    assert_eq!(plan["writes"]["parameter_octets"], 1, "plan: {plan}");
     let digest = plan["plan_digest"].as_str().ok_or("no plan_digest")?;
     assert!(
         log.lock().map_err(|_| "log poisoned")?.controls.is_empty(),
@@ -331,6 +398,18 @@ fn test_mcp_apply_on_a_keyring_listed_device_reprograms_the_security_object() ->
     assert_eq!(applied["ok"], true, "apply: {applied}");
     assert_eq!(applied["verified"], true, "apply: {applied}");
     assert_eq!(applied["secured"], true, "apply: {applied}");
+    assert_eq!(applied["parameters"]["written"], true, "apply: {applied}");
+    assert_eq!(applied["parameters"]["octets"], 1, "apply: {applied}");
+    let (params, app_state, plain_refused) = gw.with_device(ia("1.1.10")?, |dev| {
+        (
+            dev.table_image(APP_OBJECT).unwrap_or_default(),
+            dev.load_state(APP_OBJECT),
+            dev.plain_refused,
+        )
+    })?;
+    assert_eq!(params, vec![12, 0], "the differing octet is written");
+    assert_eq!(app_state, 1, "the application is Loaded again");
+    assert_eq!(plain_refused, 0, "every request rode A_SecureData");
 
     // The tables: 1/2/0 and 1/2/3, with (1,20) and (2,22).
     let (addresses, associations) = gw.with_device(ia("1.1.10")?, |dev| {

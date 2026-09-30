@@ -505,8 +505,7 @@ async fn test_knx_apply_device_refuses_a_mismatched_plan_hash() -> anyhow::Resul
 /// recovery line and still plans the links, and the approved links-only plan
 /// applies (issue #274).
 #[tokio::test]
-async fn test_knx_apply_device_missing_product_data_applies_the_links_only() -> anyhow::Result<()>
-{
+async fn test_knx_apply_device_missing_product_data_applies_the_links_only() -> anyhow::Result<()> {
     let h = Harness::start(Duration::from_secs(600)).await?;
     // The lock pins an archive that was never stored, and the device file
     // carries a parameter value.

@@ -222,14 +222,20 @@ fn test_mcp_plan_and_apply_write_the_differing_parameter_octet() -> TestResult {
         sentences.contains("  ~ thr@P-0_R-1 = 12, was 7\n"),
         "{sentences}"
     );
-    assert!(sentences.contains("  writes: 1 parameter octet\n"), "{sentences}");
+    assert!(
+        sentences.contains("  writes: 1 parameter octet\n"),
+        "{sentences}"
+    );
     assert!(
         plan["identity"]
             .as_str()
             .is_some_and(|l| l.starts_with("identity of 1.1.4: matches bussard.lock")),
         "plan: {plan}"
     );
-    assert!(bench.device().memory_writes.is_empty(), "planning writes nothing");
+    assert!(
+        bench.device().memory_writes.is_empty(),
+        "planning writes nothing"
+    );
 
     let applied = server.apply(&plan)?;
     assert_eq!(applied["ok"], true, "apply: {applied}");

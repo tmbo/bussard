@@ -2525,6 +2525,92 @@ async fn test_parameters_only_sys7_property_writes_one_octet()
     run_parameters_only_sys7(LsmMode::Property).await
 }
 
+/// The parameter half `bussard apply` and `knx_apply_device` share (issue
+/// #274), on System 7: the resident-application gate, the code-segment
+/// comparison, the parameter-only download of the differing octet, and the
+/// read-back verification that skips the runtime-owned segments. The same
+/// pieces, in the same order, as `bussard_service::download::write_parameters`
+/// and `bussard_service::params::read_state`.
+async fn run_parameter_engine_sys7(mode: LsmMode) -> Result<(), Box<dyn std::error::Error>> {
+    set_sys7_lsm_env(mode);
+    let (mut bus, state, handle) = setup(mode, Fault::None).await?;
+    let (_app, full) = parameters_only_fixture(&state, LS_LOADED)?;
+    let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await?;
+
+    // The read of the plan: the gate, the code sample, the regions.
+    let access = full.sys7_lsm_access();
+    let resident =
+        bussard_download::probe_resident_state(session.l4(), MASK_0705, access.as_ref()).await;
+    bussard_download::identity_gate(&full, Some(&resident))?;
+    // Code that is not the product's reads as another application ...
+    let mismatch = bussard_download::sys7_code_mismatch(session.l4(), &full).await;
+    assert!(
+        mismatch
+            .as_deref()
+            .is_some_and(|m| m.contains("M-83_A-E_AS-1")),
+        "{mismatch:?}"
+    );
+    // ... and the product's code (AS-1, AS-2) passes.
+    {
+        let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+        for (i, b) in [0u8, 1, 2, 3].iter().enumerate() {
+            s.memory.insert(0x4000 + i as u16, *b);
+        }
+        for (i, b) in [1u8, 2, 3].iter().enumerate() {
+            s.memory.insert(0x4201 + i as u16, *b);
+        }
+    }
+    assert_eq!(
+        bussard_download::sys7_code_mismatch(session.l4(), &full).await,
+        None
+    );
+    let regions = bussard_download::read_parameter_regions(session.l4(), &full).await;
+    let partial = full.parameters_only(&regions)?;
+    assert_eq!(partial.changed_octets(), 1);
+
+    // The write, then the read-back of every octet it meant to change.
+    let outcome = flash(
+        &mut session,
+        &partial,
+        bussard_download::FlashOptions::default(),
+        |_p| {},
+    )
+    .await?;
+    assert!(outcome.ok(), "{outcome:?}");
+    let after = bussard_download::read_parameter_regions(session.l4(), &full).await;
+    drop(handle);
+    let _ = session.into_disconnect().await;
+    let skip = bussard_download::runtime_segments(&full);
+    assert_eq!(
+        bussard_download::verify_readback(&partial, &after, &skip),
+        Ok(1)
+    );
+    // A read-back that does not hold the written octet is a mismatch.
+    let mut stale = after.clone();
+    if let Some(region) = stale.get_mut("M-83_A-E_AS-4") {
+        region.bytes = vec![4, 5];
+    }
+    assert!(bussard_download::verify_readback(&partial, &stale, &skip).is_err());
+    let s = state.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(s.segment_writes, vec![(0x4401, 1)]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_parameter_engine_sys7_memory_mapped_gates_writes_and_verifies()
+-> Result<(), Box<dyn std::error::Error>> {
+    run_parameter_engine_sys7(LsmMode::MemoryMapped).await
+}
+
+#[tokio::test]
+async fn test_parameter_engine_sys7_property_gates_writes_and_verifies()
+-> Result<(), Box<dyn std::error::Error>> {
+    run_parameter_engine_sys7(LsmMode::Property).await
+}
+
 // --- ETS parity: state read-backs, one connection, prelude (issue #116) -----
 
 /// Runs a full MDT-canonical flash of a `mode` device over a reconnecting
