@@ -502,3 +502,84 @@ async fn test_set_parameter_takes_the_file_key_and_a_label() -> TestResult {
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
+
+/// Calls one tool that is expected to fail with a tool result that has
+/// `isError` set, and returns the result's text.
+async fn call_err(
+    client: &rmcp::service::RunningService<rmcp::RoleClient, ()>,
+    params: CallToolRequestParams,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let res = client.call_tool(params).await?;
+    if res.is_error != Some(true) {
+        return Err(format!("the call succeeded: {res:?}").into());
+    }
+    let text = res
+        .content
+        .first()
+        .and_then(|content| content.as_text())
+        .map(|text| text.text.clone())
+        .ok_or("the error result carries no text")?;
+    Ok(text)
+}
+
+/// Issue #269: a client that drops the arguments gets told so, with the
+/// fields to send, instead of serde's "missing field `device`"; a mistyped
+/// field keeps serde's text and names the field; a valid call still works.
+#[tokio::test]
+async fn test_add_link_argument_errors_explain_what_arrived() -> TestResult {
+    let dir = model_dir("args")?;
+    let (client, task) = connect(server_over(&dir)?).await?;
+
+    let msg = call_err(&client, CallToolRequestParams::new("knx_add_link")).await?;
+    assert_eq!(
+        msg,
+        "the call reached bussard without any arguments (the client sent none); \
+         expected fields: device, com_object, ga, role; \
+         retry with the arguments as a JSON object"
+    );
+
+    let empty = json!({});
+    let empty = empty.as_object().ok_or("not an object")?.clone();
+    let msg = call_err(
+        &client,
+        CallToolRequestParams::new("knx_add_link").with_arguments(empty),
+    )
+    .await?;
+    assert!(
+        msg.starts_with("the call reached bussard with an empty object"),
+        "{msg}"
+    );
+
+    let wrong = json!({"device": "1.1.4", "com_object": "seven", "ga": "3/0/1", "role": "listen"});
+    let wrong = wrong.as_object().ok_or("not an object")?.clone();
+    let msg = call_err(
+        &client,
+        CallToolRequestParams::new("knx_add_link").with_arguments(wrong),
+    )
+    .await?;
+    assert!(
+        msg.contains("com_object: invalid type: string \"seven\", expected u16"),
+        "{msg}"
+    );
+    assert!(
+        msg.contains("expected fields: device, com_object, ga, role"),
+        "{msg}"
+    );
+
+    let res = call(
+        &client,
+        "knx_add_link",
+        json!({"device": "1.1.4", "com_object": 12, "ga": "3/0/1", "role": "listen"}),
+    )
+    .await;
+    assert_eq!(res["ok"], true, "{res}");
+
+    // A tool whose fields are all optional still runs without arguments.
+    let res = call(&client, "knx_describe_change", Value::Null).await;
+    assert!(res.is_object(), "{res}");
+
+    client.cancel().await?;
+    task.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}

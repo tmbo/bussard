@@ -672,6 +672,14 @@ directory or a script from before these changes needs:
 
 ### Fixed
 
+- An MCP tool call without arguments no longer fails with serde's "missing
+  field `device`", which read as a server bug. The error says the call
+  reached bussard without any arguments (or with an empty object), lists the
+  fields the tool expects and asks for a retry; a mistyped field keeps
+  serde's text, names the field and lists the expected ones. Every
+  `tools/call` is logged at info with the tool name, whether `arguments` was
+  present and the field names (never values); `-vv` adds the raw request with
+  string values redacted (#269).
 - Product models regenerate when `.bussard/models/` exists but is empty or
   lacks the model of a pinned application, not only when the directory is
   absent. Before, an empty directory left every consumer, the MCP server

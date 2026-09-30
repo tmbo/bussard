@@ -10,8 +10,8 @@
 //! homeowner or integrator, calls it once the human has confirmed the list, and
 //! gets back the addresses it created plus the model's validation counts.
 
+use crate::args::Parameters;
 use rmcp::ErrorData;
-use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::{tool, tool_router};

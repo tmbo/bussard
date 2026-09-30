@@ -19,13 +19,13 @@
 //!   address whatever `tests.toml` says. There is no MCP override for a
 //!   protected GA, ever.
 
+use crate::args::Parameters;
 use bussard_model::tests_schema;
 use bussard_model::{Dpt, GroupAddress};
 use bussard_monitor::Filter;
 use bussard_monitor::acceptance::{self, RunOptions, SkipManual};
 use bussard_monitor::infer;
 use rmcp::ErrorData;
-use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::{tool, tool_router};

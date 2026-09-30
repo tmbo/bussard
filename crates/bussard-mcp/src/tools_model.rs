@@ -19,13 +19,13 @@
 
 use std::path::Path;
 
+use crate::args::Parameters;
 use bussard_model::change::{ChangeSet, describe};
 use bussard_model::history::{History, SnapshotReason};
 use bussard_model::param_model::{ProductModels, key_to_param_id};
 use bussard_model::schema::{Group, Link, Location};
 use bussard_model::{Dpt, GroupAddress, IndividualAddress, Model, Severity};
 use rmcp::ErrorData;
-use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::{tool, tool_router};
