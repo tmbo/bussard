@@ -56,7 +56,7 @@ A rename, nothing that affects the warranty. He unpacks the bundle into an empty
 $ bussard import knx-2026-10-01.bussard --dir house
 ```
 
-His assistant makes the edit with `knx_add_link` (device `1.0.3`, com object `1`, GA `1/0/1`, role `listen`). Before sending, he checks exactly what he is sending back:
+His assistant makes the edit with `knx_add_link` (address `1.0.3`, com object `1`, GA `1/0/1`, role `listen`). Before sending, he checks exactly what he is sending back:
 
 ```console
 $ bussard diff knx-2026-10-01.bussard house

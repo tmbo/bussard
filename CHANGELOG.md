@@ -465,6 +465,11 @@ directory or a script from before these changes needs:
 
 ### Changed
 
+- `knx_add_link` and `knx_remove_link` take the device's individual address
+  as `address`, like every other MCP tool, instead of `device`. The Claude
+  remote-devices bridge reserves `device` for its own routing and strips it
+  from forwarded calls, so those calls arrived without the field. `device` is
+  still accepted as an alias but no longer advertised in the schema.
 - Product data is resolved from the lock and the store everywhere (#228):
   `replace` no longer requires `--product`, `flash --product <export>` needs
   no `--application` when the lock pins the program, and `adopt` stores an

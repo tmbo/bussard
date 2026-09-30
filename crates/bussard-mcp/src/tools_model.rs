@@ -74,8 +74,12 @@ pub struct SetGroupArgs {
 /// Arguments for `knx_add_link` and `knx_remove_link`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LinkArgs {
+    // Accepted as `device` too, the name this field had before. The Claude
+    // remote-devices bridge reserves `device` for its own routing and strips
+    // it from forwarded calls, so the advertised name is `address`.
     /// The device's individual address, e.g. `"1.1.4"`.
-    pub device: String,
+    #[serde(alias = "device")]
+    pub address: String,
     /// The ETS com-object number on that device.
     pub com_object: u16,
     /// The group address to bind or unbind, e.g. `"0/0/4"`.
@@ -735,10 +739,10 @@ impl Role {
 
 /// Parses the shared link-tool arguments.
 fn parse_link_args(args: &LinkArgs) -> Result<(IndividualAddress, GroupAddress, Role), String> {
-    let ia: IndividualAddress = args.device.parse().map_err(|_| {
+    let ia: IndividualAddress = args.address.parse().map_err(|_| {
         format!(
             "{:?} is not an individual address like \"1.1.4\"",
-            args.device
+            args.address
         )
     })?;
     let ga: GroupAddress = args

@@ -62,7 +62,8 @@ const NEXT_STEP: &str = "Tell the human what you think this group address is \
     (the proposed name and the top DPT candidate, in their words, e.g. \"that looks like the \
     kitchen ceiling light switch\") and ASK them to confirm or correct it. Only after they \
     answer, write the result into the model: knx_set_group for the name and DPT, and \
-    knx_add_link for the sending device's com object when a sender is known. If the candidates \
+    knx_add_link (address, com_object, ga, role) for the sending device's com object when a \
+    sender is known. If the candidates \
     are not confident enough, ask the human to trigger the same object again and call this tool \
     once more; repeated observations narrow the candidate set.";
 
