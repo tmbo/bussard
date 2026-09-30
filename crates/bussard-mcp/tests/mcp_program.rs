@@ -499,3 +499,65 @@ async fn test_knx_apply_device_refuses_a_mismatched_plan_hash() -> anyhow::Resul
     assert_eq!(applied["ok"], true, "{applied}");
     h.stop().await
 }
+
+/// A device whose product data is missing (bussard.lock pins an archive that
+/// is not in `products/`): the plan refuses the parameter part with the
+/// recovery line and still plans the links, and the approved links-only plan
+/// applies (issue #274).
+#[tokio::test]
+async fn test_knx_apply_device_missing_product_data_applies_the_links_only() -> anyhow::Result<()>
+{
+    let h = Harness::start(Duration::from_secs(600)).await?;
+    // The lock pins an archive that was never stored, and the device file
+    // carries a parameter value.
+    let sha = "ab".repeat(32);
+    std::fs::write(
+        h.dir.path().join("bussard.lock"),
+        format!(
+            "version = 2\n\n[[product]]\nsha256 = \"{sha}\"\nfile = \"products/gone.knxprod\"\n\
+             origin = {{ kind = \"index\", order_number = \"TST-1\" }}\napplications = \
+             [\"M-00FA_A-0002\"]\norder_numbers = [\"TST-1\"]\n\n[[device]]\naddress = \
+             \"1.1.4\"\nproduct = \"TST-1\"\napplication = \"M-00FA_A-0002\"\n\
+             product_sha256 = \"{sha}\"\nmask = \"07B0\"\n"
+        ),
+    )?;
+    std::fs::write(
+        h.dir.path().join("devices").join("1.1.4.toml"),
+        "address = \"1.1.4\"\nname = \"Jalousie Wohnen\"\nproduct = \"TST-1\"\n\n\
+         [parameters]\n\"thr@P-0_R-1\" = \"12\"\n\n[links]\n\
+         20.send = \"1/2/0\"\n21.listen = [\"1/2/1\"]\n22.listen = [\"1/2/2\"]\n",
+    )?;
+
+    let plan = h
+        .call("knx_plan_device", json!({"address": "1.1.4"}))
+        .await?;
+    assert_eq!(plan["ok"], true, "plan: {plan}");
+    assert_eq!(plan["noop"], false, "plan: {plan}");
+    let skipped = plan["parameters"]["skipped"].as_str().unwrap_or_default();
+    assert!(skipped.contains("is missing"), "{plan}");
+    assert!(
+        skipped.contains("bussard import-product --order-number TST-1"),
+        "the recovery line: {plan}"
+    );
+    assert_eq!(plan["parameters"]["written"], false, "{plan}");
+    assert_eq!(plan["writes"]["parameter_octets"], 0, "{plan}");
+    let next = plan["next_step"].as_str().unwrap_or_default();
+    assert!(next.contains("only the links are written"), "{next}");
+
+    let applied = h
+        .call(
+            "knx_apply_device",
+            json!({"address": "1.1.4", "plan_digest": digest_of(&plan)?}),
+        )
+        .await?;
+    assert_eq!(applied["ok"], true, "apply: {applied}");
+    assert_eq!(applied["verified"], true, "apply: {applied}");
+    assert_eq!(applied["parameters"]["written"], false, "apply: {applied}");
+    let (addresses, associations) = h.tables()?;
+    assert_eq!(addresses, address_table(&["1/2/0", "1/2/1", "1/2/2"])?);
+    assert_eq!(
+        associations,
+        association_table(&[(1, 20), (2, 21), (3, 22)])
+    );
+    h.stop().await
+}
