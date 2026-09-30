@@ -1306,8 +1306,8 @@ Bus operations share one rate limiter (minimum 250 ms between operations, at mos
 | `knx_describe_change` | `from`, `to` (snapshot ids, optional) | The change as plain sentences. With no arguments: the pending changes, i.e. the working model against the last snapshot. Files only. |
 | `knx_history` | `limit` (default 50, max 500) | The history snapshots with id, time, command, gateway and a one-line summary each. |
 | `knx_set_group` | `ga`, `name`, `dpt`, `description` (all but `ga` optional) | Creates or updates a group address. Creating one needs `name`. Refuses to rename or retype a `protected = true` GA; there is no parameter that sets or clears `protected`. |
-| `knx_add_link` | `device`, `com_object`, `ga`, `role` (`send`\|`listen`) | Binds a com object to a GA. A com object has at most one sending GA, so an existing one is replaced. Refuses protected GAs. |
-| `knx_remove_link` | `device`, `com_object`, `ga`, `role` | Unbinds a com object from a GA. Refuses protected GAs. |
+| `knx_add_link` | `address`, `com_object`, `ga`, `role` (`send`\|`listen`) | Binds a com object to a GA. A com object has at most one sending GA, so an existing one is replaced. Refuses protected GAs. |
+| `knx_remove_link` | `address`, `com_object`, `ga`, `role` | Unbinds a com object from a GA. Refuses protected GAs. |
 | `knx_set_device` | `address`, `name`, `floor`, `room` (all but `address` optional) | Renames a device or changes where it lives. |
 | `knx_set_parameter` | `address`, `parameter`, `value`, `channel` (optional) | Sets one parameter in the device file: `parameter` is the key the file uses (`knx_show_device` lists them; `channel` names the handle when the key repeats across channels), `value` an enum label or code, a number or text, checked against the product model and stored as the model stores it (a label becomes its code). Refuses a key neither the file nor the lock knows, and a device without a product model to check against. |
 | `knx_undo` | `snapshot_id` (optional) | Restores the model files to a snapshot (default: the newest one that differs from the working files, i.e. undo the last change). Files only. |

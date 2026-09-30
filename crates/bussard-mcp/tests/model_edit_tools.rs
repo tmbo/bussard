@@ -145,7 +145,7 @@ async fn test_model_edit_tools_snapshot_edit_and_describe() -> TestResult {
     let res = call(
         &client,
         "knx_add_link",
-        json!({"device": "1.1.4", "com_object": 12, "ga": "0/0/4", "role": "listen"}),
+        json!({"address": "1.1.4", "com_object": 12, "ga": "0/0/4", "role": "listen"}),
     )
     .await;
     assert_eq!(res["ok"], true, "{res}");
@@ -192,7 +192,7 @@ async fn test_protected_group_addresses_are_refused() -> TestResult {
     let res = call(
         &client,
         "knx_add_link",
-        json!({"device": "1.1.4", "com_object": 12, "ga": "3/2/0", "role": "listen"}),
+        json!({"address": "1.1.4", "com_object": 12, "ga": "3/2/0", "role": "listen"}),
     )
     .await;
     assert_eq!(res["ok"], false, "{res}");
@@ -343,7 +343,7 @@ async fn test_add_link_declares_an_undefined_group_address() -> TestResult {
     let res = call(
         &client,
         "knx_add_link",
-        json!({"device": "1.1.4", "com_object": 12, "ga": "0/0/9", "role": "send"}),
+        json!({"address": "1.1.4", "com_object": 12, "ga": "0/0/9", "role": "send"}),
     )
     .await;
     assert_eq!(res["ok"], true, "{res}");
@@ -523,7 +523,7 @@ async fn call_err(
 }
 
 /// Issue #269: a client that drops the arguments gets told so, with the
-/// fields to send, instead of serde's "missing field `device`"; a mistyped
+/// fields to send, instead of serde's "missing field `address`"; a mistyped
 /// field keeps serde's text and names the field; a valid call still works.
 #[tokio::test]
 async fn test_add_link_argument_errors_explain_what_arrived() -> TestResult {
@@ -534,7 +534,7 @@ async fn test_add_link_argument_errors_explain_what_arrived() -> TestResult {
     assert_eq!(
         msg,
         "the call reached bussard without any arguments (the client sent none); \
-         expected fields: device, com_object, ga, role; \
+         expected fields: address, com_object, ga, role; \
          retry with the arguments as a JSON object"
     );
 
@@ -550,7 +550,7 @@ async fn test_add_link_argument_errors_explain_what_arrived() -> TestResult {
         "{msg}"
     );
 
-    let wrong = json!({"device": "1.1.4", "com_object": "seven", "ga": "3/0/1", "role": "listen"});
+    let wrong = json!({"address": "1.1.4", "com_object": "seven", "ga": "3/0/1", "role": "listen"});
     let wrong = wrong.as_object().ok_or("not an object")?.clone();
     let msg = call_err(
         &client,
@@ -562,9 +562,70 @@ async fn test_add_link_argument_errors_explain_what_arrived() -> TestResult {
         "{msg}"
     );
     assert!(
-        msg.contains("expected fields: device, com_object, ga, role"),
+        msg.contains("expected fields: address, com_object, ga, role"),
         "{msg}"
     );
+
+    let res = call(
+        &client,
+        "knx_add_link",
+        json!({"address": "1.1.4", "com_object": 12, "ga": "3/0/1", "role": "listen"}),
+    )
+    .await;
+    assert_eq!(res["ok"], true, "{res}");
+
+    // A tool whose fields are all optional still runs without arguments.
+    let res = call(&client, "knx_describe_change", Value::Null).await;
+    assert!(res.is_object(), "{res}");
+
+    client.cancel().await?;
+    task.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// The link tools advertise `address` as the required field name. The Claude
+/// remote-devices bridge strips a `device` key from forwarded calls, so the old
+/// name must not appear in the schema even though it is still accepted.
+#[tokio::test]
+async fn test_link_tools_schema_advertises_address() -> TestResult {
+    let dir = model_dir("schema")?;
+    let (client, task) = connect(server_over(&dir)?).await?;
+
+    let tools = client.list_all_tools().await?;
+    for name in ["knx_add_link", "knx_remove_link"] {
+        let tool = tools
+            .iter()
+            .find(|t| t.name == name)
+            .ok_or_else(|| format!("{name} is not registered"))?;
+        let schema = Value::Object(tool.input_schema.as_ref().clone());
+        let properties = schema["properties"]
+            .as_object()
+            .ok_or_else(|| format!("{name} schema has no properties: {schema}"))?;
+        assert!(properties.contains_key("address"), "{name}: {schema}");
+        assert!(!properties.contains_key("device"), "{name}: {schema}");
+        let required: Vec<&str> = schema["required"]
+            .as_array()
+            .ok_or_else(|| format!("{name} schema has no required list: {schema}"))?
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(required.contains(&"address"), "{name}: {schema}");
+        assert!(!required.contains(&"device"), "{name}: {schema}");
+    }
+
+    client.cancel().await?;
+    task.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// An older client that still sends `device` keeps working through the serde
+/// alias.
+#[tokio::test]
+async fn test_add_link_accepts_legacy_device_field() -> TestResult {
+    let dir = model_dir("legacy")?;
+    let (client, task) = connect(server_over(&dir)?).await?;
 
     let res = call(
         &client,
@@ -573,10 +634,6 @@ async fn test_add_link_argument_errors_explain_what_arrived() -> TestResult {
     )
     .await;
     assert_eq!(res["ok"], true, "{res}");
-
-    // A tool whose fields are all optional still runs without arguments.
-    let res = call(&client, "knx_describe_change", Value::Null).await;
-    assert!(res.is_object(), "{res}");
 
     client.cancel().await?;
     task.abort();
