@@ -234,13 +234,19 @@ fn build_filter(ga: Option<&str>, source: Option<&str>) -> Result<Filter, ErrorD
 impl BussardMcp {
     /// `knx_project_summary`.
     #[tool(
-        description = "Summarize the loaded KNX project: name, counts of devices/group-addresses/links, floors and rooms with device counts, group-address main-range names, live bus connection status, and validation error/warning counts. Call this first to orient yourself."
+        description = "Summarize the loaded KNX project: name, counts of devices/group-addresses/links, floors and rooms with device counts, group-address main-range names, live bus connection status, and validation error/warning counts, plus `server` (the active tiers: passive, writes, programming) and `capabilities` (what this server may do, in one paragraph). Call this first to orient yourself."
     )]
     async fn knx_project_summary(&self) -> Result<CallToolResult, ErrorData> {
-        ok(tools::project_summary(
-            &self.state.model.current(),
-            &self.state.bus,
-        ))
+        let mut summary = tools::project_summary(&self.state.model.current(), &self.state.bus);
+        let tiers = crate::guidance::Tiers::of(&self.state);
+        if let Some(map) = summary.as_object_mut() {
+            map.insert("server".to_string(), tiers.summary_json());
+            map.insert(
+                "capabilities".to_string(),
+                Value::String(tiers.capabilities()),
+            );
+        }
+        ok(summary)
     }
 
     /// `knx_model_lookup`.
@@ -302,7 +308,9 @@ impl BussardMcp {
         whether at the vendor default) and objects (key, number, text/function, DPT, flags, \
         what it sends and listens on). With `toml: true` also the paste-ready TOML for \
         devices/<address>.toml. Use it before editing a device file: the keys it prints are the \
-        ones the file accepts. Without product data it says so and lists what the lock has."
+        ones the file accepts and knx_set_parameter takes, and `how_to_change` says how to edit \
+        and push them. Without product data it says so, says what to run, and lists what the \
+        lock has."
     )]
     async fn knx_show_device(
         &self,
@@ -328,10 +336,17 @@ impl BussardMcp {
         let mut value = serde_json::to_value(&view).map_err(|e| {
             ErrorData::internal_error(format!("serializing the device view: {e}"), None)
         })?;
-        if args.toml
-            && let Some(map) = value.as_object_mut()
-        {
-            map.insert("toml".to_string(), Value::String(view.render_toml()));
+        if let Some(map) = value.as_object_mut() {
+            map.insert(
+                "how_to_change".to_string(),
+                Value::String(crate::guidance::how_to_change(
+                    view.product_model,
+                    &view.notes,
+                )),
+            );
+            if args.toml {
+                map.insert("toml".to_string(), Value::String(view.render_toml()));
+            }
         }
         ok(value)
     }
@@ -1026,21 +1041,6 @@ impl ServerHandler for BussardMcp {
 
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(server_info)
-            .with_instructions(
-                "bussard: read-only KNX introspection over MCP. Loads a KNX-as-code model and \
-                 observes the bus. Start with knx_project_summary, then knx_model_lookup / \
-                 knx_get_group / knx_get_device to explore, knx_recent_telegrams and \
-                 knx_wait_for_telegram to observe live traffic (the latter enables 'press the \
-                 button now' debugging), knx_validate to check the model, knx_read_group to \
-                 actively read a value, and knx_describe_device to introspect a device's interface \
-                 objects and property descriptions over the bus (both unless the server is in \
-                 passive mode). When started with \
-                 --allow-writes the knx_write_group tool is also available; it writes to the \
-                 physical bus (actuators move) and refuses protected group addresses — prefer \
-                 asking the human when a write's intent or safety is unclear. When started \
-                 with --allow-programming, knx_plan_device and knx_apply_device program one \
-                 device's link tables: always show the plan to the human and call \
-                 knx_apply_device only after an explicit yes in the conversation.",
-            )
+            .with_instructions(crate::guidance::Tiers::of(&self.state).instructions())
     }
 }

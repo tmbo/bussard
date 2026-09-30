@@ -1,4 +1,4 @@
-//! MCP stdio server for bussard: read-only KNX model and bus introspection.
+//! MCP stdio server for bussard: KNX model and bus tools, tier-gated.
 //!
 //! This crate implements the phase-0 Model Context Protocol server described in
 //! the design document (§5.5). It loads a KNX-as-code [`Model`] from a directory,
@@ -103,6 +103,7 @@
 #![warn(missing_docs)]
 
 pub mod args;
+pub mod guidance;
 pub mod model_handle;
 pub mod run;
 mod secure_group;

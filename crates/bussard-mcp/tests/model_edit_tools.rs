@@ -265,7 +265,7 @@ async fn test_undo_puts_the_model_back_without_touching_devices() -> TestResult 
         res["next_step"]
             .as_str()
             .is_some_and(|s| s.contains("plan")),
-        "the caller must be told a human still has to push this: {res}"
+        "the caller must be told how the change reaches a device: {res}"
     );
 
     // The group address is gone again; the earlier device edit survives.
