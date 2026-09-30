@@ -619,16 +619,19 @@ transmits at all.
 | Passive | `--passive` | Read and edit the model files, watch the bus. Nothing is transmitted. |
 | Read | none | Also read group values and introspect devices (rate-limited). |
 | Write | `--allow-writes` | Also send group values (`knx_write_group`, `knx_run_tests`). Protected GAs are refused. |
-| Programming | `--allow-programming` | Also write one device's link tables (`knx_plan_device`, `knx_apply_device`) after the human approved the plan. Not with `--passive`. |
+| Programming | `--allow-programming` | Also write one device's link tables and parameter values (`knx_plan_device`, `knx_apply_device`) after the human approved the plan. Not with `--passive`. |
 
 Model edits (`--no-model-edits` withholds them) touch files only, at every
-tier. Parameter values are edited with `knx_set_parameter` but written to a
-device only by `bussard apply` at the CLI. The server's instructions, each
+tier. Parameter values are edited with `knx_set_parameter` and reach a device
+through the same plan and apply as links: `knx_plan_device` and
+`knx_apply_device` at the programming tier, `bussard plan` and `bussard apply`
+at the CLI. The server's instructions, each
 edit's `next_step` and `knx_project_summary` state the active tier, so the
 assistant tells the human the push that actually applies.
 
-`bussard mcp --allow-programming` exposes the single-device table write of
-`bussard apply` to an assistant. It is off by default and never available with
+`bussard mcp --allow-programming` exposes the single-device write of `bussard
+apply` to an assistant: the link tables and the parameter octets that differ
+from the model, written by the same code the CLI runs (issue #274). It is off by default and never available with
 `--passive`. Every gate the CLI has applies, plus one the CLI does not need:
 
 1. **Write gate.** A non-loopback gateway needs `BUSSARD_ALLOW_REAL_GATEWAY=1`
@@ -639,7 +642,9 @@ assistant tells the human the push that actually applies.
    [Source address check](#source-address-check) before they open a connection.
 3. **Plan digest.** `knx_plan_device` reads the device and returns the plan the
    CLI prints plus a `plan_digest`: a SHA-256 over the device address, the
-   model's links for it, the desired tables and the live tables it read.
+   model's links and parameter values for it, the desired tables, the
+   parameter image the write would stream, and the live tables and parameter
+   memory it read.
    `knx_apply_device` writes only when that digest was produced by the same
    server session within `--plan-ttl-minutes` (default 10), and a fresh read of
    the device, with the current model, reproduces it. If the device was changed
@@ -654,13 +659,39 @@ assistant tells the human the push that actually applies.
    write what a plan showed.
 5. **Protected GAs.** A plan whose additions or removals touch a
    `protected = true` GA is refused. There is no override over MCP.
+6. **Identity.** The device's application and mask are compared with what
+   `bussard.lock` pins, as `bussard apply` does. A device that drifted is
+   refused with the `bussard flash` it needs, and so is a parameter change
+   that shows or hides a com-object (the group-object table changes, which a
+   parameter download does not rewrite).
 
-An apply then runs exactly the CLI rails: the pre-apply backup to
-`captures/backups/` (no backup, no write), a history snapshot
+An apply then runs exactly the CLI rails: the pre-apply backups to
+`captures/backups/` (the tables, and the parameter memory when parameters
+change; no backup, no write), a history snapshot
 `mcp knx_apply_device <address> <digest>` that names the gateway (the audit
-line in `bussard history`), the write, and a read-back verify. The result
-carries the verify outcome and the backup path. One device per call, tables
-only: the parameter half of `apply`, `flash` and `apply --line` stay CLI-only.
+line in `bussard history`), the table write when a link changes, then the
+parameter-only download of the differing octets, each verified by reading
+back. The result carries the verify outcome, what was written and the backup
+paths. One device per call; `flash` and `apply --line` stay CLI-only.
+
+### Parameters over MCP
+
+The plan reads the parameter memory on the same connection as the tables,
+with the product data `bussard.lock` pins for the device, and lists every
+parameter that differs by key, vendor text, device value and model value,
+one plan sentence each, so the human approves them by name. The write streams
+only the octets that differ, after the tables, and verifies them by reading
+the memory back. On System B the parameter-only download is refused unless
+the device runs the application the product data describes; on System 7
+every load-state machine must be Loaded and the application's code must read
+back as the product's.
+
+When the product data is missing (the lock pins an archive that is not in
+`products/`, or one whose SHA-256 changed), the parameters are left out of
+the plan with the recovery line (`bussard import-product ...`), and the plan
+says it writes the links only. A links-only plan the human approved applies
+as approved; the parameters follow once the archive is back and a new plan is
+approved.
 
 ### Secured devices over MCP
 

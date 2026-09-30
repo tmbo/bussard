@@ -1,4 +1,4 @@
-//! Running a download ([`bussard_download::flash`]) over a [`BusService`], and
+//! Running a download ([`bussard_download::flash()`]) over a [`BusService`], and
 //! the parameter-only download `bussard apply` and the MCP programming tier
 //! write the differing parameter octets with (issue #274).
 //!
