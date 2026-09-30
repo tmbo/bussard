@@ -612,6 +612,21 @@ transmits at all.
 
 ## MCP programming tier
 
+`bussard mcp` runs at one of four tiers; each adds to the one before:
+
+| Tier | Flag | What the assistant can do |
+|---|---|---|
+| Passive | `--passive` | Read and edit the model files, watch the bus. Nothing is transmitted. |
+| Read | none | Also read group values and introspect devices (rate-limited). |
+| Write | `--allow-writes` | Also send group values (`knx_write_group`, `knx_run_tests`). Protected GAs are refused. |
+| Programming | `--allow-programming` | Also write one device's link tables (`knx_plan_device`, `knx_apply_device`) after the human approved the plan. Not with `--passive`. |
+
+Model edits (`--no-model-edits` withholds them) touch files only, at every
+tier. Parameter values are edited with `knx_set_parameter` but written to a
+device only by `bussard apply` at the CLI. The server's instructions, each
+edit's `next_step` and `knx_project_summary` state the active tier, so the
+assistant tells the human the push that actually applies.
+
 `bussard mcp --allow-programming` exposes the single-device table write of
 `bussard apply` to an assistant. It is off by default and never available with
 `--passive`. Every gate the CLI has applies, plus one the CLI does not need:

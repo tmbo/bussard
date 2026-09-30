@@ -1274,10 +1274,22 @@ CREATE INDEX idx_telegrams_dest_ts ON telegrams (destination, ts_utc);
 | Passive | `--passive` | Never transmits. The bus-touching read tools (`knx_read_group`, `knx_describe_device`) are not registered, and `knx_audit` refuses `live: true`. |
 | Read (default) | none | May send GroupValueReads, rate-limited. |
 | Write | `--allow-writes` | Adds `knx_write_group` and `knx_run_tests`. |
-| Programming | `--allow-programming` | Adds `knx_plan_device` and `knx_apply_device`, which write one device's link tables after a plan the human approved. Needs a loopback gateway or the real-gateway opt-in. Independent of `--allow-writes`; not available with `--passive`. |
+| Programming | `--allow-programming` | Adds `knx_plan_device` and `knx_apply_device`, which write one device's link tables after a plan the human approved. Parameter values are not written over MCP; `bussard apply` writes them at the CLI. Needs a loopback gateway or the real-gateway opt-in. Independent of `--allow-writes`; not available with `--passive`. |
 | No model edits | `--no-model-edits` | Withholds the six model-edit tools, `knx_scaffold_groups` and `knx_reserve_groups`. Orthogonal to the tiers above: they write the model's TOML files, never the bus, so they are registered in every tier by default. |
 
-The model tools (`knx_describe_change`, `knx_history`, the six that edit, `knx_scaffold_groups` and `knx_reserve_groups`) touch files under the model directory and nothing else. `knx_export_bundle` and `knx_diff_project` only read the model (the export writes one bundle file) and are registered in every tier, `--no-model-edits` included. Every edit snapshots the model first, validates after, and returns the change as sentences for the caller to quote to the human. Nothing reaches a device until a human runs `bussard plan` and `bussard apply`, or approves a plan in the conversation on a server started with `--allow-programming`.
+The model tools (`knx_describe_change`, `knx_history`, the six that edit, `knx_scaffold_groups` and `knx_reserve_groups`) touch files under the model directory and nothing else. `knx_export_bundle` and `knx_diff_project` only read the model (the export writes one bundle file) and are registered in every tier, `--no-model-edits` included. Every edit snapshots the model first, validates after, and returns the change as sentences for the caller to quote to the human, plus a `next_step` that says how the change reaches the device at this server's tier (see [What the server tells the assistant](#what-the-server-tells-the-assistant)).
+
+### What the server tells the assistant
+
+Clients load tools lazily, so a tool description or a result string is often all the assistant knows at the moment of a call. Every string that depends on what the server may do is built from its active tiers, in one place:
+
+- **Server instructions.** What the server does end to end at its tier, which tools push, and what still needs the CLI (`flash` of a new application, `adopt`, `replace`, `commission`) or ETS (the Secure activation of a fresh device, and any setting the product model does not expose). Parameters are edited with `knx_set_parameter` using the keys `knx_show_device` lists.
+- **`next_step` after a model edit.** Names the devices the change touches. Link changes: with `--allow-programming`, push with `knx_plan_device` for the device and `knx_apply_device` after an explicit yes; without it, restart with the flag, or `bussard plan <ia>` and `bussard apply <ia>` at the CLI. Parameter changes: `knx_apply_device` writes links only, so the parameter write is `bussard apply <ia>` at the CLI at every tier. Names, rooms and group-address metadata are stored in no device: nothing to push.
+- **Tool descriptions** of the six edit tools name `knx_plan_device` and `knx_apply_device` as the push step and leave the tier-specific part to `next_step`.
+- **`knx_project_summary`** carries `server` (`tiers`, `passive`, `writes`, `programming`, `model_edits`) and `capabilities`, one paragraph saying what the assistant may do here.
+- **`knx_show_device`** carries `how_to_change`: which tool edits the listed parameters and links and how they are pushed. Without a product model it says the parameters are not editable yet and what to run.
+
+A guard test lists every tool description and every `next_step` at each tier and fails on a string that sends the assistant to `bussard plan` or `bussard apply` without naming the MCP tool that pushes at the programming tier.
 
 Tool counts: 22 in `--passive`, 24 by default, 26 with `--allow-writes`. `--no-model-edits` takes eight away from each (14, 16 and 18). `--allow-programming` adds two to any non-passive tier.
 
@@ -1287,11 +1299,11 @@ Bus operations share one rate limiter (minimum 250 ms between operations, at mos
 
 | Tool | Parameters | Returns |
 |---|---|---|
-| `knx_project_summary` | none | Project name, device/GA/link counts, floors and rooms, GA main-range names, bus connection status, validation counts. Call first. |
+| `knx_project_summary` | none | Project name, device/GA/link counts, floors and rooms, GA main-range names, bus connection status, validation counts, `server` (the active tiers) and `capabilities` (what the assistant may do here). Call first. |
 | `knx_model_lookup` | `query` (substring), `limit` (default 50, max 500) | Case-insensitive matches across GA names/addresses, device names/IAs, room names, com-object names, grouped by kind. |
 | `knx_get_group` | `ga` | The GA's definition, every link sending to or listening on it, and the last telegram seen on it. |
 | `knx_get_device` | `address` | One device's identity, product, location, channels, com-object table, and links. |
-| `knx_show_device` | `address`, `channel` (optional; a handle, or `device`), `toml` (optional) | What [`bussard device`](#bussard-device-address-channel) shows, as JSON: the channels, and for `channel` its parameters and objects; with `toml: true` also the paste-ready snippet. Files only. |
+| `knx_show_device` | `address`, `channel` (optional; a handle, or `device`), `toml` (optional) | What [`bussard device`](#bussard-device-address-channel) shows, as JSON: the channels, and for `channel` its parameters and objects; with `toml: true` also the paste-ready snippet; `how_to_change` says which tool edits and pushes what. Files only. |
 | `knx_recent_telegrams` | `limit` (default 50, max 1000), `ga` (GA or prefix), `source` (IA), `since` (RFC3339), all optional | Recent decoded telegrams, oldest first. With `--capture-db`, windows that predate the in-memory ring are topped up from the capture database. |
 | `knx_wait_for_telegram` | `timeout_seconds` (max 300), `ga`, `source` (optional) | Blocks until a matching telegram arrives or the timeout elapses. A timeout is a normal result, not an error. Enables "press the button now" debugging. With the server's keyring a secured group telegram arrives decrypted, with `secured: true`; without its group key it keeps the ciphertext and says `secure_status: "no_key"`. |
 | `knx_validate` | none | Every diagnostic (code, severity, message, location) plus counts, including the keyring rules (E027 to I031) against the server's keyring. |

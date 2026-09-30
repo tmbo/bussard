@@ -9,9 +9,11 @@
 //! 3. saves and validates, and
 //! 4. returns the change as plain-language sentences plus the snapshot id.
 //!
-//! Nothing here touches the bus. A model edit changes model files only; a human
-//! still runs `bussard plan` and `bussard apply` to push it to a device. Every
-//! tool description says so, because the caller has to say so to the human.
+//! Nothing here touches the bus. A model edit changes model files only; the
+//! push to a device is `knx_plan_device` and `knx_apply_device` at the
+//! programming tier. Every tool description says so, and every result carries
+//! a `next_step` from [`crate::guidance`] that says how the edit reaches the
+//! device at this server's tier, because the caller has to tell the human.
 //!
 //! Protected group addresses (`protected: true`) are refused outright, exactly
 //! as `knx_write_group` refuses them: there is no MCP override, and no tool
@@ -264,8 +266,9 @@ impl BussardMcp {
     /// `knx_set_group`.
     #[tool(
         description = "Create or update a group address in groups.toml: its name, datapoint type \
-        and free-text note. Creating one needs a name. This edits FILES ONLY — no telegram is sent \
-        and no device is touched until a human runs `bussard plan` and `bussard apply`. A group \
+        and free-text note. Creating one needs a name. This edits FILES ONLY: no telegram is sent, \
+        and no device stores a group address's name or type; links that use it are pushed per \
+        device with knx_plan_device and knx_apply_device. A group \
         address marked protected (safety-critical, e.g. a wind alarm) cannot be renamed or retyped \
         here, and there is deliberately no way to set or clear that flag over MCP. Returns the \
         change as sentences: quote them to the human."
@@ -348,9 +351,9 @@ impl BussardMcp {
         makes the com object transmit on that GA (a com object has at most one, so an existing one \
         is replaced), role \"listen\" makes it react to the GA. A GA that groups.toml does not \
         define yet is added there, named `<channel or device name> <object function>` with the \
-        object's DPT, and reported in groups_declared. This edits FILES ONLY — the device \
-        keeps its current wiring until a human runs `bussard plan <ia>` and `bussard apply <ia>`. \
-        Protected group addresses are refused outright. Returns the change as sentences: quote \
+        object's DPT, and reported in groups_declared. This edits FILES ONLY: the device \
+        keeps its current wiring until knx_plan_device and knx_apply_device push it (the \
+        result's next_step says how at this server's tier). Protected group addresses are refused outright. Returns the change as sentences: quote \
         them to the human before she confirms."
     )]
     async fn knx_add_link(
@@ -428,8 +431,9 @@ impl BussardMcp {
     /// `knx_remove_link`.
     #[tool(
         description = "Unbind a device's com object from a group address in its device file (devices/<address>.toml) (role \
-        \"send\" or \"listen\"). This edits FILES ONLY — the device keeps its current wiring until \
-        a human runs `bussard plan <ia>` and `bussard apply <ia>`. Protected group addresses are \
+        \"send\" or \"listen\"). This edits FILES ONLY: the device keeps its current wiring until \
+        knx_plan_device and knx_apply_device push it (the result's next_step says how at this \
+        server's tier). Protected group addresses are \
         refused outright. Returns the change as sentences: quote them to the human."
     )]
     async fn knx_remove_link(
@@ -537,9 +541,10 @@ impl BussardMcp {
         knx_show_device lists it (add `channel` when the key repeats across channels); any \
         parameter the lock knows for the device can be set, and the value (an enum label or \
         code, a number) is checked against the vendor's product model first; without a product \
-        model the edit is refused rather than guessed. This edits FILES ONLY — the device keeps \
-        its current settings until a human runs `bussard plan <ia>` and `bussard apply <ia>`. \
-        Returns the change as sentences: quote them to the human."
+        model the edit is refused rather than guessed. This edits FILES ONLY: the device keeps \
+        its current settings until the change is pushed; knx_plan_device and knx_apply_device \
+        push links only, so the result's next_step says how a parameter value reaches the \
+        device at this server's tier. Returns the change as sentences: quote them to the human."
     )]
     async fn knx_set_parameter(
         &self,
@@ -573,8 +578,9 @@ impl BussardMcp {
     /// `knx_undo`.
     #[tool(
         description = "Put the model files back to a history snapshot (default: the newest \
-        snapshot that differs from the current files, i.e. undo the last change). This changes FILES ONLY: devices keep whatever is in their tables until a \
-        human runs `bussard plan <ia>` and `bussard apply <ia>`. The state before the undo is \
+        snapshot that differs from the current files, i.e. undo the last change). This changes FILES ONLY: devices keep whatever is in their tables until \
+        knx_plan_device and knx_apply_device push them (the result's next_step names the \
+        devices and says how at this server's tier). The state before the undo is \
         itself snapshotted, so an undo can be undone. Returns what the undo reverted, as \
         sentences: quote them to the human."
     )]
@@ -634,13 +640,18 @@ impl BussardMcp {
             "changes": sentences(&changes),
             "detail": changes.changes,
             "validation": validation_json(&diagnostics),
-            "next_step": "Nothing has reached any device. A human runs `bussard plan <ia>` and \
-                          `bussard apply <ia>` to push this to the bus.",
+            "next_step": self.next_step(&changes),
         }))
     }
 }
 
 impl BussardMcp {
+    /// The `next_step` for an edit that produced `changes`, at this server's
+    /// tier (see [`crate::guidance::Tiers::next_step`]).
+    fn next_step(&self, changes: &ChangeSet) -> String {
+        crate::guidance::Tiers::of(self.state()).next_step(changes)
+    }
+
     /// The shared edit ladder: load, apply, snapshot, save, validate, describe.
     ///
     /// The model is re-read from disk rather than taken from the cached handle,
@@ -712,8 +723,7 @@ impl BussardMcp {
             "touches_protected": changes.touches_protected(),
             "groups_declared": declared,
             "validation": validation_json(&diagnostics),
-            "next_step": "Nothing has reached any device. A human runs `bussard plan <ia>` and \
-                          `bussard apply <ia>` to push this to the bus.",
+            "next_step": self.next_step(&changes),
         }))
     }
 }
