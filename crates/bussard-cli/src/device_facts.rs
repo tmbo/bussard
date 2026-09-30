@@ -15,11 +15,11 @@
 
 use std::path::Path;
 
-use bussard_mgmt::{ConnectionSeed, L4Channel, Layer4Connection, MaskProfile};
+use bussard_mgmt::{L4Channel, Layer4Connection};
 use bussard_model::IndividualAddress;
 use bussard_model::identity::{IdentityCheck, ReportedIdentity};
 use bussard_model::schema::Device;
-use bussard_service::{Authorize, Established, FactsCache, FactsSource, FactsWant};
+use bussard_service::{Authorize, FactsCache};
 
 /// The facts store of a command run against the model in `dir`: `None` for
 /// `model_loaded == false` (no model, so nothing is written next to it).
@@ -43,102 +43,6 @@ pub(crate) fn read_only_authorize(facts: &mut FactsCache, target: IndividualAddr
     } else {
         Authorize::BestEffort(key)
     }
-}
-
-/// Reads the descriptor and, on a System B device (the family whose table
-/// reader walks the objects), checks or reads the device facts and seeds the
-/// connection, so the table reader and the freshness probe skip their object
-/// walks and the second descriptor read.
-///
-/// `Ok(None)` when nothing was seeded: the descriptor read failed (the reader
-/// repeats it and reports the failure as it always did) or the mask is not
-/// System B (the reader refuses it, or reads System 7 memory, as before).
-///
-/// # Errors
-///
-/// A connection death from one of the facts reads.
-pub(crate) async fn establish_table_facts<Ch: L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
-    facts: &FactsCache,
-) -> anyhow::Result<Option<Established>> {
-    let mask = match bussard_mgmt::read_device_descriptor(l4).await {
-        Ok(mask) => mask,
-        Err(err) => {
-            tracing::debug!("{} descriptor read before the facts: {err}", l4.target());
-            return Ok(None);
-        }
-    };
-    if !MaskProfile::from_mask(mask).tables_supported() {
-        return Ok(None);
-    }
-    Ok(Some(facts.establish(l4, mask, FactsWant::Table).await?))
-}
-
-/// The seed for a later connection of the same command (the write phase of
-/// `apply`), from facts its read phase established.
-pub(crate) fn seed_of(established: Option<&Established>) -> Option<ConnectionSeed> {
-    let established = established?;
-    if established.source == FactsSource::Unavailable {
-        return None;
-    }
-    let record = established.record.as_ref()?;
-    Some(ConnectionSeed {
-        mask: record.mask_value(),
-        object_table: record.object_table(),
-        max_apdu: record.max_apdu,
-        authorize_unanswered: record.authorize
-            == Some(bussard_model::facts::AuthorizeVerdict::Unsupported),
-    })
-}
-
-/// The one sentence every management command prints for a device's identity
-/// against `bussard.lock` (issue #228, item 5): `identity of 1.1.4: matches
-/// bussard.lock (application id 0004D14122, mask 07B0)`, `… drift from
-/// bussard.lock: …` or `… not pinned in bussard.lock`.
-pub(crate) fn identity_line(target: IndividualAddress, check: &IdentityCheck) -> String {
-    format!("identity of {target}: {}", check.summary())
-}
-
-/// What [`identify`] found on the connection.
-pub(crate) struct Identified {
-    /// The device facts in effect (System B), for seeding a later connection.
-    pub established: Option<Established>,
-    /// The identity verdict, when the descriptor answered.
-    pub check: Option<IdentityCheck>,
-}
-
-/// Checks (or reads, and stores) the device facts through
-/// [`establish_table_facts`] and compares what the device reports with what
-/// the lock pins for `device`. The one step every management command that
-/// opens a connection to a device runs first.
-///
-/// # Errors
-///
-/// A connection death from one of the facts reads.
-pub(crate) async fn identify<Ch: L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
-    facts: &FactsCache,
-    device: Option<&Device>,
-) -> anyhow::Result<Identified> {
-    let established = establish_table_facts(l4, facts).await?;
-    let reported = match established.as_ref().and_then(|e| e.record.as_ref()) {
-        Some(record) => Some(ReportedIdentity {
-            mask: record.mask.clone(),
-            application_id: record.application_id.clone(),
-        }),
-        // Outside System B (or without facts) the mask alone.
-        None => bussard_mgmt::read_device_descriptor(l4)
-            .await
-            .ok()
-            .map(|mask| ReportedIdentity {
-                mask: bussard_model::facts::format_mask(mask),
-                application_id: None,
-            }),
-    };
-    Ok(Identified {
-        established,
-        check: reported.map(|r| IdentityCheck::compare(device, r)),
-    })
 }
 
 /// The identity verdict for a device a probe read only the mask of (`scan`,
@@ -176,6 +80,23 @@ pub(crate) fn observe(
     )
 }
 
+pub(crate) use bussard_service::{Identified, identity_line, seed_of};
+
+/// Checks (or reads, and stores) the device facts and compares what the
+/// device reports with what the lock pins for `device`
+/// ([`bussard_service::identify`]).
+///
+/// # Errors
+///
+/// A connection death from one of the facts reads.
+pub(crate) async fn identify<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    facts: &FactsCache,
+    device: Option<&Device>,
+) -> anyhow::Result<Identified> {
+    Ok(bussard_service::identify(l4, facts, device).await?)
+}
+
 /// Refuses a write to a device whose identity drifted from the lock, naming
 /// the `bussard flash` it needs (`apply`, `commission --apply` through it,
 /// `replace --no-flash`).
@@ -184,13 +105,8 @@ pub(crate) fn refuse_drift(
     check: &IdentityCheck,
     verb: &str,
 ) -> anyhow::Result<()> {
-    if check.is_drift() {
-        anyhow::bail!(
-            "refusing to {verb} {target}: {}. The model's parameters and tables are for the \
-             application the lock pins; run `bussard flash {target}` to load it, or re-import \
-             the project if the lock is stale",
-            check.differences.join("; ")
-        );
+    match bussard_service::drift_refusal(target, check, verb) {
+        Some(refusal) => anyhow::bail!("{refusal}"),
+        None => Ok(()),
     }
-    Ok(())
 }

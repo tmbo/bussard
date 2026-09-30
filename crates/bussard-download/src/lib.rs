@@ -29,6 +29,7 @@ pub mod compute;
 pub mod compute_sys7;
 pub mod device_plan;
 pub mod flash;
+pub mod model_params;
 pub mod param_decode;
 pub mod param_plan;
 pub mod plan;
@@ -75,6 +76,13 @@ pub use flash::{
     Session, SingleConnector, Sys7Context, discover_application_object, flash, plan_flash,
     plan_flash_sys7_with_hawk, plan_flash_with_object_flags, same_program, select_application,
     sys7_profile_from_hawk, trace,
+};
+pub use model_params::{
+    OrderNumberError, build_module_obj3_descriptors, build_table_images,
+    describe_group_object_change, identity_gate, linked_object_flags, malformed_parameter_warning,
+    model_parameters, parameter_overrides, plan_for_readback, product_display, region_rows,
+    resolve_by_order_number, runtime_segments, sys7_code_mismatch, template_ops_for,
+    verify_readback, write_parameter_memory_backup,
 };
 pub use param_decode::{DecodedParameters, decode_parameters};
 pub use param_plan::{

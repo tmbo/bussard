@@ -644,7 +644,7 @@ fn write_parameters(
     target: IndividualAddress,
     source: IndividualAddress,
     partial: Option<&bussard_download::FlashPlan>,
-    detail: Option<&crate::param_readback::ParamDetail>,
+    detail: Option<&bussard_service::params::ParamDetail>,
     tool_key: &Option<bussard_secure::Key16>,
     secure_seq: &bussard_secure::SequenceHighWater,
     read_options: &L4Options,
@@ -662,64 +662,48 @@ fn write_parameters(
             );
         }
     };
-    let facts = bussard_download::DeviceFacts {
-        object_table: detail.resident.object_table.clone(),
-        ..bussard_download::DeviceFacts::default()
-    };
-    let options = bussard_download::FlashOptions {
-        bcu_key: None,
-        verify_after_restart: true,
-        skip_matching_mcb: false,
-    };
-    let outcome = runtime.block_on(crate::flash_cmd::execute(
+    // The one parameter write (issue #274), shared with `knx_apply_device`.
+    let mut observer = ParamDisplay(Some(crate::progress::FlashDisplay::new(partial, false)));
+    let outcome = runtime.block_on(bussard_service::download::write_parameters(
         service,
         target,
         source,
         partial,
-        options,
-        facts,
+        detail,
         tool_key.clone(),
         secure_seq.clone(),
-        false,
-        &std::cell::Cell::new(None),
-        None,
-    ));
-    match outcome {
-        Ok(outcome) if outcome.ok() => {}
-        Ok(outcome) => {
-            eprintln!("\nERROR: the parameter download did not verify: {outcome:?}");
-            backup_note(target);
-            return Ok(ExitCode::FAILURE);
-        }
-        Err(err) => {
-            eprintln!("\nERROR: the parameter download failed: {err}");
-            backup_note(target);
-            return Ok(ExitCode::FAILURE);
-        }
-    }
-    let after = runtime.block_on(async {
-        service
-            .with_l4(target, read_options, async |l4| {
-                anyhow::Ok(bussard_download::read_parameter_regions(l4, &detail.plan).await)
-            })
-            .await
-    })?;
-    match crate::flash_params::verify_readback(
-        partial,
-        &after,
-        &crate::flash_params::runtime_segments(&detail.plan),
-    ) {
-        Ok(octets) => {
+        read_options,
+        &mut observer,
+    ))?;
+    match (&outcome, outcome.failure()) {
+        (bussard_service::download::ParamWriteOutcome::Verified { octets }, _) => {
             println!(
                 "parameters verified: {octets} changed octet(s) read back from {target}; the \
                  application is Loaded"
             );
             Ok(ExitCode::SUCCESS)
         }
-        Err(reason) => {
-            eprintln!("\nERROR: the parameter read-back does not match: {reason}");
+        (_, failure) => {
+            eprintln!("\nERROR: {}", failure.unwrap_or_default());
             backup_note(target);
             Ok(ExitCode::FAILURE)
+        }
+    }
+}
+
+/// The progress display of the parameter download.
+struct ParamDisplay(Option<crate::progress::FlashDisplay>);
+
+impl bussard_service::download::FlashObserver for ParamDisplay {
+    fn progress(&mut self, event: bussard_download::Progress) {
+        if let Some(display) = &mut self.0 {
+            display.on_progress(event);
+        }
+    }
+
+    fn finished(&mut self, verified: bool) {
+        if let Some(display) = self.0.take() {
+            display.finish(verified);
         }
     }
 }
