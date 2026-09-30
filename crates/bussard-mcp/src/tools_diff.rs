@@ -13,12 +13,12 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::args::Parameters;
 use bussard_model::Model;
 use bussard_model::bundle::{self, Bundle, ExportOptions};
 use bussard_model::change::{describe, name_parameters};
 use bussard_model::param_model::ProductModels;
 use rmcp::ErrorData;
-use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::{tool, tool_router};

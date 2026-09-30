@@ -16,6 +16,7 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use crate::args::Parameters;
 use bussard_bus::ops;
 use bussard_model::{GroupAddress, IndividualAddress};
 use bussard_monitor::{CaptureStore, Filter, QueryFilter};
@@ -27,7 +28,6 @@ use bussard_service::{
 };
 use rmcp::ErrorData;
 use rmcp::handler::server::router::tool::ToolRouter;
-use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ServerCapabilities, ServerInfo};
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::{ServerHandler, tool, tool_handler, tool_router};
@@ -984,6 +984,38 @@ fn parse_rfc3339(s: &str) -> Result<SystemTime, ErrorData> {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for BussardMcp {
+    /// Logs the shape of every `tools/call` (issue #269), then dispatches it
+    /// through the tool router exactly as the `#[tool_handler]` default does.
+    ///
+    /// Info: the tool name, whether `arguments` was present and the received
+    /// field names, never values. Debug (`-vv`): the raw request with every
+    /// string value redacted. An argument error comes back as a tool result
+    /// with `isError` set (see [`crate::args::argument_error_as_tool_result`]).
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+        tracing::info!(
+            tool = %request.name,
+            arguments_present = request.arguments.is_some(),
+            fields = ?crate::args::field_names(request.arguments.as_ref()),
+            "tools/call"
+        );
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            let arguments = request.arguments.as_ref().map(|object| {
+                crate::args::redact_strings(&serde_json::Value::Object(object.clone()))
+            });
+            tracing::debug!(
+                tool = %request.name,
+                raw = %serde_json::json!({ "name": request.name, "arguments": arguments }),
+                "tools/call request (string values redacted)"
+            );
+        }
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        crate::args::argument_error_as_tool_result(self.tool_router.call(tcc).await)
+    }
+
     fn get_info(&self) -> ServerInfo {
         // Identify as bussard (not the SDK default "rmcp") so clients show the
         // right name/version.

@@ -102,6 +102,7 @@
 
 #![warn(missing_docs)]
 
+pub mod args;
 pub mod model_handle;
 pub mod run;
 mod secure_group;

@@ -54,6 +54,7 @@ use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::args::Parameters;
 use bussard_bus::BusHandle;
 use bussard_download::{
     DesiredTables, LiveRead, LiveTables, PlanReport, SecurityInputs, backups_root,
@@ -68,7 +69,6 @@ use bussard_service::secure::{SecureMaterial, ToolKeySource};
 use bussard_transport::ConnectionConfig;
 use bussard_transport::write_gate::{check_write_gate, gateway_display};
 use rmcp::ErrorData;
-use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::{tool, tool_router};

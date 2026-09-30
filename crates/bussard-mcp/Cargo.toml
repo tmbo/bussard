@@ -30,6 +30,8 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The field path in a tool-argument error (#269).
+serde_path_to_error = { workspace = true }
 anyhow = { workspace = true }
 # The official Rust MCP SDK. Apache-2.0. Server + macros + stdio transport +
 # JSON-Schema generation for tool parameters. Pinned to 3.x; MSRV 1.88 < 1.98.

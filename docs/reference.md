@@ -1330,6 +1330,12 @@ An apply writes the pre-state backup to `captures/backups/` before anything else
 
 The model is not frozen at startup: the server re-reads the model directory when its files change (and immediately after one of its own model edits), so a `protected = true` or a corrected `dpt` added to `groups.toml` mid-session is in force on the next tool call. A model that fails to parse is not swapped in; the server keeps the last good one and warns on stderr.
 
+### Argument errors and the server log
+
+A tool call whose arguments do not fit comes back as a tool error that says what reached the server, followed by the fields the tool expects. "the call reached bussard without any arguments (the client sent none)" means the client or a bridge between it and bussard dropped the arguments: the request carried no `arguments` member, so the fix is on the client side, and retrying with the arguments as a JSON object is the next step. "with an empty object as its arguments" means the client sent `{}`. Any other text is serde's own, with the path of the offending field, e.g. `com_object: invalid type: string "seven", expected u16`.
+
+The server logs every `tools/call` on stderr at info (`-v`): the tool name, whether `arguments` was present, and the names of the fields received, never their values. A rejected call is also logged at warn, so it shows without `-v`. With `-vv` the raw request is logged too, with every string value replaced by `<redacted>`. Claude Desktop writes a server's stderr to `~/Library/Logs/Claude/mcp-server-<name>.log` on macOS, where `<name>` is the key in `mcpServers`; Claude Code shows it in the session's MCP output.
+
 ## The viz server
 
 `bussard viz` serves a single self-contained website (no CDN, no build step, works offline) that turns the model into a live picture of the installation. Open the listen address in a browser.

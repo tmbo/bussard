@@ -18,12 +18,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddrV4;
 use std::time::{Duration, SystemTime};
 
+use crate::args::Parameters;
 use bussard_mgmt::MaskProfile;
 use bussard_model::{GroupAddress, IndividualAddress, Model};
 use bussard_monitor::{DestinationRef, Filter};
 use bussard_transport::knxnet::GatewayDescription;
 use rmcp::ErrorData;
-use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::{tool, tool_router};
