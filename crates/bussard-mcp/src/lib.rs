@@ -45,6 +45,9 @@
 //! | `knx_ha_status` | Home Assistant's version, KNX integration, entity counts and the state of the KNX YAML file (registered only with the Home Assistant tier). |
 //! | `knx_ha_plan` | What writing the generated KNX YAML would change, per entity, plus a `plan_digest` (Home Assistant tier). |
 //! | `knx_ha_apply` | Write the planned KNX YAML (backup first) and reload Home Assistant's KNX integration, only with a fresh matching `plan_digest` (Home Assistant tier). |
+//! | `knx_ha_automation_plan` | Render a small rule (when a GA receives a value, send group values) into a bussard-managed Home Assistant automation, plus a `plan_digest` (Home Assistant tier). |
+//! | `knx_ha_automation_apply` | Write the planned automation through the config API (previous JSON backed up) and reload automations, only with a fresh matching `plan_digest` (Home Assistant tier). |
+//! | `knx_ha_automation_remove` | Plan, then with the digest delete, a bussard-managed automation (Home Assistant tier). |
 //! | `knx_apply_device` | Write the planned tables to one device, backup first and verify after, only with a fresh matching `plan_digest` (registered only with `--allow-programming`). |
 //!
 //! The eight from `knx_describe_change` to `knx_undo` are model tools: they
@@ -76,13 +79,15 @@
 //! produced minutes ago and which a fresh read still reproduces. See
 //! [`tools_program`].
 //!
-//! `--allow-home-assistant` (issue #280) adds the three Home Assistant tools
+//! `--allow-home-assistant` (issue #280) adds the six Home Assistant tools
 //! ([`tools_ha::HA_TOOLS`]) when `bussard.toml` has a `[home_assistant]`
 //! table: `knx_ha_status` reads Home Assistant's REST API, `knx_ha_plan`
 //! diffs the KNX YAML generated from the model against the file Home
 //! Assistant reads, and `knx_ha_apply` writes it (backup first) and reloads
-//! the KNX integration, only with a fresh digest from this session. See
-//! [`tools_ha`].
+//! the KNX integration, only with a fresh digest from this session. The
+//! automation tools ([`tools_ha_automation`]) create, update and remove
+//! bussard-managed automations through Home Assistant's config API with the
+//! same plan, digest and explicit-yes flow. See [`tools_ha`].
 //!
 //! # Connecting this to Claude Code
 //!
@@ -126,6 +131,7 @@ pub mod tools_audit;
 pub mod tools_diff;
 pub mod tools_groups;
 pub mod tools_ha;
+pub mod tools_ha_automation;
 pub mod tools_learn;
 pub mod tools_model;
 pub mod tools_program;

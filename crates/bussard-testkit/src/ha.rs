@@ -10,12 +10,18 @@
 //! - `GET /api/config/config_entries/entry`: the configured config entries, or
 //!   404 when [`MockHaConfig::config_entries`] is `None`
 //! - `POST /api/services/knx/reload`: `[]`, counted
+//! - `GET`, `POST` and `DELETE /api/config/automation/config/<id>`: an
+//!   in-memory automation store (404 for an unknown id); every stored
+//!   automation also shows in `/api/states` as `automation.<id>` with
+//!   `attributes.id` and the alias as `friendly_name`
+//! - `POST /api/services/automation/reload`: `[]`, counted
 //!
 //! Every request without `Authorization: Bearer <token>` gets 401, like Home
 //! Assistant. Each request is recorded ([`MockHomeAssistant::requests`]) with
 //! whether it carried the right token, so a test can assert what was called
 //! and in which order. The server stops when the value is dropped.
 
+use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -37,6 +43,8 @@ pub struct MockHaConfig {
     pub config_entries: Option<String>,
     /// The status `POST /api/services/knx/reload` answers with.
     pub reload_status: u16,
+    /// Automations stored at start, by config id (JSON objects).
+    pub automations: BTreeMap<String, String>,
 }
 
 impl MockHaConfig {
@@ -54,7 +62,14 @@ impl MockHaConfig {
                     .to_string(),
             ),
             reload_status: 200,
+            automations: BTreeMap::new(),
         }
+    }
+
+    /// Stores an automation config (a JSON object) under `id` at start.
+    pub fn with_automation(mut self, id: &str, config: &str) -> Self {
+        self.automations.insert(id.to_string(), config.to_string());
+        self
     }
 
     /// Sets the `/api/states` body from `(entity_id, friendly_name)` pairs.
@@ -91,6 +106,7 @@ pub struct RecordedRequest {
 pub struct MockHomeAssistant {
     addr: SocketAddr,
     requests: Arc<Mutex<Vec<RecordedRequest>>>,
+    automations: Arc<Mutex<BTreeMap<String, String>>>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
@@ -105,9 +121,11 @@ impl MockHomeAssistant {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let addr = listener.local_addr()?;
         let requests = Arc::new(Mutex::new(Vec::new()));
+        let automations = Arc::new(Mutex::new(config.automations.clone()));
         let stop = Arc::new(AtomicBool::new(false));
         let thread = {
             let requests = Arc::clone(&requests);
+            let automations = Arc::clone(&automations);
             let stop = Arc::clone(&stop);
             std::thread::spawn(move || {
                 for stream in listener.incoming() {
@@ -115,7 +133,7 @@ impl MockHomeAssistant {
                         break;
                     }
                     if let Ok(stream) = stream {
-                        let _ = serve_one(stream, &config, &requests);
+                        let _ = serve_one(stream, &config, &requests, &automations);
                     }
                 }
             })
@@ -123,6 +141,7 @@ impl MockHomeAssistant {
         Ok(MockHomeAssistant {
             addr,
             requests,
+            automations,
             stop,
             thread: Some(thread),
         })
@@ -144,6 +163,24 @@ impl MockHomeAssistant {
             .lock()
             .map(|list| list.clone())
             .unwrap_or_else(|poisoned| poisoned.into_inner().clone())
+    }
+
+    /// The stored config of automation `id`, as JSON text.
+    pub fn automation(&self, id: &str) -> Option<String> {
+        self.automations
+            .lock()
+            .map(|store| store.get(id).cloned())
+            .unwrap_or_else(|poisoned| poisoned.into_inner().get(id).cloned())
+    }
+
+    /// How many authorized `automation.reload` service calls were received.
+    pub fn automation_reloads(&self) -> usize {
+        self.requests()
+            .iter()
+            .filter(|r| {
+                r.method == "POST" && r.path == "/api/services/automation/reload" && r.authorized
+            })
+            .count()
     }
 
     /// How many authorized `knx.reload` service calls were received.
@@ -171,6 +208,7 @@ fn serve_one(
     stream: TcpStream,
     config: &MockHaConfig,
     requests: &Mutex<Vec<RecordedRequest>>,
+    automations: &Mutex<BTreeMap<String, String>>,
 ) -> std::io::Result<()> {
     stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
     let mut reader = BufReader::new(stream.try_clone()?);
@@ -210,17 +248,22 @@ fn serve_one(
             method: method.clone(),
             path: path.clone(),
             authorized,
-            body,
+            body: body.clone(),
         });
     }
     let (status, payload) = if !authorized {
         (401, r#"{"message":"401: Unauthorized"}"#.to_string())
+    } else if let Some(id) = path.strip_prefix("/api/config/automation/config/") {
+        automation_route(automations, &method, id, &body)
+    } else if method == "GET" && path == "/api/states" {
+        (200, states(config, automations))
     } else {
         respond(config, &method, &path)
     };
     let reason = match status {
         200 => "OK",
         401 => "Unauthorized",
+        400 => "Bad Request",
         404 => "Not Found",
         _ => "Error",
     };
@@ -258,8 +301,59 @@ fn respond(config: &MockHaConfig, method: &str, path: &str) -> (u16, String) {
             None => (404, r#"{"message":"Not Found"}"#.to_string()),
         },
         ("POST", "/api/services/knx/reload") => (config.reload_status, "[]".to_string()),
+        ("POST", "/api/services/automation/reload") => (200, "[]".to_string()),
         _ => (404, r#"{"message":"Not Found"}"#.to_string()),
     }
+}
+
+/// The automation config API on the in-memory store.
+fn automation_route(
+    store: &Mutex<BTreeMap<String, String>>,
+    method: &str,
+    id: &str,
+    body: &str,
+) -> (u16, String) {
+    let Ok(mut store) = store.lock() else {
+        return (500, r#"{"message":"store poisoned"}"#.to_string());
+    };
+    let not_found = || (404, r#"{"message":"Resource not found"}"#.to_string());
+    match method {
+        "GET" => store
+            .get(id)
+            .map(|c| (200, c.clone()))
+            .unwrap_or_else(not_found),
+        "POST" => match serde_json::from_str::<serde_json::Value>(body) {
+            Ok(value) if value.is_object() => {
+                store.insert(id.to_string(), value.to_string());
+                (200, r#"{"result":"ok"}"#.to_string())
+            }
+            _ => (400, r#"{"message":"Message format incorrect"}"#.to_string()),
+        },
+        "DELETE" => match store.remove(id) {
+            Some(_) => (200, r#"{"result":"ok"}"#.to_string()),
+            None => not_found(),
+        },
+        _ => (405, r#"{"message":"Method not allowed"}"#.to_string()),
+    }
+}
+
+/// The configured states plus one `automation.<id>` per stored automation.
+fn states(config: &MockHaConfig, store: &Mutex<BTreeMap<String, String>>) -> String {
+    let mut list: Vec<serde_json::Value> = serde_json::from_str(&config.states).unwrap_or_default();
+    if let Ok(store) = store.lock() {
+        for (id, text) in store.iter() {
+            let alias = serde_json::from_str::<serde_json::Value>(text)
+                .ok()
+                .and_then(|v| v["alias"].as_str().map(str::to_string))
+                .unwrap_or_else(|| id.clone());
+            list.push(serde_json::json!({
+                "entity_id": format!("automation.{id}"),
+                "state": "on",
+                "attributes": {"id": id, "friendly_name": alias},
+            }));
+        }
+    }
+    serde_json::Value::Array(list).to_string()
 }
 
 /// Escapes `"` and `\` for a JSON string literal.

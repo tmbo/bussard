@@ -192,6 +192,64 @@ impl HaClient {
         .map(|_| ())
     }
 
+    /// `DELETE path`, decoded as JSON.
+    ///
+    /// # Errors
+    ///
+    /// Any [`ApiError`] but the token and URL ones.
+    pub fn delete_json(&self, path: &str) -> Result<Value, ApiError> {
+        let request = self
+            .agent
+            .delete(&format!("{}{path}", self.base))
+            .set("Authorization", &format!("Bearer {}", self.token));
+        self.finish(path, request.call())
+    }
+
+    /// The stored config of automation `id`, or `None` when Home Assistant
+    /// has none (HTTP 404).
+    ///
+    /// # Errors
+    ///
+    /// Any [`ApiError`] but the token and URL ones, and not a 404.
+    pub fn automation(&self, id: &str) -> Result<Option<Value>, ApiError> {
+        match self.get_json(&automation_path(id)) {
+            Ok(value) => Ok(Some(value)),
+            Err(ApiError::Status { status: 404, .. }) => Ok(None),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Creates or replaces automation `id` with `config`.
+    ///
+    /// # Errors
+    ///
+    /// Any [`ApiError`] but the token and URL ones.
+    pub fn save_automation(&self, id: &str, config: &Value) -> Result<(), ApiError> {
+        self.post_json(&automation_path(id), config).map(|_| ())
+    }
+
+    /// Deletes automation `id`.
+    ///
+    /// # Errors
+    ///
+    /// Any [`ApiError`] but the token and URL ones.
+    pub fn delete_automation(&self, id: &str) -> Result<(), ApiError> {
+        self.delete_json(&automation_path(id)).map(|_| ())
+    }
+
+    /// Calls the `automation.reload` service.
+    ///
+    /// # Errors
+    ///
+    /// Any [`ApiError`] but the token and URL ones.
+    pub fn reload_automations(&self) -> Result<(), ApiError> {
+        self.post_json(
+            "/api/services/automation/reload",
+            &Value::Object(Default::default()),
+        )
+        .map(|_| ())
+    }
+
     /// Reads what the REST API tells about Home Assistant and its KNX
     /// integration. Never fails: what could not be read is `None` or listed
     /// in [`HaStatus::errors`].
@@ -207,6 +265,7 @@ impl HaClient {
             entity_counts: BTreeMap::new(),
             total_entities: None,
             entities: Vec::new(),
+            automations: Vec::new(),
             errors: Vec::new(),
         };
         match self.get_json("/api/") {
@@ -254,6 +313,19 @@ impl HaClient {
                         continue;
                     };
                     let domain = entity_id.split('.').next().unwrap_or_default();
+                    if domain == "automation" {
+                        if let Some(id) = state["attributes"]["id"].as_str() {
+                            status.automations.push(HaAutomation {
+                                entity_id: entity_id.to_string(),
+                                id: id.to_string(),
+                                alias: state["attributes"]["friendly_name"]
+                                    .as_str()
+                                    .map(str::to_string),
+                                state: state["state"].as_str().unwrap_or_default().to_string(),
+                            });
+                        }
+                        continue;
+                    }
                     if !KNX_DOMAINS.contains(&domain) {
                         continue;
                     }
@@ -324,6 +396,12 @@ impl HaClient {
     }
 }
 
+/// The config API path of automation `id`. Callers pass checked ids
+/// (`crate::automation::check_id`), so no escaping is needed.
+fn automation_path(id: &str) -> String {
+    format!("/api/config/automation/config/{id}")
+}
+
 /// One KNX config entry of Home Assistant.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct KnxEntry {
@@ -342,6 +420,19 @@ pub struct HaEntity {
     pub domain: String,
     /// The friendly name, which for a YAML KNX entity is its `name`.
     pub friendly_name: Option<String>,
+}
+
+/// One automation entity from `/api/states`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HaAutomation {
+    /// The entity id, e.g. `automation.guest_mode_end`.
+    pub entity_id: String,
+    /// The config id (`attributes.id`), e.g. `bussard_guest_mode_end`.
+    pub id: String,
+    /// The friendly name (the alias).
+    pub alias: Option<String>,
+    /// `on` or `off`.
+    pub state: String,
 }
 
 /// What the REST API tells about Home Assistant.
@@ -368,6 +459,9 @@ pub struct HaStatus {
     /// The entities of KNX-capable domains, for matching against the YAML.
     #[serde(skip)]
     pub entities: Vec<HaEntity>,
+    /// Every automation entity that carries a config id.
+    #[serde(skip)]
+    pub automations: Vec<HaAutomation>,
     /// What could not be read, one line each.
     pub errors: Vec<String>,
 }

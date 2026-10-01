@@ -27,6 +27,8 @@ bussard-secure = { workspace = true }
 # The Home Assistant tier (issue #280): the KNX YAML generator, its diff and
 # write, and the REST client.
 bussard-ha = { workspace = true }
+# The rendered automation as YAML for the human (issue #280).
+serde_norway = { workspace = true }
 # SHA-256 for the programming tier's plan digest. MIT OR Apache-2.0.
 sha2 = { workspace = true }
 tokio = { workspace = true }

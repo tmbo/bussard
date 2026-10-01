@@ -1,6 +1,6 @@
 //! `bussard mcp --allow-home-assistant` as a subprocess (issue #280): the
-//! token stays out of stdout and stderr through status, plan and apply, at
-//! the most verbose log level.
+//! token stays out of stdout and stderr through status, plan and apply and
+//! an automation plan and apply, at the most verbose log level.
 //!
 //! Home Assistant is the mock from `bussard-testkit` on 127.0.0.1; the bus
 //! connection is a loopback port and the server is passive.
@@ -32,7 +32,9 @@ fn test_mcp_home_assistant_tier_never_prints_the_token() -> TestResult {
     )?;
     std::fs::write(
         knx.join("groups.toml"),
-        "groups = [{ address = \"1/0/1\", name = \"Licht\", dpt = \"1.001\" }]\n",
+        "groups = [\n  { address = \"1/0/1\", name = \"Licht\", dpt = \"1.001\" },\n  \
+         { address = \"4/3/2\", name = \"Zu Hause\", dpt = \"1.001\" },\n  \
+         { address = \"4/3/10\", name = \"Gastmodus\", dpt = \"1.001\" },\n]\n",
     )?;
     std::fs::write(knx.join("ha/knx.yaml"), "knx:\n")?;
 
@@ -101,6 +103,33 @@ fn test_mcp_home_assistant_tier_never_prints_the_token() -> TestResult {
     )?;
     assert_eq!(applied["ok"], true, "{applied}");
     assert_eq!(mock.reloads(), 1);
+    let rule = serde_json::json!({
+        "id": "bussard_guest_mode_end",
+        "when": {"ga": "4/3/2", "value": "1"},
+        "then": [{"send": {"ga": "4/3/10", "value": "0"}}],
+    });
+    let auto_plan = tool(
+        &mut stdin,
+        &mut reader,
+        5,
+        "knx_ha_automation_plan",
+        rule,
+        &mut stdout_seen,
+    )?;
+    let auto_digest = auto_plan["plan_digest"]
+        .as_str()
+        .ok_or("no automation digest")?
+        .to_string();
+    let auto_applied = tool(
+        &mut stdin,
+        &mut reader,
+        6,
+        "knx_ha_automation_apply",
+        serde_json::json!({"plan_digest": auto_digest}),
+        &mut stdout_seen,
+    )?;
+    assert_eq!(auto_applied["ok"], true, "{auto_applied}");
+    assert_eq!(mock.automation_reloads(), 1);
 
     drop(stdin);
     let deadline = std::time::Instant::now() + Duration::from_millis(500);
@@ -116,6 +145,10 @@ fn test_mcp_home_assistant_tier_never_prints_the_token() -> TestResult {
     let _ = std::fs::remove_dir_all(&tmp);
 
     assert!(stderr.contains("audit: knx_ha_apply"), "{stderr}");
+    assert!(
+        stderr.contains("audit: knx_ha_automation_apply"),
+        "{stderr}"
+    );
     assert!(!stderr.contains(TOKEN), "the token is on stderr");
     assert!(!stdout_seen.contains(TOKEN), "the token is on stdout");
     Ok(())
