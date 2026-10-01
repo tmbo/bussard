@@ -495,3 +495,68 @@ fn test_mcp_plan_attributes_every_written_parameter_octet() -> TestResult {
     }
     Ok(())
 }
+
+/// Issue #285: an octet no shown parameter covers is attributed to the
+/// internal ETS selector or the hidden parameter placed there, with the
+/// device's and the model's value; a differing selector carries the one
+/// sentence on what it means.
+#[test]
+fn test_mcp_plan_attributes_internal_and_hidden_octets() -> TestResult {
+    let model = "\"thr@P-0_R-1\" = \"12\"\n\"obj2@P-1_R-2\" = \"Off\"\n";
+    const SELECTOR_NOTE: &str = "an internal ETS selector differs: the device's function \
+         assignment differs from the project (the project changed after the device's last \
+         download, or the device was downloaded from another project state); writing makes \
+         the device match the model";
+    // (octet 1 as the device holds it, the owner's key and role, the device
+    // and model values, the run's sentence, whether the selector note follows)
+    type Case<'a> = (u8, (&'a str, &'a str), (&'a str, &'a str), &'a str, bool);
+    let cases: [Case<'_>; 2] = [
+        (
+            0x03,
+            ("P-3", "internal"),
+            ("Light", "no application"),
+            "1 octet at offset 1 of segment RS-2: _AppInstanz 1 (internal ETS selector, P-3), \
+             device Light, model no application",
+            true,
+        ),
+        (
+            0x10,
+            ("P-2", "hidden"),
+            ("1", "0"),
+            "1 octet at offset 1 of segment RS-2: Delay (hidden by the configuration, P-2), \
+             device 1, model 0",
+            false,
+        ),
+    ];
+    for (octet, (key, role), (device, model_value), sentence, noted) in cases {
+        let Some(bench) = pinned("mcp-internal", [12, octet], model)? else {
+            return Ok(());
+        };
+        let mut server = bench.mcp()?;
+        let plan = server.plan()?;
+        assert_eq!(plan["ok"], true, "plan: {plan}");
+        let parameters = &plan["parameters"];
+        assert_eq!(parameters["changed"], json!([]), "plan: {plan}");
+        let ranges = parameters["octet_ranges"]
+            .as_array()
+            .ok_or("no octet_ranges")?;
+        assert_eq!(ranges.len(), 1, "plan: {plan}");
+        assert_eq!(ranges[0]["offset"], 1, "plan: {plan}");
+        assert_eq!(
+            ranges[0]["parameters"],
+            json!([{"key": key, "name": ranges[0]["parameters"][0]["name"], "role": role,
+                    "device": device, "model": model_value}]),
+            "plan: {plan}"
+        );
+        assert_eq!(ranges[0]["sentence"], sentence, "plan: {plan}");
+        assert_eq!(
+            ranges[0]["explanation"].as_str(),
+            noted.then_some(SELECTOR_NOTE),
+            "plan: {plan}"
+        );
+        let sentences = plan["sentences"].as_str().unwrap_or_default();
+        assert!(sentences.contains(sentence), "{sentences}");
+        assert_eq!(sentences.contains(SELECTOR_NOTE), noted, "{sentences}");
+    }
+    Ok(())
+}

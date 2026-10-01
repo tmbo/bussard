@@ -453,6 +453,11 @@ pub struct Readback {
     /// verdict against the default or the model.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub device_managed: Vec<ReadingJson>,
+    /// The written octet runs that hold an internal ETS value (`Access="None"`,
+    /// never shown, e.g. a function-block selector) differing from the
+    /// model's image, with both values (issue #285).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub internal: Vec<OctetAttribution>,
     /// Why the read-back is partial or absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
@@ -566,21 +571,32 @@ pub async fn read_state<Ch: L4Channel>(
     let octets = plan
         .parameters_only(&regions)
         .map(|partial| {
-            bussard_download::attribute_octets(
-                app,
-                &overrides,
-                &bases,
-                &current,
-                &partial.changed_bits(),
-            )
+            let changed = partial.changed_bits();
+            let image: BTreeMap<String, Vec<u8>> = changed
+                .keys()
+                .filter_map(|segment| {
+                    partial
+                        .image_bytes(segment)
+                        .map(|bytes| (segment.clone(), bytes.to_vec()))
+                })
+                .collect();
+            bussard_download::attribute_octets(app, &overrides, &bases, &current, &image, &changed)
         })
         .unwrap_or_default();
+    let device = model
+        .and_then(|m| m.devices.get(&target))
+        .map(|d| &d.device);
+    let internal = octet_attributions(device, &octets)
+        .into_iter()
+        .filter(|r| r.parameters.iter().any(|p| p.role == OctetRole::Internal))
+        .collect();
     ParamState {
         readback: Readback {
             application: app.id.clone(),
             non_default,
             differences,
             device_managed,
+            internal,
             note: None,
         },
         detail: Some(ParamDetail {
@@ -675,7 +691,17 @@ pub struct OctetAttribution {
     pub parameters: Vec<OctetParameter>,
     /// The run in one line, ready to quote.
     pub sentence: String,
+    /// What the run means, when it holds an internal ETS selector whose
+    /// device value differs from the model's ([`INTERNAL_SELECTOR_NOTE`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub explanation: Option<String>,
 }
+
+/// What an internal ETS selector that differs means (issue #285).
+pub const INTERNAL_SELECTOR_NOTE: &str = "an internal ETS selector differs: the device's \
+     function assignment differs from the project (the project changed after the device's \
+     last download, or the device was downloaded from another project state); writing makes \
+     the device match the model";
 
 /// A parameter behind written octets.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -687,6 +713,11 @@ pub struct OctetParameter {
     pub name: String,
     /// Why it is or is not in the changed list.
     pub role: OctetRole,
+    /// What the device holds there (enumeration member text, else the
+    /// number, with the unit); `None` when it cannot be decoded.
+    pub device: Option<String>,
+    /// What the model's image holds there, in the same form.
+    pub model: Option<String>,
 }
 
 /// How many octet runs a plan's notes spell out before pointing at the
@@ -725,6 +756,8 @@ fn octet_attributions(device: Option<&Device>, ranges: &[OctetRange]) -> Vec<Oct
                     key: file_key(device, &o.key),
                     name: o.name.clone(),
                     role: o.role,
+                    device: o.device.clone(),
+                    model: o.model.clone(),
                 })
                 .collect();
             let place = format!(
@@ -742,18 +775,36 @@ fn octet_attributions(device: Option<&Device>, ranges: &[OctetRange]) -> Vec<Oct
                      covered by a shown parameter"
                 )
             } else {
-                let names: Vec<String> = parameters
+                let names: Vec<String> = r
+                    .owners
                     .iter()
-                    .map(|p| format!("{} ({}, {})", p.name, p.key, p.role.describe()))
+                    .zip(&parameters)
+                    .map(|(o, p)| {
+                        let named = format!("{} ({}, {})", p.name, o.role_text(), p.key);
+                        match (&p.device, &p.model) {
+                            (None, None) => named,
+                            (device, model) => format!(
+                                "{named}, device {}, model {}",
+                                device.as_deref().unwrap_or("unreadable"),
+                                model.as_deref().unwrap_or("unreadable")
+                            ),
+                        }
+                    })
                     .collect();
                 format!("{place}: {}", names.join("; "))
             };
+            let explanation = r
+                .owners
+                .iter()
+                .any(bussard_download::OctetOwner::internal_selector_differs)
+                .then(|| INTERNAL_SELECTOR_NOTE.to_string());
             OctetAttribution {
                 segment,
                 offset: r.offset,
                 length: r.length,
                 parameters,
                 sentence,
+                explanation,
             }
         })
         .collect()
@@ -793,6 +844,9 @@ fn octet_notes(octets: usize, changed: usize, ranges: &[OctetAttribution]) -> Ve
             "and {} more octet runs (the plan's parameter octet list names them all)",
             unexplained.len() - OCTET_NOTE_RANGES
         ));
+    }
+    if ranges.iter().any(|r| r.explanation.is_some()) {
+        notes.push(INTERNAL_SELECTOR_NOTE.to_string());
     }
     notes
 }
@@ -1002,6 +1056,9 @@ mod tests {
             key: key.to_string(),
             name: format!("{key} text"),
             role,
+            device: None,
+            model: None,
+            enumerated: false,
         };
         let range =
             |offset: usize, length: usize, owners: Vec<bussard_download::OctetOwner>| OctetRange {
@@ -1066,6 +1123,40 @@ mod tests {
                 assert_eq!(notes.len(), 2, "{notes:?}");
             }
         }
+    }
+
+    /// Issue #285: an internal ETS selector is named with its role and both
+    /// values, and the plan says once what a differing selector means.
+    #[test]
+    fn test_octet_attributions_name_internal_selectors() {
+        let selector = bussard_download::OctetOwner {
+            key: "P-643".to_string(),
+            name: "_AppInstanz 51".to_string(),
+            role: OctetRole::Internal,
+            device: Some("3".to_string()),
+            model: Some("no application".to_string()),
+            enumerated: true,
+        };
+        let runs = octet_attributions(
+            None,
+            &[OctetRange {
+                segment: "M-0004_A-D142-21-8848-O000A_RS-04-00000".to_string(),
+                offset: 165,
+                length: 1,
+                owners: vec![selector],
+            }],
+        );
+        assert_eq!(
+            runs[0].sentence,
+            "1 octet at offset 165 of segment RS-04-00000: _AppInstanz 51 (internal ETS \
+             selector, P-643), device 3, model no application"
+        );
+        assert_eq!(runs[0].explanation.as_deref(), Some(INTERNAL_SELECTOR_NOTE));
+        assert_eq!(runs[0].parameters[0].role, OctetRole::Internal);
+        let notes = octet_notes(1, 0, &runs);
+        assert_eq!(notes.len(), 3, "{notes:?}");
+        assert_eq!(notes[1], runs[0].sentence);
+        assert_eq!(notes[2], INTERNAL_SELECTOR_NOTE);
     }
 
     #[test]

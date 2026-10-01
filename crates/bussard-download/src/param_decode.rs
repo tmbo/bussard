@@ -186,7 +186,7 @@ fn placements_of<'a>(
 }
 
 /// Why a parameter whose bits a parameter download rewrites is, or is not,
-/// in the plan's list of changed parameters (issue #279).
+/// in the plan's list of changed parameters (issues #279, #285).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OctetRole {
@@ -195,11 +195,18 @@ pub enum OctetRole {
     /// A shown parameter that decodes to the model's value although its bits
     /// differ (a later placement overwrites part of them).
     SameValue,
-    /// A parameter the configuration hides, or one an `<Assign>` sets: it is
-    /// written at the value the configuration gives it, never shown.
+    /// A parameter the configuration hides, or one an `<Assign>` sets: the
+    /// image holds the value the configuration gives it (its default, or the
+    /// segment's vendor data where the application does not download hidden
+    /// parameters), never shown.
     Hidden,
-    /// A parameter the application owns at runtime (`Access="None"`, e.g. a
-    /// download flag): written at the model's value, never compared.
+    /// An `Access="None"` parameter the configuration does not reach: an
+    /// internal value ETS keeps for itself (the function-block selectors of a
+    /// push-button, `_AppInstanz <n>`), never shown and never in the model.
+    Internal,
+    /// An `Access="None"` parameter the configuration reaches, owned by the
+    /// application at runtime (e.g. a download flag): written at the model's
+    /// value, never compared.
     DeviceManaged,
 }
 
@@ -209,7 +216,8 @@ impl OctetRole {
         match self {
             OctetRole::Changed => "changed",
             OctetRole::SameValue => "same value, other bits of the field differ",
-            OctetRole::Hidden => "hidden or set by the configuration, written at that value",
+            OctetRole::Hidden => "hidden by the configuration",
+            OctetRole::Internal => "internal ETS value",
             OctetRole::DeviceManaged => "owned by the application at runtime",
         }
     }
@@ -219,18 +227,46 @@ impl OctetRole {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct OctetOwner {
     /// The device-file key of the ref (app-relative `ParameterRef` id, with
-    /// the module-instance selector where it has one).
+    /// the module-instance selector where it has one), or the app-relative
+    /// parameter id (`P-643`) for a parameter the configuration does not
+    /// reach.
     pub key: String,
     /// The vendor text of the parameter.
     pub name: String,
     /// Why it is or is not in the changed list.
     pub role: OctetRole,
+    /// What the device's octets hold there: the enumeration member's text
+    /// where the type is an enumeration and the value one of its members,
+    /// else the value, with the unit. `None` when it cannot be decoded.
+    pub device: Option<String>,
+    /// What the model's image holds there, in the same form.
+    pub model: Option<String>,
+    /// Whether the parameter's type is an enumeration (an internal one is a
+    /// selector ETS writes).
+    pub enumerated: bool,
+}
+
+impl OctetOwner {
+    /// The role in words: [`OctetRole::describe`], with an internal
+    /// enumeration named as the selector it is.
+    pub fn role_text(&self) -> &'static str {
+        match self.role {
+            OctetRole::Internal if self.enumerated => "internal ETS selector",
+            role => role.describe(),
+        }
+    }
+
+    /// Whether this is an internal ETS selector whose device value differs
+    /// from the model's.
+    pub fn internal_selector_differs(&self) -> bool {
+        self.role == OctetRole::Internal && self.enumerated && self.device != self.model
+    }
 }
 
 /// A run of consecutive written octets in one code segment, with the
 /// parameters whose differing bits lie in it (issue #279). `owners` empty:
 /// the device memory differs from the model's image (the segment's vendor
-/// data) where no parameter is placed.
+/// data) where no parameter of the application is placed.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct OctetRange {
     /// The code-segment id.
@@ -247,24 +283,54 @@ pub struct OctetRange {
 ///
 /// `changed` lists, per code segment, each written octet's offset and the
 /// bits that differ ([`crate::FlashPlan::changed_bits`]); `current` is the
-/// memory the device holds. Every placement the encoder writes for the
+/// memory the device holds and `image` the model's image the download
+/// writes (segment id to bytes). Every placement the encoder writes for the
 /// model's `overrides` whose bit range meets a differing bit owns that
-/// octet. Consecutive octets with the same owners form one range.
+/// octet. A differing bit no such placement covers is attributed to every
+/// parameter of the application placed there (issue #285): one the
+/// configuration hides, or an `Access="None"` internal ETS value such as a
+/// function-block selector. Module parameters are attributed through the
+/// configuration's own placements only. Consecutive octets with the same
+/// owners form one range.
 pub fn attribute_octets(
     app: &ApplicationProgram,
     overrides: &BTreeMap<String, String>,
     base_offsets: &BTreeMap<String, u32>,
     current: &CurrentMemory,
+    image: &CurrentMemory,
     changed: &BTreeMap<String, Vec<(usize, u8)>>,
 ) -> Vec<OctetRange> {
     let keys = KeyForms::new(overrides);
     let placed = placements_of(app, overrides, base_offsets, &keys);
+    let unreached = application_placements(app);
+    let values = |param: &Parameter, segment: &str, offset: usize, bit_offset: u8| {
+        let ptype = parameter_type(app, param);
+        let read = |memory: &CurrentMemory| {
+            let bytes = memory.get(segment)?;
+            let raw = bussard_prod::decode_parameter_value(app, param, bytes, offset, bit_offset)?;
+            let shown = render(&raw, ptype);
+            Some(match param.suffix_text.as_deref() {
+                Some(unit) if !unit.trim().is_empty() => format!("{shown} {unit}"),
+                _ => shown,
+            })
+        };
+        (
+            read(current),
+            read(image),
+            matches!(ptype, Some(ParameterType::Enum { .. })),
+        )
+    };
     let mut out: Vec<OctetRange> = Vec::new();
     for (segment, octets) in changed {
         let fields: Vec<(&Placed<'_>, (usize, usize))> = placed
             .iter()
             .filter(|p| p.segment == segment.as_str())
             .map(|p| (p, p.bits(app)))
+            .collect();
+        let others: Vec<(&Unreached<'_>, (usize, usize))> = unreached
+            .iter()
+            .filter(|u| u.segment == segment.as_str())
+            .map(|u| (u, u.bits(app)))
             .collect();
         for &(offset, diff) in octets {
             let mut owners: Vec<OctetOwner> = Vec::new();
@@ -273,12 +339,20 @@ pub fn attribute_octets(
                     continue;
                 }
                 let pos = offset * 8 + bit;
+                let mut covered = false;
                 for (p, (start, end)) in &fields {
-                    if pos < *start || pos >= *end || owners.iter().any(|o| o.key == p.key) {
+                    if pos < *start || pos >= *end {
                         continue;
                     }
-                    let role = if p.device_managed(app) {
+                    covered = true;
+                    if owners.iter().any(|o| o.key == p.key) {
+                        continue;
+                    }
+                    let managed = p.device_managed(app);
+                    let role = if managed && p.reached {
                         OctetRole::DeviceManaged
+                    } else if managed {
+                        OctetRole::Internal
                     } else if !p.user_value {
                         OctetRole::Hidden
                     } else if p.decode(app, current).as_deref() == p.desired.as_deref() {
@@ -286,10 +360,39 @@ pub fn attribute_octets(
                     } else {
                         OctetRole::Changed
                     };
+                    let (device, model, enumerated) =
+                        values(p.param, p.segment, p.offset, p.bit_offset);
                     owners.push(OctetOwner {
                         key: p.key.clone(),
                         name: display_name(p.param),
                         role,
+                        device,
+                        model,
+                        enumerated,
+                    });
+                }
+                if covered {
+                    continue;
+                }
+                for (u, (start, end)) in &others {
+                    let key = relative_id(app, &u.param.id);
+                    if pos < *start || pos >= *end || owners.iter().any(|o| o.key == key) {
+                        continue;
+                    }
+                    let role = if access_none(u.param.access.as_deref()) {
+                        OctetRole::Internal
+                    } else {
+                        OctetRole::Hidden
+                    };
+                    let (device, model, enumerated) =
+                        values(u.param, u.segment, u.offset, u.bit_offset);
+                    owners.push(OctetOwner {
+                        key,
+                        name: display_name(u.param),
+                        role,
+                        device,
+                        model,
+                        enumerated,
                     });
                 }
             }
@@ -298,7 +401,7 @@ pub fn attribute_octets(
                 Some(last)
                     if last.segment == *segment
                         && last.offset + last.length == offset
-                        && last.owners == owners =>
+                        && same_parameters(&last.owners, &owners) =>
                 {
                     last.length += 1;
                 }
@@ -312,6 +415,58 @@ pub fn attribute_octets(
         }
     }
     out
+}
+
+/// Whether two owner lists name the same parameters in the same roles (the
+/// decoded values of a multi-octet field are the same field's).
+fn same_parameters(a: &[OctetOwner], b: &[OctetOwner]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|(x, y)| x.key == y.key && x.role == y.role)
+}
+
+/// Whether an `Access` attribute says `None`.
+fn access_none(access: Option<&str>) -> bool {
+    access.is_some_and(|a| a.trim().eq_ignore_ascii_case("none"))
+}
+
+/// A placement of an application-level parameter, whatever the
+/// configuration: its own `<Memory>`, or its union's plus the member offset.
+struct Unreached<'a> {
+    param: &'a Parameter,
+    segment: &'a str,
+    offset: usize,
+    bit_offset: u8,
+}
+
+impl Unreached<'_> {
+    /// The bit range the value occupies (see [`Placed::bits`]).
+    fn bits(&self, app: &ApplicationProgram) -> (usize, usize) {
+        let start = self.offset * 8 + usize::from(self.bit_offset);
+        let width = bit_width(parameter_type(app, self.param)).unwrap_or(1);
+        (start, start + width as usize)
+    }
+}
+
+/// Every placement of an application-level parameter (module parameters
+/// left out: their offsets depend on the instance), sorted by parameter id.
+fn application_placements(app: &ApplicationProgram) -> Vec<Unreached<'_>> {
+    let mut params: Vec<&Parameter> = app.parameters.values().collect();
+    params.sort_by(|a, b| a.id.cmp(&b.id));
+    params
+        .into_iter()
+        .filter_map(|param| {
+            let (segment, offset, bit_offset) =
+                static_location(app, param, None, &BTreeMap::new())?;
+            Some(Unreached {
+                param,
+                segment,
+                offset,
+                bit_offset,
+            })
+        })
+        .collect()
 }
 
 /// One value the encoder writes, with what the configuration wants there.
@@ -328,6 +483,9 @@ struct Placed<'a> {
     /// A hidden parameter written at its default, or an assigned target, is
     /// placed but never reported.
     user_value: bool,
+    /// Whether the configuration reaches the ref (a hidden parameter the
+    /// application downloads at its default is placed but not reached).
+    reached: bool,
     /// The value the configuration writes, canonical.
     desired: Option<String>,
     /// The vendor default of the ref, canonical.
@@ -351,9 +509,10 @@ impl Placed<'_> {
         let pref = app
             .parameter_refs
             .get(&format!("{}_{}", app.id, split_selector(&self.key).1));
-        pref.and_then(|r| r.access.as_deref())
-            .or(self.param.access.as_deref())
-            .is_some_and(|a| a.trim().eq_ignore_ascii_case("none"))
+        access_none(
+            pref.and_then(|r| r.access.as_deref())
+                .or(self.param.access.as_deref()),
+        )
     }
 
     /// The value the device holds here, `None` when the segment was not read
@@ -456,6 +615,7 @@ fn dynamic_placements<'a>(
             let canonical = |v: Option<String>| {
                 bussard_prod::canonical_parameter_value(app, slot.parameter, v.as_deref())
             };
+            let reached = slot.param_ref_id.is_some();
             let (key, user_value, desired, default) = match slot.param_ref_id.as_deref() {
                 Some(ref_id) => (
                     keys.key(config.module_instance_id(slot.module), ref_id),
@@ -475,6 +635,7 @@ fn dynamic_placements<'a>(
                 offset: slot.offset,
                 bit_offset: slot.bit_offset,
                 user_value,
+                reached,
                 desired,
                 default,
                 shadowed: Vec::new(),
@@ -592,6 +753,7 @@ fn static_placements<'a>(
             offset: offset as usize,
             bit_offset: mem.bit_offset.unwrap_or(0),
             user_value: true,
+            reached: true,
             desired: default.clone(),
             default,
             shadowed: Vec::new(),
@@ -633,6 +795,7 @@ fn static_placements<'a>(
             offset: offset as usize,
             bit_offset: (bits % 8) as u8,
             user_value: true,
+            reached: true,
             desired: default.clone(),
             default,
             shadowed: Vec::new(),
@@ -661,6 +824,7 @@ fn static_placements<'a>(
             offset,
             bit_offset,
             user_value: true,
+            reached: true,
             desired: canonical(param, Some(value)),
             default: canonical(param, default.as_deref()),
             shadowed: Vec::new(),
@@ -930,7 +1094,8 @@ mod tests {
             let desired = segment[offset];
             segment[offset] = held;
             let changed = BTreeMap::from([("A_RS-1".to_string(), vec![(offset, desired ^ held)])]);
-            let ranges = attribute_octets(&app, &model, &BTreeMap::new(), &current, &changed);
+            let ranges =
+                attribute_octets(&app, &model, &BTreeMap::new(), &current, &image, &changed);
             assert_eq!(ranges.len(), 1, "octet {offset}: {ranges:?}");
             let got: Vec<(&str, OctetRole)> = ranges[0]
                 .owners
@@ -944,12 +1109,20 @@ mod tests {
         // Concept 0 hides `hidden` (octet 2): written at its default, never
         // shown.
         let hidden_model = map(&[("P-1_R-1", "0")]);
-        let mut current = device(&app, &hidden_model)?;
+        let hidden_image = device(&app, &hidden_model)?;
+        let mut current = hidden_image.clone();
         let segment = current.get_mut("A_RS-1").ok_or("no segment")?;
         let desired = segment[2];
         segment[2] = desired ^ 0x01;
         let changed = BTreeMap::from([("A_RS-1".to_string(), vec![(2, 0x01)])]);
-        let ranges = attribute_octets(&app, &hidden_model, &BTreeMap::new(), &current, &changed);
+        let ranges = attribute_octets(
+            &app,
+            &hidden_model,
+            &BTreeMap::new(),
+            &current,
+            &hidden_image,
+            &changed,
+        );
         let got: Vec<(&str, OctetRole)> = ranges
             .iter()
             .flat_map(|r| r.owners.iter().map(|o| (o.key.as_str(), o.role)))
@@ -958,9 +1131,94 @@ mod tests {
 
         // Consecutive octets with the same owners form one range.
         let changed = BTreeMap::from([("A_RS-1".to_string(), vec![(14, 0xFF), (15, 0xFF)])]);
-        let ranges = attribute_octets(&app, &model, &BTreeMap::new(), &image, &changed);
+        let ranges = attribute_octets(&app, &model, &BTreeMap::new(), &image, &image, &changed);
         assert_eq!(ranges.len(), 1, "{ranges:?}");
         assert_eq!((ranges[0].offset, ranges[0].length), (14, 2));
+        Ok(())
+    }
+
+    /// The synthetic application with an internal function-block selector
+    /// at octet 15 (`Access="None"`, an enumeration no Dynamic section
+    /// reaches), downloading hidden parameters or not.
+    fn app_with_selector(
+        download_hidden: bool,
+    ) -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
+        let xml = include_str!("../tests/fixtures/param-readback/app.xml")
+            .replace(
+                "<ParameterTypes>",
+                "<ParameterTypes><ParameterType Id=\"A_PT-6\" Name=\"instances\">\
+                 <TypeRestriction Base=\"Value\" SizeInBit=\"8\">\
+                 <Enumeration Text=\"no application\" Value=\"0\" />\
+                 <Enumeration Text=\"Light\" Value=\"33\" />\
+                 </TypeRestriction></ParameterType>",
+            )
+            .replace(
+                "<Parameters>",
+                "<Parameters><Parameter Id=\"A_P-9\" Name=\"_AppInstanz 1\" Text=\"\" \
+                 ParameterType=\"A_PT-6\" Access=\"None\" Value=\"0\">\
+                 <Memory CodeSegment=\"A_RS-1\" Offset=\"15\" BitOffset=\"0\" /></Parameter>",
+            )
+            .replace(
+                "<ParameterRefs>",
+                "<ParameterRefs><ParameterRef Id=\"A_P-9_R-9\" RefId=\"A_P-9\" />",
+            );
+        let xml = if download_hidden {
+            xml
+        } else {
+            xml.replace(
+                "<Static>",
+                "<Options DownloadInvisibleParameters=\"None\" /><Static>",
+            )
+        };
+        Ok(parse_application_program("A", xml.as_bytes())?)
+    }
+
+    /// Issue #285: an octet no shown parameter covers is attributed to the
+    /// internal selector or the hidden parameter placed there, with both
+    /// values decoded.
+    #[test]
+    fn test_attribute_octets_names_internal_and_hidden_parameters() -> TestResult {
+        for download_hidden in [false, true] {
+            let app = app_with_selector(download_hidden)?;
+            // Concept 0 hides `hidden` (octet 2).
+            let model = map(&[("P-1_R-1", "0")]);
+            let image = device(&app, &model)?;
+            let mut current = image.clone();
+            let segment = current.get_mut("A_RS-1").ok_or("no segment")?;
+            assert_eq!(segment[15], 0, "the image holds the selector's default");
+            segment[15] = 33;
+            segment[2] ^= 0x01;
+            let changed = BTreeMap::from([("A_RS-1".to_string(), vec![(2, 0x01), (15, 33)])]);
+            let ranges =
+                attribute_octets(&app, &model, &BTreeMap::new(), &current, &image, &changed);
+            assert_eq!(ranges.len(), 2, "{ranges:?}");
+
+            let hidden = &ranges[0].owners;
+            assert_eq!(hidden.len(), 1, "{hidden:?}");
+            assert_eq!(
+                (hidden[0].key.as_str(), hidden[0].role),
+                ("P-2", OctetRole::Hidden)
+            );
+            // 7 (its default) where hidden parameters are downloaded, else the
+            // segment's vendor data 0.
+            let held = image["A_RS-1"][2];
+            assert_eq!(hidden[0].device, Some((held ^ 0x01).to_string()));
+            assert_eq!(hidden[0].model, Some(held.to_string()));
+            assert!(!hidden[0].internal_selector_differs());
+
+            let selector = &ranges[1].owners;
+            assert_eq!(selector.len(), 1, "{selector:?}");
+            let owner = &selector[0];
+            assert_eq!(
+                (owner.key.as_str(), owner.role),
+                ("P-9", OctetRole::Internal)
+            );
+            assert_eq!(owner.name, "_AppInstanz 1");
+            assert_eq!(owner.device.as_deref(), Some("Light"));
+            assert_eq!(owner.model.as_deref(), Some("no application"));
+            assert_eq!(owner.role_text(), "internal ETS selector");
+            assert!(owner.internal_selector_differs());
+        }
         Ok(())
     }
 

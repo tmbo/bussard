@@ -586,8 +586,8 @@ async fn test_add_link_argument_errors_explain_what_arrived() -> TestResult {
 }
 
 /// The link tools advertise `address` as the required field name. The Claude
-/// remote-devices bridge strips a `device` key from forwarded calls, so the old
-/// name must not appear in the schema even though it is still accepted.
+/// remote-devices bridge strips a `device` key from forwarded calls, so that
+/// name appears nowhere in the schema.
 #[tokio::test]
 async fn test_link_tools_schema_advertises_address() -> TestResult {
     let dir = model_dir("schema")?;
@@ -621,20 +621,54 @@ async fn test_link_tools_schema_advertises_address() -> TestResult {
     Ok(())
 }
 
-/// An older client that still sends `device` keeps working through the serde
-/// alias.
+/// The link tools take `address` only: a call that names the device
+/// `device` is refused with the fields the tool expects (issue #285).
 #[tokio::test]
-async fn test_add_link_accepts_legacy_device_field() -> TestResult {
-    let dir = model_dir("legacy")?;
+async fn test_add_link_refuses_device_field() -> TestResult {
+    let dir = model_dir("device-field")?;
     let (client, task) = connect(server_over(&dir)?).await?;
 
-    let res = call(
-        &client,
-        "knx_add_link",
-        json!({"device": "1.1.4", "com_object": 12, "ga": "3/0/1", "role": "listen"}),
-    )
-    .await;
-    assert_eq!(res["ok"], true, "{res}");
+    for name in ["knx_add_link", "knx_remove_link"] {
+        let args = json!({"device": "1.1.4", "com_object": 12, "ga": "3/0/1", "role": "listen"});
+        let args = args.as_object().ok_or("not an object")?.clone();
+        let msg = call_err(
+            &client,
+            CallToolRequestParams::new(name).with_arguments(args),
+        )
+        .await?;
+        assert!(msg.contains("missing field `address`"), "{name}: {msg}");
+        assert!(
+            msg.contains("expected fields: address, com_object, ga, role"),
+            "{name}: {msg}"
+        );
+    }
+
+    client.cancel().await?;
+    task.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// The link tools' descriptions say where the device's address goes: an
+/// assistant still tries `device` first (issue #285).
+#[tokio::test]
+async fn test_link_tools_describe_the_address_field() -> TestResult {
+    let dir = model_dir("link-descriptions")?;
+    let (client, task) = connect(server_over(&dir)?).await?;
+
+    let tools = client.list_all_tools().await?;
+    for name in ["knx_add_link", "knx_remove_link"] {
+        let tool = tools
+            .iter()
+            .find(|t| t.name == name)
+            .ok_or_else(|| format!("{name} is not registered"))?;
+        let description = tool.description.as_deref().unwrap_or_default();
+        assert!(
+            description.contains("The device's individual address goes in `address`"),
+            "{name}: {description}"
+        );
+        assert!(!description.contains("`device`"), "{name}: {description}");
+    }
 
     client.cancel().await?;
     task.abort();
