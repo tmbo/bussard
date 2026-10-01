@@ -375,7 +375,39 @@ impl MockSecureGateway {
     /// # Errors
     /// The port cannot be bound again, or a poisoned task lock.
     pub async fn reopen_tcp(&self) -> Result<(), MockError> {
-        let listener = TcpListener::bind(("127.0.0.1", self.port)).await?;
+        // The connections `close_tcp` dropped were closed from this side, so
+        // their port sits in TIME_WAIT; Windows refuses to bind it again
+        // without SO_REUSEADDR (and can report the bind as WSAEACCES for a
+        // moment). Reuse the address and retry the bind briefly.
+        let addr = SocketAddr::from(SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, self.port));
+        let mut last = None;
+        let mut listener = None;
+        for _ in 0..50 {
+            let attempt = (|| {
+                let socket = tokio::net::TcpSocket::new_v4()?;
+                socket.set_reuseaddr(true)?;
+                socket.bind(addr)?;
+                socket.listen(64)
+            })();
+            match attempt {
+                Ok(l) => {
+                    listener = Some(l);
+                    break;
+                }
+                Err(err) => {
+                    last = Some(err);
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        }
+        let listener = match listener {
+            Some(l) => l,
+            None => {
+                return Err(MockError::Io(last.unwrap_or_else(|| {
+                    std::io::Error::other("could not rebind the TCP port")
+                })));
+            }
+        };
         let accept = spawn_accept(
             listener,
             self.config.clone(),

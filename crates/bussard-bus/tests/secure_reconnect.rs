@@ -23,6 +23,11 @@ const USER3_KEY: &str = "tunnel-user-3";
 const TUNNEL_22: u16 = 0x1116;
 const TUNNEL_23: u16 = 0x1117;
 
+/// What a connect attempt may take on the slowest CI runner on top of the
+/// backoff it waits out: a refused loopback connect takes about 2 s on
+/// Windows (it retries the SYN), and an attempt makes up to two of them.
+const SLACK: Duration = Duration::from_secs(10);
+
 fn key(password: &str, salt: &[u8]) -> Key16 {
     Password::new(password).derive(salt)
 }
@@ -86,7 +91,7 @@ async fn test_bus_reconnects_within_one_backoff_after_the_listener_returns() -> 
     // The interface goes away: listener closed, the session's socket closed.
     gw.close_tcp()?;
     assert!(
-        until(&handle, Duration::from_secs(5), |h| h
+        until(&handle, Duration::from_secs(30), |h| h
             .diagnostics()
             .attempts
             >= 1)
@@ -104,12 +109,10 @@ async fn test_bus_reconnects_within_one_backoff_after_the_listener_returns() -> 
     gw.reopen_tcp().await?;
     let reopened = Instant::now();
     assert!(
-        handle
-            .wait_connected(backoff + Duration::from_secs(2))
-            .await,
+        handle.wait_connected(backoff + SLACK).await,
         "connected within one backoff ({backoff:?}) of the listener's return"
     );
-    assert!(reopened.elapsed() <= backoff + Duration::from_secs(2));
+    assert!(reopened.elapsed() <= backoff + SLACK);
 
     let after = gw.stats()?;
     assert!(
@@ -141,7 +144,7 @@ async fn test_reconnect_connects_now_with_the_backoff_reset() -> TestResult {
     // While down with a grown backoff: the next attempt is now, not later.
     gw.close_tcp()?;
     assert!(
-        until(&handle, Duration::from_secs(8), |h| h
+        until(&handle, Duration::from_secs(45), |h| h
             .diagnostics()
             .attempts
             >= 2)
@@ -158,7 +161,7 @@ async fn test_reconnect_connects_now_with_the_backoff_reset() -> TestResult {
     );
     gw.reopen_tcp().await?;
     let asked = Instant::now();
-    tokio::time::timeout(Duration::from_secs(5), handle.reconnect()).await??;
+    tokio::time::timeout(Duration::from_secs(20), handle.reconnect()).await??;
     assert_eq!(handle.status(), BusState::Connected);
     assert!(
         asked.elapsed() < waiting,

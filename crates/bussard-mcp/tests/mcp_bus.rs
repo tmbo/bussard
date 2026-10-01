@@ -551,12 +551,13 @@ async fn measure_two_consecutive_describes() -> TestResult {
     Ok(())
 }
 
-/// Polls `knx_bus_status` until `done` holds, up to ~8 s.
+/// Polls `knx_bus_status` until `done` holds, up to ~40 s (a refused
+/// loopback connect alone takes about 2 s on Windows).
 async fn bus_status_until(
     client: &Client,
     done: impl Fn(&serde_json::Value) -> bool,
 ) -> TestResult<serde_json::Value> {
-    for _ in 0..200 {
+    for _ in 0..1000 {
         let status = call_tool(
             client,
             "knx_bus_status",
