@@ -24,9 +24,12 @@ use bussard_download::{FlashStep, plan_flash_sys7_with_hawk, select_application}
 const JUNG_APP: &str = "M-0004_A-A011-13-60BC-O000A";
 const MASK_0705: u16 = 0x0705;
 
-/// Resolve the Jung 3361-1M product from the corpus cache, or `None` to skip.
+/// The Jung 3361-1M product in the corpus's vendor directory.
+/// `BUSSARD_PRODUCT_CORPUS` may name the product-corpus root, its `cache/` or
+/// the vendor directory (`docs/testing.md`); unset, the in-repo cache is
+/// tried. A missing file makes the tests skip.
 fn jung_knxprod_path() -> PathBuf {
-    std::env::var_os("BUSSARD_PRODUCT_CORPUS")
+    let dir = std::env::var_os("BUSSARD_PRODUCT_CORPUS")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -34,10 +37,12 @@ fn jung_knxprod_path() -> PathBuf {
                 .join("..")
                 .join("tests-support")
                 .join("product-corpus")
-        })
-        .join("cache")
-        .join("vendor")
-        .join("de_3361-1m_V1.3_2020-05.knxprod")
+        });
+    let vendor = [dir.join("cache/vendor"), dir.join("vendor")]
+        .into_iter()
+        .find(|d| d.is_dir())
+        .unwrap_or(dir);
+    vendor.join("de_3361-1m_V1.3_2020-05.knxprod")
 }
 
 #[test]
@@ -169,10 +174,19 @@ fn test_bussard_property_plan_matches_m2_jung_shape() {
 }
 
 /// Issue #146: the parameter-only download of the Jung 3361-1MWW (1.1.32,
-/// capture `bad-eg-pm-1-1-18.pcapng`) opens and completes LSM 3 around plain
-/// memory writes. It sends no allocation record (the `0x0700` RAM region put
-/// the real device into load state Error), no task segment and no task
-/// control, keeps the MCB reads of objects 1 to 3, and ends with the restart.
+/// capture `bad-eg-pm-1-1-18.pcapng`, whose file name is swapped: it holds
+/// 1.1.32's download) opens and completes LSM 3 around plain memory writes.
+/// It sends no allocation record (the `0x0700` RAM region put the real device
+/// into load state Error), no task segment and no task control, keeps the MCB
+/// reads of objects 1 to 3, and ends with the restart.
+///
+/// Issue #116 (#186) put ETS's System 7 prelude in front of it, and #293
+/// pinned it here: the capture opens with a basic restart and no unload pass
+/// (ops 1 to 9), so the plan starts with `Sys7PreDownloadRestart` with no
+/// LSM to unload; ETS then sets verify mode (`obj0/PID_DEVICE_CONTROL` read,
+/// `04` written, ops 33 and 34) before the first memory write, which
+/// `Sys7EnableVerifyMode` reproduces ahead of LSM 3's `StartLoading`
+/// (`docs/system7-spec.md` section 3.1: nothing depends on that order).
 #[test]
 fn test_parameters_only_jung_plan_writes_in_place() -> Result<(), Box<dyn std::error::Error>> {
     let path = jung_knxprod_path();
@@ -207,12 +221,17 @@ fn test_parameters_only_jung_plan_writes_in_place() -> Result<(), Box<dyn std::e
             FlashStep::LoadImageProp { obj_idx, .. } => format!("mcb {obj_idx}"),
             FlashStep::CompareProp { .. } => "compare".to_string(),
             FlashStep::Restart => "restart".to_string(),
+            FlashStep::Sys7PreDownloadRestart { unload } if unload.is_empty() => {
+                "prelude restart".to_string()
+            }
+            FlashStep::Sys7EnableVerifyMode => "verify mode".to_string(),
             other => format!("unexpected {other:?}"),
         })
         .collect();
+    let head: Vec<&str> = shape.iter().take(3).map(String::as_str).collect();
     assert_eq!(
-        shape.first().map(String::as_str),
-        Some("start 3"),
+        head,
+        ["prelude restart", "verify mode", "start 3"],
         "{shape:?}"
     );
     assert!(

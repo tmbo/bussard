@@ -67,7 +67,7 @@ fn corpus_flashability_sweep() {
         );
         return;
     };
-    let dir = PathBuf::from(dir);
+    let dir = vendor_dir(PathBuf::from(dir));
     if knxprod_files(&dir).is_empty() {
         eprintln!(
             "BUSSARD_PRODUCT_CORPUS={} holds no .knxprod files; skipping (nothing to sweep). \
@@ -221,7 +221,7 @@ fn corpus_never_emits_duplicate_consecutive_allocations() {
         eprintln!("BUSSARD_PRODUCT_CORPUS unset; skipping the duplicate-allocation guard.");
         return;
     };
-    let dir = PathBuf::from(dir);
+    let dir = vendor_dir(PathBuf::from(dir));
     let files = knxprod_files(&dir);
     if files.is_empty() {
         eprintln!("corpus empty; skipping the duplicate-allocation guard.");
@@ -364,7 +364,7 @@ fn corpus_extended_memory_apps_lower_to_executable_plans() {
         eprintln!("BUSSARD_PRODUCT_CORPUS unset; skipping the extended-memory guard.");
         return;
     };
-    let dir = PathBuf::from(dir);
+    let dir = vendor_dir(PathBuf::from(dir));
     let files = knxprod_files(&dir);
     if files.is_empty() {
         eprintln!("corpus empty; skipping the extended-memory guard.");
@@ -436,4 +436,14 @@ fn corpus_extended_memory_apps_lower_to_executable_plans() {
     } else {
         eprintln!("extended-memory guard checked {found} capture app(s).");
     }
+}
+
+/// The corpus's vendor directory: `BUSSARD_PRODUCT_CORPUS` may name the
+/// product-corpus root (`tests-support/product-corpus`), its `cache/`, or the
+/// vendor directory itself (`docs/testing.md`).
+fn vendor_dir(dir: PathBuf) -> PathBuf {
+    [dir.join("cache/vendor"), dir.join("vendor")]
+        .into_iter()
+        .find(|d| d.is_dir())
+        .unwrap_or(dir)
 }

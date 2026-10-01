@@ -20,9 +20,17 @@ use std::path::{Path, PathBuf};
 
 use bussard_download::{FlashStep, plan_flash};
 
-/// The product-corpus cache directory, or `None` (skip) when unset.
+/// The corpus's vendor directory, or `None` (skip) when unset.
+/// `BUSSARD_PRODUCT_CORPUS` may name the product-corpus root, its `cache/`, or
+/// the vendor directory itself (`docs/testing.md`).
 fn corpus_dir() -> Option<PathBuf> {
-    std::env::var_os("BUSSARD_PRODUCT_CORPUS").map(PathBuf::from)
+    let dir = PathBuf::from(std::env::var_os("BUSSARD_PRODUCT_CORPUS")?);
+    Some(
+        [dir.join("cache/vendor"), dir.join("vendor")]
+            .into_iter()
+            .find(|d| d.is_dir())
+            .unwrap_or(dir),
+    )
 }
 
 /// Collects `.knxprod` files at or one level under `dir` (the flat cache or its
@@ -151,28 +159,30 @@ fn plan_lowers_theben_m0048_with_task_ctrl1() {
     match plan_for(app) {
         Ok(plan) => {
             assert!(plan.is_sys7());
-            // The Theben FIX2 procedure carries a TaskCtrl1 and a post-restart
-            // LSM-5 Load; both must lower (TaskCtrl1 as its own step).
+            // The Theben FIX2 procedure carries a TaskCtrl1, which lowers as its
+            // own step, and a post-restart LSM 5 tail (`LdCtrlTaskSegment` and
+            // `LdCtrlLoad` on LSM 5). ETS sends nothing after the restart, so
+            // the plan ends at it and never names LSM 5 (issue #178,
+            // docs/system7-spec.md, "LSM 5").
             assert!(
                 count_steps(&plan, |s| matches!(s, FlashStep::Sys7TaskCtrl1 { .. })) >= 1,
                 "Theben FIX2 must lower its LdCtrlTaskCtrl1"
             );
-            // A post-restart Sys7 step (TaskSegment/StartLoading on LSM 5) appears
-            // after the Restart in the step list.
-            let restart_pos = plan
-                .steps
-                .iter()
-                .position(|s| matches!(s, FlashStep::Restart));
-            if let Some(pos) = restart_pos {
-                assert!(
-                    plan.steps[pos + 1..].iter().any(|s| matches!(
-                        s,
-                        FlashStep::Sys7TaskSegment { lsm: 5, .. }
-                            | FlashStep::Sys7StartLoading { lsm: 5 }
-                    )),
-                    "the post-restart LSM-5 dance must lower after the restart"
-                );
-            }
+            assert!(
+                matches!(plan.steps.last(), Some(FlashStep::Restart)),
+                "the plan ends at the terminal restart: {:?}",
+                plan.steps.last()
+            );
+            assert_eq!(
+                count_steps(&plan, |s| matches!(
+                    s,
+                    FlashStep::Sys7TaskSegment { lsm: 5, .. }
+                        | FlashStep::Sys7StartLoading { lsm: 5 }
+                        | FlashStep::Sys7LoadCompleted { lsm: 5 }
+                )),
+                0,
+                "the LSM 5 tail after the restart is cut"
+            );
         }
         // The Theben FIX2 also surfaces the orthogonal wide-integer parameter-image
         // bug in bussard-prod (a 472-bit field); that is tracked separately and is

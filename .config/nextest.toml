@@ -44,3 +44,11 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 # Emit JUnit XML so CI can surface per-test results and timings.
 [profile.ci.junit]
 path = "junit.xml"
+
+[profile.corpus]
+# The corpus-gated tests (docs/testing.md): run with BUSSARD_PRODUCT_CORPUS
+# set. A full-corpus sweep reads ~500 vendor archives and takes minutes, so the
+# per-test budget is wide; everything else matches the CI profile.
+fail-fast = false
+retries = 0
+slow-timeout = { period = "120s", terminate-after = 10 }

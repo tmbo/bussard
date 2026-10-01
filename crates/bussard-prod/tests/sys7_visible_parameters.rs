@@ -58,8 +58,14 @@ fn corpus_app(product: &str, app_id: &str) -> TestResult<Option<bussard_prod::Ap
         eprintln!("BUSSARD_PRODUCT_CORPUS unset; skipping {app_id}.");
         return Ok(None);
     };
-    let path = PathBuf::from(dir).join("cache/vendor").join(product);
-    if !path.exists() {
+    // The corpus root, its `cache/`, or the vendor directory (docs/testing.md).
+    let dir = PathBuf::from(dir);
+    let path = [dir.join("cache/vendor"), dir.join("vendor"), dir]
+        .into_iter()
+        .map(|d| d.join(product))
+        .find(|p| p.is_file())
+        .unwrap_or_default();
+    if !path.is_file() {
         eprintln!("{product} not in the corpus; skipping {app_id}.");
         return Ok(None);
     }

@@ -773,6 +773,22 @@ directory or a script from before these changes needs:
 
 ### Fixed
 
+- The corpus-gated tests run again and are listed (#293). They read vendor
+  archives that are never committed and skip green without
+  `BUSSARD_PRODUCT_CORPUS`, so three had gone stale unseen: the Jung 3361-1M
+  parameter-only plan test now expects ETS's prelude (a restart with no
+  unload, then verify mode) that #186 added, as the 1.1.32 capture
+  `bad-eg-pm-1-1-18.pcapng` shows; the Theben FIX2 plan test expects the plan
+  to end at the terminal restart (#178); the ABB IEEE-754 test checks the
+  4-octet encoding and the image only where the configuration reaches the
+  parameters (#159). No product code changed. Every gated test now accepts
+  the product-corpus directory, its `cache/` or the vendor directory (before,
+  each wanted one of them and quietly skipped with the others).
+  `docs/testing.md` lists them and how to run them locally with the new
+  `corpus` nextest profile, and a `workflow_dispatch` run of `corpus-sweep`
+  with a corpus path runs all of them, not only the sweep.
+  The full sweep itself still fails against its baseline on one Zennio
+  application (#294).
 - A bus stuck reconnecting says why and can be told to reconnect (#287).
   `bus` in `knx_project_summary` and the new read-only `knx_bus_status`
   carry the interface, the tunnelling user, the exact last transport error

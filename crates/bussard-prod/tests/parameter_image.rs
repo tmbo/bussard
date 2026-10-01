@@ -176,7 +176,7 @@ fn union_default_member_overlays_shared_region_exact_bytes()
 /// segment `AS-48D0` offset 56 whose `DefaultUnionParameter` member is an 8-bit
 /// value 75 (0x4B). Its base `<Data>` byte there is 0x00, so the computed image
 /// byte must be exactly 0x4B — the value ETS itself would write. Set
-/// `BUSSARD_PRODUCT_CORPUS=<vendor-dir>` to run it; skipped when unset (CI never
+/// `BUSSARD_PRODUCT_CORPUS=<corpus>` to run it; skipped when unset (CI never
 /// ships the copyrighted vendor file, which the fabricated union test covers).
 #[test]
 fn real_zennio_fix2_union_byte_is_vendor_default() -> Result<(), Box<dyn std::error::Error>> {
@@ -184,7 +184,7 @@ fn real_zennio_fix2_union_byte_is_vendor_default() -> Result<(), Box<dyn std::er
         eprintln!("BUSSARD_PRODUCT_CORPUS unset; skipping the FIX2 union byte check.");
         return Ok(());
     };
-    let path = std::path::PathBuf::from(dir).join("T4940275_KNX_FIX2_Dimmaktor_V1.0_ETS4.knxprod");
+    let path = vendor_dir(dir.into()).join("T4940275_KNX_FIX2_Dimmaktor_V1.0_ETS4.knxprod");
     if !path.exists() {
         eprintln!("FIX2 dimmer not in corpus dir; skipping.");
         return Ok(());
@@ -329,7 +329,7 @@ fn real_knxproj_smoke() -> Result<(), Box<dyn std::error::Error>> {
 /// calling `read_knxprod`: this product ships 737 entries (~2.8 GB of XML
 /// uncompressed) and parsing all of them takes minutes in a debug build.
 ///
-/// Set `BUSSARD_PRODUCT_CORPUS=<vendor-dir>` to run it; skipped when unset (the
+/// Set `BUSSARD_PRODUCT_CORPUS=<corpus>` to run it; skipped when unset (the
 /// vendor file is copyrighted and never committed — the unit test
 /// `test_encode_value_float_honours_declared_encoding` covers the same rule on a
 /// synthetic fixture).
@@ -342,7 +342,7 @@ fn real_abb_ieee754_single_parameters_are_four_bytes_wide() -> Result<(), Box<dy
         eprintln!("BUSSARD_PRODUCT_CORPUS unset; skipping the ABB IEEE-754 width check.");
         return Ok(());
     };
-    let dir = std::path::PathBuf::from(dir);
+    let dir = vendor_dir(dir.into());
     let found = std::fs::read_dir(&dir)
         .ok()
         .into_iter()
@@ -393,25 +393,58 @@ fn real_abb_ieee754_single_parameters_are_four_bytes_wide() -> Result<(), Box<dy
         "the vendor lays these two floats 4 bytes apart"
     );
 
-    let images = compute_parameter_image(&app, &BTreeMap::new(), &BTreeMap::new())?;
-    let seg = mem10.code_segment.as_deref().ok_or("segment id")?;
-    let img = &images[seg];
+    // The width rule itself: each default, written the way the image builder
+    // writes it, is a 4-byte IEEE-754 single.
     let at = off10 as usize;
-    assert!(
-        img.len() >= at + 8,
-        "segment image too short: {}",
-        img.len()
-    );
+    let mut written = Vec::new();
+    bussard_prod::write_parameter_value(&app, p10, p10.default.as_deref(), &mut written, at, 0)?;
+    bussard_prod::write_parameter_value(&app, p1, p1.default.as_deref(), &mut written, at + 4, 0)?;
     assert_eq!(
-        &img[at..at + 4],
+        &written[at..at + 4],
         &10.0f32.to_be_bytes(),
         "IEEE-754 Single default 10.0 at offset {at}"
     );
     assert_eq!(
-        &img[at + 4..at + 8],
+        &written[at + 4..at + 8],
         &1.0f32.to_be_bytes(),
         "IEEE-754 Single default 1.0 at offset {}",
         at + 4
     );
+
+    // The image builder evaluates the Dynamic section (#123) and writes only
+    // the parameters the configuration reaches (#159). Where it reaches these
+    // two, the image carries the same eight octets; where it does not (the
+    // vendor-default configuration of this release), their octets keep the
+    // template, so there is nothing more to check.
+    let config = bussard_prod::dynamic::evaluate_dynamic(&app, &BTreeMap::new());
+    let slots = bussard_prod::dynamic_parameter_slots(&app, &config)?;
+    let reached =
+        |param: &bussard_prod::Parameter| slots.iter().any(|s| s.parameter.id == param.id);
+    if !bussard_prod::uses_dynamic_image(&app) || (reached(p10) && reached(p1)) {
+        let images = compute_parameter_image(&app, &BTreeMap::new(), &BTreeMap::new())?;
+        let seg = mem10.code_segment.as_deref().ok_or("segment id")?;
+        let img = images.get(seg).ok_or("no image for the segment")?;
+        assert!(
+            img.len() >= at + 8,
+            "segment image too short: {}",
+            img.len()
+        );
+        assert_eq!(&img[at..at + 8], &written[at..at + 8]);
+    } else {
+        eprintln!(
+            "the default configuration does not reach the two floats; the image keeps the \
+             template there (checked the encoding only)"
+        );
+    }
     Ok(())
+}
+
+/// The corpus's vendor directory: `BUSSARD_PRODUCT_CORPUS` may name the
+/// product-corpus root, its `cache/`, or the vendor directory itself
+/// (`docs/testing.md`).
+fn vendor_dir(dir: std::path::PathBuf) -> std::path::PathBuf {
+    [dir.join("cache/vendor"), dir.join("vendor")]
+        .into_iter()
+        .find(|d| d.is_dir())
+        .unwrap_or(dir)
 }
