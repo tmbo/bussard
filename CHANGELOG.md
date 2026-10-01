@@ -704,6 +704,14 @@ directory or a script from before these changes needs:
 
 ### Fixed
 
+- `knx_model_lookup` searches com-object and channel texts (#276): every
+  object a device has, linked or not, matches on its vendor text, function
+  and key besides the link name, and a new `channels` list matches channel
+  texts, names and handles. Each hit names the device, channel handle and
+  object number, so "Mapper" finds the IPS300SREG mapper objects 15..34 that
+  have no links, and "Logik" finds a push-button's logic inputs once its LED
+  function shows them. The tool description no longer claims more than it
+  searches.
 - Parameters at their vendor default are visible and settable (#276).
   `bussard.lock` indexes every parameter the device's configuration shows,
   not only the ones ETS stored, so `bussard device`, its `--toml` (as

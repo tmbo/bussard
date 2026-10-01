@@ -90,10 +90,14 @@ pub fn project_summary(model: &Model, bus: &BusStatus) -> Value {
 }
 
 /// `knx_model_lookup`: case-insensitive substring search over GA names +
-/// addresses, device names + IAs, room names, and com-object names.
+/// addresses, device names + IAs, room names, com objects (the link name the
+/// device file gives, the vendor text and function, the key) and channels
+/// (the vendor text, the user's name, the handle). An object or channel hit
+/// names its device, channel handle and object number (issue #276).
 pub fn model_lookup(model: &Model, query: &str, limit: usize) -> Value {
     let q = query.to_lowercase();
     let hit = |s: &str| s.to_lowercase().contains(&q);
+    let hit_opt = |s: Option<&str>| s.is_some_and(|s| !s.is_empty() && hit(s));
 
     // Group addresses.
     let mut groups = Vec::new();
@@ -139,28 +143,92 @@ pub fn model_lookup(model: &Model, query: &str, limit: usize) -> Value {
         }
     }
 
-    // Com-objects (by name), with the GAs each is linked to. The name lives in
-    // the device file's links only (issue #19).
+    // Com objects, per device in object-number order: every object the lock
+    // lists (linked or not) and every linked number, matched on the link
+    // name (the device file's, issue #19), the vendor text and function, and
+    // the key, with the GAs each is linked to.
     let mut objects = Vec::new();
-    'outer: for (ia, links) in &model.links.links {
-        for link in links {
-            let obj_name = link.name.clone().unwrap_or_default();
-            if hit(&obj_name) {
-                if objects.len() >= limit {
-                    break 'outer;
-                }
-                let mut linked: Vec<String> = Vec::new();
+    let mut ias: Vec<&bussard_model::IndividualAddress> = model
+        .devices
+        .keys()
+        .chain(model.links.links.keys())
+        .collect();
+    ias.sort();
+    ias.dedup();
+    'outer: for ia in ias {
+        let device = model.devices.get(ia).map(|d| &d.device);
+        let links = model.links.links.get(ia).map(Vec::as_slice).unwrap_or(&[]);
+        let mut numbers: Vec<u16> = device
+            .map(|d| d.com_objects.keys().copied().collect())
+            .unwrap_or_default();
+        numbers.extend(links.iter().map(|l| l.object));
+        numbers.sort_unstable();
+        numbers.dedup();
+        for number in numbers {
+            let co = device.and_then(|d| d.com_objects.get(&number));
+            let link = links.iter().find(|l| l.object == number);
+            let name = link.and_then(|l| l.name.as_deref());
+            let text = co.and_then(|c| c.text.as_deref());
+            let function = co.and_then(|c| c.function.as_deref());
+            let key = co.and_then(|c| c.key.as_deref());
+            if !(hit_opt(name) || hit_opt(text) || hit_opt(function) || hit_opt(key)) {
+                continue;
+            }
+            if objects.len() >= limit {
+                break 'outer;
+            }
+            let mut linked: Vec<String> = Vec::new();
+            if let Some(link) = link {
                 if let Some(send) = &link.send {
                     linked.push(send.to_string());
                 }
                 linked.extend(link.listen.iter().map(|g| g.to_string()));
-                objects.push(json!({
-                    "device_ia": ia.to_string(),
-                    "object": link.object,
-                    "name": obj_name,
-                    "linked_gas": linked,
-                }));
             }
+            let channel = co
+                .and_then(|c| c.channel.as_deref())
+                .zip(device)
+                .map(|(id, d)| d.channel_handle(id));
+            objects.push(json!({
+                "device_ia": ia.to_string(),
+                "device_name": device.map(|d| d.name.clone()),
+                "channel": channel,
+                "object": number,
+                "key": key,
+                "name": name.unwrap_or_default(),
+                "text": text,
+                "function": function,
+                "linked_gas": linked,
+            }));
+        }
+    }
+
+    // Channels (by vendor text, user name or handle), with their objects.
+    let mut channels = Vec::new();
+    'channels: for (ia, loaded) in &model.devices {
+        let dev = &loaded.device;
+        for (id, ch) in &dev.channels {
+            let handle = dev.channel_handle(id);
+            if !(hit_opt(ch.text.as_deref()) || hit_opt(Some(&ch.name)) || hit(&handle)) {
+                continue;
+            }
+            if channels.len() >= limit {
+                break 'channels;
+            }
+            let numbers: Vec<u16> = dev
+                .com_objects
+                .iter()
+                .filter(|(_, o)| o.channel.as_deref() == Some(id.as_str()))
+                .map(|(n, _)| *n)
+                .collect();
+            channels.push(json!({
+                "device_ia": ia.to_string(),
+                "device_name": dev.name,
+                "channel": handle,
+                "number": ch.number,
+                "text": ch.text,
+                "name": ch.name,
+                "objects": numbers,
+            }));
         }
     }
 
@@ -169,6 +237,7 @@ pub fn model_lookup(model: &Model, query: &str, limit: usize) -> Value {
         "groups": groups,
         "devices": devices,
         "objects": objects,
+        "channels": channels,
     })
 }
 
