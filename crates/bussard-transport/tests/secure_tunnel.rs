@@ -630,3 +630,136 @@ async fn test_probe_secure_idle_without_credentials_is_refused() -> TestResult {
     );
     Ok(())
 }
+
+// --- Tunnel user choice and re-establish hygiene (issue #287) --------------
+
+/// A mock that holds one session per user, with users 2 and 3.
+async fn one_session_gateway() -> TestResult<MockSecureGateway> {
+    Ok(MockSecureGateway::builder()
+        .device_auth(device_key())
+        .user(2, user_key(USER2_KEY), TUNNEL_22)
+        .user(3, user_key(USER3_KEY), TUNNEL_23)
+        .one_session_per_user()
+        .start()
+        .await?)
+}
+
+/// Keyring users 2 and 3 of the mock interface, optionally marking the held
+/// user under `lock_dir`.
+fn two_users(gw: &MockSecureGateway, lock_dir: Option<&std::path::Path>) -> ConnectionConfig {
+    let mut secure = SecureTunnelConfig::new(
+        vec![
+            user(2, USER2_KEY, TUNNEL_22, Some(SECURE_GATEWAY_IA)),
+            user(3, USER3_KEY, TUNNEL_23, Some(SECURE_GATEWAY_IA)),
+        ],
+        SecureSource::Keyring,
+    );
+    if let Some(dir) = lock_dir {
+        secure = secure.with_user_lock_dir(dir);
+    }
+    config(gw, Some(secure))
+}
+
+/// A fresh, empty directory under the system temp dir.
+fn scratch_dir(name: &str) -> TestResult<std::path::PathBuf> {
+    let dir = std::env::temp_dir().join(format!("bussard-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+#[tokio::test]
+async fn test_secure_tunnel_second_instance_rotates_to_the_next_user() -> TestResult {
+    // No lock files: both instances pick user 2 (its slot reads free). The
+    // interface refuses the second session for user 2 by hanging up, and the
+    // second instance moves on to user 3 instead of failing the connect.
+    let gw = one_session_gateway().await?;
+    let first = Transport::connect(&two_users(&gw, None)).await?;
+    assert_eq!(first.secure_user_id(), Some(2));
+    let second = Transport::connect(&two_users(&gw, None)).await?;
+    assert_eq!(second.secure_user_id(), Some(3));
+    assert_eq!(second.assigned_individual_address(), Some(TUNNEL_23));
+    let stats = gw.stats()?;
+    assert_eq!(stats.user_conflicts, 1, "user 2 was refused once");
+    assert_eq!(stats.users, vec![2, 3]);
+    first.close().await?;
+    second.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_secure_tunnel_lock_files_keep_instances_on_different_users() -> TestResult {
+    // With the lock directory the second instance sees that user 2 is held on
+    // this host and never asks the interface for it.
+    let dir = scratch_dir("tunnel-users")?;
+    let gw = one_session_gateway().await?;
+    let first = Transport::connect(&two_users(&gw, Some(&dir))).await?;
+    assert_eq!(first.secure_user_id(), Some(2));
+    let lock = dir.join(format!("127.0.0.1-{}-user2.lock", gw.addr().port()));
+    assert!(lock.exists(), "user 2 is marked held");
+    let second = Transport::connect(&two_users(&gw, Some(&dir))).await?;
+    assert_eq!(second.secure_user_id(), Some(3));
+    assert_eq!(
+        gw.stats()?.user_conflicts,
+        0,
+        "no collision on the interface"
+    );
+    first.close().await?;
+    // The lock goes with the tunnel task.
+    for _ in 0..50 {
+        if !lock.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(!lock.exists(), "closing the tunnel releases user 2");
+    second.close().await?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_secure_tunnel_reestablish_closes_the_stale_session_first() -> TestResult {
+    // Issue #287: a stalled TCP link is re-established with a new session as
+    // the same user. On an interface that holds one session per user the old
+    // session must be ended before the new one authenticates; otherwise every
+    // attempt of the budget collides with our own stale session.
+    let gw = MockSecureGateway::builder()
+        .device_auth(device_key())
+        .user(3, user_key(USER3_KEY), TUNNEL_23)
+        .stall_after_requests(1)
+        .one_session_per_user()
+        .start()
+        .await?;
+    let mut conn = Transport::connect(&stall_config(&gw, Duration::from_millis(300))).await?;
+    let mut link = conn.link_state().ok_or("a tunnel has a link state")?;
+    conn.send(CemiFrame::group_write_packed(
+        ga("1/2/3")?,
+        ia("1.1.23")?,
+        &[1],
+    ))
+    .await?;
+    let _ = expect_con(&mut conn).await?;
+    tokio::time::timeout(Duration::from_secs(3), until_reconnecting(&mut link)).await??;
+    let wait_up = async {
+        loop {
+            link.changed().await?;
+            if matches!(*link.borrow(), LinkState::Up { .. }) {
+                return Ok::<(), tokio::sync::watch::error::RecvError>(());
+            }
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(8), wait_up).await??;
+    conn.send(CemiFrame::group_write_packed(
+        ga("1/2/4")?,
+        ia("1.1.23")?,
+        &[0],
+    ))
+    .await?;
+    let _ = expect_con(&mut conn).await?;
+    conn.close().await?;
+    let stats = gw.stats()?;
+    assert_eq!(stats.sessions, 2, "one new session for the lost link");
+    assert_eq!(stats.users, vec![3, 3]);
+    Ok(())
+}

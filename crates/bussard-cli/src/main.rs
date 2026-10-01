@@ -469,6 +469,14 @@ fn resolve_globals(global: &Global, command: &Command) -> anyhow::Result<Resolve
             ),
             (config, None) => config,
         };
+        // Mark the tunnelling user a tunnel holds, so another bussard process
+        // for this model picks a different one (issue #287).
+        let config = match config {
+            Some(config) if dir.is_dir() => {
+                Some(config.with_user_lock_dir(dir.join(".bussard").join("tunnel-users")))
+            }
+            other => other,
+        };
         conn_cmd::set_secure_tunnel(config);
     }
 

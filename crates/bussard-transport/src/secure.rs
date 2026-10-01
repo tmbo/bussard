@@ -112,7 +112,13 @@ impl FrameReader {
             if let Some(frame) = self.pop()? {
                 return Ok(frame);
             }
-            let n = stream.read(&mut chunk).await?;
+            let n = stream
+                .read(&mut chunk)
+                .await
+                .map_err(|source| TransportError::Io {
+                    peer: stream.peer_addr().ok(),
+                    source,
+                })?;
             if n == 0 {
                 return Err(TransportError::Io {
                     peer: stream.peer_addr().ok(),
@@ -257,11 +263,12 @@ impl Carrier {
         }
     }
 
-    /// Reads the next frame before `deadline`, naming `what` on timeout.
+    /// Reads the next frame before `deadline`, naming `what` on timeout and
+    /// in a socket error.
     async fn recv_until(&mut self, deadline: Instant, what: &'static str) -> Result<Vec<u8>> {
         let remaining = deadline.saturating_duration_since(Instant::now());
         match time::timeout(remaining, self.recv()).await {
-            Ok(result) => result,
+            Ok(result) => result.map_err(|err| at_stage(err, what)),
             Err(_) => Err(TransportError::Timeout(what)),
         }
     }
@@ -271,6 +278,20 @@ impl Carrier {
         if let Carrier::Tcp { stream, .. } = self {
             let _ = stream.shutdown().await;
         }
+    }
+}
+
+/// Names the handshake step in a socket error, keeping its kind (issue #287):
+/// "Broken pipe (os error 32), waiting for SESSION_RESPONSE" tells an
+/// interface that hung up before the session apart from one that refused
+/// the user after SESSION_AUTHENTICATE.
+pub(crate) fn at_stage(err: TransportError, what: &str) -> TransportError {
+    match err {
+        TransportError::Io { peer, source } => TransportError::Io {
+            peer,
+            source: std::io::Error::new(source.kind(), format!("{source}, waiting for {what}")),
+        },
+        other => other,
     }
 }
 
@@ -297,7 +318,10 @@ impl SecureLink {
 
         let keys = EphemeralKeyPair::generate()?;
         let request = ipsecure::session_request(&carrier.hpai().to_bytes(), keys.public());
-        carrier.send(&request, gateway).await?;
+        carrier
+            .send(&request, gateway)
+            .await
+            .map_err(|e| at_stage(e, "the TCP connection to take SESSION_REQUEST"))?;
 
         // SESSION_RESPONSE.
         let response = loop {
@@ -342,7 +366,10 @@ impl SecureLink {
             &response.server_public,
         )?;
         let wrapped = session.seal(&authenticate)?;
-        carrier.send(&wrapped, gateway).await?;
+        carrier
+            .send(&wrapped, gateway)
+            .await
+            .map_err(|e| at_stage(e, "the TCP connection to take SESSION_AUTHENTICATE"))?;
 
         // SESSION_STATUS, wrapped.
         loop {

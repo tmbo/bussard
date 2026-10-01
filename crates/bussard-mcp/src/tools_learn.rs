@@ -286,7 +286,7 @@ impl BussardMcp {
         if state.bus.state() != ConnState::Connected {
             return ok(json!({
                 "ok": false,
-                "reason": "bus is not connected",
+                "reason": state.bus.not_connected_reason(),
                 "bus": state.bus.to_json(),
                 "refused_protected": refused,
             }));

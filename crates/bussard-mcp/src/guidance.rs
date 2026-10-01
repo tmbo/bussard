@@ -137,11 +137,13 @@ impl Tiers {
     pub fn capabilities(&self) -> String {
         let mut parts = Vec::new();
         parts.push(if self.passive {
-            "This server observes the bus without transmitting and reads the model files."
+            "This server observes the bus without transmitting and reads the model files. It \
+             reports the bus connection (knx_bus_status)."
                 .to_string()
         } else {
             "This server reads the model files, observes the bus, reads group values \
-             (knx_read_group) and introspects devices (knx_describe_device)."
+             (knx_read_group) and introspects devices (knx_describe_device). It reports the \
+             bus connection (knx_bus_status) and rebuilds it on request (knx_bus_reconnect)."
                 .to_string()
         });
         parts.push(if self.model_edits {
@@ -200,12 +202,17 @@ impl Tiers {
         out.push(if self.passive {
             "Observe with knx_recent_telegrams and knx_wait_for_telegram (the latter enables \
              'press the button now' debugging). Passive mode: nothing is transmitted, so \
-             knx_read_group and knx_describe_device are not available."
+             knx_read_group and knx_describe_device are not available. knx_bus_status says \
+             why the bus is not connected (the last transport error, the attempts, the next \
+             retry)."
                 .to_string()
         } else {
             "Observe with knx_recent_telegrams and knx_wait_for_telegram (the latter enables \
              'press the button now' debugging); knx_read_group reads a value and \
-             knx_describe_device introspects a device's interface objects over the bus."
+             knx_describe_device introspects a device's interface objects over the bus. When a \
+             bus tool says the bus is not connected, knx_bus_status says why (the last \
+             transport error, the attempts, the next retry) and knx_bus_reconnect connects \
+             afresh now; neither writes to the bus."
                 .to_string()
         });
         out.push(if self.model_edits {

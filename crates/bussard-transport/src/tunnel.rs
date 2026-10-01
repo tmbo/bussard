@@ -102,6 +102,7 @@
 //! deeper, which is the signal that a consumer is wedged for some other reason.
 
 use std::net::{Ipv4Addr, SocketAddrV4};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::SystemTime;
@@ -119,6 +120,7 @@ use crate::config::{
 };
 use crate::conn::{BusConnection, TimestampedFrame};
 use crate::error::{Result, TransportError};
+use crate::host_lock::{Holder, HostLock};
 use crate::knxnet::{self, ConnectionHeader, GatewayDescription, Hpai, ServiceType};
 use crate::secure::{SecureLink, UserKeys};
 
@@ -250,13 +252,31 @@ pub(crate) enum Plan {
         /// Why a keyring did not lead to a secure session, for the refusal.
         keyring_note: Option<String>,
     },
-    /// A secure tunnel with this user.
+    /// A secure tunnel with one of these users, in the order to try them
+    /// (issue #287): each with the bussard process on this host that holds
+    /// it, if any.
     Secure {
-        /// The chosen user.
-        user: Box<SecureUser>,
+        /// The candidate users, best first.
+        users: Vec<(SecureUser, Option<Holder>)>,
         /// What the keyring probe learned, reused by the UDP fallback.
         probed: Option<Box<GatewayDescription>>,
     },
+}
+
+/// A tunnel the handshake opened, before its task starts.
+struct Opened {
+    /// The socket or secure session.
+    link: Link,
+    /// The HPAI the tunnel advertises.
+    local_hpai: Hpai,
+    /// The granted channel.
+    channel_id: u8,
+    /// The individual address the gateway assigned.
+    assigned_ia: Option<u16>,
+    /// The secure user's keys, on a secure tunnel.
+    keys: Option<UserKeys>,
+    /// The host lock marking that user as held by this tunnel.
+    lock: Option<HostLock>,
 }
 
 /// Command sent from a [`Tunnel`] handle to its background task.
@@ -282,6 +302,8 @@ pub struct Tunnel {
     assigned_ia: Option<u16>,
     /// The link state the task publishes (up / re-establishing).
     link: watch::Receiver<LinkState>,
+    /// The KNXnet/IP Secure user this tunnel authenticated as, if secure.
+    secure_user: Option<u8>,
 }
 
 impl Tunnel {
@@ -302,61 +324,55 @@ impl Tunnel {
         })?;
 
         let plan = plan_connection(config, gateway).await?;
-        let secure_user = match &plan {
-            Plan::Secure { user, .. } => Some(UserKeys::derive(user)),
-            Plan::Plain { .. } => None,
-        };
         let requested = config
             .secure
             .as_ref()
             .map(|s| s.transport)
             .unwrap_or_default();
-        let (mut link, local_hpai) = match (&secure_user, &plan) {
-            (Some(user), Plan::Secure { probed, .. }) => {
-                let link = open_secure(
-                    gateway,
-                    config.local_interface,
-                    user,
-                    requested,
-                    probed.as_deref(),
-                    CONNECT_TIMEOUT,
-                )
-                .await?;
-                let hpai = link.hpai();
-                (Link::Secure(Box::new(link)), hpai)
+        let opened = match plan {
+            Plan::Secure { users, probed } => {
+                open_secure_tunnel(config, gateway, requested, &users, probed.as_deref()).await?
             }
-            _ => {
-                let (socket, hpai) = udp_socket(gateway, config.local_interface).await?;
-                (Link::Udp(socket), hpai)
+            Plan::Plain {
+                probed,
+                keyring_note,
+            } => {
+                let (socket, local_hpai) = udp_socket(gateway, config.local_interface).await?;
+                let mut link = Link::Udp(socket);
+                match Self::handshake(&mut link, local_hpai).await {
+                    Ok((channel_id, assigned_ia)) => Opened {
+                        link,
+                        local_hpai,
+                        channel_id,
+                        assigned_ia,
+                        keys: None,
+                        lock: None,
+                    },
+                    Err(TransportError::GatewayStatus { status, context }) => {
+                        return Err(refusal(gateway, status, context, probed, keyring_note).await);
+                    }
+                    Err(err) => return Err(err),
+                }
             }
         };
+        let Opened {
+            link,
+            local_hpai,
+            channel_id,
+            assigned_ia,
+            keys: secure_user,
+            lock: user_lock,
+        } = opened;
         let secure_transport = match &link {
             Link::Secure(l) => l.transport(),
             Link::Udp(_) => SecureTransport::Tcp,
         };
-
-        let handshake = Self::handshake(&mut link, local_hpai).await;
-        let (channel_id, assigned_ia) = match (handshake, plan) {
-            (Ok(ok), _) => ok,
-            (
-                Err(TransportError::GatewayStatus { status, context }),
-                Plan::Plain {
-                    probed,
-                    keyring_note,
-                },
-            ) => {
-                return Err(refusal(gateway, status, context, probed, keyring_note).await);
-            }
-            (Err(err), _) => {
-                link.close().await;
-                return Err(err);
-            }
-        };
         let (link_tx, link_rx) = watch::channel(LinkState::Up { assigned_ia });
-        if secure_user.is_some() {
+        if let Some(user) = &secure_user {
             tracing::info!(
                 "KNXnet/IP Secure tunnel to {gateway} established over {secure_transport} \
-                 (channel {channel_id})"
+                 as user {} (channel {channel_id})",
+                user.user_id
             );
         }
         let keepalive = config
@@ -395,7 +411,9 @@ impl Tunnel {
             reconnect: config.reconnect,
             link_state: link_tx,
             last_rx: Instant::now(),
+            _user_lock: user_lock,
         };
+        let secure_user = task_state.secure_user.as_ref().map(|u| u.user_id);
         let task = tokio::spawn(task_state.run());
 
         Ok(Tunnel {
@@ -405,7 +423,14 @@ impl Tunnel {
             task: Some(task),
             assigned_ia,
             link: link_rx,
+            secure_user,
         })
+    }
+
+    /// The KNXnet/IP Secure tunnelling user this tunnel authenticated as, or
+    /// `None` for a plain tunnel.
+    pub fn secure_user_id(&self) -> Option<u8> {
+        self.secure_user
     }
 
     /// A receiver that observes the tunnel's [`LinkState`]: `Up` after the
@@ -424,7 +449,9 @@ impl Tunnel {
     /// and any assigned individual address.
     async fn handshake(link: &mut Link, hpai: Hpai) -> Result<(u8, Option<u16>)> {
         let req = knxnet::connect_request(hpai, hpai);
-        link.send(&req).await?;
+        link.send(&req)
+            .await
+            .map_err(|e| crate::secure::at_stage(e, "the connection to take CONNECT_REQUEST"))?;
 
         let mut buf = [0u8; 512];
         let deadline = Instant::now() + CONNECT_TIMEOUT;
@@ -432,7 +459,8 @@ impl Tunnel {
             let remaining = deadline.saturating_duration_since(Instant::now());
             let n = time::timeout(remaining, link.recv(&mut buf))
                 .await
-                .map_err(|_| TransportError::Timeout("CONNECT_RESPONSE"))??;
+                .map_err(|_| TransportError::Timeout("CONNECT_RESPONSE"))?
+                .map_err(|e| crate::secure::at_stage(e, "CONNECT_RESPONSE"))?;
             let parsed = knxnet::parse(&buf[..n])?;
             if parsed.service == ServiceType::ConnectResponse {
                 return accept_connect_response(parsed.body);
@@ -484,8 +512,10 @@ pub(crate) async fn udp_socket(
 /// * Explicit credentials (`--secure-user`): secure with that user.
 /// * Keyring credentials: probe the gateway (SEARCH_REQUEST_EXTENDED). Secure
 ///   when a keyring interface names this gateway's individual address as its
-///   host and the gateway advertises KNXnet/IP Secure; the user whose tunnel
-///   address is a free slot is preferred. Otherwise plain.
+///   host and the gateway advertises KNXnet/IP Secure; otherwise plain. The
+///   candidate users come in the order [`order_users`] gives (issue #287):
+///   not held by another bussard process on this host first, then a free
+///   tunnel slot first.
 pub(crate) async fn plan_connection(
     config: &ConnectionConfig,
     gateway: SocketAddrV4,
@@ -499,7 +529,7 @@ pub(crate) async fn plan_connection(
     if secure.source == SecureSource::Explicit {
         return match secure.users.first() {
             Some(user) => Ok(Plan::Secure {
-                user: Box::new(user.clone()),
+                users: vec![(user.clone(), None)],
                 probed: None,
             }),
             None => Ok(Plan::Plain {
@@ -520,10 +550,11 @@ pub(crate) async fn plan_connection(
             }
         };
     let host = probed.individual_address;
-    let candidates: Vec<&SecureUser> = secure
+    let candidates: Vec<SecureUser> = secure
         .users
         .iter()
         .filter(|u| host.is_some() && u.host_ia == host)
+        .cloned()
         .collect();
     if candidates.is_empty() {
         let note = match host {
@@ -558,27 +589,225 @@ pub(crate) async fn plan_connection(
                 .collect()
         })
         .unwrap_or_default();
-    let chosen = candidates
+    let lock_dir = secure.user_lock_dir.as_deref();
+    let users = order_users(candidates, &free, |user_id| {
+        lock_dir
+            .and_then(|dir| crate::host_lock::live_holder(&user_lock_path(dir, gateway, user_id)))
+    });
+    Ok(Plan::Secure {
+        users,
+        probed: Some(Box::new(probed)),
+    })
+}
+
+/// Orders the keyring users for one interface (issue #287): users no other
+/// bussard process on this host holds come first, and within each group the
+/// users whose tunnel address the interface reports as a free slot. The order
+/// is otherwise the keyring's. `held` names the holder of a user, if any.
+pub(crate) fn order_users(
+    users: Vec<SecureUser>,
+    free: &[u16],
+    held: impl Fn(u8) -> Option<Holder>,
+) -> Vec<(SecureUser, Option<Holder>)> {
+    let mut ordered: Vec<(SecureUser, Option<Holder>)> = users
+        .into_iter()
+        .map(|u| {
+            let holder = held(u.user_id);
+            (u, holder)
+        })
+        .collect();
+    ordered.sort_by_key(|(u, holder)| {
+        let slot_free = u.tunnel_ia.is_some_and(|ia| free.contains(&ia));
+        (holder.is_some(), !slot_free)
+    });
+    ordered
+}
+
+/// The lock file marking `user_id` on `gateway` as held (issue #287).
+pub(crate) fn user_lock_path(dir: &std::path::Path, gateway: SocketAddrV4, user_id: u8) -> PathBuf {
+    dir.join(format!(
+        "{}-{}-user{}.lock",
+        gateway.ip(),
+        gateway.port(),
+        user_id
+    ))
+}
+
+/// Whether `err`, from opening a secure tunnel as one user, is the
+/// interface refusing that user rather than the interface being away
+/// (issue #287): a failed authentication, no free tunnel for the user, the
+/// session ended, or the connection closed or reset during the handshake.
+/// The tunnel then tries the next keyring user before the bus backs off.
+pub(crate) fn is_user_refusal(err: &TransportError) -> bool {
+    match err {
+        TransportError::SecureAuthFailed { .. }
+        | TransportError::NoMoreConnections
+        | TransportError::SecureSessionEnded(_) => true,
+        TransportError::Io { source, .. } => matches!(
+            source.kind(),
+            std::io::ErrorKind::UnexpectedEof
+                | std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted
+        ),
+        _ => false,
+    }
+}
+
+/// Opens a secure tunnel with the first of `users` the interface accepts
+/// (issue #287).
+///
+/// Users another bussard process on this host holds are skipped while an
+/// unheld one remains. A user refused by the interface ([`is_user_refusal`])
+/// hands over to the next; any other failure (a timeout, an unreachable
+/// interface) ends the round at once, since the next user would fare no
+/// better. With a lock directory the chosen user is marked held.
+async fn open_secure_tunnel(
+    config: &ConnectionConfig,
+    gateway: SocketAddrV4,
+    requested: SecureTransport,
+    users: &[(SecureUser, Option<Holder>)],
+    probed: Option<&GatewayDescription>,
+) -> Result<Opened> {
+    let lock_dir = config
+        .secure
+        .as_ref()
+        .and_then(|s| s.user_lock_dir.as_deref());
+    let any_unheld = users.iter().any(|(_, holder)| holder.is_none());
+    if !any_unheld && !users.is_empty() {
+        let pids: Vec<String> = users
+            .iter()
+            .filter_map(|(_, h)| h.map(|h| h.pid.to_string()))
+            .collect();
+        tracing::warn!(
+            "every keyring tunnelling user for {gateway} is held by another bussard process on \
+             this host (pid {}); trying them anyway",
+            pids.join(", ")
+        );
+    }
+    let tries: Vec<&SecureUser> = users
         .iter()
-        .find(|u| u.tunnel_ia.is_some_and(|ia| free.contains(&ia)))
-        .or_else(|| candidates.first())
-        .map(|u| (*u).clone());
-    match chosen {
-        Some(user) => {
-            tracing::debug!(
-                user = user.user_id,
-                "KNXnet/IP Secure: using keyring tunnelling user {} for {gateway}",
-                user.user_id
-            );
-            Ok(Plan::Secure {
-                user: Box::new(user),
-                probed: Some(Box::new(probed)),
-            })
+        .filter(|(user, holder)| match holder {
+            Some(holder) if any_unheld => {
+                tracing::info!(
+                    "KNXnet/IP Secure: tunnelling user {} for {gateway} is held by bussard pid \
+                     {} on this host; skipping it",
+                    user.user_id,
+                    holder.pid
+                );
+                false
+            }
+            _ => true,
+        })
+        .map(|(user, _)| user)
+        .collect();
+    let mut errors: Vec<TransportError> = Vec::new();
+    for (i, user) in tries.iter().enumerate() {
+        let next = tries.get(i + 1);
+        let lock = match lock_dir {
+            Some(dir) => match HostLock::try_acquire(&user_lock_path(dir, gateway, user.user_id)) {
+                Ok(Ok(lock)) => Some(lock),
+                Ok(Err(holder)) => {
+                    // Taken since the plan was made: leave it to its holder
+                    // while another user remains.
+                    if let Some(next) = next
+                        && any_unheld
+                    {
+                        tracing::info!(
+                            "KNXnet/IP Secure: tunnelling user {} was just taken by bussard pid \
+                             {}; trying user {}",
+                            user.user_id,
+                            holder.pid,
+                            next.user_id
+                        );
+                        continue;
+                    }
+                    None
+                }
+                Err(err) => {
+                    tracing::debug!(%err, "could not write the tunnel-user lock");
+                    None
+                }
+            },
+            None => None,
+        };
+        tracing::info!(
+            user = user.user_id,
+            "KNXnet/IP Secure: using keyring tunnelling user {} for {gateway}",
+            user.user_id
+        );
+        let keys = UserKeys::derive(user);
+        match connect_secure_user(config, gateway, &keys, requested, probed).await {
+            Ok((link, local_hpai, channel_id, assigned_ia)) => {
+                return Ok(Opened {
+                    link,
+                    local_hpai,
+                    channel_id,
+                    assigned_ia,
+                    keys: Some(keys),
+                    lock,
+                });
+            }
+            Err(err) => {
+                drop(lock);
+                let rotate = next.is_some() && is_user_refusal(&err);
+                if let Some(next) = next
+                    && rotate
+                {
+                    tracing::warn!(
+                        "KNXnet/IP Secure: {gateway} refused tunnelling user {} ({err}); trying \
+                         user {}",
+                        user.user_id,
+                        next.user_id
+                    );
+                }
+                errors.push(err);
+                if !rotate {
+                    break;
+                }
+            }
         }
-        None => Ok(Plan::Plain {
-            probed: Some(probed),
-            keyring_note: None,
-        }),
+    }
+    Err(pick_error(errors))
+}
+
+/// The error a failed round of users reports: the first one retrying can fix
+/// (so one user's wrong password does not stop the bus while another user is
+/// merely busy), else the first.
+fn pick_error(mut errors: Vec<TransportError>) -> TransportError {
+    match errors.iter().position(|e| !e.is_fatal()) {
+        Some(i) => errors.swap_remove(i),
+        None if !errors.is_empty() => errors.swap_remove(0),
+        None => TransportError::Timeout("KNXnet/IP Secure session (no user to try)"),
+    }
+}
+
+/// Opens the secure session as one user and runs the CONNECT handshake in
+/// it, closing the session when the CONNECT fails.
+async fn connect_secure_user(
+    config: &ConnectionConfig,
+    gateway: SocketAddrV4,
+    keys: &UserKeys,
+    requested: SecureTransport,
+    probed: Option<&GatewayDescription>,
+) -> Result<(Link, Hpai, u8, Option<u16>)> {
+    let link = open_secure(
+        gateway,
+        config.local_interface,
+        keys,
+        requested,
+        probed,
+        CONNECT_TIMEOUT,
+    )
+    .await?;
+    let hpai = link.hpai();
+    let mut link = Link::Secure(Box::new(link));
+    match Tunnel::handshake(&mut link, hpai).await {
+        Ok((channel_id, assigned_ia)) => Ok((link, hpai, channel_id, assigned_ia)),
+        Err(err) => {
+            link.close().await;
+            Err(err)
+        }
     }
 }
 
@@ -784,6 +1013,9 @@ struct TaskState {
     /// When the link last delivered anything, for the TCP read deadline
     /// (issue #192).
     last_rx: Instant,
+    /// Marks the secure user as held by this tunnel for other bussard
+    /// processes on the host (issue #287); released when the task ends.
+    _user_lock: Option<HostLock>,
 }
 
 impl TaskState {
@@ -1344,8 +1576,15 @@ impl TaskState {
         let deadline = Instant::now() + wait;
         if let Some(user) = &self.secure_user {
             // A secure tunnel needs a fresh session on the same carrier: the
-            // old session died with the link. Ending it releases the old
-            // channel on the gateway, so no DISCONNECT is owed.
+            // old session died with the link. End the old one FIRST (wrapped
+            // STATUS_CLOSE, then the socket): an interface that holds one
+            // session per user would otherwise refuse the new session as long
+            // as the old, half-dead one is open, and every attempt of the
+            // budget would collide with our own stale session (issue #287).
+            // Ending it also releases the old channel on the gateway, so no
+            // DISCONNECT is owed.
+            self.link.close().await;
+            *old_open = false;
             let link = SecureLink::open(
                 self.gateway,
                 self.local_interface,
@@ -1354,11 +1593,9 @@ impl TaskState {
                 wait,
             )
             .await?;
-            self.link.close().await;
             // A UDP session has a new socket, so a new endpoint to advertise.
             self.local_hpai = link.hpai();
             self.link = Link::Secure(Box::new(link));
-            *old_open = false;
         }
         let req = knxnet::connect_request(self.local_hpai, self.local_hpai);
         match self.link.send(&req).await {
@@ -1463,5 +1700,61 @@ mod tests {
         assert!(!link.is_deferred_refusal(&io(std::io::ErrorKind::PermissionDenied)));
         assert!(!link.is_deferred_refusal(&TransportError::HeartbeatLost));
         Ok(())
+    }
+
+    fn secure_user(user_id: u8, tunnel_ia: u16) -> SecureUser {
+        SecureUser {
+            user_id,
+            password: bussard_secure::Password::new("pw"),
+            device_authentication_code: None,
+            tunnel_ia: Some(tunnel_ia),
+            host_ia: None,
+        }
+    }
+
+    #[test]
+    fn test_order_users_prefers_unheld_then_free_slot() {
+        let users = vec![
+            secure_user(2, 0x1116),
+            secure_user(3, 0x1117),
+            secure_user(4, 0x1118),
+        ];
+        // User 2 is held by another process; only 4's slot is free.
+        let ordered = order_users(users, &[0x1118], |id| {
+            (id == 2).then_some(Holder { pid: 4242 })
+        });
+        let ids: Vec<(u8, bool)> = ordered
+            .iter()
+            .map(|(u, h)| (u.user_id, h.is_some()))
+            .collect();
+        assert_eq!(ids, vec![(4, false), (3, false), (2, true)]);
+    }
+
+    #[test]
+    fn test_order_users_keeps_the_keyring_order_when_nothing_differs() {
+        let users = vec![secure_user(2, 0x1116), secure_user(3, 0x1117)];
+        let ordered = order_users(users, &[0x1116, 0x1117], |_| None);
+        let ids: Vec<u8> = ordered.iter().map(|(u, _)| u.user_id).collect();
+        assert_eq!(ids, vec![2, 3]);
+    }
+
+    #[test]
+    fn test_is_user_refusal_covers_hang_ups_but_not_absence() {
+        assert!(is_user_refusal(&io(std::io::ErrorKind::BrokenPipe)));
+        assert!(is_user_refusal(&io(std::io::ErrorKind::UnexpectedEof)));
+        assert!(is_user_refusal(&io(std::io::ErrorKind::ConnectionReset)));
+        assert!(is_user_refusal(&TransportError::NoMoreConnections));
+        assert!(!is_user_refusal(&io(std::io::ErrorKind::ConnectionRefused)));
+        assert!(!is_user_refusal(&TransportError::Timeout(
+            "SESSION_RESPONSE"
+        )));
+    }
+
+    #[test]
+    fn test_pick_error_prefers_a_retryable_error() {
+        let gateway = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 3671);
+        let fatal = TransportError::SecureServerUnverified { gateway };
+        let picked = pick_error(vec![fatal, io(std::io::ErrorKind::BrokenPipe)]);
+        assert!(!picked.is_fatal(), "got {picked}");
     }
 }

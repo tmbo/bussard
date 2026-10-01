@@ -30,6 +30,8 @@
 //! | `knx_read_group` | Send a GroupValueRead and return the value (omitted in `--passive`). |
 //! | `knx_describe_device` | Introspect a device: enumerate its interface objects and each property's description (omitted in `--passive`). |
 //! | `knx_infer_group` | Infer a GA's DPT and a proposed name from the traffic seen on it (issue #95). |
+//! | `knx_bus_status` | The bus connection in detail: interface, tunnelling user, the last transport error and when, attempts, seconds to the next retry, other `bussard mcp` processes for the model (issue #287). |
+//! | `knx_bus_reconnect` | Drop the bus connection and connect afresh now, backoff reset; not a write (omitted in `--passive`, issue #287). |
 //! | `knx_write_group` | Send a GroupValueWrite (registered only with `--allow-writes`). |
 //! | `knx_run_tests` | Run the model directory's `tests.toml` against the bus (registered only with `--allow-writes`). |
 //! | `knx_describe_change` | Pending or between-snapshot model changes, as plain sentences. |
@@ -68,9 +70,9 @@
 //! started with `--allow-writes` (which conflicts with `--passive`); both write
 //! to the physical bus, and both hard-refuse `protected` GAs.
 //!
-//! Tool counts per tier: `--passive` 22, default 24, `--allow-writes` 26. With
+//! Tool counts per tier: `--passive` 23, default 26, `--allow-writes` 28. With
 //! `--no-model-edits` the eight model-edit tools (the six above plus the two
-//! reservation tools) are withheld, giving 14, 16 and 18.
+//! reservation tools) are withheld, giving 15, 18 and 20.
 //!
 //! `--allow-programming` (issue #118) adds the two programming tools
 //! ([`tools_program::PROGRAMMING_TOOLS`]) to any non-passive tier. They write
@@ -120,6 +122,7 @@
 
 pub mod args;
 pub mod guidance;
+pub mod instances;
 pub mod model_handle;
 pub mod run;
 mod secure_group;
@@ -306,6 +309,9 @@ pub async fn run(config: &McpConfig) -> anyhow::Result<()> {
 /// to register the server with a client.
 pub async fn run_with_ready(config: &McpConfig, on_ready: impl FnOnce()) -> anyhow::Result<()> {
     let state = build_state(config)?;
+    // Instance awareness (issue #287): mark this server and warn about another
+    // one for the same model directory. Held until the server exits.
+    let _instance = instances::register(&config.dir);
     let service = BusService::open(config.connection.clone(), config.write_policy())?;
     if service.gate() == Some(bussard_transport::write_gate::WriteGate::OptedIn) {
         tracing::warn!(
@@ -318,15 +324,17 @@ pub async fn run_with_ready(config: &McpConfig, on_ready: impl FnOnce()) -> anyh
 
 /// The set of tool names exposed, in registration order. Used by tests and docs.
 ///
-/// - passive mode: 22 tools (no bus-touching tools: no `knx_read_group`, no
-///   `knx_describe_device`, no `knx_write_group`, no `knx_run_tests`).
-///   `knx_infer_group` is there: it only reads the telegram ring. `knx_audit`
-///   is there too, but refuses `live: true`.
-/// - default mode: 24 tools (adds `knx_read_group` and `knx_describe_device`).
-/// - `--allow-writes`: 26 tools (adds `knx_write_group` and `knx_run_tests`).
+/// - passive mode: 23 tools (no bus-touching tools: no `knx_read_group`, no
+///   `knx_describe_device`, no `knx_bus_reconnect`, no `knx_write_group`, no
+///   `knx_run_tests`). `knx_infer_group` is there: it only reads the telegram
+///   ring. `knx_bus_status` reads the connection state. `knx_audit` is there
+///   too, but refuses `live: true`.
+/// - default mode: 26 tools (adds `knx_read_group`, `knx_describe_device` and
+///   `knx_bus_reconnect`).
+/// - `--allow-writes`: 28 tools (adds `knx_write_group` and `knx_run_tests`).
 /// - `--no-model-edits` removes the eight model-edit tools
 ///   ([`tools_model::MODEL_EDIT_TOOLS`], including the two reservation tools) from
-///   any of those (14, 16 and 18 tools).
+///   any of those (15, 18 and 20 tools).
 ///
 /// The two model/history read tools (`knx_describe_change`, `knx_history`),
 /// the two bundle/diff tools (`knx_export_bundle`, `knx_diff_project`) and the
@@ -375,10 +383,12 @@ pub fn tool_names_with_ha(
         "knx_validate",
         "knx_audit",
         "knx_infer_group",
+        "knx_bus_status",
     ];
     if !passive {
         names.push("knx_read_group");
         names.push("knx_describe_device");
+        names.push("knx_bus_reconnect");
     }
     if allow_writes && !passive {
         names.push("knx_write_group");

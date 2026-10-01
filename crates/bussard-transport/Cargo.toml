@@ -27,6 +27,10 @@ thiserror = { workspace = true }
 # MIT OR Apache-2.0.
 if-addrs = "0.15"
 
+[target.'cfg(unix)'.dependencies]
+# Whether the pid in a tunnel-user lock is alive (issue #287), safely.
+rustix = { workspace = true }
+
 [dev-dependencies]
 # Key16 for the secure-tunnel tests' credentials.
 bussard-secure = { workspace = true }

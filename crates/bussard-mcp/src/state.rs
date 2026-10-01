@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use bussard_bus::{BusHandle, BusState};
+use bussard_bus::{BusDiagnostics, BusHandle, BusState};
 use bussard_monitor::TelegramRing;
 use bussard_service::BusService;
 use bussard_transport::TransportKind;
@@ -136,13 +136,112 @@ impl BusStatus {
         self.service.get()
     }
 
-    /// A JSON object describing the bus status.
+    /// The actor's attempt history (issue #287), if the bus is wired.
+    pub fn diagnostics(&self) -> Option<BusDiagnostics> {
+        self.handle().map(BusHandle::diagnostics)
+    }
+
+    /// A JSON object describing the bus status: the state, and why it is not
+    /// connected (issue #287): the interface, the tunnelling user, the exact
+    /// last transport error and when it happened, the failed attempts since
+    /// the last connect and the seconds until the next one.
     pub fn to_json(&self) -> Value {
-        json!({
+        let mut out = json!({
             "state": self.state().tag(),
             "transport": self.transport_tag(),
             "connected": self.state() == ConnState::Connected,
-        })
+        });
+        let Some(map) = out.as_object_mut() else {
+            return out;
+        };
+        let diag = self.diagnostics();
+        let fatal = self.handle().and_then(BusHandle::fatal_error);
+        let interface = diag
+            .as_ref()
+            .map(|d| d.interface.clone())
+            .or_else(|| self.gateway.map(|g| g.to_string()));
+        map.insert("interface".into(), json!(interface));
+        map.insert(
+            "tunnel_user".into(),
+            json!(diag.as_ref().and_then(|d| d.tunnel_user)),
+        );
+        map.insert(
+            "last_error".into(),
+            json!(diag.as_ref().and_then(|d| d.last_error.clone())),
+        );
+        map.insert(
+            "last_error_at".into(),
+            json!(
+                diag.as_ref()
+                    .and_then(|d| d.last_error_at)
+                    .map(bussard_monitor::timefmt::to_rfc3339)
+            ),
+        );
+        map.insert(
+            "attempts".into(),
+            json!(diag.as_ref().map(|d| d.attempts).unwrap_or(0)),
+        );
+        map.insert(
+            "retry_in_seconds".into(),
+            json!(
+                diag.as_ref()
+                    .and_then(|d| d.retry_in)
+                    .map(|r| r.as_secs_f64().ceil() as u64)
+            ),
+        );
+        map.insert(
+            "connected_since".into(),
+            json!(
+                diag.as_ref()
+                    .and_then(|d| d.connected_since)
+                    .map(bussard_monitor::timefmt::to_rfc3339)
+            ),
+        );
+        if let Some(fatal) = fatal {
+            map.insert("stopped".into(), json!(fatal));
+        }
+        out
+    }
+
+    /// Why a bus tool is refused while the bus is down, with the last error
+    /// (issue #287): "the bus to 192.0.2.10:3671 is not connected: socket
+    /// error: Broken pipe at 2026-10-01T15:36:14Z after 240 attempts;
+    /// retrying in 30 s".
+    pub fn not_connected_reason(&self) -> String {
+        let diag = self.diagnostics();
+        let interface = diag
+            .as_ref()
+            .map(|d| d.interface.clone())
+            .or_else(|| self.gateway.map(|g| g.to_string()))
+            .unwrap_or_else(|| self.transport_tag().to_string());
+        let mut out = format!("the bus to {interface} is not connected");
+        if let Some(fatal) = self.handle().and_then(BusHandle::fatal_error) {
+            out.push_str(&format!(
+                ": stopped on {fatal}; fix that and restart the server"
+            ));
+            return out;
+        }
+        let Some(diag) = diag else {
+            return out;
+        };
+        if let Some(err) = &diag.last_error {
+            out.push_str(&format!(": {err}"));
+            if let Some(at) = diag.last_error_at {
+                out.push_str(&format!(" at {}", bussard_monitor::timefmt::to_rfc3339(at)));
+            }
+        }
+        if diag.attempts > 0 {
+            let s = if diag.attempts == 1 { "" } else { "s" };
+            out.push_str(&format!(" after {} attempt{s}", diag.attempts));
+        }
+        if let Some(retry) = diag.retry_in {
+            out.push_str(&format!(
+                "; retrying in {} s",
+                retry.as_secs_f64().ceil() as u64
+            ));
+        }
+        out.push_str(". knx_bus_status shows the details; knx_bus_reconnect connects afresh now");
+        out
     }
 }
 

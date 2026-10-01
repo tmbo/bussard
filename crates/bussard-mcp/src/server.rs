@@ -37,6 +37,11 @@ use serde_json::{Value, json};
 use crate::state::{ConnState, READ_RESPONSE_TIMEOUT, SharedState};
 use crate::tools;
 
+/// How long `knx_bus_reconnect` waits for its connect attempt: the secure
+/// probe, the TCP connect and the session handshake each have their own
+/// timeout well inside this.
+const RECONNECT_WAIT: Duration = Duration::from_secs(20);
+
 /// The bussard MCP server handler.
 ///
 /// Cloneable: rmcp clones the handler per request, but the heavy state lives
@@ -79,6 +84,8 @@ impl BussardMcp {
         }
         if state.passive {
             tool_router.remove_route("knx_read_group");
+            // Passive mode leaves the connection to the actor's own reconnect.
+            tool_router.remove_route("knx_bus_reconnect");
             // Introspection actively transmits management traffic, so it is a
             // bus-touching tool: unavailable in passive (observe-only) mode.
             tool_router.remove_route("knx_describe_device");
@@ -461,6 +468,73 @@ impl BussardMcp {
         }
     }
 
+    /// `knx_bus_status` (issue #287).
+    #[tool(
+        description = "The live bus connection in detail, read-only: state, interface, tunnelling user, the exact last transport error and when it happened (last_error, last_error_at), failed connect attempts since the bus was last connected, seconds until the next attempt (retry_in_seconds), and other bussard mcp processes serving this model directory on this host. Call it when a bus tool says the bus is not connected, instead of guessing; knx_bus_reconnect connects afresh."
+    )]
+    async fn knx_bus_status(&self) -> Result<CallToolResult, ErrorData> {
+        let mut out = self.state.bus.to_json();
+        if let Some(map) = out.as_object_mut() {
+            let others: Vec<u32> = crate::instances::other_instances(&self.state.dir);
+            map.insert("other_instances".into(), json!(others));
+            if self.state.bus.state() != ConnState::Connected {
+                map.insert(
+                    "reason".into(),
+                    json!(self.state.bus.not_connected_reason()),
+                );
+            }
+        }
+        ok(out)
+    }
+
+    /// `knx_bus_reconnect` (issue #287; omitted in passive mode).
+    #[tool(
+        description = "Drop the bus connection and connect afresh now: a new socket, a new KNXnet/IP Secure session and the reconnect backoff reset. A connected bus closes its tunnel cleanly first. Not a write: nothing is sent on the KNX bus, only the connection to the interface is rebuilt. Returns the bus status after the attempt (knx_bus_status's fields). Use it when knx_bus_status shows the bus stuck reconnecting."
+    )]
+    async fn knx_bus_reconnect(&self) -> Result<CallToolResult, ErrorData> {
+        if self.state.passive {
+            return ok(json!({
+                "ok": false,
+                "reason": "server is in passive mode; the bus reconnects on its own",
+            }));
+        }
+        let Some(handle) = self.state.bus.handle() else {
+            return ok(json!({
+                "ok": false,
+                "reason": "bus is not wired",
+                "bus": self.state.bus.to_json(),
+            }));
+        };
+        let attempt = tokio::time::timeout(RECONNECT_WAIT, handle.reconnect()).await;
+        let note = match attempt {
+            Ok(Ok(())) => None,
+            Ok(Err(err)) => Some(format!(
+                "{err}: the bus stopped (see `stopped`); restart the server after fixing the cause"
+            )),
+            Err(_) => Some(format!(
+                "the connect attempt did not finish within {} s; it continues in the background",
+                RECONNECT_WAIT.as_secs()
+            )),
+        };
+        let connected = self.state.bus.state() == ConnState::Connected;
+        let mut out = json!({
+            "ok": connected,
+            "bus": self.state.bus.to_json(),
+        });
+        if let Some(map) = out.as_object_mut() {
+            if let Some(note) = note {
+                map.insert("note".into(), json!(note));
+            }
+            if !connected {
+                map.insert(
+                    "reason".into(),
+                    json!(self.state.bus.not_connected_reason()),
+                );
+            }
+        }
+        ok(out)
+    }
+
     /// `knx_validate`.
     #[tool(
         description = "Run the bussard model validator and return every diagnostic as JSON (code, severity, message, location) plus counts of errors/warnings/infos. Use this to check whether the model (bussard.toml, groups.toml, devices/*.toml, bussard.lock) is internally consistent, and, with the server's keyring, whether security-activated devices have a tool key and the groups' secure flags match the keyring's group keys (addresses only, never a key)."
@@ -536,7 +610,7 @@ impl BussardMcp {
             return ok(json!({
                 "ga": ga.to_string(),
                 "ok": false,
-                "reason": "bus is not connected",
+                "reason": self.state.bus.not_connected_reason(),
                 "bus": self.state.bus.to_json(),
             }));
         }
@@ -626,7 +700,7 @@ impl BussardMcp {
             return ok(json!({
                 "address": target.to_string(),
                 "ok": false,
-                "reason": "bus is not connected",
+                "reason": self.state.bus.not_connected_reason(),
                 "bus": self.state.bus.to_json(),
             }));
         }
@@ -817,7 +891,7 @@ impl BussardMcp {
             return ok(json!({
                 "ga": ga.to_string(),
                 "ok": false,
-                "reason": "bus is not connected",
+                "reason": self.state.bus.not_connected_reason(),
                 "bus": self.state.bus.to_json(),
             }));
         }

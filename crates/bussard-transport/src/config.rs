@@ -290,6 +290,10 @@ pub struct SecureTunnelConfig {
     /// ([`SECURE_KEEPALIVE_INTERVAL`] by default). [`Duration::ZERO`] sends
     /// none, leaving the session to the tunnel's own traffic and heartbeats.
     pub keepalive: Duration,
+    /// Where the tunnel marks the keyring user it holds, so other bussard
+    /// processes on this host pick another one (issue #287): one lock file
+    /// per gateway and user, holding the pid. `None` marks nothing.
+    pub user_lock_dir: Option<std::path::PathBuf>,
 }
 
 impl SecureTunnelConfig {
@@ -301,7 +305,15 @@ impl SecureTunnelConfig {
             source,
             transport: SecureTransport::Auto,
             keepalive: SECURE_KEEPALIVE_INTERVAL,
+            user_lock_dir: None,
         }
+    }
+
+    /// This configuration marking the held tunnelling user under `dir`
+    /// (issue #287; the CLI passes `<model dir>/.bussard/tunnel-users`).
+    pub fn with_user_lock_dir(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
+        self.user_lock_dir = Some(dir.into());
+        self
     }
 
     /// This configuration over `transport`.
