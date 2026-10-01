@@ -302,7 +302,13 @@ fn test_read_knxprod_selected_matches_full_read_on_the_corpus() -> TestResult {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(6);
-    let mut files: Vec<std::path::PathBuf> = walk(Path::new(&dir))
+    // The corpus root, its `cache/`, or the vendor directory (docs/testing.md).
+    let dir = std::path::PathBuf::from(dir);
+    let dir = [dir.join("cache/vendor"), dir.join("vendor")]
+        .into_iter()
+        .find(|d| d.is_dir())
+        .unwrap_or(dir);
+    let mut files: Vec<std::path::PathBuf> = walk(&dir)
         .into_iter()
         .filter(|p| {
             p.extension()

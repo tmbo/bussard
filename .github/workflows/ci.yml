@@ -13,8 +13,9 @@ on:
       product_corpus:
         description: >-
           Path to a cached vendor product corpus on the runner. Set it to run
-          the full 500-product conformance sweep; empty (the default) runs only
-          the committed-fixture sweep. The corpus is large and copyrighted, so
+          every corpus-gated test, the full 500-product conformance sweep
+          included (docs/testing.md); empty (the default) runs only the
+          committed-fixture sweep. The corpus is large and copyrighted, so
           it is never committed and a normal push/PR never has one.
         required: false
         default: ""
@@ -158,7 +159,8 @@ jobs:
   corpus-sweep:
     name: corpus-sweep (ubuntu, conformance)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 30 minutes without a corpus; the corpus-gated tests below need longer.
+    timeout-minutes: ${{ (inputs.product_corpus || vars.BUSSARD_PRODUCT_CORPUS) && 120 || 30 }}
     env:
       # Empty on a normal push/PR, so the full-corpus step below is skipped and
       # the env-gated tests skip green. A `workflow_dispatch` run can supply a
@@ -190,18 +192,25 @@ jobs:
       # module unit tests — no cache needed. These fail if the fabricated-fixture
       # buckets drift from tests-support/product-corpus/fixture-conformance.json.
       - name: Conformance sweep (committed fixtures)
+        # Fixtures only, even on a run with a corpus: the step below runs the
+        # corpus-gated tests once.
+        env:
+          BUSSARD_PRODUCT_CORPUS: ""
         run: |
           cargo nextest run -p bussard-download --profile ci \
             -E 'test(sweep) + test(golden) + test(corpus)'
 
-      # Full 500-product sweep, only when a corpus is available. The job-level
-      # `env` above sets BUSSARD_PRODUCT_CORPUS from the workflow_dispatch input
-      # or the repository variable; on a normal push/PR both are empty, so this
-      # step is skipped and the env-gated tests skip green.
-      - name: Conformance sweep (full corpus, if cached)
+      # Every corpus-gated test (docs/testing.md), the full 500-product sweep
+      # included, only when a corpus is available. The job-level `env` above
+      # sets BUSSARD_PRODUCT_CORPUS from the workflow_dispatch input or the
+      # repository variable; on a normal push/PR both are empty, so this step
+      # is skipped and the env-gated tests skip green.
+      - name: Corpus-gated tests (full corpus, if given)
         if: ${{ env.BUSSARD_PRODUCT_CORPUS != '' }}
         run: |
-          cargo test -p bussard-download --test flash_corpus -- --nocapture
+          cargo nextest run --profile corpus \
+            -p bussard-download -p bussard-prod -p bussard-cli \
+            -E 'binary(flash_corpus) | binary(flash_dryrun_system7) | binary(ets_golden) | binary(sys7_jung_m2_plan) | binary(param_readback_roundtrip) | binary(parameter_image) | binary(sys7_visible_parameters) | binary(selected) | binary(flash_dry_run)'
 
   # cargo-deny is the automated guard for bussard's central "never GPL"
   # constraint: the license allow-list in deny.toml fails this job if any crate

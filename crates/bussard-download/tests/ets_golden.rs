@@ -547,7 +547,12 @@ fn test_20de_plan_writes_program_version_only_to_loaded_objects() -> TestResult 
     let Some(dir) = std::env::var_os("BUSSARD_PRODUCT_CORPUS") else {
         return Ok(());
     };
-    let path = PathBuf::from(dir).join("cache/vendor").join(source.product);
+    let dir = PathBuf::from(dir);
+    let path = [dir.join("cache/vendor"), dir.join("vendor"), dir]
+        .into_iter()
+        .map(|d| d.join(source.product))
+        .find(|p| p.is_file())
+        .ok_or("the product `load` found is gone")?;
     let master_xml = zip_entry(std::fs::read(path)?, "knx_master.xml")?;
     let master = bussard_prod::parse_master_template(&master_xml, "knx_master.xml")?;
     let mask = app.mask_version.as_deref().ok_or("no mask version")?;

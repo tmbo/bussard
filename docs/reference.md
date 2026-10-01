@@ -905,7 +905,7 @@ bussard reads the `BUSSARD_*` variables above from a `.env` file too, so the pas
 
 `BUSSARD_NO_DOTENV=1`, exported, skips the file. The campaign scripts (`scripts/campaign/`) apply the same lookup and rules and export the file's `BUSSARD_*` variables for the tools bussard does not cover (`knxtrace` reads `BUSSARD_KEYRING_PASSWORD`), so `set -a; . ./.env` is no longer needed before them.
 
-Test-harness variables (`BUSSARD_VIRTUAL_DEVICE*`, `BUSSARD_TEST_MULTICAST`, `BUSSARD_PRODUCT_CORPUS`) gate the integration test suites, never the CLI; they are documented in the `tests-support/` READMEs.
+Test-harness variables (`BUSSARD_VIRTUAL_DEVICE*`, `BUSSARD_TEST_MULTICAST`, `BUSSARD_PRODUCT_CORPUS`) gate the integration test suites, never the CLI; [testing.md](testing.md) lists the tests they gate and how to run them.
 
 ## The model directory
 
