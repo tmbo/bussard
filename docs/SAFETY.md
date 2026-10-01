@@ -557,8 +557,8 @@ first of `<model dir>/.env`, the `.env` next to the model directory and
 `./.env`. The full rules are in
 [reference.md](reference.md#the-env-file). What matters for safety:
 
-- **The file stays out of git.** Keep `BUSSARD_KEYRING_PASSWORD` and
-  `BUSSARD_PROJECT_PASSWORD` there only if `.env` is in `.gitignore` (the
+- **The file stays out of git.** Keep `BUSSARD_KEYRING_PASSWORD`,
+  `BUSSARD_PROJECT_PASSWORD` and `BUSSARD_HA_TOKEN` there only if `.env` is in `.gitignore` (the
   repository's own `.gitignore` lists it). `bussard export` never copies a
   `.env` into a bundle.
 - **No value is printed.** `-vv` and `--timing` name the file that was read
@@ -718,6 +718,40 @@ A device the model records as `security.activated` but the keyring does not
 list is refused, as on the CLI; plain management cannot reach it. System 7
 devices get their tables written secured and their security object left as
 it is, as with `bussard apply --keyring`.
+
+## MCP Home Assistant tier
+
+`bussard mcp --allow-home-assistant` (issue #280) lets the assistant read
+Home Assistant and rewrite the KNX YAML it reads. It needs the
+`[home_assistant]` table in `bussard.toml` as well as the flag; with only one
+of the two the tools are not registered. The tier never touches the KNX bus.
+
+- **The owner's rule: every Home Assistant change needs an explicit yes.**
+  Reads are free (`knx_ha_status`, `knx_ha_plan`). A write goes through the
+  plan, the sentences shown to the human, and a yes in the conversation, with
+  the same single-use, time-limited digest as `knx_plan_device` and
+  `knx_apply_device`. A digest the session did not produce, an expired one,
+  or one a new plan no longer reproduces (the model, `ha.toml` or the file
+  changed) is refused.
+- **The token** comes only from the variable `home_assistant.token_env` names
+  (default `BUSSARD_HA_TOKEN`), exported or from the `.env`. It is sent as a
+  bearer header, which the HTTP client redacts from its own logs, and appears
+  in no result, error or log line (a test greps stdout and stderr at `-vv`).
+  Keep it in an untracked `.env`. A long-lived token is an admin credential
+  for Home Assistant: revoke it on the profile page when the laptop leaves.
+- **One file.** The only file written is `config_path`, and only when it is
+  YAML-managed (a `knx:` package file, or the inside of a
+  `knx: !include`). Its previous bytes are kept under
+  `captures/backups/ha/` first, and the replacement is atomic (temporary file
+  and rename). KNX entities created in Home Assistant's UI are reported as
+  not visible and never touched.
+- **Reload only after a successful write.** The apply checks that Home
+  Assistant answers with the token before writing, calls the `knx.reload`
+  service only after the write succeeded, and reads the status again. A
+  failed reload is reported with the backup path; restoring is copying the
+  backup over the file and reloading.
+- **No other Home Assistant change.** The tier calls no other service and
+  writes no other configuration. Automations are a later, separate step.
 
 ## History and undo
 

@@ -177,6 +177,7 @@ async fn serve(
         allow_remote_gateway: false,
         plan_ttl,
         keyring: None,
+        allow_home_assistant: false,
     };
     let state = bussard_mcp::build_state(&config)?;
     if with_bus {

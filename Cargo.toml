@@ -90,6 +90,10 @@ rayon = "1"
 # SSE, static-asset responses). MIT. Its tree (hyper, tower, http) is already
 # vetted by deny.toml's MIT/Apache allow-list.
 axum = "0.8"
+# Blocking HTTP client: vendor product downloads (`bussard-prod`) and the
+# Home Assistant REST API (`bussard-ha`, issue #280). rustls, no OpenSSL.
+# MIT OR Apache-2.0.
+ureq = { version = "2", default-features = false, features = ["tls"] }
 # tokio-stream: adapts the `TrafficHub`'s tokio broadcast receiver into a
 # `Stream` for axum's SSE responder (the `sync` feature wraps broadcast/watch).
 # MIT.

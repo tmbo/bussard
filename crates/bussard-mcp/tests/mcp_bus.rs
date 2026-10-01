@@ -84,6 +84,7 @@ fn state_for() -> TestResult<Arc<SharedState>> {
         source_ia: "0.0.255".parse()?,
         programming: None,
         keyring: None,
+        home_assistant: None,
     }))
 }
 

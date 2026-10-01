@@ -304,9 +304,13 @@ name = "bussard-ha"
 version = "0.1.0"
 dependencies = [
  "bussard-model",
+ "bussard-testkit",
  "serde",
+ "serde_json",
  "serde_norway",
+ "tempfile",
  "thiserror",
+ "ureq",
 ]
 
 [[package]]
@@ -316,6 +320,7 @@ dependencies = [
  "anyhow",
  "bussard-bus",
  "bussard-download",
+ "bussard-ha",
  "bussard-mgmt",
  "bussard-model",
  "bussard-monitor",

@@ -49,6 +49,7 @@ fn server_over(dir: &Path) -> Result<BussardMcp, Box<dyn Error>> {
         source_ia: "0.0.255".parse()?,
         programming: None,
         keyring: None,
+        home_assistant: None,
     });
     Ok(BussardMcp::new(state))
 }

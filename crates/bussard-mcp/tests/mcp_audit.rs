@@ -106,6 +106,7 @@ fn server(
         source_ia: "0.0.255".parse()?,
         programming: None,
         keyring: None,
+        home_assistant: None,
     });
     Ok(BussardMcp::new(state))
 }
@@ -262,6 +263,7 @@ async fn test_knx_audit_live_probes_secure_devices() -> TestResult {
         source_ia: "0.0.255".parse()?,
         programming: None,
         keyring: None,
+        home_assistant: None,
     });
     let report = call_audit(BussardMcp::new(state), json!({ "live": true })).await??;
     let _ = handle.close().await;

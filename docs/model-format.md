@@ -76,12 +76,25 @@ blind = 10
 
 [import]
 # language = "de-DE"            # text language of import; see Text language
+
+[home_assistant]                # optional: the MCP server's Home Assistant tier
+url = "http://homeassistant.local:8123"
+token_env = "BUSSARD_HA_TOKEN"  # default; the token itself never goes here
+config_path = "../ha/knx.yaml"  # the KNX YAML Home Assistant reads
 ```
 
 Written by `init`. bussard never rewrites it, except to append a `[lint]`
 table when one is missing. `[lint]` configures the topology limits and the
 group-address convention that `validate` checks. `[import]` is optional;
 `language` overrides the language `import` derives texts and keys in.
+
+`[home_assistant]` is optional (issue #280). It names the Home Assistant
+instance (`url`), the environment variable that holds a long-lived access
+token (`token_env`, default `BUSSARD_HA_TOKEN`; a `.env` supplies it only for
+a `BUSSARD_*` name) and the KNX YAML file Home Assistant reads (`config_path`,
+relative to the model directory unless absolute). With it, `bussard mcp
+--allow-home-assistant` registers the Home Assistant tools; without it the flag
+does nothing. See [reference.md](reference.md#the-home-assistant-tier).
 
 ## `groups.toml`
 

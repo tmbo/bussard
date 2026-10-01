@@ -25,6 +25,8 @@
 //! - [`secure_gateway`]: [`MockSecureGateway`], a secure-only KNXnet/IP
 //!   interface (plain CONNECT refused with `0x22`, KNXnet/IP Secure session
 //!   and tunnelling over TCP), for the Phase B client (issue #71).
+//! - [`ha`]: [`MockHomeAssistant`], a mock Home Assistant REST API on a
+//!   loopback TCP port for the MCP server's Home Assistant tier (issue #280).
 //! - [`device`]: [`MockDevice`], a builder-configured KNX device that speaks
 //!   transport-layer connected mode, broadcast management, and the System B
 //!   load-state machine.
@@ -125,6 +127,7 @@
 pub mod consts;
 pub mod device;
 pub mod gateway;
+pub mod ha;
 pub mod secure_gateway;
 pub mod wire;
 
@@ -135,6 +138,7 @@ pub use gateway::{
     AckPolicy, CONFIRMATION_DELAY, GatewayBuilder, GatewayStats, Inbound, MockGateway, Outage,
     Verdict,
 };
+pub use ha::{MockHaConfig, MockHomeAssistant, RecordedRequest};
 pub use secure_gateway::{MockSecureGateway, SecureGatewayBuilder, SecureGatewayStats};
 pub use wire::RawGateway;
 

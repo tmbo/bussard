@@ -69,7 +69,8 @@ impl BussardMcp {
             + Self::learn_router()
             + Self::audit_router()
             + Self::diff_router()
-            + Self::program_router();
+            + Self::program_router()
+            + Self::ha_router();
         if state.no_model_edits {
             for name in crate::tools_model::MODEL_EDIT_TOOLS {
                 tool_router.remove_route(name);
@@ -91,6 +92,14 @@ impl BussardMcp {
             // The programming tier writes device tables: registered only with
             // `--allow-programming`, never in passive mode (issue #118).
             for name in crate::tools_program::PROGRAMMING_TOOLS {
+                tool_router.remove_route(name);
+            }
+        }
+        if state.home_assistant.is_none() {
+            // The Home Assistant tier needs the `[home_assistant]` table and
+            // `--allow-home-assistant` (issue #280). It never touches the bus,
+            // so passive mode keeps it.
+            for name in crate::tools_ha::HA_TOOLS {
                 tool_router.remove_route(name);
             }
         }

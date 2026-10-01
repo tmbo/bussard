@@ -42,6 +42,9 @@
 //! | `knx_export_bundle` | Write the model and history as one `.bussard` handover file. |
 //! | `knx_diff_project` | What a received `.knxproj` or bundle would change, as sentences. |
 //! | `knx_plan_device` | Read one device's live tables and return the plan `bussard plan` prints, plus a `plan_digest` (registered only with `--allow-programming`). |
+//! | `knx_ha_status` | Home Assistant's version, KNX integration, entity counts and the state of the KNX YAML file (registered only with the Home Assistant tier). |
+//! | `knx_ha_plan` | What writing the generated KNX YAML would change, per entity, plus a `plan_digest` (Home Assistant tier). |
+//! | `knx_ha_apply` | Write the planned KNX YAML (backup first) and reload Home Assistant's KNX integration, only with a fresh matching `plan_digest` (Home Assistant tier). |
 //! | `knx_apply_device` | Write the planned tables to one device, backup first and verify after, only with a fresh matching `plan_digest` (registered only with `--allow-programming`). |
 //!
 //! The eight from `knx_describe_change` to `knx_undo` are model tools: they
@@ -72,6 +75,14 @@
 //! the source-address probe, and apply only a plan whose digest this session
 //! produced minutes ago and which a fresh read still reproduces. See
 //! [`tools_program`].
+//!
+//! `--allow-home-assistant` (issue #280) adds the three Home Assistant tools
+//! ([`tools_ha::HA_TOOLS`]) when `bussard.toml` has a `[home_assistant]`
+//! table: `knx_ha_status` reads Home Assistant's REST API, `knx_ha_plan`
+//! diffs the KNX YAML generated from the model against the file Home
+//! Assistant reads, and `knx_ha_apply` writes it (backup first) and reloads
+//! the KNX integration, only with a fresh digest from this session. See
+//! [`tools_ha`].
 //!
 //! # Connecting this to Claude Code
 //!
@@ -114,6 +125,7 @@ pub mod tools;
 pub mod tools_audit;
 pub mod tools_diff;
 pub mod tools_groups;
+pub mod tools_ha;
 pub mod tools_learn;
 pub mod tools_model;
 pub mod tools_program;
@@ -165,6 +177,10 @@ pub struct McpConfig {
     /// An ETS `.knxkeys` keyring for KNX Data Secure management (issue #71);
     /// the password comes from `BUSSARD_KEYRING_PASSWORD`.
     pub keyring: Option<PathBuf>,
+    /// Register the Home Assistant tier (`--allow-home-assistant`, issue
+    /// #280). It takes effect only when `bussard.toml` also has a
+    /// `[home_assistant]` table.
+    pub allow_home_assistant: bool,
 }
 
 impl McpConfig {
@@ -213,6 +229,20 @@ pub fn build_state_from_model(
     model: Model,
     config: &McpConfig,
 ) -> anyhow::Result<Arc<SharedState>> {
+    let home_assistant = match (
+        config.allow_home_assistant,
+        model.config.home_assistant.clone(),
+    ) {
+        (true, Some(table)) => Some(tools_ha::HomeAssistantTier::new(table, config.plan_ttl)),
+        (true, None) => {
+            tracing::warn!(
+                "--allow-home-assistant without a [home_assistant] table in bussard.toml: the \
+                 Home Assistant tools stay off"
+            );
+            None
+        }
+        (false, _) => None,
+    };
     let source_ia = DEFAULT_SOURCE_IA
         .parse()
         .expect("DEFAULT_SOURCE_IA is a valid individual address");
@@ -240,6 +270,7 @@ pub fn build_state_from_model(
             )
         }),
         keyring: config.keyring.clone(),
+        home_assistant,
     });
 
     Ok(state)
@@ -307,6 +338,26 @@ pub fn tool_names_for(
     no_model_edits: bool,
     allow_programming: bool,
 ) -> Vec<&'static str> {
+    tool_names_with_ha(
+        passive,
+        allow_writes,
+        no_model_edits,
+        allow_programming,
+        false,
+    )
+}
+
+/// [`tool_names_for`] with the Home Assistant tier: `home_assistant` (the
+/// `[home_assistant]` table and `--allow-home-assistant` together) appends
+/// [`tools_ha::HA_TOOLS`]. That tier never touches the bus, so passive mode
+/// does not remove it.
+pub fn tool_names_with_ha(
+    passive: bool,
+    allow_writes: bool,
+    no_model_edits: bool,
+    allow_programming: bool,
+    home_assistant: bool,
+) -> Vec<&'static str> {
     let mut names = vec![
         "knx_project_summary",
         "knx_model_lookup",
@@ -334,6 +385,9 @@ pub fn tool_names_for(
     }
     if allow_programming && !passive {
         names.extend(tools_program::PROGRAMMING_TOOLS);
+    }
+    if home_assistant {
+        names.extend(tools_ha::HA_TOOLS);
     }
     names
 }
