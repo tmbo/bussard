@@ -269,7 +269,7 @@ impl BussardMcp {
 
     /// `knx_model_lookup`.
     #[tool(
-        description = "Search the KNX model by a case-insensitive substring. Matches group-address names and addresses, device names and individual addresses, room names, and com-object names. Returns matches grouped by kind (groups, devices, objects) with enough context to act on them."
+        description = "Search the KNX model by a case-insensitive substring. Matches group-address names and addresses, device names and individual addresses, room names, com objects (the name the device file gives a linked object, and for every object the device has, linked or not, the vendor text, function and key) and channels (vendor text, name, handle). Returns matches grouped by kind (groups, devices, objects, channels); an object or channel names its device (`device_ia`), channel handle and object numbers, ready for knx_show_device and knx_add_link."
     )]
     async fn knx_model_lookup(
         &self,
