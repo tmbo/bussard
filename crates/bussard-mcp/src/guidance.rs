@@ -40,7 +40,9 @@ const ETS_ONLY: &str = "Still needs ETS: the Secure activation of a fresh device
 /// The Home Assistant tier in the capabilities paragraph.
 const HA_CAPABILITY: &str = "It reads Home Assistant (knx_ha_status) and, after the human \
     said yes to a knx_ha_plan, writes the KNX YAML Home Assistant reads and reloads its KNX \
-    integration (knx_ha_apply).";
+    integration (knx_ha_apply). It creates, updates and removes bussard-managed Home \
+    Assistant automations for logic the bus cannot do alone (knx_ha_automation_plan, \
+    knx_ha_automation_apply, knx_ha_automation_remove), each after the human's yes.";
 
 /// The Home Assistant tier in the instructions.
 const HA_INSTRUCTIONS: &str = "Home Assistant tier: knx_ha_status reads Home Assistant \
@@ -48,7 +50,12 @@ const HA_INSTRUCTIONS: &str = "Home Assistant tier: knx_ha_status reads Home Ass
     knx_ha_plan says per entity what writing the KNX YAML generated from the model would add, \
     change or remove; show those sentences to the human in full and call knx_ha_apply only \
     after an explicit yes in this conversation. It writes only that one file, keeps a backup \
-    and reloads the KNX integration. Change Home Assistant in no other way.";
+    and reloads the KNX integration. For logic the bus cannot do alone (when 4/3/2 receives \
+    1, send 0 to 4/3/10), propose a rule to knx_ha_automation_plan, show its sentence and \
+    automation to the human, and call knx_ha_automation_apply only after an explicit yes; \
+    knx_ha_automation_remove removes one the same way. These touch only automations whose id \
+    starts with bussard_ and that carry bussard's marker. Change Home Assistant in no other \
+    way.";
 
 /// The `next_step` after a model edit on this server: [`Tiers::next_step`],
 /// plus the Home Assistant line when that tier is on and the edit touched a

@@ -52,28 +52,44 @@ pub fn write_with_backup(
     text: &str,
     now: SystemTime,
 ) -> Result<PathBuf, ApplyError> {
+    let path = write_backup(model_dir, "", "yaml", current, now)?;
+    replace_atomically(target, text.as_bytes()).map_err(|source| ApplyError::Write {
+        path: target.to_path_buf(),
+        source,
+    })?;
+    Ok(path)
+}
+
+/// Writes `bytes` under [`backup_dir`] as `<prefix><unix seconds>.<ext>`
+/// (with `-2`, `-3` appended on a clash) and returns the path.
+///
+/// # Errors
+///
+/// [`ApplyError::Backup`] when the directory or the file cannot be written.
+pub fn write_backup(
+    model_dir: &Path,
+    prefix: &str,
+    ext: &str,
+    bytes: &[u8],
+    now: SystemTime,
+) -> Result<PathBuf, ApplyError> {
     let dir = backup_dir(model_dir);
     let seconds = now
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let backup = |source| ApplyError::Backup {
+    std::fs::create_dir_all(&dir).map_err(|source| ApplyError::Backup {
         path: dir.clone(),
         source,
-    };
-    std::fs::create_dir_all(&dir).map_err(backup)?;
-    let mut path = dir.join(format!("{seconds}.yaml"));
+    })?;
+    let mut path = dir.join(format!("{prefix}{seconds}.{ext}"));
     let mut n = 1;
     while path.exists() {
         n += 1;
-        path = dir.join(format!("{seconds}-{n}.yaml"));
+        path = dir.join(format!("{prefix}{seconds}-{n}.{ext}"));
     }
-    std::fs::write(&path, current).map_err(|source| ApplyError::Backup {
+    std::fs::write(&path, bytes).map_err(|source| ApplyError::Backup {
         path: path.clone(),
-        source,
-    })?;
-    replace_atomically(target, text.as_bytes()).map_err(|source| ApplyError::Write {
-        path: target.to_path_buf(),
         source,
     })?;
     Ok(path)

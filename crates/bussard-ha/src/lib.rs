@@ -22,7 +22,9 @@
 //! For the MCP server's Home Assistant tier (issue #280), [`api`] is a small
 //! REST client (status reads and the `knx.reload` service), [`plan`] diffs the
 //! generated YAML against the file Home Assistant reads, entity by entity, and
-//! [`apply`] writes that file atomically with a backup.
+//! [`apply`] writes that file atomically with a backup. [`automation`] renders
+//! the small rules an assistant proposes into bussard-managed Home Assistant
+//! automations.
 //!
 //! # Determinism
 //!
@@ -48,6 +50,7 @@
 
 pub mod api;
 pub mod apply;
+pub mod automation;
 pub mod derive;
 pub mod emit;
 pub mod entities;

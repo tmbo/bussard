@@ -264,6 +264,15 @@ directory or a script from before these changes needs:
   token comes from `BUSSARD_HA_TOKEN` (or the variable `token_env` names) and
   is never printed. `next_step` after an edit to a group address Home
   Assistant uses names `knx_ha_plan`.
+- The Home Assistant tier manages bussard's own automations (#280):
+  `knx_ha_automation_plan` renders a small rule (`when` a group address
+  receives a value, `then` send group values) into a `knx.telegram` trigger
+  and `knx.send` actions with the raw payload of the group address's DPT;
+  `knx_ha_automation_apply` writes it through the config API after the
+  human's yes and reloads automations; `knx_ha_automation_remove` deletes one.
+  Only `bussard_` ids with bussard's marker line are touched, every address
+  must be in `groups.toml` with a matching DPT, and the previous JSON is kept
+  under `captures/backups/ha/`.
 - `bussard mcp` started from a terminal prints how to register it: the
   `claude mcp add` command and the `mcpServers` JSON entry for Claude Desktop
   and other clients, built from the running binary, the resolved model

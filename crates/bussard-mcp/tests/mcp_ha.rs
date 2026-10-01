@@ -154,7 +154,7 @@ async fn test_gate_needs_the_table_and_the_flag() -> TestResult {
         (&with_table, false, 0),
         (&without, true, 0),
         (&without, false, 0),
-        (&with_table, true, 3),
+        (&with_table, true, 6),
     ] {
         let (client, task) = serve(dir, flag).await?;
         let names = tool_names(&client).await?;
@@ -165,7 +165,7 @@ async fn test_gate_needs_the_table_and_the_flag() -> TestResult {
             dir == &with_table
         );
         let mut expected_names: Vec<String> =
-            bussard_mcp::tool_names_with_ha(true, false, false, false, expected == 3)
+            bussard_mcp::tool_names_with_ha(true, false, false, false, expected == 6)
                 .into_iter()
                 .map(str::to_string)
                 .collect();
@@ -177,9 +177,9 @@ async fn test_gate_needs_the_table_and_the_flag() -> TestResult {
             .peer_info()
             .and_then(|i| i.instructions.clone())
             .unwrap_or_default();
-        assert_eq!(instructions.contains("knx_ha_plan"), expected == 3);
+        assert_eq!(instructions.contains("knx_ha_plan"), expected == 6);
         let summary = call(&client, "knx_project_summary", json!({})).await?;
-        assert_eq!(summary["server"]["home_assistant"], expected == 3);
+        assert_eq!(summary["server"]["home_assistant"], expected == 6);
         client.cancel().await?;
         task.abort();
     }

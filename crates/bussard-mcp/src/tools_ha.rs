@@ -46,8 +46,17 @@ use sha2::{Digest, Sha256};
 
 use crate::server::BussardMcp;
 
-/// The three tools of the Home Assistant tier, in registration order.
-pub const HA_TOOLS: [&str; 3] = ["knx_ha_status", "knx_ha_plan", "knx_ha_apply"];
+/// The tools of the Home Assistant tier, in registration order: the KNX
+/// YAML trio, then the bussard-managed automations
+/// ([`crate::tools_ha_automation`]).
+pub const HA_TOOLS: [&str; 6] = [
+    "knx_ha_status",
+    "knx_ha_plan",
+    "knx_ha_apply",
+    "knx_ha_automation_plan",
+    "knx_ha_automation_apply",
+    "knx_ha_automation_remove",
+];
 
 /// What `knx_ha_status` says about entities created in Home Assistant's UI.
 const UI_NOTE: &str = "KNX entities created in Home Assistant's UI live in its .storage and \
@@ -67,6 +76,9 @@ pub struct HomeAssistantTier {
     plans: std::sync::Mutex<HashMap<String, Instant>>,
     /// Serialises applies.
     lock: tokio::sync::Mutex<()>,
+    /// Automation plans produced in this session, by digest.
+    automation_plans:
+        std::sync::Mutex<HashMap<String, crate::tools_ha_automation::PendingAutomation>>,
 }
 
 impl HomeAssistantTier {
@@ -77,7 +89,28 @@ impl HomeAssistantTier {
             plan_ttl,
             plans: std::sync::Mutex::new(HashMap::new()),
             lock: tokio::sync::Mutex::new(()),
+            automation_plans: std::sync::Mutex::new(HashMap::new()),
         }
+    }
+
+    /// How long a plan stays valid.
+    pub(crate) fn plan_ttl(&self) -> Duration {
+        self.plan_ttl
+    }
+
+    /// The lock every Home Assistant write holds.
+    pub(crate) fn write_lock(&self) -> &tokio::sync::Mutex<()> {
+        &self.lock
+    }
+
+    /// The automation plan table, recovering from a poisoned lock.
+    pub(crate) fn automation_plans(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<String, crate::tools_ha_automation::PendingAutomation>>
+    {
+        self.automation_plans
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// The `[home_assistant]` table the tier runs with.
@@ -184,7 +217,7 @@ struct Prepared {
 
 impl BussardMcp {
     /// The tier, or the refusal naming what is missing.
-    fn ha_tier(&self) -> Result<&HomeAssistantTier, String> {
+    pub(crate) fn ha_tier(&self) -> Result<&HomeAssistantTier, String> {
         self.state().home_assistant.as_ref().ok_or_else(|| {
             "the Home Assistant tier is off; add [home_assistant] to bussard.toml and start \
              the server with --allow-home-assistant"
@@ -269,6 +302,12 @@ impl BussardMcp {
                 "plan_ttl_minutes".into(),
                 json!(tier.plan_ttl.as_secs().div_ceil(60)),
             );
+            if let Ok(s) = &status {
+                map.insert(
+                    "automations".into(),
+                    crate::tools_ha_automation::managed_automations(&tier.config, s, &model).await,
+                );
+            }
         }
         Ok(out)
     }
@@ -503,7 +542,7 @@ fn plan_digest(path: &Path, layout: Layout, desired: &str, current: Option<&[u8]
 }
 
 /// The status read on a blocking thread, or why the client could not be built.
-async fn fetch_status(config: &HomeAssistantConfig) -> Result<HaStatus, String> {
+pub(crate) async fn fetch_status(config: &HomeAssistantConfig) -> Result<HaStatus, String> {
     let config = config.clone();
     tokio::task::spawn_blocking(move || HaClient::from_config(&config).map(|c| c.status()))
         .await

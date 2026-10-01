@@ -750,8 +750,22 @@ of the two the tools are not registered. The tier never touches the KNX bus.
   service only after the write succeeded, and reads the status again. A
   failed reload is reported with the backup path; restoring is copying the
   backup over the file and reloading.
-- **No other Home Assistant change.** The tier calls no other service and
-  writes no other configuration. Automations are a later, separate step.
+- **Automations are Home Assistant state, and bussard owns only its own.**
+  `knx_ha_automation_plan`, `knx_ha_automation_apply` and
+  `knx_ha_automation_remove` write through Home Assistant's config API, with
+  the same plan, digest and explicit yes. bussard writes only ids starting
+  with `bussard_`, adds the line `managed by bussard (model <dir>)` to each
+  description, and updates or removes only automations that carry both; a
+  hand-made automation is refused, whatever its id. `knx_ha_plan` lists the
+  bussard-managed ones and flags addresses the model no longer has. Before an
+  update or removal the previous automation's JSON is kept under
+  `captures/backups/ha/automation-<id>-<unix seconds>.json`; restoring is
+  posting it back (or re-planning the old rule). Every address must be in
+  `groups.toml` with a matching DPT, and an automation may not send to a
+  `protected` address.
+- **No other Home Assistant change.** The tier calls `knx.reload` and
+  `automation.reload` and no other service, and writes no other
+  configuration.
 
 ## History and undo
 

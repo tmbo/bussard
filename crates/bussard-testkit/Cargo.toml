@@ -16,6 +16,8 @@ bussard-transport = { workspace = true }
 bussard-secure = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+# The mock Home Assistant's automation store and states (issue #280).
+serde_json = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
