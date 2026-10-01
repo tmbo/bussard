@@ -53,6 +53,7 @@
 //! | `knx_apply_device` | Write the planned tables to one device, backup first and verify after, only with a fresh matching `plan_digest` (registered only with `--allow-programming`). |
 //! | `knx_apply_status` | One apply job's step, progress and final result (issue #289; registered only with `--allow-programming`). |
 //! | `knx_last_apply` | The latest apply job for a device, from the session or its record under `.bussard/history/` (registered only with `--allow-programming`). |
+//! | `knx_restore_parameters` | Plan, then with the digest write, the replay of a parameter backup from `captures/backups/parameters/` onto one device: refused on a device, application or mask mismatch, only placed octets, device-managed ones kept, verified by read-back, run as a job (issue #290; registered only with `--allow-programming`). |
 //!
 //! The eight from `knx_describe_change` to `knx_undo` are model tools: they
 //! read and write the model files (TOML) under the model directory and never touch the bus,
@@ -76,13 +77,15 @@
 //! `--no-model-edits` the eight model-edit tools (the six above plus the two
 //! reservation tools) are withheld, giving 15, 18 and 20.
 //!
-//! `--allow-programming` (issue #118) adds the four programming tools
+//! `--allow-programming` (issue #118) adds the five programming tools
 //! ([`tools_program::PROGRAMMING_TOOLS`]) to any non-passive tier. They write
 //! device tables, so they pass the non-loopback write gate on every call, run
 //! the source-address probe, and apply only a plan whose digest this session
 //! produced minutes ago and which a fresh read still reproduces. The write
 //! runs as a job (issue #289, [`apply_jobs`]): `knx_apply_status` and
-//! `knx_last_apply` report it. See [`tools_program`].
+//! `knx_last_apply` report it. `knx_restore_parameters` (issue #290) replays
+//! a parameter backup with the same plan, digest and job flow. See
+//! [`tools_program`].
 //!
 //! `--allow-home-assistant` (issue #280) adds the six Home Assistant tools
 //! ([`tools_ha::HA_TOOLS`]) when `bussard.toml` has a `[home_assistant]`

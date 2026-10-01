@@ -72,17 +72,22 @@ pub(crate) fn print_text(readback: &Readback, target: IndividualAddress) {
     }
     if !readback.internal.is_empty() {
         println!(
-            "  internal ETS values that differ from the model (never shown, written by a download):"
+            "  internal ETS values that differ from the model (never shown; a run marked not \
+             written is one ETS's download leaves alone, and so does `apply`):"
         );
         for run in &readback.internal {
             println!("      {}", run.sentence);
         }
-        if let Some(explanation) = readback
+        let mut explained: Vec<&str> = Vec::new();
+        for explanation in readback
             .internal
             .iter()
-            .find_map(|r| r.explanation.as_deref())
+            .filter_map(|r| r.explanation.as_deref())
         {
-            println!("      {explanation}");
+            if !explained.contains(&explanation) {
+                explained.push(explanation);
+                println!("      {explanation}");
+            }
         }
     }
     if readback.non_default.is_empty() && readback.differences.is_empty() {

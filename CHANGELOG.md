@@ -63,6 +63,15 @@ directory or a script from before these changes needs:
 
 ### Added
 
+- `bussard restore --parameters <backup.json> <ADDRESS>` and the MCP tool
+  `knx_restore_parameters` (#290) replay a parameter backup from
+  `captures/backups/parameters/` with the parameter-only download `apply`
+  uses: refused for a backup of another device, application or mask; only
+  placed octets written, device-managed ones kept; the current memory backed
+  up first; verified by read-back. The MCP tool is at the programming tier
+  with a plan, a single-use digest and an explicit yes, and runs the write as
+  a job like `knx_apply_device`.
+
 **The model and the ETS import**
 
 - `bussard import` reads an ETS 4, 5 or 6 `.knxproj`, including
@@ -495,6 +504,19 @@ directory or a script from before these changes needs:
 
 ### Changed
 
+- The partial parameter write does what ETS's download does (#290, owner
+  decision, option b): `apply`, `flash --parameters-only` and
+  `knx_apply_device` compare and write only the octets a parameter is placed
+  in under the current configuration (reached by the Dynamic section, or a
+  hidden parameter the application downloads), plus device-managed octets
+  alongside another write. An octet no reached parameter covers keeps the
+  device's value; when it differs from the model's image the plan lists it in
+  `octet_ranges` with `written: false` and the "ETS does not write this octet
+  in a download" sentence, and it is not counted in `parameter_octets`. On
+  1.1.18 the stale extension-module selectors `_AppInstanz 51/52` (offsets 165
+  and 168, gated by `P-388`) are now listed and left alone, as the 2026-09-18
+  ETS capture shows ETS skipping them. The full `flash` is unchanged (it
+  allocates with fill); the 16-row offline oracle is byte-identical to main.
 - `knx_apply_device` runs the write as a job (#289): the pre-flight (gates,
   digest, identity, snapshot, backups) runs in the call, the write in the
   server. A write that ends within 20 s still returns the full result

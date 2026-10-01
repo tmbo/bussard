@@ -33,6 +33,8 @@
 //!   device (links, `secure` flags, the security intent and lock facts).
 //! - [`describe`]: the interface-object walk and the PID / object-type name
 //!   tables shared by `bussard describe` and `knx_describe_device`.
+//! - [`restore`]: replaying a parameter backup (`bussard restore
+//!   --parameters`, `knx_restore_parameters`, issue #290).
 //!
 //! The crate never prints. Terminal prompts, JSON shapes and HTTP status codes
 //! stay with the surfaces.
@@ -51,6 +53,7 @@ pub mod identity;
 pub mod model_handle;
 pub mod params;
 pub mod policy;
+pub mod restore;
 pub mod secure;
 pub mod write;
 

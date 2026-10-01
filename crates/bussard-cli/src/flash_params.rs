@@ -411,6 +411,15 @@ fn print_plan(
     for (segment, address, len, changed) in region_rows(partial, regions) {
         println!("      {segment} at {address:#08X}: {changed} of {len} octet(s) change");
     }
+    for (segment, octets) in partial.unwritten_bits() {
+        let offsets: Vec<String> = octets.iter().map(|(i, _)| i.to_string()).collect();
+        println!(
+            "      {segment}: {} octet(s) differ where no parameter the configuration reaches \
+             is placed (offset {}): not written; ETS does not write these octets in a download",
+            octets.len(),
+            offsets.join(", ")
+        );
+    }
     println!(
         "  procedure   : {} (no unload, no table write)",
         procedure_summary(partial)
@@ -451,6 +460,12 @@ fn print_json(
             "address": format!("{address:#08X}"),
             "octets": len,
             "changed_octets": changed,
+        })).collect::<Vec<_>>(),
+        "unwritten": partial.unwritten_bits().into_iter().map(|(segment, octets)| serde_json::json!({
+            "segment": segment,
+            "offsets": octets.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
+            "written": false,
+            "reason": "no parameter the configuration reaches is placed there; ETS does not write this octet in a download",
         })).collect::<Vec<_>>(),
         "procedure": bussard_download::trace(partial),
     });
@@ -494,8 +509,9 @@ pub(crate) fn dry_run(
             partial.identity.name.as_deref().unwrap_or("")
         );
         println!(
-            "  memory      : only the octets that differ from the device's parameter memory \
-             are written (read before the first write)"
+            "  memory      : only the octets a parameter is placed in under the configuration \
+             that differ from the device's parameter memory are written (read before the first \
+             write); ETS does not write the others in a download either"
         );
         println!("  procedure   :");
         for (i, step) in partial.steps.iter().enumerate() {

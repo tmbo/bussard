@@ -1124,18 +1124,28 @@ enum Command {
         #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
         tool_key: Option<String>,
     },
-    /// Write a device's backed-up link tables back onto it (issue #96).
+    /// Write a device's backed-up link tables back onto it (issue #96), or
+    /// with `--parameters` its backed-up parameter memory (issue #290).
     ///
-    /// Runs the same plan, confirm, back up, write and verify path as `apply`,
-    /// with the backup as the desired state instead of the model.
+    /// `restore <BACKUP_DIR> <ADDRESS>` runs the same plan, confirm, back up,
+    /// write and verify path as `apply`, with the backup as the desired state
+    /// instead of the model. `restore --parameters <BACKUP_JSON> <ADDRESS>`
+    /// replays a parameter backup with `apply`'s parameter-only download.
     Restore {
-        /// The backup directory: a `bussard backup` run, or
-        /// `<dir>/captures/backups` for the per-device snapshots `apply` leaves.
-        #[arg(value_name = "BACKUP_DIR")]
-        backup_dir: PathBuf,
-        /// The device to restore, e.g. `1.1.4`.
-        #[arg(value_name = "ADDRESS")]
-        address: String,
+        /// `<BACKUP_DIR> <ADDRESS>`: the backup directory (a `bussard backup`
+        /// run, or `<dir>/captures/backups` for the per-device snapshots
+        /// `apply` leaves) and the device, e.g. `1.1.4`. With `--parameters`,
+        /// only `<ADDRESS>`.
+        #[arg(value_name = "BACKUP_DIR> <ADDRESS", num_args = 1..=2, required = true)]
+        args: Vec<String>,
+        /// Replay this parameter backup
+        /// (`<dir>/captures/backups/parameters/<ia>-<ts>.json`) instead of
+        /// link tables: refused unless the backup's device, application and
+        /// mask match; writes only the octets a parameter is placed in under
+        /// the model's configuration, keeps device-managed octets, verifies by
+        /// read-back.
+        #[arg(long, value_name = "BACKUP_JSON")]
+        parameters: Option<PathBuf>,
         /// Skip the confirmation prompt. Without a terminal the command is
         /// refused unless this is given.
         #[arg(long)]
@@ -1812,19 +1822,39 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
             g.mgmt(),
         ),
         Command::Restore {
-            backup_dir,
-            address,
+            args,
+            parameters,
             yes,
             tool_key,
-        } => restore_cmd::run(
-            &backup_dir,
-            &address,
-            dir,
-            yes,
-            g.allow_remote_gateway,
-            g.tool_keys(tool_key.as_deref()),
-            g.mgmt(),
-        ),
+        } => match (parameters, args.as_slice()) {
+            (Some(backup), [address]) => restore_cmd::run_parameters(
+                &backup,
+                address,
+                dir,
+                yes,
+                g.allow_remote_gateway,
+                g.tool_keys(tool_key.as_deref()),
+                g.mgmt(),
+            ),
+            (None, [backup_dir, address]) => restore_cmd::run(
+                std::path::Path::new(backup_dir),
+                address,
+                dir,
+                yes,
+                g.allow_remote_gateway,
+                g.tool_keys(tool_key.as_deref()),
+                g.mgmt(),
+            ),
+            (Some(_), _) => anyhow::bail!(
+                "`restore --parameters <BACKUP_JSON>` takes one more argument, the device \
+                 address: `bussard restore --parameters <BACKUP_JSON> <ADDRESS>`"
+            ),
+            (None, _) => anyhow::bail!(
+                "`restore` takes the backup directory and the device address: `bussard restore \
+                 <BACKUP_DIR> <ADDRESS>` (or `bussard restore --parameters <BACKUP_JSON> \
+                 <ADDRESS>`)"
+            ),
+        },
         Command::Replace {
             address,
             product,

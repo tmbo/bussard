@@ -246,7 +246,9 @@ impl Tiers {
                  device's product data writes the links only and says why. knx_apply_device \
                  runs the write as a job: when it answers `started` with a job id, call \
                  knx_apply_status with that job until `done` is true and report its result; \
-                 knx_last_apply recovers a device's latest result when a reply is lost."
+                 knx_last_apply recovers a device's latest result when a reply is lost. \
+                 knx_restore_parameters replays a parameter backup an apply kept, with the same \
+                 plan, explicit yes and job flow."
                     .to_string(),
             );
         } else {

@@ -296,11 +296,13 @@ pub fn plan_flash_with_object_flags(
     // No per-instance base offsets are supplied here (they live in the project,
     // not in the product data): a module-instance override therefore refuses at
     // pre-flight rather than misplacing a byte — see `compute_parameter_image`.
-    let param_images = bussard_prod::compute_parameter_image(app, overrides, base_offsets)
-        .map_err(|e| PlanError::UnresolvableImage {
-            step: 0,
-            reason: format!("computing the parameter image: {e}"),
-        })?;
+    let (param_images, placed) =
+        bussard_prod::compute_parameter_image_placed(app, overrides, base_offsets).map_err(
+            |e| PlanError::UnresolvableImage {
+                step: 0,
+                reason: format!("computing the parameter image: {e}"),
+            },
+        )?;
 
     // The 5-octet application-program-version (app-id / run-state) value ETS
     // writes to the app object's PID 13 on LoadCompleted, synthesized from the
@@ -951,6 +953,8 @@ pub fn plan_flash_with_object_flags(
         sys7: None,
         confirmed_restart: sparse,
         baseline: BTreeMap::new(),
+        placed,
+        unwritten: BTreeMap::new(),
     })
 }
 

@@ -492,6 +492,11 @@ pub struct ParamDetail {
     /// parameters behind each run (issue #279). Empty when nothing differs
     /// or the download cannot be cut.
     pub octets: Vec<OctetRange>,
+    /// The octets that differ from the model's image where no parameter the
+    /// configuration reaches is placed (issue #290): ETS's download does not
+    /// write them, so neither does the parameter-only download. Listed, never
+    /// written or counted.
+    pub unwritten: Vec<OctetRange>,
 }
 
 /// A parameter read-back: the report, and the detail when the memory was
@@ -568,25 +573,29 @@ pub async fn read_state<Ch: L4Channel>(
         .map(reading_json)
         .collect();
     let (non_default, differences) = report(decoded.clone());
-    let octets = plan
+    let (octets, unwritten) = plan
         .parameters_only(&regions)
         .map(|partial| {
-            let changed = partial.changed_bits();
-            let image: BTreeMap<String, Vec<u8>> = changed
-                .keys()
-                .filter_map(|segment| {
-                    partial
-                        .image_bytes(segment)
-                        .map(|bytes| (segment.clone(), bytes.to_vec()))
-                })
-                .collect();
-            bussard_download::attribute_octets(app, &overrides, &bases, &current, &image, &changed)
+            let attribute = |changed: &BTreeMap<String, Vec<(usize, u8)>>| {
+                bussard_download::attribute_octets(
+                    app,
+                    &overrides,
+                    &bases,
+                    &current,
+                    &model_images(&partial, changed),
+                    changed,
+                )
+            };
+            (
+                attribute(&partial.changed_bits()),
+                attribute(&partial.unwritten_bits()),
+            )
         })
         .unwrap_or_default();
     let device = model
         .and_then(|m| m.devices.get(&target))
         .map(|d| &d.device);
-    let internal = octet_attributions(device, &octets)
+    let internal = octet_ranges(device, &octets, &unwritten, TargetLabel::Model)
         .into_iter()
         .filter(|r| r.parameters.iter().any(|p| p.role == OctetRole::Internal))
         .collect();
@@ -606,8 +615,21 @@ pub async fn read_state<Ch: L4Channel>(
             resident,
             needs_flash,
             octets,
+            unwritten,
         }),
     }
+}
+
+/// The model's image of each segment `changed` names (the octets a full
+/// download writes there), for attributing octets of `partial`.
+pub(crate) fn model_images(
+    partial: &FlashPlan,
+    changed: &BTreeMap<String, Vec<(usize, u8)>>,
+) -> BTreeMap<String, Vec<u8>> {
+    changed
+        .keys()
+        .filter_map(|segment| Some((segment.clone(), partial.model_image(segment)?)))
+        .collect()
 }
 
 /// One decoded value as a JSON report row.
@@ -692,9 +714,36 @@ pub struct OctetAttribution {
     /// The run in one line, ready to quote.
     pub sentence: String,
     /// What the run means, when it holds an internal ETS selector whose
-    /// device value differs from the model's ([`INTERNAL_SELECTOR_NOTE`]).
+    /// device value differs from the model's ([`INTERNAL_SELECTOR_NOTE`]),
+    /// or when the run is not written (the "ETS does not write this octet"
+    /// sentence, issue #290).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub explanation: Option<String>,
+    /// Whether the plan writes the run. `false` for octets that differ where
+    /// no parameter the configuration reaches is placed (issue #290): ETS's
+    /// download leaves them as the device holds them, and so does bussard's
+    /// parameter-only download. They are never counted in
+    /// `parameter_octets`.
+    pub written: bool,
+}
+
+/// Whose bytes the `model` side of an octet run shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetLabel {
+    /// The model's image (`plan`, `apply`).
+    Model,
+    /// A parameter backup's memory (`restore --parameters`).
+    Backup,
+}
+
+impl TargetLabel {
+    /// The word a run's sentence uses for the side.
+    fn word(self) -> &'static str {
+        match self {
+            TargetLabel::Model => "model",
+            TargetLabel::Backup => "backup",
+        }
+    }
 }
 
 /// What an internal ETS selector that differs means (issue #285).
@@ -715,6 +764,23 @@ fn unwritten_note(owner: &bussard_download::OctetOwner) -> String {
         owner.device.as_deref().unwrap_or("an unreadable value")
     )
 }
+
+/// What an unwritten run means when no unreached parameter of the
+/// application names it (vendor data, a module parameter the configuration
+/// does not instantiate there): the same rule, without a value to quote.
+pub const UNWRITTEN_NOTE: &str = "ETS does not write this octet in a download: no parameter the \
+     configuration reaches is placed there, so the device keeps its value; a full download \
+     writes the segment's fill or vendor data there";
+
+/// The sentence a plan prefixes to a run it does not write (issue #290).
+const UNWRITTEN_PREFIX: &str = "not written (ETS does not write this octet in a download)";
+
+/// The prefix of a device-managed run a restore leaves alone (issue #290).
+const DEVICE_MANAGED_PREFIX: &str = "not written (owned by the application at runtime)";
+
+/// What a device-managed run a restore leaves alone means (issue #290).
+pub const DEVICE_MANAGED_SKIP_NOTE: &str = "the application owns this value at runtime (an \
+     `Access=\"None\"` parameter such as a download flag); a restore leaves the device's value";
 
 /// A parameter behind written octets.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -752,8 +818,28 @@ fn file_key(device: Option<&Device>, reference: &str) -> String {
     }
 }
 
-/// The octet runs of `ranges` in the model's words.
-fn octet_attributions(device: Option<&Device>, ranges: &[OctetRange]) -> Vec<OctetAttribution> {
+/// The written runs and the unwritten ones (issue #290) in the model's
+/// words, in segment and offset order.
+pub fn octet_ranges(
+    device: Option<&Device>,
+    written: &[OctetRange],
+    unwritten: &[OctetRange],
+    label: TargetLabel,
+) -> Vec<OctetAttribution> {
+    let mut out = octet_attributions(device, written, true, label);
+    out.extend(octet_attributions(device, unwritten, false, label));
+    out.sort_by(|a, b| (&a.segment, a.offset).cmp(&(&b.segment, b.offset)));
+    out
+}
+
+/// The octet runs of `ranges` in the model's words; `written` says whether
+/// the plan writes them.
+fn octet_attributions(
+    device: Option<&Device>,
+    ranges: &[OctetRange],
+    written: bool,
+    label: TargetLabel,
+) -> Vec<OctetAttribution> {
     ranges
         .iter()
         .map(|r| {
@@ -782,10 +868,23 @@ fn octet_attributions(device: Option<&Device>, ranges: &[OctetRange]) -> Vec<Oct
                 },
                 r.offset
             );
+            let managed =
+                !r.owners.is_empty() && r.owners.iter().all(|o| o.role == OctetRole::DeviceManaged);
+            let place = match (written, managed) {
+                (true, _) => place,
+                (false, true) => format!("{place}, {DEVICE_MANAGED_PREFIX}"),
+                (false, false) => format!("{place}, {UNWRITTEN_PREFIX}"),
+            };
             let sentence = if parameters.is_empty() {
                 format!(
-                    "{place}: device memory differs from the model's defaults there, not \
-                     covered by a shown parameter"
+                    "{place}: device memory differs from the {}'s {} there, not covered by a \
+                     shown parameter",
+                    label.word(),
+                    if label == TargetLabel::Model {
+                        "defaults"
+                    } else {
+                        "bytes"
+                    }
                 )
             } else {
                 let names: Vec<String> = r
@@ -797,8 +896,9 @@ fn octet_attributions(device: Option<&Device>, ranges: &[OctetRange]) -> Vec<Oct
                         match (&p.device, &p.model) {
                             (None, None) => named,
                             (device, model) => format!(
-                                "{named}, device {}, model {}",
+                                "{named}, device {}, {} {}",
                                 device.as_deref().unwrap_or("unreadable"),
+                                label.word(),
                                 model.as_deref().unwrap_or("unreadable")
                             ),
                         }
@@ -816,6 +916,11 @@ fn octet_attributions(device: Option<&Device>, ranges: &[OctetRange]) -> Vec<Oct
                         .iter()
                         .any(bussard_download::OctetOwner::internal_selector_differs)
                         .then(|| INTERNAL_SELECTOR_NOTE.to_string())
+                })
+                .or_else(|| match (written, managed) {
+                    (true, _) => None,
+                    (false, true) => Some(DEVICE_MANAGED_SKIP_NOTE.to_string()),
+                    (false, false) => Some(UNWRITTEN_NOTE.to_string()),
                 });
             OctetAttribution {
                 segment,
@@ -824,6 +929,7 @@ fn octet_attributions(device: Option<&Device>, ranges: &[OctetRange]) -> Vec<Oct
                 parameters,
                 sentence,
                 explanation,
+                written,
             }
         })
         .collect()
@@ -833,6 +939,8 @@ fn octet_attributions(device: Option<&Device>, ranges: &[OctetRange]) -> Vec<Oct
 /// accounts for: every run when no parameter changes, else the runs that
 /// are not all changed parameters. Empty when nothing needs explaining.
 fn octet_notes(octets: usize, changed: usize, ranges: &[OctetAttribution]) -> Vec<String> {
+    let ranges: Vec<OctetAttribution> = ranges.iter().filter(|r| r.written).cloned().collect();
+    let ranges = ranges.as_slice();
     let unexplained: Vec<&OctetAttribution> = ranges
         .iter()
         .filter(|r| {
@@ -874,13 +982,23 @@ fn octet_notes(octets: usize, changed: usize, ranges: &[OctetAttribution]) -> Ve
     notes
 }
 
+/// The written and unwritten octet runs of `detail` in the model's words.
+fn octet_ranges_of(
+    device: Option<&Device>,
+    detail: &ParamDetail,
+    label: TargetLabel,
+) -> Vec<OctetAttribution> {
+    octet_ranges(device, &detail.octets, &detail.unwritten, label)
+}
+
 /// Whether every written octet run is owned only by device-managed
 /// parameters ([`OctetRole::DeviceManaged`]: `Access="None"` runtime values
 /// such as a download flag). A run no parameter covers, or one with any
 /// other owner, is a real difference.
 pub fn device_managed_only(ranges: &[OctetAttribution]) -> bool {
-    !ranges.is_empty()
-        && ranges.iter().all(|r| {
+    let mut ranges = ranges.iter().filter(|r| r.written).peekable();
+    ranges.peek().is_some()
+        && ranges.all(|r| {
             !r.parameters.is_empty()
                 && r.parameters
                     .iter()
@@ -893,7 +1011,11 @@ pub fn device_managed_only(ranges: &[OctetAttribution]) -> bool {
 /// own, written with the next table or parameter write as ETS does at a
 /// download.
 fn device_managed_note(octets: usize, ranges: &[OctetAttribution]) -> String {
-    let runs: Vec<&str> = ranges.iter().map(|r| r.sentence.as_str()).collect();
+    let runs: Vec<&str> = ranges
+        .iter()
+        .filter(|r| r.written)
+        .map(|r| r.sentence.as_str())
+        .collect();
     format!(
         "{octets} device-managed parameter octet{s} differ{v} from the model's image and {is} \
          not written on {its} own (the application owns {them} at runtime; the next table or \
@@ -905,6 +1027,38 @@ fn device_managed_note(octets: usize, ranges: &[OctetAttribution]) -> String {
         its = if octets == 1 { "its" } else { "their" },
         them = if octets == 1 { "it" } else { "them" },
     )
+}
+
+/// The plan note for the octets a parameter-only download leaves alone
+/// although the device differs from the model's image there (issue #290):
+/// `None` when there are none.
+pub fn unwritten_note_for(ranges: &[OctetAttribution]) -> Option<String> {
+    let runs: Vec<&OctetAttribution> = ranges.iter().filter(|r| !r.written).collect();
+    if runs.is_empty() {
+        return None;
+    }
+    let octets: usize = runs.iter().map(|r| r.length).sum();
+    let mut sentences: Vec<&str> = runs
+        .iter()
+        .take(OCTET_NOTE_RANGES)
+        .map(|r| r.sentence.as_str())
+        .collect();
+    let more = runs.len().saturating_sub(OCTET_NOTE_RANGES);
+    let tail = if more > 0 {
+        format!(" (and {more} more runs in the plan's parameter octet list)")
+    } else {
+        String::new()
+    };
+    sentences.dedup();
+    Some(format!(
+        "{octets} parameter octet{s} differ{v} from the model's image where no parameter the \
+         configuration reaches is placed; ETS does not write {them} in a download, so this plan \
+         leaves the device's value{s} (a full `bussard flash` writes the segment fill): {}{tail}",
+        sentences.join("; "),
+        s = if octets == 1 { "" } else { "s" },
+        v = if octets == 1 { "s" } else { "" },
+        them = if octets == 1 { "it" } else { "them" },
+    ))
 }
 
 /// The refusal of a parameter write whose values show, hide or reshape a
@@ -1021,8 +1175,11 @@ pub fn build_device_plan(
                     match detail.plan.parameters_only(&detail.regions) {
                         Ok(p) => {
                             let octets = p.changed_octets();
+                            octet_ranges = octet_ranges_of(device, detail, TargetLabel::Model);
+                            if let Some(note) = unwritten_note_for(&octet_ranges) {
+                                notes.push(note);
+                            }
                             if octets > 0 {
-                                octet_ranges = octet_attributions(device, &detail.octets);
                                 if report.is_noop()
                                     && parameters.is_empty()
                                     && device_managed_only(&octet_ranges)
@@ -1136,7 +1293,7 @@ mod tests {
                 length,
                 owners,
             };
-        let uncovered = octet_attributions(None, &[range(1, 2, vec![])]);
+        let uncovered = octet_attributions(None, &[range(1, 2, vec![])], true, TargetLabel::Model);
         assert_eq!(uncovered[0].segment, "RS-2");
         assert_eq!(
             uncovered[0].sentence,
@@ -1150,10 +1307,14 @@ mod tests {
                 1,
                 vec![owner("P-8_R-8", OctetRole::DeviceManaged)],
             )],
+            true,
+            TargetLabel::Model,
         );
         let changed = octet_attributions(
             None,
             &[range(0, 1, vec![owner("P-0_R-1", OctetRole::Changed)])],
+            true,
+            TargetLabel::Model,
         );
 
         // (octets, changed parameters, runs, the notes' first line or None)
@@ -1227,10 +1388,13 @@ mod tests {
             (vec![], false),
         ];
         for (runs, want) in cases {
-            let ranges = octet_attributions(None, &runs);
+            let ranges = octet_attributions(None, &runs, true, TargetLabel::Model);
             assert_eq!(device_managed_only(&ranges), want, "{ranges:?}");
         }
-        let note = device_managed_note(1, &octet_attributions(None, &[run(vec![flag()])]));
+        let note = device_managed_note(
+            1,
+            &octet_attributions(None, &[run(vec![flag()])], true, TargetLabel::Model),
+        );
         assert!(
             note.starts_with("1 device-managed parameter octet differs from the model's image"),
             "{note}"
@@ -1259,6 +1423,8 @@ mod tests {
                 length: 1,
                 owners: vec![selector],
             }],
+            true,
+            TargetLabel::Model,
         );
         assert_eq!(
             runs[0].sentence,
@@ -1273,9 +1439,11 @@ mod tests {
         assert_eq!(notes[2], INTERNAL_SELECTOR_NOTE);
     }
 
-    /// Issue #289 (1.1.18): a selector the Dynamic does not reach is an
-    /// octet ETS does not write; the explanation says the device's value is
-    /// left from an earlier state, not that the project changed.
+    /// Issues #289, #290 (1.1.18): a selector the Dynamic does not reach is
+    /// an octet ETS does not write, and the plan does not write it either:
+    /// the run is listed with `written: false`, its sentence and explanation
+    /// say ETS does not write it and the device's value is left from an
+    /// earlier state, and only the unwritten note names it.
     #[test]
     fn test_octet_attributions_explain_an_unreached_selector() {
         let selector = bussard_download::OctetOwner {
@@ -1297,16 +1465,30 @@ mod tests {
                 length: 1,
                 owners: vec![selector],
             }],
+            false,
+            TargetLabel::Model,
         );
         let want = "ETS does not write this octet in a download; a full download leaves the \
                     segment fill (0x00) there; the device holds 3 from an earlier state";
+        assert!(!runs[0].written);
         assert_eq!(runs[0].explanation.as_deref(), Some(want));
-        let notes = octet_notes(1, 0, &runs);
-        assert_eq!(notes.last().map(String::as_str), Some(want), "{notes:?}");
-        assert!(
-            !notes.iter().any(|n| n == INTERNAL_SELECTOR_NOTE),
-            "{notes:?}"
+        assert_eq!(
+            runs[0].sentence,
+            "1 octet at offset 165 of segment RS-04-00000, not written (ETS does not write this \
+             octet in a download): _AppInstanz 51 (internal ETS selector, P-643), device 3, model \
+             no application"
         );
+        assert!(octet_notes(1, 0, &runs).is_empty());
+        assert!(!device_managed_only(&runs));
+        let note = unwritten_note_for(&runs).unwrap_or_default();
+        assert!(
+            note.starts_with(
+                "1 parameter octet differs from the model's image where no parameter the \
+                 configuration reaches is placed; ETS does not write it in a download"
+            ),
+            "{note}"
+        );
+        assert!(note.contains(&runs[0].sentence), "{note}");
     }
 
     #[test]

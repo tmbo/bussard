@@ -442,6 +442,30 @@ pub fn attribute_octets(
     out
 }
 
+/// The octets of each code segment that hold a device-managed value under
+/// the configuration `overrides` gives (issue #290): an `Access="None"`
+/// parameter the configuration reaches, owned by the application at runtime
+/// (a download flag). `bussard restore --parameters` leaves them as the
+/// device holds them.
+pub fn device_managed_octets(
+    app: &ApplicationProgram,
+    overrides: &BTreeMap<String, String>,
+    base_offsets: &BTreeMap<String, u32>,
+) -> bussard_prod::PlacedOctets {
+    let keys = KeyForms::new(overrides);
+    let mut out = bussard_prod::PlacedOctets::new();
+    for p in placements_of(app, overrides, base_offsets, &keys) {
+        if !(p.reached && p.device_managed(app)) {
+            continue;
+        }
+        let (start, end) = p.bits(app);
+        out.entry(p.segment.to_string())
+            .or_default()
+            .extend(start / 8..end.div_ceil(8));
+    }
+    out
+}
+
 /// Whether two owner lists name the same parameters in the same roles (the
 /// decoded values of a multi-octet field are the same field's).
 fn same_parameters(a: &[OctetOwner], b: &[OctetOwner]) -> bool {

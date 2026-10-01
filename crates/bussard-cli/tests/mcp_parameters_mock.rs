@@ -719,3 +719,352 @@ fn test_real_parameter_change_still_writes_the_download_flag_alongside() -> Test
     assert!(replan["plan_digest"].is_null(), "replan: {replan}");
     Ok(())
 }
+
+/// The synthetic application with an unreached octet (issue #290): the
+/// parameter segment grows to three octets, the internal selector
+/// `_AppInstanz 1` (`P-3`, `Access="None"`, reached by no Dynamic section)
+/// moves to the high nibble of octet 2, where no other parameter is placed,
+/// and the application prefers a partial download, so (like the Jung F50)
+/// a hidden parameter keeps the segment template instead of its default.
+fn unreached_app_xml() -> String {
+    APP_XML
+        .replace(
+            "          <Static>\n",
+            "          <Static>\n            <Options DownloadInvisibleParameters=\"None\" \
+             PreferPartialDownloadIfApplicationLoaded=\"true\" />\n",
+        )
+        .replace(
+            "<RelativeSegment Id=\"M-00FA_A-0002_RS-2\" Size=\"2\" LoadStateMachine=\"4\" \
+             Offset=\"0\"><Data>AAA=</Data>",
+            "<RelativeSegment Id=\"M-00FA_A-0002_RS-2\" Size=\"3\" LoadStateMachine=\"4\" \
+             Offset=\"0\"><Data>AAAA</Data>",
+        )
+        .replace(
+            "<Memory CodeSegment=\"M-00FA_A-0002_RS-2\" Offset=\"1\" BitOffset=\"4\" />",
+            "<Memory CodeSegment=\"M-00FA_A-0002_RS-2\" Offset=\"2\" BitOffset=\"4\" />",
+        )
+        .replace(
+            "<LdCtrlRelSegment LsmIdx=\"4\" Size=\"2\" AppliesTo=\"par\" />",
+            "<LdCtrlRelSegment LsmIdx=\"4\" Size=\"3\" AppliesTo=\"par\" />",
+        )
+        .replace(
+            "<LdCtrlWriteRelMem ObjIdx=\"0\" Offset=\"0\" Size=\"2\" AppliesTo=\"par\" />",
+            "<LdCtrlWriteRelMem ObjIdx=\"0\" Offset=\"0\" Size=\"3\" AppliesTo=\"par\" />",
+        )
+}
+
+/// `Light` in the selector's nibble of octet 2.
+const SELECTOR_LIGHT: u8 = 0x03;
+
+/// A bench on [`unreached_app_xml`] with the product pinned and the device's
+/// three parameter octets, or `None` when `zip` is unavailable.
+fn unreached_bench(
+    tag: &str,
+    params: [u8; 3],
+    model: &str,
+) -> Result<Option<Bench>, Box<dyn Error>> {
+    let xml = unreached_app_xml();
+    assert!(
+        xml.contains("Offset=\"2\" BitOffset=\"4\"")
+            && xml.contains("Size=\"3\" AppliesTo")
+            && xml.contains("PreferPartialDownloadIfApplicationLoaded"),
+        "the unreached selector was not moved"
+    );
+    let mut device = MockDevice::running([params[0], params[1]]);
+    device.memory.insert(PARAM_BASE + 2, params[2]);
+    let Some(bench) = Bench::start_with_app(tag, device, model, &xml)? else {
+        return Ok(None);
+    };
+    bench.pin_product()?;
+    Ok(Some(bench))
+}
+
+/// Issue #290 (option b, ETS parity): an octet no parameter the
+/// configuration reaches is placed in differs on the device. The plan lists
+/// it with `written: false`, its role, both values and the "ETS does not
+/// write this octet" sentence, and does not count it; the apply writes only
+/// the reached octet and leaves the unreached one as the device holds it.
+#[test]
+fn test_partial_write_leaves_an_unreached_octet_alone() -> TestResult {
+    let model = "\"thr@P-0_R-1\" = \"12\"\n\"obj2@P-1_R-2\" = \"Off\"\n";
+    let Some(bench) = unreached_bench("mcp-unreached", [7, 0, SELECTOR_LIGHT], model)? else {
+        return Ok(());
+    };
+    let mut server = bench.mcp()?;
+    let plan = server.plan()?;
+    assert_eq!(plan["ok"], true, "plan: {plan}");
+    assert_eq!(plan["noop"], false, "plan: {plan}");
+    assert_eq!(plan["writes"]["parameter_octets"], 1, "plan: {plan}");
+    assert_eq!(plan["parameters"]["octets"], 1, "plan: {plan}");
+    let ranges = plan["parameters"]["octet_ranges"]
+        .as_array()
+        .ok_or("no octet_ranges")?;
+    assert_eq!(ranges.len(), 2, "plan: {plan}");
+    assert_eq!(
+        (&ranges[0]["offset"], &ranges[0]["written"]),
+        (&json!(0), &json!(true)),
+        "plan: {plan}"
+    );
+    assert_eq!(
+        ranges[0]["parameters"][0]["role"], "changed",
+        "plan: {plan}"
+    );
+    let unreached = &ranges[1];
+    assert_eq!(unreached["offset"], 2, "plan: {plan}");
+    assert_eq!(unreached["written"], false, "plan: {plan}");
+    assert_eq!(
+        unreached["parameters"],
+        json!([{"key": "P-3", "name": "_AppInstanz 1", "role": "internal",
+                "device": "Light", "model": "no application"}]),
+        "plan: {plan}"
+    );
+    assert_eq!(
+        unreached["sentence"],
+        "1 octet at offset 2 of segment RS-2, not written (ETS does not write this octet in a \
+         download): _AppInstanz 1 (internal ETS selector, P-3), device Light, model no \
+         application",
+        "plan: {plan}"
+    );
+    assert_eq!(
+        unreached["explanation"],
+        "ETS does not write this octet in a download; a full download leaves the segment fill \
+         (0x00) there; the device holds Light from an earlier state",
+        "plan: {plan}"
+    );
+    let sentences = plan["sentences"].as_str().unwrap_or_default();
+    assert!(
+        sentences.contains(
+            "ETS does not write it in a download, so this plan leaves the device's value"
+        ),
+        "{sentences}"
+    );
+
+    let applied = server.apply(&plan)?;
+    assert_eq!(applied["ok"], true, "apply: {applied}");
+    assert_eq!(applied["parameters"]["octets"], 1, "apply: {applied}");
+    let dev = bench.device();
+    assert_eq!(dev.memory_writes, vec![(PARAM_BASE, 1)]);
+    assert_eq!(dev.memory.get(&PARAM_BASE).copied(), Some(12));
+    assert_eq!(
+        dev.memory.get(&(PARAM_BASE + 2)).copied(),
+        Some(SELECTOR_LIGHT)
+    );
+
+    // Only the unreached octet differs now: nothing to write, still listed.
+    let replan = server.plan()?;
+    assert_eq!(replan["noop"], true, "replan: {replan}");
+    assert!(replan["plan_digest"].is_null(), "replan: {replan}");
+    assert_eq!(
+        replan["parameters"]["octet_ranges"][0]["written"], false,
+        "replan: {replan}"
+    );
+    assert!(
+        replan["next_step"]
+            .as_str()
+            .is_some_and(|s| s.contains("ETS does not write in a download either")),
+        "replan: {replan}"
+    );
+    Ok(())
+}
+
+/// The one parameter backup under the model's backup directory.
+fn only_parameter_backup(bench: &Bench) -> Result<PathBuf, Box<dyn Error>> {
+    let dir = bench.model().join("captures/backups/parameters");
+    let files: Vec<PathBuf> = std::fs::read_dir(&dir)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .collect();
+    match files.as_slice() {
+        [one] => Ok(one.clone()),
+        other => Err(format!(
+            "expected one parameter backup in {}, found {other:?}",
+            dir.display()
+        )
+        .into()),
+    }
+}
+
+/// Issue #290: `apply` keeps the pre-write parameter memory, and `restore
+/// --parameters` puts it back on the mock device with the same download,
+/// verified by read-back; a second restore finds nothing to write.
+#[test]
+fn test_restore_parameters_round_trip() -> TestResult {
+    let Some(bench) = pinned("restore-roundtrip", [12, 0], "\"thr@P-0_R-1\" = \"13\"\n")? else {
+        return Ok(());
+    };
+    let out = bench.bussard(&["apply", "1.1.4", "--yes"])?;
+    let (stdout, stderr) = text(&out);
+    assert!(out.status.success(), "apply: {stdout}\n{stderr}");
+    assert_eq!(bench.device().memory.get(&PARAM_BASE).copied(), Some(13));
+    let backup = only_parameter_backup(&bench)?;
+    // Keep the backup apart: the restore writes its own backup into the
+    // same directory.
+    let kept = bench.tmp.join("kept-backup.json");
+    std::fs::copy(&backup, &kept)?;
+    let kept = kept.to_str().ok_or("non-UTF-8 temp path")?;
+
+    let writes_before = bench.device().memory_writes.len();
+    let out = bench.bussard(&["restore", "--parameters", kept, "1.1.4", "--yes"])?;
+    let (stdout, stderr) = text(&out);
+    assert!(out.status.success(), "restore: {stdout}\n{stderr}");
+    assert!(
+        stdout.contains("writes 1 parameter octet(s) to 1.1.4:"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("parameters restored and verified: 1 octet(s) read back"),
+        "{stdout}"
+    );
+    let dev = bench.device();
+    assert_eq!(dev.memory.get(&PARAM_BASE).copied(), Some(12));
+    assert_eq!(&dev.memory_writes[writes_before..], &[(PARAM_BASE, 1)]);
+
+    let out = bench.bussard(&["restore", "--parameters", kept, "1.1.4", "--yes"])?;
+    let (stdout, stderr) = text(&out);
+    assert!(out.status.success(), "second restore: {stdout}\n{stderr}");
+    assert!(
+        stdout.contains("already holds the backup's parameter octets; nothing to write"),
+        "{stdout}"
+    );
+    assert_eq!(bench.device().memory_writes.len(), dev.memory_writes.len());
+    Ok(())
+}
+
+/// Issue #290: a backup of another application, mask or device is refused
+/// before anything is written.
+#[test]
+fn test_restore_parameters_refuses_another_identity() -> TestResult {
+    let Some(bench) = pinned("restore-identity", [12, 0], "\"thr@P-0_R-1\" = \"13\"\n")? else {
+        return Ok(());
+    };
+    let backup = |field: &str, value: &str| -> Result<PathBuf, Box<dyn Error>> {
+        let mut body = json!({
+            "address": "1.1.4",
+            "mask": "07B0",
+            "application": "M-00FA_A-0002",
+            "unix_timestamp": 1,
+            "read_time": "1970-01-01T00:00:01Z",
+            "regions": [{"base": PARAM_BASE, "length": 2, "bytes": "0700",
+                         "source": "parameter segment M-00FA_A-0002_RS-2"}],
+        });
+        body[field] = json!(value);
+        let path = bench.tmp.join(format!("backup-{field}.json"));
+        std::fs::write(&path, serde_json::to_string(&body)?)?;
+        Ok(path)
+    };
+    let cases = [
+        (
+            "application",
+            "M-00FA_A-0003",
+            "the backup holds the parameters of application M-00FA_A-0003",
+        ),
+        (
+            "mask",
+            "0705",
+            "the backup was read from a device with mask 0705",
+        ),
+        ("address", "1.1.5", "the backup is of 1.1.5, not 1.1.4"),
+    ];
+    for (field, value, reason) in cases {
+        let path = backup(field, value)?;
+        let path = path.to_str().ok_or("non-UTF-8 temp path")?;
+        let out = bench.bussard(&["restore", "--parameters", path, "1.1.4", "--yes"])?;
+        let (stdout, stderr) = text(&out);
+        assert!(!out.status.success(), "{field}: {stdout}\n{stderr}");
+        assert!(stderr.contains(reason), "{field}: {stderr}");
+        assert!(bench.device().memory_writes.is_empty(), "{field}: wrote");
+    }
+    // The same backup with the device's identity restores.
+    let path = backup("application", "M-00FA_A-0002")?;
+    let path = path.to_str().ok_or("non-UTF-8 temp path")?;
+    let out = bench.bussard(&["restore", "--parameters", path, "1.1.4", "--yes"])?;
+    let (stdout, stderr) = text(&out);
+    assert!(out.status.success(), "{stdout}\n{stderr}");
+    assert_eq!(bench.device().memory.get(&PARAM_BASE).copied(), Some(7));
+    Ok(())
+}
+
+/// Issue #290: `knx_restore_parameters` plans the replay of an apply's
+/// backup (octets, roles, digest; nothing written), refuses a digest it did
+/// not produce, and with the plan's digest writes and verifies.
+#[test]
+fn test_mcp_restore_parameters_plans_then_writes() -> TestResult {
+    let Some(bench) = pinned("mcp-restore", [12, 0], "\"thr@P-0_R-1\" = \"13\"\n")? else {
+        return Ok(());
+    };
+    let mut server = bench.mcp()?;
+    let plan = server.plan()?;
+    let applied = server.apply(&plan)?;
+    assert_eq!(applied["ok"], true, "apply: {applied}");
+    let backup = only_parameter_backup(&bench)?;
+    let name = backup
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("no backup file name")?
+        .to_string();
+    let writes_before = bench.device().memory_writes.len();
+
+    let planned = server.call(
+        "knx_restore_parameters",
+        json!({"address": "1.1.4", "backup": name}),
+    )?;
+    assert_eq!(planned["ok"], true, "restore plan: {planned}");
+    assert_eq!(planned["octets"], 1, "restore plan: {planned}");
+    let ranges = planned["octet_ranges"]
+        .as_array()
+        .ok_or("no octet_ranges")?;
+    assert_eq!(ranges.len(), 1, "restore plan: {planned}");
+    assert_eq!(ranges[0]["written"], true, "restore plan: {planned}");
+    assert_eq!(
+        ranges[0]["parameters"][0]["key"], "thr@P-0_R-1",
+        "restore plan: {planned}"
+    );
+    assert_eq!(
+        (
+            &ranges[0]["parameters"][0]["device"],
+            &ranges[0]["parameters"][0]["model"]
+        ),
+        (&json!("13"), &json!("12")),
+        "restore plan: {planned}"
+    );
+    assert!(
+        ranges[0]["sentence"]
+            .as_str()
+            .is_some_and(|s| s.ends_with("device 13, backup 12")),
+        "restore plan: {planned}"
+    );
+    assert_eq!(bench.device().memory_writes.len(), writes_before);
+    let digest = planned["plan_digest"].as_str().ok_or("no plan_digest")?;
+
+    let refused = server.call(
+        "knx_restore_parameters",
+        json!({"address": "1.1.4", "backup": name, "plan_digest": "00"}),
+    )?;
+    assert_eq!(refused["refused"], true, "refused: {refused}");
+    assert_eq!(bench.device().memory_writes.len(), writes_before);
+
+    let written = server.call(
+        "knx_restore_parameters",
+        json!({"address": "1.1.4", "backup": name, "plan_digest": digest}),
+    )?;
+    assert_eq!(written["ok"], true, "restore: {written}");
+    assert_eq!(written["verified"], true, "restore: {written}");
+    assert_eq!(written["parameters"]["octets"], 1, "restore: {written}");
+    assert!(
+        written["parameter_backup"]
+            .as_str()
+            .is_some_and(|p| Path::new(p).is_file()),
+        "restore: {written}"
+    );
+    let dev = bench.device();
+    assert_eq!(dev.memory.get(&PARAM_BASE).copied(), Some(12));
+    assert_eq!(&dev.memory_writes[writes_before..], &[(PARAM_BASE, 1)]);
+
+    // Single use: the digest is spent.
+    let again = server.call(
+        "knx_restore_parameters",
+        json!({"address": "1.1.4", "backup": name, "plan_digest": digest}),
+    )?;
+    assert_eq!(again["refused"], true, "again: {again}");
+    Ok(())
+}

@@ -469,8 +469,8 @@ fn test_reconstruct_prints_differing_internal_selectors() -> TestResult {
     assert!(out.status.success(), "stdout:\n{stdout}\nstderr:\n{stderr}");
     assert!(
         stdout.contains(
-            "  internal ETS values that differ from the model (never shown, written by a \
-             download):\n      1 octet at offset 1 of segment RS-2: _AppInstanz 1 (internal \
+            "  internal ETS values that differ from the model (never shown; a run marked not \
+             written is one ETS's download leaves alone, and so does `apply`):\n      1 octet at offset 1 of segment RS-2: _AppInstanz 1 (internal \
              ETS selector, P-3), device Light, model no application\n      an internal ETS \
              selector differs: the device's function assignment differs from the project"
         ),

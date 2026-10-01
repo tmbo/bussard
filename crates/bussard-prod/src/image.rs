@@ -39,7 +39,8 @@
 //! keep the vendor's bytes); otherwise the image starts as all-`0x00`, sized to
 //! hold every parameter that targets it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Range;
 
 use bussard_ets::application::{
     ApplicationProgram, LabelMatch, ParameterType, enum_member_by_label,
@@ -60,6 +61,14 @@ use crate::error::{ProdError, Result};
 /// (`tests-support/product-corpus`) declares `Size="1048575"` — the ABB i-bus
 /// application, one byte under the cap — and everything else is far smaller.
 const MAX_SEGMENT_IMAGE: u64 = 1024 * 1024;
+
+/// Records the octets `range` of segment `seg_id` as placed.
+fn mark(placed: &mut PlacedOctets, seg_id: &str, range: Range<usize>) {
+    if range.is_empty() {
+        return;
+    }
+    placed.entry(seg_id.to_string()).or_default().extend(range);
+}
 
 /// Builds the per-segment parameter memory images for `app`, applying
 /// caller-supplied overrides keyed by **app-relative `ParameterRef` id** (the
@@ -109,8 +118,41 @@ pub fn compute_parameter_image(
     overrides: &BTreeMap<String, String>,
     base_offsets: &BTreeMap<String, u32>,
 ) -> Result<BTreeMap<String, Vec<u8>>> {
+    compute_parameter_image_placed(app, overrides, base_offsets).map(|(images, _)| images)
+}
+
+/// The octets of each code segment that a parameter placement writes (segment
+/// id to octet offsets), as [`compute_parameter_image_placed`] records them.
+///
+/// An octet is placed when the encoder lays any bit of a parameter value into
+/// it: a parameter the Dynamic section reaches under the configuration, a
+/// hidden parameter the application downloads at its default, every
+/// parameter's default and the default union member on the vendor-default
+/// path, and the overrides. Every other octet of the image holds the
+/// segment's `<Data>` or its fill, which ETS does not write in a download
+/// (issue #290).
+pub type PlacedOctets = BTreeMap<String, BTreeSet<usize>>;
+
+/// [`compute_parameter_image`], with the octets each placement wrote
+/// ([`PlacedOctets`]).
+///
+/// The images are the ones [`compute_parameter_image`] returns, byte for byte;
+/// the second half records where a parameter value landed, so a
+/// parameter-only download can leave every other octet as the device holds
+/// it, the way ETS's download does (issue #290).
+///
+/// # Errors
+///
+/// As [`compute_parameter_image`].
+pub fn compute_parameter_image_placed(
+    app: &ApplicationProgram,
+    overrides: &BTreeMap<String, String>,
+    base_offsets: &BTreeMap<String, u32>,
+) -> Result<(BTreeMap<String, Vec<u8>>, PlacedOctets)> {
+    let mut placed = PlacedOctets::new();
     if uses_dynamic_image(app) {
-        return compute_dynamic_parameter_image(app, overrides);
+        let images = dynamic_image(app, overrides, &mut placed)?;
+        return Ok((images, placed));
     }
     // Pre-index the first ParameterRef Value override per parameter id, in a
     // deterministic order (sorted by ref id) so a fixed ref wins reproducibly.
@@ -240,7 +282,7 @@ pub fn compute_parameter_image(
             .or_insert_with(|| base_image(app, seg_id));
 
         for inst_offset in instance_offsets {
-            place_checked(
+            let range = place_checked(
                 app,
                 pname,
                 image,
@@ -249,6 +291,7 @@ pub fn compute_parameter_image(
                 &placement,
                 seg_size,
             )?;
+            mark(&mut placed, seg_id, range);
         }
     }
 
@@ -314,7 +357,8 @@ pub fn compute_parameter_image(
         let image = images
             .entry(seg_id.to_string())
             .or_insert_with(|| base_image(app, seg_id));
-        place_checked(app, pname, image, offset, bit_offset, &placement, seg_size)?;
+        let range = place_checked(app, pname, image, offset, bit_offset, &placement, seg_size)?;
+        mark(&mut placed, seg_id, range);
     }
 
     // Second pass: apply the caller's explicit overrides, keyed by app-relative
@@ -415,7 +459,7 @@ pub fn compute_parameter_image(
             .entry(seg_id.to_string())
             .or_insert_with(|| base_image(app, seg_id));
 
-        place_checked(
+        let range = place_checked(
             app,
             pname,
             image,
@@ -424,9 +468,10 @@ pub fn compute_parameter_image(
             &placement,
             seg_size,
         )?;
+        mark(&mut placed, seg_id, range);
     }
 
-    Ok(images)
+    Ok((images, placed))
 }
 
 /// Validates every segment's decoded `<Data>`/`<Mask>` against its declared
@@ -525,6 +570,16 @@ pub fn compute_dynamic_parameter_image(
     app: &ApplicationProgram,
     overrides: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, Vec<u8>>> {
+    dynamic_image(app, overrides, &mut PlacedOctets::new())
+}
+
+/// [`compute_dynamic_parameter_image`], recording the octets each slot writes
+/// into `placed`.
+fn dynamic_image(
+    app: &ApplicationProgram,
+    overrides: &BTreeMap<String, String>,
+    placed: &mut PlacedOctets,
+) -> Result<BTreeMap<String, Vec<u8>>> {
     validate_segments(app)?;
     let config = bussard_ets::dynamic::evaluate_dynamic(app, overrides);
     if let Some(key) = config.unresolved_overrides.first() {
@@ -562,7 +617,8 @@ pub fn compute_dynamic_parameter_image(
             ),
             None => (slot.parameter.default.clone(), ValueSource::VendorDefault),
         };
-        write_slot(app, &mut images, &slot, value.as_deref(), source)?;
+        let range = write_slot(app, &mut images, &slot, value.as_deref(), source)?;
+        mark(placed, slot.segment, range);
     }
 
     // A segment's image spans its declared size (the template may be shorter).
@@ -748,7 +804,7 @@ fn write_slot(
     slot: &ParameterSlot<'_>,
     value: Option<&str>,
     source: ValueSource,
-) -> Result<()> {
+) -> Result<Range<usize>> {
     let param = slot.parameter;
     let pname = param.name.as_deref().unwrap_or(&param.id);
     let placement = encode_value(app, pname, parameter_type_of(app, param), value, source)?;
@@ -1519,7 +1575,7 @@ fn place_checked(
     bit_offset: u8,
     placement: &Placement,
     seg_size: Option<u32>,
-) -> Result<()> {
+) -> Result<Range<usize>> {
     // The exclusive byte end this placement writes up to (bit fields round up).
     let end: u64 = match placement {
         Placement::Empty => offset as u64,
@@ -1551,7 +1607,13 @@ fn place_checked(
         ));
     }
     place(image, offset, bit_offset, placement);
-    Ok(())
+    // The octets the placement wrote: from the one holding its first bit to
+    // the end computed above (within the limit just checked).
+    let first = match placement {
+        Placement::Field { .. } => offset + usize::from(bit_offset) / 8,
+        _ => offset,
+    };
+    Ok(first..usize::try_from(end).unwrap_or(first).max(first))
 }
 
 /// Places an encoded value into `image` at the byte offset (and bit offset for
@@ -1674,7 +1736,7 @@ pub fn write_parameter_value(
         value,
         ValueSource::VendorDefault,
     )?;
-    place_checked(app, pname, image, offset, bit_offset, &placement, None)
+    place_checked(app, pname, image, offset, bit_offset, &placement, None).map(|_| ())
 }
 
 /// [`decode_parameter_value`] on a resolved type.

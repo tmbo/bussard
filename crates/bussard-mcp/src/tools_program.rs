@@ -102,12 +102,15 @@ use sha2::{Digest, Sha256};
 use crate::server::BussardMcp;
 use crate::state::ConnState;
 
+mod restore;
+
 /// The tools of the programming tier, in registration order.
-pub const PROGRAMMING_TOOLS: [&str; 4] = [
+pub const PROGRAMMING_TOOLS: [&str; 5] = [
     "knx_plan_device",
     "knx_apply_device",
     "knx_apply_status",
     "knx_last_apply",
+    "knx_restore_parameters",
 ];
 
 /// How long a plan stays valid for `knx_apply_device` unless configured.
@@ -130,6 +133,8 @@ pub struct ProgrammingTier {
     bus_lock: tokio::sync::Mutex<()>,
     /// The apply jobs (issue #289): one at a time, with status and record.
     jobs: crate::apply_jobs::ApplyJobs,
+    /// Restore plans produced in this session, by digest (issue #290).
+    restore_plans: std::sync::Mutex<HashMap<String, restore::PendingRestore>>,
 }
 
 impl ProgrammingTier {
@@ -146,6 +151,7 @@ impl ProgrammingTier {
             plans: std::sync::Mutex::new(HashMap::new()),
             bus_lock: tokio::sync::Mutex::new(()),
             jobs: crate::apply_jobs::ApplyJobs::new(),
+            restore_plans: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -165,6 +171,13 @@ impl ProgrammingTier {
     /// not wedge the tier; the map holds plain data).
     fn plans(&self) -> std::sync::MutexGuard<'_, HashMap<String, PendingPlan>> {
         self.plans
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The restore plan table, recovering from a poisoned lock.
+    fn restore_plans(&self) -> std::sync::MutexGuard<'_, HashMap<String, restore::PendingRestore>> {
+        self.restore_plans
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
@@ -202,6 +215,21 @@ pub struct ApplyDeviceArgs {
     /// device produces the same hash.
     #[serde(default)]
     pub plan_hash: Option<String>,
+}
+
+/// Arguments for `knx_restore_parameters`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RestoreParametersArgs {
+    /// The individual address of the device, e.g. `"1.1.4"`.
+    pub address: String,
+    /// The parameter backup to replay: a file name in
+    /// `<dir>/captures/backups/parameters/` (e.g. `"1.1.18-1790880058.json"`),
+    /// or a path to one there.
+    pub backup: String,
+    /// Omit it to get the restore plan and its digest; pass that digest
+    /// (after the human's explicit yes) to write.
+    #[serde(default)]
+    pub plan_digest: Option<String>,
 }
 
 /// Arguments for `knx_apply_status`.
@@ -287,6 +315,42 @@ impl BussardMcp {
                 &args.address,
                 args.plan_digest.trim(),
                 args.plan_hash.as_deref().map(str::trim),
+            )
+            .await
+        {
+            Ok(value) => ok(value),
+            Err(reason) => refusal(&args.address, reason),
+        }
+    }
+
+    /// `knx_restore_parameters` (registered only with `--allow-programming`).
+    #[tool(
+        description = "Replay a parameter backup onto ONE device on the PHYSICAL bus (issue \
+        #290), in two calls. Every apply keeps the device's parameter memory under \
+        captures/backups/parameters/<ia>-<unix>.json before it writes; pass that file name as \
+        `backup`. Without plan_digest: reads the device (read-only) and returns the restore \
+        plan: `sentences`, `octets` to write, `octet_ranges` (each run with the parameters \
+        behind it, their role, the device's and the backup's value, and `written`: false for \
+        octets the restore leaves as the device holds them, because no parameter is placed \
+        there under the model's configuration, which ETS does not write either, or because the \
+        application owns the value at runtime), the `question` and a plan_digest. Show the \
+        sentences to the human in full and ask the question. With the plan_digest (ONLY after \
+        the human's explicit yes in this conversation): re-reads the device, refuses if \
+        anything moved, backs up the current parameter memory, writes and verifies by \
+        read-back, as a job like knx_apply_device (`started: true` with a `job`: poll \
+        knx_apply_status). Refuses a backup of another device, application or mask, a device \
+        whose application drifted from bussard.lock, and a device that does not run the \
+        application. Only available with --allow-programming."
+    )]
+    async fn knx_restore_parameters(
+        &self,
+        Parameters(args): Parameters<RestoreParametersArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        match self
+            .restore_parameters(
+                &args.address,
+                &args.backup,
+                args.plan_digest.as_deref().map(str::trim),
             )
             .await
         {
@@ -518,6 +582,12 @@ impl BussardMcp {
                     Some(why) => format!(
                         "nothing to write over MCP: the links already match the model, and {why}"
                     ),
+                    None if built.octet_ranges.iter().any(|r| !r.written) => "nothing to \
+                        write: the device matches the model wherever the configuration places a \
+                        parameter; the parameter octets that differ (parameters.octet_ranges \
+                        with written: false) are ones ETS does not write in a download either, \
+                        so they stay as the device holds them (see notes)"
+                        .to_string(),
                     None if !built.octet_ranges.is_empty() => "nothing to write: the device \
                         already matches the model; only device-managed parameter octets differ \
                         (see notes and parameters.octet_ranges), and those are not written on \
@@ -558,22 +628,37 @@ impl BussardMcp {
         digest: &str,
         plan_hash: Option<&str>,
     ) -> Result<Value, String> {
-        let began = Instant::now();
         let target = parse_address(address)?;
+        let (digest, plan_hash) = (digest.to_string(), plan_hash.map(str::to_string));
+        self.run_job(target, "apply", move |me, job, started| async move {
+            me.apply_job(&job, target, &digest, plan_hash.as_deref(), started)
+                .await;
+        })
+        .await
+    }
+
+    /// Runs one write as a job of the programming tier (issue #289):
+    /// claims the one slot, runs `work` (the pre-flight, which answers on its
+    /// `started` sender, then the write) in a server task, and answers once
+    /// the pre-flight is through: with the full result when the write also
+    /// ends within the reply wait, else with `started: true` and the job id.
+    /// `verb` names the write in a refusal.
+    async fn run_job<F, Fut>(
+        &self,
+        target: IndividualAddress,
+        verb: &'static str,
+        work: F,
+    ) -> Result<Value, String>
+    where
+        F: FnOnce(BussardMcp, String, tokio::sync::oneshot::Sender<Result<(), String>>) -> Fut,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let began = Instant::now();
         let (tier, _, _) = self.programming_preflight()?;
         let job = tier.jobs.claim(target)?;
         let reply_wait = tier.jobs.reply_wait();
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-        let me = self.clone();
-        let (job_id, digest, plan_hash) = (
-            job.clone(),
-            digest.to_string(),
-            plan_hash.map(str::to_string),
-        );
-        let worker = tokio::spawn(async move {
-            me.apply_job(&job_id, target, &digest, plan_hash.as_deref(), started_tx)
-                .await;
-        });
+        let worker = tokio::spawn(work(self.clone(), job.clone(), started_tx));
         // A panic in the job must not leave the slot claimed for good.
         let state = std::sync::Arc::clone(self.state());
         let watched = job.clone();
@@ -586,7 +671,7 @@ impl BussardMcp {
                     json!({
                         "ok": false,
                         "verified": false,
-                        "reason": format!("the apply task stopped unexpectedly: {err}"),
+                        "reason": format!("the {verb} task stopped unexpectedly: {err}"),
                     }),
                 );
             }
@@ -596,7 +681,7 @@ impl BussardMcp {
             Ok(Err(reason)) => return Err(reason),
             Err(_) => {
                 return Err(format!(
-                    "the apply of {target} stopped before its pre-flight ended; call \
+                    "the {verb} of {target} stopped before its pre-flight ended; call \
                      knx_apply_status with job {job}"
                 ));
             }
