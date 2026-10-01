@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # `edited` fires when a stacked pull request is retargeted to main; without it
+    # no run exists for the head and auto-merge waits forever (seen on #240, #278, #283).
+    types: [opened, synchronize, reopened, edited]
   workflow_dispatch:
     inputs:
       product_corpus:
