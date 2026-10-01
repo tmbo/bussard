@@ -685,3 +685,234 @@ fn test_fresh_import_writes_the_models_in_the_lock_language() -> TestResult {
     let _ = std::fs::remove_dir_all(&root);
     Ok(())
 }
+
+/// A `bussard mcp --passive` child over stdio JSON-RPC (model edits on, a
+/// closed loopback gateway: the edit tools never touch the bus).
+struct McpChild {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    lines: std::sync::mpsc::Receiver<String>,
+    next_id: u64,
+}
+
+impl McpChild {
+    fn start(dir: &Path) -> Result<McpChild, Box<dyn std::error::Error>> {
+        use std::io::BufRead as _;
+        let mut child = Command::new(env!("CARGO_BIN_EXE_bussard"))
+            .args(["mcp", "--dir"])
+            .arg(dir)
+            .args(["--gateway", "127.0.0.1:9", "--passive"])
+            .env_remove("BUSSARD_GATEWAY")
+            .env_remove("BUSSARD_KEYRING")
+            .env_remove("BUSSARD_ALLOW_REAL_GATEWAY")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()?;
+        let stdin = child.stdin.take().ok_or("no stdin pipe")?;
+        let stdout = child.stdout.take().ok_or("no stdout pipe")?;
+        let (tx, lines) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stdout)
+                .lines()
+                .map_while(Result::ok)
+            {
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut server = McpChild {
+            child,
+            stdin,
+            lines,
+            next_id: 1,
+        };
+        server.request(
+            "initialize",
+            serde_json::json!({
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "label-noise", "version": "0"}
+            }),
+        )?;
+        writeln!(
+            server.stdin,
+            "{}",
+            serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        )?;
+        Ok(server)
+    }
+
+    fn request(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let id = self.next_id;
+        self.next_id += 1;
+        writeln!(
+            self.stdin,
+            "{}",
+            serde_json::json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+        )?;
+        self.stdin.flush()?;
+        loop {
+            let line = self
+                .lines
+                .recv_timeout(std::time::Duration::from_secs(60))?;
+            let message: serde_json::Value = serde_json::from_str(&line)?;
+            if message["id"] == id {
+                if let Some(error) = message.get("error") {
+                    return Err(format!("{method} failed: {error}").into());
+                }
+                return Ok(message["result"].clone());
+            }
+        }
+    }
+
+    fn call(
+        &mut self,
+        tool: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let result = self.request(
+            "tools/call",
+            serde_json::json!({"name": tool, "arguments": args}),
+        )?;
+        Ok(result["structuredContent"].clone())
+    }
+}
+
+impl Drop for McpChild {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// The sentences of an MCP edit result.
+fn sentences(result: &serde_json::Value) -> Vec<String> {
+    result["changes"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|s| s.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Issue #279 on the house model's shape: a fresh de-DE import whose device
+/// file writes an enum member by its German label (and whose lock indexes the
+/// parameters with their defaults). Every MCP edit and undo reports exactly
+/// its own change, the enum value reads as its label, and the pending change
+/// against the latest snapshot is never the label/code mirror of the whole
+/// model.
+#[test]
+fn test_mcp_edits_on_a_labelled_import_report_only_their_change() -> TestResult {
+    let root = std::env::temp_dir().join(format!("bussard-store-noise-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let dir = root.join("knx");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(
+        dir.join("bussard.toml"),
+        "[connection]\ntransport = \"tunnel\"\ngateway = \"127.0.0.1:9\"\n\n\
+         [import]\nlanguage = \"de-DE\"\n",
+    )?;
+    let archive = root.join("labels.knxprod");
+    write_bilingual_knxprod(&archive)?;
+    let bytes = std::fs::read(&archive)?;
+    let index = root.join("index.json");
+    std::fs::write(
+        &index,
+        serde_json::to_string(&serde_json::json!({ "entries": [{
+            "manufacturer": "Test Manufacturer",
+            "manufacturer_id": "M-9999",
+            "order_numbers": ["TST-1"],
+            "name": "Label test",
+            "url": format!("file://{}", archive.display()),
+            "sha256": sha256_hex(&archive)?,
+            "size": bytes.len(),
+            "filename": "labels.knxprod",
+        }] }))?,
+    )?;
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../bussard-project/tests/fixtures/tiny.xknxproject.json");
+    let out = Command::new(env!("CARGO_BIN_EXE_bussard"))
+        .args(["import", "--from-json"])
+        .arg(&fixture)
+        .arg("--dir")
+        .arg(&dir)
+        .arg("--yes-download")
+        .env("BUSSARD_PRODUCT_INDEX", &index)
+        .env_remove("BUSSARD_KEYRING")
+        .env_remove("BUSSARD_KEYRING_PASSWORD")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()?;
+    assert!(out.status.success(), "{}", text(&out));
+
+    // The house shape: the device file writes the member by its German
+    // label, as `bussard import` writes a stored value.
+    let device_file = dir.join("devices/1.1.1.toml");
+    let file = std::fs::read_to_string(&device_file)?;
+    std::fs::write(
+        &device_file,
+        format!("{file}\n[parameters]\n\"mode@P-1_R-1\" = \"K\u{fc}hlen\"\n"),
+    )?;
+
+    let mut mcp = McpChild::start(&dir)?;
+    let set = mcp.call(
+        "knx_set_parameter",
+        serde_json::json!({"address": "1.1.1", "parameter": "mode@P-1_R-1", "value": "Heizen"}),
+    )?;
+    assert_eq!(set["ok"], true, "{set}");
+    assert_eq!(
+        sentences(&set),
+        ["Mode on Test Switch Actuator (1.1.1): K\u{fc}hlen (1) to Heizen (0)."],
+        "{set}"
+    );
+    assert_eq!(
+        set["validation"]["new_warnings"],
+        serde_json::json!([]),
+        "{set}"
+    );
+    let file = std::fs::read_to_string(&device_file)?;
+    assert!(file.contains("Heizen"), "the file keeps the label: {file}");
+
+    // (tool, arguments, how many sentences the result carries)
+    let edits = [
+        (
+            "knx_set_device",
+            serde_json::json!({"address": "1.1.1", "name": "Hall actuator"}),
+            1,
+        ),
+        (
+            "knx_set_parameter",
+            serde_json::json!({"address": "1.1.1", "parameter": "mode@P-1_R-1", "value": "Beides"}),
+            1,
+        ),
+        ("knx_undo", serde_json::json!({}), 1),
+        ("knx_undo", serde_json::json!({}), 1),
+    ];
+    for (tool, args, count) in edits {
+        let res = mcp.call(tool, args.clone())?;
+        assert_eq!(res["ok"], true, "{tool} {args}: {res}");
+        let said = sentences(&res);
+        assert_eq!(said.len(), count, "{tool} {args}: {res}");
+        assert!(
+            said.iter()
+                .all(|s| !s.contains("Mode on") || s.contains(" (")),
+            "an enum value reads as its label with the code: {res}"
+        );
+        assert!(res["validation"].get("warnings").is_none(), "{res}");
+        // The working model against the snapshot this call took: exactly the
+        // call's own change, never every labelled parameter.
+        let pending = mcp.call("knx_describe_change", serde_json::json!({}))?;
+        assert_eq!(pending["count"], count, "{tool}: {pending}");
+    }
+    let _ = std::fs::remove_dir_all(&root);
+    Ok(())
+}

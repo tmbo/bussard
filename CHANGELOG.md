@@ -728,6 +728,27 @@ directory or a script from before these changes needs:
   `tools/call` is logged at info with the tool name, whether `arguments` was
   present and the field names (never values); `-vv` adds the raw request with
   string values redacted (#269).
+- MCP payloads carry only what the edit did (#279). A history snapshot holds
+  no product models, so its enum labels stayed text while the working model
+  held codes: `knx_undo`, `knx_describe_change` and the plan's pending list
+  reported every labelled parameter of the house as changed ("Fußbodenheizung
+  to 8"). Snapshots now translate labels through the working directory's
+  models, and a parameter change whose two sides name the same enum member
+  is dropped. Parameter sentences print the label with the code after it
+  ("Funktion … is set to Kurzer und langer Tastendruck (5)").
+  `knx_plan_device`'s `pending_model_changes` lists this session's
+  unapplied edits of that device only (`[{snapshot, tool, sentences}]`),
+  cleared by a successful `knx_apply_device`, a plan with nothing to write,
+  or `knx_undo` of the edit. Edit and undo results return `validation:
+  {ok, errors, error_count, new_warnings, warning_count}` with only the
+  warnings the edit introduced (the full list stays in `knx_validate`), and
+  cap their lists with a `truncated` or `note` field. A plan names the
+  parameters behind every written parameter octet (`parameters.
+  octet_ranges`), and a plan that writes octets while no shown parameter
+  changes says why in its notes (device memory that differs from the model's
+  image outside any parameter, a hidden or runtime-owned parameter). W005 no
+  longer fires for a main-type-only DPT (`1`) next to a subtype of it
+  (`1.017`).
 - Product models regenerate when `.bussard/models/` exists but is empty or
   lacks the model of a pinned application, not only when the directory is
   absent. Before, an empty directory left every consumer, the MCP server

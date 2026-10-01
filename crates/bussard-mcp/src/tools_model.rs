@@ -22,7 +22,7 @@
 use std::path::Path;
 
 use crate::args::Parameters;
-use bussard_model::change::{ChangeSet, describe};
+use bussard_model::change::{ChangeKind, ChangeSet, describe, name_parameters};
 use bussard_model::history::{History, SnapshotReason};
 use bussard_model::param_model::{ProductModels, key_to_param_id};
 use bussard_model::schema::{Group, Link, Location};
@@ -212,7 +212,8 @@ impl BussardMcp {
             },
         };
 
-        let changes = describe(&from_model, &to_model);
+        let mut changes = describe(&from_model, &to_model);
+        settle_changes(&dir, &mut changes, [&to_model, &from_model]);
         ok(change_json(base, &changes))
     }
 
@@ -625,27 +626,36 @@ impl BussardMcp {
             Ok(model) => model,
             Err(err) => return refusal(format!("snapshot {} does not load: {err}", target.id)),
         };
-        let changes = before
+        let mut changes = before
             .as_ref()
             .map(|b| describe(b, &restored))
             .unwrap_or_default();
+        if let Some(b) = &before {
+            settle_changes(&dir, &mut changes, [&restored, b]);
+        }
 
         let undo_snapshot = match history.restore(&target.id) {
             Ok(id) => id,
             Err(err) => return refusal(format!("the restore failed: {err}")),
         };
         self.state().model.reload();
+        self.session_edits()
+            .undone(target.id.as_str(), undo_snapshot.as_str(), &changes);
 
+        let earlier = before
+            .as_ref()
+            .map(|b| bussard_model::validate_in_dir(b, &dir))
+            .unwrap_or_default();
         let diagnostics = bussard_model::validate_in_dir(&restored, &dir);
-        ok(json!({
+        let mut result = json!({
             "ok": true,
             "restored": target.id,
             "snapshot": undo_snapshot,
-            "changes": sentences(&changes),
-            "detail": changes.changes,
-            "validation": validation_json(&diagnostics),
+            "validation": validation_json(&earlier, &diagnostics),
             "next_step": self.next_step(&changes),
-        }))
+        });
+        put_changes(&mut result, &changes);
+        ok(result)
     }
 }
 
@@ -705,7 +715,8 @@ impl BussardMcp {
             .iter()
             .map(|d| d.sentence())
             .collect();
-        let changes = describe(&before, &edited);
+        let mut changes = describe(&before, &edited);
+        settle_changes(&dir, &mut changes, [&edited, &before]);
         if changes.is_empty() {
             return ok(json!({
                 "ok": true,
@@ -733,17 +744,20 @@ impl BussardMcp {
         // tool call sees what we just wrote.
         self.state().model.reload();
 
+        self.session_edits()
+            .record(snapshot.as_str(), tool, &changes);
+
+        let earlier = bussard_model::validate_in_dir(&before, &dir);
         let diagnostics = bussard_model::validate_in_dir(&edited, &dir);
         let mut result = json!({
             "ok": true,
             "snapshot": snapshot,
-            "changes": sentences(&changes),
-            "detail": changes.changes,
             "touches_protected": changes.touches_protected(),
             "groups_declared": declared,
-            "validation": validation_json(&diagnostics),
+            "validation": validation_json(&earlier, &diagnostics),
             "next_step": self.next_step(&changes),
         });
+        put_changes(&mut result, &changes);
         if let (Some(note), Some(map)) = (note, result.as_object_mut()) {
             map.insert("note".to_string(), Value::String(note));
         }
@@ -1006,49 +1020,170 @@ fn resolve_model(history: &History, spec: &str) -> Result<Model, String> {
     history.load(&snapshot.id).map_err(|e| e.to_string())
 }
 
-/// The sentences of a change set, in rendering order (protected first).
-fn sentences(changes: &ChangeSet) -> Vec<String> {
-    bussard_model::change::render_text(changes)
-        .lines()
-        .map(str::to_string)
-        .collect()
-}
-
 /// The `{base, changes, sentences}` payload `knx_describe_change` returns.
 fn change_json(base: Option<String>, changes: &ChangeSet) -> Value {
-    json!({
+    let mut out = json!({
         "ok": true,
         "base": base,
         "count": changes.len(),
         "touches_protected": changes.touches_protected(),
-        "sentences": sentences(changes),
-        "changes": changes.changes,
         "note": "Nothing here has reached any device: these are model files only.",
-    })
+    });
+    let (sentences, detail, truncated) = capped(changes, MAX_DESCRIBED_CHANGES);
+    if let Some(map) = out.as_object_mut() {
+        map.insert("sentences".into(), json!(sentences));
+        map.insert("changes".into(), json!(detail));
+        if let Some(note) = truncated {
+            map.insert("truncated".into(), json!(note));
+        }
+    }
+    out
 }
 
-/// The `{errors, warnings}` validation payload every edit tool returns.
-fn validation_json(diagnostics: &[bussard_model::Diagnostic]) -> Value {
-    let pick = |severity: Severity| -> Vec<Value> {
-        diagnostics
-            .iter()
-            .filter(|d| d.severity == severity)
-            .map(|d| {
-                json!({
-                    "code": d.code,
-                    "message": d.message,
-                    "location": d.location,
-                })
+/// The most changes an edit or undo result lists (issue #279): a result the
+/// client has to spill to a file helps nobody. `knx_describe_change` lists
+/// up to [`MAX_DESCRIBED_CHANGES`].
+pub const MAX_RESULT_CHANGES: usize = 50;
+
+/// The most changes `knx_describe_change` lists.
+pub const MAX_DESCRIBED_CHANGES: usize = 200;
+
+/// The most diagnostics of one kind a `validation` object lists; the counts
+/// stay exact and `knx_validate` lists them all.
+pub const MAX_RESULT_DIAGNOSTICS: usize = 20;
+
+/// The first `max` sentences and changes of `changes` (protected ones
+/// first, as [`sentences`] orders them), and a note when some were left out.
+fn capped(
+    changes: &ChangeSet,
+    max: usize,
+) -> (Vec<String>, Vec<bussard_model::Change>, Option<String>) {
+    let mut ordered: Vec<&bussard_model::Change> = changes.changes.iter().collect();
+    ordered.sort_by_key(|c| !c.touches_protected);
+    let total = ordered.len();
+    let kept: Vec<bussard_model::Change> = ordered.into_iter().take(max).cloned().collect();
+    let sentences = kept.iter().map(|c| c.sentence.clone()).collect();
+    let note = (total > max).then(|| {
+        format!(
+            "showing {max} of {total} changes; knx_describe_change with this result's \
+             snapshot as `from` lists them"
+        )
+    });
+    (sentences, kept, note)
+}
+
+/// Puts `changes` into an edit or undo result as `changes` (sentences) and
+/// `detail` (structured), capped at [`MAX_RESULT_CHANGES`] with a
+/// `truncated` note.
+fn put_changes(result: &mut Value, changes: &ChangeSet) {
+    let (sentences, detail, truncated) = capped(changes, MAX_RESULT_CHANGES);
+    if let Some(map) = result.as_object_mut() {
+        map.insert("changes".into(), json!(sentences));
+        map.insert("detail".into(), json!(detail));
+        if let Some(note) = truncated {
+            map.insert("truncated".into(), json!(note));
+        }
+    }
+}
+
+/// Settles the parameter changes of `changes` against the product models of
+/// the devices they name (issue #279): a label on one side and its code on
+/// the other is no change, and an enum value reads as its label with the
+/// code after it. `models` are the new side, then the old.
+pub(crate) fn settle_changes(dir: &Path, changes: &mut ChangeSet, models: [&Model; 2]) {
+    let devices: std::collections::BTreeSet<IndividualAddress> = changes
+        .changes
+        .iter()
+        .filter(|c| c.kind == ChangeKind::ParameterChanged)
+        .filter_map(|c| c.device.as_deref()?.parse().ok())
+        .collect();
+    if devices.is_empty() {
+        return;
+    }
+    let apps: Vec<&str> = models
+        .iter()
+        .flat_map(|m| {
+            devices.iter().filter_map(|ia| {
+                m.devices
+                    .get(ia)?
+                    .device
+                    .product
+                    .as_ref()?
+                    .application_ref
+                    .as_deref()
             })
-            .collect()
+        })
+        .collect();
+    let products = ProductModels::load_apps(dir, apps);
+    name_parameters(changes, models, &products);
+}
+
+/// A diagnostic's identity for the before/after comparison.
+fn diagnostic_key(d: &bussard_model::Diagnostic) -> (String, String, String) {
+    (d.code.to_string(), d.location.clone(), d.message.clone())
+}
+
+/// The validation payload every edit tool returns (issue #279):
+/// `{ok, errors, error_count, new_warnings, warning_count}`.
+///
+/// `errors` are the model's errors after the edit; `new_warnings` the
+/// warnings `after` has and `before` did not (same code, location and
+/// message), so an edit that adds none returns none. Each list stops at
+/// [`MAX_RESULT_DIAGNOSTICS`] with a `note`; `knx_validate` lists all.
+fn validation_json(
+    before: &[bussard_model::Diagnostic],
+    after: &[bussard_model::Diagnostic],
+) -> Value {
+    let row = |d: &bussard_model::Diagnostic| {
+        json!({
+            "code": d.code,
+            "message": d.message,
+            "location": d.location,
+        })
     };
-    let errors = pick(Severity::Error);
-    let warnings = pick(Severity::Warning);
-    json!({
+    let earlier: std::collections::BTreeSet<(String, String, String)> = before
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .map(diagnostic_key)
+        .collect();
+    let errors: Vec<&bussard_model::Diagnostic> = after
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    let warnings: Vec<&bussard_model::Diagnostic> = after
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .collect();
+    let new_warnings: Vec<&bussard_model::Diagnostic> = warnings
+        .iter()
+        .copied()
+        .filter(|d| !earlier.contains(&diagnostic_key(d)))
+        .collect();
+    let mut out = json!({
         "ok": errors.is_empty(),
-        "errors": errors,
-        "warnings": warnings,
-    })
+        "errors": errors.iter().take(MAX_RESULT_DIAGNOSTICS).map(|d| row(d)).collect::<Vec<_>>(),
+        "error_count": errors.len(),
+        "new_warnings": new_warnings
+            .iter()
+            .take(MAX_RESULT_DIAGNOSTICS)
+            .map(|d| row(d))
+            .collect::<Vec<_>>(),
+        "warning_count": warnings.len(),
+    });
+    if (errors.len() > MAX_RESULT_DIAGNOSTICS || new_warnings.len() > MAX_RESULT_DIAGNOSTICS)
+        && let Some(map) = out.as_object_mut()
+    {
+        map.insert(
+            "note".into(),
+            json!(format!(
+                "listing at most {MAX_RESULT_DIAGNOSTICS} errors and {MAX_RESULT_DIAGNOSTICS} new \
+                 warnings ({} errors, {} new warnings in all); knx_validate lists every one",
+                errors.len(),
+                new_warnings.len()
+            )),
+        );
+    }
+    out
 }
 
 /// Turns a JSON value into a structured tool result.

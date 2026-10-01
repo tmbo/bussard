@@ -269,20 +269,32 @@ impl FlashPlan {
     /// parameter image that differ from its baseline. `0` means the device
     /// already holds every value.
     pub fn changed_octets(&self) -> usize {
+        self.changed_bits().values().map(Vec::len).sum()
+    }
+
+    /// The octets the parameter-only download writes, per code segment: each
+    /// written octet's offset in its segment and the bits that differ from
+    /// the baseline (`desired ^ current`, MSB first as the encoder places
+    /// fields; `0xFF` when the device's octet was not read). The same octets
+    /// [`FlashPlan::changed_octets`] counts.
+    pub fn changed_bits(&self) -> BTreeMap<String, Vec<(usize, u8)>> {
         self.baseline
             .iter()
             .map(|(segment, current)| {
                 let desired = self.images.get(segment).map(Vec::as_slice).unwrap_or(&[]);
                 let mask = self.segment_mask(segment);
-                desired
+                let changed: Vec<(usize, u8)> = desired
                     .iter()
                     .enumerate()
                     .filter(|(i, b)| {
                         mask.is_none_or(|m| m.get(*i) == Some(&0xFF)) && current.get(*i) != Some(*b)
                     })
-                    .count()
+                    .map(|(i, b)| (i, current.get(i).map_or(0xFF, |c| c ^ b)))
+                    .collect();
+                (segment.clone(), changed)
             })
-            .sum()
+            .filter(|(_, changed)| !changed.is_empty())
+            .collect()
     }
 }
 

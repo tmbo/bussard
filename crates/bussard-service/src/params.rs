@@ -23,10 +23,10 @@ use std::time::Duration;
 
 use bussard_download::backup::backups_root;
 use bussard_download::{
-    ChangeMark, ChangeSubject, DecodedParameters, DevicePlan, FlashPlan, LiveTables, ParamRegions,
-    ParamValue, PlanChange, PlanReport, PlanWrites, ResidentState, decode_parameters,
-    group_object_change, object_changes, probe_resident_state, read_parameter_regions,
-    regions_memory, select_application, sort_changes, state_hash,
+    ChangeMark, ChangeSubject, DecodedParameters, DevicePlan, FlashPlan, LiveTables, OctetRange,
+    OctetRole, ParamRegions, ParamValue, PlanChange, PlanReport, PlanWrites, ResidentState,
+    decode_parameters, group_object_change, object_changes, probe_resident_state,
+    read_parameter_regions, regions_memory, select_application, sort_changes, state_hash,
 };
 use bussard_mgmt::{L4Channel, Layer4Connection};
 use bussard_model::schema::{Device, ProductEntry};
@@ -483,6 +483,10 @@ pub struct ParamDetail {
     /// Why writing the model's values needs a full flash: they show or hide
     /// a com-object (the group-object table changes). `None` when they do not.
     pub needs_flash: Option<String>,
+    /// The octets a parameter-only download of the model writes, with the
+    /// parameters behind each run (issue #279). Empty when nothing differs
+    /// or the download cannot be cut.
+    pub octets: Vec<OctetRange>,
 }
 
 /// A parameter read-back: the report, and the detail when the memory was
@@ -559,6 +563,18 @@ pub async fn read_state<Ch: L4Channel>(
         .map(reading_json)
         .collect();
     let (non_default, differences) = report(decoded.clone());
+    let octets = plan
+        .parameters_only(&regions)
+        .map(|partial| {
+            bussard_download::attribute_octets(
+                app,
+                &overrides,
+                &bases,
+                &current,
+                &partial.changed_bits(),
+            )
+        })
+        .unwrap_or_default();
     ParamState {
         readback: Readback {
             application: app.id.clone(),
@@ -573,6 +589,7 @@ pub async fn read_state<Ch: L4Channel>(
             decoded,
             resident,
             needs_flash,
+            octets,
         }),
     }
 }
@@ -638,6 +655,146 @@ pub struct BuiltPlan {
     /// Why the parameters were not compared or cannot be written, when they
     /// were not (also in the plan's notes).
     pub parameters_skipped: Option<String>,
+    /// Every run of parameter octets the plan writes, with the parameters
+    /// behind it (issue #279). Empty when no parameter octet is written.
+    pub octet_ranges: Vec<OctetAttribution>,
+}
+
+/// A run of parameter octets a plan writes, in the model's words (issue
+/// #279).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct OctetAttribution {
+    /// The code segment, as the product names it after the application id
+    /// (`RS-2`).
+    pub segment: String,
+    /// The first octet's offset in the segment.
+    pub offset: usize,
+    /// How many octets.
+    pub length: usize,
+    /// The parameters whose bits in the run differ, by device-file key.
+    pub parameters: Vec<OctetParameter>,
+    /// The run in one line, ready to quote.
+    pub sentence: String,
+}
+
+/// A parameter behind written octets.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct OctetParameter {
+    /// The device-file key (`<channel>.<key>` in a channel), or the ref id
+    /// when the device file does not place the parameter.
+    pub key: String,
+    /// The vendor text.
+    pub name: String,
+    /// Why it is or is not in the changed list.
+    pub role: OctetRole,
+}
+
+/// How many octet runs a plan's notes spell out before pointing at the
+/// structured list.
+const OCTET_NOTE_RANGES: usize = 8;
+
+/// The model-side key of a parameter ref on `device`: `<channel>.<key>` or
+/// `<key>` where the device file places it, else the ref id.
+fn file_key(device: Option<&Device>, reference: &str) -> String {
+    let Some(d) = device else {
+        return reference.to_string();
+    };
+    match d.parameter_place(reference) {
+        Some((channel, key)) => match channel.map(|id| d.channel_handle(&id)) {
+            Some(handle) => format!("{handle}.{key}"),
+            None => key,
+        },
+        None => reference.to_string(),
+    }
+}
+
+/// The octet runs of `ranges` in the model's words.
+fn octet_attributions(device: Option<&Device>, ranges: &[OctetRange]) -> Vec<OctetAttribution> {
+    ranges
+        .iter()
+        .map(|r| {
+            let segment = r
+                .segment
+                .rsplit_once('_')
+                .map_or(r.segment.as_str(), |(_, tail)| tail)
+                .to_string();
+            let parameters: Vec<OctetParameter> = r
+                .owners
+                .iter()
+                .map(|o| OctetParameter {
+                    key: file_key(device, &o.key),
+                    name: o.name.clone(),
+                    role: o.role,
+                })
+                .collect();
+            let place = format!(
+                "{} at offset {} of segment {segment}",
+                if r.length == 1 {
+                    "1 octet".to_string()
+                } else {
+                    format!("{} octets", r.length)
+                },
+                r.offset
+            );
+            let sentence = if parameters.is_empty() {
+                format!(
+                    "{place}: device memory differs from the model's defaults there, not \
+                     covered by a shown parameter"
+                )
+            } else {
+                let names: Vec<String> = parameters
+                    .iter()
+                    .map(|p| format!("{} ({}, {})", p.name, p.key, p.role.describe()))
+                    .collect();
+                format!("{place}: {}", names.join("; "))
+            };
+            OctetAttribution {
+                segment,
+                offset: r.offset,
+                length: r.length,
+                parameters,
+                sentence,
+            }
+        })
+        .collect()
+}
+
+/// The plan notes that explain the written octets no changed parameter
+/// accounts for: every run when no parameter changes, else the runs that
+/// are not all changed parameters. Empty when nothing needs explaining.
+fn octet_notes(octets: usize, changed: usize, ranges: &[OctetAttribution]) -> Vec<String> {
+    let unexplained: Vec<&OctetAttribution> = ranges
+        .iter()
+        .filter(|r| {
+            r.parameters.is_empty() || r.parameters.iter().any(|p| p.role != OctetRole::Changed)
+        })
+        .collect();
+    if octets == 0 || unexplained.is_empty() {
+        return Vec::new();
+    }
+    let mut notes = vec![if changed == 0 {
+        format!(
+            "the {octets} parameter octet{} this plan writes change{} no parameter the device \
+             file shows; writing the model's image puts back what follows",
+            if octets == 1 { "" } else { "s" },
+            if octets == 1 { "s" } else { "" }
+        )
+    } else {
+        "parameter octets written besides the changed parameters:".to_string()
+    }];
+    notes.extend(
+        unexplained
+            .iter()
+            .take(OCTET_NOTE_RANGES)
+            .map(|r| r.sentence.clone()),
+    );
+    if unexplained.len() > OCTET_NOTE_RANGES {
+        notes.push(format!(
+            "and {} more octet runs (the plan's parameter octet list names them all)",
+            unexplained.len() - OCTET_NOTE_RANGES
+        ));
+    }
+    notes
 }
 
 /// The refusal of a parameter write whose values show, hide or reshape a
@@ -674,6 +831,7 @@ pub fn build_device_plan(
     let mut refusal = None;
     let mut parameter_octets = 0;
     let mut parameters = Vec::new();
+    let mut octet_ranges = Vec::new();
 
     match params {
         None => {
@@ -755,6 +913,12 @@ pub fn build_device_plan(
                             parameter_octets = p.changed_octets();
                             if parameter_octets > 0 {
                                 partial = Some(p);
+                                octet_ranges = octet_attributions(device, &detail.octets);
+                                notes.extend(octet_notes(
+                                    parameter_octets,
+                                    parameters.len(),
+                                    &octet_ranges,
+                                ));
                             }
                         }
                         Err(err) => notes.push(format!(
@@ -815,6 +979,7 @@ pub fn build_device_plan(
         parameters,
         refusal,
         parameters_skipped,
+        octet_ranges,
     }
 }
 
@@ -826,6 +991,80 @@ mod tests {
         ProductCatalog {
             application_ids: ids.iter().map(|s| s.to_string()).collect(),
             ..ProductCatalog::default()
+        }
+    }
+
+    /// Issue #279: the written octets are named per run, and a plan that
+    /// changes no shown parameter says why it writes octets at all.
+    #[test]
+    fn test_octet_notes_explain_unattributed_octets() {
+        let owner = |key: &str, role: OctetRole| bussard_download::OctetOwner {
+            key: key.to_string(),
+            name: format!("{key} text"),
+            role,
+        };
+        let range =
+            |offset: usize, length: usize, owners: Vec<bussard_download::OctetOwner>| OctetRange {
+                segment: "M-00FA_A-0002_RS-2".to_string(),
+                offset,
+                length,
+                owners,
+            };
+        let uncovered = octet_attributions(None, &[range(1, 2, vec![])]);
+        assert_eq!(uncovered[0].segment, "RS-2");
+        assert_eq!(
+            uncovered[0].sentence,
+            "2 octets at offset 1 of segment RS-2: device memory differs from the model's \
+             defaults there, not covered by a shown parameter"
+        );
+        let hidden = octet_attributions(
+            None,
+            &[range(
+                4,
+                1,
+                vec![owner("P-8_R-8", OctetRole::DeviceManaged)],
+            )],
+        );
+        let changed = octet_attributions(
+            None,
+            &[range(0, 1, vec![owner("P-0_R-1", OctetRole::Changed)])],
+        );
+
+        // (octets, changed parameters, runs, the notes' first line or None)
+        let cases: Vec<(usize, usize, Vec<OctetAttribution>, Option<&str>)> = vec![
+            (
+                2,
+                0,
+                uncovered.clone(),
+                Some(
+                    "the 2 parameter octets this plan writes change no parameter the device \
+                     file shows; writing the model's image puts back what follows",
+                ),
+            ),
+            (
+                1,
+                0,
+                hidden.clone(),
+                Some(
+                    "the 1 parameter octet this plan writes changes no parameter the device \
+                     file shows; writing the model's image puts back what follows",
+                ),
+            ),
+            (1, 1, changed.clone(), None),
+            (
+                2,
+                1,
+                [changed, hidden].concat(),
+                Some("parameter octets written besides the changed parameters:"),
+            ),
+            (0, 0, Vec::new(), None),
+        ];
+        for (octets, n_changed, runs, want) in cases {
+            let notes = octet_notes(octets, n_changed, &runs);
+            assert_eq!(notes.first().map(String::as_str), want, "{notes:?}");
+            if want.is_some() {
+                assert_eq!(notes.len(), 2, "{notes:?}");
+            }
         }
     }
 
