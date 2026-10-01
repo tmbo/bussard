@@ -283,7 +283,10 @@ async fn test_plan_and_apply_write_back_up_and_reload() -> TestResult {
     let backup = applied["backup"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("no backup: {applied}"))?;
-    assert!(backup.contains("captures/backups/ha/"), "{backup}");
+    assert!(
+        Path::new(backup).starts_with(bussard_ha::apply::backup_dir(&dir)),
+        "{backup}"
+    );
     assert_eq!(std::fs::read_to_string(backup)?, old);
     assert_eq!(applied["status_after"]["reachable"], true);
 
