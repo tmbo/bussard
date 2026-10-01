@@ -54,6 +54,7 @@ mod conn;
 pub mod discovery;
 mod error;
 pub mod guidance;
+pub mod host_lock;
 pub mod knxnet;
 mod router;
 mod secure;
@@ -108,6 +109,15 @@ impl Transport {
     pub fn assigned_individual_address(&self) -> Option<u16> {
         match self {
             Transport::Tunnel(t) => t.assigned_individual_address().filter(|&ia| ia != 0),
+            Transport::Router(_) => None,
+        }
+    }
+
+    /// The KNXnet/IP Secure tunnelling user this connection authenticated
+    /// as, or `None` for a plain tunnel or routing (issue #287).
+    pub fn secure_user_id(&self) -> Option<u8> {
+        match self {
+            Transport::Tunnel(t) => t.secure_user_id(),
             Transport::Router(_) => None,
         }
     }

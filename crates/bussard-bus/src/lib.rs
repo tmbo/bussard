@@ -33,6 +33,10 @@
 //!   gateway link (issue #177) reports [`BusState::Reconnecting`] while it does,
 //!   and [`BusState::Connected`] once it is back; the send that was pending
 //!   completes then, instead of failing.
+//! - [`diagnostics`](BusHandle::diagnostics) and
+//!   [`reconnect`](BusHandle::reconnect) (issue #287): why the bus is down
+//!   (the exact last error and when, the failed attempts, the time to the next
+//!   one, the tunnelling user), and a fresh connect now with the backoff reset.
 //! - [`close`](BusHandle::close) — awaits the transport `DISCONNECT` on a single
 //!   close path (the #31 tunnel-slot guarantee), so a graceful shutdown never
 //!   opens a fresh tunnel just to close it.
@@ -47,7 +51,7 @@ pub mod ops;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use bussard_transport::cemi::{CemiFrame, MessageCode};
 use bussard_transport::{
@@ -207,6 +211,45 @@ enum Command {
     },
     /// Cleanly close the connection; reply when the DISCONNECT has been awaited.
     Close { reply: oneshot::Sender<()> },
+    /// Drop the connection (or the wait for the next attempt) and connect
+    /// afresh now with the backoff reset; reply once that attempt finished
+    /// (issue #287).
+    Reconnect { reply: oneshot::Sender<()> },
+}
+
+/// What the actor knows about its connection attempts (issue #287): enough
+/// to tell an operator why the bus is down without reading the log.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BusDiagnostics {
+    /// The interface the bus connects to, as an operator reads it
+    /// (`192.0.2.10:3671`, or `multicast 224.0.23.12:3671`).
+    pub interface: String,
+    /// The KNXnet/IP Secure tunnelling user of the current (or last)
+    /// connection, if secure.
+    pub tunnel_user: Option<u8>,
+    /// The exact error of the last failed connect attempt or of the last lost
+    /// connection. Kept after a successful reconnect, as history.
+    pub last_error: Option<String>,
+    /// When `last_error` happened.
+    pub last_error_at: Option<SystemTime>,
+    /// Failed connect attempts since the bus was last connected (0 while
+    /// connected).
+    pub attempts: u32,
+    /// How long until the next connect attempt, while waiting for one.
+    pub retry_in: Option<Duration>,
+    /// When the current connection came up, while connected.
+    pub connected_since: Option<SystemTime>,
+}
+
+/// The mutable part of [`BusDiagnostics`], behind the shared lock.
+#[derive(Debug, Default)]
+struct DiagState {
+    tunnel_user: Option<u8>,
+    last_error: Option<String>,
+    last_error_at: Option<SystemTime>,
+    attempts: u32,
+    retry_at: Option<tokio::time::Instant>,
+    connected_since: Option<SystemTime>,
 }
 
 /// Shared, cheaply-cloneable status published by the actor and read by handles.
@@ -225,9 +268,20 @@ struct Shared {
     link_losses: AtomicU64,
     /// The fatal connect error the actor stopped on, if any.
     fatal: std::sync::Mutex<Option<String>>,
+    /// The interface, for [`BusDiagnostics::interface`].
+    interface: String,
+    /// The attempt history (issue #287).
+    diag: std::sync::Mutex<DiagState>,
 }
 
 impl Shared {
+    /// Updates the attempt history; a poisoned lock skips the update.
+    fn diag(&self, f: impl FnOnce(&mut DiagState)) {
+        if let Ok(mut d) = self.diag.lock() {
+            f(&mut d);
+        }
+    }
+
     fn set_state(&self, state: BusState) {
         self.state.store(state.as_u8(), Ordering::Relaxed);
         // Store the state in the watch and wake any `wait_connected` /
@@ -267,6 +321,8 @@ impl Bus {
             reconnect_budget: config.reconnect.budget,
             link_losses: AtomicU64::new(0),
             fatal: std::sync::Mutex::new(None),
+            interface: bussard_transport::write_gate::gateway_display(&config),
+            diag: std::sync::Mutex::new(DiagState::default()),
         });
 
         let actor = Actor {
@@ -371,6 +427,49 @@ impl BusHandle {
     /// [`BusState::Closed`].
     pub fn fatal_error(&self) -> Option<String> {
         self.shared.fatal.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// The attempt history: the last error and when, the failed attempts
+    /// since the last connect, the time to the next attempt, the interface
+    /// and the tunnelling user (issue #287).
+    pub fn diagnostics(&self) -> BusDiagnostics {
+        let mut out = BusDiagnostics {
+            interface: self.shared.interface.clone(),
+            ..BusDiagnostics::default()
+        };
+        if let Ok(d) = self.shared.diag.lock() {
+            out.tunnel_user = d.tunnel_user;
+            out.last_error = d.last_error.clone();
+            out.last_error_at = d.last_error_at;
+            out.attempts = d.attempts;
+            out.retry_in = d
+                .retry_at
+                .map(|at| at.saturating_duration_since(tokio::time::Instant::now()));
+            out.connected_since = d.connected_since;
+        }
+        out
+    }
+
+    /// Drops the current connection, or the wait for the next attempt, and
+    /// connects afresh now: a fresh socket, a fresh KNXnet/IP Secure session,
+    /// and the reconnect backoff reset (issue #287). Resolves once that
+    /// attempt has finished, connected or not; read [`status`](Self::status)
+    /// and [`diagnostics`](Self::diagnostics) for the outcome.
+    ///
+    /// A connected bus closes its tunnel cleanly first (DISCONNECT, session
+    /// close), so the interface frees the slot before the new CONNECT.
+    ///
+    /// # Errors
+    ///
+    /// [`BusError::ActorGone`] when the actor has stopped (closed, or on a
+    /// fatal connect error).
+    pub async fn reconnect(&self) -> Result<(), BusError> {
+        let (reply, rx) = oneshot::channel();
+        self.commands
+            .send(Command::Reconnect { reply })
+            .await
+            .map_err(|_| BusError::ActorGone)?;
+        rx.await.map_err(|_| BusError::ActorGone)
     }
 
     /// The current connection status.
@@ -571,15 +670,35 @@ impl Actor {
     /// [`Command::Close`] or when every handle has been dropped.
     async fn run(mut self) {
         let mut backoff = BACKOFF_START;
+        // Whether the bus has been connected once. A connect error that is
+        // fatal at startup (a refused password, a TCP endpoint that refuses)
+        // is retried after that: the same credentials worked, so the cause is
+        // the interface's state, not the configuration (issue #287).
+        let mut ever_connected = false;
+        // `knx_bus_reconnect` callers waiting for the next attempt to finish.
+        let mut waiting: Vec<oneshot::Sender<()>> = Vec::new();
 
         loop {
-            match Transport::connect(&self.config).await {
+            let attempt = Transport::connect(&self.config).await;
+            let connected = attempt.is_ok();
+            match attempt {
                 Ok(conn) => {
                     backoff = BACKOFF_START;
+                    ever_connected = true;
                     // Publish the assigned IA and connected state.
                     let ia = conn.assigned_individual_address().unwrap_or(0);
                     self.shared.assigned_ia.store(ia, Ordering::Relaxed);
+                    let user = conn.secure_user_id();
+                    self.shared.diag(|d| {
+                        d.attempts = 0;
+                        d.retry_at = None;
+                        d.tunnel_user = user;
+                        d.connected_since = Some(SystemTime::now());
+                    });
                     self.shared.set_state(BusState::Connected);
+                    for reply in waiting.drain(..) {
+                        let _ = reply.send(());
+                    }
                     // Mirror the tunnel's own re-establish (issue #177) into the
                     // bus state. A separate task, because the actor awaits a
                     // pending send inline while the tunnel re-establishes.
@@ -591,22 +710,32 @@ impl Actor {
                     if let Some(forwarder) = forwarder {
                         forwarder.abort();
                     }
+                    self.shared.diag(|d| d.connected_since = None);
                     match outcome {
-                        ActorOutcome::Closed => {
+                        ActorOutcome::Closed | ActorOutcome::HandlesDropped => {
                             self.shared.set_state(BusState::Closed);
                             return;
                         }
-                        ActorOutcome::HandlesDropped => {
-                            self.shared.set_state(BusState::Closed);
-                            return;
-                        }
-                        ActorOutcome::Dropped => {
+                        ActorOutcome::Dropped(err) => {
                             self.shared.link_losses.fetch_add(1, Ordering::Relaxed);
+                            let text = format!("connection lost: {err}");
+                            let retry_at = tokio::time::Instant::now() + backoff;
+                            self.shared.diag(|d| {
+                                d.last_error = Some(text);
+                                d.last_error_at = Some(SystemTime::now());
+                                d.retry_at = Some(retry_at);
+                            });
                             self.shared.set_state(BusState::Reconnecting);
+                        }
+                        ActorOutcome::Reconnect(reply) => {
+                            tracing::info!("bus reconnect requested; connecting afresh");
+                            waiting.push(reply);
+                            self.shared.set_state(BusState::Reconnecting);
+                            continue;
                         }
                     }
                 }
-                Err(err) if err.is_fatal() => {
+                Err(err) if err.is_fatal() && !ever_connected => {
                     // Retrying cannot help (issue #182): stop, and let the
                     // command report this error instead of a later timeout.
                     tracing::debug!("bus connect failed for good: {err}");
@@ -614,6 +743,12 @@ impl Actor {
                     if let Ok(mut slot) = self.shared.fatal.lock() {
                         *slot = Some(err.to_string());
                     }
+                    let text = err.to_string();
+                    self.shared.diag(|d| {
+                        d.last_error = Some(text);
+                        d.last_error_at = Some(SystemTime::now());
+                        d.attempts = d.attempts.saturating_add(1);
+                    });
                     self.shared.set_state(BusState::Closed);
                     return;
                 }
@@ -624,10 +759,28 @@ impl Actor {
                             "the gateway has no free tunnelling connection (E_NO_MORE_CONNECTIONS); \
                              another client holds every slot. Retrying in {backoff:?}"
                         );
+                    } else if err.is_fatal() {
+                        tracing::warn!(
+                            "bus connect failed: {err}; retrying in {backoff:?} (the same \
+                             configuration connected before)"
+                        );
                     } else {
                         tracing::warn!("bus connect failed: {err}; retrying in {backoff:?}");
                     }
+                    let text = err.to_string();
+                    let retry_at = tokio::time::Instant::now() + backoff;
+                    self.shared.diag(|d| {
+                        d.last_error = Some(text);
+                        d.last_error_at = Some(SystemTime::now());
+                        d.attempts = d.attempts.saturating_add(1);
+                        d.retry_at = Some(retry_at);
+                    });
                     self.shared.set_state(BusState::Reconnecting);
+                }
+            }
+            if !connected {
+                for reply in waiting.drain(..) {
+                    let _ = reply.send(());
                 }
             }
 
@@ -636,6 +789,11 @@ impl Actor {
             // fresh tunnel just to close it — issue #31).
             match self.wait_backoff(backoff).await {
                 BackoffOutcome::Elapsed => backoff = next_backoff(backoff),
+                BackoffOutcome::Reconnect(reply) => {
+                    tracing::info!("bus reconnect requested; connecting now");
+                    waiting.push(reply);
+                    backoff = BACKOFF_START;
+                }
                 BackoffOutcome::Close => {
                     self.shared.set_state(BusState::Closed);
                     return;
@@ -645,6 +803,7 @@ impl Actor {
                     return;
                 }
             }
+            self.shared.diag(|d| d.retry_at = None);
         }
     }
 
@@ -683,7 +842,7 @@ impl Actor {
                             message_code,
                         });
                     }
-                    Err(_err) => return ActorOutcome::Dropped,
+                    Err(err) => return ActorOutcome::Dropped(err.to_string()),
                 },
 
                 // A command from a handle.
@@ -704,9 +863,10 @@ impl Actor {
                                 let _ = reply.send(Ok(SendReceipt::new()));
                             }
                             Err(err) => {
+                                let text = err.to_string();
                                 let _ = reply.send(Err(BusError::Transport(err)));
                                 // A send error is a connection problem: reconnect.
-                                return ActorOutcome::Dropped;
+                                return ActorOutcome::Dropped(text);
                             }
                         }
                     }
@@ -714,6 +874,12 @@ impl Actor {
                         let _ = conn.close().await;
                         let _ = reply.send(());
                         return ActorOutcome::Closed;
+                    }
+                    Some(Command::Reconnect { reply }) => {
+                        // Close cleanly so the interface frees the tunnel and
+                        // the user's session before the fresh connect.
+                        let _ = conn.close().await;
+                        return ActorOutcome::Reconnect(reply);
                     }
                     None => return ActorOutcome::HandlesDropped,
                 },
@@ -761,6 +927,9 @@ impl Actor {
                         let _ = reply.send(());
                         return BackoffOutcome::Close;
                     }
+                    Some(Command::Reconnect { reply }) => {
+                        return BackoffOutcome::Reconnect(reply);
+                    }
                     None => return BackoffOutcome::HandlesDropped,
                 },
             }
@@ -774,14 +943,19 @@ enum ActorOutcome {
     Closed,
     /// Every handle was dropped; nothing more can command the actor.
     HandlesDropped,
-    /// The connection dropped; the actor should reconnect.
-    Dropped,
+    /// The connection dropped (with this error); the actor should reconnect.
+    Dropped(String),
+    /// A reconnect was requested: the connection was closed; connect afresh
+    /// and answer `reply` after that attempt.
+    Reconnect(oneshot::Sender<()>),
 }
 
 /// The result of waiting out a reconnect backoff.
 enum BackoffOutcome {
     /// The backoff elapsed; try to connect again.
     Elapsed,
+    /// A reconnect was requested: connect now, with the backoff reset.
+    Reconnect(oneshot::Sender<()>),
     /// A `Close` command arrived.
     Close,
     /// Every handle was dropped.
@@ -802,6 +976,13 @@ async fn forward_link(mut link: watch::Receiver<LinkState>, shared: Arc<Shared>)
         match state {
             LinkState::Reconnecting => {
                 shared.link_losses.fetch_add(1, Ordering::Relaxed);
+                shared.diag(|d| {
+                    d.last_error = Some(
+                        "gateway connection lost; the tunnel is re-establishing itself".to_string(),
+                    );
+                    d.last_error_at = Some(SystemTime::now());
+                    d.connected_since = None;
+                });
                 tracing::info!("gateway connection lost, reconnecting");
                 shared.set_state(BusState::Reconnecting);
             }
@@ -816,6 +997,7 @@ async fn forward_link(mut link: watch::Receiver<LinkState>, shared: Arc<Shared>)
                     );
                 }
                 tracing::info!("gateway connection re-established");
+                shared.diag(|d| d.connected_since = Some(SystemTime::now()));
                 shared.set_state(BusState::Connected);
             }
         }

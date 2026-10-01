@@ -401,7 +401,10 @@ const READ_INSTRUCTIONS: &str = "bussard: KNX as code over MCP. The installation
     knx_get_device and knx_show_device to explore, and knx_validate and knx_audit to check \
     the model. Observe with knx_recent_telegrams and knx_wait_for_telegram (the latter \
     enables 'press the button now' debugging); knx_read_group reads a value and \
-    knx_describe_device introspects a device's interface objects over the bus. Change the \
+    knx_describe_device introspects a device's interface objects over the bus. When a bus \
+    tool says the bus is not connected, knx_bus_status says why (the last transport error, \
+    the attempts, the next retry) and knx_bus_reconnect connects afresh now; neither writes \
+    to the bus. Change the \
     model with the edit tools, never by writing files: knx_set_group, knx_add_link, \
     knx_remove_link, knx_set_device, knx_set_parameter and knx_undo. Parameters are edited \
     with knx_set_parameter using the keys knx_show_device lists (the device needs its \
@@ -426,7 +429,9 @@ const PROGRAMMING_INSTRUCTIONS: &str = "bussard: KNX as code over MCP. The insta
     knx_audit to check the model. Observe with knx_recent_telegrams and \
     knx_wait_for_telegram (the latter enables 'press the button now' debugging); \
     knx_read_group reads a value and knx_describe_device introspects a device's interface \
-    objects over the bus. Change the model with the edit tools, never by writing files: \
+    objects over the bus. When a bus tool says the bus is not connected, knx_bus_status says \
+    why (the last transport error, the attempts, the next retry) and knx_bus_reconnect \
+    connects afresh now; neither writes to the bus. Change the model with the edit tools, never by writing files: \
     knx_set_group, knx_add_link, knx_remove_link, knx_set_device, knx_set_parameter and \
     knx_undo. Parameters are edited with knx_set_parameter using the keys knx_show_device \
     lists (the device needs its product model). Every edit snapshots the files first and \

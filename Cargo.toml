@@ -70,6 +70,10 @@ serde_norway = "0.9"
 toml = "1"
 toml_edit = "0.25"
 thiserror = "2"
+# rustix: asks the kernel whether a pid recorded in a host lock is alive
+# (`kill(pid, 0)`, issue #287) without `unsafe`. Unix only. Apache-2.0 WITH
+# LLVM-exception OR Apache-2.0 OR MIT, already in the tree through tempfile.
+rustix = { version = "1", default-features = false, features = ["std", "process"] }
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

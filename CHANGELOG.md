@@ -729,6 +729,30 @@ directory or a script from before these changes needs:
 
 ### Fixed
 
+- A bus stuck reconnecting says why and can be told to reconnect (#287).
+  `bus` in `knx_project_summary` and the new read-only `knx_bus_status`
+  carry the interface, the tunnelling user, the exact last transport error
+  and when it happened, the failed attempts and the seconds to the next one;
+  a bus tool refused while the bus is down quotes that error. A socket error
+  in the KNXnet/IP Secure handshake names the step it happened at.
+  `knx_bus_reconnect` (read tier, not a write) drops the connection and
+  connects afresh with the backoff reset.
+- Two bussard processes on one host no longer share a tunnelling user
+  (#287). The tunnel marks the user it holds in
+  `<dir>/.bussard/tunnel-users/` (stale pids ignored) and a second process
+  picks another; a user the interface refuses (authentication, no tunnel,
+  or a hang-up in the handshake) hands over to the next keyring user before
+  the bus backs off. `bussard mcp` warns at start when another server for
+  the same model directory runs, and lists it in `knx_bus_status`.
+- A lost KNXnet/IP Secure tunnel closes its stale session before it opens
+  the new one (#287). Before, the re-establish authenticated as the same
+  user while the old session was still open, which an interface holding one
+  session per user refuses for the whole budget.
+- A connect error that is fatal at startup (a refused password, a TCP
+  endpoint that refuses while UDP still answers) no longer stops a bus that
+  was connected before: it is retried, since the same configuration worked
+  (#287).
+
 - `knx_model_lookup` searches com-object and channel texts (#276): every
   object a device has, linked or not, matches on its vendor text, function
   and key besides the link name, and a new `channels` list matches channel

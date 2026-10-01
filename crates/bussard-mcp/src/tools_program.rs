@@ -278,7 +278,7 @@ impl BussardMcp {
             return Err("the bus is not wired".into());
         };
         if state.bus.state() != ConnState::Connected {
-            return Err(format!("the bus to {gateway} is not connected"));
+            return Err(state.bus.not_connected_reason());
         }
         Ok((tier, handle.clone(), gateway))
     }

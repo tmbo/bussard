@@ -84,7 +84,15 @@ pub async fn probe_secure_idle(
         value: 0,
     })?;
     let (user, probed) = match plan_connection(config, gateway).await? {
-        Plan::Secure { user, probed } => (user, probed),
+        Plan::Secure { users, probed } => match users.into_iter().next() {
+            Some((user, _)) => (user, probed),
+            None => {
+                return Err(TransportError::SecureNotSelected {
+                    gateway,
+                    reason: "the keyring lists no tunnelling user for it".to_string(),
+                });
+            }
+        },
         Plan::Plain { keyring_note, .. } => {
             return Err(TransportError::SecureNotSelected {
                 gateway,

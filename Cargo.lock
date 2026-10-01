@@ -225,6 +225,7 @@ name = "bussard-bus"
 version = "0.1.0"
 dependencies = [
  "bussard-model",
+ "bussard-secure",
  "bussard-testkit",
  "bussard-transport",
  "thiserror",
@@ -485,6 +486,7 @@ dependencies = [
  "bussard-secure",
  "bussard-testkit",
  "if-addrs",
+ "rustix",
  "socket2 0.5.10",
  "thiserror",
  "tokio",

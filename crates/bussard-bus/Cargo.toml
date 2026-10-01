@@ -17,6 +17,8 @@ tracing = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
 bussard-testkit = { workspace = true }
+# Key16/Password for the secure mock's tunnelling users (issue #287 tests).
+bussard-secure = { workspace = true }
 
 [lints]
 workspace = true

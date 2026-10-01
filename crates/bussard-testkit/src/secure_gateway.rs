@@ -96,6 +96,12 @@ pub struct SecureGatewayStats {
     /// Sessions ended by the idle timeout (see
     /// [`SecureGatewayBuilder::session_timeout`]).
     pub timeouts: usize,
+    /// TCP connections accepted (a fresh socket per connect, issue #287).
+    pub tcp_connections: usize,
+    /// SESSION_AUTHENTICATEs for a user that already held a session, answered
+    /// by closing the connection (see
+    /// [`SecureGatewayBuilder::one_session_per_user`]).
+    pub user_conflicts: usize,
 }
 
 /// Configures a [`MockSecureGateway`].
@@ -111,9 +117,20 @@ pub struct SecureGatewayBuilder {
     tcp: bool,
     session_timeout: Option<Duration>,
     feature_info_first: bool,
+    one_session_per_user: bool,
 }
 
 impl SecureGatewayBuilder {
+    /// Holds one session per tunnelling user (issue #287): a
+    /// SESSION_AUTHENTICATE for a user whose earlier session is still open is
+    /// answered by closing the TCP connection, without a SESSION_STATUS. This
+    /// models the hypothesis that the IPS300SREG will not let one user hold
+    /// two sessions; the earlier session keeps running.
+    pub fn one_session_per_user(mut self) -> Self {
+        self.one_session_per_user = true;
+        self
+    }
+
     /// Sends a wrapped TUNNELLING_FEATURE_INFO before each CONNECT_RESPONSE,
     /// so the client's handshake must skip an unrelated authenticated frame
     /// (issue #197: over TCP and UDP alike).
@@ -254,6 +271,32 @@ struct Config {
     udp_sessions: bool,
     session_timeout: Option<Duration>,
     feature_info_first: bool,
+    one_session_per_user: bool,
+    /// The users with an open session (for `one_session_per_user`).
+    held_users: Mutex<Vec<u8>>,
+    /// Whether the next accepted connection is the first (the faults apply
+    /// to the first one only).
+    first_connection: std::sync::atomic::AtomicBool,
+    /// The channel handed to the last accepted connection.
+    next_channel: std::sync::atomic::AtomicU8,
+}
+
+/// The TCP side's tasks: the accept loop and one task per connection.
+#[derive(Default)]
+struct TcpTasks {
+    accept: Option<JoinHandle<()>>,
+    sessions: Vec<JoinHandle<()>>,
+}
+
+impl TcpTasks {
+    fn abort_all(&mut self) {
+        if let Some(accept) = self.accept.take() {
+            accept.abort();
+        }
+        for task in self.sessions.drain(..) {
+            task.abort();
+        }
+    }
 }
 
 /// A running mock secure interface. Dropping it stops the tasks.
@@ -261,12 +304,17 @@ pub struct MockSecureGateway {
     port: u16,
     stats: Arc<Mutex<SecureGatewayStats>>,
     tasks: Vec<JoinHandle<()>>,
+    config: Arc<Config>,
+    tcp: Arc<Mutex<TcpTasks>>,
 }
 
 impl Drop for MockSecureGateway {
     fn drop(&mut self) {
         for task in &self.tasks {
             task.abort();
+        }
+        if let Ok(mut tcp) = self.tcp.lock() {
+            tcp.abort_all();
         }
     }
 }
@@ -286,6 +334,7 @@ impl MockSecureGateway {
             tcp: true,
             session_timeout: None,
             feature_info_first: false,
+            one_session_per_user: false,
         }
     }
 
@@ -305,6 +354,40 @@ impl MockSecureGateway {
             .map_err(|_| MockError::Poisoned)
     }
 
+    /// Closes the TCP side (issue #287): the listener goes, so a connect is
+    /// refused, and every open TCP connection is dropped, so a connected
+    /// client sees the peer close its socket. UDP keeps answering.
+    ///
+    /// # Errors
+    /// A poisoned task lock.
+    pub fn close_tcp(&self) -> Result<(), MockError> {
+        let mut tcp = self.tcp.lock().map_err(|_| MockError::Poisoned)?;
+        tcp.abort_all();
+        if let Ok(mut held) = self.config.held_users.lock() {
+            held.clear();
+        }
+        Ok(())
+    }
+
+    /// Opens the TCP side again on the same port after
+    /// [`close_tcp`](Self::close_tcp).
+    ///
+    /// # Errors
+    /// The port cannot be bound again, or a poisoned task lock.
+    pub async fn reopen_tcp(&self) -> Result<(), MockError> {
+        let listener = TcpListener::bind(("127.0.0.1", self.port)).await?;
+        let accept = spawn_accept(
+            listener,
+            self.config.clone(),
+            self.stats.clone(),
+            self.tcp.clone(),
+        );
+        let mut tcp = self.tcp.lock().map_err(|_| MockError::Poisoned)?;
+        tcp.abort_all();
+        tcp.accept = Some(accept);
+        Ok(())
+    }
+
     fn spawn(builder: SecureGatewayBuilder, udp: UdpSocket, tcp: TcpListener, port: u16) -> Self {
         let stats = Arc::new(Mutex::new(SecureGatewayStats::default()));
         let serve_tcp_side = builder.tcp;
@@ -319,45 +402,67 @@ impl MockSecureGateway {
             udp_sessions: builder.udp_sessions,
             session_timeout: builder.session_timeout,
             feature_info_first: builder.feature_info_first,
+            one_session_per_user: builder.one_session_per_user,
+            held_users: Mutex::new(Vec::new()),
+            first_connection: std::sync::atomic::AtomicBool::new(true),
+            next_channel: std::sync::atomic::AtomicU8::new(0x40),
         });
         let udp_task = tokio::spawn(serve_udp(udp, stats.clone(), config.clone()));
+        let tasks = Arc::new(Mutex::new(TcpTasks::default()));
         if !serve_tcp_side {
             // Closing the listener frees the TCP port: a connect is refused.
             drop(tcp);
-            return MockSecureGateway {
-                port,
-                stats,
-                tasks: vec![udp_task],
-            };
-        }
-        let tcp_stats = stats.clone();
-        let tcp_task = tokio::spawn(async move {
-            let mut first = true;
-            let mut channel = 0x40u8;
-            while let Ok((stream, _)) = tcp.accept().await {
-                let faults = if first {
-                    Faults {
-                        drop_after: config.drop_after_requests,
-                        stall_after: config.stall_after_requests,
-                    }
-                } else {
-                    Faults::default()
-                };
-                first = false;
-                channel = channel.wrapping_add(1);
-                let stats = tcp_stats.clone();
-                let config = config.clone();
-                tokio::spawn(async move {
-                    let _ = serve_tcp(stream, config, stats, faults, channel).await;
-                });
+        } else {
+            let accept = spawn_accept(tcp, config.clone(), stats.clone(), tasks.clone());
+            if let Ok(mut t) = tasks.lock() {
+                t.accept = Some(accept);
             }
-        });
+        }
         MockSecureGateway {
             port,
             stats,
-            tasks: vec![udp_task, tcp_task],
+            tasks: vec![udp_task],
+            config,
+            tcp: tasks,
         }
     }
+}
+
+/// The TCP accept loop: one serving task per connection, tracked in `tasks`
+/// so [`MockSecureGateway::close_tcp`] can drop them.
+fn spawn_accept(
+    tcp: TcpListener,
+    config: Arc<Config>,
+    stats: Arc<Mutex<SecureGatewayStats>>,
+    tasks: Arc<Mutex<TcpTasks>>,
+) -> JoinHandle<()> {
+    use std::sync::atomic::Ordering;
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = tcp.accept().await {
+            bump(&stats, |s| s.tcp_connections += 1);
+            let faults = if config.first_connection.swap(false, Ordering::Relaxed) {
+                Faults {
+                    drop_after: config.drop_after_requests,
+                    stall_after: config.stall_after_requests,
+                }
+            } else {
+                Faults::default()
+            };
+            let channel = config
+                .next_channel
+                .fetch_add(1, Ordering::Relaxed)
+                .wrapping_add(1);
+            let stats = stats.clone();
+            let config = config.clone();
+            let session = tokio::spawn(async move {
+                let _ = serve_tcp(stream, config, stats, faults, channel).await;
+            });
+            if let Ok(mut t) = tasks.lock() {
+                t.sessions.retain(|task| !task.is_finished());
+                t.sessions.push(session);
+            }
+        }
+    })
 }
 
 fn bump(stats: &Mutex<SecureGatewayStats>, f: impl FnOnce(&mut SecureGatewayStats)) {
@@ -815,6 +920,28 @@ async fn serve_tcp(
                 let wrapped = read_frame(&mut stream).await?;
                 let (session, reply, user) =
                     finish_authentication(&config, pending, &wrapped, &stats)?;
+                if let Some(user) = &user
+                    && config.one_session_per_user
+                {
+                    let taken = match config.held_users.lock() {
+                        Ok(held) if held.contains(&user.user_id) => true,
+                        Ok(mut held) => {
+                            held.push(user.user_id);
+                            false
+                        }
+                        Err(_) => false,
+                    };
+                    if taken {
+                        // Undo the success the authentication counted and
+                        // hang up without an answer.
+                        bump(&stats, |s| {
+                            s.user_conflicts += 1;
+                            s.sessions = s.sessions.saturating_sub(1);
+                            s.users.pop();
+                        });
+                        return Ok(());
+                    }
+                }
                 stream.write_all(&reply).await?;
                 match user {
                     Some(user) => break (session, user),
@@ -825,7 +952,12 @@ async fn serve_tcp(
         }
     };
 
-    // Tunnelling inside the session.
+    // Tunnelling inside the session. The guard releases the user however
+    // the session ends.
+    let _held = HeldUser {
+        config: config.clone(),
+        user_id: user.user_id,
+    };
     let mut side = TunnelSide::new(channel, user.tunnel_ia);
     loop {
         let Some(frame) = read_session_frame(&mut stream, config.session_timeout).await? else {
@@ -860,6 +992,20 @@ async fn serve_tcp(
                 read_frame(&mut stream).await?;
                 bump(&stats, |s| s.stalled_frames += 1);
             }
+        }
+    }
+}
+
+/// Releases a user's session slot when its TCP session ends.
+struct HeldUser {
+    config: Arc<Config>,
+    user_id: u8,
+}
+
+impl Drop for HeldUser {
+    fn drop(&mut self) {
+        if let Ok(mut held) = self.config.held_users.lock() {
+            held.retain(|&u| u != self.user_id);
         }
     }
 }

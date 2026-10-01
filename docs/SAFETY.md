@@ -938,8 +938,20 @@ never retries into a full interface, so the refusal happens before anything is
 sent to a device.
 
 On a KNXnet/IP Secure interface each slot is bound to a tunnelling user. With
-`--keyring` bussard picks a user whose slot is free; with `--secure-user` the
-slot is fixed by the user you name, so pick one Home Assistant does not hold.
+`--keyring` bussard picks a user whose slot is free and that no other bussard
+process on this host holds (a lock file per user under
+`<dir>/.bussard/tunnel-users/`, issue #287); a user the interface refuses hands
+over to the next. With `--secure-user` the slot is fixed by the user you name,
+so pick one Home Assistant does not hold.
+
+**Reconnecting is not a write.** `knx_bus_reconnect` (MCP, read tier) drops the
+server's connection to the interface and opens a new one: a DISCONNECT and a
+session close for the old tunnel, then a new socket, a new KNXnet/IP Secure
+session and a CONNECT. Nothing is sent onto the KNX bus, no device sees it, and
+the tool needs no gate beyond the read tier; it is withheld only in
+`--passive` mode, where the server reconnects on its own. A tool that writes
+while the bus is down is refused with the last connection error, never queued:
+a frame waiting for a connection is dropped after 2 s.
 
 **Keyring without a device entry (issue #189).** On a secure-only interface
 every command needs the keyring, if only to open the tunnel. A device the

@@ -550,3 +550,103 @@ async fn measure_two_consecutive_describes() -> TestResult {
     server_task.abort();
     Ok(())
 }
+
+/// Polls `knx_bus_status` until `done` holds, up to ~8 s.
+async fn bus_status_until(
+    client: &Client,
+    done: impl Fn(&serde_json::Value) -> bool,
+) -> TestResult<serde_json::Value> {
+    for _ in 0..200 {
+        let status = call_tool(
+            client,
+            "knx_bus_status",
+            serde_json::json!({}),
+            Duration::from_secs(5),
+        )
+        .await?;
+        if done(&status) {
+            return Ok(status);
+        }
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+    Err("knx_bus_status never reached the expected state".into())
+}
+
+#[tokio::test]
+async fn test_bus_status_explains_the_outage_and_reconnect_recovers() -> TestResult {
+    // Issue #287: a bus stuck reconnecting says why (the exact last error,
+    // the attempts, the next retry), a refused bus tool quotes it, and
+    // knx_bus_reconnect connects afresh once the interface is back.
+    use bussard_secure::{Password, salt};
+    let gw = bussard_testkit::MockSecureGateway::builder()
+        .device_auth(Password::new("device-auth-code").derive(salt::DEVICE_AUTHENTICATION_CODE))
+        .user(
+            3,
+            Password::new("tunnel-user-3").derive(salt::USER_PASSWORD),
+            0x1117,
+        )
+        .start()
+        .await?;
+    let secure = bussard_transport::SecureTunnelConfig::new(
+        vec![bussard_transport::SecureUser {
+            user_id: 3,
+            password: Password::new("tunnel-user-3"),
+            device_authentication_code: Some(Password::new("device-auth-code")),
+            tunnel_ia: Some(0x1117),
+            host_ia: None,
+        }],
+        bussard_transport::SecureSource::Explicit,
+    )
+    .with_transport(bussard_transport::SecureTransport::Tcp);
+    let config = ConnectionConfig::tunnel(gw.addr())
+        .with_reconnect(bussard_transport::TunnelReconnect::disabled())
+        .with_secure(Some(secure));
+    let (client, server_task) = connect_client_over(state_for()?, config).await?;
+
+    let up = bus_status_until(&client, |s| s["connected"] == true).await?;
+    assert_eq!(up["interface"], gw.addr().to_string());
+    assert_eq!(up["tunnel_user"], 3);
+    assert_eq!(up["attempts"], 0);
+    assert!(up["connected_since"].is_string(), "{up}");
+
+    gw.close_tcp()?;
+    let down = bus_status_until(&client, |s| s["attempts"].as_u64() >= Some(1)).await?;
+    assert_eq!(down["connected"], false);
+    let last = down["last_error"].as_str().ok_or("a last error")?;
+    assert!(
+        last.contains("socket error"),
+        "the exact transport error: {last}"
+    );
+    assert!(down["last_error_at"].is_string());
+    assert!(down["retry_in_seconds"].is_u64(), "{down}");
+    assert!(down["other_instances"].is_array());
+
+    let refused = call_tool(
+        &client,
+        "knx_read_group",
+        serde_json::json!({"ga": "3/0/4"}),
+        Duration::from_secs(5),
+    )
+    .await?;
+    let reason = refused["reason"].as_str().ok_or("a refusal reason")?;
+    assert!(reason.contains("is not connected: "), "{reason}");
+    assert!(reason.contains("socket error"), "{reason}");
+    assert!(reason.contains("attempt"), "{reason}");
+    assert!(reason.contains("knx_bus_reconnect"), "{reason}");
+
+    gw.reopen_tcp().await?;
+    let again = call_tool(
+        &client,
+        "knx_bus_reconnect",
+        serde_json::json!({}),
+        Duration::from_secs(25),
+    )
+    .await?;
+    assert_eq!(again["ok"], true, "{again}");
+    assert_eq!(again["bus"]["connected"], true);
+    assert_eq!(again["bus"]["attempts"], 0);
+
+    client.cancel().await?;
+    server_task.abort();
+    Ok(())
+}
