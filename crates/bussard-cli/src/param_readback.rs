@@ -8,7 +8,10 @@
 //!
 //! - the parameters whose value differs from the vendor default, and
 //! - the differences to the model's parameter values (what
-//!   `bussard flash --parameters-only` would write).
+//!   `bussard flash --parameters-only` would write), and
+//! - the internal ETS values (`Access="None"`, never shown, e.g. a
+//!   function-block selector) whose octets differ from the model's image,
+//!   with both values (issue #285).
 //!
 //! The resolution, the read and the decoding live in
 //! [`bussard_service::params`], shared with the MCP programming tier (issue
@@ -67,9 +70,28 @@ pub(crate) fn print_text(readback: &Readback, target: IndividualAddress) {
             println!("      {}: {}", r.name, with_unit(&r.value, &r.unit));
         }
     }
+    if !readback.internal.is_empty() {
+        println!(
+            "  internal ETS values that differ from the model (never shown, written by a download):"
+        );
+        for run in &readback.internal {
+            println!("      {}", run.sentence);
+        }
+        if let Some(explanation) = readback
+            .internal
+            .iter()
+            .find_map(|r| r.explanation.as_deref())
+        {
+            println!("      {explanation}");
+        }
+    }
     if readback.non_default.is_empty() && readback.differences.is_empty() {
         if readback.note.is_none() {
-            println!("  every parameter holds its vendor default and matches the model");
+            if readback.internal.is_empty() {
+                println!("  every parameter holds its vendor default and matches the model");
+            } else {
+                println!("  every shown parameter holds its vendor default and matches the model");
+            }
         }
         return;
     }

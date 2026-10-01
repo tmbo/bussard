@@ -54,6 +54,12 @@ directory or a script from before these changes needs:
 - **`replace --product` is optional** (#228): the archive the lock pins is the
   default. A `--product` or `--application` that contradicts the lock is
   refused by `flash`, `apply` and `replace` unless `--force`.
+- **`knx_add_link` / `knx_remove_link` take `address` only** (#285): the
+  `device` alias is gone, and a call that names the device `device` is
+  refused with "expected fields: address, com_object, ga, role". The Claude
+  remote-devices bridge strips a key named `device`, so it never worked
+  there; both descriptions say the device's individual address goes in
+  `address`.
 
 ### Added
 
@@ -514,8 +520,8 @@ directory or a script from before these changes needs:
 - `knx_add_link` and `knx_remove_link` take the device's individual address
   as `address`, like every other MCP tool, instead of `device`. The Claude
   remote-devices bridge reserves `device` for its own routing and strips it
-  from forwarded calls, so those calls arrived without the field. `device` is
-  still accepted as an alias but no longer advertised in the schema.
+  from forwarded calls, so those calls arrived without the field. (The
+  `device` alias was removed later, see Breaking changes.)
 - Product data is resolved from the lock and the store everywhere (#228):
   `replace` no longer requires `--product`, `flash --product <export>` needs
   no `--application` when the lock pins the program, and `adopt` stores an
@@ -776,6 +782,20 @@ directory or a script from before these changes needs:
   image outside any parameter, a hidden or runtime-owned parameter). W005 no
   longer fires for a main-type-only DPT (`1`) next to a subtype of it
   (`1.017`).
+- Written parameter octets are attributed to every parameter placed there
+  (#285), not only the shown ones: a parameter the configuration hides
+  (`hidden`) and an `Access="None"` internal ETS value the configuration
+  does not reach (`internal`, such as the `_AppInstanz <n>` function-block
+  selectors of a Jung push-button) next to `changed`, `same_value` and
+  `device_managed`. Each parameter in `octet_ranges` carries `device` and
+  `model`, the values the device's octets and the model's image hold
+  (enumeration text where the value is a member, else the number), and the
+  sentence reads "1 octet at offset 165 of segment RS-04-00000: _AppInstanz
+  51 (internal ETS selector, P-643), device 3, model no application". A
+  differing internal selector adds one note on what it means (the device's
+  function assignment differs from the project; writing makes the device
+  match the model). `reconstruct` and `plan -v` print the differing internal
+  values too (`parameters.internal` in `--json`).
 - Product models regenerate when `.bussard/models/` exists but is empty or
   lacks the model of a pinned application, not only when the directory is
   absent. Before, an empty directory left every consumer, the MCP server

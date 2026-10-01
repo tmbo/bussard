@@ -76,11 +76,10 @@ pub struct SetGroupArgs {
 /// Arguments for `knx_add_link` and `knx_remove_link`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LinkArgs {
-    // Accepted as `device` too, the name this field had before. The Claude
-    // remote-devices bridge reserves `device` for its own routing and strips
-    // it from forwarded calls, so the advertised name is `address`.
+    // The Claude remote-devices bridge reserves the key `device` for its own
+    // routing and strips it from forwarded calls, so the field is `address`
+    // and no other name is accepted.
     /// The device's individual address, e.g. `"1.1.4"`.
-    #[serde(alias = "device")]
     pub address: String,
     /// The ETS com-object number on that device.
     pub com_object: u16,
@@ -348,7 +347,7 @@ impl BussardMcp {
 
     /// `knx_add_link`.
     #[tool(
-        description = "Bind a device's com object to a group address in its device file (devices/<address>.toml): role \"send\" \
+        description = "Bind a device's com object to a group address in its device file (devices/<address>.toml). The device's individual address goes in `address` (e.g. \"1.1.4\"). Role \"send\" \
         makes the com object transmit on that GA (a com object has at most one, so an existing one \
         is replaced), role \"listen\" makes it react to the GA. A GA that groups.toml does not \
         define yet is added there, named `<channel or device name> <object function>` with the \
@@ -432,7 +431,7 @@ impl BussardMcp {
     /// `knx_remove_link`.
     #[tool(
         description = "Unbind a device's com object from a group address in its device file (devices/<address>.toml) (role \
-        \"send\" or \"listen\"). This edits FILES ONLY: the device keeps its current wiring until \
+        \"send\" or \"listen\"). The device's individual address goes in `address` (e.g. \"1.1.4\"). This edits FILES ONLY: the device keeps its current wiring until \
         knx_plan_device and knx_apply_device push it (the result's next_step says how at this \
         server's tier). Protected group addresses are \
         refused outright. Returns the change as sentences: quote them to the human."

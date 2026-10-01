@@ -2,7 +2,7 @@
 //!
 //! rmcp's own `Parameters<T>` turns a `tools/call` request that carries no
 //! `arguments` member into an empty object, so a client that drops the
-//! arguments produces "missing field `device`", which the assistant reads as a
+//! arguments produces "missing field `address`", which the assistant reads as a
 //! server bug. [`Parameters`] here replaces it on every bussard tool and says
 //! what actually reached the server: no arguments, an empty object, or a real
 //! serde error, each followed by the fields the tool expects.
@@ -196,7 +196,7 @@ mod tests {
 
     #[derive(Debug, Deserialize, JsonSchema)]
     struct Link {
-        device: String,
+        address: String,
         com_object: u16,
         #[serde(default)]
         note: Option<String>,
@@ -221,7 +221,7 @@ mod tests {
             err.as_deref(),
             Some(
                 "the call reached bussard without any arguments (the client sent none); \
-                 expected fields: device, com_object, note (optional); \
+                 expected fields: address, com_object, note (optional); \
                  retry with the arguments as a JSON object"
             )
         );
@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn test_deserialize_arguments_wrong_type_names_field() {
         let err = deserialize_arguments::<Link>(object(
-            json!({"device": "1.1.4", "com_object": "seven"}),
+            json!({"address": "1.1.4", "com_object": "seven"}),
         ))
         .err()
         .map(|e| e.message.to_string())
@@ -248,15 +248,18 @@ mod tests {
             err.contains("com_object: invalid type: string \"seven\""),
             "{err}"
         );
-        assert!(err.contains("expected fields: device, com_object"), "{err}");
+        assert!(
+            err.contains("expected fields: address, com_object"),
+            "{err}"
+        );
     }
 
     #[test]
     fn test_deserialize_arguments_valid() -> Result<(), ErrorData> {
         let link =
-            deserialize_arguments::<Link>(object(json!({"device": "1.1.4", "com_object": 7})))?;
+            deserialize_arguments::<Link>(object(json!({"address": "1.1.4", "com_object": 7})))?;
         assert_eq!(
-            (link.device.as_str(), link.com_object, link.note),
+            (link.address.as_str(), link.com_object, link.note),
             ("1.1.4", 7, None)
         );
         Ok(())

@@ -452,6 +452,48 @@ fn test_plan_and_reconstruct_read_back_the_parameters() -> TestResult {
     Ok(())
 }
 
+/// Issue #285: `reconstruct` names an internal ETS selector whose octet
+/// differs from the model's image, with both values and what it means.
+#[test]
+fn test_reconstruct_prints_differing_internal_selectors() -> TestResult {
+    let Some(bench) = Bench::start(
+        "params-internal",
+        MockDevice::running([12, 0x03]),
+        "\"thr@P-0_R-1\" = \"12\"\n",
+    )?
+    else {
+        return Ok(());
+    };
+    let out = bench.bussard(&["reconstruct", "1.1.4", "--product", bench.product()?])?;
+    let (stdout, stderr) = text(&out);
+    assert!(out.status.success(), "stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert!(
+        stdout.contains(
+            "  internal ETS values that differ from the model (never shown, written by a \
+             download):\n      1 octet at offset 1 of segment RS-2: _AppInstanz 1 (internal \
+             ETS selector, P-3), device Light, model no application\n      an internal ETS \
+             selector differs: the device's function assignment differs from the project"
+        ),
+        "{stdout}"
+    );
+
+    let out = bench.bussard(&[
+        "reconstruct",
+        "1.1.4",
+        "--product",
+        bench.product()?,
+        "--json",
+    ])?;
+    let (stdout, stderr) = text(&out);
+    assert!(out.status.success(), "stdout:\n{stdout}\nstderr:\n{stderr}");
+    let json: serde_json::Value = serde_json::from_str(&stdout)?;
+    let internal = &json["parameters"]["internal"][0]["parameters"][0];
+    assert_eq!(internal["role"], "internal", "{json}");
+    assert_eq!(internal["device"], "Light", "{json}");
+    assert_eq!(internal["model"], "no application", "{json}");
+    Ok(())
+}
+
 /// Issue #215: `reconstruct --no-parameters` reads the links and tables only:
 /// no parameter memory is read and the report's tables are the ones the full
 /// run reports.
