@@ -79,11 +79,7 @@ pub fn decode_parameters(
 ) -> DecodedParameters {
     let keys = KeyForms::new(overrides);
     let placements = |values: &BTreeMap<String, String>| -> Vec<Placed<'_>> {
-        if bussard_prod::uses_dynamic_image(app) {
-            dynamic_placements(app, values, &keys)
-        } else {
-            static_placements(app, values, base_offsets)
-        }
+        placements_of(app, values, base_offsets, &keys)
     };
 
     // The device's configuration: iterate until the decoded values settle.
@@ -173,6 +169,149 @@ pub fn decode_parameters(
         device_managed,
         unknown,
     }
+}
+
+/// The placements the encoder writes for the configuration `values`.
+fn placements_of<'a>(
+    app: &'a ApplicationProgram,
+    values: &BTreeMap<String, String>,
+    base_offsets: &BTreeMap<String, u32>,
+    keys: &KeyForms,
+) -> Vec<Placed<'a>> {
+    if bussard_prod::uses_dynamic_image(app) {
+        dynamic_placements(app, values, keys)
+    } else {
+        static_placements(app, values, base_offsets)
+    }
+}
+
+/// Why a parameter whose bits a parameter download rewrites is, or is not,
+/// in the plan's list of changed parameters (issue #279).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OctetRole {
+    /// A shown parameter whose value changes: it is in the changed list.
+    Changed,
+    /// A shown parameter that decodes to the model's value although its bits
+    /// differ (a later placement overwrites part of them).
+    SameValue,
+    /// A parameter the configuration hides, or one an `<Assign>` sets: it is
+    /// written at the value the configuration gives it, never shown.
+    Hidden,
+    /// A parameter the application owns at runtime (`Access="None"`, e.g. a
+    /// download flag): written at the model's value, never compared.
+    DeviceManaged,
+}
+
+impl OctetRole {
+    /// The role in words, for a plan note.
+    pub fn describe(self) -> &'static str {
+        match self {
+            OctetRole::Changed => "changed",
+            OctetRole::SameValue => "same value, other bits of the field differ",
+            OctetRole::Hidden => "hidden or set by the configuration, written at that value",
+            OctetRole::DeviceManaged => "owned by the application at runtime",
+        }
+    }
+}
+
+/// A parameter whose encoding covers bits of a written octet range.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct OctetOwner {
+    /// The device-file key of the ref (app-relative `ParameterRef` id, with
+    /// the module-instance selector where it has one).
+    pub key: String,
+    /// The vendor text of the parameter.
+    pub name: String,
+    /// Why it is or is not in the changed list.
+    pub role: OctetRole,
+}
+
+/// A run of consecutive written octets in one code segment, with the
+/// parameters whose differing bits lie in it (issue #279). `owners` empty:
+/// the device memory differs from the model's image (the segment's vendor
+/// data) where no parameter is placed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct OctetRange {
+    /// The code-segment id.
+    pub segment: String,
+    /// The first octet's offset in the segment.
+    pub offset: usize,
+    /// How many octets.
+    pub length: usize,
+    /// The parameters covering the differing bits, sorted by key.
+    pub owners: Vec<OctetOwner>,
+}
+
+/// Names the parameters behind each octet a parameter download writes.
+///
+/// `changed` lists, per code segment, each written octet's offset and the
+/// bits that differ ([`crate::FlashPlan::changed_bits`]); `current` is the
+/// memory the device holds. Every placement the encoder writes for the
+/// model's `overrides` whose bit range meets a differing bit owns that
+/// octet. Consecutive octets with the same owners form one range.
+pub fn attribute_octets(
+    app: &ApplicationProgram,
+    overrides: &BTreeMap<String, String>,
+    base_offsets: &BTreeMap<String, u32>,
+    current: &CurrentMemory,
+    changed: &BTreeMap<String, Vec<(usize, u8)>>,
+) -> Vec<OctetRange> {
+    let keys = KeyForms::new(overrides);
+    let placed = placements_of(app, overrides, base_offsets, &keys);
+    let mut out: Vec<OctetRange> = Vec::new();
+    for (segment, octets) in changed {
+        let fields: Vec<(&Placed<'_>, (usize, usize))> = placed
+            .iter()
+            .filter(|p| p.segment == segment.as_str())
+            .map(|p| (p, p.bits(app)))
+            .collect();
+        for &(offset, diff) in octets {
+            let mut owners: Vec<OctetOwner> = Vec::new();
+            for bit in 0..8usize {
+                if diff & (0x80u8 >> bit) == 0 {
+                    continue;
+                }
+                let pos = offset * 8 + bit;
+                for (p, (start, end)) in &fields {
+                    if pos < *start || pos >= *end || owners.iter().any(|o| o.key == p.key) {
+                        continue;
+                    }
+                    let role = if p.device_managed(app) {
+                        OctetRole::DeviceManaged
+                    } else if !p.user_value {
+                        OctetRole::Hidden
+                    } else if p.decode(app, current).as_deref() == p.desired.as_deref() {
+                        OctetRole::SameValue
+                    } else {
+                        OctetRole::Changed
+                    };
+                    owners.push(OctetOwner {
+                        key: p.key.clone(),
+                        name: display_name(p.param),
+                        role,
+                    });
+                }
+            }
+            owners.sort_by(|a, b| a.key.cmp(&b.key));
+            match out.last_mut() {
+                Some(last)
+                    if last.segment == *segment
+                        && last.offset + last.length == offset
+                        && last.owners == owners =>
+                {
+                    last.length += 1;
+                }
+                _ => out.push(OctetRange {
+                    segment: segment.clone(),
+                    offset,
+                    length: 1,
+                    owners,
+                }),
+            }
+        }
+    }
+    out
 }
 
 /// One value the encoder writes, with what the configuration wants there.
@@ -759,6 +898,69 @@ mod tests {
         for (key, value) in &model {
             assert_eq!(decoded.values.get(key), Some(value), "{key}");
         }
+        Ok(())
+    }
+
+    /// Issue #279: every written octet names the parameters behind it, or
+    /// none where the image differs from the device outside any parameter.
+    #[test]
+    fn test_attribute_octets_names_the_parameters_behind_each_octet() -> TestResult {
+        let app = app()?;
+        let model = map(&[
+            ("P-1_R-1", "1"),
+            ("P-10_R-10", "12"),
+            ("UP-4_R-4", "9"),
+            ("P-2_R-2", "5"),
+            ("P-7_R-7", "1"),
+        ]);
+        let image = device(&app, &model)?;
+        // (octet, the value the device holds there, the owners)
+        type Case<'a> = (usize, u8, &'a [(&'a str, OctetRole)]);
+        let cases: &[Case<'_>] = &[
+            (0, 7, &[("P-10_R-10", OctetRole::Changed)]),
+            (13, 0, &[("P-8_R-8", OctetRole::DeviceManaged)]),
+            (14, 0x00, &[]),
+            // Bit 3 of octet 3 is the flag; bit 7 belongs to nothing.
+            (3, 0x10 ^ 0x01, &[]),
+            (3, 0x00, &[("P-7_R-7", OctetRole::Changed)]),
+        ];
+        for &(offset, held, want) in cases {
+            let mut current = image.clone();
+            let segment = current.get_mut("A_RS-1").ok_or("no segment")?;
+            let desired = segment[offset];
+            segment[offset] = held;
+            let changed = BTreeMap::from([("A_RS-1".to_string(), vec![(offset, desired ^ held)])]);
+            let ranges = attribute_octets(&app, &model, &BTreeMap::new(), &current, &changed);
+            assert_eq!(ranges.len(), 1, "octet {offset}: {ranges:?}");
+            let got: Vec<(&str, OctetRole)> = ranges[0]
+                .owners
+                .iter()
+                .map(|o| (o.key.as_str(), o.role))
+                .collect();
+            assert_eq!(got, want.to_vec(), "octet {offset}: {ranges:?}");
+            assert_eq!((ranges[0].offset, ranges[0].length), (offset, 1));
+        }
+
+        // Concept 0 hides `hidden` (octet 2): written at its default, never
+        // shown.
+        let hidden_model = map(&[("P-1_R-1", "0")]);
+        let mut current = device(&app, &hidden_model)?;
+        let segment = current.get_mut("A_RS-1").ok_or("no segment")?;
+        let desired = segment[2];
+        segment[2] = desired ^ 0x01;
+        let changed = BTreeMap::from([("A_RS-1".to_string(), vec![(2, 0x01)])]);
+        let ranges = attribute_octets(&app, &hidden_model, &BTreeMap::new(), &current, &changed);
+        let got: Vec<(&str, OctetRole)> = ranges
+            .iter()
+            .flat_map(|r| r.owners.iter().map(|o| (o.key.as_str(), o.role)))
+            .collect();
+        assert_eq!(got, [("P-2", OctetRole::Hidden)], "{ranges:?}");
+
+        // Consecutive octets with the same owners form one range.
+        let changed = BTreeMap::from([("A_RS-1".to_string(), vec![(14, 0xFF), (15, 0xFF)])]);
+        let ranges = attribute_octets(&app, &model, &BTreeMap::new(), &image, &changed);
+        assert_eq!(ranges.len(), 1, "{ranges:?}");
+        assert_eq!((ranges[0].offset, ranges[0].length), (14, 2));
         Ok(())
     }
 

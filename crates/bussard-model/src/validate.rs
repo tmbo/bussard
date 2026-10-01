@@ -9,7 +9,7 @@ use std::fmt;
 use std::path::Path;
 
 use crate::address::GroupAddress;
-use crate::dpt::ApduSize;
+use crate::dpt::{ApduSize, Dpt};
 use crate::flags::Flags;
 use crate::loader::Model;
 use crate::param_model::{ParamKind, ProductModels, key_to_param_id};
@@ -510,6 +510,27 @@ fn check_duplicate_individual_addresses(model: &Model, diags: &mut Vec<Diagnosti
     // Two files declaring one address are a load error (the loader names both).
 }
 
+/// The DPTs on one group address that conflict, rendered and sorted, or
+/// `None` when they agree (W005).
+///
+/// A main-type-only declaration (`"1"`) is compatible with every subtype of
+/// that main type (`"1.017"`), so it is dropped when a subtype of its main
+/// type is present (issue #279). Two different subtypes of one main type, or
+/// two main types, still conflict.
+fn conflicting_subtypes(dpts: &BTreeSet<Dpt>) -> Option<Vec<String>> {
+    let kept: Vec<String> = dpts
+        .iter()
+        .filter(|d| {
+            d.sub.is_some()
+                || !dpts
+                    .iter()
+                    .any(|other| other.main == d.main && other.sub.is_some())
+        })
+        .map(Dpt::to_string)
+        .collect();
+    (kept.len() > 1).then_some(kept)
+}
+
 /// GA-level consistency: E004, W005, W006, W011, I010.
 fn check_ga_consistency(model: &Model, diags: &mut Vec<Diagnostic>) {
     // For each GA, collect the sizes and DPT subtypes contributed by the group
@@ -517,7 +538,7 @@ fn check_ga_consistency(model: &Model, diags: &mut Vec<Diagnostic>) {
     #[derive(Default)]
     struct GaInfo {
         sizes: BTreeSet<(SizeInfo, String)>, // (size, source label)
-        subtypes: BTreeSet<String>,          // distinct declared DPT subtypes
+        subtypes: BTreeSet<Dpt>,             // distinct declared DPTs
         sizes_only: BTreeSet<SizeInfo>,
         senders: Vec<String>,
         linked: bool,
@@ -534,7 +555,7 @@ fn check_ga_consistency(model: &Model, diags: &mut Vec<Diagnostic>) {
                 info.sizes.insert((si, "groups.toml".to_string()));
                 info.sizes_only.insert(si);
             }
-            info.subtypes.insert(dpt.to_string());
+            info.subtypes.insert(*dpt);
         }
     }
 
@@ -566,7 +587,7 @@ fn check_ga_consistency(model: &Model, diags: &mut Vec<Diagnostic>) {
                         info.sizes.insert((si, format!("{ia}#{} dpt", link.object)));
                         info.sizes_only.insert(si);
                     }
-                    info.subtypes.insert(dpt.to_string());
+                    info.subtypes.insert(*dpt);
                 }
             }
         }
@@ -589,10 +610,8 @@ fn check_ga_consistency(model: &Model, diags: &mut Vec<Diagnostic>) {
                 loc.clone(),
                 format!("conflicting sizes on GA {ga}: {}", described.join(", ")),
             ));
-        } else if info.subtypes.len() > 1 {
+        } else if let Some(subs) = conflicting_subtypes(&info.subtypes) {
             // W005: same size but different declared DPT subtypes.
-            let mut subs: Vec<String> = info.subtypes.iter().cloned().collect();
-            subs.sort();
             diags.push(Diagnostic::new(
                 "W005",
                 Severity::Warning,
@@ -1233,5 +1252,70 @@ parameters:
         assert_eq!(e016.len(), 1, "{diags:#?}");
         assert!(e016[0].message.contains("malformed"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_conflicting_subtypes_main_type_only_is_compatible() {
+        // (declared DPTs on one GA, the W005 list or None)
+        let cases: &[(&[&str], Option<&[&str]>)] = &[
+            (&["1", "1.017"], None),
+            (&["1", "1.001"], None),
+            (&["1"], None),
+            (&["1.001", "1.001"], None),
+            (&["1", "1.001", "1.017"], Some(&["1.001", "1.017"])),
+            (&["1.001", "1.017"], Some(&["1.001", "1.017"])),
+            (&["5", "5.001"], None),
+            (&["5.001", "5.010"], Some(&["5.001", "5.010"])),
+            // A main type only with a subtype of another main type still
+            // conflicts (same size, different types).
+            (&["5", "6.010"], Some(&["5", "6.010"])),
+        ];
+        for (declared, want) in cases {
+            let set: BTreeSet<Dpt> = declared.iter().map(|s| dpt(s)).collect();
+            let got = conflicting_subtypes(&set);
+            let want: Option<Vec<String>> = want.map(|w| w.iter().map(|s| s.to_string()).collect());
+            assert_eq!(got, want, "{declared:?}");
+        }
+    }
+
+    #[test]
+    fn test_w005_skips_main_type_only_group_against_a_subtyped_object() {
+        let mut groups = BTreeMap::new();
+        groups.insert(ga("4/3/4"), group("main only", Some("1")));
+        let mut links_map = BTreeMap::new();
+        links_map.insert(
+            ia("1.1.1"),
+            vec![Link {
+                object: 1,
+                name: None,
+                send: None,
+                listen: vec![ga("4/3/4")],
+            }],
+        );
+        let mut devices = BTreeMap::new();
+        devices.insert(
+            ia("1.1.1"),
+            device(
+                "1.1.1",
+                "1.1.1",
+                vec![(1, com_object("Status", Some("1.017"), "CW"))],
+            ),
+        );
+        let model = Model {
+            config: BussardConfig::default(),
+            groups: Groups {
+                project: None,
+                imported_from: None,
+                ranges: BTreeMap::new(),
+                groups,
+            },
+            links: Links { links: links_map },
+            devices,
+        };
+        let diags = validate(&model);
+        assert!(
+            !diags.iter().any(|d| d.code == "W005"),
+            "a group declared as main type 1 must not conflict: {diags:#?}"
+        );
     }
 }

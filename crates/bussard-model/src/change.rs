@@ -28,7 +28,7 @@ use serde::Serialize;
 
 use crate::address::{GroupAddress, IndividualAddress};
 use crate::loader::{LoadedDevice, Model};
-use crate::param_model::{ProductModels, key_to_param_id};
+use crate::param_model::{ParamDef, ProductModels, enum_code, enum_label, key_to_param_id};
 use crate::schema::{Device, Group, Location, Product};
 
 /// The kind of a single model change.
@@ -272,7 +272,12 @@ pub fn describe(old: &Model, new: &Model) -> ChangeSet {
 /// up in each, in order, for its `application_ref`). A change whose device has
 /// no cached product model, or whose parameter has no text, keeps the label
 /// derived from its key: nothing degrades to silence.
+///
+/// It settles the values first ([`settle_parameters`]): a change whose two
+/// sides name the same enum member is dropped, and enum values read as their
+/// label with the code after it.
 pub fn name_parameters(set: &mut ChangeSet, models: [&Model; 2], products: &ProductModels) {
+    settle_parameters(set, models, products);
     for change in &mut set.changes {
         if change.kind != ChangeKind::ParameterChanged {
             continue;
@@ -300,6 +305,108 @@ pub fn name_parameters(set: &mut ChangeSet, models: [&Model; 2], products: &Prod
             change.sentence = format!("{}{rest}", text.trim());
         }
     }
+}
+
+/// Settles every parameter change against the cached product models (issue
+/// #279).
+///
+/// A device file writes an enum member by its label in the project language
+/// and the loader keeps the code when a product model translates it, so one
+/// side of a comparison can hold `Fussbodenheizung` and the other `8` for the
+/// same member. Such a change is no change and is dropped. A change that
+/// remains renders each enum value as its label with the code after it
+/// (`Kurzer und langer Tastendruck (5)`); the structured `from` and `to`
+/// fields keep the values as the models hold them. A parameter without a
+/// cached product model, or not an enumeration, is left as described.
+pub fn settle_parameters(set: &mut ChangeSet, models: [&Model; 2], products: &ProductModels) {
+    set.changes.retain_mut(|change| {
+        if change.kind != ChangeKind::ParameterChanged {
+            return true;
+        }
+        let (Some(device), Some(key)) = (change.device.as_deref(), change.field.as_deref()) else {
+            return true;
+        };
+        let Ok(ia) = device.parse::<IndividualAddress>() else {
+            return true;
+        };
+        let Some(def) = parameter_def(models, products, ia, key) else {
+            return true;
+        };
+        if def.labels.is_empty() {
+            return true;
+        }
+        let code = |v: &str| -> String {
+            enum_code(&def.labels, v)
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| v.trim().to_string())
+        };
+        if let (Some(from), Some(to)) = (change.from.as_deref(), change.to.as_deref())
+            && code(from) == code(to)
+        {
+            return false;
+        }
+        let shown = |v: &str| -> String {
+            let c = code(v);
+            match enum_label(&def.labels, &c) {
+                Some(label) => format!("{} ({c})", label.trim()),
+                None => v.to_string(),
+            }
+        };
+        let name = models
+            .iter()
+            .find_map(|m| m.devices.get(&ia))
+            .map(|d| d.device.name.trim().to_string())
+            .unwrap_or_default();
+        let device = if name.is_empty() {
+            ia.to_string()
+        } else {
+            format!("{name} ({ia})")
+        };
+        let from = change.from.as_deref().map(shown);
+        let to = change.to.as_deref().map(shown);
+        if let Some(sentence) = parameter_sentence(
+            &parameter_label(key),
+            &device,
+            from.as_deref(),
+            to.as_deref(),
+        ) {
+            change.sentence = sentence;
+        }
+        true
+    });
+}
+
+/// The product-model definition of parameter `key` on device `ia`, looked
+/// up through the device's `application_ref` in each model in turn.
+fn parameter_def<'a>(
+    models: [&Model; 2],
+    products: &'a ProductModels,
+    ia: IndividualAddress,
+    key: &str,
+) -> Option<&'a ParamDef> {
+    models
+        .iter()
+        .filter_map(|m| m.devices.get(&ia))
+        .filter_map(|d| d.device.product.as_ref()?.application_ref.as_deref())
+        .find_map(|app| products.param_def(app, key))
+}
+
+/// The sentence of a parameter set, changed or cleared on `device`; `None`
+/// when neither side has a value.
+fn parameter_sentence(
+    label: &str,
+    device: &str,
+    before: Option<&str>,
+    after: Option<&str>,
+) -> Option<String> {
+    Some(match (before, after) {
+        (Some(from), Some(to)) => format!("{label} on {device}: {from} to {to}."),
+        (None, Some(to)) => format!("{label} on {device} is set to {to}."),
+        (Some(from), None) => {
+            format!("{label} on {device} goes back to the vendor default (was {from}).")
+        }
+        (None, None) => return None,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -785,14 +892,13 @@ fn describe_parameters(ia: IndividualAddress, a: &Device, b: &Device, out: &mut 
         if before == after {
             continue;
         }
-        let label = parameter_label(key);
-        let sentence = match (before, after) {
-            (Some(from), Some(to)) => format!("{label} on {device}: {from} to {to}."),
-            (None, Some(to)) => format!("{label} on {device} is set to {to}."),
-            (Some(from), None) => {
-                format!("{label} on {device} goes back to the vendor default (was {from}).")
-            }
-            (None, None) => continue,
+        let Some(sentence) = parameter_sentence(
+            &parameter_label(key),
+            &device,
+            before.map(String::as_str),
+            after.map(String::as_str),
+        ) else {
+            continue;
         };
         out.push(
             Change::new(ChangeKind::ParameterChanged, sentence)

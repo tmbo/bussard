@@ -479,6 +479,18 @@ impl Model {
     /// model is refused with [`LoadError::LegacyYaml`] rather than read as
     /// empty.
     pub fn load(dir: &Path) -> Result<Self, LoadError> {
+        Self::load_with_models(dir, dir)
+    }
+
+    /// [`Model::load`] for model files in `dir` whose enum labels translate
+    /// through the product models of `models_root` (its `.bussard/models/`).
+    ///
+    /// A history snapshot holds the model files only, never `models/`, so a
+    /// snapshot loaded on its own keeps every enum label as text while the
+    /// working model holds codes, and every labelled parameter reads as
+    /// changed (issue #279). [`crate::history::History::load`] loads with the
+    /// working directory as `models_root`.
+    pub fn load_with_models(dir: &Path, models_root: &Path) -> Result<Self, LoadError> {
         let mut files = BTreeMap::new();
         for name in [CONFIG_FILE, GROUPS_FILE, LOCK_FILE] {
             if let Some(text) = read_optional(&dir.join(name))? {
@@ -501,7 +513,7 @@ impl Model {
                 dir: dir.to_path_buf(),
             });
         }
-        let models = models_fingerprint(dir);
+        let models = models_fingerprint(models_root);
         if let Some(model) = memo::get(dir, &files, &models) {
             return Ok(model);
         }
@@ -509,7 +521,7 @@ impl Model {
             base: dir.to_path_buf(),
             files,
         };
-        let model = assemble(&sources, Some(dir))?;
+        let model = assemble(&sources, Some(models_root))?;
         memo::put(dir, sources.files, models, &model);
         Ok(model)
     }

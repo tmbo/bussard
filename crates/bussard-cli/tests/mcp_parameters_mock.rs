@@ -73,7 +73,12 @@ impl Bench {
 
     /// Starts `bussard mcp --allow-programming` on the model against the mock.
     fn mcp(&self) -> Result<Server, Box<dyn Error>> {
-        Server::start(&self.model(), self.port)
+        Server::start(&self.model(), self.port, false)
+    }
+
+    /// [`Bench::mcp`] with the model-edit tools registered.
+    fn mcp_with_edits(&self) -> Result<Server, Box<dyn Error>> {
+        Server::start(&self.model(), self.port, true)
     }
 }
 
@@ -86,15 +91,19 @@ struct Server {
 }
 
 impl Server {
-    fn start(dir: &Path, port: u16) -> Result<Server, Box<dyn Error>> {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_bussard"))
+    fn start(dir: &Path, port: u16, edits: bool) -> Result<Server, Box<dyn Error>> {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_bussard"));
+        command
             .arg("mcp")
             .arg("--dir")
             .arg(dir)
             .arg("--gateway")
             .arg(format!("127.0.0.1:{port}"))
-            .arg("--allow-programming")
-            .arg("--no-model-edits")
+            .arg("--allow-programming");
+        if !edits {
+            command.arg("--no-model-edits");
+        }
+        let mut child = command
             .env_remove("BUSSARD_ALLOW_REAL_GATEWAY")
             .env_remove("BUSSARD_KEYRING")
             .env("BUSSARD_FLASH_L4_TIMEOUT_MS", "300")
@@ -360,5 +369,129 @@ fn test_mcp_and_cli_write_the_same_parameter_image() -> TestResult {
     assert_eq!(a.load_events, b.load_events, "the load sequence");
     assert_eq!(a.property_writes, b.property_writes);
     assert_eq!(a.restarts, b.restarts);
+    Ok(())
+}
+
+/// Issue #279: `pending_model_changes` lists only this session's unapplied
+/// edits of the planned device. A labelled device file (`"Off"` for code 0)
+/// is not a change, an edit is listed exactly, and an apply clears it.
+#[test]
+fn test_mcp_pending_model_changes_lists_only_this_sessions_edits() -> TestResult {
+    let model = "\"thr@P-0_R-1\" = \"12\"\n\"obj2@P-1_R-2\" = \"Off\"\n";
+    let Some(bench) = pinned("mcp-pending", [12, 0], model)? else {
+        return Ok(());
+    };
+    let mut server = bench.mcp_with_edits()?;
+    let plan = server.plan()?;
+    assert_eq!(plan["ok"], true, "plan: {plan}");
+    assert_eq!(plan["noop"], true, "plan: {plan}");
+    assert_eq!(plan["pending_model_changes"], json!([]), "plan: {plan}");
+
+    let edit = server.call(
+        "knx_set_parameter",
+        json!({"address": "1.1.4", "parameter": "thr@P-0_R-1", "value": "13"}),
+    )?;
+    assert_eq!(edit["ok"], true, "edit: {edit}");
+    let threshold = "Threshold on Parameter test (1.1.4): 12 to 13.";
+    assert!(
+        edit["changes"]
+            .as_array()
+            .is_some_and(|c| c.iter().any(|s| s == threshold)),
+        "edit: {edit}"
+    );
+    assert_eq!(
+        edit["validation"]["new_warnings"],
+        json!([]),
+        "edit: {edit}"
+    );
+
+    let plan = server.plan()?;
+    assert_eq!(plan["noop"], false, "plan: {plan}");
+    let pending = plan["pending_model_changes"]
+        .as_array()
+        .ok_or("no pending_model_changes")?;
+    assert_eq!(pending.len(), 1, "plan: {plan}");
+    assert_eq!(pending[0]["tool"], "knx_set_parameter", "plan: {plan}");
+    // Only what reaches the device: the group address the edit declared in
+    // groups.toml is not pending on 1.1.4.
+    assert_eq!(pending[0]["sentences"], json!([threshold]), "plan: {plan}");
+
+    let applied = server.apply(&plan)?;
+    assert_eq!(applied["ok"], true, "apply: {applied}");
+    let replan = server.plan()?;
+    assert_eq!(replan["noop"], true, "replan: {replan}");
+    assert_eq!(
+        replan["pending_model_changes"],
+        json!([]),
+        "replan: {replan}"
+    );
+    Ok(())
+}
+
+/// Issue #279: every written parameter octet is attributed. A device whose
+/// memory differs from the model's image outside any parameter writes an
+/// octet that changes no parameter, and the plan says so; a changed
+/// parameter names its octet.
+#[test]
+fn test_mcp_plan_attributes_every_written_parameter_octet() -> TestResult {
+    let model = "\"thr@P-0_R-1\" = \"12\"\n\"obj2@P-1_R-2\" = \"Off\"\n";
+    // (the device's parameter octets, the changed keys, the written octet,
+    // its owners, whether the plan explains unattributed octets)
+    type Case<'a> = ([u8; 2], Vec<&'a str>, usize, Vec<(&'a str, &'a str)>, bool);
+    let cases: [Case<'_>; 2] = [
+        // Bit 1 of octet 1 belongs to no parameter (obj2 is bit 0).
+        ([12, 0x40], vec![], 1, vec![], true),
+        (
+            [7, 0],
+            vec!["thr@P-0_R-1"],
+            0,
+            vec![("thr@P-0_R-1", "changed")],
+            false,
+        ),
+    ];
+    for (memory, changed, offset, owners, explained) in cases {
+        let Some(bench) = pinned("mcp-octets", memory, model)? else {
+            return Ok(());
+        };
+        let mut server = bench.mcp()?;
+        let plan = server.plan()?;
+        assert_eq!(plan["ok"], true, "plan: {plan}");
+        let parameters = &plan["parameters"];
+        assert_eq!(parameters["octets"], 1, "plan: {plan}");
+        let keys: Vec<&str> = parameters["changed"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|c| c["key"].as_str()).collect())
+            .unwrap_or_default();
+        assert_eq!(keys, changed, "plan: {plan}");
+        let ranges = parameters["octet_ranges"]
+            .as_array()
+            .ok_or("no octet_ranges")?;
+        assert_eq!(ranges.len(), 1, "plan: {plan}");
+        assert_eq!(ranges[0]["offset"], offset, "plan: {plan}");
+        assert_eq!(ranges[0]["length"], 1, "plan: {plan}");
+        let got: Vec<(&str, &str)> = ranges[0]["parameters"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|p| Some((p["key"].as_str()?, p["role"].as_str()?)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(got, owners, "plan: {plan}");
+        let sentences = plan["sentences"].as_str().unwrap_or_default();
+        assert_eq!(
+            sentences.contains("no parameter the device file shows"),
+            explained,
+            "{sentences}"
+        );
+        assert_eq!(
+            sentences.contains(
+                "1 octet at offset 1 of segment RS-2: device memory differs from the model's \
+                 defaults there, not covered by a shown parameter"
+            ),
+            explained,
+            "{sentences}"
+        );
+    }
     Ok(())
 }

@@ -640,3 +640,121 @@ async fn test_add_link_accepts_legacy_device_field() -> TestResult {
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
+
+/// The keyed fixture with the device file writing `betriebsart` by its label
+/// (as `bussard import` does) and groups.toml defining the linked addresses.
+fn labelled_dir(tag: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let dir = model_dir(tag)?;
+    let app = "M-0004_A-20DE-22-C7D8-O000A";
+    std::fs::create_dir_all(dir.join(".bussard/models"))?;
+    std::fs::write(
+        dir.join(".bussard/models").join(format!("{app}.yaml")),
+        KEYED_PRODUCT,
+    )?;
+    std::fs::write(dir.join("bussard.lock"), KEYED_LOCK)?;
+    std::fs::remove_file(dir.join("devices").join("1.1.4.toml"))?;
+    std::fs::write(
+        dir.join("devices").join("1.1.47.toml"),
+        KEYED_DEVICE.replace("betriebsart = \"2\"", "betriebsart = \"Jalousie\""),
+    )?;
+    std::fs::write(
+        dir.join("groups.toml"),
+        "groups = [\n  { address = \"0/1/3\", name = \"Langzeit\", dpt = \"1.008\" },\n  \
+         { address = \"4/1/2\", name = \"In Betrieb\", dpt = \"1.002\" },\n  \
+         { address = \"4/1/9\", name = \"Untyped\" },\n]\n",
+    )?;
+    Ok(dir)
+}
+
+/// Issue #279: every edit tool reports exactly its own change (no label/code
+/// noise from the labelled device file), enum values as labels, and only the
+/// warnings it introduced; the full list stays in knx_validate.
+#[tokio::test]
+async fn test_edit_tools_report_only_their_change_and_new_warnings() -> TestResult {
+    // (tool, arguments, the change sentences, the new warning codes)
+    let cases: Vec<(&'static str, Value, Vec<&str>, Vec<&str>)> = vec![
+        (
+            "knx_set_parameter",
+            json!({"address": "1.1.47", "parameter": "betriebsart", "value": "Rollladen"}),
+            vec!["Betriebsart on Jalousieaktor Kind 2 (1.1.47): Jalousie (2) to Rollladen (1)."],
+            vec![],
+        ),
+        (
+            "knx_set_parameter",
+            json!({"address": "1.1.47", "parameter": "regenalarm", "value": "1"}),
+            vec!["Regenalarm on Jalousieaktor Kind 2 (1.1.47) is set to Ja (1)."],
+            vec![],
+        ),
+        (
+            "knx_set_group",
+            json!({"ga": "0/1/3", "dpt": "1.009"}),
+            vec!["Langzeit (0/1/3) changes type from 1.008 to 1.009."],
+            vec!["W005"],
+        ),
+        (
+            "knx_set_group",
+            json!({"ga": "0/1/3", "dpt": "1"}),
+            vec!["Langzeit (0/1/3) changes type from 1.008 to 1."],
+            vec![],
+        ),
+        (
+            "knx_add_link",
+            json!({"address": "1.1.47", "com_object": 162, "ga": "4/1/9", "role": "listen"}),
+            vec![],
+            vec![],
+        ),
+    ];
+    for (tool, args, want_changes, want_new) in cases {
+        let dir = labelled_dir("noise")?;
+        let (client, task) = connect(server_over(&dir)?).await?;
+        // A fresh model: nothing pending against its own snapshot.
+        let fresh = call(&client, "knx_describe_change", json!({})).await;
+        assert!(
+            fresh["sentences"].as_array().is_none_or(Vec::is_empty),
+            "{fresh}"
+        );
+
+        let res = call(&client, tool, args.clone()).await;
+        assert_eq!(res["ok"], true, "{tool} {args}: {res}");
+        let changes: Vec<&str> = res["changes"]
+            .as_array()
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        if !want_changes.is_empty() {
+            assert_eq!(changes, want_changes, "{tool} {args}: {res}");
+        } else {
+            assert_eq!(changes.len(), 1, "{tool} {args}: {res}");
+        }
+        let validation = &res["validation"];
+        assert!(validation.get("warnings").is_none(), "{validation}");
+        assert!(
+            validation["warning_count"].as_u64().is_some(),
+            "{validation}"
+        );
+        let new: Vec<&str> = validation["new_warnings"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|w| w["code"].as_str()).collect())
+            .unwrap_or_default();
+        assert_eq!(new, want_new, "{tool} {args}: {validation}");
+
+        // The undo reverts exactly that edit, with no warning of its own
+        // beyond what the edit removed.
+        let undo = call(&client, "knx_undo", json!({})).await;
+        assert_eq!(undo["ok"], true, "{undo}");
+        assert_eq!(
+            undo["changes"].as_array().map(Vec::len),
+            Some(changes.len()),
+            "{undo}"
+        );
+        assert!(undo["validation"].get("warnings").is_none(), "{undo}");
+
+        // knx_validate keeps the full list (the untyped 4/1/9 is W011).
+        let full = call(&client, "knx_validate", json!({})).await;
+        assert!(full.to_string().contains("W011"), "{full}");
+
+        client.cancel().await?;
+        task.abort();
+        std::fs::remove_dir_all(&dir)?;
+    }
+    Ok(())
+}

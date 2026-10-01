@@ -84,7 +84,9 @@ pub use model_params::{
     resolve_by_order_number, runtime_segments, sys7_code_mismatch, template_ops_for,
     verify_readback, write_parameter_memory_backup,
 };
-pub use param_decode::{DecodedParameters, decode_parameters};
+pub use param_decode::{
+    DecodedParameters, OctetOwner, OctetRange, OctetRole, attribute_octets, decode_parameters,
+};
 pub use param_plan::{
     CurrentMemory, GroupObjectChange, ParamChange, ParamPlan, ParamReading, ParamRegion,
     ParamRegions, ParamValue, SYS7_NOTE, current_parameter_values, group_object_change,

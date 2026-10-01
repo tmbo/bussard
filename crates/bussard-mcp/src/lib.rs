@@ -108,6 +108,7 @@ pub mod model_handle;
 pub mod run;
 mod secure_group;
 pub mod server;
+pub mod session_edits;
 pub mod state;
 pub mod tools;
 pub mod tools_audit;

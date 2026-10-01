@@ -47,6 +47,8 @@ pub struct BussardMcp {
     tool_router: ToolRouter<BussardMcp>,
     /// The warm management connection shared by every clone (issue #215).
     warm: crate::warm::WarmConnection,
+    /// This session's model edits no device has received yet (issue #279).
+    session_edits: crate::session_edits::SessionEdits,
 }
 
 impl BussardMcp {
@@ -96,6 +98,7 @@ impl BussardMcp {
             state,
             tool_router,
             warm: crate::warm::WarmConnection::new(),
+            session_edits: crate::session_edits::SessionEdits::new(),
         }
     }
 
@@ -108,6 +111,11 @@ impl BussardMcp {
     /// management connection holds its lock for the session.
     pub(crate) fn warm(&self) -> &crate::warm::WarmConnection {
         &self.warm
+    }
+
+    /// This session's unapplied model edits, by device (issue #279).
+    pub(crate) fn session_edits(&self) -> &crate::session_edits::SessionEdits {
+        &self.session_edits
     }
 }
 

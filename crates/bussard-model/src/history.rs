@@ -364,7 +364,9 @@ impl History {
                 spec: id.to_string(),
             });
         }
-        Model::load(&dir).map_err(|source| HistoryError::Load {
+        // The snapshot carries no `models/`: enum labels translate through
+        // the working directory's product models, as the working model's do.
+        Model::load_with_models(&dir, &self.dir).map_err(|source| HistoryError::Load {
             id: id.to_string(),
             source,
         })
@@ -806,6 +808,52 @@ mod tests {
                 .sentence
                 .contains("Kitchen blind")
         );
+
+        fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    /// Issue #279: a snapshot carries no `models/`, so its enum labels
+    /// translate through the working directory's product models. A labelled
+    /// device file is then unchanged against its own snapshot.
+    #[test]
+    fn test_pending_is_empty_for_a_labelled_device_file() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = model_dir("labels")?;
+        let app = "M-0004_A-1";
+        fs::create_dir_all(dir.join(".bussard/models"))?;
+        fs::write(
+            dir.join(".bussard/models").join(format!("{app}.yaml")),
+            format!(
+                "parameters:\n  - id: {app}_P-14\n    text: Betriebsart\n    type: !enum\n      \
+                 values:\n        - {{ value: 1, text: Rollladen }}\n        \
+                 - {{ value: 2, text: Jalousie }}\n"
+            ),
+        )?;
+        fs::write(
+            dir.join("devices").join("1.1.4.toml"),
+            format!(
+                "address = \"1.1.4\"\nname = \"Blind actuator\"\nproduct = \"BA-4\"\n\
+                 application = \"{app}\"\n\n[parameters]\n\"betriebsart@P-14_R-14\" = \"Jalousie\"\n"
+            ),
+        )?;
+        fs::write(
+            dir.join("bussard.lock"),
+            format!(
+                "version = 3\n\n[[device]]\naddress = \"1.1.4\"\nproduct = \"BA-4\"\n\
+                 application = \"{app}\"\n"
+            ),
+        )?;
+        let working = Model::load(&dir)?;
+        let device = &working.devices[&"1.1.4".parse()?].device;
+        assert_eq!(device.parameters["betriebsart@P-14_R-14"], "2");
+
+        let history = History::open(&dir);
+        let id = history.snapshot(SnapshotReason::new("import"))?;
+        assert_eq!(history.load(&id)?, working);
+        let pending = history.pending()?;
+        assert!(pending.changes.is_empty(), "{:?}", pending.changes);
+        assert!(history.undo_target()?.is_none());
 
         fs::remove_dir_all(&dir)?;
         Ok(())

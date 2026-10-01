@@ -350,16 +350,11 @@ impl BussardMcp {
             return Err(refusal.clone());
         }
 
-        // Issue #112: the model changes since the last snapshot, as sentences,
-        // then record an edit made outside bussard so it cannot be lost (the
-        // same order `bussard plan` uses).
+        // Issue #279: the edits this session made to this device and has not
+        // applied yet (issue #112 listed the whole model against the last
+        // snapshot), then record an edit made outside bussard so it cannot
+        // be lost.
         let history = History::open(&dir);
-        let pending = match history.pending() {
-            Ok(p) if p.base.is_some() && !p.changes.is_empty() => {
-                Some(bussard_model::change::render_text(&p.changes))
-            }
-            _ => None,
-        };
         if let Err(err) = history.snapshot_if_changed_externally() {
             tracing::warn!("could not record a history snapshot: {err}");
         }
@@ -367,6 +362,13 @@ impl BussardMcp {
         let plan_text = render_plan_text(target, tables, &report);
         let tables_noop = report.is_noop();
         let noop = tables_noop && built.partial.is_none();
+        if noop {
+            // The device already holds the model: nothing this session
+            // edited is pending on it any more.
+            self.session_edits()
+                .applied(target, built.parameters_skipped.is_none());
+        }
+        let pending = self.session_edits().for_device(target);
         let mut device_plan = built.plan.clone();
         if let Some(line) = security
             .as_ref()
@@ -779,6 +781,10 @@ impl BussardMcp {
             result["ok"] = json!(true);
             result["verified"] = json!(true);
         }
+        if result["ok"] == json!(true) {
+            self.session_edits()
+                .applied(target, built.parameters_skipped.is_none());
+        }
         Ok(result)
     }
 }
@@ -1072,6 +1078,7 @@ fn parameters_json(built: &BuiltPlan) -> Value {
         "compared": built.parameters_skipped.is_none() || !built.parameters.is_empty(),
         "changed": built.parameters,
         "octets": built.plan.writes.parameter_octets,
+        "octet_ranges": built.octet_ranges,
         "written": built.partial.is_some(),
         "skipped": built.parameters_skipped,
     })
