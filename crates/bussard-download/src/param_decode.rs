@@ -244,6 +244,13 @@ pub struct OctetOwner {
     /// Whether the parameter's type is an enumeration (an internal one is a
     /// selector ETS writes).
     pub enumerated: bool,
+    /// `Some(fill)` when a download of the model's image does not place this
+    /// parameter (the Dynamic does not reach it under the current
+    /// configuration and the application does not download hidden
+    /// parameters): the image keeps the segment's fill octet there, and ETS
+    /// does not write the octet. `None` when the download writes the field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub segment_fill: Option<u8>,
 }
 
 impl OctetOwner {
@@ -256,10 +263,20 @@ impl OctetOwner {
         }
     }
 
-    /// Whether this is an internal ETS selector whose device value differs
-    /// from the model's.
+    /// Whether this is an internal ETS selector the download writes and
+    /// whose device value differs from the model's.
     pub fn internal_selector_differs(&self) -> bool {
-        self.role == OctetRole::Internal && self.enumerated && self.device != self.model
+        self.role == OctetRole::Internal
+            && self.enumerated
+            && self.segment_fill.is_none()
+            && self.device != self.model
+    }
+
+    /// Whether this parameter is one the download does not place (see
+    /// [`OctetOwner::segment_fill`]) and the device holds another value
+    /// than the image's fill decodes to.
+    pub fn unwritten_differs(&self) -> bool {
+        self.segment_fill.is_some() && self.device != self.model
     }
 }
 
@@ -369,6 +386,7 @@ pub fn attribute_octets(
                         device,
                         model,
                         enumerated,
+                        segment_fill: None,
                     });
                 }
                 if covered {
@@ -386,6 +404,12 @@ pub fn attribute_octets(
                     };
                     let (device, model, enumerated) =
                         values(u.param, u.segment, u.offset, u.bit_offset);
+                    // The image keeps the segment's fill here: no
+                    // placement of the configuration covers the bit.
+                    let fill = image
+                        .get(segment.as_str())
+                        .and_then(|bytes| bytes.get(offset))
+                        .copied();
                     owners.push(OctetOwner {
                         key,
                         name: display_name(u.param),
@@ -393,6 +417,7 @@ pub fn attribute_octets(
                         device,
                         model,
                         enumerated,
+                        segment_fill: Some(fill.unwrap_or(0)),
                     });
                 }
             }
@@ -1217,7 +1242,17 @@ mod tests {
             assert_eq!(owner.device.as_deref(), Some("Light"));
             assert_eq!(owner.model.as_deref(), Some("no application"));
             assert_eq!(owner.role_text(), "internal ETS selector");
-            assert!(owner.internal_selector_differs());
+            // Issue #289: where hidden parameters are not downloaded, the
+            // image keeps the segment fill at the selector and ETS does not
+            // write it; otherwise the download writes its default.
+            if download_hidden {
+                assert_eq!(owner.segment_fill, None);
+                assert!(owner.internal_selector_differs());
+            } else {
+                assert_eq!(owner.segment_fill, Some(0));
+                assert!(owner.unwritten_differs());
+                assert!(!owner.internal_selector_differs());
+            }
         }
         Ok(())
     }

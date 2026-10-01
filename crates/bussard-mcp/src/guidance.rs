@@ -243,7 +243,10 @@ impl Tiers {
                  writes the device's links (group-address and association tables) and the \
                  parameter values that differ from the model (one plan sentence each), over KNX \
                  Data Secure when the server's keyring lists the device. A plan without the \
-                 device's product data writes the links only and says why."
+                 device's product data writes the links only and says why. knx_apply_device \
+                 runs the write as a job: when it answers `started` with a job id, call \
+                 knx_apply_status with that job until `done` is true and report its result; \
+                 knx_last_apply recovers a device's latest result when a reply is lost."
                     .to_string(),
             );
         } else {

@@ -619,7 +619,7 @@ transmits at all.
 | Passive | `--passive` | Read and edit the model files, watch the bus. Nothing is transmitted. |
 | Read | none | Also read group values and introspect devices (rate-limited). |
 | Write | `--allow-writes` | Also send group values (`knx_write_group`, `knx_run_tests`). Protected GAs are refused. |
-| Programming | `--allow-programming` | Also write one device's link tables and parameter values (`knx_plan_device`, `knx_apply_device`) after the human approved the plan. Not with `--passive`. |
+| Programming | `--allow-programming` | Also write one device's link tables and parameter values (`knx_plan_device`, `knx_apply_device`, with `knx_apply_status` and `knx_last_apply` for the apply job) after the human approved the plan. Not with `--passive`. |
 
 Model edits (`--no-model-edits` withholds them) touch files only, at every
 tier. Parameter values are edited with `knx_set_parameter` and reach a device
@@ -673,6 +673,42 @@ line in `bussard history`), the table write when a link changes, then the
 parameter-only download of the differing octets, each verified by reading
 back. The result carries the verify outcome, what was written and the backup
 paths. One device per call; `flash` and `apply --line` stay CLI-only.
+
+**The apply job (issue #289).** A client bridge may cut a tool call at 60 s,
+which a secured apply with a restart and a read-back exceeds; the write then
+completed on the bus while the reply was lost. `knx_apply_device` now runs
+every gate above, the snapshot and both backups inside the call, and the
+write as a job in the server:
+
+- A refusal in the pre-flight is the call's reply; nothing was written and no
+  job remains.
+- After the pre-flight the call waits up to 20 s (from its start) for the
+  write. If it ends, the reply is the full result (`started: false`,
+  `done: true`); if not, the reply is `started: true` with the job id, and
+  `knx_apply_status {job}` reports the step, the download progress and the
+  final result.
+- One apply per server at a time. A second `knx_apply_device`, and a
+  `knx_plan_device`, while a job runs are refused with the running job's id;
+  the job holds the bus lock and the management slot until it ends, so the
+  sequential rule for management calls holds.
+- The job's record is written to `apply-result.json` in its history
+  snapshot's directory under `.bussard/history/`, at the start of the write
+  and at its end. `knx_last_apply {address}` returns the latest job for a
+  device, from the session or from that record, so a lost reply is
+  recoverable after a server restart. A record left running by a stopped
+  server reads as `interrupted`: plan again before trusting the device.
+- The status tools never touch the bus.
+
+**Device-managed parameters (issue #289).** An `Access="None"` parameter the
+configuration reaches is owned by the application at runtime, for example a
+Download-Flag the application sets after every download. Its octets always
+differ from the model's image, so they are left out of the decision whether
+there is anything to write: a plan whose only difference is such octets is
+`noop` ("nothing to write"), and `apply` and `knx_apply_device` do not write
+them on their own. They are still written, at the model's value, alongside a
+table or parameter write, as ETS does at a download, and the plan still lists
+them in `octet_ranges` with the role `device_managed`. The CLI `plan` and
+`apply` follow the same rule through the shared engine.
 
 ### Parameters over MCP
 

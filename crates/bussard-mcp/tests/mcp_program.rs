@@ -102,6 +102,14 @@ struct Harness {
 impl Harness {
     /// Starts the mock device and a programming-tier server against it.
     async fn start(plan_ttl: Duration) -> anyhow::Result<Harness> {
+        Harness::start_with(plan_ttl, None).await
+    }
+
+    /// [`Harness::start`] with the apply reply wait set (issue #289).
+    async fn start_with(
+        plan_ttl: Duration,
+        reply_wait: Option<Duration>,
+    ) -> anyhow::Result<Harness> {
         // Keep serving after a DISCONNECT so a second connection finds the
         // same device with the same state.
         let gateway = MockGateway::builder()
@@ -115,7 +123,8 @@ impl Harness {
         let dir = tempfile::tempdir()?;
         write_model(dir.path())?;
         let connection = ConnectionConfig::tunnel(gateway.addr());
-        let (client, server_task) = serve(dir.path(), connection.clone(), plan_ttl, true).await?;
+        let (client, server_task) =
+            serve(dir.path(), connection.clone(), plan_ttl, true, reply_wait).await?;
         Ok(Harness {
             client,
             server_task,
@@ -162,6 +171,7 @@ async fn serve(
     connection: ConnectionConfig,
     plan_ttl: Duration,
     with_bus: bool,
+    reply_wait: Option<Duration>,
 ) -> anyhow::Result<(
     rmcp::service::RunningService<rmcp::RoleClient, ()>,
     tokio::task::JoinHandle<()>,
@@ -180,6 +190,9 @@ async fn serve(
         allow_home_assistant: false,
     };
     let state = bussard_mcp::build_state(&config)?;
+    if let (Some(wait), Some(tier)) = (reply_wait, state.programming.as_ref()) {
+        tier.set_reply_wait(wait);
+    }
     if with_bus {
         let service = bussard_service::BusService::open(connection, config.write_policy())?;
         if !service.wait_connected(Duration::from_secs(5)).await {
@@ -385,8 +398,14 @@ async fn test_knx_plan_device_refuses_non_loopback_gateway_without_gate() -> any
     write_model(dir.path())?;
     // TEST-NET-1: never contacted, because no bus actor is spawned.
     let connection = ConnectionConfig::tunnel(SocketAddrV4::new([192, 0, 2, 10].into(), 3671));
-    let (client, server_task) =
-        serve(dir.path(), connection, Duration::from_secs(600), false).await?;
+    let (client, server_task) = serve(
+        dir.path(),
+        connection,
+        Duration::from_secs(600),
+        false,
+        None,
+    )
+    .await?;
 
     for (tool, args) in [
         ("knx_plan_device", json!({"address": "1.1.4"})),
@@ -414,8 +433,14 @@ async fn test_programming_tools_registered_only_with_the_tier() -> anyhow::Resul
     let dir = tempfile::tempdir()?;
     write_model(dir.path())?;
     let connection = ConnectionConfig::tunnel(SocketAddrV4::new([127, 0, 0, 1].into(), 9));
-    let (client, server_task) =
-        serve(dir.path(), connection, Duration::from_secs(600), false).await?;
+    let (client, server_task) = serve(
+        dir.path(),
+        connection,
+        Duration::from_secs(600),
+        false,
+        None,
+    )
+    .await?;
     let names: Vec<String> = client
         .list_all_tools()
         .await?
@@ -559,5 +584,176 @@ async fn test_knx_apply_device_missing_product_data_applies_the_links_only() -> 
         associations,
         association_table(&[(1, 20), (2, 21), (3, 22)])
     );
+    h.stop().await
+}
+
+/// Polls `knx_apply_status` for `job` until it reports `done`.
+async fn poll_until_done(h: &Harness, job: &str) -> anyhow::Result<Value> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let status = h.call("knx_apply_status", json!({"job": job})).await?;
+        if status["done"] == true {
+            return Ok(status);
+        }
+        assert_eq!(status["state"], "running", "status: {status}");
+        if std::time::Instant::now() > deadline {
+            anyhow::bail!("job {job} did not finish: {status}");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Issue #289: an apply that outlasts the reply wait answers `started` with a
+/// job id once the pre-flight is through; a second apply and a plan are
+/// refused with that id while it runs; `knx_apply_status` reports it to
+/// completion with the full result, also recorded next to the snapshot.
+#[tokio::test]
+async fn test_knx_apply_device_slow_write_returns_started_and_completes_under_status()
+-> anyhow::Result<()> {
+    let h = Harness::start_with(Duration::from_secs(600), Some(Duration::ZERO)).await?;
+    let plan = h
+        .call("knx_plan_device", json!({"address": "1.1.4"}))
+        .await?;
+    let digest = digest_of(&plan)?;
+    // A slow device: every answer comes 80 ms late, so the write takes
+    // seconds while the call answers at once.
+    h.gateway.with_device(device_ia()?, |dev| {
+        dev.response_delay = Some(Duration::from_millis(80));
+    })?;
+
+    let started = h
+        .call(
+            "knx_apply_device",
+            json!({"address": "1.1.4", "plan_digest": digest}),
+        )
+        .await?;
+    assert_eq!(started["started"], true, "apply: {started}");
+    assert_eq!(started["done"], false, "apply: {started}");
+    assert_eq!(started["address"], "1.1.4");
+    assert!(started.get("ok").is_none(), "no outcome yet: {started}");
+    let job = started["job"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("no job in {started}"))?
+        .to_string();
+    let next = started["next_step"].as_str().unwrap_or_default();
+    assert!(next.contains("knx_apply_status"), "{next}");
+    assert!(next.contains(&job), "{next}");
+    assert!(
+        Path::new(started["backup"].as_str().unwrap_or_default()).is_file(),
+        "the backup is written before the call answers: {started}"
+    );
+
+    // One apply at a time, and no plan while the bus is the job's.
+    let second = h
+        .call(
+            "knx_apply_device",
+            json!({"address": "1.1.4", "plan_digest": digest}),
+        )
+        .await?;
+    assert_eq!(second["refused"], true, "{second}");
+    assert!(
+        second["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains(&job) && r.contains("already running")),
+        "{second}"
+    );
+    let replan = h
+        .call("knx_plan_device", json!({"address": "1.1.4"}))
+        .await?;
+    assert_eq!(replan["refused"], true, "{replan}");
+    assert!(
+        replan["reason"].as_str().is_some_and(|r| r.contains(&job)),
+        "{replan}"
+    );
+
+    let done = poll_until_done(&h, &job).await?;
+    assert_eq!(done["state"], "done", "{done}");
+    assert_eq!(done["result"]["ok"], true, "{done}");
+    assert_eq!(done["result"]["verified"], true, "{done}");
+    assert_eq!(done["progress"]["tables"], "verified", "{done}");
+    let (addresses, associations) = h.tables()?;
+    assert_eq!(addresses, address_table(&["1/2/0", "1/2/1", "1/2/2"])?);
+    assert_eq!(
+        associations,
+        association_table(&[(1, 20), (2, 21), (3, 22)])
+    );
+
+    // The record sits next to the audit snapshot.
+    let record = done["record"].as_str().unwrap_or_default();
+    let latest = bussard_model::history::History::open(h.dir.path())
+        .latest()?
+        .ok_or_else(|| anyhow::anyhow!("no history snapshot recorded"))?;
+    assert_eq!(done["snapshot"], latest.id.as_str(), "{done}");
+    assert!(
+        record.contains(latest.id.as_str()) && Path::new(record).is_file(),
+        "{record}"
+    );
+    let saved: Value = serde_json::from_slice(&std::fs::read(record)?)?;
+    assert_eq!(saved["state"], "done");
+    assert_eq!(saved["result"]["verified"], true);
+
+    // The slot is free again: a fresh plan has nothing to do.
+    h.gateway.with_device(device_ia()?, |dev| {
+        dev.response_delay = None;
+    })?;
+    let replan = h
+        .call("knx_plan_device", json!({"address": "1.1.4"}))
+        .await?;
+    assert_eq!(replan["noop"], true, "replan: {replan}");
+    h.stop().await
+}
+
+/// Issue #289: a reply the client lost is recoverable: `knx_last_apply`
+/// returns the job's result in the session, and a restarted server reads it
+/// from the record under `.bussard/history`, by address and by job.
+#[tokio::test]
+async fn test_knx_last_apply_recovers_a_lost_reply_across_a_restart() -> anyhow::Result<()> {
+    let h = Harness::start(Duration::from_secs(600)).await?;
+    let none = h
+        .call("knx_last_apply", json!({"address": "1.1.4"}))
+        .await?;
+    assert_eq!(none["found"], false, "{none}");
+
+    let plan = h
+        .call("knx_plan_device", json!({"address": "1.1.4"}))
+        .await?;
+    let applied = h
+        .call(
+            "knx_apply_device",
+            json!({"address": "1.1.4", "plan_digest": digest_of(&plan)?}),
+        )
+        .await?;
+    // The mock is fast: the write ends within the reply wait, inline.
+    assert_eq!(applied["started"], false, "apply: {applied}");
+    assert_eq!(applied["done"], true, "apply: {applied}");
+    assert_eq!(applied["ok"], true, "apply: {applied}");
+    let job = applied["job"].as_str().unwrap_or_default().to_string();
+    assert!(!job.is_empty(), "apply: {applied}");
+
+    // The reply is "lost": the session still has it.
+    let last = h
+        .call("knx_last_apply", json!({"address": "1.1.4"}))
+        .await?;
+    assert_eq!(last["found"], true, "{last}");
+    assert_eq!(last["job"], job.as_str(), "{last}");
+    assert_eq!(last["state"], "done", "{last}");
+    assert_eq!(last["result"]["verified"], true, "{last}");
+    assert_eq!(last["result"]["backup"], applied["backup"], "{last}");
+
+    // A server restart: a fresh session on the same model reads the record.
+    let dir = h.dir.path().to_path_buf();
+    let connection = ConnectionConfig::tunnel(h.gateway.addr());
+    let (client, task) = serve(&dir, connection, Duration::from_secs(600), false, None).await?;
+    let restored = call(&client, "knx_last_apply", json!({"address": "1.1.4"})).await?;
+    assert_eq!(restored["found"], true, "{restored}");
+    assert_eq!(restored["from_record"], true, "{restored}");
+    assert_eq!(restored["job"], job.as_str(), "{restored}");
+    assert_eq!(restored["result"]["ok"], true, "{restored}");
+    let by_job = call(&client, "knx_apply_status", json!({"job": job})).await?;
+    assert_eq!(by_job["state"], "done", "{by_job}");
+    let unknown = call(&client, "knx_apply_status", json!({"job": "apply-0-1.1.9"})).await?;
+    assert_eq!(unknown["refused"], true, "{unknown}");
+    client.cancel().await?;
+    task.abort();
     h.stop().await
 }

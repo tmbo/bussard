@@ -560,3 +560,162 @@ fn test_mcp_plan_attributes_internal_and_hidden_octets() -> TestResult {
     }
     Ok(())
 }
+
+/// The synthetic application with a Download-Flag (issue #289): an
+/// `Access="None"` parameter the configuration reaches, in the free bit 1 of
+/// octet 1, default 0. The application sets it at runtime, so it always
+/// differs from the model's image after a download.
+fn flag_app_xml() -> String {
+    APP_XML
+        .replace(
+            "              <Parameter Id=\"M-00FA_A-0002_P-3\"",
+            "              <Parameter Id=\"M-00FA_A-0002_P-4\" Name=\"dlflag\" \
+             Text=\"Download-Flag\" ParameterType=\"M-00FA_A-0002_PT-1\" Access=\"None\" \
+             Value=\"0\"><Memory CodeSegment=\"M-00FA_A-0002_RS-2\" Offset=\"1\" \
+             BitOffset=\"1\" /></Parameter>\n              <Parameter Id=\"M-00FA_A-0002_P-3\"",
+        )
+        .replace(
+            "              <ParameterRef Id=\"M-00FA_A-0002_P-3_R-4\"",
+            "              <ParameterRef Id=\"M-00FA_A-0002_P-4_R-5\" \
+             RefId=\"M-00FA_A-0002_P-4\" />\n              <ParameterRef \
+             Id=\"M-00FA_A-0002_P-3_R-4\"",
+        )
+        .replace(
+            "                <ComObjectRefRef RefId=\"M-00FA_A-0002_O-1_R-1\" />",
+            "                <ParameterRefRef RefId=\"M-00FA_A-0002_P-4_R-5\" />\n                \
+             <ComObjectRefRef RefId=\"M-00FA_A-0002_O-1_R-1\" />",
+        )
+}
+
+/// The Download-Flag set by the application: bit 1 of octet 1.
+const FLAG_SET: u8 = 0x40;
+
+/// A bench on [`flag_app_xml`] with the product pinned, or `None` when `zip`
+/// is unavailable.
+fn flag_bench(tag: &str, params: [u8; 2], model: &str) -> Result<Option<Bench>, Box<dyn Error>> {
+    let xml = flag_app_xml();
+    assert!(xml.contains("P-4_R-5\" />"), "the flag was not spliced in");
+    let Some(bench) = Bench::start_with_app(tag, MockDevice::running(params), model, &xml)? else {
+        return Ok(None);
+    };
+    bench.pin_product()?;
+    Ok(Some(bench))
+}
+
+/// The roles of a plan's parameter octet runs, run by run.
+fn octet_roles(plan: &Value) -> Vec<Vec<String>> {
+    plan["parameters"]["octet_ranges"]
+        .as_array()
+        .map(|runs| {
+            runs.iter()
+                .map(|run| {
+                    run["parameters"]
+                        .as_array()
+                        .map(|ps| {
+                            ps.iter()
+                                .filter_map(|p| p["role"].as_str().map(str::to_string))
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Issue #289: a device whose only difference is the device-managed
+/// Download-Flag plans as `noop` over MCP and as "nothing to write" at the
+/// CLI; the flag is still listed with its role, and neither `apply` writes.
+#[test]
+fn test_download_flag_only_difference_plans_as_noop() -> TestResult {
+    let model = "\"thr@P-0_R-1\" = \"12\"\n\"obj2@P-1_R-2\" = \"Off\"\n";
+    let Some(bench) = flag_bench("mcp-flag-noop", [12, FLAG_SET], model)? else {
+        return Ok(());
+    };
+    let mut server = bench.mcp()?;
+    let plan = server.plan()?;
+    assert_eq!(plan["ok"], true, "plan: {plan}");
+    assert_eq!(plan["noop"], true, "plan: {plan}");
+    assert!(plan["plan_digest"].is_null(), "plan: {plan}");
+    assert_eq!(plan["writes"]["parameter_octets"], 0, "plan: {plan}");
+    assert_eq!(plan["parameters"]["written"], false, "plan: {plan}");
+    assert_eq!(plan["parameters"]["changed"], json!([]), "plan: {plan}");
+    assert_eq!(
+        octet_roles(&plan),
+        vec![vec!["device_managed".to_string()]],
+        "plan: {plan}"
+    );
+    let next = plan["next_step"].as_str().unwrap_or_default();
+    assert!(next.starts_with("nothing to write"), "{next}");
+    assert!(next.contains("device-managed"), "{next}");
+    let sentences = plan["sentences"].as_str().unwrap_or_default();
+    assert!(
+        sentences.starts_with("1.1.4 matches the model; nothing to write\n"),
+        "{sentences}"
+    );
+    assert!(
+        sentences.contains("1 device-managed parameter octet differs"),
+        "{sentences}"
+    );
+    drop(server);
+
+    // The CLI plans and applies through the same engine.
+    let out = bench.bussard(&["plan", "1.1.4"])?;
+    let (stdout, stderr) = text(&out);
+    assert!(out.status.success(), "stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert!(
+        stdout.contains("1.1.4 matches the model; nothing to write"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("Download-Flag"), "{stdout}");
+    let out = bench.bussard(&["apply", "1.1.4", "--yes"])?;
+    let (stdout, stderr) = text(&out);
+    assert!(out.status.success(), "stdout:\n{stdout}\nstderr:\n{stderr}");
+    let dev = bench.device();
+    assert!(dev.memory_writes.is_empty(), "{:?}", dev.memory_writes);
+    assert!(dev.load_events.is_empty(), "{:?}", dev.load_events);
+    assert_eq!(dev.memory.get(&(PARAM_BASE + 1)).copied(), Some(FLAG_SET));
+    Ok(())
+}
+
+/// Issue #289: with a real parameter change the Download-Flag is written
+/// alongside, at the model's value, as ETS does at a download; once the
+/// application sets it again the device plans as `noop`.
+#[test]
+fn test_real_parameter_change_still_writes_the_download_flag_alongside() -> TestResult {
+    let model = "\"thr@P-0_R-1\" = \"12\"\n\"obj2@P-1_R-2\" = \"Off\"\n";
+    let Some(bench) = flag_bench("mcp-flag-write", [7, FLAG_SET], model)? else {
+        return Ok(());
+    };
+    let mut server = bench.mcp()?;
+    let plan = server.plan()?;
+    assert_eq!(plan["ok"], true, "plan: {plan}");
+    assert_eq!(plan["noop"], false, "plan: {plan}");
+    assert_eq!(plan["writes"]["parameter_octets"], 2, "plan: {plan}");
+    assert_eq!(
+        octet_roles(&plan),
+        vec![
+            vec!["changed".to_string()],
+            vec!["device_managed".to_string()]
+        ],
+        "plan: {plan}"
+    );
+
+    let applied = server.apply(&plan)?;
+    assert_eq!(applied["ok"], true, "apply: {applied}");
+    assert_eq!(applied["parameters"]["written"], true, "apply: {applied}");
+    let dev = bench.device();
+    assert_eq!(dev.memory.get(&PARAM_BASE).copied(), Some(12));
+    assert_eq!(
+        dev.memory.get(&(PARAM_BASE + 1)).copied(),
+        Some(0),
+        "the flag is written at the model's value"
+    );
+
+    // The application sets its flag again after the download.
+    lock(&bench.shared).memory.insert(PARAM_BASE + 1, FLAG_SET);
+    let replan = server.plan()?;
+    assert_eq!(replan["noop"], true, "replan: {replan}");
+    assert!(replan["plan_digest"].is_null(), "replan: {replan}");
+    Ok(())
+}

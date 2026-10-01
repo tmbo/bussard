@@ -51,6 +51,8 @@
 //! | `knx_ha_automation_apply` | Write the planned automation through the config API (previous JSON backed up) and reload automations, only with a fresh matching `plan_digest` (Home Assistant tier). |
 //! | `knx_ha_automation_remove` | Plan, then with the digest delete, a bussard-managed automation (Home Assistant tier). |
 //! | `knx_apply_device` | Write the planned tables to one device, backup first and verify after, only with a fresh matching `plan_digest` (registered only with `--allow-programming`). |
+//! | `knx_apply_status` | One apply job's step, progress and final result (issue #289; registered only with `--allow-programming`). |
+//! | `knx_last_apply` | The latest apply job for a device, from the session or its record under `.bussard/history/` (registered only with `--allow-programming`). |
 //!
 //! The eight from `knx_describe_change` to `knx_undo` are model tools: they
 //! read and write the model files (TOML) under the model directory and never touch the bus,
@@ -74,12 +76,13 @@
 //! `--no-model-edits` the eight model-edit tools (the six above plus the two
 //! reservation tools) are withheld, giving 15, 18 and 20.
 //!
-//! `--allow-programming` (issue #118) adds the two programming tools
+//! `--allow-programming` (issue #118) adds the four programming tools
 //! ([`tools_program::PROGRAMMING_TOOLS`]) to any non-passive tier. They write
 //! device tables, so they pass the non-loopback write gate on every call, run
 //! the source-address probe, and apply only a plan whose digest this session
-//! produced minutes ago and which a fresh read still reproduces. See
-//! [`tools_program`].
+//! produced minutes ago and which a fresh read still reproduces. The write
+//! runs as a job (issue #289, [`apply_jobs`]): `knx_apply_status` and
+//! `knx_last_apply` report it. See [`tools_program`].
 //!
 //! `--allow-home-assistant` (issue #280) adds the six Home Assistant tools
 //! ([`tools_ha::HA_TOOLS`]) when `bussard.toml` has a `[home_assistant]`
@@ -120,6 +123,7 @@
 
 #![warn(missing_docs)]
 
+pub mod apply_jobs;
 pub mod args;
 pub mod guidance;
 pub mod instances;

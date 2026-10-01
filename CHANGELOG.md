@@ -495,6 +495,28 @@ directory or a script from before these changes needs:
 
 ### Changed
 
+- `knx_apply_device` runs the write as a job (#289): the pre-flight (gates,
+  digest, identity, snapshot, backups) runs in the call, the write in the
+  server. A write that ends within 20 s still returns the full result
+  (`started: false, done: true`); a longer one returns `started: true` with a
+  `job` id, and `knx_apply_status {job}` reports progress and the final
+  result. `knx_last_apply {address}` returns a device's latest job, also from
+  the record kept in `.bussard/history/<snapshot>/apply-result.json`, so a
+  reply lost to the client's 60 s call budget or a server restart is
+  recoverable. One apply per server at a time; a second call is refused with
+  the running job's id. The CLI `apply` is unchanged.
+- Device-managed parameter octets (`Access="None"` runtime values such as a
+  Download-Flag) no longer make a plan non-empty (#289): a plan whose only
+  difference is such octets is `noop` / "nothing to write" in `bussard plan`,
+  `bussard apply` and `knx_plan_device`, and they are not written on their
+  own. They are still written alongside a table or parameter write and still
+  listed in `octet_ranges` with their role.
+- An octet attributed to a parameter the download does not place (the
+  Dynamic does not reach it, the image keeps the segment fill) is explained
+  as one ETS does not write: "ETS does not write this octet in a download; a
+  full download leaves the segment fill (0x00) there; the device holds
+  <value> from an earlier state" (#289, from an ETS capture of 1.1.18). The
+  "project changed" note stays for a selector the download writes.
 - `knx_plan_device` and `knx_apply_device` push parameter values too (#274),
   so a change made in a chat reaches the device without a terminal step. The
   plan reads the parameter memory with the product data `bussard.lock` pins,
