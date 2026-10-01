@@ -134,7 +134,7 @@ impl TempModel {
                 std::fs::write(
                     dir.join("bussard.lock"),
                     format!(
-                        "version = 2\n\n[[device]]\naddress = \"1.1.12\"\n{}\n",
+                        "version = 3\n\n[[device]]\naddress = \"1.1.12\"\n{}\n",
                         facts.join("\n")
                     ),
                 )?;
@@ -326,7 +326,7 @@ fn pinned_model(name: &str) -> std::io::Result<TempModel> {
     )?;
     std::fs::write(
         dir.join("bussard.lock"),
-        "version = 2\n\n[[device]]\naddress = \"1.1.12\"\nproduct = \"X-1\"\n\
+        "version = 3\n\n[[device]]\naddress = \"1.1.12\"\nproduct = \"X-1\"\n\
          application = \"M-0004_A-D141-22-151B\"\nmask = \"07B0\"\n",
     )?;
     Ok(model)

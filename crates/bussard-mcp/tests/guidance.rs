@@ -69,7 +69,7 @@ const TIERS: [Tier; 5] = [
     },
 ];
 
-const LOCK: &str = r#"version = 2
+const LOCK: &str = r#"version = 3
 
 [[device]]
 address = "1.1.47"
@@ -412,7 +412,8 @@ const READ_INSTRUCTIONS: &str = "bussard: KNX as code over MCP. The installation
     it, the push is `bussard plan <ia>` and `bussard apply <ia>` at the CLI. Still needs the \
     CLI: `bussard \
     flash` to load a new application program, `bussard adopt`, `bussard replace` and \
-    `bussard commission`. Still needs ETS: the Secure activation of a fresh device, and any \
+    `bussard commission`. A parameter that shows or hides com-objects needs `bussard flash \
+    <ia>`. Still needs ETS: the Secure activation of a fresh device, and any \
     setting the device's product model does not expose.";
 
 /// The instructions with `--allow-programming`.
@@ -436,6 +437,7 @@ const PROGRAMMING_INSTRUCTIONS: &str = "bussard: KNX as code over MCP. The insta
     the model (one plan sentence each), over KNX Data Secure when the server's keyring lists \
     the device. A plan without the device's product data writes the links only and says \
     why. Still needs the CLI: `bussard flash` to load a new \
-    application program, `bussard adopt`, `bussard replace` and `bussard commission`. Still \
+    application program, `bussard adopt`, `bussard replace` and `bussard commission`. A \
+    parameter that shows or hides com-objects needs `bussard flash <ia>`. Still \
     needs ETS: the Secure activation of a fresh device, and any setting the device's product \
     model does not expose.";

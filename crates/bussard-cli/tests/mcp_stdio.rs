@@ -231,7 +231,7 @@ fn write_pinned_model(dir: &std::path::Path) -> TestResult {
     std::fs::write(
         dir.join("bussard.lock"),
         format!(
-            "version = 2\n\n[[product]]\nsha256 = \"{sha}\"\nfile = \"products/taster.knxprod\"\n\
+            "version = 3\n\n[[product]]\nsha256 = \"{sha}\"\nfile = \"products/taster.knxprod\"\n\
              filename = \"taster.knxprod\"\norigin = {{ kind = \"index\", order_number = \
              \"MDT-BE-04001.02\" }}\napplications = [\"{APP_ID}\"]\norder_numbers = \
              [\"MDT-BE-04001.02\"]\n\n[[device]]\naddress = \"1.1.4\"\nproduct = \
@@ -329,6 +329,161 @@ fn test_mcp_show_device_sees_product_data_with_an_empty_models_directory() -> Te
     let second = call_tool(&mut stdin, &mut reader, 3, "knx_show_device", args)?;
     assert_eq!(second["product_model"], true, "{second}");
     assert!(model_file.is_file(), "the reload regenerated the model");
+
+    drop(stdin);
+    let _ = child.wait_timeout(Duration::from_millis(500));
+    let _ = child.kill();
+    let _ = std::fs::remove_dir_all(&tmp);
+    Ok(())
+}
+
+/// The fabricated program of issue #276: an enable flag whose ref turns
+/// channel 1 on, a second enable flag at its default hiding a data length and
+/// object 2.
+const DEFAULTS_APP_ID: &str = "M-00FA_A-00D2-10-0001";
+const DEFAULTS_APP_XML: &[u8] =
+    include_bytes!("../../bussard-project/tests/fixtures/default_params.app.xml");
+
+/// Imports a project with device 1.1.9 running [`DEFAULTS_APP_XML`] (no
+/// stored parameter) into `knx`, and pins the extracted archive for it.
+fn import_defaults(tmp: &std::path::Path, knx: &std::path::Path) -> TestResult {
+    use sha2::Digest as _;
+    let project = r#"<KNX xmlns="http://knx.org/xml/project/21">
+ <Project Id="P-9998">
+  <Installations><Installation>
+   <Topology><Area Address="1"><Line Address="1">
+    <DeviceInstance Id="P-9998-0_DI-1" Address="9" Name="Mapper" Hardware2ProgramRefId="M-00FA_H-1_HP-00D2-10-0001" />
+   </Line></Area></Topology>
+  </Installation></Installations>
+ </Project>
+</KNX>"#;
+    std::fs::create_dir_all(tmp)?;
+    let knxproj = tmp.join("defaults.knxproj");
+    let mut zw = zip::ZipWriter::new(std::fs::File::create(&knxproj)?);
+    let opts = zip::write::SimpleFileOptions::default();
+    zw.start_file("knx_master.xml", opts)?;
+    zw.write_all(br#"<KNX xmlns="http://knx.org/xml/project/21"/>"#)?;
+    zw.start_file("P-9998/0.xml", opts)?;
+    zw.write_all(project.as_bytes())?;
+    zw.start_file(format!("M-00FA/{DEFAULTS_APP_ID}.xml"), opts)?;
+    zw.write_all(DEFAULTS_APP_XML)?;
+    zw.finish()?;
+    let out = Command::new(env!("CARGO_BIN_EXE_bussard"))
+        .arg("import")
+        .arg(&knxproj)
+        .arg("--no-download")
+        .arg("--dir")
+        .arg(knx)
+        .stdin(Stdio::null())
+        .output()?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // The project names no catalogue entry, so the import pins nothing for
+    // the device; pin the extracted archive the way `import-product` would.
+    let archive = knx.join(format!("products/{DEFAULTS_APP_ID}.knxprod"));
+    let sha: String = sha2::Sha256::digest(std::fs::read(&archive)?)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let lock = std::fs::read_to_string(knx.join("bussard.lock"))?;
+    let pinned = lock.replacen(
+        "address = \"1.1.9\"\n",
+        &format!("address = \"1.1.9\"\nproduct_sha256 = \"{sha}\"\n"),
+        1,
+    );
+    assert_ne!(pinned, lock, "{lock}");
+    std::fs::write(knx.join("bussard.lock"), pinned)?;
+    std::fs::write(
+        knx.join("bussard.toml"),
+        "[connection]\ntransport = \"tunnel\"\ngateway = \"127.0.0.1:9\"\n",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn test_mcp_set_parameter_at_default_reveals_dependent_parameters() -> TestResult {
+    let tmp = std::env::temp_dir().join(format!("bussard-mcp-defaults-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let knx = tmp.join("knx");
+    import_defaults(&tmp, &knx)?;
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_bussard"))
+        .args(["mcp", "--dir"])
+        .arg(&knx)
+        .args(["--gateway", "127.0.0.1:9", "--passive"])
+        .env_remove("BUSSARD_GATEWAY")
+        .env_remove("BUSSARD_KEYRING")
+        .env_remove("BUSSARD_ALLOW_REAL_GATEWAY")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let mut stdin = child.stdin.take().ok_or("no stdin pipe")?;
+    let mut reader = BufReader::new(child.stdout.take().ok_or("no stdout pipe")?);
+    let init = serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "probe", "version": "0"}
+        }
+    });
+    writeln!(stdin, "{init}")?;
+    stdin.flush()?;
+    let init_resp: serde_json::Value = serde_json::from_str(&read_line(&mut reader))?;
+    assert_eq!(init_resp["id"], 1);
+    writeln!(
+        stdin,
+        "{}",
+        serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"})
+    )?;
+
+    let keys = |view: &serde_json::Value| -> Vec<String> {
+        view["scope"]["parameters"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|p| p["key"].as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let show = serde_json::json!({"address": "1.1.9", "channel": "mapper-1"});
+    let before = call_tool(&mut stdin, &mut reader, 2, "knx_show_device", show.clone())?;
+    assert_eq!(
+        keys(&before),
+        [
+            "enable-channel-1",
+            "enable-channel-2",
+            "data-length-1",
+            "polarity"
+        ],
+        "{before}"
+    );
+
+    // A key at its vendor default (no stored value) is settable, and the
+    // block it enables appears at once.
+    let set = call_tool(
+        &mut stdin,
+        &mut reader,
+        3,
+        "knx_set_parameter",
+        serde_json::json!({"address": "1.1.9", "parameter": "enable-channel-2", "value": "On"}),
+    )?;
+    assert_eq!(set["ok"], true, "{set}");
+    let note = set["note"].as_str().unwrap_or_default();
+    assert!(note.contains("shows object(s) 2"), "{set}");
+    assert!(note.contains("`bussard flash 1.1.9`"), "{set}");
+    let after = call_tool(&mut stdin, &mut reader, 4, "knx_show_device", show)?;
+    assert!(keys(&after).iter().any(|k| k == "data-length-2"), "{after}");
+    let objects: Vec<u64> = after["scope"]["objects"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|o| o["number"].as_u64()).collect())
+        .unwrap_or_default();
+    assert_eq!(objects, [1, 2], "{after}");
 
     drop(stdin);
     let _ = child.wait_timeout(Duration::from_millis(500));

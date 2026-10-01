@@ -806,7 +806,7 @@ mod tests {
     /// channel label parameter and a hidden value, from texts.
     fn param_model() -> Result<Model, Box<dyn std::error::Error>> {
         let lock = format!(
-            r#"version = 2
+            r#"version = 3
 
 [[device]]
 address = "1.1.9"

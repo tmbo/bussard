@@ -640,6 +640,18 @@ pub struct BuiltPlan {
     pub parameters_skipped: Option<String>,
 }
 
+/// The refusal of a parameter write whose values show, hide or reshape a
+/// com-object (`why` names them): `apply` and `knx_apply_device` rewrite
+/// parameters in place, so only a full `bussard flash <ia>` writes the new
+/// group-object table.
+pub fn group_object_refusal(target: IndividualAddress, why: &str) -> String {
+    format!(
+        "the model's parameter values change the group-object table ({why}); `apply` rewrites \
+         parameters in place and cannot do that. A parameter that shows or hides com-objects \
+         needs a full `bussard flash {target}`."
+    )
+}
+
 /// Builds the plan of writing the model to `target`.
 ///
 /// `params` is the parameter read-back, `None` when no product data was at
@@ -736,11 +748,7 @@ pub fn build_device_plan(
                     });
                 }
                 if let Some(why) = &detail.needs_flash {
-                    refusal = Some(format!(
-                        "the model's parameter values change the group-object table ({why}); \
-                         `apply` rewrites parameters in place and cannot do that. Run a full \
-                         `bussard flash {target}`."
-                    ));
+                    refusal = Some(group_object_refusal(target, why));
                 } else {
                     match detail.plan.parameters_only(&detail.regions) {
                         Ok(p) => {
@@ -842,5 +850,18 @@ mod tests {
             select_id(&cat, "M-0004_A-A011-13-60BC-O000A"),
             Some("M-0004_A-A011-13-400D-O000A".to_string())
         );
+    }
+
+    #[test]
+    fn test_group_object_refusal_names_the_flash() -> Result<(), Box<dyn std::error::Error>> {
+        let text = group_object_refusal("1.1.201".parse()?, "shows object(s) 35, 36");
+        assert!(text.contains("(shows object(s) 35, 36)"), "{text}");
+        assert!(
+            text.contains(
+                "A parameter that shows or hides com-objects needs a full `bussard flash 1.1.201`."
+            ),
+            "{text}"
+        );
+        Ok(())
     }
 }

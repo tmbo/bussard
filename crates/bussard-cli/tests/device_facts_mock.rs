@@ -137,7 +137,7 @@ impl Bench {
         )?;
         std::fs::write(
             dir.join("bussard.lock"),
-            "version = 2\n\n[[device]]\naddress = \"1.1.12\"\napplication = \"M-00FA_A-0002\"\nmask = \"07B0\"\n",
+            "version = 3\n\n[[device]]\naddress = \"1.1.12\"\napplication = \"M-00FA_A-0002\"\nmask = \"07B0\"\n",
         )?;
         std::fs::write(
             dir.join("devices").join("1.1.12.toml"),
@@ -798,7 +798,7 @@ fn build_knxprod(dir: &Path) -> TestResult<Option<PathBuf>> {
 fn pin_application(bench: &Bench) -> TestResult {
     std::fs::write(
         bench.dir().join("bussard.lock"),
-        "version = 2\n\n[[device]]\naddress = \"1.1.12\"\n\
+        "version = 3\n\n[[device]]\naddress = \"1.1.12\"\n\
          application = \"M-00FA_A-0002-01-ABCD\"\nmask = \"07B0\"\n",
     )?;
     Ok(())

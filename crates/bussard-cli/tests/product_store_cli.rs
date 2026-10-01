@@ -92,7 +92,7 @@ fn model(
     std::fs::write(
         dir.join("bussard.lock"),
         format!(
-            "version = 2\n{product_block}\n[[device]]\naddress = \"1.1.4\"\nproduct = \"MDT-BE-04001.02\"\n\
+            "version = 3\n{product_block}\n[[device]]\naddress = \"1.1.4\"\nproduct = \"MDT-BE-04001.02\"\n\
              application = \"{APP_ID}\"\n{device_link}mask = \"07B0\"\n"
         ),
     )?;
@@ -603,7 +603,7 @@ fn test_regenerated_models_follow_the_lock_language() -> TestResult {
     std::fs::write(
         dir.join("bussard.lock"),
         format!(
-            "version = 2\nlanguage = \"de-DE\"\n\n[[product]]\nsha256 = \"{sha}\"\n\
+            "version = 3\nlanguage = \"de-DE\"\n\n[[product]]\nsha256 = \"{sha}\"\n\
              file = \"products/labels.knxprod\"\nfilename = \"labels.knxprod\"\n\
              origin = {{ kind = \"file\", path = \"labels.knxprod\" }}\n\
              applications = [\"{BILINGUAL_APP}\"]\norder_numbers = [\"TST-1\"]\n\n\

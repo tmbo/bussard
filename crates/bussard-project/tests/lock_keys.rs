@@ -131,16 +131,17 @@ fn test_import_populates_the_lock() -> TestResult {
     ] {
         assert!(lock.contains(line), "lock lacks {line}\n{lock}");
     }
-    // Only the parameters the device file sets are listed; the others
-    // (vendor defaults) are in the product model.
-    for absent in [
-        r#"key = "hidden""#,
-        r#"key = "cycle""#,
-        r#"key = "mode""#,
-        r#"channel = "output-2", ref"#,
+    // The parameters at their vendor default are listed too (issue #276), so
+    // the device view shows them and an edit can set them.
+    for line in [
+        r#"  { key = "cycle", channel = "heating-7", ref = "P-4_R-5", param = "P-4" },"#,
+        r#"  { key = "mode", channel = "heating-7", ref = "P-3_R-4", param = "P-3" },"#,
+        r#"  { key = "output-mode", channel = "output-2", ref = "MD-1_M-2_MI-1_P-2_R-2", param = "MD-1_P-2" },"#,
     ] {
-        assert!(!lock.contains(absent), "lock lists {absent}\n{lock}");
+        assert!(lock.contains(line), "lock lacks {line}\n{lock}");
     }
+    // A parameter only an `<Assign>` reaches is ETS's to set: not listed.
+    assert!(!lock.contains(r#"key = "hidden""#), "{lock}");
     // The value of the ref ETS does not show is the lock's, not the file's.
     assert!(
         lock.contains("hidden = [\n  { ref = \"P-4_R-6\", value = \"30\" },\n]\n"),
@@ -278,13 +279,14 @@ fn test_unlisted_key_resolves_through_the_product_model_else_e023() -> TestResul
     assert_ne!(edited, file);
     std::fs::write(dir.join("devices/1.1.30.toml"), &edited)?;
 
-    // Without a product model the keys are unknown.
+    // The lock indexes both at-default parameters (issue #276), so they
+    // resolve without a product model too.
     let model = Model::load(&dir)?;
     let e023 = bussard_model::validate::validate_in_dir(&model, &dir)
         .into_iter()
         .filter(|d| d.code == "E023")
         .count();
-    assert_eq!(e023, 2);
+    assert_eq!(e023, 0);
 
     // With one they resolve, and a save lists them in the lock.
     std::fs::create_dir_all(dir.join(".bussard/models"))?;
@@ -423,8 +425,24 @@ fn test_derive_facts_with_vendor_defaults() -> TestResult {
     };
     apply_facts(&mut device, &app, &facts, &BTreeMap::new());
     assert!(device.parameters.is_empty());
-    // Nothing stored, nothing listed.
-    assert!(device.lock.parameters.is_empty());
+    // Nothing stored, yet every shown parameter is listed at its default
+    // (issue #276); the `<Assign>`-only one and the labels are not.
+    let listed: Vec<&str> = device
+        .lock
+        .parameters
+        .values()
+        .map(|p| p.key.as_str())
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            "output-mode",
+            "output-mode",
+            "heating-delay",
+            "mode",
+            "cycle"
+        ]
+    );
     assert_eq!(
         device.com_objects.get(&0).and_then(|c| c.key.as_deref()),
         Some("on-off")

@@ -544,8 +544,11 @@ impl BussardMcp {
         model the edit is refused rather than guessed. This edits FILES ONLY: the device keeps \
         its current settings until the change is pushed with knx_plan_device and \
         knx_apply_device (the plan lists the parameter by name); the result's next_step says how \
-        it reaches the device at this server's tier. Returns the change as sentences: quote them \
-        to the human."
+        it reaches the device at this server's tier. Parameters at their vendor default are set \
+        the same way. A parameter that shows or hides com-objects (an enable flag, a data \
+        length) needs `bussard flash <ia>`: the result's `note` names the objects, and \
+        knx_show_device lists the parameters and objects it reveals right away. Returns the \
+        change as sentences: quote them to the human."
     )]
     async fn knx_set_parameter(
         &self,
@@ -565,14 +568,14 @@ impl BussardMcp {
         let channel = args.channel.clone();
         let label = vec![ia.to_string(), wanted.clone(), value.clone()];
 
-        self.edit("knx_set_parameter", label, move |model| {
+        self.edit_with_note("knx_set_parameter", label, move |model| {
             let Some(loaded) = model.devices.get_mut(&ia) else {
                 return Err(format!("{ia} is not a device in this model"));
             };
             let key = resolve_parameter_key(&loaded.device, &wanted, channel.as_deref())?;
             let value = check_parameter(&dir, loaded, &key, &value)?;
             loaded.device.parameters.insert(key, value);
-            Ok(())
+            Ok(refresh_device_facts(&dir, model, ia))
         })
     }
 
@@ -663,6 +666,20 @@ impl BussardMcp {
     where
         F: FnOnce(&mut Model) -> Result<(), String>,
     {
+        self.edit_with_note(tool, args, |model| apply(model).map(|()| None))
+    }
+
+    /// [`Self::edit`] for an edit that may add a `note` to its result (what
+    /// a parameter change revealed or hid, and that it needs a flash).
+    fn edit_with_note<F>(
+        &self,
+        tool: &str,
+        args: Vec<String>,
+        apply: F,
+    ) -> Result<CallToolResult, ErrorData>
+    where
+        F: FnOnce(&mut Model) -> Result<Option<String>, String>,
+    {
         if self.state().no_model_edits {
             return refusal("this server was started with --no-model-edits");
         }
@@ -677,9 +694,10 @@ impl BussardMcp {
             }
         };
         let mut edited = before.clone();
-        if let Err(reason) = apply(&mut edited) {
-            return refusal(reason);
-        }
+        let note = match apply(&mut edited) {
+            Ok(note) => note,
+            Err(reason) => return refusal(reason),
+        };
         // A group address the edit links but groups.toml does not define is
         // declared there, named after the object that uses it first; the
         // change set below reports it with the rest.
@@ -716,7 +734,7 @@ impl BussardMcp {
         self.state().model.reload();
 
         let diagnostics = bussard_model::validate_in_dir(&edited, &dir);
-        ok(json!({
+        let mut result = json!({
             "ok": true,
             "snapshot": snapshot,
             "changes": sentences(&changes),
@@ -725,8 +743,91 @@ impl BussardMcp {
             "groups_declared": declared,
             "validation": validation_json(&diagnostics),
             "next_step": self.next_step(&changes),
-        }))
+        });
+        if let (Some(note), Some(map)) = (note, result.as_object_mut()) {
+            map.insert("note".to_string(), Value::String(note));
+        }
+        ok(result)
     }
+}
+
+/// Re-derives the lock-side facts of `ia` (channels, objects, the parameter
+/// index) with its device file's current values, when the lock pins an
+/// intact product archive for it (issue #276). A parameter that enables a
+/// block or picks a data length then shows its dependent parameters and
+/// objects in `knx_show_device` right away. Returns a note naming the
+/// objects the change shows or hides, which only a full flash writes; `None`
+/// when nothing changed shape or there is no archive to derive from.
+fn refresh_device_facts(dir: &Path, model: &mut Model, ia: IndividualAddress) -> Option<String> {
+    let lookup = bussard_service::params::resolve_product(
+        dir,
+        bussard_service::params::Selection::default(),
+        Some(model),
+        ia,
+        bussard_service::params::MissingProduct::Warn,
+        None,
+    )
+    .ok()?;
+    let source = lookup.source?;
+    let app = source.app()?;
+    let linked: std::collections::BTreeSet<u16> = model
+        .links
+        .links
+        .get(&ia)
+        .map(|links| links.iter().map(|l| l.object).collect())
+        .unwrap_or_default();
+    let device = &mut model.devices.get_mut(&ia)?.device;
+    let values: std::collections::BTreeMap<String, String> = device
+        .parameters
+        .iter()
+        .filter_map(|(k, v)| Some((k.split_once('@')?.1.to_string(), v.clone())))
+        .collect();
+    let facts = bussard_project::facts::derive_facts(app, &values, &Default::default());
+    let shape =
+        |d: &bussard_model::schema::Device| -> std::collections::BTreeMap<u16, Option<String>> {
+            d.com_objects
+                .iter()
+                .map(|(n, o)| (*n, o.reference.clone()))
+                .collect()
+        };
+    let before = shape(device);
+    bussard_project::facts::refresh_facts(device, &facts, &linked);
+    let after = shape(device);
+    let list = |numbers: Vec<&u16>| {
+        numbers
+            .iter()
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let shown: Vec<&u16> = after.keys().filter(|n| !before.contains_key(n)).collect();
+    let hidden: Vec<&u16> = before.keys().filter(|n| !after.contains_key(n)).collect();
+    let resized: Vec<&u16> = after
+        .iter()
+        .filter(|(n, r)| before.get(n).is_some_and(|b| b != *r))
+        .map(|(n, _)| n)
+        .collect();
+    let mut parts = Vec::new();
+    if !shown.is_empty() {
+        parts.push(format!("shows object(s) {}", list(shown)));
+    }
+    if !hidden.is_empty() {
+        parts.push(format!("hides object(s) {}", list(hidden)));
+    }
+    if !resized.is_empty() {
+        parts.push(format!(
+            "changes the size or flags of object(s) {}",
+            list(resized)
+        ));
+    }
+    (!parts.is_empty()).then(|| {
+        format!(
+            "This value {} on {ia}; knx_show_device lists the device under it. A parameter \
+             that shows or hides com-objects needs `bussard flash {ia}`: knx_apply_device and \
+             `bussard apply` refuse it.",
+            parts.join(", ")
+        )
+    })
 }
 
 /// Which side of a link a group address sits on.

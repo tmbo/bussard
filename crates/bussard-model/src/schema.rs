@@ -604,6 +604,10 @@ pub struct LockedParameter {
     pub channel: Option<String>,
     /// The application parameter id (the memory cell), e.g. `MD-3_P-14`.
     pub param: Option<String>,
+    /// The vendor default of this ref when the `ParameterRef` overrides the
+    /// parameter's own (its `Value` attribute); `None` when the parameter's
+    /// default (the product model's) applies.
+    pub default: Option<String>,
 }
 
 /// A single generated com object on a device.

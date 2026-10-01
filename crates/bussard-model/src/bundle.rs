@@ -739,7 +739,7 @@ mod tests {
         )?;
         fs::write(
             dir.join("bussard.lock"),
-            "version = 2\nsource = \"home.knxproj\"\n",
+            "version = 3\nsource = \"home.knxproj\"\n",
         )?;
         fs::write(
             dir.join("devices/1.1.4.toml"),

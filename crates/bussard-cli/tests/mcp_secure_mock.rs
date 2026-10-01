@@ -133,7 +133,7 @@ fn model_dir(tag: &str) -> TestResult<PathBuf> {
     std::fs::write(
         dir.join("bussard.lock"),
         format!(
-            "version = 2\n\n[[product]]\nsha256 = \"{sha}\"\nfile = \
+            "version = 3\n\n[[product]]\nsha256 = \"{sha}\"\nfile = \
              \"products/param-test.knxprod\"\norigin = {{ kind = \"file\", path = \
              \"param-test.knxprod\" }}\napplications = [\"M-00FA_A-0002\"]\n\n[[device]]\n\
              address = \"1.1.10\"\napplication = \"M-00FA_A-0002\"\nproduct_sha256 = \

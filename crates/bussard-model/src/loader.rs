@@ -79,14 +79,17 @@ pub enum LoadError {
     },
     /// `bussard.lock` carries a format version this build does not read.
     #[error(
-        "{path}: lock format version {version} is not supported (this bussard reads version \
-         {LOCK_VERSION} only); regenerate it with `bussard import <export> --dir <dir>`"
+        "{path}: lock format version {version}{} is not supported (this bussard reads version \
+         {LOCK_VERSION} only); regenerate it with `bussard import <export> --dir <dir>`",
+        written_by.as_deref().map(|w| format!(", written by {w},")).unwrap_or_default()
     )]
     LockVersion {
         /// The lock file.
         path: PathBuf,
         /// The version it declares.
         version: u32,
+        /// The build that wrote it (`written_by`), when the lock records one.
+        written_by: Option<String>,
     },
     /// The directory holds the retired YAML model and no TOML model.
     #[error(
@@ -236,12 +239,30 @@ fn list_device_files(devices_dir: &Path) -> Vec<String> {
 }
 
 /// Parses `bussard.lock` text.
+///
+/// The `version` is read first, leniently: a lock of another version is
+/// refused with [`LoadError::LockVersion`] before the strict parse, so a newer
+/// lock's fields never surface as "unknown field" and an older build never
+/// reads (and so never rewrites) a lock it does not understand.
 pub(crate) fn parse_lock(path: &Path, text: &str) -> Result<LockFile, LoadError> {
+    if let Ok(files::LockVersionOnly {
+        version: Some(version),
+        written_by,
+    }) = toml::from_str::<files::LockVersionOnly>(text)
+        && version != LOCK_VERSION
+    {
+        return Err(LoadError::LockVersion {
+            path: path.to_path_buf(),
+            version,
+            written_by,
+        });
+    }
     let lock: LockFile = toml_io::parse(path, text)?;
     if lock.version != LOCK_VERSION {
         return Err(LoadError::LockVersion {
             path: path.to_path_buf(),
             version: lock.version,
+            written_by: lock.written_by.clone(),
         });
     }
     Ok(lock)
