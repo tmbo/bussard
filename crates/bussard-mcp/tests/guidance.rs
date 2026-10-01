@@ -444,7 +444,9 @@ const PROGRAMMING_INSTRUCTIONS: &str = "bussard: KNX as code over MCP. The insta
     the device. A plan without the device's product data writes the links only and says \
     why. knx_apply_device runs the write as a job: when it answers `started` with a job id, \
     call knx_apply_status with that job until `done` is true and report its result; \
-    knx_last_apply recovers a device's latest result when a reply is lost. Still needs the CLI: `bussard flash` to load a new \
+    knx_last_apply recovers a device's latest result when a reply is lost. \
+    knx_restore_parameters replays a parameter backup an apply kept, with the same plan, \
+    explicit yes and job flow. Still needs the CLI: `bussard flash` to load a new \
     application program, `bussard adopt`, `bussard replace` and `bussard commission`. A \
     parameter that shows or hides com-objects needs `bussard flash <ia>`. Still \
     needs ETS: the Secure activation of a fresh device, and any setting the device's product \

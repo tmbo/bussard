@@ -51,7 +51,8 @@ pub use backup::{
     AssociationEntry, BackupError, BackupManifest, BackupStatus, DeviceBackup, ManifestEntry,
     ParameterBackup, ParameterMemory, ParameterStatus, ResolvedEntry, Sys7Detail, backups_root,
     find_device_backup, has_installation_backup, parameter_backups_dir, read_device_backup,
-    read_manifest, write_device_backup, write_manifest, write_parameter_backup,
+    read_manifest, read_parameter_backup, write_device_backup, write_manifest,
+    write_parameter_backup,
 };
 pub use compute::{
     ChannelConfig, DesiredTables, GroupObjectDescriptor, LinkedObject, Priority,
@@ -86,6 +87,7 @@ pub use model_params::{
 };
 pub use param_decode::{
     DecodedParameters, OctetOwner, OctetRange, OctetRole, attribute_octets, decode_parameters,
+    device_managed_octets,
 };
 pub use param_plan::{
     CurrentMemory, GroupObjectChange, ParamChange, ParamPlan, ParamReading, ParamRegion,

@@ -692,7 +692,14 @@ fn write_parameters(
 }
 
 /// The progress display of the parameter download.
-struct ParamDisplay(Option<crate::progress::FlashDisplay>);
+pub(crate) struct ParamDisplay(Option<crate::progress::FlashDisplay>);
+
+impl ParamDisplay {
+    /// The display of `partial`'s download.
+    pub(crate) fn new(partial: &bussard_download::FlashPlan) -> Self {
+        ParamDisplay(Some(crate::progress::FlashDisplay::new(partial, false)))
+    }
+}
 
 impl bussard_service::download::FlashObserver for ParamDisplay {
     fn progress(&mut self, event: bussard_download::Progress) {

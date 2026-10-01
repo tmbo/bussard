@@ -780,6 +780,15 @@ pub struct FlashPlan {
     /// ETS rewrites one changed octet of a resident parameter segment. Empty for
     /// every full flash.
     baseline: BTreeMap<String, Vec<u8>>,
+    /// The octets of each parameter image a parameter placement wrote under
+    /// the configuration the plan was built for (issue #290): the octets a
+    /// parameter-only download compares and writes. Every other octet keeps
+    /// what the device holds, as in ETS's download.
+    placed: bussard_prod::PlacedOctets,
+    /// The octets a parameter-only download leaves as the device holds them
+    /// although the model's image differs there (issue #290): per segment,
+    /// each octet's offset and the model's byte. Empty for a full flash.
+    unwritten: BTreeMap<String, Vec<(usize, u8)>>,
 }
 
 /// The System 7 execution context attached to a [`FlashPlan`] for a mask

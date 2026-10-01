@@ -83,17 +83,145 @@ impl FlashPlan {
                 _ => None,
             })
             .collect();
+        // Issue #290: only the octets a parameter placement covers are
+        // compared and written. Every other octet of the image (the segment's
+        // fill or `<Data>` where the Dynamic reaches no parameter under the
+        // configuration) takes the device's value, so the download leaves it
+        // alone, as ETS's download does; where the model's image differs
+        // there, the octet is recorded as unwritten.
+        let mut images = self.images.clone();
+        let mut unwritten: BTreeMap<String, Vec<(usize, u8)>> = BTreeMap::new();
+        for (segment, current) in &baseline {
+            let Some(image) = images.get_mut(segment) else {
+                continue;
+            };
+            let placed = self.placed.get(segment);
+            let mask = self.segment_mask(segment);
+            let mut skipped = Vec::new();
+            for (i, byte) in image.iter_mut().enumerate() {
+                let Some(&held) = current.get(i) else {
+                    break;
+                };
+                if placed.is_some_and(|p| p.contains(&i)) {
+                    continue;
+                }
+                let writable = mask.is_none_or(|m| m.get(i) == Some(&0xFF));
+                if writable && *byte != held {
+                    skipped.push((i, *byte));
+                }
+                *byte = held;
+            }
+            if !skipped.is_empty() {
+                unwritten.insert(segment.clone(), skipped);
+            }
+        }
         Ok(FlashPlan {
             identity: self.identity.clone(),
             device_mask: self.device_mask,
             steps,
-            images: self.images.clone(),
+            images,
             param_images: self.param_images.clone(),
             spliced_from_template: self.spliced_from_template,
             sys7: self.sys7.clone(),
             confirmed_restart: self.confirmed_restart,
             baseline,
+            placed: self.placed.clone(),
+            unwritten,
         })
+    }
+
+    /// The octets of `segment` a parameter placement writes under the
+    /// configuration this plan was built for (issue #290), `None` when no
+    /// parameter lands in the segment.
+    pub fn placed_octets(&self, segment: &str) -> Option<&std::collections::BTreeSet<usize>> {
+        self.placed.get(segment)
+    }
+
+    /// The octets a parameter-only download leaves as the device holds them
+    /// although the model's image differs there (issue #290), per segment:
+    /// each octet's offset and the differing bits (`model ^ device`), in the
+    /// form of [`FlashPlan::changed_bits`]. No parameter the configuration
+    /// reaches is placed in them, so ETS's download does not write them
+    /// either. Empty for a full flash.
+    pub fn unwritten_bits(&self) -> BTreeMap<String, Vec<(usize, u8)>> {
+        self.unwritten
+            .iter()
+            .map(|(segment, octets)| {
+                let current = self.baseline.get(segment);
+                let bits = octets
+                    .iter()
+                    .map(|&(i, model)| {
+                        let held = current.and_then(|c| c.get(i)).copied().unwrap_or(model);
+                        (i, model ^ held)
+                    })
+                    .collect();
+                (segment.clone(), bits)
+            })
+            .collect()
+    }
+
+    /// The model's image of `segment`: for a parameter-only download, the
+    /// image it writes with the [`FlashPlan::unwritten_bits`] octets put back
+    /// to the model's bytes (what a full download writes); for a full flash,
+    /// [`FlashPlan::image_bytes`].
+    pub fn model_image(&self, segment: &str) -> Option<Vec<u8>> {
+        let mut image = self.images.get(segment)?.clone();
+        for &(i, model) in self.unwritten.get(segment).into_iter().flatten() {
+            if let Some(byte) = image.get_mut(i) {
+                *byte = model;
+            }
+        }
+        Some(image)
+    }
+
+    /// This parameter-only download rewritten to put `wanted` back (a
+    /// parameter backup's memory, segment id to octets): each placed octet
+    /// not in `skip` takes the backup's byte, every other octet keeps what the
+    /// device holds (issue #290, `bussard restore --parameters`). A segment
+    /// `wanted` does not name is left as the device holds it.
+    ///
+    /// The restore writes the same octets an `apply` of the model may write
+    /// (the ones a parameter is placed in under the model's configuration),
+    /// so it puts back everything an apply changed, and nothing ETS's
+    /// download would leave alone. `skip` names the device-managed octets
+    /// (`Access="None"` values the application owns at runtime).
+    pub fn restoring(
+        &self,
+        wanted: &BTreeMap<String, Vec<u8>>,
+        skip: &bussard_prod::PlacedOctets,
+    ) -> FlashPlan {
+        let mut plan = self.clone();
+        plan.unwritten = BTreeMap::new();
+        for (segment, current) in &self.baseline {
+            let Some(image) = plan.images.get_mut(segment) else {
+                continue;
+            };
+            let backup = wanted.get(segment);
+            let placed = self.placed.get(segment);
+            let skipped = skip.get(segment);
+            let mut left = Vec::new();
+            for (i, byte) in image.iter_mut().enumerate() {
+                let held = current.get(i).copied();
+                let restored = backup.and_then(|b| b.get(i)).copied();
+                let writes = placed.is_some_and(|p| p.contains(&i))
+                    && !skipped.is_some_and(|s| s.contains(&i));
+                match (writes, restored, held) {
+                    (true, Some(b), _) => *byte = b,
+                    (_, _, Some(h)) => {
+                        if let Some(b) = restored.filter(|b| *b != h) {
+                            left.push((i, b));
+                        }
+                        *byte = h;
+                    }
+                    // Past what the device read back: nothing to keep.
+                    (false, _, None) | (true, None, None) => {}
+                }
+            }
+            if !left.is_empty() {
+                plan.unwritten.insert(segment.clone(), left);
+            }
+        }
+        plan
     }
 
     /// The System B parameter-only steps (module docs).
@@ -383,6 +511,48 @@ mod tests {
             err,
             Err(PartialPlanError::UnreadableSegment { .. })
         ));
+        Ok(())
+    }
+
+    /// Issue #290: a restore writes the backup's byte on a placed octet,
+    /// and leaves a skipped (device-managed) one as the device holds it,
+    /// reporting it as unwritten.
+    #[test]
+    fn test_restoring_writes_placed_octets_and_keeps_skipped_ones()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let app = fabricated_app();
+        let full = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )?;
+        let segment = "M-1_A-1_RS-2";
+        assert!(full.placed_octets(segment).is_some_and(|p| p.contains(&0)));
+        let regions = ParamRegions::from([region(segment, 0x4006, &[7])]);
+        let partial = full.parameters_only(&regions)?;
+        let wanted = BTreeMap::from([(segment.to_string(), vec![9u8])]);
+
+        let restore = partial.restoring(&wanted, &bussard_prod::PlacedOctets::new());
+        assert_eq!(restore.changed_octets(), 1);
+        assert_eq!(restore.image_bytes(segment), Some(&[9u8][..]));
+        assert!(restore.unwritten_bits().is_empty());
+
+        let skip = bussard_prod::PlacedOctets::from([(
+            segment.to_string(),
+            std::collections::BTreeSet::from([0usize]),
+        )]);
+        let restore = partial.restoring(&wanted, &skip);
+        assert_eq!(restore.changed_octets(), 0);
+        assert_eq!(restore.image_bytes(segment), Some(&[7u8][..]));
+        assert_eq!(
+            restore.unwritten_bits().get(segment).map(Vec::as_slice),
+            Some(&[(0usize, 9u8 ^ 7)][..])
+        );
+        assert_eq!(restore.model_image(segment), Some(vec![9u8]));
         Ok(())
     }
 

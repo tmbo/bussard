@@ -177,8 +177,19 @@ hint while no such snapshot exists.
 the `apply` command with the backup as the desired state: same plan, same
 confirmation naming the gateway, same pre-write backup, same verify, same
 non-loopback gate. Restoring a fresh backup onto an unchanged device plans empty
-and writes nothing. `restore` writes link tables only; parameters come back with
-`flash`.
+and writes nothing. `restore` writes link tables only.
+
+`bussard restore --parameters <backup.json> <ADDRESS>` replays a parameter
+backup (`captures/backups/parameters/`, written before every parameter write)
+with the parameter-only download below (issue #290). It refuses a backup of
+another device, application or mask before planning, writes only the octets a
+parameter is placed in under the model's configuration, keeps device-managed
+octets (`Access="None"` values the application owns at runtime) as the device
+holds them, backs up the memory it overwrites, confirms naming the gateway, and
+verifies by read-back. It keeps every rail of `--parameters-only`: a device that
+does not run the application (a factory-fresh or unloaded one) is refused. At
+the programming tier the same restore is `knx_restore_parameters`, with a plan,
+a single-use digest and the human's explicit yes.
 
 **`replace <ADDRESS>`** swaps a dead device for a new one of the same
 product, flashing it from the archive `bussard.lock` pins (or `--product`).
@@ -405,8 +416,24 @@ confirms (or needs `--yes`), backs the memory up to
 `<dir>/captures/backups/parameters/<ia>-<unix time>.json`, writes only the
 octets that differ, completes the load, restarts the device and verifies by
 reading the memory back. It never unloads, never allocates a segment, never
-factory-resets and never touches the link tables. It refuses before any write
-when:
+factory-resets and never touches the link tables.
+
+**What a partial write touches (issue #290, ETS parity).** Only the octets a
+parameter is placed in under the current configuration: a parameter the
+Dynamic section reaches, a hidden parameter the application downloads at its
+default, and the device-managed octets alongside another write. An octet the
+configuration places no parameter in keeps the device's value, because ETS's
+download does not write it either: the 1.1.18 capture shows ETS skipping
+offsets 165, 168 and 171 (the extension-module selectors `_AppInstanz 51/52`,
+gated by `P-388`). When such an octet differs from the model's image, the plan
+lists it as not written with the sentence "ETS does not write this octet in a
+download" and does not count it. A full `flash` still allocates the segment
+with its fill and writes every octet, as an ETS full download does, so a
+device that needs those octets cleared gets a full flash. This holds for
+`apply`, `flash --parameters-only`, `knx_apply_device` and `restore
+--parameters` alike.
+
+It refuses before any write when:
 
 | What the device reports | What `--parameters-only` does |
 |---|---|
@@ -619,7 +646,7 @@ transmits at all.
 | Passive | `--passive` | Read and edit the model files, watch the bus. Nothing is transmitted. |
 | Read | none | Also read group values and introspect devices (rate-limited). |
 | Write | `--allow-writes` | Also send group values (`knx_write_group`, `knx_run_tests`). Protected GAs are refused. |
-| Programming | `--allow-programming` | Also write one device's link tables and parameter values (`knx_plan_device`, `knx_apply_device`, with `knx_apply_status` and `knx_last_apply` for the apply job) after the human approved the plan. Not with `--passive`. |
+| Programming | `--allow-programming` | Also write one device's link tables and parameter values (`knx_plan_device`, `knx_apply_device`, with `knx_apply_status` and `knx_last_apply` for the apply job) after the human approved the plan, and replay a parameter backup (`knx_restore_parameters`). Not with `--passive`. |
 
 Model edits (`--no-model-edits` withholds them) touch files only, at every
 tier. Parameter values are edited with `knx_set_parameter` and reach a device

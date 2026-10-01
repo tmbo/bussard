@@ -510,6 +510,19 @@ pub fn write_parameter_backup(
     Ok(path)
 }
 
+/// Reads a [`ParameterBackup`] back from disk (`bussard restore
+/// --parameters`, issue #290).
+pub fn read_parameter_backup(path: &Path) -> Result<ParameterBackup, BackupError> {
+    let body = std::fs::read_to_string(path).map_err(|source| BackupError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    serde_json::from_str(&body).map_err(|source| BackupError::Decode {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
 /// Reads one device's backup back from disk.
 pub fn read_device_backup(path: &Path) -> Result<DeviceBackup, BackupError> {
     let body = std::fs::read_to_string(path).map_err(|source| BackupError::Io {

@@ -428,6 +428,107 @@ fn test_d141_22_inactive_channel_condition_leaves_the_fill() -> TestResult {
     Ok(())
 }
 
+/// Issue #290: the D142-21 twin of the #159 rule (the 1.1.18 investigation).
+/// `_AppInstanz 51` (`P-643`, +0xA5) and `_AppInstanz 52` (`P-733`, +0xA8)
+/// are chosen through `UP-394` / `P-1119`, shown only in the extension-module
+/// channel `CH-55`, itself shown while `P-388` ("Tastsensor-Erweiterungsmodul")
+/// is 1 to 4. With `P-388` = 0 the image keeps the allocation fill (0x00) at
+/// both, while the base module's instances `_AppInstanz 49/50` (+0x9F, +0xA2)
+/// still hold `AP_RGBWLED` (0x2E); with `P-388` = 2 both selectors are 0x2E.
+#[test]
+fn test_d142_21_inactive_extension_module_leaves_the_fill() -> TestResult {
+    let Some(app) = load(&F50)? else {
+        return Ok(());
+    };
+    let with = |p388: &str| -> BTreeMap<String, String> {
+        [("P-388_R-471".to_string(), p388.to_string())].into()
+    };
+    let plan = plan_flash(
+        &app,
+        "1.1.18",
+        0x07B0,
+        &with("0"),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    let fill = plan
+        .steps
+        .iter()
+        .find_map(|s| match s {
+            FlashStep::AllocateSegment { fill, .. } => *fill,
+            _ => None,
+        })
+        .ok_or("the parameter segment is not allocated with a fill")?;
+    let images = compute_parameter_image(&app, &with("0"), &BTreeMap::new())?;
+    let ours = images
+        .get(F50_SEGMENT)
+        .ok_or("no image for the parameter segment")?;
+    assert_eq!((ours[0xA5], ours[0xA8]), (fill, fill));
+    assert_eq!((ours[0x9F], ours[0xA2]), (0x2E, 0x2E));
+    // The flash image is the allocation-with-fill image; the partial write
+    // set leaves the two unreached selectors out.
+    let placed = plan
+        .placed_octets(F50_SEGMENT)
+        .ok_or("no placed octets in the parameter segment")?;
+    assert!(placed.contains(&0x9F) && placed.contains(&0xA2));
+    assert!(!placed.contains(&0xA5) && !placed.contains(&0xA8));
+
+    let images = compute_parameter_image(&app, &with("2"), &BTreeMap::new())?;
+    let ours = images
+        .get(F50_SEGMENT)
+        .ok_or("no image for the parameter segment")?;
+    assert_eq!((ours[0xA5], ours[0xA8]), (0x2E, 0x2E));
+    Ok(())
+}
+
+/// Issue #290, the 1.1.18 case: the device holds the stale `AP_RGBWLED`
+/// (0x2E) at the unreached selectors +0xA5/+0xA8 and differs at the reached
+/// TSM instance +0x9F. The parameter-only download writes +0x9F and leaves
+/// +0xA5/+0xA8 as the device holds them, the way ETS's download skipped
+/// offsets 165 and 168; they are reported as unwritten.
+#[test]
+fn test_d142_21_partial_write_skips_unreached_selectors() -> TestResult {
+    let Some(app) = load(&F50)? else {
+        return Ok(());
+    };
+    let overrides: BTreeMap<String, String> = [("P-388_R-471".to_string(), "0".to_string())].into();
+    let plan = plan_flash(
+        &app,
+        "1.1.18",
+        0x07B0,
+        &overrides,
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    let mut regions = bussard_download::planned_parameter_regions(&plan);
+    let region = regions.get_mut(F50_SEGMENT).ok_or("no parameter region")?;
+    region.bytes[0xA5] = 0x2E;
+    region.bytes[0xA8] = 0x2E;
+    region.bytes[0x9F] = 0x00;
+    let partial = plan.parameters_only(&regions)?;
+    let written: Vec<usize> = partial
+        .changed_bits()
+        .get(F50_SEGMENT)
+        .map(|octets| octets.iter().map(|(i, _)| *i).collect())
+        .unwrap_or_default();
+    assert_eq!(written, [0x9F]);
+    assert_eq!(partial.changed_octets(), 1);
+    let unwritten = partial.unwritten_bits();
+    assert_eq!(
+        unwritten.get(F50_SEGMENT).map(Vec::as_slice),
+        Some(&[(0xA5, 0x2E), (0xA8, 0x2E)][..])
+    );
+    // The streamed image keeps the device's bytes there; the model's image
+    // (what a full download writes) has the fill.
+    let image = partial.image_bytes(F50_SEGMENT).ok_or("no image")?;
+    assert_eq!((image[0xA5], image[0xA8], image[0x9F]), (0x2E, 0x2E, 0x2E));
+    let model = partial.model_image(F50_SEGMENT).ok_or("no model image")?;
+    assert_eq!((model[0xA5], model[0xA8]), (0x00, 0x00));
+    Ok(())
+}
+
 /// Issue #160: the Jung 2-fold switch actuator (1.1.47, `M-0004_A-20DE-22`)
 /// loads nothing into object 5, so ETS writes PID 13 only to object 4 although
 /// the product's 07B0 `Load/all` template writes it to objects 5 and 4. The

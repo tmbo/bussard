@@ -218,11 +218,13 @@ pub(super) fn plan_flash_sys7(
     // Resolve parameter images up front: each parameter segment's <Data> is only
     // the vendor's template, and the image streamed for it is that template with
     // the parameters laid over it.
-    let param_images = bussard_prod::compute_parameter_image(app, overrides, base_offsets)
-        .map_err(|e| PlanError::UnresolvableImage {
-            step: 0,
-            reason: format!("computing the parameter image: {e}"),
-        })?;
+    let (param_images, placed) =
+        bussard_prod::compute_parameter_image_placed(app, overrides, base_offsets).map_err(
+            |e| PlanError::UnresolvableImage {
+                step: 0,
+                reason: format!("computing the parameter image: {e}"),
+            },
+        )?;
 
     // The data-driven mask profile: from `HawkConfigurationData` when the import
     // path supplied one, else the corpus-default fallback (`[system7-spec §2.4]`).
@@ -539,6 +541,8 @@ pub(super) fn plan_flash_sys7(
         }),
         confirmed_restart: false,
         baseline: BTreeMap::new(),
+        placed,
+        unwritten: BTreeMap::new(),
     })
 }
 
