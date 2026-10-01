@@ -9,7 +9,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 const APP: &str = "M-0004_A-20DE-22-C7D8-O000A";
 
-const LOCK: &str = r#"version = 2
+const LOCK: &str = r#"version = 3
 
 [[device]]
 address = "1.1.47"
@@ -188,5 +188,88 @@ fn test_device_toml_is_paste_ready() -> TestResult {
     assert!(stdout.contains("betriebsart = \"2\""), "{stdout}");
     assert!(stdout.contains("# fahrzeit = \"\""), "{stdout}");
     std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// The fabricated program of issue #276 (an enable flag whose ref turns
+/// channel 1 on, data lengths, a polarity, an `Access="None"` channel).
+const DEFAULTS_APP_ID: &str = "M-00FA_A-00D2-10-0001";
+const DEFAULTS_APP_XML: &[u8] =
+    include_bytes!("../../bussard-project/tests/fixtures/default_params.app.xml");
+
+/// A project with one device on 1.1.9 running [`DEFAULTS_APP_XML`] and
+/// storing no parameter value at all.
+const DEFAULTS_PROJECT_XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/21">
+ <Project Id="P-9998">
+  <Installations><Installation>
+   <Topology><Area Address="1"><Line Address="1">
+    <DeviceInstance Id="P-9998-0_DI-1" Address="9" Name="Mapper" Hardware2ProgramRefId="M-00FA_H-1_HP-00D2-10-0001" />
+   </Line></Area></Topology>
+  </Installation></Installations>
+ </Project>
+</KNX>"#;
+
+/// Imports the at-default fixture project into a fresh model directory.
+fn imported_defaults(tag: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    use std::io::Write;
+    let dir = std::env::temp_dir().join(format!(
+        "bussard-device-{tag}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    let knxproj = dir.join("defaults.knxproj");
+    let mut zw = zip::ZipWriter::new(std::fs::File::create(&knxproj)?);
+    let opts = zip::write::SimpleFileOptions::default();
+    zw.start_file("knx_master.xml", opts)?;
+    zw.write_all(br#"<KNX xmlns="http://knx.org/xml/project/21"/>"#)?;
+    zw.start_file("P-9998/0.xml", opts)?;
+    zw.write_all(DEFAULTS_PROJECT_XML.as_bytes())?;
+    zw.start_file(format!("M-00FA/{DEFAULTS_APP_ID}.xml"), opts)?;
+    zw.write_all(DEFAULTS_APP_XML)?;
+    zw.finish()?;
+    let model = dir.join("knx");
+    let out = bussard(&[
+        "import",
+        knxproj.to_str().ok_or("path")?,
+        "--no-download",
+        "--dir",
+        model.to_str().ok_or("path")?,
+    ])?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Ok(model)
+}
+
+#[test]
+fn test_device_toml_lists_parameters_at_their_default_as_comments() -> TestResult {
+    let dir = imported_defaults("defaults")?;
+    let d = dir.to_str().ok_or("path")?;
+    let out = bussard(&["device", "1.1.9", "mapper-1", "--toml", "--dir", d])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}");
+    // The project stores nothing, yet every parameter channel 1 shows is
+    // there as a commented default line; the enable flag's default is its
+    // ref's `Value` (On), not the parameter's (Off).
+    for line in [
+        "# enable-channel-1 = \"On\"   # Enable channel 1: Off | On\n",
+        "# enable-channel-2 = \"Off\"   # Enable channel 2: Off | On\n",
+        "# data-length-1 = \"1 Bit\"   # Data length 1: 1 Bit | 1 Byte\n",
+        "# polarity = \"Off\"   # Polarity: Off | On\n",
+    ] {
+        assert!(stdout.contains(line), "lacks {line:?}\n{stdout}");
+    }
+    // The internal channel is not listed.
+    let out = bussard(&["device", "1.1.9", "--dir", d])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}");
+    assert!(!stdout.contains("applikationsinstanzen"), "{stdout}");
+    std::fs::remove_dir_all(dir.parent().ok_or("parent")?)?;
     Ok(())
 }

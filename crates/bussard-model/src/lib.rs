@@ -55,7 +55,10 @@ pub use discover::{DEFAULT_MODEL_DIR, NESTED_MODEL_DIR, discover};
 pub use doc::{DocError, DocFile, DocFormat, InstallationDoc};
 pub use dpt::{ApduSize, Dpt, DptParseError};
 pub use ets_export::{to_ets_csv, to_ets_xml};
-pub use files::{hidden_mem_key, is_hidden_mem_key, label_mem_key, param_mem_key, slug};
+pub use files::{
+    LOCK_SCHEMA_FINGERPRINT, LOCK_VERSION, hidden_mem_key, is_hidden_mem_key, label_mem_key,
+    lock_written_by, param_mem_key, slug,
+};
 pub use flags::{Flags, FlagsParseError};
 pub use history::{History, HistoryError, Snapshot, SnapshotId, SnapshotReason};
 pub use keyring_checks::{KeyringFacts, KeyringStatus, validate_keyring};

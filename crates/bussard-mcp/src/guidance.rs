@@ -26,7 +26,8 @@ use crate::state::SharedState;
 
 /// The CLI commands no MCP tool replaces, named once in the instructions.
 const CLI_ONLY: &str = "Still needs the CLI: `bussard flash` to load a new application \
-    program, `bussard adopt`, `bussard replace` and `bussard commission`.";
+    program, `bussard adopt`, `bussard replace` and `bussard commission`. A parameter that \
+    shows or hides com-objects needs `bussard flash <ia>`.";
 
 /// What still needs ETS, named once in the instructions.
 const ETS_ONLY: &str = "Still needs ETS: the Secure activation of a fresh device, and any \

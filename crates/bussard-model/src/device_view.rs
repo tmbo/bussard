@@ -173,6 +173,9 @@ struct ParamEntry {
     channel: Option<String>,
     param: Option<String>,
     stored: Option<String>,
+    /// The ref's own default when it overrides the parameter's (the lock's
+    /// `default`), else `None` and the product model's default applies.
+    ref_default: Option<String>,
 }
 
 /// Every parameter of `device`: the lock's index plus what the file stores.
@@ -187,6 +190,7 @@ fn parameter_entries(device: &Device) -> Vec<ParamEntry> {
                 channel: p.channel.clone(),
                 param: p.param.clone(),
                 stored: None,
+                ref_default: p.default.clone(),
             },
         );
     }
@@ -202,6 +206,7 @@ fn parameter_entries(device: &Device) -> Vec<ParamEntry> {
                 channel: None,
                 param: crate::param_model::key_to_param_id(mem_key),
                 stored: None,
+                ref_default: None,
             });
         entry.stored = Some(value.clone());
     }
@@ -240,7 +245,10 @@ fn param_row(entry: &ParamEntry, product: Option<&ProductModel>) -> ParamRow {
         .param
         .as_deref()
         .and_then(|id| product.and_then(|p| p.parameters.get(id)));
-    let default = def.and_then(|d| d.default.as_deref());
+    let default = entry
+        .ref_default
+        .as_deref()
+        .or_else(|| def.and_then(|d| d.default.as_deref()));
     let value = entry.stored.as_deref().map(|v| display_value(def, v));
     let at_default = def.map(|_| match (entry.stored.as_deref(), default) {
         (None, _) => true,

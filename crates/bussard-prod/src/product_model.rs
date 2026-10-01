@@ -825,7 +825,7 @@ mod tests {
         assert!(!models_incomplete(&dir), "no lock, nothing to complete");
         std::fs::write(
             dir.join(bussard_model::loader::LOCK_FILE),
-            "version = 2\n\n[[product]]\nsha256 = \"00\"\nfile = \"products/a.knxprod\"\n\
+            "version = 3\n\n[[product]]\nsha256 = \"00\"\nfile = \"products/a.knxprod\"\n\
              origin = { kind = \"file\", path = \"a.knxprod\" }\napplications = [\"M-1\", \"M-2\"]\n",
         )?;
         assert!(models_incomplete(&dir), "no models directory");

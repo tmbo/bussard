@@ -133,6 +133,12 @@ pub struct ParameterFact {
     pub param: String,
     /// For an enumeration, its `(code, text)` pairs.
     pub enum_labels: Vec<(i64, String)>,
+    /// The ref's vendor default when its `Value` overrides the parameter's
+    /// own default, else `None` (the product model's default applies).
+    pub default: Option<String>,
+    /// Whether the configuration shows it (`false` for a parameter only an
+    /// `<Assign>` reaches, which ETS sets and never presents).
+    pub shown: bool,
 }
 
 /// Derives the lock-side facts of a device running `app` with parameter
@@ -183,8 +189,9 @@ pub fn derive_facts(
 }
 
 /// Writes `facts` into `device`: channel handles, texts and labels, object
-/// keys and texts, the lock's parameter index (the parameters `stored` holds
-/// a value for), and the parameter values.
+/// keys and texts, the lock's parameter index (every parameter the
+/// configuration shows, stored or at its vendor default, issue #276), and the
+/// parameter values.
 ///
 /// `stored` holds the values ETS stores (the non-default ones), keyed by
 /// app-relative ref with the module-instance selector. Each is keyed in
@@ -255,22 +262,16 @@ pub fn apply_facts(
         co.function = o.function.clone();
     }
 
-    // The lock lists the parameters the device file holds a value for; the
-    // rest of the program's parameters are in the product model.
+    // The lock indexes every parameter the configuration shows, the ones at
+    // their vendor default too (ETS stores only the others), so the device
+    // view lists them and an edit tool can set them (issue #276). The rest of
+    // the program's parameters are in the product model.
+    // A parameter only an `<Assign>` reaches is listed when stored, as before.
     device.lock.parameters = facts
         .parameters
         .iter()
-        .filter(|p| stored.contains_key(&p.reference))
-        .map(|p| {
-            (
-                p.reference.clone(),
-                LockedParameter {
-                    key: p.key.clone(),
-                    channel: p.channel.clone(),
-                    param: Some(p.param.clone()),
-                },
-            )
-        })
+        .filter(|p| p.shown || stored.contains_key(&p.reference))
+        .map(|p| (p.reference.clone(), locked_parameter(p)))
         .collect();
 
     let labels: BTreeSet<&str> = facts
@@ -305,6 +306,140 @@ pub fn apply_facts(
             );
         }
         device.parameters.insert(key, value.clone());
+    }
+}
+
+/// The lock's index entry for a derived parameter.
+fn locked_parameter(p: &ParameterFact) -> LockedParameter {
+    LockedParameter {
+        key: p.key.clone(),
+        channel: p.channel.clone(),
+        param: Some(p.param.clone()),
+        default: p.default.clone(),
+    }
+}
+
+/// Brings the lock-side facts of `device` up to date after a parameter edit,
+/// from `facts` derived with the device file's current values (issue #276).
+///
+/// A parameter that enables a block or chooses a data length shows, hides or
+/// reshapes parameters and com-objects. This adds what the new values show
+/// (channels, objects, parameter index entries) and drops what they hide,
+/// while every handle and key the device already has stays as it is, so the
+/// device file does not move: a new channel or parameter takes its derived
+/// handle or key unless the device already uses it, then the escape-hatch
+/// form. An object the facts no longer show is dropped unless `linked` names
+/// it (its links stay valid in the file and validation reports them). An
+/// object whose ref changed (another data length) takes the new ref, size,
+/// DPT and flags. The parameter values are not touched.
+pub fn refresh_facts(device: &mut Device, facts: &DeviceFacts, linked: &BTreeSet<u16>) {
+    let mut handles: BTreeSet<String> = device
+        .channels
+        .values()
+        .filter_map(|c| c.key.clone())
+        .collect();
+    for ch in &facts.channels {
+        if device.channels.contains_key(&ch.id) {
+            continue;
+        }
+        let key = if handles.contains(&ch.key) {
+            ch.id.clone()
+        } else {
+            ch.key.clone()
+        };
+        handles.insert(key.clone());
+        device.channels.insert(
+            ch.id.clone(),
+            Channel {
+                name: ch
+                    .label
+                    .clone()
+                    .or_else(|| ch.text.clone())
+                    .unwrap_or_default(),
+                key: Some(key),
+                number: ch.number,
+                text: ch.text.clone(),
+            },
+        );
+        if let Some(r) = &ch.label_ref {
+            device.lock.channel_labels.insert(ch.id.clone(), r.clone());
+        }
+    }
+
+    let shown: BTreeSet<u16> = facts.objects.iter().map(|o| o.number).collect();
+    device
+        .com_objects
+        .retain(|number, _| shown.contains(number) || linked.contains(number));
+    for o in &facts.objects {
+        match device.com_objects.get_mut(&o.number) {
+            Some(co) => {
+                if co.reference.as_deref() != Some(o.reference.as_str()) {
+                    co.dpt = o.dpt;
+                    co.size = o.size.clone();
+                    co.flags = o.flags;
+                    co.reference = Some(o.reference.clone());
+                    co.text = o.text.clone();
+                    co.function = o.function.clone();
+                }
+            }
+            None => {
+                device.com_objects.insert(
+                    o.number,
+                    ComObject {
+                        dpt: o.dpt,
+                        size: o.size.clone(),
+                        flags: o.flags,
+                        reference: Some(o.reference.clone()),
+                        key: o.key.clone(),
+                        channel: o.channel.clone(),
+                        text: o.text.clone(),
+                        function: o.function.clone(),
+                        ..ComObject::default()
+                    },
+                );
+            }
+        }
+    }
+
+    let derived: BTreeSet<&str> = facts
+        .parameters
+        .iter()
+        .filter(|p| p.shown)
+        .map(|p| p.reference.as_str())
+        .collect();
+    let stored: BTreeSet<&str> = device
+        .parameters
+        .keys()
+        .filter_map(|k| k.split_once('@').map(|(_, r)| r))
+        .collect();
+    let stored: BTreeSet<String> = stored.into_iter().map(str::to_string).collect();
+    device
+        .lock
+        .parameters
+        .retain(|r, _| derived.contains(r.as_str()) || stored.contains(r));
+    // The keys each scope already uses (parameters and objects share a
+    // channel table).
+    let mut taken: BTreeSet<(Option<String>, String)> = device
+        .lock
+        .parameters
+        .values()
+        .map(|p| (p.channel.clone(), p.key.clone()))
+        .chain(
+            device
+                .com_objects
+                .values()
+                .filter_map(|o| o.key.clone().map(|k| (o.channel.clone(), k))),
+        )
+        .collect();
+    for p in facts.parameters.iter().filter(|p| p.shown) {
+        if device.lock.parameters.contains_key(&p.reference) {
+            continue;
+        }
+        let mut entry = locked_parameter(p);
+        if !taken.insert((p.channel.clone(), p.key.clone())) {
+            entry.key = format!("{}@{}", slug(&p.key), p.reference);
+        }
+        device.lock.parameters.insert(p.reference.clone(), entry);
     }
 }
 
@@ -431,28 +566,55 @@ fn placed_channel_id(ctx: &Ctx<'_>, placement: &Placement) -> Option<String> {
 // Channels
 // ---------------------------------------------------------------------------
 
+/// Whether the effective `Access` of the parameter ref `ref_id` is `"None"`:
+/// ETS keeps such a parameter as internal bookkeeping and never shows it.
+fn access_none(app: &ApplicationProgram, ref_id: &str) -> bool {
+    let Some(pref) = app.parameter_ref(ref_id) else {
+        return false;
+    };
+    let own = app
+        .parameters
+        .get(&pref.ref_id)
+        .and_then(|p| p.access.as_deref());
+    pref.access.as_deref().or(own) == Some("None")
+}
+
 /// The channels the placements name, in first-seen (walk) order, with their
 /// handles.
+///
+/// A channel that holds only `Access="None"` parameters and no com-object
+/// (Jung's "Applikationsinstanzen", ETS bookkeeping of which application each
+/// key runs) has nothing to configure and is not emitted (issue #276). It
+/// still takes its place in the ordinals the handles fall back to, so no
+/// other channel's handle moves.
 fn derive_channels(ctx: &Ctx<'_>) -> Vec<ChannelFact> {
-    let shown_params = ctx.config.parameter_placements.iter().filter(|p| p.shown);
-    let placements = shown_params.chain(ctx.config.com_object_placements.iter());
+    let shown_params = ctx
+        .config
+        .parameters
+        .iter()
+        .zip(&ctx.config.parameter_placements)
+        .filter(|(_, p)| p.shown)
+        .map(|(a, p)| (p, !access_none(ctx.app, &a.param_ref_id)));
+    let objects = ctx.config.com_object_placements.iter().map(|p| (p, true));
 
-    // (device id) -> (channel ref, module) in first-seen order.
-    let mut seen: Vec<(String, ChannelRef, Option<usize>)> = Vec::new();
-    for placement in placements {
+    // (device id) -> (channel ref, module, has something to configure) in
+    // first-seen order.
+    let mut seen: Vec<(String, ChannelRef, Option<usize>, bool)> = Vec::new();
+    for (placement, configurable) in shown_params.chain(objects) {
         let Some(channel) = &placement.channel else {
             continue;
         };
         let module = channel_module(ctx, placement, channel);
         let id = selector_key(ctx.config.module_instance_id(module), &channel.id);
-        if !seen.iter().any(|(s, _, _)| *s == id) {
-            seen.push((id, channel.clone(), module));
+        match seen.iter_mut().find(|(s, _, _, _)| *s == id) {
+            Some(entry) => entry.3 |= configurable,
+            None => seen.push((id, channel.clone(), module, configurable)),
         }
     }
 
     let mut out: Vec<ChannelFact> = Vec::new();
     let mut handles: Vec<String> = Vec::new();
-    for (index, (id, channel, module)) in seen.iter().enumerate() {
+    for (index, (id, channel, module, _)) in seen.iter().enumerate() {
         let ordinal = index + 1;
         let name = channel
             .name
@@ -504,7 +666,11 @@ fn derive_channels(ctx: &Ctx<'_>) -> Vec<ChannelFact> {
     for (fact, key) in out.iter_mut().zip(keys) {
         fact.key = key;
     }
-    out
+    out.into_iter()
+        .zip(&seen)
+        .filter(|(_, (_, _, _, configurable))| *configurable)
+        .map(|(fact, _)| fact)
+        .collect()
 }
 
 /// A channel's handle before collisions: the slug of the channel `Name` when
@@ -893,6 +1059,14 @@ fn derive_parameters(
                 reference: v.ref_key.clone(),
                 param: v.parameter_id.clone(),
                 enum_labels,
+                // A ref `Value` overrides the parameter's default: that is
+                // the value ETS shows (and the device holds) when nothing
+                // is stored, e.g. a channel enable that is on out of the box.
+                default: pref
+                    .value
+                    .clone()
+                    .filter(|v| param.default.as_ref() != Some(v)),
+                shown: placement.shown,
             },
             base: slug(&text),
             pages,
@@ -1041,6 +1215,8 @@ mod tests {
                 reference: reference.to_string(),
                 param: String::new(),
                 enum_labels: Vec::new(),
+                default: None,
+                shown: true,
             },
             base: base.to_string(),
             pages: pages.iter().map(|p| p.to_string()).collect(),

@@ -513,7 +513,7 @@ async fn test_knx_apply_device_missing_product_data_applies_the_links_only() -> 
     std::fs::write(
         h.dir.path().join("bussard.lock"),
         format!(
-            "version = 2\n\n[[product]]\nsha256 = \"{sha}\"\nfile = \"products/gone.knxprod\"\n\
+            "version = 3\n\n[[product]]\nsha256 = \"{sha}\"\nfile = \"products/gone.knxprod\"\n\
              origin = {{ kind = \"index\", order_number = \"TST-1\" }}\napplications = \
              [\"M-00FA_A-0002\"]\norder_numbers = [\"TST-1\"]\n\n[[device]]\naddress = \
              \"1.1.4\"\nproduct = \"TST-1\"\napplication = \"M-00FA_A-0002\"\n\

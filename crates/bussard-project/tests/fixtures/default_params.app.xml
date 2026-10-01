@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FABRICATED fixture (issue #276). Shape only, no vendor content copied:
+       * channel CH-1 "Mapper": an enable flag P-1 (no memory) whose ref R-1
+         overrides the parameter default 0 with Value="1", so channel 1 is on
+         out of the box; behind it a data length P-3 (no memory) that picks
+         the ref of object 1, and a polarity P-5 with memory;
+       * a second enable flag P-2 at default 0 hiding the data length P-4 and
+         object 2;
+       * channel CH-2 "Applikationsinstanzen" whose only parameter P-6 is
+         Access="None" (ETS bookkeeping, nothing to configure). -->
+<KNX xmlns="http://knx.org/xml/project/21">
+ <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
+  <ApplicationProgram Id="M-00FA_A-00D2-10-0001" ApplicationNumber="210" ApplicationVersion="16" MaskVersion="MV-07B0" Name="Default Params Fixture" LoadProcedureStyle="MergedProcedure">
+   <Static>
+    <ParameterTypes>
+     <ParameterType Id="M-00FA_A-00D2-10-0001_PT-Switch" Name="Switch">
+      <TypeRestriction Base="Value" SizeInBit="1">
+       <Enumeration Text="Off" Value="0" Id="M-00FA_A-00D2-10-0001_PT-Switch_EN-0" />
+       <Enumeration Text="On" Value="1" Id="M-00FA_A-00D2-10-0001_PT-Switch_EN-1" />
+      </TypeRestriction>
+     </ParameterType>
+     <ParameterType Id="M-00FA_A-00D2-10-0001_PT-Len" Name="Length">
+      <TypeRestriction Base="Value" SizeInBit="8">
+       <Enumeration Text="1 Bit" Value="0" Id="M-00FA_A-00D2-10-0001_PT-Len_EN-0" />
+       <Enumeration Text="1 Byte" Value="1" Id="M-00FA_A-00D2-10-0001_PT-Len_EN-1" />
+      </TypeRestriction>
+     </ParameterType>
+     <ParameterType Id="M-00FA_A-00D2-10-0001_PT-Byte" Name="Byte"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+    </ParameterTypes>
+    <Parameters>
+     <Parameter Id="M-00FA_A-00D2-10-0001_P-1" Name="Enable1" Text="Enable channel 1" ParameterType="M-00FA_A-00D2-10-0001_PT-Switch" Value="0" />
+     <Parameter Id="M-00FA_A-00D2-10-0001_P-2" Name="Enable2" Text="Enable channel 2" ParameterType="M-00FA_A-00D2-10-0001_PT-Switch" Value="0" />
+     <Parameter Id="M-00FA_A-00D2-10-0001_P-3" Name="Len1" Text="Data length 1" ParameterType="M-00FA_A-00D2-10-0001_PT-Len" Value="0" />
+     <Parameter Id="M-00FA_A-00D2-10-0001_P-4" Name="Len2" Text="Data length 2" ParameterType="M-00FA_A-00D2-10-0001_PT-Len" Value="0" />
+     <Parameter Id="M-00FA_A-00D2-10-0001_P-5" Name="Polarity" Text="Polarity" ParameterType="M-00FA_A-00D2-10-0001_PT-Switch" Value="0">
+      <Memory CodeSegment="M-00FA_A-00D2-10-0001_RS-1" Offset="0" BitOffset="0" />
+     </Parameter>
+     <Parameter Id="M-00FA_A-00D2-10-0001_P-6" Name="_AppInstance" Text="_App instance" ParameterType="M-00FA_A-00D2-10-0001_PT-Byte" Value="0" Access="None">
+      <Memory CodeSegment="M-00FA_A-00D2-10-0001_RS-1" Offset="1" BitOffset="0" />
+     </Parameter>
+    </Parameters>
+    <ParameterRefs>
+     <ParameterRef Id="M-00FA_A-00D2-10-0001_P-1_R-1" RefId="M-00FA_A-00D2-10-0001_P-1" Value="1" />
+     <ParameterRef Id="M-00FA_A-00D2-10-0001_P-2_R-2" RefId="M-00FA_A-00D2-10-0001_P-2" />
+     <ParameterRef Id="M-00FA_A-00D2-10-0001_P-3_R-3" RefId="M-00FA_A-00D2-10-0001_P-3" />
+     <ParameterRef Id="M-00FA_A-00D2-10-0001_P-4_R-4" RefId="M-00FA_A-00D2-10-0001_P-4" />
+     <ParameterRef Id="M-00FA_A-00D2-10-0001_P-5_R-5" RefId="M-00FA_A-00D2-10-0001_P-5" />
+     <ParameterRef Id="M-00FA_A-00D2-10-0001_P-6_R-6" RefId="M-00FA_A-00D2-10-0001_P-6" />
+    </ParameterRefs>
+    <ComObjects>
+     <ComObject Id="M-00FA_A-00D2-10-0001_O-1" Name="Mapper1" Text="Mapper object 1" Number="1" FunctionText="Value" ObjectSize="1 Bit" DatapointType="DPST-1-1" CommunicationFlag="Enabled" WriteFlag="Enabled" />
+     <ComObject Id="M-00FA_A-00D2-10-0001_O-2" Name="Mapper2" Text="Mapper object 2" Number="2" FunctionText="Value" ObjectSize="1 Bit" DatapointType="DPST-1-1" CommunicationFlag="Enabled" WriteFlag="Enabled" />
+    </ComObjects>
+    <ComObjectRefs>
+     <ComObjectRef Id="M-00FA_A-00D2-10-0001_O-1_R-1" RefId="M-00FA_A-00D2-10-0001_O-1" />
+     <ComObjectRef Id="M-00FA_A-00D2-10-0001_O-1_R-2" RefId="M-00FA_A-00D2-10-0001_O-1" ObjectSize="1 Byte" DatapointType="DPST-5-10" />
+     <ComObjectRef Id="M-00FA_A-00D2-10-0001_O-2_R-1" RefId="M-00FA_A-00D2-10-0001_O-2" />
+    </ComObjectRefs>
+   </Static>
+   <Dynamic>
+    <Channel Id="M-00FA_A-00D2-10-0001_CH-1" Name="Mapper" Text="Mapper" Number="1">
+     <ParameterBlock Id="M-00FA_A-00D2-10-0001_PB-1" Name="Pairs" Text="Pairs">
+      <ParameterRefRef RefId="M-00FA_A-00D2-10-0001_P-1_R-1" />
+      <choose ParamRefId="M-00FA_A-00D2-10-0001_P-1_R-1">
+       <when test="1">
+        <ParameterRefRef RefId="M-00FA_A-00D2-10-0001_P-3_R-3" />
+        <ParameterRefRef RefId="M-00FA_A-00D2-10-0001_P-5_R-5" />
+        <choose ParamRefId="M-00FA_A-00D2-10-0001_P-3_R-3">
+         <when test="0"><ComObjectRefRef RefId="M-00FA_A-00D2-10-0001_O-1_R-1" /></when>
+         <when test="1"><ComObjectRefRef RefId="M-00FA_A-00D2-10-0001_O-1_R-2" /></when>
+        </choose>
+       </when>
+      </choose>
+      <ParameterRefRef RefId="M-00FA_A-00D2-10-0001_P-2_R-2" />
+      <choose ParamRefId="M-00FA_A-00D2-10-0001_P-2_R-2">
+       <when test="1">
+        <ParameterRefRef RefId="M-00FA_A-00D2-10-0001_P-4_R-4" />
+        <ComObjectRefRef RefId="M-00FA_A-00D2-10-0001_O-2_R-1" />
+       </when>
+      </choose>
+     </ParameterBlock>
+    </Channel>
+    <Channel Id="M-00FA_A-00D2-10-0001_CH-2" Name="Applikationsinstanzen" Text="Applikationsinstanzen" Number="2">
+     <ParameterBlock Id="M-00FA_A-00D2-10-0001_PB-2" Name="Applikationsinstanzen" Access="None">
+      <ParameterRefRef RefId="M-00FA_A-00D2-10-0001_P-6_R-6" />
+     </ParameterBlock>
+    </Channel>
+   </Dynamic>
+  </ApplicationProgram>
+ </ApplicationPrograms>
+ </Manufacturer></ManufacturerData>
+</KNX>

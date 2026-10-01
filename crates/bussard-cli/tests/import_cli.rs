@@ -312,7 +312,7 @@ fn test_import_pins_the_downloaded_product_data_in_the_lock() -> TestResult {
         String::from_utf8_lossy(&out.stderr)
     );
     let lock = std::fs::read_to_string(dir.join("bussard.lock"))?;
-    assert!(lock.contains("version = 2\n"), "{lock}");
+    assert!(lock.contains("version = 3\n"), "{lock}");
     assert!(lock.contains("[[product]]"), "{lock}");
     assert!(lock.contains(&format!("sha256 = \"{sha}\"")), "{lock}");
     assert!(lock.contains("file = \"products/tst.knxprod\""), "{lock}");

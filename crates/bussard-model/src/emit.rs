@@ -534,7 +534,10 @@ pub(crate) fn render_lock(
     products: &[ProductEntry],
     devices: &[LockDevice],
 ) -> String {
-    let mut out = format!("{LOCK_HEADER}\nversion = {LOCK_VERSION}\n");
+    let mut out = format!(
+        "{LOCK_HEADER}\nversion = {LOCK_VERSION}\nwritten_by = {}\n",
+        basic_string(&crate::files::lock_written_by())
+    );
     if let Some(s) = source {
         out.push_str(&format!("source = {}\n", basic_string(s)));
     }
@@ -665,6 +668,9 @@ pub(crate) fn render_lock(
                 f.push(format!("ref = {}", basic_string(&p.reference)));
                 if let Some(param) = &p.param {
                     f.push(format!("param = {}", basic_string(param)));
+                }
+                if let Some(default) = &p.default {
+                    f.push(format!("default = {}", basic_string(default)));
                 }
                 f.join(", ")
             })

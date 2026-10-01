@@ -53,7 +53,7 @@ impl Bench {
         std::fs::write(
             self.model().join("bussard.lock"),
             format!(
-                "version = 2\n\n[[product]]\nsha256 = \"{sha}\"\nfile = \
+                "version = 3\n\n[[product]]\nsha256 = \"{sha}\"\nfile = \
                  \"products/param-test.knxprod\"\nfilename = \"param-test.knxprod\"\n\
                  origin = {{ kind = \"file\", path = \"param-test.knxprod\" }}\n\
                  applications = [\"M-00FA_A-0002\"]\n\n[[device]]\naddress = \"1.1.4\"\n\

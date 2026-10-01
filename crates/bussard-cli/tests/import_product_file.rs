@@ -218,7 +218,7 @@ fn test_import_product_pins_the_archive_and_links_the_device() -> TestResult {
     std::fs::write(
         dir.join("bussard.lock"),
         format!(
-            "version = 2\n\n[[device]]\naddress = \"1.1.4\"\nproduct = \"MDT-BE-04001.02\"\n\
+            "version = 3\n\n[[device]]\naddress = \"1.1.4\"\nproduct = \"MDT-BE-04001.02\"\n\
              application = \"{APP_ID}\"\n"
         ),
     )?;
@@ -231,7 +231,7 @@ fn test_import_product_pins_the_archive_and_links_the_device() -> TestResult {
     );
     let sha = sha256_hex(&file)?;
     let lock = lock_text(&dir)?;
-    assert!(lock.contains("version = 2\n"), "{lock}");
+    assert!(lock.contains("version = 3\n"), "{lock}");
     assert!(lock.contains(&format!("sha256 = \"{sha}\"")), "{lock}");
     assert!(
         lock.contains("file = \"products/taster.knxprod\""),

@@ -944,6 +944,7 @@ fn test_reimport_writes_the_same_bytes_as_a_fresh_import() -> anyhow::Result<()>
             key: "regenalarm".to_string(),
             channel: None,
             param: None,
+            default: None,
         },
     );
     let fresh = with_links(named, vec![link(73, Some("4/2/20"), &[])]);

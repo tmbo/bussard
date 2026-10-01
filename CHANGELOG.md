@@ -15,9 +15,14 @@ entry supersedes it and is not a diff against it.
 bussard is pre-release and keeps no compatibility shims. What a model
 directory or a script from before these changes needs:
 
-- **Lock version 2 only** (#228): a `bussard.lock` of another version is
-  refused with the fix, `bussard import <export> --dir <dir>`, which
-  regenerates it.
+- **Lock version 3 only** (#228, #276): a `bussard.lock` of another version
+  is refused with the fix, `bussard import <export> --dir <dir>`, which
+  regenerates it. Version 3 indexes the parameters at their vendor default
+  and records a ref's `default` and the `written_by` build. The version is
+  read before the rest of the lock, so a mismatch is always the version
+  message (quoting `written_by` when present), never an unknown-field error;
+  any later schema change bumps the version again (a schema fingerprint test
+  enforces it).
 - **Product data moved** (#228): archives live in `<dir>/products/` (retained,
   pinned in the lock, no longer git-ignored by bussard); the first command
   moves an old `vendor/` there. Product models live in `.bussard/models/` and
@@ -699,6 +704,22 @@ directory or a script from before these changes needs:
 
 ### Fixed
 
+- Parameters at their vendor default are visible and settable (#276).
+  `bussard.lock` indexes every parameter the device's configuration shows,
+  not only the ones ETS stored, so `bussard device`, its `--toml` (as
+  commented default lines), `knx_show_device` and `knx_set_parameter` see
+  them: the IPS300SREG mapper's channel enables and data lengths, the
+  52921ST's "Objekt-Polarität", a key's function parameters. A parameter
+  ref's `Value` override counts as the default (lock field `default`). A
+  channel with nothing to configure (only `Access="None"` parameters, no
+  objects, such as "Applikationsinstanzen") is no longer emitted; other
+  handles do not move. After `knx_set_parameter` the device's channels,
+  objects and parameter index are re-derived under the new value when the
+  lock pins the archive, so dependent parameters and objects appear in
+  `knx_show_device` at once, and the result's `note` names objects the value
+  shows or hides. Such a change still needs `bussard flash <ia>`, which the
+  `apply` refusal and the MCP instructions now say. The lock format is now
+  version 3 (see Breaking changes).
 - An MCP tool call without arguments no longer fails with serde's "missing
   field `device`", which read as a server bug. The error says the call
   reached bussard without any arguments (or with an empty object), lists the
