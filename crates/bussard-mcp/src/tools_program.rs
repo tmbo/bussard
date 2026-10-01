@@ -74,8 +74,9 @@ use std::time::{Duration, Instant, SystemTime};
 use crate::args::Parameters;
 use bussard_bus::BusHandle;
 use bussard_download::{
-    DesiredTables, LiveRead, LiveTables, PlanReport, SecurityInputs, desired_tables_for, plan,
-    render_plan_text, sys7_table_images, write_pre_write_backup, write_tables_secured,
+    DesiredTables, LiveRead, LiveTables, PlanReport, SecurityInputs, Sys7TableImages,
+    desired_tables_for, plan, render_plan_text, sys7_table_images, write_pre_write_backup,
+    write_tables_secured,
 };
 use bussard_mgmt::{Layer4Connection, LeaseChannel, MaskProfile, Timeouts, system_type};
 use bussard_model::history::{History, SnapshotReason};
@@ -101,8 +102,13 @@ use sha2::{Digest, Sha256};
 use crate::server::BussardMcp;
 use crate::state::ConnState;
 
-/// The two tools of the programming tier, in registration order.
-pub const PROGRAMMING_TOOLS: [&str; 2] = ["knx_plan_device", "knx_apply_device"];
+/// The tools of the programming tier, in registration order.
+pub const PROGRAMMING_TOOLS: [&str; 4] = [
+    "knx_plan_device",
+    "knx_apply_device",
+    "knx_apply_status",
+    "knx_last_apply",
+];
 
 /// How long a plan stays valid for `knx_apply_device` unless configured.
 pub const DEFAULT_PLAN_TTL: Duration = Duration::from_secs(10 * 60);
@@ -122,6 +128,8 @@ pub struct ProgrammingTier {
     plans: std::sync::Mutex<HashMap<String, PendingPlan>>,
     /// Serialises programming: one plan or apply on the bus at a time.
     bus_lock: tokio::sync::Mutex<()>,
+    /// The apply jobs (issue #289): one at a time, with status and record.
+    jobs: crate::apply_jobs::ApplyJobs,
 }
 
 impl ProgrammingTier {
@@ -137,7 +145,15 @@ impl ProgrammingTier {
             plan_ttl,
             plans: std::sync::Mutex::new(HashMap::new()),
             bus_lock: tokio::sync::Mutex::new(()),
+            jobs: crate::apply_jobs::ApplyJobs::new(),
         }
+    }
+
+    /// Sets how long `knx_apply_device` waits for its write before it
+    /// answers `started` (default [`crate::apply_jobs::DEFAULT_REPLY_WAIT`],
+    /// counted from the start of the call). Tests pass zero.
+    pub fn set_reply_wait(&self, wait: Duration) {
+        self.jobs.set_reply_wait(wait);
     }
 
     /// How long a plan stays valid.
@@ -188,6 +204,20 @@ pub struct ApplyDeviceArgs {
     pub plan_hash: Option<String>,
 }
 
+/// Arguments for `knx_apply_status`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ApplyStatusArgs {
+    /// The `job` id `knx_apply_device` returned.
+    pub job: String,
+}
+
+/// Arguments for `knx_last_apply`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct LastApplyArgs {
+    /// The individual address of the device, e.g. `"1.1.4"`.
+    pub address: String,
+}
+
 #[tool_router(router = program_router, vis = "pub(crate)")]
 impl BussardMcp {
     /// `knx_plan_device` (registered only with `--allow-programming`).
@@ -229,19 +259,24 @@ impl BussardMcp {
     /// `knx_apply_device` (registered only with `--allow-programming`).
     #[tool(
         description = "Write the planned change to ONE device on the PHYSICAL bus (issues #118, \
-        #274): the group-address and association tables when a link changes, then the \
+        #274, #289): the group-address and association tables when a link changes, then the \
         parameter octets that differ, with the engine `bussard apply` uses. Call this ONLY \
         after you showed the human the plan from knx_plan_device and the human answered yes \
         explicitly in this conversation. Pass the plan_digest from that plan, and its \
         state_hash as plan_hash to refuse if the device changed since. Refuses unless the \
         digest came from this server session within the plan lifetime and a fresh read of the \
         device, with the current model, still matches it; if refused, plan again and ask \
-        again. On success it backs up the device's current tables and parameter memory first, \
-        writes, reads back to verify, and returns the verify outcome, `parameters` (what was \
-        written) and the backup paths. Tell the human the outcome and the backup paths. A KNX \
-        Data Secure device the server's keyring lists is written over A_SecureData, its \
-        security object reprogrammed with the tables, exactly as `bussard apply --keyring` \
-        does. Only available with --allow-programming."
+        again. The pre-flight (gates, digest, identity, backups of the tables and parameter \
+        memory) runs in this call; the write and its read-back run as a job in the server. \
+        When the write ends within about 20 s the reply is the full result with `started: \
+        false, done: true` (the verify outcome, `parameters` written, the backup paths); \
+        otherwise it is `started: true` with the `job` id: call knx_apply_status with that job \
+        until `done` is true, and knx_last_apply with the address recovers the result if a \
+        reply is lost. One apply at a time: a second call while a job runs is refused with \
+        its id. Tell the human the outcome and the backup paths. A KNX Data Secure device the \
+        server's keyring lists is written over A_SecureData, its security object reprogrammed \
+        with the tables, exactly as `bussard apply --keyring` does. Only available with \
+        --allow-programming."
     )]
     async fn knx_apply_device(
         &self,
@@ -255,6 +290,45 @@ impl BussardMcp {
             )
             .await
         {
+            Ok(value) => ok(value),
+            Err(reason) => refusal(&args.address, reason),
+        }
+    }
+
+    /// `knx_apply_status` (registered only with `--allow-programming`).
+    #[tool(
+        description = "Report one apply job started by knx_apply_device (issue #289): `state` \
+        (running, done, or interrupted when the server stopped mid-write), `done`, the current \
+        `step`, `progress` (the table outcome, the parameter download step, octets written), \
+        the backup paths and, once done, `result`: the same result knx_apply_device returns \
+        inline (ok, verified, parameters, recovery). Reads only the server's job table and the \
+        job record under .bussard/history; never touches the bus. Poll every few seconds while \
+        `done` is false, then tell the human the outcome. Only available with \
+        --allow-programming."
+    )]
+    async fn knx_apply_status(
+        &self,
+        Parameters(args): Parameters<ApplyStatusArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        match self.apply_status(&args.job) {
+            Ok(value) => ok(value),
+            Err(reason) => refusal(&args.job, reason),
+        }
+    }
+
+    /// `knx_last_apply` (registered only with `--allow-programming`).
+    #[tool(
+        description = "The latest apply job for ONE device (issue #289), in the shape of \
+        knx_apply_status: this session's, else the newest record under .bussard/history, so a \
+        result whose reply was lost (a client timeout, a server restart) is recoverable. \
+        `found: false` when no apply of the device is recorded. Never touches the bus. Only \
+        available with --allow-programming."
+    )]
+    async fn knx_last_apply(
+        &self,
+        Parameters(args): Parameters<LastApplyArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        match self.last_apply(&args.address) {
             Ok(value) => ok(value),
             Err(reason) => refusal(&args.address, reason),
         }
@@ -308,6 +382,13 @@ impl BussardMcp {
     async fn plan_device(&self, address: &str) -> Result<Value, String> {
         let target = parse_address(address)?;
         let (tier, handle, gateway) = self.programming_preflight()?;
+        // The bus is the running apply's until it ends (issue #289): waiting
+        // for it here could outlast the client's call budget.
+        if let Some((job, device)) = tier.jobs.running() {
+            return Err(format!(
+                "an apply is running on this server (job {job} for {device}); call                  knx_apply_status with job {job} until it is done, then plan again"
+            ));
+        }
         let dir = self.state().dir.clone();
         let model = self.state().model.reload();
         let desired = desired_tables_for(&model, target).map_err(|e| e.to_string())?;
@@ -437,6 +518,11 @@ impl BussardMcp {
                     Some(why) => format!(
                         "nothing to write over MCP: the links already match the model, and {why}"
                     ),
+                    None if !built.octet_ranges.is_empty() => "nothing to write: the device \
+                        already matches the model; only device-managed parameter octets differ \
+                        (see notes and parameters.octet_ranges), and those are not written on \
+                        their own"
+                        .to_string(),
                     None => "nothing to write: the device already matches the model".to_string(),
                 }
             } else {
@@ -460,14 +546,161 @@ impl BussardMcp {
     }
 
     /// `knx_apply_device`'s body; `Err` is a refusal reason.
+    ///
+    /// Claims the one apply slot, runs the pre-flight and the write in a
+    /// server task ([`BussardMcp::apply_job`]), and answers once the
+    /// pre-flight is through: with the full result when the write also ends
+    /// within the reply wait, else with `started: true` and the job id
+    /// (issue #289).
     async fn apply_device(
         &self,
         address: &str,
         digest: &str,
         plan_hash: Option<&str>,
     ) -> Result<Value, String> {
+        let began = Instant::now();
         let target = parse_address(address)?;
-        let (tier, handle, gateway) = self.programming_preflight()?;
+        let (tier, _, _) = self.programming_preflight()?;
+        let job = tier.jobs.claim(target)?;
+        let reply_wait = tier.jobs.reply_wait();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let me = self.clone();
+        let (job_id, digest, plan_hash) = (
+            job.clone(),
+            digest.to_string(),
+            plan_hash.map(str::to_string),
+        );
+        let worker = tokio::spawn(async move {
+            me.apply_job(&job_id, target, &digest, plan_hash.as_deref(), started_tx)
+                .await;
+        });
+        // A panic in the job must not leave the slot claimed for good.
+        let state = std::sync::Arc::clone(self.state());
+        let watched = job.clone();
+        tokio::spawn(async move {
+            if let Err(err) = worker.await
+                && let Some(tier) = state.programming.as_ref()
+            {
+                tier.jobs.finish(
+                    &watched,
+                    json!({
+                        "ok": false,
+                        "verified": false,
+                        "reason": format!("the apply task stopped unexpectedly: {err}"),
+                    }),
+                );
+            }
+        });
+        match started_rx.await {
+            Ok(Ok(())) => {}
+            Ok(Err(reason)) => return Err(reason),
+            Err(_) => {
+                return Err(format!(
+                    "the apply of {target} stopped before its pre-flight ended; call \
+                     knx_apply_status with job {job}"
+                ));
+            }
+        }
+        let wait = reply_wait.saturating_sub(began.elapsed());
+        if tier.jobs.wait(&job, wait).await {
+            let mut result = tier.jobs.result(&job).unwrap_or_else(|| json!({}));
+            let status = tier.jobs.status(&self.state().dir, &job);
+            let record = status.as_ref().map(|s| s["record"].clone());
+            let next_step = inline_next_step(&job, target, &result);
+            merge(
+                &mut result,
+                json!({
+                    "started": false,
+                    "done": true,
+                    "job": job,
+                    "record": record,
+                    "next_step": next_step,
+                }),
+            );
+            return Ok(result);
+        }
+        let mut status = tier
+            .jobs
+            .status(&self.state().dir, &job)
+            .unwrap_or_else(|| json!({}));
+        merge(
+            &mut status,
+            json!({
+                "started": true,
+                "done": false,
+                "job": job,
+                "address": target.to_string(),
+                "next_step": format!(
+                    "The write to {target} continues in the server as job {job}; it is not done \
+                     yet. Tell the human it is running, then call knx_apply_status with job \
+                     {job} every few seconds until `done` is true and report its `result` (the \
+                     verify outcome, the parameters written, the backup paths). If the reply is \
+                     lost, knx_last_apply with address {target} returns the same job."
+                ),
+            }),
+        );
+        if let Some(map) = status.as_object_mut() {
+            map.remove("result");
+            map.remove("state");
+        }
+        Ok(status)
+    }
+
+    /// One apply job: the pre-flight, then the write, holding the bus lock
+    /// and the warm slot throughout. `started` gets the pre-flight's verdict;
+    /// a refusal abandons the job, a pass is followed by the write and the
+    /// final result in the job table.
+    async fn apply_job(
+        &self,
+        job: &str,
+        target: IndividualAddress,
+        digest: &str,
+        plan_hash: Option<&str>,
+        started: tokio::sync::oneshot::Sender<Result<(), String>>,
+    ) {
+        let state = std::sync::Arc::clone(self.state());
+        let Some(tier) = state.programming.as_ref() else {
+            let _ = started.send(Err("the programming tier is off".into()));
+            return;
+        };
+        let _guard = tier.bus_lock.lock().await;
+        // Held until the write is done: management calls are sequential and
+        // this one leases the bus itself (issue #215).
+        let mut warm = self.warm().lock().await;
+        warm.release().await;
+        let prepared = match self.apply_preflight(tier, target, digest, plan_hash).await {
+            Ok(prepared) => prepared,
+            Err(reason) => {
+                tier.jobs.abandon(job);
+                let _ = started.send(Err(reason));
+                return;
+            }
+        };
+        let record = prepared.snapshot.as_ref().map(|id| {
+            History::open(&prepared.dir)
+                .history_dir()
+                .join(id)
+                .join(crate::apply_jobs::RECORD_FILE)
+        });
+        tier.jobs.started(job, prepared.result.clone(), record);
+        let _ = started.send(Ok(()));
+        let result = self.apply_write(tier, job, prepared).await;
+        drop(warm);
+        tier.jobs.finish(job, result);
+    }
+
+    /// The pre-flight of an apply: the digest names a fresh plan of this
+    /// session for `target`, a fresh read with the current model reproduces
+    /// it, the gates pass, and the audit snapshot and both backups are
+    /// written. `Err` is a refusal reason; nothing was written to the device.
+    async fn apply_preflight(
+        &self,
+        tier: &ProgrammingTier,
+        target: IndividualAddress,
+        digest: &str,
+        plan_hash: Option<&str>,
+    ) -> Result<Prepared, String> {
+        let (_, handle, gateway) = self.programming_preflight()?;
         let dir = self.state().dir.clone();
 
         // The digest must name a plan this session produced, for this device,
@@ -492,14 +725,9 @@ impl BussardMcp {
             ));
         }
 
-        let _guard = tier.bus_lock.lock().await;
         let model = self.state().model.reload();
         let desired = desired_tables_for(&model, target).map_err(|e| e.to_string())?;
         let product = product_for(&dir, &model, target);
-        // Held until the write is done: management calls are sequential and
-        // this one leases the bus itself (issue #215).
-        let mut warm = self.warm().lock().await;
-        warm.release().await;
         // KNX Data Secure: the same material the plan resolved, one
         // high-water mark for the read and the write so the send sequence
         // stays monotonic across both connections (spec §5.9).
@@ -634,7 +862,7 @@ impl BussardMcp {
         let backup_path = backup.display().to_string();
         let param_backup_path = param_backup.as_ref().map(|p| p.display().to_string());
 
-        let mut result = json!({
+        let result = json!({
             "address": target.to_string(),
             "gateway": gateway,
             "secured": tool_key.is_some(),
@@ -642,6 +870,59 @@ impl BussardMcp {
             "parameter_backup": param_backup_path,
             "snapshot": snapshot,
         });
+        Ok(Prepared {
+            target,
+            gateway,
+            dir,
+            handle,
+            source,
+            tool_key,
+            high_water,
+            desired,
+            report,
+            built,
+            read,
+            security,
+            images,
+            snapshot,
+            backup_path,
+            param_backup_path,
+            result,
+        })
+    }
+
+    /// The write of an apply whose pre-flight passed: the tables when a link
+    /// changes, then the parameter octets, each verified. Never refuses: a
+    /// failure is the result (`ok: false` with the reason and the recovery).
+    async fn apply_write(&self, tier: &ProgrammingTier, job: &str, p: Prepared) -> Value {
+        let Prepared {
+            target,
+            gateway,
+            handle,
+            source,
+            tool_key,
+            high_water,
+            desired,
+            report,
+            built,
+            read,
+            security,
+            images,
+            backup_path,
+            param_backup_path,
+            mut result,
+            ..
+        } = p;
+        let live = &read.live;
+        let tables = live.tables();
+        let tables_change = !report.is_noop();
+        let param_write = match (
+            &built.partial,
+            read.params.as_ref().and_then(|p| p.detail.as_ref()),
+        ) {
+            (Some(partial), Some(detail)) => Some((partial, detail)),
+            _ => None,
+        };
         let recovery = format!(
             "The device may be left with partially written or unloaded tables. The pre-apply \
              state is backed up at {backup_path}. Re-planning and re-applying {target} is safe \
@@ -651,10 +932,25 @@ impl BussardMcp {
 
         // The tables first, when a link changes.
         if tables_change {
-            let lease = handle
-                .lease()
-                .await
-                .map_err(|e| format!("could not lease the bus: {e}"))?;
+            tier.jobs.step(
+                job,
+                "writing the group-address and association tables, then reading them back",
+            );
+            let lease = match handle.lease().await {
+                Ok(lease) => lease,
+                Err(e) => {
+                    merge(
+                        &mut result,
+                        json!({
+                            "ok": false,
+                            "verified": false,
+                            "reason": format!("could not lease the bus: {e}"),
+                            "recovery": recovery,
+                        }),
+                    );
+                    return result;
+                }
+            };
             let outcome = write_tables_secured(
                 LeaseChannel::new(lease),
                 target,
@@ -670,6 +966,11 @@ impl BussardMcp {
             tracing::info!(
                 "audit: knx_apply_device {target} tables via {gateway}: {}; backup {backup_path}",
                 if verified { "verified" } else { "FAILED" }
+            );
+            tier.jobs.progress(
+                job,
+                "tables",
+                json!(if verified { "verified" } else { "failed" }),
             );
             merge(
                 &mut result,
@@ -700,7 +1001,7 @@ impl BussardMcp {
                         "reason": "not written: the table write did not verify",
                     });
                 }
-                return Ok(result);
+                return result;
             }
         }
 
@@ -709,14 +1010,33 @@ impl BussardMcp {
         // memory back.
         if let Some((partial, detail)) = param_write {
             let Some(service) = self.state().bus.service() else {
-                return Err("the bus is not wired".into());
+                merge(
+                    &mut result,
+                    json!({
+                        "ok": false,
+                        "verified": false,
+                        "reason": "the bus is not wired",
+                    }),
+                );
+                return result;
             };
+            tier.jobs.step(
+                job,
+                format!(
+                    "writing {} parameter octet(s)",
+                    built.plan.writes.parameter_octets
+                ),
+            );
             let read_options = L4Options {
                 source: SourcePolicy::Known(source),
                 tool_key: tool_key.clone(),
                 high_water: high_water.clone(),
                 authorize: Authorize::BestEffort(bussard_mgmt::apci::FREE_ACCESS_KEY),
                 ..L4Options::default()
+            };
+            let mut observer = JobObserver {
+                jobs: &tier.jobs,
+                job,
             };
             let outcome = bussard_service::download::write_parameters(
                 service,
@@ -727,7 +1047,7 @@ impl BussardMcp {
                 tool_key.clone(),
                 high_water.clone(),
                 &read_options,
-                &mut (),
+                &mut observer,
             )
             .await;
             let (ok, parameters) = match outcome {
@@ -785,7 +1105,150 @@ impl BussardMcp {
             self.session_edits()
                 .applied(target, built.parameters_skipped.is_none());
         }
-        Ok(result)
+        result
+    }
+
+    /// `knx_apply_status`'s body; `Err` is a refusal reason.
+    fn apply_status(&self, job: &str) -> Result<Value, String> {
+        let Some(tier) = self.state().programming.as_ref() else {
+            return Err(
+                "the programming tier is off; start the server with --allow-programming".into(),
+            );
+        };
+        let job = job.trim();
+        tier.jobs.status(&self.state().dir, job).ok_or_else(|| {
+            format!(
+                "no apply job {job:?} in this session or under .bussard/history; \
+                 knx_last_apply with the device's address returns its latest job"
+            )
+        })
+    }
+
+    /// `knx_last_apply`'s body; `Err` is a refusal reason.
+    fn last_apply(&self, address: &str) -> Result<Value, String> {
+        let target = parse_address(address)?;
+        let Some(tier) = self.state().programming.as_ref() else {
+            return Err(
+                "the programming tier is off; start the server with --allow-programming".into(),
+            );
+        };
+        Ok(match tier.jobs.last(&self.state().dir, target) {
+            Some(status) => {
+                let mut status = status;
+                status["found"] = json!(true);
+                status
+            }
+            None => json!({
+                "found": false,
+                "address": target.to_string(),
+                "next_step": format!(
+                    "no apply of {target} is recorded in this session or under \
+                     .bussard/history; call knx_plan_device for {target} to see what the device \
+                     holds"
+                ),
+            }),
+        })
+    }
+}
+
+/// What an apply whose pre-flight passed carries into its write.
+struct Prepared {
+    /// The device.
+    target: IndividualAddress,
+    /// The resolved gateway, for the audit line.
+    gateway: String,
+    /// The model directory.
+    dir: std::path::PathBuf,
+    /// The bus.
+    handle: BusHandle,
+    /// The checked source address.
+    source: IndividualAddress,
+    /// The Data Secure tool key, `None` on the plain path.
+    tool_key: Option<Key16>,
+    /// The send-sequence high-water mark shared by the read and the write.
+    high_water: SequenceHighWater,
+    /// The model's tables for the device.
+    desired: DesiredTables,
+    /// The table plan.
+    report: PlanReport,
+    /// The device plan with its parameter half.
+    built: BuiltPlan,
+    /// The pre-flight read.
+    read: DeviceRead,
+    /// The security-object inputs, on the secured System B path.
+    security: Option<SecurityInputs>,
+    /// The System 7 table images, when a System 7 device's links change.
+    images: Option<Sys7TableImages>,
+    /// The audit snapshot's id.
+    snapshot: Option<String>,
+    /// The table backup.
+    backup_path: String,
+    /// The parameter backup, when parameters are written.
+    param_backup_path: Option<String>,
+    /// The result so far (address, gateway, backups, snapshot).
+    result: Value,
+}
+
+/// Reports a parameter download's progress into its job.
+struct JobObserver<'a> {
+    /// The job table.
+    jobs: &'a crate::apply_jobs::ApplyJobs,
+    /// The job.
+    job: &'a str,
+}
+
+impl bussard_service::download::FlashObserver for JobObserver<'_> {
+    fn progress(&mut self, event: bussard_download::Progress) {
+        match event {
+            bussard_download::Progress::Step {
+                index,
+                total,
+                label,
+            } => {
+                self.jobs.step(
+                    self.job,
+                    format!("parameter download step {index} of {total}: {label}"),
+                );
+                self.jobs
+                    .progress(self.job, "download_step", json!(format!("{index}/{total}")));
+            }
+            bussard_download::Progress::Bytes { written, total } => {
+                self.jobs.progress(
+                    self.job,
+                    "octets",
+                    json!({"written": written, "total": total}),
+                );
+            }
+        }
+    }
+
+    fn finished(&mut self, verified: bool) {
+        self.jobs.progress(
+            self.job,
+            "download",
+            json!(if verified { "verified" } else { "failed" }),
+        );
+        if verified {
+            self.jobs
+                .step(self.job, "reading the parameter memory back to verify");
+        }
+    }
+}
+
+/// The `next_step` of an apply that finished within its call.
+fn inline_next_step(job: &str, target: IndividualAddress, result: &Value) -> String {
+    if result["ok"] == true {
+        format!(
+            "The write finished within this call (job {job}). Tell the human the outcome and \
+             the backup paths; knx_apply_status with job {job} or knx_last_apply with address \
+             {target} returns this result again."
+        )
+    } else {
+        format!(
+            "The write ended without verifying (job {job}). Tell the human the reason, the \
+             recovery and the backup paths; knx_last_apply with address {target} returns this \
+             result again."
+        )
     }
 }
 

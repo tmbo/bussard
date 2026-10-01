@@ -703,6 +703,19 @@ pub const INTERNAL_SELECTOR_NOTE: &str = "an internal ETS selector differs: the 
      last download, or the device was downloaded from another project state); writing makes \
      the device match the model";
 
+/// What an octet a download of the model does not place means, when the
+/// device holds another value there (issue #289, 1.1.18): ETS skips such an
+/// octet in a download (a capture of ETS showed it skipping exactly those),
+/// so the device's value is left from an earlier state, not a project change.
+fn unwritten_note(owner: &bussard_download::OctetOwner) -> String {
+    format!(
+        "ETS does not write this octet in a download; a full download leaves the segment fill \
+         (0x{:02X}) there; the device holds {} from an earlier state",
+        owner.segment_fill.unwrap_or(0),
+        owner.device.as_deref().unwrap_or("an unreadable value")
+    )
+}
+
 /// A parameter behind written octets.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct OctetParameter {
@@ -796,8 +809,14 @@ fn octet_attributions(device: Option<&Device>, ranges: &[OctetRange]) -> Vec<Oct
             let explanation = r
                 .owners
                 .iter()
-                .any(bussard_download::OctetOwner::internal_selector_differs)
-                .then(|| INTERNAL_SELECTOR_NOTE.to_string());
+                .find(|o| o.unwritten_differs())
+                .map(unwritten_note)
+                .or_else(|| {
+                    r.owners
+                        .iter()
+                        .any(bussard_download::OctetOwner::internal_selector_differs)
+                        .then(|| INTERNAL_SELECTOR_NOTE.to_string())
+                });
             OctetAttribution {
                 segment,
                 offset: r.offset,
@@ -845,10 +864,47 @@ fn octet_notes(octets: usize, changed: usize, ranges: &[OctetAttribution]) -> Ve
             unexplained.len() - OCTET_NOTE_RANGES
         ));
     }
-    if ranges.iter().any(|r| r.explanation.is_some()) {
-        notes.push(INTERNAL_SELECTOR_NOTE.to_string());
+    let mut explained: Vec<&str> = Vec::new();
+    for explanation in ranges.iter().filter_map(|r| r.explanation.as_deref()) {
+        if !explained.contains(&explanation) {
+            explained.push(explanation);
+        }
     }
+    notes.extend(explained.into_iter().map(str::to_string));
     notes
+}
+
+/// Whether every written octet run is owned only by device-managed
+/// parameters ([`OctetRole::DeviceManaged`]: `Access="None"` runtime values
+/// such as a download flag). A run no parameter covers, or one with any
+/// other owner, is a real difference.
+pub fn device_managed_only(ranges: &[OctetAttribution]) -> bool {
+    !ranges.is_empty()
+        && ranges.iter().all(|r| {
+            !r.parameters.is_empty()
+                && r.parameters
+                    .iter()
+                    .all(|p| p.role == OctetRole::DeviceManaged)
+        })
+}
+
+/// The plan note for parameter octets that differ only where the
+/// application owns the value at runtime (issue #289): not written on their
+/// own, written with the next table or parameter write as ETS does at a
+/// download.
+fn device_managed_note(octets: usize, ranges: &[OctetAttribution]) -> String {
+    let runs: Vec<&str> = ranges.iter().map(|r| r.sentence.as_str()).collect();
+    format!(
+        "{octets} device-managed parameter octet{s} differ{v} from the model's image and {is} \
+         not written on {its} own (the application owns {them} at runtime; the next table or \
+         parameter write puts back the model's value, as ETS does at a download): {}",
+        runs.join("; "),
+        s = if octets == 1 { "" } else { "s" },
+        v = if octets == 1 { "s" } else { "" },
+        is = if octets == 1 { "is" } else { "are" },
+        its = if octets == 1 { "its" } else { "their" },
+        them = if octets == 1 { "it" } else { "them" },
+    )
 }
 
 /// The refusal of a parameter write whose values show, hide or reshape a
@@ -964,15 +1020,27 @@ pub fn build_device_plan(
                 } else {
                     match detail.plan.parameters_only(&detail.regions) {
                         Ok(p) => {
-                            parameter_octets = p.changed_octets();
-                            if parameter_octets > 0 {
-                                partial = Some(p);
+                            let octets = p.changed_octets();
+                            if octets > 0 {
                                 octet_ranges = octet_attributions(device, &detail.octets);
-                                notes.extend(octet_notes(
-                                    parameter_octets,
-                                    parameters.len(),
-                                    &octet_ranges,
-                                ));
+                                if report.is_noop()
+                                    && parameters.is_empty()
+                                    && device_managed_only(&octet_ranges)
+                                {
+                                    // Issue #289: octets the application owns
+                                    // at runtime (a download flag) always
+                                    // differ from the model's image. They are
+                                    // listed, but never written on their own.
+                                    notes.push(device_managed_note(octets, &octet_ranges));
+                                } else {
+                                    parameter_octets = octets;
+                                    partial = Some(p);
+                                    notes.extend(octet_notes(
+                                        parameter_octets,
+                                        parameters.len(),
+                                        &octet_ranges,
+                                    ));
+                                }
                             }
                         }
                         Err(err) => notes.push(format!(
@@ -1059,6 +1127,7 @@ mod tests {
             device: None,
             model: None,
             enumerated: false,
+            segment_fill: None,
         };
         let range =
             |offset: usize, length: usize, owners: Vec<bussard_download::OctetOwner>| OctetRange {
@@ -1125,6 +1194,50 @@ mod tests {
         }
     }
 
+    /// Issue #289: runs owned only by device-managed parameters are not a
+    /// difference on their own; any other owner, or a run no parameter
+    /// covers, is.
+    #[test]
+    fn test_device_managed_only_needs_every_owner_device_managed() {
+        let owner = |key: &str, role: OctetRole| bussard_download::OctetOwner {
+            key: key.to_string(),
+            name: key.to_string(),
+            role,
+            device: Some("1".to_string()),
+            model: Some("0".to_string()),
+            enumerated: false,
+            segment_fill: None,
+        };
+        let run = |owners: Vec<bussard_download::OctetOwner>| OctetRange {
+            segment: "M-00FA_A-0002_RS-2".to_string(),
+            offset: 1,
+            length: 1,
+            owners,
+        };
+        let flag = || owner("P-1_R-2", OctetRole::DeviceManaged);
+        let cases = [
+            (vec![run(vec![flag()])], true),
+            (vec![run(vec![flag()]), run(vec![flag()])], true),
+            (
+                vec![run(vec![flag(), owner("P-0_R-1", OctetRole::Changed)])],
+                false,
+            ),
+            (vec![run(vec![flag()]), run(vec![])], false),
+            (vec![run(vec![owner("P-3", OctetRole::Internal)])], false),
+            (vec![], false),
+        ];
+        for (runs, want) in cases {
+            let ranges = octet_attributions(None, &runs);
+            assert_eq!(device_managed_only(&ranges), want, "{ranges:?}");
+        }
+        let note = device_managed_note(1, &octet_attributions(None, &[run(vec![flag()])]));
+        assert!(
+            note.starts_with("1 device-managed parameter octet differs from the model's image"),
+            "{note}"
+        );
+        assert!(!note.starts_with("parameters not"), "{note}");
+    }
+
     /// Issue #285: an internal ETS selector is named with its role and both
     /// values, and the plan says once what a differing selector means.
     #[test]
@@ -1136,6 +1249,7 @@ mod tests {
             device: Some("3".to_string()),
             model: Some("no application".to_string()),
             enumerated: true,
+            segment_fill: None,
         };
         let runs = octet_attributions(
             None,
@@ -1157,6 +1271,42 @@ mod tests {
         assert_eq!(notes.len(), 3, "{notes:?}");
         assert_eq!(notes[1], runs[0].sentence);
         assert_eq!(notes[2], INTERNAL_SELECTOR_NOTE);
+    }
+
+    /// Issue #289 (1.1.18): a selector the Dynamic does not reach is an
+    /// octet ETS does not write; the explanation says the device's value is
+    /// left from an earlier state, not that the project changed.
+    #[test]
+    fn test_octet_attributions_explain_an_unreached_selector() {
+        let selector = bussard_download::OctetOwner {
+            key: "P-643".to_string(),
+            name: "_AppInstanz 51".to_string(),
+            role: OctetRole::Internal,
+            device: Some("3".to_string()),
+            model: Some("no application".to_string()),
+            enumerated: true,
+            segment_fill: Some(0x00),
+        };
+        assert!(!selector.internal_selector_differs());
+        assert!(selector.unwritten_differs());
+        let runs = octet_attributions(
+            None,
+            &[OctetRange {
+                segment: "M-0004_A-D142-21-8848-O000A_RS-04-00000".to_string(),
+                offset: 165,
+                length: 1,
+                owners: vec![selector],
+            }],
+        );
+        let want = "ETS does not write this octet in a download; a full download leaves the \
+                    segment fill (0x00) there; the device holds 3 from an earlier state";
+        assert_eq!(runs[0].explanation.as_deref(), Some(want));
+        let notes = octet_notes(1, 0, &runs);
+        assert_eq!(notes.last().map(String::as_str), Some(want), "{notes:?}");
+        assert!(
+            !notes.iter().any(|n| n == INTERNAL_SELECTOR_NOTE),
+            "{notes:?}"
+        );
     }
 
     #[test]

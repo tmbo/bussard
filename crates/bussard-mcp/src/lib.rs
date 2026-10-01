@@ -120,6 +120,7 @@
 
 #![warn(missing_docs)]
 
+pub mod apply_jobs;
 pub mod args;
 pub mod guidance;
 pub mod instances;

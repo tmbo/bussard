@@ -442,7 +442,9 @@ const PROGRAMMING_INSTRUCTIONS: &str = "bussard: KNX as code over MCP. The insta
     links (group-address and association tables) and the parameter values that differ from \
     the model (one plan sentence each), over KNX Data Secure when the server's keyring lists \
     the device. A plan without the device's product data writes the links only and says \
-    why. Still needs the CLI: `bussard flash` to load a new \
+    why. knx_apply_device runs the write as a job: when it answers `started` with a job id, \
+    call knx_apply_status with that job until `done` is true and report its result; \
+    knx_last_apply recovers a device's latest result when a reply is lost. Still needs the CLI: `bussard flash` to load a new \
     application program, `bussard adopt`, `bussard replace` and `bussard commission`. A \
     parameter that shows or hides com-objects needs `bussard flash <ia>`. Still \
     needs ETS: the Secure activation of a fresh device, and any setting the device's product \
