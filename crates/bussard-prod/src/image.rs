@@ -1219,8 +1219,8 @@ fn encode_value(
             buf[..bytes.len()].copy_from_slice(bytes);
             Ok(Placement::Bytes(buf))
         }
-        Some(ParameterType::Float { encoding, .. }) => {
-            encode_float(app, pname, encoding.as_deref(), value)
+        Some(ParameterType::Float { encoding, max, .. }) => {
+            encode_float(app, pname, encoding.as_deref(), *max, value)
         }
         Some(ParameterType::None) | None => Ok(Placement::Empty),
         Some(ParameterType::Other { kind, .. }) if kind == "TypeRawData" => {
@@ -1315,8 +1315,9 @@ fn encode_raw_data(
 /// `"IEEE-754 Single"`, 109 `"IEEE-754 Double"`, and no `TypeFloat` without an
 /// `Encoding`):
 ///
-/// * `"DPT 9"` — the KNX 2-byte float, encoded by the one workspace encoder in
-///   [`bussard_model::codec::encode_float16`];
+/// * `"DPT 9"`: the KNX 2-byte float, rounded like ETS by
+///   [`encode_dpt9_parameter`]; `max` is the type's `maxInclusive`, which
+///   decides whether the top raw pattern `7F FF` is a value;
 /// * `"IEEE-754 Single"` (and the equivalent `"DPT 14"` spelling) — a 4-byte
 ///   big-endian `f32`;
 /// * `"IEEE-754 Double"` — an 8-byte big-endian `f64`.
@@ -1330,6 +1331,7 @@ fn encode_float(
     app: &ApplicationProgram,
     pname: &str,
     encoding: Option<&str>,
+    max: Option<f64>,
     value: Option<&str>,
 ) -> Result<Placement> {
     let raw = value.unwrap_or("0");
@@ -1383,7 +1385,7 @@ fn encode_float(
             let f: f64 = raw.trim().parse().map_err(|_| {
                 param_err(app, pname, &format!("float value `{raw}` is not a number"))
             })?;
-            let enc = encode_dpt9_parameter(f).ok_or_else(|| {
+            let enc = encode_dpt9_parameter(f, admits_dpt9_top(max)).ok_or_else(|| {
                 param_err(
                     app,
                     pname,
@@ -1403,9 +1405,15 @@ fn encode_float(
 /// threshold defaulting to 1000 lux; `100000 / 64 = 1562.5` and ETS writes
 /// `36 1A` (mantissa 1562), where the group-value encoder's halving with
 /// rounding away from zero wrote `36 1B`. Its 65535 default is `66 40`
-/// (`6553500 / 4096 = 1599.98`, rounded to 1600). `None` when the value is not
-/// finite or out of range (including the `7F FF` "invalid" marker).
-fn encode_dpt9_parameter(value: f64) -> Option<[u8; 2]> {
+/// (`6553500 / 4096 = 1599.98`, rounded to 1600).
+///
+/// `7F FF` (mantissa 2047, exponent 15, `670760.96`) is the "invalid data"
+/// marker of a DPT 9 group value, but a parameter is memory, not a group
+/// value: when the parameter type declares a `maxInclusive` that reaches it
+/// (`admits_top`), the pattern is the value and is written as ETS computes it.
+/// `None` when the value is not finite, out of range, or encodes to `7F FF`
+/// without `admits_top`.
+fn encode_dpt9_parameter(value: f64, admits_top: bool) -> Option<[u8; 2]> {
     if !value.is_finite() {
         return None;
     }
@@ -1420,7 +1428,27 @@ fn encode_dpt9_parameter(value: f64) -> Option<[u8; 2]> {
         (0, mantissa as u16)
     };
     let raw = sign | (exponent << 11) | (bits & 0x07ff);
-    (raw != 0x7FFF).then_some(raw.to_be_bytes())
+    (raw != 0x7FFF || admits_top).then_some(raw.to_be_bytes())
+}
+
+/// The largest DPT 9 raw value, `0.01 * 2047 * 2^15`: the pattern `7F FF`.
+const DPT9_RAW_TOP: f64 = 670_760.96;
+
+/// Whether a `<TypeFloat Encoding="DPT 9">` whose `maxInclusive` is `max`
+/// declares `7F FF` (`670760.96`) a value.
+///
+/// Issue #294: the Zennio Flat 55 Display (`M-0071_A-5261-10`) types its
+/// `ctrl[n].uCtrl.b2.float16.maxValue` parameters with
+/// `<ParameterType Name="float16_t (-671088.64, 670760.96)"><TypeFloat
+/// Encoding="DPT 9" minInclusive="-671088.64" maxInclusive="670760.96" />`,
+/// the full raw range of the two octets, and defaults them to
+/// `6.707609600000000E+005`. ETS accepts that default (it is inside the type's
+/// own range) and writes `7F FF`; refusing it refused the whole image. A type
+/// without a `maxInclusive`, or with a lower one, keeps the marker refused.
+fn admits_dpt9_top(max: Option<f64>) -> bool {
+    // The declared bound is parsed from decimal text, so compare with a
+    // tolerance far below the DPT 9 step at the top (327.68).
+    max.is_some_and(|m| m >= DPT9_RAW_TOP - 0.005)
 }
 
 /// Encodes a `<TypeNumber>` value, honouring declared min/max and signedness.
@@ -2505,8 +2533,9 @@ mod tests {
     /// `FLOAT16_MAX` used mantissa 2047 instead of 2046, so the top of its
     /// accepted range rounded up onto the raw pattern `0x7FFF` — the DPT-9
     /// "invalid data" marker the model encoder deliberately avoids (issue #62).
-    /// The copy is gone; prod now calls `bussard_model::codec::encode_float16`,
-    /// so the marker is unreachable and the top of the old range is refused.
+    /// The copy is gone. The marker is refused unless the parameter type's own
+    /// `maxInclusive` reaches it (issue #294, see
+    /// `test_encode_value_float_dpt9_full_raw_range_type_writes_7fff`).
     #[test]
     fn test_encode_value_float_dpt9_never_emits_the_invalid_marker()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -2523,18 +2552,42 @@ mod tests {
         assert_eq!(&img[0..2], &[0x7F, 0xFE]);
 
         // Anything above it (the old copy's 2047-mantissa range) is refused
-        // rather than written as 0x7FFF.
-        let app = app_with(&[(
-            "fover",
-            r#"<TypeFloat Encoding="DPT 9" minInclusive="-671088" maxInclusive="670761" />"#,
-            Some("670760.96"),
-            0,
-            0,
-        )])?;
-        let err = compute_parameter_image(&app, &no_overrides(), &no_bases())
-            .err()
-            .ok_or("above the DPT-9 maximum")?;
-        assert!(err.to_string().contains("DPT-9 range"), "{err}");
+        // rather than written as 0x7FFF when the type stops below the marker.
+        for max in ["670434", "670760"] {
+            let app = app_with(&[(
+                "fover",
+                &format!(
+                    r#"<TypeFloat Encoding="DPT 9" minInclusive="-671088" maxInclusive="{max}" />"#
+                ),
+                Some("670760.96"),
+                0,
+                0,
+            )])?;
+            let err = compute_parameter_image(&app, &no_overrides(), &no_bases())
+                .err()
+                .ok_or("above the DPT-9 maximum")?;
+            assert!(err.to_string().contains("DPT-9 range"), "{max}: {err}");
+        }
+        Ok(())
+    }
+
+    /// Issue #294: the Zennio Flat 55 Display (`M-0071_A-5261-10`) declares
+    /// `float16_t (-671088.64, 670760.96)` as `<TypeFloat Encoding="DPT 9"
+    /// minInclusive="-671088.64" maxInclusive="670760.96" />` and defaults its
+    /// `ctrl[n].uCtrl.b2.float16.maxValue` to `6.707609600000000E+005`. That is
+    /// mantissa 2047 at exponent 15, the raw pattern `7F FF`, inside the type's
+    /// range; ETS writes it, so the image does too instead of refusing.
+    #[test]
+    fn test_encode_value_float_dpt9_full_raw_range_type_writes_7fff()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let ty =
+            r#"<TypeFloat Encoding="DPT 9" minInclusive="-671088.64" maxInclusive="670760.96" />"#;
+        let app = app_with(&[
+            ("maxValue", ty, Some("6.707609600000000E+005"), 0, 0),
+            ("minValue", ty, Some("-6.710886400000000E+005"), 2, 0),
+        ])?;
+        let img = image_of(&app)?;
+        assert_eq!(&img[0..4], &[0x7F, 0xFF, 0xF8, 0x00]);
         Ok(())
     }
 
@@ -3180,16 +3233,18 @@ mod tests {
     /// the Busch-Wächter PRO 280's 1000 lux threshold is `36 1A`, not `36 1B`).
     #[test]
     fn test_encode_dpt9_parameter_rounds_like_ets() {
-        assert_eq!(encode_dpt9_parameter(1000.0), Some([0x36, 0x1A]));
-        assert_eq!(encode_dpt9_parameter(65535.0), Some([0x66, 0x40]));
-        assert_eq!(encode_dpt9_parameter(20.0), Some([0x07, 0xD0]));
-        assert_eq!(encode_dpt9_parameter(21.0), Some([0x0C, 0x1A]));
-        assert_eq!(encode_dpt9_parameter(1.0), Some([0x00, 0x64]));
-        assert_eq!(encode_dpt9_parameter(0.0), Some([0x00, 0x00]));
-        assert_eq!(encode_dpt9_parameter(-1.0), Some([0x87, 0x9C]));
-        assert_eq!(encode_dpt9_parameter(670_760.96), None);
-        assert_eq!(encode_dpt9_parameter(1e9), None);
-        assert_eq!(encode_dpt9_parameter(f64::NAN), None);
+        assert_eq!(encode_dpt9_parameter(1000.0, false), Some([0x36, 0x1A]));
+        assert_eq!(encode_dpt9_parameter(65535.0, false), Some([0x66, 0x40]));
+        assert_eq!(encode_dpt9_parameter(20.0, false), Some([0x07, 0xD0]));
+        assert_eq!(encode_dpt9_parameter(21.0, false), Some([0x0C, 0x1A]));
+        assert_eq!(encode_dpt9_parameter(1.0, false), Some([0x00, 0x64]));
+        assert_eq!(encode_dpt9_parameter(0.0, false), Some([0x00, 0x00]));
+        assert_eq!(encode_dpt9_parameter(-1.0, false), Some([0x87, 0x9C]));
+        assert_eq!(encode_dpt9_parameter(670_760.96, false), None);
+        assert_eq!(encode_dpt9_parameter(670_760.96, true), Some([0x7F, 0xFF]));
+        assert_eq!(encode_dpt9_parameter(1e9, false), None);
+        assert_eq!(encode_dpt9_parameter(1e9, true), None);
+        assert_eq!(encode_dpt9_parameter(f64::NAN, true), None);
     }
 
     /// The Steinel ControlPro's packed durations (issue #89): seconds, minutes,

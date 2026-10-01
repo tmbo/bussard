@@ -773,6 +773,15 @@ directory or a script from before these changes needs:
 
 ### Fixed
 
+- A DPT 9 parameter whose type spans the full raw range is written like ETS
+  writes it (#294). The Zennio Flat 55 Display (`M-0071_A-5261-10`) types
+  `ctrl[n].uCtrl.b2.float16.maxValue` as `float16_t (-671088.64, 670760.96)`
+  with `maxInclusive="670760.96"` and that value as the default. It encodes
+  to `7F FF`, the group-value "invalid data" marker, so the image builder
+  refused the whole parameter image. The pattern is now written when the
+  type's own `maxInclusive` reaches it and stays refused otherwise. The
+  product-corpus sweep baseline is regenerated: the Flat 55 Display is
+  executable again, and seven archives added to the corpus are tracked.
 - The corpus-gated tests run again and are listed (#293). They read vendor
   archives that are never committed and skip green without
   `BUSSARD_PRODUCT_CORPUS`, so three had gone stale unseen: the Jung 3361-1M
