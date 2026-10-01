@@ -1367,6 +1367,13 @@ enum Command {
         /// history beyond the in-memory ring window.
         #[arg(long, value_name = "PATH")]
         capture_db: Option<PathBuf>,
+        /// Home Assistant tier: registers `knx_ha_status`, `knx_ha_plan` and
+        /// `knx_ha_apply` when bussard.toml has a `[home_assistant]` table
+        /// (issue #280). Writes only the KNX YAML file it names, after a plan
+        /// the human approved, then reloads the KNX integration. Off by
+        /// default; never touches the bus.
+        #[arg(long)]
+        allow_home_assistant: bool,
     },
 }
 
@@ -2010,6 +2017,7 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
             plan_ttl_minutes,
             no_model_edits,
             capture_db,
+            allow_home_assistant,
         } => mcp_cmd::run(
             dir,
             g.group(),
@@ -2020,6 +2028,7 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
                 plan_ttl: std::time::Duration::from_secs(plan_ttl_minutes.saturating_mul(60)),
                 allow_remote_gateway: g.allow_remote_gateway,
                 no_model_edits,
+                allow_home_assistant,
             },
             capture_db,
             g.keyring.clone(),

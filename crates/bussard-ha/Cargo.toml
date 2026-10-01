@@ -12,6 +12,15 @@ bussard-model = { workspace = true }
 serde = { workspace = true }
 serde_norway = { workspace = true }
 thiserror = { workspace = true }
+# The Home Assistant REST API client (issue #280): the blocking client the
+# workspace already builds for product downloads. MIT OR Apache-2.0.
+ureq = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# The mock Home Assistant HTTP server.
+bussard-testkit = { workspace = true }
+tempfile = "3"
 
 [lints]
 workspace = true

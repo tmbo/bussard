@@ -44,6 +44,51 @@ pub struct BussardConfig {
     /// Settings for `bussard import`. Absent means the defaults.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub import: Option<ImportConfig>,
+    /// The Home Assistant the MCP server's Home Assistant tier talks to
+    /// (issue #280). Absent means the tier is off, whatever the flags say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_assistant: Option<HomeAssistantConfig>,
+}
+
+/// The default environment variable holding the Home Assistant token.
+pub const DEFAULT_HA_TOKEN_ENV: &str = "BUSSARD_HA_TOKEN";
+
+fn default_ha_token_env() -> String {
+    DEFAULT_HA_TOKEN_ENV.to_string()
+}
+
+/// The `[home_assistant]` table of `bussard.toml` (issue #280).
+///
+/// Names the Home Assistant instance and the KNX YAML file it reads. The
+/// token itself never lives here: only the name of the environment variable
+/// (or `.env` key) that holds it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HomeAssistantConfig {
+    /// The base URL of Home Assistant, e.g. `"http://homeassistant.local:8123"`.
+    pub url: String,
+    /// The environment variable holding a long-lived access token. A `.env`
+    /// file supplies it only when the name starts with `BUSSARD_`.
+    #[serde(default = "default_ha_token_env")]
+    pub token_env: String,
+    /// The KNX YAML file Home Assistant reads, as bussard may overwrite it. A
+    /// relative path is resolved against the model directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_path: Option<std::path::PathBuf>,
+}
+
+impl HomeAssistantConfig {
+    /// The configured KNX YAML path, resolved against the model directory
+    /// `dir` when relative, or `None` when `config_path` is unset.
+    pub fn config_path(&self, dir: &std::path::Path) -> Option<std::path::PathBuf> {
+        self.config_path.as_ref().map(|path| {
+            if path.is_absolute() {
+                path.clone()
+            } else {
+                dir.join(path)
+            }
+        })
+    }
 }
 
 /// The `[import]` table of `bussard.toml`.

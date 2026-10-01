@@ -429,6 +429,7 @@ mod tests {
                 connection: Default::default(),
                 lint: Some(config),
                 import: None,
+                home_assistant: None,
             },
             groups,
             links: Default::default(),

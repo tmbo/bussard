@@ -254,6 +254,16 @@ directory or a script from before these changes needs:
 - `--allow-programming` adds `knx_plan_device` and `knx_apply_device`: the
   assistant writes one device's link tables only with the digest of a plan the
   human approved (#118).
+- `--allow-home-assistant` with a `[home_assistant]` table in `bussard.toml`
+  adds the Home Assistant tier (#280): `knx_ha_status` reads Home Assistant's
+  REST API (version, KNX integration, entity counts, the state of the KNX
+  YAML file); `knx_ha_plan` says per entity what writing the YAML generated
+  from the model would add, change or remove, with a digest; `knx_ha_apply`
+  takes that digest after the human's yes, backs the file up under
+  `captures/backups/ha/`, replaces it atomically and calls `knx.reload`. The
+  token comes from `BUSSARD_HA_TOKEN` (or the variable `token_env` names) and
+  is never printed. `next_step` after an edit to a group address Home
+  Assistant uses names `knx_ha_plan`.
 - `bussard mcp` started from a terminal prints how to register it: the
   `claude mcp add` command and the `mcpServers` JSON entry for Claude Desktop
   and other clients, built from the running binary, the resolved model

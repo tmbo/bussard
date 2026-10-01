@@ -227,6 +227,11 @@ pub struct SharedState {
     /// target's tool key up in it; the password comes from
     /// `BUSSARD_KEYRING_PASSWORD`. `None` is plain management.
     pub keyring: Option<PathBuf>,
+    /// The Home Assistant tier (issue #280): the `[home_assistant]` table and
+    /// the plans produced this session. `None` (no table, or no
+    /// `--allow-home-assistant`) keeps `knx_ha_status`, `knx_ha_plan` and
+    /// `knx_ha_apply` unregistered.
+    pub home_assistant: Option<crate::tools_ha::HomeAssistantTier>,
 }
 
 #[cfg(test)]

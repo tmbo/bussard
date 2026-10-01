@@ -17,6 +17,13 @@
 //! result: exclusions, switch↔light promotion, name and device_class overrides,
 //! and merging extra GAs onto an entity.
 //!
+//! # Talking to Home Assistant
+//!
+//! For the MCP server's Home Assistant tier (issue #280), [`api`] is a small
+//! REST client (status reads and the `knx.reload` service), [`plan`] diffs the
+//! generated YAML against the file Home Assistant reads, entity by entity, and
+//! [`apply`] writes that file atomically with a backup.
+//!
 //! # Determinism
 //!
 //! Output is fully sorted (by platform, then entity name, then primary GA) and
@@ -39,10 +46,13 @@
 
 #![warn(missing_docs)]
 
+pub mod api;
+pub mod apply;
 pub mod derive;
 pub mod emit;
 pub mod entities;
 pub mod overrides;
+pub mod plan;
 
 pub use derive::{Derived, derive};
 pub use overrides::{Overrides, OverridesError};

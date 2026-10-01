@@ -32,7 +32,7 @@ sha2 = "0.10"
 # Sync HTTP client for vendor downloads. Chosen over reqwest: `ureq` is
 # blocking (no async runtime pulled into this crate), tiny, and uses rustls for
 # TLS with no OpenSSL system dependency. MIT OR Apache-2.0.
-ureq = { version = "2", default-features = false, features = ["tls"] }
+ureq = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

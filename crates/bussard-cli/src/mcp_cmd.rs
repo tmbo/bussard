@@ -30,6 +30,9 @@ use crate::conn_cmd::{ConnOverrides, resolve_config};
 /// the LLM the table write of `bussard apply`, so it passes the same gate here,
 /// and the programming tools check it again on every call. A read-only or
 /// `--passive` server never writes, so it is allowed against any gateway.
+/// `--allow-home-assistant` (issue #280) registers the Home Assistant tools
+/// when `bussard.toml` has a `[home_assistant]` table; it never touches the
+/// bus, so it combines with every tier.
 /// The server's tier flags, bundled so the subcommand's five booleans do not
 /// become five positional arguments.
 #[derive(Debug, Clone, Copy)]
@@ -46,6 +49,8 @@ pub struct McpModes {
     pub allow_remote_gateway: bool,
     /// Omit the model-edit tools.
     pub no_model_edits: bool,
+    /// Register the Home Assistant tier (with a `[home_assistant]` table).
+    pub allow_home_assistant: bool,
 }
 
 pub fn run(
@@ -62,6 +67,7 @@ pub fn run(
         plan_ttl,
         allow_remote_gateway,
         no_model_edits,
+        allow_home_assistant,
     } = modes;
     if !dir.exists() {
         anyhow::bail!(
@@ -86,14 +92,24 @@ pub fn run(
         allow_remote_gateway,
         plan_ttl,
         keyring,
+        allow_home_assistant,
     };
+    // The Home Assistant token the client must provide, by name only.
+    let ha_token_env: Vec<String> = model
+        .config
+        .home_assistant
+        .as_ref()
+        .filter(|_| allow_home_assistant)
+        .map(|table| table.token_env.clone())
+        .into_iter()
+        .collect();
 
     // Built before the server starts (the environment and the arguments do not
     // change), printed only once it is ready and only to a person: a client
     // that spawned the server with pipes gets the info log line alone.
     let hint = std::io::stderr()
         .is_terminal()
-        .then(|| ConnectHint::for_this_process(dir, config.keyring.is_some()))
+        .then(|| ConnectHint::for_this_process(dir, config.keyring.is_some(), &ha_token_env))
         .flatten();
 
     let runtime = tokio::runtime::Runtime::new()?;
@@ -177,7 +193,7 @@ impl ConnectHint {
     /// The hint for this process: its binary, its resolved model directory,
     /// its arguments and its environment. `None` when the binary path is
     /// unknown (nothing useful to print then).
-    fn for_this_process(dir: &Path, has_keyring: bool) -> Option<Self> {
+    fn for_this_process(dir: &Path, has_keyring: bool, extra_secrets: &[String]) -> Option<Self> {
         let exe = std::env::current_exe().ok()?;
         let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
         let dir = std::fs::canonicalize(dir)
@@ -196,6 +212,7 @@ impl ConnectHint {
         if let Some(var) = flag_value(&args, "--secure-password-env") {
             names.push(var);
         }
+        names.extend(extra_secrets.iter().cloned());
         let dotenv_next_to_model = bussard_model::dotenv::find(&dir, &dir).is_some();
         let secrets = names
             .into_iter()

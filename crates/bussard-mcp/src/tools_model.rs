@@ -663,7 +663,7 @@ impl BussardMcp {
     /// The `next_step` for an edit that produced `changes`, at this server's
     /// tier (see [`crate::guidance::Tiers::next_step`]).
     fn next_step(&self, changes: &ChangeSet) -> String {
-        crate::guidance::Tiers::of(self.state()).next_step(changes)
+        crate::guidance::next_step(self.state(), changes)
     }
 
     /// The shared edit ladder: load, apply, snapshot, save, validate, describe.

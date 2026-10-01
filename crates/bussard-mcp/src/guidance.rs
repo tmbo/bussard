@@ -16,6 +16,10 @@
 //! are edited in the device files with `knx_set_parameter` at every tier; the
 //! push is the same pair of tools, or `bussard plan` and `bussard apply` at the
 //! CLI on a server without that tier.
+//!
+//! The Home Assistant tier (issue #280, `[home_assistant]` in `bussard.toml`
+//! plus `--allow-home-assistant`) stands beside these: it never touches the
+//! bus, so it can be on in any of them, passive included.
 
 use std::collections::BTreeSet;
 
@@ -33,6 +37,31 @@ const CLI_ONLY: &str = "Still needs the CLI: `bussard flash` to load a new appli
 const ETS_ONLY: &str = "Still needs ETS: the Secure activation of a fresh device, and any \
     setting the device's product model does not expose.";
 
+/// The Home Assistant tier in the capabilities paragraph.
+const HA_CAPABILITY: &str = "It reads Home Assistant (knx_ha_status) and, after the human \
+    said yes to a knx_ha_plan, writes the KNX YAML Home Assistant reads and reloads its KNX \
+    integration (knx_ha_apply).";
+
+/// The Home Assistant tier in the instructions.
+const HA_INSTRUCTIONS: &str = "Home Assistant tier: knx_ha_status reads Home Assistant \
+    (version, KNX integration, entity counts, the KNX YAML file) and changes nothing. \
+    knx_ha_plan says per entity what writing the KNX YAML generated from the model would add, \
+    change or remove; show those sentences to the human in full and call knx_ha_apply only \
+    after an explicit yes in this conversation. It writes only that one file, keeps a backup \
+    and reloads the KNX integration. Change Home Assistant in no other way.";
+
+/// The `next_step` after a model edit on this server: [`Tiers::next_step`],
+/// plus the Home Assistant line when that tier is on and the edit touched a
+/// group address Home Assistant's KNX config uses.
+pub fn next_step(state: &SharedState, changes: &ChangeSet) -> String {
+    let mut out = Tiers::of(state).next_step(changes);
+    if let Some(line) = crate::tools_ha::next_step_line(state, changes) {
+        out.push(' ');
+        out.push_str(&line);
+    }
+    out
+}
+
 /// The server's active tiers, as the tool router registered them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tiers {
@@ -45,6 +74,9 @@ pub struct Tiers {
     pub programming: bool,
     /// The model-edit tools are registered (no `--no-model-edits`).
     pub model_edits: bool,
+    /// The Home Assistant tier: `knx_ha_status`, `knx_ha_plan` and
+    /// `knx_ha_apply` are registered.
+    pub home_assistant: bool,
 }
 
 impl Tiers {
@@ -56,21 +88,27 @@ impl Tiers {
             writes: state.allow_writes && !state.passive,
             programming: state.programming.is_some() && !state.passive,
             model_edits: !state.no_model_edits,
+            home_assistant: state.home_assistant.is_some(),
         }
     }
 
     /// The tier names in order: `passive`, or `read` followed by `write`
-    /// and `programming` when those are on.
+    /// and `programming` when those are on; then `home_assistant` when on.
     pub fn names(&self) -> Vec<&'static str> {
-        if self.passive {
-            return vec!["passive"];
-        }
-        let mut names = vec!["read"];
-        if self.writes {
-            names.push("write");
-        }
-        if self.programming {
-            names.push("programming");
+        let mut names = if self.passive {
+            vec!["passive"]
+        } else {
+            let mut names = vec!["read"];
+            if self.writes {
+                names.push("write");
+            }
+            if self.programming {
+                names.push("programming");
+            }
+            names
+        };
+        if self.home_assistant {
+            names.push("home_assistant");
         }
         names
     }
@@ -83,6 +121,7 @@ impl Tiers {
             "writes": self.writes,
             "programming": self.programming,
             "model_edits": self.model_edits,
+            "home_assistant": self.home_assistant,
         })
     }
 
@@ -116,6 +155,9 @@ impl Tiers {
             });
         }
         parts.push(self.push_paragraph());
+        if self.home_assistant {
+            parts.push(HA_CAPABILITY.to_string());
+        }
         parts.join(" ")
     }
 
@@ -198,6 +240,9 @@ impl Tiers {
                  <ia>` and `bussard apply <ia>` at the CLI."
                     .to_string(),
             );
+        }
+        if self.home_assistant {
+            out.push(HA_INSTRUCTIONS.to_string());
         }
         out.push(CLI_ONLY.to_string());
         out.push(ETS_ONLY.to_string());
@@ -334,6 +379,7 @@ mod tests {
             writes,
             programming,
             model_edits: true,
+            home_assistant: false,
         }
     }
 
@@ -389,6 +435,19 @@ mod tests {
         let off = tiers(false, false, false).next_step(&set);
         assert!(off.contains("`bussard apply 1.1.18`"), "{off}");
         assert!(off.contains("knx_apply_device"), "{off}");
+    }
+
+    #[test]
+    fn test_home_assistant_tier_is_named_and_explained() {
+        let mut ha = tiers(true, false, false);
+        ha.home_assistant = true;
+        assert_eq!(ha.names(), ["passive", "home_assistant"]);
+        assert_eq!(ha.summary_json()["home_assistant"], true);
+        assert!(ha.instructions().contains("knx_ha_plan"));
+        assert!(ha.capabilities().contains("knx_ha_apply"));
+        let off = tiers(false, false, false);
+        assert!(!off.instructions().contains("knx_ha_"));
+        assert_eq!(off.summary_json()["home_assistant"], false);
     }
 
     #[test]
