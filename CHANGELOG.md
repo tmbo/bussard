@@ -850,6 +850,27 @@ directory or a script from before these changes needs:
 
 ### Fixed
 
+- The plan no longer calls a value "ignored" that the flash writes, and
+  `knx_set_parameter` no longer refuses a parameter the configuration shows
+  (#326). Some conditions in ETS hold through a value the vendor sets on the
+  parameter reference itself, not on the parameter. On the Meteodata, C1's
+  wind threshold sits behind "Wenn Temperatur" = Windsensor, which only that
+  reference value satisfies: `knx_plan_device` said the 8 m/s threshold was
+  ignored while the image carried it, and the C4 brightness threshold was
+  refused until "Wenn Temperatur" was set by hand, a value ETS never stores.
+  The same shape hid values on 1.1.30 and 1.1.39. The product model now
+  records these reference values (`ref_values`, model format 4; older models
+  regenerate from their archive on the next command), and the device view,
+  the plan notes and `knx_set_parameter` read a value in the order the
+  download does. A row `knx_set_parameter` adds to the lock carries the
+  reference value as its `default`, as an import writes it.
+- A plan that needs a full download (`method: flash`) said `writes: nothing`
+  and "nothing to do, the device tables already match the model" when only
+  parameters changed (#326). It now names the download: `writes: full image
+  (segments AS-4800, ...), tables rewritten (unchanged: 12 addresses, 15
+  associations)`.
+- `knx_set_parameter` refusals no longer carry runs of spaces in the middle
+  of a sentence.
 - `knx_set_parameter` stored a value on a parameter ref the configuration
   does not show, and nothing ever wrote it (#321). On a Meteodata, a value
   set on the XOR-branch ref of "Eingangsgröße für Eingang 1" while the logic

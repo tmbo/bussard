@@ -56,6 +56,10 @@ struct Unindexed {
     /// The channel id the importer would put it in: the device's only
     /// channel, if it has exactly one.
     channel: Option<String>,
+    /// The ref's own `Value` when it overrides the parameter's default (the
+    /// product model's `ref_values`), recorded as the lock row's `default`
+    /// the way the facts refresh records it (issue #326).
+    default: Option<String>,
 }
 
 impl KeyContext {
@@ -100,11 +104,13 @@ impl KeyContext {
                 if let Some(text) = u.text {
                     texts.insert(reference.clone(), text);
                 }
+                let default = product.and_then(|m| m.ref_values.get(&reference).cloned());
                 unindexed.insert(
                     reference,
                     Unindexed {
                         key: u.key,
                         channel: only_channel.clone(),
+                        default,
                     },
                 );
             }
@@ -426,10 +432,10 @@ pub fn unreached_refusal(device: &Device, ctx: &KeyContext, key: &str) -> Option
             format!("`{named}` belongs to the branch {branch}; {now}")
         }
         Some(branch) if !seen.on_branch => format!(
-            "`{named}` belongs to the branch {branch} and is not shown under the current              values ({now}): it needs {needs}"
+            "`{named}` belongs to the branch {branch} and is not shown under the current values ({now}): it needs {needs}"
         ),
         _ => format!(
-            "`{named}` sits on a page the configuration does not show under the current              values ({now}): it needs {needs}"
+            "`{named}` sits on a page the configuration does not show under the current values ({now}): it needs {needs}"
         ),
     };
     let param = ref_param_id(reference);
@@ -448,7 +454,7 @@ pub fn unreached_refusal(device: &Device, ctx: &KeyContext, key: &str) -> Option
         ),
         [] => format!("Set {needs} first"),
         many => format!(
-            "The shown refs of this parameter are {}: set one of those instead, or set {needs}              first",
+            "The shown refs of this parameter are {}: set one of those instead, or set {needs} first",
             many.iter()
                 .map(|c| format!("`{}` ({})", c.key, c.reference))
                 .collect::<Vec<_>>()
@@ -456,7 +462,7 @@ pub fn unreached_refusal(device: &Device, ctx: &KeyContext, key: &str) -> Option
         ),
     };
     Some(format!(
-        "{head}. The device does not carry it, so a value stored for it is never written.          {instead}. Pass `force: true` to store the value anyway (it stays unwritten until the          configuration shows it, and the plan lists it as ignored)."
+        "{head}. The device does not carry it, so a value stored for it is never written. {instead}. Pass `force: true` to store the value anyway (it stays unwritten until the configuration shows it, and the plan lists it as ignored)."
     ))
 }
 
@@ -597,7 +603,7 @@ pub fn index_parameter(device: &mut Device, ctx: &KeyContext, mem_key: &str) -> 
             key,
             channel: u.channel.clone(),
             param: Some(ref_param_id(reference).to_string()),
-            default: None,
+            default: u.default.clone(),
         },
     );
     true

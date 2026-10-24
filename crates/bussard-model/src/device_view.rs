@@ -385,10 +385,7 @@ fn param_row(entry: &ParamEntry, product: Option<&ProductModel>) -> ParamRow {
         .param
         .as_deref()
         .and_then(|id| product.and_then(|p| p.parameters.get(id)));
-    let default = entry
-        .ref_default
-        .as_deref()
-        .or_else(|| def.and_then(|d| d.default.as_deref()));
+    let default = default_value(product, entry.ref_default.as_deref(), &entry.reference, def);
     let value = entry.stored.as_deref().map(|v| display_value(def, v));
     let at_default = def.map(|_| match (entry.stored.as_deref(), default) {
         (None, _) => true,
@@ -450,6 +447,48 @@ fn enum_codes(def: &ParamDef) -> Vec<i64> {
     }
 }
 
+/// The default of parameter ref `reference` (definition `def`) when nothing
+/// is stored, in the order the download side resolves it (issue #326): the
+/// lock's `default` (`locked`, the ref's own value as the lock indexes it),
+/// else the product model's `ParameterRef` value, else the parameter's
+/// default.
+fn default_value<'b>(
+    product: Option<&'b ProductModel>,
+    locked: Option<&'b str>,
+    reference: &str,
+    def: Option<&'b ParamDef>,
+) -> Option<&'b str> {
+    locked
+        .or_else(|| {
+            product
+                .and_then(|p| p.ref_values.get(reference))
+                .map(String::as_str)
+        })
+        .or_else(|| def.and_then(|d| d.default.as_deref()))
+}
+
+/// The device's value of parameter ref `reference`, as written: the stored
+/// value (a hidden one too: a download writes it), else
+/// [`default_value`]. The one lookup the page states, the conditions and
+/// the rendered values share, so they agree with the image a download
+/// writes.
+fn raw_value<'b>(
+    product: &'b ProductModel,
+    values: &HashMap<&str, &'b ParamEntry>,
+    reference: &str,
+) -> Option<&'b str> {
+    let def = product.parameters.get(ref_param_id(reference));
+    let entry = values.get(reference);
+    entry.and_then(|e| e.stored.as_deref()).or_else(|| {
+        default_value(
+            Some(product),
+            entry.and_then(|e| e.ref_default.as_deref()),
+            reference,
+            def,
+        )
+    })
+}
+
 /// The ETS parameter pages of one device: which it shows, and where its
 /// parameters and objects sit.
 struct Pages<'a> {
@@ -457,8 +496,11 @@ struct Pages<'a> {
     blocks: &'a [BlockDef],
     parents: Vec<Option<usize>>,
     states: Vec<BlockState>,
-    /// The device's parameters by ref.
+    /// The device's parameters by ref, without the hidden ones.
     entries: HashMap<&'a str, &'a ParamEntry>,
+    /// The device's parameters by ref, the hidden ones too: what the value
+    /// lookup reads.
+    values: HashMap<&'a str, &'a ParamEntry>,
     /// The block each of the device's parameter refs sits on.
     param_block: HashMap<&'a str, usize>,
     /// The block each of the device's object refs sits on.
@@ -475,6 +517,8 @@ impl<'a> Pages<'a> {
             .filter(|p| !crate::files::is_hidden_mem_key(&p.key))
             .map(|p| (p.reference.as_str(), p))
             .collect();
+        let values: HashMap<&str, &ParamEntry> =
+            params.iter().map(|p| (p.reference.as_str(), p)).collect();
         let active_params: HashSet<&str> = entries.keys().copied().collect();
         let object_refs: Vec<&str> = device
             .com_objects
@@ -484,15 +528,7 @@ impl<'a> Pages<'a> {
         let active_objects: HashSet<&str> = object_refs.iter().copied().collect();
         let value_of = |reference: &str| -> Option<f64> {
             let def = product.parameters.get(ref_param_id(reference));
-            let raw = match entries.get(reference) {
-                Some(e) => e
-                    .stored
-                    .clone()
-                    .or_else(|| e.ref_default.clone())
-                    .or_else(|| def.and_then(|d| d.default.clone())),
-                None => def.and_then(|d| d.default.clone()),
-            }?;
-            value_number(def, &raw)
+            value_number(def, raw_value(product, &values, reference)?)
         };
         let states = block_states(blocks, &active_params, &active_objects, &value_of);
         let parents = parent_indexes(blocks);
@@ -522,6 +558,7 @@ impl<'a> Pages<'a> {
             parents,
             states,
             entries,
+            values,
             param_block,
             object_block,
         }
@@ -543,15 +580,8 @@ impl<'a> Pages<'a> {
     /// The device's value of a parameter ref, rendered as the file writes it.
     fn current(&self, reference: &str) -> Option<String> {
         let def = self.product.parameters.get(ref_param_id(reference));
-        let raw = match self.entries.get(reference) {
-            Some(e) => e
-                .stored
-                .clone()
-                .or_else(|| e.ref_default.clone())
-                .or_else(|| def.and_then(|d| d.default.clone())),
-            None => def.and_then(|d| d.default.clone()),
-        }?;
-        Some(display_value(def, &raw))
+        let raw = raw_value(self.product, &self.values, reference)?;
+        Some(display_value(def, raw))
     }
 
     /// The parameter definitions blocks `members` and their nested blocks
@@ -637,15 +667,7 @@ impl<'a> Pages<'a> {
 
     fn value_number(&self, reference: &str) -> Option<f64> {
         let def = self.product.parameters.get(ref_param_id(reference));
-        let raw = match self.entries.get(reference) {
-            Some(e) => e
-                .stored
-                .clone()
-                .or_else(|| e.ref_default.clone())
-                .or_else(|| def.and_then(|d| d.default.clone())),
-            None => def.and_then(|d| d.default.clone()),
-        }?;
-        value_number(def, &raw)
+        value_number(def, raw_value(self.product, &self.values, reference)?)
     }
 
     /// Whether the configuration shows parameter ref `reference` of block
@@ -806,9 +828,15 @@ impl<'a> Pages<'a> {
                     reference: g.reference.clone(),
                     text: def.and_then(|d| d.text.clone().or_else(|| d.name.clone())),
                     set_to,
-                    default: def
-                        .and_then(|d| d.default.as_deref())
-                        .map(|d| display_value(def, d)),
+                    default: default_value(
+                        Some(self.product),
+                        self.values
+                            .get(g.reference.as_str())
+                            .and_then(|e| e.ref_default.as_deref()),
+                        &g.reference,
+                        def,
+                    )
+                    .map(|d| display_value(def, d)),
                     current: self.current(&g.reference),
                 }
             })
@@ -1794,9 +1822,12 @@ fn ignored_in(device: &Device, pg: &Pages<'_>) -> Vec<IgnoredOverride> {
         };
         let def = pg.product.parameters.get(ref_param_id(reference));
         let locked = device.lock.parameters.get(reference);
-        let default = locked
-            .and_then(|p| p.default.as_deref())
-            .or_else(|| def.and_then(|d| d.default.as_deref()));
+        let default = default_value(
+            Some(pg.product),
+            locked.and_then(|p| p.default.as_deref()),
+            reference,
+            def,
+        );
         if default.is_some_and(|d| same_value(def, value, d)) {
             continue;
         }

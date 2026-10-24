@@ -4,7 +4,10 @@
      own whose universal channels A, B and C are ETS parameter pages behind
      "enable" parameters, C behind B. Each channel's function can be a
      brightness threshold with a 1-bit output object; channel B's objects sit
-     on a page of their own, behind the same switch. -->
+     on a page of their own, behind the same switch. Channel A's wind
+     function shows its threshold behind "If temperature" = Wind, a ref
+     with Access="None" whose ref-level Value (4) is what opens the branch:
+     the parameter's own default is 2 (issue #326). -->
 <KNX xmlns="http://knx.org/xml/project/23">
   <ManufacturerData>
     <Manufacturer RefId="M-00FA">
@@ -25,6 +28,11 @@
                 <Enumeration Text="Temperature sensor" Value="2" Id="M-00FA_A-0298-10-0000_PT-Function_EN-2" />
                 <Enumeration Text="Wind sensor" Value="3" Id="M-00FA_A-0298-10-0000_PT-Function_EN-3" />
               </TypeRestriction></ParameterType>
+              <ParameterType Id="M-00FA_A-0298-10-0000_PT-Source" Name="source"><TypeRestriction Base="Value" SizeInBit="4">
+                <Enumeration Text="Brightness sensor" Value="1" Id="M-00FA_A-0298-10-0000_PT-Source_EN-1" />
+                <Enumeration Text="Temperature sensor" Value="2" Id="M-00FA_A-0298-10-0000_PT-Source_EN-2" />
+                <Enumeration Text="Wind sensor" Value="4" Id="M-00FA_A-0298-10-0000_PT-Source_EN-4" />
+              </TypeRestriction></ParameterType>
               <ParameterType Id="M-00FA_A-0298-10-0000_PT-Lux" Name="lux"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="1" maxInclusive="200" /></ParameterType>
               <ParameterType Id="M-00FA_A-0298-10-0000_PT-None" Name="none"><TypeNone /></ParameterType>
             </ParameterTypes>
@@ -35,6 +43,8 @@
               <Parameter Id="M-00FA_A-0298-10-0000_P-10" Name="TitleA" Text="Universal channel A: function" ParameterType="M-00FA_A-0298-10-0000_PT-None" />
               <Parameter Id="M-00FA_A-0298-10-0000_P-11" Name="FunctionA" Text="Channel function" ParameterType="M-00FA_A-0298-10-0000_PT-Function" Value="1"><Memory CodeSegment="M-00FA_A-0298-10-0000_AS-4400" Offset="1" BitOffset="0" /></Parameter>
               <Parameter Id="M-00FA_A-0298-10-0000_P-12" Name="DuskA" Text="Dusk threshold in lx" ParameterType="M-00FA_A-0298-10-0000_PT-Lux" Value="10"><Memory CodeSegment="M-00FA_A-0298-10-0000_AS-4400" Offset="2" BitOffset="0" /></Parameter>
+              <Parameter Id="M-00FA_A-0298-10-0000_P-13" Name="SourceA" Text="If temperature" ParameterType="M-00FA_A-0298-10-0000_PT-Source" Value="2"><Memory CodeSegment="M-00FA_A-0298-10-0000_AS-4400" Offset="6" BitOffset="4" /></Parameter>
+              <Parameter Id="M-00FA_A-0298-10-0000_P-14" Name="WindA" Text="Wind threshold" ParameterType="M-00FA_A-0298-10-0000_PT-Lux" Value="4"><Memory CodeSegment="M-00FA_A-0298-10-0000_AS-4400" Offset="7" BitOffset="0" /></Parameter>
               <Parameter Id="M-00FA_A-0298-10-0000_P-20" Name="TitleB" Text="Universal channel B: function" ParameterType="M-00FA_A-0298-10-0000_PT-None" />
               <Parameter Id="M-00FA_A-0298-10-0000_P-21" Name="FunctionB" Text="Channel function" ParameterType="M-00FA_A-0298-10-0000_PT-Function" Value="1"><Memory CodeSegment="M-00FA_A-0298-10-0000_AS-4400" Offset="3" BitOffset="0" /></Parameter>
               <Parameter Id="M-00FA_A-0298-10-0000_P-22" Name="DuskB" Text="Dusk threshold in lx" ParameterType="M-00FA_A-0298-10-0000_PT-Lux" Value="10"><Memory CodeSegment="M-00FA_A-0298-10-0000_AS-4400" Offset="4" BitOffset="0" /></Parameter>
@@ -49,6 +59,9 @@
               <ParameterRef Id="M-00FA_A-0298-10-0000_P-10_R-10" RefId="M-00FA_A-0298-10-0000_P-10" />
               <ParameterRef Id="M-00FA_A-0298-10-0000_P-11_R-11" RefId="M-00FA_A-0298-10-0000_P-11" />
               <ParameterRef Id="M-00FA_A-0298-10-0000_P-12_R-12" RefId="M-00FA_A-0298-10-0000_P-12" />
+              <ParameterRef Id="M-00FA_A-0298-10-0000_P-13_R-13" RefId="M-00FA_A-0298-10-0000_P-13" Access="None" Value="4" />
+              <ParameterRef Id="M-00FA_A-0298-10-0000_P-13_R-15" RefId="M-00FA_A-0298-10-0000_P-13" Access="None" />
+              <ParameterRef Id="M-00FA_A-0298-10-0000_P-14_R-14" RefId="M-00FA_A-0298-10-0000_P-14" />
               <ParameterRef Id="M-00FA_A-0298-10-0000_P-20_R-20" RefId="M-00FA_A-0298-10-0000_P-20" />
               <ParameterRef Id="M-00FA_A-0298-10-0000_P-21_R-21" RefId="M-00FA_A-0298-10-0000_P-21" />
               <ParameterRef Id="M-00FA_A-0298-10-0000_P-22_R-22" RefId="M-00FA_A-0298-10-0000_P-22" />
@@ -95,6 +108,13 @@
                       <when test="1">
                         <ParameterRefRef RefId="M-00FA_A-0298-10-0000_P-12_R-12" />
                         <ComObjectRefRef RefId="M-00FA_A-0298-10-0000_O-1_R-1" />
+                      </when>
+                      <when test="2"><ParameterRefRef RefId="M-00FA_A-0298-10-0000_P-13_R-15" /></when>
+                      <when test="3">
+                        <ParameterRefRef RefId="M-00FA_A-0298-10-0000_P-13_R-13" />
+                        <choose ParamRefId="M-00FA_A-0298-10-0000_P-13_R-13">
+                          <when test="4"><ParameterRefRef RefId="M-00FA_A-0298-10-0000_P-14_R-14" /></when>
+                        </choose>
                       </when>
                     </choose>
                   </ParameterBlock>

@@ -42,6 +42,12 @@ pub struct ProductModel {
     /// describes through another ref of the same number, keyed by
     /// app-relative ref id (`O-32_R-454`).
     pub com_object_refs: BTreeMap<String, ObjectDef>,
+    /// The ETS `ParameterRef` `Value` overrides of the refs the blocks name
+    /// (in a page, or in a condition), keyed by app-relative ref id
+    /// (`UP-2248_R-2262`): the value a ref has when nothing is stored, where
+    /// it differs from its parameter's default (issue #326). Empty for a
+    /// model written before [`MODEL_FORMAT`] 4.
+    pub ref_values: BTreeMap<String, String>,
 }
 
 /// One com-object of a product model, reduced to what a view shows.
@@ -60,8 +66,9 @@ pub struct ObjectDef {
 /// The product-model format this build writes: `model_format:` at the top of
 /// the file. A model of an older format regenerates from its archive
 /// (format 2 adds `blocks:`, issue #298; format 3 the conditions inside a
-/// block, `parameter_when:`, issue #315).
-pub const MODEL_FORMAT: u32 = 3;
+/// block, `parameter_when:`, issue #315; format 4 the `ParameterRef` values,
+/// `ref_values:`, issue #326).
+pub const MODEL_FORMAT: u32 = 4;
 
 /// Whether the model file at `path` is of the current [`MODEL_FORMAT`]. Reads
 /// only the head of the file, where the emitter puts the key.
@@ -148,6 +155,8 @@ struct RawModel {
     com_objects: BTreeMap<u16, RawComObject>,
     #[serde(default)]
     com_object_refs: BTreeMap<String, RawComObject>,
+    #[serde(default)]
+    ref_values: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -289,7 +298,23 @@ impl ProductModel {
             blocks: raw.blocks,
             com_objects,
             com_object_refs,
+            ref_values: raw.ref_values,
         })
+    }
+
+    /// The vendor default of app-relative parameter ref `reference`: the
+    /// ref's own `Value` ([`Self::ref_values`]) when it overrides its
+    /// parameter's, else the parameter's default. This is the value ETS
+    /// shows, and a download writes, when nothing is stored (issue #326).
+    pub fn ref_default(&self, reference: &str) -> Option<&str> {
+        self.ref_values
+            .get(reference)
+            .map(String::as_str)
+            .or_else(|| {
+                self.parameters
+                    .get(crate::blocks::ref_param_id(reference))
+                    .and_then(|d| d.default.as_deref())
+            })
     }
 
     /// Resolves a device-file parameter key the lock does not list, in the

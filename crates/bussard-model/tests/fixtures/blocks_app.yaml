@@ -6,7 +6,7 @@
 # procedure used to download it. Regenerated data under .bussard/: derived from
 # the archive under products/, rebuilt whenever it is missing.
 # Docs: https://github.com/tmbo/bussard/blob/main/docs/product-data.md
-model_format: 3
+model_format: 4
 identity:
   id: M-00FA_A-0298-10-0000
   name: bussard capability test app
@@ -86,6 +86,34 @@ parameters:
   memory:
     segment: M-00FA_A-0298-10-0000_AS-4400
     offset: 2
+    bit_offset: 0
+- id: M-00FA_A-0298-10-0000_P-13
+  name: SourceA
+  text: If temperature
+  type: !enum
+    values:
+    - value: 1
+      text: Brightness sensor
+    - value: 2
+      text: Temperature sensor
+    - value: 4
+      text: Wind sensor
+  default: '2'
+  memory:
+    segment: M-00FA_A-0298-10-0000_AS-4400
+    offset: 6
+    bit_offset: 4
+- id: M-00FA_A-0298-10-0000_P-14
+  name: WindA
+  text: Wind threshold
+  type: !int
+    min: 1
+    max: 200
+    size: 8
+  default: '4'
+  memory:
+    segment: M-00FA_A-0298-10-0000_AS-4400
+    offset: 7
     bit_offset: 0
 - id: M-00FA_A-0298-10-0000_P-2
   name: EnableB
@@ -205,10 +233,24 @@ blocks:
   parameters:
   - P-11_R-11
   - P-12_R-12
+  - P-13_R-15
+  - P-13_R-13
+  - P-14_R-14
   parameter_when:
     P-12_R-12:
     - ref: P-11_R-11
       test: '1'
+    P-13_R-13:
+    - ref: P-11_R-11
+      test: '3'
+    P-13_R-15:
+    - ref: P-11_R-11
+      test: '2'
+    P-14_R-14:
+    - ref: P-11_R-11
+      test: '3'
+    - ref: P-13_R-13
+      test: '4'
   objects:
   - O-1_R-1
 - id: PB-20
@@ -259,3 +301,5 @@ com_object_refs:
     dpt: '5.010'
     flags: CRT
     ref_id: M-00FA_A-0298-10-0000_O-2_R-3
+ref_values:
+  P-13_R-13: '4'

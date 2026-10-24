@@ -332,6 +332,27 @@ async fn test_knx_apply_device_flashes_a_parameter_that_shows_a_com_object() -> 
     assert_eq!(flash["parameter_backup"]["taken_first"], true, "{flash}");
     assert_eq!(flash["product"]["product_sha256"], sha.as_str(), "{flash}");
     assert_eq!(flash["product"]["archive"], "products/flash-test.knxprod");
+    // Issue #326: the links stay as they are, yet a full download writes
+    // the image and the tables; neither text says "nothing".
+    let text = plan["plan"].as_str().unwrap_or_default();
+    assert!(!text.contains("nothing to do"), "{text}");
+    assert!(
+        text.contains("full download: writes full image (segment")
+            && text.contains("tables rewritten (unchanged: 1 address, "),
+        "{text}"
+    );
+    let sentences = plan["sentences"].as_str().unwrap_or_default();
+    assert!(!sentences.contains("writes: nothing"), "{sentences}");
+    assert!(
+        sentences.contains("writes: full image (segment"),
+        "{sentences}"
+    );
+    assert!(
+        plan["writes"]["full_image"]["segments"]
+            .as_array()
+            .is_some_and(|s| !s.is_empty()),
+        "{plan}"
+    );
     let question = plan["question"].as_str().unwrap_or_default();
     assert!(question.starts_with("flash 1.1.4 through"), "{question}");
     let next = plan["next_step"].as_str().unwrap_or_default();

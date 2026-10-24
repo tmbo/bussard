@@ -53,7 +53,16 @@ fn test_blocks_for_records_pages_gates_and_objects() -> TestResult {
         (a.when[0].reference.as_str(), a.when[0].test.as_str()),
         ("P-1_R-1", "1")
     );
-    assert_eq!(a.parameters, ["P-11_R-11", "P-12_R-12"]);
+    assert_eq!(
+        a.parameters,
+        [
+            "P-11_R-11",
+            "P-12_R-12",
+            "P-13_R-15",
+            "P-13_R-13",
+            "P-14_R-14"
+        ]
+    );
     // The dusk threshold sits under the channel function's choice inside
     // the page (issue #315); the function itself under none.
     let dusk: Vec<(&str, &str)> = a
@@ -68,6 +77,19 @@ fn test_blocks_for_records_pages_gates_and_objects() -> TestResult {
         .unwrap_or_default();
     assert_eq!(dusk, [("P-11_R-11", "1")]);
     assert!(!a.parameter_when.contains_key("P-11_R-11"));
+    // The wind threshold sits behind the wind function and "If temperature"
+    // = Wind (issue #326).
+    let wind: Vec<(&str, &str)> = a
+        .parameter_when
+        .get("P-14_R-14")
+        .map(|gates| {
+            gates
+                .iter()
+                .map(|g| (g.reference.as_str(), g.test.as_str()))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert_eq!(wind, [("P-11_R-11", "3"), ("P-13_R-13", "4")]);
     assert_eq!(a.objects, ["O-1_R-1"]);
 
     // The objects page: the default function shows O-2_R-2; the default
@@ -84,6 +106,22 @@ fn test_blocks_for_records_pages_gates_and_objects() -> TestResult {
         .map(|g| (g.reference.as_str(), g.test.as_str()))
         .collect();
     assert_eq!(gates, [("P-2_R-2", "1"), ("P-3_R-3", "1")]);
+    Ok(())
+}
+
+/// Issue #326: a `ParameterRef` `Value` that differs from its parameter's
+/// default is carried into the model, so the page evaluator resolves a
+/// condition on it as the download side does. A ref without one, or whose
+/// parameter has no ref of the kind, is not listed.
+#[test]
+fn test_ref_values_for_carries_ref_level_values() -> TestResult {
+    let app = app()?;
+    let blocks = bussard_prod::blocks::blocks_for(&app);
+    let values = bussard_prod::blocks::ref_values_for(&app, &blocks);
+    assert_eq!(
+        values.into_iter().collect::<Vec<_>>(),
+        [("P-13_R-13".to_string(), "4".to_string())]
+    );
     Ok(())
 }
 
@@ -115,6 +153,9 @@ fn test_written_model_matches_the_fixture() -> TestResult {
 
     let model = bussard_model::ProductModel::from_yaml(&written, APP)?;
     assert_eq!(model.blocks.len(), 6);
+    assert_eq!(model.ref_default("P-13_R-13"), Some("4"));
+    assert_eq!(model.ref_default("P-13_R-15"), Some("2"));
+    assert_eq!(model.ref_default("P-11_R-11"), Some("1"));
     assert_eq!(
         model
             .object_def("O-2_R-3")

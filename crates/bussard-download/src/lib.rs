@@ -68,8 +68,8 @@ pub use compute_sys7::{
     sys7_association_table, sys7_config_byte, sys7_group_object_table, sys7_group_objects,
 };
 pub use device_plan::{
-    ChangeMark, ChangeSubject, DevicePlan, PlanChange, PlanWrites, object_changes, sort_changes,
-    state_hash,
+    ChangeMark, ChangeSubject, DevicePlan, FullImage, PlanChange, PlanWrites, object_changes,
+    sort_changes, state_hash,
 };
 pub use flash::{
     AppIdentity, Connector, DeviceFacts, FlashOptions, FlashOutcome, FlashPlan, FlashStep,
@@ -104,9 +104,9 @@ pub use preflight::{
 };
 pub use program::{
     LiveRead, LiveReadError, LiveTables, NoLinks, TableWriteSummary, desired_tables_for,
-    read_live_tables, render_plan_text, write_pre_write_backup, write_sys7, write_system_b,
-    write_system_b_secured, write_system_b_seeded, write_tables, write_tables_secured,
-    write_tables_seeded,
+    read_live_tables, render_full_image_plan_text, render_plan_text, write_pre_write_backup,
+    write_sys7, write_system_b, write_system_b_secured, write_system_b_seeded, write_tables,
+    write_tables_secured, write_tables_seeded,
 };
 pub use security::{
     DeviceSecurityView, GO_FLAGS_SECURE, GroupKeyEntry, MAX_SEQUENCE, SecureSenderEntry,

@@ -146,6 +146,26 @@ pub fn desired_tables_for(
     Ok(compute_tables(links))
 }
 
+/// [`render_plan_text`] for a full application download (`method: flash`,
+/// issue #326): the tables are rewritten with the image even when their
+/// contents stay, so the plan says what the download writes instead of
+/// "nothing to do".
+pub fn render_full_image_plan_text(
+    target: IndividualAddress,
+    live: &DeviceTables,
+    report: &PlanReport,
+    full: &crate::device_plan::FullImage,
+) -> String {
+    let text = render_plan_text(target, live, report);
+    let line = format!("full download: writes {}", full.describe());
+    if report.is_noop() {
+        let head = text.lines().next().unwrap_or_default();
+        format!("{head}\n\n{line}\n")
+    } else {
+        format!("{text}\n{line}\n")
+    }
+}
+
 /// Renders the plan exactly as `bussard plan` prints it, without the closing
 /// "run `bussard apply`" hint (which is the CLI's to add).
 ///

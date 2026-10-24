@@ -63,6 +63,19 @@ comparing against it; review and commit the diff.
 |---|---|
 | `BUSSARD_ETS_PROJECT` | `ets_golden.rs`: the `A-D141-22` inactive-channel fill and the `A-2088-11` plan that ends at the restart. The path of a `.knxproj` whose product XML is not encrypted. |
 
+## A model snapshot with the Meteodata (`BUSSARD_METEO_SNAPSHOT`)
+
+Point `BUSSARD_METEO_SNAPSHOT` at a model snapshot directory that holds the
+Theben Meteodata 1.1.202 (for example `knx/.bussard/history/20261023T190946Z-001`).
+The archive `M-0048_A-140C-14-EB70.knxprod` is read from `BUSSARD_METEO_KNXPROD`,
+else from `<snapshot>/../../../products/`. The tests copy what they need into a
+temporary directory and never write to the snapshot.
+
+| Crate | Test file | What it checks |
+|---|---|---|
+| bussard-prod | `evaluator_conformance.rs` | the page evaluator and the download's Dynamic evaluator reach the same refs for the device's values, and every "ignored" value is one the image leaves out (#326) |
+| bussard-mcp | `capabilities.rs` | `knx_set_parameter helligkeitsschwelle@P-7305_R-7305` is taken once C4's function is Helligkeitssensor, without "Wenn Temperatur" being set (#326) |
+
 ## CI
 
 The `corpus-sweep` job runs the committed-fixture sweep on every push and pull

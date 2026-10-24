@@ -83,8 +83,8 @@ use crate::args::Parameters;
 use bussard_bus::BusHandle;
 use bussard_download::{
     DesiredTables, LiveRead, LiveTables, PlanReport, SecureSenderEntry, SecurityInputs,
-    Sys7TableImages, desired_tables_for, plan, render_plan_text, sys7_table_images,
-    write_pre_write_backup, write_tables_secured,
+    Sys7TableImages, desired_tables_for, plan, render_full_image_plan_text, render_plan_text,
+    sys7_table_images, write_pre_write_backup, write_tables_secured,
 };
 use bussard_mgmt::{Layer4Connection, LeaseChannel, MaskProfile, Timeouts, system_type};
 use bussard_model::history::{History, SnapshotReason};
@@ -555,7 +555,6 @@ impl BussardMcp {
             tracing::warn!("could not record a history snapshot: {err}");
         }
 
-        let plan_text = render_plan_text(target, tables, &report);
         // A security-object change of its own rewrites the tables too (issue
         // #297): the security object is written inside the table download.
         let tables_noop = report.is_noop() && !built.plan.writes.security_object;
@@ -592,9 +591,19 @@ impl BussardMcp {
         {
             device_plan.notes.push(line);
         }
-        if flash.is_some() {
+        if let Some(f) = &flash {
             device_plan.notes.push(flash_note(target));
+            // Issue #326: name what the full download writes.
+            if let Some(full) = device_plan.writes.full_image.as_mut() {
+                full.segments = f.plan.written_segments();
+            }
         }
+        let plan_text = match device_plan.writes.full_image.as_ref() {
+            Some(full) if flash.is_some() => {
+                render_full_image_plan_text(target, tables, &report, full)
+            }
+            _ => render_plan_text(target, tables, &report),
+        };
         let digest = if noop {
             None
         } else {

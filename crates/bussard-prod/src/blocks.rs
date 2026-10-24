@@ -3,7 +3,7 @@
 //! conditions that show them. See [`bussard_model::blocks`] for the shape and
 //! for how a device's configuration decides which of them it shows.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use bussard_ets::application::{CompareOp, DynamicNode, WhenTest};
 use bussard_model::blocks::{BlockDef, BlockKind, Gate};
@@ -22,6 +22,43 @@ pub fn blocks_for(app: &ApplicationProgram) -> Vec<BlockDef> {
     let mut gates = Vec::new();
     walk.nodes(&app.dynamic, None, None, &mut gates, true);
     walk.out
+}
+
+/// The `ParameterRef` `Value` overrides of the refs `blocks` name, in a
+/// page or in a condition, keyed by app-relative ref id: the value ETS gives
+/// a ref when nothing is stored, where it differs from the parameter's own
+/// default (issue #326). A `<choose>` on such a ref (a union steering member
+/// like the Meteodata's "Wenn Temperatur" = Windsensor) opens the branch the
+/// ref's value names, as the download side evaluates it.
+pub fn ref_values_for(app: &ApplicationProgram, blocks: &[BlockDef]) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let named = blocks.iter().flat_map(|b| {
+        let gates = b
+            .when
+            .iter()
+            .chain(b.parameter_when.values().flatten())
+            .map(|g| &g.reference);
+        b.parameters.iter().chain(gates)
+    });
+    for reference in named {
+        if out.contains_key(reference) {
+            continue;
+        }
+        let Some(pref) = app.parameter_ref(reference) else {
+            continue;
+        };
+        let Some(value) = pref.value.as_ref() else {
+            continue;
+        };
+        let default = app
+            .parameters
+            .get(&pref.ref_id)
+            .and_then(|p| p.default.as_ref());
+        if default != Some(value) {
+            out.insert(reference.clone(), value.clone());
+        }
+    }
+    out
 }
 
 /// The walk state: the blocks so far, and per block the refs already

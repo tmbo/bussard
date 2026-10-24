@@ -116,18 +116,82 @@ pub struct PlanWrites {
     /// inside the table download.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub security_object: bool,
+    /// The parameter values change the group-object table, so the write is
+    /// a full application download (`method: flash`): the whole image and
+    /// the tables, whatever else differs (issue #326).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub full_image: Option<FullImage>,
+}
+
+/// What a full application download writes, for the plan's `writes` line.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct FullImage {
+    /// The memory segments the image writes, app-relative (`AS-4800`), in
+    /// download order. Empty until the image is built (a CLI plan names the
+    /// download, `bussard flash` builds it).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub segments: Vec<String>,
+    /// The address table entry count after the download.
+    pub address_table: usize,
+    /// The association table entry count after the download.
+    pub association_table: usize,
+    /// Whether the tables' contents change, or are rewritten as they are.
+    pub tables_change: bool,
+}
+
+impl FullImage {
+    /// `full image (segments AS-4400, AS-4800), tables rewritten (unchanged:
+    /// 4 addresses, 5 associations)`.
+    pub fn describe(&self) -> String {
+        let image = if self.segments.is_empty() {
+            "full image".to_string()
+        } else {
+            format!(
+                "full image (segment{} {})",
+                if self.segments.len() == 1 { "" } else { "s" },
+                self.segments.join(", ")
+            )
+        };
+        let tables = if self.tables_change {
+            format!(
+                "tables rewritten (address table ({}), association table ({}))",
+                entries(self.address_table),
+                entries(self.association_table)
+            )
+        } else {
+            format!(
+                "tables rewritten (unchanged: {} address{}, {} association{})",
+                self.address_table,
+                if self.address_table == 1 { "" } else { "es" },
+                self.association_table,
+                if self.association_table == 1 { "" } else { "s" }
+            )
+        };
+        format!("{image}, {tables}")
+    }
 }
 
 impl PlanWrites {
     /// Whether nothing is written.
     pub fn is_empty(&self) -> bool {
-        self.address_table.is_none() && self.parameter_octets == 0 && !self.security_object
+        self.address_table.is_none()
+            && self.parameter_octets == 0
+            && !self.security_object
+            && self.full_image.is_none()
     }
 
     /// `address table (4 entries), association table (5 entries), 1 parameter
-    /// octet`, or `nothing`.
+    /// octet`, `full image (segments …), tables rewritten (…)` for a full
+    /// download, or `nothing`.
     pub fn describe(&self) -> String {
         let mut parts = Vec::new();
+        if let Some(full) = &self.full_image {
+            parts.push(full.describe());
+            if self.security_object {
+                parts.push("security object (PID 54)".to_string());
+            }
+            return parts.join(", ");
+        }
         if let Some(n) = self.address_table {
             parts.push(format!("address table ({})", entries(n)));
         }
@@ -605,6 +669,7 @@ mod tests {
                 association_table: Some(3),
                 parameter_octets: 0,
                 security_object: false,
+                full_image: None,
             },
             backup_dir: "knx/captures/backups/".to_string(),
             notes: Vec::new(),
@@ -626,5 +691,35 @@ mod tests {
             "apply these 3 changes to 1.1.47 through 127.0.0.1:3671?"
         );
         Ok(())
+    }
+
+    /// Issue #326: a full download with parameter changes and unchanged
+    /// links says what it writes, never "nothing".
+    #[test]
+    fn test_plan_writes_describe_a_full_image() {
+        let mut writes = PlanWrites {
+            full_image: Some(FullImage {
+                segments: vec!["AS-4400".to_string(), "AS-4800".to_string()],
+                address_table: 12,
+                association_table: 1,
+                tables_change: false,
+            }),
+            ..PlanWrites::default()
+        };
+        assert!(!writes.is_empty());
+        assert_eq!(
+            writes.describe(),
+            "full image (segments AS-4400, AS-4800), tables rewritten (unchanged: 12 \
+             addresses, 1 association)"
+        );
+        if let Some(full) = writes.full_image.as_mut() {
+            full.segments = Vec::new();
+            full.tables_change = true;
+        }
+        assert_eq!(
+            writes.describe(),
+            "full image, tables rewritten (address table (12 entries), association table (1 \
+             entry))"
+        );
     }
 }

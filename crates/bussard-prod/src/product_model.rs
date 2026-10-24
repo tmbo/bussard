@@ -308,6 +308,10 @@ struct Model {
     /// DPT), keyed by app-relative ref id.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     com_object_refs: BTreeMap<String, ComObjectModel>,
+    /// The `ParameterRef` values that override a parameter's default, of
+    /// the refs the blocks name, keyed by app-relative ref id (issue #326).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    ref_values: BTreeMap<String, String>,
 }
 
 /// The identity block.
@@ -422,6 +426,7 @@ fn build_model(app: &ApplicationProgram, product: &ProductData) -> Model {
     let com_objects = com_objects_for(app);
     let blocks = crate::blocks::blocks_for(app);
     let com_object_refs = other_object_refs(app, &blocks, &com_objects);
+    let ref_values = crate::blocks::ref_values_for(app, &blocks);
     Model {
         model_format: bussard_model::param_model::MODEL_FORMAT,
         identity: Identity {
@@ -440,6 +445,7 @@ fn build_model(app: &ApplicationProgram, product: &ProductData) -> Model {
         load_procedure: load_procedure_summary(&app.load_procedures),
         blocks,
         com_object_refs,
+        ref_values,
     }
 }
 

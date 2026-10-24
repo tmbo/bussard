@@ -765,12 +765,13 @@ async fn test_knx_last_apply_recovers_a_lost_reply_across_a_restart() -> anyhow:
 async fn test_knx_plan_device_lists_a_value_on_an_unshown_ref_as_ignored() -> anyhow::Result<()> {
     let h = Harness::start(Duration::from_secs(600)).await?;
     let app = "M-00FA_A-0321-10-0000";
+    let format = bussard_model::param_model::MODEL_FORMAT;
     let dir = h.dir.path();
     std::fs::create_dir_all(dir.join(".bussard/models"))?;
     std::fs::write(
         dir.join(format!(".bussard/models/{app}.yaml")),
         format!(
-            "model_format: 3\nidentity:\n  id: {app}\n  name: branch test app\n  \
+            "model_format: {format}\nidentity:\n  id: {app}\n  name: branch test app\n  \
              application_number: 321\n  application_version: 16\n  mask_version: '07B0'\n  \
              load_procedure_style: ProductProcedure\n  schema_version: '23'\nparameters:\n\
              - id: {app}_P-1\n  name: Function\n  text: Funktion des Kanals\n  type: !enum\n    \

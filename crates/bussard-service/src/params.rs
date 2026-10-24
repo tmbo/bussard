@@ -23,10 +23,11 @@ use std::time::Duration;
 
 use bussard_download::backup::backups_root;
 use bussard_download::{
-    ChangeMark, ChangeSubject, DecodedParameters, DevicePlan, FlashPlan, LiveTables, OctetRange,
-    OctetRole, ParamRegions, ParamValue, PlanChange, PlanReport, PlanWrites, ResidentState,
-    Sys7Identity, decode_parameters, group_object_change, object_changes, probe_resident_state,
-    read_parameter_regions, regions_memory, select_application, sort_changes, state_hash,
+    ChangeMark, ChangeSubject, DecodedParameters, DevicePlan, FlashPlan, FullImage, LiveTables,
+    OctetRange, OctetRole, ParamRegions, ParamValue, PlanChange, PlanReport, PlanWrites,
+    ResidentState, Sys7Identity, decode_parameters, group_object_change, object_changes,
+    probe_resident_state, read_parameter_regions, regions_memory, select_application, sort_changes,
+    state_hash,
 };
 use bussard_mgmt::{L4Channel, Layer4Connection};
 use bussard_model::schema::{Device, ProductEntry};
@@ -1388,6 +1389,15 @@ pub fn build_device_plan(
         association_table: tables_change.then_some(report.resulting_association_count),
         parameter_octets,
         security_object: false,
+        // A change of the group-object table is a full download: the image
+        // and the tables, never "nothing" (issue #326). The flash planner
+        // names the segments once it builds the image.
+        full_image: needs_flash.as_ref().map(|_| FullImage {
+            segments: Vec::new(),
+            address_table: report.resulting_address_count,
+            association_table: report.resulting_association_count,
+            tables_change,
+        }),
     };
     let root = backups_root(dir);
     let backup_dir = if parameter_octets > 0 {

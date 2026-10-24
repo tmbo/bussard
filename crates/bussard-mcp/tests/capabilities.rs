@@ -258,7 +258,10 @@ async fn test_model_lookup_finds_a_function_on_an_inactive_page() -> TestResult 
 /// up to their own (C10 needs C5 .. C10). C1 .. C4 are enabled. Like the
 /// real Theben application (`P-7305_R-7305` and `P-7305_R-7330`), each
 /// function page holds its brightness threshold twice, in the "Helligkeit"
-/// and the "Wind" branch of "Funktion des Kanals" (issue #315).
+/// and the "Wind" branch of "Funktion des Kanals" (issue #315). The "Wind"
+/// branch shows the wind threshold behind the union member "Wenn
+/// Temperatur" = Windsensor, which only its ETS ref value (4) satisfies: the
+/// parameter's default is 2 (issue #326, `UP-2248_R-2262`).
 const METEO_APP: &str = "M-0004_A-0304-10-0000";
 const METEO_CHANNELS: u32 = 12;
 const METEO_ON: u32 = 4;
@@ -268,6 +271,7 @@ fn meteo_product() -> String {
     let enum_yes_no = "  type: !enum\n    values:\n    - value: 0\n      text: nein\n    - value: 1\n      text: ja\n  default: '0'\n";
     let mut objects = String::from("com_objects:\n");
     let mut params = String::from("parameters:\n");
+    let mut ref_values = String::from("ref_values:\n");
     let mut blocks = String::from(
         "blocks:\n- id: CH-0\n  kind: channel\n  text: Generic\n  number: 0\n- id: PB-1\n  text: Allgemein\n  parent: CH-0\n  channel: CH-0\n  parameters:\n",
     );
@@ -302,18 +306,32 @@ fn meteo_product() -> String {
                 id(format!("O-{n}_R-{n}"))
             ));
         }
+        // "Wenn Temperatur" (a union member in the real application) and
+        // the wind threshold behind it.
+        let (u, w) = (1006 + 10 * k, 1008 + 10 * k);
+        params.push_str(&format!(
+            "- id: {}\n  name: Source{k}\n  text: Wenn Temperatur\n  type: !enum\n    values:\n    - value: 1\n      text: Helligkeitssensor\n    - value: 2\n      text: Temperatursensor\n    - value: 4\n      text: Windsensor\n  default: '2'\n",
+            id(format!("UP-{u}"))
+        ));
+        params.push_str(&format!(
+            "- id: {}\n  name: Wind{k}\n  text: Windgeschwindigkeit\n  type: !int\n    min: 1\n    max: 40\n    size: 8\n  default: '4'\n",
+            id(format!("P-{w}"))
+        ));
+        ref_values.push_str(&format!("  UP-{u}_R-{v}: '4'\n", v = u + 1));
         let wind = 1005 + 10 * k;
         blocks.push_str(&format!(
-            "- id: PB-{k}0\n  text: 'Universalkanal C{k}: Funktion'\n  parent: CH-0\n  channel: CH-0\n  when:\n{when}  parameters:\n  - P-{f}_R-{f}\n  - P-{s}_R-{s}\n  - P-{h}_R-{h}\n  - P-{h}_R-{wind}\n  parameter_when:\n    P-{h}_R-{h}:\n    - ref: P-{f}_R-{f}\n      test: '1'\n    P-{h}_R-{wind}:\n    - ref: P-{f}_R-{f}\n      test: '3'\n  objects:\n  - O-{n}_R-{n}\n",
-            n = 2 * k
+            "- id: PB-{k}0\n  text: 'Universalkanal C{k}: Funktion'\n  parent: CH-0\n  channel: CH-0\n  when:\n{when}  parameters:\n  - P-{f}_R-{f}\n  - P-{s}_R-{s}\n  - P-{h}_R-{h}\n  - P-{h}_R-{wind}\n  - UP-{u}_R-{v}\n  - P-{w}_R-{w}\n  parameter_when:\n    P-{h}_R-{h}:\n    - ref: P-{f}_R-{f}\n      test: '1'\n    P-{h}_R-{wind}:\n    - ref: P-{f}_R-{f}\n      test: '3'\n    UP-{u}_R-{v}:\n    - ref: P-{f}_R-{f}\n      test: '3'\n    P-{w}_R-{w}:\n    - ref: P-{f}_R-{f}\n      test: '3'\n    - ref: UP-{u}_R-{v}\n      test: '4'\n  objects:\n  - O-{n}_R-{n}\n",
+            n = 2 * k,
+            v = u + 1
         ));
         blocks.push_str(&format!(
             "- id: PB-{k}1\n  text: Objekte zu C{k}\n  parent: CH-0\n  channel: CH-0\n  when:\n{when}  objects:\n  - O-{n}_R-{n}\n",
             n = 2 * k + 1
         ));
     }
+    let format = bussard_model::param_model::MODEL_FORMAT;
     format!(
-        "model_format: 3\nidentity:\n  id: {METEO_APP}\n  name: meteo test app\n  application_number: 304\n  application_version: 16\n  mask_version: '0701'\n  load_procedure_style: ProductProcedure\n  schema_version: '23'\n{objects}{params}load_procedure:\n- connect\n- restart\n- disconnect\n{blocks}"
+        "model_format: {format}\nidentity:\n  id: {METEO_APP}\n  name: meteo test app\n  application_number: 304\n  application_version: 16\n  mask_version: '0701'\n  load_procedure_style: ProductProcedure\n  schema_version: '23'\n{objects}{params}load_procedure:\n- connect\n- restart\n- disconnect\n{blocks}{ref_values}"
     )
 }
 
@@ -978,6 +996,144 @@ async fn test_set_parameter_refuses_a_ref_the_configuration_does_not_show() -> T
         reason.contains("Universalkanal C5 aktivieren = ja and Universalkanal C6 aktivieren = ja"),
         "{reason}"
     );
+
+    client.cancel().await?;
+    task.abort();
+    Ok(())
+}
+
+/// Issue #326: the wind threshold sits behind "Funktion des Kanals" = Wind
+/// and "Wenn Temperatur" = Windsensor, which only the ETS ref value of the
+/// union member satisfies. Once the function is Wind the threshold is shown,
+/// so `knx_set_parameter` takes it without "Wenn Temperatur" being set, and
+/// the plan calls nothing ignored: what the image builder writes.
+#[tokio::test]
+async fn test_set_parameter_takes_a_condition_the_ref_value_satisfies() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    write_meteo(dir.path())?;
+    let (client, task) = serve(dir.path()).await?;
+    let ia = "1.1.202";
+    let page = "universalkanal-c1-funktion";
+    let file = dir.path().join("devices/1.1.202.toml");
+
+    // Under "Helligkeit" the refusal names the function only: the union
+    // member's ref value already holds.
+    let body = call(
+        &client,
+        "knx_set_parameter",
+        json!({"address": ia, "parameter": "P-1018_R-1018", "value": "8"}),
+    )
+    .await?;
+    assert_eq!(body["refused"], true, "{body}");
+    let reason = body["reason"].as_str().unwrap_or_default();
+    assert!(
+        reason
+            .contains("(Funktion des Kanals is Helligkeit): it needs Funktion des Kanals = Wind. "),
+        "{reason}"
+    );
+
+    let body = call(
+        &client,
+        "knx_set_parameter",
+        json!({"address": ia, "parameter": "funktion-des-kanals", "channel": page, "value": "Wind"}),
+    )
+    .await?;
+    assert_ne!(body["refused"], true, "{body}");
+    let body = call(
+        &client,
+        "knx_set_parameter",
+        json!({"address": ia, "parameter": "P-1018_R-1018", "value": "8"}),
+    )
+    .await?;
+    assert_ne!(body["refused"], true, "{body}");
+    let row = shown_row(&client, ia, page, "P-1018_R-1018").await?;
+    assert_eq!(row["value"], "8", "{row}");
+    assert!(row.get("ignored").is_none(), "{row}");
+    assert!(ignored_notes(dir.path(), ia)?.is_empty());
+    assert!(!std::fs::read_to_string(&file)?.contains("wenn-temperatur"));
+
+    // Setting the member itself indexes it in the lock with its ref value
+    // as the default, as the facts refresh writes the row.
+    let body = call(
+        &client,
+        "knx_set_parameter",
+        json!({"address": ia, "parameter": "UP-1016_R-1017", "value": "Windsensor"}),
+    )
+    .await?;
+    assert_ne!(body["refused"], true, "{body}");
+    let lock = std::fs::read_to_string(dir.path().join("bussard.lock"))?;
+    let row = lock
+        .lines()
+        .find(|l| l.contains("ref = \"UP-1016_R-1017\""))
+        .unwrap_or_default();
+    assert!(row.contains("default = \"4\""), "{row}");
+
+    client.cancel().await?;
+    task.abort();
+    Ok(())
+}
+
+/// Corpus-gated (issue #326): on a copy of the owner's model snapshot
+/// (`BUSSARD_METEO_SNAPSHOT`, e.g.
+/// `knx/.bussard/history/20261023T190946Z-001`, with the archive at
+/// `BUSSARD_METEO_KNXPROD` or `<snapshot>/../../../products/`), the C4
+/// brightness threshold `helligkeitsschwelle@P-7305_R-7305` is taken once the
+/// function is "Helligkeitssensor": "Wenn Temperatur" = Helligkeitssensor
+/// holds through its ref value and is never written to the file.
+#[tokio::test]
+async fn test_meteodata_snapshot_takes_the_c4_brightness_threshold() -> TestResult {
+    let Some(snapshot) = std::env::var_os("BUSSARD_METEO_SNAPSHOT").map(std::path::PathBuf::from)
+    else {
+        eprintln!("skipping: BUSSARD_METEO_SNAPSHOT is not set");
+        return Ok(());
+    };
+    let archive = std::env::var_os("BUSSARD_METEO_KNXPROD")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| snapshot.join("../../../products/M-0048_A-140C-14-EB70.knxprod"));
+    if !snapshot.join("bussard.lock").is_file() || !archive.is_file() {
+        eprintln!("skipping: no snapshot or archive at hand");
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    std::fs::create_dir_all(dir.path().join("devices"))?;
+    std::fs::create_dir_all(dir.path().join("products"))?;
+    for name in ["bussard.lock", "bussard.toml", "groups.toml"] {
+        std::fs::copy(snapshot.join(name), dir.path().join(name))?;
+    }
+    for entry in std::fs::read_dir(snapshot.join("devices"))? {
+        let path = entry?.path();
+        if let Some(name) = path.file_name() {
+            std::fs::copy(&path, dir.path().join("devices").join(name))?;
+        }
+    }
+    std::fs::copy(
+        &archive,
+        dir.path().join("products/M-0048_A-140C-14-EB70.knxprod"),
+    )?;
+    let (client, task) = serve(dir.path()).await?;
+    let ia = "1.1.202";
+    let file = dir.path().join("devices/1.1.202.toml");
+
+    let body = call(
+        &client,
+        "knx_set_parameter",
+        json!({"address": ia, "parameter": "funktion-des-kanals",
+               "channel": "universalkanal-c4-funktion",
+               "value": "Helligkeitssensor 1 .. 100 000 lx"}),
+    )
+    .await?;
+    assert_ne!(body["refused"], true, "{body}");
+    let body = call(
+        &client,
+        "knx_set_parameter",
+        json!({"address": ia, "parameter": "helligkeitsschwelle@P-7305_R-7305",
+               "value": "unter 5 lx"}),
+    )
+    .await?;
+    assert_ne!(body["refused"], true, "{body}");
+    let text = std::fs::read_to_string(&file)?;
+    assert!(text.contains("unter 5 lx"), "{text}");
+    assert!(!text.contains("wenn-temperatur"), "{text}");
 
     client.cancel().await?;
     task.abort();

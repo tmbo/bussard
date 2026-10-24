@@ -1028,6 +1028,34 @@ impl FlashPlan {
         !self.baseline.is_empty()
     }
 
+    /// The code and parameter segments the memory-write steps stream, in
+    /// step order, without the application prefix (`AS-4800`): what a
+    /// plan's `writes` line names. The tables are not among them.
+    pub fn written_segments(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for step in &self.steps {
+            let image = match step {
+                FlashStep::WriteRelMem { image, .. } | FlashStep::WriteMem { image, .. } => image,
+                FlashStep::Sys7AbsSegment {
+                    image: Some(image), ..
+                } => image,
+                _ => continue,
+            };
+            if image.kind == ImageKind::Table {
+                continue;
+            }
+            let id = image
+                .segment_id
+                .rsplit_once('_')
+                .map_or(image.segment_id.as_str(), |(_, tail)| tail)
+                .to_string();
+            if !out.contains(&id) {
+                out.push(id);
+            }
+        }
+        out
+    }
+
     /// Total octets written to device memory across all memory-write steps.
     pub fn total_write_bytes(&self) -> usize {
         self.steps

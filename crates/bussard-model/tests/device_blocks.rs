@@ -505,6 +505,21 @@ fn test_unindexed_parameters_lists_what_the_pages_hold_beyond_the_lock() -> Test
                 Some("universal-channel-a-function")
             ),
             (
+                "P-13_R-13",
+                "if-temperature",
+                Some("universal-channel-a-function")
+            ),
+            (
+                "P-13_R-15",
+                "if-temperature",
+                Some("universal-channel-a-function")
+            ),
+            (
+                "P-14_R-14",
+                "wind-threshold",
+                Some("universal-channel-a-function")
+            ),
+            (
                 "P-21_R-21",
                 "channel-function",
                 Some("universal-channel-b-function")
@@ -523,5 +538,131 @@ fn test_unindexed_parameters_lists_what_the_pages_hold_beyond_the_lock() -> Test
         ]
     );
     assert!(unindexed_parameters(&model()?, &ProductModels::default(), ia()?)?.is_empty());
+    Ok(())
+}
+
+/// The model of [`LOCK`] and [`DEVICE`] with `lock_extra` appended to the
+/// device's lock entry and the device file's channel table replaced by
+/// `channel`.
+fn model_with(lock_extra: &str, channel: &str) -> Result<Model, Box<dyn std::error::Error>> {
+    let mut files: BTreeMap<String, String> = files()
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    files.insert("bussard.lock".to_string(), format!("{LOCK}{lock_extra}"));
+    let head = DEVICE
+        .split("[channel.generic-0]")
+        .next()
+        .ok_or("no channel table")?;
+    files.insert(
+        "devices/1.1.30.toml".to_string(),
+        format!("{head}[channel.generic-0]\n{channel}"),
+    );
+    Ok(Model::from_texts(&files)?)
+}
+
+/// Issue #326: channel A's wind threshold sits behind "If temperature" =
+/// Wind sensor, a ref whose ETS `ParameterRef` value (4) differs from its
+/// parameter's default (2). Nothing stored: the ref value holds the
+/// condition, as the download side evaluates it, so a stored threshold is
+/// live, not "ignored".
+#[test]
+fn test_parameter_visibility_takes_the_ref_value_of_a_condition() -> TestResult {
+    let channel = "universal-channel-a-enable = \"yes\"\nchannel-function = \"Wind sensor\"\n\
+                   brightness.send = \"4/1/5\"\n";
+    let mut model = model_with("", channel)?;
+    let products = products()?;
+    let seen = parameter_visibility(&model, &products, ia()?)?;
+    let wind = seen.get("P-14_R-14").ok_or("no P-14_R-14")?;
+    assert!(wind.shown, "{wind:?}");
+    assert_eq!(wind.needs, None);
+    assert_eq!(
+        wind.condition.as_deref(),
+        Some("Channel function = Wind sensor and If temperature = Wind sensor")
+    );
+    assert_eq!(seen.get("P-13_R-13").map(|v| v.shown), Some(true));
+    // The other ref of the parameter keeps the parameter's default and its
+    // own branch (the temperature function).
+    assert_eq!(seen.get("P-13_R-15").map(|v| v.shown), Some(false));
+
+    let device = &mut model.devices.get_mut(&ia()?).ok_or("no device")?.device;
+    device
+        .parameters
+        .insert("wind-threshold@P-14_R-14".to_string(), "8".to_string());
+    assert!(ignored_overrides(&model, &products, ia()?)?.is_empty());
+    Ok(())
+}
+
+/// Issue #326: a value ETS stored for the steering ref (the lock's
+/// `hidden[]`, written by a flash as is) wins over its ref value, on both
+/// sides: 2 closes the wind branch and the stored threshold is ignored, 4
+/// opens it.
+#[test]
+fn test_ignored_overrides_follow_a_stored_value_over_the_ref_value() -> TestResult {
+    let channel = "universal-channel-a-enable = \"yes\"\nchannel-function = \"Wind sensor\"\n\
+                   brightness.send = \"4/1/5\"\n";
+    let products = products()?;
+    for (stored, shown) in [("2", false), ("4", true)] {
+        let lock = format!("hidden = [\n  {{ ref = \"P-13_R-13\", value = \"{stored}\" }},\n]\n");
+        let mut model = model_with(&lock, channel)?;
+        let seen = parameter_visibility(&model, &products, ia()?)?;
+        let wind = seen.get("P-14_R-14").ok_or("no P-14_R-14")?;
+        assert_eq!(wind.shown, shown, "{stored}: {wind:?}");
+        let device = &mut model.devices.get_mut(&ia()?).ok_or("no device")?.device;
+        device
+            .parameters
+            .insert("wind-threshold@P-14_R-14".to_string(), "8".to_string());
+        let ignored = ignored_overrides(&model, &products, ia()?)?;
+        if shown {
+            assert!(ignored.is_empty(), "{ignored:?}");
+        } else {
+            assert_eq!(ignored.len(), 1, "{ignored:?}");
+            assert_eq!(ignored[0].reference, "P-14_R-14");
+            assert_eq!(
+                ignored[0].needs, "If temperature = Wind sensor",
+                "{ignored:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Issue #326: a lock row without a `default` of its own takes the ref
+/// value as its default, so a stored value equal to it is at the default
+/// and the row says so.
+#[test]
+fn test_device_view_marks_a_value_at_the_ref_value_as_default() -> TestResult {
+    let lock = LOCK.replace(
+        "  { key = \"channel-function\"",
+        "  { key = \"if-temperature\", channel = \"generic-0\", ref = \"P-13_R-13\", param = \
+         \"P-13\" },\n  { key = \"channel-function\"",
+    );
+    let mut files: BTreeMap<String, String> = files()
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    files.insert("bussard.lock".to_string(), lock);
+    files.insert(
+        "devices/1.1.30.toml".to_string(),
+        DEVICE.replace(
+            "channel-function = \"Temperature sensor\"",
+            "channel-function = \"Wind sensor\"\nif-temperature = \"Wind sensor\"",
+        ),
+    );
+    let model = Model::from_texts(&files)?;
+    let view = device_view(
+        &model,
+        &products()?,
+        ia()?,
+        Some("universal-channel-a-function"),
+    )?;
+    let scope = view.scope.as_ref().ok_or("no scope")?;
+    let row = scope
+        .parameters
+        .iter()
+        .find(|p| p.key == "if-temperature")
+        .ok_or("no if-temperature row")?;
+    assert_eq!(row.default.as_deref(), Some("Wind sensor"));
+    assert_eq!(row.at_default, Some(true));
     Ok(())
 }
