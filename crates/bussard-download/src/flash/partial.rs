@@ -293,7 +293,10 @@ impl FlashPlan {
                         });
                     }
                 }
-                FlashStep::WriteProp { obj_idx, .. } if objects.contains(obj_idx) => {
+                FlashStep::WriteProp {
+                    object: super::PropObject::Index(obj_idx),
+                    ..
+                } if objects.contains(obj_idx) => {
                     steps.push(step.clone());
                 }
                 FlashStep::LoadImageProp { obj_idx, .. } if objects.contains(obj_idx) => {

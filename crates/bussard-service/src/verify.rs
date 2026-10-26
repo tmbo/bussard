@@ -17,6 +17,10 @@
 //!   the product data).
 //! - **Parameters**: the parameter memory decoded and compared with the
 //!   model ([`crate::params::read_flashed_parameters`], the plan's decode).
+//! - **Load-procedure properties** (issue #390): every property an
+//!   `LdCtrlWriteProp` of a System 7 or property-only flash wrote, read back
+//!   by the object and PID the plan addressed and compared with the value
+//!   the plan wrote.
 //! - **Security object** (KNX Data Secure, issue #331): the element count of
 //!   the group key table (PID 53, whose keys are write-only), the security
 //!   individual address table (PID 54) and the group-object security flags
@@ -121,6 +125,59 @@ impl ExpectedSecurity {
     }
 }
 
+/// A property a load procedure wrote (issue #390): what its read-back must
+/// find.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpectedProperty {
+    /// The interface object, as the plan addressed it.
+    pub object: bussard_download::PropObject,
+    /// The property id.
+    pub prop_id: u32,
+    /// The first element written.
+    pub start: u16,
+    /// How many elements were written.
+    pub count: u16,
+    /// The octets written.
+    pub value: Vec<u8>,
+}
+
+impl ExpectedProperty {
+    /// The property writes of `flash` a read-back compares: those of a System
+    /// 7 or property-only plan. A System B plan's program-version writes keep
+    /// the read-back they had before issue #390 (none).
+    pub fn from_flash_plan(flash: &FlashPlan) -> Vec<ExpectedProperty> {
+        if !flash.is_sys7() && !flash.is_property_only() {
+            return Vec::new();
+        }
+        flash
+            .steps
+            .iter()
+            .filter_map(|step| match step {
+                FlashStep::WriteProp {
+                    object,
+                    prop_id,
+                    value,
+                    start_element,
+                    count,
+                    ..
+                } => Some(ExpectedProperty {
+                    object: *object,
+                    prop_id: *prop_id,
+                    start: *start_element,
+                    count: (*count).max(1),
+                    value: value.clone(),
+                }),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// `object type 11 PID 205`.
+    fn name(&self) -> String {
+        format!("{} PID {}", self.object, self.prop_id)
+    }
+}
+
 /// What a write meant to leave on the device. A `None` field is not
 /// compared.
 #[derive(Clone, Default)]
@@ -133,6 +190,8 @@ pub struct Expected<'a> {
     pub parameters: Option<ExpectedParameters<'a>>,
     /// The security object.
     pub security: Option<ExpectedSecurity>,
+    /// The properties the load procedure wrote (issue #390).
+    pub properties: Vec<ExpectedProperty>,
     /// Where the product puts a System 7 device's tables, the reader's
     /// fallback when the device does not answer `PID_TABLE_REFERENCE`.
     pub table_bases: bussard_download::Sys7TableBases,
@@ -189,6 +248,7 @@ impl<'a> Expected<'a> {
                 device_mask,
             }),
             security: ExpectedSecurity::from_flash_plan(flash),
+            properties: ExpectedProperty::from_flash_plan(flash),
             table_bases: bussard_download::sys7_table_bases(app),
         }
     }
@@ -214,6 +274,8 @@ pub enum LeftoverKind {
     SecureSender,
     /// A group object's security flag (PID 61).
     SecurityFlag,
+    /// A property a load procedure wrote (issue #390).
+    Property,
     /// The read-back itself could not be made.
     Readback,
 }
@@ -267,6 +329,9 @@ pub struct Compared {
     /// Group objects flagged secured (PID 61).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secured_objects: Option<usize>,
+    /// Properties a load procedure wrote (issue #390).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub properties: Option<usize>,
 }
 
 /// What the post-write read-back found.
@@ -353,6 +418,9 @@ impl WriteReadback {
         if let Some(n) = c.secured_objects {
             parts.push(format!("{n} secured object(s) (PID 61)"));
         }
+        if let Some(n) = c.properties {
+            parts.push(format!("{n} load-procedure property value(s)"));
+        }
         if parts.is_empty() {
             "nothing".to_string()
         } else {
@@ -426,8 +494,50 @@ pub async fn read_back<Ch: L4Channel>(
     if let Some(security) = &expected.security {
         compare_security(l4, &mut out, security).await;
     }
+    if !expected.properties.is_empty() {
+        compare_properties(l4, &mut out, &expected.properties).await;
+    }
     out.verified = out.leftovers.is_empty();
     out
+}
+
+/// Reads back every property a load procedure wrote and compares it with
+/// the octets written; a property that cannot be read is a leftover too (the
+/// write cannot be confirmed).
+async fn compare_properties<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    out: &mut WriteReadback,
+    expected: &[ExpectedProperty],
+) {
+    let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02X}")).collect::<String>();
+    for prop in expected {
+        let elem = (prop.value.len() / usize::from(prop.count.max(1))).max(1);
+        match bussard_download::read_property_value(
+            l4,
+            prop.object,
+            prop.prop_id,
+            prop.start,
+            prop.count,
+            elem,
+        )
+        .await
+        {
+            Ok(held) if held == prop.value => {}
+            Ok(held) => out.push(
+                LeftoverKind::Property,
+                prop.name(),
+                hex(&held),
+                hex(&prop.value),
+            ),
+            Err(err) => out.push(
+                LeftoverKind::Property,
+                prop.name(),
+                format!("no answer ({})", chain(&err)),
+                hex(&prop.value),
+            ),
+        }
+    }
+    out.compared.properties = Some(expected.len());
 }
 
 /// [`read_back`] on a fresh session to `target` (an apply, after its writes
@@ -722,5 +832,55 @@ mod tests {
         let out = WriteReadback::unreadable("timeout".to_string());
         assert!(!out.verified);
         assert!(out.failure().is_some_and(|f| f.contains("timeout")));
+    }
+
+    #[tokio::test]
+    async fn test_read_back_names_a_property_the_device_does_not_hold() -> TestResult {
+        use bussard_download::PropObject;
+        let device = bussard_testkit::MockDevice::new("1.1.200".parse()?)
+            .with_property_ext(11, 204, 1, &[0x0A])
+            .with_property_ext(11, 205, 4, &[192, 168, 0, 1, 0, 0, 0, 0]);
+        let gw = bussard_testkit::MockGateway::builder()
+            .device(device)
+            .start()
+            .await?;
+        let mut bus = bussard_transport::Transport::connect(
+            &bussard_transport::ConnectionConfig::tunnel(gw.addr()),
+        )
+        .await?;
+        let mut l4 =
+            Layer4Connection::connect(&mut bus, "1.1.200".parse()?, "0.0.255".parse()?).await?;
+        let ip = PropObject::Type {
+            object_type: 11,
+            occurrence: 0,
+        };
+        let expected = Expected {
+            properties: vec![
+                ExpectedProperty {
+                    object: ip,
+                    prop_id: 204,
+                    start: 1,
+                    count: 1,
+                    value: vec![0x0A],
+                },
+                ExpectedProperty {
+                    object: ip,
+                    prop_id: 205,
+                    start: 1,
+                    count: 2,
+                    value: vec![192, 168, 0, 1, 10, 0, 0, 2],
+                },
+            ],
+            ..Expected::default()
+        };
+        let out = read_back(&mut l4, &expected).await;
+        let _ = l4.disconnect().await;
+        assert!(!out.verified);
+        assert_eq!(out.compared.properties, Some(2));
+        assert_eq!(out.leftovers.len(), 1, "{:?}", out.leftovers);
+        assert_eq!(out.leftovers[0].kind, LeftoverKind::Property);
+        assert_eq!(out.leftovers[0].item, "object type 11 PID 205");
+        assert_eq!(out.leftovers[0].device, "C0A8000100000000");
+        Ok(())
     }
 }

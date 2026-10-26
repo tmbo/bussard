@@ -267,7 +267,12 @@ pub fn plan_flash_with_memo(
         });
     }
     let profile = bussard_mgmt::MaskProfile::from_mask(device_mask);
-    if !profile.capabilities().flash {
+    // A procedure of property operations only on mask 0021 (the Jung IPS 300
+    // SREG, issue #390) loads nothing: the family gate opens for it, and only
+    // the mask match below applies. Every other family keeps its refusal.
+    let property_only = device_mask == super::plan_props::PROPERTY_ONLY_MASK
+        && super::plan_props::is_property_only(app);
+    if !profile.capabilities().flash && !property_only {
         return Err(PlanError::NotSystemB {
             device: device.to_string(),
             device_mask,
@@ -287,6 +292,10 @@ pub fn plan_flash_with_memo(
             device_mask,
             app_mask,
         });
+    }
+
+    if property_only && !profile.capabilities().flash {
+        return super::plan_props::plan_flash_properties(app, device_mask, overrides, memo);
     }
 
     // System 7 has its own memory-mapped, absolute-addressed lowering: the LSM
@@ -742,12 +751,11 @@ pub fn plan_flash_with_memo(
 
             LoadOp::WriteProp {
                 obj_idx,
-                obj_type,
                 prop_id,
                 inline_data,
                 start_element,
+                ..
             } => {
-                let obj_type = obj_type.unwrap_or(0);
                 let start_element = start_element
                     .and_then(|e| u16::try_from(e).ok())
                     .unwrap_or(1)
@@ -799,12 +807,16 @@ pub fn plan_flash_with_memo(
                                 ),
                             });
                         }
+                        // System B keeps its historical shape (issue #390 leaves
+                        // it as the offline oracle confirms it): the value is one
+                        // element, the write echo-validated, no extra read-back.
                         steps.push(FlashStep::WriteProp {
-                            obj_idx,
-                            obj_type,
+                            object: super::PropObject::Index(obj_idx),
                             prop_id,
                             value: value.clone(),
                             start_element,
+                            count: 1,
+                            verify: false,
                         });
                     }
                     _ => {
@@ -834,7 +846,7 @@ pub fn plan_flash_with_memo(
                 // needed to complete the download).
                 let _ = range;
                 steps.push(FlashStep::CompareProp {
-                    obj_idx: obj_idx.unwrap_or(0),
+                    object: super::PropObject::Index(obj_idx.unwrap_or(0)),
                     prop_id: prop_id.unwrap_or(0),
                     expected: inline_data.clone(),
                     mask: mask.clone(),
@@ -1163,10 +1175,27 @@ pub(super) fn assemble_ops(
         return (out, true);
     }
 
-    // Self-contained: no template splice. Merged-style (all MergeId) → concat in
-    // ascending MergeId order; else the richest single block.
+    (
+        self_contained_blocks(app)
+            .into_iter()
+            .flat_map(|p| p.ops.clone())
+            .collect(),
+        false,
+    )
+}
+
+/// The blocks a self-contained download (no master-template splice) runs, in
+/// order: merged-style (every block MergeId-tagged) → all blocks in ascending
+/// MergeId order; else the richest single block. Empty blocks never count.
+pub(super) fn self_contained_blocks(app: &ApplicationProgram) -> Vec<&LoadProcedure> {
+    let non_empty: Vec<&LoadProcedure> = app
+        .load_procedures
+        .iter()
+        .filter(|p| !p.ops.is_empty())
+        .collect();
+    let all_merged = non_empty.iter().all(|p| p.merge_id.is_some());
     if all_merged && non_empty.len() > 1 {
-        let mut blocks = non_empty.clone();
+        let mut blocks = non_empty;
         blocks.sort_by(|a, b| {
             let key = |p: &&LoadProcedure| {
                 p.merge_id
@@ -1177,19 +1206,13 @@ pub(super) fn assemble_ops(
             };
             key(a).cmp(&key(b))
         });
-        return (
-            blocks.into_iter().flat_map(|p| p.ops.clone()).collect(),
-            false,
-        );
+        return blocks;
     }
-    (
-        non_empty
-            .into_iter()
-            .max_by_key(|p| p.ops.len())
-            .map(|p| p.ops.clone())
-            .unwrap_or_default(),
-        false,
-    )
+    non_empty
+        .into_iter()
+        .max_by_key(|p| p.ops.len())
+        .into_iter()
+        .collect()
 }
 
 /// Resolves which relative segment a `RelSegment` op allocates. Returns
@@ -2092,12 +2115,12 @@ mod tests {
         assert_eq!(compares.len(), 2, "both CompareProp ops lower");
         match compares[0] {
             FlashStep::CompareProp {
-                obj_idx,
+                object,
                 prop_id,
                 expected,
                 mask,
             } => {
-                assert_eq!(*obj_idx, 0);
+                assert_eq!(*object, crate::flash::PropObject::Index(0));
                 assert_eq!(*prop_id, 78);
                 assert_eq!(
                     expected.as_deref(),
@@ -2396,12 +2419,12 @@ mod tests {
         assert_eq!(write_props.len(), 1, "the value-carrying WriteProp lowers");
         match write_props[0] {
             FlashStep::WriteProp {
-                obj_idx,
+                object,
                 prop_id,
                 value,
                 ..
             } => {
-                assert_eq!(*obj_idx, 0);
+                assert_eq!(*object, crate::flash::PropObject::Index(0));
                 assert_eq!(*prop_id, 204);
                 assert_eq!(value, &vec![0x01, 0x02]);
             }

@@ -31,12 +31,13 @@ use crate::consts::{
     A_MEMORY_EXTENDED_READ_RESPONSE, A_MEMORY_EXTENDED_WRITE, A_MEMORY_EXTENDED_WRITE_RESPONSE,
     A_MEMORY_READ, A_MEMORY_RESPONSE, A_MEMORY_WRITE, A_PROPERTY_DESCRIPTION_READ,
     A_PROPERTY_DESCRIPTION_RESPONSE, A_PROPERTY_EXT_VALUE_READ, A_PROPERTY_EXT_VALUE_RESPONSE,
-    A_PROPERTY_VALUE_READ, A_PROPERTY_VALUE_RESPONSE, A_PROPERTY_VALUE_WRITE, A_RESTART,
-    APCI_SELECTOR, LE_ADDITIONAL, LE_LOAD_COMPLETED, LE_START_LOADING, LE_UNLOAD, LS_LOADED,
-    LS_LOADING, LS_UNLOADED, OT_ADDRESS_TABLE, OT_ASSOCIATION_TABLE, OT_DEVICE,
-    OT_GROUP_OBJECT_TABLE, OT_KNXNET_IP_PARAMETER, PID_IO_LIST, PID_LOAD_STATE_CONTROL,
-    PID_MANUFACTURER_ID, PID_OBJECT_TYPE, PID_ORDER_INFO, PID_PROGMODE, PID_SERIAL_NUMBER,
-    PID_TABLE, PID_TABLE_REFERENCE, SUB_REL_SEGMENT,
+    A_PROPERTY_EXT_VALUE_WRITE_CON, A_PROPERTY_EXT_VALUE_WRITE_CON_RESPONSE, A_PROPERTY_VALUE_READ,
+    A_PROPERTY_VALUE_RESPONSE, A_PROPERTY_VALUE_WRITE, A_RESTART, APCI_SELECTOR, LE_ADDITIONAL,
+    LE_LOAD_COMPLETED, LE_START_LOADING, LE_UNLOAD, LS_LOADED, LS_LOADING, LS_UNLOADED,
+    OT_ADDRESS_TABLE, OT_ASSOCIATION_TABLE, OT_DEVICE, OT_GROUP_OBJECT_TABLE,
+    OT_KNXNET_IP_PARAMETER, PID_IO_LIST, PID_LOAD_STATE_CONTROL, PID_MANUFACTURER_ID,
+    PID_OBJECT_TYPE, PID_ORDER_INFO, PID_PROGMODE, PID_SERIAL_NUMBER, PID_TABLE,
+    PID_TABLE_REFERENCE, SUB_REL_SEGMENT,
 };
 
 /// The Data Secure SCF octet of an `S-A_Sync_Req` (tool access).
@@ -537,6 +538,35 @@ impl MockDevice {
         self
     }
 
+    /// Serves a writable array property of instance 1 of `object_type` to
+    /// `A_PropertyExtValue_Read` and `A_PropertyExtValue_WriteCon` (issue
+    /// #390: the KNXnet/IP parameter object of an IP interface). A write
+    /// replaces the addressed elements and is confirmed with return code 0.
+    pub fn with_writable_property_ext(
+        mut self,
+        object_type: u16,
+        pid: u16,
+        elem_size: usize,
+        data: &[u8],
+    ) -> Self {
+        self.ext_properties.insert(
+            (object_type, pid),
+            Property {
+                elem_size: elem_size.max(1),
+                data: data.to_vec(),
+                writable: true,
+            },
+        );
+        self
+    }
+
+    /// The value of the extended property `object_type`/`pid` (instance 1).
+    pub fn property_ext(&self, object_type: u16, pid: u16) -> Option<&[u8]> {
+        self.ext_properties
+            .get(&(object_type, pid))
+            .map(|p| p.data.as_slice())
+    }
+
     /// Refuses an `A_PropertyExtValue_Read` of more than `limit` elements.
     pub fn with_ext_read_limit(mut self, limit: u8) -> Self {
         self.ext_read_limit = Some(limit);
@@ -902,6 +932,7 @@ impl MockDevice {
             A_MEMORY_EXTENDED_WRITE => self.memory_extended_write(data),
             A_PROPERTY_VALUE_READ => self.property_read(data),
             A_PROPERTY_EXT_VALUE_READ => self.property_ext_read(data),
+            A_PROPERTY_EXT_VALUE_WRITE_CON => self.property_ext_write(data),
             A_PROPERTY_VALUE_WRITE => self.property_write(data),
             A_PROPERTY_DESCRIPTION_READ => {
                 if let Some(payload) = self.description(data) {
@@ -1037,6 +1068,40 @@ impl MockDevice {
         let from = (idx - 1) * prop.elem_size;
         let bytes = prop.data[from..from + usize::from(count) * prop.elem_size].to_vec();
         answer(count, &bytes)
+    }
+
+    /// `A_PropertyExtValue_WriteCon`: `[type:16][instance:12|pid:12][count]
+    /// [start:16][data]`, confirmed with the header, count, start and a return
+    /// code: 0 when a writable property of instance 1 took the elements, else
+    /// non-zero.
+    fn property_ext_write(&mut self, data: &[u8]) -> Reaction {
+        self.writes += 1;
+        let Some(h) = data.get(..8) else {
+            return Reaction::Nak;
+        };
+        let object_type = u16::from_be_bytes([h[0], h[1]]);
+        let packed = (u32::from(h[2]) << 16) | (u32::from(h[3]) << 8) | u32::from(h[4]);
+        let instance = (packed >> 12) as u16;
+        let pid = (packed & 0x0FFF) as u16;
+        let start = u16::from_be_bytes([h[6], h[7]]);
+        let value = &data[8..];
+        let confirm = |rc: u8| {
+            let mut out = h.to_vec();
+            out.push(rc);
+            Reaction::Answer(A_PROPERTY_EXT_VALUE_WRITE_CON_RESPONSE, out)
+        };
+        match self.ext_properties.get_mut(&(object_type, pid)) {
+            Some(prop) if prop.writable && instance == 1 && start >= 1 => {
+                let from = (usize::from(start) - 1) * prop.elem_size;
+                let end = from + value.len();
+                if prop.data.len() < end {
+                    prop.data.resize(end, 0);
+                }
+                prop.data[from..end].copy_from_slice(value);
+                confirm(0)
+            }
+            _ => confirm(0x01),
+        }
     }
 
     fn property_read(&self, data: &[u8]) -> Reaction {

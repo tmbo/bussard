@@ -1,6 +1,6 @@
 //! Human labels for flash steps: the progress line and the dry-run [`trace`].
 
-use super::{FlashPlan, FlashStep};
+use super::{FlashPlan, FlashStep, PropObject};
 
 /// A `" (LsmIdx/ObjIdx N)"` suffix for a step label, naming the object index the
 /// op targets, or empty when it targets the discovered application object.
@@ -101,28 +101,42 @@ pub(super) fn step_label(step: &FlashStep) -> String {
             )
         }
         FlashStep::WriteProp {
-            obj_idx,
-            obj_type,
+            object,
             prop_id,
             value,
             start_element,
+            count,
+            verify,
         } => {
+            let elements = if *count > 1 {
+                format!(", {count} elements")
+            } else {
+                String::new()
+            };
+            let verify = if *verify { ", verified" } else { "" };
+            // An index-addressed write keeps the label `knxtrace` parses
+            // (`object N, type 0, PID …`) for the plans that carry no
+            // structured property record.
+            let object = match object {
+                PropObject::Index(index) => format!("object {index}, type 0"),
+                by_type => by_type.to_string(),
+            };
             format!(
-                "write property (object {obj_idx}, type {obj_type}, PID {prop_id}, {} byte(s) from element {start_element})",
+                "write property ({object}, PID {prop_id}, {} byte(s) from element {start_element}{elements}{verify})",
                 value.len()
             )
         }
         FlashStep::CompareProp {
-            obj_idx,
+            object,
             prop_id,
             expected,
             ..
         } => match expected {
             Some(bytes) => format!(
-                "verify property (object {obj_idx}, PID {prop_id} == {} byte(s))",
+                "verify property ({object}, PID {prop_id} == {} byte(s))",
                 bytes.len()
             ),
-            None => format!("verify property (object {obj_idx}, PID {prop_id}, range — skipped)"),
+            None => format!("verify property ({object}, PID {prop_id}, range — skipped)"),
         },
         FlashStep::CompareRelMem {
             target,

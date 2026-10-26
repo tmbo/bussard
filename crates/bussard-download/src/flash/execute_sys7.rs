@@ -7,9 +7,7 @@ use super::session::{
 };
 use super::verify::take_sample;
 use super::{FlashOptions, FlashOutcome, FlashPlan, FlashStep, Progress};
-use bussard_mgmt::load::{
-    LoadControl, LoadState, WriteError, compare_property, read_mcb_table, read_memory,
-};
+use bussard_mgmt::load::{LoadControl, LoadState, WriteError, read_mcb_table, read_memory};
 
 /// Executes a validated **System 7** [`FlashPlan`] (`[system7-spec §3/§4]`).
 ///
@@ -235,7 +233,7 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                         }
                     }
                     FlashStep::CompareProp {
-                        obj_idx,
+                        object,
                         prop_id,
                         expected,
                         mask,
@@ -243,15 +241,36 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                         // The obj0/PID78 preflight and any other property compare: identical
                         // to System B (an interface-object property read + compare).
                         if let Some(expected) = expected {
-                            compare_property(
+                            super::props::compare_property_value(
                                 session.l4(),
-                                (*obj_idx).min(u8::MAX.into()) as u8,
-                                (*prop_id).min(u8::MAX.into()) as u8,
+                                *object,
+                                *prop_id,
                                 expected,
                                 mask.as_deref(),
                             )
                             .await?;
                         }
+                    }
+                    FlashStep::WriteProp {
+                        object,
+                        prop_id,
+                        value,
+                        start_element,
+                        count,
+                        verify,
+                    } => {
+                        // A property write of the procedure (issue #390), with its
+                        // Count and Verify, as on System B.
+                        super::props::write_property_value(
+                            session.l4(),
+                            *object,
+                            *prop_id,
+                            *start_element,
+                            *count,
+                            value,
+                            *verify,
+                        )
+                        .await?;
                     }
                     FlashStep::LoadImageProp {
                         obj_idx,
@@ -571,6 +590,7 @@ pub(super) async fn verify_sys7<C: Connector>(
         spot_checks_match,
         warnings: Vec::new(),
         reboot_readiness: Vec::new(),
+        property_only: false,
     })
 }
 

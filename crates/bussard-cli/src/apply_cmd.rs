@@ -555,6 +555,7 @@ pub(crate) fn apply_desired(
         } else {
             None
         },
+        properties: Vec::new(),
         table_bases: plan_cmd::table_bases(write.product),
     };
     let (code, read_back) = if tables_change {

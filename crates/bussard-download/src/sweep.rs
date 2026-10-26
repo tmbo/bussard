@@ -520,7 +520,10 @@ pub fn normalize_plan_error(e: &PlanError) -> String {
             "SelectionError".to_string()
         }
         PlanError::AddressOutOfRange { .. } => "AddressOutOfRange".to_string(),
-        PlanError::UnsupportedWriteProp { .. } => "UnsupportedWriteProp".to_string(),
+        PlanError::UnsupportedWriteProp { reason, .. } => {
+            format!("UnsupportedWriteProp: {}", first_clause(reason))
+        }
+        PlanError::UndecidableCondition { .. } => "UndecidableCondition".to_string(),
         PlanError::MissingTableImage { .. } => "MissingTableImage".to_string(),
         PlanError::Sys7FieldOutOfRange { field, .. } => {
             format!("Sys7FieldOutOfRange: {field}")

@@ -9,16 +9,12 @@
     "image_ok": 1354,
     "image_refused": 0,
     "image_panicked": 0,
-    "plan_executable": 1135,
-    "plan_refused": 101,
-    "plan_not_supported_family": 118,
+    "plan_executable": 1235,
+    "plan_refused": 2,
+    "plan_not_supported_family": 117,
     "plan_panicked": 0
   },
   "plan_refusal_ranking": [
-    {
-      "reason": "UnsupportedOp: LdCtrlWriteProp",
-      "count": 99
-    },
     {
       "reason": "NoProcedure",
       "count": 1
@@ -33,15 +29,15 @@
   "family_coverage": {
     "System 1": {
       "apps": 95,
-      "executable": 0,
+      "executable": 1,
       "refused": 0,
-      "not_supported_family": 95,
+      "not_supported_family": 94,
       "panicked": 0
     },
     "System 7": {
       "apps": 378,
-      "executable": 278,
-      "refused": 100,
+      "executable": 377,
+      "refused": 1,
       "not_supported_family": 0,
       "panicked": 0
     },
@@ -5628,8 +5624,8 @@
             "segments": 2
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 24
           }
         },
         {
@@ -5640,8 +5636,8 @@
             "segments": 3
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 23
           }
         },
         {
@@ -5736,8 +5732,8 @@
             "segments": 2
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 22
           }
         },
         {
@@ -5772,8 +5768,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 21
           }
         },
         {
@@ -5784,8 +5780,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 21
           }
         },
         {
@@ -5796,8 +5792,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 21
           }
         },
         {
@@ -5808,8 +5804,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -5820,8 +5816,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -5832,8 +5828,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -5844,8 +5840,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -5856,8 +5852,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -5868,8 +5864,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -5880,8 +5876,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 21
           }
         },
         {
@@ -5892,8 +5888,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 21
           }
         },
         {
@@ -5904,8 +5900,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 21
           }
         },
         {
@@ -5916,8 +5912,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 21
           }
         },
         {
@@ -5928,8 +5924,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -5940,8 +5936,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -5952,8 +5948,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 19
           }
         },
         {
@@ -5976,8 +5972,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 19
           }
         },
         {
@@ -6012,8 +6008,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -6024,8 +6020,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -6036,8 +6032,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -6048,8 +6044,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -6060,8 +6056,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -6072,8 +6068,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -6084,8 +6080,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -6096,8 +6092,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 19
           }
         },
         {
@@ -6108,8 +6104,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -6120,8 +6116,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 21
           }
         },
         {
@@ -6132,8 +6128,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 22
           }
         },
         {
@@ -6144,8 +6140,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 22
           }
         },
         {
@@ -6156,8 +6152,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -6168,8 +6164,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -6180,8 +6176,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -6192,8 +6188,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 19
           }
         },
         {
@@ -6204,8 +6200,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 19
           }
         },
         {
@@ -6228,8 +6224,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -6240,8 +6236,8 @@
             "segments": 2
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 22
           }
         },
         {
@@ -6252,8 +6248,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -6264,8 +6260,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -6276,8 +6272,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -6288,8 +6284,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 21
           }
         },
         {
@@ -6300,8 +6296,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 21
           }
         },
         {
@@ -6312,8 +6308,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -6324,8 +6320,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -6336,8 +6332,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -6348,8 +6344,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -6360,8 +6356,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 19
           }
         },
         {
@@ -6372,8 +6368,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 19
           }
         },
         {
@@ -6396,8 +6392,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 19
           }
         },
         {
@@ -6408,8 +6404,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 19
           }
         },
         {
@@ -6732,8 +6728,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 19
           }
         },
         {
@@ -10209,8 +10205,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -10221,8 +10217,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -10233,8 +10229,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -10245,8 +10241,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -10257,8 +10253,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -10269,8 +10265,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 21
           }
         },
         {
@@ -10281,8 +10277,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 21
           }
         },
         {
@@ -10293,8 +10289,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 21
           }
         },
         {
@@ -10305,8 +10301,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 21
           }
         },
         {
@@ -10329,8 +10325,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 19
           }
         },
         {
@@ -10365,8 +10361,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -10377,8 +10373,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -10389,8 +10385,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -10401,8 +10397,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -10413,8 +10409,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -10425,8 +10421,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -10437,8 +10433,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -10449,8 +10445,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 19
           }
         },
         {
@@ -10461,8 +10457,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 21
           }
         },
         {
@@ -10473,8 +10469,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -10485,8 +10481,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 22
           }
         },
         {
@@ -10497,8 +10493,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 22
           }
         },
         {
@@ -10509,8 +10505,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -10521,8 +10517,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -10533,8 +10529,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -10545,8 +10541,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 19
           }
         },
         {
@@ -10557,8 +10553,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 19
           }
         },
         {
@@ -10569,8 +10565,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -10581,8 +10577,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -10593,8 +10589,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -10605,8 +10601,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -10617,8 +10613,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 21
           }
         },
         {
@@ -10629,8 +10625,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 21
           }
         },
         {
@@ -10641,8 +10637,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -10653,8 +10649,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -10665,8 +10661,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -10677,8 +10673,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 20
           }
         },
         {
@@ -10689,8 +10685,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 19
           }
         },
         {
@@ -15315,8 +15311,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 69
           }
         }
       ]
@@ -15336,8 +15332,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 22
           }
         },
         {
@@ -15348,8 +15344,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 22
           }
         }
       ]
@@ -15369,8 +15365,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 22
           }
         },
         {
@@ -15381,8 +15377,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 22
           }
         }
       ]
@@ -16500,8 +16496,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 22
           }
         }
       ]
@@ -17992,8 +17988,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 22
           }
         },
         {
@@ -18004,8 +18000,8 @@
             "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnsupportedOp: LdCtrlWriteProp"
+            "plan": "executable",
+            "steps": 22
           }
         },
         {
@@ -20113,8 +20109,8 @@
             "segments": 0
           },
           "plan": {
-            "plan": "not_supported_family",
-            "system": "System 1"
+            "plan": "executable",
+            "steps": 5
           }
         },
         {

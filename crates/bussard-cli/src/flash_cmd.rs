@@ -886,6 +886,16 @@ pub fn run(
                      is left",
                     plan.identity.id, verify.load_state,
                 );
+            } else if verify.property_only {
+                // A property-only procedure (issue #390) loads no object.
+                println!(
+                    "\nflash verified: the property procedure of {} ran on {target} and every \
+                     property it wrote reads back as written",
+                    plan.identity.id,
+                );
+                if let Some(note) = not_compared {
+                    eprintln!("note: parameters not compared with the model: {note}");
+                }
             } else if let Some(note) = not_compared {
                 println!(
                     "\nflash verified: application program {} is {} on {target}",

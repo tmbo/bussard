@@ -6280,7 +6280,7 @@ fn test_plan_flash_skips_program_version_of_an_unloaded_object() -> TestResult {
         .iter()
         .filter_map(|s| match s {
             FlashStep::WriteProp {
-                obj_idx,
+                object: bussard_download::PropObject::Index(obj_idx),
                 prop_id: 13,
                 ..
             } => Some(*obj_idx),
@@ -6389,7 +6389,7 @@ fn test_plan_flash_streams_a_companion_pei_program() -> TestResult {
     let pid13 = |obj: u32| {
         plan.steps.iter().find_map(|s| match s {
             FlashStep::WriteProp {
-                obj_idx,
+                object: bussard_download::PropObject::Index(obj_idx),
                 prop_id: 13,
                 value,
                 ..
@@ -6464,6 +6464,7 @@ fn test_plan_flash_image_checks_follow_the_app_procedure() -> TestResult {
                 count: None,
             })
             .collect(),
+        ..bussard_prod::LoadProcedure::default()
     });
     let tables = BTreeMap::from([(1, vec![0, 0]), (2, vec![0, 0]), (3, vec![0, 0])]);
     let template = master_template_with_image_check()?;

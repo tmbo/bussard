@@ -576,7 +576,7 @@ fn test_20de_plan_writes_program_version_only_to_loaded_objects() -> TestResult 
         .iter()
         .filter_map(|s| match s {
             FlashStep::WriteProp {
-                obj_idx,
+                object: bussard_download::PropObject::Index(obj_idx),
                 prop_id: 13,
                 value,
                 ..

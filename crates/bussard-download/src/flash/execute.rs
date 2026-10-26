@@ -20,8 +20,8 @@ use super::{FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageKind, Progres
 use bussard_mgmt::MgmtError;
 use bussard_mgmt::connection::{L4Channel, Layer4Connection};
 use bussard_mgmt::load::{
-    LoadControl, LoadState, WriteError, compare_property, compare_rel_mem,
-    master_reset_via_basic_restart, read_mcb_table, read_table_reference, write_property,
+    LoadControl, LoadState, WriteError, compare_rel_mem, master_reset_via_basic_restart,
+    read_mcb_table, read_table_reference, write_property,
 };
 use bussard_mgmt::tables::OT_APPLICATION_PROGRAM;
 use std::collections::{BTreeMap, BTreeSet};
@@ -253,6 +253,11 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
     // control, absolute streaming and read-back verify all differ from System B.
     if plan.sys7.is_some() {
         return flash_sys7(session, plan, options, progress).await;
+    }
+    // A property-only procedure (issue #390) loads no object: no discovery,
+    // no load-state machine, a read-back of every written property.
+    if plan.is_property_only() {
+        return super::execute_props::flash_properties(session, plan, progress).await;
     }
     // `options.bcu_key` was consumed at connect time (the session was opened with
     // it); only `verify_after_restart` is read below, in the terminal-restart arm.
@@ -634,11 +639,12 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                         }
                     }
                     FlashStep::WriteProp {
-                        obj_idx,
-                        obj_type,
+                        object,
                         prop_id,
                         value,
                         start_element,
+                        count,
+                        verify,
                     } => {
                         // A spliced template writes properties on obj4 and obj5 (the app
                         // id, PID 13). Skip a write to an object index the device does not
@@ -646,38 +652,54 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                         // the load-control steps — otherwise the device NAKs the write to
                         // the absent object and fails the flash. A `u32::MAX`-bounded index
                         // is compared against the discovered table.
-                        let _ = obj_type;
-                        if plan.spliced_from_template
-                            && !object_table.iter().any(|(i, _)| u32::from(*i) == *obj_idx)
+                        if let Some(obj_idx) = object.index()
+                            && plan.spliced_from_template
+                            && !object_table.iter().any(|(i, _)| u32::from(*i) == obj_idx)
                         {
                             return Ok(());
                         }
-                        let obj = (*obj_idx).min(u32::from(u8::MAX)) as u8;
-                        let pid = (*prop_id).min(u32::from(u8::MAX)) as u8;
                         // PID_MCB_TABLE is an array of 8-octet entries and the vendor
                         // InlineData is padded to 10: ETS writes one 8-octet element per
                         // request from `StartElement` (1.1.18 capture: `count=1 index=1
                         // len=8`, then `index=2`). The Jung F50 refuses the padded
                         // 10-octet write with a zero-count response (issue #89).
-                        if pid == bussard_mgmt::PID_MCB_TABLE
+                        if let Some(obj_idx) = object.index()
+                            && *prop_id == u32::from(bussard_mgmt::PID_MCB_TABLE)
                             && value.len() > bussard_mgmt::MCB_ENTRY_LEN
                         {
+                            let obj = obj_idx.min(u32::from(u8::MAX)) as u8;
                             for (i, entry) in value.chunks(bussard_mgmt::MCB_ENTRY_LEN).enumerate()
                             {
                                 if entry.len() < bussard_mgmt::MCB_ENTRY_LEN {
                                     break; // the vendor's zero padding, never an entry
                                 }
                                 let index = start_element.saturating_add(i as u16);
-                                write_property(session.l4(), obj, pid, 1, index, entry, None)
-                                    .await?;
+                                write_property(
+                                    session.l4(),
+                                    obj,
+                                    bussard_mgmt::PID_MCB_TABLE,
+                                    1,
+                                    index,
+                                    entry,
+                                    None,
+                                )
+                                .await?;
                             }
                         } else {
-                            write_property(session.l4(), obj, pid, 1, *start_element, value, None)
-                                .await?;
+                            super::props::write_property_value(
+                                session.l4(),
+                                *object,
+                                *prop_id,
+                                *start_element,
+                                *count,
+                                value,
+                                *verify,
+                            )
+                            .await?;
                         }
                     }
                     FlashStep::CompareProp {
-                        obj_idx,
+                        object,
                         prop_id,
                         expected,
                         mask,
@@ -688,10 +710,10 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                         // names the object by its own index (e.g. 0 = the device object),
                         // read directly — not the discovered app object.
                         if let Some(expected) = expected {
-                            compare_property(
+                            super::props::compare_property_value(
                                 session.l4(),
-                                (*obj_idx).min(u32::from(u8::MAX)) as u8,
-                                (*prop_id).min(u32::from(u8::MAX)) as u8,
+                                *object,
+                                *prop_id,
                                 expected,
                                 mask.as_deref(),
                             )

@@ -975,6 +975,7 @@ fn load_op_summary(op: &LoadOp) -> String {
             inline_data,
             mask,
             range,
+            ..
         } => {
             let expected = match (inline_data, range) {
                 (Some(d), _) => format!("data={}", hex(d)),

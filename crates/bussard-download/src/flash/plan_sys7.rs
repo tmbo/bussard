@@ -211,11 +211,22 @@ pub(super) fn plan_flash_sys7(
 
     // System 7 apps carry their whole download in their own load procedures
     // (ProductProcedure style — no master-template splice; `[corpus 49/49]`).
-    let (mut ops, _spliced) = assemble_ops(app, None);
+    // Each `<choose>` of the procedure is decided under the device's
+    // parameters (issue #390: the MDT 0705 label writes and PID 19 compare).
+    let config = memo.evaluate_for(app, overrides);
+    let mut ops = super::plan_props::guarded_ops(app, &config)?;
     if ops.is_empty() {
         return Err(PlanError::NoProcedure(app.id.clone()));
     }
     ops.truncate(sys7_procedure_end(&ops));
+    // The values the program's property-located parameters compose, for a
+    // property write without `InlineData`.
+    let property_values = bussard_prod::compute_property_values(app, &config).map_err(|e| {
+        PlanError::UnsupportedWriteProp {
+            step: 0,
+            reason: format!("composing the property values from the parameters: {e}"),
+        }
+    })?;
 
     // Resolve parameter images up front: each parameter segment's <Data> is only
     // the vendor's template, and the image streamed for it is that template with
@@ -459,22 +470,21 @@ pub(super) fn plan_flash_sys7(
                     count,
                 });
             }
-            LoadOp::CompareProp {
-                obj_idx,
-                prop_id,
-                inline_data,
-                mask,
-                ..
-            } => {
+            LoadOp::CompareProp { .. } => {
                 // The obj0/PID78 preflight (44/49 MDT apps). Reuses the System B
                 // CompareProp step: an interface-object property read + compare,
                 // which is identical on System 7 (`[system7-spec §4.6]`).
-                steps.push(FlashStep::CompareProp {
-                    obj_idx: obj_idx.unwrap_or(0),
-                    prop_id: prop_id.unwrap_or(0),
-                    expected: inline_data.clone(),
-                    mask: mask.clone(),
-                });
+                steps.push(super::plan_props::lower_compare_prop(step_no, op)?);
+            }
+            LoadOp::WriteProp { .. } => {
+                // A property write with its Count and Verify (issue #390): the
+                // 0701 programs' `ObjIdx=3 PropId=204 Count=2` and the MDT 0705
+                // label properties their parameters compose.
+                steps.push(super::plan_props::lower_write_prop(
+                    step_no,
+                    op,
+                    &property_values,
+                )?);
             }
             LoadOp::LoadImageProp {
                 obj_idx,
@@ -529,7 +539,6 @@ pub(super) fn plan_flash_sys7(
         .unwrap_or_default();
     // Every unlinked object's CONFIG (and TYPE) comes from the ComObjectRef the
     // device's parameter values make visible, as in ETS (issue #117).
-    let config = memo.evaluate_for(app, overrides);
     let default_flags = sys7_object_defaults(app, &config);
     // Module instances shift numbers past the declared ones: count those too.
     let last_object = app
@@ -1989,7 +1998,7 @@ mod tests {
             matches!(
                 plan.steps.first(),
                 Some(FlashStep::CompareProp {
-                    obj_idx: 0,
+                    object: crate::flash::PropObject::Index(0),
                     prop_id: 78,
                     expected: Some(_),
                     ..
@@ -2066,7 +2075,7 @@ mod tests {
         let procedure = || {
             vec![
                 FlashStep::CompareProp {
-                    obj_idx: 0,
+                    object: crate::flash::PropObject::Index(0),
                     prop_id: 78,
                     expected: Some(vec![0]),
                     mask: None,

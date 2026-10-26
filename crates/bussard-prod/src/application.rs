@@ -4,7 +4,7 @@
 
 pub use bussard_ets::application::{
     ApplicationProgram, ChannelDef, ChannelMembership, CodeSegment, ComObject, ComObjectRef,
-    ConditionalGroup, EnumValue, LoadOp, LoadProcedure, Memory, ModuleInstance, Parameter,
-    ParameterRef, ParameterType, ParameterTypeDecl, ResolvedComObject, ResolvedParameter,
-    SegmentKind, TableLocation, parse_application_program,
+    ConditionalGroup, EnumValue, LoadChoose, LoadGuard, LoadOp, LoadProcedure, Memory,
+    ModuleInstance, Parameter, ParameterRef, ParameterType, ParameterTypeDecl, PropertyLocation,
+    ResolvedComObject, ResolvedParameter, SegmentKind, TableLocation, parse_application_program,
 };

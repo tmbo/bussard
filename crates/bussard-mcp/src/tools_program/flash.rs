@@ -361,7 +361,12 @@ impl BussardMcp {
             Ok(done) if done.ok() => {
                 result["ok"] = json!(params_differ.is_none());
                 result["verified"] = json!(params_differ.is_none());
-                result["load_state"] = json!(done.load_state.to_string());
+                if done.property_only {
+                    // A property-only procedure (issue #390) loads no object.
+                    result["property_procedure"] = json!(true);
+                } else {
+                    result["load_state"] = json!(done.load_state.to_string());
+                }
                 result["application"] = json!(image.plan.identity.id);
                 result["warnings"] = json!(done.warnings);
                 result["parameters"] = json!({
@@ -425,15 +430,22 @@ impl BussardMcp {
             Ok(done) => {
                 result["ok"] = json!(false);
                 result["verified"] = json!(false);
-                let sequence = format!(
-                    "the flash did not verify: load state {}, spot checks {}",
-                    done.load_state,
-                    if done.spot_checks_match {
-                        "matched"
-                    } else {
-                        "did not match"
-                    }
-                );
+                let sequence = if done.property_only {
+                    format!(
+                        "the property procedure did not verify: {}",
+                        done.warnings.join("; ")
+                    )
+                } else {
+                    format!(
+                        "the flash did not verify: load state {}, spot checks {}",
+                        done.load_state,
+                        if done.spot_checks_match {
+                            "matched"
+                        } else {
+                            "did not match"
+                        }
+                    )
+                };
                 // Issue #349: the read-back names what differs.
                 result["reason"] = json!(match &params_differ {
                     Some(failure) => format!("{sequence}; {failure}"),

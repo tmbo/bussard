@@ -7,13 +7,12 @@ Corpus-driven conformance sweep. Buckets every application in every product thro
 - Product files: **497** (497 parsed, 0 parse-failed, 0 parse-panicked)
 - Application programs: **1354**
   - Image: 1354 ok, 0 refused, 0 panicked
-  - Plan: 1135 executable, 101 refused, 118 unsupported-family, 0 panicked
+  - Plan: 1235 executable, 2 refused, 117 unsupported-family, 0 panicked
 
 ## Plan-refusal reasons (ranked by app count)
 
 | count | reason |
 | ---: | --- |
-| 99 | UnsupportedOp: LdCtrlWriteProp |
 | 1 | NoProcedure |
 | 1 | UnresolvableImage: no relative segment to write into |
 
@@ -29,8 +28,8 @@ _(none)_
 
 | family | apps | exec | refused | unsupported | panicked |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| System 1 | 95 | 0 | 0 | 95 | 0 |
-| System 7 | 378 | 278 | 100 | 0 | 0 |
+| System 1 | 95 | 1 | 0 | 94 | 0 |
+| System 7 | 378 | 377 | 1 | 0 | 0 |
 | System ? | 23 | 0 | 0 | 23 | 0 |
 | System B | 851 | 850 | 1 | 0 | 0 |
 | System B (IP) | 1 | 1 | 0 | 0 | 0 |

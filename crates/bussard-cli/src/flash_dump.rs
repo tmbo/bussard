@@ -370,6 +370,39 @@ pub fn write_dump(
                     "data": format!("{:02x}", bussard_mgmt::DEVICE_CONTROL_VERIFY_MODE),
                 });
             }
+            // A load procedure's property write (issue #390), as the wire
+            // carries it: an index-addressed object with the plain service,
+            // one named by type with the extended service (instance 1-based).
+            // A System B plan keeps the label-only record the oracle rows
+            // were recorded with.
+            FlashStep::WriteProp {
+                object,
+                prop_id,
+                value,
+                start_element,
+                count,
+                verify,
+            } if plan.is_sys7() || plan.is_property_only() => {
+                let hex: String = value.iter().map(|b| format!("{b:02x}")).collect();
+                let mut prop = match object {
+                    bussard_download::PropObject::Index(index) => json!({ "object": index }),
+                    bussard_download::PropObject::Type {
+                        object_type,
+                        occurrence,
+                    } => json!({
+                        "object_type": object_type,
+                        "instance": u32::from(*occurrence) + 1,
+                    }),
+                };
+                prop["pid"] = json!(prop_id);
+                prop["start_element"] = json!(start_element);
+                prop["count"] = json!(count);
+                prop["length"] = json!(value.len());
+                prop["data"] = json!(hex);
+                prop["verify"] = json!(verify);
+                prop["source"] = json!("load-procedure");
+                record["property"] = prop;
+            }
             FlashStep::SecurityLoadControl { .. }
             | FlashStep::SecurityClearAddressTable
             | FlashStep::SecuritySenders { .. }
@@ -426,7 +459,13 @@ pub fn write_dump(
     let doc = json!({
         "device": device,
         "device_mask": format!("{device_mask:04X}"),
-        "system": if plan.is_sys7() { "7" } else { "B" },
+        "system": if plan.is_sys7() {
+            "7"
+        } else if plan.is_property_only() {
+            "properties"
+        } else {
+            "B"
+        },
         "sys7_segment_write": if plan.is_sys7() {
             json!(if plan.sys7_read_compare() { "read-compare" } else { "blind" })
         } else {

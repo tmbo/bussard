@@ -36,6 +36,8 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+# The mock device the property read-back test reads from (a workspace crate).
+bussard-testkit = { workspace = true }
 
 [lints]
 workspace = true

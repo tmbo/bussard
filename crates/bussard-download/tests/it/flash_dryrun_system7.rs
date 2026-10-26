@@ -124,7 +124,7 @@ fn plan_lowers_mdt_a000e_smallest_canonical() {
         plan.steps.iter().any(|s| matches!(
             s,
             FlashStep::CompareProp {
-                obj_idx: 0,
+                object: bussard_download::PropObject::Index(0),
                 prop_id: 78,
                 ..
             }

@@ -98,11 +98,14 @@ use bussard_mgmt::load::LoadState;
 use std::collections::BTreeMap;
 
 mod execute;
+mod execute_props;
 mod execute_sys7;
 mod labels;
 mod partial;
 mod plan;
+mod plan_props;
 mod plan_sys7;
+mod props;
 mod session;
 #[cfg(test)]
 mod test_support;
@@ -123,7 +126,53 @@ pub use plan_sys7::{
     Sys7PlanTables, Sys7TableBases, Sys7TableImage, linked_flags_from_system_b,
     plan_flash_sys7_with_hawk, sys7_profile_from_hawk, sys7_table_bases, sys7_tables_from_system_b,
 };
+pub use props::{compare_property_value, read_property_value, write_property_value};
 pub use session::{Connector, DeviceFacts, RebootReadiness, RestartKind, Session, SingleConnector};
+
+/// How a property step names its interface object (issue #390).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum PropObject {
+    /// The interface object at this index (`ObjIdx`), addressed with the
+    /// plain `A_PropertyValue_*` services.
+    Index(u32),
+    /// The `occurrence`-th (0-based) interface object of `object_type`
+    /// (`ObjType`/`Occurrence`), addressed with the extended
+    /// `A_PropertyExtValue_*` services as ETS does on the IPS 300 SREG
+    /// (capture of 2026-10-26), falling back to the object's index when the
+    /// device refuses them.
+    Type {
+        /// The interface object type.
+        object_type: u16,
+        /// Which object of that type, 0 for the first.
+        occurrence: u16,
+    },
+}
+
+impl PropObject {
+    /// The object index, for an index-addressed object.
+    pub fn index(self) -> Option<u32> {
+        match self {
+            PropObject::Index(i) => Some(i),
+            PropObject::Type { .. } => None,
+        }
+    }
+}
+
+impl std::fmt::Display for PropObject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PropObject::Index(i) => write!(f, "object {i}"),
+            PropObject::Type {
+                object_type,
+                occurrence: 0,
+            } => write!(f, "object type {object_type}"),
+            PropObject::Type {
+                object_type,
+                occurrence,
+            } => write!(f, "object type {object_type} #{occurrence}"),
+        }
+    }
+}
 
 /// The KNX manufacturer id of the KNX Association, which KNX Virtual devices
 /// report (`M-00FA_…` application ids).
@@ -188,21 +237,28 @@ pub enum FlashStep {
         image: ImageRef,
     },
     /// Write an interface-object property (`LdCtrlWriteProp`). Carries the value
-    /// to write (from the op's `InlineData`) and the object index the write
-    /// targets, resolved at plan time. A value-less op is refused at plan time
+    /// to write and the object the write targets, resolved at plan time. A
+    /// value-less op whose value no parameter supplies is refused at plan time
     /// (see [`PlanError::UnsupportedWriteProp`]) rather than lowering to a step
     /// that would execute as a silent no-op.
     WriteProp {
-        /// The interface-object index (`ObjIdx`) the property write targets.
-        obj_idx: u32,
-        /// The interface-object type (`ObjType`), kept for the trace/label.
-        obj_type: u32,
+        /// The interface object the write targets: by index (`ObjIdx`) or by
+        /// type and occurrence (`ObjType`), resolved on the device.
+        object: PropObject,
         /// The property id.
         prop_id: u32,
-        /// The value bytes to write (decoded `InlineData`), echo-validated.
+        /// The value bytes to write: the op's `InlineData`, else the value the
+        /// program's property-located parameters compose (issue #390).
         value: Vec<u8>,
         /// The 1-based element the value is written from (`StartElement`, default 1).
         start_element: u16,
+        /// How many elements `value` spans (`Count`, default 1). A System B
+        /// plan keeps 1: its value is written as one element, as before
+        /// issue #390.
+        count: u16,
+        /// `Verify="true"`: read the property back right after writing it and
+        /// fail the flash on a difference, as ETS does.
+        verify: bool,
     },
     /// Verify an interface-object property against expected data
     /// (`LdCtrlCompareProp`) — the read-only precondition check that is the twin
@@ -211,8 +267,8 @@ pub enum FlashStep {
     /// the flash. A `Range`-only compare (no `InlineData`) carries no `expected`
     /// bytes and is a no-op confirm, kept so the procedure still lowers whole.
     CompareProp {
-        /// The interface-object index (`ObjIdx`) whose property to read.
-        obj_idx: u32,
+        /// The interface object whose property to read.
+        object: PropObject,
         /// The property id (`PropId`) to compare.
         prop_id: u32,
         /// The expected property bytes (decoded `InlineData`), or `None` for a
@@ -645,6 +701,20 @@ pub enum PlanError {
         reason: String,
     },
 
+    /// A `<choose>` in the load procedure cannot be decided: its parameter
+    /// has no value, or a branch test bussard does not understand. Refused
+    /// rather than guessing which ops run.
+    #[error(
+        "load procedure step {step} sits in a <choose> bussard cannot decide: {reason} — \
+         refusing the procedure rather than guessing which operations ETS would run"
+    )]
+    UndecidableCondition {
+        /// The 1-based op index in the procedure.
+        step: usize,
+        /// Why the branch cannot be decided.
+        reason: String,
+    },
+
     /// A spliced master-template op programs a standard table object (obj1
     /// address, obj2 association, obj3 group-object) but no table image was
     /// supplied for it. Refused at pre-flight — writing the app segment (or
@@ -832,7 +902,10 @@ impl FlashPlan {
     /// device is not factory-fresh. A no-op on a System 7 plan, whose download
     /// rewrites every region in full.
     pub fn require_factory_reset(&mut self) {
-        if self.sys7.is_none() && !self.has_factory_reset() {
+        // Never on a property-only plan (issue #390): it loads nothing a reset
+        // would clear, and a reset of the KNX IP interface it targets wipes the
+        // interface's IP and tunnelling configuration.
+        if self.sys7.is_none() && !self.has_factory_reset() && !self.is_property_only() {
             insert_factory_reset(&mut self.steps);
         }
     }
@@ -856,10 +929,12 @@ impl FlashPlan {
     ///   the property writes (`PID_PROGRAM_VERSION`) that precede the first
     ///   `LoadCompleted`.
     ///
-    /// A no-op on a System 7 plan (no security object) and when the plan
-    /// already carries security steps.
+    /// A no-op on a System 7 plan (no security object), on a property-only
+    /// plan, and when the plan already carries security steps.
     pub fn add_security_program(&mut self, program: crate::security::SecurityProgram) {
-        if self.sys7.is_some() || self.has_security_program() {
+        // A property-only plan (issue #390) loads no group objects and has
+        // no security object to program here.
+        if self.sys7.is_some() || self.has_security_program() || self.is_property_only() {
             return;
         }
         let first_load_completed = self
@@ -959,6 +1034,23 @@ impl FlashPlan {
             }
             _ => step_label(step),
         }
+    }
+
+    /// Whether this plan only reads and writes interface-object properties
+    /// (issue #390): a property-only procedure (the IPS 300 SREG, mask
+    /// 0021), executed by its own small executor.
+    pub fn is_property_only(&self) -> bool {
+        self.sys7.is_none()
+            && !self.steps.is_empty()
+            && self.steps.iter().all(|s| {
+                matches!(
+                    s,
+                    FlashStep::WriteProp { .. }
+                        | FlashStep::CompareProp { .. }
+                        | FlashStep::Restart
+                )
+            })
+            && self.steps.iter().any(|s| !matches!(s, FlashStep::Restart))
     }
 
     /// Whether this is a System 7 (mask 0705/0701) plan.
@@ -1240,12 +1332,21 @@ pub struct FlashOutcome {
     /// confirmed (issue #212), for `flash -v`'s timing line. Empty when the
     /// plan restarts nothing the device confirms.
     pub reboot_readiness: Vec<RebootReadiness>,
+    /// The plan was property-only (issue #390): it loads no object, so
+    /// [`Self::load_state`] and [`Self::object_states`] say nothing (`Loaded`
+    /// and empty), and [`Self::spot_checks_match`] is the read-back of every
+    /// property the plan wrote.
+    pub property_only: bool,
 }
 
 impl FlashOutcome {
     /// The flash verified: every programmed object reached `Loaded` and every
-    /// spot check matched.
+    /// spot check matched (for a property-only plan: every property it wrote
+    /// reads back as written).
     pub fn ok(&self) -> bool {
+        if self.property_only {
+            return self.spot_checks_match;
+        }
         self.object_states
             .iter()
             .all(|(_, state)| *state == LoadState::Loaded)

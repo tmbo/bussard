@@ -386,6 +386,28 @@ pub enum WriteError {
         mask_note: String,
     },
 
+    /// A property a load procedure compares or verifies does not hold what the
+    /// procedure expects (issue #390): an `LdCtrlCompareProp` precondition on an
+    /// object named by type, or the read-back of an `LdCtrlWriteProp
+    /// Verify="true"`. `property` names the object and PID (`object type 11
+    /// PID 205`).
+    #[error(
+        "{address}: {property} {what} failed — expected {expected:02X?} but the device holds \
+         {actual:02X?}"
+    )]
+    PropertyMismatch {
+        /// The device.
+        address: IndividualAddress,
+        /// The object and property, in words.
+        property: String,
+        /// Which check failed (`compare`, `verify read-back`).
+        what: &'static str,
+        /// The expected octets.
+        expected: Vec<u8>,
+        /// The octets the device returned.
+        actual: Vec<u8>,
+    },
+
     /// A `LdCtrlCompareRelMem` verify failed: the device's stored relative
     /// (segment-relative) memory does not match the expected data the vendor
     /// procedure declared (after masking, and after inversion when the op sets
@@ -569,6 +591,33 @@ pub async fn write_property<Ch: L4Channel>(
         });
     }
     Ok(echoed)
+}
+
+/// Reads `count` elements of `property_id` on `object_index` from element
+/// `start` with `A_PropertyValue_Read` and returns their octets. A response
+/// with fewer elements than asked (count 0 = refused) is
+/// [`MgmtError::ServiceRejected`].
+pub async fn read_property_elements<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    object_index: u8,
+    property_id: u8,
+    start: u16,
+    count: u8,
+) -> Result<Vec<u8>> {
+    let resp = property_request(l4, object_index, property_id, start, count).await?;
+    if resp.count != count {
+        return Err(WriteError::Mgmt(MgmtError::ServiceRejected {
+            address: l4.target(),
+            service: "A_PropertyValue_Read",
+            target: format!(
+                "object {object_index} PID {property_id} start {start} count {count} \
+                 (answered count {})",
+                resp.count
+            ),
+            return_code: None,
+        }));
+    }
+    Ok(resp.data)
 }
 
 /// Reads the current [`LoadState`] of a loadable object (`PID_LOAD_STATE_CONTROL`

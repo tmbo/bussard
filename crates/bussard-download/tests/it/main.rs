@@ -16,6 +16,7 @@ mod flash_mock_system7;
 mod golden_images;
 mod golden_tables;
 mod param_readback_roundtrip;
+mod property_procedure;
 mod sweep_fixtures;
 mod sys7_jung_m2_plan;
 mod sys7_theben_0701_plan;

@@ -344,6 +344,31 @@ pub struct Parameter {
     /// value, and `<choose>` branches on it select that instance's refs (issue
     /// #126). `None` for a parameter without one.
     pub base_value: Option<String>,
+    /// The interface-object property this parameter's value occupies, when it
+    /// lives in a property rather than in memory (`<Property ObjectIndex|ObjectType
+    /// PropertyId Offset BitOffset>`). An `LdCtrlWriteProp` without `InlineData`
+    /// writes the value these parameters compose (issue #390).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub property: Option<PropertyLocation>,
+}
+
+/// Where a property-located parameter sits: the interface object (by index or
+/// by type and occurrence), the property id, and the byte and bit offset inside
+/// the property value.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PropertyLocation {
+    /// `ObjectIndex`, when the object is named by index.
+    pub object_index: Option<u32>,
+    /// `ObjectType`, when the object is named by type.
+    pub object_type: Option<u32>,
+    /// `Occurrence` of the object type (absent = the first, 0).
+    pub occurrence: Option<u32>,
+    /// `PropertyId`.
+    pub property_id: u32,
+    /// Byte offset inside the property value (all elements concatenated).
+    pub offset: u32,
+    /// Bit offset inside that byte, MSB first.
+    pub bit_offset: u8,
 }
 
 /// A `<ParameterRef>`: a reference to a [`Parameter`] with optional overrides.
@@ -546,6 +571,16 @@ pub enum LoadOp {
         /// `StartElement`: the 1-based element the value is written from
         /// (absent = element 1). ETS writes one element per request from here.
         start_element: Option<u32>,
+        /// `Count`: how many elements the value spans (absent = 1). The
+        /// IPS 300 SREG writes its eight preferred tunnel addresses as one
+        /// `Count="8"` property value (issue #390).
+        count: Option<u32>,
+        /// `Verify`: whether ETS reads the property back after writing it and
+        /// fails the download on a difference (absent = `false`).
+        verify: Option<bool>,
+        /// `Occurrence`: which object of `ObjType` the op addresses when it
+        /// names the object by type (absent = the first, 0).
+        occurrence: Option<u32>,
     },
     /// `<LdCtrlCompareProp …>`: read an interface-object property and compare it
     /// against expected data — the verify twin of [`LoadOp::WriteProp`]. The
@@ -577,6 +612,9 @@ pub enum LoadOp {
         /// The raw `Range` attribute (e.g. `"[2216203124736,]"`), when the op
         /// expresses its expectation as a numeric range rather than `InlineData`.
         range: Option<String>,
+        /// `Occurrence`: which object of `ObjType` the op addresses when it
+        /// names the object by type (absent = the first, 0).
+        occurrence: Option<u32>,
     },
     /// `<LdCtrlCompareRelMem …>`: read relative (segment-relative) memory and
     /// compare it against expected data — the memory twin of
@@ -652,6 +690,42 @@ pub struct LoadProcedure {
     pub merge_id: Option<String>,
     /// The ordered control operations.
     pub ops: Vec<LoadOp>,
+    /// The `<choose ParamRefId>` blocks the procedure contains, in document
+    /// order. An op inside one runs only when its branch is taken (issue #390:
+    /// the MDT 0705 programs write their label properties only when a
+    /// parameter selects them). Empty for a procedure without `<choose>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chooses: Vec<LoadChoose>,
+    /// Per op, at the same index as [`Self::ops`], the branches the op sits
+    /// in, outermost first. Empty for a procedure without `<choose>`; read it
+    /// through [`LoadProcedure::guards_of`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub guards: Vec<Vec<LoadGuard>>,
+}
+
+impl LoadProcedure {
+    /// The branches op `index` sits in (empty: unconditional).
+    pub fn guards_of(&self, index: usize) -> &[LoadGuard] {
+        self.guards.get(index).map(Vec::as_slice).unwrap_or(&[])
+    }
+}
+
+/// A `<choose ParamRefId>` inside a `<LoadProcedure>`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LoadChoose {
+    /// The app-relative `ParameterRef` id whose value selects the branch.
+    pub param_ref_id: String,
+    /// Each `<when>` branch's test, in document order.
+    pub tests: Vec<WhenTest>,
+}
+
+/// One `<when>` branch an op of a [`LoadProcedure`] sits in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LoadGuard {
+    /// Index into [`LoadProcedure::chooses`].
+    pub choose: usize,
+    /// Index into that choose's [`LoadChoose::tests`].
+    pub branch: usize,
 }
 
 /// A table's place inside a code segment, as `<Static>` declares it
@@ -1037,6 +1111,15 @@ pub fn parse_application_program_in(
                     if let Some(lp) = state.lp.take() {
                         app.load_procedures.push(lp);
                     }
+                    state.lp_frames.clear();
+                }
+                b"when" if state.lp.is_some() => {
+                    if let Some(frame) = state.lp_frames.last_mut() {
+                        frame.1 = None;
+                    }
+                }
+                b"choose" if state.lp.is_some() => {
+                    state.lp_frames.pop();
                 }
                 b"when" => {
                     // Close the innermost `<when>`: attach its collected
@@ -1247,8 +1330,9 @@ fn handle_start(
         b"LoadProcedure" => {
             state.lp = Some(LoadProcedure {
                 merge_id: get(m, b"MergeId").map(str::to_string),
-                ops: Vec::new(),
+                ..LoadProcedure::default()
             });
+            state.lp_frames.clear();
         }
         b"Module" => {
             // Begin accumulating a `<Module>` instance's argument values.
@@ -1270,6 +1354,29 @@ fn handle_start(
             // per-channel com-object membership.
             if !state.dynamic.membership_captured {
                 state.dynamic.cur_membership = Some(ChannelMembership::default());
+            }
+        }
+        b"choose" if state.lp.is_some() => {
+            // A `<choose>` inside a load procedure guards the ops it holds.
+            if let Some(lp) = state.lp.as_mut() {
+                lp.chooses.push(LoadChoose {
+                    param_ref_id: get(m, b"ParamRefId")
+                        .and_then(|id| app_relative_id(id, &app.id))
+                        .map(str::to_string)
+                        .unwrap_or_default(),
+                    tests: Vec::new(),
+                });
+                state.lp_frames.push((lp.chooses.len() - 1, None));
+            }
+        }
+        b"when" if state.lp.is_some() => {
+            if let (Some(lp), Some(frame)) = (state.lp.as_mut(), state.lp_frames.last_mut())
+                && let Some(choose) = lp.chooses.get_mut(frame.0)
+            {
+                choose
+                    .tests
+                    .push(WhenTest::parse(get(m, b"test"), get(m, b"default")));
+                frame.1 = Some(choose.tests.len() - 1);
             }
         }
         b"choose" => {
@@ -1302,6 +1409,7 @@ fn handle_start(
         // A control op with children (e.g. LdCtrlCompareProp wrapping data).
         name if name.starts_with(b"LdCtrl") => {
             push_load_op(&mut state.lp, e, m);
+            record_load_guards(state);
         }
         _ => {}
     }
@@ -1399,6 +1507,10 @@ fn handle_empty(
                 _ => attach_memory(app, &state.param_id, m),
             }
         }
+        // A parameter whose value lives in an interface-object property
+        // (issue #390). A union based on a property is not modelled: its
+        // members keep no location.
+        b"Property" if state.union.is_none() => attach_property(app, &state.param_id, m),
         b"TranslationElement" => translations.enter_element(get(m, b"RefId")),
         b"Translation" => translations.record(m, TRANSLATED),
         // Parameter-type shapes (all self-closing except TypeRestriction).
@@ -1459,6 +1571,7 @@ fn handle_empty(
         }
         name if name.starts_with(b"LdCtrl") => {
             push_load_op(&mut state.lp, e, m);
+            record_load_guards(state);
         }
         _ => {}
     }
@@ -1681,6 +1794,7 @@ fn insert_parameter_start(app: &mut ApplicationProgram, m: &Attrs) -> Option<Str
             suffix_text: get(m, b"SuffixText").map(str::to_string),
             memory: None,
             base_value: get(m, b"BaseValue").map(str::to_string),
+            property: None,
         },
     );
     Some(id)
@@ -1712,6 +1826,27 @@ fn attach_memory(app: &mut ApplicationProgram, cur_param_id: &Option<String>, m:
             offset: get(m, b"Offset").and_then(|s| s.parse().ok()),
             bit_offset: get(m, b"BitOffset").and_then(|s| s.parse().ok()),
             base_offset: get(m, b"BaseOffset").map(str::to_string),
+        });
+    }
+}
+
+fn attach_property(app: &mut ApplicationProgram, cur_param_id: &Option<String>, m: &Attrs) {
+    let Some(pid) = cur_param_id else {
+        return;
+    };
+    let Some(property_id) = get(m, b"PropertyId").and_then(|s| s.parse().ok()) else {
+        return;
+    };
+    if let Some(param) = app.parameters.get_mut(pid) {
+        param.property = Some(PropertyLocation {
+            object_index: get(m, b"ObjectIndex").and_then(|s| s.parse().ok()),
+            object_type: get(m, b"ObjectType").and_then(|s| s.parse().ok()),
+            occurrence: get(m, b"Occurrence").and_then(|s| s.parse().ok()),
+            property_id,
+            offset: get(m, b"Offset").and_then(|s| s.parse().ok()).unwrap_or(0),
+            bit_offset: get(m, b"BitOffset")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
         });
     }
 }
@@ -1777,6 +1912,9 @@ struct ParseState {
     pt_kind: Option<ParameterType>,
     /// The `<LoadProcedure>` currently being built.
     lp: Option<LoadProcedure>,
+    /// The `<choose>`s open inside that procedure, outermost first: the
+    /// choose's index and the `<when>` branch open in it.
+    lp_frames: Vec<(usize, Option<usize>)>,
     /// The `<Parameter>` whose `<Memory>` child we are waiting for.
     param_id: Option<String>,
     /// The `<Union>` currently being built. Its single `<Memory>` child gives the
@@ -2178,6 +2316,31 @@ fn parse_fill(m: &Attrs) -> Option<u8> {
     Some(byte(get(m, b"FillByte")))
 }
 
+/// Records the branches the op just appended to the open procedure sits in,
+/// keeping [`LoadProcedure::guards`] parallel to its ops once any `<choose>`
+/// was seen.
+fn record_load_guards(state: &mut ParseState) {
+    let Some(lp) = state.lp.as_mut() else {
+        return;
+    };
+    if lp.chooses.is_empty() {
+        return;
+    }
+    let guards: Vec<LoadGuard> = state
+        .lp_frames
+        .iter()
+        .filter_map(|(choose, branch)| {
+            branch.map(|branch| LoadGuard {
+                choose: *choose,
+                branch,
+            })
+        })
+        .collect();
+    let before = lp.ops.len().saturating_sub(1);
+    lp.guards.resize(before, Vec::new());
+    lp.guards.push(guards);
+}
+
 /// Parses one `LdCtrl*` element into a typed [`LoadOp`], appending to the
 /// current load procedure (if any).
 pub(crate) fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m: &Attrs) {
@@ -2245,6 +2408,9 @@ pub(crate) fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m
             prop_id: u(b"PropId"),
             inline_data: get(m, b"InlineData").and_then(decode_hex_bytes),
             start_element: u(b"StartElement"),
+            count: u(b"Count"),
+            verify: get(m, b"Verify").map(parse_xml_bool),
+            occurrence: u(b"Occurrence"),
         },
         b"LdCtrlCompareProp" => LoadOp::CompareProp {
             obj_idx: u(b"ObjIdx"),
@@ -2253,6 +2419,7 @@ pub(crate) fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m
             inline_data: get(m, b"InlineData").and_then(decode_hex_bytes),
             mask: get(m, b"Mask").and_then(decode_hex_bytes),
             range: s(b"Range"),
+            occurrence: u(b"Occurrence"),
         },
         b"LdCtrlCompareRelMem" => LoadOp::CompareRelMem {
             obj_idx: u(b"ObjIdx"),
@@ -2280,6 +2447,11 @@ pub(crate) fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m
         },
     };
     lp.ops.push(op);
+}
+
+/// An XML schema boolean (`true`/`1` are true, everything else false).
+fn parse_xml_bool(v: &str) -> bool {
+    matches!(v.trim().to_ascii_lowercase().as_str(), "true" | "1")
 }
 
 /// Returns the attribute map as sorted `(key, value)` pairs for a stable `Raw`.
@@ -3468,6 +3640,114 @@ mod tests {
             rendered.contains("M-1_A-1_RS-4-1-0") && rendered.contains("Data"),
             "message should name segment and field: {rendered}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_property_located_parameters_and_guarded_load_ops()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/20">
+         <ApplicationProgram Id="M-4_A-1" MaskVersion="MV-0021" Name="IP">
+          <Static>
+           <Parameters>
+            <Parameter Id="M-4_A-1_P-100" Name="ip1" Value="192.168.255.255">
+             <Property ObjectType="11" PropertyId="205" Offset="4" BitOffset="0" />
+            </Parameter>
+            <Parameter Id="M-4_A-1_P-36" Name="label" Value="x">
+             <Property ObjectIndex="6" Occurrence="1" PropertyId="60" Offset="0" BitOffset="2" />
+            </Parameter>
+            <Parameter Id="M-4_A-1_P-18" Name="mode" Value="1" />
+           </Parameters>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlCompareProp InlineData="0004" ObjType="0" PropId="12" />
+             <choose ParamRefId="M-4_A-1_P-18_R-8">
+              <when test="&gt;=3">
+               <LdCtrlWriteProp ObjIdx="6" PropId="60" Verify="false" />
+              </when>
+              <when default="true">
+               <LdCtrlCompareProp InlineData="01" ObjIdx="0" PropId="19" />
+              </when>
+             </choose>
+             <LdCtrlWriteProp ObjType="11" PropId="205" Count="8" Verify="true" Occurrence="0" />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program_str("M-4_A-1", xml)?;
+        let ip = app
+            .parameters
+            .get("M-4_A-1_P-100")
+            .and_then(|p| p.property.clone())
+            .ok_or("P-100 has a property location")?;
+        assert_eq!(
+            ip,
+            PropertyLocation {
+                object_index: None,
+                object_type: Some(11),
+                occurrence: None,
+                property_id: 205,
+                offset: 4,
+                bit_offset: 0,
+            }
+        );
+        let label = app
+            .parameters
+            .get("M-4_A-1_P-36")
+            .and_then(|p| p.property.clone())
+            .ok_or("P-36 has a property location")?;
+        assert_eq!(label.object_index, Some(6));
+        assert_eq!(label.occurrence, Some(1));
+        assert_eq!(label.bit_offset, 2);
+        assert!(
+            app.parameters
+                .get("M-4_A-1_P-18")
+                .is_some_and(|p| p.property.is_none())
+        );
+
+        let lp = &app.load_procedures[0];
+        assert_eq!(lp.ops.len(), 4);
+        assert_eq!(
+            lp.chooses,
+            vec![LoadChoose {
+                param_ref_id: "P-18_R-8".to_string(),
+                tests: vec![WhenTest::parse(Some(">=3"), None), WhenTest::Default,],
+            }]
+        );
+        assert!(lp.guards_of(0).is_empty());
+        assert_eq!(
+            lp.guards_of(1),
+            &[LoadGuard {
+                choose: 0,
+                branch: 0
+            }]
+        );
+        assert_eq!(
+            lp.guards_of(2),
+            &[LoadGuard {
+                choose: 0,
+                branch: 1
+            }]
+        );
+        assert!(lp.guards_of(3).is_empty());
+        assert!(matches!(
+            &lp.ops[3],
+            LoadOp::WriteProp {
+                count: Some(8),
+                verify: Some(true),
+                occurrence: Some(0),
+                obj_type: Some(11),
+                ..
+            }
+        ));
+        assert!(matches!(
+            &lp.ops[1],
+            LoadOp::WriteProp {
+                verify: Some(false),
+                count: None,
+                ..
+            }
+        ));
         Ok(())
     }
 }

@@ -1329,6 +1329,7 @@ impl BussardMcp {
             } else {
                 None
             },
+            properties: Vec::new(),
             table_bases: product
                 .as_ref()
                 .and_then(|p| p.app())

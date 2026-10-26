@@ -2067,6 +2067,160 @@ fn sign_extend(raw: u64, bits: u32) -> i64 {
     }
 }
 
+/// The interface object a property-located parameter names (issue #390).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PropertyObjectRef {
+    /// `ObjectIndex`.
+    Index(u32),
+    /// `ObjectType` and `Occurrence` (0 = the first object of the type).
+    Type {
+        /// The interface object type.
+        object_type: u32,
+        /// Which object of that type.
+        occurrence: u32,
+    },
+}
+
+impl PropertyObjectRef {
+    /// The object a [`PropertyLocation`](bussard_ets::application::PropertyLocation)
+    /// names; `None` when it names neither an index nor a type.
+    pub fn of(loc: &bussard_ets::application::PropertyLocation) -> Option<PropertyObjectRef> {
+        match (loc.object_index, loc.object_type) {
+            (Some(index), _) => Some(PropertyObjectRef::Index(index)),
+            (None, Some(object_type)) => Some(PropertyObjectRef::Type {
+                object_type,
+                occurrence: loc.occurrence.unwrap_or(0),
+            }),
+            (None, None) => None,
+        }
+    }
+}
+
+/// The property values a program's property-located parameters compose, by
+/// object and property id.
+pub type PropertyValues = BTreeMap<(PropertyObjectRef, u32), Vec<u8>>;
+
+/// Composes the value of every interface-object property the program's
+/// parameters live in (`<Parameter><Property …/></Parameter>`), the value an
+/// `LdCtrlWriteProp` without `InlineData` writes (issue #390: the IPS 300
+/// SREG's tunnelling timeout PID 204, its eight preferred tunnel addresses PID
+/// 205 and the Jung telegram-rate limit PID 211).
+///
+/// Each parameter is encoded for its type and placed at its byte and bit
+/// offset in the property value, as a memory parameter is placed in its
+/// segment. A parameter the evaluated configuration `config` reaches takes its
+/// effective value (an override, an `<Assign>` result, else the vendor
+/// default); one it does not reach takes its vendor default, since a property
+/// has no template to keep. Module parameters are not modelled here.
+///
+/// # Errors
+///
+/// [`ProdError::ParameterImage`] when a value cannot be encoded for its type.
+pub fn compute_property_values(
+    app: &ApplicationProgram,
+    config: &bussard_ets::dynamic::DynamicConfig,
+) -> Result<PropertyValues> {
+    let prefix = format!("{}_", app.id);
+    // The reached application-level ref of each parameter, first in walk order.
+    let mut reached: BTreeMap<&str, &str> = BTreeMap::new();
+    for active in config.parameters.iter().filter(|a| a.module.is_none()) {
+        if let Some(pref) = app
+            .parameter_refs
+            .get(&format!("{prefix}{}", active.param_ref_id))
+        {
+            reached
+                .entry(pref.ref_id.as_str())
+                .or_insert(active.param_ref_id.as_str());
+        }
+    }
+    // The first ref of each parameter, by id, for an unreached parameter's
+    // vendor default (a ref may override the parameter's own `Value`).
+    let mut first_ref: BTreeMap<&str, &str> = BTreeMap::new();
+    for pref in app.parameter_refs.values() {
+        if let Some(rel) = pref.id.strip_prefix(&prefix) {
+            let entry = first_ref.entry(pref.ref_id.as_str()).or_insert(rel);
+            if rel < *entry {
+                *entry = rel;
+            }
+        }
+    }
+    let mut params: Vec<&bussard_ets::application::Parameter> = app
+        .parameters
+        .values()
+        .filter(|p| p.property.is_some())
+        .collect();
+    params.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut out = PropertyValues::new();
+    for param in params {
+        let Some(loc) = param.property.as_ref() else {
+            continue;
+        };
+        let Some(object) = PropertyObjectRef::of(loc) else {
+            continue;
+        };
+        let pname = param.name.as_deref().unwrap_or(&param.id);
+        let (value, source) = match reached.get(param.id.as_str()) {
+            Some(ref_id) => (
+                config.value(app, None, ref_id),
+                if config.is_override(app, None, ref_id) {
+                    ValueSource::UserOverride
+                } else {
+                    ValueSource::VendorDefault
+                },
+            ),
+            None => (
+                first_ref
+                    .get(param.id.as_str())
+                    .and_then(|ref_id| config.vendor_default(app, None, ref_id))
+                    .or_else(|| param.default.clone()),
+                ValueSource::VendorDefault,
+            ),
+        };
+        let placement = match parameter_type_of(app, param) {
+            Some(ParameterType::Other { kind, .. }) if kind == "TypeIPAddress" => {
+                encode_ip_address(app, pname, value.as_deref())?
+            }
+            ptype => encode_value(app, pname, ptype, value.as_deref(), source)?,
+        };
+        let image = out.entry((object, loc.property_id)).or_default();
+        place_checked(
+            app,
+            pname,
+            image,
+            loc.offset as usize,
+            loc.bit_offset,
+            &placement,
+            None,
+        )?;
+    }
+    Ok(out)
+}
+
+/// Encodes a `<TypeIPAddress>` property value: an IPv4 address as its four
+/// octets, most significant first. ETS writes the dotted quad
+/// (`192.168.255.255`, the IPS 300 SREG) or the address as one number (`0`).
+/// Only the property path encodes it: a memory parameter of this type keeps
+/// the template octets as before issue #390.
+fn encode_ip_address(
+    app: &ApplicationProgram,
+    pname: &str,
+    value: Option<&str>,
+) -> Result<Placement> {
+    let raw = value.unwrap_or("0").trim();
+    let addr = raw
+        .parse::<std::net::Ipv4Addr>()
+        .ok()
+        .or_else(|| raw.parse::<u32>().ok().map(std::net::Ipv4Addr::from))
+        .ok_or_else(|| {
+            param_err(
+                app,
+                pname,
+                &format!("`{raw}` is not an IPv4 address (a.b.c.d or one number)"),
+            )
+        })?;
+    Ok(Placement::Bytes(addr.octets().to_vec()))
+}
+
 /// Builds a [`ProdError::ParameterImage`] naming the parameter and reason.
 fn param_err(_app: &ApplicationProgram, pname: &str, reason: &str) -> ProdError {
     ProdError::ParameterImage {
@@ -3796,6 +3950,67 @@ mod tests {
         let images = compute_parameter_image(&app, &no_overrides(), &no_bases())?;
         // Byte 0: op2 = 2 at bits 5-6 (0x04). Byte 1: op4 = 0 (op5's 3 would be 0x03).
         assert_eq!(images.get("M-1_A-1_RS-1"), Some(&vec![0x04, 0x00]));
+        Ok(())
+    }
+
+    #[test]
+    fn test_compute_property_values_composes_the_property()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/20">
+         <ApplicationProgram Id="M-4_A-1" MaskVersion="MV-0021" Name="IP">
+          <Static>
+           <ParameterTypes>
+            <ParameterType Id="M-4_A-1_PT-ip" Name="ip"><TypeIPAddress AddressType="HostAddress" /></ParameterType>
+            <ParameterType Id="M-4_A-1_PT-u8" Name="u8"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+           </ParameterTypes>
+           <Parameters>
+            <Parameter Id="M-4_A-1_P-1" Name="a" ParameterType="M-4_A-1_PT-ip" Value="192.168.1.2">
+             <Property ObjectType="11" PropertyId="205" Offset="0" BitOffset="0" />
+            </Parameter>
+            <Parameter Id="M-4_A-1_P-2" Name="b" ParameterType="M-4_A-1_PT-ip" Value="0">
+             <Property ObjectType="11" PropertyId="205" Offset="4" BitOffset="0" />
+            </Parameter>
+            <Parameter Id="M-4_A-1_P-3" Name="c" ParameterType="M-4_A-1_PT-u8" Value="7">
+             <Property ObjectIndex="3" PropertyId="204" Offset="0" BitOffset="0" />
+            </Parameter>
+           </Parameters>
+           <ParameterRefs>
+            <ParameterRef Id="M-4_A-1_P-1_R-1" RefId="M-4_A-1_P-1" />
+            <ParameterRef Id="M-4_A-1_P-2_R-2" RefId="M-4_A-1_P-2" />
+            <ParameterRef Id="M-4_A-1_P-3_R-3" RefId="M-4_A-1_P-3" Value="9" />
+           </ParameterRefs>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-4_A-1", xml.as_bytes())?;
+        let config = bussard_ets::dynamic::evaluate_dynamic(&app, &BTreeMap::new());
+        let values = compute_property_values(&app, &config)?;
+        let ip = PropertyObjectRef::Type {
+            object_type: 11,
+            occurrence: 0,
+        };
+        assert_eq!(
+            values.get(&(ip, 205)),
+            Some(&vec![192, 168, 1, 2, 0, 0, 0, 0])
+        );
+        // An unreached parameter takes its ref's vendor default.
+        assert_eq!(
+            values.get(&(PropertyObjectRef::Index(3), 204)),
+            Some(&vec![9])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_encode_ip_address_takes_a_dotted_quad_or_a_number()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = ApplicationProgram::default();
+        let bytes = |v: &str| match encode_ip_address(&app, "p", Some(v)) {
+            Ok(Placement::Bytes(b)) => Ok(b),
+            _ => Err("not a byte placement".to_string()),
+        };
+        assert_eq!(bytes("10.0.0.1")?, vec![10, 0, 0, 1]);
+        assert_eq!(bytes("3232235521")?, vec![192, 168, 0, 1]);
+        assert!(encode_ip_address(&app, "p", Some("fe80::1")).is_err());
         Ok(())
     }
 }
