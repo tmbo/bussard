@@ -79,3 +79,14 @@ here (the per-vendor scraping logic was one-off and vendor-specific); re-running
 the harvest means repeating that process by hand for whichever vendors are
 still worth covering. `fetch.py` only replays the download half from
 `index.json`.
+
+## Second pass (browser-driven, 2026-10-27)
+
+A browser-driven pass added what the plain crawler could not reach: Siemens
+and Siemens HVAC (131), Elsner (111), ABB (20), Busch-Jaeger (15), Arcus-EDS
+(9), Intesis (4), one combined Jung database and two Theben databases, for
+509 pointers in `index.json` in total (every file verified by size and
+SHA-256, no overlap with `tests-support/product-corpus/` by name or hash).
+Gira publishes no `.knxprod` downloads (its devices are configured through
+its own installer and DCA apps) and Basalte keeps its product data behind a
+partner login, so those two stay out.

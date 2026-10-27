@@ -5454,5 +5454,148 @@
     "sha256": "6b854b6ceb7084d3155da06c5d0bfe5387d3e2724a68e562e6d6d4283779fc8d",
     "file": "71235_Windancer_KNX_1-0_d-en-fr-it-es-pl.knxprod",
     "fetched": "2026-10-27"
+  },
+  {
+    "vendor": "Arcus-EDS",
+    "product": "KNX-LUNOS-Control4 \u2013 Arcus-EDS",
+    "order_numbers": [],
+    "url": "https://www.arcus-eds.de/fileadmin/download.arcus-eds.de/6000_Licht_Aktoren/6800_LUNOS/Arcus_Lunos_Ex_v5_knxprod.zip",
+    "source_page": "https://www.arcus-eds.de/de/knx-aktorik-und-systemgeraete/lunos",
+    "size": 81740,
+    "sha256": "1fc6e0d2106ff41697409fd24187cfc96d264882825dc9da93959ffdfe6302bb",
+    "file": "Arcus_Lunos_Ex_v5.knxprod",
+    "fetched": "2026-10-27"
+  },
+  {
+    "vendor": "Arcus-EDS",
+    "product": "KNX-LUNOS-Control4 \u2013 Arcus-EDS",
+    "order_numbers": [],
+    "url": "https://www.arcus-eds.de/fileadmin/download.arcus-eds.de/6000_Licht_Aktoren/6800_LUNOS/Arcus_Lunos_Ex_v4_knxprod.zip",
+    "source_page": "https://www.arcus-eds.de/de/knx-aktorik-und-systemgeraete/lunos",
+    "size": 110077,
+    "sha256": "108e8d2d62be150b4a2cc6ceb6f7569fac4d9f07f512da8e6f9a09e5ff9b0322",
+    "file": "Arcus_Lunos_Ex_v4.knxprod",
+    "fetched": "2026-10-27"
+  },
+  {
+    "vendor": "Arcus-EDS",
+    "product": "3.5\" Touch_IT PC35 \u2013 Arcus-EDS",
+    "order_numbers": [],
+    "url": "https://www.arcus-eds.de/fileadmin/download.arcus-eds.de/1000_VISU/1300_MANUAL_Touch_IT/TouchIT_V2.zip",
+    "source_page": "https://www.arcus-eds.de/de/knx-displays-und-leds/35-touch-it-pc35",
+    "size": 992318,
+    "sha256": "c8e1833c3a66ea7862a2ef34992d6f8fd3038383643fa7602d4cc8647dd045a6",
+    "file": "TouchIT_V2.knxprod",
+    "fetched": "2026-10-27"
+  },
+  {
+    "vendor": "Arcus-EDS",
+    "product": "HAN | P1 KNX \u2013 Arcus-EDS",
+    "order_numbers": [],
+    "url": "https://www.arcus-eds.de/fileadmin/download.arcus-eds.de/4000_Gateways/4600_P1_HAN/KNX_GW_P1_v0.7.zip",
+    "source_page": "https://www.arcus-eds.de/de/knx-gateways-und-smart-metering/han-p1-knx",
+    "size": 62071,
+    "sha256": "ef878413e7e59e0470570e7c897e3eca70076ce35c679bc2faa91dcf329277e4",
+    "file": "KNX_GW_P1_v0.7.knxprod",
+    "fetched": "2026-10-27"
+  },
+  {
+    "vendor": "Arcus-EDS",
+    "product": "HAN | P1 KNX \u2013 Arcus-EDS",
+    "order_numbers": [],
+    "url": "https://www.arcus-eds.de/fileadmin/download.arcus-eds.de/4000_Gateways/4600_P1_HAN/KNX_GW_HAN_knxprod.zip",
+    "source_page": "https://www.arcus-eds.de/de/knx-gateways-und-smart-metering/han-p1-knx",
+    "size": 49208,
+    "sha256": "78069f025ef9a7c8ef2448324d82ff7a78b420fa6f96b9f05ae8f0aee2259421",
+    "file": "KNX_GW_HAN.knxprod",
+    "fetched": "2026-10-27"
+  },
+  {
+    "vendor": "Arcus-EDS",
+    "product": "M-BUS KNX \u2013 Arcus-EDS",
+    "order_numbers": [],
+    "url": "https://www.arcus-eds.de/fileadmin/download.arcus-eds.de/4000_Gateways/4400/4410_4420_4430_MBUS/4410_4420_knxprod_MBUS_v4.zip",
+    "source_page": "https://www.arcus-eds.de/de/knx-gateways-und-smart-metering/m-bus-knx",
+    "size": 87239,
+    "sha256": "bad4b3fea0caaa95aa2ab1155ead73100bef36f26b6a154aa1e8cd9af6381ae1",
+    "file": "MBUS_v4.knxprod",
+    "fetched": "2026-10-27"
+  },
+  {
+    "vendor": "Arcus-EDS",
+    "product": "MODBUS KNX \u2013 Arcus-EDS",
+    "order_numbers": [],
+    "url": "https://www.arcus-eds.de/fileadmin/download.arcus-eds.de/4000_Gateways/4500_MODBUS/4510_4520_GW_knxprod_ModBus.zip",
+    "source_page": "https://www.arcus-eds.de/de/knx-gateways-und-smart-metering/modbus-knx",
+    "size": 93982,
+    "sha256": "ffd134061fdedd39b3e09c6a33b171ccd957b9ccb2306c62ac6271b4b12d52f8",
+    "file": "KNX_GW_ModBus.knxprod",
+    "fetched": "2026-10-27"
+  },
+  {
+    "vendor": "Arcus-EDS",
+    "product": "Analogmodul | AN \u2013 Arcus-EDS",
+    "order_numbers": [],
+    "url": "https://www.arcus-eds.de/fileadmin/download.arcus-eds.de/3000_S8_Spezielle_Sensorik/3000_S8_allgemein/Arc_S8_knxprod.zip",
+    "source_page": "https://www.arcus-eds.de/de/physikalisch-chemische-knx-messtechnik/analogmodul",
+    "size": 195289,
+    "sha256": "fc2832b2784a0a7c79a4eebadda508033f5e80d7acd09834fec27c89b794843f",
+    "file": "Arc_S8.knxprod",
+    "fetched": "2026-10-27"
+  },
+  {
+    "vendor": "Arcus-EDS",
+    "product": "F\u00fcllstand (KNX) | F \u2013 Arcus-EDS",
+    "order_numbers": [],
+    "url": "https://www.arcus-eds.de/fileadmin/download.arcus-eds.de/3000_S8_Spezielle_Sensorik/3000_S8_allgemein/SK80_F.knxprod.zip",
+    "source_page": "https://www.arcus-eds.de/de/physikalisch-chemische-knx-messtechnik/fuellstandsmessung-knx",
+    "size": 98285,
+    "sha256": "25d2cb0c4a1e0078eafa0402eae04176ae59a55da71d7fa2a00ddc8a19c7dcdb",
+    "file": "SK80_F.knxprod",
+    "fetched": "2026-10-27"
+  },
+  {
+    "vendor": "Intesis",
+    "product": "Universal IR Air Conditioner to KNX Secure (INKNXUNI001I200)",
+    "order_numbers": [],
+    "url": "https://hmsnetworks.blob.core.windows.net/nlw/docs/default-source/products/intesis/configuration-files/ets-database/intesis-inknxuni001i2xx-ets-database.zip",
+    "source_page": "https://www.hms-networks.com/p/inknxuni001i200-universal-ir-air-conditioner-to-knx-secure",
+    "size": 164019,
+    "sha256": "49238f010a847eb081a78386c8d8e668ee201ad617fe5b5e3ffff4d1f1e63359",
+    "file": "INKNXUNI001I2xx.knxprod",
+    "fetched": "2026-10-27"
+  },
+  {
+    "vendor": "Intesis",
+    "product": "Panasonic Etherea AC units to KNX Interface with Binary Inputs (INKNXPAN001I000)",
+    "order_numbers": [],
+    "url": "https://hmsnetworks.blob.core.windows.net/nlw/docs/default-source/products/intesis/configuration-files/ets-database/intesisbox_inknxpan001i000_ets_database.zip",
+    "source_page": "https://www.hms-networks.com/p/inknxpan001i000-panasonic-etherea-ac-units-to-knx-interface-with-binary-inputs",
+    "size": 166812,
+    "sha256": "9129d95f24b97e253a81a254e790f276fbe67d9cf3d5292408f72caa318312c6",
+    "file": "Interfaz PA AC, 4 entradas binarias.knxprod",
+    "fetched": "2026-10-27"
+  },
+  {
+    "vendor": "Intesis",
+    "product": "Fujitsu RAC and VRF to KNX Interface with binary inputs (INKNXFGL001I000)",
+    "order_numbers": [],
+    "url": "https://hmsnetworks.blob.core.windows.net/nlw/docs/default-source/products/intesis/configuration-files/ets-database/fj_ac_knx_1i_3g_v1-0r.zip",
+    "source_page": "https://www.hms-networks.com/p/inknxfgl001i000-fujitsu-rac-and-vrf-to-knx-interface-with-binary-inputs-to-cn-connector-",
+    "size": 141399,
+    "sha256": "6058bd53e6c99216c39c7b3b13b2ab639378bbc65d7677898ccf8071354ef6af",
+    "file": "FJ_AC_KNX_1i_3G_v1.0(.2)c.knxprod",
+    "fetched": "2026-10-27"
+  },
+  {
+    "vendor": "Intesis",
+    "product": "Modbus RTU Client to KNX TP Gateway (INKNXMBM1000200)",
+    "order_numbers": [],
+    "url": "https://hmsnetworks.blob.core.windows.net/nlw/docs/default-source/products/intesis/configuration-files/ets-database/intesis_inknxmbm1000200_ets_database.zip",
+    "source_page": "https://www.hms-networks.com/p/inknxmbm1000200-modbus-rtu-client-to-knx-tp-gateway",
+    "size": 336616,
+    "sha256": "82ad4e7cfc27be8f8aab0c4184f93888019dc0b23bd03c2ad1359382b225343d",
+    "file": "INKNXMBMxxx02_v1.1_c.knxprod",
+    "fetched": "2026-10-27"
   }
 ]
