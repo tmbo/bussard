@@ -137,6 +137,9 @@ pub struct KnxnetIpServer {
     /// gateway reports in its DEVICE_INFO DIB and assigns to the tunnel.
     /// 1.0.0 unless `gateway.tunnel_address` says otherwise.
     plain_ia: u16,
+    /// When a pending interface-secure switch (after the interface device's
+    /// master reset) takes effect; see `sync_interface_secure`.
+    interface_switch_due: Option<std::time::Instant>,
     /// Every UDP datagram in and out, as a pcap file (`gateway.pcap`): the
     /// capture of an ETS run without a sniffer on the host.
     pcap: Option<PcapWriter>,
@@ -177,6 +180,7 @@ impl KnxnetIpServer {
             secure: None,
             interface_device: None,
             plain_ia: 0x1000,
+            interface_switch_due: None,
             pcap: None,
             interface_epoch: 0,
             mgmt: BTreeMap::new(),
@@ -243,6 +247,20 @@ impl KnxnetIpServer {
         if ip.epoch() == self.interface_epoch {
             return;
         }
+        // A real interface answers the master reset and keeps serving its
+        // tunnel for the moment it takes to reboot; the tool's T_ACK of that
+        // answer lands in it. Apply the switch after that moment, not in the
+        // same loop turn, or the T_ACK finds a secure-only gateway and the
+        // tool's TUNNELLING_ACK wait times out (bussard-cli
+        // sim_interface_secure, after the device started answering under the
+        // request's sequence number, 2026-10-27).
+        let due = *self
+            .interface_switch_due
+            .get_or_insert_with(|| std::time::Instant::now() + Duration::from_millis(300));
+        if std::time::Instant::now() < due {
+            return;
+        }
+        self.interface_switch_due = None;
         self.interface_epoch = ip.epoch();
         let state = ip.applied().cloned();
         self.peer = None;
@@ -462,6 +480,23 @@ impl KnxnetIpServer {
                 return Ok(());
             }
         };
+        // After the interface device's master reset only the old tunnel keeps
+        // being served for the reboot grace (the tool's T_ACK of the restart
+        // answer, its DISCONNECT). Anything else, a new CONNECT, a SEARCH or a
+        // DESCRIPTION request, sees the new state at once.
+        let old_channel_traffic = matches!(
+            frame.service,
+            service::TUNNELLING_REQUEST
+                | service::TUNNELLING_ACK
+                | service::TUNNELLING_FEATURE_GET
+                | service::TUNNELLING_FEATURE_SET
+                | service::CONNECTIONSTATE_REQUEST
+                | service::DISCONNECT_REQUEST
+        );
+        if self.interface_switch_due.is_some() && !old_channel_traffic {
+            self.interface_switch_due = Some(std::time::Instant::now());
+            self.sync_interface_secure();
+        }
         match frame.service {
             service::CONNECT_REQUEST => self.on_connect_request(&frame.body, peer),
             service::CONNECTIONSTATE_REQUEST => self.on_connectionstate_request(&frame.body, peer),
