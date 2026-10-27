@@ -87,11 +87,11 @@ impl Device {
             detail: "too short".into(),
         })?;
         self.rx_seq = (self.rx_seq + 1) & 0x0F;
-        // The response carries the request's sequence number: KNX Virtual and
-        // the house devices answer NDT(seq=n) with NDT(seq=n) in every ETS
-        // capture, while a free-running send counter drifts after the
-        // T_ACK-only exchanges (memory writes) and ETS then drops the answer.
-        self.tx_seq = seq;
+        // The response carries the device's own send sequence (03_03_04), not
+        // the request's: it lags the tool's after T_ACK-only exchanges, which
+        // bussard's L4 expects and ETS 6 accepts (it T_ACKed a lagging answer
+        // and went on, ETS-against-sim capture 2026-10-27). KNX Virtual mirrors
+        // the request's number instead; mirroring here broke bussard's loop.
         let mut reaction = self.handle_apdu(cemi, &apdu)?;
         if reaction.responses.is_empty() {
             reaction.responses.push(self.t_ack(tool, seq));
