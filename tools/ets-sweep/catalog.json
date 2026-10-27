@@ -1,0 +1,5193 @@
+{
+ "135959_True_Presence_Multisensor_V1_0_DE_EN_NL.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "STEINEL True Presence Multisensor"
+  ],
+  "message": "Import erfolgreich. Datei: Vl_O_DE_EN_NL.knxprod Produkt: STEINEL True Presence Multisensor Version OK SL Ready &1.1.1",
+  "seconds": 21,
+  "when": "2026-10-27T13:44:57.502008+00:00",
+  "verified": true
+ },
+ "135960_TruePresence_V1_0_DE_EN_NL.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "STEINEL True Presence"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: STEINEL True Presence 40078410596», Version OK iHF KNX SL Ready",
+  "seconds": 21,
+  "when": "2026-10-27T13:45:24.780891+00:00",
+  "verified": true
+ },
+ "21979_STEINEL_HPD2_KNX V1.0.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "STEINEL 'HPD2"
+  ],
+  "message": "Import erfolgreich. Datei: KNX Vl.O.knxprod Produkt: STEINEL HPD2 40078410596», Version OK iHF KNX SL Ready",
+  "seconds": 24,
+  "when": "2026-10-27T13:54:04.758424+00:00",
+  "verified": true
+ },
+ "75010009_Spannungsversorgung_320mA_REG.knxprod.zip": {
+  "outcome": "imported",
+  "products": [
+   "Spannungsversorgung 320mA REG"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: Spannungsversorgung 320mA REG Version OK SL Ready",
+  "seconds": 25,
+  "when": "2026-10-27T22:54:47.864597+00:00",
+  "verified": true
+ },
+ "754411xx_Berker_RTR_mit_Tsterschnittstelle_V1.1.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Raumtemperaturregler mit Tasterschnittstelle"
+  ],
+  "message": "Import erfolgreich. Datei: 175441 Ixx_Berker_RTR_mit_Tsterschnittstelle_V1.1 knxprod Produkt: Raumtempereturregler mit Testerschnlttstelle SL Ready 40078410596», Version OK iHF KNX",
+  "seconds": 24,
+  "when": "2026-10-27T13:54:34.294691+00:00",
+  "verified": true
+ },
+ "75492001_Helligkeits-_und_Temperatursensor_V2.0.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'Helligkeits- und Temperatursensor"
+  ],
+  "message": "Import erfolgreich. Datei: _u nd_Temperatu rsensor_V2.0. knxprod Produkt: Helligkeits- und Temperatursensor 6128/28 Version OK Raumtemperaturreq[er... i. 1 C SL Ready",
+  "seconds": 22,
+  "when": "2026-10-27T13:55:18.499261+00:00",
+  "verified": false
+ },
+ "75730010_Berker_Alarmzentrale_V0.3_ETS4.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Alarmzentrale"
+  ],
+  "message": "Import erfolgreich. Datei: 175730010_Berker knxprod Produkt: Alermzentrale Version OK SL Ready &1.11",
+  "seconds": 27,
+  "when": "2026-10-27T13:55:51.515262+00:00",
+  "verified": false
+ },
+ "7574001x_Berker_Master_Control_V0.1_ETS4.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Master Control"
+  ],
+  "message": "Import erfolgreich. Datei: VO. 1_ETS4.knxprod Produkt: Master Control Version OK SL Ready &1.11",
+  "seconds": 21,
+  "when": "2026-10-27T13:56:18.594385+00:00",
+  "verified": true
+ },
+ "ACGDAI100.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "ACGMEIOO"
+  ],
+  "message": "Import erfolgreich. Datei: knxprod Produkt: ACGMEIOO Version OK SL Ready",
+  "seconds": 13,
+  "when": "2026-10-27T13:56:37.064045+00:00",
+  "verified": false
+ },
+ "ACGME100_v1.3_en_de_fr_it_es.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "ACGMEIOO"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: ACGMEIOO Version OK SL Ready &1.1.1",
+  "seconds": 12,
+  "when": "2026-10-27T13:56:55.111474+00:00",
+  "verified": false
+ },
+ "ACTINBOX_MAX6_3.2_EI.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "ACTinBOX MAX6"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: ACT,n80X MAX6 Version OK SL Ready &1.11",
+  "seconds": 30,
+  "when": "2026-10-27T13:57:31.019978+00:00",
+  "verified": true
+ },
+ "ACTinBOX_QUATRO_2.1_EI.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "ACTinBOX QUATRO"
+  ],
+  "message": "Import erfolgreich. Datei: IACTinBOX knxprod Produkt: ACT,n80X QUATRO Version OK SL Ready &1.11",
+  "seconds": 30,
+  "when": "2026-10-27T13:58:06.143240+00:00",
+  "verified": false
+ },
+ "AKD-02x0CC-02_MDT_KP_V31.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "AKD-0260CC,02 LED Controller CC/CV 60 W / 230 V 2-Kanal"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: AKO-0260CC.02 LEO Controller CC/CV 60 W / V 2-KanaI Version OK SL Ready &1.11",
+  "seconds": 10,
+  "when": "2026-10-27T13:58:21.378078+00:00",
+  "verified": false
+ },
+ "AKD-0x01-02_MDT_KP_V23.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "AKD-0201,02 Dimmaktor 2-fach",
+   "AKD-0401,02 Dimmaktor 4-fach"
+  ],
+  "message": "Import erfolgreich. Datei: KP_V23 knxprod Produkt: AKO-0201,02 Dimmektor 2-fach Produkt: AKO-0401,02 Dimmektor 4-fach Version OK SL Ready &1.11",
+  "seconds": 16,
+  "when": "2026-10-27T13:58:43.348678+00:00",
+  "verified": false
+ },
+ "AKR-IOxxx-01S_MDT_KP_V13a.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "AKR-10108.01S Raumaktor 8 Ausgänge, 10 Eingänge, 16A",
+   "AKR-1086.01S Raumektor 6 Ausgänge, 8 Eingänge, 16A"
+  ],
+  "message": "Import erfolgreich. Datei: ICxxx-01S Produkt: AKR-10108.CIS Raumaktar 8 Ausgänge, 10 Eingänge, 16A 230VAC Produkt: AKR-1086.01S Raumaktor 6 Ausgange, 8 Eingänge, 16A 230VAC Version OK SL Ready &1.11",
+  "seconds": 23,
+  "when": "2026-10-27T13:59:12.428379+00:00",
+  "verified": false
+ },
+ "ALLinBOX_1612_1.0_EIFAItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "ALLinBOX 1612"
+  ],
+  "message": "Import erfolgreich. Datei: IALLinBCX Produkt: ALLin30X 1612 Version OK SL Ready &1.11",
+  "seconds": 32,
+  "when": "2026-10-27T13:59:49.850775+00:00",
+  "verified": true
+ },
+ "ALLinBOX_1612_1.3_EIFAItR_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "ALLinBOX 1612"
+  ],
+  "message": "Import erfolgreich. Datei: IALLinBCX 1612 Produkt: ALLin30X 1612 ZPR88V2 Version OK ALLinBOX 88 v2 SL Ready &1.11",
+  "seconds": 32,
+  "when": "2026-10-27T14:00:27.664650+00:00",
+  "verified": true
+ },
+ "ALLinBOX_1612_v2_2.1_EIFARUk.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "ALLinBOX 1612 v2"
+  ],
+  "message": "Import erfolgreich. Datei: IALLinBCX 1612 2.1_EIFÅRUkknxprod Produkt: ALLin30X 1612 v2 ZPR88V2 Version OK ALLinBOX 88 v2 SL Ready &1.11",
+  "seconds": 38,
+  "when": "2026-10-27T14:01:11.605177+00:00",
+  "verified": true
+ },
+ "ALLinBOX_1612_v3_2.3_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "ALLinBOX 1612 v3"
+  ],
+  "message": "Import erfolgreich. Datei: IALLinBCX 1612 Produkt: ALLin30X 1612 ZPR88V2 Version OK ALLinBOX 88 v2 SL Ready &1.11",
+  "seconds": 39,
+  "when": "2026-10-27T14:01:56.261063+00:00",
+  "verified": true
+ },
+ "ALLinBOX_46_2.1_EIFARUk.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "ALLinBOX 46"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: 46 ZPR88V2 Version OK ALLinBOX 88 v2 SL Ready &1.11",
+  "seconds": 38,
+  "when": "2026-10-27T14:02:40.229885+00:00",
+  "verified": true
+ },
+ "ALLinBOX_46_v2_2.3_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "ALLinBOX 46 v2"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: 46 v2 ZPR88V2 Version OK ALLinBOX 88 v2 SL Ready &1.11",
+  "seconds": 41,
+  "when": "2026-10-27T14:03:27.401318+00:00",
+  "verified": true
+ },
+ "ALLinBOX_88_2.1_EIFARUk.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "ALLinBOX 88"
+  ],
+  "message": "Import erfolgreich. Datei: IALLinBCX 88 2.1_EIFARUkknxprad Produkt: ALLin30X 88 ZPR88V2 Version OK ALLinBOX 88 v2 SL Ready &1.11",
+  "seconds": 40,
+  "when": "2026-10-27T14:04:13.139767+00:00",
+  "verified": true
+ },
+ "ALLinBOX_88_v2_2.3_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "ALLinBOX 88 v2"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: ALLin30X 88 v2 ZPR88V2 Version OK ALLin80X 88 v2 SL Ready &1.11",
+  "seconds": 42,
+  "when": "2026-10-27T14:05:00.419651+00:00",
+  "verified": false
+ },
+ "ALLinBOX_Hospitality_2.1_EIFARUk.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "ALLinBOX Hospitality"
+  ],
+  "message": "Import erfolgreich. Datei: \\ALLinBCX_Hospitality_2.1 _EI FÅRUZknxprod Produkt: ALLin30X Hospitality Version OK SL Ready",
+  "seconds": 43,
+  "when": "2026-10-27T14:05:49.811599+00:00",
+  "verified": true
+ },
+ "ALLinBOX_Hospitality_v2_2.3_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "ALLinBOX Hospitality v2"
+  ],
+  "message": "Import erfolgreich. Datei: Cert.knxprod Produkt: ALLin30X Hospitality v2 ZPR88V2 Version OK ALLinBOX 88 v2 SL Ready &1.11",
+  "seconds": 44,
+  "when": "2026-10-27T14:06:39.953905+00:00",
+  "verified": true
+ },
+ "APEKEH2TP01.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Taster 6-fach"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: Taster 6-fach ZPR88V2 Version OK ALLinBOX 88 v2 SL Ready &1.1.1",
+  "seconds": 35,
+  "when": "2026-10-27T14:07:20.346876+00:00",
+  "verified": true
+ },
+ "APEKEI2TP411.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "EK-E12-TP-4"
+  ],
+  "message": "Import erfolgreich. Datei: IAPEKE12TP411. knxprod Produkt: EK-E12-TP-4 OK 6108/07-AP Tasterankopplunq 4-fa.. I Version SL Ready",
+  "seconds": 25,
+  "when": "2026-10-27T14:07:50.910878+00:00",
+  "verified": false
+ },
+ "APEKHE1TP01.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Aktor-Kontroller 8-fach für elektrothermische Antriebe"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: Aktor-Kontroller 8-fach für elektrothermische Antriebe Version OK SL Ready &1.11",
+  "seconds": 24,
+  "when": "2026-10-27T14:08:20.691768+00:00",
+  "verified": true
+ },
+ "Air_Sensato_THCDE_1.0_EIA_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Air Sensato THCDE"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: Air Senseto THEDE Version OK SL Ready &1.11",
+  "seconds": 33,
+  "when": "2026-10-27T14:09:00.051959+00:00",
+  "verified": true
+ },
+ "AmbianceBOX_1.1_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "AmbianceBOX"
+  ],
+  "message": "Import erfolgreich. Datei: \\AmbianceBCX Produkt: AmbianceBOX Version OK SL Ready",
+  "seconds": 18,
+  "when": "2026-10-27T14:09:23.927522+00:00",
+  "verified": false
+ },
+ "AudioInRoom_1.2_EIFAItR_ETS5_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "AudiolnRoom"
+  ],
+  "message": "Import erfolgreich. Datei: knxprod Produkt: AudiolnRaom Version OK SL Ready",
+  "seconds": 20,
+  "when": "2026-10-27T14:09:50.005833+00:00",
+  "verified": false
+ },
+ "BE-GTSx6Tx-01S_MDT_KP_V23.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "BE-GTS06Tx,01S Glas Touch Smart 6 Zoll",
+   "BE-GTSP6TX,01S Glas Touch Smart Plus 6 zoll"
+  ],
+  "message": "Import erfolgreich. Datei: GTSx6Tx-01S MOT KP_V23 knxprod Produkt: BE-GTS06Tx,OlS Glas Touch Smart 6 zoll Produkt: BE-GTSP6TX,OlS Glas Smart Plus 6 zoll Version OK SL Ready &1.11",
+  "seconds": 23,
+  "when": "2026-10-27T14:10:18.914040+00:00",
+  "verified": false
+ },
+ "BE-TA55xx-x2_MDT_KP_V21a.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "BE-TA5502.02 Tester 55, 2-fech",
+   "BE-TA5504.02 Tester 55, 4-fech",
+   "BE-TA5506.02 Tester 55, 6-fech",
+   "BE-TA5508.02 Tester 55, 8-fech",
+   "BE-TA55P2.02 Taster Plus 55,",
+   "BE-TA55P4.02 Taster Plus 55,",
+   "BE-TA55P6.02 Taster Plus 55,",
+   "BE-TA55P8.02 Taster Plus 55,"
+  ],
+  "message": "Import erfolgreich. Datei: MOT Produkt: Produkt: Produkt: Produkt: Produkt: Produkt: Produkt: Produkt: KP_V21 a knxprod BE-TA5502.02 Tester 55, 2-fach BE-TA5504.02 Tester 55, 4-fach BE-TA5506.02 Tester 55, 6-fach BE-TA5508.02 Tester 55, 8-fach BE-TA55P2.C2 Taster Plus 55, 2-fech BE-TA55P4.C2 Taster Plus 55, 4-fech BE-TA55P6.C2 Taster Plus 55, 6-fech BE-TA55P8.C2 Taster Plus 55, 8-fech Version OK SL Ready &1.1.1",
+  "seconds": 23,
+  "when": "2026-10-27T14:10:48.087572+00:00",
+  "verified": true
+ },
+ "BEG92430_KNX_PD2_Dim_AP_V4.0_ETS4.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "PD2-KNX-DlM-AP"
+  ],
+  "message": "Import erfolgreich. Datei: KNX Produkt: PD2-KNX-DlM-AP Version OK SL Ready &1.1.1",
+  "seconds": 21,
+  "when": "2026-10-27T14:11:15.318740+00:00",
+  "verified": false
+ },
+ "BEG92430_KNX_PD_Dim_AP_V3.0_ETS4.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "PD-DIM-KNX"
+  ],
+  "message": "Import erfolgreich. Datei: KNX PO_Dim knxprod Produkt: PD-DIM-KNX Version OK SL Ready &1.11",
+  "seconds": 19,
+  "when": "2026-10-27T14:11:39.804395+00:00",
+  "verified": false
+ },
+ "BEG92431_KNX_PD2_Dim_De_V4.0_ETS4.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "PD2-KNX-DlM-DE"
+  ],
+  "message": "Import erfolgreich. Datei: KNX V4.C_ETS4.knxprod Produkt: PD2-KNX-DlM-DE Version OK SL Ready &1.11",
+  "seconds": 21,
+  "when": "2026-10-27T14:12:06.775369+00:00",
+  "verified": false
+ },
+ "BEG92432_KNX_PD2_Dim_UP_V4.0_ETS4.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "PD2-KNX-DlM-UP"
+  ],
+  "message": "Import erfolgreich. Datei: IBEG92432_KNX Produkt: PD2-KNX-DlM-UP Version OK SL Ready &1.11",
+  "seconds": 21,
+  "when": "2026-10-27T14:12:33.994511+00:00",
+  "verified": false
+ },
+ "BEG92433_KNX_PD4_Dim_AP_V4.0_ETS4.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "PD4-KNX-DlM-AP"
+  ],
+  "message": "Import erfolgreich. Datei: KNX Produkt: PD4-KNX-DlM-AP Version OK SL Ready &1.11",
+  "seconds": 21,
+  "when": "2026-10-27T14:13:01.308853+00:00",
+  "verified": false
+ },
+ "BEG92434_KNX_PD4_Dim_UP_V4.0_ETS4.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "PD4-KNX-DlM-UP"
+  ],
+  "message": "Import erfolgreich. Datei: KNX Produkt: PD4-KNX-DlM-UP Version OK SL Ready &1.11",
+  "seconds": 21,
+  "when": "2026-10-27T14:13:28.433942+00:00",
+  "verified": false
+ },
+ "BEG92436_KNX_Dim_Indor_V4.0_ETS4.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "BEG-KNX-DIM-INDOOR"
+  ],
+  "message": "Import erfolgreich. Datei: V4.c ETS4.knxpr,d Produkt: BEG-KNX-DIM-INOCOR Version OK SL Ready &1.11",
+  "seconds": 22,
+  "when": "2026-10-27T14:13:55.903914+00:00",
+  "verified": false
+ },
+ "BEG92437_KNX_PD9_Dim_V4.0_ETS4.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "PD9-KNX-DlM"
+  ],
+  "message": "Import erfolgreich. Datei: KNX knxprod Produkt: PDS-KNX-DIM Version OK SL Ready &1.11",
+  "seconds": 22,
+  "when": "2026-10-27T14:14:23.887297+00:00",
+  "verified": false
+ },
+ "BEG92446_KNX_PD2_SWI_AP_V3.1_ETS4.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "PD2-KNX-SWl-AP"
+  ],
+  "message": "Import erfolgreich. Datei: KNX TS4.knxprad Produkt: PD2-KNX-SWl-AP Version OK SL Ready &1.11",
+  "seconds": 19,
+  "when": "2026-10-27T14:14:48.202494+00:00",
+  "verified": false
+ },
+ "BEG92447_KNX_PD2_SWI_DE_V3.1_ETS4.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "PD2-KNX-SWl-DE"
+  ],
+  "message": "Import erfolgreich. Datei: KNX Produkt: PD2-KNX-SWl-DE Version OK SL Ready &1.11",
+  "seconds": 19,
+  "when": "2026-10-27T14:15:12.904815+00:00",
+  "verified": false
+ },
+ "BEG92448_KNX_PD2_SWI_UP_V3.1_ETS4.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "PD2-KNX-SWl-UP"
+  ],
+  "message": "Import erfolgreich. Datei: KNX Produkt: PD2-KNX-SWl-UP Version OK SL Ready &1.11",
+  "seconds": 19,
+  "when": "2026-10-27T14:15:37.716478+00:00",
+  "verified": false
+ },
+ "BEG92449_KNX_PD4_SWI_AP_V3.1_ETS4.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "PD4-KNX-SWl-AP"
+  ],
+  "message": "Import erfolgreich. Datei: KNX TS4.knxprad Produkt: PD4-KNX-SWl-AP Version OK SL Ready &1.11",
+  "seconds": 19,
+  "when": "2026-10-27T14:16:02.561864+00:00",
+  "verified": false
+ },
+ "BEG92450_KNX_PD4_SWI_DE_V3.1_ETS4.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "PD4-KNX-SWl-DE"
+  ],
+  "message": "Import erfolgreich. Datei: KNX Produkt: PD4-KNX-SWl-DE Version OK SL Ready &1.11",
+  "seconds": 19,
+  "when": "2026-10-27T14:16:26.996925+00:00",
+  "verified": false
+ },
+ "BEG92451_KNX_PD4_SWI_UP_V3.1_ETS4.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "PD4-KNX-SWl-UP"
+  ],
+  "message": "Import erfolgreich. Datei: IBEGg2451 KNX Produkt: PD4-KNX-SWl-UP Version OK SL Ready &1.11",
+  "seconds": 20,
+  "when": "2026-10-27T14:16:52.461107+00:00",
+  "verified": false
+ },
+ "BEG92452_KNX_PD9_SWI_V3.1_ETS4.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "PD9-KNX-SWl"
+  ],
+  "message": "Import erfolgreich. Datei: IBEG92452_KNX Produkt: PDS-KNX-SWI Version OK SL Ready &1.11",
+  "seconds": 19,
+  "when": "2026-10-27T14:17:17.086264+00:00",
+  "verified": false
+ },
+ "BEG92453_KNX_Indor_SWI_V3.1_ETS4.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Indoor-KNX-SWI"
+  ],
+  "message": "Import erfolgreich. Datei: V3.l ETS4knxprad Produkt: Indaar-KNX-SWl Version OK SL Ready &1.11",
+  "seconds": 19,
+  "when": "2026-10-27T14:17:42.148511+00:00",
+  "verified": false
+ },
+ "BEG92454_KNX_PD4_DIM_GH_AP_V4.0_ETS4.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "PD4-KNX-DlM-GH-AP"
+  ],
+  "message": "Import erfolgreich. Datei: KNX P04_OIM ETS4knxprod Produkt: PD4-KNX-DlM-GH-AP Version OK SL Ready &1.11",
+  "seconds": 21,
+  "when": "2026-10-27T14:18:09.473044+00:00",
+  "verified": false
+ },
+ "BEG92456_KNX_PD4_DIM_AP_K_UP_V4.0_ETS4.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "PD4-KNX-DlM-AP-K-UP"
+  ],
+  "message": "Import erfolgreich. Datei: KNX P04_OIM Produkt: PD4-KNX-DlM-AP-K-UP Version OK SL Ready &1.11",
+  "seconds": 22,
+  "when": "2026-10-27T14:18:37.506138+00:00",
+  "verified": false
+ },
+ "BEG92461_KNX_PD4_DIM_K_DE_V4.0_ETS4.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "PD4-KNX-DlM-K-DE"
+  ],
+  "message": "Import erfolgreich. Datei: IBEGg2461 KNX P04_OIM K Produkt: PD4-KNX-DlM-K-OE Version OK SL Ready &1.11",
+  "seconds": 22,
+  "when": "2026-10-27T14:19:05.412563+00:00",
+  "verified": false
+ },
+ "BEG97052_BEG97053_KNX_RC_Plus_Next_V4.0_ETS4.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "RC-Plus-Next-KNX"
+  ],
+  "message": "Import erfolgreich. Datei: knxprod Produkt: RC-Plus-Next KNX Version OK SL Ready &1.11",
+  "seconds": 22,
+  "when": "2026-10-27T14:19:33.322354+00:00",
+  "verified": true
+ },
+ "BIN_2X_1_0_EIFAItRS_ETS5_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "BIN 2X"
+  ],
+  "message": "Import erfolgreich. Datei: IBIN_2X EIFAItRS ETS5_CERT.knxprod Produkt: BIN 2X Version OK SL Ready &1.11",
+  "seconds": 22,
+  "when": "2026-10-27T14:20:00.776029+00:00",
+  "verified": true
+ },
+ "BIN_2X_1_2_EIFAItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "BIN 2X"
+  ],
+  "message": "Import erfolgreich. Datei: EIFAItRS ETS5.knxpr,d Produkt: BIN 2X 6188/19 Version OK 4f 23021/1.3e SL Ready",
+  "seconds": 18,
+  "when": "2026-10-27T14:20:25.057900+00:00",
+  "verified": true
+ },
+ "BIN_2X_v2_1.0_EIFAItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "BIN 2X v2"
+  ],
+  "message": "Import erfolgreich. Datei: IBIN_2X Produkt: BIN ax v2 Version OK Binäreingang Ånzeiqe.. SL Ready",
+  "seconds": 19,
+  "when": "2026-10-27T14:20:49.589601+00:00",
+  "verified": true
+ },
+ "BIN_44_1_0_EIFAItRS_ETS5_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "BIN 44"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: BIN 44 Version OK Binäreingang Ånzeiqe.. SL Ready",
+  "seconds": 26,
+  "when": "2026-10-27T14:21:21.730452+00:00",
+  "verified": true
+ },
+ "BIN_44_1_2_EIFAItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "BIN 44"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: BIN 44 Version OK Binäreingang Ånzeiqe.. SL Ready",
+  "seconds": 22,
+  "when": "2026-10-27T14:21:49.595859+00:00",
+  "verified": true
+ },
+ "BIN_44_v2_1.0_EIFAItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "BIN 44 v2"
+  ],
+  "message": "Import erfolgreich. Datei: EIFAltR_Certknxprad Produkt: BIN 44 v2 6188/19 Version OK 4f 23021/1.3e SL Ready",
+  "seconds": 19,
+  "when": "2026-10-27T14:22:14.248682+00:00",
+  "verified": true
+ },
+ "BIN_4X_1_0_EIFAItRS_ETS5_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "BIN 4X"
+  ],
+  "message": "Import erfolgreich. Datei: IBIN_4X EIFAItRS ETS5_CERT.knxprod Produkt: BIN 4X 6188/19 Version OK 4f 23021/1.3e SL Ready",
+  "seconds": 25,
+  "when": "2026-10-27T14:22:45.249189+00:00",
+  "verified": true
+ },
+ "BIN_4X_1_2_EIFAItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "BIN 4X"
+  ],
+  "message": "Import erfolgreich. Datei: IBIN_4X EIFAltRS ETS5.knxpr,d Produkt: BIN 4X 6188/19 Version OK 4f 23021/1.3e SL Ready",
+  "seconds": 23,
+  "when": "2026-10-27T14:23:14.284005+00:00",
+  "verified": true
+ },
+ "BIN_4X_v2_1.0_EIFAItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "BIN 4X v2"
+  ],
+  "message": "Import erfolgreich. Datei: IBIN_4X Produkt: v2 6188/19 Version OK 4f 23021/1.3e SL Ready",
+  "seconds": 22,
+  "when": "2026-10-27T14:23:41.876975+00:00",
+  "verified": true
+ },
+ "BM_A4_11_13X_V8-2_9AKK108471A0162.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "BWA4.11-13x Busch-Wächters PRO 2802 KNX"
+  ],
+  "message": "Version OK SL Ready Iktäbfrage 4fack Import erfolgreich. Datei: IBM Produkt: BWA4.11-13x Busch-Wächters PRO 280' KNX 6188/15-10-",
+  "seconds": 19,
+  "when": "2026-10-27T14:24:06.595245+00:00",
+  "verified": false
+ },
+ "BWM-xxxxx-03S_MDT_KP_V11.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "BWM55.03S KNX BewegungsmeIder/Automatikschalter 55,",
+   "BWM55T0x.03S KNX Bewegungsmelder/Automatikschelter",
+   "BWM-6001x.03S KNX Bewegungsmelder/",
+   "BWM-60T1x.03S KNX Bewegungsmelder/"
+  ],
+  "message": "Import erfolgreich. Datei: mn-03S_MOT KP Vl l.knxprad Produkt: BWV5SÆS {NX BewegungsmeIder/Automatikschalter 55, Secure Produkt: BWM55TOx.03S KNX Bewegungsmelder/AutomatlkscHöIter TS 55, Produkt: BWM-6001x.03S KNX Bewegungsmelder/ Autamatikschalter 60 CHI Secure Produkt: BWM-60T1x.03S {NX Bewegungsmelder/ Autamatikschalter TS 60 CH, Secure Version OK SL Ready &1.11",
+  "seconds": 42,
+  "when": "2026-10-27T18:00:19.733129+00:00",
+  "verified": true
+ },
+ "COMIP-REG-1.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "COMIP-REG-I"
+  ],
+  "message": "Import erfolgreich. Datei: REG-l.knxprad Produkt: COWP-REG-I Version OK SL Ready &1.11",
+  "seconds": 22,
+  "when": "2026-10-27T18:00:47.295326+00:00",
+  "verified": false
+ },
+ "CX_1.1_EIFAItRUk.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "CX"
+  ],
+  "message": "Import erfolgreich. Datei: 1.1_EIFAItRUk.knxprod Produkt: CX Version OK SL Ready &1.11",
+  "seconds": 89,
+  "when": "2026-10-27T18:02:21.679249+00:00",
+  "verified": true
+ },
+ "ControlPro_KNX_V3.1.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "STEINEL Control Pro"
+  ],
+  "message": "Import erfolgreich. Datei: V3.1.knxprod Produkt: STEINEL Control Pro PB40ClxKNX Version OK PB40CxxKNX SL Ready &1.11",
+  "seconds": 21,
+  "when": "2026-10-27T18:02:48.640142+00:00",
+  "verified": true
+ },
+ "DALI-BOX_Interface_v2_1.0_EIFAItR_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "DALI-BOX Interface v2"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: DALI-3CX Interface v2 40078410596», Version OK iHF KNX SL Ready",
+  "seconds": 102,
+  "when": "2026-10-27T18:04:37.147545+00:00",
+  "verified": false
+ },
+ "DALI-BOX_Interface_v2_1.1_EIFAItR_ETS5_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "DALI-BOX Interface v2"
+  ],
+  "message": "Iktäbfrage 4fack Import erfolgreich. Datei: BOX_I nterface_v2_ 1. I knxprod Produkt: DALI-3CX Interface v2 6188/15-10- Version OK SL Ready",
+  "seconds": 59,
+  "when": "2026-10-27T14:25:15.772213+00:00",
+  "verified": false
+ },
+ "DALI-BOX_Interface_v2_1.2_EIAFItR.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "DALI-BOX Interface v2"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: DALI-3CX Interface v2 Version OK SL Ready &1.11",
+  "seconds": 58,
+  "when": "2026-10-27T14:26:19.191944+00:00",
+  "verified": false
+ },
+ "DALIBOX_Broadcast_4CH_1.0_EIFAItRSP.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "DALIBOX Broadcast 4CH"
+  ],
+  "message": "Import erfolgreich. Datei: IDALIBCX EIFÅItRSP.knxprad Produkt: DALIBOX Broadcast 4CH Version OK SL Ready &1.11",
+  "seconds": 42,
+  "when": "2026-10-27T14:27:06.851617+00:00",
+  "verified": true
+ },
+ "DALIBOX_Broadcast_4CH_1.1_EIFAItRSP.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "DALIBOX Broadcast 4CH"
+  ],
+  "message": "Import erfolgreich. Datei: IDALIBCX Produkt: DALIBOX Broadcast 4CH Version OK SL Ready &1.11",
+  "seconds": 42,
+  "when": "2026-10-27T14:27:54.605097+00:00",
+  "verified": false
+ },
+ "DALIBOX_Broadcast_6CH_1.0_EIFAItRSP.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "DALIBOX Broadcast 6CH"
+  ],
+  "message": "Import erfolgreich. Datei: IDALIBCX EIFÅItRSP.knxprad Produkt: DALIBOX Broadcast 6CH Version OK SL Ready &1.11",
+  "seconds": 42,
+  "when": "2026-10-27T14:28:42.133957+00:00",
+  "verified": false
+ },
+ "DALIBOX_Interface_64_32_1_1_EIFAItRS.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "DALIBOX Interface 64/32"
+  ],
+  "message": "Import erfolgreich. Datei: IDALIBCX Produkt: DALIBOX Interface 64/32 ZOI-DLS6 Version SL Ready &1.11 OK",
+  "seconds": 59,
+  "when": "2026-10-27T14:29:46.492278+00:00",
+  "verified": false
+ },
+ "DALIBOX_Interface_64_32_1_2_EIFAItRS.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "DALIBOX Interface 64/32"
+  ],
+  "message": "Import erfolgreich. Datei: IDALIBCX Produkt: DALIBOX Interface 64/32 ZOI-DLS6 Version SL Ready &1.11 OK",
+  "seconds": 60,
+  "when": "2026-10-27T14:30:51.995721+00:00",
+  "verified": false
+ },
+ "DALIBOX_Interface_64_32_1_3_EIFAItRS.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "DALIBOX Interface 64/32"
+  ],
+  "message": "Import erfolgreich. Datei: IDALIBCX Produkt: DALIBOX Interface 64/32 ZOI-DLS6 Version SL Ready &1.11 OK",
+  "seconds": 61,
+  "when": "2026-10-27T14:31:58.702956+00:00",
+  "verified": false
+ },
+ "DALIBOX_Interface_64_32_1_3_EIFAItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "DALIBOX Interface 64/32"
+  ],
+  "message": "Import erfolgreich. Datei: IDALIBCX Produkt: DALIBOX Interface 64/32 ZOI-DLS6 Version SL Ready &1.1.1 OK",
+  "seconds": 43,
+  "when": "2026-10-27T14:32:47.452291+00:00",
+  "verified": false
+ },
+ "DALIBOX_Interface_64_32_1_4_EIFAItRS_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "DALIBOX Interface 64/32"
+  ],
+  "message": "Import erfolgreich. Datei: IDALIBCX EIFAItRS CERT knxprod Produkt: DALIBOX Interface 64/32 ZOI-DLS6 Version SL Ready &1.11 OK",
+  "seconds": 31,
+  "when": "2026-10-27T14:33:23.708128+00:00",
+  "verified": true
+ },
+ "DALIBOX_Interface_64_32_1_4_EIFAItRS_ETS5_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "DALIBOX Interface 64/32"
+  ],
+  "message": "Import erfolgreich. Datei: IDALIBCX knxprod Produkt: DALIBOX Interface 64/32 ZOI-DLS6 Version SL Ready &1.11 OK",
+  "seconds": 32,
+  "when": "2026-10-27T14:34:01.580318+00:00",
+  "verified": true
+ },
+ "DALI_BOX_Broadcast_4CH_v2_2.3_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "DALI BOX Broadcast 4CH v2"
+  ],
+  "message": "Import erfolgreich. Datei: IDALI_3CX Certknxprad Produkt: CALI BOX Braadcast 4CH v? ZOI-DLS6 Version SL Ready &1.11 OK",
+  "seconds": 24,
+  "when": "2026-10-27T14:34:31.676001+00:00",
+  "verified": true
+ },
+ "DALI_BOX_Broadcast_6CH_v2_2.3_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "DALI BOX Broadcast 6CH v2"
+  ],
+  "message": "Import erfolgreich. Datei: IDALI_3CX Certknxprad Produkt: CALI BOX Braadcast 6CH v? ZDl-DL86 Version SL Ready &1.11 OK DALIBOX",
+  "seconds": 24,
+  "when": "2026-10-27T14:35:01.579767+00:00",
+  "verified": true
+ },
+ "DALI_BOX_Interface_64_X2_2.1_EIFAItRUk.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "DALI BOX Interface 64 X2"
+  ],
+  "message": "Import erfolgreich. Datei: IDALI_3CX Interface_64 1 _ElFAltRIJk.knxprod Produkt: CALI BOX Interface 64 X2 ZOI-DLS6 Version SL Ready &1.11 OK",
+  "seconds": 38,
+  "when": "2026-10-27T14:35:44.806684+00:00",
+  "verified": true
+ },
+ "DALI_BOX_Interface_64_X2_2.1_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "DALI BOX Interface 64 X2"
+  ],
+  "message": "Import erfolgreich. Datei: IDALI_3CX Interface_64 1 _ EIFAltRLI k_Cert.knxprad Produkt: CALI BOX Interface 64 X2 ZOI-DLS6 Version SL Ready &1.11 OK",
+  "seconds": 39,
+  "when": "2026-10-27T14:36:28.798748+00:00",
+  "verified": true
+ },
+ "DALI_BOX_Interface_64_v3_2.1_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "DALI BOX Interface 64 v3"
+  ],
+  "message": "Import erfolgreich. Datei: IDALI_3CX Interfece_64 Produkt: CALI BOX Interface 64 vB ZOI-DLS6 Version OK SL Ready &1.1.1",
+  "seconds": 37,
+  "when": "2026-10-27T14:37:11.571478+00:00",
+  "verified": true
+ },
+ "DIMinBOX-2CH_1.0_EIFAItRSP_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "DIMinBOX 2CH"
+  ],
+  "message": "Import erfolgreich. Datei: EIFAltRSP_CERT.knxprod Produkt: ZCH ZDl-DL86 Version SL Ready &1.11 OK DALIBOX",
+  "seconds": 51,
+  "when": "2026-10-27T14:38:08.383440+00:00",
+  "verified": false
+ },
+ "DIMinBOX_2Ch_1_1_EIFAItRSP.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "DIMinBOX 2CH"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: ZCH ZDIDBOXI Version OK DIMin8CX 1.4 SL Ready &1.11",
+  "seconds": 54,
+  "when": "2026-10-27T14:39:08.495643+00:00",
+  "verified": true
+ },
+ "DIMinBOX_DX1_1.0_EIAFItRS.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "DIMinBOX DXI"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: OXI ZDIDBOXI Version OK DIMin8CX 1.4 SL Ready &1.1.1",
+  "seconds": 32,
+  "when": "2026-10-27T14:39:46.191923+00:00",
+  "verified": false
+ },
+ "DIMinBOX_DX1_1.2_EIFAItRS_Cert_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "DIMinBOX DXI"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: OXI 40078410596», Version OK iHF KNX SL Ready",
+  "seconds": 81,
+  "when": "2026-10-27T18:06:04.151143+00:00",
+  "verified": true
+ },
+ "DIMinBOX_DX1_1.4_EIFAItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "DIMinBOX DXI"
+  ],
+  "message": "Import erfolgreich. Datei: 1.4_ElFAItR Produkt: OXI ZDIDBOXI Version OK DIMin8CX 1.4 SL Ready &1.11",
+  "seconds": 76,
+  "when": "2026-10-27T18:07:26.103559+00:00",
+  "verified": true
+ },
+ "DIMinBOX_DX2_1.1_EIFAItRS.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "DIMinBOX DX2"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: oxa ZDIDBOXI Version OK DIMin8CX 1.4 SL Ready &1.1.1",
+  "seconds": 100,
+  "when": "2026-10-27T18:09:11.932475+00:00",
+  "verified": true
+ },
+ "DIMinBOX_DX2_1.2_EIAFItRS_Cert_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "DIMinBOX DX2"
+  ],
+  "message": "Import erfolgreich. Datei: ETS5 Produkt: oxa Version OK 2C76-4T SL Ready",
+  "seconds": 108,
+  "when": "2026-10-27T21:33:12.403463+00:00",
+  "verified": true
+ },
+ "DIMinBOX_DX2_1_0_EIFAItRSP_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "DIMinBOX DX2"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: oxa ZDIDBOXI Version OK DIMin8CX 1.4 SL Ready &1.11",
+  "seconds": 83,
+  "when": "2026-10-27T18:10:56.695762+00:00",
+  "verified": true
+ },
+ "DIMinBOX_DX2_1_1_EIFAItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "DIMinBOX DX2"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: oxa ZDIDBOXI Version OK DIMin8CX 1.4 SL Ready &1.11",
+  "seconds": 83,
+  "when": "2026-10-27T18:12:25.164641+00:00",
+  "verified": true
+ },
+ "DIMinBOX_DX4_1.0_EIFAItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "DIMinBOX DX4"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: DX4 ZDIDBOXI Version OK DIMin8CX 1.4 SL Ready &1.11",
+  "seconds": 76,
+  "when": "2026-10-27T18:13:47.345284+00:00",
+  "verified": true
+ },
+ "DIMinBOX_DX4_1.2_EIFAItRS_Cert_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "DIMinBOX DX4"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: DX4 ZDIDBOXI Version OK DIMin8CX 1.4 SL Ready &1.1.1",
+  "seconds": 108,
+  "when": "2026-10-27T21:35:06.373920+00:00",
+  "verified": true
+ },
+ "ELS70178_KNX_T-Objekt-UP_V2.0.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KNX T-Objekt-UP"
+  ],
+  "message": "Import erfolgreich. Datei: Objekt-LIP V2.O.knxprod Produkt: KNX T-Objekt-UP ZDIDBOXI Version OK DIMin8CX 1.4 SL Ready &1.11",
+  "seconds": 25,
+  "when": "2026-10-27T21:35:37.156290+00:00",
+  "verified": false
+ },
+ "ELS70239-42_KNX_AQSTH-B-UP_V1.0.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KNX AQS TH-B-UP"
+  ],
+  "message": "Import erfolgreich. Datei: IELS7023g-42 «X AQSTH-B-UP Vl Produkt: Aas TH-a-lJP Version OK SL Ready &1.11",
+  "seconds": 31,
+  "when": "2026-10-27T21:36:13.818305+00:00",
+  "verified": false
+ },
+ "ELS70370_70374-76_KNX_TH-B-UP_V3.0.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "KNX TH-B-UP"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: KNX TH-B-UP Version 1.0 OK Best Huts Buss IO-AI Der I Bele' Binä Ausc Teiln Sie E: Onlil Tech p Suchen SL Ready",
+  "seconds": 30,
+  "when": "2026-10-27T21:51:46.085501+00:00",
+  "verified": true
+ },
+ "EyeZen_TP_1.3_EIFAItR_ETS5_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "EyeZen TP"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: EyeZen TP Version 1.0 OK SL Ready",
+  "seconds": 106,
+  "when": "2026-10-27T21:53:37.759740+00:00",
+  "verified": false
+ },
+ "EyeZen_TP_v2_1.5_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "EyeZen TP v2"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products 1.5 1.0 Produkt: EyeZen TP v2 ZPDEZRF868 Version SL Ready OK EyeZen RF 868 1.0",
+  "seconds": 101,
+  "when": "2026-10-27T21:55:23.939321+00:00",
+  "verified": false
+ },
+ "EyeZen_TP_vT_1.3_EIFAItR_ETS5_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "EyeZen TP VT"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: EyeZen TP VT ZDIDBOXI Version OK DIMin8CX 1.4 SL Ready &1.11",
+  "seconds": 71,
+  "when": "2026-10-27T18:16:41.688928+00:00",
+  "verified": false
+ },
+ "FANinBOX_110V_1CH_1.1_EIFAItR_Cert_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "FANinBOX 1 IOV ICH"
+  ],
+  "message": "Best Huts Buss Bewe Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products 1.5 1.3 1.0 Produkt: FANinBOX 1 ICH ZPDEZRF868 Version SL Ready EyeZen OK RF 868 1.0",
+  "seconds": 98,
+  "when": "2026-10-27T21:57:07.429289+00:00",
+  "verified": false
+ },
+ "FANinBOX_230V_1CH_1.2_EIFAItR_ETS5_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "FANinBOX 230V ICH"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: FANinBOX 230V ICH ZCLFBIIOCI Version 1.2 OK FANinBOX 1 IOV ICH 1.1 1. SL Ready",
+  "seconds": 100,
+  "when": "2026-10-27T21:58:53.297813+00:00",
+  "verified": true
+ },
+ "Flat_1_1.3_EIFAItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat 1"
+  ],
+  "message": "Best Huts Buss Deck VAC Lüfte Ausc enth Tech Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: Flat 1 ZCLFBIIOCI Version 1.2 OK 1.3 FANinBOX 1 IOV ICH 1.1 1. SL Ready",
+  "seconds": 104,
+  "when": "2026-10-27T22:00:42.835001+00:00",
+  "verified": true
+ },
+ "Flat_1_1.4_EIFAItRS_Cert_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat 1"
+  ],
+  "message": "Import erfolgreich. Datei: IFIöt_1 Produkt: Flat 1 ZDIDBOXI Version OK DIMin8CX 1.4 SL Ready &1.11",
+  "seconds": 73,
+  "when": "2026-10-27T18:18:49.414284+00:00",
+  "verified": false
+ },
+ "Flat_1_v2_1.8_EIAFItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat 1 v2"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products \\Flat_1_v2_1.8_ElAFltR_Cert.knxprod Produkt: Flat 1 v2 Version 3.0 OK SL Ready",
+  "seconds": 247,
+  "when": "2026-10-27T22:04:55.970578+00:00",
+  "verified": true
+ },
+ "Flat_2_1.4_EIFAItRS_Cert_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat 2"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: Flat 2 Version 3.0 OK SL Ready",
+  "seconds": 131,
+  "when": "2026-10-27T22:07:13.360632+00:00",
+  "verified": true
+ },
+ "Flat_2_v2_1.8_EIAFItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat 2 v2"
+  ],
+  "message": "Import erfolgreich. Datei: IFIet_2 Cert.knxprod Produkt: Flat 2 v2 ZDIDBOXI Version OK DIMin8CX 1.4 SL Ready &1.1.1",
+  "seconds": 75,
+  "when": "2026-10-27T18:20:42.704606+00:00",
+  "verified": false
+ },
+ "Flat_4_1.4_EIFAItRS_Cert_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat 4"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: Flat 4 Version 3.0 OK SL Ready",
+  "seconds": 114,
+  "when": "2026-10-27T22:09:12.859285+00:00",
+  "verified": true
+ },
+ "Flat_4_v2_1.8_EIFAItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat 4 v2"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products \\Flat_4_v2_1.8_ElFAltR_Cert.knxprod Produkt: Flat 4 v2 Version 3.0 OK SL Ready",
+  "seconds": 113,
+  "when": "2026-10-27T22:11:11.017767+00:00",
+  "verified": true
+ },
+ "Flat_55_Display_1_0_EIFAItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat 55 Display"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: Flat 55 Display Version 3.0 OK SL Ready",
+  "seconds": 100,
+  "when": "2026-10-27T22:12:56.331372+00:00",
+  "verified": true
+ },
+ "Flat_55_Display_v2_2.1_EIFAItR_ETS5_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat 55 Display v2"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: Flat 55 Display v2 Version 3.0 OK SL Ready",
+  "seconds": 99,
+  "when": "2026-10-27T22:14:41.266523+00:00",
+  "verified": true
+ },
+ "Flat_55_Display_v2_2.2_EIFAItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat 55 Display v2"
+  ],
+  "message": "Import erfolgreich. Datei: Cert.knxprc•d Produkt: Flat 55 Display v2 ZDIDBOXI Version OK DIMin8CX 1.4 SL Ready &1.11",
+  "seconds": 72,
+  "when": "2026-10-27T18:23:05.790173+00:00",
+  "verified": false
+ },
+ "Flat_55_X1_v2_1.8_EIFAItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat 55 Xl v2"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: Flat 55 Xl v2 Version 3.0 OK SL Ready",
+  "seconds": 100,
+  "when": "2026-10-27T22:16:27.059106+00:00",
+  "verified": true
+ },
+ "Flat_55_X2_v2_1.5_EIFAItR_ETS5_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat 55 X2 v2"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: Flat 55 v2 Version 3.0 OK SL Ready",
+  "seconds": 102,
+  "when": "2026-10-27T22:18:14.623428+00:00",
+  "verified": true
+ },
+ "Flat_55_X2_v2_1.8_EIFAItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat 55 X2 v2"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: Flat 55 v2 Version 3.0 OK SL Ready",
+  "seconds": 103,
+  "when": "2026-10-27T22:20:03.263743+00:00",
+  "verified": true
+ },
+ "Flat_55_X4_v2_1.8_EIFAItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat 55 X4 v2"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: Flat 55 v2 Version 3.0 OK SL Ready",
+  "seconds": 95,
+  "when": "2026-10-27T22:21:43.894310+00:00",
+  "verified": true
+ },
+ "Flat_6_1.4_EIFAItRS_Cert_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat 6"
+  ],
+  "message": "Import erfolgreich. Datei: IFIöt_6 Produkt: Flat 6 ZOIDBOXI Version OK OlMin8CX DXI 1.4 SL Ready &1.1.1",
+  "seconds": 34,
+  "when": "2026-10-27T14:40:49.336574+00:00",
+  "verified": true
+ },
+ "Flat_6_v2_1.8_EIFAItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat 6 v2"
+  ],
+  "message": "Import erfolgreich. Datei: IFIet_6 v2_1.8_ElFAltR_Cert.knxprod Produkt: Flat 6 v2 Version OK SL Ready &1.1.1",
+  "seconds": 32,
+  "when": "2026-10-27T14:41:26.523758+00:00",
+  "verified": true
+ },
+ "Flat_Display_1.0_EIFAItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat Display"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: Flat Display Version OK SL Ready &1.1.1",
+  "seconds": 36,
+  "when": "2026-10-27T14:42:08.414312+00:00",
+  "verified": true
+ },
+ "Flat_Display_2.1_EIFAItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat Display"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: Flat Display Version OK SL Ready &1.1.1",
+  "seconds": 35,
+  "when": "2026-10-27T14:42:48.619784+00:00",
+  "verified": true
+ },
+ "Flat_Display_2.2_EIFAItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat Display"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: Flat Display Version OK SL Ready &1.1.1",
+  "seconds": 35,
+  "when": "2026-10-27T14:43:28.728923+00:00",
+  "verified": true
+ },
+ "Flat_Display_H_2.2_EIFAItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat Display H"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: Flat Display H Version OK SL Ready &1.1.1",
+  "seconds": 34,
+  "when": "2026-10-27T14:44:08.527599+00:00",
+  "verified": true
+ },
+ "Flat_Display_v2_2.4_EIFAItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat Display v2"
+  ],
+  "message": "Import erfolgreich. Datei: 2.4_ElFAltR Cert knxprad Produkt: Flat Display v2 Version OK SL Ready &1.11",
+  "seconds": 34,
+  "when": "2026-10-27T14:44:48.372538+00:00",
+  "verified": true
+ },
+ "Flat_Display_v2_2_5_EIFAItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat Display v2"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: Flat Display v2 Version OK SL Ready &1.11",
+  "seconds": 37,
+  "when": "2026-10-27T14:45:31.235205+00:00",
+  "verified": true
+ },
+ "Flat_RGB_1.1_EIFAItRUk.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat RGB"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: Flat Version OK SL Ready",
+  "seconds": 35,
+  "when": "2026-10-27T14:46:11.999297+00:00",
+  "verified": true
+ },
+ "Flat_Sensato_1_0_EIFAItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat Sensato"
+  ],
+  "message": "Import erfolgreich. Datei: EIFAltRS ETS5 knxprod Produkt: Flat Sensata Version OK SL Ready",
+  "seconds": 39,
+  "when": "2026-10-27T14:46:57.032770+00:00",
+  "verified": true
+ },
+ "Flat_Sensato_1_1_EIFAItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat Sensato"
+  ],
+  "message": "Import erfolgreich. Datei: _l_EIFAItRS ETS5.knxprod Produkt: Flat Sensata Version OK SL Ready",
+  "seconds": 49,
+  "when": "2026-10-27T14:47:51.815478+00:00",
+  "verified": true
+ },
+ "Flat_Sensato_v2_1.3_EIFAItR_ETS5_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat Sensato v2"
+  ],
+  "message": "Import erfolgreich. Datei: knxprod Produkt: Flat Sensata v2 Version OK SL Ready",
+  "seconds": 34,
+  "when": "2026-10-27T14:48:31.801664+00:00",
+  "verified": true
+ },
+ "Flat_XL_10_1.7_EIFAItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat XL X10"
+  ],
+  "message": "Import erfolgreich. Datei: IFIöt_XL Produkt: Flat XL XIC Version OK SL Ready",
+  "seconds": 37,
+  "when": "2026-10-27T14:49:14.346936+00:00",
+  "verified": true
+ },
+ "Flat_XL_4_1.7_EIFAItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat XL X4"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: Flat XL X4 Version OK SL Ready",
+  "seconds": 36,
+  "when": "2026-10-27T14:49:56.132180+00:00",
+  "verified": true
+ },
+ "Flat_XL_6_1.7_EIFAItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat XL X6"
+  ],
+  "message": "Import erfolgreich. Datei: IFIöt_XL Produkt: Flat XL X6 Version OK SL Ready",
+  "seconds": 40,
+  "when": "2026-10-27T14:50:41.991300+00:00",
+  "verified": true
+ },
+ "Flat_XL_8_1.7_EIFAItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat XL X8"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: Flat XL X8 Version OK SL Ready",
+  "seconds": 38,
+  "when": "2026-10-27T14:51:25.135442+00:00",
+  "verified": true
+ },
+ "Flat_XL_X10_1.8_EIFAItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat XL X10"
+  ],
+  "message": "Import erfolgreich. Datei: IFIöt_XL Produkt: Flat XL XIC Version OK SL Ready",
+  "seconds": 37,
+  "when": "2026-10-27T14:52:07.975829+00:00",
+  "verified": true
+ },
+ "Flat_XL_X4_1.8_EIFAItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat XL X4"
+  ],
+  "message": "Import erfolgreich. Datei: IFIet_XL Produkt: Flat XL X4 Version OK SL Ready",
+  "seconds": 37,
+  "when": "2026-10-27T14:52:50.134176+00:00",
+  "verified": true
+ },
+ "Flat_XL_X6_1.8_EIFAItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat XL X6"
+  ],
+  "message": "Import erfolgreich. Datei: IFIet_XL Produkt: Flat XL X6 Version OK SL Ready",
+  "seconds": 41,
+  "when": "2026-10-27T14:53:36.886057+00:00",
+  "verified": true
+ },
+ "Flat_XL_X8_1.8_EIFAItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Flat XL X8"
+  ],
+  "message": "Import erfolgreich. Datei: IFIöt_XL xa_l Produkt: Flat XL X8 Version OK SL Ready",
+  "seconds": 37,
+  "when": "2026-10-27T14:54:19.728685+00:00",
+  "verified": true
+ },
+ "HeatingBOX_230V_4X_1.2_EIFAItRS_Cert_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'HeatingBOX 230V 4X"
+  ],
+  "message": "Import erfolgreich. Datei: IHeetingBCX Produkt: Heating30X 2301\" 4X Version OK SL Ready",
+  "seconds": 39,
+  "when": "2026-10-27T14:55:03.780914+00:00",
+  "verified": false
+ },
+ "HeatingBOX_230V_8X_1.2_EIFAItRS_Cert_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'HeatingBOX 230V ex"
+  ],
+  "message": "Import erfolgreich. Datei: IHeetingBCX 230V Produkt: Heating30X 8X Version OK SL Ready &1.11",
+  "seconds": 39,
+  "when": "2026-10-27T14:55:48.128733+00:00",
+  "verified": false
+ },
+ "IBUS_ETS5_ABB_XX_V24-12-20_9AKK107046A7479-Rev_P.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "6108/06-500 Tasterankopplung 2-fach, UP"
+  ],
+  "message": "converted for over 20 min; result panel closed by hand; verified by catalog search for 6108/06-500",
+  "seconds": 1500,
+  "when": "2026-10-27T13:40:58.928430+00:00",
+  "verified": true
+ },
+ "IBUS_ETS5_BJE_XX_V24-12-20_9AKK107046A7479-Rev_K.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "6108/06 Tasterankopplung 2-fachl LIP",
+   "6108/06-AP Tasterenkopplung 2-fechr LIP",
+   "6108/07 Tasterankopplung 4-fachl LIP",
+   "6108/07-AP Tasterenkopplung 4-fechr LIP",
+   "6108/18 Raumtemperaturregler, LIP",
+   "6108/60 Bedienelement 6f,r RTR-Slave, Univ.-Eingang 5f,",
+   "6109/05 RTR mit Universaleingang 5-fachl LIP",
+   "6109/08 Objekt-RTR mit Universaleingang 5-fech"
+  ],
+  "message": "Import erfolgreich. Datei: 11 Produkt: 6108/06 Tasterenkapplung 2-fach, LIP Produkt: 6108/06-ÅP Tasterenkopplung 2-fach, LIP Produkt: 6108/07 Tasterenkapplung 4-fach, LIP Produkt: 6108/07-ÅP Tasterenkopplung 4-fech LIP Produkt: 6108/18 Raumtemperaturregler, LIP Produkt: 6108/60 Bedienelement 6fl, RTR-Slave, Univ.-Eingang 5f. Produkt: 6109/05 RTR mit Universalemgang 5-fåch, LIP Produkt: 6109/08 Objekt-RTR mit Universaleingang 5-fach Version OK SL Ready &1.11",
+  "seconds": 688,
+  "when": "2026-10-27T15:07:22.016322+00:00",
+  "verified": true
+ },
+ "IDAC_1.0_EIFAItR_Cert_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "IDAC"
+  ],
+  "message": "Import erfolgreich. Datei: 11 OAC_I Produkt: IDAC Version OK SL Ready &1.1.1",
+  "seconds": 41,
+  "when": "2026-10-27T15:08:08.579383+00:00",
+  "verified": true
+ },
+ "IP_Router_CL_1.0_EIFAItRS_ETS5_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "JIP Router CL"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: IP Rauter C Version OK SL Ready &1.1.1",
+  "seconds": 33,
+  "when": "2026-10-27T15:08:47.392503+00:00",
+  "verified": false
+ },
+ "IRSC_Open_1.1_EIFAHS_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "IRSC Open"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: IRSC Open Version OK SL Ready &1.11",
+  "seconds": 43,
+  "when": "2026-10-27T15:09:35.543550+00:00",
+  "verified": false
+ },
+ "IRSC_Plus_8.2_EIAFItRSP_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Klimagerätekontroller über IR-Befehle"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: Klimagerätekantraller über IR-3efehle ZNICL-[RSC Version OK IRSC Plus SL Ready &1.11",
+  "seconds": 46,
+  "when": "2026-10-27T15:10:26.988103+00:00",
+  "verified": true
+ },
+ "IRSC_Zone_1.8_EIFARSIt.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "IRSC Zone"
+  ],
+  "message": "Import erfolgreich. Datei: IIRSC zo e l. n _ 8 EIFARSlt knxprod Produkt: IRSC Zane Version OK SL Ready &1.1.1",
+  "seconds": 45,
+  "when": "2026-10-27T15:11:18.027791+00:00",
+  "verified": true
+ },
+ "ITR901-0002_ets-database.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KNX Line Coupler"
+  ],
+  "message": "Import erfolgreich. Datei: databese.knxprod Produkt: {NX Line Coupler ZNICL-[RSC Version OK IRSC Plus SL Ready &1.11",
+  "seconds": 7,
+  "when": "2026-10-27T15:11:30.139028+00:00",
+  "verified": false
+ },
+ "IWAC_Display_1_0_EIFAItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "IWAC Display"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: IWAC Display Version OK SL Ready &1.11",
+  "seconds": 38,
+  "when": "2026-10-27T15:12:13.359619+00:00",
+  "verified": false
+ },
+ "IWAC_Display_v2_1_1_EIFAItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "IWAC Display v2"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: IWAC Display v2 Version OK ZVIIWOK SL Ready &1.11",
+  "seconds": 37,
+  "when": "2026-10-27T15:12:55.609427+00:00",
+  "verified": false
+ },
+ "IWAC_Display_v2_2.1_EIFAItR_Cert_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "IWAC Display v2"
+  ],
+  "message": "Import erfolgreich. Datei: Ceft_ETS5.knxprod Produkt: IWAC Display v2 Version OK ZVIIWOK SL Ready &1.11",
+  "seconds": 35,
+  "when": "2026-10-27T15:13:36.077589+00:00",
+  "verified": false
+ },
+ "IWAC_Display_v3_2.0_EIFAItRS_Cert_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "IWAC Display v3"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: IWAC Display vB Version OK ZVIIWOK SL Ready &1.11",
+  "seconds": 39,
+  "when": "2026-10-27T15:14:20.049817+00:00",
+  "verified": true
+ },
+ "IWAC_Display_v3_3.0_EIFAItR_ETS5_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "IWAC Display v3"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: IWAC Display vB Version OK ZVIIWOK SL Ready &1.11",
+  "seconds": 36,
+  "when": "2026-10-27T15:15:00.950551+00:00",
+  "verified": true
+ },
+ "IWAC_Display_v3_3.1_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "IWAC Display v3"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: IWAC Display vB Version OK ZVIIWOK SL Ready &1.11",
+  "seconds": 36,
+  "when": "2026-10-27T15:15:42.301305+00:00",
+  "verified": true
+ },
+ "IWAC_Out_1.0_EIFAItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "IWAC Out"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: IWAC Out Version OK ZVIIWOK SL Ready &1.11",
+  "seconds": 34,
+  "when": "2026-10-27T15:16:21.563606+00:00",
+  "verified": true
+ },
+ "IWAC_Out_Keypad_1.0_EIAFItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "IWAC Out Keypad"
+  ],
+  "message": "Import erfolgreich. Datei: ElÅFltRUk_Cert.knxprod Produkt: IWAC Out Keypad Version OK ZVIIWOK SL Ready &1.11",
+  "seconds": 34,
+  "when": "2026-10-27T15:17:01.342685+00:00",
+  "verified": true
+ },
+ "IWAC_Out_Keypad_1.1_EIFAItRUk.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "IWAC Out Keypad"
+  ],
+  "message": "Import erfolgreich. Datei: MWAC_Out_Keypad_1.1 _ EI FÅltRLI k.knxprad Produkt: IWAC Out Keypad Version OK ZVIIWOK SL Ready &1.11",
+  "seconds": 37,
+  "when": "2026-10-27T15:17:44.090431+00:00",
+  "verified": true
+ },
+ "InZennio_Z41_3.1_EIFARSItP_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "JInZennio Z41"
+  ],
+  "message": "Import erfolgreich. Datei: linZenni0_Z41 Produkt: InZennio Z41 Version OK ZVIIWOK SL Ready &1.11",
+  "seconds": 73,
+  "when": "2026-10-27T15:19:02.148828+00:00",
+  "verified": false
+ },
+ "IndustrialBOX_4_1.1_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "IndustrialBOX 4"
+  ],
+  "message": "Import erfolgreich. Datei: \\lndustrial BOX_4_ 1 . 1 _EIFAltRIJ k_Cert knxprod Produkt: IndustrialBOX 4 Version OK SL Ready &1.11",
+  "seconds": 41,
+  "when": "2026-10-27T15:19:48.663257+00:00",
+  "verified": true
+ },
+ "IndustrialBOX_Current_4_2.0_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "IndustrialBOX Current 4"
+  ],
+  "message": "Import erfolgreich. Datei: EIFAltRLlk Cert.knxprad Produkt: IndustrialBOX Current 4 Version SL Ready &1.11 OK Industria180X Current..",
+  "seconds": 41,
+  "when": "2026-10-27T15:20:36.008014+00:00",
+  "verified": true
+ },
+ "Infinity3_v1_3_1.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Infinity"
+  ],
+  "message": "Import erfolgreich. Datei: \\lnfinlty3 v 1_3_1 .knxprod Produkt: Infinity Version SL Ready &1.11 OK Industria180X Current..",
+  "seconds": 23,
+  "when": "2026-10-27T15:21:04.729251+00:00",
+  "verified": true
+ },
+ "Inzennio_Z38i_2.1_EIFAHS_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "JInZennio Z38i"
+  ],
+  "message": "Import erfolgreich. Datei: CERT.knxprod Produkt: InZennio Z38i Version OK SL Ready &1.11",
+  "seconds": 49,
+  "when": "2026-10-27T15:21:59.599954+00:00",
+  "verified": false
+ },
+ "KCI-4S0_1.0_EIAFItPRS_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KCl 4 SO"
+  ],
+  "message": "Import erfolgreich. Datei: IKCl-4SO_l knxprod Produkt: 4 SO Version OK SL Ready &1.11",
+  "seconds": 51,
+  "when": "2026-10-27T15:22:56.043560+00:00",
+  "verified": false
+ },
+ "KCI_4_S0_1_1_EIFAItRSP.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KCl 4 SO"
+  ],
+  "message": "Import erfolgreich. Datei: IKCl_4 Produkt: 4 SO Version OK SL Ready &1.11",
+  "seconds": 47,
+  "when": "2026-10-27T15:23:48.183721+00:00",
+  "verified": false
+ },
+ "KEM_1.0_EIFAItR_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "KEM"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: KEM Version OK SL Ready &1.11",
+  "seconds": 41,
+  "when": "2026-10-27T15:24:34.539912+00:00",
+  "verified": false
+ },
+ "KES_1xThree-phase_2.0_EIFAIt.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "KES"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: KES Version OK SL Ready &1.11",
+  "seconds": 51,
+  "when": "2026-10-27T15:25:31.258636+00:00",
+  "verified": false
+ },
+ "KES_3xSingle-phase_2.0_EIFAIt.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "KES"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: KES Version OK SL Ready &1.11",
+  "seconds": 51,
+  "when": "2026-10-27T15:26:28.074697+00:00",
+  "verified": true
+ },
+ "KES_Plus_1.4_EIFAItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "KES Plus"
+  ],
+  "message": "Import erfolgreich. Datei: EIFAItR_Cert.knxprod Produkt: KES Plus Version OK SL Ready &1.11",
+  "seconds": 44,
+  "when": "2026-10-27T15:27:17.702677+00:00",
+  "verified": true
+ },
+ "KILock_1.1_EIFAItRUk.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "KILock"
+  ],
+  "message": "Import erfolgreich. Datei: 1.1_ElFAltRUk.knxprod Produkt: KILock Version OK SL Ready &1.11",
+  "seconds": 34,
+  "when": "2026-10-27T15:27:57.438829+00:00",
+  "verified": true
+ },
+ "KIPI-RC_1.1_EIFAItR_Cert_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KIPI-RC"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: KIPI-RC Version OK SL Ready &1.11",
+  "seconds": 41,
+  "when": "2026-10-27T15:28:43.419566+00:00",
+  "verified": false
+ },
+ "KIPI-RC_SC_1.6_EIFAItRUk.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KIPI-RC SC"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: KIPI-RC SC Version OK SL Ready &1.11",
+  "seconds": 41,
+  "when": "2026-10-27T15:29:30.347909+00:00",
+  "verified": false
+ },
+ "KIPI_SC_1.1_EIFAItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "KIPI SC"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: KIPI SC Version OK SL Ready &1.11",
+  "seconds": 46,
+  "when": "2026-10-27T15:30:22.282380+00:00",
+  "verified": false
+ },
+ "KIRN_1.0_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KIRN"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: KIRN ZSYKIPRCSC Version OK KIPI-RC SC 1.6 SL Ready &1.11",
+  "seconds": 35,
+  "when": "2026-10-27T15:31:03.037878+00:00",
+  "verified": false
+ },
+ "KLIC-DA_1.4_EIFAItRS.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KLIC-DA LT"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: KLIC-OA LT Version OK SL Ready &1.11",
+  "seconds": 51,
+  "when": "2026-10-27T15:31:59.601880+00:00",
+  "verified": false
+ },
+ "KLIC-DA_LT_2.2_EIFAItRS.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KLIC-DA LT"
+  ],
+  "message": "Import erfolgreich. Datei: LT 2.2_EIFAItRS.knxprod Produkt: KLIC-OA LT Version OK SL Ready &1.1.1",
+  "seconds": 47,
+  "when": "2026-10-27T15:32:52.193308+00:00",
+  "verified": false
+ },
+ "KLIC-DA_v2_1.0_EIFAItR_Cert_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KLIC-DA v2"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: KLIC-OA v2 Version OK SL Ready &1.11",
+  "seconds": 39,
+  "when": "2026-10-27T15:33:37.023886+00:00",
+  "verified": false
+ },
+ "KLIC-DD_v3_1.4_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KLIC-DD v3"
+  ],
+  "message": "Import erfolgreich. Datei: DO v3 Produkt: KLIC-OD v3 Version OK SL Ready &1.11",
+  "seconds": 43,
+  "when": "2026-10-27T15:34:25.053599+00:00",
+  "verified": false
+ },
+ "KLIC-DI_v2_1.4_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KLIC-DI v2"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: KLIC-OI Version OK SL Ready &1.11",
+  "seconds": 39,
+  "when": "2026-10-27T15:35:10.088527+00:00",
+  "verified": false
+ },
+ "KLIC-FJT_1.1_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KLIC-FJT"
+  ],
+  "message": "Import erfolgreich. Datei: FIT Produkt: KLIC-FJT Version OK SL Ready &1.11",
+  "seconds": 43,
+  "when": "2026-10-27T15:36:00.069939+00:00",
+  "verified": false
+ },
+ "KLIC-FJ_1_0_EIFAItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KLIC-FJ"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: KLIC-F Version OK SL Ready &1.1.1",
+  "seconds": 42,
+  "when": "2026-10-27T15:36:48.058877+00:00",
+  "verified": false
+ },
+ "KLIC-FJ_1_1_EIFAItR_ETS5_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KLIC-FJ"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: KLIC-F Version OK KLIC-FJT SL Ready &1.11",
+  "seconds": 41,
+  "when": "2026-10-27T15:37:34.978903+00:00",
+  "verified": false
+ },
+ "KLIC-FJ_vT_1.1_EIFAItR_ETS5_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KLIC-FJ vT"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: KLIC-FJ vT Version OK SL Ready &1.11",
+  "seconds": 48,
+  "when": "2026-10-27T15:38:28.323131+00:00",
+  "verified": false
+ },
+ "KLIC-LG1_1.1_EIFAItRS_Cert_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KLIC-LGI"
+  ],
+  "message": "Import erfolgreich. Datei: LEI Produkt: KLIC-LGI Version OK SL Ready &1.11",
+  "seconds": 40,
+  "when": "2026-10-27T15:39:14.044699+00:00",
+  "verified": false
+ },
+ "KLIC-LG1_vT_1.1_EIFAItR_ETS5_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KLIC-LGI vT"
+  ],
+  "message": "Import erfolgreich. Datei: LEI Produkt: KLIC-LGI vT Version OK SL Ready &1.11",
+  "seconds": 43,
+  "when": "2026-10-27T15:40:03.169560+00:00",
+  "verified": false
+ },
+ "KLIC-PA_1.0_EIFAItRS_Cert_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KLIC-PA"
+  ],
+  "message": "Import erfolgreich. Datei: PA_I.O EIFAltRS_Cert ETS5 Produkt: KLIC-PA Version OK SL Ready &1.11",
+  "seconds": 45,
+  "when": "2026-10-27T15:40:53.520674+00:00",
+  "verified": false
+ },
+ "KLIC-SG_1.0_EIFAItR_ETS5_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KLIC-SG"
+  ],
+  "message": "Import erfolgreich. Datei: SG_I.O Produkt: KLIC-SG Version OK SL Ready &1.11",
+  "seconds": 44,
+  "when": "2026-10-27T15:41:42.860148+00:00",
+  "verified": false
+ },
+ "KLIC_DI_SKY_1.14_EIFAItRS_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KLIC-DI SKY"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: KLIC-OI SKY Version OK SL Ready &1.11",
+  "seconds": 53,
+  "when": "2026-10-27T15:42:41.647682+00:00",
+  "verified": false
+ },
+ "KLIC_DI_SKY_2.3_EIFAItRS.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KLIC-DI SKY"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: KLIC-OI SKY Version OK SL Ready &1.1.1",
+  "seconds": 60,
+  "when": "2026-10-27T15:43:46.982672+00:00",
+  "verified": false
+ },
+ "KLIC_DI_VRV_1.13_EIFAItRS.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KLIC-DI VRV"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: KLIC-OI VRV Version OK SL Ready &1.1.1",
+  "seconds": 54,
+  "when": "2026-10-27T15:44:46.463692+00:00",
+  "verified": false
+ },
+ "KLIC_LG1_1_0_EIAFItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KLIC-LGI"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: KLIC-LGI Version OK SL Ready &1.11",
+  "seconds": 44,
+  "when": "2026-10-27T15:45:36.503832+00:00",
+  "verified": false
+ },
+ "KLIC_MITT_1_0_EIAItRSF.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KLIC-MITT"
+  ],
+  "message": "Import erfolgreich. Datei: IKLIC MITT_I O_EIAltRSF.knxprod Produkt: KLIC-MITT Version OK SL Ready &1.11",
+  "seconds": 72,
+  "when": "2026-10-27T15:46:53.746142+00:00",
+  "verified": false
+ },
+ "KLIC_MITT_v2_1.0_EIFAItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KLIC-MITT v2"
+  ],
+  "message": "Import erfolgreich. Datei: IKLIC EIFAltRS_ETS5knxprod Produkt: KLIC-MITT v2 Version OK SL Ready &1.11",
+  "seconds": 49,
+  "when": "2026-10-27T15:47:48.761664+00:00",
+  "verified": false
+ },
+ "KLIC_MITT_v3_1.2_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KLIC-MITT v3"
+  ],
+  "message": "Import erfolgreich. Datei: IKLIC Ce,tknxprod Produkt: KLIC-MITT v3 Version OK SL Ready &1.11",
+  "seconds": 47,
+  "when": "2026-10-27T15:48:41.807700+00:00",
+  "verified": false
+ },
+ "KLIC_MITT_v3_1.3_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KLIC-MITT v3"
+  ],
+  "message": "Import erfolgreich. Datei: IKLIC Ce,tknxprod Produkt: KLIC-MITT v3 Version OK SL Ready &1.11",
+  "seconds": 47,
+  "when": "2026-10-27T15:49:34.558400+00:00",
+  "verified": false
+ },
+ "KLIC_TS_1_0_EIFAItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KLIC-TS"
+  ],
+  "message": "Import erfolgreich. Datei: IKLIC_TS EIFAItRS ETS5 Produkt: KLIC-TS Version OK SL Ready &1.11",
+  "seconds": 48,
+  "when": "2026-10-27T15:50:27.867205+00:00",
+  "verified": false
+ },
+ "KLIC_TS_1_1_EIFAItR_Cert_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KLIC-TS"
+  ],
+  "message": "Import erfolgreich. Datei: IKLIC_TS Produkt: KLIC-TS Version OK SL Ready &1.11",
+  "seconds": 50,
+  "when": "2026-10-27T15:51:23.276449+00:00",
+  "verified": false
+ },
+ "KLIC_TS_2_0_EIFAItR_ETS5_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'KLIC-TS"
+  ],
+  "message": "Import erfolgreich. Datei: IKLIC_TS Produkt: KLIC-TS Version OK SL Ready &1.11",
+  "seconds": 47,
+  "when": "2026-10-27T15:52:16.279833+00:00",
+  "verified": false
+ },
+ "KNX_DB_D_GB_E_F_I_NL_METEODATA_140_S_V1_4_knxprod_2206.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Meteodate 140 S",
+   "Meteodate 140 S 24V",
+   "Meteodate 140 S 24V GPS",
+   "Meteodate 140 S GPS"
+  ],
+  "message": "Import erfolgreich. Datei: prod Produkt: Meteodate 140 S Produkt: Meteodate 140 S 24V Produkt: Meteodate 140 S 24V GPS Produkt: Meteodate 140 S EPS knxprod 2206.knx Version OK SL Ready &1.11",
+  "seconds": 36,
+  "when": "2026-10-27T15:52:57.583409+00:00",
+  "verified": false
+ },
+ "KNX_IP_Interface_1_0_EIFAItPRS_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Zennio KNX-IP Interface"
+  ],
+  "message": "Import erfolgreich. Datei: P_lnterface_ 1 _ Produkt: Zennio {NX-IP Interface Version OK SL Ready &1.11",
+  "seconds": 50,
+  "when": "2026-10-27T15:53:53.509568+00:00",
+  "verified": true
+ },
+ "L&J-a2fx-sec-en-de-30.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "L&J secure Schaltaktor 2fach"
+  ],
+  "message": "Import erfolgreich. Datei: de-30 knxprod Produkt: LECI secure Schaltaktar 2fach ZCLFB230Cl Version OK r-ÅNin30X ICH SL Ready",
+  "seconds": 9,
+  "when": "2026-10-27T15:54:08.870779+00:00",
+  "verified": true
+ },
+ "L&J-a3fx-sec-en-de-30.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "L&J secure Schaltaktor 3fach"
+  ],
+  "message": "Import erfolgreich. Datei: de-30 knxprod Produkt: LECI secure Schaltaktar 3fach Å9FX-SEC Version OK SEC gx Schölten, zeit, s...g.o SL Ready",
+  "seconds": 13,
+  "when": "2026-10-27T15:54:27.887963+00:00",
+  "verified": true
+ },
+ "L&J-a4fx-sec-en-de-30.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "L&J secure Schaltaktor 4fach"
+  ],
+  "message": "Import erfolgreich. Datei: de-30 knxprod Produkt: LECI secure Schaltaktar 4fach Å9FX-SEC Version OK SEC gx Schölten, zeit, s...g.o SL Ready",
+  "seconds": 10,
+  "when": "2026-10-27T15:54:43.214428+00:00",
+  "verified": true
+ },
+ "L&J-a5fx-sec-en-de-30.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "L&J secure Schaltaktor 5fach"
+  ],
+  "message": "Import erfolgreich. Datei: de-30 knxprod Produkt: LECI secure Schaltaktar 5fach Å9FX-SEC Version OK SEC gx Schölten, zeit, s...g.o SL Ready",
+  "seconds": 10,
+  "when": "2026-10-27T15:54:58.495441+00:00",
+  "verified": true
+ },
+ "L&J-a6fx-sec-en-de-30.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "L&J secure Schaltaktor 6fach"
+  ],
+  "message": "Import erfolgreich. Datei: de-30 knxprod Produkt: LECI secure Schaltaktar 6fach Å9FX-SEC Version OK SEC gx Schölten, zeit, s...g.o SL Ready",
+  "seconds": 10,
+  "when": "2026-10-27T15:55:13.809976+00:00",
+  "verified": true
+ },
+ "L&J-a9fx-sec-en-de-30.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "L&J secure Schaltaktor 9fach"
+  ],
+  "message": "Import erfolgreich. Datei: de-30 knxprod Produkt: LECI secure Schaltaktar gfach Å9FX-SEC Version OK SEC gx Schölten, zeit, s...g.o SL Ready",
+  "seconds": 10,
+  "when": "2026-10-27T15:55:29.309818+00:00",
+  "verified": true
+ },
+ "L&J-be4fx-sec-en-de-30.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "L&J secure Binäreingang 4fach"
+  ],
+  "message": "Import erfolgreich. Datei: de-30 knxprod Produkt: LECI secure Binäreingang 4fech Å9FX-SEC Version OK SEC gx Schölten, zeit, s...g.o SL Ready",
+  "seconds": 10,
+  "when": "2026-10-27T15:55:44.722188+00:00",
+  "verified": true
+ },
+ "L&J-j2fx-sec-en-de-30.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "L&J secure Jalousieaktor 2fach"
+  ],
+  "message": "Import erfolgreich. Datei: de-30 knxprod Produkt: LECI secure delousieektor 2fach Å9FX-SEC Version OK SEC gx Schölten, zeit, s...g.o SL Ready",
+  "seconds": 10,
+  "when": "2026-10-27T15:56:00.184992+00:00",
+  "verified": true
+ },
+ "L&J-j4fx-sec-en-de-30.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "L&J secure Jalousieaktor 4fach"
+  ],
+  "message": "Import erfolgreich. Datei: de-30 knxprod Produkt: LECI secure delousieektor 4fach Å9FX-SEC Version OK SEC gx Schölten, zeit, s...g.o SL Ready",
+  "seconds": 10,
+  "when": "2026-10-27T15:56:15.560942+00:00",
+  "verified": true
+ },
+ "L&J-ta8fxct-sec-en-de-30.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "L&J secure Tastsensor 8fach + Tempu"
+  ],
+  "message": "Import erfolgreich. Datei: de-30 knxprod Produkt: LECI secure Tastsensor 8fach + Temp Å9FX-SEC Version OK SEC gx Schölten, zeit, s...g.o SL Ready",
+  "seconds": 12,
+  "when": "2026-10-27T15:56:33.552805+00:00",
+  "verified": true
+ },
+ "LUZEN_PLUS_3.2_EIFAItRS.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "LUZEN PLUS"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: LUZEN PLUS Å9FX-SEC Version OK SEC gx Schölten, zeit, s...g.o SL Ready",
+  "seconds": 58,
+  "when": "2026-10-27T15:57:37.669160+00:00",
+  "verified": true
+ },
+ "LuJ-tacjc8fa-fw-20-en-de.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "CJC Taster universal 8fach Typ A FacilityWeb"
+  ],
+  "message": "Import erfolgreich. Datei: en-de. knxprod Produkt: CIC Tester universal 8fech Typ A FacilityWeb Version OK SL Ready &1.1.1",
+  "seconds": 25,
+  "when": "2026-10-27T15:58:07.758032+00:00",
+  "verified": true
+ },
+ "LuZen_ONE_2.3_EIFAH_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "LuZen ONE"
+  ],
+  "message": "Import erfolgreich. Datei: ILLIZen ONE Produkt: LuZen ONE Version OK SL Ready &1.1.1",
+  "seconds": 58,
+  "when": "2026-10-27T15:59:10.804227+00:00",
+  "verified": false
+ },
+ "LumentoX4_LED_1.1_EIFAIt.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "LUMENTO X4 LED"
+  ],
+  "message": "Import erfolgreich. Datei: \\LumentoX4 Produkt: LUMENTC LEO Version OK SL Ready &1.11",
+  "seconds": 55,
+  "when": "2026-10-27T16:00:11.327279+00:00",
+  "verified": true
+ },
+ "LumentoX4_RGBW_1.1_EIFAS.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "LUMENTO X4 RGBW"
+  ],
+  "message": "Import erfolgreich. Datei: \\LumentoX4 RC3W_1.1 E FAS.knxprod Produkt: LUMENTC ZOILX4V2 Version OK Lumenta X4 v2 1 „C SL Ready &1.11",
+  "seconds": 58,
+  "when": "2026-10-27T16:01:14.603051+00:00",
+  "verified": true
+ },
+ "LumentoX4_WHITE_1.1_EIFAIt.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "LUMENTO X4 WHITE"
+  ],
+  "message": "Import erfolgreich. Datei: \\LumentoX4 Produkt: LUMENTC WHITE ZOILX4V2 Version OK Lumenta X4 v2 1 „C SL Ready &1.11",
+  "seconds": 54,
+  "when": "2026-10-27T16:02:14.101014+00:00",
+  "verified": true
+ },
+ "Lumento_C3_1.1_EIFAItRSP_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Lumento C3"
+  ],
+  "message": "Import erfolgreich. Datei: ILLI Produkt: Lumenta C.3 ZOILX4V2 Version OK Lumenta X4 v2 1 „C SL Ready &1.11",
+  "seconds": 58,
+  "when": "2026-10-27T16:03:18.137697+00:00",
+  "verified": true
+ },
+ "Lumento_C4_1.1_EIFAItPRS_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Lumento C4"
+  ],
+  "message": "Import erfolgreich. Datei: ILLI Produkt: Lumenta C.4 ZOILX4V2 Version OK Lumenta X4 v2 1 „C SL Ready &1.11",
+  "seconds": 66,
+  "when": "2026-10-27T16:04:29.668509+00:00",
+  "verified": true
+ },
+ "Lumento_DX4_1.2_EIFAItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Lumento DX4"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: Lumenta DX4 ZOILX4V2 Version OK Lumenta X4 v2 1 „C SL Ready &1.11",
+  "seconds": 52,
+  "when": "2026-10-27T16:05:26.839709+00:00",
+  "verified": true
+ },
+ "Lumento_X3_LED_1.1_EIFA.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "LUMENTO X3 LED"
+  ],
+  "message": "Import erfolgreich. Datei: 1.1_ElFA.knxprad Produkt: LUMENTC LEO ZOILX4V2 Version OK Lumenta X4 v2 1 „C SL Ready &1.11",
+  "seconds": 54,
+  "when": "2026-10-27T16:06:26.247652+00:00",
+  "verified": true
+ },
+ "Lumento_X3_RGB_1.1_EIFA.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "LUMENTO X3 RGB"
+  ],
+  "message": "Import erfolgreich. Datei: 1.1_ElFÅ.knxprad Produkt: LUMENTC ZOILX4V2 Version OK Lumenta X4 v2 1 „C SL Ready &1.11",
+  "seconds": 56,
+  "when": "2026-10-27T16:07:28.110115+00:00",
+  "verified": true
+ },
+ "Lumento_X3_RGB_1.2_EIFA.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "LUMENTO X3 RGB"
+  ],
+  "message": "Import erfolgreich. Datei: 1.2_ElFA.knxprad Produkt: LUMENTC ZOILX4V2 Version OK Lumenta X4 v2 1 „C SL Ready &1.11",
+  "seconds": 55,
+  "when": "2026-10-27T16:08:28.750956+00:00",
+  "verified": false
+ },
+ "Lumento_X3_v2_1.0_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Lumento X3 v2"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: Lumenta X3 v2 Version OK SL Ready",
+  "seconds": 48,
+  "when": "2026-10-27T16:09:23.187466+00:00",
+  "verified": true
+ },
+ "MAXinBOX16_2.2_EIFAR.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX 16"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: MAXin80X 16 ZOILX4V2 Version OK Lumenta X4 v2 1 „C SL Ready &1.11",
+  "seconds": 72,
+  "when": "2026-10-27T16:10:40.564979+00:00",
+  "verified": true
+ },
+ "MAXinBOX8_1.0_EI.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "IMAXinBOX 8"
+  ],
+  "message": "Import erfolgreich. Datei: WAXinBOX8 10_EI.knxprad Produkt: MAXin80X 8 ZICMB24V2 Version OK MAXin3CX 24 2.2 SL Ready &1.11",
+  "seconds": 66,
+  "when": "2026-10-27T16:11:51.919443+00:00",
+  "verified": false
+ },
+ "MAXinBOX_1212_1.7_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX 1212"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: MAXin80X 1212 Version OK SL Ready &1.1.1",
+  "seconds": 67,
+  "when": "2026-10-27T16:13:04.789452+00:00",
+  "verified": true
+ },
+ "MAXinBOX_12_1.12_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX 12"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: MAXin80X 12 ZICMB24V2 Version OK MAXin3CX 24 2.2 SL Ready &1.11",
+  "seconds": 71,
+  "when": "2026-10-27T16:14:22.091269+00:00",
+  "verified": true
+ },
+ "MAXinBOX_16_Plus_1_0_EIFAItRSP.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX 16 Plus"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: MAXin80X 16 Plus ZICMB24V2 Version OK MAXin3CX 24 2.2 SL Ready &1.11",
+  "seconds": 105,
+  "when": "2026-10-27T16:16:12.672488+00:00",
+  "verified": true
+ },
+ "MAXinBOX_16_Plus_1_1_EIFAItRSP_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX 16 Plus"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: MAXin80X 16 Plus ZNllO-MS8 Version OK MAXin3CX a SL Ready &1.11",
+  "seconds": 100,
+  "when": "2026-10-27T16:17:58.161650+00:00",
+  "verified": true
+ },
+ "MAXinBOX_16_Plus_1_2_EIFAItRSP_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX 16 Plus"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: MAXin80X 16 Plus ZICMB1212 Version OK MAXin3CX 1212 1.- SL Ready &1.11",
+  "seconds": 102,
+  "when": "2026-10-27T16:19:46.523238+00:00",
+  "verified": true
+ },
+ "MAXinBOX_16_Plus_1_2_EIFAItRSP_ETS5_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX 16 Plus"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: MAXin80X 16 Plus ZICMB12 Version OK MAXin3CX 12 1,1: SL Ready &1.11",
+  "seconds": 81,
+  "when": "2026-10-27T16:21:13.991905+00:00",
+  "verified": true
+ },
+ "MAXinBOX_16_v3_1.2_EIFAItRS_ETS5_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX 16 v3"
+  ],
+  "message": "Import erfolgreich. Datei: CERT.knxprod Produkt: MAXin80X 16 v3 ZICMB12 Version OK MAXin3CX 12 1,1: SL Ready &1.11",
+  "seconds": 74,
+  "when": "2026-10-27T16:22:34.105192+00:00",
+  "verified": true
+ },
+ "MAXinBOX_16_v4_1.10_EIAFItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX 16 v4"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: MAXin80X 16 v4 ZIO-M816P Version SL Ready &1.11 OK MAXin3CX 16 Plus 1.0",
+  "seconds": 72,
+  "when": "2026-10-27T16:23:52.085695+00:00",
+  "verified": true
+ },
+ "MAXinBOX_16_v4_1.12_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX 16 v4"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: MAXin80X 16 v4 ZIO-M816P Version OK MAXin3CX 16 Plus SL Ready &1.11",
+  "seconds": 73,
+  "when": "2026-10-27T16:25:11.044003+00:00",
+  "verified": true
+ },
+ "MAXinBOX_20_1.12_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX 20"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: MAXin80X ac ZIO-M816P Version SL Ready &1.11 OK MAXin3CX 16 Plus 1.2",
+  "seconds": 77,
+  "when": "2026-10-27T16:26:34.055992+00:00",
+  "verified": true
+ },
+ "MAXinBOX_24_1.4_EIFAItR_Cert_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX 24"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: MAXin80X 24 ZICMB16V3 Version OK MAXin3CX 16 1.2 SL Ready &1.1.1",
+  "seconds": 75,
+  "when": "2026-10-27T16:27:55.023922+00:00",
+  "verified": true
+ },
+ "MAXinBOX_24_v2_1.12_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX 24 v2"
+  ],
+  "message": "Import erfolgreich. Datei: knxprod Produkt: MAXin80X ZIOMB16V4 OK MAXin3CX Version I.IC SL Ready",
+  "seconds": 75,
+  "when": "2026-10-27T16:29:16.541045+00:00",
+  "verified": true
+ },
+ "MAXinBOX_24_v2_1.6_EIFAItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX 24 v2"
+  ],
+  "message": "Import erfolgreich. Datei: Certknxprad Produkt: MAXin80X ZIOMB16V4 OK MAXin3CX Version 1.12 SL Ready",
+  "seconds": 74,
+  "when": "2026-10-27T16:30:36.410404+00:00",
+  "verified": true
+ },
+ "MAXinBOX_66_1.3_EIFAItRSP.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX 66"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: MAXin80X 66 ZICMB20 Version OK MAXin3CX 20 1,1: SL Ready",
+  "seconds": 92,
+  "when": "2026-10-27T16:32:14.515539+00:00",
+  "verified": true
+ },
+ "MAXinBOX_66_v2_1.1_EIFAItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX 66 v2"
+  ],
+  "message": "Import erfolgreich. Datei: I EIFAltRS_ETS5.knxprod Produkt: MAXin80X 66 ZIO-MB24 Version OK MAXin3CX 24 1.4 SL Ready",
+  "seconds": 62,
+  "when": "2026-10-27T16:33:22.492527+00:00",
+  "verified": true
+ },
+ "MAXinBOX_66_v3_1.6_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX 66 v3"
+  ],
+  "message": "Import erfolgreich. Datei: Ce,tknxprod Produkt: MAXin80X 66 v3 ZICMB24V2 OK MAXin3CX 1.12 Version 1.12 SL Ready",
+  "seconds": 72,
+  "when": "2026-10-27T16:34:40.045518+00:00",
+  "verified": true
+ },
+ "MAXinBOX_88_1.6_EIAFItRUk.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX 88"
+  ],
+  "message": "Import erfolgreich. Datei: EIÅFItRUk.knxprod Produkt: MAXin80X 88 ZICMB24V2 Version OK MAXin3CX 1.6 SL Ready",
+  "seconds": 70,
+  "when": "2026-10-27T16:35:56.112511+00:00",
+  "verified": true
+ },
+ "MAXinBOX_88_1.6_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX 88"
+  ],
+  "message": "Import erfolgreich. Datei: EIFAItRUk Certknxprad Produkt: MAXin80X 88 ZNl•a-M866 Version OK MAXin3CX 66 1.3 SL Ready",
+  "seconds": 80,
+  "when": "2026-10-27T16:37:21.974097+00:00",
+  "verified": true
+ },
+ "MAXinBOX_8_Plus_1_1_EIFAItRSP_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX 8 Plus"
+  ],
+  "message": "Import erfolgreich. Datei: l_ElFAltRSP CERT.knxprod Produkt: MAXin80X8 Plus ZNl•a-M866 Version OK MAXin3CX 66 1.3 SL Ready",
+  "seconds": 101,
+  "when": "2026-10-27T16:39:09.313632+00:00",
+  "verified": true
+ },
+ "MAXinBOX_8_v3_1.2_EIFAItRS_ETS5_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX 8 v3"
+  ],
+  "message": "Import erfolgreich. Datei: WAXinBOX_8 Produkt: 8 v3 ZICMB56V2 Version OK MAXin3CX 1.' SL Ready",
+  "seconds": 79,
+  "when": "2026-10-27T16:40:34.311849+00:00",
+  "verified": true
+ },
+ "MAXinBOX_8_v4_1.10_EIAFItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX 8 v4"
+  ],
+  "message": "Import erfolgreich. Datei: WAXinBOX_8 1.10 EIAFItRUk_Cert.knxprad Produkt: ZICMB56V3 Version OK MAXin3CX 66 1.6 SL Ready",
+  "seconds": 80,
+  "when": "2026-10-27T16:42:00.175910+00:00",
+  "verified": true
+ },
+ "MAXinBOX_8_v4_1.12_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX 8 v4"
+  ],
+  "message": "Import erfolgreich. Datei: WAXinBOX_8 1.12_EIFAltRUk Ce,tknxprod Produkt: Version OK MAXin3CX 88 1.6 SL Ready",
+  "seconds": 80,
+  "when": "2026-10-27T16:43:26.407076+00:00",
+  "verified": true
+ },
+ "MAXinBOX_FANCOIL_2CH2P_1_1_EIFAItRSP_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX FANCOIL 2CH2P"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: MAXin80X r-ÅNCCIL 2CH2P ZIO-MB8P Version SL Ready OK MAXin3CX 8 Plus",
+  "seconds": 92,
+  "when": "2026-10-27T16:45:04.118749+00:00",
+  "verified": true
+ },
+ "MAXinBOX_FANCOIL_2CH2P_v2_1.2_EIFAItRS_ETS5_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX FANCOIL 2CH2P „2"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: MAXin80X r-ÅNCCIL 2CF2P ZIOMB16V4 Version I.IC SL Ready OK MAXin3CX",
+  "seconds": 80,
+  "when": "2026-10-27T16:46:30.070067+00:00",
+  "verified": true
+ },
+ "MAXinBOX_FANCOIL_4CH2P_1_0_EFAItRSP.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX FANCOIL 4CH2P"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: MAXin80X r-ÅNCCIL 4CH2P ZIOMB16V4 Version 1.12 SL Ready OK MAXin3CX",
+  "seconds": 95,
+  "when": "2026-10-27T16:48:10.795057+00:00",
+  "verified": true
+ },
+ "MAXinBOX_FANCOIL_4CH2P_1_1_EIFAItRSP_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX FANCOIL 4CH2P"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: MAXin80X r-ÅNCCIL 4CH2P ZIOMB16V4 Version 1.12 SL Ready OK MAXin3CX",
+  "seconds": 96,
+  "when": "2026-10-27T16:49:52.431839+00:00",
+  "verified": true
+ },
+ "MAXinBOX_FANCOIL_4CH2P_1_2_EIFAItRSP_ETS5_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX FANCOIL 4CH2P"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: MAXin80X r-ÅNCCIL 4CH2P ZICMB20 Version OK MAXin3CX 20 1,1: SL Ready",
+  "seconds": 75,
+  "when": "2026-10-27T16:51:13.366733+00:00",
+  "verified": true
+ },
+ "MAXinBOX_FANCOIL_4CH2P_v2_1.2_EIFAItRS_ETS5_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX FANCOIL 4CH2P „2"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: MAXin80X r-ÅNCCIL 4CF2P ZICMB20 Version OK MAXin3CX 20 1,1: SL Ready",
+  "seconds": 85,
+  "when": "2026-10-27T16:52:44.035723+00:00",
+  "verified": true
+ },
+ "MAXinBOX_FC_0-10V_FAN_1.6_EIFAItRS_Cert_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX FC 0-1 OV FAN"
+  ],
+  "message": "Import erfolgreich. Datei: WAXinBOX_FC Produkt: MAXin80X FC C-IOV FAN ZIO-MB24 Version OK MAXin3CX 24 1.4 SL Ready",
+  "seconds": 63,
+  "when": "2026-10-27T16:53:53.461869+00:00",
+  "verified": true
+ },
+ "MAXinBOX_FC_0-10V_FAN_1.9_EIFAItRUk.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX FC 0-1 OV FAN"
+  ],
+  "message": "Import erfolgreich. Datei: WAXinBOX_FC Produkt: MAXin80X FC C-IOV FAN ZIO-MB24 Version OK MAXin3CX 24 1.4 SL Ready",
+  "seconds": 65,
+  "when": "2026-10-27T16:55:04.087274+00:00",
+  "verified": true
+ },
+ "MAXinBOX_FC_0-10V_VALVE_1.4_EIFAItRS_Cert_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX FC 0-1 OV VALVE"
+  ],
+  "message": "Import erfolgreich. Datei: WAXinBOX_FC O-ICV_VALVELIÅ EIFAItRS Cert_ETS5.knxprad Produkt: MAXin80X FC C-IOV VALVE ZICMB24V2 Version 1.12 SL Ready OK MAXin3CX 1.12",
+  "seconds": 68,
+  "when": "2026-10-27T16:56:17.951392+00:00",
+  "verified": true
+ },
+ "MAXinBOX_Hospitality_1.1_EIFAItRSP_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX Hospitality"
+  ],
+  "message": "Import erfolgreich. Datei: WAXinBOX_Hospitality Produkt: MAXin80X Hospitality ZICMB24V2 Version 1.12 SL Ready OK MAXin3CX 1.12",
+  "seconds": 89,
+  "when": "2026-10-27T16:57:53.189789+00:00",
+  "verified": true
+ },
+ "MAXinBOX_Hospitality_2_0_EIFAItRS.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX Hospitality"
+  ],
+  "message": "Import erfolgreich. Datei: IMAXinBOX_Hospitality Produkt: MAXin80X Hospitality ZICMB24V2 Version OK MAXin3CX 1.6 SL Ready",
+  "seconds": 89,
+  "when": "2026-10-27T16:59:28.214574+00:00",
+  "verified": true
+ },
+ "MAXinBOX_Hospitality_2_1_EIFAItRS_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX Hospitality"
+  ],
+  "message": "Import erfolgreich. Datei: WAXinBOX_Hospitality knxprod Produkt: MAXin80X Hospitality ZICMB24V2 Version OK MAXin3CX 1.6 SL Ready",
+  "seconds": 93,
+  "when": "2026-10-27T17:01:06.761032+00:00",
+  "verified": true
+ },
+ "MAXinBOX_Hospitality_2_1_EIFAItRS_ETS5_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX Hospitality"
+  ],
+  "message": "Import erfolgreich. Datei: WAXinBOX_Hospitality ETS5 CERT knxprod Produkt: MAXin80X Hospitality ZNl•a-M866 Version OK MAXin3CX 66 1.3 SL Ready",
+  "seconds": 75,
+  "when": "2026-10-27T17:02:27.280648+00:00",
+  "verified": true
+ },
+ "MAXinBOX_Hospitality_2_2_EIFAItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX Hospitality"
+  ],
+  "message": "Import erfolgreich. Datei: WAXinBOX_Hospitality ETS5.knxprad Produkt: MAXin80X Hospitality ZNl•a-M866 Version OK MAXin3CX 66 1.3 SL Ready",
+  "seconds": 70,
+  "when": "2026-10-27T17:03:42.966424+00:00",
+  "verified": true
+ },
+ "MAXinBOX_Hospitality_2_3_EIFAItRS_Cert_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX Hospitality"
+  ],
+  "message": "Import erfolgreich. Datei: WAXinBOX_Hospitality Produkt: MAXin80X Hospitality ZNl•a-M866 Version OK MAXin3CX 66 1.3 SL Ready",
+  "seconds": 70,
+  "when": "2026-10-27T17:04:59.150129+00:00",
+  "verified": true
+ },
+ "MAXinBOX_Hospitality_v3_2.0_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX Hospitality v3"
+  ],
+  "message": "Import erfolgreich. Datei: IMAXinBOX_Hospitality Produkt: MAXin80X Hospitality v3 ZICMB56V2 Version OK MAXin3CX 1.' SL Ready",
+  "seconds": 70,
+  "when": "2026-10-27T17:06:15.662914+00:00",
+  "verified": true
+ },
+ "MAXinBOX_SHUTTER_4CH_1_2_EIFAItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX SHUTTER 4CH"
+  ],
+  "message": "Import erfolgreich. Datei: ETS5.knxprod Produkt: MAXin80X SHUTTER CCH ZICMB56V2 Version OK MAXin3CX 1.' SL Ready",
+  "seconds": 81,
+  "when": "2026-10-27T17:07:42.918517+00:00",
+  "verified": true
+ },
+ "MAXinBOX_SHUTTER_4CH_v2_1_2_EIFAItRS_ETS5_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX SHUTTER 4CH v2"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: MAXin80X SHUTTER CCH ZICMB56V3 Version OK MAXin3CX 66 1.6 SL Ready",
+  "seconds": 92,
+  "when": "2026-10-27T17:09:20.567861+00:00",
+  "verified": true
+ },
+ "MAXinBOX_SHUTTER_4CH_v3_1.13_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX SHUTTER 4CH v3"
+  ],
+  "message": "Import erfolgreich. Datei: Certknxprod Produkt: MAXin80X SHUTTER ZCH v3 ZICMB56V3 Version OK MAXin3CX 66 1.6 SL Ready",
+  "seconds": 89,
+  "when": "2026-10-27T17:10:55.914396+00:00",
+  "verified": true
+ },
+ "MAXinBOX_SHUTTER_8CH_1_2_EIFAItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX SHUTTER 8CH"
+  ],
+  "message": "Import erfolgreich. Datei: ETS5.knxprod Produkt: MAXin80X SHUTTER SCH Version OK MAXin3CX 88 1.6 SL Ready",
+  "seconds": 88,
+  "when": "2026-10-27T17:12:30.383998+00:00",
+  "verified": true
+ },
+ "MAXinBOX_SHUTTER_8CH_v2_1_2_EIFAItRS_ETS5_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX SHUTTER 8CH v2"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: MAXin80X SHUTTER SCH Version OK MAXin3CX 88 1.6 SL Ready",
+  "seconds": 91,
+  "when": "2026-10-27T17:14:07.169137+00:00",
+  "verified": true
+ },
+ "MAXinBOX_SHUTTER_8CH_v3_1.10_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX SHUTTER 8CH v3"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: MAXin80X SHUTTER 8CH v3 ZIO-MB8P Version SL Ready OK MAXin3CX 8 Plus",
+  "seconds": 94,
+  "when": "2026-10-27T17:15:46.943719+00:00",
+  "verified": true
+ },
+ "MAXinBOX_SHUTTER_8CH_v3_1.13_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MAXinBOX SHUTTER 8CH v3"
+  ],
+  "message": "Import erfolgreich. Datei: Certknxprod Produkt: MAXin80X SHUTTER 8CH v3 ZIO-MB8P Version SL Ready OK MAXin3CX 8 Plus",
+  "seconds": 93,
+  "when": "2026-10-27T17:17:26.485145+00:00",
+  "verified": true
+ },
+ "MDT_KP_AIO_01_Analog_Input_Output_V12a.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Analogaktor 2fachr LIP",
+   "Analogaktor 4fachr REG"
+  ],
+  "message": "Import erfolgreich. Datei: IMDT_KP AIO_OI Produkt: Analogektor 2fach, LIP Produkt: Analogektor 4fach, REG ZIOMB8V3 Version OK MAXin3CX a 1.2 SL Ready",
+  "seconds": 37,
+  "when": "2026-10-27T17:18:09.095381+00:00",
+  "verified": true
+ },
+ "MDT_KP_AKD_02_Dimming_Actuator_RGBW_1_10V_V21.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "AKD-0410V.02 Dimmsteuereinheit 4-fach, 4Te 1-10V RGBW"
+  ],
+  "message": "Import erfolgreich. Datei: WOT_KP Produkt: AKO-0410V.02 Dimmsteuereinheit4-fach, 4TE, 1-10V RGBW Version OK SL Ready &1.11",
+  "seconds": 35,
+  "when": "2026-10-27T17:18:50.096863+00:00",
+  "verified": false
+ },
+ "MDT_KP_AKD_02_LED_Controller_V26.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "AKD",
+   "AKD",
+   "AKD",
+   "AKD",
+   "AKD"
+  ],
+  "message": "Import erfolgreich. Datei: WOT_KP V26.knxprod Produkt: AKO-0224V.02 LEO Controller 2 Kanal Produkt: AKO-0324V.02 LEO Controller Kanal/RGB Produkt: AKO-0424R.02 LEO Controller 4 Kanäle/RGBW, REG Produkt: AKO-0424R2.02 LEO Controller 4 Kanal/RG8W, REG Produkt: AKO-0424V.02 LEO Controller 4 Kanal/RGBW Version OK SL Ready &1.11",
+  "seconds": 63,
+  "when": "2026-10-27T17:19:58.909721+00:00",
+  "verified": false
+ },
+ "MDT_KP_AKD_02_LED_Controller_V28.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "AKD",
+   "AKD",
+   "AKD",
+   "AKD",
+   "AKD"
+  ],
+  "message": "Import erfolgreich. Datei: WOT_KP V28.knxprod Produkt: AO Produkt: AO Produkt: AO Produkt: AO Produkt: AO -0224V.02 LEO Controller 2 Kanal -0324V.02 LEO Controller Kanal/RGB -0424R.02 LEO Controller 4 Kanäle/RGBW, REG -0424R2.02 LEO Controller 4 Kanal/RG8W, REG -0424V.02 LEO Controller 4 Kanal/RGBW Version OK SL Ready",
+  "seconds": 66,
+  "when": "2026-10-27T17:21:10.261090+00:00",
+  "verified": false
+ },
+ "MDT_KP_AKH_03_Heating_Actuator_V32.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "AKH-0400.03 Heizungsektor 4-fach, 2TE, 24/230VAC",
+   "AKH-0600.03 Heizungsektor 6-fach, 3TE, 24/230VAC",
+   "AKH-0800.03 Heizungsektor 8-fach, 4TE, 24/230VAC"
+  ],
+  "message": "Import erfolgreich. Datei: IMDT_KP Actuator_V32.knxprod Produkt: AKH-0400.03 Heizungsektor 4-fach, 2TE 24/23CVAC Produkt: AKH-0600.03 Heizungsektor 6-fach, 24/23CVAC Produkt: AKH-0800.03 Heizungsektor 8-fach, 4TE 24/23CVAC Version OK SL Ready &1.11",
+  "seconds": 20,
+  "when": "2026-10-27T17:21:35.160093+00:00",
+  "verified": false
+ },
+ "MDT_KP_AKH_03_Heating_Actuator_V34.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "AKH-0400.03 Heizungsektor 4-fach, 2TE, 24/230VAC",
+   "AKH-0600.03 Heizungsektor 6-fach, 3TE, 24/230VAC",
+   "AKH-0800.03 Heizungsektor 8-fach, 4TE, 24/230VAC"
+  ],
+  "message": "Import erfolgreich. Datei: IMDT_KP Actuator_V34.knxprod Produkt: AKH-0400.03 Heizungsektor 4-fach, 2TE 24/23CVAC Produkt: AKH-0600.03 Heizungsektor 6-fach, 24/23CVAC Produkt: AKH-0800.03 Heizungsektor 8-fach, 4TE 24/23CVAC Version OK SL Ready &1.11",
+  "seconds": 23,
+  "when": "2026-10-27T17:22:03.849866+00:00",
+  "verified": false
+ },
+ "MDT_KP_AKI_AKS_03_Switch_Actuator_V21a.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "AKI-0416,03 Schaltak-tor 4-fach, 4TE, 16/20A",
+   "AKI-0816,03 Schaltak-tor 8-fach, 8TE, 16/20A",
+   "AKI-1216,03 Schaltak-tor 12-fach, 12TEr 16/20A",
+   "AKS-0416.03 Schaltaktor4-fach, 4TE, 16A",
+   "AKS-0816.03 Schaltaktor 8-fach, 6TE, 16A",
+   "AKS-",
+   "AKS-1616.03 Schaltaktor 16-fechr 8TE, 16A",
+   "AKS-"
+  ],
+  "message": "Import erfolgreich. Datei: WOT_KP AKS 03 Switch Actuötor_V21a knxprod Produkt: „4<1 -0416,03 Schaltaktor4-fach, 4TE, 16/204 Produkt: „4<1 -0816,03 Schaltaktor 8-fach, 8TE, 16/204 Produkt: „4<1 -1216,03 Schaltaktor 12-fach, 12TE, 16/204 Produkt: AKS-0416.03 Schaltaktor4-fach, 4TE, 16A Produkt: AKS -0816,03 Schaltaktor 8-fach, 6TE, 16A Produkt: AKS -1216,03 Schaltaktor 8TE, 164 Produkt: AKS-1616.03 Schaltaktor 16-fech, 8TE, 164 Produkt: AKS -2016,03 Schaltaktor 12TE, 16A Version OK SL Ready &1.1.1",
+  "seconds": 44,
+  "when": "2026-10-27T17:22:53.846188+00:00",
+  "verified": false
+ },
+ "MDT_KP_AKI_AKS_03_Switch_Actuator_V32d.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "AKI-0416,04 Schaltak-tor 4-fach, 4TE, 16/20A",
+   "AKI-0816,04 Schaltak-tor 8-fach, 8TE, 16/20A",
+   "AKI-1216,04 Schaltak-tor 12-fach, 12TEr 16/20A",
+   "AKS-",
+   "AKS-OllJP,03 Schaltaktor 1 -fach,",
+   "AKS-0210.03 Schaltaktor 2-fach,",
+   "AKS-0216.03 Schaltaktor 2-fach,",
+   "AKS-0410.03 Schaltaktor4-fach,"
+  ],
+  "message": "Import erfolgreich. Datei: WOT_KP AKS 03 Switch Actuetor_V32d knxprod Produkt: „4<1 04 Schaltaktor4-fach, 4TE, 16/204 Produkt: „4<1 -081604 8-fach, 8TE, 16/204 Produkt: „4<1 -121604 Schaltaktor 12-fach, 12TE, 16/204 Produkt: AKS-CILIP.03 Schaltaktor 1 -fach, LIP, 16A Produkt: AKS -0210,03 Schaltaktor 2-fach, 2TE, IOA Produkt: AKS -0216,03 Schaltaktor 2-fach, 2TE, 16A Produkt: AKS -02UP.03 Schaltaktor 2-fach, upt 16A Produkt: AKS -0410,03 Schaltaktor4-fach, 4TE, IOA Version OK SL Ready + 11 +11 ell 4911 +11 &1.11 ell",
+  "seconds": 29,
+  "when": "2026-10-27T17:23:28.191685+00:00",
+  "verified": false
+ },
+ "MDT_KP_AKK_03_Switch_Actuator_Fan_coil_V20.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "AKK-031JP,03 Schaltaktor 3fach, FanCoil",
+   "AKK-04FC,03 Schaltaktor4fach, FanCoil"
+  ],
+  "message": "Import erfolgreich. Datei: WIDT KP AKK V20.knxprod Produkt: AKK-03LIP.03 Schaltaktar 3fach: FanCail Produkt: AKK-04FC.03 Schaltaktor4facH, FanCoil Version OK SL Ready &1.11",
+  "seconds": 35,
+  "when": "2026-10-27T17:24:08.783871+00:00",
+  "verified": false
+ },
+ "MDT_KP_AKK_03_Switch_Actuator_V23.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "AKK-OI IJP,03 Schaltaktor lfach, IJP, 16A",
+   "AKK-0216.03 Schaltaktor 2fach, 2TEr 16A",
+   "AKK-02UP.03 Schaltaktor 2fach, IJP, IOA",
+   "AKK-0416,03 Schaltaktor 4fach, 2 TEC 16A",
+   "AKK-0816.03 Schaltaktor Mach, 4TEr 16A",
+   "AKK-1616,03 Schaltaktor 16fach, 8TE, 16A",
+   "AKK-2416.03 Schaltaktor 24fach, 12TEr 16A"
+  ],
+  "message": "Import erfolgreich. Datei: IMDT_KP AKK Produkt: AKK-OI LIP.03 Schaltaktar lfach: LIP, 16A Produkt: AKK-0216.03 Schaltaktar 2fach: 2TE 16A Produkt: AKK-02LIP.03 Schaltaktar 2fach: LIP, IOA Produkt: AKK-0416.03 Schaltaktar 4fach: 2TE 16A Produkt: AKK-0816.03 Schaltaktar 8fach: 4TE 16A Produkt: AKK-1616.03 Schaltaktar 16fach, STE 164 Produkt: AKK-2416.03 Schaltaktar 24fach, 12TE. 16A Version OK SL Ready &1.11",
+  "seconds": 23,
+  "when": "2026-10-27T17:24:37.502002+00:00",
+  "verified": false
+ },
+ "MDT_KP_AKU_03_Universal_Actuator_V41a.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "AKU-02UP,03 Universalaktor 2-fachl up, 230VAC",
+   "AKLI-0416,03 Universalaktor 4-fachl 16A, 230VAC",
+   "AKLI-0616,03 Universalaktor 6-fachl 16A, 230VAC",
+   "AKLI-0816,03 Universalaktor 8-fachl 16A, 230VAC",
+   "AKLI-1616,03 Universalaktor 16-fach, 1 6Ar 230VAC",
+   "AKLI-2416,03 Universalaktor 24-fach, 1 6Ar 230VAC",
+   "AKU-B2UP.03 Universalaktor 2-fach, 230VAC, 4"
+  ],
+  "message": "Import erfolgreich. Datei: WIDT KP AKLI Produkt: AKU-C2UP.03 Universalaktar 2-fach, up, 230VAC Produkt: AKLI-0416.03 Universalaktor 4-fach, 16Å, 230VAC Produkt: AKLI-0616.03 Universalaktor 6-fach, 16Å, 230VAC Produkt: AKLI-0816.03 Universalaktor 8-fach, 16Å, 230VAC Produkt: AKLI-1616.03 Universalaktor 16-fach, 16AI 230VAC Produkt: AKLI-2416.03 Universalaktor 24-fach, 16AI 230VAC Produkt: AKU-B2UP.03 Universalaktor 2-fach, 230VAc, 4 BinSreingSnge Version OK SL Ready + 11 +11 ell 4911 +11 &1.11 ell",
+  "seconds": 29,
+  "when": "2026-10-27T17:25:12.056412+00:00",
+  "verified": false
+ },
+ "MDT_KP_AMI_AMS_03_Switch_Actuator_V31a.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "AMI-0416,03 Schaltaktor mit Strommessung 4-fachr 4TE",
+   "AMI-0816,03 Schaltaktor mit Strommessung 8-fachr 8TE",
+   "AMI-1216,03 Schaltaktor mit Strommessung 12-fach, 12TE",
+   "AMS-0416,03 Schaltaktor mit Strommessung 4-fach, 4TE"
+  ],
+  "message": "Import erfolgreich. Datei: IMDT_KP Produkt: AMI-ü416.03 Schaltaktar mit Strommessung 4-fach, 4TE REG, 16/2CA Produkt: AMI-0816.03 Schaltaktar mit Strommessung 8-fach, 8TE REG, 16/2CA Produkt: AMI-1216.03 Schaltaktar mit Strommessung 12-fach, 12TE REG, 16/2CA Produkt: AMS-0416.03 Schaltaktor mit Strommessung 4-fach, 4TE REG, 16Å Version OK SL Ready &1.1.1",
+  "seconds": 26,
+  "when": "2026-10-27T17:25:43.875740+00:00",
+  "verified": false
+ },
+ "MDT_KP_AZI_03_Switch_Actuator_V31.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "AZI-0316v03 Schaltaktor 3-fach mit Wirkleistungszähler",
+   "AZI-0616v03 Schaltaktor 6-fach mit Wirkleistungszähler"
+  ],
+  "message": "Import erfolgreich. Datei: IMDT_KP \"EI .knxprod Produkt: AZI-0316.03 Schaltaktor 3-fach mit WirkleistungszShlar Produkt: AZI-0616.03 Schaltaktor 6-fach mit WirkleistungszShlar Version OK SL Ready &1.11",
+  "seconds": 26,
+  "when": "2026-10-27T17:26:15.303147+00:00",
+  "verified": false
+ },
+ "MDT_KP_BE_01_Glass_Push_Button_II_Light_V13c.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "BE-GTL10xa01 Glastaster 11 Light 1 -fach",
+   "BE-GTLITx.01 Glastaster 11 Light I-fech mit Temperatursensor",
+   "BE-GTL20xa01 Glastaster 11 Light 2-fach",
+   "BE-GTL2Tx.01 Glastaster 11 Light 2-fech mit Temperatursensor",
+   "BE-GTL40x.01 Glastaster 11 Light 4-fach",
+   "BE-GTL4Tx.01 Glastaster 11 Light 4-fech mit Temperatursensor"
+  ],
+  "message": "Import erfolgreich. Datei: WOT_KP 01 _Light Vl Bc knxprod Produkt: BE-GTLIOx.C1 Glastaster 11 Light I-fach Produkt: BE-GTLITx.01 Glastaster 11 Light '-fech mit Temperatursensor Produkt: BE-GTL20x.C1 Glastaster 11 Light 2-fach Produkt: BE-GTL2Tx.01 Glastaster 11 Light 2-fach mit Temperatursensor Produkt: BE-GTL40x.C1 Glastaster 11 Light 4-fach Produkt: BE-GTL4Tx.01 Glastaster 11 Light 4-fach mit Temperatursensor Version OK SL Ready + 11 +11 ell 4911 +11 &1.11 ell",
+  "seconds": 50,
+  "when": "2026-10-27T17:27:10.709722+00:00",
+  "verified": false
+ },
+ "MDT_KP_BE_01_Glass_Push_Button_Plus_V10a.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "BE-GT04x,01 Glastester 4-fach Plus",
+   "BE-GT08x,01 Glastester 8-fach Plus",
+   "BE-GTT4x,01 Glastaster 4-fach Plus, Temperatur",
+   "BE-GTT8x,01 Glastaster 8-fach Plus, Temperatur"
+  ],
+  "message": "Import erfolgreich. Datei: IMDT_KP BE 01 'VIOö.knxprod Produkt: BE-GT04x.01 Glastester 4-fach Plus Produkt: BE-GT08x.01 Glastester 8-fach Plus Produkt: BE-GTT4x.01 G[astaster 4-fach Plus, Temperatur Produkt: BE-GTT8x.01 G[astaster 8-fach Plus, Temperatur Version OK SL Ready &1.11",
+  "seconds": 41,
+  "when": "2026-10-27T17:27:57.690699+00:00",
+  "verified": false
+ },
+ "MDT_KP_BE_01_Push_Button_Lite_55_63_V14.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "BE-TAL5501 Taster Light 55 1-fach",
+   "BE-TAL5502,01 Taster Light 55 2-fach",
+   "BE-TAL5504.01 Taster Light 55 4-fach",
+   "BE-TAL55B1.01 Tester Light 55 Besic I-fech",
+   "BE-TAL55B2.01 Tester Light 55 Besic 2-fech",
+   "BE-TAL55T1101 Taster Light 55 1 -fach mit",
+   "BE-TAL55T2,01 Taster Light 55 2-fach mit"
+  ],
+  "message": "Import erfolgreich. Datei: WOT_KP Lite_S5 Produkt: BE-TAL5501.01 Taster Light 55 1-fach Produkt: BE-TAL5502.01 Taster Light 55 2-fach Produkt: BE-TAL55ü4.01 Taster Light 55 4-fach Produkt: BE-TAL5531.01 Tester Light 55 Besic I-fech Produkt: BE-TAL5532.01 Tester Light 55 Besic 2-fech Produkt: BE-TAL55T1.01 Taster Light 55 1 -fach Temperatursensor Produkt: BE-TAL55T2.01 Taster Light 55 2-fach Version OK SL Ready &1.11",
+  "seconds": 57,
+  "when": "2026-10-27T17:29:00.520606+00:00",
+  "verified": false
+ },
+ "MDT_KP_BE_01_Push_Button_Lite_55_63_V15.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "BE-TAL5501 Taster Light 55 1-fach",
+   "BE-TAL5502,01 Taster Light 55 2-fach",
+   "BE-TAL5504.01 Taster Light 55 4-fach",
+   "BE-TAL55B1.01 Tester Light 55 Besic I-fech",
+   "BE-TAL55B2.01 Tester Light 55 Besic 2-fech",
+   "BE-TAL55T1101 Taster Light 55 1 -fach mit",
+   "BE-TAL55T2,01 Taster Light 55 2-fach mit"
+  ],
+  "message": "Import erfolgreich. Datei: WOT_KP Lite_S5 a_V15.knxprod Produkt: BE-TAL5501.01 Taster Light 55 1-fach Produkt: BE-TAL5502.01 Taster Light 55 2-fach Produkt: BE-TAL55ü4.01 Taster Light 55 4-fach Produkt: BE-TAL5531.01 Tester Light 55 Besic I-fech Produkt: BE-TAL5532.01 Tester Light 55 Besic 2-fech Produkt: BE-TAL55T1.01 Taster Light 55 1 -fach Temperatursensor Produkt: BE-TAL55T2.01 Taster Light 55 2-fach Version OK SL Ready &1.1.1",
+  "seconds": 62,
+  "when": "2026-10-27T17:30:08.129869+00:00",
+  "verified": false
+ },
+ "MDT_KP_BE_01_Push_Button_Lite_60_CH_V14.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "BE TAL6001.01 Taster Light 60 CH I-fach",
+   "BE TAL6002.01 Taster Light 60 CH 2-fach",
+   "BE TAL6004.01 Taster Light 60 CH 4-fach",
+   "BE TAL60T1.01 Tester Light 60 CH I-fach mit",
+   "BE TAL60T2.01 Tester Light 60 CH 2-fach mit",
+   "BE TAL60T4.01 Tester Light 60 CH 4-fach mit"
+  ],
+  "message": "Import erfolgreich. Datei: WOT_KP Lite_6ü CH_V14.knxprod Produkt: TAL6ü01.ül Taster Light 60 CH I-fach Produkt: TAL6ü02.ül Taster Light 60 CH 2-fach Produkt: TAL6üC4.ül Taster Light 60 CH 4-fach Produkt: BE TAI-6üTIÆ11 Tester Light 60 CH I-fach mit Temperatursensor Produkt: Tester Light 60 CH 2-fach mit Temperatursensor Produkt: BE TAI-6üT4Æ11 Tester Light 60 CH 4-fach mit Version OK SL Ready &1.11",
+  "seconds": 52,
+  "when": "2026-10-27T17:31:05.866376+00:00",
+  "verified": false
+ },
+ "MDT_KP_BE_02_Binary_Input_V32a.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "BE-04000.02 Binäreingang 4-fach, 2 T E, Ausführung",
+   "BE-04024.02 Binäreingang 4-fach, 2 T E, Ausführung 24VAC/",
+   "BE-04230.02 Binäreingang 4-fach, 2 T E, Ausführung",
+   "BE-08000.02 Binäreingang 8-fach, 4TE, Ausführung"
+  ],
+  "message": "Import erfolgreich. Datei: WOT_KP Produkt: BE-C4COO.C2 Binäreingang 4-fach, 2TE, Ausführung patentiölfrei Produkt: BE-C4C24.C2 Binäreingang 4-fach, Ausführung 24VAC/ Produkt: BE-C4230.C2 Binäreingang 4-fach, 2TE, Ausführung 230VAC Produkt: BE-C8000.C2 Binäreingang 8-fach, 4TE, Ausführung patentiölfrei Version OK SL Ready &1.11",
+  "seconds": 33,
+  "when": "2026-10-27T17:31:44.086172+00:00",
+  "verified": false
+ },
+ "MDT_KP_BE_02_Glass_Push_Button_II_Smart_V31.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "BE-GT20x,02 Glastester 11 Smart",
+   "BE-GT2Tx.02 Glastaster 11 Smart mit Temperatursensor",
+   "BE-TAS86Tx.02 Taster Smart 86 mit Temperatursensor",
+   "BE-TAS86x,02 Tester Smart 86"
+  ],
+  "message": "Import erfolgreich. Datei: IMDT_KP BE 02 'VBI knxprod Produkt: BE-GT20x.02 Glastester 11 Smart Produkt: BE-GT2Tk.C2 Glastaster 11 Smart mit Temperatursensor Produkt: BE-TAS86Tx.ü2 Taster Smart 86 mit Temperatursensor Produkt: BE-TAS86x.02 Tester Smart 86 Version OK SL Ready &1.11",
+  "seconds": 36,
+  "when": "2026-10-27T17:32:25.905240+00:00",
+  "verified": false
+ },
+ "MDT_KP_BE_02_Push_Button_Smart_86_V30.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "BE-TAS86Tx.02 Push Button Smart 86 With temperature",
+   "BE-TAS86x,02 Push Button Smart 86"
+  ],
+  "message": "Import erfolgreich. Datei: WOT_KP V30.knxprod Produkt: BE-TAS86Tx.ü2 Push Button Smart 86 With temperature sensor Produkt: BE-TAS86x,02 Push Button Smart 86 Version OK SL Ready &1.11",
+  "seconds": 36,
+  "when": "2026-10-27T17:33:07.569320+00:00",
+  "verified": false
+ },
+ "MDT_KP_BE_02_Universal_Interface_V32a.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "BE-02001.02 Tasterinterfece 2fach, LIP, Ausführung",
+   "BE-02230.02 Tasterinterfece 2-fach, UPC Ausführung",
+   "BE-04001.02 Tasterinterfece 4-fach, UPC Auführung",
+   "BE-06001.02 Tasterinterfece 6-fach, UPC Auführung"
+  ],
+  "message": "Import erfolgreich. Datei: IMDT_KP BE Produkt: BE-C2001.C2 Tasterinterfece 2fach, IJP, Ausführung patentiölfrei Produkt: BE-C2230.C2 Tasterinterfece 2-fach, LIP, Ausführung 230VAC Produkt: BE-C4001.C2 Tasterinterfece 4-fach, LIP, Aufuhrung patentiölfrei Produkt: BE-C6C01.C2 Tasterinterfece 6-fach, LIP, Aufuhrung patentiölfrei Version OK SL Ready &1.11",
+  "seconds": 32,
+  "when": "2026-10-27T17:33:45.786618+00:00",
+  "verified": false
+ },
+ "MDT_KP_BE_Central_Operation_Unit_Smart_V14.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "BE-BZS86,01 Bedienzentrele Smart 86",
+   "BE-GBZx.01 Glas Bedienzentrale Smart"
+  ],
+  "message": "Import erfolgreich. Datei: WIDT KP BE Central Produkt: BE-BZS86.01 Bedienzentrele Smart 86 Produkt: BE-GBZx.C1 Glas Bedienzentrele Smart Version OK SL Ready &1.11",
+  "seconds": 40,
+  "when": "2026-10-27T17:34:31.226126+00:00",
+  "verified": false
+ },
+ "MDT_KP_BE_Push_Button_Smart_55_63_V12a.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "BE-TAS5504.01 Taster Smart 55 4-fach",
+   "BE-TAS55T4.01 Taster Smart .55 4-fach mit Temperatursensor",
+   "BE-TAS6304.01 Taster Smart 63 4-fach",
+   "BE-TAS63T4.01 Taster Smart 63 4-fach mit Temperatursensor"
+  ],
+  "message": "Import erfolgreich. Datei: IMDT_KP 3E_Push_Button_Smart_55 63 V12e.knxprod Produkt: BE-TAS5504.C1 Taster Smart 55 4-fach Produkt: BE-TAS55T4.01 Taster Smart 55 4-fach mit Temperatursensor Produkt: BE-TAS6304.C1 Taster Smart 63 4-fach Produkt: BE-TAS63T4.01 Taster Smart 63 4-fach mit Temperatursensor Version OK SL Ready &1.11",
+  "seconds": 39,
+  "when": "2026-10-27T17:35:16.102714+00:00",
+  "verified": true
+ },
+ "MDT_KP_BE_Push_Button_Smart_60_CH_V12a.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "BE-TAS6004.01 Taster Smart 60 CH 4-fach",
+   "BE-TAS60T4.01 Taster Smart 60 CH 4-fach mit"
+  ],
+  "message": "Import erfolgreich. Datei: IMDT_KP C.H 'V12ö.knxprod Produkt: BE-TAS6C04.Cl Taster Smart 60 CH 4-fach Produkt: BE-TAS6CT4.01 Taster Smart 60 CH 4-fach mit Temperatursensor Version OK SL Ready &1.11",
+  "seconds": 40,
+  "when": "2026-10-27T17:36:01.747888+00:00",
+  "verified": true
+ },
+ "MDT_KP_EZ_01_Energy_Meter_V11.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "EZ-0320.01 Energlezähler 3-fach 20 A, Direktmessung, 4TE",
+   "EZ-0363.01 Energlezähler 3-fach 63 A, Wandlermessung, 4TE"
+  ],
+  "message": "Import erfolgreich. Datei: WOT_KP EZ Produkt: EZ-C320.01 Energiezähler 3-fach 20 A, Direktmessung, 4TE REG, 230/400 V AC Produkt: EZ-C363.01 Energiezähler 3-fach 63 A, Wandlermessung, 4TE REG, 230/400 V AC Version OK SL Ready &1.11",
+  "seconds": 32,
+  "when": "2026-10-27T17:36:39.913997+00:00",
+  "verified": false
+ },
+ "MDT_KP_JAL_02_Shutter_Actuator_V38b.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "JAL-OI LIP.02 Jalousieaktor 1 -facht LIP, 230VAC",
+   "JAL-0210.02 Jalousieaktor 2-fach, .2TE, 230VAC",
+   "JAL-0410.02 4TE, 230VAC",
+   "JAL-04100,02 Jalousieaktor 4-fachl 4TE, 24VDC",
+   "JAL-0810.02 Jalousieaktor 8-fach, 8TE, 230VAC",
+   "JAL-08100,02 Jalousieaktor 8-fachl 8TE, 24VDC"
+  ],
+  "message": "Import erfolgreich. Datei: IMDT_KP Actuator_V38b.knxprod Produkt: JAL-OI LIP.02 Jalousieaktor 1 -fach, LIP, 230VAC Produkt: JAL-0210.02 Jalousieaktor 2-fach, 2TE, Produkt: JAL-0410.02 Jalousieaktor 4-fach, 4TE, 230VAC Produkt: JAL-04100.02 4-fach, 4TE, 24VDC Produkt: JAL-0810.02 Jalousieaktor 8-fach, 8TE, Produkt: JAL-08100.02 8-fåch, 8TE, 24VDC Version OK SL Ready &1.11",
+  "seconds": 65,
+  "when": "2026-10-27T17:37:50.464972+00:00",
+  "verified": false
+ },
+ "MDT_KP_JAL_B1UP_02_Shutter_Actuator_V39.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "JAL-BI IJP,02 Jalousieaktor 1 -fach mit Taster4Kontakteingang"
+  ],
+  "message": "Import erfolgreich. Datei: L LIP knxprod Produkt: JAL-81 LIP.02 Jalousieaktor I-fach mit Tester-/Kontakteingeng 4-fåch Version OK SL Ready &1.11",
+  "seconds": 41,
+  "when": "2026-10-27T17:38:37.151416+00:00",
+  "verified": false
+ },
+ "MDT_KP_JAL_Meas_02_Shutter_Actuator_V43a.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "JAL-041 OM.02 Jalousieaktor 4-fach mit Fahrzeitmessung, 4TE,",
+   "JAL-081 OM.02 Jalousieaktor 8-fach mit Fahrzeitmessung, 8TE,"
+  ],
+  "message": "Import erfolgreich. Datei: WIDT KP Produkt: JAL-0410M.02 Jalausieaktar 4-fach mit Fahrzeitmessung, 4TE, 230VAC Produkt: JAL-0810M.02 Jalausieaktar 8-fach mit Fahrzeitmessung, 8TE, 230VAC Version OK SL Ready &1.11",
+  "seconds": 36,
+  "when": "2026-10-27T17:39:18.052444+00:00",
+  "verified": true
+ },
+ "MDT_KP_JTA_01_Blind_Push_Button_Smart_V10.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "BE-JTA5504.01 Jalousietaster Smart 55 mit Schaltuhr und"
+  ],
+  "message": "Import erfolgreich. Datei: WIDT KP VIO.knxprod Produkt: BE-JTA5504.C1 Jalousietaster Smart 55 mit Schaltuhr und Version SL Ready &1.11 h mit Fahrzeitmessung, Farbdisplay 4TE, ZOVAC JAL-D410MC2 OK Jalousie, iolladen mit...",
+  "seconds": 31,
+  "when": "2026-10-27T17:39:54.539673+00:00",
+  "verified": false
+ },
+ "MDT_KP_RF_01_RF_Glass_Push_Button_V11a.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "KNX RF+ Funk Glastaster4-fach Plus",
+   "KNX RF+ Funk Glastaster4-fach Plus, Temperatur",
+   "KNX RF+ Funk Glastaster 8-fach Plus",
+   "KNX RF+ Funk Glastaster 8-fach Plus, Temperatur"
+  ],
+  "message": "Import erfolgreich. Datei: WOT_KP la knxprod Produkt: {NX RF+ Funk Glestaster4-fach Plus Produkt: {NX RF+ Funk Glestaster4-fach Plus, Temperatur Produkt: {NX RF+ Funk Elestaster 8-fach Plus Produkt: {NX RF+ Funk Elestaster 8-fach Plus, Temperatur Version OK SL Ready &1.11",
+  "seconds": 37,
+  "when": "2026-10-27T17:40:37.608152+00:00",
+  "verified": true
+ },
+ "MDT_KP_RF_01_RF_Push_Button_4fold_V11.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "KNX RF+ Funk Taster 4-fach Plus",
+   "KNX RF+ Funk Taster 4-fach Plus mit Aktor"
+  ],
+  "message": "Import erfolgreich. Datei: WOT_KP Produkt: {NX RF+ Funk Tester 4-fach Plus Produkt: {NX RF+ Funk Tester 4-fach Plus mit Aktor Version OK SL Ready",
+  "seconds": 37,
+  "when": "2026-10-27T17:41:20.983358+00:00",
+  "verified": true
+ },
+ "MDT_KP_RF_01_RF_Push_Button_V10_01.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "KNX RF+ Funk Taster 2-fech Plus",
+   "KNX RF+ Funk Taster 2-fech Plus mit Aktor",
+   "KNX RF+ Funk Taster 6-fech Plus",
+   "KNX RF+ Funk Taster 6-fech Plus mit Aktor",
+   "KNX RF+ Funk Taster 8-fech Plus",
+   "KNX RF+ Funk Taster 8-fech Plus mit Aktor"
+  ],
+  "message": "Import erfolgreich. Datei: WOT_KP Push_gutton VIO_ül.knxprod Plus Produkt: Produkt: Produkt: Produkt: Produkt: Produkt: Funk Tester 2 Plus Funk Tester 2-fach Plus mit Aktor Funk Tester 6- Funk Tester 6-fech Plus mit Aktor Funk Tester 8 Plus Funk Tester 8-fech Plus mit Aktor Version OK SL Ready",
+  "seconds": 38,
+  "when": "2026-10-27T17:42:04.358344+00:00",
+  "verified": true
+ },
+ "MDT_KP_RF_01_RF_Shutter_Actuator_V10.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "KNX RF+ Funk Jalousieaktor I-fachr UP"
+  ],
+  "message": "Import erfolgreich. Datei: IMDT_KP VIO.knxprad Produkt: {NX RF+ Funk Jalousieaktar n-fach, LIP Version OK SL Ready",
+  "seconds": 40,
+  "when": "2026-10-27T17:42:50.105771+00:00",
+  "verified": true
+ },
+ "MDT_KP_RF_01_RF_Socket_V10.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "KNX RF+ Funk Steckdose 1 -fach",
+   "KNX RF+ Funk Steckdose mit Wirkleistungszähler"
+  ],
+  "message": "Import erfolgreich. Datei: WOT_KP Produkt: {NX RF+ Funk Steckdose I-fach Produkt: {NX RF+ Funk Steckdose mit Wirkleistungszähler Version OK SL Ready",
+  "seconds": 36,
+  "when": "2026-10-27T17:43:32.238483+00:00",
+  "verified": true
+ },
+ "MDT_KP_RF_01_RF_Switch_Actuator_V10.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "KNX RF+ Funk Schaltaktor 1 -fach, UP",
+   "KNX RF+ Funk Schaltaktor 2-fach, UP"
+  ],
+  "message": "Import erfolgreich. Datei: WOT_KP VIOknxprod Produkt: {NX RF+ Funk Schaltaktor 1 -fach, LIP Produkt: {NX RF+ Funk Schaltaktor 2-fach, LIP Version OK SL Ready",
+  "seconds": 40,
+  "when": "2026-10-27T17:44:17.991232+00:00",
+  "verified": true
+ },
+ "MDT_KP_RF_01_RF_Universal_Interface_V10a.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "KNX RF+ Tasterinterface, 2fachr 230VAC"
+  ],
+  "message": "Import erfolgreich. Datei: IMDT_KP knxprod Produkt: {NX RF+ Tasterinterface, 2fach, 230VAC Version OK SL Ready",
+  "seconds": 30,
+  "when": "2026-10-27T17:44:53.918229+00:00",
+  "verified": true
+ },
+ "MDT_KP_RF_02_RF_Line_Coupler_V12.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "KNX RF+ Funk Linienkoppler"
+  ],
+  "message": "Import erfolgreich. Datei: WOT_KP Produkt: {NX RF+ Funk Linienkoppler Version OK SL Ready",
+  "seconds": 30,
+  "when": "2026-10-27T17:45:29.606913+00:00",
+  "verified": true
+ },
+ "MDT_KP_SCN_01_Brightness_Sensor_Controller_V11a.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SCN-LSDOI.OI Helligkeitssensor / -regler"
+  ],
+  "message": "Import erfolgreich. Datei: WIDT KP SCN la.knxprod Produkt: SCN-LSDOI.OI Helligkeitssensor / -regler Version OK SL Ready",
+  "seconds": 42,
+  "when": "2026-10-27T17:46:17.702985+00:00",
+  "verified": false
+ },
+ "MDT_KP_SCN_01_LED_Indicator_V13.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SCN-GLEDIx.01 Glas LED Anzeige",
+   "SCN-LED55,01 LED Anzeige 55mm"
+  ],
+  "message": "Import erfolgreich. Datei: WOT_KP SCN Produkt: SCN-ELEOlx.Ol Glas LEO Anzeige Produkt: SCN-LED55.01 LED Anzeige 55mm Version OK SL Ready &1.11",
+  "seconds": 49,
+  "when": "2026-10-27T17:47:12.764397+00:00",
+  "verified": false
+ },
+ "MDT_KP_SCN_01_Leakage_Sensor.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SCN-LSENI.OI Leckagesensor"
+  ],
+  "message": "Import erfolgreich. Datei: IMDT_KP SCN knxprad Produkt: SCN-LSENI.CI Leckagesensar Version OK SL Ready &1.11",
+  "seconds": 33,
+  "when": "2026-10-27T17:47:51.700022+00:00",
+  "verified": false
+ },
+ "MDT_KP_SCN_01_Presence_Detector_1_Sensor_V24.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SCN-P360D1101 Präsenzmelder IS Mini"
+  ],
+  "message": "Import erfolgreich. Datei: WIDT KP SCN 01 V24.knxprod Produkt: SCN-P360D1.01 Präsenzmelder IS Mini Version OK SL Ready &1.11",
+  "seconds": 48,
+  "when": "2026-10-27T17:48:45.169849+00:00",
+  "verified": false
+ },
+ "MDT_KP_SCN_01_Rain_Sensor_V11.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SCN-RSIR.OI Regensensor"
+  ],
+  "message": "Import erfolgreich. Datei: WOT_KP SCN Produkt: SCN-RSIR.OI Regensensar Version OK SL Ready &1.11",
+  "seconds": 21,
+  "when": "2026-10-27T13:42:48.184579+00:00",
+  "verified": false
+ },
+ "MDT_KP_SCN_01_Room_Temperature_Controller_Sensor_V14a.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Raumtemperaturregler 1 -fach mit Einstellrad AP",
+   "Raumtemperaturregler 1 -fach mit Einstellrad LIP",
+   "Raumtemperaturregler 1 -fach IJP",
+   "Raumtemperatursensor I-fech LIP"
+  ],
+  "message": "Import erfolgreich. Datei: WIDT KP SCN Ol_Raam Temperature_Controller_Sensor_V14a.knxpra Produkt: Raumtempereturregler 1 -fach mit Einstellred AP Produkt: Raumtempereturregler 1 -fach mit Einstellred LIP Produkt: Raumtempereturregler 1 -fach Produkt: Raumtemperetursensar I-fech LIP Version OK SL Ready &1.11",
+  "seconds": 49,
+  "when": "2026-10-27T17:49:39.623722+00:00",
+  "verified": true
+ },
+ "MDT_KP_SCN_01_Room_Temperature_Controller_Smart_60_CH_V13a.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SCN-RTN60S,01 Raumtemperatur-Nebenstelle Smart 60 CH",
+   "SCN-RTR600v01 Objektregler 60 CH",
+   "SCN-RTR60S.01 Raumtemperaturregler Smart 60 CH",
+   "SCN-TFS60.01 Raumtemperatur-/Feuchtesensor 60 CH"
+  ],
+  "message": "Import erfolgreich. Datei: WIDT KP_SCN knxprod Produkt: SCN-RTN60S,01 Raumtemperatur-Nebenstelle Smart 60 CH Produkt: SCN-RTR60001 60 Produkt: SCN-RTR60S.01 Raumtemperaturregler Smart 60 C.H Produkt: SCN-TFS60.01 Raumtemperatur-/Feuchtesensar 60 CH SL Ready 6128/28 Version OK Raumtemperaturreq[er... i. 1 C",
+  "seconds": 36,
+  "when": "2026-10-27T17:50:22.551135+00:00",
+  "verified": false
+ },
+ "MDT_KP_SCN_01_Safety_Module_V10.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SCN-SAFE.OI Sicherheitsmodul"
+  ],
+  "message": "Import erfolgreich. Datei: WOT_KP SCN 01 VIO.knxprod Produkt: SCN-SAFE.OI Sicherheitsmadul Version OK 6108/18 SL Ready",
+  "seconds": 49,
+  "when": "2026-10-27T17:51:18.238207+00:00",
+  "verified": false
+ },
+ "MDT_KP_SCN_01_Temperature_Controller_V13a.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Temperaturregler / Sensor 2-fech LIP",
+   "Temperaturregler / Sensor 4-fech LIP",
+   "Temperaturregler / Sensor 6-fech AP",
+   "Temperaturregler 6-fachr 2TE REG"
+  ],
+  "message": "Import erfolgreich. Datei: WIDT KP SCN Ol_Temperature_Cantroller Vl 3a.knxprad Produkt: Temperaturregler / Sensar 2-fach LIP Produkt: Temperaturregler / Sensar 4-fach LIP Produkt: Temperaturregler / Sensar 6-fach AP Produkt: Temperaturregler 6-fech. 2TE REG Version OK SL Ready &1.11",
+  "seconds": 53,
+  "when": "2026-10-27T17:52:17.109008+00:00",
+  "verified": true
+ },
+ "MDT_KP_SCN_01_Twilight_Temperature_Sensor_V11a.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SCN-DTSENI 101 Dämmerungs- /Temperetursensor"
+  ],
+  "message": "Import erfolgreich. Datei: WIDT KP SCN 01 Twilight_Temperature_Sensar_V1 la.knxprad Produkt: SCN-DTSENI .01 Dämmerungs- nemperetursensar Version OK 6108/18 SL Ready",
+  "seconds": 35,
+  "when": "2026-10-27T17:52:58.152107+00:00",
+  "verified": false
+ },
+ "MDT_KP_SCN_01_Weather_Station_V13a.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Wetterstation 'Home"
+  ],
+  "message": "Import erfolgreich. Datei: IMDT_KP SCN Produkt: Wetterstation Home Version OK SL Ready &1.1.1",
+  "seconds": 43,
+  "when": "2026-10-27T17:53:46.448141+00:00",
+  "verified": false
+ },
+ "MDT_KP_SCN_02_03_Email_Function_IP_Router_Interface_V10c.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SCN-IP000.02/.03 Email für IP Interface ohne Secure",
+   "SCN-IP100.02/.03 Email für IP Router ohne Secure"
+  ],
+  "message": "Import erfolgreich. Datei: WIDT KP_SCN VIOc.knxpro Produkt: SCN-IPOOO.ü2/.C3 Email für IP Interface ahne Secure Produkt: SCN-IPIOO.ü2/.C3 Email für IP Router ahne Secure Version OK SL Ready &1.11",
+  "seconds": 48,
+  "when": "2026-10-27T17:54:40.612060+00:00",
+  "verified": false
+ },
+ "MDT_KP_SCN_02_03_IP_Router_Interface_V11b.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SCN-IP000.02/.03 IP Interface ohne Secure",
+   "SCN-IP100.02/.03 IP Router ohne Secure"
+  ],
+  "message": "Import erfolgreich. Datei: IMDT_KP SCN 02 Vl Ib.knxprod Produkt: SCN-IPOOO.ü2/.C3 IP Interface ohne Secure Produkt: SCN-IPIOO.ü2/.C3 IP Router ohne Secure Version OK SL Ready &1.1.1",
+  "seconds": 45,
+  "when": "2026-10-27T17:55:31.976487+00:00",
+  "verified": false
+ },
+ "MDT_KP_SCN_02_Glass_Room_Temperature_Controller_V12b.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SCN-RTRGx.02 Glas Raumtemperaturregler Smart mit"
+  ],
+  "message": "Import erfolgreich. Datei: WIDT KP SCN V12b.knxprod Produkt: SCN-RTREx.02 Glas Raumtemperaturregler Smart mit Farbdisplay ZDIDBOXI Version OK DIMin8CX 1.4 SL Ready &1.1.1",
+  "seconds": 52,
+  "when": "2026-10-27T18:25:09.208821+00:00",
+  "verified": false
+ },
+ "MDT_KP_SCN_02_Motion_Detector_60_CH_V44a.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SCN-BWM60.02 Bewegungsmelder 60 CH",
+   "SCN-BWM60T.02 Bewegungsmelder TS 60 CH mit T-Sensor"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: SCN-BWM60.02 Bewegungsmelder 60 CH Produkt: SCN-BWM60T.02 Bewegungsmelder TS 60 CH mit T-Sensor und 2 Sensortasten Version 3.0 OK SL Ready",
+  "seconds": 66,
+  "when": "2026-10-27T22:22:55.611992+00:00",
+  "verified": true
+ },
+ "MDT_KP_SCN_02_Motion_Detector_V44a.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SCN-BWM55.02/.G2 Bewegungsmelder 55",
+   "SCN-BWM55T.G2 Bewegungsmelder TS 55 mit T-Sensor und",
+   "SCN-BWM63.02 Bewegungsmelder 63",
+   "SCN-BWM63T.02 Bewegungsmelder TS 63 mit T-Sensor und"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products \\MDT_KP_SCN_02_Motion_Detector_V44a.knxprod Produkt: SCN-BWM55.02/.G2 Bewegungsmelder 55 Produkt: SCN-BWM55T.G2 Bewegungsmelder TS 55 mit T-Sensor und 2 Sensortasten Produkt: SCN-BWM63.02 Bewegungsmelder 63 Produkt: SCN-BWM63T.02 Bewegungsmelder TS 63 mit T-Sensor und 2 Sensortasten Version 4.4 OK SL Ready",
+  "seconds": 56,
+  "when": "2026-10-27T22:23:56.965124+00:00",
+  "verified": false
+ },
+ "MDT_KP_SCN_02_Temperature_Controller_8fold_V10.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SCN-RT8REG.02 Temperaturregler 8-fach REG"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: SCN-RT8REG.02 Temperaturregler 8-fach REG neld Version 4.4 OK SL Ready",
+  "seconds": 37,
+  "when": "2026-10-27T22:24:39.566771+00:00",
+  "verified": true
+ },
+ "MDT_KP_SCN_02_Time_Switch_V21.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SCN-RTC20.02 Zeitschaltuhr 20-Kanal mit Farbdisplay"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products .knxprod Produkt: SCN-RTC20.02 Zeitschaltuhr 20-Kanal mit Farbdisplay Version 1.0 OK SL Ready",
+  "seconds": 40,
+  "when": "2026-10-27T22:25:25.589912+00:00",
+  "verified": true
+ },
+ "MDT_KP_SCN_02_USB_Interface_V10.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "KNX USB Interface"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: KNX USB Interface anal Version 2. OK SL Ready",
+  "seconds": 40,
+  "when": "2026-10-27T22:26:10.873089+00:00",
+  "verified": true
+ },
+ "MDT_KP_SCN_03_Email_Function_IP_Router_Interface_Secure_V20c.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SCN-IP000.03 Email für IP Interface mit Secure",
+   "SCN-IP100.03 Email für IP Router mit Secure"
+  ],
+  "message": "Import erfolgreich. Datei: WIDT KP_SCN xprad Produkt: SCN-IPOOO.ü3 Email für IP Interface mit Secure Produkt: SCN-IPIOO.ü3 Email für IP Router mit Secure SL Ready &1.11 ZDIDBOXI Version OK DIMin8CX 1.4",
+  "seconds": 36,
+  "when": "2026-10-27T18:27:13.007599+00:00",
+  "verified": false
+ },
+ "MDT_KP_SCN_03_IP_Interface_Secure_V21a.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SCN-IP000.03 IP Interface mit Secure"
+  ],
+  "message": "Import erfolgreich. Datei: IMDT_KP SCN Produkt: SCN-IPOOO.ü3 IP Interface mit Secure Version OK SL Ready &1.11",
+  "seconds": 34,
+  "when": "2026-10-27T18:27:52.368111+00:00",
+  "verified": false
+ },
+ "MDT_KP_SCN_03_IP_Router_Secure_V23.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SCN-IP100.03 IP Router mit Secure"
+  ],
+  "message": "Import erfolgreich. Datei: WOT_KP SCN 03_IP Produkt: SCN-IPIOO.ü3 IP Router mit Secure Version OK SL Ready &1.11",
+  "seconds": 33,
+  "when": "2026-10-27T18:28:31.619707+00:00",
+  "verified": false
+ },
+ "MDT_KP_SCN_03_Line_Coupler_Data_Secure_V42.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SCN-LKOOI 103 Linienkoppler mit Deta Secure",
+   "SCN-LKOOI 103 Verstärker mit Data Secure"
+  ],
+  "message": "Import erfolgreich. Datei: IMDT_KP SCN V42.knxprad Produkt: SCN-LKOOI .03 Linienkoppler mit Deta Secure Produkt: SCN-LKOOI .03 Vérstärker mit Data Secure SL Ready &1.11 Entkoppler (ab ETS 6, Firmware SCN-IPIOO.D Version OK IP Router Securs",
+  "seconds": 37,
+  "when": "2026-10-27T18:29:14.918484+00:00",
+  "verified": false
+ },
+ "MDT_KP_SCN_03_Line_Coupler_V30a.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SCN-LKOOI 103 Linienkoppler ohne Data Secure",
+   "SCN-LKOOI 103 Verstärker ohne Data Secure"
+  ],
+  "message": "Import erfolgreich. Datei: WOT_KP SCN V30a.knxprad Produkt: SCN-LKOOI .03 Linienkoppler ohne Data Secure Produkt: SCN-LKOOI .03 Vérstärker ohne Data Secure SL Ready &1.1.1 Entkoppler (ab ETS 6, Firmware SCN-IPIOO.D Version OK IP Router Securs",
+  "seconds": 49,
+  "when": "2026-10-27T18:30:09.637596+00:00",
+  "verified": false
+ },
+ "MDT_KP_STC_01_Bus_Power_Supply_Diagnosis_V12.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "STC-0640.01 Busspannungsversorgung mit",
+   "STC-0960.01 Busspannungsversorgung mit",
+   "STC-1280.01 Busspannungsversorgung mit"
+  ],
+  "message": "Import erfolgreich. Datei: WIDT KP V12.knxprod Produkt: STC-0640.C1 Busspannungsversorgung mit Diegnosefunktian, 640mA Produkt: STC-0960.C1 Busspannungsversorgung mit Diegnosefunktian, 960mA Produkt: STC-1280.C1 Busspannungsversorgung mit Diagnosefunktion, 1280mA Version OK SL Ready &1.1.1",
+  "seconds": 52,
+  "when": "2026-10-27T18:31:06.881423+00:00",
+  "verified": false
+ },
+ "MDT_KP_STR_01_Bus_Power_Supply_Redundant_V10b.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "STR-0640,01 Redundante Busspannungsversorgung mit"
+  ],
+  "message": "Import erfolgreich. Datei: IMDT_KP STR VIOb.knxprod Produkt: STR-ü640 01 Redundante Busspennungsversargung mit Diegnosefunktian, 640mA Version OK SL Ready &1.11",
+  "seconds": 45,
+  "when": "2026-10-27T18:31:58.029994+00:00",
+  "verified": false
+ },
+ "MDT_KP_STV_02_Bus_Power_Supply_V10.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "STV-0160.02 KNX Busspannungsversorgung 160mA",
+   "STV-0320.02 KNX Busspannungsversorgung 320mA",
+   "STV-0640.02 KNX Busspannungsversorgung 640mA"
+  ],
+  "message": "Import erfolgreich. Datei: WOT_KP Produkt: STV-0160.02 KNX ausspannungsversorgung 160mA Produkt: STV-0320.02 KNX ausspannungsversorgung 320mA Produkt: STV-0640.02 KNX ausspannungsversorgung 640mA Version OK SL Ready &1.1.1",
+  "seconds": 45,
+  "when": "2026-10-27T18:32:49.044024+00:00",
+  "verified": false
+ },
+ "MDT_RF_Fenstergriff_V10.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "RF-FGxS.01S KNX RF+ Fenstergriff, Secure"
+  ],
+  "message": "Import erfolgreich. Datei: IM riff_V1 C knxprod Produkt: RF-FExS,01S KNX RF+ Fenstergriff, Secure Version OK SL Ready &1.11",
+  "seconds": 34,
+  "when": "2026-10-27T18:33:28.687733+00:00",
+  "verified": true
+ },
+ "MINiBOX_0-10V_X1_1.4_EIAFItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MINiBOX 0-10V Xl"
+  ],
+  "message": "Import erfolgreich. Datei: EIAFItRUk_CElt.knxprod Produkt: C-IOV Xl Version OK SL Ready &1.11",
+  "seconds": 75,
+  "when": "2026-10-27T18:34:49.190390+00:00",
+  "verified": true
+ },
+ "MINiBOX_0-10V_X2_1.4_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MINiBOX 0-1 OV X2"
+  ],
+  "message": "Import erfolgreich. Datei: EIFAItRUk_Certknxprad Produkt: 0-1 OV X2 Version OK MINiBOX 25 2.1 SL Ready &1.11",
+  "seconds": 74,
+  "when": "2026-10-27T18:36:09.116281+00:00",
+  "verified": true
+ },
+ "MINiBOX_0-10V_X3_1.4_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MINiBOX 0-1 OV"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: MINiBOX 0-1 OV X3 Version 1.0 OK SL Ready",
+  "seconds": 98,
+  "when": "2026-10-27T22:27:54.085375+00:00",
+  "verified": true
+ },
+ "MINiBOX_20_v2_1_7_EIAFItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MINiBOX 20 v2"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: MINiBOX 20 v2 ZIOMN20V2 p SL Ready VIINiBO) OK MINiBOX 20 v2 2.1 Version 2. 1.12 2.",
+  "seconds": 116,
+  "when": "2026-10-27T22:29:55.543370+00:00",
+  "verified": true
+ },
+ "MINiBOX_25_v2_1.2_EIFAItR_Cert_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MINiBOX 25 v2"
+  ],
+  "message": "Import erfolgreich. Datei: WINiBOX_25 Produkt: 25 Version OK MINiBOX 25 2.1 SL Ready &1.11",
+  "seconds": 82,
+  "when": "2026-10-27T18:38:09.786086+00:00",
+  "verified": true
+ },
+ "MINiBOX_25_v3_1.6_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MINiBOX 25 v3"
+  ],
+  "message": "Best Huts Buss Multi Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: MINiBOX 25 v3 ZIOMN20V2 p SL Ready VIINiBO) OK MINiBOX 20 v2 2.1 Version 2. 1.12 2.",
+  "seconds": 109,
+  "when": "2026-10-27T22:31:50.327169+00:00",
+  "verified": true
+ },
+ "MINiBOX_40_v2_1.3_EIFAItR_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MINiBOX 40 v2"
+  ],
+  "message": "Best Huts Buss Multi Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: MINiBOX 40 v2 ZIOMN20V2 p SL Ready VIINiBO) OK MINiBOX 20 v2 2.1 Version 2. 1.12 2.",
+  "seconds": 120,
+  "when": "2026-10-27T22:33:56.047797+00:00",
+  "verified": true
+ },
+ "MINiBOX_40_v3_1.12_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MINiBOX40 v3"
+  ],
+  "message": "Import erfolgreich. Datei: WINiBOX_4C Ce,tknxprod Produkt: 40 v3 Version OK MINiBOX 25 2.1 SL Ready &1.11",
+  "seconds": 97,
+  "when": "2026-10-27T18:40:25.461205+00:00",
+  "verified": false
+ },
+ "MINiBOX_45_1.3_EIFAItRSP.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MINiBOX 45"
+  ],
+  "message": "Import erfolgreich. Datei: WINiBOX_45 13_EIFÅItRSP.knxprod Produkt: Version OK MINiBOX 25 2.1 SL Ready &1.11",
+  "seconds": 108,
+  "when": "2026-10-27T18:42:18.980331+00:00",
+  "verified": true
+ },
+ "MINiBOX_45_v2_1.2_EIFAItR_Cert_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MINiBOX 45 v2"
+  ],
+  "message": "Import erfolgreich. Datei: WINiBOX_45 Produkt: 45 Version OK MINiBOX 25 2.1 SL Ready &1.11",
+  "seconds": 82,
+  "when": "2026-10-27T18:43:46.242966+00:00",
+  "verified": true
+ },
+ "MINiBOX_45_v3_1.6_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MINiBOX 45 v3"
+  ],
+  "message": "Best Huts Buss KNX Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: MINiBOX 45 v3 p SL Ready VIINiBO) OK MINiBOX 0-10V 1.4 Version 2. 1.7 1.4",
+  "seconds": 115,
+  "when": "2026-10-27T22:35:56.902613+00:00",
+  "verified": true
+ },
+ "MINiBOX_QUATRO_1_2_EIFAItRSP.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "MINiBOX QUATRO"
+  ],
+  "message": "Best Huts Buss Multi Secu Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: MINiBOX QUATRO ZIOMN20V2 p SL Ready VIINiBO) OK MINiBOX 20 v2 -.7 Version 2. 1.6",
+  "seconds": 122,
+  "when": "2026-10-27T22:38:04.711101+00:00",
+  "verified": true
+ },
+ "MV_KNX-Bus-Einheit_OEM_2020-11-17_cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "KWL-KNX Connect"
+  ],
+  "message": "Import erfolgreich. Datei: KNX-8us- Ei n knxprod Produkt: KWL-KNX Connect Version OK MINiBOX 25 2.1 SL Ready &1.11",
+  "seconds": 21,
+  "when": "2026-10-27T18:44:46.305546+00:00",
+  "verified": false
+ },
+ "Multiroom_Climate_Controller_2_1_EIFAItRS.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Multiroom Klimasteuerung"
+  ],
+  "message": "Best Huts Buss Multi 4), Ja 1) Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products \\Multiroom_Climate_Controller_2_1_ElFAltRS.knxprod Produkt: Multiroom Klimasteuerung ZIOMN25V3 p SL Ready VIINiBO) OK MINiBOX 25 v3 1.6 Version 2. 1.3 1.6",
+  "seconds": 104,
+  "when": "2026-10-27T22:39:54.354427+00:00",
+  "verified": true
+ },
+ "NarrowDIM_X2_1.3_EIFAItR_ETS5_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "NarrowDIM X2"
+  ],
+  "message": "Import erfolgreich. Datei: X2_l Produkt: Narro»vOIM X? Version OK MINiBOX 25 2.1 SL Ready &1.11",
+  "seconds": 76,
+  "when": "2026-10-27T18:46:24.534761+00:00",
+  "verified": false
+ },
+ "NarrowDIM_X4_1.4_EIFAItR_ETS5_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "NarrowDlM X4"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: NarrowDlM X4 Version .2. OK SL Ready",
+  "seconds": 104,
+  "when": "2026-10-27T22:41:43.411348+00:00",
+  "verified": false
+ },
+ "PSE-B552T0x-02S_MDT_KP_V10.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "PSE-B552TOx.02S KNX Bewegungsmelder 2,2 m TS 55, Secure"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products\\PSE- Produkt: PSE-B552TOx.02S KNX Bewegungsmelder 2,2 m TS 55, Secure Version OK SL Ready",
+  "seconds": 45,
+  "when": "2026-10-27T22:42:34.219399+00:00",
+  "verified": false
+ },
+ "PSE-B552T0x-02_MDT_KP_V44.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "PSE-B552TOx.02 KNX Bewegungsmelder 2,2 m TS 55"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products\\PSE- Produkt: PSE-B552TOx.02 KNX Bewegungsmelder 2,2 m TS 55 Version OK SL Ready",
+  "seconds": 36,
+  "when": "2026-10-27T22:43:15.767533+00:00",
+  "verified": false
+ },
+ "PSE-xxx0x-01S_MDT_KP_V10a.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "PSE-BWML0x.01S KNX Mikro Bewegungsmelder, Secure",
+   "PSE-PMC0x.01S KNX Mikro Präsenzmelder 3600, 1 Sensor,"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products\\PSE- Produkt: PSE-BWML0x.01S KNX Mikro Bewegungsmelder, Secure Produkt: PSE-PMC0x.01S KNX Mikro Präsenzmelder 3600, 1 Sensor, Secure Version OK SL Ready",
+  "seconds": 41,
+  "when": "2026-10-27T22:44:02.712263+00:00",
+  "verified": false
+ },
+ "Presentia_C_1.0_EIFAItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Presentia C"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: Presentia C Version OK MINiBOX 25 2.1 SL Ready &1.1.1",
+  "seconds": 80,
+  "when": "2026-10-27T18:48:55.590281+00:00",
+  "verified": false
+ },
+ "Presentia_C_MultiSensor_1.0_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Presentia C MultiSensor"
+  ],
+  "message": "ni Premium Import erfolgreich. Datei: .C_ElFAltRLIk Cert.knxprad Produkt: Presentia C MultiSensor 6131/21 Version SL Ready OK Melder Konstentlichtre...",
+  "seconds": 83,
+  "when": "2026-10-27T18:50:24.975260+00:00",
+  "verified": false
+ },
+ "Presentia_C_v2_1.5_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Presentia C v2"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products \\Presentia_C_v2_1.5_ElFAltRUk_Cert.knxprod Produkt: Presentia C v2 legu Version 1.0 OK SL Ready",
+  "seconds": 102,
+  "when": "2026-10-27T22:45:50.218142+00:00",
+  "verified": true
+ },
+ "Presentia_W0_1.0_EIFAItR_ETS5_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Presentia WO"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: Presentia WO ZPDC30LV2 Presentia OK cv2 16 Version 1.0 1.6 SL Ready",
+  "seconds": 102,
+  "when": "2026-10-27T22:47:38.035043+00:00",
+  "verified": true
+ },
+ "Presentia_W0_vT_1.0_EIFAItR_ETS5_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Presentia WO VT"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: Presentia WO VT :rridor Premium Version OK Melder Konstentlichtre... -;.'3 SL Ready",
+  "seconds": 80,
+  "when": "2026-10-27T18:52:24.088741+00:00",
+  "verified": false
+ },
+ "QUAD_5.2_EIFAItRSP.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "QUAD"
+  ],
+  "message": "Best Huts Buss KNX- Feucl Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: QUAD ZPDC30LV2 Presentia OK cv2 16 Version 1.0 1.6 SL Ready",
+  "seconds": 113,
+  "when": "2026-10-27T22:49:36.659441+00:00",
+  "verified": true
+ },
+ "QUAD_v3_1.0_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "QUAD v3"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: 2TYZ510202RC601 Version OK Präsenz-Konstantlichts.. I -4 SL Ready",
+  "seconds": 80,
+  "when": "2026-10-27T18:54:06.254465+00:00",
+  "verified": true
+ },
+ "Quad_Plus_1.5_EIAFItRS_ETS5_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "QUAD Plus"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: QUAD Plus OK FTR -MSxS.1.1 Version 0.2 0.3 0.3 SL Ready Taster-Sensor [FTR-MSxS.1.1] FTR-MSxS. 1.",
+  "seconds": 102,
+  "when": "2026-10-27T22:51:24.357704+00:00",
+  "verified": true
+ },
+ "RF-AKD2x0CC_02S_MDT_KP_V10.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "RF-AKD230CC.02S KNX RF+ LED Controller CC/CV 30 W /",
+   "RF-AKD260CC.02S KNX RF+ LED Controller CC/CV 60 W /"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products\\RF- Produkt: RF-AKD230CC.02S KNX RF+ LED Controller CC/CV 30 W / 230 V 2-l<anäle Produkt: RF-AKD260CC.02S KNX RF+ LED Controller CC/CV 60 W / 230 V 2-l<anäle Taster-Sensor [FTR-MSxS.1.1] Version 0.2 0.3 0.3 SL Ready OK FTR-MSxS. 1. FTR -MSxS.1.1",
+  "seconds": 45,
+  "when": "2026-10-27T22:52:14.884166+00:00",
+  "verified": false
+ },
+ "RF-FKxx-01S_MDT_KP_V10.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "RF-FKxx.01S KNX RF Fensterkontakt"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products\\RF- Produkt: RF-FKxx.01S KNX RF Fensterkontakt Con Version 1.0 OK SL Ready",
+  "seconds": 38,
+  "when": "2026-10-27T22:52:58.365474+00:00",
+  "verified": true
+ },
+ "RF-HVA1xxx-01S_MDT_KP_V11.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "KNX RF+ Heizkörperthermostat Industrie mit Longlife-",
+   "KNX RF+ Heizkörperthermostat mit Display und 2 x AA",
+   "KNX RF+ Heizkörperthermostat mit Display und Longlife-"
+  ],
+  "message": "Import erfolgreich. Datei: HVÅ1nx-01S_MOT KP_V11.knxprod Produkt: {NX RF+ Heizkarperthermastöt Industrie mit Longlife- Batterie, Secure Produkt: {NX RF+ Heizkarperthermastöt mit Display und 2 x Batterien, Secure Produkt: {NX RF+ Heizkarperthermastöt mit Display und Longlife Batterie, Secure Taster-Sensar [FTR-MSxS. Version OK SL Ready &1.11",
+  "seconds": 50,
+  "when": "2026-10-27T18:55:50.556213+00:00",
+  "verified": true
+ },
+ "RF-LK001-03_MDT_KP_V23.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "KNX RF+ Funk Linien-/Segmentkoppler"
+  ],
+  "message": "Import erfolgreich. Datei: LKOOl-03 Produkt: {NX RF+ Funk Linien-/Segmentkoppler Version OK Taster-Sensar [FTR-MSxS. SL Ready &1.1.1",
+  "seconds": 35,
+  "when": "2026-10-27T18:56:30.680499+00:00",
+  "verified": true
+ },
+ "RF-TAL55Bx0x-01S_MDT_KP_V12.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "RF-TAL55BIOx.01S KNX RF+ Taster Light 55 Basic I-fach,",
+   "RF-TAL55B202.01S KNX RF+ Taster Light 55 Basic 2-fach,"
+  ],
+  "message": "Import erfolgreich. Datei: TAL55BxOx-OlS_MDT KP_V12.knxprod Produkt: RF-TAL55BIOx.OlS KNX RF+ Taster Light 55 Basic n-fach, Secure Produkt: RF-TAL55B202.OlS KNX RF+ Taster Light 55 Basic Mach, Secure Version OK SL Ready",
+  "seconds": 42,
+  "when": "2026-10-27T18:57:18.432517+00:00",
+  "verified": false
+ },
+ "RailQUAD_8_1.6_EIFAItR_ETS5_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "RailQUAD 8"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: 8 Version OK SL Ready &1.11",
+  "seconds": 77,
+  "when": "2026-10-27T18:58:41.247343+00:00",
+  "verified": true
+ },
+ "RemoteBOX_4.1_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "RemoteBOX"
+  ],
+  "message": "Import erfolgreich. Datei: knxprod Produkt: RemoteBOX ZICRQ8V2 Version OK RöiIQUÅC 8 v2 1.3 SL Ready &1.11",
+  "seconds": 85,
+  "when": "2026-10-27T19:00:12.322569+00:00",
+  "verified": false
+ },
+ "Roll-ZAS_1.4_EIFAItRSP_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Roll-ZAS"
+  ],
+  "message": "Import erfolgreich. Datei: ZAS Produkt: Ron-us Version OK SL Ready &1.1.1",
+  "seconds": 93,
+  "when": "2026-10-27T19:01:51.415801+00:00",
+  "verified": false
+ },
+ "SCN-ACG0DAI-01_MDT_KP_V04.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "KNX Gateway for Daikin residential air conditioning units,"
+  ],
+  "message": "Import erfolgreich. Datei: ACGODAI-OI MOT KP_V04knxprod Produkt: {NX Getaway for Beikin residential air conditianing units, flush mounted Version OK SL Ready &1.11",
+  "seconds": 34,
+  "when": "2026-10-27T19:02:30.970302+00:00",
+  "verified": true
+ },
+ "SCN-ACG0MIT-01_MDT_KP_V10.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "KNX Gateway for Mitsubishi air conditioning units, flush"
+  ],
+  "message": "Import erfolgreich. Datei: VIO.knxprod Produkt: {NX Getaway for Mitsubishi air conditioning units, flush mounted Version OK SL Ready",
+  "seconds": 36,
+  "when": "2026-10-27T19:03:13.093893+00:00",
+  "verified": true
+ },
+ "SCN-ACG0PAN-01_MDT_KP_V15.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "KNX Gateway for Panasonic Etherea air conditioning units,"
+  ],
+  "message": "Import erfolgreich. Datei: 5.knxprad Produkt: {NX Getaway for Panasonic Etherea air canditianing units, flush mounted Version OK SL Ready",
+  "seconds": 36,
+  "when": "2026-10-27T19:03:55.167704+00:00",
+  "verified": true
+ },
+ "SCN-ACG1DAI-01_MDT_KP_V15.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "KNX Gateway for Daikin commercial air conditioning units,"
+  ],
+  "message": "Import erfolgreich. Datei: ACGIDAI-OI MOT KP V15.knxprod Produkt: {NX Getaway for Beikin cammerciöl air conditioning units, flush mounted Version OK SL Ready",
+  "seconds": 36,
+  "when": "2026-10-27T19:04:36.597136+00:00",
+  "verified": true
+ },
+ "SCN-CO2M601x-02_MDT_KP_V12.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SCN-C02M601 x.02 C02 / VOC Kombisensor 60 CH"
+  ],
+  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products\\SCN- C02M601 Produkt: SCN-C02M601x.02 C02 / VOC Kombisensor 60 CH ikt Version . 1.0 OK SL Ready",
+  "seconds": 37,
+  "when": "2026-10-27T22:53:41.241538+00:00",
+  "verified": false
+ },
+ "SCN-CO2MGSxx-02_MDT_KP_V12.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SCN-C02MGS.02 C02 / VOC Combi Sensor 55"
+  ],
+  "message": "Import erfolgreich. Datei: V12.knxprad Produkt: SCN-C02MGS.02 C02 / VOC Combi Sensor 55 Version OK SL Ready",
+  "seconds": 38,
+  "when": "2026-10-27T19:05:36.566032+00:00",
+  "verified": false
+ },
+ "SCN-DA641P-04S_MDT_KP_V21.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "DALI Control Pr064 Gateway"
+  ],
+  "message": "Import erfolgreich. Datei: MOT KP_V21.knxprod Produkt: CALI Control Pr064 Gateway Version OK SL Ready &1.11",
+  "seconds": 37,
+  "when": "2026-10-27T19:06:18.971232+00:00",
+  "verified": true
+ },
+ "SCN-DA64x-04_MDT_KP_V40a.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "DALI Control 2x64 Gateway",
+   "DALI Control 64 Gateway"
+  ],
+  "message": "Import erfolgreich. Datei: DA64x-04 MOT KP_V40a.knxprod Produkt: CALI Control 2.x64 Gateway Produkt: CALI Control 64 Gateway Version OK Üimmen Slave LichÉze... l.' SL Ready",
+  "seconds": 42,
+  "when": "2026-10-27T19:07:06.784962+00:00",
+  "verified": true
+ },
+ "SCN-KP360K3xx01_MDT_KP_V10.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SCN-KP360K3.03 Kombi-Präsenzmelder 360- mit Raumklima-"
+  ],
+  "message": "Import erfolgreich. Datei: VIO.knxprod Produkt: SCN-KP360K3.C3 Kombi-Präsenzmelder 360' mit Raumklima- Sensoren Version OK Üimmen Slave LichÉze... l. SL Ready",
+  "seconds": 40,
+  "when": "2026-10-27T19:07:52.823990+00:00",
+  "verified": false
+ },
+ "SCN-LK001-03S_MDT_KP_V10_ETS6.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SCN-LKOOI ,03S Linien-Segmentkoppler mit Deta Secure/"
+  ],
+  "message": "Import erfolgreich. Datei: LKOOl-03S MOT KP VIO ETS6.knxprod Produkt: SCN-LKOOI .03S Linien-Segmentkoppler mit Deta Secure/ Secure Prarj$ (für HW ab R7.O) Version OK SL Ready &1.1.1",
+  "seconds": 34,
+  "when": "2026-10-27T19:08:32.561940+00:00",
+  "verified": false
+ },
+ "SCN-LK001-03S_MDT_KP_V42_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SCN-LKOOI 103 Linienkoppler mit Deta Secure",
+   "SCN-LKOOI 103 Verstärker mit Data Secure"
+  ],
+  "message": "Import erfolgreich. Datei: LKOOl-03S_MOT Produkt: SCN-LKOOI .03 Linienkoppler mit Deta Secure Produkt: SCN-LKOOI .03 Vérstärker mit Data Secure Version OK SL Ready &1.1.1",
+  "seconds": 37,
+  "when": "2026-10-27T19:09:15.594120+00:00",
+  "verified": false
+ },
+ "SCN-LK001.03_MDT_KP_V50_from_HW_ R6.1.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SCN-LKOOI 103 Linien-/Segmentkoppler mit Data Secure (für"
+  ],
+  "message": "Import erfolgreich. Datei: LKOOI Produkt: SCN-LKOOI .03 Linien-Segmentkopp[er mit Data Secure (für ew ab R6.l) Version OK SL Ready &1.1.1",
+  "seconds": 33,
+  "when": "2026-10-27T19:09:54.477338+00:00",
+  "verified": false
+ },
+ "SCN-LOG1-03S_MDT_KP_V10a.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SCN-LOGI .03S Logikmodul"
+  ],
+  "message": "Import erfolgreich. Datei: LCGl-03S MOT KP_VIOa.knxprod Produkt: SCN-LOGI .03S Logikmodul Version OK SL Ready &1.11",
+  "seconds": 37,
+  "when": "2026-10-27T19:10:37.500651+00:00",
+  "verified": false
+ },
+ "SCN-MBGRTU-01_MDT_KP_V12.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SCN-MBGRTU.OI Modbus Gateway RTU485"
+  ],
+  "message": "Import erfolgreich. Datei: MBGRTU-OI Produkt: SCN-MBGRTU.OI Modbus Gateway RTU485 Version OK SL Ready &1.11",
+  "seconds": 39,
+  "when": "2026-10-27T19:11:22.196847+00:00",
+  "verified": false
+ },
+ "SCN-x360xx-03_MDT_KP_V44a.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SCN",
+   "SCN",
+   "SCN-P360D3,03 Präsenzmelder 3602 3S",
+   "SCN-",
+   "SCN-P360E3.03 Präsenzmelder MR16 360-",
+   "SCN-P360K3.03 Präsenzmelder 360- KLR 3S",
+   "SCN-P360K4.03 Präsenzmelder 360- KLR 4S",
+   "SCN-"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: SCN-G36CD3.C3 Glaspräsenzmelder 360' 3S Produkt: SCN-G36CK3.03 360' KLR 3S Produkt: SCN Präsenzmelder 3S Produkt: SCN -P360D4.03 Präsenzmelder 4S Produkt: SCN -P360E3.03 MR16 Produkt: SCN 360- KLR 3S Produkt: SCN 360- KLR 4S Produkt: SCN-P360L2,03 Präsenzmelder 360' 2 Sensoren Version OK SL Ready &1.1.1",
+  "seconds": 200,
+  "when": "2026-10-27T19:14:47.722856+00:00",
+  "verified": false
+ },
+ "SCN-x360xx-03_MDT_KP_V44b.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SCN",
+   "SCN",
+   "SCN-P360D3,03 Präsenzmelder 3602 3S",
+   "SCN-",
+   "SCN-P360E3.03 Präsenzmelder MR16 360-",
+   "SCN-P360K3.03 Präsenzmelder 360- KLR 3S",
+   "SCN-P360K4.03 Präsenzmelder 360- KLR 4S",
+   "SCN-"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: SCN-G36CD3.C3 Glaspräsenzmelder 360' 3S Produkt: SCN-G36CK3.03 360' KLR 3S Produkt: SCN Präsenzmelder 3S Produkt: SCN -P360D4.03 Präsenzmelder 4S Produkt: SCN -P360E3.03 MR16 Produkt: SCN 360- KLR 3S Produkt: SCN 360- KLR 4S Produkt: SCN-P360L2,03 Präsenzmelder 360' 2 Sensoren Version OK SL Ready &1.1.1",
+  "seconds": 68,
+  "when": "2026-10-27T19:16:01.024605+00:00",
+  "verified": false
+ },
+ "SCN-xxxxxx-01_RoomTemperatureController_MDT_KP_V14.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SCN-RTN55S.01 Raumtemperatur-Nebenstelle Smart 55",
+   "SCN-RTN60S.01 Raumtemperatur-Nebenstelle Smart 60",
+   "SCN-RTN63S.01 Raumtemperatur-Nebenstelle Smart 63",
+   "SCN-RTR550v01 Objektregler 55",
+   "SCN-RTR55S.01 Raumtemperaturregler Smart 55",
+   "SCN-RTR600v01 Objektregler 60 CH",
+   "SCN-RTR60S.01 Raumtemperaturregler Smart 60 CH"
+  ],
+  "message": "Import erfolgreich. Datei: V14.knxprod Produkt: SCN-RTN55S,01 Raumtemperatur-Nebenstelle Smart 55 Produkt: SCN-RTN60S,01 Raumtemperatur-Nebenstelle Smart 60 CH Produkt: SCN-RTN63S,01 Raumtemperatur-Nebenstelle Smart 63 Produkt: SCN-RTR55001 Objektregler 55 Produkt: SCN-RTR55S.01 Raumtemperaturregler Smart 55 Produkt: SCN-RTR60001 60 Produkt: SCN-RTR60S.01 Raumtemperaturregler Smart 60 C.H Version OK SL Ready &1.11",
+  "seconds": 43,
+  "when": "2026-10-27T19:16:49.391462+00:00",
+  "verified": false
+ },
+ "SW104_Switch_Actuator_v1.0-tr_en_de_es_fr_it.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "SW104 Schaltaktuator 4-Kanal 16A"
+  ],
+  "message": "Import erfolgreich. Datei: ISWI knxprod Produkt: SW104 Schaltaktuatar 4-Kanal 16A Version OK SL Ready &1.1.1",
+  "seconds": 22,
+  "when": "2026-10-27T19:17:17.303035+00:00",
+  "verified": true
+ },
+ "ShutterBOX_Drive_4ch_1.0_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "ShutterBOX Drive 4CH"
+  ],
+  "message": "Import erfolgreich. Datei: ILEIFÅltRUk_Cert.knxprod Produkt: Shutter3CX Drive 4CH Version OK SL Ready &1.1.1",
+  "seconds": 99,
+  "when": "2026-10-27T19:19:01.242410+00:00",
+  "verified": false
+ },
+ "Soft_Push_button_1.0_EIFAItRUk.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Soft Push button"
+  ],
+  "message": "Import erfolgreich. Datei: .O_EI FAItRLI k. knxprod Produkt: Soft Push buttan ZICSHD6 Version SL Ready &1.11 OK Shuttergax Drive 6CH.",
+  "seconds": 87,
+  "when": "2026-10-27T19:20:34.434533+00:00",
+  "verified": false
+ },
+ "Square_TMD-Display_1_4_EIFAItRS.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Square TMD-DispIay"
+  ],
+  "message": "Import erfolgreich. Datei: knxprod Produkt: Square TMD-Display ZICSHD6 Version SL Ready &1.11 OK Shuttergax Drive 6CH.",
+  "seconds": 102,
+  "when": "2026-10-27T19:22:21.717559+00:00",
+  "verified": false
+ },
+ "Square_TMD_2_1.2_EIFAItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Square TMD 2"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: Square TMD 2 ZICSHD6 Version SL Ready &1.11 OK Shuttergax Drive 6CH.",
+  "seconds": 92,
+  "when": "2026-10-27T19:23:58.776701+00:00",
+  "verified": false
+ },
+ "Square_TMD_6_1.1_EIFAItRSP.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Square TMD 6"
+  ],
+  "message": "Import erfolgreich. Datei: 6 1.1 EIFÅltRSP.knxprod Produkt: Square TMD 6 Version OK SL Ready &1.11",
+  "seconds": 93,
+  "when": "2026-10-27T19:25:37.428031+00:00",
+  "verified": false
+ },
+ "T1079200_Sphinx_390_2-Kanal_PrNsenzmelder_V1.0.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Sphinx 390"
+  ],
+  "message": "Import erfolgreich. Datei: ITI 079200 Produkt: Sphinx 390 ZVI-SQTMD6 Version OK TMD 6 SL Ready &1.11",
+  "seconds": 22,
+  "when": "2026-10-27T19:26:04.869703+00:00",
+  "verified": false
+ },
+ "T1079201_Sphinx_395_1-Kanal_PrNsenzmelder_V1.0.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Sphinx 395"
+  ],
+  "message": "Import erfolgreich. Datei: ITI 079201 _ Produkt: Sphinx 395 Version OK Sphinx 332 Vl .2 SL Ready &1.1.1",
+  "seconds": 22,
+  "when": "2026-10-27T19:26:32.847512+00:00",
+  "verified": false
+ },
+ "T1079210_Sphinx_330_Bewegungsmelder_V1.1.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Sphinx 330"
+  ],
+  "message": "Import erfolgreich. Datei: ITI 079210 Vl.l.knxprad Produkt: Sphinx 330 Version OK Sphinx 332 Vl .2 SL Ready &1.11",
+  "seconds": 22,
+  "when": "2026-10-27T19:27:00.460609+00:00",
+  "verified": false
+ },
+ "T1079212_Theben_Sphinx_332_2-Kanal_Bewegungsmelder_mit_Lichtregelung_V1.2.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Sphinx 332"
+  ],
+  "message": "Import erfolgreich. Datei: Kana u ngsm elder_m knxprod Produkt: Sphinx 332 Version OK SL Ready &1.11",
+  "seconds": 21,
+  "when": "2026-10-27T13:43:15.016497+00:00",
+  "verified": false
+ },
+ "T1109200_LU_110_EIB_1-Kanal_DNmmerungsschalter_V0.0.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "LIJ 110 EIB"
+  ],
+  "message": "Import erfolgreich. Datei: ITI 109200 LLI_IIO Produkt: LU 110 EIB Version OK Sphinx 332 Vl .2 SL Ready &1.11",
+  "seconds": 22,
+  "when": "2026-10-27T19:27:28.138508+00:00",
+  "verified": false
+ },
+ "T1309200_LU_130_EIB_3-Kanal_Helligkeitssensor_V0.0.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "LU 130 EIB mit 4 Szenen"
+  ],
+  "message": "Import erfolgreich. Datei: ITI 309200 1-Ll_130 Produkt: LIJ 130 EIB mit 4 Szenen Version OK SL Ready &1.11",
+  "seconds": 22,
+  "when": "2026-10-27T19:27:55.854968+00:00",
+  "verified": true
+ },
+ "T4900204_RM_4_RM_4.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "RM 4 als 4 oder 8 -Kanal Heizungsektor / 1",
+   "RM 4 mit 12 Schalt- und 2 Zeitfunktionen",
+   "RM 4 mit 12 Schaltfunktionen",
+   "RM 4 mit 4 x Logik und Rückmelden",
+   "RM 4 mit 8 Szenen und Rückmelden",
+   "RM 4 mit Schalten, Blinken und Zwangssteuerung",
+   "RM4 mit intelligenter Treppenlichtfunktion",
+   "Venkon-Steuerung"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: RV 4 als 4 ader 8 -Kenal Heizungsektor / 1 Produkt: RV 4 mit 12 Schalt- und 2 Zeitfunktionen Produkt: RV 4 mit 12 Schöltfunktianen Produkt: RV 4 mit 4 x Logik und Ruckmelden Produkt: RV 4 mit a Szenen und Rückmelden Produkt: RV 4 mit Schalten, Blinken und Zwengssteuerung Produkt: RFs•14 mit intelligenter Treppenlichtfunktion KNX Produkt: Venkon-Steuerung BM/A4.11-13x Version OK 8ä'A'äquntJ. Dämmerun...8.2 SL Ready",
+  "seconds": 30,
+  "when": "2026-10-27T19:28:31.739936+00:00",
+  "verified": true
+ },
+ "T4900240_RM_4_Schaltaktor_V0.0_bis_V0.2.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "RM 4 als 4 oder 8 -Kanal Heizungsektor / 1",
+   "RM 4 mit 12 Schalt- und 2 Zeitfunktionen",
+   "RM 4 mit 12 Schaltfunktionen",
+   "RM 4 mit 4 x Logik und Rückmelden",
+   "RM 4 mit 8 Szenen und Rückmelden",
+   "RM 4 mit Schalten, Blinken und Zwangssteuerung",
+   "RM4 mit intelligenter Treppenlichtfunktion",
+   "Venkon-Steuerung"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: RV 4 als 4 ader 8 -Kenal Heizungsektor / 1 Produkt: RV 4 mit 12 Schalt- und 2 Zeitfunktionen Produkt: RV 4 mit 12 Schöltfunktianen Produkt: RV 4 mit 4 x Logik und Ruckmelden Produkt: RV 4 mit a Szenen und Rückmelden Produkt: RV 4 mit Schalten, Blinken und Zwengssteuerung Produkt: RFs•14 mit intelligenter Treppenlichtfunktion en.2i23CV,REE Produkt: Venkon-Steuerung 6196/22-102 Version 1.4 SL Ready OK Jalousie/Rallladen 2f 2.",
+  "seconds": 31,
+  "when": "2026-10-27T19:29:08.854073+00:00",
+  "verified": true
+ },
+ "T4900250_JMG_4__4-Kanal_Jalousieaktor_V1.4.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "JMG 4"
+  ],
+  "message": "SL Ready en.2i23CV,REE Import erfolgreich. Datei: Kanal_Jöl ousiEöktor_V1.4iknxprad Produkt: JMG 4 6196/22-102 OK Jalousie/Rallladen 2f 2. Version 1.4",
+  "seconds": 22,
+  "when": "2026-10-27T19:29:36.587841+00:00",
+  "verified": false
+ },
+ "T4900270_HMG_8_8-fach_Heizungsaktor_V1.0.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'HMG 8"
+  ],
+  "message": "Import erfolgreich. Datei: 8_8- fach_Hazu ngsaktor_V110. knxprod Produkt: HMG 8 Version OK SL Ready &1.1.1",
+  "seconds": 22,
+  "when": "2026-10-27T19:30:03.571751+00:00",
+  "verified": false
+ },
+ "T4940200_KNX_8-fach_FIX1_Schalt-_oder_4-fach_Jalousieaktor_V1.0_ETS4.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "RM 8 S"
+  ],
+  "message": "Import erfolgreich. Datei: fach VI.O ETS4.knxprod Produkt: 8 S Version OK SL Ready &1.1.1",
+  "seconds": 27,
+  "when": "2026-10-27T19:30:36.180195+00:00",
+  "verified": true
+ },
+ "T4940205_KNX_16-fach_FIX2_Schalt-_oder_8-fach_Jalousieaktor_V1.0_ETS4.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "RM 16 T"
+  ],
+  "message": "Import erfolgreich. Datei: fach VI.O ETS4.knxprod Produkt: 16 T Version 1.4 SL Ready en.2i23CV,REE 6196/22-102 OK Jalousie/Rallladen 2f 2.",
+  "seconds": 31,
+  "when": "2026-10-27T19:31:13.379212+00:00",
+  "verified": true
+ },
+ "T4940245_KNX_12-fach_FIX2_Heizungsaktor_V1.0_ETS4.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "IHM 12 T"
+  ],
+  "message": "en.2i23CV,REE Import erfolgreich. Datei: fach FIX2_Heizungsaktar V 1.0 ETS4.knxprod Produkt: HM 12 T 6196/22-102 Version 1.4 SL Ready OK Jalousie/Rallladen 2f 2.",
+  "seconds": 28,
+  "when": "2026-10-27T19:31:47.031187+00:00",
+  "verified": false
+ },
+ "T4940275_KNX_FIX2_Dimmaktor_V1.0_ETS4.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "DM 4 T"
+  ],
+  "message": "Import erfolgreich. Datei: IT4940275_KNX VI.C ETS4.knxprod Produkt: DM 4 T Version OK SL Ready &1.11",
+  "seconds": 25,
+  "when": "2026-10-27T19:32:17.147961+00:00",
+  "verified": false
+ },
+ "T6129201_TR_612_S_EIB_2-Kanal_Wochenschaltuhr_V0.0.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "TR 612 S EIB"
+  ],
+  "message": "Import erfolgreich. Datei: IT6129201 TR_612 VO.Cknxprod Produkt: TR 612 S Version OK SL Ready",
+  "seconds": 23,
+  "when": "2026-10-27T19:32:45.367730+00:00",
+  "verified": true
+ },
+ "T6449200_TR_644_S_EIB_Schaltaktor_4-Kanal_V0.0.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "TR 644 S EIB mit Szenen",
+   "TR 644 S EIB mit Zeit empfangen",
+   "TR 644 S EIB mit Zeit senden"
+  ],
+  "message": "Import erfolgreich. Datei: IT6449200 Produkt: TR F,'IÖ S EIB mit Szenen Produkt: TR F,'IÖ S EIB mit Zeit empfangen Produkt: TR F,'IÖ S EIB mit Zeit senden Version OK 6f 23üV/l SL Ready",
+  "seconds": 29,
+  "when": "2026-10-27T19:33:19.804638+00:00",
+  "verified": true
+ },
+ "T6489201_TR_648_6-Kanal_Schaltaktor_V1.3.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "TR 648"
+  ],
+  "message": "Import erfolgreich. Datei: Kanal_Schaltaktar V 1.3 knxprad Produkt: TR Version OK 6f 23üV/l SL Ready",
+  "seconds": 25,
+  "when": "2026-10-27T19:33:50.556739+00:00",
+  "verified": true
+ },
+ "T7109200__RAM_710_EIB_Thermostat_f-_Einzelraumregelung_V0.1.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "RAM 710 EIB mit 3 Temperaturstufen",
+   "RAM 710 EIB mit Isteertausgabe und 3 Temp,stufen",
+   "RAM 710 EIB mit Sollwenvorgabe über Bus"
+  ],
+  "message": "Import erfolgreich. Datei: _ Einzelraumregelung VC.I knxprod Produkt: RAM 710 EIB mit 3 Temperaturstufen Produkt: RAM 710 EIB mit Isteertausgabe und 3 Temp.stufen Produkt: RAM 710 EIB mit Sallwertvorgabe über Bus Version OK 6f 23üV/l SL Ready",
+  "seconds": 26,
+  "when": "2026-10-27T19:34:22.554445+00:00",
+  "verified": false
+ },
+ "T7109202_RAM_710_Venkon_2-_u._4_Rohr_Venkon_V1.1.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "RAM 710 Venkon 2-Rohr",
+   "RAM 710 Venkon 4-Rohr"
+  ],
+  "message": "Import erfolgreich. Datei: Venkan_2- Vl.l knxprod Produkt: RAM 710 Venkon 2-Rohr Produkt: RAM 710 Venkon 4-Rohr Version OK 6f 23üV/l SL Ready",
+  "seconds": 26,
+  "when": "2026-10-27T19:34:54.321884+00:00",
+  "verified": false
+ },
+ "T7139200_RAM_713_Einzelraum_Temperaturregler_V1.0.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "RAM 713"
+  ],
+  "message": "Import erfolgreich. Datei: IT7139200 knxprod Produkt: RAM 713 Version OK 6f 23üV/l SL Ready",
+  "seconds": 24,
+  "when": "2026-10-27T19:35:24.273063+00:00",
+  "verified": false
+ },
+ "T7139201_RAM_713_S_Raumtemperaturregler_V1.2.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "RAM 713 S"
+  ],
+  "message": "Import erfolgreich. Datei: IT7139201 knxprod Produkt: 713 S Version OK 6f 23üV/l SL Ready",
+  "seconds": 23,
+  "when": "2026-10-27T19:35:52.599679+00:00",
+  "verified": false
+ },
+ "T7139202_RAM_713_FAN_Coil_Raumtemperaturregler_V1.2.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "RAM 713 Fan Coil"
+  ],
+  "message": "Import erfolgreich. Datei: Vl.2.knxprod Produkt: 713 Fan Coil Version OK 6f 23üV/l SL Ready",
+  "seconds": 27,
+  "when": "2026-10-27T19:36:25.381668+00:00",
+  "verified": true
+ },
+ "TAL-xxxxxxx-02S_MDT_KP_V10.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "TAL-5501 oox.02S KNX Taster Light 55 1-fechr RGBW,",
+   "TAL-5501AOx.02S KNX Taster Light 55 1-fach, RGBW",
+   "TAL-5501 (NX Taster Light 55 1 -facht RGBW",
+   "TAL-550200x.02S KNX Taster Light 55 2-fechr RGBW,"
+  ],
+  "message": "Import erfolgreich. Datei: VIO.knxprad Produkt: TAL-5SOlOOx.ü2S KNX Light 55 1-fach RGBW, Neutral, Secure Produkt: TAL-5501 /qnx.C2S KNX Tester Light 55 n-fach RGBW, delousie, Secure Produkt: aox.ozs '(NX Taster Light 55 1 -facht RG3W, Schalten, Secure Produkt: TAL-550200x.02S KNX Light 55 2-fach RGBW, Neutral, Secure Version OK SL Ready",
+  "seconds": 63,
+  "when": "2026-10-27T19:37:33.750126+00:00",
+  "verified": false
+ },
+ "TMD-Display_One_2_1_EIAFItRSP_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "TMD-DispIay One"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: TMD-Displey One SL Ready &1.1.1 t 55 -fach, REBW Schalten, Secure Version OK TAL-5501eax.02S",
+  "seconds": 116,
+  "when": "2026-10-27T19:39:35.467080+00:00",
+  "verified": false
+ },
+ "TMD-Display_View_1.1_EIFAItRSP.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "TMD-DispIay View"
+  ],
+  "message": "Import erfolgreich. Datei: . I _EIFAItRSP.knxprad Produkt: TMD-Displey View Version OK SL Ready &1.11",
+  "seconds": 112,
+  "when": "2026-10-27T19:41:33.674294+00:00",
+  "verified": false
+ },
+ "TMD-Plus-4_1.2_EIFAItRSP_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Touch-MyDesign Plus 4"
+  ],
+  "message": "Import erfolgreich. Datei: CERT.knxprod Produkt: Tauch-MyDesign Plus 4 Version OK SL Ready &1.11",
+  "seconds": 95,
+  "when": "2026-10-27T19:43:14.339906+00:00",
+  "verified": true
+ },
+ "TMD-Plus-6_1.2_EIFAItRSP_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Touch-MyDesign Plus 6"
+  ],
+  "message": "Import erfolgreich. Datei: CERT.knxprod Produkt: Tauch-MyDesign Plus 6 Version OK SL Ready &1.11",
+  "seconds": 96,
+  "when": "2026-10-27T19:44:55.846819+00:00",
+  "verified": false
+ },
+ "TMD-Plus-8_1.2_EIFAItRSP_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Touch-MyDesign Plus 8"
+  ],
+  "message": "Import erfolgreich. Datei: CERT.knxprod Produkt: Tauch-MyDesign Plus 8 Version OK SL Ready &1.11",
+  "seconds": 95,
+  "when": "2026-10-27T19:46:36.317112+00:00",
+  "verified": false
+ },
+ "Tastsensoren_Universal_F50_Secure_2v1_Jung_DE_EN_FR_NL_ES_RU_IT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Tastsensor-Modul Universal lfach",
+   "Tastsensor-Modul Universal 2fach",
+   "Tastsensor-Modul Universal 3fach",
+   "Tastsensor-Modul Universal"
+  ],
+  "message": "Import erfolgreich. Datei: FR NL_ES_RU_IT .knxprod Produkt: Tastsensor-Modul Universal lfach Produkt: Tastsensor-Modul Universal 2facH Produkt: Tastsensor-Modul Universal 3facH Produkt: Tastsensor-Modul Universal *fach ZVI-TMDP8 Version OK Touch-MvOesiqn Plus. SL Ready &1.1.1",
+  "seconds": 61,
+  "when": "2026-10-27T19:47:43.750037+00:00",
+  "verified": true
+ },
+ "Tecla_55_X1_1.8_EIAFItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Tecla 55 Xl"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: Tecla 55 Xl 4C72RFTSM Version SL Ready &1.1.1 OK RF Testsensar 2fach DI. I",
+  "seconds": 85,
+  "when": "2026-10-27T19:49:15.570116+00:00",
+  "verified": false
+ },
+ "Tecla_55_X2_1.8_EIAFItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Tecla 55 X2"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: Tecla 55 X2 Version OK SL Ready &1.1.1",
+  "seconds": 88,
+  "when": "2026-10-27T19:50:48.946997+00:00",
+  "verified": false
+ },
+ "Tecla_55_X2_Sign_1.0_EIFAItR_ETS5_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Tecla 55 X2 Sign"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: Tecla 55 X2 Sign ZVIT55X2 Version OK 55 X2 1.8 SL Ready &1.11",
+  "seconds": 79,
+  "when": "2026-10-27T19:52:13.588019+00:00",
+  "verified": false
+ },
+ "Tecla_55_X4_1.8_EIAFItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Tecla 55 X4"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: Tecla 55 X4 ZVIT55X2 Version OK 55 X2 1.8 SL Ready &1.11",
+  "seconds": 85,
+  "when": "2026-10-27T19:53:43.944456+00:00",
+  "verified": false
+ },
+ "Tecla_55_X6_1.8_EIAFItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Tecla 55 X6"
+  ],
+  "message": "Import erfolgreich. Datei: 1.8_ElAFItR_Cert.knxprad Produkt: Tecla 55 X6 ZVIT55X2 Version OK 55 X2 1.8 SL Ready &1.11",
+  "seconds": 83,
+  "when": "2026-10-27T19:55:12.759628+00:00",
+  "verified": false
+ },
+ "Tecla_RGB_1.1_EIFAItRUk.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Tecla RGB"
+  ],
+  "message": "Import erfolgreich. Datei: EIFAltRLkknxprod Produkt: Tecla RGB Version OK SL Ready &1.11",
+  "seconds": 85,
+  "when": "2026-10-27T19:56:43.041909+00:00",
+  "verified": false
+ },
+ "Tecla_XL_X10_1.8_EIAFItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Tecla XL X 10"
+  ],
+  "message": "Import erfolgreich. Datei: ITeclö_XL l.a_EIÅFItR Produkt: Tecla XL XIC Version OK SL Ready &1.1.1",
+  "seconds": 90,
+  "when": "2026-10-27T19:58:18.302032+00:00",
+  "verified": true
+ },
+ "Tecla_XL_X4_1.8_EIAFItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Tecla XL X4"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: Tecla XL X4 ZVIT55X2 Version OK 55 X2 1.8 SL Ready &1.11",
+  "seconds": 88,
+  "when": "2026-10-27T19:59:51.752116+00:00",
+  "verified": true
+ },
+ "Tecla_XL_X6_1.8_EIAFItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Tecla XL X6"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: Tecla XL X6 ZVIT55X2 Version OK 55 X2 1.8 SL Ready &1.11",
+  "seconds": 83,
+  "when": "2026-10-27T20:01:19.987325+00:00",
+  "verified": true
+ },
+ "Tecla_XL_X8_1.8_EIAFItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Tecla XL X8"
+  ],
+  "message": "Import erfolgreich. Datei: XB_I Produkt: Tecla XL X8 ZVIT55X2 Version OK 55 X2 1.8 SL Ready &1.11",
+  "seconds": 86,
+  "when": "2026-10-27T20:02:51.284036+00:00",
+  "verified": true
+ },
+ "Tecla_X_1.9_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Tecla X"
+  ],
+  "message": "Import erfolgreich. Datei: .g EIFAltRLIk Cert.knxprad Produkt: Tecla X ZVIT55X2 Version OK 55 X2 1.8 SL Ready &1.11",
+  "seconds": 85,
+  "when": "2026-10-27T20:04:22.061702+00:00",
+  "verified": true
+ },
+ "Touch_MyDesign_Plus_8_1_3_EIFAItRSP_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Touch-MyDesign Plus 8"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: Tauch-MyDesign Plus 8 ZVIT55X2 Version OK 55 X2 1.8 SL Ready &1.11",
+  "seconds": 104,
+  "when": "2026-10-27T20:06:11.602504+00:00",
+  "verified": false
+ },
+ "WinDoor_RF_915_1.0_EIFAItR_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "WinDoor RF 915"
+  ],
+  "message": "Import erfolgreich. Datei: IWinDaar EIFAltR_ETS5.knxprad Produkt: WinDaar RF 915 ZVI-TMDP8 Version OK Cesiqn Plus. SL Ready &1.11",
+  "seconds": 85,
+  "when": "2026-10-27T20:07:42.739376+00:00",
+  "verified": false
+ },
+ "Z28_3.4_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Z28"
+  ],
+  "message": "Import erfolgreich. Datei: EIFÅItRUk_Certknxprad Produkt: Version OK SL Ready &1.11",
+  "seconds": 88,
+  "when": "2026-10-27T20:09:15.847041+00:00",
+  "verified": false
+ },
+ "Z35_3.1_EIFAItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Z35"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: Version OK SL Ready &1.11",
+  "seconds": 97,
+  "when": "2026-10-27T20:10:58.299583+00:00",
+  "verified": false
+ },
+ "Z35_H_3.0_EIFAItR_ETS5_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Z35 H"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: H Version OK SL Ready &1.11",
+  "seconds": 88,
+  "when": "2026-10-27T20:12:31.743587+00:00",
+  "verified": false
+ },
+ "Z35_V2_3.1_EIFAItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Z35 v2"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: ZVZ35H Version OK Z-]5 H 3.0 SL Ready &1.1.1",
+  "seconds": 99,
+  "when": "2026-10-27T20:14:16.474135+00:00",
+  "verified": false
+ },
+ "Z35_v3_3.7_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Z35 v3"
+  ],
+  "message": "Import erfolgreich. Datei: EIFAItRUk_Cert.knxprad Produkt: v3 ZVZ35H Version OK Z-]5 H 3.0 SL Ready &1.1.1",
+  "seconds": 99,
+  "when": "2026-10-27T20:16:00.849317+00:00",
+  "verified": false
+ },
+ "Z35_vT_3.4_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Z35 vT"
+  ],
+  "message": "Import erfolgreich. Datei: EIFAItRUk_Certknxprad Produkt: vT ZVZ35H Version OK Z-]5 H 3.0 SL Ready &1.11",
+  "seconds": 90,
+  "when": "2026-10-27T20:17:36.733891+00:00",
+  "verified": false
+ },
+ "Z40_3.3_EIAFItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Z40"
+  ],
+  "message": "Import erfolgreich. Datei: EIAFltR_Cert knxprod Produkt: ZOO ZVZ35H Version OK Z-]5 H 3.0 SL Ready &1.11",
+  "seconds": 88,
+  "when": "2026-10-27T20:19:09.709562+00:00",
+  "verified": false
+ },
+ "Z41_COM_1_1_EIAFItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Z41 COM"
+  ],
+  "message": "Import erfolgreich. Datei: \\Z41.COM EIAFItRS_ETS5.knxprad Produkt: Z41 COM ZVZ35H Version OK Z-]5 H 3.0 SL Ready &1.1.1",
+  "seconds": 119,
+  "when": "2026-10-27T20:21:14.425733+00:00",
+  "verified": false
+ },
+ "Z41_Lite_2_2_EIFAItRSP.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Z41 Lite"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: Z41 Lite ZVI-Z41COM Version OK UI COM SL Ready &1.11",
+  "seconds": 187,
+  "when": "2026-10-27T20:24:26.572430+00:00",
+  "verified": false
+ },
+ "Z41_Lite_2_3_EIFAItRSP.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Z41 Lite"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: Z41 Lite ZVI-Z41COM Version OK UI COM SL Ready &1.11",
+  "seconds": 189,
+  "when": "2026-10-27T20:27:41.173321+00:00",
+  "verified": false
+ },
+ "Z41_Pro_3_4_EIFAItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Z41 Pro"
+  ],
+  "message": "Import erfolgreich. Datei: ETS5 Produkt: Z41 Pra ZVI-Z41COM Version OK UI COM SL Ready &1.11",
+  "seconds": 123,
+  "when": "2026-10-27T20:29:50.047403+00:00",
+  "verified": false
+ },
+ "Z41_Pro_3_6_EIFAItR_cert_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Z41 Pro"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: Z41 Pra ZVI-Z41COM Version OK UI COM SL Ready &1.11",
+  "seconds": 111,
+  "when": "2026-10-27T20:31:46.611809+00:00",
+  "verified": false
+ },
+ "Z70_1.3_EIFAItR_ETS5_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Z70"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: Z70 ZVI-Z41COM Version OK UI COM SL Ready &1.11",
+  "seconds": 139,
+  "when": "2026-10-27T20:34:10.727858+00:00",
+  "verified": false
+ },
+ "Zennio_KNX_IP_Router_PLess_1_0_EIFAItRS_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Zennio KNX-IP Router PLess"
+  ],
+  "message": "Import erfolgreich. Datei: EIFAItRS CERT.knxprod Produkt: Zennio {NX-IP Router PLess ZVI-Z41COM Version OK UI COM SL Ready &1.11",
+  "seconds": 104,
+  "when": "2026-10-27T20:36:00.166836+00:00",
+  "verified": true
+ },
+ "Zennio_Linecoupler_1.1_EIFAItRSP.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Zennio Linecoupler",
+   "Zennio Linerepeater"
+  ],
+  "message": "Import erfolgreich. Datei: I _EIFAItRSP.knxprad Produkt: Zennio Linecaupler Produkt: Zennio Linerepeater Version OK SL Ready",
+  "seconds": 105,
+  "when": "2026-10-27T20:37:50.721734+00:00",
+  "verified": true
+ },
+ "ZoningBOX_6_1_0_EIFAItRSP_ETS5_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "ZoningBOX 6"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: Zoning3CX 6 Version OK SL Ready",
+  "seconds": 95,
+  "when": "2026-10-27T20:39:31.004087+00:00",
+  "verified": false
+ },
+ "ZoningBOX_6_2.0_EIAFItR_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "ZoningBOX 6"
+  ],
+  "message": "Import erfolgreich. Datei: ZoningBOX_6 Produkt: Zoning3CX 6 Version OK Zaninq30X SL Ready &1.11",
+  "seconds": 94,
+  "when": "2026-10-27T20:41:10.523920+00:00",
+  "verified": true
+ },
+ "ZoningBOX_6_2.1_EIFAItR_Cert_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "ZoningBOX 6"
+  ],
+  "message": "Import erfolgreich. Datei: ZoningBOX_6 Produkt: Zoning3CX 6 OK HeatingBOX •.2 Version SL Ready &1.11",
+  "seconds": 100,
+  "when": "2026-10-27T20:42:56.352148+00:00",
+  "verified": false
+ },
+ "a2fx-E-Q-en-de-21.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Schaltaktor 2fach"
+  ],
+  "message": "Import erfolgreich. Datei: de-21 knxprod Produkt: Schaltaktar 2fech Version OK Zaninq30X SL Ready &1.1.1",
+  "seconds": 25,
+  "when": "2026-10-27T20:43:26.635885+00:00",
+  "verified": true
+ },
+ "a2x6f16h-2-en-de-21.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Schaltaktor 2x6fach"
+  ],
+  "message": "Import erfolgreich. Datei: de-21 knxprod Produkt: Schaltaktar 2x6fech 2CDG IIO 263 R0021 Version OK Schalten Standard 8fac.. I.d SL Ready",
+  "seconds": 30,
+  "when": "2026-10-27T20:44:03.353078+00:00",
+  "verified": true
+ },
+ "a3fx-E-Q-en-de-21.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Schaltaktor 3fach"
+  ],
+  "message": "Import erfolgreich. Datei: de-21 knxprod Produkt: Schaltaktar Mech 2CDG IIO 263 R0021 Version OK Schalten Standard 8fac.. I.d SL Ready",
+  "seconds": 21,
+  "when": "2026-10-27T20:44:31.079160+00:00",
+  "verified": true
+ },
+ "a4fx-E-Q-en-de-21.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Schaltaktor 4fach"
+  ],
+  "message": "Import erfolgreich. Datei: de-21 knxprod Produkt: Schaltaktar 4fech 2CDG IIO 263 R0021 Version OK Schalten Standard 8fac.. I.d SL Ready",
+  "seconds": 22,
+  "when": "2026-10-27T20:44:59.251938+00:00",
+  "verified": true
+ },
+ "a5fx-E-Q-en-de-21.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Schaltaktor 5fach"
+  ],
+  "message": "Import erfolgreich. Datei: de-21 knxprod Produkt: Schaltaktar 5fech 2CDG IIO 263 R0021 Version OK Schalten Standard 8fac.. I.d SL Ready",
+  "seconds": 25,
+  "when": "2026-10-27T20:45:30.199662+00:00",
+  "verified": true
+ },
+ "a6f16h-2-en-de-21.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Schaltaktor 6fach"
+  ],
+  "message": "Import erfolgreich. Datei: de-21 knxprod Produkt: Schaltaktar 6fech 2CDG IIO 263 R0021 Version OK Schalten Standard 8fac.. I.d SL Ready",
+  "seconds": 22,
+  "when": "2026-10-27T20:45:57.935346+00:00",
+  "verified": true
+ },
+ "a6fx-E-Q-en-de-21.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Schaltaktor 6fach"
+  ],
+  "message": "Import erfolgreich. Datei: de-21 knxprod Produkt: Schaltaktar 6fech 2CDG IIO 263 R0021 Version OK Schalten Standard 8fac.. I.d SL Ready",
+  "seconds": 22,
+  "when": "2026-10-27T20:46:25.853902+00:00",
+  "verified": true
+ },
+ "a9fx-E-Q-en-de-21.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Schaltaktor 9fach"
+  ],
+  "message": "Import erfolgreich. Datei: de-21 knxprod Produkt: Schaltaktar 9fech 2CDG IIO 263 R0021 Version OK Schalten Standard 8fac.. I.d SL Ready",
+  "seconds": 26,
+  "when": "2026-10-27T20:46:58.397361+00:00",
+  "verified": true
+ },
+ "all_230021SU_v2v_20210930.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Schaltaktor 2fach / Jalousieaktor lfach"
+  ],
+  "message": "Import erfolgreich. Datei: lall_230021SU v2v_20210930.knxprad Produkt: Schaltaktar 2fech / Jalousieaktar Ifech 2CDG IIO 263 R0021 Version OK Schalten Standard 8fac.. I.d SL Ready",
+  "seconds": 20,
+  "when": "2026-10-27T20:47:24.423546+00:00",
+  "verified": true
+ },
+ "all_230xx1SR_V2-6_20241213.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Schaltaktor 16fach / Jalousieaktor 8fach",
+   "Schaltaktor 24fach / Jalousieaktor 12fach",
+   "Schaltaktor 6fach / Jalousieaktor 3fach"
+  ],
+  "message": "Import erfolgreich. Datei: lall_230xxlSR V2-6 20241213.knxprad Produkt: Schaltaktar 16facH / Jalousieaktor 8facH Produkt: Schaltaktar 24facH / Jalousieaktor 12fach Produkt: Schaltaktar 6fech / delousæaktar Mech 2CDG IIO 263 R0021 Version OK Schalten Standard 8fac.. I.d SL Ready",
+  "seconds": 40,
+  "when": "2026-10-27T20:48:10.971228+00:00",
+  "verified": true
+ },
+ "all_360061SR_20230811.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'Heizungsaktor 6fach mit Regler"
+  ],
+  "message": "Import erfolgreich. Datei: 20230811.knxprad Produkt: Heizungsaktar 6fach mit Regler Version OK Sphinx 332 Vl .2 SL Ready &1.11",
+  "seconds": 18,
+  "when": "2026-10-27T13:43:38.611229+00:00",
+  "verified": false
+ },
+ "all_360061SR_20260804.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "'Heizungsaktor 6fach mit Regler"
+  ],
+  "message": "Import erfolgreich. Datei: SR 20260804.knxprad Produkt: Heizungsaktar 6fach mit Regler Version OK SL Ready &1.11",
+  "seconds": 19,
+  "when": "2026-10-27T13:44:03.326892+00:00",
+  "verified": false
+ },
+ "all_390041SR_20230313.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "LEO-Universal-Dimmaktor 4fach"
+  ],
+  "message": "Import erfolgreich. Datei: lall_390041SR 20230313.knxprad Produkt: LEO-Universal-Dlmmaktar 4fach 2CDG IIO 263 R0021 Version OK Schalten Standard 8fac.. I.d SL Ready",
+  "seconds": 25,
+  "when": "2026-10-27T20:48:41.841968+00:00",
+  "verified": false
+ },
+ "all_429x1ST_2v1_2v2_20241010.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Tastsensor-Modul Universal lfach",
+   "Tastsensor-Modul Universal lfach",
+   "Tastsensor-Modul Universal 2fach",
+   "Tastsensor-Modul Universal 2fach",
+   "Tastsensor-Modul Universal 3fach",
+   "Tastsensor-Modul Universal 3fach",
+   "Tastsensor-Modul Universal",
+   "Tastsensor-Modul Universal"
+  ],
+  "message": "Import erfolgreich. Datei: 20241010.knxprad Produkt: Tastsensor-Modul Universal lfach Produkt: Tastsensor-Modul Universal lfach Produkt: Tastsensor-Modul Universal 2facH Produkt: Tastsensor-Modul Universal 2facH Produkt: Tastsensor-Modul Universal 3facH Produkt: Tastsensor-Modul Universal 3facH Produkt: Tastsensor-Modul Universal *fach Produkt: Tastsensor-Modul Universal *fach Version OK SL Ready + 11 +11 ell 4911 +11 &1.11 ell",
+  "seconds": 94,
+  "when": "2026-10-27T20:50:22.457197+00:00",
+  "verified": true
+ },
+ "all_IPS300SREG_v2.2_v1.0_20210719.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "IP-Schnittstelle Zusatzfunktion",
+   "IP-Schnittstelle Zusatzfunktion",
+   "KNX IP Schnittstelle"
+  ],
+  "message": "Import erfolgreich. Datei: lall_lPS300SREG Produkt: IP-Schnittstelle - Zusatzfunktion Produkt: IP-Schnittstelle - Zusatzfunktion Produkt: {NX IP Schnittstelle 4C72RFTSM Version SL Ready OK RF Testsensar 2fach DI. I",
+  "seconds": 25,
+  "when": "2026-10-27T20:50:54.174960+00:00",
+  "verified": true
+ },
+ "be4fx-E-Q-en-de-10.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Binäreingang 4fach"
+  ],
+  "message": "Import erfolgreich. Datei: de-10 knxprod Produkt: Binäreingang 4fech Version OK SL Ready",
+  "seconds": 25,
+  "when": "2026-10-27T20:51:25.204277+00:00",
+  "verified": true
+ },
+ "bea4fx-E-Q-en-de-21.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Binäreingang / Binärausgang 4fach"
+  ],
+  "message": "Version OK af 2021/1.3a SL Ready ktadfrage 8fack Import erfolgreich. Datei: de-21 knxprod Produkt: Binäreingang / Binärausgang 4fach 6188/18-10-",
+  "seconds": 25,
+  "when": "2026-10-27T20:51:56.300149+00:00",
+  "verified": true
+ },
+ "bea8fx-E-Q-en-de-21.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Binäreingang / Binärausgang 8fach"
+  ],
+  "message": "Version OK af 2021/1.3a SL Ready ktadfrage 8fack Import erfolgreich. Datei: de-21 knxprod Produkt: Binäreingang / Binärausgang 8fach 6188/18-10-",
+  "seconds": 25,
+  "when": "2026-10-27T20:52:28.111144+00:00",
+  "verified": true
+ },
+ "de_2116REG_2128REG_14062016.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Binäreingang 6fach",
+   "Binäreingang 8fach 12-48V REG"
+  ],
+  "message": "SL Ready ktadfrage 8fack Import erfolgreich. Datei: Produkt: Binäreingang 6fech Produkt: Binäreingang 8fach 12-48V REG 6188/18-10- Version OK af 2021/1.3a",
+  "seconds": 32,
+  "when": "2026-10-27T20:53:06.422562+00:00",
+  "verified": true
+ },
+ "de_3361-1m_V1.3_2020-05.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Präsenzmelder Mini Universal"
+  ],
+  "message": "ktadfrage 8fack Import erfolgreich. Datei: m_Vl .3_2020-05.knxprod Produkt: Präsenzmelder Mini Universal 6188/18-10- Version OK af 2021/1.3a SL Ready",
+  "seconds": 40,
+  "when": "2026-10-27T20:53:52.460509+00:00",
+  "verified": true
+ },
+ "de_3x81_24112017.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Automatischalter Standard 1,10 m",
+   "Automatischalter Standard 2,20 m"
+  ],
+  "message": "Import erfolgreich. Datei: Produkt: Automatischölter Standard 1,10 m Produkt: Automatischölter Standard 2,20 m 6131/50 Version OK Melder Konstentlichtsc... -;.'3 SL Ready",
+  "seconds": 35,
+  "when": "2026-10-27T20:54:33.664789+00:00",
+  "verified": false
+ },
+ "dim4fu_2_fw_E_Q_en_de_22.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Dimmer-2 4fach 570W universal Hand FacilityWeb"
+  ],
+  "message": "Import erfolgreich. Datei: knxprod Produkt: Dimmer-2 4fach 570W uniVersel Hand FacilityWeb Version OK SL Ready &1.1.1",
+  "seconds": 23,
+  "when": "2026-10-27T20:55:02.528413+00:00",
+  "verified": false
+ },
+ "helios_kwl_knx_connect.knxprod": {
+  "outcome": "refused",
+  "products": [],
+  "message": "Import fehlgeschlagen! Datei: knxprod Masterdaten kannte nicht gelesen werden. Version OK SL Ready &1.11",
+  "seconds": 7,
+  "when": "2026-10-27T20:55:15.241405+00:00"
+ },
+ "inBOX_20_1_0_EIFAItRS.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "inBOX 20"
+  ],
+  "message": "Import erfolgreich. Datei: lin3CX Produkt: inBOX 20 Version OK SL Ready &1.11",
+  "seconds": 112,
+  "when": "2026-10-27T20:57:07.500825+00:00",
+  "verified": false
+ },
+ "inBOX_20_v2_1.2_EIAFItRS_ETS5_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "inBOX 20 v2"
+  ],
+  "message": "Import erfolgreich. Datei: lin3CX 20 Produkt: in30X 20 v2 Version OK SL Ready",
+  "seconds": 131,
+  "when": "2026-10-27T20:59:24.399243+00:00",
+  "verified": false
+ },
+ "inBOX_20_v3_1.12_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "inBOX 20 v3"
+  ],
+  "message": "Import erfolgreich. Datei: lin3CX 20 Produkt: in30X 20 Version OK SL Ready",
+  "seconds": 123,
+  "when": "2026-10-27T21:01:33.596457+00:00",
+  "verified": false
+ },
+ "inBOX_20_v3_1.8_EIAFItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "inBOX 20 v3"
+  ],
+  "message": "Import erfolgreich. Datei: lin3CX 20 Produkt: in30X 20 Version OK SL Ready",
+  "seconds": 120,
+  "when": "2026-10-27T21:03:39.418428+00:00",
+  "verified": true
+ },
+ "inBOX_20_v3_1.8_EIFAItR_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "inBOX 20 v3"
+  ],
+  "message": "Import erfolgreich. Datei: lin3CX 20 Produkt: in30X 20 ZCL-4XFC2P Version SL Ready OK MAXinBCX FANCOIL C.",
+  "seconds": 127,
+  "when": "2026-10-27T21:05:52.239320+00:00",
+  "verified": true
+ },
+ "inBOX_24_1_0_EIFAItRS.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "inBOX 24"
+  ],
+  "message": "Import erfolgreich. Datei: lin3CX 24 Produkt: in30X 24 ZCL-4XFC2P Version SL Ready OK MAXinBCX FANCOIL C.",
+  "seconds": 139,
+  "when": "2026-10-27T21:08:17.550786+00:00",
+  "verified": true
+ },
+ "inBOX_24_1_1_EIFAItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "inBOX 24"
+  ],
+  "message": "Import erfolgreich. Datei: lin3CX 24 EIFÅItRS_ETS5.knxprad Produkt: in30X 24 ZCL4FC2PV2 Version SL Ready OK MAXinBCX FANCOIL C.",
+  "seconds": 161,
+  "when": "2026-10-27T21:11:05.214032+00:00",
+  "verified": true
+ },
+ "inBOX_24_1_2_EIFAItRS.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "inBOX 24"
+  ],
+  "message": "Import erfolgreich. Datei: lin3CX 24 Produkt: in30X 24 ZCL-FCOIOF Version SL Ready OK MAXinBCX FC 0-10V z.",
+  "seconds": 138,
+  "when": "2026-10-27T21:13:33.914648+00:00",
+  "verified": true
+ },
+ "inBOX_24_1_3_EIFAItRS_ETS5_CERT.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "inBOX 24"
+  ],
+  "message": "Import erfolgreich. Datei: lin3CX 24 Produkt: in30X 24 ZCL-FCOIOF Version SL Ready OK MAXinBCX FC 0-10V z.",
+  "seconds": 112,
+  "when": "2026-10-27T21:15:32.032871+00:00",
+  "verified": true
+ },
+ "inBOX_24_v2_1_1_EIFAItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "inBOX 24 v2"
+  ],
+  "message": "Import erfolgreich. Datei: lin3CX_24 ETS5.knxprod Produkt: in30X 24 v2 ZCL-FCOIOF Version SL Ready OK MAXinBCX FC 0-10V z.",
+  "seconds": 108,
+  "when": "2026-10-27T21:17:25.593000+00:00",
+  "verified": true
+ },
+ "inBOX_24_v3_1.6_EIAFItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "inBOX 24 v3"
+  ],
+  "message": "Import erfolgreich. Datei: lin3CX 24 Certknxprod Produkt: in30X 24 ZCL-FCOIOV OK MAXinBCX FC O- lovv. Version 1.4 SL Ready",
+  "seconds": 118,
+  "when": "2026-10-27T21:19:29.015553+00:00",
+  "verified": true
+ },
+ "inBOX_DALI_16_1.4_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "inBOX DALI 16"
+  ],
+  "message": "Import erfolgreich. Datei: lin3CX EIFAItRUk_Cert.knxprad Produkt: in30X 16 Version OK MAXinBCX Hospitalit/. SL Ready",
+  "seconds": 131,
+  "when": "2026-10-27T21:21:46.244090+00:00",
+  "verified": true
+ },
+ "inBOX_DALI_16_2.2_EIFAItRUk_Cert.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "inBOX DALI 16"
+  ],
+  "message": "Import erfolgreich. Datei: lin3CX Produkt: in30X 16 Version OK MAXinBCX Hospitalit/. SL Ready",
+  "seconds": 117,
+  "when": "2026-10-27T21:23:48.921444+00:00",
+  "verified": true
+ },
+ "inBOX_DIM_1_1_EIFAItRS_ETS5.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "inBOX DIM"
+  ],
+  "message": "Import erfolgreich. Datei: lin3CX EIFAltRS_ETS5knxprod Produkt: in30X Version OK MAXinBCX Hospitalit/.. SL Ready",
+  "seconds": 117,
+  "when": "2026-10-27T21:25:52.194214+00:00",
+  "verified": true
+ },
+ "j2fx_E_Q_en_de_20.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Jalousieaktor 2fach"
+  ],
+  "message": "Import erfolgreich. Datei: \\j2fx E_Q_en_de_20.knxprad Produkt: JalouElEöktor 2fach Version OK MAXinBCX Hospitalit/.. SL Ready",
+  "seconds": 32,
+  "when": "2026-10-27T21:26:30.334361+00:00",
+  "verified": true
+ },
+ "j4f6h-2-en-de-20.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Jalousieaktor 4fach"
+  ],
+  "message": "Version 164, REG Import erfolgreich. Datei: de-20 knxprod Produkt: JalouElEöktor 4fach 2CDG IIO 252 R0021 n- OK Schalten/Jalousie 24%. SL Ready",
+  "seconds": 26,
+  "when": "2026-10-27T21:27:03.295058+00:00",
+  "verified": true
+ },
+ "j4fx_E_Q_en_de_20.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Jalousieaktor 4fach"
+  ],
+  "message": "Version 164, REG Import erfolgreich. Datei: ij4fx E_Q_en_de_20.knxprad Produkt: JalouElEöktor 4fach 2CDG IIO 252 R0021 SL Ready OK Schalten/Jalousie 24%.",
+  "seconds": 26,
+  "when": "2026-10-27T21:27:36.026386+00:00",
+  "verified": true
+ },
+ "j6f6h-2-en-de-20.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Jalousieaktor 6fach"
+  ],
+  "message": "Version 164, REG Import erfolgreich. Datei: de-20 knxprod Produkt: JalouElEöktor Fach 2CDG IIO 252 R0021 n- OK Schalten/Jalousie 24%. SL Ready",
+  "seconds": 25,
+  "when": "2026-10-27T21:28:07.896393+00:00",
+  "verified": true
+ },
+ "j6fx_E_Q_en_de_20.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Jalousieaktor 6fach"
+  ],
+  "message": "Version 164, REG Import erfolgreich. Datei: \\j6fx E_Q_en_de_20.knxprad Produkt: JalouElEöktor Fach 2CDG IIO 252 R0021 SL Ready OK Schalten/Jalousie 24%.",
+  "seconds": 25,
+  "when": "2026-10-27T21:28:38.871382+00:00",
+  "verified": true
+ },
+ "nta6f16h-2-en-de-21.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Schaltaktor 6fach"
+  ],
+  "message": "Version 164, REG Import erfolgreich. Datei: de-21 knxprod Produkt: Schaltaktar 6fech 2CDG IIO 252 R0021 SL Ready OK Schalten/Jalousie 24%.",
+  "seconds": 25,
+  "when": "2026-10-27T21:29:10.085850+00:00",
+  "verified": true
+ },
+ "takp2fa-en-de-30.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Kopp HK05/HK07 Taster 4x2fach Typ A FacilityWeb"
+  ],
+  "message": "Import erfolgreich. Datei: de-30 knxprod Produkt: Kopp Taster 4x2fach Typ FacilityWeb Version OK Schalten Standard 4fac.. I.d SL Ready 2CDG IIO 258 R0021",
+  "seconds": 25,
+  "when": "2026-10-27T21:29:41.335208+00:00",
+  "verified": true
+ },
+ "ts4fxt-E-Q-en-de-21.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Tasterschnittstelle 4fach + Temp."
+  ],
+  "message": "Import erfolgreich. Datei: Tasterankopplunq 2-fa.. I 'l de-21 knxprod Produkt: Tasterschnittstelle 4fach + Temp. 6108/06-AP Version SL Ready OK",
+  "seconds": 25,
+  "when": "2026-10-27T21:30:12.026953+00:00",
+  "verified": true
+ },
+ "ts8fxt-E-Q-en-de-21.knxprod": {
+  "outcome": "imported",
+  "products": [
+   "Tasterschnittstelle 8fach + Temp."
+  ],
+  "message": "Import erfolgreich. Datei: de-21 knxprod Produkt: Tasterschnittstelle 8fach + Temp. Version OK 2C76-4T SL Ready",
+  "seconds": 25,
+  "when": "2026-10-27T21:30:43.772124+00:00",
+  "verified": true
+ }
+}

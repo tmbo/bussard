@@ -130,3 +130,18 @@ unless `--redo`). Importing a file ETS already holds just converts it again
 and reports success, so a resumed run is idempotent. A large multi-product
 file (the ABB i-bus catalogue) converts for well over 15 minutes; the flow
 attaches to a conversion that is still running when a previous call timed out.
+
+Result of the first full run (2026-10-27): 497 of 498 corpus files imported,
+1 refused by ETS itself (`helios_kwl_knx_connect.knxprod`: "Masterdaten konnte
+nicht gelesen werden"). `catalog-apps.json` maps every file to its 1354
+application programs (id, name, mask, order numbers) via `bussard
+import-product`; it is the join part 3 uses (order number = ETS catalog search
+term, application id = what the sim and the oracle run).
+
+Three things interrupted the run and are handled by the driver now: a missed
+click on the result panel's OK left it covering the Import button (closed by
+position and checked); an internal ETS error dialog ("Die Sammlung wurde
+geändert") after a few hundred imports (dismissed and recorded); and ETS
+restarting itself, reopening the project in its default panel layout
+(`ensure_layout` maximizes, closes panels above Topologie, opens one Katalog
+panel, and the catalog coordinates follow the panel's actual position).

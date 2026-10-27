@@ -50,3 +50,4 @@ website/site/
 # The product-model JSON cache (#339) the tests write next to fixture models.
 **/.bussard/model-cache/
 knx-sim/target-win/
+tools/ets-sweep/.unpacked/

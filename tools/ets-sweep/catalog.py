@@ -20,7 +20,8 @@ The manifest holds outcome labels and the product names ETS printed, never
 vendor data. A file with an outcome is skipped unless `--redo`; ETS refuses
 nothing on a second import of the same file (it converts and reports success
 again), so a resumed run is idempotent at the file level. `.knxprod.zip`
-wrappers are recorded as `skipped` (ETS wants the inner file).
+wrappers are unpacked (their single inner file, into the git-ignored
+`tools/ets-sweep/.unpacked/`) and that file is imported.
 """
 from __future__ import annotations
 
@@ -69,6 +70,7 @@ def main() -> int:
     ap.add_argument("--filter", default="", help="comma-separated substrings of the file name")
     ap.add_argument("--limit", type=int, default=0, help="stop after N imports (0 = all)")
     ap.add_argument("--redo", action="store_true", help="import files that already have an outcome")
+    ap.add_argument("--redo-errors", action="store_true", help="import again the files whose outcome is error")
     ap.add_argument("--timeout", type=int, default=3600, help="seconds to wait for one import (a multi-product ABB file converts for over 15 min)")
     args = ap.parse_args()
 
@@ -81,15 +83,27 @@ def main() -> int:
     done = 0
     for path in files:
         entry = manifest.get(path.name)
-        if entry and not args.redo:
-            continue
-        if path.name.lower().endswith(".zip"):
-            manifest[path.name] = {"outcome": "skipped", "message": "zip wrapper, ETS wants the inner .knxprod",
-                                   "products": [], "seconds": 0, "when": datetime.now(timezone.utc).isoformat()}
-            save_manifest(manifest)
+        if entry and not args.redo and not (args.redo_errors and entry["outcome"] == "error"):
             continue
         t0 = time.time()
-        remote = upload_if_missing(c, path)
+        source = path
+        if path.name.lower().endswith(".zip"):
+            # A zip wrapper: ETS wants the .knxprod inside it. Extract the
+            # (single) inner file next to the cache, outside the corpus dir.
+            import zipfile
+
+            with zipfile.ZipFile(path) as z:
+                inner = [n for n in z.namelist() if n.lower().endswith(".knxprod")]
+                if len(inner) != 1:
+                    manifest[path.name] = {"outcome": "skipped", "message": f"zip wrapper with {len(inner)} inner .knxprod files",
+                                           "products": [], "seconds": 0, "when": datetime.now(timezone.utc).isoformat()}
+                    save_manifest(manifest)
+                    continue
+                unpacked = HERE / ".unpacked"
+                unpacked.mkdir(exist_ok=True)
+                source = unpacked / Path(inner[0]).name.replace(" ", "_")
+                source.write_bytes(z.read(inner[0]))
+        remote = upload_if_missing(c, source)
         r = vm.driver(c, "POST", "/ets/catalog_import", {"path": remote, "timeout": args.timeout}, timeout=args.timeout + 60)
         entry = {
             "outcome": r.get("outcome", "error"),
@@ -100,9 +114,9 @@ def main() -> int:
         }
         if entry["products"]:
             # The catalog entry ETS shows: search for the first product's order number.
-            order = entry["products"][0].split()[0]
-            found = vm.driver(c, "POST", "/ets/catalog_search", {"term": order}, timeout=120)
-            entry["verified"] = any(order.lower() in row["text"].lower() for row in found.get("rows", []))
+            order = (entry["products"][0].split() or [""])[0]
+            found = vm.driver(c, "POST", "/ets/catalog_search", {"term": order}, timeout=120) if order else {}
+            entry["verified"] = bool(order) and any(order.lower() in row["text"].lower() for row in found.get("rows", []))
         manifest[path.name] = entry
         save_manifest(manifest)
         print(f"{manifest[path.name]['outcome']:9} {path.name} {manifest[path.name]['seconds']}s {manifest[path.name]['products'][:2]}")

@@ -341,7 +341,8 @@ def flow_windows(req: dict) -> dict:
 LAYOUT = {
     "tab_strip": (0, 0, 4112, 90),
     "logo": (170, 40),
-    "toolbar_connection": (3686, 113),      # the connection dropdown (left of the info button)
+    "toolbar_connection": (3686, 113),
+    "toolbar_panels": (3535, 113),           # 'Panels' dropdown      # the connection dropdown (left of the info button)
     "connection_menu": (3400, 130, 4112, 500),
     "toolbar_program_arrow": (2980, 113),   # arrow of 'Programmieren'
     "tree_line_1_1": (150, 480),
@@ -538,6 +539,94 @@ def flow_history(req: dict) -> dict:
     return {"lines": [l["text"] for l in lines]}
 
 
+def dismiss_ets_error() -> str | None:
+    """Close an 'ETS - Fehler' dialog (an internal ETS exception, e.g. the
+    'Sammlung wurde geändert' one that hit after the 286th catalog import on
+    2026-10-27) and return its text. Those dialogs are overlays: OCR only."""
+    lines = ocr((1200, 950, 3000, 1300))
+    joined = " ".join(l["text"] for l in lines)
+    if "Fehler" not in joined:
+        return None
+    ok = find_text("OK", (2400, 1180, 2800, 1260), min_ratio=0.6)
+    if ok:
+        click(ok["x"] + ok["w"] // 2, ok["y"] + ok["h"] // 2)
+    else:
+        click(2600, 1226)
+    time.sleep(1.5)
+    return joined[:400]
+
+
+@flow("ets_error")
+def flow_ets_error(req: dict) -> dict:
+    return {"dismissed": dismiss_ets_error()}
+
+
+def ensure_layout() -> dict:
+    """Bring ETS back to the sweep layout that LAYOUT assumes: main window
+    maximized, the Topologie panel on top and the Katalog panel below. ETS
+    restarts itself at times (after a catalog update, 2026-10-27) and then
+    opens the project in its default single-panel layout."""
+    import ctypes
+
+    did = []
+    w = ets_main_window()
+    r = w.rectangle()
+    if (r.right - r.left) < SCREEN[2] - 20:
+        ctypes.windll.user32.ShowWindow(w.handle, 3)  # SW_MAXIMIZE
+        time.sleep(1.5)
+        did.append("maximized")
+    for _ in range(2):
+        # Any panel above the Topologie panel (ETS reopens 'Gebäude' after a
+        # restart) pushes the Katalog panel down: close the top panel while it
+        # is not Topologie (its close button sits at the panel header's right).
+        top = find_text("Gebäude", (0, 160, 660, 210)) or find_text("Gruppenadressen", (0, 160, 660, 210))
+        if not top:
+            break
+        click(648, 185)
+        time.sleep(2)
+        did.append("closed " + top["text"])
+    if not find_text("Topologie", (0, 160, 660, 210)):
+        click(*LAYOUT["toolbar_panels"])
+        time.sleep(1.2)
+        choose("Topologie", (3400, 140, 3900, 620))
+        time.sleep(2.5)
+        did.append("topologie")
+    headers = [l for l in ocr((0, 200, 660, 2440)) if _norm(l["text"]) == "katalog"]
+    for extra in sorted(headers, key=lambda l: l["y"])[1:]:
+        # A second Katalog panel (opened by an earlier restore): close it.
+        click(648, extra["y"] + 12)
+        time.sleep(2)
+        did.append("closed duplicate katalog")
+    if not headers:
+        click(*LAYOUT["toolbar_panels"])
+        time.sleep(1.2)
+        choose("Alle Panels", (3400, 140, 3900, 620))
+        time.sleep(1.2)
+        choose("Katalog", (2800, 140, 4112, 1200))
+        time.sleep(3)
+        did.append("katalog")
+    return {"did": did, "import_button": bool(catalog_import_button()), "catalog_dy": catalog_dy()}
+
+
+def catalog_import_button() -> dict | None:
+    """The Katalog panel's Import button wherever the panel sits."""
+    hits = [l for l in ocr((680, 200, 1100, 2440)) if _norm(l["text"]) in ("import", "impart", "imp0rt")]
+    return min(hits, key=lambda l: abs(l["y"] - 1354)) if hits else None
+
+
+def catalog_dy() -> int:
+    """Vertical offset of the Katalog panel from the layout LAYOUT was
+    measured in (Import button at y=1354): ETS reopens panels with other
+    splitter positions after a restart."""
+    btn = catalog_import_button()
+    return btn["y"] - 1354 if btn else 0
+
+
+@flow("ensure_layout")
+def flow_ensure_layout(req: dict) -> dict:
+    return ensure_layout()
+
+
 @flow("catalog_import")
 def flow_catalog_import(req: dict) -> dict:
     """Import a `.knxprod` (a path inside the VM) into ETS's catalog: the
@@ -548,26 +637,47 @@ def flow_catalog_import(req: dict) -> dict:
     path = req["path"]
     timeout = float(req.get("timeout", 900))
     region = (1500, 400, 3500, 1600)
-    btn = find_text("Import", (680, 1340, 1100, 1390))
+    ets_error = dismiss_ets_error()
+    if not catalog_import_button():
+        ensure_layout()
+    btn = catalog_import_button()
     wizard_text = " ".join(l["text"] for l in ocr(region))
     attached = False
-    if not btn and any(k in wizard_text for k in ("Konvertiere", "erfolgreich", "Produktsprache", "Import auswählen")):
+    for _ in range(3):
+        if "erfolgreich" not in wizard_text and "fehlgeschlagen" not in wizard_text:
+            break
+        # A previous file's result panel is still up (its OK click missed
+        # once and covered the Import button for 39 files, 2026-10-27):
+        # close it by position, then look again.
+        click(2488, 1528)
+        time.sleep(1.5)
+        btn = catalog_import_button()
+        wizard_text = " ".join(l["text"] for l in ocr(region))
+    if not btn and any(k in wizard_text for k in ("Konvertiere", "Signiere", "Produktsprache", "Import auswählen")):
         # An import is already running (a previous call timed out while a
         # large file converted): wait for its result instead of starting over.
         attached = True
     elif not btn:
         raise RuntimeError("the Katalog panel's Import button is not on screen")
     else:
-        click(btn["x"] + btn["w"] // 2, btn["y"] + btn["h"] // 2)
         dialog = None
-        t0 = time.time()
-        while time.time() - t0 < 15:
-            dialog = next((p for p in ets_popups() if "Produktdatei" in p.window_text()), None)
+        for attempt in range(3):
+            # The click lands on nothing now and then while ETS refreshes the
+            # catalog after the previous import (43 of 498 files on the first
+            # pass, 2026-10-27): press Import again before giving up.
+            click(btn["x"] + btn["w"] // 2, btn["y"] + btn["h"] // 2)
+            t0 = time.time()
+            while time.time() - t0 < 15:
+                dialog = next((p for p in ets_popups() if "Produktdatei" in p.window_text()), None)
+                if dialog:
+                    break
+                time.sleep(0.5)
             if dialog:
                 break
-            time.sleep(0.5)
+            dismiss_ets_error()
+            btn = catalog_import_button() or btn
         if dialog is None:
-            raise RuntimeError("no 'Produktdatei öffnen' dialog appeared")
+            raise RuntimeError("no 'Produktdatei öffnen' dialog appeared after 3 clicks")
         edit = dialog.child_window(title="Dateiname:", control_type="Edit")
         edit.set_edit_text(path)
         time.sleep(0.3)
@@ -603,14 +713,17 @@ def flow_catalog_import(req: dict) -> dict:
         if "erfolgreich" in joined:
             # Re-read the panel magnified: the order number and name matter.
             fine = [l["text"] for l in ocr((1700, 1050, 2600, 1480), zoom=2)]
-            products = [t.split(":", 1)[1].strip() for t in fine if t.startswith("Produkt")]
-            ok = find_text("OK", (2300, 1450, 2700, 1600), min_ratio=0.6)
-            if ok:
-                click(ok["x"] + ok["w"] // 2, ok["y"] + ok["h"] // 2)
-            else:
-                click(2488, 1528)  # where the result panel's OK sits (OCR misses two letters at times)
-            time.sleep(1)
-            return {"outcome": "imported", "products": products, "message": joined[:600], "attached": attached}
+            products = [t.partition(":")[2].strip() or t[len("Produkt"):].strip() for t in fine if t.startswith("Produkt")]
+            for _ in range(3):
+                ok = find_text("OK", (2300, 1450, 2700, 1600), min_ratio=0.6)
+                if ok:
+                    click(ok["x"] + ok["w"] // 2, ok["y"] + ok["h"] // 2)
+                else:
+                    click(2488, 1528)  # where the result panel's OK sits
+                time.sleep(1.5)
+                if "erfolgreich" not in " ".join(l["text"] for l in ocr(region)):
+                    break
+            return {"outcome": "imported", "products": products, "message": joined[:600], "attached": attached, "ets_error": ets_error}
         if any(k in joined for k in ("Fehler", "fehlgeschlagen", "nicht importiert", "ungültig", "Ausnahme")):
             for label in ("OK", "Schließen", "Abbrechen"):
                 if find_text(label, (1900, 1460, 2700, 1580)):
@@ -634,14 +747,17 @@ def flow_catalog_import(req: dict) -> dict:
 def flow_catalog_search(req: dict) -> dict:
     """Type `term` into the Katalog panel's search box and return the result
     rows (order number, name, application) read magnified."""
-    click(*LAYOUT["catalog_search"])
+    dy = catalog_dy()
+    sx, sy = LAYOUT["catalog_search"]
+    click(sx, sy + dy)
     time.sleep(0.3)
     keys("^a")
     keys(req["term"] + "{ENTER}")
     time.sleep(float(req.get("wait", 3)))
-    click(1000, 1380)  # closes the search-history dropdown
+    click(1000, 1380 + dy)  # closes the search-history dropdown
     time.sleep(0.5)
     x0, y0, x1, y1 = LAYOUT["catalog_rows"]
+    y0, y1 = y0 + dy, min(y1 + dy, 2440)
     rows = []
     for line in ocr((x0, y0 + 40, x1, y1), zoom=2):
         rows.append({"text": line["text"], "x": line["x"], "y": line["y"]})
