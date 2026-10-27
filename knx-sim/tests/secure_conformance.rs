@@ -136,7 +136,8 @@ impl SecureTool {
         let tpdu = self.ndt_tpdu(A_SECURE_DATA_APCI, asdu);
         let responses = self.bus.deliver_from_tool(&cemi_std(TOOL, DEV, tpdu));
         self.seq = (self.seq + 1) & 0x0F;
-        responses
+        // Without the transport T_ACK the bus puts in front of every answer.
+        responses.into_iter().filter(|r| r.tpdu.len() > 1).collect()
     }
 
     /// Build a raw secure ASDU for `(apci10, data)` at the tool's current send
@@ -159,7 +160,8 @@ impl SecureTool {
         let tpdu = self.ndt_tpdu(apci10, data);
         let responses = self.bus.deliver_from_tool(&cemi_std(TOOL, DEV, tpdu));
         self.seq = (self.seq + 1) & 0x0F;
-        responses
+        // Without the transport T_ACK the bus puts in front of every answer.
+        responses.into_iter().filter(|r| r.tpdu.len() > 1).collect()
     }
 
     /// Build a connected NDT TPDU for `(apci10, payload)` at the current L4 seq.
@@ -456,7 +458,11 @@ fn test_plain_device_unchanged() {
     // T_Connect then a PLAIN A_Authorize_Request — accepted, level 0.
     bus.deliver_from_tool(&cemi_std(TOOL, DEV, vec![0x80]));
     let auth = cemi_std(TOOL, DEV, vec![0x43, 0xd1, 0x00, 0xff, 0xff, 0xff, 0xff]);
-    let responses = bus.deliver_from_tool(&auth);
+    let responses: Vec<_> = bus
+        .deliver_from_tool(&auth)
+        .into_iter()
+        .filter(|r| r.tpdu.len() > 1) // without the transport T_ACK in front
+        .collect();
     assert_eq!(responses.len(), 1, "plain authorize produces a response");
     let apdu = Apdu::parse(&responses[0].tpdu).expect("parses");
     assert_eq!(apdu.apci_raw, 0x3D2, "plain A_Authorize_Response");

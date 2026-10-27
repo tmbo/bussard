@@ -81,7 +81,7 @@ impl Bus {
         }
 
         let dest = cemi.dest_individual();
-        let responses = match self.devices.get_mut(&dest) {
+        let mut responses = match self.devices.get_mut(&dest) {
             Some(dev) => match dev.handle_cemi(cemi) {
                 Ok(reaction) => reaction.responses,
                 Err(err) => {
@@ -98,6 +98,28 @@ impl Bus {
             None => Vec::new(),
         };
 
+        // A real device T_ACKs every numbered data frame at the transport
+        // layer before its application-layer answer (KNX Virtual and the house
+        // devices do, in every ETS capture). ETS 6 waits for that T_ACK: without
+        // it the download ends in "Verbindung zu 1.1.1 fehlgeschlagen" right
+        // after the device-descriptor read although the response arrived
+        // (ETS-against-sim capture, 2026-10-27).
+        let numbered = cemi.tpdu.first().is_some_and(|b| b & 0xC0 == 0x40);
+        let bare_ack = |r: &CemiLData| r.tpdu.len() == 1 && r.tpdu[0] & 0xC3 == 0xC2;
+        if numbered && !responses.is_empty() && !bare_ack(&responses[0]) {
+            let seq = (cemi.tpdu[0] >> 2) & 0x0F;
+            responses.insert(
+                0,
+                CemiLData {
+                    message_code: crate::wire::cemi::MessageCode::LDataInd,
+                    ctrl1: 0xbc,
+                    ctrl2: 0x60,
+                    source: dest,
+                    dest: cemi.source.raw(),
+                    tpdu: vec![crate::wire::apdu::Tpci::ack_byte(seq)],
+                },
+            );
+        }
         for r in &responses {
             self.events.emit(Event::Telegram {
                 direction: Direction::ToTool,
@@ -708,7 +730,9 @@ mod tests {
             tpdu: vec![0x43, 0xd1, 0x00, 0xff, 0xff, 0xff, 0xff],
         };
         let resp = bus.deliver_from_tool(&auth);
-        assert_eq!(resp.len(), 1, "authorize should produce a response");
+        // The transport T_ACK a real device sends first, then the response.
+        assert_eq!(resp.len(), 2, "authorize should produce T_ACK + response");
+        assert_eq!(resp[0].tpdu, vec![0xC2], "T_ACK(seq=0) comes first");
         assert!(!sink.events().is_empty());
         Ok(())
     }

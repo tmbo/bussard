@@ -134,9 +134,28 @@ impl Device {
             addr: addr32,
             len: n,
         });
-        // A_MemoryWrite is not acknowledged at the application layer in the
-        // captured flow (the tool relies on the transport T_ACK), so no APDU
-        // response is produced.
+        // Verify mode (PID_DEVICE_CONTROL bit 2, object 0): the device echoes
+        // every written block as an A_Memory_Response after the T_ACK. KNX
+        // Virtual reports 0x04 and does so; ETS 6 reads the property before
+        // the table writes and, when the bit is set, waits for the echo and
+        // retries the write after 5 s without it (ETS-against-sim capture,
+        // 2026-10-27). The read-back is what the tool compares, not a copy of
+        // the request.
+        let verify = self
+            .objects
+            .get(&0)
+            .and_then(|o| o.property(super::interface_object::PID_DEVICE_CONTROL))
+            .is_some_and(|p| p.value.first().is_some_and(|b| b & 0x04 != 0));
+        if verify {
+            let mut data = Vec::with_capacity(2 + n);
+            data.extend_from_slice(&addr.to_be_bytes());
+            data.extend_from_slice(&self.memory.read(addr32, n));
+            let resp = self.respond(tool, 0x240 | (n as u16 & 0x3F), &data);
+            return Ok(DeviceReaction {
+                responses: vec![resp],
+                did_master_reset: false,
+            });
+        }
         Ok(DeviceReaction::default())
     }
 

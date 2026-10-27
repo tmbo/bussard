@@ -34,10 +34,22 @@ pub mod service {
     pub const TUNNELLING_REQUEST: u16 = 0x0420;
     /// TUNNELLING_ACK.
     pub const TUNNELLING_ACK: u16 = 0x0421;
+    /// TUNNELLING_FEATURE_GET (tunnelling v2): ETS 6 asks the interface for
+    /// feature 0x07 (max APDU length) right after CONNECT and drops the tunnel
+    /// after 4 s without an answer (ETS-against-sim capture, 2026-10-27).
+    pub const TUNNELLING_FEATURE_GET: u16 = 0x0422;
+    /// TUNNELLING_FEATURE_RESPONSE: connection header, feature id, return code, value.
+    pub const TUNNELLING_FEATURE_RESPONSE: u16 = 0x0423;
+    /// TUNNELLING_FEATURE_SET: the client writes a feature (info-service enable).
+    pub const TUNNELLING_FEATURE_SET: u16 = 0x0424;
     /// DESCRIPTION_REQUEST.
     pub const DESCRIPTION_REQUEST: u16 = 0x0203;
     /// DESCRIPTION_RESPONSE.
     pub const DESCRIPTION_RESPONSE: u16 = 0x0204;
+    /// Plain discovery (ETS 6 probes a configured connection with it, 2026-10-27).
+    pub const SEARCH_REQUEST: u16 = 0x0201;
+    /// The answer to a plain SEARCH_REQUEST: HPAI plus the two basic DIBs.
+    pub const SEARCH_RESPONSE: u16 = 0x0202;
     /// SEARCH_REQUEST_EXTENDED.
     pub const SEARCH_REQUEST_EXTENDED: u16 = 0x020B;
     /// SEARCH_RESPONSE_EXTENDED.

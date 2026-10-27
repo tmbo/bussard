@@ -137,9 +137,7 @@ fn test_property_description_read_over_udp() -> Result<(), Box<dyn std::error::E
     expect_ack(&client)?;
 
     // The device answers with a TUNNELLING_REQUEST carrying the response cEMI.
-    let (n, _) = client.recv_from(&mut buf)?;
-    let reply = KnxnetIpFrame::decode(&buf[..n])?;
-    assert_eq!(reply.service, service::TUNNELLING_REQUEST);
+    let reply = recv_ind(&client)?;
     let cemi = CemiLData::decode(&reply.body[4..])?;
     let apci10 = ((cemi.tpdu[0] as u16 & 0x03) << 8) | cemi.tpdu[1] as u16;
     assert_eq!(
@@ -351,9 +349,7 @@ fn test_individual_address_write_over_udp() -> Result<(), Box<dyn std::error::Er
     // The discovery read now reports the new address as the response source.
     send_tunnel(&client, server_addr, channel, 1, &individual_address_read())?;
     expect_ack(&client)?;
-    let (n, _) = client.recv_from(&mut buf)?;
-    let frame = KnxnetIpFrame::decode(&buf[..n])?;
-    assert_eq!(frame.service, service::TUNNELLING_REQUEST);
+    let frame = recv_ind(&client)?;
     let cemi = CemiLData::decode(&frame.body[4..])?;
     let apci10 = ((cemi.tpdu[0] as u16 & 0x03) << 8) | cemi.tpdu[1] as u16;
     assert_eq!(Apci::from_u10(apci10), Apci::IndividualAddressResponse);
@@ -408,9 +404,7 @@ fn test_connect_and_authorize_over_udp() -> Result<(), Box<dyn std::error::Error
     // The server sends an ACK and then a TUNNELLING_REQUEST carrying the
     // A_Authorize_Response. Order: ACK first.
     expect_ack(&client)?;
-    let (n, _) = client.recv_from(&mut buf)?;
-    let reply = KnxnetIpFrame::decode(&buf[..n])?;
-    assert_eq!(reply.service, service::TUNNELLING_REQUEST);
+    let reply = recv_ind(&client)?;
     // The reply body is [connheader(4)][cEMI...]; decode the cEMI and check it is
     // an L_Data.ind from the device.
     let cemi = CemiLData::decode(&reply.body[4..])?;
@@ -455,9 +449,7 @@ fn test_group_write_is_echoed_to_the_tunnel_client() -> Result<(), Box<dyn std::
 
     // The client receives its own write back as a TUNNELLING_REQUEST carrying an
     // L_Data.con of the same GA and value.
-    let (n, _) = client.recv_from(&mut buf)?;
-    let frame = KnxnetIpFrame::decode(&buf[..n])?;
-    assert_eq!(frame.service, service::TUNNELLING_REQUEST);
+    let frame = recv_tunnel(&client)?;
     let cemi = CemiLData::decode(&frame.body[4..])?;
     assert_eq!(cemi.message_code, MessageCode::LDataCon, "echo is a con");
     assert_eq!(cemi.dest_group(), GroupAddress(0x0805));
@@ -516,9 +508,7 @@ fn test_programming_mode_device_answers_broadcast_read() -> Result<(), Box<dyn s
 
     // The device answers over the tunnel with an A_IndividualAddress_Response
     // whose source is the device's own address.
-    let (n, _) = client.recv_from(&mut buf)?;
-    let frame = KnxnetIpFrame::decode(&buf[..n])?;
-    assert_eq!(frame.service, service::TUNNELLING_REQUEST);
+    let frame = recv_ind(&client)?;
     let cemi = CemiLData::decode(&frame.body[4..])?;
     assert_eq!(cemi.message_code, MessageCode::LDataInd);
     assert_eq!(
@@ -584,10 +574,8 @@ fn test_tunnelling_sequence_counters_are_per_client() -> Result<(), Box<dyn std:
     // the connection-header seq of that frame must be per-client.
     let reply_seq = |client: &UdpSocket| -> Result<u8, Box<dyn std::error::Error>> {
         expect_ack(client)?;
-        let mut buf = [0u8; 1024];
-        let (n, _) = client.recv_from(&mut buf)?;
-        let frame = KnxnetIpFrame::decode(&buf[..n])?;
-        assert_eq!(frame.service, service::TUNNELLING_REQUEST);
+        // The first frame the gateway sends this client (its L_Data.con).
+        let frame = recv_tunnel(client)?;
         let hdr = ConnectionHeader::parse(&frame.body).ok_or("short connection header")?;
         Ok(hdr.seq)
     };
@@ -618,7 +606,9 @@ fn test_tunnelling_sequence_counters_are_per_client() -> Result<(), Box<dyn std:
         1,
         &individual_address_read(),
     )?;
-    assert_eq!(reply_seq(&client_a)?, 1, "client A advances independently");
+    // Client A's counter went 0 (con), 1 (the response) and is now at 2 for
+    // this request's con, untouched by B's session.
+    assert_eq!(reply_seq(&client_a)?, 2, "client A advances independently");
 
     let _server = handle.join().expect("join");
     Ok(())
@@ -763,12 +753,50 @@ fn send_tunnel(
     Ok(())
 }
 
+/// The next data `L_Data.ind` from the gateway. Skips what a real interface
+/// also sends on the way: the `L_Data.con` echo of the request and the
+/// device's transport `T_ACK` (both added 2026-10-27 for ETS, which needs them).
+fn recv_ind(client: &UdpSocket) -> Result<KnxnetIpFrame, Box<dyn std::error::Error>> {
+    let mut buf = [0u8; 1024];
+    loop {
+        let (n, _) = client.recv_from(&mut buf)?;
+        let f = KnxnetIpFrame::decode(&buf[..n])?;
+        if f.service != service::TUNNELLING_REQUEST {
+            continue;
+        }
+        let cemi = CemiLData::decode(&f.body[4..])?;
+        if cemi.message_code == MessageCode::LDataInd && cemi.tpdu.len() > 1 {
+            return Ok(f);
+        }
+    }
+}
+
+/// The next TUNNELLING_REQUEST from the gateway, whatever it carries.
+fn recv_tunnel(client: &UdpSocket) -> Result<KnxnetIpFrame, Box<dyn std::error::Error>> {
+    let mut buf = [0u8; 1024];
+    loop {
+        let (n, _) = client.recv_from(&mut buf)?;
+        let f = KnxnetIpFrame::decode(&buf[..n])?;
+        if f.service == service::TUNNELLING_REQUEST {
+            return Ok(f);
+        }
+    }
+}
+
+/// The TUNNELLING_ACK of the request just sent. Frames the gateway sent on
+/// its own before it (the previous request's L_Data.con, a device T_ACK a
+/// test did not read) are skipped: a real client reads them, these tests only
+/// care about the acknowledgement.
 fn expect_ack(client: &UdpSocket) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = [0u8; 1024];
-    let (n, _) = client.recv_from(&mut buf)?;
-    let f = KnxnetIpFrame::decode(&buf[..n])?;
-    assert_eq!(f.service, service::TUNNELLING_ACK);
-    Ok(())
+    loop {
+        let (n, _) = client.recv_from(&mut buf)?;
+        let f = KnxnetIpFrame::decode(&buf[..n])?;
+        if f.service == service::TUNNELLING_ACK {
+            return Ok(());
+        }
+        assert_eq!(f.service, service::TUNNELLING_REQUEST, "unexpected service");
+    }
 }
 
 /// A group `L_Data.req` write of a single small value (packed into the APCI).
@@ -890,7 +918,12 @@ fn flash_object(
     bus.deliver_from_tool(&ndt(addr, seq, 0x3D7, &pid5(&alloc)));
     let base = {
         let r = bus.deliver_from_tool(&ndt(addr, seq, 0x3D5, &[obj, 7, 0x10, 0x01]));
-        let tpdu = &r[0].tpdu;
+        // The bus puts the transport T_ACK first; the response follows.
+        let tpdu = &r
+            .iter()
+            .find(|c| c.tpdu.len() > 1)
+            .ok_or("no response")?
+            .tpdu;
         let n = tpdu.len();
         u16::from_be_bytes([tpdu[n - 2], tpdu[n - 1]])
     };

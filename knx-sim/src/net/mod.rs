@@ -37,7 +37,7 @@ use crate::bus::Bus;
 use crate::config::IpSecureConfig;
 use crate::secure::ipsecure::{self, Handshake, SecureSession};
 use crate::wire::IndividualAddress;
-use crate::wire::cemi::CemiLData;
+use crate::wire::cemi::{CemiLData, MessageCode};
 use crate::wire::knxnetip::{
     ConnectionHeader, DEVICE_MGMT_CONNECTION, E_CONNECTION_ID, E_CONNECTION_TYPE, KnxnetIpFrame,
     service,
@@ -133,6 +133,13 @@ pub struct KnxnetIpServer {
     /// issue #398): its KNXnet/IP Secure properties decide, after each of its
     /// master resets, whether the gateway serves plain or secure tunnelling.
     interface_device: Option<u16>,
+    /// The individual address a plain (non-secure, no interface device)
+    /// gateway reports in its DEVICE_INFO DIB and assigns to the tunnel.
+    /// 1.0.0 unless `gateway.tunnel_address` says otherwise.
+    plain_ia: u16,
+    /// Every UDP datagram in and out, as a pcap file (`gateway.pcap`): the
+    /// capture of an ETS run without a sniffer on the host.
+    pcap: Option<PcapWriter>,
     /// The master-reset epoch of [`interface_device`](Self::interface_device)
     /// last applied.
     interface_epoch: u64,
@@ -169,6 +176,8 @@ impl KnxnetIpServer {
             started: Instant::now(),
             secure: None,
             interface_device: None,
+            plain_ia: 0x1000,
+            pcap: None,
             interface_epoch: 0,
             mgmt: BTreeMap::new(),
             mgmt_transport: BTreeMap::new(),
@@ -181,6 +190,41 @@ impl KnxnetIpServer {
     /// credentials of its KNXnet/IP Secure properties, or back to plain.
     pub fn set_interface_device(&mut self, address: u16) {
         self.interface_device = Some(address);
+    }
+
+    /// The address the plain gateway reports and hands out on CONNECT
+    /// (`gateway.tunnel_address`). ETS compares the line of this address with
+    /// the project's line medium, so a sweep project puts it on a TP line.
+    pub fn set_plain_address(&mut self, address: u16) {
+        self.plain_ia = address;
+    }
+
+    /// Record every UDP datagram the gateway receives or sends to `path`
+    /// (classic pcap, raw IPv4 link type, flushed per packet so a killed sim
+    /// loses nothing). `tools/knxtrace` reads it like a sniffer capture.
+    pub fn set_pcap(&mut self, path: &std::path::Path) -> std::io::Result<()> {
+        self.pcap = Some(PcapWriter::create(path)?);
+        Ok(())
+    }
+
+    fn record(&mut self, data: &[u8], peer: Peer, inbound: bool) {
+        let Peer::Udp(remote) = peer else {
+            return;
+        };
+        let Ok(local) = self.socket.local_addr() else {
+            return;
+        };
+        if let Some(w) = self.pcap.as_mut() {
+            let (src, dst) = if inbound {
+                (remote, local)
+            } else {
+                (local, remote)
+            };
+            if let Err(e) = w.write_udp(src, dst, data) {
+                tracing::warn!("pcap write failed: {e}");
+                self.pcap = None;
+            }
+        }
     }
 
     /// Applies the interface device's KNXnet/IP Secure state after a master
@@ -371,6 +415,7 @@ impl KnxnetIpServer {
     /// Process one inbound KNXnet/IP datagram from `peer`, emitting the
     /// appropriate replies. Public so a test harness can drive it directly.
     pub fn handle_datagram(&mut self, data: &[u8], peer: SocketAddr) -> Result<(), ServerError> {
+        self.record(data, Peer::Udp(peer), true);
         let udp_secure = self.secure.as_ref().is_some_and(|s| s.udp);
         if udp_secure && data.len() >= 4 {
             let svc = u16::from_be_bytes([data[2], data[3]]);
@@ -422,11 +467,25 @@ impl KnxnetIpServer {
             service::CONNECTIONSTATE_REQUEST => self.on_connectionstate_request(&frame.body, peer),
             service::DISCONNECT_REQUEST => self.on_disconnect_request(&frame.body, peer),
             service::TUNNELLING_REQUEST => self.on_tunnelling_request(&frame.body, peer),
+            service::TUNNELLING_FEATURE_GET => self.on_tunnelling_feature(&frame.body, peer, false),
+            service::TUNNELLING_FEATURE_SET => self.on_tunnelling_feature(&frame.body, peer, true),
             service::DEVICE_CONFIGURATION_REQUEST => {
                 self.on_device_configuration(&frame.body, peer)
             }
             service::DESCRIPTION_REQUEST => {
                 let out = KnxnetIpFrame::encode(service::DESCRIPTION_RESPONSE, &self.dibs(false));
+                self.send_frame(&out, peer)
+            }
+            service::SEARCH_REQUEST => {
+                // Plain discovery: ETS 6 sends it (unicast) to a configured
+                // tunnelling connection before listing it, and the house
+                // interface answers with HPAI + device info + service families.
+                let mut body = match (peer, self.socket.local_addr()?) {
+                    (Peer::Udp(_) | Peer::SecureUdp(_), local) => hpai(local).to_vec(),
+                    (Peer::Tcp(_), _) => vec![0x08, 0x02, 0, 0, 0, 0, 0, 0],
+                };
+                body.extend_from_slice(&self.dibs(false));
+                let out = KnxnetIpFrame::encode(service::SEARCH_RESPONSE, &body);
                 self.send_frame(&out, peer)
             }
             service::SEARCH_REQUEST_EXTENDED => {
@@ -453,7 +512,7 @@ impl KnxnetIpServer {
             .as_ref()
             .map(|s| s.individual_address)
             .or(self.interface_device)
-            .unwrap_or(0x1000);
+            .unwrap_or(self.plain_ia);
         let mut out = vec![0u8; 54];
         out[0] = 54;
         out[1] = 0x01; // DEVICE_INFO
@@ -549,6 +608,7 @@ impl KnxnetIpServer {
         match peer {
             Peer::Udp(addr) => {
                 self.socket.send_to(frame, addr)?;
+                self.record(frame, peer, false);
                 Ok(())
             }
             Peer::Tcp(_) | Peer::SecureUdp(_) => {
@@ -817,12 +877,13 @@ impl KnxnetIpServer {
         // server's own local address (echo the peer's addressing family is not
         // required; a real gateway returns its own endpoint). Over TCP it is
         // the route-back HPAI, as on the real interface.
+        let plain = self.plain_ia;
         let session_ia = |state: Option<&mut SessionState>| match state {
             Some(SessionState::Established { tunnel_ia, .. }) => *tunnel_ia,
-            _ => 0x1000,
+            _ => plain,
         };
         let (hpai_bytes, tunnel_ia) = match peer {
-            Peer::Udp(_) => (hpai(self.socket.local_addr()?), 0x1000u16),
+            Peer::Udp(_) => (hpai(self.socket.local_addr()?), plain),
             Peer::Tcp(_) => (
                 [0x08, 0x02, 0, 0, 0, 0, 0, 0],
                 session_ia(self.session_state(peer)),
@@ -1023,6 +1084,82 @@ impl KnxnetIpServer {
         Ok(())
     }
 
+    /// Tunnelling v2 feature services (03_08_04 §2.3.x): GET answers the
+    /// feature's value, SET accepts and echoes it. ETS 6 reads feature 0x07
+    /// (max APDU length) right after CONNECT and gives up without an answer.
+    fn on_tunnelling_feature(
+        &mut self,
+        body: &[u8],
+        peer: Peer,
+        set: bool,
+    ) -> Result<(), ServerError> {
+        let Some(hdr) = ConnectionHeader::parse(body) else {
+            return Ok(());
+        };
+        if hdr.channel != self.channel_of(peer) || body.len() < 6 {
+            return Ok(());
+        }
+        let feature = body[4];
+        let ia = self
+            .secure
+            .as_ref()
+            .map(|s| s.individual_address)
+            .or(self.interface_device)
+            .unwrap_or(self.plain_ia);
+        let (code, value): (u8, Vec<u8>) = if set {
+            (0x00, body[6..].to_vec())
+        } else {
+            match feature {
+                0x01 => (0x00, vec![0x00, 0x04]), // supported EMI types: cEMI
+                0x02 => (0x00, vec![0x57, 0xB0]), // device descriptor type 0 of an IP interface
+                0x03 => (0x00, vec![0x01]),       // bus connection status: connected
+                0x04 => (0x00, vec![0x00, 0x00]), // KNX manufacturer code
+                0x05 => (0x00, vec![0x00, 0x04]), // active EMI type: cEMI
+                0x06 => (0x00, ia.to_be_bytes().to_vec()), // individual address of the tunnel
+                0x07 => (0x00, vec![0x00, 0xFE]), // max APDU length 254
+                0x08 => (0x00, vec![0x00]),       // info service disabled
+                _ => (0x01, vec![]),              // unknown feature
+            }
+        };
+        tracing::info!(
+            feature = format!("0x{feature:02x}"),
+            set,
+            "tunnelling feature"
+        );
+        // Feature frames ride the tunnelling sequence machinery (03_08_04 v2):
+        // the GET/SET is acknowledged with TUNNELLING_ACK under the client's
+        // sequence, and the RESPONSE carries the server's own send sequence,
+        // which the client acknowledges in turn. ETS 6 re-sends the GET after
+        // one second and disconnects after two unacknowledged attempts.
+        if matches!(peer, Peer::Udp(_) | Peer::SecureUdp(_)) {
+            let ack = KnxnetIpFrame::encode(
+                service::TUNNELLING_ACK,
+                &ConnectionHeader {
+                    channel: hdr.channel,
+                    seq: hdr.seq,
+                    status: 0x00,
+                }
+                .to_bytes(),
+            );
+            self.send_frame(&ack, peer)?;
+        }
+        let counter = self.tx_seqs.entry(peer).or_insert(0);
+        let seq = *counter;
+        *counter = counter.wrapping_add(1);
+        let mut out = ConnectionHeader {
+            channel: hdr.channel,
+            seq,
+            status: 0x00,
+        }
+        .to_bytes()
+        .to_vec();
+        out.push(feature);
+        out.push(code);
+        out.extend_from_slice(&value);
+        let frame = KnxnetIpFrame::encode(service::TUNNELLING_FEATURE_RESPONSE, &out);
+        self.send_frame(&frame, peer)
+    }
+
     fn on_tunnelling_request(&mut self, body: &[u8], peer: Peer) -> Result<(), ServerError> {
         let Some(hdr) = ConnectionHeader::parse(body) else {
             return Ok(());
@@ -1082,11 +1219,45 @@ impl KnxnetIpServer {
             }
         };
 
+        let mut cemi = cemi;
+        // As a real interface: a request sent with source 0.0.0 goes out under
+        // the tunnel's address.
+        if cemi.message_code == MessageCode::LDataReq && cemi.source.0 == 0 {
+            cemi.source = IndividualAddress(self.tunnel_ia_of(peer));
+        }
         let responses = self.bus.deliver_from_tool(&cemi);
+        // Every L_Data.req is confirmed with exactly one L_Data.con before any
+        // answer from the bus (the bus echoes group writes as a con itself;
+        // the gateway adds one for every other request). ETS 6 waits for that
+        // confirmation and drops the tunnel after 3 s without it
+        // (ETS-against-sim capture, 2026-10-27).
+        if cemi.message_code == MessageCode::LDataReq
+            && !responses
+                .iter()
+                .any(|r| r.message_code == MessageCode::LDataCon)
+        {
+            let con = CemiLData {
+                message_code: MessageCode::LDataCon,
+                ..cemi.clone()
+            };
+            self.send_tunnelling(&con, peer)?;
+        }
         for resp in responses {
             self.send_tunnelling(&resp, peer)?;
         }
         Ok(())
+    }
+
+    /// The individual address the tunnel of `peer` was given at CONNECT.
+    fn tunnel_ia_of(&mut self, peer: Peer) -> u16 {
+        let plain = self.plain_ia;
+        if matches!(peer, Peer::Udp(_)) {
+            return plain;
+        }
+        match self.session_state(peer) {
+            Some(SessionState::Established { tunnel_ia, .. }) => *tunnel_ia,
+            _ => plain,
+        }
     }
 
     fn send_tunnelling(&mut self, cemi: &CemiLData, peer: Peer) -> Result<(), ServerError> {
@@ -1174,4 +1345,68 @@ fn hpai(addr: SocketAddr) -> [u8; 8] {
     };
     let port = addr.port().to_be_bytes();
     [0x08, 0x01, ip[0], ip[1], ip[2], ip[3], port[0], port[1]]
+}
+
+/// A classic pcap file of raw IPv4 packets (link type 101), one UDP datagram
+/// per record with synthesised IP and UDP headers. Flushed after every packet.
+struct PcapWriter {
+    out: std::io::BufWriter<std::fs::File>,
+    start: std::time::Instant,
+    epoch: std::time::SystemTime,
+}
+
+impl PcapWriter {
+    fn create(path: &std::path::Path) -> std::io::Result<Self> {
+        use std::io::Write;
+        let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
+        // magic, version 2.4, thiszone 0, sigfigs 0, snaplen 65535, linktype 101 (RAW)
+        out.write_all(&0xa1b2_c3d4u32.to_le_bytes())?;
+        out.write_all(&2u16.to_le_bytes())?;
+        out.write_all(&4u16.to_le_bytes())?;
+        out.write_all(&0u32.to_le_bytes())?;
+        out.write_all(&0u32.to_le_bytes())?;
+        out.write_all(&65535u32.to_le_bytes())?;
+        out.write_all(&101u32.to_le_bytes())?;
+        out.flush()?;
+        Ok(Self {
+            out,
+            start: std::time::Instant::now(),
+            epoch: std::time::SystemTime::now(),
+        })
+    }
+
+    fn write_udp(
+        &mut self,
+        src: SocketAddr,
+        dst: SocketAddr,
+        payload: &[u8],
+    ) -> std::io::Result<()> {
+        use std::io::Write;
+        let (SocketAddr::V4(s), SocketAddr::V4(d)) = (src, dst) else {
+            return Ok(());
+        };
+        let udp_len = 8 + payload.len();
+        let total = 20 + udp_len;
+        let mut pkt = Vec::with_capacity(total);
+        pkt.extend_from_slice(&[0x45, 0x00]);
+        pkt.extend_from_slice(&(total as u16).to_be_bytes());
+        pkt.extend_from_slice(&[0, 0, 0, 0, 64, 17, 0, 0]); // id, flags, ttl, proto UDP, checksum 0
+        pkt.extend_from_slice(&s.ip().octets());
+        pkt.extend_from_slice(&d.ip().octets());
+        pkt.extend_from_slice(&s.port().to_be_bytes());
+        pkt.extend_from_slice(&d.port().to_be_bytes());
+        pkt.extend_from_slice(&(udp_len as u16).to_be_bytes());
+        pkt.extend_from_slice(&[0, 0]);
+        pkt.extend_from_slice(payload);
+        let since = (self.epoch + self.start.elapsed())
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        self.out
+            .write_all(&(since.as_secs() as u32).to_le_bytes())?;
+        self.out.write_all(&since.subsec_micros().to_le_bytes())?;
+        self.out.write_all(&(pkt.len() as u32).to_le_bytes())?;
+        self.out.write_all(&(pkt.len() as u32).to_le_bytes())?;
+        self.out.write_all(&pkt)?;
+        self.out.flush()
+    }
 }

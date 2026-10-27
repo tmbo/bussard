@@ -71,6 +71,28 @@ impl Device {
             }
             (desc, _) => desc,
         };
+        // ETS 6.4 reads the description of PID_TABLE on the table objects
+        // before a System B download. A real device describes it (PDT 0x14,
+        // writable, one element, read level 3, property index 3: three house
+        // devices in the ETS captures of 2026-10-27) although it then refuses
+        // the table write itself (DESIGN.md). Without a description ETS
+        // disconnects and reports the download as failed.
+        let table_object = self.objects.get(&object).is_some_and(|io| {
+            io.property(super::interface_object::PID_OBJECT_TYPE)
+                .is_some_and(|p| matches!(p.value.as_slice(), [0, 1] | [0, 2] | [0, 3]))
+        });
+        let synthesized =
+            desc.is_none() && req_pid == super::interface_object::PID_TABLE && table_object;
+        let desc = desc.or_else(|| {
+            synthesized.then_some(super::interface_object::PropertyDescription {
+                pid: super::interface_object::PID_TABLE,
+                pdt: 0x14,
+                writable: true,
+                max_elements: 1,
+                read_level: 3,
+                write_level: 0,
+            })
+        });
         // The 7-octet response payload. On absence, echo the addressing with a
         // zero type / zero count / zero access — a real "no property" descriptor.
         let data = match desc {
@@ -105,6 +127,10 @@ impl Device {
             }
             None => vec![object, req_pid, req_index, 0x00, 0x00, 0x00, 0x00],
         };
+        let mut data = data;
+        if synthesized {
+            data[2] = 3; // the property index the house devices report for PID_TABLE
+        }
         let resp = self.respond(tool, Apci::PropertyDescriptionResponse.to_u10(), &data);
         Ok(DeviceReaction {
             responses: vec![resp],

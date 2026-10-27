@@ -16,10 +16,9 @@ impl Device {
     /// - **Expected sequence** (`seq == rx_seq`): process the APDU, advance the
     ///   receive sequence, and acknowledge. Verbs that carry their own
     ///   application-layer response (property read/write, authorize,
-    ///   device-descriptor, master-reset) let that response stand as the
-    ///   acknowledgement — the response NDT's arrival is what the tool waits on.
-    ///   Response-less verbs (`A_MemoryWrite`, a bare `A_Restart`) get an explicit
-    ///   `T_ACK(seq)` so the tool is not left retransmitting.
+    ///   device-descriptor, master-reset) answer; the bus puts the T_ACK a
+    ///   real device sends first in front of that answer. Response-less verbs
+    ///   (`A_MemoryWrite`, a bare `A_Restart`) get the `T_ACK(seq)` here.
     /// - **Duplicate of the last accepted frame** (`seq == rx_seq - 1` mod 16): a
     ///   retransmit whose `T_ACK` the tool missed. Re-acknowledge with `T_ACK(seq)`
     ///   but do **not** reprocess it (idempotency — reprocessing a memory write or
@@ -88,10 +87,18 @@ impl Device {
             detail: "too short".into(),
         })?;
         self.rx_seq = (self.rx_seq + 1) & 0x0F;
+        // The response carries the request's sequence number: KNX Virtual and
+        // the house devices answer NDT(seq=n) with NDT(seq=n) in every ETS
+        // capture, while a free-running send counter drifts after the
+        // T_ACK-only exchanges (memory writes) and ETS then drops the answer.
+        self.tx_seq = seq;
         let mut reaction = self.handle_apdu(cemi, &apdu)?;
         if reaction.responses.is_empty() {
             reaction.responses.push(self.t_ack(tool, seq));
         }
+        // The T_ACK that precedes an application-layer response is added by
+        // the bus (`Bus::deliver_from_tool`), where the device's unit tests do
+        // not look.
         Ok(reaction)
     }
 

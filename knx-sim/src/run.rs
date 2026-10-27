@@ -75,6 +75,19 @@ pub fn serve_config(config_path: &Path) -> Result<()> {
             "KNXnet/IP Secure tunnelling"
         );
     }
+    if let Some(pcap) = &cfg.gateway.pcap {
+        let path = config_path.parent().unwrap_or(Path::new(".")).join(pcap);
+        server
+            .set_pcap(&path)
+            .with_context(|| format!("creating pcap {}", path.display()))?;
+        tracing::info!(path = %path.display(), "recording UDP datagrams to pcap");
+    }
+    if let Some(addr) = &cfg.gateway.tunnel_address {
+        let ia: crate::wire::IndividualAddress = addr
+            .parse()
+            .map_err(|e| anyhow::anyhow!("gateway.tunnel_address {addr:?}: {e}"))?;
+        server.set_plain_address(ia.0);
+    }
     if let Some(device) = &cfg.gateway.interface_device {
         let ia: crate::wire::IndividualAddress = device
             .parse()

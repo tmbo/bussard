@@ -43,6 +43,16 @@ pub struct GatewayConfig {
     /// secure-only tunnelling at each of its master resets.
     #[serde(default)]
     pub interface_device: Option<String>,
+    /// The individual address a plain gateway reports and assigns to the
+    /// tunnel (default `1.0.0`). ETS checks that its line's medium matches the
+    /// project, so an ETS run against a TP line sets e.g. `1.1.254`.
+    #[serde(default)]
+    pub tunnel_address: Option<String>,
+    /// Write every UDP datagram in and out to this pcap file (relative to
+    /// the config file), so a tool run against the sim is captured without a
+    /// sniffer. `tools/knxtrace` reads it.
+    #[serde(default)]
+    pub pcap: Option<String>,
 }
 
 /// A KNXnet/IP Secure tunnelling interface: TCP (and optionally UDP) on the

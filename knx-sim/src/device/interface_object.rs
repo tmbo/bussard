@@ -52,6 +52,9 @@ pub const PID_TABLE_REFERENCE: u8 = 7;
 /// PID 23 is not a download path any real device implements — see
 /// `Device::on_property_write`, which refuses it.
 pub const PID_TABLE: u8 = 23;
+/// PID_DEVICE_CONTROL (object 0): bit 2 is verify mode, in which every
+/// memory write is echoed as an A_Memory_Response.
+pub const PID_DEVICE_CONTROL: u8 = 14;
 /// `PID_MCB_TABLE` (27) — a loadable object's memory-control-block table. On
 /// System B it is a device-computed, read-only array of 8-octet entries, each an
 /// integrity block over a stored segment (size + a CRC the device computes). A

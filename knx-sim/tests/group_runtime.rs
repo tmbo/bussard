@@ -86,8 +86,13 @@ fn flash_object(
     // Read the object's base (PID_TABLE_REFERENCE, PID 7).
     let base = {
         let r = bus.deliver_from_tool(&mk(bus, addr, seq, 0x3D5, &[obj, 7, 0x10, 0x01]));
+        // The bus puts the transport T_ACK first; the response follows.
         // Response value is the last 4 octets: [00 00 base_hi base_lo].
-        let tpdu = &r[0].tpdu;
+        let tpdu = &r
+            .iter()
+            .find(|c| c.tpdu.len() > 1)
+            .ok_or("no response")?
+            .tpdu;
         let n = tpdu.len();
         u16::from_be_bytes([tpdu[n - 2], tpdu[n - 1]])
     };
