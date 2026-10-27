@@ -538,6 +538,116 @@ def flow_history(req: dict) -> dict:
     return {"lines": [l["text"] for l in lines]}
 
 
+@flow("catalog_import")
+def flow_catalog_import(req: dict) -> dict:
+    """Import a `.knxprod` (a path inside the VM) into ETS's catalog: the
+    Import button of the Katalog panel, the 'Produktdatei öffnen' file dialog
+    (UI Automation), 'Alle Sprachen importieren', then the result panel.
+    Returns outcome imported|refused|error, the 'Produkt:' lines and the panel
+    text. ETS imports a file it already holds again without complaint."""
+    path = req["path"]
+    timeout = float(req.get("timeout", 900))
+    region = (1500, 400, 3500, 1600)
+    btn = find_text("Import", (680, 1340, 1100, 1390))
+    wizard_text = " ".join(l["text"] for l in ocr(region))
+    attached = False
+    if not btn and any(k in wizard_text for k in ("Konvertiere", "erfolgreich", "Produktsprache", "Import auswählen")):
+        # An import is already running (a previous call timed out while a
+        # large file converted): wait for its result instead of starting over.
+        attached = True
+    elif not btn:
+        raise RuntimeError("the Katalog panel's Import button is not on screen")
+    else:
+        click(btn["x"] + btn["w"] // 2, btn["y"] + btn["h"] // 2)
+        dialog = None
+        t0 = time.time()
+        while time.time() - t0 < 15:
+            dialog = next((p for p in ets_popups() if "Produktdatei" in p.window_text()), None)
+            if dialog:
+                break
+            time.sleep(0.5)
+        if dialog is None:
+            raise RuntimeError("no 'Produktdatei öffnen' dialog appeared")
+        edit = dialog.child_window(title="Dateiname:", control_type="Edit")
+        edit.set_edit_text(path)
+        time.sleep(0.3)
+        edit.type_keys("{ENTER}")
+    seen: list[str] = []
+    pressed_languages = False
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        time.sleep(2)
+        if any("Produktdatei" in p.window_text() for p in ets_popups()):
+            # The file dialog is still up: the path was refused.
+            keys("{ESC}")
+            return {"outcome": "error", "products": [], "message": f"file dialog did not accept {path}"}
+        lines = ocr(region)
+        texts = [l["text"] for l in lines]
+        joined = " ".join(texts)
+        if attached and not any(k in joined for k in ("Konvertiere", "erfolgreich", "Produktsprache", "Import", "Signiere", "Lese ", "Lade ")):
+            # The wizard went away while nobody watched (its result panel
+            # was closed by hand): the caller verifies through the catalog.
+            return {"outcome": "done_unverified", "products": [], "message": "wizard closed before the result was read", "attached": True}
+        if "Import auswählen" in joined or "Import auswahlen" in joined:
+            # Multi-product file: a selection list; take every product.
+            hit = find_text("Alle Produkte importieren", (2200, 1700, 3000, 1860))
+            if hit:
+                click(hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2)
+                seen.append("all products")
+                time.sleep(1)
+                continue
+        if "Produktsprache" in joined and not pressed_languages:
+            click_text("Alle Sprachen importieren", (1900, 1490, 2400, 1560))
+            pressed_languages = True
+            continue
+        if "erfolgreich" in joined:
+            # Re-read the panel magnified: the order number and name matter.
+            fine = [l["text"] for l in ocr((1700, 1050, 2600, 1480), zoom=2)]
+            products = [t.split(":", 1)[1].strip() for t in fine if t.startswith("Produkt")]
+            ok = find_text("OK", (2300, 1450, 2700, 1600), min_ratio=0.6)
+            if ok:
+                click(ok["x"] + ok["w"] // 2, ok["y"] + ok["h"] // 2)
+            else:
+                click(2488, 1528)  # where the result panel's OK sits (OCR misses two letters at times)
+            time.sleep(1)
+            return {"outcome": "imported", "products": products, "message": joined[:600], "attached": attached}
+        if any(k in joined for k in ("Fehler", "fehlgeschlagen", "nicht importiert", "ungültig", "Ausnahme")):
+            for label in ("OK", "Schließen", "Abbrechen"):
+                if find_text(label, (1900, 1460, 2700, 1580)):
+                    click_text(label, (1900, 1460, 2700, 1580))
+                    break
+            time.sleep(1)
+            return {"outcome": "refused", "products": [], "message": joined[:800]}
+        # A page with a plain 'Importieren' or 'Weiter' button (product
+        # selection for multi-product files).
+        for label in ("Importieren", "Weiter"):
+            hit = find_text(label, (1900, 1460, 2700, 1580))
+            if hit and hit["ratio"] >= 0.9 and "Alle Sprachen" not in hit["text"]:
+                click(hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2)
+                seen.append(f"pressed {label}")
+                break
+    # No ESC: ETS keeps converting, and the next call attaches to it.
+    return {"outcome": "error", "products": [], "message": f"timed out after {int(timeout)}s; last: {joined[:400]}; {seen}"}
+
+
+@flow("catalog_search")
+def flow_catalog_search(req: dict) -> dict:
+    """Type `term` into the Katalog panel's search box and return the result
+    rows (order number, name, application) read magnified."""
+    click(*LAYOUT["catalog_search"])
+    time.sleep(0.3)
+    keys("^a")
+    keys(req["term"] + "{ENTER}")
+    time.sleep(float(req.get("wait", 3)))
+    click(1000, 1380)  # closes the search-history dropdown
+    time.sleep(0.5)
+    x0, y0, x1, y1 = LAYOUT["catalog_rows"]
+    rows = []
+    for line in ocr((x0, y0 + 40, x1, y1), zoom=2):
+        rows.append({"text": line["text"], "x": line["x"], "y": line["y"]})
+    return {"term": req["term"], "rows": rows}
+
+
 @flow("dialogs")
 def flow_dialogs(req: dict) -> dict:
     """Any dialog text in the middle of the screen, for the watchdog."""

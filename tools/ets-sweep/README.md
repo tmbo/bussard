@@ -114,3 +114,19 @@ Each of these ended a run until the sim did it (all 2026-10-27, DA.tp):
 (truncated), which is why the sim writes its own pcap (`gateway.pcap`).
 - The device added to an empty line 1.1 gets 1.1.1; the sweep deletes leftovers
   first, so the sim device is always 1.1.1.
+
+## Part 2: the corpus in ETS's catalog (#421)
+
+`uv run tools/ets-sweep/catalog.py [--filter a,b] [--limit N] [--redo]` uploads
+each corpus `.knxprod` (`tests-support/product-corpus/cache/vendor`, vendor
+data, never committed) to `C:\Users\macremote\ets-sweep\products\` and has
+the driver run ETS's catalog import: the Katalog panel's Import button, the
+`Produktdatei öffnen` file dialog (a Win32 dialog, driven by UI Automation),
+`Alle Produkte importieren` on the selection page of a multi-product file,
+`Alle Sprachen importieren`, then the result panel ("Import erfolgreich" with
+`Produkt:` lines, read magnified). Outcomes land in `tools/ets-sweep/catalog.json`
+(labels and the product names ETS printed; a file with an outcome is skipped
+unless `--redo`). Importing a file ETS already holds just converts it again
+and reports success, so a resumed run is idempotent. A large multi-product
+file (the ABB i-bus catalogue) converts for well over 15 minutes; the flow
+attaches to a conversion that is still running when a previous call timed out.
