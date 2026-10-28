@@ -23,6 +23,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import traceback
 from contextlib import redirect_stdout
@@ -1040,6 +1041,13 @@ def flow_catalog_import(req: dict) -> dict:
     timeout = float(req.get("timeout", 900))
     region = (1500, 400, 3500, 1600)
     ets_error = dismiss_ets_error()
+    # Removing a large product (ALLinBOX 1612) keeps ETS busy after the remove
+    # flow returned; three imports in a row found no button (2026-10-28).
+    wait_busy()
+    t_btn = time.time()
+    while not catalog_import_button() and time.time() - t_btn < 30:
+        time.sleep(2)
+        wait_busy()
     if not catalog_import_button():
         ensure_layout()
     btn = catalog_import_button()
@@ -1252,6 +1260,16 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, {"error": "unknown path"})
 
     def do_POST(self):  # noqa: N802
+        global IN_FLIGHT
+        with IN_FLIGHT_LOCK:
+            IN_FLIGHT += 1
+        try:
+            self._do_post()
+        finally:
+            with IN_FLIGHT_LOCK:
+                IN_FLIGHT -= 1
+
+    def _do_post(self) -> None:
         n = int(self.headers.get("Content-Length") or 0)
         try:
             req = json.loads(self.rfile.read(n) or b"{}")
@@ -1318,6 +1336,12 @@ class Handler(BaseHTTPRequestHandler):
             log(f"{self.path} {time.time() - t0:.1f}s")
 
 
+# Requests being served: an upload restarts the driver only between flows,
+# so a running sweep loses no flow to it.
+IN_FLIGHT = 0
+IN_FLIGHT_LOCK = threading.Lock()
+
+
 def _reload_watch(srv: ThreadingHTTPServer) -> None:
     """Re-exec this process when ets_driver.py changes on disk, so a new upload
     takes effect without anyone starting the driver in the desktop session again."""
@@ -1330,6 +1354,9 @@ def _reload_watch(srv: ThreadingHTTPServer) -> None:
         except OSError:
             continue
         if now != stamp:
+            t_idle = time.time()
+            while IN_FLIGHT and time.time() - t_idle < 1800:
+                time.sleep(0.5)
             # Not os.execv: on Windows it joins argv without quoting, so the space
             # in "C:\Program Files\Python312" killed the first attempt (2026-10-26).
             log("source changed, restarting")
@@ -1351,7 +1378,6 @@ def main() -> None:
         TOKEN_FILE.write_text(base64.b16encode(os.urandom(16)).decode())
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     srv.daemon_threads = True
-    import threading
 
     threading.Thread(target=_reload_watch, args=(srv,), daemon=True).start()
     log(f"listening on 127.0.0.1:{PORT}")
