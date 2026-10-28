@@ -586,10 +586,30 @@ fn parse_application_program(
     // select (issue #400).
     let hardware_type_marker = defaults.pick(&marker_cands).pop().map(|((), v)| v);
     let device_compare_props = defaults.pick(&device_cands);
+    // A program-id compare (PID 13, `mfr:2 app:2 version:1`) with a mask
+    // compares only the application number (`Mask="0000FFFF00"`), so its
+    // InlineData leaves the manufacturer at 0000. ETS checks the manufacturer
+    // apart from the compare and refused "a device of another manufacturer"
+    // (ABB A-A001, 2026-10-28): a device of that hardware holds its own, the
+    // application id's `M-xxxx`, and the version.
+    let manufacturer = app_id
+        .strip_prefix("M-")
+        .and_then(|m| m.get(..4))
+        .and_then(|m| u16::from_str_radix(m, 16).ok());
     let object_compare_props: Vec<(u8, u8, Vec<u8>)> = defaults
         .pick(&object_cands)
         .into_iter()
-        .map(|((o, p), v)| (o, p, v))
+        .map(|((o, p), mut v)| {
+            if p == 13 && v.len() == 5 && v[..2] == [0, 0] {
+                if let Some(m) = manufacturer {
+                    v[..2].copy_from_slice(&m.to_be_bytes());
+                }
+                if v[4] == 0 {
+                    v[4] = u8::try_from(app_version).unwrap_or(0);
+                }
+            }
+            (o, p, v)
+        })
         .collect();
     for ((object_type, pid), value) in defaults.pick(&typed_cands) {
         if let Some(t) = typed_props
@@ -907,7 +927,8 @@ mod tests {
         assert_eq!(pd.device_compare_props, vec![(12, vec![0x00, 0x04])]);
         assert_eq!(
             pd.object_compare_props,
-            vec![(3, 13, vec![0x00, 0x00, 0xA0, 0x42, 0x00])]
+            // Masked compare: the manufacturer and version filled in.
+            vec![(3, 13, vec![0x00, 0x04, 0xA0, 0x42, 0x10])]
         );
         assert_eq!(pd.typed_props.len(), 2);
         assert!(pd.typed_props.iter().all(|t| t.written));
