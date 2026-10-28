@@ -171,7 +171,11 @@ the knx-sim device config); the learned values are kept per application.
 
 `oracle.py` builds a scratch model per captured application (one device
 1.1.1 at its defaults, no links; `oracle_model.py`) and runs the offline
-oracle row against the capture into `results/oracle.json`.
+oracle row against the capture into `results/oracle.json`, the load-control
+verdict and its differences under `loadctl` (#419). From a worktree, read the
+main checkout's captures and write nothing under them:
+`--captures <main>/captures/ets-sweep --work <scratch> --seed-models` (the last
+copies the model the sweep already imported instead of importing again).
 
 What ETS needed from the sim in this part: connectionless
 `A_DeviceDescriptor_Read` / `A_PropertyValue_Read` (ETS probes KNX Secure
