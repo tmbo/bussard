@@ -99,6 +99,23 @@ pub mod iot {
 /// the sim overclaiming a precise data type it does not model.
 pub const PDT_GENERIC_01: u8 = 0x10;
 
+/// The `PDT_GENERIC_nn` code for a property value of `len` octets, as a
+/// device describes a property it knows only by its size (Resources 03.05.01
+/// / 03.07.03: `PDT_GENERIC_01` = 0x11 up to `PDT_GENERIC_20` = 0x24). A
+/// value longer than 20 octets has no generic code; it is described as
+/// `PDT_VARIABLE_LENGTH` (0x10).
+///
+/// Used for the properties a product's own load procedure names on an
+/// application interface object (bussard issue #422): ETS reads the
+/// description of such a property before it writes it, and the size is the
+/// one fact the procedure's `InlineData` gives.
+pub fn generic_pdt_for_len(len: usize) -> u8 {
+    match u8::try_from(len) {
+        Ok(n @ 1..=20) => 0x10 + n,
+        _ => 0x10,
+    }
+}
+
 /// A property's on-the-wire *description* — what a device reports in an
 /// `A_PropertyDescription_Response` (issue #72): the PID, its data type and
 /// writability, its element count and its read/write access levels.
@@ -126,6 +143,9 @@ pub struct Property {
     pub value: Vec<u8>,
     /// Whether writes are rejected.
     pub read_only: bool,
+    /// The PDT an `A_PropertyDescription_Read` reports, when the property
+    /// carries a specific one; `None` reports [`PDT_GENERIC_01`].
+    pub pdt: Option<u8>,
 }
 
 impl Property {
@@ -134,6 +154,7 @@ impl Property {
         Self {
             value,
             read_only: false,
+            pdt: None,
         }
     }
 
@@ -142,7 +163,15 @@ impl Property {
         Self {
             value,
             read_only: true,
+            pdt: None,
         }
+    }
+
+    /// The same property, described with the generic PDT of its value's
+    /// length ([`generic_pdt_for_len`]).
+    pub fn sized(mut self) -> Self {
+        self.pdt = Some(generic_pdt_for_len(self.value.len()));
+        self
     }
 }
 
@@ -193,8 +222,8 @@ impl InterfaceObject {
     ///
     /// Returns `None` once the index runs past the object's property list — the
     /// terminating signal an enumerating tool reads as `max_elements == 0`. The
-    /// simulator reports every property as [`PDT_GENERIC_01`] with a single
-    /// element (it stores opaque bytes, so it does not model per-PID arrays), a
+    /// simulator reports every property as [`PDT_GENERIC_01`] (or the PDT the
+    /// property carries, [`Property::pdt`]) with a single element (it stores opaque bytes, so it does not model per-PID arrays), a
     /// read level of 3 (the ETS free-access default), and a write level of 0 for a
     /// writable property or 15 for a read-only one.
     pub fn describe_at_index(&self, property_index: u8) -> Option<PropertyDescription> {
@@ -205,7 +234,7 @@ impl InterfaceObject {
         let prop = self.property(pid)?;
         Some(PropertyDescription {
             pid,
-            pdt: PDT_GENERIC_01,
+            pdt: prop.pdt.unwrap_or(PDT_GENERIC_01),
             writable: !prop.read_only,
             max_elements: 1,
             read_level: 3,

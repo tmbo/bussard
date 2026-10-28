@@ -91,47 +91,93 @@ fn object_type_for(object_index: u8) -> u16 {
     }
 }
 
-/// Seeds, writable and zero, every property the application's own
-/// `LdCtrlWriteProp` steps write and the device does not already serve: the
-/// real hardware accepts those writes (an ABB i-bus program writes the PEI type
-/// to object 4 or 5 PID 16 before its image, others object 0 PID 52 or 86),
-/// and a write the simulated device refused would go unanswered and time the
-/// flash out.
-///
-/// With `add_objects` (System 7), an object the device does not otherwise
-/// model is added (bussard issue #390: the MDT 0705 programs write their
-/// label texts to object 6), with `PID_OBJECT_TYPE` reporting its index as
-/// the type. A System B device keeps its object list: a tool skips a template
-/// write to an object the device lacks.
-fn seed_written_props(
-    objects: &mut BTreeMap<u8, InterfaceObject>,
-    product: &ProductData,
-    add_objects: bool,
-) {
-    for &(object, pid, len) in &product.written_props {
-        if !add_objects && !objects.contains_key(&object) {
-            continue;
-        }
-        let io = objects.entry(object).or_insert_with(|| {
-            let mut io = InterfaceObject::new();
-            io.set_property(
-                PID_OBJECT_TYPE,
-                Property::read_only(object_type_for(object).to_be_bytes().to_vec()),
-            );
-            io
-        });
-        if !io.has_property(pid) {
-            io.set_property(pid, Property::writable(vec![0x00; len]));
-        }
+/// The first `PID_OBJECT_TYPE` of the manufacturer-specific range (KNX
+/// Resources 03.05.01: object types 50000 to 65535 are the manufacturer's).
+const MANUFACTURER_OBJECT_TYPE_BASE: u16 = 50000;
+
+/// The index of the first interface object beyond the system objects a System
+/// B device models (0 device, 1 address table, 2 association table, 3
+/// group-object table, 4 application program, 5 KNX-object association
+/// table).
+const FIRST_APPLICATION_OBJECT: u8 = 6;
+
+/// The `PID_OBJECT_TYPE` of an interface object the device creates only
+/// because the application's load procedure addresses it (bussard issue
+/// #422). The type a procedure step declares for that index (`ObjType`
+/// beside `ObjIdx`) wins. A system index (0 to 5) keeps its system type.
+/// Any other object is an application object whose type the product does
+/// not say: it reports the manufacturer-specific type `50000 + index`, a
+/// value no standard object type uses, so a tool that walks the object table
+/// sees an object it does not know rather than a standard one (index 7 as
+/// type 7 would claim an LTE address routing table).
+fn procedure_object_type(product: &ProductData, object_index: u8) -> u16 {
+    if let Some(&(_, object_type)) = product
+        .object_types
+        .iter()
+        .find(|&&(o, _)| o == object_index)
+    {
+        return object_type;
+    }
+    if object_index < FIRST_APPLICATION_OBJECT {
+        object_type_for(object_index)
+    } else {
+        MANUFACTURER_OBJECT_TYPE_BASE + u16::from(object_index)
     }
 }
 
-/// Seeds the properties of non-device objects the application's own
-/// `LdCtrlCompareProp` preflights expect (bussard issue #390: the ABB 0701
-/// programs compare object 3 PID 13, the application object's program
-/// version, with their application number): a device of that hardware holds
-/// them. A property the procedure also writes stays writable.
-fn seed_object_compare_props(objects: &mut BTreeMap<u8, InterfaceObject>, product: &ProductData) {
+/// Seeds the interface objects and properties the application's own load
+/// procedure addresses by index, beyond the ones the device already models.
+///
+/// - Every property an `LdCtrlCompareProp` preflight compares holds the value
+///   the compare expects (bussard issue #390: the ABB 0701 programs compare
+///   object 3 PID 13, the application object's program version, with their
+///   application number). The value under a `<choose>` is the one the
+///   product's parameter defaults select (`ProductData::object_compare_props`,
+///   picked by the same branch logic as the object-0 identity). A device of
+///   that hardware holds them. A property the procedure also writes stays
+///   writable.
+/// - Every property an `LdCtrlWriteProp` step writes and the device does not
+///   already serve is writable and zero, as long as its inline data: the real
+///   hardware accepts those writes (an ABB i-bus program writes the PEI type
+///   to object 4 or 5 PID 16 before its image, others object 0 PID 52 or 86),
+///   and a write the simulated device refused would go unanswered and time
+///   the flash out.
+///
+/// An object the device lacks is created, with a `PID_OBJECT_TYPE` from
+/// [`procedure_object_type`], when its index is at least `first_new_object`.
+/// System 7 passes 0 (bussard issue #390: the MDT 0705 programs write their
+/// label texts to object 6). System B passes [`FIRST_APPLICATION_OBJECT`]
+/// (bussard issue #422: the MDT Glass Touch Smart, mask 07B0, compares object
+/// 7 PID 162 and writes object 7 PID 161, and ETS reads that property's
+/// description before the write); a System B system object the product does
+/// not load stays absent, as before.
+///
+/// The seeded properties are described with the generic PDT of their length
+/// ([`Property::sized`]), the one fact the procedure gives about them.
+fn seed_procedure_props(
+    objects: &mut BTreeMap<u8, InterfaceObject>,
+    product: &ProductData,
+    first_new_object: u8,
+) {
+    let addressed = product
+        .object_compare_props
+        .iter()
+        .map(|(object, _, _)| *object)
+        .chain(product.written_props.iter().map(|&(object, _, _)| object));
+    for object in addressed {
+        if object >= first_new_object && !objects.contains_key(&object) {
+            let mut io = InterfaceObject::new();
+            io.set_property(
+                PID_OBJECT_TYPE,
+                Property::read_only(
+                    procedure_object_type(product, object)
+                        .to_be_bytes()
+                        .to_vec(),
+                ),
+            );
+            objects.insert(object, io);
+        }
+    }
     for (object, pid, value) in &product.object_compare_props {
         let written = product
             .written_props
@@ -143,7 +189,14 @@ fn seed_object_compare_props(objects: &mut BTreeMap<u8, InterfaceObject>, produc
             } else {
                 Property::read_only(value.clone())
             };
-            io.set_property(*pid, prop);
+            io.set_property(*pid, prop.sized());
+        }
+    }
+    for &(object, pid, len) in &product.written_props {
+        if let Some(io) = objects.get_mut(&object)
+            && !io.has_property(pid)
+        {
+            io.set_property(pid, Property::writable(vec![0x00; len]).sized());
         }
     }
 }
@@ -268,8 +321,7 @@ impl Device {
             );
         }
 
-        seed_object_compare_props(&mut objects, product);
-        seed_written_props(&mut objects, product, false);
+        seed_procedure_props(&mut objects, product, FIRST_APPLICATION_OBJECT);
         let mut device = Self {
             address,
             profile,
@@ -423,8 +475,7 @@ impl Device {
             );
         }
 
-        seed_object_compare_props(&mut objects, product);
-        seed_written_props(&mut objects, product, true);
+        seed_procedure_props(&mut objects, product, 0);
         // The factory memory the product's CompareMem preflights check.
         let mut memory = Memory::new();
         for (address, value) in &product.compare_mems {
@@ -590,5 +641,165 @@ mod tests {
             std::sync::Arc::new(RecordingSink::new()),
         );
         assert!(err.is_err(), "unmodelled mask must be refused");
+    }
+
+    /// A System B device built from `pd` at 1.1.2, connected and authorized.
+    fn connected_device(
+        pd: &crate::prod::ProductData,
+    ) -> Result<Device, Box<dyn std::error::Error>> {
+        let mut dev = Device::from_product(
+            IndividualAddress::new(1, 1, 2),
+            pd,
+            LoadState::Unloaded,
+            std::sync::Arc::new(RecordingSink::new()),
+        );
+        connect(&mut dev)?;
+        dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xFF, 0xFF, 0xFF, 0xFF]))?;
+        Ok(dev)
+    }
+
+    /// The `A_PropertyDescription_Response` payload for `object` / `pid`:
+    /// `[obj, pid, index, type, max_hi, max_lo, access]`.
+    fn describe(
+        dev: &mut Device,
+        object: u8,
+        pid: u8,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let r = dev.handle_cemi(&data(dev, 0x3D8, &[object, pid, 0]))?;
+        Ok(r.responses[0].tpdu[2..].to_vec())
+    }
+
+    /// Checks the device has application object 7 as the Glass Touch
+    /// procedure addresses it: PID 161 writable and described with one
+    /// octet, PID 162 holding `compare`.
+    fn assert_object_7(dev: &mut Device, compare: u8) -> Result<(), Box<dyn std::error::Error>> {
+        // The object answers the object-type probe with a manufacturer type.
+        let r = dev.handle_cemi(&data(dev, 0x3D5, &[7, 1, 0x10, 0x01]))?;
+        assert_eq!(prop_response_value(&r), 50007u16.to_be_bytes().to_vec());
+        // PID 161: writable, PDT_GENERIC_01, one element, read 3 / write 0.
+        let d = describe(dev, 7, 161)?;
+        assert_eq!(d[0..2], [7, 161]);
+        assert_ne!(d[2], 0, "the property index is reported");
+        assert_eq!(d[3], 0x80 | 0x11, "writable, PDT_GENERIC_01");
+        assert_eq!(d[4..6], [0, 1], "one element");
+        assert_eq!(d[6], 0x30, "read level 3, write level 0");
+        // By index too: the walk reaches PID 161.
+        let r = dev.handle_cemi(&data(dev, 0x3D8, &[7, 0, d[2]]))?;
+        assert_eq!(r.responses[0].tpdu[2..], d[..]);
+        // PID 162 holds the default branch's compare value, read-only.
+        let r = dev.handle_cemi(&data(dev, 0x3D5, &[7, 162, 0x10, 0x01]))?;
+        assert_eq!(prop_response_value(&r), vec![compare]);
+        let d = describe(dev, 7, 162)?;
+        assert_eq!(d[3], 0x11, "read-only, PDT_GENERIC_01");
+        // The procedure's write is taken and stored.
+        let r = dev.handle_cemi(&data(dev, 0x3D7, &[7, 161, 0x10, 0x01, 0x01]))?;
+        assert_eq!(prop_response_value(&r), vec![0x01]);
+        Ok(())
+    }
+
+    /// The Glass Touch Smart load procedure (`M-0083_A-018C-23-81D7`) with a
+    /// device-selection parameter whose default is `device_default`.
+    fn glass_touch_app(device_default: &str) -> String {
+        format!(
+            r#"<KNX><ApplicationProgram Id="M-0083_A-018C-23-81D7" ApplicationNumber="396" ApplicationVersion="35" ProgramType="ApplicationProgram" MaskVersion="MV-07B0"><Static>
+          <Code><RelativeSegment Id="RS-04" Offset="0" Size="16" LoadStateMachine="4" /></Code>
+          <Parameters><Parameter Id="M-0083_A-018C-23-81D7_P-646" Name="Device" Value="{device_default}" /></Parameters>
+          <ParameterRefs><ParameterRef Id="M-0083_A-018C-23-81D7_P-646_R-1" RefId="M-0083_A-018C-23-81D7_P-646" /></ParameterRefs>
+          <AddressTable /><AssociationTable /><ComObjectTable />
+          <LoadProcedures>
+            <LoadProcedure MergeId="4">
+              <choose ParamRefId="M-0083_A-018C-23-81D7_P-646_R-1">
+                <when test="0 2"><LdCtrlCompareProp AppliesTo="full,par" InlineData="00" ObjIdx="7" PropId="162" /></when>
+                <when test="1 3"><LdCtrlCompareProp AppliesTo="full,par" InlineData="01" ObjIdx="7" PropId="162" /></when>
+              </choose>
+              <LdCtrlWriteRelMem AppliesTo="full,par" ObjIdx="4" Offset="0" Size="16" Verify="true" />
+              <LdCtrlWriteProp ObjIdx="7" PropId="161" Verify="false" InlineData="01" />
+            </LoadProcedure>
+          </LoadProcedures></Static></ApplicationProgram></KNX>"#
+        )
+    }
+
+    /// `glass_touch_app` packed as a `.knxprod` and read back.
+    fn glass_touch_product(
+        device_default: &str,
+    ) -> Result<crate::prod::ProductData, Box<dyn std::error::Error>> {
+        use std::io::Write as _;
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut buf);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("M-0083/M-0083_A-018C-23-81D7.xml", options)?;
+            zip.write_all(glass_touch_app(device_default).as_bytes())?;
+            zip.finish()?;
+        }
+        Ok(crate::prod::read_knxprod_bytes(buf.get_ref(), None)?)
+    }
+
+    #[test]
+    fn test_build_system_b_creates_the_procedure_application_object()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Bussard issue #422 without vendor data: the Glass Touch procedure
+        // shape. Default 1 selects the second branch (compare 01); a default
+        // no branch tests (255, the real product's) falls back to the first.
+        for (default, compare) in [("1", 0x01), ("2", 0x00), ("255", 0x00)] {
+            let pd = glass_touch_product(default)?;
+            let mut dev = connected_device(&pd)?;
+            assert_object_7(&mut dev, compare)?;
+            // Object 6 is not invented: no procedure step names it.
+            assert!(!dev.objects.contains_key(&6));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_build_system_b_uses_the_declared_object_type() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut pd = glass_touch_product("1")?;
+        pd.object_types.push((7, 50123));
+        let mut dev = connected_device(&pd)?;
+        let r = dev.handle_cemi(&data(&dev, 0x3D5, &[7, 1, 0x10, 0x01]))?;
+        assert_eq!(prop_response_value(&r), 50123u16.to_be_bytes().to_vec());
+        Ok(())
+    }
+
+    #[test]
+    fn test_build_system_b_keeps_absent_system_objects() -> Result<(), Box<dyn std::error::Error>> {
+        // A write to a system object the product does not load (object 4 here,
+        // with no application segment) creates nothing, as before.
+        let mut pd = crate::testfixtures::synthetic_mdt_sys7_product();
+        pd.mask_version = "MV-07B0".into();
+        pd.written_props.push((4, 16, 1));
+        let dev = Device::from_product(
+            IndividualAddress::new(1, 1, 2),
+            &pd,
+            LoadState::Unloaded,
+            std::sync::Arc::new(RecordingSink::new()),
+        );
+        assert!(!dev.objects.contains_key(&4));
+        Ok(())
+    }
+
+    #[test]
+    fn test_build_mdt_glass_touch_has_application_object_7()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let Some(bytes) = crate::testfixtures::mdt_glass_touch_knxprod() else {
+            eprintln!(
+                "SKIP: MDT Glass Touch product not found at {}",
+                crate::testfixtures::corpus_vendor_knxprod_path(
+                    "BE-GTSx6Tx-01S_MDT_KP_V23.knxprod"
+                )
+                .display()
+            );
+            return Ok(());
+        };
+        let pd = crate::prod::read_knxprod_bytes(&bytes, Some("M-0083_A-018C-23-81D7"))?;
+        assert!(pd.written_props.contains(&(7, 161, 1)));
+        let mut dev = connected_device(&pd)?;
+        assert!(!dev.profile().is_system7(), "mask 07B0 is System B");
+        // The device-selection default (255) matches no branch: the first
+        // compare (00) stands.
+        assert_object_7(&mut dev, 0x00)?;
+        Ok(())
     }
 }

@@ -45,6 +45,32 @@ pub fn jung_3361_knxprod() -> Option<Vec<u8>> {
     std::fs::read(jung_3361_knxprod_path()).ok()
 }
 
+/// The path of a vendor `.knxprod` in the product-corpus cache
+/// (`cache/vendor/<file>`): under `BUSSARD_PRODUCT_CORPUS` when that is set
+/// (a worktree has no cache of its own), else under the repository's
+/// `tests-support/product-corpus`.
+pub fn corpus_vendor_knxprod_path(file: &str) -> PathBuf {
+    let corpus = std::env::var_os("BUSSARD_PRODUCT_CORPUS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("tests-support")
+                .join("product-corpus")
+        });
+    corpus.join("cache").join("vendor").join(file)
+}
+
+/// The MDT Glass Touch Smart (`M-0083_A-018C-23-81D7`, mask 07B0) product:
+/// its load procedure compares and writes properties of application object 7
+/// (bussard issue #422). `None` when the copyrighted vendor file is absent.
+pub fn mdt_glass_touch_knxprod() -> Option<Vec<u8>> {
+    std::fs::read(corpus_vendor_knxprod_path(
+        "BE-GTSx6Tx-01S_MDT_KP_V23.knxprod",
+    ))
+    .ok()
+}
+
 /// A synthetic MDT-canonical System 7 product (`M-0083_A-000E`, mask 0705),
 /// built in memory so the System 7 conformance tests need no vendor fixture.
 ///
@@ -92,6 +118,7 @@ pub fn synthetic_mdt_sys7_product() -> crate::prod::ProductData {
         compare_mems: Vec::new(),
         object_compare_props: Vec::new(),
         typed_props: Vec::new(),
+        object_types: Vec::new(),
         property_only: false,
     }
 }
@@ -123,6 +150,7 @@ pub fn synthetic_system_b_product() -> crate::prod::ProductData {
         compare_mems: Vec::new(),
         object_compare_props: Vec::new(),
         typed_props: Vec::new(),
+        object_types: Vec::new(),
         property_only: false,
     }
 }

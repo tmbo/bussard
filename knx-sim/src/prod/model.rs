@@ -139,6 +139,12 @@ pub struct ProductData {
     /// type (`ObjType`, bussard issue #390: the IPS 300 SREG's KNXnet/IP
     /// parameter object, type 11, and a vendor object, type 50001).
     pub typed_props: Vec<TypedProperty>,
+    /// The interface-object type a property step declares for an object it
+    /// addresses by index, as `(object index, ObjType)`: a step that carries
+    /// both `ObjIdx` and `ObjType` names the type of the object at that index.
+    /// The simulated device reports it as that object's `PID_OBJECT_TYPE`
+    /// when it creates the object (bussard issue #422).
+    pub object_types: Vec<(u8, u16)>,
     /// Whether the application's load procedure holds nothing but property
     /// compares and writes (and the session around them): a property-only
     /// device, the Jung IPS 300 SREG (mask 0021).

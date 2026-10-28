@@ -193,6 +193,22 @@ fn attach_pei_programs<R: Read + std::io::Seek>(
     Ok(())
 }
 
+/// Record the object type a property step declares for the object it
+/// addresses by index (both `ObjIdx` and `ObjType` present).
+fn record_object_type(
+    e: &quick_xml::events::BytesStart<'_>,
+    object_types: &mut Vec<(u8, u16)>,
+) -> Result<(), ProdError> {
+    let object = parse_u32(e, "ObjIdx")?.and_then(|v| u8::try_from(v).ok());
+    let object_type = parse_u32(e, "ObjType")?.and_then(|v| u16::try_from(v).ok());
+    if let (Some(object), Some(object_type)) = (object, object_type)
+        && !object_types.iter().any(|&(o, _)| o == object)
+    {
+        object_types.push((object, object_type));
+    }
+    Ok(())
+}
+
 /// Decode an even-length hex string (as used by `InlineData`); `None` on any
 /// malformed input rather than a partial value.
 ///
@@ -285,6 +301,7 @@ fn parse_application_program(
     let mut completes_loads = false;
     let mut compare_mems: Vec<(u16, Vec<u8>)> = Vec::new();
     let mut typed_props: Vec<crate::prod::TypedProperty> = Vec::new();
+    let mut object_types: Vec<(u8, u16)> = Vec::new();
     // Whether the procedure holds a property op, and any other load op.
     let mut property_ops = false;
     let mut other_ops = false;
@@ -414,6 +431,7 @@ fn parse_application_program(
                 }
                 b"LdCtrlWriteProp" if in_app => {
                     property_ops = true;
+                    record_object_type(&e, &mut object_types)?;
                     let obj_type = parse_u32(&e, "ObjType")?.and_then(|v| u16::try_from(v).ok());
                     let pid8 = parse_u32(&e, "PropId")?.and_then(|v| u8::try_from(v).ok());
                     if parse_u32(&e, "ObjIdx")?.is_none()
@@ -478,6 +496,7 @@ fn parse_application_program(
                     let pid = parse_u32(&e, "PropId")?.unwrap_or(0);
                     if in_app {
                         property_ops = true;
+                        record_object_type(&e, &mut object_types)?;
                     }
                     let obj_idx = parse_u32(&e, "ObjIdx")?;
                     let obj_type = parse_u32(&e, "ObjType")?;
@@ -636,6 +655,7 @@ fn parse_application_program(
         compare_mems,
         object_compare_props,
         typed_props,
+        object_types,
         property_only: property_ops && !other_ops,
     }))
 }

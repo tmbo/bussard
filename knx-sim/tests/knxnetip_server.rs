@@ -59,6 +59,7 @@ fn synthetic_system_b_product() -> ProductData {
         compare_mems: Vec::new(),
         object_compare_props: Vec::new(),
         typed_props: Vec::new(),
+        object_types: Vec::new(),
         property_only: false,
     }
 }
