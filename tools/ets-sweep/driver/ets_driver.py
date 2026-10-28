@@ -617,7 +617,9 @@ def dismiss_password_dialog() -> bool:
 
 
 def _digits(t: str) -> str:
-    return re.sub(r"[^0-9a-z]", "", t.lower())
+    # Noise before the first digit goes (OCR read MDT's '2.1' as 'h 2.1',
+    # 2026-10-28); letters after it stay (a version such as '1.0a').
+    return re.sub(r"[^0-9a-z]", "", re.sub(r"^[^0-9]+", "", t.lower()))
 
 
 def _canon(t: str) -> str:
