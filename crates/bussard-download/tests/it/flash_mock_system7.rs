@@ -72,6 +72,15 @@ const MASK_0705: u16 = 0x0705;
 const LSM_CONTROL_ADDR: u16 = 0x0104;
 const LSM_STATUS_ADDR: u16 = 0xB6EA;
 
+/// The application identity of the Jung 0705 binaereingang (M-0004_A-7066-11):
+/// the TaskSegment records of a table-only apply carry it.
+const JUNG_TASK_IDENTITY: bussard_mgmt::Sys7TaskIdentity = bussard_mgmt::Sys7TaskIdentity {
+    pei_type: 0,
+    manufacturer: 0x0004,
+    application_number: 0x7066,
+    application_version: 0x11,
+};
+
 const LS_UNLOADED: u8 = 0;
 const LS_LOADED: u8 = 1;
 const LS_LOADING: u8 = 2;
@@ -152,6 +161,9 @@ struct DeviceState {
     /// Every load event applied, as `(lsm, opcode)`, so a parameter-only
     /// download can be shown to unload nothing and touch only LSM 3 (#119).
     lsm_events: Vec<(u8, u8)>,
+    /// Every TaskSegment record (`03 02 …`) as `(lsm, record)`, so a test can
+    /// check the application identity it carries.
+    task_records: Vec<(u8, [u8; 10])>,
     /// The address and length of every segment content write.
     segment_writes: Vec<(u16, usize)>,
     /// Interface objects the device does not have: in property mode a
@@ -244,6 +256,7 @@ fn fresh_device(mode: LsmMode, fault: Fault) -> Shared {
         rebooting: false,
         lsm5_property_accesses: 0,
         lsm_events: Vec::new(),
+        task_records: Vec::new(),
         segment_writes: Vec::new(),
         absent_objects: Vec::new(),
         device_control: 0,
@@ -273,14 +286,14 @@ fn mdt_canonical_app() -> Result<ApplicationProgram, Box<dyn std::error::Error>>
     // AS-2 @ 0x4201: 3 assoc bytes. AS-3 @ 0x0700: allocate-only (no Data).
     // AS-4 @ 0x4400: 2 param bytes.
     let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
-     <ApplicationProgram Id="M-83_A-E" ApplicationNumber="14" ApplicationVersion="35"
+     <ApplicationProgram PeiType="0" Id="M-0083_A-E" ApplicationNumber="14" ApplicationVersion="35"
         MaskVersion="MV-0705" Name="MDT S7" LoadProcedureStyle="ProductProcedure">
       <Static>
        <Code>
-        <AbsoluteSegment Id="M-83_A-E_AS-1" Size="4" Address="16384"><Data>AAECAw==</Data><Mask>//8A/w==</Mask></AbsoluteSegment>
-        <AbsoluteSegment Id="M-83_A-E_AS-2" Size="3" Address="16897"><Data>AQID</Data></AbsoluteSegment>
-        <AbsoluteSegment Id="M-83_A-E_AS-3" Size="8" Address="1792" />
-        <AbsoluteSegment Id="M-83_A-E_AS-4" Size="2" Address="17408"><Data>BAU=</Data></AbsoluteSegment>
+        <AbsoluteSegment Id="M-0083_A-E_AS-1" Size="4" Address="16384"><Data>AAECAw==</Data><Mask>//8A/w==</Mask></AbsoluteSegment>
+        <AbsoluteSegment Id="M-0083_A-E_AS-2" Size="3" Address="16897"><Data>AQID</Data></AbsoluteSegment>
+        <AbsoluteSegment Id="M-0083_A-E_AS-3" Size="8" Address="1792" />
+        <AbsoluteSegment Id="M-0083_A-E_AS-4" Size="2" Address="17408"><Data>BAU=</Data></AbsoluteSegment>
        </Code>
        <LoadProcedures>
         <LoadProcedure>
@@ -308,7 +321,7 @@ fn mdt_canonical_app() -> Result<ApplicationProgram, Box<dyn std::error::Error>>
        </LoadProcedures>
       </Static>
      </ApplicationProgram></KNX>"#;
-    parse_application_program("M-83_A-E", xml.as_bytes())
+    parse_application_program("M-0083_A-E", xml.as_bytes())
         .map_err(|e| format!("parse MDT S7 app: {e}").into())
 }
 
@@ -319,13 +332,13 @@ fn mdt_canonical_app() -> Result<ApplicationProgram, Box<dyn std::error::Error>>
 /// replay test exercised — the shape that broke the live `run.sh` device 1.1.8.
 fn theben_post_restart_lsm5_app() -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
     let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
-     <ApplicationProgram Id="M-48_A-4947" ApplicationNumber="18759" ApplicationVersion="16"
+     <ApplicationProgram PeiType="0" Id="M-0048_A-4947" ApplicationNumber="18759" ApplicationVersion="16"
         MaskVersion="MV-0701" Name="FIX2 post-restart LSM5" LoadProcedureStyle="ProductProcedure">
       <Static>
        <Code>
-        <AbsoluteSegment Id="M-48_A-4947_AS-1" Size="4" Address="16384"><Data>AAECAw==</Data></AbsoluteSegment>
-        <AbsoluteSegment Id="M-48_A-4947_AS-2" Size="3" Address="16897"><Data>AQID</Data></AbsoluteSegment>
-        <AbsoluteSegment Id="M-48_A-4947_AS-3" Size="2" Address="17408"><Data>BAU=</Data></AbsoluteSegment>
+        <AbsoluteSegment Id="M-0048_A-4947_AS-1" Size="4" Address="16384"><Data>AAECAw==</Data></AbsoluteSegment>
+        <AbsoluteSegment Id="M-0048_A-4947_AS-2" Size="3" Address="16897"><Data>AQID</Data></AbsoluteSegment>
+        <AbsoluteSegment Id="M-0048_A-4947_AS-3" Size="2" Address="17408"><Data>BAU=</Data></AbsoluteSegment>
        </Code>
        <LoadProcedures>
         <LoadProcedure>
@@ -353,7 +366,7 @@ fn theben_post_restart_lsm5_app() -> Result<ApplicationProgram, Box<dyn std::err
        </LoadProcedures>
       </Static>
      </ApplicationProgram></KNX>"#;
-    parse_application_program("M-48_A-4947", xml.as_bytes())
+    parse_application_program("M-0048_A-4947", xml.as_bytes())
         .map_err(|e| format!("parse Theben post-restart LSM5 app: {e}").into())
 }
 
@@ -708,6 +721,12 @@ fn apply_lsm_event(s: &mut DeviceState, lsm: u8, event: &[u8]) {
     s.lsm_events.push((lsm, opcode));
     // The AdditionalLoadControls sub-command selector (octet 1); 0x02 = Task.
     let subtype = event.get(1).copied().unwrap_or(0);
+    if opcode == 3
+        && subtype == 0x02
+        && let Ok(record) = <[u8; 10]>::try_from(event)
+    {
+        s.task_records.push((lsm, record));
+    }
     let next = match opcode {
         LE_UNLOAD => LS_UNLOADED,
         // StartLoading opens the LSM; idempotent while already Loading (the
@@ -1180,6 +1199,17 @@ async fn flash_system7_verifies_after_restart_reaches_loaded()
             "LSM {lsm} should still be Loaded after the reboot"
         );
     }
+    // Every TaskSegment carries the product's identity: PEI type 0,
+    // manufacturer 0x0083, application 14 (0x000E), version 35 (0x23).
+    let lsms: Vec<u8> = s.task_records.iter().map(|(lsm, _)| *lsm).collect();
+    assert_eq!(lsms, vec![1, 2, 3]);
+    for (lsm, record) in &s.task_records {
+        assert_eq!(
+            record[4..],
+            [0x00, 0x00, 0x83, 0x00, 0x0E, 0x23],
+            "LSM {lsm} TaskSegment identity"
+        );
+    }
     Ok(())
 }
 
@@ -1580,7 +1610,12 @@ async fn test_flash_sys7_post_restart_step_on_absent_object_warns()
     plan.steps.push(FlashStep::Sys7TaskSegment {
         lsm: 5,
         address: 0x43FF,
-        marker: [0x04, 0x20, 0x88, 0x11],
+        identity: bussard_mgmt::Sys7TaskIdentity {
+            pei_type: 0,
+            manufacturer: 0x0004,
+            application_number: 0x2088,
+            application_version: 0x11,
+        },
     });
     plan.steps.push(FlashStep::Sys7StartLoading { lsm: 5 });
 
@@ -1628,12 +1663,12 @@ fn theben_read_compare_app(
 ) -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
     let xml = format!(
         r#"<KNX xmlns="http://knx.org/xml/project/23">
-     <ApplicationProgram Id="M-48_A-4948" ApplicationNumber="18760" ApplicationVersion="16"
+     <ApplicationProgram PeiType="0" Id="M-0048_A-4948" ApplicationNumber="18760" ApplicationVersion="16"
         MaskVersion="{mask_version}" Name="read-compare" LoadProcedureStyle="ProductProcedure">
       <Static>
        <Code>
-        <AbsoluteSegment Id="M-48_A-4948_AS-1" Size="4" Address="16384"><Data>AAECAw==</Data><Mask>//8A/w==</Mask></AbsoluteSegment>
-        <AbsoluteSegment Id="M-48_A-4948_AS-2" Size="40" Address="17408"><Data>AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKA==</Data></AbsoluteSegment>
+        <AbsoluteSegment Id="M-0048_A-4948_AS-1" Size="4" Address="16384"><Data>AAECAw==</Data><Mask>//8A/w==</Mask></AbsoluteSegment>
+        <AbsoluteSegment Id="M-0048_A-4948_AS-2" Size="40" Address="17408"><Data>AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKA==</Data></AbsoluteSegment>
        </Code>
        <LoadProcedures>
         <LoadProcedure>
@@ -1655,7 +1690,7 @@ fn theben_read_compare_app(
       </Static>
      </ApplicationProgram></KNX>"#
     );
-    parse_application_program("M-48_A-4948", xml.as_bytes())
+    parse_application_program("M-0048_A-4948", xml.as_bytes())
         .map_err(|e| format!("parse read-compare app: {e}").into())
 }
 
@@ -1807,22 +1842,22 @@ async fn test_flash_sys7_verify_mode_mask_writes_blind() -> Result<(), Box<dyn s
 /// `P-1` at offset 20 (inside the masked run); nothing else is placed.
 fn masked_param_app() -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
     let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
-     <ApplicationProgram Id="M-48_A-4949" ApplicationNumber="18761" ApplicationVersion="16"
+     <ApplicationProgram PeiType="0" Id="M-0048_A-4949" ApplicationNumber="18761" ApplicationVersion="16"
         MaskVersion="MV-0701" Name="masked parameters" LoadProcedureStyle="ProductProcedure">
       <Static>
        <Code>
-        <AbsoluteSegment Id="M-48_A-4949_AS-2" Size="40" Address="17408"><Data>AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==</Data><Mask>/////////////////////wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==</Mask></AbsoluteSegment>
+        <AbsoluteSegment Id="M-0048_A-4949_AS-2" Size="40" Address="17408"><Data>AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==</Data><Mask>/////////////////////wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==</Mask></AbsoluteSegment>
        </Code>
        <ParameterTypes>
-        <ParameterType Id="M-48_A-4949_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType>
+        <ParameterType Id="M-0048_A-4949_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType>
        </ParameterTypes>
        <Parameters>
-        <Parameter Id="M-48_A-4949_P-0" Name="owned" Text="Owned" ParameterType="M-48_A-4949_PT-0" Value="7"><Memory CodeSegment="M-48_A-4949_AS-2" Offset="2" BitOffset="0" /></Parameter>
-        <Parameter Id="M-48_A-4949_P-1" Name="masked" Text="Masked" ParameterType="M-48_A-4949_PT-0" Value="0"><Memory CodeSegment="M-48_A-4949_AS-2" Offset="20" BitOffset="0" /></Parameter>
+        <Parameter Id="M-0048_A-4949_P-0" Name="owned" Text="Owned" ParameterType="M-0048_A-4949_PT-0" Value="7"><Memory CodeSegment="M-0048_A-4949_AS-2" Offset="2" BitOffset="0" /></Parameter>
+        <Parameter Id="M-0048_A-4949_P-1" Name="masked" Text="Masked" ParameterType="M-0048_A-4949_PT-0" Value="0"><Memory CodeSegment="M-0048_A-4949_AS-2" Offset="20" BitOffset="0" /></Parameter>
        </Parameters>
        <ParameterRefs>
-        <ParameterRef Id="M-48_A-4949_P-0_R-1" RefId="M-48_A-4949_P-0" />
-        <ParameterRef Id="M-48_A-4949_P-1_R-2" RefId="M-48_A-4949_P-1" />
+        <ParameterRef Id="M-0048_A-4949_P-0_R-1" RefId="M-0048_A-4949_P-0" />
+        <ParameterRef Id="M-0048_A-4949_P-1_R-2" RefId="M-0048_A-4949_P-1" />
        </ParameterRefs>
        <LoadProcedures>
         <LoadProcedure>
@@ -1838,7 +1873,7 @@ fn masked_param_app() -> Result<ApplicationProgram, Box<dyn std::error::Error>> 
        </LoadProcedures>
       </Static>
      </ApplicationProgram></KNX>"#;
-    parse_application_program("M-48_A-4949", xml.as_bytes())
+    parse_application_program("M-0048_A-4949", xml.as_bytes())
         .map_err(|e| format!("parse masked-parameter app: {e}").into())
 }
 
@@ -1909,7 +1944,7 @@ async fn test_flash_sys7_placed_octet_under_masked_run_is_written()
     .await?;
     assert!(outcome?.ok(), "the flash verifies");
     let mask = plan
-        .segment_mask("M-48_A-4949_AS-2")
+        .segment_mask("M-0048_A-4949_AS-2")
         .ok_or("the segment keeps a write mask")?;
     assert_eq!(
         mask.get(20).copied(),
@@ -2288,7 +2323,7 @@ async fn run_table_apply(mode: LsmMode) -> Result<(), Box<dyn std::error::Error>
         &lsm_access_for(mode),
         &profile,
         &images,
-        bussard_mgmt::task_segment_marker(MASK_0705, 0, 0),
+        &JUNG_TASK_IDENTITY,
     )
     .await?;
     assert!(outcome.ok(), "apply must verify: {outcome:?}");
@@ -2361,6 +2396,7 @@ async fn test_read_sys7_tables_at_reads_the_product_association_base()
         address: Some(0x4000),
         association: Some(0x41FF),
         packed_end: None,
+        ..Default::default()
     };
     let live = bussard_download::read_sys7_tables_at(&mut l4, bases).await?;
     assert_eq!(live.association_base, 0x41FF);
@@ -2396,6 +2432,7 @@ async fn test_read_sys7_tables_at_reads_a_packed_association_table()
         address: Some(0x4000),
         association: Some(0x41FF),
         packed_end: Some(0x43FE),
+        ..Default::default()
     };
     let live = bussard_download::read_sys7_tables_at(&mut l4, bases).await?;
     assert_eq!(live.association_base, 0x4007);
@@ -2525,7 +2562,7 @@ async fn apply_system7_tables_fails_on_a_verify_mismatch() -> Result<(), Box<dyn
         &lsm_access_for(LsmMode::Property),
         &profile,
         &images,
-        bussard_mgmt::task_segment_marker(MASK_0705, 0, 0),
+        &JUNG_TASK_IDENTITY,
     )
     .await
     .expect_err("a corrupted store must fail the read-back verify");
@@ -2554,23 +2591,23 @@ async fn apply_system7_tables_fails_on_a_verify_mismatch() -> Result<(), Box<dyn
 /// (defaults 4 and 5, the segment's own `<Data>`).
 fn mdt_app_with_parameters() -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
     let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
-     <ApplicationProgram Id="M-83_A-E" ApplicationNumber="14" ApplicationVersion="35"
+     <ApplicationProgram PeiType="0" Id="M-0083_A-E" ApplicationNumber="14" ApplicationVersion="35"
         MaskVersion="MV-0705" Name="MDT S7" LoadProcedureStyle="ProductProcedure">
       <Static>
        <Code>
-        <AbsoluteSegment Id="M-83_A-E_AS-1" Size="4" Address="16384"><Data>AAECAw==</Data><Mask>//8A/w==</Mask></AbsoluteSegment>
-        <AbsoluteSegment Id="M-83_A-E_AS-2" Size="3" Address="16897"><Data>AQID</Data></AbsoluteSegment>
-        <AbsoluteSegment Id="M-83_A-E_AS-3" Size="8" Address="1792" />
-        <AbsoluteSegment Id="M-83_A-E_AS-4" Size="2" Address="17408"><Data>BAU=</Data></AbsoluteSegment>
+        <AbsoluteSegment Id="M-0083_A-E_AS-1" Size="4" Address="16384"><Data>AAECAw==</Data><Mask>//8A/w==</Mask></AbsoluteSegment>
+        <AbsoluteSegment Id="M-0083_A-E_AS-2" Size="3" Address="16897"><Data>AQID</Data></AbsoluteSegment>
+        <AbsoluteSegment Id="M-0083_A-E_AS-3" Size="8" Address="1792" />
+        <AbsoluteSegment Id="M-0083_A-E_AS-4" Size="2" Address="17408"><Data>BAU=</Data></AbsoluteSegment>
        </Code>
-       <ParameterTypes><ParameterType Id="M-83_A-E_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType></ParameterTypes>
+       <ParameterTypes><ParameterType Id="M-0083_A-E_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType></ParameterTypes>
        <Parameters>
-        <Parameter Id="M-83_A-E_P-0" Name="delay" Text="Delay" ParameterType="M-83_A-E_PT-0" Value="4"><Memory CodeSegment="M-83_A-E_AS-4" Offset="0" BitOffset="0" /></Parameter>
-        <Parameter Id="M-83_A-E_P-1" Name="step" Text="Step" ParameterType="M-83_A-E_PT-0" Value="5"><Memory CodeSegment="M-83_A-E_AS-4" Offset="1" BitOffset="0" /></Parameter>
+        <Parameter Id="M-0083_A-E_P-0" Name="delay" Text="Delay" ParameterType="M-0083_A-E_PT-0" Value="4"><Memory CodeSegment="M-0083_A-E_AS-4" Offset="0" BitOffset="0" /></Parameter>
+        <Parameter Id="M-0083_A-E_P-1" Name="step" Text="Step" ParameterType="M-0083_A-E_PT-0" Value="5"><Memory CodeSegment="M-0083_A-E_AS-4" Offset="1" BitOffset="0" /></Parameter>
        </Parameters>
        <ParameterRefs>
-        <ParameterRef Id="M-83_A-E_P-0_R-1" RefId="M-83_A-E_P-0" />
-        <ParameterRef Id="M-83_A-E_P-1_R-2" RefId="M-83_A-E_P-1" />
+        <ParameterRef Id="M-0083_A-E_P-0_R-1" RefId="M-0083_A-E_P-0" />
+        <ParameterRef Id="M-0083_A-E_P-1_R-2" RefId="M-0083_A-E_P-1" />
        </ParameterRefs>
        <LoadProcedures>
         <LoadProcedure>
@@ -2598,7 +2635,7 @@ fn mdt_app_with_parameters() -> Result<ApplicationProgram, Box<dyn std::error::E
        </LoadProcedures>
       </Static>
      </ApplicationProgram></KNX>"#;
-    parse_application_program("M-83_A-E", xml.as_bytes())
+    parse_application_program("M-0083_A-E", xml.as_bytes())
         .map_err(|e| format!("parse MDT S7 app: {e}").into())
 }
 
@@ -2701,7 +2738,7 @@ async fn run_parameters_only_sys7(mode: LsmMode) -> Result<(), Box<dyn std::erro
     let mut session = authed_session(l4).await?;
     let regions = bussard_download::read_parameter_regions(session.l4(), &full).await;
     let region = regions
-        .get("M-83_A-E_AS-4")
+        .get("M-0083_A-E_AS-4")
         .ok_or("the System 7 parameter segment must be read back")?;
     assert_eq!(
         (region.address, region.bytes.as_slice()),
@@ -2819,7 +2856,7 @@ async fn run_parameter_engine_sys7(mode: LsmMode) -> Result<(), Box<dyn std::err
     assert!(
         mismatch
             .as_deref()
-            .is_some_and(|m| m.contains("M-83_A-E_AS-1")),
+            .is_some_and(|m| m.contains("M-0083_A-E_AS-1")),
         "{mismatch:?}"
     );
     // ... and the product's code (AS-1, AS-2) passes.
@@ -2859,7 +2896,7 @@ async fn run_parameter_engine_sys7(mode: LsmMode) -> Result<(), Box<dyn std::err
     );
     // A read-back that does not hold the written octet is a mismatch.
     let mut stale = after.clone();
-    if let Some(region) = stale.get_mut("M-83_A-E_AS-4") {
+    if let Some(region) = stale.get_mut("M-0083_A-E_AS-4") {
         region.bytes = vec![4, 5];
     }
     assert!(bussard_download::verify_readback(&partial, &stale, &skip).is_err());
@@ -2906,7 +2943,7 @@ async fn run_sys7_identity(mode: LsmMode) -> Result<(), Box<dyn std::error::Erro
         return Err(format!("expected a different application, got {differs:?}").into());
     };
     assert!(
-        reason.contains("M-83_A-E_AS-1") && reason.contains("offset 1"),
+        reason.contains("M-0083_A-E_AS-1") && reason.contains("offset 1"),
         "{reason}"
     );
     let gate = bussard_download::flash_gate(&freshness, &full, Some(&resident), Some(&differs));
@@ -3277,28 +3314,28 @@ async fn test_flash_system7_resumes_tunnel_loss_during_terminal_restart_verify()
 /// (issue #413).
 fn split_segment_app() -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
     let xml = r#"<KNX xmlns="http://knx.org/xml/project/20">
-     <ApplicationProgram Id="M-83_A-S" ApplicationNumber="84" ApplicationVersion="20"
+     <ApplicationProgram PeiType="0" Id="M-0083_A-S" ApplicationNumber="84" ApplicationVersion="20"
         MaskVersion="MV-0705" Name="Split" LoadProcedureStyle="ProductProcedure">
       <Static>
        <Options DownloadInvisibleParameters="Background" PreferPartialDownloadIfApplicationLoaded="true" />
        <Code>
-        <AbsoluteSegment Id="M-83_A-S_AS-48" Size="16" Address="18432"><Data>AAECAwQFBgcICQoLDA0ODw==</Data></AbsoluteSegment>
+        <AbsoluteSegment Id="M-0083_A-S_AS-48" Size="16" Address="18432"><Data>AAECAwQFBgcICQoLDA0ODw==</Data></AbsoluteSegment>
        </Code>
        <ParameterTypes>
-        <ParameterType Id="M-83_A-S_PT-8"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+        <ParameterType Id="M-0083_A-S_PT-8"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
        </ParameterTypes>
        <Parameters>
-        <Parameter Id="M-83_A-S_P-1" Name="kept by the device" ParameterType="M-83_A-S_PT-8" Value="0" />
+        <Parameter Id="M-0083_A-S_P-1" Name="kept by the device" ParameterType="M-0083_A-S_PT-8" Value="0" />
        </Parameters>
        <ParameterRefs>
-        <ParameterRef Id="M-83_A-S_P-1_R-1" RefId="M-83_A-S_P-1" />
+        <ParameterRef Id="M-0083_A-S_P-1_R-1" RefId="M-0083_A-S_P-1" />
        </ParameterRefs>
        <LoadProcedures>
         <LoadProcedure>
          <LdCtrlConnect />
          <LdCtrlUnload LsmIdx="3" />
          <LdCtrlLoad LsmIdx="3" />
-         <choose ParamRefId="M-83_A-S_P-1_R-1">
+         <choose ParamRefId="M-0083_A-S_P-1_R-1">
           <when test="0">
            <LdCtrlAbsSegment LsmIdx="3" Address="18432" Size="16" />
           </when>
@@ -3313,11 +3350,11 @@ fn split_segment_app() -> Result<ApplicationProgram, Box<dyn std::error::Error>>
         </LoadProcedure>
        </LoadProcedures>
       </Static>
-      <Dynamic><ChannelIndependentBlock><ParameterBlock Id="M-83_A-S_PB-1">
-       <ParameterRefRef RefId="M-83_A-S_P-1_R-1" />
+      <Dynamic><ChannelIndependentBlock><ParameterBlock Id="M-0083_A-S_PB-1">
+       <ParameterRefRef RefId="M-0083_A-S_P-1_R-1" />
       </ParameterBlock></ChannelIndependentBlock></Dynamic>
      </ApplicationProgram></KNX>"#;
-    parse_application_program("M-83_A-S", xml.as_bytes())
+    parse_application_program("M-0083_A-S", xml.as_bytes())
         .map_err(|e| format!("parse the split-segment app: {e}").into())
 }
 
@@ -3379,5 +3416,98 @@ async fn test_flash_system7_streams_each_allocation_its_part()
     }
     drop(handle);
     let _ = session.into_disconnect().await;
+    Ok(())
+}
+
+/// A table write without product data has no application identity for its
+/// TaskSegment records, so `write_sys7` refuses before it opens a connection:
+/// the device sees no load event and no memory write.
+#[tokio::test]
+async fn test_write_sys7_refuses_without_task_identity() -> Result<(), Box<dyn std::error::Error>> {
+    let (mut bus, state, handle) = setup(LsmMode::Property, Fault::None).await?;
+    let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
+    seed_tables(&state, target.raw(), &[0x0801], &[(1, 1)], &[]);
+    let live = {
+        let mut l4 = authed_connection(&mut bus, target).await?;
+        let live = read_sys7_tables(&mut l4).await?;
+        let _ = l4.disconnect().await;
+        live
+    };
+    assert_eq!(live.task_identity, None, "no product data, no identity");
+    let images = sys7_table_images(&live, &desired_links()?, target.raw())?;
+    let writes_before = lock(&state).memory_writes_seen;
+    let result = bussard_download::write_sys7(
+        &mut bus,
+        target,
+        "0.0.255".parse()?,
+        MASK_0705,
+        &images,
+        bussard_mgmt::SecureLayer::plain(),
+    )
+    .await;
+    assert!(
+        matches!(
+            result,
+            Err(bussard_download::Sys7ApplyError::NoTaskIdentity)
+        ),
+        "{result:?}"
+    );
+    {
+        let s = lock(&state);
+        assert!(s.lsm_events.is_empty(), "no load event: {:?}", s.lsm_events);
+        assert_eq!(s.memory_writes_seen, writes_before, "no memory write");
+    }
+    drop(handle);
+    Ok(())
+}
+
+/// With the product's identity the table write's TaskSegment records carry it
+/// on both table LSMs, as ETS's partial download of the EK-E72 does
+/// (`03 02 40 00 01 00 b6 45 37 03`, `03 02 40 ed 01 00 b6 45 37 03`).
+#[tokio::test]
+async fn test_write_sys7_task_segments_carry_the_product_identity()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (mut bus, state, handle) = setup(LsmMode::Property, Fault::None).await?;
+    let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
+    seed_tables(&state, target.raw(), &[0x0801], &[(1, 1)], &[]);
+    let e72 = bussard_mgmt::Sys7TaskIdentity {
+        pei_type: 1,
+        manufacturer: 0x00B6,
+        application_number: 0x4537,
+        application_version: 3,
+    };
+    let bases = bussard_download::Sys7TableBases {
+        task_identity: Some(e72),
+        ..Default::default()
+    };
+    let live = {
+        let mut l4 = authed_connection(&mut bus, target).await?;
+        let live = bussard_download::read_sys7_tables_at(&mut l4, bases).await?;
+        let _ = l4.disconnect().await;
+        live
+    };
+    let images = sys7_table_images(&live, &desired_links()?, target.raw())?;
+    assert_eq!(images.task_identity, Some(e72));
+    let outcome = bussard_download::write_sys7(
+        &mut bus,
+        target,
+        "0.0.255".parse()?,
+        MASK_0705,
+        &images,
+        bussard_mgmt::SecureLayer::plain(),
+    )
+    .await?;
+    assert!(outcome.ok(), "{outcome:?}");
+    {
+        let s = lock(&state);
+        let tails: Vec<(u8, [u8; 6])> = s
+            .task_records
+            .iter()
+            .map(|(lsm, r)| (*lsm, [r[4], r[5], r[6], r[7], r[8], r[9]]))
+            .collect();
+        let id = [0x01, 0x00, 0xB6, 0x45, 0x37, 0x03];
+        assert_eq!(tails, vec![(1, id), (2, id)]);
+    }
+    drop(handle);
     Ok(())
 }

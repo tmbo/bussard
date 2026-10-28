@@ -463,14 +463,25 @@ device writes nothing but the load-state records.
 
 `TaskSegment{lsm_idx, address}` `[corpus: 47/49]` writes a task/segment
 descriptor pointing at the segment base, issued once per LSM immediately before
-`LoadCompleted`. Realisation: an `AdditionalLoadControls` record carrying the
-address. Default: encode as AllocAbsTaskSegment (subtype 0x02) with
-`start=address`, `length` = the LSM's total loaded span. **M2 CONFIRMED** the
-`[03][02][address:2 BE]` prefix (LSM1 `0x4000`, LSM2 `0x41FF`, LSM3 `0x4722`); in
-the capture the length field was `0x0000` and the four trailing octets a fixed
-`04 a0 11 13` marker. bussard's `length=span` form still drives the sim to Loaded
-(it keys the finalize on subtype + address). `S7-CAL: confirm the TaskSegment
-length field (0x0000 vs span) and the trailing 04 a0 11 13 marker`.
+`LoadCompleted`. Realisation: an AllocAbsTaskSegment record (subtype 0x02)
+carrying the address and the application's identity:
+
+```
+[03][02][address:2 BE][PEI type][manufacturer:2 BE][application number:2 BE][application version]
+```
+
+**CONFIRMED** against ETS 6. The EK-E72 (`M-00B6_A-4537-03-DE59`, `PeiType="1"`,
+number 17719 = `0x4537`, version 3) wrote `03 02 40 00 01 00 b6 45 37 03` and
+`03 02 40 ed 01 00 b6 45 37 03`; the Jung `00 00 04 a0 11 13` and Theben
+`00 00 48 14 0c 14` tails, once read as a "zero length plus marker", are PEI type
+0 and manufacturer `0x0004` / `0x0048`. The ETS sweep captures of 30
+applications (nine manufacturers, 0705 and 0701, property and memory-mapped) and
+the house captures all match. The manufacturer is the one in the application id,
+except with `<Options LegacyPatchManufacturerIdInTaskSegment="true">`, where it
+is the `OriginalManufacturer` (Busch-Jaeger `M-0007_A-A002-13-…-O0002`, PEI type
+`0x80`: `80 00 02 a0 02 13`). The planner takes every octet from the product
+(`sys7_task_identity`) and refuses when one is missing; a table-only `apply`
+without product data refuses for the same reason.
 
 The sim must accept a TaskSegment in `Loading` state and treat it as "segment
 descriptor committed"; it is a precondition for the following `LoadCompleted`.
@@ -585,10 +596,10 @@ LSM index into the high nibble of the event opcode byte and widens the address t
 3 octets; there is NO `[lsm][00]` prefix:
 ```
 [0] (lsm << 4) | event_opcode   [1] subtype   [2] 0x00 (addr high octet)
-[3..5] start:2 BE   [5..7] length:2 BE   [7..11] tail (alloc attrs or task marker)
+[3..5] start:2 BE   [5..11] the event's octets 4..10 (alloc attrs or task identity)
 ```
 e.g. `13 00 00 40 00 00 1d f2 03 80 00` (LSM1 alloc 0x4000 len 0x1D EEPROM),
-`13 02 00 40 00 00 00 48 14 0c 14` (LSM1 task, marker `48 14 0c 14`),
+`13 02 00 40 00 00 00 48 14 0c 14` (LSM1 task, identity `00 00 48 14 0c 14`),
 `33 04 00 46 eb 01 00 00 00 00 00` (LSM3 taskctrl1 0x46EB count 1). Built by
 `bussard_mgmt::wrap_memory_lsm_record`, decoded by the sim's
 `decode_memory_lsm_record`.
@@ -611,9 +622,9 @@ Calibration constants now CONFIRMED (were `S7-CAL:`): LSM realisation is
 mask-family dependent (0705 property PID 5 / 0701 memory-mapped 11-octet @0x0104);
 free-access authorize with `0xFFFFFFFF` → level 0; max-APDU absent → 15-octet
 floor → 12-octet chunks; MCB via `A_PropertyValue_Read(PID 27)`; bare-0x380
-fire-and-forget restart. Remaining `S7-CAL:` on the memory-mapped path: the
-TaskSegment marker lead/version octets and the residual alloc `seg_flags 0xF3` /
-last-EEPROM `checksum_ctrl 0x00`.
+fire-and-forget restart; the TaskSegment identity (§4.3); the allocation
+record's octets 6 to 8 are the op's `Access`, `MemType` and `SegFlags` verbatim
+(172 of 172 sweep records).
 
 ---
 

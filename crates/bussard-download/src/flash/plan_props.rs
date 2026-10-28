@@ -508,7 +508,7 @@ mod tests {
     /// default branch, and a 0701-shaped inline `Count="2"` write.
     fn guarded_app() -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/20">
-         <ApplicationProgram Id="M-0083_A-1" ApplicationNumber="1" ApplicationVersion="1"
+         <ApplicationProgram PeiType="0" Id="M-0083_A-1" ApplicationNumber="1" ApplicationVersion="1"
             MaskVersion="MV-0705" Name="G">
           <Static>
            <ParameterTypes>
@@ -690,7 +690,7 @@ mod tests {
     /// branch (`0` writes PID 60, `1` PID 61, default PID 62; a self-closed `<when test="2"/>` takes no op).
     fn nested_app() -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/20">
-         <ApplicationProgram Id="M-0083_A-2" ApplicationNumber="2" ApplicationVersion="1"
+         <ApplicationProgram PeiType="0" Id="M-0083_A-2" ApplicationNumber="2" ApplicationVersion="1"
             MaskVersion="MV-0705" Name="N">
           <Static>
            <ParameterTypes>

@@ -180,11 +180,11 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                     FlashStep::Sys7TaskSegment {
                         lsm: idx,
                         address,
-                        marker,
+                        identity,
                     } => {
                         let target = session.l4().target();
                         let task_addr = sys7_u16(target, "task segment address", *address)?;
-                        let event = bussard_mgmt::encode_task_segment(task_addr, *marker);
+                        let event = bussard_mgmt::encode_task_segment(task_addr, identity);
                         let octet = lsm_octet(target, *idx)?;
                         lsm.send_control(session.l4(), octet, &event).await?;
                     }

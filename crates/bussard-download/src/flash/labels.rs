@@ -207,9 +207,12 @@ pub(super) fn step_label(step: &FlashStep) -> String {
         FlashStep::Sys7TaskSegment {
             lsm,
             address,
-            marker,
+            identity,
         } => {
-            format!("[S7] finalize LSM {lsm} task segment at {address:#06X} (marker {marker:02X?})")
+            format!(
+                "[S7] finalize LSM {lsm} task segment at {address:#06X} (application {:02X?})",
+                identity.octets()
+            )
         }
         FlashStep::Sys7TaskCtrl1 {
             lsm,

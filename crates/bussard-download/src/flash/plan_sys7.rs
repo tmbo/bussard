@@ -313,16 +313,11 @@ pub(super) fn plan_flash_sys7(
         _ => None,
     };
 
-    // The TaskSegment trailing marker `[lead][AppNumber:2][ver]` is per-app: the
-    // lead byte tracks the mask family (0x04 on 0705, 0x48 on 0701), the middle two
-    // octets are the application number, the trailing octet the app version's low
-    // byte (`[system7-spec §4.3]`; the lead/version octets are best-effort — see
-    // `bussard_mgmt::task_segment_marker`).
-    let task_marker = bussard_mgmt::task_segment_marker(
-        device_mask,
-        app.application_number.unwrap_or(0) as u16,
-        app.application_version.unwrap_or(0) as u8,
-    );
+    // Every TaskSegment record carries the application's identity: PEI type,
+    // manufacturer, application number and version, all from the product
+    // ([`sys7_task_identity`]). A product that lacks one refuses at the first
+    // TaskSegment op rather than writing a guessed identity.
+    let task_identity = sys7_task_identity(app);
 
     for (i, op) in ops.iter().enumerate() {
         let step_no = i + 1;
@@ -480,13 +475,17 @@ pub(super) fn plan_flash_sys7(
                     Some(p) if lsm == 2 && addr == p.static_association => p.association,
                     _ => addr,
                 };
-                // ETS writes a zero-length field + a `[lead][AppNumber:2][ver]`
-                // marker, not the loaded span. Derive the marker from the mask
-                // family + application number (`[system7-spec §4.3]`).
+                let identity =
+                    task_identity
+                        .clone()
+                        .map_err(|reason| PlanError::UnresolvableImage {
+                            step: step_no,
+                            reason,
+                        })?;
                 steps.push(FlashStep::Sys7TaskSegment {
                     lsm,
                     address: addr,
-                    marker: task_marker,
+                    identity,
                 });
             }
             LoadOp::TaskCtrl1 {
@@ -1298,6 +1297,68 @@ pub fn sys7_tables_from_system_b(
     out
 }
 
+/// The application identity every System 7 TaskSegment record carries
+/// ([`bussard_mgmt::encode_task_segment`]), from `app`:
+///
+/// - the PEI type is `PeiType`;
+/// - the manufacturer is the one in the application id (`M-00B6_A-…` gives
+///   `0x00B6`), or `OriginalManufacturer` when the application declares
+///   `LegacyPatchManufacturerIdInTaskSegment`;
+/// - the application number and version are `ApplicationNumber` and
+///   `ApplicationVersion`.
+///
+/// The ETS 6 captures confirm each part: the Ekinex EK-E72 (`PeiType="1"`)
+/// writes `01 00 b6 45 37 03`, the Busch-Jaeger `M-0007_A-A002-13-…-O0002`
+/// (`PeiType="128"`, `OriginalManufacturer="M-0002"`, the legacy option set)
+/// `80 00 02 a0 02 13`, and an OEM application without the option (Zennio
+/// `M-0071_A-4411-…-O00C9`) its own manufacturer, `00 00 71 44 11 10`.
+///
+/// An error names what is missing or out of range. The caller refuses: a
+/// TaskSegment with a guessed identity can leave the device's application
+/// marked as some other program.
+pub fn sys7_task_identity(
+    app: &ApplicationProgram,
+) -> Result<bussard_mgmt::Sys7TaskIdentity, String> {
+    let missing = |what: &str| {
+        format!(
+            "the application {} declares no {what}, which every System 7 TaskSegment record carries",
+            app.id
+        )
+    };
+    let pei_type = app.pei_type.ok_or_else(|| missing("PeiType"))?;
+    let manufacturer_id = if app.legacy_patch_manufacturer_in_task_segment {
+        app.original_manufacturer.as_deref().unwrap_or(&app.id)
+    } else {
+        &app.id
+    };
+    let manufacturer = super::plan::manufacturer_from_app_id(manufacturer_id)
+        .ok_or_else(|| missing("manufacturer id"))?;
+    let application_number = app
+        .application_number
+        .ok_or_else(|| missing("ApplicationNumber"))?;
+    let application_number = u16::try_from(application_number).map_err(|_| {
+        format!(
+            "the application {} declares ApplicationNumber {application_number}, more than the TaskSegment record's two octets hold",
+            app.id
+        )
+    })?;
+    let application_version = app
+        .application_version
+        .ok_or_else(|| missing("ApplicationVersion"))?;
+    let application_version = u8::try_from(application_version).map_err(|_| {
+        format!(
+            "the application {} declares ApplicationVersion {application_version}, more than the TaskSegment record's octet holds",
+            app.id
+        )
+    })?;
+    Ok(bussard_mgmt::Sys7TaskIdentity {
+        pei_type,
+        manufacturer,
+        application_number,
+        application_version,
+    })
+}
+
 /// Maps an `LdCtrlAbsSegment` `SegFlags` attribute to the allocation record's
 /// checksum-control octet: `128` → `0x80` (checksum-controlled), `0` → `0x00`
 /// (runtime-writable). Any other value is passed through when it fits an octet.
@@ -1395,6 +1456,10 @@ pub struct Sys7TableBases {
     /// The value is where the product's LSM 2 segment ends (exclusive), the
     /// end of both tables. `None` for static table segments.
     pub packed_end: Option<u16>,
+    /// The application identity a table write's TaskSegment records carry
+    /// ([`sys7_task_identity`]); `None` without product data, or when the
+    /// product lacks part of it.
+    pub task_identity: Option<bussard_mgmt::Sys7TaskIdentity>,
 }
 
 /// The first `LdCtrlAbsSegment` (address, size) `app`'s procedure allocates on
@@ -1454,6 +1519,7 @@ pub fn sys7_table_bases(app: &ApplicationProgram) -> Sys7TableBases {
         address: base(0),
         association: base(1),
         packed_end,
+        task_identity: sys7_task_identity(app).ok(),
     }
 }
 
@@ -1917,7 +1983,7 @@ mod tests {
     fn test_apply_sys7_group_object_links_takes_the_visible_ref()
     -> Result<(), Box<dyn std::error::Error>> {
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/20">
-         <ApplicationProgram Id="A" MaskVersion="MV-0705" Name="s7dyn">
+         <ApplicationProgram PeiType="0" Id="A" MaskVersion="MV-0705" Name="s7dyn">
           <Static>
            <Parameters><Parameter Id="A_P-1" Name="type" Value="0" /></Parameters>
            <ParameterRefs><ParameterRef Id="A_P-1_R-1" RefId="A_P-1" /></ParameterRefs>
@@ -2030,13 +2096,13 @@ mod tests {
         // FF FF 00 FF -> byte 2 is device-owned); AS-3 = 2 bytes of param at
         // 0x4400; AS-2 (0x0700) is allocate-only (no <Data>).
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
-         <ApplicationProgram Id="M-83_A-E" ApplicationNumber="14" ApplicationVersion="35"
+         <ApplicationProgram PeiType="0" Id="M-0083_A-E" ApplicationNumber="14" ApplicationVersion="35"
             MaskVersion="MV-0705" Name="FabS7" LoadProcedureStyle="ProductProcedure">
           <Static>
            <Code>
-            <AbsoluteSegment Id="M-83_A-E_AS-1" Size="4" Address="16384"><Data>AAECAw==</Data><Mask>//8A/w==</Mask></AbsoluteSegment>
-            <AbsoluteSegment Id="M-83_A-E_AS-2" Size="8" Address="1792" />
-            <AbsoluteSegment Id="M-83_A-E_AS-3" Size="2" Address="17408"><Data>BAU=</Data></AbsoluteSegment>
+            <AbsoluteSegment Id="M-0083_A-E_AS-1" Size="4" Address="16384"><Data>AAECAw==</Data><Mask>//8A/w==</Mask></AbsoluteSegment>
+            <AbsoluteSegment Id="M-0083_A-E_AS-2" Size="8" Address="1792" />
+            <AbsoluteSegment Id="M-0083_A-E_AS-3" Size="2" Address="17408"><Data>BAU=</Data></AbsoluteSegment>
            </Code>
            <LoadProcedures>
             <LoadProcedure>
@@ -2060,7 +2126,7 @@ mod tests {
            </LoadProcedures>
           </Static>
          </ApplicationProgram></KNX>"#;
-        parse_application_program("M-83_A-E", xml.as_bytes()).expect("the fixture app parses")
+        parse_application_program("M-0083_A-E", xml.as_bytes()).expect("the fixture app parses")
     }
 
     /// A minimal System 7 app whose single `LdCtrlAbsSegment` carries the given
@@ -2068,7 +2134,7 @@ mod tests {
     fn sys7_app_with(lsm: u32, address: u32, size: u32) -> ApplicationProgram {
         let xml = format!(
             r#"<KNX xmlns="http://knx.org/xml/project/23">
-         <ApplicationProgram Id="M-83_A-F" ApplicationNumber="14" ApplicationVersion="35"
+         <ApplicationProgram PeiType="0" Id="M-0083_A-F" ApplicationNumber="14" ApplicationVersion="35"
             MaskVersion="MV-0705" Name="FabS7Range" LoadProcedureStyle="ProductProcedure">
           <Static>
            <Code />
@@ -2084,7 +2150,7 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#
         );
-        parse_application_program("M-83_A-F", xml.as_bytes()).expect("the fixture app parses")
+        parse_application_program("M-0083_A-F", xml.as_bytes()).expect("the fixture app parses")
     }
 
     fn plan_sys7_range(
@@ -2319,22 +2385,22 @@ mod tests {
     fn test_plan_flash_sys7_streams_the_parameter_image() -> Result<(), Box<dyn std::error::Error>>
     {
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/11">
-         <ApplicationProgram Id="M-83_A-F" ApplicationNumber="14" ApplicationVersion="35"
+         <ApplicationProgram PeiType="0" Id="M-0083_A-F" ApplicationNumber="14" ApplicationVersion="35"
             MaskVersion="MV-0705" Name="FabS7P" LoadProcedureStyle="ProductProcedure">
           <Static>
            <Code>
-            <AbsoluteSegment Id="M-83_A-F_AS-3" Size="3" Address="17408"><Data>BAUG</Data></AbsoluteSegment>
+            <AbsoluteSegment Id="M-0083_A-F_AS-3" Size="3" Address="17408"><Data>BAUG</Data></AbsoluteSegment>
            </Code>
            <ParameterTypes>
-            <ParameterType Id="M-83_A-F_PT-8"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+            <ParameterType Id="M-0083_A-F_PT-8"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
            </ParameterTypes>
            <Parameters>
-            <Parameter Id="M-83_A-F_P-1" Name="delay" ParameterType="M-83_A-F_PT-8" Value="17"><Memory CodeSegment="M-83_A-F_AS-3" Offset="0" BitOffset="0" /></Parameter>
-            <Parameter Id="M-83_A-F_P-2" Name="level" ParameterType="M-83_A-F_PT-8" Value="1"><Memory CodeSegment="M-83_A-F_AS-3" Offset="1" BitOffset="0" /></Parameter>
+            <Parameter Id="M-0083_A-F_P-1" Name="delay" ParameterType="M-0083_A-F_PT-8" Value="17"><Memory CodeSegment="M-0083_A-F_AS-3" Offset="0" BitOffset="0" /></Parameter>
+            <Parameter Id="M-0083_A-F_P-2" Name="level" ParameterType="M-0083_A-F_PT-8" Value="1"><Memory CodeSegment="M-0083_A-F_AS-3" Offset="1" BitOffset="0" /></Parameter>
            </Parameters>
            <ParameterRefs>
-            <ParameterRef Id="M-83_A-F_P-1_R-1" RefId="M-83_A-F_P-1" />
-            <ParameterRef Id="M-83_A-F_P-2_R-2" RefId="M-83_A-F_P-2" />
+            <ParameterRef Id="M-0083_A-F_P-1_R-1" RefId="M-0083_A-F_P-1" />
+            <ParameterRef Id="M-0083_A-F_P-2_R-2" RefId="M-0083_A-F_P-2" />
            </ParameterRefs>
            <LoadProcedures>
             <LoadProcedure>
@@ -2348,12 +2414,12 @@ mod tests {
             </LoadProcedure>
            </LoadProcedures>
           </Static>
-          <Dynamic><ChannelIndependentBlock><ParameterBlock Id="M-83_A-F_PB-1">
-           <ParameterRefRef RefId="M-83_A-F_P-1_R-1" />
-           <ParameterRefRef RefId="M-83_A-F_P-2_R-2" />
+          <Dynamic><ChannelIndependentBlock><ParameterBlock Id="M-0083_A-F_PB-1">
+           <ParameterRefRef RefId="M-0083_A-F_P-1_R-1" />
+           <ParameterRefRef RefId="M-0083_A-F_P-2_R-2" />
           </ParameterBlock></ChannelIndependentBlock></Dynamic>
          </ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-83_A-F", xml.as_bytes())?;
+        let app = parse_application_program("M-0083_A-F", xml.as_bytes())?;
         let overrides: BTreeMap<String, String> =
             [("P-2_R-2".to_string(), "200".to_string())].into();
         let plan = plan_flash(
@@ -2367,7 +2433,7 @@ mod tests {
         )?;
         // Byte 0: P-1's default 17 over the template's 04. Byte 1: the
         // override. Byte 2: no parameter, the template's 06.
-        assert_eq!(plan.images.get("M-83_A-F_AS-3"), Some(&vec![17, 200, 6]));
+        assert_eq!(plan.images.get("M-0083_A-F_AS-3"), Some(&vec![17, 200, 6]));
         Ok(())
     }
 
@@ -2378,11 +2444,11 @@ mod tests {
         // followed by a converted TaskSegment + Load on LSM 5, which ETS never
         // sends and the plan drops (issue #178).
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
-         <ApplicationProgram Id="M-48_A-4947" ApplicationNumber="18759" ApplicationVersion="16"
+         <ApplicationProgram PeiType="0" Id="M-0048_A-4947" ApplicationNumber="18759" ApplicationVersion="16"
             MaskVersion="MV-0701" Name="FIX2" LoadProcedureStyle="ProductProcedure">
           <Static>
            <Code>
-            <AbsoluteSegment Id="M-48_A-4947_AS-1" Size="4" Address="16384"><Data>AAECAw==</Data></AbsoluteSegment>
+            <AbsoluteSegment Id="M-0048_A-4947_AS-1" Size="4" Address="16384"><Data>AAECAw==</Data></AbsoluteSegment>
            </Code>
            <LoadProcedures>
             <LoadProcedure>
@@ -2401,7 +2467,7 @@ mod tests {
            </LoadProcedures>
           </Static>
          </ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-48_A-4947", xml.as_bytes())?;
+        let app = parse_application_program("M-0048_A-4947", xml.as_bytes())?;
         let plan = plan_flash(
             &app,
             "1.1.99",
@@ -2457,11 +2523,11 @@ mod tests {
     fn plan_lowers_system_7_compare_mem() -> Result<(), Box<dyn std::error::Error>> {
         // The Zennio LUMENTO shape (§4.5): a raw LdCtrlCompareMem before the LSMs.
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
-         <ApplicationProgram Id="M-71_A-3211" ApplicationNumber="12817" ApplicationVersion="18"
+         <ApplicationProgram PeiType="0" Id="M-0071_A-3211" ApplicationNumber="12817" ApplicationVersion="18"
             MaskVersion="MV-0701" Name="LUMENTO" LoadProcedureStyle="ProductProcedure">
           <Static>
            <Code>
-            <AbsoluteSegment Id="M-71_A-3211_AS-1" Size="2" Address="16384"><Data>AAE=</Data></AbsoluteSegment>
+            <AbsoluteSegment Id="M-0071_A-3211_AS-1" Size="2" Address="16384"><Data>AAE=</Data></AbsoluteSegment>
            </Code>
            <LoadProcedures>
             <LoadProcedure>
@@ -2476,7 +2542,7 @@ mod tests {
            </LoadProcedures>
           </Static>
          </ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-71_A-3211", xml.as_bytes())?;
+        let app = parse_application_program("M-0071_A-3211", xml.as_bytes())?;
         let plan = plan_flash(
             &app,
             "1.1.99",
@@ -2494,12 +2560,142 @@ mod tests {
         Ok(())
     }
 
+    /// A System 7 application with the given `<ApplicationProgram>` attributes
+    /// and `<Options>`, and one TaskSegment in its procedure.
+    fn identity_app(
+        id: &str,
+        attrs: &str,
+        options: &str,
+    ) -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/20">
+         <ApplicationProgram Id="{id}" {attrs} MaskVersion="MV-0705" Name="I"
+            LoadProcedureStyle="ProductProcedure">
+          <Static>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlUnload LsmIdx="1" />
+             <LdCtrlLoad LsmIdx="1" />
+             <LdCtrlAbsSegment LsmIdx="1" SegType="0" Address="16384" Size="16" />
+             <LdCtrlTaskSegment LsmIdx="1" Address="16384" />
+             <LdCtrlLoadCompleted LsmIdx="1" />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+          {options}
+         </ApplicationProgram></KNX>"#
+        );
+        Ok(parse_application_program(id, xml.as_bytes())?)
+    }
+
+    #[test]
+    fn test_sys7_task_identity_ekinex_e72() -> Result<(), Box<dyn std::error::Error>> {
+        // ETS wrote `01 00 b6 45 37 03` for M-00B6_A-4537-03-DE59.
+        let app = identity_app(
+            "M-00B6_A-4537-03-DE59",
+            r#"ApplicationNumber="17719" ApplicationVersion="3" PeiType="1""#,
+            "",
+        )?;
+        let identity = sys7_task_identity(&app)?;
+        assert_eq!(identity.octets(), [0x01, 0x00, 0xB6, 0x45, 0x37, 0x03]);
+        let plan = plan_flash(
+            &app,
+            "1.1.1",
+            0x0705,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )?;
+        let planned: Vec<_> = plan
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                FlashStep::Sys7TaskSegment { identity, .. } => Some(*identity),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(planned, vec![identity]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_sys7_task_identity_legacy_patch_takes_the_original_manufacturer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // ETS wrote `80 00 02 a0 02 13` for the Busch-Jaeger A-A002 (house 1.1.44).
+        let app = identity_app(
+            "M-0007_A-A002-13-73C8-O0002",
+            r#"ApplicationNumber="40962" ApplicationVersion="19" PeiType="128" OriginalManufacturer="M-0002""#,
+            r#"<Options LegacyPatchManufacturerIdInTaskSegment="true" />"#,
+        )?;
+        assert_eq!(
+            sys7_task_identity(&app)?.octets(),
+            [0x80, 0x00, 0x02, 0xA0, 0x02, 0x13]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_sys7_task_identity_oem_without_the_option_keeps_its_manufacturer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // ETS wrote `00 00 71 44 11 10` for M-0071_A-4411-10-C69D-O00C9.
+        let app = identity_app(
+            "M-0071_A-4411-10-C69D-O00C9",
+            r#"ApplicationNumber="17425" ApplicationVersion="16" PeiType="0" OriginalManufacturer="M-00C9""#,
+            "",
+        )?;
+        assert_eq!(
+            sys7_task_identity(&app)?.octets(),
+            [0x00, 0x00, 0x71, 0x44, 0x11, 0x10]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_sys7_task_identity_without_pei_type_refuses_the_plan()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let app = identity_app(
+            "M-00B6_A-4537-03-DE59",
+            r#"ApplicationNumber="17719" ApplicationVersion="3""#,
+            "",
+        )?;
+        let reason = sys7_task_identity(&app)
+            .err()
+            .ok_or("no PeiType must refuse")?;
+        assert!(reason.contains("PeiType"), "{reason}");
+        let err = plan_flash(
+            &app,
+            "1.1.1",
+            0x0705,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .err()
+        .ok_or("the plan must refuse")?;
+        assert!(err.to_string().contains("PeiType"), "{err}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_sys7_task_identity_version_past_an_octet_refuses()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let app = identity_app(
+            "M-00B6_A-4537-03-DE59",
+            r#"ApplicationNumber="17719" ApplicationVersion="256" PeiType="1""#,
+            "",
+        )?;
+        assert!(sys7_task_identity(&app).is_err());
+        Ok(())
+    }
+
     #[test]
     fn test_sys7_table_bases_reads_the_procedure_allocations()
     -> Result<(), Box<dyn std::error::Error>> {
         // The Jung 0705 shape: the association table at 0x41FF, not 0x4201.
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
-         <ApplicationProgram Id="M-0004_A-7066" ApplicationNumber="28774" ApplicationVersion="17"
+         <ApplicationProgram PeiType="0" Id="M-0004_A-7066" ApplicationNumber="28774" ApplicationVersion="17"
             MaskVersion="MV-0705" Name="Eingang" LoadProcedureStyle="ProductProcedure">
           <Static>
            <LoadProcedures>
@@ -2522,6 +2718,12 @@ mod tests {
                 address: Some(0x4000),
                 association: Some(0x41FF),
                 packed_end: None,
+                task_identity: Some(bussard_mgmt::Sys7TaskIdentity {
+                    pei_type: 0,
+                    manufacturer: 0x0004,
+                    application_number: 0x7066,
+                    application_version: 0x11,
+                }),
             }
         );
         Ok(())
@@ -2540,7 +2742,7 @@ mod tests {
             .unwrap_or_default();
         let xml = format!(
             r#"<KNX xmlns="http://knx.org/xml/project/23">
-         <ApplicationProgram Id="M-83_A-D" ApplicationNumber="14" ApplicationVersion="35"
+         <ApplicationProgram PeiType="0" Id="M-0083_A-D" ApplicationNumber="14" ApplicationVersion="35"
             MaskVersion="MV-0705" Name="FabS7Dyn" LoadProcedureStyle="ProductProcedure"{dtm}>
           <Static>
            <Code />
@@ -2568,7 +2770,7 @@ mod tests {
             a2 = lsm2.0,
             s2 = lsm2.1,
         );
-        Ok(parse_application_program("M-83_A-D", xml.as_bytes())?)
+        Ok(parse_application_program("M-0083_A-D", xml.as_bytes())?)
     }
 
     /// The System B table images for `n` group addresses, each linked to its
@@ -2658,6 +2860,12 @@ mod tests {
                 address: Some(0x4000),
                 association: Some(0x41FF),
                 packed_end: Some(0x43FE),
+                task_identity: Some(bussard_mgmt::Sys7TaskIdentity {
+                    pei_type: 0,
+                    manufacturer: 0x0083,
+                    application_number: 14,
+                    application_version: 35,
+                }),
             }
         );
         Ok(())
@@ -2806,37 +3014,37 @@ mod tests {
     ) -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
         let (p5, p5_ref, p5_rr) = if gap_param {
             (
-                r#"<Parameter Id="M-83_A-S_P-5" Name="kept" ParameterType="M-83_A-S_PT-8" Value="5"><Memory CodeSegment="M-83_A-S_AS-48" Offset="14" BitOffset="0" /></Parameter>"#,
-                r#"<ParameterRef Id="M-83_A-S_P-5_R-5" RefId="M-83_A-S_P-5" />"#,
-                r#"<ParameterRefRef RefId="M-83_A-S_P-5_R-5" />"#,
+                r#"<Parameter Id="M-0083_A-S_P-5" Name="kept" ParameterType="M-0083_A-S_PT-8" Value="5"><Memory CodeSegment="M-0083_A-S_AS-48" Offset="14" BitOffset="0" /></Parameter>"#,
+                r#"<ParameterRef Id="M-0083_A-S_P-5_R-5" RefId="M-0083_A-S_P-5" />"#,
+                r#"<ParameterRefRef RefId="M-0083_A-S_P-5_R-5" />"#,
             )
         } else {
             ("", "", "")
         };
         let xml = format!(
             r#"<KNX xmlns="http://knx.org/xml/project/20">
-         <ApplicationProgram Id="M-83_A-S" ApplicationNumber="84" ApplicationVersion="20"
+         <ApplicationProgram PeiType="0" Id="M-0083_A-S" ApplicationNumber="84" ApplicationVersion="20"
             MaskVersion="MV-0705" Name="Split" LoadProcedureStyle="ProductProcedure">
           <Static>
            <Options DownloadInvisibleParameters="Background" PreferPartialDownloadIfApplicationLoaded="true" />
            <Code>
-            <AbsoluteSegment Id="M-83_A-S_AS-48" Size="16" Address="18432"><Data>AAECAwQFBgcICQoLDA0ODw==</Data></AbsoluteSegment>
+            <AbsoluteSegment Id="M-0083_A-S_AS-48" Size="16" Address="18432"><Data>AAECAwQFBgcICQoLDA0ODw==</Data></AbsoluteSegment>
            </Code>
            <ParameterTypes>
-            <ParameterType Id="M-83_A-S_PT-8"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+            <ParameterType Id="M-0083_A-S_PT-8"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
            </ParameterTypes>
            <Parameters>
-            <Parameter Id="M-83_A-S_P-1" Name="kept by the device" ParameterType="M-83_A-S_PT-8" Value="0" />
-            <Parameter Id="M-83_A-S_P-2" Name="delay" ParameterType="M-83_A-S_PT-8" Value="17"><Memory CodeSegment="M-83_A-S_AS-48" Offset="0" BitOffset="0" /></Parameter>
-            <Parameter Id="M-83_A-S_P-3" Name="switch time" ParameterType="M-83_A-S_PT-8" Value="33"><Memory CodeSegment="M-83_A-S_AS-48" Offset="13" BitOffset="0" /></Parameter>
-            <Parameter Id="M-83_A-S_P-4" Name="level" ParameterType="M-83_A-S_PT-8" Value="44"><Memory CodeSegment="M-83_A-S_AS-48" Offset="9" BitOffset="0" /></Parameter>
+            <Parameter Id="M-0083_A-S_P-1" Name="kept by the device" ParameterType="M-0083_A-S_PT-8" Value="0" />
+            <Parameter Id="M-0083_A-S_P-2" Name="delay" ParameterType="M-0083_A-S_PT-8" Value="17"><Memory CodeSegment="M-0083_A-S_AS-48" Offset="0" BitOffset="0" /></Parameter>
+            <Parameter Id="M-0083_A-S_P-3" Name="switch time" ParameterType="M-0083_A-S_PT-8" Value="33"><Memory CodeSegment="M-0083_A-S_AS-48" Offset="13" BitOffset="0" /></Parameter>
+            <Parameter Id="M-0083_A-S_P-4" Name="level" ParameterType="M-0083_A-S_PT-8" Value="44"><Memory CodeSegment="M-0083_A-S_AS-48" Offset="9" BitOffset="0" /></Parameter>
             {p5}
            </Parameters>
            <ParameterRefs>
-            <ParameterRef Id="M-83_A-S_P-1_R-1" RefId="M-83_A-S_P-1" />
-            <ParameterRef Id="M-83_A-S_P-2_R-2" RefId="M-83_A-S_P-2" />
-            <ParameterRef Id="M-83_A-S_P-3_R-3" RefId="M-83_A-S_P-3" />
-            <ParameterRef Id="M-83_A-S_P-4_R-4" RefId="M-83_A-S_P-4" />
+            <ParameterRef Id="M-0083_A-S_P-1_R-1" RefId="M-0083_A-S_P-1" />
+            <ParameterRef Id="M-0083_A-S_P-2_R-2" RefId="M-0083_A-S_P-2" />
+            <ParameterRef Id="M-0083_A-S_P-3_R-3" RefId="M-0083_A-S_P-3" />
+            <ParameterRef Id="M-0083_A-S_P-4_R-4" RefId="M-0083_A-S_P-4" />
             {p5_ref}
            </ParameterRefs>
            <LoadProcedures>
@@ -2844,7 +3052,7 @@ mod tests {
              <LdCtrlConnect />
              <LdCtrlUnload LsmIdx="3" />
              <LdCtrlLoad LsmIdx="3" />
-             <choose ParamRefId="M-83_A-S_P-1_R-1">
+             <choose ParamRefId="M-0083_A-S_P-1_R-1">
               <when test="0">
                <LdCtrlAbsSegment LsmIdx="3" SegType="0" Address="18432" Size="16" Access="255" MemType="3" SegFlags="128" />
               </when>
@@ -2859,18 +3067,18 @@ mod tests {
             </LoadProcedure>
            </LoadProcedures>
           </Static>
-          <Dynamic><ChannelIndependentBlock><ParameterBlock Id="M-83_A-S_PB-1">
-           <ParameterRefRef RefId="M-83_A-S_P-1_R-1" />
-           <ParameterRefRef RefId="M-83_A-S_P-2_R-2" />
-           <ParameterRefRef RefId="M-83_A-S_P-4_R-4" />
+          <Dynamic><ChannelIndependentBlock><ParameterBlock Id="M-0083_A-S_PB-1">
+           <ParameterRefRef RefId="M-0083_A-S_P-1_R-1" />
+           <ParameterRefRef RefId="M-0083_A-S_P-2_R-2" />
+           <ParameterRefRef RefId="M-0083_A-S_P-4_R-4" />
            {p5_rr}
-           <choose ParamRefId="M-83_A-S_P-1_R-1">
-            <when test="0"><ParameterRefRef RefId="M-83_A-S_P-3_R-3" /></when>
+           <choose ParamRefId="M-0083_A-S_P-1_R-1">
+            <when test="0"><ParameterRefRef RefId="M-0083_A-S_P-3_R-3" /></when>
            </choose>
           </ParameterBlock></ChannelIndependentBlock></Dynamic>
          </ApplicationProgram></KNX>"#
         );
-        Ok(parse_application_program("M-83_A-S", xml.as_bytes())?)
+        Ok(parse_application_program("M-0083_A-S", xml.as_bytes())?)
     }
 
     /// Plans [`split_segment_app`] with `P-1` at `kept`.
@@ -2902,7 +3110,7 @@ mod tests {
                     size,
                     image: Some(image),
                     ..
-                } if image.segment_id == "M-83_A-S_AS-48" => {
+                } if image.segment_id == "M-0083_A-S_AS-48" => {
                     Some((*address, *size, image.offset, image.len))
                 }
                 _ => None,
@@ -2917,7 +3125,7 @@ mod tests {
         // P-1 = 0: one allocation holds the whole image, streamed whole.
         let whole = plan_split(&app, "0")?;
         assert_eq!(split_layout(&whole), vec![(0x4800, 16, 0, 16)]);
-        assert_eq!(whole.segment_mask("M-83_A-S_AS-48"), None);
+        assert_eq!(whole.segment_mask("M-0083_A-S_AS-48"), None);
         // P-1 = 1: each allocation streams the part it holds, so what is
         // streamed into an allocation equals its size.
         let split = plan_split(&app, "1")?;
@@ -2927,10 +3135,10 @@ mod tests {
         // The image is the whole segment's; the octets no allocation holds
         // are the device's: masked off, so no diff or partial download
         // writes them.
-        let image = split.image_bytes("M-83_A-S_AS-48").ok_or("the image")?;
+        let image = split.image_bytes("M-0083_A-S_AS-48").ok_or("the image")?;
         assert_eq!(image.len(), 16);
         assert_eq!((image[0], image[9]), (17, 44));
-        let mask = split.segment_mask("M-83_A-S_AS-48").ok_or("a mask")?;
+        let mask = split.segment_mask("M-0083_A-S_AS-48").ok_or("a mask")?;
         let owned: Vec<usize> = (0..16).filter(|&i| mask[i] == 0xFF).collect();
         assert_eq!(owned, vec![0, 1, 2, 3, 4, 5, 8, 9, 10, 11]);
         Ok(())
@@ -2950,7 +3158,7 @@ mod tests {
         match plan_split(&app, "1") {
             Err(PlanError::UnsupportedOp { op }) => {
                 assert!(
-                    op.contains("octets 12..16 of segment M-83_A-S_AS-48"),
+                    op.contains("octets 12..16 of segment M-0083_A-S_AS-48"),
                     "{op}"
                 );
             }

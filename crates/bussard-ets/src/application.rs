@@ -752,6 +752,21 @@ pub struct ApplicationProgram {
     pub version: Option<String>,
     /// The mask version with the `MV-` prefix stripped, e.g. `"07B0"`.
     pub mask_version: Option<String>,
+    /// `PeiType`: the physical external interface the application needs. A
+    /// System 7 download writes it into every TaskSegment record (`1` on the
+    /// Ekinex EK-E72, `128` on the Busch-Jaeger A-A002).
+    #[serde(default)]
+    pub pei_type: Option<u8>,
+    /// `OriginalManufacturer` (e.g. `M-0002`): the manufacturer that made an
+    /// application another manufacturer sells.
+    #[serde(default)]
+    pub original_manufacturer: Option<String>,
+    /// Whether `<Options>` declares
+    /// `LegacyPatchManufacturerIdInTaskSegment="true"`: a System 7 TaskSegment
+    /// record then carries [`Self::original_manufacturer`] instead of the
+    /// manufacturer in the application id.
+    #[serde(default)]
+    pub legacy_patch_manufacturer_in_task_segment: bool,
     /// Application-program display name (translation applied).
     pub name: Option<String>,
     /// The declared `DefaultLanguage`: the language of the untranslated
@@ -1274,6 +1289,8 @@ fn handle_start(
             if let Some(mv) = get(m, b"MaskVersion") {
                 app.mask_version = Some(mv.strip_prefix("MV-").unwrap_or(mv).to_string());
             }
+            app.pei_type = get(m, b"PeiType").and_then(|s| s.parse().ok());
+            app.original_manufacturer = get(m, b"OriginalManufacturer").map(str::to_string);
             app.name = get(m, b"Name").map(str::to_string);
             app.default_language = get(m, b"DefaultLanguage").map(str::to_string);
             app.load_procedure_style = get(m, b"LoadProcedureStyle").map(str::to_string);
@@ -1289,15 +1306,7 @@ fn handle_start(
         }
         b"RelativeSegment" => insert_segment(app, m, SegmentKind::Relative),
         b"AbsoluteSegment" => insert_segment(app, m, SegmentKind::Absolute),
-        b"Options" => {
-            app.download_invisible_parameters =
-                get(m, b"DownloadInvisibleParameters").map(str::to_string);
-            app.prefer_partial_download = get(m, b"PreferPartialDownloadIfApplicationLoaded")
-                .is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1");
-            app.parameters_little_endian = get(m, b"ParameterByteOrder")
-                .is_some_and(|v| v.eq_ignore_ascii_case("LittleEndian"));
-            app.text_parameter_encoding = get(m, b"TextParameterEncoding").map(str::to_string);
-        }
+        b"Options" => insert_options(app, m),
         b"ComObjectTable" => insert_com_object_table(app, m),
         b"Language" => translations.enter_language(get(m, b"Identifier")),
         b"TranslationElement" => translations.enter_element(get(m, b"RefId")),
@@ -1427,6 +1436,18 @@ fn handle_start(
     Ok(())
 }
 
+/// Reads the `<Options>` element's attributes into `app`.
+fn insert_options(app: &mut ApplicationProgram, m: &Attrs) {
+    let flag =
+        |name: &[u8]| get(m, name).is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1");
+    app.download_invisible_parameters = get(m, b"DownloadInvisibleParameters").map(str::to_string);
+    app.prefer_partial_download = flag(b"PreferPartialDownloadIfApplicationLoaded");
+    app.parameters_little_endian =
+        get(m, b"ParameterByteOrder").is_some_and(|v| v.eq_ignore_ascii_case("LittleEndian"));
+    app.text_parameter_encoding = get(m, b"TextParameterEncoding").map(str::to_string);
+    app.legacy_patch_manufacturer_in_task_segment = flag(b"LegacyPatchManufacturerIdInTaskSegment");
+}
+
 /// Handles an `Empty` (self-closing) event.
 fn handle_empty(
     e: &BytesStart,
@@ -1444,15 +1465,7 @@ fn handle_empty(
         b"ComObjectRef" => insert_com_object_ref(app, m),
         b"Channel" => insert_channel(app, m),
         b"Argument" => insert_argument(app, m),
-        b"Options" => {
-            app.download_invisible_parameters =
-                get(m, b"DownloadInvisibleParameters").map(str::to_string);
-            app.prefer_partial_download = get(m, b"PreferPartialDownloadIfApplicationLoaded")
-                .is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1");
-            app.parameters_little_endian = get(m, b"ParameterByteOrder")
-                .is_some_and(|v| v.eq_ignore_ascii_case("LittleEndian"));
-            app.text_parameter_encoding = get(m, b"TextParameterEncoding").map(str::to_string);
-        }
+        b"Options" => insert_options(app, m),
         b"ComObjectTable" => insert_com_object_table(app, m),
         b"NumericArg" => {
             // A `<NumericArg RefId=arg-id Value=n>` of the current `<Module>`.

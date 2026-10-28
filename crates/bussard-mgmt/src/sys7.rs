@@ -19,9 +19,9 @@
 //! Everything here is clean-room: encoders from the published KNX
 //! `AdditionalLoadControls` structure (KNX 3/5/2), the issue-#49 corpus
 //! archaeology and the real-ETS download analysis; no GPL source was consulted.
-//! The remaining `S7-CAL:` markers name the few alloc-record attribute octets and
-//! the TaskSegment marker lead/version bytes whose derivation from product data is
-//! not yet settled.
+//! Every octet of the allocation, TaskSegment and TaskCtrl1 records comes from
+//! the product's load procedure and application attributes, checked against the
+//! ETS 6 sweep captures of nine manufacturers.
 
 use crate::connection::{L4Channel, Layer4Connection, property_request, property_write_request};
 use crate::load::{LoadControl, LoadState, Result, WriteError, read_memory, write_memory};
@@ -62,18 +62,12 @@ pub const S7_SUB_TASK_CTRL1: u8 = 0x04;
 /// `0x0700` low-RAM region and `3` (EEPROM) for the `0x4xxx` table/param regions,
 /// exactly as observed.
 ///
-/// The `seg_flags` (octet 6) and `checksum_ctrl` (octet 8) attribute octets are
-/// now derived from `mem_type` via [`alloc_attr_octets`] rather than emitted as
-/// zeros — the real-ETS captures show a stable dominant pattern:
-/// - `seg_flags` = `0xF2` on RAM and most EEPROM segments (a minority of later
-///   EEPROM segments show `0xF3`, which does not follow a clean address rule);
-/// - `checksum_ctrl` = `0x80` on checksum-controlled EEPROM segments and `0x00`
-///   on the RAM segments (the final tiny EEPROM segment also shows `0x00`).
-///
-/// The residual `0xF3` seg_flags and the checksum-`0x00`-on-last-EEPROM cases are
-/// not derivable from the parsed product, so this reproduces the majority pattern
-/// exactly and leaves the rest as an approximation. `S7-CAL: derive the residual
-/// seg_flags 0xF3 and the last-EEPROM checksum_ctrl 0x00 from product data.`
+/// Octets 6 to 8 are the `LdCtrlAbsSegment` attributes verbatim: octet 6 is
+/// `Access`, octet 7 `MemType`, octet 8 `SegFlags`. All 172 allocation records
+/// of the ETS sweep captures (nine manufacturers, 0705 and 0701) match that,
+/// including the `ff 03 00` of an M-0002 segment with `Access="255"
+/// SegFlags="0"`. The planner passes the product's values; [`alloc_attr_octets`]
+/// is only the fallback for an op that does not declare them.
 ///
 /// `subtype` is [`S7_SUB_ALLOC_DATA`] for a Data segment (the corpus/M2 form), or
 /// the Stack/Task variants.
@@ -97,69 +91,77 @@ pub fn encode_alloc_segment(
     v
 }
 
-/// Derives the AbsSegment allocation `(seg_flags, checksum_ctrl)` attribute octets
-/// from the segment's `mem_type` (`[system7-spec §4.2]`), reproducing the dominant
-/// real-ETS pattern (see [`encode_alloc_segment`]):
+/// The fallback AbsSegment `(access, seg_flags)` octets for an op that does not
+/// declare `Access`/`SegFlags`, from the segment's `mem_type`
+/// (`[system7-spec §4.2]`), reproducing the dominant real-ETS pattern (see
+/// [`encode_alloc_segment`]):
 /// - EEPROM (`mem_type == 3`) → `(0xF2, 0x80)` — checksum-controlled;
 /// - RAM (`mem_type == 2`, and anything else) → `(0xF2, 0x00)` — no checksum.
 ///
 /// Cites the binaereingang-6fach 0705 capture (`0300400001ff f2 03 80 00` EEPROM,
 /// `0300070001c2 f2 02 00 00` RAM) and the Theben 0701 Meteodata capture
 /// (`13 00 00 40 00 00 1d f2 03 80 00` EEPROM, `33 00 00 1c 00 01 b0 f2 02 00 00`
-/// RAM). `S7-CAL: the residual 0xF3 seg_flags / last-EEPROM 0x00 checksum are not
-/// yet derivable from product data.`
+/// RAM).
 pub fn alloc_attr_octets(mem_type: u8) -> (u8, u8) {
     let seg_flags = 0xF2;
     let checksum_ctrl = if mem_type == 3 { 0x80 } else { 0x00 };
     (seg_flags, checksum_ctrl)
 }
 
+/// The application identity a System 7 TaskSegment record carries
+/// ([`encode_task_segment`]). Every field comes from the product.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Sys7TaskIdentity {
+    /// The application's `PeiType` (`0` on the Jung and Theben products, `1` on
+    /// the Ekinex EK-E72, `128` on the Busch-Jaeger A-A002).
+    pub pei_type: u8,
+    /// The manufacturer id: the one in the application id (`M-00B6` gives
+    /// `0x00B6`), or the `OriginalManufacturer` when the application declares
+    /// `LegacyPatchManufacturerIdInTaskSegment`.
+    pub manufacturer: u16,
+    /// The application's `ApplicationNumber`.
+    pub application_number: u16,
+    /// The application's `ApplicationVersion`.
+    pub application_version: u8,
+}
+
+impl Sys7TaskIdentity {
+    /// The six identity octets as the record carries them:
+    /// `[PEI type][manufacturer:2 BE][application number:2 BE][version]`.
+    pub fn octets(&self) -> [u8; 6] {
+        let [m_hi, m_lo] = self.manufacturer.to_be_bytes();
+        let [a_hi, a_lo] = self.application_number.to_be_bytes();
+        [
+            self.pei_type,
+            m_hi,
+            m_lo,
+            a_hi,
+            a_lo,
+            self.application_version,
+        ]
+    }
+}
+
 /// Encodes the 10-octet `AdditionalLoadControls` record for a **TaskSegment**
-/// finalize (`LdCtrlTaskSegment`), issued once per LSM immediately before
+/// (`LdCtrlTaskSegment`), issued once per LSM immediately before
 /// `LoadCompleted` (`[system7-spec §4.3]`).
 ///
-/// Realisation: an absolute Task-segment allocation ([`S7_SUB_ALLOC_TASK`]) with
-/// `start = address`, a **zero** length field, and a fixed 4-octet trailing
-/// marker. Layout: `[03][02][address:2 BE][00 00][marker:4]`.
+/// Layout: `[03][02][address:2 BE][PEI type][manufacturer:2 BE]
+/// [application number:2 BE][application version]`.
 ///
-/// The real-ETS captures pin this: every LSM finalize wrote length `0x0000` (NOT
-/// the loaded span) followed by a 4-octet marker `[lead][AppNumber:2 BE][ver]`.
-/// The `AppNumber` middle two octets are stable across all four captured devices
-/// (Jung `04 7066 11` / `04 a033 12` / `04 2088 11`; Theben `48 140c 14`); the
-/// leading byte tracks the mask/media (`0x04` on Jung `0705`, `0x48` on Theben
-/// `0701`) and the trailing byte varies (`11`/`12`/`14`). The caller derives the
-/// `AppNumber` from the product; the lead/version octets are not yet derivable
-/// from product data alone. `S7-CAL: derive the TaskSegment marker leading byte
-/// (0x04 0705 / 0x48 0701) and trailing version octet from product data.`
-///
-/// A 0705/0701 device keys the finalize on subtype + address, so an approximate
-/// marker still drives it to `Loaded`; the marker matters for byte-for-byte replay.
-pub fn encode_task_segment(address: u16, marker: [u8; 4]) -> [u8; LOAD_EVENT_SIZE] {
-    // [03][02][address:2 BE][00 00][marker:4]. The Data alloc already reserved the
-    // segment; this commits the task pointer with the zero-length + marker form.
+/// ETS 6.4.1 into knx-sim with the Ekinex EK-E72 (`M-00B6_A-4537-03-DE59`,
+/// `PeiType="1" ApplicationNumber="17719" ApplicationVersion="3"`) wrote
+/// `03 02 40 00 01 00 b6 45 37 03` on object 1 and `03 02 40 ed 01 00 b6 45 37 03`
+/// on object 2. The Jung (`00 00 04 …`) and Theben (`00 00 48 …`) records read
+/// the same way with PEI type 0, and the TaskSegment records of the ETS sweep
+/// captures of 30 applications from nine manufacturers all match.
+pub fn encode_task_segment(address: u16, identity: &Sys7TaskIdentity) -> [u8; LOAD_EVENT_SIZE] {
     let mut v = [0u8; LOAD_EVENT_SIZE];
     v[0] = LoadControl::AdditionalLoadControls.octet();
     v[1] = S7_SUB_ALLOC_TASK;
     v[2..4].copy_from_slice(&address.to_be_bytes());
-    // v[4..6] length = 0x0000 (observed in every capture).
-    v[6..10].copy_from_slice(&marker);
+    v[4..10].copy_from_slice(&identity.octets());
     v
-}
-
-/// Builds the 4-octet TaskSegment trailing marker `[lead][AppNumber:2 BE][ver]`
-/// for a System 7 download (`[system7-spec §4.3]`).
-///
-/// The middle two octets are the KNX application number (stable across every
-/// captured device). The leading byte tracks the mask family (`0x04` on Jung
-/// `0705`, `0x48` on Theben `0701`) and the trailing version octet is not cleanly
-/// derivable from product data, so both are best-effort. `mask` selects the lead
-/// byte; `version` is the trailing octet (the app version's low byte is the
-/// closest derivable proxy). `S7-CAL: confirm the marker lead/version octets.`
-pub fn task_segment_marker(mask: u16, application_number: u16, version: u8) -> [u8; 4] {
-    // 0x04 for the Jung 0705 family; 0x48 for the Theben 0701 family.
-    let lead = if mask & 0x0FFF == 0x701 { 0x48 } else { 0x04 };
-    let [an_hi, an_lo] = application_number.to_be_bytes();
-    [lead, an_hi, an_lo, version]
 }
 
 /// Encodes the 10-octet `AdditionalLoadControls` record for **Task control 1**
@@ -201,16 +203,15 @@ pub const MEMORY_LSM_RECORD_SIZE: usize = 11;
 /// [1]      subtype                           00 alloc / 02 task / 04 taskctrl1
 /// [2]      0x00                              high octet of the 3-octet start address
 /// [3..5]   start:2 BE                        the segment start address (low 16 bits)
-/// [5..7]   length:2 BE                       the segment length / event fields
-/// [7..11]  tail                              seg_flags/mem_type/checksum_ctrl/reserved (alloc)
-///                                            OR the 4-octet task marker (task segment)
+/// [5..11]  the event's octets 4..10          length/access/mem_type/seg_flags/reserved (alloc)
+///                                            OR the 6-octet application identity (task segment)
 /// ```
 /// The LSM index is folded into the **high nibble of the event opcode byte**;
 /// there is NO separate `[lsm][00]` prefix. Relative to the abstract 10-octet
 /// event the address field is widened to 3 octets (a leading `0x00`), which is
 /// exactly the byte-for-byte transform that reproduces the captured records:
 /// - alloc `13 00 00 40 00 00 1d f2 03 80 00` (LSM1, 0x4000 len 0x1D, EEPROM),
-/// - task  `13 02 00 40 00 00 00 48 14 0c 14` (LSM1, marker `48 14 0c 14`),
+/// - task  `13 02 00 40 00 00 00 48 14 0c 14` (LSM1, identity `00 00 48 14 0c 14`),
 /// - taskctrl1 `33 04 00 46 eb 01 00 00 00 00 00` (LSM3, addr 0x46EB count 1).
 ///
 /// `lsm_index` must be `1..=15` (it occupies the high nibble; `0` names no
@@ -647,28 +648,70 @@ mod tests {
         assert_eq!(alloc_attr_octets(0x02), (0xF2, 0x00));
     }
 
-    #[test]
-    fn test_encode_task_segment_zero_length_and_marker() {
-        // ETS writes length 0x0000 and a fixed marker `[lead][AppNumber:2][ver]`,
-        // not the loaded span. Jung 0705 binaereingang: `03 02 40 00 00 00 04 70 66 11`.
-        let marker = task_segment_marker(0x0705, 0x7066, 0x11);
-        assert_eq!(marker, [0x04, 0x70, 0x66, 0x11]);
-        let v = encode_task_segment(0x4000, marker);
-        assert_eq!(
-            v,
-            [0x03, 0x02, 0x40, 0x00, 0x00, 0x00, 0x04, 0x70, 0x66, 0x11],
-            "TaskSegment: zero length + `04 <app> <ver>` marker (Jung 0705)"
-        );
+    /// The Jung 0705 binaereingang (M-0004_A-7066-11, PEI type 0).
+    const JUNG_7066: Sys7TaskIdentity = Sys7TaskIdentity {
+        pei_type: 0,
+        manufacturer: 0x0004,
+        application_number: 0x7066,
+        application_version: 0x11,
+    };
 
-        // Theben 0701 Meteodata uses the 0x48 lead byte: property-form event
-        // `03 02 40 00 00 00 48 14 0c 14`.
-        let marker = task_segment_marker(0x0701, 0x140C, 0x14);
-        assert_eq!(marker, [0x48, 0x14, 0x0C, 0x14]);
-        let v = encode_task_segment(0x4000, marker);
+    /// The Theben 0701 Meteodata (M-0048_A-140C-14, PEI type 0).
+    const THEBEN_140C: Sys7TaskIdentity = Sys7TaskIdentity {
+        pei_type: 0,
+        manufacturer: 0x0048,
+        application_number: 0x140C,
+        application_version: 0x14,
+    };
+
+    #[test]
+    fn test_encode_task_segment_ekinex_e72_matches_ets() {
+        // ETS 6.4.1 into knx-sim, M-00B6_A-4537-03-DE59 (PeiType 1, number
+        // 17719 = 0x4537, version 3): obj1 and obj2 PID 5.
+        let e72 = Sys7TaskIdentity {
+            pei_type: 1,
+            manufacturer: 0x00B6,
+            application_number: 17719,
+            application_version: 3,
+        };
         assert_eq!(
-            v,
+            encode_task_segment(0x4000, &e72),
+            [0x03, 0x02, 0x40, 0x00, 0x01, 0x00, 0xB6, 0x45, 0x37, 0x03]
+        );
+        assert_eq!(
+            encode_task_segment(0x40ED, &e72),
+            [0x03, 0x02, 0x40, 0xED, 0x01, 0x00, 0xB6, 0x45, 0x37, 0x03]
+        );
+    }
+
+    #[test]
+    fn test_encode_task_segment_jung_0705() {
+        // binaereingang-6fach capture: `03 02 40 00 00 00 04 70 66 11`.
+        assert_eq!(
+            encode_task_segment(0x4000, &JUNG_7066),
+            [0x03, 0x02, 0x40, 0x00, 0x00, 0x00, 0x04, 0x70, 0x66, 0x11]
+        );
+    }
+
+    #[test]
+    fn test_encode_task_segment_theben_0701() {
+        // Meteodata capture, property-form event `03 02 40 00 00 00 48 14 0c 14`.
+        assert_eq!(
+            encode_task_segment(0x4000, &THEBEN_140C),
             [0x03, 0x02, 0x40, 0x00, 0x00, 0x00, 0x48, 0x14, 0x0C, 0x14]
         );
+    }
+
+    #[test]
+    fn test_encode_task_segment_two_octet_manufacturer() {
+        // ETS sweep, M-011E_A-BC87-13: the manufacturer fills both octets.
+        let id = Sys7TaskIdentity {
+            pei_type: 0,
+            manufacturer: 0x011E,
+            application_number: 0xBC87,
+            application_version: 0x13,
+        };
+        assert_eq!(id.octets(), [0x00, 0x01, 0x1E, 0xBC, 0x87, 0x13]);
     }
 
     #[test]
@@ -706,7 +749,7 @@ mod tests {
         );
 
         // task LSM1 -> `13 02 00 40 00 00 00 48 14 0c 14` (marker `48 14 0c 14`).
-        let task = encode_task_segment(0x4000, task_segment_marker(0x0701, 0x140C, 0x14));
+        let task = encode_task_segment(0x4000, &THEBEN_140C);
         assert_eq!(
             wrap_memory_lsm_record(1, &task),
             [

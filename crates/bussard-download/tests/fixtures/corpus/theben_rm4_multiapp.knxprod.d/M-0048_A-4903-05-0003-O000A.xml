@@ -3,7 +3,7 @@
      MV-0705 (System 7); the sweep classifies it not-supported-family. -->
 <KNX xmlns="http://knx.org/xml/project/20">
  <ManufacturerData><Manufacturer RefId="M-0048"><ApplicationPrograms>
-  <ApplicationProgram Id="M-0048_A-4903-05-0003-O000A" ApplicationNumber="18691" ApplicationVersion="05" MaskVersion="MV-0705" Name="RM4 Fixture C" LoadProcedureStyle="ProductDefault">
+  <ApplicationProgram PeiType="0" Id="M-0048_A-4903-05-0003-O000A" ApplicationNumber="18691" ApplicationVersion="05" MaskVersion="MV-0705" Name="RM4 Fixture C" LoadProcedureStyle="ProductDefault">
    <Static>
     <ComObjectTable>
      <ComObject Id="M-0048_A-4903-05-0003-O000A_O-0" Number="0" Text="Ch3" ObjectSize="1 Bit" CommunicationFlag="Enabled" WriteFlag="Enabled" />

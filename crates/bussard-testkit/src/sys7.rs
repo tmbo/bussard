@@ -37,7 +37,7 @@ pub const SYS7_APP_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
   <ManufacturerData>
     <Manufacturer RefId="M-00FA">
       <ApplicationPrograms>
-        <ApplicationProgram Id="M-00FA_A-0007" ApplicationNumber="7" ApplicationVersion="1"
+        <ApplicationProgram PeiType="0" Id="M-00FA_A-0007" ApplicationNumber="7" ApplicationVersion="1"
             MaskVersion="MV-0705" Name="bussard System 7 flash test app" LoadProcedureStyle="ProductProcedure">
           <Static>
             <Code>

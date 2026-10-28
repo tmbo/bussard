@@ -659,7 +659,7 @@ mod tests {
     /// A System 7 application (mask 0705) whose procedure loads LSMs 1 and 3.
     fn sys7_plan() -> Result<FlashPlan, Box<dyn std::error::Error>> {
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
-         <ApplicationProgram Id="M-0083_A-000E-23-0000" ApplicationNumber="14" ApplicationVersion="35"
+         <ApplicationProgram PeiType="0" Id="M-0083_A-000E-23-0000" ApplicationNumber="14" ApplicationVersion="35"
             MaskVersion="MV-0705" Name="S7" LoadProcedureStyle="ProductProcedure">
           <Static>
            <Code>

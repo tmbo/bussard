@@ -357,6 +357,9 @@ pub async fn write_sys7<Ch: L4Channel>(
     images: &Sys7TableImages,
     secure: SecureLayer,
 ) -> Result<Sys7VerifyOutcome, Sys7ApplyError> {
+    // Refuse before the connection opens: every TaskSegment record carries the
+    // application's identity, which only the product gives.
+    let task_identity = images.task_identity.ok_or(Sys7ApplyError::NoTaskIdentity)?;
     let mut l4 = Layer4Connection::connect_with_secure(
         channel,
         target,
@@ -378,13 +381,7 @@ pub async fn write_sys7<Ch: L4Channel>(
         .sys7_default_profile()
         .unwrap_or_else(bussard_mgmt::Sys7Profile::corpus_default);
     let lsm = bussard_mgmt::lsm_access_from_profile(&profile);
-    // The TaskSegment marker's middle octets are the product's application number,
-    // which a table-only apply does not have (no product is loaded). The device
-    // keys the finalize on subtype + address, so a zero application number still
-    // drives it to Loaded. `S7-CAL: confirm a 0705/0701 device ignores the
-    // TaskSegment marker on a table-only reload.`
-    let marker = bussard_mgmt::task_segment_marker(mask, 0, 0);
-    let result = apply_sys7_tables(&mut l4, &lsm, &profile, images, marker).await;
+    let result = apply_sys7_tables(&mut l4, &lsm, &profile, images, &task_identity).await;
     let _ = l4.disconnect().await;
     result
 }

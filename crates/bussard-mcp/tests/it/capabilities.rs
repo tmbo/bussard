@@ -420,7 +420,7 @@ fn meteo_xml() -> String {
     format!(
         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<KNX xmlns=\"http://knx.org/xml/project/23\">\
          <ManufacturerData><Manufacturer RefId=\"M-0004\"><ApplicationPrograms>\n\
-         <ApplicationProgram Id=\"{METEO_APP}\" ApplicationNumber=\"304\" ApplicationVersion=\"16\" \
+         <ApplicationProgram PeiType=\"0\" Id=\"{METEO_APP}\" ApplicationNumber=\"304\" ApplicationVersion=\"16\" \
          MaskVersion=\"MV-0701\" Name=\"meteo test app\" LoadProcedureStyle=\"ProductProcedure\">\n<Static>\n\
          <ParameterTypes>\n{types}</ParameterTypes>\n<Parameters>\n{params}</Parameters>\n\
          <ParameterRefs>\n{refs}</ParameterRefs>\n<ComObjects>\n{objects}</ComObjects>\n\

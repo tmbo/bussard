@@ -126,6 +126,7 @@ pub(crate) use plan_sys7::sys7_lsm_override;
 pub use plan_sys7::{
     Sys7PlanTables, Sys7TableBases, Sys7TableImage, linked_flags_from_system_b,
     plan_flash_sys7_with_hawk, sys7_profile_from_hawk, sys7_table_bases, sys7_tables_from_system_b,
+    sys7_task_identity,
 };
 pub use props::{compare_property_value, read_property_value, write_property_value};
 pub use restart_form::{RestartForm, restart_form};
@@ -479,12 +480,10 @@ pub enum FlashStep {
         lsm: u32,
         /// The segment base address the task descriptor points at.
         address: u32,
-        /// The 4-octet trailing marker `[lead][AppNumber:2 BE][ver]` ETS writes
-        /// after the zero-length field (`[system7-spec §4.3]`). Derived at plan
-        /// time from the mask family + application number (see
-        /// [`bussard_mgmt::task_segment_marker`]). The real captures show the
-        /// length field is `0x0000`, NOT the loaded span.
-        marker: [u8; 4],
+        /// The application identity the record carries (PEI type, manufacturer,
+        /// application number and version), from the product at plan time
+        /// ([`sys7_task_identity`]).
+        identity: bussard_mgmt::Sys7TaskIdentity,
     },
     /// Write a task-control-table entry `count` times on `lsm` (`LdCtrlTaskCtrl1`,
     /// `[system7-spec §4.4]`) — the Theben/Steinel/Elsner second-phase op.
