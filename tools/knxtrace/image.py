@@ -40,6 +40,34 @@ is a written octet only, even when ETS read it before or after the write: the
 written value is ETS's image, and a read-back may differ from it (the
 Meteodata 1.1.202 clears its `0x4800+0` marker after ETS writes `0xAA`).
 
+Load control (issue #419): `compose` also writes `load_controls.json`, every
+record ETS sent a load-state machine, in order: the 10-octet
+`PID_LOAD_STATE_CONTROL` value of an `A_PropertyValue_Write` on an
+index-addressed object, and the 11-octet System 7 record an `A_Memory_Write`
+puts at the LSM control address 0x0104. `compare` checks them against the
+`load_controls` bussard's dry run lists per step and reports a third verdict
+next to the memory and the property verdicts. The rule:
+
+- Records are grouped per load-state object (the object index, which is the
+  LSM index on System 7, in either form) and compared in order within it.
+  How the objects interleave is not judged: ETS and bussard both drive one
+  object at a time, but the pre-download unloads and the System B
+  allocate-all-then-write template order the objects differently, and the
+  device keeps one state machine per object.
+- An immediate repeat of the same record on the same object counts once: the
+  pre-download unload followed by the procedure's own unload, or a write the
+  tool sent again, leaves the machine where one record does.
+- Reads (a PID 5 read, a System 7 status read) are not records.
+- Every octet counts, and the form too: a property record never matches a
+  memory record.
+- A bussard object index the plan leaves to the device (System B, no LsmIdx)
+  pairs with the one ETS object no other bussard sequence claims.
+
+The verdict is `identical`, `differs` (the first differing record of the
+first differing object, both hex records, plus every difference), or
+`not-comparable` (ETS sent no load-control record, or the dump predates the
+`load_controls` field).
+
 A diff is only as strong as what it compared. `compare` also reports the
 coverage (issue #347): of the octets bussard places, how many the capture
 holds a value for. A region's placed octets are the ones a parameter placement
@@ -354,6 +382,38 @@ def property_writes(ops: DeviceOps) -> List[Dict[str, object]]:
 
 CONFIRMED_DIR = "confirmed"
 
+# Load control (issue #419): the file `compose` writes, the System 7
+# memory-mapped LSM control address and record width (bussard_mgmt
+# SYS7_DEFAULT_CONTROL_ADDR, MEMORY_LSM_RECORD_SIZE).
+LOAD_CONTROLS_FILE = "load_controls.json"
+SYS7_LSM_CONTROL_ADDR = 0x0104
+SYS7_LSM_RECORD_LEN = 11
+
+
+def load_control_writes(ops: DeviceOps) -> List[Dict[str, object]]:
+    """Every load-control record the tool sent, in order (see the module doc).
+
+    A property record names its object index, a memory record its LSM (the
+    high nibble of its first octet) and the address. `data` is the hex value.
+    """
+    out: List[Dict[str, object]] = []
+    for op in ops.ops:
+        apdu = op.apdu
+        if op.direction != "req":
+            continue
+        if apdu is not None and apdu.name == "A_PropertyValue_Write":
+            f = apdu.fields
+            if f.get("truncated") or f.get("pid") != PID_LOAD_STATE_CONTROL or "obj_type" in f:
+                continue
+            data = bytes(apdu.payload[PROPERTY_WRITE_SERVICES[apdu.name]:])
+            out.append({"seq": len(out) + 1, "form": "property", "object": int(f.get("obj", 0)),
+                        "data": data.hex()})
+        elif op.kind == KIND_MEM_WRITE and op.detail.get("addr_int") == SYS7_LSM_CONTROL_ADDR \
+                and len(op.data) == SYS7_LSM_RECORD_LEN:
+            out.append({"seq": len(out) + 1, "form": "memory", "lsm": op.data[0] >> 4,
+                        "address": SYS7_LSM_CONTROL_ADDR, "data": op.data.hex()})
+    return out
+
 
 def compose(ops: DeviceOps, out_dir: str, source: str = "") -> Dict[str, object]:
     """Writes the composed image of one device's download into `out_dir`.
@@ -412,6 +472,10 @@ def compose(ops: DeviceOps, out_dir: str, source: str = "") -> Dict[str, object]
         confirmed.append(
             {"start": start, "length": len(data), "sha256": sha256(data), "file": name}
         )
+
+    with open(os.path.join(out_dir, LOAD_CONTROLS_FILE), "w", encoding="utf-8") as fh:
+        json.dump(load_control_writes(ops), fh, indent=2)
+        fh.write("\n")
 
     props = property_writes(ops)
     with open(os.path.join(out_dir, "properties.json"), "w", encoding="utf-8") as fh:
@@ -670,6 +734,7 @@ def compare(
     # verdict the pre-flash gate reads, so a known extra property write does
     # not hide whether the memory images match.
     props = compare_properties(plan, image_dir, _ets_groups(plan, results, ets), phase=phase)
+    load_controls = compare_load_controls(plan, image_dir)
     for r in results:
         r["in_scope"] = scope is None or region_short(r["region"]) in scope
     judged = [r for r in results if r["in_scope"]]
@@ -703,6 +768,7 @@ def compare(
         "ets_only_octets": len(ets_only),
         "ets_only_ranges": _ranges(ets_only)[:20],
         "properties": props,
+        "load_controls": load_controls,
     }
 
 
@@ -1132,6 +1198,7 @@ def compare_properties(
     PID_LOAD_STATE_CONTROL writes on the plain services are left out on the
     ETS side: they are the load state machine (unload, allocate, complete),
     which the plan carries as its own step kinds, not as property writes.
+    `compare_load_controls` judges them.
     """
     path = os.path.join(image_dir, "properties.json")
     if not os.path.exists(path):
@@ -1228,6 +1295,168 @@ def compare_properties(
         out["reason"] = reason
         out["commissioning"] = commissioning
     return out
+
+
+LOAD_EVENTS = {1: "start-loading", 2: "load-completed", 4: "unload", 0: "no-operation"}
+# `AdditionalLoadControls` subtypes. 0x01 is a System B LdCtrlAbsSegment or a
+# System 7 stack segment, so it keeps its number.
+LOAD_SUBTYPES = {0x00: "abs-segment", 0x02: "task-segment", 0x03: "task-ptr",
+                 0x04: "task-ctrl1", 0x05: "task-ctrl2", 0x0B: "rel-segment"}
+MAX_LOAD_DIFFERENCES = 64
+
+
+def load_event_name(form: str, data_hex: str) -> str:
+    """`unload`, `abs-segment`, `task-segment`, `sub0x01`, ... for a record."""
+    try:
+        data = bytes.fromhex(data_hex)
+    except ValueError:
+        return "?"
+    if not data:
+        return "empty"
+    opcode = data[0] & 0x0F if form == "memory" else data[0]
+    if opcode != 3:
+        return LOAD_EVENTS.get(opcode, "event0x%02x" % opcode)
+    if len(data) < 2:
+        return "additional"
+    return LOAD_SUBTYPES.get(data[1], "sub0x%02x" % data[1])
+
+
+def _lc_object(rec: Dict[str, object]) -> Optional[int]:
+    """The load-state object a record drives: the object index, or the LSM."""
+    value = rec.get("lsm") if rec.get("form") == "memory" else rec.get("object")
+    return None if value is None else int(value)
+
+
+def _lc_text(rec: Optional[Dict[str, object]]) -> str:
+    if rec is None:
+        return "none"
+    where = "@0x%04X" % int(rec.get("address") or 0) if rec["form"] == "memory" else "PID 5"
+    return "%s %s %s" % (rec["event"], where, rec["data"])
+
+
+def _lc_collapse(records: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    """Drops an immediate repeat of the same record (see the module doc)."""
+    out: List[Dict[str, object]] = []
+    for rec in records:
+        if out and (out[-1]["form"], out[-1]["data"]) == (rec["form"], rec["data"]):
+            out[-1]["repeats"] = int(out[-1].get("repeats", 1)) + 1
+            continue
+        out.append(dict(rec))
+    return out
+
+
+def plan_load_controls(plan: dict) -> Optional[List[Dict[str, object]]]:
+    """bussard's load-control records in plan order, or None for a dump that
+    predates the `load_controls` field."""
+    if "load_control_records" not in plan:
+        return None
+    out: List[Dict[str, object]] = []
+    for step in plan.get("steps", []):
+        for rec in step.get("load_controls") or []:
+            out.append(dict(rec, step=step.get("index"),
+                            event=load_event_name(rec["form"], rec["data"])))
+    return out
+
+
+def compare_load_controls(plan: dict, image_dir: str) -> Dict[str, object]:
+    """Compares bussard's load-control records with ETS's, per load-state
+    object, by the rule in the module doc."""
+    if plan.get("system") in (IP_SECURE_SYSTEM, "properties"):
+        return {"verdict": NOT_COMPARABLE, "reason": "the plan drives no load-state machine"}
+    ours_all = plan_load_controls(plan)
+    if ours_all is None:
+        return {"verdict": NOT_COMPARABLE,
+                "reason": "plan.json lists no load_controls (rebuild bussard)"}
+    path = os.path.join(image_dir, LOAD_CONTROLS_FILE)
+    if not os.path.exists(path):
+        return {"verdict": NOT_COMPARABLE,
+                "reason": "no %s (re-run `knxtrace image`)" % LOAD_CONTROLS_FILE}
+    with open(path, encoding="utf-8") as fh:
+        ets_all = [dict(e, event=load_event_name(e["form"], e["data"])) for e in json.load(fh)]
+    base = {"bussard_records": len(ours_all), "ets_records": len(ets_all)}
+    if not ets_all:
+        return dict(base, verdict=NOT_COMPARABLE, reason="ETS sent no load-control record",
+                    objects=[], differences=[], first=None)
+
+    def grouped(records: List[Dict[str, object]]) -> Dict[Optional[int], List[Dict[str, object]]]:
+        out: Dict[Optional[int], List[Dict[str, object]]] = {}
+        for rec in records:
+            out.setdefault(_lc_object(rec), []).append(rec)
+        return {k: _lc_collapse(v) for k, v in out.items()}
+
+    ours, ets = grouped(ours_all), grouped(ets_all)
+    notes: List[str] = []
+    if None in ours:
+        # The object the device resolves: the one ETS object no bussard
+        # sequence names.
+        free = [k for k in ets if k not in ours]
+        if len(free) == 1:
+            ours[free[0]] = ours.pop(None)
+            notes.append("bussard's unresolved object paired with ETS object %d" % free[0])
+    order: List[Optional[int]] = []
+    for rec in ets_all + ours_all:
+        key = _lc_object(rec)
+        if key not in order and (key in ours or key in ets):
+            order.append(key)
+    for key in ours:
+        if key not in order:
+            order.append(key)
+    differences: List[Dict[str, object]] = []
+    objects: List[Dict[str, object]] = []
+    for key in order:
+        a, b = ours.get(key, []), ets.get(key, [])
+        sig_a = [(r["form"], r["data"]) for r in a]
+        sig_b = [(r["form"], r["data"]) for r in b]
+        same = sig_a == sig_b
+        objects.append({"object": key, "bussard": len(a), "ets": len(b),
+                        "verdict": IDENTICAL if same else DIFFERS})
+        if same:
+            continue
+        matcher = difflib.SequenceMatcher(None, sig_a, sig_b, autojunk=False)
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag == "equal":
+                continue
+            for k in range(max(i2 - i1, j2 - j1)):
+                x = a[i1 + k] if i1 + k < i2 else None
+                y = b[j1 + k] if j1 + k < j2 else None
+                differences.append({
+                    "object": key,
+                    "position": (i1 + k if x is not None else j1 + k) + 1,
+                    "kind": "value" if x and y else "bussard-only" if x else "ets-only",
+                    "event": (y or x or {}).get("event"),
+                    "bussard_event": x["event"] if x else None,
+                    "ets_event": y["event"] if y else None,
+                    "step": x.get("step") if x else None,
+                    "ets_seq": y.get("seq") if y else None,
+                    "bussard": _lc_text(x),
+                    "ets": _lc_text(y),
+                    "bussard_hex": x["data"] if x else None,
+                    "ets_hex": y["data"] if y else None,
+                })
+    verdict = DIFFERS if differences else IDENTICAL
+    return dict(base, verdict=verdict, reason="", notes=notes, objects=objects,
+                differences=differences[:MAX_LOAD_DIFFERENCES],
+                difference_count=len(differences),
+                first=differences[0] if differences else None)
+
+
+def render_load_controls(lc: Optional[Dict[str, object]]) -> List[str]:
+    if not lc:
+        return []
+    if lc["verdict"] == NOT_COMPARABLE:
+        return ["  load control: not comparable: %s" % lc.get("reason", "")]
+    head = "  load control: %s (bussard %d, ETS %d record(s) on %d object(s))" % (
+        lc["verdict"], lc["bussard_records"], lc["ets_records"], len(lc["objects"]))
+    lines = [head]
+    for note in lc.get("notes") or []:
+        lines.append("      note: %s" % note)
+    for d in lc["differences"]:
+        lines.append("      obj %s #%d %s: bussard %s" % (d["object"], d["position"], d["kind"], d["bussard"]))
+        lines.append("      %s ETS     %s" % (" " * len("obj %s #%d %s:" % (
+            d["object"], d["position"], d["kind"])), d["ets"]))
+    if lc.get("difference_count", 0) > len(lc["differences"]):
+        lines.append("      ... %d more" % (lc["difference_count"] - len(lc["differences"])))
+    return lines
 
 
 def _group_key_table(ours: list, ets: list) -> Optional[Dict[str, str]]:
@@ -1391,6 +1620,7 @@ def render(report: Dict[str, object]) -> List[str]:
             )
         )
     lines.extend(render_properties(report.get("properties")))
+    lines.extend(render_load_controls(report.get("load_controls")))
     return lines
 
 

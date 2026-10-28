@@ -6,13 +6,17 @@
 (epic #419, part 3 #422).
 
     uv run tools/ets-sweep/oracle.py [--filter SUBSTR,...] [--redo]
+        [--captures DIR] [--work DIR] [--out FILE]
 
 For each application with outcome `captured` in results/defaults.json: build
 the scratch model (one device 1.1.1, the application at its defaults, no
 links; oracle_model.py) and run scripts/campaign/95-offline-oracle.sh on the
 row `1.1.1|<capture>|<product>|<application>`. The verdict, coverage and the
-region summary land in results/oracle.json, keyed by application id. Nothing
-touches a bus; the model and the oracle output live under captures/ (ignored).
+region summary land in results/oracle.json, keyed by application id, with the
+load-control verdict and its differences under `loadctl` (issue #419). Nothing
+touches a bus; the model and the oracle output live next to the capture under
+captures/ (ignored), or under --work DIR/<application> (a worktree reads the
+main checkout's captures with --captures and writes nowhere under them).
 """
 from __future__ import annotations
 
@@ -20,6 +24,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -37,13 +42,40 @@ CAPTURES = REPO / "captures" / "ets-sweep"
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
-def run_row(app: str, entry: dict) -> dict:
-    run_dir = CAPTURES / app / "plain-defaults"
+def load_control_summary(diff_json: Path) -> dict:
+    """The load-control verdict of a row and its differences, from diff.json."""
+    try:
+        lc = json.loads(diff_json.read_text()).get("load_controls") or {}
+    except (OSError, ValueError):
+        return {"verdict": "missing"}
+    out = {"verdict": lc.get("verdict", "missing")}
+    if lc.get("reason"):
+        out["reason"] = lc["reason"]
+    for key in ("bussard_records", "ets_records", "difference_count", "notes"):
+        if lc.get(key):
+            out[key] = lc[key]
+    if lc.get("differences"):
+        out["differences"] = [{k: d.get(k) for k in ("object", "position", "kind", "event", "bussard_hex",
+                                                     "ets_hex", "bussard_event", "ets_event")}
+                              for d in lc["differences"]]
+    return out
+
+
+def run_row(app: str, entry: dict, captures: Path, work: Path | None, seed: bool = False) -> dict:
+    run_dir = captures / app / "plain-defaults"
+    work_dir = work / app if work else run_dir
     capture = run_dir / "ets.pcapng"
     product = defaults.product_path(entry["file"])
-    model = oracle_model.build(run_dir / "model", product, app, mask=entry.get("mask", ""))
+    model = work_dir / "model"
+    if seed and work and not model.exists() and (run_dir / "model" / "bussard.lock").exists():
+        # A copy of the model the sweep already imported: a large product
+        # takes minutes to import with a debug build.
+        shutil.copytree(run_dir / "model", model, symlinks=True)
+    lock = model / "bussard.lock"
+    if not (seed and lock.exists() and "[[device]]" in lock.read_text()):
+        model = oracle_model.build(model, product, app, mask=entry.get("mask", ""))
     row = f"1.1.1|{capture}|{product}|{app}"
-    r = subprocess.run(["bash", str(ORACLE), "--dir", str(model), "--out", str(run_dir / "oracle"), "--row", row],
+    r = subprocess.run(["bash", str(ORACLE), "--dir", str(model), "--out", str(work_dir / "oracle"), "--row", row],
                        capture_output=True, text=True, timeout=1800, env={**os.environ, "BUSSARD_NO_DOTENV": "1"})
     text = ANSI.sub("", r.stdout + r.stderr)
     summary = next((l for l in text.splitlines() if l.startswith("1.1.1 ")), "")
@@ -60,6 +92,7 @@ def run_row(app: str, entry: dict) -> dict:
     else:
         out["verdict"] = "oracle-error"
         out["tail"] = text.strip().splitlines()[-6:]
+    out["loadctl"] = load_control_summary(work_dir / "oracle" / "1.1.1" / "diff.json")
     return out
 
 
@@ -67,9 +100,15 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--filter", default="")
     ap.add_argument("--redo", action="store_true")
+    ap.add_argument("--captures", type=Path, default=CAPTURES, help="the sweep captures (default %(default)s)")
+    ap.add_argument("--work", type=Path, help="write the models and oracle output here, not next to the captures")
+    ap.add_argument("--out", type=Path, default=OUT, help="the results file (default %(default)s)")
+    ap.add_argument("--seed-models", action="store_true",
+                    help="with --work: start from a copy of the model next to the capture instead of importing")
+    ap.add_argument("--defaults", type=Path, default=defaults.RESULTS, help="the sweep results (default %(default)s)")
     args = ap.parse_args()
-    res = json.loads(defaults.RESULTS.read_text())
-    out = json.loads(OUT.read_text()) if OUT.exists() else {}
+    res = json.loads(args.defaults.read_text())
+    out = json.loads(args.out.read_text()) if args.out.exists() else {}
     wanted = [w.lower() for w in args.filter.split(",") if w]
     for app, entry in sorted(res.items()):
         if entry["outcome"] != "captured":
@@ -79,18 +118,24 @@ def main() -> int:
         if app in out and not args.redo and out[app].get("capture_when") == entry["when"]:
             continue
         try:
-            v = run_row(app, entry)
+            v = run_row(app, entry, args.captures, args.work, args.seed_models)
         except Exception as exc:  # noqa: BLE001 - recorded, the next row runs
             v = {"verdict": "oracle-error", "error": str(exc)[:400]}
         v.update({"name": entry.get("name"), "mask": entry.get("mask"), "capture_when": entry["when"],
                   "when": datetime.now(timezone.utc).isoformat()})
         out[app] = v
-        OUT.write_text(json.dumps(dict(sorted(out.items())), indent=1, ensure_ascii=False) + "\n")
-        print(f"{v['verdict']:14} {v.get('coverage', ''):>7} {entry.get('mask')} {app} {v.get('regions', '')[:90]}", flush=True)
+        args.out.write_text(json.dumps(dict(sorted(out.items())), indent=1, ensure_ascii=False) + "\n")
+        lc = v.get("loadctl", {}).get("verdict", "-")
+        print(f"{v['verdict']:14} {lc:14} {v.get('coverage', ''):>7} {entry.get('mask')} {app} "
+              f"{v.get('regions', '')[:70]}", flush=True)
     counts: dict[str, int] = {}
+    lc_counts: dict[str, int] = {}
     for v in out.values():
         counts[v["verdict"]] = counts.get(v["verdict"], 0) + 1
+        lc = v.get("loadctl", {}).get("verdict", "missing")
+        lc_counts[lc] = lc_counts.get(lc, 0) + 1
     print("oracle:", counts)
+    print("load control:", lc_counts)
     return 0
 
 

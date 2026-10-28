@@ -101,6 +101,7 @@ mod execute;
 mod execute_props;
 mod execute_sys7;
 mod labels;
+mod load_records;
 mod partial;
 mod plan;
 mod plan_props;
@@ -116,6 +117,7 @@ pub(crate) use execute::probe_object_types;
 pub use execute::{discover_application_object, flash};
 use labels::step_label;
 pub use labels::trace;
+pub use load_records::{LoadControlForm, LoadControlRecord};
 pub use partial::PartialPlanError;
 use plan::{MAX_MEMORY_END, insert_factory_reset, manufacturer_from_app_id};
 pub use plan::{

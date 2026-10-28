@@ -2157,5 +2157,114 @@ class TestIpSecureCompare(unittest.TestCase):
         self.assertIn("clock", props["matched"][0]["why"])
 
 
+class TestLoadControls(unittest.TestCase):
+    """`load_controls.json` and the load-control parity (issue #419)."""
+
+    UNLOAD = bytes([4]) + bytes(9)
+    START = bytes([1]) + bytes(9)
+    DONE = bytes([2]) + bytes(9)
+    ALLOC = bytes.fromhex("0300400001d5ff038000")
+    TASK = bytes.fromhex("030240000100b6454801")
+    LSM_RECORD = bytes.fromhex("33040046eb010000000000")
+
+    def capture(self) -> str:
+        path = tempfile.mkstemp(suffix=".pcapng")[1]
+        self.addCleanup(os.unlink, path)
+        tool, dev = "0.0.0", "1.1.5"
+        frames = [
+            cemi_ldata(tool, dev, t_connect()),
+            cemi_ldata(tool, dev, prop_write(1, 5, 1, 1, self.UNLOAD, seq=0)),
+            cemi_ldata(tool, dev, prop_write(2, 5, 1, 1, self.UNLOAD, seq=1)),
+            cemi_ldata(tool, dev, prop_write(1, 5, 1, 1, self.START, seq=2)),
+            cemi_ldata(tool, dev, prop_write(1, 5, 1, 1, self.ALLOC, seq=3)),
+            cemi_ldata(tool, dev, mem_write(0x4000, b"\x01\x02", seq=4)),
+            cemi_ldata(tool, dev, prop_write(1, 5, 1, 1, self.TASK, seq=5)),
+            cemi_ldata(tool, dev, prop_write(1, 5, 1, 1, self.DONE, seq=6)),
+            cemi_ldata(tool, dev, mem_write(0x0104, self.LSM_RECORD, seq=7)),
+            cemi_ldata(tool, dev, t_disconnect()),
+        ]
+        udp_capture(path, [(tunneling_request(f, seq=n), True) for n, f in enumerate(frames)])
+        return path
+
+    def image_dir(self) -> str:
+        out = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, out, ignore_errors=True)
+        self.assertEqual(main(["image", self.capture(), "--device", "1.1.5", "--out", out]), 0)
+        return out
+
+    @staticmethod
+    def plan(records) -> dict:
+        steps = [{"index": n + 1, "label": "", "load_controls": [r]} for n, r in enumerate(records)]
+        return {"device": "1.1.5", "system": "7", "steps": steps, "tables": [],
+                "load_control_records": len(records)}
+
+    @staticmethod
+    def prop(obj, data: bytes) -> dict:
+        return {"form": "property", "object": obj, "data": data.hex()}
+
+    def ours(self, task: bytes = TASK) -> list:
+        return [
+            # The pre-download pass and the procedure both unload LSM 1.
+            self.prop(1, self.UNLOAD), self.prop(2, self.UNLOAD), self.prop(1, self.UNLOAD),
+            self.prop(1, self.START), self.prop(1, self.ALLOC), self.prop(1, task),
+            self.prop(1, self.DONE),
+            {"form": "memory", "lsm": 3, "address": 0x0104, "data": self.LSM_RECORD.hex()},
+        ]
+
+    def test_compose_writes_load_controls_in_order(self):
+        with open(os.path.join(self.image_dir(), memimage.LOAD_CONTROLS_FILE)) as fh:
+            records = json.load(fh)
+        self.assertEqual(
+            [(r["form"], r.get("object"), r.get("lsm")) for r in records],
+            [("property", 1, None), ("property", 2, None)] + [("property", 1, None)] * 4
+            + [("memory", None, 3)],
+        )
+        self.assertEqual(records[3]["data"], self.ALLOC.hex())
+        self.assertEqual(records[-1]["data"], self.LSM_RECORD.hex())
+
+    def test_compare_load_controls_identical_collapses_an_immediate_repeat(self):
+        lc = memimage.compare_load_controls(self.plan(self.ours()), self.image_dir())
+        self.assertEqual(lc["verdict"], memimage.IDENTICAL, lc)
+        self.assertEqual(lc["objects"][0], {"object": 1, "bussard": 5, "ets": 5,
+                                            "verdict": memimage.IDENTICAL})
+
+    def test_compare_load_controls_differs_names_the_record(self):
+        other = bytes.fromhex("03024000000004454801")
+        lc = memimage.compare_load_controls(self.plan(self.ours(task=other)), self.image_dir())
+        self.assertEqual(lc["verdict"], memimage.DIFFERS)
+        first = lc["first"]
+        self.assertEqual((first["object"], first["position"], first["kind"], first["event"]),
+                         (1, 4, "value", "task-segment"))
+        self.assertEqual((first["bussard_hex"], first["ets_hex"]), (other.hex(), self.TASK.hex()))
+        lines = "\n".join(memimage.render_load_controls(lc))
+        self.assertIn(other.hex(), lines)
+
+    def test_compare_load_controls_form_and_missing_record_differ(self):
+        ours = self.ours()[:-1] + [self.prop(3, bytes.fromhex("030446eb010000000000"))]
+        ours.append(self.prop(4, self.UNLOAD))
+        lc = memimage.compare_load_controls(self.plan(ours), self.image_dir())
+        self.assertEqual(lc["verdict"], memimage.DIFFERS)
+        kinds = {(d["object"], d["kind"]) for d in lc["differences"]}
+        self.assertEqual(kinds, {(3, "value"), (4, "bussard-only")})
+
+    def test_compare_load_controls_not_comparable_without_plan_field(self):
+        plan = self.plan(self.ours())
+        del plan["load_control_records"]
+        lc = memimage.compare_load_controls(plan, self.image_dir())
+        self.assertEqual(lc["verdict"], memimage.NOT_COMPARABLE)
+        self.assertIn("rebuild bussard", lc["reason"])
+
+    def test_compare_load_controls_pairs_an_unresolved_object(self):
+        ets = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, ets, ignore_errors=True)
+        with open(os.path.join(ets, memimage.LOAD_CONTROLS_FILE), "w") as fh:
+            json.dump([{"seq": 1, "form": "property", "object": 3, "data": self.UNLOAD.hex()}], fh)
+        plan = self.plan([self.prop(None, self.UNLOAD)])
+        plan["system"] = "B"
+        lc = memimage.compare_load_controls(plan, ets)
+        self.assertEqual(lc["verdict"], memimage.IDENTICAL, lc)
+        self.assertTrue(lc["notes"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

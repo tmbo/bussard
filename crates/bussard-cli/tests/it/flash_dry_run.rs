@@ -169,6 +169,27 @@ fn test_flash_dry_run_dump_images_writes_plan_and_images_without_a_gateway() -> 
     if plan["allocations"].as_array().is_none_or(|a| a.is_empty()) {
         return Err(format!("no allocation recorded: {raw}"));
     }
+    // The load-control records (issue #419): every one a 10-octet PID 5
+    // value, a relative-segment allocation among them, and the count on top.
+    let records: Vec<&serde_json::Value> = plan["steps"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|s| s.get("load_controls").and_then(|l| l.as_array()))
+        .flatten()
+        .collect();
+    if records.is_empty() || plan["load_control_records"] != records.len() {
+        return Err(format!("load-control records missing or miscounted: {raw}"));
+    }
+    if records
+        .iter()
+        .any(|r| r["form"] != "property" || r["data"].as_str().map_or(0, str::len) != 20)
+    {
+        return Err(format!("a load-control record is not a PID 5 value: {raw}"));
+    }
+    if !records.iter().any(|r| r["event"] == "rel-segment") {
+        return Err(format!("no relative-segment record: {raw}"));
+    }
     Ok(())
 }
 

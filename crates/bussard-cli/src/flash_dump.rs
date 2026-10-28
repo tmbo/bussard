@@ -249,6 +249,33 @@ fn security_property_records(step: &FlashStep, salt: Option<&str>) -> Vec<serde_
     }
 }
 
+/// The load-control records of `step` as `plan.json` carries them: the form
+/// (`property` with the object index, null when the device resolves it, or
+/// `memory` with the LSM and the control address), the event and the octets.
+fn load_control_records(plan: &FlashPlan, step: &FlashStep) -> Vec<Value> {
+    plan.load_control_records(step)
+        .into_iter()
+        .map(|rec| {
+            let mut out = match rec.form {
+                bussard_download::LoadControlForm::Property { object } => {
+                    json!({ "form": "property", "object": object })
+                }
+                bussard_download::LoadControlForm::Memory { lsm, address } => {
+                    json!({ "form": "memory", "lsm": lsm, "address": address })
+                }
+            };
+            out["event"] = json!(rec.event);
+            out["data"] = json!(
+                rec.bytes
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+            );
+            out
+        })
+        .collect()
+}
+
 /// Writes the dry-run dump for `plan` into `dir` (created if missing).
 ///
 /// `table_images` are the System B table images keyed by object index (1 =
@@ -272,11 +299,19 @@ pub fn write_dump(
     // Where each table image went: System B object index / System 7 LSM →
     // (step number, absolute address when known).
     let mut table_steps: BTreeMap<u32, (usize, Option<u32>)> = BTreeMap::new();
+    let mut load_control_count = 0usize;
 
     for (i, step) in plan.steps.iter().enumerate() {
         let n = i + 1;
         let label = labels.get(i).cloned().unwrap_or_default();
         let mut record = json!({ "index": n, "label": label.trim() });
+        // The load-control records the step sends (issue #419), for the
+        // oracle's load-control parity.
+        let load_controls = load_control_records(plan, step);
+        if !load_controls.is_empty() {
+            load_control_count += load_controls.len();
+            record["load_controls"] = json!(load_controls);
+        }
         match step {
             FlashStep::WriteRelMem {
                 offset,
@@ -498,6 +533,9 @@ pub fn write_dump(
             "mask": plan.identity.mask_version,
         },
         "write_bytes": plan.total_write_bytes(),
+        // How many load-control records the steps carry (issue #419); its
+        // presence tells the oracle the dump lists them at all.
+        "load_control_records": load_control_count,
         "procedure": labels,
         "steps": steps,
         "allocations": allocations,

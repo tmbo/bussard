@@ -47,6 +47,10 @@
 #                                unchecked when absent. For a property-only
 #                                plan (a KNX IP interface, mask 0021), whose
 #                                memory verdict is always not-comparable
+#                loadctl=VERDICT the verdict the load-control parity must give
+#                                (identical, differs or not-comparable);
+#                                unchecked when absent. For a row whose
+#                                load-control records are known to differ
 #                run=secure-on|secure-off  compare `bussard interface secure
 #                                on|off --dry-run` (issue #398) instead of a
 #                                flash: the KNXnet/IP Secure property writes
@@ -108,7 +112,10 @@
 # Per device the result is identical / differs (octets, first differing
 # offset, both hex excerpts, per region) / not comparable (why), plus the
 # property-write parity against `properties.json` (security-object key
-# material redacted to a hash). PID 54 (the security individual address table)
+# material redacted to a hash), plus the load-control parity (issue #419):
+# every record bussard sends a load-state machine (PID 5, or the System 7
+# memory-mapped record at 0x0104) against ETS's, per object in order, an
+# immediate repeat counted once (tools/knxtrace/image.py has the rule). PID 54 (the security individual address table)
 # is compared by sender address, set and order; its sequence numbers are a
 # note. PID 53 (the group key table) is compared per entry and names the group
 # addresses whose key differs or is missing on one side: both sides hash each
@@ -326,16 +333,17 @@ run_row() {
   product="$(trim "${product:-}")"; application="$(trim "${application:-}")"
   note_text="$(trim "${note_text:-}")"; recorded="$(trim "${recorded:-}")"
   options="$(trim "${options:-}")"
-  local expect="" confirmed="" props="" scope="" run="" phase="" word
+  local expect="" confirmed="" props="" loadctl="" scope="" run="" phase="" word
   for word in $options; do
     case "$word" in
       expect=*)    expect="${word#expect=}" ;;
       confirmed=*) confirmed="${word#confirmed=}" ;;
       props=*)     props="${word#props=}" ;;
+      loadctl=*)   loadctl="${word#loadctl=}" ;;
       run=*)       run="${word#run=}" ;;
       phase=*)     phase="${word#phase=}" ;;
       scope=*)     scope="${word#scope=}" ;;
-      *)           die "$device: unknown row option: $word (expect=..., confirmed=..., props=..., run=..., phase=..., scope=...)" ;;
+      *)           die "$device: unknown row option: $word (expect=..., confirmed=..., props=..., loadctl=..., run=..., phase=..., scope=...)" ;;
     esac
   done
   local scope_args=()
@@ -352,13 +360,14 @@ run_row() {
 
   # The row's recorded coverage and expected verdict, for the summary and
   # --check (written next to the result, whatever the result is).
-  "$PYTHON" - "$dir/row.json" "$recorded" "$expect" "$confirmed" "$props" <<'PY'
+  "$PYTHON" - "$dir/row.json" "$recorded" "$expect" "$confirmed" "$props" "$loadctl" <<'PY'
 import json, sys
-path, recorded, expect, confirmed, props = sys.argv[1:6]
+path, recorded, expect, confirmed, props, loadctl = sys.argv[1:7]
 with open(path, "w", encoding="utf-8") as fh:
     json.dump({"recorded_coverage": float(recorded.rstrip("% ")) if recorded else None,
                "expect": expect or "identical", "expect_confirmed": confirmed or None,
                "expect_props": props or None,
+               "expect_loadctl": loadctl or None,
                "skipped": None}, fh)
 PY
   if [ -z "$run" ] && { [ -z "$product" ] || [ "$product" = "-" ]; }; then
@@ -516,6 +525,16 @@ for dev in devices:
             props.get("bussard_only", []))
     if props.get("commissioning"):
         detail += " [ETS commissioning %d, not counted]" % len(props["commissioning"])
+    lc = r.get("load_controls") or {}
+    if lc.get("verdict") == "identical":
+        detail += "  loadctl=ok(%d)" % lc.get("ets_records", 0)
+    elif lc.get("verdict") == "differs":
+        first = lc.get("first") or {}
+        detail += "  loadctl=differs(%d, first obj%s#%s %s)" % (
+            lc.get("difference_count", 0), first.get("object"), first.get("position"),
+            first.get("event"))
+    elif lc:
+        detail += "  loadctl=n/c"
     if r.get("verdict") == "not-comparable" and parts and not r.get("reason", "").startswith("thin"):
         detail += "  (%s)" % (r.get("reason") or "nothing compared")
     print(FMT % (dev, r.get("system") or "-", r["verdict"], cov_text, conf_text, detail))
@@ -536,6 +555,10 @@ for dev in devices:
     if want_props and props.get("verdict", "not-comparable") != want_props:
         failures.append("%s: property writes %s, expected %s" % (
             dev, props.get("verdict", "not-comparable"), want_props))
+    want_lc = row.get("expect_loadctl")
+    if want_lc and lc.get("verdict", "not-comparable") != want_lc:
+        failures.append("%s: load control %s, expected %s" % (
+            dev, lc.get("verdict", "not-comparable"), want_lc))
     want = row.get("expect_confirmed")
     if want and conf.get("verdict", "not-comparable") != want:
         failures.append("%s: confirmed %s, expected %s" % (
