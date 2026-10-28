@@ -104,6 +104,27 @@ class Sim:
             self.proc.kill()
 
 
+def ip_enabled(knxprod: Path, app: str) -> bool:
+    """Whether the hardware that carries `app` declares IsIPEnabled="true"."""
+    import zipfile
+
+    m = re.match(r"(M-[0-9A-F]{4})_A-(.+)$", app)
+    if not m:
+        return False
+    hp = "_HP-" + m.group(2)
+    try:
+        z = zipfile.ZipFile(knxprod)
+        for name in z.namelist():
+            if name.endswith("Hardware.xml"):
+                xml = z.read(name).decode("utf-8", "replace")
+                for hw in re.finditer(r"<Hardware [^>]*>.*?</Hardware>", xml, re.S):
+                    if hp in hw.group(0) and 'IsIPEnabled="true"' in hw.group(0)[:600]:
+                        return True
+    except (OSError, zipfile.BadZipFile):
+        return False
+    return False
+
+
 class RemoteSim:
     """knx-sim.exe INSIDE the VM (ETS reaches it on 127.0.0.1, where its ping
     check passes; the Mac's managed firewall drops ping). The process runs over
@@ -137,6 +158,11 @@ class RemoteSim:
             dev["security"] = secure
         if properties:
             dev["properties"] = properties
+        if ip_enabled(knxprod, app):
+            # Hardware with a KNX IP interface built in: ETS looks for its
+            # KNXnet/IP parameter object (type 11) after the download and
+            # aborts without it (Zennio ALLinBOX 1612, 2026-10-28).
+            dev["knxnet"] = {}
         # tunnel_address on the TP line 1.1: ETS compares the tunnel's line medium
         # with the project's and asks otherwise (the sim's default 1.0.0 is on the IP main line).
         # The sim records its own datagrams (gateway.pcap): dumpcap killed over

@@ -21,6 +21,8 @@ tools/ets-sweep/results/defaults.json, keyed by application id:
     sim-refused     knx-sim did not start with this product (its message is kept)
     unknown         neither: look at the run directory
     skipped-mask / skipped-no-order / skipped-not-in-catalog
+    skipped-older-version   a newer version of the same application on the
+                            same hardware runs instead (field `newer`)
 
 The run directory per application is captures/ets-sweep/<app>/plain-defaults/
 (gitignored): ets.pcapng, sim.log, driver.json, ops.txt.
@@ -29,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -58,7 +61,15 @@ def product_path(file: str) -> Path:
     return path
 
 
+APP_ID = re.compile(r"(M-[0-9A-F]{4})_A-([0-9A-F]{4})-([0-9A-F]{2})-")
+
+
 def jobs() -> list[dict]:
+    """One job per application, and per hardware only the newest version of
+    an application: the same order numbers and application number in several
+    versions (ALLinBOX 1612 1.0 and 1.3) run once, as the newest. ETS's
+    catalog offers only that one anyway. Older versions come back with
+    `older: <newest id>` so the caller records them as skipped."""
     apps = json.loads(APPS.read_text())
     catalog = json.loads(CATALOG.read_text()) if CATALOG.exists() else {}
     seen: set[str] = set()
@@ -69,6 +80,21 @@ def jobs() -> list[dict]:
                 continue
             seen.add(app["id"])
             out.append({**app, "file": file, "in_catalog": catalog.get(file, {}).get("outcome") == "imported"})
+    newest: dict[tuple, dict] = {}
+    for j in out:
+        m = APP_ID.match(j["id"])
+        if not m:
+            continue
+        key = (m.group(1), m.group(2), tuple(j["order_numbers"]))
+        cur = newest.get(key)
+        if cur is None or int(m.group(3), 16) > int(APP_ID.match(cur["id"]).group(3), 16):
+            newest[key] = j
+    for j in out:
+        m = APP_ID.match(j["id"])
+        if m:
+            top = newest[(m.group(1), m.group(2), tuple(j["order_numbers"]))]
+            if top["id"] != j["id"]:
+                j["older"] = top["id"]
     return out
 
 
@@ -102,6 +128,11 @@ def main() -> int:
         if prev and not args.redo and not (args.redo_failed and not prev["outcome"].startswith(("captured", "skipped"))):
             continue
         base = {"file": job["file"], "name": job["name"], "mask": job["mask"], "when": datetime.now(timezone.utc).isoformat()}
+        if job.get("older"):
+            if not prev or prev["outcome"] != "captured":
+                results[job["id"]] = {**base, "outcome": "skipped-older-version", "newer": job["older"]}
+                save()
+            continue
         if job["mask"] not in SIM_MASKS:
             results[job["id"]] = {**base, "outcome": "skipped-mask"}
             save()
