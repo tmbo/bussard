@@ -87,6 +87,19 @@ def catalog_sibling(job: dict, r: dict, everything: dict[str, dict]) -> dict | N
     """When ETS's catalog shows another version of the same application for
     this product (a catalog version mismatch), the job of that version."""
     m = APP_ID.match(job["id"])
+    history = " ".join(r.get("history") or r.get("ets_history") or [])
+    if m and r.get("outcome") == "ets-failed" and "association table format" in history:
+        # ETS downloaded another application of this hardware than the sim
+        # plays: one Hardware2Program lists several versions and ETS's
+        # catalog row takes the first, while ABB's Version column shows the
+        # name's suffix ('11.1' for both A-0806-B1 and -C1), so the row cannot
+        # tell them apart. Run the next older sibling.
+        older = [o for o in everything.values()
+                 if (om := APP_ID.match(o["id"])) and o["id"] != job["id"]
+                 and om.group(1) == m.group(1) and om.group(2) == m.group(2)
+                 and o["order_numbers"] == job["order_numbers"]
+                 and int(om.group(3), 16) < int(m.group(3), 16)]
+        return max(older, key=lambda o: int(APP_ID.match(o["id"]).group(3), 16), default=None)
     if r.get("outcome") == "skipped-catalog-version":
         shown = re.findall(r"\('[^']*', '([^']*)'", r.get("error") or "")
     else:
