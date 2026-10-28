@@ -244,19 +244,20 @@ def click(x: int, y: int, button: str = "left", double: bool = False) -> None:
     """Click at layout coordinates (scaled to the physical screen)."""
     s = scale()
     at = (int(round(x * s)), int(round(y * s)))
-    for attempt in range(4):
+    for attempt in range(6):
         try:
             if double:
                 mouse.double_click(button=button, coords=at)
             else:
                 mouse.click(button=button, coords=at)
             return
-        except OSError:
+        except Exception as exc:  # noqa: BLE001 - pywintypes.error is no OSError
             # SetCursorPos fails with 258 'Wartevorgang abgebrochen' while the
-            # session's input desktop is busy (just after an RDP reconnect).
-            if attempt == 3:
+            # session's input desktop is busy (just after an RDP reconnect,
+            # and once mid-sweep, 2026-10-28).
+            if attempt == 5 or "SetCursorPos" not in str(exc) and not isinstance(exc, OSError):
                 raise
-            time.sleep(1.5)
+            time.sleep(3)
 
 
 def click_text(pattern: str, bbox=None, dx: int = 0, dy: int = 0, button: str = "left", double: bool = False) -> dict:
