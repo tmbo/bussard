@@ -410,6 +410,18 @@ impl Device {
         }
     }
 
+    /// Overrides (or adds) a read-only property value on interface object
+    /// `object`: the device identity a tool reads before it downloads
+    /// (hardware type PID 78, order info PID 15, ...) when the product data
+    /// does not say what the real hardware answers (the ETS sweep, bussard
+    /// epic #419). An unknown object index is ignored.
+    pub fn with_property(mut self, object: u8, pid: u8, value: Vec<u8>) -> Self {
+        if let Some(obj) = self.objects.get_mut(&object) {
+            obj.set_property(pid, Property::read_only(value));
+        }
+        self
+    }
+
     /// Sets the device's per-connection numbered-exchange budget (builder-style).
     ///
     /// After `budget` accepted NDTs on one L4 connection the device drops the
@@ -832,6 +844,53 @@ impl Device {
 mod tests {
     use super::*;
     use crate::device::test_support::*;
+
+    #[test]
+    fn test_connectionless_descriptor_and_property_reads_are_answered_unnumbered()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // ETS 6 probes a KNX Secure capable device with unnumbered
+        // A_DeviceDescriptor_Read and A_PropertyValue_Read before it connects.
+        let mut dev = system_b_device()?;
+        let tool = IndividualAddress(0x11FE);
+        let dest = dev.address.raw();
+        let req = |tpdu: Vec<u8>| CemiLData {
+            message_code: crate::wire::cemi::MessageCode::LDataReq,
+            ctrl1: 0xBC,
+            ctrl2: 0x60,
+            source: tool,
+            dest,
+            tpdu,
+        };
+        let r = dev.handle_cemi(&req(vec![0x03, 0x00]))?;
+        assert_eq!(r.responses.len(), 1);
+        assert_eq!(r.responses[0].tpdu[0] & 0xFC, 0x00, "unnumbered response");
+        assert_eq!(
+            &r.responses[0].tpdu[..2],
+            &[0x03, 0x40],
+            "A_DeviceDescriptor_Response"
+        );
+        // PID 56 (max APDU length) of object 0.
+        let r = dev.handle_cemi(&req(vec![0x03, 0xD5, 0x00, 0x38, 0x10, 0x01]))?;
+        assert_eq!(r.responses.len(), 1);
+        assert_eq!(r.responses[0].tpdu[0] & 0xFC, 0x00, "unnumbered response");
+        // Every other service still needs a connection.
+        let err = dev.handle_cemi(&req(vec![0x03, 0xD1, 0x00, 0xFF, 0xFF, 0xFF, 0xFF]));
+        assert!(matches!(err, Err(DeviceError::NotConnected)));
+        // A later connection starts at sequence 0, untouched by the probes.
+        dev.handle_cemi(&req(vec![0x80]))?;
+        let r = dev.handle_cemi(&req(vec![0x43, 0x00]))?;
+        let ndt = r
+            .responses
+            .iter()
+            .find(|c| c.tpdu.len() > 1)
+            .ok_or("no response")?;
+        assert_eq!(
+            ndt.tpdu[0] & 0x3C,
+            0x00,
+            "first connected response under sequence 0"
+        );
+        Ok(())
+    }
 
     #[test]
     fn test_individual_address_response_only_when_in_prog_mode()

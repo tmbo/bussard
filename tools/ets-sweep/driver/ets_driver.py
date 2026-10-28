@@ -143,6 +143,7 @@ def run_exec(code: str) -> dict:
         "re": re,
         "result": None,
     }
+    scope = {**globals(), **scope}  # every driver helper, for developing flows
     buf = io.StringIO()
     try:
         with redirect_stdout(buf):
@@ -404,11 +405,27 @@ def flow_project_tab(req: dict) -> dict:
     return {"project": name}
 
 
+def line_1_1() -> tuple[int, int]:
+    """Screen position of '1.1 TP Linie' in the Topologie tree, expanding the
+    tree when ETS reopened it collapsed (after a restart, 2026-10-28)."""
+    tree = LAYOUT["tree"]
+    for _ in range(3):
+        hit = find_text("1.1 TP Linie", tree, min_ratio=0.75)
+        if hit:
+            return hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2
+        main = find_text("IP Hauptlinie", tree, min_ratio=0.75)
+        if not main:
+            raise RuntimeError(f"no 'IP Hauptlinie' in the Topologie tree: {[l['text'] for l in ocr(tree)]}")
+        click(18, main["y"] + main["h"] // 2)  # the expander arrow left of the line
+        time.sleep(1.5)
+    raise RuntimeError("'1.1 TP Linie' did not appear in the Topologie tree")
+
+
 @flow("devices")
 def flow_devices(req: dict) -> dict:
     """The devices on line 1.1 of the active project, by OCR of the device list."""
     require_project(req["project"])
-    click(*LAYOUT["tree_line_1_1"])
+    click(*line_1_1())
     time.sleep(1.5)
     x0, y0, x1, y1 = LAYOUT["device_list"]
     # Row centres: every OCR line below the header, clustered by height.
@@ -417,49 +434,140 @@ def flow_devices(req: dict) -> dict:
         cy = line["y"] + line["h"] // 2
         if cy > y0 + 40 and all(abs(cy - c) > 18 for c in centres):
             centres.append(cy)
+    native = [l for l in ocr(LAYOUT["device_list"]) if l["x"] < 860 and _ia_in(l["text"])]
     ias = []
     for cy in sorted(centres):
-        # The Adresse cell alone, magnified: a selected row's grey background
-        # hides it from OCR at native size.
-        cell = ocr((690, cy - 18, 860, cy + 18), zoom=3)
-        ia = next((_ia_in(l["text"]) for l in cell if _ia_in(l["text"])), None)
+        ia = next((_ia_in(l["text"]) for l in native if abs(l["y"] + l["h"] // 2 - cy) < 16), None)
+        for zoom in (3, 2, 4):
+            if ia:
+                break
+            # The Adresse cell alone, magnified: a selected row's grey
+            # background hides it at native size; one zoom level misses a
+            # row now and then, another reads it.
+            cell = ocr((690, cy - 18, 860, cy + 18), zoom=zoom)
+            ia = next((_ia_in(l["text"]) for l in cell if _ia_in(l["text"])), None)
         if ia:
             ias.append({"ia": ia, "y": cy})
     return {"devices": ias}
 
 
+def dismiss_password_dialog() -> bool:
+    """'Projektpasswort setzen': ETS asks for a project password the first
+    time a KNX Secure capable product joins a project without one. The plain
+    sweep answers Abbrechen (no project security); the secure pass (part 4)
+    sets one instead. Without this the next keystrokes land in the field."""
+    if not find_text("Projektpasswort setzen", (1300, 750, 2800, 900), min_ratio=0.8):
+        return False
+    hit = find_text("Abbrechen", (2200, 1600, 2800, 1760))
+    if hit:
+        click(hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2)
+    else:
+        keys("{ESC}")
+    time.sleep(1.5)
+    return True
+
+
+def _digits(t: str) -> str:
+    return re.sub(r"[^0-9a-z]", "", t.lower())
+
+
+def catalog_rows() -> list[dict]:
+    """The catalog result rows as {y, name, order, application, version},
+    grouped from OCR lines by height; manufacturer group headers are left out."""
+    dy = catalog_dy()
+    x0, y0, x1, y1 = LAYOUT["catalog_rows"]
+    lines = ocr((x0, y0 + 40 + dy, x1, min(y1 + dy, 2440)))
+    rows: list[dict] = []
+    for line in sorted(lines, key=lambda l: l["y"]):
+        cy = line["y"] + line["h"] // 2
+        row = next((r for r in rows if abs(r["y"] - cy) < 14), None)
+        if row is None:
+            row = {"y": cy, "cells": []}
+            rows.append(row)
+        row["cells"].append(line)
+    out = []
+    for r in rows:
+        def cell(lo: int, hi: int) -> str:
+            return " ".join(c["text"] for c in r["cells"] if lo <= c["x"] < hi).strip()
+        version = cell(2560, 2740)
+        if not version:
+            continue  # a manufacturer group header
+        out.append({"y": r["y"], "name": cell(1130, 1970), "order": cell(1970, 2240),
+                    "application": cell(2300, 2560), "version": version})
+    return out
+
+
+@flow("catalog_rows")
+def flow_catalog_rows(req: dict) -> dict:
+    return {"rows": catalog_rows()}
+
+
 @flow("catalog_add")
 def flow_catalog_add(req: dict) -> dict:
-    """Search the catalog for `search` (order number works best), select the
-    first result row and add it to line 1.1. Returns the device list afterwards."""
+    """Search the catalog for `search` (an order number), pick the row whose
+    order number matches and whose application version is `version` (as ETS
+    shows it, e.g. "2.3"), and add it to line 1.1. Returns the device list."""
     require_project(req["project"])
+    dismiss_password_dialog()
     before = {d["ia"] for d in flow_devices(req)["devices"]}
-    click(*LAYOUT["catalog_search"])
-    time.sleep(0.3)
-    keys("^a")
-    keys(req["search"] + "{ENTER}")
-    time.sleep(3)
-    click(1000, 1380)  # a neutral spot: closes the search-history dropdown
-    time.sleep(0.5)
-    rows = [l for l in ocr(LAYOUT["catalog_rows"]) if l["y"] > LAYOUT["catalog_rows"][1] + 40 and l["x"] < 1300]
-    # rows: a manufacturer group header, then product rows (indented further)
-    product_rows = [l for l in rows if l["x"] > 780]
-    if not product_rows:
-        raise RuntimeError(f"no catalog row for {req['search']!r}: {[l['text'] for l in rows]}")
-    row = product_rows[0]
-    click(1300, row["y"] + row["h"] // 2)
+    dy = catalog_dy()
+    sx, sy = LAYOUT["catalog_search"]
+    rows: list[dict] = []
+    for attempt in range(3):
+        click(sx, sy + dy)
+        time.sleep(0.3)
+        keys("^a")
+        keys(req["search"] + "{ENTER}")
+        time.sleep(3 + 2 * attempt)
+        click(1000, 1380 + dy)  # a neutral spot: closes the search-history dropdown
+        time.sleep(0.5)
+        rows = catalog_rows()
+        if rows:
+            break  # ETS fills the list late at times: type the search again
+    want_order = _digits(req["search"])
+    want_version = _digits(req.get("version", ""))
+    exact = [r for r in rows if _digits(r["order"]).startswith(want_order[:12]) or want_order in _digits(r["order"])]
+    pool = exact or rows
+    match = [r for r in pool if want_version and _digits(r["version"]) == want_version]
+    if match:
+        row = match[0]
+    elif len(pool) == 1 and not want_version:
+        row = pool[0]
+    else:
+        raise RuntimeError(f"no catalog row for {req['search']!r} version {req.get('version')!r}: {pool[:8]}")
+    click(1300, row["y"])
     time.sleep(1)
-    bar = find_text("1.1 TP Linie", LAYOUT["catalog_bar"])
-    if not bar:
-        click(*LAYOUT["catalog_line_dropdown"])
+    bar = (LAYOUT["catalog_bar"][0], LAYOUT["catalog_bar"][1] + dy, LAYOUT["catalog_bar"][2], min(LAYOUT["catalog_bar"][3] + dy, 2484))
+    if not find_text("1.1 TP Linie", bar, min_ratio=0.75):
+        # The add bar's target line follows the tree selection: select the
+        # line, then the catalog row again.
+        click(*line_1_1())
+        time.sleep(1.5)
+        click(1300, row["y"])
         time.sleep(1)
-        choose("1.1 TP Linie", (600, 1900, 1300, 2484))
+    if not find_text("1.1 TP Linie", bar, min_ratio=0.75):
+        lx, ly = LAYOUT["catalog_line_dropdown"]
+        click(lx, ly + dy)
+        time.sleep(1)
+        choose("1.1 TP Linie", (600, 1600, 1300, 2484))
         time.sleep(0.8)
-    click(*LAYOUT["catalog_add"])
+    if not find_text("1.1 TP Linie", bar, min_ratio=0.75):
+        raise RuntimeError(f"the add bar does not target 1.1 TP Linie: {[l['text'] for l in ocr(bar)]}")
+    ax, ay = LAYOUT["catalog_add"]
+    click(ax, ay + dy)
     time.sleep(3)
+    # A KNX Secure capable product raises 'Projektpasswort setzen' a few
+    # seconds after it was added (seen up to ~8 s, 2026-10-28): wait for it.
+    password_dialog = False
+    t0 = time.time()
+    while time.time() - t0 < float(req.get("password_wait", 12)):
+        if dismiss_password_dialog():
+            password_dialog = True
+            break
+        time.sleep(1)
     after = flow_devices(req)["devices"]
     new = [d for d in after if d["ia"] not in before]
-    return {"devices": after, "added": new, "row": row["text"]}
+    return {"devices": after, "added": new, "row": row, "password_dialog": password_dialog}
 
 
 @flow("delete_device")
@@ -472,11 +580,19 @@ def flow_delete_device(req: dict) -> dict:
     click(700, hit[0]["y"])
     time.sleep(0.8)
     keys("{DELETE}")
+    # The confirmation comes later for a larger product (over 2 s for an MDT
+    # room actuator): wait for it, confirm, and check the device is gone.
+    t0 = time.time()
+    confirmed = False
+    while time.time() - t0 < float(req.get("confirm_wait", 10)):
+        time.sleep(1)
+        if find_text("Möchten Sie die markierten Objekte", LAYOUT["delete_dialog"]):
+            click_text("Ja", LAYOUT["delete_yes"])
+            confirmed = True
+            break
     time.sleep(2)
-    if find_text("Möchten Sie die markierten Objekte", LAYOUT["delete_dialog"]):
-        click_text("Ja", LAYOUT["delete_yes"])
-        time.sleep(2)
-    return {"deleted": True, "devices": flow_devices(req)["devices"]}
+    after = flow_devices(req)["devices"]
+    return {"deleted": confirmed and all(d["ia"] != req["ia"] for d in after), "devices": after}
 
 
 @flow("select_connection")
@@ -517,13 +633,16 @@ def flow_download(req: dict) -> dict:
     menu_click(PROGRAM_MODES[req.get("mode", "application")])
     t0 = time.time()
     kept = False
+    password = False
     while time.time() - t0 < float(req.get("dialog_wait", 20)):
         if find_text("Schnittstellen-Prüfung", LAYOUT["medium_dialog"]):
             click(*LAYOUT["medium_keep"])
             kept = True
             break
+        if dismiss_password_dialog():
+            password = True
         time.sleep(1)
-    return {"ia": req["ia"], "mode": req.get("mode", "application"), "medium_dialog_kept": kept}
+    return {"ia": req["ia"], "mode": req.get("mode", "application"), "medium_dialog_kept": kept, "password_dialog": password}
 
 
 @flow("history")
@@ -822,8 +941,14 @@ class Handler(BaseHTTPRequestHandler):
                 if fn is None:
                     self._send(404, {"error": f"unknown flow {name}", "flows": sorted(FLOWS)})
                     return
+                # Watchdog before every flow: a modal left open by the
+                # previous one (the project-password dialog, an ETS error)
+                # would swallow this flow's clicks and keystrokes.
+                watchdog = {"password_dialog": dismiss_password_dialog(), "ets_error": dismiss_ets_error()}
                 out = fn(req)
                 out.setdefault("ok", True)
+                if any(watchdog.values()):
+                    out["watchdog"] = watchdog
                 self._send(200, out)
             else:
                 self._send(404, {"error": "unknown path"})

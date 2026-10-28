@@ -75,10 +75,37 @@ impl Device {
         cemi: &CemiLData,
         apdu: &Apdu,
     ) -> Result<DeviceReaction, DeviceError> {
-        if !self.connected {
-            return Err(DeviceError::NotConnected);
-        }
         let tool = cemi.source;
+        if !self.connected {
+            // Connectionless management: a device answers A_DeviceDescriptor_Read
+            // and A_PropertyValue_Read sent unnumbered (T_Data_Individual) with an
+            // unnumbered response. ETS 6 probes a KNX Secure capable device that
+            // way before it connects (MDT AKR-IO86.01S, ETS-against-sim capture
+            // 2026-10-28). Every other service still needs a connection.
+            let unnumbered = cemi.tpdu.first().is_some_and(|b| b & 0xC0 == 0x00);
+            let reaction = match apdu.apci {
+                Apci::DeviceDescriptorRead(t) if unnumbered => {
+                    let saved = self.tx_seq;
+                    let r = self.on_device_descriptor_read(tool, t);
+                    self.tx_seq = saved;
+                    r?
+                }
+                Apci::PropertyValueRead if unnumbered => {
+                    let saved = self.tx_seq;
+                    let r = self.on_property_read(tool, apdu);
+                    self.tx_seq = saved;
+                    r?
+                }
+                _ => return Err(DeviceError::NotConnected),
+            };
+            let mut reaction = reaction;
+            for resp in &mut reaction.responses {
+                if let Some(first) = resp.tpdu.first_mut() {
+                    *first &= 0x03; // T_Data_Individual: no sequence, keep the APCI bits
+                }
+            }
+            return Ok(reaction);
+        }
 
         // System 7 wire strictness (spec section 6): a memory op to a System 7
         // device must ride a STANDARD frame and carry at most 12 data octets. An

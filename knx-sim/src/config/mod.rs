@@ -180,6 +180,17 @@ pub struct SecurityConfig {
     pub initial_rx_seq: u64,
 }
 
+/// One property value override of a device (`properties:` in its config).
+#[derive(Debug, Clone, Deserialize)]
+pub struct PropertyOverride {
+    /// The interface object index (0 = device object).
+    pub object: u8,
+    /// The property id.
+    pub pid: u8,
+    /// The value as hex octets (spaces allowed).
+    pub value: String,
+}
+
 /// The activation status of a device's KNX Data Secure block.
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -276,6 +287,11 @@ pub struct DeviceConfig {
     /// read-only. Omit for any other device.
     #[serde(default)]
     pub knxnet: Option<KnxnetSimConfig>,
+    /// Read-only property values to override after the device is built, e.g.
+    /// the hardware type a tool compares before it downloads:
+    /// `properties: [{object: 0, pid: 78, value: "000a80000269"}]` (hex).
+    #[serde(default)]
+    pub properties: Vec<PropertyOverride>,
 }
 
 /// The KNXnet/IP parameter object of a simulated IP interface.
@@ -611,6 +627,23 @@ impl SimConfig {
                 ),
                 None => device,
             };
+            let mut device = device;
+            for p in &dc.properties {
+                let hex: String = p.value.chars().filter(|c| !c.is_whitespace()).collect();
+                let bytes = (0..hex.len())
+                    .step_by(2)
+                    .map(|i| {
+                        hex.get(i..i + 2)
+                            .and_then(|h| u8::from_str_radix(h, 16).ok())
+                    })
+                    .collect::<Option<Vec<u8>>>()
+                    .filter(|b| !b.is_empty() && hex.len().is_multiple_of(2))
+                    .ok_or_else(|| ConfigError::BadDeviceOption {
+                        device: dc.address.clone(),
+                        reason: format!("properties: bad hex value {:?}", p.value),
+                    })?;
+                device = device.with_property(p.object, p.pid, bytes);
+            }
             bus.add_device(device);
         }
         bus.set_stimulus(self.build_stimulus()?);

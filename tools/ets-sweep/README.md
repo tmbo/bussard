@@ -145,3 +145,37 @@ geändert") after a few hundred imports (dismissed and recorded); and ETS
 restarting itself, reopening the project in its default panel layout
 (`ensure_layout` maximizes, closes panels above Topologie, opens one Katalog
 panel, and the catalog coordinates follow the panel's actual position).
+
+## Part 3: the defaults sweep (#422)
+
+```sh
+uv run tools/ets-sweep/defaults.py [--filter ...] [--mask 07B0] [--shard k/n] [--redo-failed]
+uv run tools/ets-sweep/oracle.py
+```
+
+`defaults.py` runs every corpus application (one job per application id, from
+`catalog-apps.json`): sim in the VM, delete what line 1.1 holds, add the
+catalog row whose order number and application version match, select the
+knx-sim connection, application download, wait for the bus to go quiet, read
+ETS's history. Results land in `results/defaults.json`; a run directory per
+application under `captures/ets-sweep/<app>/plain-defaults/`.
+
+**Identity learned from ETS.** Before a download ETS compares the device's
+identity with what the product requires, and refuses with "inkompatible
+Produktdaten" on a mismatch. Its log
+(`%LOCALAPPDATA%\KNX\ETS6\Log\ETS6.log`) names the value it wanted:
+`Required data mismatch at SystemProperty(0/78)[$0000]: <device> instead of
+<required>`. `sweep.run_learning` reads those lines after a refusal and runs
+again with the required values as sim property overrides (`properties:` in
+the knx-sim device config); the learned values are kept per application.
+
+`oracle.py` builds a scratch model per captured application (one device
+1.1.1 at its defaults, no links; `oracle_model.py`) and runs the offline
+oracle row against the capture into `results/oracle.json`.
+
+What ETS needed from the sim in this part: connectionless
+`A_DeviceDescriptor_Read` / `A_PropertyValue_Read` (ETS probes KNX Secure
+capable devices before connecting), and the device identity above. A KNX
+Secure capable product makes ETS ask for a project password a few seconds
+after it is added and again at download; the plain pass answers Abbrechen,
+which leaves the device's secure commissioning off.
