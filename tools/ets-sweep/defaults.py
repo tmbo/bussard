@@ -38,8 +38,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import catalog  # noqa: E402
 import sweep  # noqa: E402
 import vm  # noqa: E402
+
+
+def sweep_search_term(order: str) -> str:
+    """The fixed part of an order number (no wildcard suffix)."""
+    return re.sub(r"(?<=[0-9.\-])x+$", "", order.strip(), flags=re.IGNORECASE) or order
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
@@ -123,69 +129,124 @@ def main() -> int:
 
     c = vm.connect()
     done = 0
-    for job in todo:
+    stop = False
+
+    def runnable(job: dict) -> bool:
+        """Record the skips; True when the job needs ETS."""
         prev = results.get(job["id"])
         if prev and not args.redo and not (args.redo_failed and not prev["outcome"].startswith(("captured", "skipped"))):
-            continue
+            return False
         base = {"file": job["file"], "name": job["name"], "mask": job["mask"], "when": datetime.now(timezone.utc).isoformat()}
         if job.get("older"):
             if not prev or prev["outcome"] != "captured":
                 results[job["id"]] = {**base, "outcome": "skipped-older-version", "newer": job["older"]}
                 save()
-            continue
+            return False
         if job["mask"] not in SIM_MASKS:
             results[job["id"]] = {**base, "outcome": "skipped-mask"}
             save()
-            continue
+            return False
         if job["mask"] not in masks:
-            continue
+            return False
         if not job["order_numbers"]:
             results[job["id"]] = {**base, "outcome": "skipped-no-order"}
             save()
-            continue
-        if not job["in_catalog"]:
-            results[job["id"]] = {**base, "outcome": "skipped-not-in-catalog"}
-            save()
-            continue
+            return False
+        return True
+
+    # One product file at a time: import it into ETS's catalog, run its
+    # applications, remove its products again. ETS slowed down and its product
+    # store broke with the whole corpus imported at once (2026-10-28).
+    by_file: dict[str, list[dict]] = {}
+    for job in todo:
+        if runnable(job):
+            by_file.setdefault(job["file"], []).append(job)
+    all_orders: dict[str, set[str]] = {}
+    for job in jobs():
+        all_orders.setdefault(job["file"], set()).update(str(o) for o in job["order_numbers"])
+    for file, file_jobs in by_file.items():
+        if stop:
+            break
+        path = product_path(file)
+        if file.lower().endswith(".zip") and not path.exists():
+            import zipfile
+
+            with zipfile.ZipFile(CORPUS / file) as z:
+                inner = [n for n in z.namelist() if n.lower().endswith(".knxprod")][0]
+                path.parent.mkdir(exist_ok=True)
+                path.write_bytes(z.read(inner))
+        imp: dict = {}
         try:
-            # The product name without its version suffix, for ETS's search
-            # when the order number does not list the wanted version.
-            fallback = re.sub(r"\s+v?\d+(\.\d+)*$", "", job["name"] or "").strip()
-            # Start from the identity a previous run learned from ETS: saves
-            # the refused first attempt on a rerun.
-            r = sweep.run_learning(c, product_path(job["file"]), job["id"], str(job["order_numbers"][0]),
-                                   mask=job["mask"], fallback_search=fallback,
-                                   properties=(prev or {}).get("learned_properties") or None)
-        except Exception as exc:  # noqa: BLE001 - a lost ssh link: reconnect and go on
-            r = {"outcome": "driver-error", "error": f"{type(exc).__name__}: {exc}"[:600]}
+            remote = catalog.upload_if_missing(c, path)
+            imp = vm.driver(c, "POST", "/ets/catalog_import", {"path": remote, "timeout": 3600, "project": "ets-sweep"}, timeout=3700)
+        except Exception as exc:  # noqa: BLE001
+            imp = {"outcome": "error", "error": str(exc)[:300]}
             c = vm.connect()
-        results[job["id"]] = {
-            **base,
-            "outcome": r["outcome"],
-            "ets": r.get("ets"),
-            "ops": r.get("ops"),
-            "loaded": r.get("loaded_objects"),
-            "seconds": r.get("seconds"),
-            "search": job["order_numbers"][0],
-            "row": r.get("catalog_row"),
-            "error": r.get("error"),
-            "ets_history": [l for l in (r.get("history") or [])[:4]],
-            "attempts": r.get("attempt"),
-            "end": r.get("end"),
-            "learned_properties": r.get("learned_properties"),
-        }
-        save()
-        if any(k in (r.get("error") or "") for k in ("screen grab failed", "not the RDP layout", "desktop in use")):
-            # The VM's desktop session is not drawing (an RDP client went
-            # away): every further job would fail the same way. Stop here;
-            # `tscon <session> /dest:console` in the VM brings it back.
-            print(f"stopping: the VM desktop is not usable: {r.get('error', '')[:160]}", flush=True)
-            break
-        print(f"{r['outcome']:13} {job['mask']} {r.get('seconds', 0):4}s ops={r.get('ops')} {job['id']} {job['name']!s:.40}"
-              + (f"  {r.get('error', '')[:100]}" if r.get("error") else ""), flush=True)
-        done += 1
-        if args.limit and done >= args.limit:
-            break
+        print(f"import  {imp.get('outcome', imp.get('error'))!s:12} {file}", flush=True)
+        if imp.get("outcome") not in ("imported", "done_unverified"):
+            for job in file_jobs:
+                results[job["id"]] = {"file": file, "name": job["name"], "mask": job["mask"],
+                                      "when": datetime.now(timezone.utc).isoformat(),
+                                      "outcome": "skipped-import-failed" if imp.get("outcome") == "refused" else "driver-error",
+                                      "error": (imp.get("message") or imp.get("error") or "")[:300]}
+            save()
+            if any(k in (imp.get("error") or "") for k in ("screen grab failed", "not the RDP layout", "desktop in use")):
+                print(f"stopping: the VM desktop is not usable: {imp.get('error', '')[:160]}", flush=True)
+                break
+            continue
+        for job in file_jobs:
+            prev = results.get(job["id"])
+            base = {"file": job["file"], "name": job["name"], "mask": job["mask"], "when": datetime.now(timezone.utc).isoformat()}
+            try:
+                # The product name without its version suffix, for ETS's search
+                # when the order number does not list the wanted version.
+                fallback = re.sub(r"\s+v?\d+(\.\d+)*$", "", job["name"] or "").strip()
+                # Start from the identity a previous run learned from ETS.
+                r = sweep.run_learning(c, path, job["id"], str(job["order_numbers"][0]),
+                                       mask=job["mask"], fallback_search=fallback,
+                                       properties=(prev or {}).get("learned_properties") or None)
+            except Exception as exc:  # noqa: BLE001 - a lost ssh link: reconnect and go on
+                r = {"outcome": "driver-error", "error": f"{type(exc).__name__}: {exc}"[:600]}
+                c = vm.connect()
+            results[job["id"]] = {
+                **base,
+                "outcome": r["outcome"],
+                "ets": r.get("ets"),
+                "ops": r.get("ops"),
+                "loaded": r.get("loaded_objects"),
+                "seconds": r.get("seconds"),
+                "search": job["order_numbers"][0],
+                "row": r.get("catalog_row"),
+                "error": r.get("error"),
+                "ets_history": [l for l in (r.get("history") or [])[:4]],
+                "attempts": r.get("attempt"),
+                "end": r.get("end"),
+                "learned_properties": r.get("learned_properties"),
+            }
+            save()
+            print(f"{r['outcome']:13} {job['mask']} {r.get('seconds', 0):4}s ops={r.get('ops')} {job['id']} {job['name']!s:.40}"
+                  + (f"  {r.get('error', '')[:100]}" if r.get("error") else ""), flush=True)
+            if any(k in (r.get("error") or "") for k in ("screen grab failed", "not the RDP layout", "desktop in use")):
+                print(f"stopping: the VM desktop is not usable: {r.get('error', '')[:160]}", flush=True)
+                stop = True
+                break
+            done += 1
+            if args.limit and done >= args.limit:
+                stop = True
+                break
+        # Remove what the file put into the catalog: every product of every
+        # application it holds (multi-product files import many).
+        removed = []
+        for order in sorted(all_orders.get(file, set())):
+            try:
+                rm = vm.driver(c, "POST", "/ets/catalog_remove", {"term": sweep_search_term(order), "project": "ets-sweep"}, timeout=900)
+                removed += rm.get("removed", [])
+                if not rm.get("ok", True):
+                    print(f"remove  failed {order}: {rm.get('error', '')[:120]}", flush=True)
+            except Exception as exc:  # noqa: BLE001
+                print(f"remove  failed {order}: {exc}", flush=True)
+                c = vm.connect()
+        print(f"remove  {len(removed):3} rows  {file}", flush=True)
     counts: dict[str, int] = {}
     for e in results.values():
         counts[e["outcome"]] = counts.get(e["outcome"], 0) + 1

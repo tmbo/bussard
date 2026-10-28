@@ -520,9 +520,33 @@ def ensure_ets_running(project: str = "ets-sweep") -> list[str]:
     did: list[str] = []
     try:
         ets_app()
-        return did
+        running = True
     except Exception:
-        pass
+        running = False
+    if running:
+        if window_project() == project:
+            return did
+        # ETS runs but shows its start page (or another tab): close a settings
+        # dialog left open, then open the project's tile.
+        if find_text("Einstellungen", (600, 100, 1200, 180), min_ratio=0.9) and find_text("Schließen", (3100, 2300, 3500, 2420)):
+            click_text("Schließen", (3100, 2300, 3500, 2420))
+            time.sleep(1.5)
+        tab = find_text(project, (0, 0, 4112, 90), min_ratio=0.9)
+        if tab:
+            click(tab["x"] + tab["w"] // 2, tab["y"] + tab["h"] // 2)
+            time.sleep(3)
+        else:
+            hit = find_text(project, (0, 700, 4112, 2400), min_ratio=0.9)
+            if not hit:
+                raise RuntimeError(f"ETS shows {window_project()!r} and no tile or tab for {project!r}")
+            click(hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2)
+            t0 = time.time()
+            while time.time() - t0 < 120 and window_project() != project:
+                time.sleep(3)
+            time.sleep(5)
+        did.append("opened project")
+        did.append(str(ensure_layout()))
+        return did
     subprocess.Popen([r"C:\Program Files (x86)\ETS6\ETS6.exe"], creationflags=subprocess.DETACHED_PROCESS)
     did.append("started ETS")
     t0 = time.time()
@@ -628,11 +652,32 @@ def catalog_rows(expand: bool = True) -> list[dict]:
         def cell(lo: int, hi: int) -> str:
             return " ".join(c["text"] for c in r["cells"] if lo <= c["x"] < hi).strip()
         version = cell(2560, 2740)
-        if not version:
+        order = cell(1970, 2240)
+        if not version and order:
+            # A short version ("1.1") can vanish at native size: read the
+            # cell magnified, at more than one zoom.
+            for zoom in (3, 2, 4):
+                version = " ".join(l["text"] for l in ocr((2560, r["y"] - 20, 2740, r["y"] + 20), zoom=zoom)).strip()
+                if version:
+                    break
+        if not version and not order:
             continue  # a manufacturer group header
         out.append({"y": r["y"], "name": cell(1130, 1970), "order": cell(1970, 2240),
-                    "application": cell(2300, 2560), "version": version})
+                    "application": cell(2300, 2560), "version": version, "online": row_is_online(r["y"])})
     return out
+
+
+def row_is_online(y: int) -> bool:
+    """Whether a catalog row is an online-catalog entry (cloud icon at x
+    694-725) rather than an imported product. ETS lists its online catalog
+    next to the local one since the product store was cleared (2026-10-28)."""
+    from PIL import ImageOps
+
+    img = ImageOps.grayscale(grab((690, y - 16, 730, y + 16)))
+    w, h = img.size
+    px = img.load()
+    dark_cols = sum(1 for x in range(w) if min(px[x, yy] for yy in range(h)) < 180)
+    return dark_cols >= 8
 
 
 @flow("catalog_rows")
@@ -676,12 +721,16 @@ def flow_catalog_add(req: dict) -> dict:
     want_version = _digits(req.get("version", ""))
 
     def pick(hits: list[dict]) -> dict | None:
+        # Imported products only: an online-catalog row would make ETS fetch
+        # product data from the internet instead of our corpus file.
+        hits = [r for r in hits if not r.get("online")]
         # The order number exactly (ZPR1612 is not ZPR1612V2), else a prefix.
         exact = [r for r in hits if _canon(r["order"]) == order] or [r for r in hits if _canon(r["order"]).startswith(order)]
         match = [r for r in exact if want_version and _digits(r["version"]) == want_version]
         if match:
             return match[0]
-        if not want_version and len(exact) == 1:
+        if len(exact) == 1 and (not want_version or not exact[0]["version"]):
+            # The only local row with this order number, its version unread.
             return exact[0]
         return None
 
@@ -1076,6 +1125,60 @@ def flow_catalog_search(req: dict) -> dict:
     for line in ocr((x0, y0 + 40, x1, y1), zoom=2):
         rows.append({"text": line["text"], "x": line["x"], "y": line["y"]})
     return {"term": req["term"], "rows": rows}
+
+
+@flow("catalog_remove")
+def flow_catalog_remove(req: dict) -> dict:
+    """Delete the imported catalog products a search for `term` lists (not
+    online-catalog entries), one row at a time, until none is left. ETS
+    deletes a catalog product on the Delete key without asking. Keeps the
+    catalog small: the sweep imports a product file, runs it and removes it,
+    since ETS slowed down and broke with the whole corpus in its store."""
+    require_project(req["project"])
+    removed = []
+    rows: list[dict] = []
+    for _ in range(int(req.get("max", 40))):
+        rows = [r for r in catalog_search_rows(req["term"]) if not r.get("online")]
+        if not rows:
+            break
+        row = rows[0]
+        click(1300, row["y"])
+        time.sleep(0.8)
+        keys("{DELETE}")
+        time.sleep(2)
+        # A confirmation, should one appear for some product.
+        text = " ".join(l["text"] for l in ocr((1200, 700, 3000, 1800)))
+        if "Möchten Sie" in text:
+            for label in ("Ja", "OK"):
+                hit = find_text(label, (1800, 1300, 3000, 1800), min_ratio=0.95)
+                if hit:
+                    click(hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2)
+                    break
+        wait_busy()
+        removed.append(f"{row['order']} {row['version']}")
+    return {"removed": removed, "left": rows}
+
+
+def catalog_search_rows(term: str) -> list[dict]:
+    """Type `term` into the catalog search and return the rows of that search."""
+    dy = catalog_dy()
+    sx, sy = LAYOUT["catalog_search"]
+    want = _canon(term)
+    rows: list[dict] = []
+    for attempt in range(3):
+        click(sx, sy + dy)
+        time.sleep(0.3)
+        keys("^a")
+        keys("{DEL}")
+        time.sleep(0.5)
+        keys(term + "{ENTER}")
+        time.sleep(3 + 2 * attempt)
+        click(1000, 1380 + dy)
+        time.sleep(0.5)
+        rows = [r for r in catalog_rows() if want in _canon(r["order"]) or want in _canon(r["name"])]
+        if rows:
+            return rows
+    return rows
 
 
 @flow("dialogs")
