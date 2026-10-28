@@ -851,6 +851,12 @@ def flow_catalog_add(req: dict) -> dict:
             break
         if dismiss_password_dialog():
             password_dialog = True
+        # ETS asks for compatibility mode for some old products only once the
+        # add has run for a while (ABB A-A033, 2026-10-28); the next job then
+        # met the prompt and was charged with it.
+        compat = decline_compat_mode()
+        if compat:
+            raise CompatModeRequired(f"ETS asked for compatibility mode on adding: {compat[:200]}")
         time.sleep(2)
     return {"devices": after, "added": new, "row": row, "password_dialog": password_dialog}
 
