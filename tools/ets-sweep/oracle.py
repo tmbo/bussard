@@ -52,6 +52,11 @@ def run_row(app: str, entry: dict) -> dict:
     if m:
         out.update({"system": m.group(1), "verdict": m.group(2), "coverage": m.group(3), "confirmed": m.group(4),
                     "regions": m.group(5).strip()})
+        # The oracle judges memory only unless a row asks for property parity;
+        # an ETS-only property write (the KNXnet/IP object of an IP-enabled
+        # device, ALLinBOX 1612) is a write bussard would miss: report it.
+        if out["verdict"] == "identical" and "props=differs" in out["regions"]:
+            out["verdict"] = "differs-props"
     else:
         out["verdict"] = "oracle-error"
         out["tail"] = text.strip().splitlines()[-6:]
