@@ -275,10 +275,23 @@ pub fn ext_write(
 /// for another object type.
 pub fn ext_description(obj: &InterfaceObject, request: &[u8], slots: u16) -> Option<Vec<u8>> {
     let h = request.get(..7)?;
-    let (object_type, instance, pid) = ext_header(h);
-    if object_type != IOT_KNXNET_IP_PARAMETER {
+    if ext_header(h).0 != IOT_KNXNET_IP_PARAMETER {
         return None;
     }
+    describe_ext(obj, request, Some(slots))
+}
+
+/// The `A_PropertyExtDescription_Response` payload for an object of any type
+/// reached by type (a vendor object such as the ABB Modbus RTU gateway's type
+/// 65281, whose PID 207 ETS describes before comparing it, 2026-10-28).
+pub fn typed_ext_description(obj: &InterfaceObject, request: &[u8]) -> Option<Vec<u8>> {
+    describe_ext(obj, request, None)
+}
+
+/// The description payload; `slots` refines the KNXnet/IP object's PID 53.
+fn describe_ext(obj: &InterfaceObject, request: &[u8], slots: Option<u16>) -> Option<Vec<u8>> {
+    let h = request.get(..7)?;
+    let (object_type, instance, pid) = ext_header(h);
     let index = u16::from_be_bytes([h[5], h[6]]) & 0x0FFF;
     let desc = match (instance, u8::try_from(pid)) {
         (1, Ok(0)) => u8::try_from(index)
@@ -287,7 +300,10 @@ pub fn ext_description(obj: &InterfaceObject, request: &[u8], slots: u16) -> Opt
         (1, Ok(pid)) => obj.describe_pid(pid),
         _ => None,
     }
-    .map(|d| refine(d, obj, slots));
+    .map(|d| match slots {
+        Some(slots) => refine(d, obj, slots),
+        None => d,
+    });
     let (pid, type_octet, max, access) = match desc {
         Some(d) => (
             u16::from(d.pid),
@@ -457,6 +473,24 @@ pub fn typed_ext_write(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_typed_ext_description_of_a_vendor_object() -> Result<(), Box<dyn std::error::Error>> {
+        // The ABB Modbus RTU gateway's object type 65281, PID 207 = 01.
+        let mut obj = InterfaceObject::new();
+        obj.set_property(207, crate::device::Property::read_only(vec![0x01]));
+        // [type 0xFF01][instance 1 | PID 207][index 0]
+        let req = [0xFF, 0x01, 0x00, 0x10, 0xCF, 0x00, 0x00];
+        let out = typed_ext_description(&obj, &req).ok_or("a description")?;
+        assert_eq!(&out[..5], &req[..5], "type, instance and PID echoed");
+        assert_eq!(out[12] >> 4 & 0x0F, 0, "read level 0");
+        assert_ne!(
+            u16::from_be_bytes([out[10], out[11]]),
+            0,
+            "max elements set"
+        );
+        Ok(())
+    }
 
     #[test]
     fn test_array_write_elements_count_and_capacity() {
