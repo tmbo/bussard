@@ -1240,18 +1240,28 @@ def catalog_import_button() -> dict | None:
 
 def type_search(term: str, dy: int) -> None:
     """Type `term` into the Katalog search box and run the search. Delete is
-    pressed only once OCR shows the term in the box: a missed click once left
-    the focus on the Topologie tree and Ctrl+A, Delete removed line 1.1 (ETS
-    asks no confirmation; 2026-10-28). Letters typed elsewhere do no harm."""
+    pressed only once focus is proven to be in the box: a missed click once
+    left the focus on the Topologie tree and Ctrl+A, Delete removed line 1.1
+    (ETS asks no confirmation; 2026-10-28). The proof is a marker typed over
+    the box's text and read back by OCR (the term itself is a poor proof:
+    OCR misreads order numbers, and the previous term is often similar).
+    Letters typed elsewhere do no harm."""
     sx, sy = LAYOUT["catalog_search"]
-    click(sx, sy + dy)
-    time.sleep(0.3)
+    region = (sx - 260, sy + dy - 30, sx + 420, sy + dy + 30)
+    for _ in range(2):
+        click(sx, sy + dy)
+        time.sleep(0.3)
+        keys("^a")
+        keys("QQQ")
+        time.sleep(0.6)
+        box = " ".join(l["text"] for l in ocr(region, zoom=2))
+        if "QQQ" in box.upper().replace("0", "Q"):
+            break
+    else:
+        raise RuntimeError(f"the search box does not take keys (shows {box!r}); no Delete pressed")
     keys("^a")
-    keys(term)  # replaces the selected old term
-    time.sleep(0.6)
-    box = " ".join(l["text"] for l in ocr((sx - 260, sy + dy - 30, sx + 420, sy + dy + 30), zoom=2))
-    if _canon(term) not in _canon(box):
-        raise RuntimeError(f"the search box did not take {term!r} (shows {box!r}); no Delete pressed")
+    keys(term)
+    time.sleep(0.4)
     keys("{DEL}{ENTER}")  # drop ETS's autocompleted suffix (ZPR1612 -> ZPR1612V3)
 
 
