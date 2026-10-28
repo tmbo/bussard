@@ -139,12 +139,12 @@ fn sys7_events(step: &FlashStep) -> Vec<(u32, &'static str, [u8; sys7::LOAD_EVEN
         FlashStep::Sys7TaskSegment {
             lsm,
             address,
-            marker,
+            identity,
         } => match u16::try_from(*address) {
             Ok(address) => vec![(
                 *lsm,
                 "task-segment",
-                sys7::encode_task_segment(address, *marker),
+                sys7::encode_task_segment(address, identity),
             )],
             Err(_) => Vec::new(),
         },
