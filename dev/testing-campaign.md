@@ -409,7 +409,11 @@ confirmed restart is T_ACKed and answered with `A_Restart_Response`, which ETS
 T_ACKs before closing, with no T_Disconnect and no reconnect. A basic restart
 may or may not be T_ACKed (1.1.44 and 1.1.45 do, 1.1.52 does not), and ETS
 sends T_Disconnect 1 to 3 s later. ETS does not check that the device comes
-back.
+back. Both shapes are what the standard allows: after an `A_Restart` on a
+connection-oriented session the device may or may not tear the transport
+connection down, and may or may not send a T_Disconnect when it does
+(03/03/07 Application Layer §3.4.2.2, error handling); only the master reset
+is a confirmed service.
 
 These captures are the capture plan for `bussard restart` (#347): no oracle
 row compares a restart. To turn them into rows, re-take them over a plain

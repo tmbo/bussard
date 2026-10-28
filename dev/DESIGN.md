@@ -295,6 +295,50 @@ buffer. The tool list, parameters and tiers are in
   reversible without git (`bussard undo`) and reach nothing physical; the bus is where a
   human confirms.
 
+### 5.6 Protocol stack references (cEMI, TL, AL)
+
+The clauses the clean-room transport is written against, so a reader can check a
+frame without re-deriving it. Volume and clause numbers are from KNX Standard 3.0.0
+under `dev/knx-standard-3.0.0/`.
+
+- cEMI `L_Data` layout, control fields and the length octet: 03/06/03 EMI/IMI
+  §4.1.5.3.2 and §4.1.5.3.3. Control field 1 bit 7 selects the frame type (1 =
+  standard), bit 5 the repeat flag (1 = repetitions allowed), bit 4 the system
+  broadcast flag (1 = ordinary broadcast; "don't care" on TP1), bits 3-2 the
+  priority (`00` system, `01` normal, `10` urgent, `11` low, 03/02/02 TP1 §2.2.4),
+  bit 1 the L2 acknowledge request, bit 0 the confirm/error flag of an `L_Data.con`.
+  The length octet counts the octets after the TPCI octet. An APDU longer than 15
+  octets needs an extended frame (length 0 to 254, 03/02/02 §2.2.5.6); a receiver
+  must accept an extended frame for a short payload too (03/06/03 §4.1.5.2.3).
+  `cemi.rs` picks the frame type from the encoded length. The
+  `Control1::system_broadcast` field name is the inverse of the wire meaning (#508).
+- Transport layer: timings and the connection-oriented state machine are 03/03/04
+  Transport Layer §4 (acknowledge timeout 3 s, three repetitions, connection
+  timeout 6 s) and §5 (events, actions, Style 3 table), as amended by AN210 v02
+  (T_ACK with a wrong sequence closes the connection, T_NAK with a wrong sequence
+  is ignored). The current test spec 08/03/04 v01.06.07 §3 tests only Style 3 and
+  says new stacks shall implement it; Styles 1 and 2 are phased out.
+  `Layer4Connection` has the happy path and the duplicate rule (`SeqNoRcv - 1` is
+  re-acknowledged, not re-delivered) right; its error paths are tracked in #507 and
+  `knx-sim`'s server side in #511. T_Connect, T_Disconnect, T_ACK and T_NAK are
+  system-priority telegrams (03/03/04 §3.7, §3.8, §5.3), as are the
+  `A_IndividualAddress*` broadcasts (03/03/07 §3.2); bussard sends them at normal
+  priority (#506).
+- Application layer: the APCI table is 03/03/07 Application Layer §2. The six-bit
+  packed form of the group-value services is for values of six bits or less
+  (§3.1.2); a byte-sized value with a small number still travels as a data octet
+  (#59). `A_Memory_Read/Write` carry 1 to 63 octets and a 16-bit address (§3.5.3,
+  §3.5.4); the extended services carry 1 to 250 octets and a 24-bit address, and
+  answer with a return code (§3.4.9). A response with `number = 0`, `nr_of_elem = 0`
+  or descriptor type 3Fh is the defined negative answer, not a malformed frame
+  (§3.5.3, §3.4.4.1, §3.4.2.1; bussard's reading of these is #509). `A_Restart`
+  carries the restart type in the low APCI bit; a basic restart is never answered,
+  a master reset is answered with an error code and a process time, and the device
+  may or may not drop the transport connection afterwards (§3.4.2.2). Reading a
+  property with `start_index = 0` returns its element count (§3.4.4.1).
+  `PID_MAX_APDULENGTH` of the device object bounds every chunk (§3.5.3 note 17);
+  without it the standard-frame budget of 15 applies.
+
 ## 6. Roadmap
 
 **Phase 0, read-only and zero risk. Shipped.** Import an existing `.knxproj` (ETS 6,
@@ -319,8 +363,12 @@ ETS-free application download from a `.knxprod` into a System B device: pre-flig
 verification. The parameter image is computed from vendor defaults plus the device file's
 parameter values, with the lock's module bases resolving per-channel placement. Hardening
 shipped along the way: A_Authorize on every management connect (`flash --bcu-key` for
-keyed devices, free access otherwise, #52), per-chunk read-back verification, and strict
-load-state checking that fails fast when a device does not honour a segment allocation.
+keyed devices, free access otherwise, #52), end-of-segment read-back and the device's own
+MCB check (a plain `A_Memory_Write` is only acknowledged at the transport layer and is
+confirmed by the device solely in verify mode, 03/03/07 Application Layer §3.5.4, so the
+plain path streams chunks without a per-chunk read-back, as ETS does; the extended
+service confirms each chunk inline, §3.4.9.2), and strict load-state checking that fails
+fast when a device does not honour a segment allocation.
 The download runs over a single management connection for its whole duration, exactly as
 ETS does; a genuinely dead connection fails cleanly, and re-running `flash` is safe
 because the download is idempotent.
