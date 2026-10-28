@@ -875,7 +875,7 @@ pcap and keyring from the environment) re-checks every CONFIRMED row.
 | SEARCH_REQUEST_EXTENDED SRP `08 04 01 08 02 06 07 00` (request DIBs) | CONFIRMED | byte-identical to bussard's `SEARCH_EXTENDED_SRP` |
 | Security family `09 01` in the SUPP_SVC_FAMILIES DIB of the extended answer only (not in DESCRIPTION_RESPONSE) | CONFIRMED | before and after Secure |
 | Secured families DIB type `0x06`: `06 06 03 01 04 01` (device management v1, tunnelling v1) marks tunnelling secure-only | CONFIRMED | after Secure; plain CONNECT then refused with `0x22` (#182) |
-| Tunnelling-info slots of a secure interface: status `0x0005` (usable, free, not pre-authorized) | CONFIRMED | slots 1.1.22..1.1.29 |
+| Tunnelling-info slots of a secure interface: status `0x0005` (usable, free, authorisation required). Outside a secure session bit 1 means "no authorisation required", not "this client is authorised" (3/8/2 Core §7.5.4.8); bussard's probe is always outside a session (#518) | CONFIRMED | slots 1.1.22..1.1.29 |
 | SESSION_REQUEST = 46 octets: TCP route-back HPAI + 32-octet public key | CONFIRMED | 3 of 3 |
 | SESSION_RESPONSE = 56 octets: session id (2) + public key (32) + MAC (16) | CONFIRMED | 3 of 3 |
 | SESSION_RESPONSE MAC input and key (§7.4) | CONFIRMED | all 3 MACs verify under the keyring's `Interface@Authentication` and `Device@Authentication` of 1.1.200 |
@@ -886,11 +886,15 @@ pcap and keyring from the environment) re-checks every CONFIRMED row.
 | ETS sends DISCONNECT and closes TCP without a SESSION_STATUS close | CONFIRMED (bussard also sends `STATUS_CLOSE`, as XKNX does) | last frames of session 3 |
 | SESSION_AUTHENTICATE MAC (§7.5) and SecureWrapper `additional_data` (§8.2) | INFERRED (XKNX, which works against real interfaces; three independent implementations agree on vectors: bussard, knx-sim, a Python script) | not checkable without the session key |
 | Session idle timeout 60 s; keepalive every 30 s (wrapped `STATUS_KEEPALIVE`) is adequate | CONFIRMED (live, read-only, 2026-09-25, #197): `bussard test --secure-idle` against 1.1.200 found the TCP session alive after 45 s idle and dropped with a wrapped `STATUS_TIMEOUT` at 59.97 s, 3 of 3 runs (`SECURE_SESSION_TIMEOUT`). Configurable (`SecureTunnelConfig::keepalive`, `BUSSARD_SECURE_KEEPALIVE_SECS`, `0` = none); an interval of 60 s or more is warned about at connect | the capture's sessions last seconds; the timeout was measured with the idle probe (§8.3) |
-| Secure session over **UDP** (#197): SESSION_REQUEST with the client's UDP HPAI, the tunnel's control/data HPAIs as on a plain UDP tunnel, TUNNELING_ACK inside SECURE_WRAPPERs in both directions, TIMER_NOTIFY ignored on unicast | INFERRED (KNX specification), **sim-verified only** (knx-sim `udp: true`, bussard-testkit mock); no real interface tested | no UDP-only interface captured; the Jung interface serves TCP. UDP runs only with `--secure-transport udp`: the default `auto` reports a TCP refusal from a Secure-advertising interface (`SecureTcpRefused`) instead of switching |
+| Secure session over **UDP** (#197): SESSION_REQUEST with the client's UDP HPAI, the tunnel's control/data HPAIs as on a plain UDP tunnel, TUNNELING_ACK inside SECURE_WRAPPERs in both directions, TIMER_NOTIFY ignored on unicast | **NOT ALLOWED by the standard** (3/8/9 KNX IP Secure §2.2.3.3: unicast sessions use TCP, not UDP; §2.2.3.6.4: a SESSION_REQUEST received over UDP, or with any HPAI but the TCP route-back one, is discarded; TSSK test 2.2.25). Only knx-sim and the testkit mock answer it; a conforming interface never will (#513) | no UDP-only interface exists by specification; the Jung interface serves TCP. The opt-in `--secure-transport udp` and the `SecureTcpRefused` hint are to be retired (#513) |
 
 What ETS did in session 3 was a **device management** connection to the
-interface (CRI `02 03`: 24-octet CONNECT_REQUEST, 18-octet response), not a
-tunnel; tunnelling uses the same session with the tunnel CRI.
+interface (CRI `02 03`: 24-octet CONNECT_REQUEST, 18-octet response; 3/8/3
+Device Management §4.2.3, §4.2.4), not a tunnel; tunnelling uses the same
+session with the tunnel CRI. bussard has no device management connection and
+configures the interface over the tunnel instead (#523). Inside a session the
+management user (id 1) may open it; a tunnelling user may not (3/8/9
+§2.2.1.4.2).
 
 The client (`crates/bussard-transport/src/secure.rs`, `tunnel.rs`):
 
@@ -899,8 +903,12 @@ The client (`crates/bussard-transport/src/secure.rs`, `tunnel.rs`):
    is the gateway's individual address, on a gateway that advertises Secure,
    selects the secure tunnel; the user whose tunnel address is a free slot is
    preferred. With `--secure-user`/`--secure-password-env`, go secure directly.
-2. TCP connect (or a UDP socket, #197, §8.3); SESSION_REQUEST with a fresh
-   X25519 key.
+2. TCP connect (the only carrier the standard allows, 3/8/9 §2.2.3.3; the
+   UDP socket of #197 is a sim-only artefact, #513); SESSION_REQUEST with a
+   fresh X25519 key. Each of SESSION_RESPONSE and the authentication
+   SESSION_STATUS is waited for at most 10 s (3/8/9 §2.2.3.6.1, §2.2.3.8.1);
+   a failed authentication needs a new session with a new key pair, never a
+   second SESSION_AUTHENTICATE on the same key (3/8/9 §2.2.3.8.3).
 3. SESSION_RESPONSE: verify its MAC under the device authentication code when
    the keyring has one (the client authenticates the interface before it sends
    anything derived from the user password); warn and skip otherwise.
@@ -936,7 +944,13 @@ Extend `ServiceType` in `crates/bussard-transport/src/knxnet.rs:32`:
 | TIMER_NOTIFY | 0x0955 |
 
 `SecureSessionStatusCode`: SUCCESS=0x00, AUTH_FAILED=0x01, UNAUTHENTICATED=0x02,
-TIMEOUT=0x03, KEEPALIVE=0x04, CLOSE=0x05.
+TIMEOUT=0x03, KEEPALIVE=0x04, CLOSE=0x05 (3/8/9 KNX IP Secure §2.2.3.9.2).
+The status table in 3/8/1 Overview §5.5 lists CLOSE as 04h and KEEPALIVE as
+05h, the other way round; the KNX IP Secure volume, XKNX and the live
+interface (which keeps a session alive on 04h for well over 60 s) agree on
+the values above, so the Overview table is taken to be the misprint.
+SESSION_STATUS is only ever sent wrapped (§2.2.3.9.2); a plain one is not a
+valid session event (#522).
 
 ### 7.2 ECDH session-key derivation `[XKNX ip_secure.py, CONFIRMED]`
 
@@ -1011,8 +1025,10 @@ message_authentication_code 16 bytes
 ```
 
 `SECURITY_INFORMATION_LENGTH = 16` (session_id+seq+serial+tag),
-`MESSAGE_AUTHENTICATION_CODE_LENGTH = 16`, minimum frame = 34 bytes; fixed
-overhead beyond the wrapped payload = 32 bytes.
+`MESSAGE_AUTHENTICATION_CODE_LENGTH = 16`; fixed overhead beyond the wrapped
+payload = 32 octets, so the smallest valid wrapper is 44 octets (6 header +
+16 security information + a 6-octet inner header + 16 MAC); anything shorter
+is discarded (3/8/9 §2.2.1.3.3). bussard's `MIN_WRAPPER_LEN` is 38 (#522).
 
 ### 8.2 Crypto blocks
 
@@ -1039,7 +1055,12 @@ the wrapped SESSION_AUTHENTICATE, so the session never authenticates.
   SESSION_RESPONSE. `message_tag` = 0 for tunnelling `[CONFIRMED]`. Replay
   protection = never accept a sequence below the next expected one. bussard
   runs unicast over TCP first, as ETS does with this interface.
-- **Unicast (UDP)** `[INFERRED, sim-verified only; #197]`: the same session on
+- **Unicast (UDP)** `[NOT ALLOWED: 3/8/9 §2.2.3.3 and §2.2.3.6.4; sim-only, #513]`:
+  the standard reserves unicast secure sessions to TCP, because the
+  strictly-increasing sequence rule loses reordered datagrams; a conforming
+  server discards a SESSION_REQUEST that arrives over UDP. What follows
+  describes the knx-sim/mock behaviour bussard's opt-in was written against,
+  kept for the record until #513 removes it: the same session on
   one UDP socket connected to the control endpoint. SESSION_REQUEST carries the
   socket's real HPAI (`08 01 <ip> <port>`), CONNECT names it as control and
   data endpoint, and the tunnelling layer keeps its TUNNELING_ACKs (wrapped).
@@ -1052,8 +1073,8 @@ the wrapped SESSION_AUTHENTICATE, so the session never authenticates.
   connect is refused and the extended search advertises the security family,
   it fails with `SecureTcpRefused`, which names `--secure-transport udp`, and
   never switches to UDP on its own. `--secure-transport udp` is the explicit
-  opt-in. No real interface has been tested over UDP; it stays INFERRED until
-  a UDP-only interface is captured.
+  opt-in. No real interface can be tested over UDP: the specification
+  excludes the carrier, so there is nothing left to capture.
 - The wrapper sits at the `frame()`/`do_send` seam in
   `crates/bussard-transport/src/tunnel.rs:279` - the plain tunnelling frame is
   built as today, then wrapped in a SecureWrapper before the socket write, and
@@ -1063,9 +1084,11 @@ the wrapped SESSION_AUTHENTICATE, so the session never authenticates.
   and `BUSSARD_SECURE_KEEPALIVE_SECS`), plus the tunnel's own CONNECTIONSTATE
   heartbeat every 60 s. The Jung interface drops a session idle for 60 s
   `[CONFIRMED, live idle probe, 2026-09-25: alive at 45 s, STATUS_TIMEOUT at
-  59.97 s, 3 of 3]`, the session timeout of the KNX specification, so the
-  30 s keepalive leaves 30 s of margin over TCP. Over UDP (sim-verified only)
-  one lost keepalive leaves none; lower `BUSSARD_SECURE_KEEPALIVE_SECS` there.
+  59.97 s, 3 of 3]`, which is `timeoutSession` = 60 s of the session state
+  machine (3/8/9 §2.2.3.5.2.1.1; the unauthenticated phase has its own
+  `timeoutAuthentication` = 10 s), so the 30 s keepalive leaves 30 s of margin
+  over TCP. The server answers the expiry with a wrapped `STATUS_TIMEOUT` and
+  may close the TCP connection without waiting (§2.2.3.9.2, §2.4.1).
   A keepalive of 60 s or more is warned about when the tunnel connects
   (`SecureTunnelConfig::keepalive_risk`); the heartbeat alone (keepalive `0`)
   runs at the timeout itself and relies on the TCP read-deadline probe or
@@ -1107,9 +1130,12 @@ timeout tears the session down and (for tunnelling) the transport reconnects.
 ### 9.2 Replay / timeout
 
 - Unicast: reject any inbound SecureWrapper whose `sequence_information` is not
-  strictly greater than the last accepted (per session). Constant-time MAC
-  compare before accepting. A rejected wrapper is dropped and logged; it does
-  not end the session.
+  strictly greater than the last accepted (per session): the standard words it
+  as "less than or equal to the last received" is discarded, and allows gaps
+  (3/8/9 §2.2.1.3.3, §2.2.3.3). The check may run before the MAC check, since
+  a rejected frame has no further effect. Constant-time MAC compare before
+  accepting. A rejected wrapper is dropped and logged; it does not end the
+  session. A wrapper for an unknown session id is discarded (§2.2.1.3.3).
 - `KEEPALIVE` (SESSION_STATUS 0x04) keeps an idle session alive (30 s, §8.3).
 
 ### 9.3 Secure ROUTING (deferred, B2)
@@ -1491,10 +1517,10 @@ greppable.
    S-A_Data, but the only way to read the tool-access counter (§6.3).
 4. **SecureWrapper `additional_data` MAC input** (§8.2): the first live
    bussard session against the interface settles it (the capture cannot).
-5. **KNXnet/IP Secure over UDP** (§8.3, #197): implemented from the KNX
-   specification and verified against knx-sim only, reachable only through
-   `--secure-transport udp`; a UDP-only interface capture settles the HPAIs,
-   the data endpoint and whether the interface ACKs inside the session.
+5. ~~**KNXnet/IP Secure over UDP** (§8.3, #197)~~ **Settled by the standard**
+   (spec review 2026-10-28, #513): 3/8/9 §2.2.3.3 and §2.2.3.6.4 exclude UDP
+   for unicast secure sessions, so no capture can exist; the opt-in carrier
+   and its sim/mock servers are to be retired.
 6. ~~**The interface's session idle timeout** (§8.3, #197)~~ **Settled**
    2026-09-25: 60 s on the Jung interface (idle probe, alive at 45 s,
    `STATUS_TIMEOUT` at 59.97 s, 3 of 3); the 30 s keepalive is CONFIRMED

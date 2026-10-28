@@ -106,7 +106,13 @@ including 6-bit small APDUs. The small form is the standard's rule for sub-octet
 an optimisation for small values: a DPT shorter than one octet travels in the low bits of
 the APCI octet (KNX 03_07_02 Datapoint Types §1.3.1), which is main types 1, 2, 3 and 23;
 a byte-sized value always goes as a separate data octet, whatever its value (issue #59;
-23 is not in the size registry yet, #498). The `.knxprod` reader (`bussard-prod`) is likewise written
+23 is not in the size registry yet, #498). The KNXnet/IP clauses it implements: 3/8/2 Core §5.2 to §5.5 (connect
+within 10 s, per-channel sequence counters from 0, heartbeat every 60 s answered within
+10 s and repeated three times before a DISCONNECT, control versus data endpoint), 3/8/4
+Tunnelling §2.6 (1 s ACK timeout, one repeat, ACK on the expected sequence and on seq-1
+only, no ACKs over TCP) and 3/8/5 Routing §2.3.5 (ROUTING_BUSY wait plus random back-off).
+Where the code deviates, the spec-review issues say how (#512, #514, #516, #519). The
+`.knxprod` reader (`bussard-prod`) is likewise written
 from scratch: parsing XML from a ZIP; signing is never needed since bussard only reads
 vendor files.
 
