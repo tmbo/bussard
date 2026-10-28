@@ -375,6 +375,9 @@ def flow_windows(req: dict) -> dict:
 LAYOUT = {
     # The breadcrumb under the tabs: names the selected line or device.
     "breadcrumb": (150, 80, 2300, 150),
+    # The toolbar's add button: 'Geräte hinzufügen' with a line selected,
+    # 'Hinzufügen' with a device selected.
+    "toolbar_add": (2200, 80, 2600, 150),
     "tab_strip": (0, 0, 4112, 90),
     "logo": (170, 40),
     "toolbar_connection": (3686, 113),
@@ -854,11 +857,14 @@ def flow_delete_device(req: dict) -> dict:
     click(700, hit[0]["y"])
     time.sleep(0.8)
     # ETS deletes without asking now, so Delete removes whatever has the
-    # selection: once the line and the area (2026-10-28). Press it only when
-    # the breadcrumb names the device.
-    crumb = " ".join(l["text"] for l in ocr(LAYOUT["breadcrumb"])).replace(" ", "")
-    if req["ia"] not in crumb or "Linie" in crumb.rsplit(req["ia"], 1)[-1]:
-        raise RuntimeError(f"delete: the selection is not device {req['ia']}: breadcrumb {crumb[:120]!r}")
+    # selection: once the line and the area (2026-10-28). Press it only when a
+    # device in line 1.1 is selected: the breadcrumb (the selection's
+    # container) ends in '1.1 TP Linie', and the toolbar offers a plain
+    # 'Hinzufügen' (a selected line or area offers 'Geräte/Linien hinzufügen').
+    crumb = " ".join(l["text"] for l in ocr(LAYOUT["breadcrumb"]))
+    bar = " ".join(l["text"] for l in ocr(LAYOUT["toolbar_add"]))
+    if not crumb.rstrip().endswith("TP Linie") or re.search(r"(Geräte|Linien|Bereiche|Segmente)\s*hinzu", bar):
+        raise RuntimeError(f"delete: the selection is not device {req['ia']}: breadcrumb {crumb[:120]!r}, toolbar {bar[:80]!r}")
     keys("{DELETE}")
     # The confirmation comes later for a larger product (over 2 s for an MDT
     # room actuator): wait for it, confirm, and check the device is gone.
