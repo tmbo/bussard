@@ -148,7 +148,14 @@ def main() -> int:
             save()
             continue
         try:
-            r = sweep.run_learning(c, product_path(job["file"]), job["id"], str(job["order_numbers"][0]), mask=job["mask"])
+            # The product name without its version suffix, for ETS's search
+            # when the order number does not list the wanted version.
+            fallback = re.sub(r"\s+v?\d+(\.\d+)*$", "", job["name"] or "").strip()
+            # Start from the identity a previous run learned from ETS: saves
+            # the refused first attempt on a rerun.
+            r = sweep.run_learning(c, product_path(job["file"]), job["id"], str(job["order_numbers"][0]),
+                                   mask=job["mask"], fallback_search=fallback,
+                                   properties=(prev or {}).get("learned_properties") or None)
         except Exception as exc:  # noqa: BLE001 - a lost ssh link: reconnect and go on
             r = {"outcome": "driver-error", "error": f"{type(exc).__name__}: {exc}"[:600]}
             c = vm.connect()
@@ -164,10 +171,11 @@ def main() -> int:
             "error": r.get("error"),
             "ets_history": [l for l in (r.get("history") or [])[:4]],
             "attempts": r.get("attempt"),
+            "end": r.get("end"),
             "learned_properties": r.get("learned_properties"),
         }
         save()
-        if any(k in (r.get("error") or "") for k in ("screen grab failed", "not the RDP layout")):
+        if any(k in (r.get("error") or "") for k in ("screen grab failed", "not the RDP layout", "desktop in use")):
             # The VM's desktop session is not drawing (an RDP client went
             # away): every further job would fail the same way. Stop here;
             # `tscon <session> /dest:console` in the VM brings it back.

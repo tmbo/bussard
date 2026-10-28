@@ -441,13 +441,19 @@ def line_1_1() -> tuple[int, int]:
     """Screen position of '1.1 TP Linie' in the Topologie tree, expanding the
     tree when ETS reopened it collapsed (after a restart, 2026-10-28)."""
     tree = LAYOUT["tree"]
-    for _ in range(3):
-        hit = find_text("1.1 TP Linie", tree, min_ratio=0.75)
-        if hit:
+    for attempt in range(3):
+        # The sweep project holds exactly one TP line; the selection highlight
+        # garbles its number at times ('IJ:: TP Linie'), so match on the rest,
+        # magnified on a second look.
+        lines = ocr(tree, zoom=1 if attempt == 0 else 3)
+        tp = [l for l in lines if "TP Linie" in l["text"] or "TP Unie" in l["text"]]
+        if tp:
+            hit = tp[0]
             return hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2
-        main = find_text("IP Hauptlinie", tree, min_ratio=0.75)
+        main = next((l for l in lines if "Haupt" in l["text"]), None) or next(
+            (l for l in lines if l["text"].strip().startswith("IP") or "1.0" in l["text"]), None)
         if not main:
-            raise RuntimeError(f"no 'IP Hauptlinie' in the Topologie tree: {[l['text'] for l in ocr(tree)]}")
+            raise RuntimeError(f"no 'IP Hauptlinie' in the Topologie tree: {[l['text'] for l in lines]}")
         click(18, main["y"] + main["h"] // 2)  # the expander arrow left of the line
         time.sleep(1.5)
     raise RuntimeError("'1.1 TP Linie' did not appear in the Topologie tree")
@@ -547,6 +553,19 @@ def ensure_ets_running(project: str = "ets-sweep") -> list[str]:
     return did
 
 
+def wait_busy(timeout: float = 300) -> float:
+    """Wait while ETS shows a progress overlay ('Löschen …', 'Hinzufügen …'):
+    deleting a large device (Zennio ALLinBOX 1612, 110 kB of parameters) takes
+    minutes, and clicks meanwhile go nowhere. Returns the seconds waited."""
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        text = " ".join(l["text"] for l in ocr((1550, 900, 2560, 1100)))
+        if not re.search(r"(Löschen|Hinzufügen|Einfügen|Speichern|Laden|Konvertiere)\s*(…|\.\.\.)", text):
+            return time.time() - t0
+        time.sleep(2)
+    raise RuntimeError(f"ETS still busy after {int(timeout)} s")
+
+
 def dismiss_password_dialog() -> bool:
     """'Projektpasswort setzen': ETS asks for a project password the first
     time a KNX Secure capable product joins a project without one. The plain
@@ -580,12 +599,22 @@ def search_term(order: str) -> str:
     return re.sub(r"(?<=[0-9.\-])x+$", "", order.strip(), flags=re.IGNORECASE) or order
 
 
-def catalog_rows() -> list[dict]:
+def catalog_rows(expand: bool = True) -> list[dict]:
     """The catalog result rows as {y, name, order, application, version},
-    grouped from OCR lines by height; manufacturer group headers are left out."""
+    grouped from OCR lines by height; manufacturer group headers are left out.
+    A collapsed manufacturer group (ETS keeps a group collapsed across
+    searches) is expanded first."""
     dy = catalog_dy()
     x0, y0, x1, y1 = LAYOUT["catalog_rows"]
     lines = ocr((x0, y0 + 40 + dy, x1, min(y1 + dy, 2440)))
+    if expand and not any(l["x"] >= 1130 for l in lines):
+        # No product rows: expand collapsed manufacturer headers (left column;
+        # the first one sits just above the scanned area).
+        heads = [l for l in ocr((x0, y0 + dy, 1300, min(y1 + dy, 2440))) if l["x"] < 800 and l["y"] > y0 + dy + 10]
+        for head in heads[:6]:
+            click(707, head["y"] + head["h"] // 2)
+            time.sleep(1)
+        lines = ocr((x0, y0 + 40 + dy, x1, min(y1 + dy, 2440)))
     rows: list[dict] = []
     for line in sorted(lines, key=lambda l: l["y"]):
         cy = line["y"] + line["h"] // 2
@@ -618,42 +647,57 @@ def flow_catalog_add(req: dict) -> dict:
     shows it, e.g. "2.3"), and add it to line 1.1. Returns the device list."""
     require_project(req["project"])
     dismiss_password_dialog()
+    wait_busy()
     before = {d["ia"] for d in flow_devices(req)["devices"]}
     dy = catalog_dy()
     sx, sy = LAYOUT["catalog_search"]
-    term = search_term(req["search"])
-    want = _canon(term)
-    rows: list[dict] = []
-    exact: list[dict] = []
-    for attempt in range(4):
-        click(sx, sy + dy)
-        time.sleep(0.3)
-        keys("^a")
-        keys("{DEL}")
-        time.sleep(0.5)
-        keys(term + "{ENTER}")
-        time.sleep(3 + 2 * attempt)
-        click(1000, 1380 + dy)  # a neutral spot: closes the search-history dropdown
-        time.sleep(0.5)
-        rows = catalog_rows()
-        # Only rows of THIS search count: ETS leaves the previous search's
-        # rows up for a while (a third of the misses in the first full run).
-        exact = [r for r in rows if want and (want in _canon(r["order"]) or _canon(r["order"]).startswith(want)
-                                              or want in _canon(r["name"]))]
-        if exact:
-            break
+    def search(term: str) -> tuple[list[dict], list[dict]]:
+        want = _canon(term)
+        rows: list[dict] = []
+        for attempt in range(4):
+            click(sx, sy + dy)
+            time.sleep(0.3)
+            keys("^a")
+            keys("{DEL}")
+            time.sleep(0.5)
+            keys(term + "{ENTER}")
+            time.sleep(3 + 2 * attempt)
+            click(1000, 1380 + dy)  # a neutral spot: closes the search-history dropdown
+            time.sleep(0.5)
+            rows = catalog_rows()
+            # Only rows of THIS search count: ETS leaves the previous search's
+            # rows up for a while (a third of the misses in the first full run).
+            hits = [r for r in rows if want and (want in _canon(r["order"]) or want in _canon(r["name"]))]
+            if hits:
+                return rows, hits
+        return rows, []
+
+    order = _canon(search_term(req["search"]))
     want_version = _digits(req.get("version", ""))
-    match = [r for r in exact if want_version and _digits(r["version"]) == want_version]
-    if match:
-        row = match[0]
-    elif exact and not want_version and len(exact) == 1:
-        row = exact[0]
-    elif exact:
-        # The product is in the catalog with another application version: ETS
-        # offers each hardware's current application only.
-        raise RuntimeError(f"catalog version mismatch: {term!r} shows {[r['version'] for r in exact]}, wanted {req.get('version')!r}")
-    else:
-        raise RuntimeError(f"not found in catalog search: {term!r}; rows {rows[:4]}")
+
+    def pick(hits: list[dict]) -> dict | None:
+        # The order number exactly (ZPR1612 is not ZPR1612V2), else a prefix.
+        exact = [r for r in hits if _canon(r["order"]) == order] or [r for r in hits if _canon(r["order"]).startswith(order)]
+        match = [r for r in exact if want_version and _digits(r["version"]) == want_version]
+        if match:
+            return match[0]
+        if not want_version and len(exact) == 1:
+            return exact[0]
+        return None
+
+    rows, hits = search(search_term(req["search"]))
+    row = pick(hits)
+    if row is None and req.get("fallback_search"):
+        # ETS's search by order number shows only some versions of a product
+        # family at times (ZPR1612 listed only the v2 product); the product
+        # name lists them all.
+        rows, more = search(req["fallback_search"])
+        hits = hits + more
+        row = pick(more)
+    if row is None:
+        if hits:
+            raise RuntimeError(f"catalog version mismatch: {req['search']!r} shows {[(r['order'], r['version']) for r in hits][:8]}, wanted {req.get('version')!r}")
+        raise RuntimeError(f"not found in catalog search: {req['search']!r}; rows {rows[:4]}")
     click(1300, row["y"])
     time.sleep(1)
     bar = (LAYOUT["catalog_bar"][0], LAYOUT["catalog_bar"][1] + dy, LAYOUT["catalog_bar"][2], min(LAYOUT["catalog_bar"][3] + dy, 2484))
@@ -684,11 +728,19 @@ def flow_catalog_add(req: dict) -> dict:
     ax, ay = LAYOUT["catalog_add"]
     click(ax, ay + dy)
     time.sleep(3)
+    wait_busy()
     # A KNX Secure capable product raises 'Projektpasswort setzen' a few
     # seconds after it was added (seen up to ~8 s, 2026-10-28): wait for it.
     password_dialog = False
     t0 = time.time()
     while time.time() - t0 < float(req.get("password_wait", 12)):
+        invalid = " ".join(l["text"] for l in ocr((1400, 1000, 2700, 1350)))
+        if "Validierung fehlgeschlagen" in invalid or "defekte Daten" in invalid:
+            # ETS's product store holds data it cannot validate for this
+            # product (Zennio ALLinBOX 1612 v2): it refuses the add.
+            click_text("OK", (2500, 1380, 2700, 1460))
+            time.sleep(1)
+            raise RuntimeError(f"ETS product data invalid: {invalid[:200]}")
         compat = decline_compat_mode()
         if compat:
             raise CompatModeRequired(f"ETS asked for compatibility mode on adding: {compat[:200]}")
@@ -730,8 +782,9 @@ def flow_delete_device(req: dict) -> dict:
                 raise RuntimeError(f"delete dialog does not name {req['ia']}: {named[:200]}")
             break
     time.sleep(2)
+    waited = wait_busy()
     after = flow_devices(req)["devices"]
-    return {"deleted": confirmed and all(d["ia"] != req["ia"] for d in after), "devices": after}
+    return {"deleted": confirmed and all(d["ia"] != req["ia"] for d in after), "devices": after, "busy_wait": round(waited)}
 
 
 @flow("select_connection")
@@ -1092,6 +1145,14 @@ class Handler(BaseHTTPRequestHandler):
                     # differently): refuse rather than click beside the target.
                     raise RuntimeError(f"desktop is not the RDP layout (scale {scale():.3f}); reconnect the RDP session")
                 started = ensure_ets_running(req.get("project", "ets-sweep")) if name != "windows" else []
+                if name not in ("windows", "state"):
+                    import ctypes
+
+                    fg = ctypes.windll.user32.GetForegroundWindow()
+                    if fg != ets_main_window().handle and not ets_popups():
+                        # Someone works in the VM (another window is in front):
+                        # refuse instead of clicking into their windows.
+                        raise RuntimeError("desktop in use: ETS is not the foreground window; the sweep waits")
                 compat = decline_compat_mode()
                 if compat:
                     raise CompatModeRequired(f"ETS asked for compatibility mode before {name}: {compat[:200]}")

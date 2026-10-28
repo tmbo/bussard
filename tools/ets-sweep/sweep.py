@@ -268,10 +268,38 @@ def ets_required(c, since: str) -> list[dict]:
     return out
 
 
+def ets_failed_since(c, since: str) -> bool:
+    """Whether ETS logged a failed download (LoadDeviceTask WARN/ERROR) since
+    `since` (VM local time). Reads the log's tail only, cheap enough to poll."""
+    cmd = ("powershell -NoProfile -Command \"Get-Content -Path '" + ETS_LOG +
+           "' -Tail 60 | Select-String -Pattern 'LoadDeviceTask' | ForEach-Object { $_.Line }\"")
+    for line in vm.run(c, cmd, 60)[1].splitlines():
+        if line[:19] >= since and (" WARN " in line or " ERROR " in line):
+            return True
+    return False
+
+
+def secure_enabled(knxprod: Path, app: str) -> bool:
+    """Whether the application declares IsSecureEnabled (ETS then asks for a
+    project password a few seconds after the device is added)."""
+    import zipfile
+
+    try:
+        z = zipfile.ZipFile(knxprod)
+        for name in z.namelist():
+            if app in name and name.endswith(".xml"):
+                head = z.read(name)[:4000].decode("utf-8", "replace")
+                return 'IsSecureEnabled="true"' in head
+    except (OSError, zipfile.BadZipFile):
+        pass
+    return True  # unknown: keep the wait
+
+
 def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = None, ia: str = "1.1.1",
             variant: str = "plain-defaults", mode: str = "application", project: str = "ets-sweep",
             connection: str = "knx-sim", sim_port: int = 3672, timeout: int = 900, quiet: int = 45,
-            first_traffic: int = 120, mask: str = "", properties: list[dict] | None = None) -> dict:
+            first_traffic: int = 120, mask: str = "", properties: list[dict] | None = None,
+            fallback_search: str = "") -> dict:
     """One ETS download of `app` into a sim inside the VM; returns the result
     and leaves capture, sim log, driver.json and ops.txt in the run directory."""
     out = CAPTURES / app / variant
@@ -302,22 +330,39 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
         for d in flow("devices")["devices"]:
             if not flow("delete_device", ia=d["ia"]).get("deleted"):
                 raise RuntimeError(f"could not delete {d['ia']} before the add")
-        add = flow("catalog_add", search=search, version=version)
+        add = flow("catalog_add", search=search, version=version, fallback_search=fallback_search,
+                   password_wait=12 if secure_enabled(knxprod, app) else 2)
         if not add.get("added"):
             raise RuntimeError(f"catalog add added nothing: {add.get('row')}")
         result["catalog_row"] = add.get("row")
         flow("select_connection", name=connection)
         flow("download", ia=ia, mode=mode)
-        # Wait: the download is over when the bus has been quiet for `quiet`
-        # seconds after traffic, or never started within `first_traffic`.
+        # Wait for the end of the download, whichever signal comes first:
+        # - success: the device restarted (not a master reset) after its load
+        #   states went Loaded, the last step of every ETS download;
+        # - failure: ETS logged a LoadDeviceTask warning or error (it logs
+        #   failures, never successes);
+        # - fallback: the bus quiet for `quiet` seconds after traffic, or no
+        #   traffic within `first_traffic`.
         started = time.time()
         while time.time() - started < timeout:
-            time.sleep(5)
-            seen = bool(sim.lines()) and any("direction=" in l for l in sim.lines())
+            time.sleep(3)
+            lines = sim.lines()
+            seen = any("direction=" in l for l in lines)
+            loaded_at = max((i for i, l in enumerate(lines) if Sim.LOADED.search(l)), default=-1)
+            if loaded_at >= 0 and any("device restarted" in l and "master_reset=false" in l for l in lines[loaded_at:]):
+                time.sleep(3)
+                result["end"] = "device restarted"
+                break
+            if ets_failed_since(c, since):
+                result["end"] = "ets logged a failure"
+                break
             age = sim.last_telegram_age()
             if seen and age > quiet:
+                result["end"] = "bus quiet"
                 break
             if not seen and time.time() - started > first_traffic:
+                result["end"] = "no traffic"
                 break
         result["history"] = vm.driver(c, "POST", "/ets/history", {}, timeout=120).get("lines")
         result["ets"] = ets_status(result["history"])
@@ -339,6 +384,7 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
     err = result.get("error") or ""
     result["outcome"] = (
         "skipped-compat-mode" if "compatibility mode" in err
+        else "skipped-ets-invalid-product" if "ETS product data invalid" in err
         else "skipped-catalog-version" if "catalog version mismatch" in err
         else "skipped-not-in-catalog" if "not found in catalog search" in err
         else "captured" if result.get("ets") == "ok" and result.get("ops")
