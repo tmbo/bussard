@@ -4,6 +4,7 @@
 use crate::bus::event::Event;
 use crate::wire::IndividualAddress;
 
+use super::interface_object::PID_RUN_STATE_CONTROL;
 use super::{
     Device, DeviceError, DeviceReaction, LoadEvent, LoadState, PID_LOAD_STATE_CONTROL,
     PID_TABLE_REFERENCE, Property, Sys7LoadStateMachine, Sys7Step, profile, sys7_lsm,
@@ -150,6 +151,20 @@ impl Device {
                 return Err(DeviceError::LoadControl(e.to_string()));
             }
         };
+        // A TaskSegment record (`03 02 <addr:2> <01> <id:5>`) ends in the
+        // program id (`00 b6 45 37 03`: manufacturer, application number,
+        // version) the BimM112 masks expose as the object's PID 13 (the
+        // `ApplicationId` resource, object 3). ETS reads it back before a
+        // partial download and refuses when it is missing (Ekinex EK-E72,
+        // 2026-10-28).
+        let program_id = if event_record.get(..2) == Some(&[0x03, 0x02]) {
+            event_record.get(5..10)
+        } else {
+            None
+        };
+        if let (Some(id), Some(obj)) = (program_id, self.objects.get_mut(&lsm_index)) {
+            obj.set_property(PID_RUN_STATE_CONTROL, Property::read_only(id.to_vec()));
+        }
         match step {
             Sys7Step::Alloc {
                 start,
@@ -202,13 +217,14 @@ impl Device {
         Ok(())
     }
 
-    /// If `addr` falls in the System 7 memory-mapped LSM status region, return
-    /// the `n` status bytes (one live LSM state per octet), else `None`.
+    /// If `addr` falls in the System 7 LSM status region, return the `n`
+    /// status bytes (one live LSM state per octet), else `None`. The region is
+    /// readable whichever way load control is driven: the masks define it as
+    /// the runtime-readable `ApplicationLoadStatus` resource (0xB6EC on
+    /// BimM112), and ETS reads it before a partial download and refuses with
+    /// "the loaded application does not match" on 0x00 (EK-E72, 2026-10-28).
     pub(super) fn sys7_status_bytes(&self, addr: u16, n: usize) -> Option<Vec<u8>> {
         let s7 = self.sys7.as_ref()?;
-        if s7.profile.lsm_access != profile::LsmAccess::MemoryMapped {
-            return None;
-        }
         let base = s7.profile.mm_lsm.status_addr;
         // The status region spans one octet per LSM index starting at `base`
         // (index 1 at base+0). Only serve reads wholly inside that region.
@@ -274,6 +290,7 @@ impl Device {
 #[cfg(test)]
 mod tests {
     use crate::bus::event::RecordingSink;
+    use crate::device::interface_object::PID_RUN_STATE_CONTROL;
     use crate::device::profile::LsmAccess;
     use crate::device::test_support::*;
     use crate::device::*;
@@ -593,6 +610,72 @@ mod tests {
             gc.on_group_read(GroupAddress(0x0801)).is_none(),
             "the removed GA no longer routes"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_sys7_status_bytes_property_lsm() -> Result<(), Box<dyn std::error::Error>> {
+        // ETS reads the ApplicationLoadStatus byte before a partial download of
+        // a property-driven 0705 (EK-E72) and refuses on 0x00: the status
+        // region answers in property mode too.
+        let mut dev = sys7_device(LsmAccess::Property);
+        connect(&mut dev)?;
+        dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
+        load_tables(
+            &mut dev,
+            LsmAccess::Property,
+            &lsm1_region(0x1105, &[0x0801]),
+            &lsm2_region(1),
+        )?;
+        let base = dev
+            .sys7
+            .as_ref()
+            .ok_or("a System 7 device")?
+            .profile
+            .mm_lsm
+            .status_addr;
+        let bytes = dev
+            .sys7_status_bytes(base, 2)
+            .ok_or("the status region answers")?;
+        assert_eq!(
+            bytes,
+            vec![LoadState::Loaded.to_byte(), LoadState::Loaded.to_byte()]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_sys7_task_segment_sets_program_id() -> Result<(), Box<dyn std::error::Error>> {
+        // ETS's TaskSegment record ends in the program id (EK-E72:
+        // `03 02 41 d8 01 00 b6 45 37 03`); the object reports it as PID 13.
+        let mut dev = sys7_device(LsmAccess::Property);
+        connect(&mut dev)?;
+        dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
+        dev.handle_cemi(&data(
+            &dev,
+            0x3D7,
+            &[0x03, 0x05, 0x10, 0x01, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        ))?;
+        dev.handle_cemi(&data(
+            &dev,
+            0x3D7,
+            &[
+                0x03, 0x05, 0x10, 0x01, 0x03, 0x00, 0x41, 0xd8, 0x01, 0xd8, 0xff, 0x03, 0x80, 0x00,
+            ],
+        ))?;
+        dev.handle_cemi(&data(
+            &dev,
+            0x3D7,
+            &[
+                0x03, 0x05, 0x10, 0x01, 0x03, 0x02, 0x41, 0xd8, 0x01, 0x00, 0xb6, 0x45, 0x37, 0x03,
+            ],
+        ))?;
+        let id = dev
+            .objects
+            .get(&3)
+            .and_then(|o| o.property(PID_RUN_STATE_CONTROL))
+            .map(|p| p.value.clone());
+        assert_eq!(id, Some(vec![0x00, 0xb6, 0x45, 0x37, 0x03]));
         Ok(())
     }
 

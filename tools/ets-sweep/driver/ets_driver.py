@@ -919,6 +919,188 @@ def flow_delete_device(req: dict) -> dict:
     return {"deleted": confirmed and all(d["ia"] != req["ia"] for d in after), "devices": after, "busy_wait": round(waited)}
 
 
+# The device's 'Kommunikationsobjekte' table (layout x ranges, measured
+# 2026-10-28 on the Ekinex EK-E72): number, name, linked addresses, flags.
+GO_TABLE = (680, 260, 3400, 1240)
+GO_COLS = {"number": (690, 830), "name": (830, 1280), "ga": (1840, 2000), "flags": (2090, 2300)}
+GA_RE = re.compile(r"\d{1,2}/\d{1,2}/\d{1,3}")
+# Centres of the K, L, S, Ü, A flag columns.
+GO_FLAG_X = (2120, 2159, 2200, 2241, 2280)
+
+
+def open_device_objects(ia: str) -> None:
+    """Select device `ia` in the Topologie tree and show its object table."""
+    click(*line_1_1())
+    time.sleep(1)
+    # The node reads '> 1.1.1 <product>' (its expander arrow first).
+    tree = [l for l in ocr(LAYOUT["tree"]) if re.match(rf"^\W*{re.escape(ia)}\b", l["text"].strip())]
+    if not tree:
+        raise RuntimeError(f"device {ia} not in the Topologie tree")
+    t = tree[0]
+    click(t["x"] + t["w"] // 2, t["y"] + t["h"] // 2)
+    # OCR joins the tab strip into one line ('Kanäle 5 Kommunikationsobjekte 22');
+    # it takes a few seconds to switch from the line's tabs.
+    t0, tabs = time.time(), ""
+    while time.time() - t0 < 8 and "Kommunikationsobjekte" not in tabs:
+        time.sleep(1)
+        tabs = " ".join(l["text"] for l in ocr((680, 150, 1600, 220)))
+    if "Kommunikationsobjekte" not in tabs:
+        raise RuntimeError(f"the object table did not open: {tabs!r}")
+    click(1090, 188)  # the 'Kommunikationsobjekte' tab
+    time.sleep(1)
+
+
+def read_objects() -> list[dict]:
+    """Rows of the open object table: number, name, addresses, flags."""
+    lines = ocr(GO_TABLE)
+    rows: dict[int, dict] = {}
+    # Numbers magnified: a lone '1' in a selected row went unread.
+    for l in ocr((GO_COLS["number"][0], GO_TABLE[1], GO_COLS["number"][1], GO_TABLE[3]), zoom=2):
+        cy = l["y"] + l["h"] // 2
+        if l["text"].strip().isdigit():
+            rows[cy] = {"number": int(l["text"].strip()), "y": cy, "name": "", "gas": [], "flags": ""}
+    # Rows whose number OCR missed: Windows OCR never reads a lone '1'
+    # (2026-10-28, any zoom or crop). Infer it from the neighbours when only
+    # one number fits, else take a single narrow glyph as '1'.
+    for l in lines:
+        cy = l["y"] + l["h"] // 2
+        if GO_COLS["name"][0] <= l["x"] + 4 < GO_COLS["name"][1] and all(abs(y - cy) >= 14 for y in rows):
+            rows[cy] = {"number": None, "y": cy, "name": "", "gas": [], "flags": ""}
+    ordered = sorted(rows.values(), key=lambda r: r["y"])
+    for i, r in enumerate(ordered):
+        if r["number"] is not None:
+            continue
+        prev = next((o["number"] for o in reversed(ordered[:i]) if o["number"] is not None), None)
+        nxt = next((o["number"] for o in ordered[i + 1:] if o["number"] is not None), None)
+        if prev is not None and nxt is not None and nxt - prev == 2:
+            r["number"] = prev + 1
+            continue
+        img = grab((722, r["y"] - 16, 830, r["y"] + 16)).convert("L")
+        cols = [x for x in range(img.width) if any(img.getpixel((x, y)) < 150 for y in range(img.height))]
+        if cols and cols[-1] - cols[0] <= img.height // 3 and (nxt is None or nxt > 1) and (prev is None or prev < 1):
+            r["number"] = 1
+    rows = {cy: r for cy, r in rows.items() if r["number"] is not None}
+
+    def row_at(cy: int) -> dict | None:
+        best = min(rows, key=lambda y: abs(y - cy), default=None)
+        return rows[best] if best is not None and abs(best - cy) < 14 else None
+    for l in lines:
+        cx, cy = l["x"] + 4, l["y"] + l["h"] // 2
+        r = row_at(cy)
+        if not r:
+            continue
+        if GO_COLS["name"][0] <= cx < GO_COLS["name"][1]:
+            r["name"] = (r["name"] + " " + l["text"]).strip()
+        for ga in GA_RE.findall(l["text"]):
+            if cx >= GO_COLS["ga"][0] - 400 and ga not in r["gas"]:
+                r["gas"].append(ga)
+    # The address column magnified as well: '1/0/4' next to a link went
+    # unread in the plain pass (EK-E72 object 27, 2026-10-28).
+    for l in ocr((GO_COLS["ga"][0], GO_TABLE[1], GO_COLS["ga"][1] + 10, GO_TABLE[3]), zoom=3):
+        r = row_at(l["y"] + l["h"] // 2)
+        if r:
+            for ga in GA_RE.findall(l["text"].replace(" ", "")):
+                if ga not in r["gas"]:
+                    r["gas"].append(ga)
+    # Flags by ink, not OCR (single letters next to '-' read badly): a cell
+    # holds 28+ dark pixels with its letter, 10-12 with the dash (EK-E72,
+    # 2026-10-28).
+    for r in rows.values():
+        flags = ""
+        for letter, xc in zip("KLSÜA", GO_FLAG_X):
+            img = grab((xc - 14, r["y"] - 14, xc + 14, r["y"] + 14)).convert("L")
+            if sum(1 for p in img.getdata() if p < 120) > 20:
+                flags += letter
+        r["flags"] = flags
+    return sorted(rows.values(), key=lambda r: r["y"])
+
+
+@flow("objects")
+def flow_objects(req: dict) -> dict:
+    """The object table of device `ia`: number, name, linked group
+    addresses and the flags ETS shows (K L S Ü A)."""
+    require_project(req["project"])
+    open_device_objects(req["ia"])
+    return {"objects": read_objects()}
+
+
+def _object_row(number: int) -> dict:
+    rows = read_objects()
+    hit = [r for r in rows if r["number"] == number]
+    if not hit:
+        raise RuntimeError(f"object {number} not in the table (hidden by a parameter?): {[r['number'] for r in rows]}")
+    return hit[0]
+
+
+@flow("link")
+def flow_link(req: dict) -> dict:
+    """Link object `number` of device `ia` to group address `ga` ('1/0/9'):
+    the object's context menu 'Verbinden mit...', the address typed into
+    the dialog's field, 'Erstellen & Verbinden' (ETS creates the address
+    when the project lacks it) or 'Verbinden'. Verified in the table."""
+    require_project(req["project"])
+    from pywinauto import mouse
+
+    open_device_objects(req["ia"])
+    row = _object_row(int(req["number"]))
+    if req["ga"] in row["gas"]:
+        return {"linked": True, "already": True, "row": row}
+    s = scale()
+    mouse.right_click(coords=(int(1000 * s), int(row["y"] * s)))
+    time.sleep(1.2)
+    menu_click("Verbinden mit...")
+    time.sleep(2)
+    if not find_text("Mit Gruppenadresse verbinden", (1500, 560, 2600, 680)):
+        raise RuntimeError("the link dialog did not open")
+    click(1720, 1718)  # the address field left of 'Neue Gruppenadresse'
+    time.sleep(0.3)
+    keys("^a")
+    keys(req["ga"])
+    time.sleep(1.2)
+    # The button reads 'Erstellen & Verbinden' for a new address and
+    # 'Verbinden' for an existing one; OCR prefixes its link icon ('00').
+    buttons = [l for l in ocr((1800, 1830, 2300, 1910)) if "Verbinden" in l["text"]]
+    if not buttons:
+        raise RuntimeError("no 'Verbinden' button in the link dialog")
+    b = buttons[0]
+    # The first click after typing only commits the field at times (the
+    # dialog stayed open, 2026-10-28): click until the dialog closes.
+    for _ in range(3):
+        click(b["x"] + b["w"] - 60, b["y"] + b["h"] // 2)
+        time.sleep(2)
+        if not find_text("Mit Gruppenadresse verbinden", (1500, 560, 2600, 680)):
+            break
+    else:
+        raise RuntimeError("the link dialog did not close")
+    time.sleep(1)
+    row = _object_row(int(req["number"]))
+    if req["ga"] not in row["gas"]:
+        raise RuntimeError(f"object {req['number']} shows {row['gas']} after linking {req['ga']}")
+    return {"linked": True, "row": row}
+
+
+@flow("unlink")
+def flow_unlink(req: dict) -> dict:
+    """Remove the link of object `number` of device `ia` to `ga` (context
+    menu 'Trennen'). Verified in the table."""
+    require_project(req["project"])
+    from pywinauto import mouse
+
+    open_device_objects(req["ia"])
+    row = _object_row(int(req["number"]))
+    if req["ga"] not in row["gas"]:
+        return {"unlinked": True, "already": True, "row": row}
+    s = scale()
+    mouse.right_click(coords=(int(1000 * s), int(row["y"] * s)))
+    time.sleep(1.2)
+    menu_click("Trennen")
+    time.sleep(2)
+    row = _object_row(int(req["number"]))
+    if req["ga"] in row["gas"]:
+        raise RuntimeError(f"object {req['number']} still shows {req['ga']}: {row}")
+    return {"unlinked": True, "row": row}
+
+
 @flow("select_connection")
 def flow_select_connection(req: dict) -> dict:
     """Make the configured connection `name` current (the quick menu in the toolbar)."""
