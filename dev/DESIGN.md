@@ -476,6 +476,8 @@ the everyday win is a group-address change in ~2 seconds instead of a minute.
 
 - **ETS DCA plugin devices**: configured by compiled .NET, no XML to interpret. These
   stay ETS-only, permanently. Audit target installations for them early.
-- **KNX Data Secure**: secure commissioning with the FDSK is additional work where
-  enabled.
+- **KNX Data Secure**: operating ETS-activated devices is done; activating a
+  factory-fresh device from its FDSK (#201 tier 2) and retrying a refused
+  S-A_Sync under the FDSK when somebody reset a device to default (KNX 3/5/2
+  §4.1 NOTE 18) are additional work.
 - Per-manufacturer quirks that ETS handles by special-casing.

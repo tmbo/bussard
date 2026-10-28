@@ -237,7 +237,7 @@ stay unset in normal use.
 
 | Variable | Meaning |
 |---|---|
-| `BUSSARD_SECURE_ALGORITHM` | `auth` wraps KNX Data Secure management APDUs authentication-only (in the clear under a MAC) instead of the default authentication + encryption. For the conformance loop against the simulator; a real flash never sets it. |
+| `BUSSARD_SECURE_ALGORITHM` | `auth` wraps KNX Data Secure management APDUs authentication-only (in the clear under a MAC) instead of the default authentication + encryption. For the conformance loop against the simulator; a real flash never sets it: the standard allows the tool key with authentication + confidentiality only (KNX 3/5/1 §6.3.10.4), even though TSS J §3.1.1 expects a device to accept the authentication-only form. |
 | `BUSSARD_FLASH_SYS7_LSM` | `memory` or `property` overrides the product-driven System 7 load-state-machine realisation (memory-mapped record or PID 5). For conformance tests against knx-sim; unset in normal use. |
 | `BUSSARD_ASSIGN_WAIT_MS` | shrinks the programming-mode wait budget of `assign` and `adopt`. Unset in normal use. |
 | `BUSSARD_SCAN_DISCOVERY_MS` | shrinks the per-address probe timeout of `scan`, `reconstruct --line`, `commission`, `backup` and `replace`. Unset in normal use. |

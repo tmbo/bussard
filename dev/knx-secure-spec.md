@@ -23,7 +23,17 @@ Rule for implementers: treat every UNKNOWN as "build the seam, pick the
 best-evidence default, leave a calibration TODO tagged with the greppable marker
 string `SEC-CAL:`". Do not hardcode an UNKNOWN as if it were CONFIRMED. There are
 five load-bearing UNKNOWNs (all `SEC-CAL:`-tagged) that only a live ETS capture
-settles - see §12 (test plan) and §13 (open questions). Until then, ship the
+settles - see §12 (test plan) and §13 (open questions).
+
+Since the 2026-10-28 review against KNX Standard 3.0.0 (the text under
+`dev/knx-standard-3.0.0/_txt/`), rows also cite the standard: `[KNX 3/3/7 §x]`
+is 03_03_07 Application Layer v02.01.01 (its chapter 5 is the Secure
+Application Layer), `[KNX 3/5/1 §x]` is 03_05_01 Resources v01.10.01 (chapter 6,
+the security interface object), `[KNX 3/5/2 §x]` is 03_05_02 Management
+Procedures v02.01.02 (chapter 4, `DM_SecureSync_*`), `[AN193]` the access
+policies, `[AN194]` the master reset table, `[TSS J §x]` Volume 8 Data Security
+Tests v1.11. A clause outranks a capture inference; where the standard
+contradicts itself the newer application note wins and the conflict is named. Until then, ship the
 seam with the best-evidence default. The two Data Secure ones (Sync layout, MAC
 length) are now settled by the secure-1-1-12 capture (2026-09-23), see §12.4.
 Of the three IP Secure ones, the secure-only DIB and the message tag are settled
@@ -118,9 +128,11 @@ gateway.
   QR/label string encoding is UNKNOWN (§4.4) and unneeded - FDSK comes from the
   knxproj `<DeviceCertificate>` or a `.knxkeys` export, not a phone camera.
   `[corpus §4, research §2.6]`
-- **Point-to-point connection-oriented secure** (secure T_CONNECT): unsupported
-  in XKNX and out of scope; secure management is tool-access secure APDUs, not
-  secure T_CONNECT. `[research §3.7]`
+- **"Secure T_CONNECT"** does not exist: `T_Connect`, `T_Disconnect`, `T_ACK`
+  and `T_NAK` carry no APDU and are never secured; secure management is
+  S-A_Data inside the plain TL connection, which is what bussard does
+  `[KNX 3/3/7 §5.5.5.1 NOTE 49]`. A failed security check on a
+  `T_Data_Connected.ind` does not close the connection either (§5.5.5.2).
 
 ---
 
@@ -140,8 +152,18 @@ gateway.
 **FDSK vs tool key lifecycle** `[research §2.6, ABB]`: FDSK is unique per device,
 printed on a removable label and carried in the knxproj device certificate.
 During first secure commissioning ETS uses the FDSK as the tool key, writes the
-individual address (which **invalidates the FDSK**), then writes an ETS-generated
-tool key that replaces it. From then on secure management uses the tool key.
+individual address, then writes an ETS-generated tool key. The FDSK becomes
+inactive the moment the tool key is written, not when the address is written
+`[KNX 3/5/1 §6.1.4, §6.3.10.4]`; the write is confirmed already under the new
+key (§6.3.10.4, the #398 capture agrees). A Reset to default (erase code 02h
+or the local reset) makes the FDSK active again; erase code 07h ("without IA")
+keeps the tool key, the security mode and both sequence numbers and clears
+only the tables `[AN194 §2.3.2.12, §2.3.2.13]` (this resolves the table in
+`[KNX 3/5/1 §6.1.4]`, which lists 07h as reactivating the FDSK; ETS opens an
+unload + download of the activated 1.1.12 with erase code 07h and continues
+under the tool key, so AN194 is what devices do). ETS must give every device a
+unique random tool key and a new one must differ from every earlier one
+(§6.3.10.5, §6.2 NOTE 96). From then on secure management uses the tool key.
 bussard's Phase A treats "the device's tool key" as: keyring `ToolKey` if present,
 else the FDSK from the certificate (a device not yet commissioned). It does NOT
 perform the FDSK→tool-key rotation itself in v1 (that is ETS's job); it consumes
@@ -433,10 +455,17 @@ APCI (6-bit high field 0x03F… family).
 
 | Bit(s) | Field | Meaning |
 |---|---|---|
-| 7 | `tool_access` | 1 = tool/management access (uses tool key) |
-| 6-4 | `algorithm` (SecurityAlgorithmIdentifier) | `000` = CCM auth-only (MAC), `001` = CCM auth+encrypt |
-| 3 | `system_broadcast` | 1 = system broadcast |
-| 2-0 | `service` (SecurityALService) | S-A_Data service selector |
+| 7 | `tool_access` (T) | 1 = tool/management access (uses tool key or FDSK) |
+| 6-4 | `algorithm` (SAI) | `000` = CCM auth-only (MAC), `001` = CCM auth+encrypt; every other value reserved |
+| 3 | `system_broadcast` (SBC) | 1 = system broadcast |
+| 2-0 | `service` | S-A_Data `000`, S-A_Sync_Req `010`, S-A_Sync_Res `011`; every other value reserved |
+
+The field names and the four defined rows are `[KNX 3/3/7 §5.2.1.2 Figure
+106, Table 6, Table 7]`; the Sync services exist only with SAI `001`. A
+receiver throws away a frame with a reserved SAI or service value or a
+reserved bit set, without counting a security failure (§5.1.3.4.2 step 1,
+§5.1.4). SBC is set only for system broadcast (§5.2.1.3 Table 8); a TP1
+device may ignore any frame with SBC set.
 
 Serialize: `scf = (tool_access<<7) | (algorithm<<4) | (system_broadcast<<3) |
 service`. Service selector values observed in captures `[corpus §2]`: SCF `0x90`
@@ -457,8 +486,14 @@ SCF(1) + sequence_number(6) + secured_apdu(variable) + MAC(4)
 ```
 
 `len(SecureData) = 10 + len(secured_apdu)` (10 = 6-byte seq + 4-byte MAC). The
-Data-Secure MAC for TP is **4 bytes**, truncated `mac[:4]`. `[research §3.3;
-CONFIRMED on the tunnel management path, secure-1-1-12 capture, 2026-09-23]`.
+Data-Secure MAC for TP is **4 bytes**, `MSB32(Yn)` of the CBC-MAC, XORed with
+`MSB32(S0)` `[KNX 3/3/7 §5.1.3.4.2 step 5, Annex A.3 step 8; CONFIRMED on the
+tunnel management path, secure-1-1-12 capture, 2026-09-23]`. The inner APDU
+starts with `000000b` in the six bits above the APCI; after a positive MAC
+check the receiver also verifies those six bits are zero and drops the frame
+otherwise, without a failure count and with the sequence still accepted
+(§5.2.1.4, `[TSS J §3.1.12]`). bussard's decoder masks the bits instead of
+checking them (`asdu.rs` `parse_inner_apdu`); harmless for a tool, a sim gap (#535).
 The Sync services reuse this frame with a different body, see §6.3.
 
 ### 5.4 CCM nonce (block_0) for TP frames `[XKNX data_secure_asdu.py, CONFIRMED]`
@@ -475,7 +510,17 @@ block_0 = sequence_number(6)
             payload_length ]               # 6 more bytes → 16 total
 ```
 
-"Only Ctrl2 is protected, and only as `A000EEEEb`" (verbatim XKNX comment).
+The standard's Figure 100 `[KNX 3/3/7 §5.1.3.2]`: octet 11 is `A000EEEEb`
+with A the address type and EEEE the extended frame format when an
+L_Data_Extended frame carries the APDU (0000b for a standard frame, and also
+for the standard extended format, so bussard's constant 0 is right until LTE
+frames appear); octets 12-13 are the carrier's 6-bit TPCI, including the TL
+sequence number of a numbered telegram, followed by the 10-bit APCISec 3F1h
+(Figure 101); octet 15 is `q`, the length of the CCM payload P, which is 0 for
+authentication-only because the APDU is then in A (NOTE 17, §5.1.3.4.2).
+Repeat flag, priority, hop count and the rest of Ctrl are not protected
+(NOTE 16). Over a local TL (USB cEMI, `[AN203 §2.2]`) source, destination and
+TL sequence are 0 in B0 and Ctr; bussard has no such transport.
 
 ### 5.5 CCM counter_0 for TP frames `[XKNX, CONFIRMED]`
 
@@ -483,7 +528,18 @@ block_0 = sequence_number(6)
 counter_0 = sequence_number(6) + address_fields_raw(4) + [0x00,0x00,0x00,0x00,0x01,0x00]
 ```
 
+`[KNX 3/3/7 §5.1.3.2 Figure 102]`: octet 14 is 01h so that B0 and Ctr0 never
+coincide (NOTE 18); octet 15 is the block counter j, incremented by one per
+block, at most 255 blocks.
+
 ### 5.6 MAC-only vs MAC+encryption `[XKNX, CONFIRMED]`
+
+The standard's definitions `[KNX 3/3/7 §5.1.3.4.2, §5.1.3.5.2, Annex A.3]`:
+authentication only has `A = SCF | 000000b | plain APDU`, `P` empty;
+authentication + confidentiality has `A = SCF`, `P = 000000b | plain APDU`;
+`B1..Bn = PAD16(a | A | P)` with `a` the 16-bit length of A; the same key
+serves both halves. Confidentiality without authentication does not exist
+(§5.1.3.3).
 
 - **CCM_AUTHENTICATION (`algorithm=0b000`)**: `additional_data = SCF(1) + apdu`;
   compute CBC-MAC (§3.2) with `block_0` from §5.4; the APDU is transmitted **in
@@ -503,10 +559,17 @@ counter_0 = sequence_number(6) + address_fields_raw(4) + [0x00,0x00,0x00,0x00,0x
   built from the ASDU primitives (which support it) + the keyring ToolKey.
   `[research §3.7, CONFIRMED that XKNX ASDU supports it, runtime does not]`.
 - **Group communication** (`tool_access=0`): key looked up by **destination group
-  address** in the group-key table (keyring per-GA `Key`). Freshness: the received
-  6-byte sequence must be strictly greater than the last seen for that source IA;
-  update the per-source table only after a successful decrypt. Group comms is not
-  on the Phase A flash hot path but the sim should model it for completeness.
+  address** in the group-key table (keyring per-GA `Key`). The receiver first
+  looks the GA up in its group key table, then refuses a tool-access flag on
+  a group telegram as an attack `[KNX 3/3/7 §5.5.3.2, Table 10]`, then checks
+  that the sender is in its security individual address table (§5.2.1.1 step
+  1), then the sequence `[KNX 3/3/7 §5.3.1 Reception]`: higher than the
+  stored Last Valid SeqNr → accept and, after the MAC check, store it; equal →
+  ignore silently (a link-layer repeat); lower → ignore, keep accepting later
+  frames, count a SeqNr error in the failures log. The per-source table is
+  updated only after a successful MAC check. One sequence counter per sender
+  serves every link and every key (§5.3.1). Group comms is not on the Phase A
+  flash hot path but the sim should model it for completeness.
 
 ### 5.7.1 Group communication (issue #172)
 
@@ -522,7 +585,8 @@ and `write --keyring` (and MCP, viz), and modelled by the knx-sim Secure device.
 | Inner APDU | the plain group APDU with TPCI bits zero: `00 00` GroupValueRead, `00 8v` small write, `00 40 …` large response | CONFIRMED (live, 2026-09-24) for the small/large GroupValueWrite form: the decrypted APDU decoded as a DPT 9.001 write of 22.12 °C |
 | Sender sequence | ms since 2018-01-05, strictly above the last sent by the process (`SequenceHighWater`) | CONFIRMED rule (§5.8) |
 | Receiver freshness | per sender IA; bussard's monitor only *warns* on a non-increasing sequence, it never drops | design choice |
-| Sender admission | a device accepts a secured group telegram only from an IA in its security individual address table (PID 54), with a sequence above that entry's | INFERRED (ETS lists every secured sender there, §11.1); the sim enforces it (issue #181); consistent with the owner's 2026-10-22 observation (issue #297): a secured write to 1/0/4 from tunnel user 5 was confirmed by the interface (L_Data.con) and did nothing on 1.1.5, whose PID 54 lists only 1.1.16 |
+| Sender admission | a device accepts a secured group telegram only from an IA in its security individual address table (PID 54), with a sequence above that entry's | CONFIRMED by the standard `[KNX 3/3/7 §5.2.1.1 step 1, §5.3.1 Reception; KNX 3/5/1 §6.3.8.4]`: a frame from an unlisted sender is thrown away without a failure count, so the device keeps no trace of it either; the sim enforces it (issue #181); consistent with the owner's 2026-10-22 observation (issue #297): a secured write to 1/0/4 from tunnel user 5 was confirmed by the interface (L_Data.con) and did nothing on 1.1.5, whose PID 54 lists only 1.1.16 |
+| GO flags match | the receiving group object's PID 61 flags must equal the SCF's authentication/confidentiality exactly; `0x03` accepts bussard's `0x10`, an auth-only `0x01` object refuses it and counts an access error | CONFIRMED by the standard `[KNX 3/5/1 §6.3.15.3 Table 108, NOTE 112; TSS J §3.2.3]`; ETS writes only `0x00`/`0x03` (§11.1) |
 
 Known-answer vector (synthetic; bussard `group::tests` and knx-sim
 `GROUP_KAT_ASDU` agree, and so does `tools/knxtrace/datasecure.py`): key
@@ -566,13 +630,26 @@ from 1.1.12 on 0/3/47, MAC ok). Still to observe: a secured GroupValueRead and
 its response on the wire, and a real device dropping an unlisted sender
 (PID 54).
 
-### 5.8 Sequence number = time since epoch `[XKNX, CONFIRMED]`
+### 5.8 Sequence number = time since epoch `[XKNX, CONFIRMED as the ETS convention]`
 
 Sending sequence initialized to `int((now - epoch) * 1000)` where
 `epoch = 2018-01-05T00:00:00Z` - **milliseconds since 2018-01-05 UTC** - then
 `+1` per send. 48-bit (max `0xFFFFFFFFFFFF`). "The sequence need not increment by
 exactly one; any higher value is acceptable" `[ABB]`. This is why ETS shows
 per-device sequence numbers and why a device reset needs an ETS seqnum update.
+
+The standard asks for less and for more `[KNX 3/3/7 §5.3.1]`: the Sequence
+Number Sending is a plain 48-bit counter, one per device for all secure
+communication, incremented after every S-A_Data handed to the TL whether or
+not the frame was confirmed; the ex-factory value is 1 to 255 (0 is never
+accepted); at FFFFFFFFFFFFh it stops and the device sends no further secure
+frame; a Reset to default re-initialises it only when it is at or above
+FF0000000000h, and then by 20 to FFFFh above the previous initial value. The
+device stores it as PID 59 `[KNX 3/5/1 §6.3.13]`, the tool-access counter it
+accepts from ETS/bussard separately and outside any property (§6.2, readable
+only through the Sync). The millisecond clock is what ETS writes into PID 59
+at activation and into PID 54 entries, and what bussard uses for its own
+counter (§5.9); any strictly increasing value would do.
 
 ### 5.9 Sequence seeding (no persistence)
 
@@ -645,6 +722,18 @@ those plain, then the Sync, then every further management APDU as S-A_Data
 (including a second, secured descriptor read). bussard secures everything once
 a tool key is given, which the device accepts.
 
+The standard behind that: the tool key is to be used with authentication +
+confidentiality only `[KNX 3/5/1 §6.3.10.4]` (so `BUSSARD_SECURE_ALGORITHM=auth`
+stays a sim-only knob, although `[TSS J §3.1.1]` expects a device to accept a
+tool-access frame with authentication only), and with security mode enabled
+a plain `A_DeviceDescriptor_Read` of type 0 from a sender without the
+permission answers descriptor `FFFFh` `[AN193 §2.2.4.5]`, which is exactly the
+"mask FFFF means activated" signal bussard's identity gate reads. Access
+policies are written `off/on` as 10-bit role masks per security mode
+(`3FF/0CC`: everyone while security mode is off, the tool and the roles with
+A+C once it is on); the security object's own properties are `00C/00C` or
+`008/008` (tool only, A+C, PID 56 write-only) `[KNX 3/5/1 §6.3; AN193 §2.2.3]`.
+
 ### 6.3 The Sync preamble `[CONFIRMED: secure-1-1-12 capture, 2026-09-23; frames decrypted with the device tool key]`
 
 ETS opens every secured tool-access connection like this (a System B device
@@ -692,6 +781,26 @@ masked(6) || enc( responder_seq(6) || requester_seq(6) ) || MAC(4)
   four exchanges of the capture it equals the Sync_Req's sequence, and ETS uses
   it as its next send sequence.
 
+The standard names the two fields `SeqNrlocal` (the requester's) and
+`SeqNrremote` (the responder's) and fixes the arithmetic `[KNX 3/3/7 §5.3.2;
+KNX 3/5/2 §4.2 DM_SecureSync_RCl]`: the device sets its stored tool-access
+counter to `max(stored, SeqNrlocal - 1)` (so the Sync_Req itself can raise
+it, `[KNX 3/5/1 §6.2 NOTE 94]`) and answers `stored + 1`; `SeqNrremote` is its
+own PID 59 value; neither Sync frame increments a Sequence Number Sending
+(NOTE 38, NOTE 44); the requester takes `max(own, SeqNrlocal received)` as
+its next send sequence and `SeqNrremote - 1` as the device's last valid
+sequence (Comparisons 1 and 2); a `SeqNrlocal` of 0 is allowed and does not
+raise the device's expectation (`[TSS J §3.3]` note 2). The requester's timer
+is 6 s; on a connection-oriented link the request is not repeated (`[KNX
+3/5/2 §4.2]`), and a device ignores any Sync_Req within 1 s of its last
+Sync_Res (§5.3.2 step 1). On point-to-point the serial field may be 0 or the
+device's own serial, which it then checks (§5.3.2 step 2). When the Sync
+fails under one key ETS retries it under the other (tool key ↔ FDSK, `[KNX
+3/5/2 §4.1 NOTE 18]`): that is how a device somebody reset to default is
+found again. bussard's retry policy (three attempts, 1 s then 2 s backoff,
+issue #166) is a deliberate deviation for devices that T_ACK before their
+security layer is up; it never falls back to the FDSK (#532).
+
 bussard: `DataSecureSession::sync_request` builds the request with a fresh
 challenge; `unwrap` applies a verified Sync_Res (send sequence =
 `max(current, requester_seq)`, freshness floor = `responder_seq - 1`);
@@ -721,7 +830,13 @@ addressed.
   knx-sim logs the refusal (`SecureError::NotActivated`) rather than staying
   silent, and bussard turns the resulting silence into a message that names both
   possible causes (wrong tool key, or a device that is not activated). The
-  spec had no wording for this direction; this is the best-evidence reading.
+  standard splits the case: a device without the secure application layer has
+  no handler for APCI 3F1h and drops the frame as any unknown APCI; a
+  Secure-capable device answers S-A_Data under its tool key, or under its FDSK
+  while no tool key is set, whether or not its security mode is on `[KNX
+  3/5/1 §6.1.4; TSS J §3.1.1 runs with security mode off]`. That second case
+  is what the #398 activation of the IP interface relies on; the sim's
+  `NotActivated` models the first.
 
 ### 6.5 Send-sequence continuity across connections (A2 finding)
 
@@ -1082,6 +1197,34 @@ Every full download of an activated device reprograms the security object
 The header is `[object type:16][instance:12 | PID:12]`; the value services
 follow with `[count:8][start:16]`, the write-con response with `[count][start]
 [return code]`, the function state response with `[return code][data]`.
+`[TSS J §3.6]` drives the same load-state machine with a 10-octet
+`A_PropertyExtValue_WriteCon` of PID 5 instead of the function property, so a
+conformant device accepts both forms.
+
+The layouts and orders are in the standard `[KNX 3/5/1 §6.3]`: PID 53
+elements are `[GA_Index:16][key:128]`, sorted ascending by GA_Index, which is
+the TSAP of the group address table (1-based, NOTE 103), one key per GA_Index
+and the same key for that GA in every device (§6.3.7); PID 54 elements are
+`[IA:16][Last Valid SeqNr:48]`, sorted ascending by individual address, the
+whole table rewritten whenever an entry changes, the sequence written as the
+partner's last valid value when known and 000000000000h otherwise (§6.3.8.3,
+§6.3.8.5); PID 61 is one octet per group object with b0 = authentication, b1
+= confidentiality, b7 to b2 reserved, written 0 and ignored by the device
+(§6.3.15.2 Figure 81; `[TSS J §2.3.1]` lists 0x02 "C only" as a legal
+setting); PID 59 is the device's 6-octet Sequence Number Sending (§6.3.13);
+PID 56 is write-only and `[TSS J §3.1.2]` shows 0x11 (= 17) as the object
+type octets. The key tables, PID 54 and PID 61 count only while the object is
+Loaded: in any other load state the device throws away every secured group
+telegram and confirms every secured group transmission negatively, while the
+tool key and the security mode stay valid `[KNX 3/5/1 §6.3.4 NOTE 97, §6.3.7.4,
+§6.3.8.4, §6.3.10.4; KNX 3/3/7 §5.5.2 items 2 and 3]`; so between bussard's
+`Unload` and `LoadCompleted`, and after an apply that failed in between, the
+device is deaf and mute on its secured group addresses (the read-back does not yet check that state, #534). Master reset
+`[AN194 §2.3.2.13]`: erase codes 02h, 07h and the local reset clear PID 52, 53,
+54, 60, 61 and the load state and reset PID 55, 57, 58; 02h and the local
+reset also drop the tool key (FDSK active again), switch the security mode
+off and re-initialise the tool-access counter; 07h keeps those; 01h changes
+nothing; PID 59 is never touched below FF0000000000h.
 Chunks follow the inner APDU budget: `PID_MAX_APDU_LENGTH` minus 13 octets of
 Data Secure overhead (ETS: 233 → 215-octet `A_MemoryExtended_Write` chunks,
 211-element PID 61 chunks). The group key table and flags bussard builds from
@@ -1100,11 +1243,14 @@ every octet is `0x00` or `0x03`; the 42 secured objects (1.1.5: 16, 1.1.7: 8,
 1.1.48: 2 each) are all `0x03`. The ETS 6 security setting of a group address
 is Automatic, On or Off, with no authentication-only choice (the ETS dialog,
 not a capture), so another value is not expected from ETS. bussard writes only
-`0x00` and `0x03` (`GO_FLAGS_PLAIN`, `GO_FLAGS_SECURE`). INFERRED: the meaning
-of the bits (bit 0 authentication, bit 1 confidentiality), and so what `0x01`
-or `0x02` would do. A read-back (`bussard adopt`) that finds another value
-counts the object as secured and adds a note naming the objects and values;
-a later secured download rewrites them as `0x03`.
+`0x00` and `0x03` (`GO_FLAGS_PLAIN`, `GO_FLAGS_SECURE`). The bit meaning is
+CONFIRMED by the standard (bit 0 authentication, bit 1 confidentiality, `[KNX
+3/5/1 §6.3.15.2 Figure 81]`), and so is what `0x01` or `0x02` do: the device
+accepts a group telegram only when the SCF matches the flags exactly (Table
+108), so an object at `0x01` refuses bussard's `0x10` frames. A read-back
+(`bussard adopt`) that finds another value counts the object as secured and
+adds a note naming the objects and values; a later secured download rewrites
+them as `0x03`.
 
 **The security individual address table (PID 54)** `[CONFIRMED: S3 captures
 secure-1-1-{5,7,9,16,47,48} and secure-1-1-12-group, 2026-09-24, issue #181]`.
@@ -1133,14 +1279,20 @@ before 1.1.16 and 1.1.12 were downloaded, so they got its keyring value.
 there; the keyring exported after all downloads marks it activated with a later
 sequence, and bussard's entry on 1.1.5 differs from that capture in the 6
 sequence octets (the IA matches). That is the only remaining difference.
-INFERRED: several entries in ascending IA order, packed like PID 53 (26
-entries per telegram at `PID_MAX_APDU_LENGTH` 233). Every observed table has at
-most one entry: all eight decrypted downloads (secure-1-1-{5,7,9,12,16,47,48}
+The order of several entries is ascending individual address, CONFIRMED by
+the standard (`[KNX 3/5/1 §6.3.8.3, §6.3.8.5]`, the MaC sorts and rewrites the
+whole table); only the packing per telegram (26 entries at
+`PID_MAX_APDU_LENGTH` 233, like PID 53) is still INFERRED from the PID 53
+captures. Every observed table has at most one entry: all eight decrypted downloads (secure-1-1-{5,7,9,12,16,47,48}
 and secure-1-1-12-group) write the count-0 clear and then zero or one element
 at element 1, so the order of several cannot be read from a capture. ETS writes
 the other tables of the object (PID 53, PID 61) ascending and packed, and
 bussard follows that shape. Also INFERRED: whether a device's own send GA
-counts as listened (it made no difference in the reference installation). A multi-sender sample is not
+counts as listened (it made no difference in the reference installation), and
+whether ETS lists a device that only reads a secured GA (an `A_GroupValue_Read`
+is a secured frame from that device too, and §6.3.8.4 checks every received
+S-A_Data against the table); the standard says only "the IAs as assigned for
+group- and point-to-point communication" (§6.3.8.5). A multi-sender sample is not
 available in the reference installation (#197, 2026-09-24): 1.1.10 is secured,
 but the GA it shares with 1.1.5 also carries a device that is not
 Secure-capable, so ETS cannot secure it. It needs another installation or a
@@ -1326,11 +1478,17 @@ greppable.
 1. ~~Does the gateway require IP Secure (secure-only), and which user ids map
    to which tunnel slots?~~ **Settled** 2026-09-24: secure-only; users 2..9 map
    to tunnels 1.1.22..1.1.29 through the keyring (§8.4).
-2. **Do target devices require Data Secure for management once activated, or is
-   plain management still allowed inside a secure tunnel?** Decides the Phase A
-   default (§6.2).
-3. **Sync_Req/Sync_Res byte layout and whether Sync is mandatory** to learn the
-   device seqnum (§5.9, §6.3).
+2. ~~Do target devices require Data Secure for management once activated, or is
+   plain management still allowed inside a secure tunnel?~~ **Settled** by
+   `[AN193 §2.2.3, §2.2.4]`: with security mode on, each service and resource
+   has an access policy; most management resources are tool/role with A+C
+   (`0CC`, `00C`), a few services stay open (`A_IndividualAddress_Read`,
+   `A_Authorize_Request`, the descriptor read, which then answers `FFFFh`).
+   bussard's "secure everything once a tool key is given" is right (§6.2).
+3. ~~Sync_Req/Sync_Res byte layout and whether Sync is mandatory~~ **Settled**:
+   layout by the secure-1-1-12 capture and `[KNX 3/3/7 §5.3.2 Figures 109,
+   110]`; the Sync is a procedure (`DM_SecureSync_RCl`), not a precondition of
+   S-A_Data, but the only way to read the tool-access counter (§6.3).
 4. **SecureWrapper `additional_data` MAC input** (§8.2): the first live
    bussard session against the interface settles it (the capture cannot).
 5. **KNXnet/IP Secure over UDP** (§8.3, #197): implemented from the KNX
@@ -1344,7 +1502,11 @@ greppable.
 7. **`A_PropertyExtDescription_Response` layout**: not in any capture; bussard
    follows KNX 3/3/7 (`crates/bussard-mgmt/src/property_ext.rs`), INFERRED.
 8. **FDSK QR/label string encoding** - only if commissioning from a scanned label
-   (a non-goal, §1.4). `[research §2.6, UNKNOWN]`.
+   (a non-goal, §1.4). `[research §2.6, UNKNOWN]`; the standard does not define
+   it either (`[KNX 3/5/1 §6.1.3]`: no standardised access to the FDSK).
+9. **Which senders ETS puts into PID 54 beyond the transmitting devices**
+   (reading listeners, the device's own send GA): the standard leaves it to
+   the MaC (§11.1); needs a capture of a GA with a reading listener.
 
 ---
 
