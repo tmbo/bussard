@@ -1280,11 +1280,27 @@ def type_search(term: str, dy: int) -> None:
     keys("{ENTER}")
 
 
+def expand_catalog_tree() -> bool:
+    """Expand the Katalog panel's manufacturer tree when ETS collapsed it to
+    a sidebar: every catalog column then sits ~600 px further left and the
+    row reader finds nothing (seven ABB products read as 'not in catalog',
+    2026-10-28). The collapsed panel shows its Import button near x=140."""
+    hits = [l for l in ocr((0, 200, 680, 2440))
+            if l["text"].split() and _norm(l["text"].split()[0]) in ("import", "impart", "imp0rt")]
+    if not hits:
+        return False
+    click(25, hits[0]["y"] + 2)  # the '>' expander at the panel's left edge
+    time.sleep(2)
+    return True
+
+
 def catalog_dy() -> int:
     """Vertical offset of the Katalog panel from the layout LAYOUT was
     measured in (Import button at y=1354): ETS reopens panels with other
     splitter positions after a restart."""
     btn = catalog_import_button()
+    if not btn and expand_catalog_tree():
+        btn = catalog_import_button()
     return btn["y"] - 1354 if btn else 0
 
 
@@ -1359,6 +1375,8 @@ def flow_catalog_import(req: dict) -> dict:
     while not catalog_import_button() and time.time() - t_btn < 30:
         time.sleep(2)
         wait_busy()
+    if not catalog_import_button():
+        expand_catalog_tree()
     if not catalog_import_button():
         ensure_layout()
     btn = catalog_import_button()
