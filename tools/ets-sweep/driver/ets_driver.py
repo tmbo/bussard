@@ -243,10 +243,19 @@ def click(x: int, y: int, button: str = "left", double: bool = False) -> None:
     """Click at layout coordinates (scaled to the physical screen)."""
     s = scale()
     at = (int(round(x * s)), int(round(y * s)))
-    if double:
-        mouse.double_click(button=button, coords=at)
-    else:
-        mouse.click(button=button, coords=at)
+    for attempt in range(4):
+        try:
+            if double:
+                mouse.double_click(button=button, coords=at)
+            else:
+                mouse.click(button=button, coords=at)
+            return
+        except OSError:
+            # SetCursorPos fails with 258 'Wartevorgang abgebrochen' while the
+            # session's input desktop is busy (just after an RDP reconnect).
+            if attempt == 3:
+                raise
+            time.sleep(1.5)
 
 
 def click_text(pattern: str, bbox=None, dx: int = 0, dy: int = 0, button: str = "left", double: bool = False) -> dict:
@@ -599,6 +608,15 @@ def flow_catalog_add(req: dict) -> dict:
         time.sleep(0.8)
     if not find_text("1.1 TP Linie", bar, min_ratio=0.75):
         raise RuntimeError(f"the add bar does not target 1.1 TP Linie: {[l['text'] for l in ocr(bar)]}")
+    # The 'Elemente' count left of the add bar must be 1; an interrupted
+    # flow once left it empty (marked red), and Hinzufügen then adds nothing.
+    count = (130, LAYOUT["catalog_add"][1] + dy - 25, 300, LAYOUT["catalog_add"][1] + dy + 25)
+    if not any(l["text"].strip() == "1" for l in ocr(count, zoom=3)):
+        click(200, LAYOUT["catalog_add"][1] + dy)
+        time.sleep(0.3)
+        keys("^a")
+        keys("1{TAB}")
+        time.sleep(0.5)
     ax, ay = LAYOUT["catalog_add"]
     click(ax, ay + dy)
     time.sleep(3)
@@ -633,8 +651,16 @@ def flow_delete_device(req: dict) -> dict:
     while time.time() - t0 < float(req.get("confirm_wait", 10)):
         time.sleep(1)
         if find_text("Möchten Sie die markierten Objekte", LAYOUT["delete_dialog"]):
-            click_text("Ja", LAYOUT["delete_yes"])
-            confirmed = True
+            # Confirm only when the dialog names the device: an interrupted
+            # flow once left the line selected, and 'Ja' deleted line 1.1
+            # (2026-10-28).
+            named = " ".join(l["text"] for l in ocr(LAYOUT["delete_dialog"]))
+            if req["ia"] in named.replace(" ", "") and "Linie" not in named:
+                click_text("Ja", LAYOUT["delete_yes"])
+                confirmed = True
+            else:
+                click_text("Nein", (2450, 1420, 2700, 1480))
+                raise RuntimeError(f"delete dialog does not name {req['ia']}: {named[:200]}")
             break
     time.sleep(2)
     after = flow_devices(req)["devices"]
