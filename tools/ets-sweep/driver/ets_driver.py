@@ -584,8 +584,20 @@ def ensure_ets_running(project: str = "ets-sweep") -> list[str]:
 
     ctypes.windll.user32.ShowWindow(ets_main_window().handle, 3)
     time.sleep(2)
+    # A started ETS can open behind another window (Explorer, 2026-10-28):
+    # bring it to the front before reading its start page.
+    try:
+        ets_main_window().set_focus()
+    except Exception:
+        pass
+    time.sleep(2)
     if window_project() != project:
-        hit = find_text(project, (0, 900, 4112, 1500), min_ratio=0.9)
+        hit = None
+        t1 = time.time()
+        while not hit and time.time() - t1 < 60:
+            hit = find_text(project, (0, 700, 4112, 2400), min_ratio=0.9)
+            if not hit:
+                time.sleep(5)
         if not hit:
             raise RuntimeError(f"ETS started, but no project tile {project!r} on the overview")
         click(hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2)
@@ -1059,6 +1071,54 @@ def catalog_dy() -> int:
     return btn["y"] - 1354 if btn else 0
 
 
+PRODUCT_STORE = Path(r"C:\ProgramData\KNX\ETS6\ProductStore")
+
+
+def ets_running() -> bool:
+    import subprocess
+
+    # Bytes: tasklist's console code page made the decoded output None once.
+    out = subprocess.run(["tasklist", "/fi", "imagename eq ETS6N.exe"], capture_output=True).stdout or b""
+    return b"ETS6N.exe" in out
+
+
+@flow("reset_catalog")
+def flow_reset_catalog(req: dict) -> dict:
+    """Close ETS, clear its product store, start it again on the sweep
+    project. Faster than removing every imported product from the catalog
+    one row at a time; the sweep calls it every few hundred products. The
+    manufacturer folders are moved aside (to ProductStore-cleared-<time>)
+    and deleted afterwards, the store's version file stays. Every project
+    tab ETS had open is closed with it; ETS saves projects as it goes."""
+    import shutil
+    import subprocess
+
+    did: list[str] = []
+    if ets_running():
+        ets_main_window().close()
+        did.append("closed ETS")
+    t0 = time.time()
+    while ets_running() and time.time() - t0 < 120:
+        time.sleep(2)
+    if ets_running():
+        subprocess.run(["taskkill", "/f", "/im", "ETS6N.exe"], capture_output=True)
+        subprocess.run(["taskkill", "/f", "/im", "ETS6.exe"], capture_output=True)
+        time.sleep(5)
+        did.append("killed ETS after 120 s")
+    aside = PRODUCT_STORE.with_name(f"ProductStore-cleared-{time.strftime('%Y%m%d-%H%M%S')}")
+    aside.mkdir()
+    moved = []
+    for d in PRODUCT_STORE.iterdir():
+        if d.is_dir() and d.name.startswith("M-"):
+            shutil.move(str(d), str(aside / d.name))
+            moved.append(d.name)
+    did.append(f"cleared {len(moved)} manufacturers")
+    if req.get("delete", True):
+        shutil.rmtree(aside, ignore_errors=True)
+    did += ensure_ets_running(req.get("project", "ets-sweep"))
+    return {"did": did, "manufacturers": moved}
+
+
 @flow("ensure_layout")
 def flow_ensure_layout(req: dict) -> dict:
     return ensure_layout()
@@ -1342,6 +1402,12 @@ class Handler(BaseHTTPRequestHandler):
                     # (the VM console is 1280x800 and lays ETS out
                     # differently): refuse rather than click beside the target.
                     raise RuntimeError(f"desktop is not the RDP layout (scale {scale():.3f}); reconnect the RDP session")
+                if name == "reset_catalog":
+                    # Closes and starts ETS itself; nothing to guard yet.
+                    out = fn(req)
+                    out.setdefault("ok", True)
+                    self._send(200, out)
+                    return
                 started = ensure_ets_running(req.get("project", "ets-sweep")) if name != "windows" else []
                 if name not in ("windows", "state"):
                     import ctypes

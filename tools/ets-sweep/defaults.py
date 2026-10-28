@@ -148,6 +148,9 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--shard", default="", help="k/n: run every n-th job starting at k (0-based)")
     ap.add_argument("--redo", action="store_true")
+    ap.add_argument("--reset-every", type=int, default=200,
+                    help="close ETS and clear its product store once this many products were imported")
+    ap.add_argument("--in-catalog", type=int, default=0, help="products already in ETS's catalog at the start")
     ap.add_argument("--redo-failed", action="store_true", help="run again what is not `captured` or skipped")
     args = ap.parse_args()
 
@@ -192,9 +195,10 @@ def main() -> int:
             return False
         return True
 
-    # One product file at a time: import it into ETS's catalog, run its
-    # applications, remove its products again. ETS slowed down and its product
-    # store broke with the whole corpus imported at once (2026-10-28).
+    # One product file at a time: import it into ETS's catalog and run its
+    # applications; every --reset-every products ETS's product store is
+    # cleared. ETS slowed down and its product store broke with the whole
+    # corpus imported at once (2026-10-28).
     by_file: dict[str, list[dict]] = {}
     for job in todo:
         if runnable(job):
@@ -202,6 +206,7 @@ def main() -> int:
     all_orders: dict[str, set[str]] = {}
     for job in jobs():
         all_orders.setdefault(job["file"], set()).update(str(o) for o in job["order_numbers"])
+    in_catalog = args.in_catalog
     for file, file_jobs in by_file.items():
         if stop:
             break
@@ -213,6 +218,20 @@ def main() -> int:
                 inner = [n for n in z.namelist() if n.lower().endswith(".knxprod")][0]
                 path.parent.mkdir(exist_ok=True)
                 path.write_bytes(z.read(inner))
+        if in_catalog >= args.reset_every:
+            # Clearing the whole store now and then is much faster than
+            # removing each file's products row by row (user decision,
+            # 2026-10-28); ETS slowed down and broke with the whole corpus in it.
+            try:
+                rs = vm.driver(c, "POST", "/ets/reset_catalog", {"project": "ets-sweep"}, timeout=900)
+                print(f"reset   {rs.get('did', rs.get('error'))}", flush=True)
+                if not rs.get("ok", True):
+                    break
+            except Exception as exc:  # noqa: BLE001
+                print(f"reset   failed: {exc}", flush=True)
+                break
+            in_catalog = 0
+        in_catalog += len(all_orders.get(file, ()))
         imp: dict = {}
         try:
             remote = catalog.upload_if_missing(c, path)
@@ -286,19 +305,6 @@ def main() -> int:
             if args.limit and done >= args.limit:
                 stop = True
                 break
-        # Remove what the file put into the catalog: every product of every
-        # application it holds (multi-product files import many).
-        removed = []
-        for order in sorted(all_orders.get(file, set())):
-            try:
-                rm = vm.driver(c, "POST", "/ets/catalog_remove", {"term": sweep_search_term(order), "project": "ets-sweep"}, timeout=900)
-                removed += rm.get("removed", [])
-                if not rm.get("ok", True):
-                    print(f"remove  failed {order}: {rm.get('error', '')[:120]}", flush=True)
-            except Exception as exc:  # noqa: BLE001
-                print(f"remove  failed {order}: {exc}", flush=True)
-                c = vm.connect()
-        print(f"remove  {len(removed):3} rows  {file}", flush=True)
     counts: dict[str, int] = {}
     for e in results.values():
         counts[e["outcome"]] = counts.get(e["outcome"], 0) + 1
