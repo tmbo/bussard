@@ -373,6 +373,8 @@ def flow_windows(req: dict) -> dict:
 # 4112x2484 VM screen; Topologie panel left, device list top, Katalog panel
 # bottom, Eigenschaften column right). Physical pixels. Verified 2026-10-27.
 LAYOUT = {
+    # The breadcrumb under the tabs: names the selected line or device.
+    "breadcrumb": (150, 80, 2300, 150),
     "tab_strip": (0, 0, 4112, 90),
     "logo": (170, 40),
     "toolbar_connection": (3686, 113),
@@ -448,7 +450,7 @@ def line_1_1() -> tuple[int, int]:
     """Screen position of '1.1 TP Linie' in the Topologie tree, expanding the
     tree when ETS reopened it collapsed (after a restart, 2026-10-28)."""
     tree = LAYOUT["tree"]
-    for attempt in range(3):
+    for attempt in range(4):
         # The sweep project holds exactly one TP line; the selection highlight
         # garbles its number at times ('IJ:: TP Linie'), so match on the rest,
         # magnified on a second look.
@@ -460,7 +462,16 @@ def line_1_1() -> tuple[int, int]:
         main = next((l for l in lines if "Haupt" in l["text"]), None) or next(
             (l for l in lines if l["text"].strip().startswith("IP") or "1.0" in l["text"]), None)
         if not main:
-            raise RuntimeError(f"no 'IP Hauptlinie' in the Topologie tree: {[l['text'] for l in lines]}")
+            # Collapsed down to the backbone (seen 2026-10-28): select it and
+            # expand it with the arrow key, then look again.
+            backbone = next((l for l in lines if "Backbone" in l["text"]), None)
+            if not backbone:
+                raise RuntimeError(f"no 'IP Hauptlinie' in the Topologie tree: {[l['text'] for l in lines]}")
+            click(backbone["x"] + backbone["w"] // 2, backbone["y"] + backbone["h"] // 2)
+            time.sleep(0.5)
+            keys("{RIGHT}")
+            time.sleep(1.5)
+            continue
         click(18, main["y"] + main["h"] // 2)  # the expander arrow left of the line
         time.sleep(1.5)
     raise RuntimeError("'1.1 TP Linie' did not appear in the Topologie tree")
@@ -744,12 +755,14 @@ def flow_catalog_add(req: dict) -> dict:
             # A search by product name whose order cell OCR left empty
             # (ALLinBOX 88 v2, 2026-10-28): the exact name stands in for it.
             exact = [r for r in hits if not r["order"].strip() and _canon(r["name"]) == _canon(name)]
+        if len(exact) == 1:
+            # The sweep imports one product file at a time, so the only local
+            # row with this order number is the product: its version cell
+            # (often truncated or noisy in OCR) is not checked.
+            return exact[0]
         match = [r for r in exact if want_version and _digits(r["version"]) == want_version]
         if match:
             return match[0]
-        if len(exact) == 1 and (not want_version or not exact[0]["version"]):
-            # The only local row with this order number, its version unread.
-            return exact[0]
         return None
 
     rows, hits = search(search_term(req["search"]))
@@ -840,6 +853,12 @@ def flow_delete_device(req: dict) -> dict:
         return {"deleted": False, "devices": devs}
     click(700, hit[0]["y"])
     time.sleep(0.8)
+    # ETS deletes without asking now, so Delete removes whatever has the
+    # selection: once the line and the area (2026-10-28). Press it only when
+    # the breadcrumb names the device.
+    crumb = " ".join(l["text"] for l in ocr(LAYOUT["breadcrumb"])).replace(" ", "")
+    if req["ia"] not in crumb or "Linie" in crumb.rsplit(req["ia"], 1)[-1]:
+        raise RuntimeError(f"delete: the selection is not device {req['ia']}: breadcrumb {crumb[:120]!r}")
     keys("{DELETE}")
     # The confirmation comes later for a larger product (over 2 s for an MDT
     # room actuator): wait for it, confirm, and check the device is gone.
@@ -1019,7 +1038,10 @@ def ensure_layout() -> dict:
 
 def catalog_import_button() -> dict | None:
     """The Katalog panel's Import button wherever the panel sits."""
-    hits = [l for l in ocr((680, 200, 1100, 2440)) if _norm(l["text"]) in ("import", "impart", "imp0rt")]
+    # The first word: OCR joins an enabled 'Herunterladen' next to it into one
+    # line ('Import Herunterladen', 2026-10-28).
+    hits = [l for l in ocr((680, 200, 1100, 2440))
+            if l["text"].split() and _norm(l["text"].split()[0]) in ("import", "impart", "imp0rt")]
     return min(hits, key=lambda l: abs(l["y"] - 1354)) if hits else None
 
 
@@ -1081,7 +1103,7 @@ def flow_catalog_import(req: dict) -> dict:
             # The click lands on nothing now and then while ETS refreshes the
             # catalog after the previous import (43 of 498 files on the first
             # pass, 2026-10-27): press Import again before giving up.
-            click(btn["x"] + btn["w"] // 2, btn["y"] + btn["h"] // 2)
+            click(btn["x"] + 40, btn["y"] + btn["h"] // 2)  # the word Import, not a joined neighbour
             t0 = time.time()
             while time.time() - t0 < 15:
                 dialog = next((p for p in ets_popups() if "Produktdatei" in p.window_text()), None)
