@@ -166,9 +166,23 @@ from pywinauto import keyboard, mouse
 SCREEN = (0, 0, 4112, 2484)
 
 
+def scale() -> float:
+    """Physical screen width / the 4112-pixel layout every coordinate here is
+    written in. The RDP session ran at 4112x2484; on the VM console (after
+    `tscon`, when no RDP client is attached) the desktop is 2056 wide with the
+    same relative layout, so clicks, grabs and OCR positions scale by this."""
+    import ctypes
+
+    return ctypes.windll.user32.GetSystemMetrics(0) / 4112.0
+
+
 def grab(bbox=None):
+    """A screenshot of `bbox` (layout coordinates), in physical pixels."""
     from PIL import ImageGrab
 
+    if bbox:
+        s = scale()
+        bbox = tuple(int(round(v * s)) for v in bbox)
     return ImageGrab.grab(bbox=tuple(bbox) if bbox else None)
 
 
@@ -180,6 +194,11 @@ def ocr(bbox=None, lang: str = "de", zoom: int = 1) -> list[dict]:
 
     from PIL import ImageOps
 
+    s = scale()
+    if s < 0.9:
+        # A half-size console desktop: magnify so text keeps the pixel size
+        # the OCR read well at 4112 wide.
+        zoom = max(zoom, 2)
     img = grab(bbox)
     if zoom > 1:
         # Magnify and stretch the contrast: a dimmed window (modal overlay) or
@@ -189,10 +208,11 @@ def ocr(bbox=None, lang: str = "de", zoom: int = 1) -> list[dict]:
     out = []
     for line in winocr.recognize_pil_sync(img, lang)["lines"]:
         rects = [w["bounding_rect"] for w in line["words"]]
-        x0 = min(r["x"] for r in rects) / zoom
-        y0 = min(r["y"] for r in rects) / zoom
-        x1 = max(r["x"] + r["width"] for r in rects) / zoom
-        y1 = max(r["y"] + r["height"] for r in rects) / zoom
+        # OCR pixels -> physical pixels (/zoom) -> layout coordinates (/s).
+        x0 = min(r["x"] for r in rects) / zoom / s
+        y0 = min(r["y"] for r in rects) / zoom / s
+        x1 = max(r["x"] + r["width"] for r in rects) / zoom / s
+        y1 = max(r["y"] + r["height"] for r in rects) / zoom / s
         out.append({"text": line["text"], "x": int(ox + x0), "y": int(oy + y0), "w": int(x1 - x0), "h": int(y1 - y0)})
     return out
 
@@ -220,10 +240,13 @@ def find_text(pattern: str, bbox=None, min_ratio: float = 0.8) -> dict | None:
 
 
 def click(x: int, y: int, button: str = "left", double: bool = False) -> None:
+    """Click at layout coordinates (scaled to the physical screen)."""
+    s = scale()
+    at = (int(round(x * s)), int(round(y * s)))
     if double:
-        mouse.double_click(button=button, coords=(int(x), int(y)))
+        mouse.double_click(button=button, coords=at)
     else:
-        mouse.click(button=button, coords=(int(x), int(y)))
+        mouse.click(button=button, coords=at)
 
 
 def click_text(pattern: str, bbox=None, dx: int = 0, dy: int = 0, button: str = "left", double: bool = False) -> dict:
@@ -471,6 +494,19 @@ def _digits(t: str) -> str:
     return re.sub(r"[^0-9a-z]", "", t.lower())
 
 
+def _canon(t: str) -> str:
+    """An order number as OCR may read it: case-folded, the letters OCR mixes
+    up with digits unified (I/l/1/| and O/0), punctuation and spaces dropped."""
+    t = t.lower().translate(str.maketrans({"l": "i", "1": "i", "|": "i", "!": "i", "0": "o"}))
+    return re.sub(r"[^0-9a-z]", "", t)
+
+
+def search_term(order: str) -> str:
+    """ETS's catalog search does not take an order number's wildcard suffix
+    ('754411xx', 'BM/A4.11-13x', '4007841059xxx'); search its fixed part."""
+    return re.sub(r"(?<=[0-9.\-])x+$", "", order.strip(), flags=re.IGNORECASE) or order
+
+
 def catalog_rows() -> list[dict]:
     """The catalog result rows as {y, name, order, application, version},
     grouped from OCR lines by height; manufacturer group headers are left out."""
@@ -512,29 +548,39 @@ def flow_catalog_add(req: dict) -> dict:
     before = {d["ia"] for d in flow_devices(req)["devices"]}
     dy = catalog_dy()
     sx, sy = LAYOUT["catalog_search"]
+    term = search_term(req["search"])
+    want = _canon(term)
     rows: list[dict] = []
-    for attempt in range(3):
+    exact: list[dict] = []
+    for attempt in range(4):
         click(sx, sy + dy)
         time.sleep(0.3)
         keys("^a")
-        keys(req["search"] + "{ENTER}")
+        keys("{DEL}")
+        time.sleep(0.5)
+        keys(term + "{ENTER}")
         time.sleep(3 + 2 * attempt)
         click(1000, 1380 + dy)  # a neutral spot: closes the search-history dropdown
         time.sleep(0.5)
         rows = catalog_rows()
-        if rows:
-            break  # ETS fills the list late at times: type the search again
-    want_order = _digits(req["search"])
+        # Only rows of THIS search count: ETS leaves the previous search's
+        # rows up for a while (a third of the misses in the first full run).
+        exact = [r for r in rows if want and (want in _canon(r["order"]) or _canon(r["order"]).startswith(want)
+                                              or want in _canon(r["name"]))]
+        if exact:
+            break
     want_version = _digits(req.get("version", ""))
-    exact = [r for r in rows if _digits(r["order"]).startswith(want_order[:12]) or want_order in _digits(r["order"])]
-    pool = exact or rows
-    match = [r for r in pool if want_version and _digits(r["version"]) == want_version]
+    match = [r for r in exact if want_version and _digits(r["version"]) == want_version]
     if match:
         row = match[0]
-    elif len(pool) == 1 and not want_version:
-        row = pool[0]
+    elif exact and not want_version and len(exact) == 1:
+        row = exact[0]
+    elif exact:
+        # The product is in the catalog with another application version: ETS
+        # offers each hardware's current application only.
+        raise RuntimeError(f"catalog version mismatch: {term!r} shows {[r['version'] for r in exact]}, wanted {req.get('version')!r}")
     else:
-        raise RuntimeError(f"no catalog row for {req['search']!r} version {req.get('version')!r}: {pool[:8]}")
+        raise RuntimeError(f"not found in catalog search: {term!r}; rows {rows[:4]}")
     click(1300, row["y"])
     time.sleep(1)
     bar = (LAYOUT["catalog_bar"][0], LAYOUT["catalog_bar"][1] + dy, LAYOUT["catalog_bar"][2], min(LAYOUT["catalog_bar"][3] + dy, 2484))
@@ -623,7 +669,7 @@ def flow_download(req: dict) -> dict:
     wait for the result: the sweep watches the simulator instead."""
     require_project(req["project"])
     devs = flow_devices(req)["devices"]
-    hit = [d for d in devs if d["ia"] == req["ia"]]
+    hit = [d for d in devs if d["ia"] == req["ia"]] or [d for d in devs if d["ia"].endswith("." + req["ia"].split(".", 1)[1]) and len(devs) == 1]
     if not hit:
         raise RuntimeError(f"device {req['ia']} not in list: {devs}")
     click(700, hit[0]["y"])
@@ -690,7 +736,7 @@ def ensure_layout() -> dict:
     did = []
     w = ets_main_window()
     r = w.rectangle()
-    if (r.right - r.left) < SCREEN[2] - 20:
+    if (r.right - r.left) < SCREEN[2] * scale() - 20:
         ctypes.windll.user32.ShowWindow(w.handle, 3)  # SW_MAXIMIZE
         time.sleep(1.5)
         did.append("maximized")
@@ -944,6 +990,11 @@ class Handler(BaseHTTPRequestHandler):
                 # Watchdog before every flow: a modal left open by the
                 # previous one (the project-password dialog, an ETS error)
                 # would swallow this flow's clicks and keystrokes.
+                if abs(scale() - 1.0) > 0.01:
+                    # Not the 4112-wide RDP desktop the layout was measured on
+                    # (the VM console is 1280x800 and lays ETS out
+                    # differently): refuse rather than click beside the target.
+                    raise RuntimeError(f"desktop is not the RDP layout (scale {scale():.3f}); reconnect the RDP session")
                 watchdog = {"password_dialog": dismiss_password_dialog(), "ets_error": dismiss_ets_error()}
                 out = fn(req)
                 out.setdefault("ok", True)

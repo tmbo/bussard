@@ -136,6 +136,12 @@ def main() -> int:
             "learned_properties": r.get("learned_properties"),
         }
         save()
+        if any(k in (r.get("error") or "") for k in ("screen grab failed", "not the RDP layout")):
+            # The VM's desktop session is not drawing (an RDP client went
+            # away): every further job would fail the same way. Stop here;
+            # `tscon <session> /dest:console` in the VM brings it back.
+            print(f"stopping: the VM desktop is not usable: {r.get('error', '')[:160]}", flush=True)
+            break
         print(f"{r['outcome']:13} {job['mask']} {r.get('seconds', 0):4}s ops={r.get('ops')} {job['id']} {job['name']!s:.40}"
               + (f"  {r.get('error', '')[:100]}" if r.get("error") else ""), flush=True)
         done += 1
