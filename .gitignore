@@ -51,3 +51,6 @@ website/site/
 **/.bussard/model-cache/
 knx-sim/target-win/
 tools/ets-sweep/.unpacked/
+
+# external specification
+dev/knx-standard-3.0.0/
