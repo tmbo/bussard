@@ -1,0 +1,1 @@
+- A System 7 flash or table write now puts the application's PEI type, manufacturer, number and version into each TaskSegment record, as ETS does (#485). bussard guessed the manufacturer octet from the mask family, which was right only for Jung and Theben products. A table write without the device's product data now refuses instead of writing a zeroed application id.
