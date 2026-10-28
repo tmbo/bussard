@@ -274,10 +274,25 @@ impl Device {
                 Apci::PropertyExtValueRead | Apci::PropertyExtValueWriteCon
             )
         {
+            // An object the device holds by index, reached by its type: the
+            // device object as type 0 (ETS reads PID 12 that way on the ABB
+            // Modbus RTU gateway, 2026-10-28) or any object whose
+            // PID_OBJECT_TYPE names the type.
+            let by_index = self
+                .objects
+                .iter()
+                .find(|(idx, o)| {
+                    o.property(super::interface_object::PID_OBJECT_TYPE)
+                        .map(|p| p.value.as_slice() == object_type.to_be_bytes())
+                        .unwrap_or(object_type == 0 && **idx == 0)
+                })
+                .map(|(idx, _)| *idx);
             let obj = if object_type == super::knxnet_object::IOT_KNXNET_IP_PARAMETER {
                 self.knxnet_by_type.as_mut()
-            } else {
+            } else if self.typed_objects.contains_key(&object_type) {
                 self.typed_objects.get_mut(&object_type)
+            } else {
+                by_index.and_then(|idx| self.objects.get_mut(&idx))
             };
             let reply = obj.and_then(|obj| {
                 if apdu.apci == Apci::PropertyExtValueRead {

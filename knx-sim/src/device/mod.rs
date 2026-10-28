@@ -1054,6 +1054,21 @@ mod tests {
     }
 
     #[test]
+    fn test_device_object_answers_ext_read_by_type() -> Result<(), Box<dyn std::error::Error>> {
+        // ETS reads the manufacturer id of the ABB Modbus RTU gateway as
+        // A_PropertyExtValue_Read type 0, instance 1, PID 12 (2026-10-28).
+        let mut dev = system_b_device()?;
+        connect(&mut dev)?;
+        let r = dev.handle_cemi(&data(&dev, 0x1CC, &[0x00, 0x00, 0x00, 0x10, 0x0C, 1, 0, 1]))?;
+        assert_eq!(r.responses.len(), 1);
+        let tpdu = &r.responses[0].tpdu;
+        assert_eq!(tpdu[1], 0xCD, "A_PropertyExtValue_Response");
+        assert_eq!(tpdu[7], 1, "one element returned");
+        assert_eq!(tpdu.len(), 10 + 2, "the two-octet manufacturer id");
+        Ok(())
+    }
+
+    #[test]
     fn test_unlisted_knxnet_object_answers_by_type_only() -> Result<(), Box<dyn std::error::Error>>
     {
         // The IPS 300 SREG shape (bussard issue #391): the walk does not list
