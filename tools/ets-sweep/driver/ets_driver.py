@@ -474,6 +474,70 @@ def flow_devices(req: dict) -> dict:
     return {"devices": ias}
 
 
+class CompatModeRequired(RuntimeError):
+    """ETS wants to switch to compatibility mode for this product. Declined by
+    the owner's rule (2026-10-28): such products are skipped, not run."""
+
+
+def decline_compat_mode() -> str | None:
+    """Decline ETS's compatibility-mode prompt (old product data) and return
+    its text; the caller records the product as skipped."""
+    lines = ocr((900, 500, 3300, 2000))
+    joined = " ".join(l["text"] for l in lines)
+    if "ompatibilit" not in joined:
+        return None
+    for label in ("Nein", "Abbrechen", "Nicht", "Schließen"):
+        hit = find_text(label, (1500, 900, 3300, 2000), min_ratio=0.9)
+        if hit and "ompatibilit" not in hit["text"]:
+            click(hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2)
+            break
+    else:
+        keys("{ESC}")
+    time.sleep(2)
+    return joined[:400]
+
+
+def ensure_ets_running(project: str = "ets-sweep") -> list[str]:
+    """Start ETS and open `project` when ETS is not running (it closed after a
+    compatibility prompt, 2026-10-28)."""
+    import subprocess
+
+    did: list[str] = []
+    try:
+        ets_app()
+        return did
+    except Exception:
+        pass
+    subprocess.Popen([r"C:\Program Files (x86)\ETS6\ETS6.exe"], creationflags=subprocess.DETACHED_PROCESS)
+    did.append("started ETS")
+    t0 = time.time()
+    while time.time() - t0 < 240:
+        time.sleep(5)
+        try:
+            w = ets_main_window()
+            if w.window_text().startswith("ETS6"):
+                break
+        except Exception:
+            continue
+    time.sleep(10)
+    import ctypes
+
+    ctypes.windll.user32.ShowWindow(ets_main_window().handle, 3)
+    time.sleep(2)
+    if window_project() != project:
+        hit = find_text(project, (0, 900, 4112, 1500), min_ratio=0.9)
+        if not hit:
+            raise RuntimeError(f"ETS started, but no project tile {project!r} on the overview")
+        click(hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2)
+        did.append("opened project")
+        t0 = time.time()
+        while time.time() - t0 < 120 and window_project() != project:
+            time.sleep(3)
+        time.sleep(5)
+    did.append(str(ensure_layout()))
+    return did
+
+
 def dismiss_password_dialog() -> bool:
     """'Projektpasswort setzen': ETS asks for a project password the first
     time a KNX Secure capable product joins a project without one. The plain
@@ -607,6 +671,9 @@ def flow_catalog_add(req: dict) -> dict:
     password_dialog = False
     t0 = time.time()
     while time.time() - t0 < float(req.get("password_wait", 12)):
+        compat = decline_compat_mode()
+        if compat:
+            raise CompatModeRequired(f"ETS asked for compatibility mode on adding: {compat[:200]}")
         if dismiss_password_dialog():
             password_dialog = True
             break
@@ -687,6 +754,9 @@ def flow_download(req: dict) -> dict:
             break
         if dismiss_password_dialog():
             password = True
+        compat = decline_compat_mode()
+        if compat:
+            raise CompatModeRequired(f"ETS asked for compatibility mode on download: {compat[:200]}")
         time.sleep(1)
     return {"ia": req["ia"], "mode": req.get("mode", "application"), "medium_dialog_kept": kept, "password_dialog": password}
 
@@ -995,7 +1065,12 @@ class Handler(BaseHTTPRequestHandler):
                     # (the VM console is 1280x800 and lays ETS out
                     # differently): refuse rather than click beside the target.
                     raise RuntimeError(f"desktop is not the RDP layout (scale {scale():.3f}); reconnect the RDP session")
-                watchdog = {"password_dialog": dismiss_password_dialog(), "ets_error": dismiss_ets_error()}
+                started = ensure_ets_running(req.get("project", "ets-sweep")) if name != "windows" else []
+                compat = decline_compat_mode()
+                if compat:
+                    raise CompatModeRequired(f"ETS asked for compatibility mode before {name}: {compat[:200]}")
+                watchdog = {"password_dialog": dismiss_password_dialog(), "ets_error": dismiss_ets_error(),
+                            "ets_started": started}
                 out = fn(req)
                 out.setdefault("ok", True)
                 if any(watchdog.values()):

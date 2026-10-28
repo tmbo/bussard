@@ -312,7 +312,8 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
         result["ops"] = sum(1 for l in ops.stdout.splitlines() if re.match(r"\s+\d+\s", l))
     err = result.get("error") or ""
     result["outcome"] = (
-        "skipped-catalog-version" if "catalog version mismatch" in err
+        "skipped-compat-mode" if "compatibility mode" in err
+        else "skipped-catalog-version" if "catalog version mismatch" in err
         else "skipped-not-in-catalog" if "not found in catalog search" in err
         else "captured" if result.get("ets") == "ok" and result.get("ops")
         else "ets-failed" if result.get("ets") == "failed"
