@@ -859,18 +859,35 @@ def flow_delete_device(req: dict) -> dict:
     hit = [d for d in devs if d["ia"] == req["ia"]]
     if not hit:
         return {"deleted": False, "devices": devs}
-    click(700, hit[0]["y"])
+    # ETS deletes without asking now, and a Delete key acts on whatever holds
+    # the selection: it removed line 1.1 and area 1 (2026-10-28). The device
+    # is deleted through its own row's context menu instead, and only when
+    # that row shows the address and is highlighted, and the menu is a
+    # device's menu.
+    from pywinauto import mouse
+
+    y = hit[0]["y"]
+    click(1000, y)
     time.sleep(0.8)
-    # ETS deletes without asking now, so Delete removes whatever has the
-    # selection: once the line and the area (2026-10-28). Press it only when a
-    # device in line 1.1 is selected: the breadcrumb (the selection's
-    # container) ends in '1.1 TP Linie', and the toolbar offers a plain
-    # 'Hinzufügen' (a selected line or area offers 'Geräte/Linien hinzufügen').
-    crumb = " ".join(l["text"] for l in ocr(LAYOUT["breadcrumb"]))
-    bar = " ".join(l["text"] for l in ocr(LAYOUT["toolbar_add"]))
-    if not crumb.rstrip().endswith("TP Linie") or re.search(r"(Geräte|Linien|Bereiche|Segmente)\s*hinzu", bar):
-        raise RuntimeError(f"delete: the selection is not device {req['ia']}: breadcrumb {crumb[:120]!r}, toolbar {bar[:80]!r}")
-    keys("{DELETE}")
+    band = " ".join(l["text"] for l in ocr((680, y - 20, 1700, y + 20), zoom=2))
+    if not re.search(rf"(?<![\d.]){re.escape(req['ia'])}(?![\d.])", band):
+        raise RuntimeError(f"delete: the row at y={y} reads {band[:80]!r}, not device {req['ia']}")
+    # Selected reads blue (219, 234, 255) once the pointer is off the row; a
+    # hovered row is grey and an unselected one white.
+    s_ = scale()
+    mouse.move(coords=(int(2600 * s_), int(1200 * s_)))
+    time.sleep(0.4)
+    r, g, b = grab((1450, y - 4, 1460, y + 4)).convert("RGB").getpixel((5, 4))
+    if not (b > r + 20 and b > 230):
+        raise RuntimeError(f"delete: the row of {req['ia']} is not highlighted (rgb {r},{g},{b})")
+    mouse.right_click(coords=(int(1000 * s_), int(y * s_)))
+    time.sleep(1.2)
+    items = menu_items()
+    # A device's menu offers 'Gerät neu starten'; a line's or area's does not.
+    if "Gerät neu starten" not in items or "Löschen" not in items:
+        keys("{ESC}")
+        raise RuntimeError(f"delete: unexpected context menu for {req['ia']}: {items[:12]}")
+    menu_click("Löschen")
     # The confirmation comes later for a larger product (over 2 s for an MDT
     # room actuator): wait for it, confirm, and check the device is gone.
     t0 = time.time()
@@ -1239,30 +1256,19 @@ def catalog_import_button() -> dict | None:
 
 
 def type_search(term: str, dy: int) -> None:
-    """Type `term` into the Katalog search box and run the search. Delete is
-    pressed only once focus is proven to be in the box: a missed click once
-    left the focus on the Topologie tree and Ctrl+A, Delete removed line 1.1
-    (ETS asks no confirmation; 2026-10-28). The proof is a marker typed over
-    the box's text and read back by OCR (the term itself is a poor proof:
-    OCR misreads order numbers, and the previous term is often similar).
-    Letters typed elsewhere do no harm."""
+    """Type `term` into the Katalog search box and run the search, with no
+    Delete key at all: a Delete that reached the Topologie tree removed line
+    1.1 twice (ETS asks no confirmation; 2026-10-28). Ctrl+A and the typed
+    term replace the old text; the trailing space stops ETS's autocompletion
+    (ZPR1612 -> ZPR1612V3), which the search ignores. Letters typed
+    elsewhere do no harm."""
     sx, sy = LAYOUT["catalog_search"]
-    region = (sx - 260, sy + dy - 30, sx + 420, sy + dy + 30)
-    for _ in range(2):
-        click(sx, sy + dy)
-        time.sleep(0.3)
-        keys("^a")
-        keys("QQQ")
-        time.sleep(0.6)
-        box = " ".join(l["text"] for l in ocr(region, zoom=2))
-        if "QQQ" in box.upper().replace("0", "Q"):
-            break
-    else:
-        raise RuntimeError(f"the search box does not take keys (shows {box!r}); no Delete pressed")
+    click(sx, sy + dy)
+    time.sleep(0.3)
     keys("^a")
-    keys(term)
-    time.sleep(0.4)
-    keys("{DEL}{ENTER}")  # drop ETS's autocompleted suffix (ZPR1612 -> ZPR1612V3)
+    keys(term + " ")
+    time.sleep(0.3)
+    keys("{ENTER}")
 
 
 def catalog_dy() -> int:
