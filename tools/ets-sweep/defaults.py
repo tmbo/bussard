@@ -120,6 +120,62 @@ def catalog_sibling(job: dict, r: dict, everything: dict[str, dict]) -> dict | N
     return None
 
 
+def seed_properties(path: Path, app: str, prev: dict | None) -> list[dict] | None:
+    """The device properties the sim starts with: those the application binds
+    parameters to (the hardware type ETS checks first, PID 78; 78 of 81
+    learned values match), overridden by what a previous run learned from
+    ETS's log, else Zennio's rule for PID 78."""
+    # The device object only: its PIDs 78 and 25 are what ETS checks; a
+    # property on an object the sim does not build would refuse the config.
+    merged = {(p["object"], p["pid"]): p for p in sweep.product_properties(path, app) if p["object"] == 0}
+    for p in (prev or {}).get("learned_properties") or []:
+        merged[(p["object"], p["pid"])] = p
+    if (0, 78) not in merged:
+        for p in guessed_identity(app) or []:
+            merged[(p["object"], p["pid"])] = p
+    return list(merged.values()) or None
+
+
+OFFERED = HERE / "results" / "offered.json"
+
+
+def offered_apps(files: list[str]) -> dict[str, str]:
+    """application id -> the application ETS's catalog offers for its
+    hardware: the first ApplicationProgramRef of each Hardware2Program (one
+    H2P can list several versions, ABB BM/A4.11-13x 8.2 and 8.3, and the
+    catalog item adds the first). Read from each product's Hardware.xml and
+    cached in results/offered.json."""
+    import zipfile
+
+    cache = json.loads(OFFERED.read_text()) if OFFERED.exists() else {}
+    changed = False
+    for file in files:
+        if file in cache:
+            continue
+        mapping: dict[str, str] = {}
+        try:
+            z = zipfile.ZipFile(CORPUS / file)
+            if file.lower().endswith(".zip"):
+                import io
+
+                inner = [n for n in z.namelist() if n.lower().endswith(".knxprod")][0]
+                z = zipfile.ZipFile(io.BytesIO(z.read(inner)))
+            for name in z.namelist():
+                if name.endswith("Hardware.xml"):
+                    xml = z.read(name).decode("utf-8", "replace")
+                    for h2p in re.finditer(r"<Hardware2Program\b.*?</Hardware2Program>", xml, re.S):
+                        refs = re.findall(r'<ApplicationProgramRef RefId="([^"]+)"', h2p.group(0))
+                        for ref in refs:
+                            mapping.setdefault(ref, refs[0])
+        except (OSError, zipfile.BadZipFile, IndexError):
+            pass
+        cache[file] = mapping
+        changed = True
+    if changed:
+        OFFERED.write_text(json.dumps(cache, indent=1, sort_keys=True))
+    return {app: first for m in cache.values() for app, first in m.items()}
+
+
 def jobs() -> list[dict]:
     """One job per application, and per hardware only the newest version of
     an application: the same order numbers and application number in several
@@ -136,8 +192,17 @@ def jobs() -> list[dict]:
                 continue
             seen.add(app["id"])
             out.append({**app, "file": file, "in_catalog": catalog.get(file, {}).get("outcome") == "imported"})
+    # Only the application ETS's catalog offers for a hardware can run; the
+    # others of the same Hardware2Program are recorded as skipped in its favour.
+    offered = offered_apps(sorted(apps))
+    for j in out:
+        first = offered.get(j["id"])
+        if first and first != j["id"]:
+            j["older"] = first
     newest: dict[tuple, dict] = {}
     for j in out:
+        if j.get("older"):
+            continue
         m = APP_ID.match(j["id"])
         if not m:
             continue
@@ -147,9 +212,9 @@ def jobs() -> list[dict]:
             newest[key] = j
     for j in out:
         m = APP_ID.match(j["id"])
-        if m:
-            top = newest[(m.group(1), m.group(2), tuple(j["order_numbers"]))]
-            if top["id"] != j["id"]:
+        if m and not j.get("older"):
+            top = newest.get((m.group(1), m.group(2), tuple(j["order_numbers"])))
+            if top and top["id"] != j["id"]:
                 j["older"] = top["id"]
     return out
 
@@ -276,7 +341,7 @@ def main() -> int:
                 # Start from the identity a previous run learned from ETS.
                 r = sweep.run_learning(c, path, job["id"], str(job["order_numbers"][0]),
                                        mask=job["mask"], fallback_search=fallback,
-                                       properties=(prev or {}).get("learned_properties") or guessed_identity(job["id"]))
+                                       properties=seed_properties(path, job["id"], prev))
             except Exception as exc:  # noqa: BLE001 - a lost ssh link: reconnect and go on
                 r = {"outcome": "driver-error", "error": f"{type(exc).__name__}: {exc}"[:600]}
                 c = vm.connect()

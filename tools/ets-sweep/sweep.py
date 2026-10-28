@@ -281,6 +281,66 @@ def ets_failed_since(c, since: str) -> bool:
     return False
 
 
+def product_properties(knxprod: Path, app: str) -> list[dict]:
+    """The device properties the application binds parameters to, with the
+    values those parameters hold: `<Parameter ...><Property ObjectIndex
+    PropertyId/>`. ETS compares them before a download (Configuration
+    Procedures 3/5/3 §3.5.2: the hardware type, PID 78, against a parameter
+    of the application program), so a factory device of that hardware holds
+    them. The value is the selected Enumeration member's BinaryValue of a
+    TypeRestriction, or the number or text encoded to the property's size.
+    (Found by the coordinator session, 2026-10-28: 72 of 73 learned PID 78
+    values sit in the product's own XML.)"""
+    import base64
+    import zipfile
+
+    try:
+        z = zipfile.ZipFile(knxprod)
+        name = next((n for n in z.namelist() if n.endswith(f"{app}.xml")), None)
+        if not name:
+            return []
+        xml = z.read(name).decode("utf-8", "replace")
+    except (OSError, zipfile.BadZipFile):
+        return []
+
+    def attr(tag: str, key: str) -> str | None:
+        m = re.search(rf'\b{key}="([^"]*)"', tag)
+        return m.group(1) if m else None
+
+    out: list[dict] = []
+    for m in re.finditer(r"(<Parameter\s[^>]*>)\s*(<Property\s[^>]*/>)", xml):
+        param, prop = m.group(1), m.group(2)
+        obj, pid = attr(prop, "ObjectIndex"), attr(prop, "PropertyId")
+        pid_ = attr(param, "Id")
+        ptype, value = attr(param, "ParameterType"), attr(param, "Value") or "0"
+        if obj is None or pid is None or not ptype:
+            continue
+        ref = re.search(rf'<ParameterRef\s[^>]*RefId="{re.escape(pid_ or "")}"[^>]*>', xml)
+        if ref and attr(ref.group(0), "Value") is not None:
+            value = attr(ref.group(0), "Value") or value
+        t = xml.find(f'<ParameterType Id="{ptype}"')
+        block = xml[t: xml.find("</ParameterType>", t)] if t >= 0 else ""
+        size_m = re.search(r'SizeInBit="(\d+)"', block)
+        size = (int(size_m.group(1)) + 7) // 8 if size_m else 0
+        data: bytes | None = None
+        if "<TypeRestriction" in block:
+            for e in re.finditer(r"<Enumeration\s[^>]*>", block):
+                if attr(e.group(0), "Value") == value:
+                    b64 = attr(e.group(0), "BinaryValue")
+                    data = base64.b64decode(b64) if b64 else int(value).to_bytes(max(size, 1), "big")
+                    break
+        elif "<TypeNumber" in block and size:
+            try:
+                data = int(float(value)).to_bytes(size, "big", signed=int(float(value)) < 0)
+            except (ValueError, OverflowError):
+                data = None
+        elif "<TypeText" in block and size:
+            data = value.encode("latin-1", "replace")[:size].ljust(size, b"\0")
+        if data is not None:
+            out.append({"object": int(obj), "pid": int(pid), "value": data.hex()})
+    return out
+
+
 def secure_enabled(knxprod: Path, app: str) -> bool:
     """Whether the application declares IsSecureEnabled (ETS then asks for a
     project password a few seconds after the device is added)."""
