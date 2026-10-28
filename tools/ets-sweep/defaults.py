@@ -86,10 +86,16 @@ def guessed_identity(app: str) -> list[dict] | None:
 def catalog_sibling(job: dict, r: dict, everything: dict[str, dict]) -> dict | None:
     """When ETS's catalog shows another version of the same application for
     this product (a catalog version mismatch), the job of that version."""
-    if r.get("outcome") != "skipped-catalog-version":
-        return None
     m = APP_ID.match(job["id"])
-    shown = re.findall(r"\('[^']*', '([^']*)'", r.get("error") or "")
+    if r.get("outcome") == "skipped-catalog-version":
+        shown = re.findall(r"\('[^']*', '([^']*)'", r.get("error") or "")
+    else:
+        # The sole catalog row is taken without its version, so look at the
+        # version it shows when OCR read one: another version means ETS
+        # downloaded that application, not this one.
+        shown = [((r.get("catalog_row") or {}).get("version") or "")]
+        if not m or not shown[0] or re.sub(r"[^0-9a-z]", "", re.sub(r"^[^0-9]+", "", shown[0].lower())) == m.group(3).lower():
+            return None
     if not m or not shown:
         return None
     wanted = {re.sub(r"[^0-9a-z]", "", re.sub(r"^[^0-9]+", "", v.lower())) for v in shown}
@@ -265,6 +271,11 @@ def main() -> int:
                 stop = True
                 break
             sibling = catalog_sibling(job, r, everything)
+            if sibling and r["outcome"] != "skipped-catalog-version":
+                # Recorded as what it was: ETS ran the sibling's application.
+                results[job["id"]].update(outcome="skipped-catalog-version",
+                                          error=f"ETS's catalog row is version {(r.get('catalog_row') or {}).get('version')}, run as {sibling['id']}")
+                save()
             if sibling and sibling["id"] not in [q["id"] for q in queue]:
                 # One Hardware2Program maps several versions of the application
                 # to the hardware (ABB BM/A4.11-13x: 8.2 and 8.3) and ETS's
