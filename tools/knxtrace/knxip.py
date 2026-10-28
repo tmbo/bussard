@@ -352,22 +352,28 @@ EXT_PID_NAMES = {
 FUNC_SECURED_SERVICE_FAMILIES = (11, 94)
 FUNC_SECURITY_MODE = (17, 51)
 
-LD_CTRL_ABS_SEGMENT = 0x01
+# `AdditionalLoadControls` subtypes (octet 1 of the 10-octet record, KNX
+# 3/5/1 §3.31.3.4). 00h and 01h share one layout,
+# `[start:2][length:2][access][mem_type][mem_attr][0]`: a data and a stack
+# segment (`LdCtrlAbsSegment SegType=0/1`).
+LD_CTRL_ABS_DATA_SEGMENT = 0x00
+LD_CTRL_ABS_STACK_SEGMENT = 0x01
 LD_CTRL_TASK_SEGMENT = 0x02
 LD_CTRL_TASK_PTR = 0x03
 LD_CTRL_TASK_CTRL1 = 0x04
 LD_CTRL_TASK_CTRL2 = 0x05
+LD_CTRL_REL_ALLOCATION = 0x0A
 LD_CTRL_REL_SEGMENT = 0x0B
-LD_CTRL_DATA_SEGMENT = 0x0C
 
 LD_CTRL_NAMES = {
-    LD_CTRL_ABS_SEGMENT: "LdCtrlAbsSegment",
+    LD_CTRL_ABS_DATA_SEGMENT: "LdCtrlAbsSegment(data)",
+    LD_CTRL_ABS_STACK_SEGMENT: "LdCtrlAbsSegment(stack)",
     LD_CTRL_TASK_SEGMENT: "LdCtrlTaskSegment",
     LD_CTRL_TASK_PTR: "LdCtrlTaskPtr",
     LD_CTRL_TASK_CTRL1: "LdCtrlTaskCtrl1",
     LD_CTRL_TASK_CTRL2: "LdCtrlTaskCtrl2",
+    LD_CTRL_REL_ALLOCATION: "RelativeAllocation",
     LD_CTRL_REL_SEGMENT: "LdCtrlRelSegment",
-    LD_CTRL_DATA_SEGMENT: "LdCtrlDataSegment",
 }
 
 SECURE_ALGORITHMS = {0b000: "CCM-auth-only", 0b001: "CCM-auth-enc"}
@@ -819,11 +825,16 @@ def _decode_property_value(
             out["seg_size"] = struct.unpack("!I", data[2:6])[0]
             out["fill"] = bool(data[6])
             out["fill_byte"] = "0x%02x" % data[7]
-        elif sub == LD_CTRL_ABS_SEGMENT and len(data) >= 10:
-            out["seg_addr"] = "0x%08x" % struct.unpack("!I", data[2:6])[0]
-            out["seg_size"] = struct.unpack("!H", data[6:8])[0]
-            out["access"] = "0x%02x" % data[8]
-            out["mem_type"] = "0x%02x" % data[9]
+        elif sub in (LD_CTRL_ABS_DATA_SEGMENT, LD_CTRL_ABS_STACK_SEGMENT) and len(data) >= 9:
+            out["seg_addr"] = "0x%04x" % struct.unpack("!H", data[2:4])[0]
+            out["seg_size"] = struct.unpack("!H", data[4:6])[0]
+            out["access"] = "0x%02x" % data[6]
+            out["mem_type"] = "0x%02x" % data[7]
+            out["mem_attr"] = "0x%02x" % data[8]
+        elif sub == LD_CTRL_TASK_SEGMENT and len(data) >= 10:
+            out["seg_addr"] = "0x%04x" % struct.unpack("!H", data[2:4])[0]
+            out["pei_type"] = data[4]
+            out["app_id"] = data[5:10].hex()
         elif sub in (LD_CTRL_TASK_PTR, LD_CTRL_TASK_CTRL1, LD_CTRL_TASK_CTRL2):
             out["ld_ctrl_data"] = data[2:].hex()
     return out

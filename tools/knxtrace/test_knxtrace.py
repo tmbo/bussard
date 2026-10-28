@@ -310,13 +310,17 @@ class TestApciDecoding(unittest.TestCase):
         self.assertEqual(apdu.fields["write_level"], 1)
 
     def test_decode_apdu_alloc_record(self):
-        """AdditionalLoadControls / LdCtrlAbsSegment decodes to address and size."""
-        data = bytes([0x03, 0x01]) + struct.pack("!I", 0x4B00) + struct.pack("!H", 0x0130) + b"\x30\x00"
+        """AdditionalLoadControls / LdCtrlAbsSegment decodes to address and size;
+        subtype 01 is a stack segment with the data segment's layout."""
+        data = bytes.fromhex("030107f6000100020000")  # MDT A-0222 stack segment
         apdu = self.apdu(prop_write(3, 5, 1, 1, data)).apdu
         self.assertEqual(apdu.fields["load_event"], "AdditionalLoadControls")
-        self.assertEqual(apdu.fields["ld_ctrl"], "LdCtrlAbsSegment")
-        self.assertEqual(apdu.fields["seg_addr"], "0x00004b00")
-        self.assertEqual(apdu.fields["seg_size"], 0x0130)
+        self.assertEqual(apdu.fields["ld_ctrl"], "LdCtrlAbsSegment(stack)")
+        self.assertEqual(apdu.fields["seg_addr"], "0x07f6")
+        self.assertEqual(apdu.fields["seg_size"], 1)
+        self.assertEqual(apdu.fields["mem_type"], "0x02")
+        task = self.apdu(prop_write(1, 5, 1, 1, bytes.fromhex("030240000100b6454801"))).apdu
+        self.assertEqual((task.fields["pei_type"], task.fields["app_id"]), (1, "00b6454801"))
 
     def test_decode_apdu_memory(self):
         apdu = self.apdu(mem_write(0x4000, b"\x01\x02\x03")).apdu

@@ -95,8 +95,10 @@ from datasecure import PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE, SECURITY_OBJECT_TY
 from normalize import KIND_ALLOC, KIND_MEM_WRITE, DeviceOps, coalesce
 
 # LdCtrl subtypes of an `AdditionalLoadControls` (event 3) record.
-SUB_S7_ALLOC = 0x00  # System 7 property-based AbsSegment: [3][0][start:2][len:2][acc][mem][cs][0]
-SUB_ABS_SEGMENT = 0x01  # System B LdCtrlAbsSegment: [3][1][addr:4][len:2][acc][mem]...
+# AbsSegment, data (00h) or stack (01h, SegType 1): [3][sub][start:2][len:2][acc][mem][attr][0]
+# (KNX 3/5/1 §3.31.3.4). 01h is not a System B segment with a 4-octet address.
+SUB_ABS_DATA = 0x00
+SUB_ABS_STACK = 0x01
 SUB_REL_SEGMENT = 0x0B  # LdCtrlRelSegment: [3][0x0B][size:4][fill:1][fill_byte:1]
 
 IDENTICAL = "identical"
@@ -180,27 +182,17 @@ def allocations(ops: DeviceOps) -> List[Dict[str, object]]:
             if obj is not None:
                 pending[obj] = rec
             out.append(rec)
-        elif sub == SUB_S7_ALLOC and len(data) >= 9:
+        elif sub in (SUB_ABS_DATA, SUB_ABS_STACK) and len(data) >= 9:
             out.append(
                 {
                     "kind": "abs-segment",
                     "lsm": obj,
+                    "seg_type": sub,
                     "address": struct.unpack("!H", data[2:4])[0],
                     "size": struct.unpack("!H", data[4:6])[0],
                     "access": data[6],
                     "mem_type": data[7],
                     "checksum_ctrl": data[8],
-                }
-            )
-        elif sub == SUB_ABS_SEGMENT and len(data) >= 10:
-            out.append(
-                {
-                    "kind": "abs-segment",
-                    "object": obj,
-                    "address": struct.unpack("!I", data[2:6])[0],
-                    "size": struct.unpack("!H", data[6:8])[0],
-                    "access": data[8],
-                    "mem_type": data[9],
                 }
             )
     return out
@@ -1298,10 +1290,10 @@ def compare_properties(
 
 
 LOAD_EVENTS = {1: "start-loading", 2: "load-completed", 4: "unload", 0: "no-operation"}
-# `AdditionalLoadControls` subtypes. 0x01 is a System B LdCtrlAbsSegment or a
-# System 7 stack segment, so it keeps its number.
-LOAD_SUBTYPES = {0x00: "abs-segment", 0x02: "task-segment", 0x03: "task-ptr",
-                 0x04: "task-ctrl1", 0x05: "task-ctrl2", 0x0B: "rel-segment"}
+# `AdditionalLoadControls` subtypes (KNX 3/5/1 §3.31.3.4).
+LOAD_SUBTYPES = {0x00: "abs-segment", 0x01: "stack-segment", 0x02: "task-segment",
+                 0x03: "task-ptr", 0x04: "task-ctrl1", 0x05: "task-ctrl2",
+                 0x0A: "rel-allocation", 0x0B: "rel-segment"}
 MAX_LOAD_DIFFERENCES = 64
 
 
