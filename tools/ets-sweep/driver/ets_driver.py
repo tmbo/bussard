@@ -877,7 +877,13 @@ def flow_delete_device(req: dict) -> dict:
     s_ = scale()
     mouse.move(coords=(int(2600 * s_), int(1200 * s_)))
     time.sleep(0.4)
-    r, g, b = grab((1450, y - 4, 1460, y + 4)).convert("RGB").getpixel((5, 4))
+    # The background is the most common light colour along the row: one
+    # sample point hit blue link text (82, 129, 190) of a long product name.
+    from collections import Counter
+
+    strip = grab((700, y - 2, 3200, y + 2)).convert("RGB")
+    light = [p for p in strip.getdata() if min(p) > 180]
+    r, g, b = Counter(light).most_common(1)[0][0] if light else (0, 0, 0)
     if not (b > r + 20 and b > 230):
         raise RuntimeError(f"delete: the row of {req['ia']} is not highlighted (rgb {r},{g},{b})")
     mouse.right_click(coords=(int(1000 * s_), int(y * s_)))
