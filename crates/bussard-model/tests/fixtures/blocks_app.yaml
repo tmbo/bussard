@@ -6,7 +6,7 @@
 # procedure used to download it. Regenerated data under .bussard/: derived from
 # the archive under products/, rebuilt whenever it is missing.
 # Docs: https://github.com/tmbo/bussard/blob/main/dev/product-model-format.md
-model_format: 7
+model_format: 8
 identity:
   id: M-00FA_A-0298-10-0000
   name: bussard capability test app

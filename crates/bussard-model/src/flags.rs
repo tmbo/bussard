@@ -113,6 +113,53 @@ impl<'de> Deserialize<'de> for Flags {
     }
 }
 
+/// A com-object's transmission priority: the 2-bit field of a group-object
+/// descriptor (System B descriptor bits 9-8, System 7 CONFIG bits 1-0).
+///
+/// The codes are the standard's (Resources 3/5/1 §4.18.3.1.2.1 and Table 87):
+/// `00` system, `01` normal, `10` urgent, `11` low. The product schema names
+/// them by the ETS terms (`ComObjectPriority_t`): `Low`, `High` (the
+/// standard's normal), `Alert` (urgent) and `System`. A product that declares
+/// none gets [`Priority::Low`], the [`Default`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Priority {
+    /// System priority (`00`), reserved for management.
+    System,
+    /// ETS `High`, the standard's normal priority (`01`).
+    High,
+    /// ETS `Alert`, the standard's urgent priority (`10`).
+    #[serde(rename = "Alert")]
+    Alarm,
+    /// Low priority (`11`), the group-communication default.
+    #[default]
+    Low,
+}
+
+impl Priority {
+    /// The raw 2-bit priority code (`0`..=`3`). A System B descriptor word
+    /// carries it in bits 9-8, a System 7 CONFIG octet in bits 1-0.
+    pub fn code(self) -> u16 {
+        match self {
+            Priority::System => 0b00,
+            Priority::High => 0b01,
+            Priority::Alarm => 0b10,
+            Priority::Low => 0b11,
+        }
+    }
+
+    /// Parses the product schema's `Priority` attribute value (`Low`, `High`,
+    /// `Alert`, `System`); `None` for anything else.
+    pub fn from_ets(value: &str) -> Option<Priority> {
+        match value.trim() {
+            "Low" => Some(Priority::Low),
+            "High" => Some(Priority::High),
+            "Alert" => Some(Priority::Alarm),
+            "System" => Some(Priority::System),
+            _ => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,5 +210,15 @@ mod tests {
     #[test]
     fn rejects_duplicate() {
         assert!("CC".parse::<Flags>().is_err());
+    }
+
+    #[test]
+    fn test_priority_from_ets_maps_the_schema_names_to_standard_codes() {
+        assert_eq!(Priority::from_ets("Low").map(Priority::code), Some(0b11));
+        assert_eq!(Priority::from_ets("High").map(Priority::code), Some(0b01));
+        assert_eq!(Priority::from_ets("Alert").map(Priority::code), Some(0b10));
+        assert_eq!(Priority::from_ets("System").map(Priority::code), Some(0b00));
+        assert_eq!(Priority::from_ets("Urgent"), None);
+        assert_eq!(Priority::default(), Priority::Low);
     }
 }

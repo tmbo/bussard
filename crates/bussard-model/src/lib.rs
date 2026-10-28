@@ -73,7 +73,7 @@ pub use files::{
     LOCK_SCHEMA_FINGERPRINT, LOCK_VERSION, hidden_mem_key, is_hidden_mem_key, label_mem_key,
     lock_written_by, param_mem_key, slug,
 };
-pub use flags::{Flags, FlagsParseError};
+pub use flags::{Flags, FlagsParseError, Priority};
 pub use history::{History, HistoryError, Snapshot, SnapshotId, SnapshotReason};
 pub use keyring_checks::{KeyringFacts, KeyringStatus, validate_keyring};
 pub use keystore_meta::{KEYSTORE_META_FILE, KeyStoreMeta, KeyStoreMetaError, KeyringExport};

@@ -826,6 +826,9 @@ pub(super) struct Sys7ObjectDefault {
     /// The TYPE octet (the size code of the ref's object size), `None` to keep
     /// the template's.
     type_code: Option<u8>,
+    /// The transmission priority the ref (else its base object) declares,
+    /// for CONFIG bits 1-0; `None` keeps the template's (issue #541).
+    priority: Option<bussard_model::Priority>,
 }
 
 /// The per-ASAP defaults the System 7 post-pass writes, from the Dynamic walk.
@@ -851,6 +854,7 @@ pub(super) fn sys7_object_defaults(
                     Sys7ObjectDefault {
                         flags: c.flags(),
                         type_code: None,
+                        priority: c.declared_priority(),
                     },
                 )
             })
@@ -876,6 +880,7 @@ pub(super) fn sys7_object_defaults(
             Sys7ObjectDefault {
                 flags: base.flags.merge(cref.flags).to_flags(),
                 type_code: size.and_then(sys7_type_code),
+                priority: cref.priority.or(base.priority),
             },
         );
     }
@@ -935,7 +940,9 @@ pub(super) fn sys7_linked_asaps(assoc_image: &[u8]) -> BTreeSet<u16> {
 ///   cleared.
 ///
 /// An ASAP whose default carries a TYPE octet (the visible ref's object size)
-/// takes that too.
+/// takes that too, and one whose visible ref (else base object) declares a
+/// `Priority` takes it into bits 1-0 (Resources 3/5/1 §4.18.3.1.2.1, issue
+/// #541); without a declaration the template's priority stays.
 ///
 /// `last_object` is the highest com-object `Number` the application declares:
 /// ETS rewrites the descriptors up to it (numbering gaps included) and leaves
@@ -1005,6 +1012,9 @@ pub(super) fn apply_sys7_group_object_links(
         }
         if let Some(t) = default.and_then(|o| o.type_code) {
             d[3] = t;
+        }
+        if let Some(p) = default.and_then(|o| o.priority) {
+            d[2] = (d[2] & !0b11) | (p.code() as u8 & 0b11);
         }
     }
 }
@@ -1719,6 +1729,7 @@ mod tests {
                 Sys7ObjectDefault {
                     flags: Flags::WRITE | Flags::COMMUNICATION,
                     type_code: None,
+                    priority: None,
                 },
             ),
             (
@@ -1726,10 +1737,12 @@ mod tests {
                 Sys7ObjectDefault {
                     flags: Flags::TRANSMIT | Flags::WRITE | Flags::COMMUNICATION,
                     type_code: None,
+                    priority: None,
                 },
             ),
         ]);
-        let run = |declared: Option<&TableLocation>| {
+        let run_with = |declared: Option<&TableLocation>,
+                        defaults: &BTreeMap<u16, Sys7ObjectDefault>| {
             let mut images = BTreeMap::from([(seg_id.clone(), template.clone())]);
             apply_sys7_group_object_links(
                 &steps,
@@ -1737,11 +1750,12 @@ mod tests {
                 declared,
                 &BTreeSet::new(),
                 &BTreeMap::new(),
-                &defaults,
+                defaults,
                 None,
             );
             images.remove(&seg_id).unwrap_or_default()
         };
+        let run = |declared: Option<&TableLocation>| run_with(declared, &defaults);
         // The shape finder alone does not see it: no RAM segment in the plan.
         assert_eq!(sys7_group_object_table(&steps, &BTreeMap::new()), None);
         assert_eq!(run(None), template);
@@ -1753,6 +1767,33 @@ mod tests {
             run(Some(&declared)),
             vec![
                 0x03, 0x60, 0x04, 0x7E, 0x04, 0x13, 0x00, 0x7F, 0x04, 0x53, 0x00, 0x83, 0x04, 0xDB,
+                0x00
+            ]
+        );
+        // A declared priority replaces the template's in bits 1-0 (issue
+        // #541): `High` is the standard's normal (`01`), `Alert` urgent
+        // (`10`); a declared `Low` keeps `11`.
+        let mut prioritised = defaults.clone();
+        for (asap, priority) in [
+            (0, bussard_model::Priority::Low),
+            (1, bussard_model::Priority::High),
+        ] {
+            if let Some(d) = prioritised.get_mut(&asap) {
+                d.priority = Some(priority);
+            }
+        }
+        prioritised.insert(
+            2,
+            Sys7ObjectDefault {
+                flags: Flags::TRANSMIT,
+                type_code: None,
+                priority: Some(bussard_model::Priority::Alarm),
+            },
+        );
+        assert_eq!(
+            run_with(Some(&declared), &prioritised),
+            vec![
+                0x03, 0x60, 0x04, 0x7E, 0x04, 0x13, 0x00, 0x7F, 0x04, 0x51, 0x00, 0x83, 0x04, 0x42,
                 0x00
             ]
         );

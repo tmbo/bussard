@@ -238,8 +238,8 @@ pub fn build_table_images_with(
     memo: &DynamicMemo<'_, ApplicationProgram>,
 ) -> BTreeMap<u32, Vec<u8>> {
     use crate::compute::{
-        GroupObjectDescriptor, Priority, compute_group_object_table,
-        descriptors_for_linked_objects, size_code_from_object_size, table_image_with_count,
+        GroupObjectDescriptor, compute_group_object_table, descriptors_for_linked_objects,
+        size_code_from_object_size, table_image_with_count,
     };
 
     let mut out = BTreeMap::new();
@@ -331,7 +331,7 @@ pub fn build_table_images_with(
                     // Communication cleared: an unlinked com-object on a bare flash.
                     flags: c.flags() - bussard_model::Flags::COMMUNICATION,
                     size_code: size_code_from_object_size(c.object_size()),
-                    priority: Priority::default(),
+                    priority: c.priority(),
                 })
                 .collect();
             compute_group_object_table(&descriptors)

@@ -203,39 +203,12 @@ pub fn app_program_version(
     [mfr[0], mfr[1], app[0], app[1], application_version]
 }
 
-/// KNX group-communication priority, the 2-bit priority field of a System B
-/// group-object descriptor.
-///
-/// The on-wire values are the KNX standard priority codes (`00` system, `01`
-/// high/urgent, `10` alarm, `11` low). ETS emits **Low** for every com-object of
-/// the DA.tp reference device (the product XML declares no `Priority`), so
-/// [`Default`] is [`Priority::Low`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Priority {
-    /// System priority (`00`) — used by ETS for device programming.
-    System,
-    /// High / urgent priority (`01`).
-    High,
-    /// Alarm priority (`10`).
-    Alarm,
-    /// Low priority (`11`) — the normal group-communication default.
-    #[default]
-    Low,
-}
-
-impl Priority {
-    /// The raw 2-bit priority code (`0`..=`3`); [`group_object_word`] shifts it
-    /// into bits 8-9 of the System B descriptor word, and the System 7 CONFIG
-    /// byte ([`crate::compute_sys7::sys7_config_byte`]) places it in bits 1-0.
-    pub fn code(self) -> u16 {
-        match self {
-            Priority::System => 0b00,
-            Priority::High => 0b01,
-            Priority::Alarm => 0b10,
-            Priority::Low => 0b11,
-        }
-    }
-}
+/// KNX transmission priority of a group object, the 2-bit field of a System
+/// B descriptor (bits 9-8) and a System 7 CONFIG octet (bits 1-0): `00`
+/// system, `01` normal (ETS `High`), `10` urgent (ETS `Alert`), `11` low.
+/// Each builder takes it from the product, the ref's `Priority` else the base
+/// object's, Low when neither declares one (issue #541).
+pub use bussard_model::Priority;
 
 /// One com-object's group-object-table descriptor input: its ASAP (com-object
 /// number) and the effective flags/size/priority the descriptor encodes.
@@ -247,7 +220,8 @@ pub struct GroupObjectDescriptor {
     pub flags: bussard_model::Flags,
     /// The object size code (see [`size_code_from_object_size`]).
     pub size_code: u8,
-    /// The group-communication priority (Low unless the product overrides it).
+    /// The transmission priority the product declares (Low when it declares
+    /// none).
     pub priority: Priority,
 }
 
@@ -382,7 +356,7 @@ pub fn descriptors_for_linked_objects(
             asap: c.number(),
             flags: c.flags(),
             size_code: size_code_from_object_size(c.object_size()),
-            priority: Priority::default(),
+            priority: c.priority(),
         })
         .collect()
 }
@@ -499,7 +473,7 @@ pub fn expand_group_object_descriptors(
                 asap,
                 flags,
                 size_code,
-                priority: Priority::default(),
+                priority: cref.priority.or(base.priority).unwrap_or_default(),
             });
         }
     }
@@ -566,7 +540,7 @@ pub fn dynamic_group_object_descriptors(
             size_code: size_code_from_object_size(
                 cref.object_size.as_deref().or(base.object_size.as_deref()),
             ),
-            priority: Priority::default(),
+            priority: cref.priority.or(base.priority).unwrap_or_default(),
         }
     };
 
@@ -858,6 +832,47 @@ mod tests {
         // obj2: absent -> 0x0000.
         // obj3: C|T|Low -> bit10|bit14|(3<<8) = 0x4400|0x0300 = 0x4700, size 7.
         assert_eq!(table, vec![0x00, 0x03, 0x17, 0x00, 0x00, 0x00, 0x47, 0x07]);
+        Ok(())
+    }
+
+    /// The product's `Priority` reaches bits 9-8 of the System B descriptor
+    /// (issue #541): `High` is the standard's normal (`01`), `Alert` urgent
+    /// (`10`), and an object that declares none stays Low (`11`). The ref's
+    /// priority overrides the base's.
+    #[test]
+    fn test_compute_group_object_table_writes_the_declared_priority()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let xml = r#"<KNX><ApplicationProgram Id="A" MaskVersion="MV-07B0">
+          <Static>
+           <ComObjectTable>
+            <ComObject Id="A_O-1" Number="1" ObjectSize="1 Bit" Priority="High" CommunicationFlag="Enabled" />
+            <ComObject Id="A_O-2" Number="2" ObjectSize="1 Bit" Priority="Low" CommunicationFlag="Enabled" />
+            <ComObject Id="A_O-3" Number="3" ObjectSize="1 Bit" CommunicationFlag="Enabled" />
+           </ComObjectTable>
+           <ComObjectRefs>
+            <ComObjectRef Id="A_O-1_R-1" RefId="A_O-1" />
+            <ComObjectRef Id="A_O-2_R-1" RefId="A_O-2" Priority="Alert" />
+            <ComObjectRef Id="A_O-3_R-1" RefId="A_O-3" />
+           </ComObjectRefs>
+          </Static>
+          <Dynamic><ChannelIndependentBlock><ParameterBlock Id="A_PB-1">
+           <ComObjectRefRef RefId="A_O-1_R-1" />
+           <ComObjectRefRef RefId="A_O-2_R-1" />
+           <ComObjectRefRef RefId="A_O-3_R-1" />
+          </ParameterBlock></ChannelIndependentBlock></Dynamic>
+         </ApplicationProgram></KNX>"#;
+        let app = bussard_prod::parse_application_program("A", xml.as_bytes())?;
+
+        // The flat builder, every object linked: C (bit 10) plus the priority.
+        let linked = std::collections::BTreeSet::from([1u16, 2, 3]);
+        let descriptors = descriptors_for_linked_objects(&app.resolved_com_objects(), &linked);
+        let table = compute_group_object_table(&descriptors).ok_or("empty table")?;
+        assert_eq!(table, vec![0x00, 0x03, 0x05, 0x00, 0x06, 0x00, 0x07, 0x00]);
+
+        // The Dynamic builder, nothing linked: C cleared, priority kept.
+        let table = dynamic_group_object_table(&app, &BTreeMap::new(), &BTreeMap::new())
+            .ok_or("empty table")?;
+        assert_eq!(table, vec![0x00, 0x03, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00]);
         Ok(())
     }
 

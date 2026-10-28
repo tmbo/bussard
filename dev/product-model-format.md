@@ -86,9 +86,12 @@ Field notes:
   device file) and its `application` (pinned in `bussard.lock`) both point here.
 - `com_objects`: keyed by com-object number, in the same field style as the `objects`
   of `bussard.lock`. `dpt` and `flags` (compact `CRWTUI` string) are the effective, ref-resolved
-  values. The System B group-object descriptor also carries a transmission priority
-  (Resources 3/5/1 §4.18.6, Table 87, bits 9 to 8); the model does not carry the product's
-  `Priority` yet, so every descriptor is written Low (#541). `size` appears only when there is
+  values. `priority` (format 8, #541) is the object's transmission priority: the ref's
+  `Priority`, else the base object's, in the product schema's terms: `High` (the standard's
+  normal, `01`), `Alert` (urgent, `10`) or `System` (`00`). It is left out when it is
+  `Low` (`11`), which is also what an object that declares none gets. The download writes
+  it into bits 9 to 8 of a System B group-object descriptor (Resources 3/5/1 §4.18.6,
+  Table 87) and bits 1 to 0 of a System 7 CONFIG octet (§4.18.3.1.2.1). `size` appears only when there is
   no DPT to imply it (the DPT main number fixes the format and so the size, the sub number only
   range and unit: KNX 03_07_02 Datapoint Types §1.1 and the format column of §1.4). `ref_id` is the
   application ref the value was resolved through.
@@ -131,6 +134,11 @@ model as it runs over the application XML (`bussard_model::dynamic::DynamicSourc
   (`TextParameterRefId`), `param_ref` (block) and `nodes`; `module` is a `<Module>`
   with its `id`, `def` and `args`; `assign` an `<Assign>` with `target` and `source`
   or `value`. All ids are app-relative; absent attributes are left out.
+
+Format 7 adds a text type's `encoding` (#401). Format 8 adds a com-object's
+`priority` (#541). The download takes the priority from the parsed application
+program, whose cache format moved to `bussard-parsed-product-v5` with it; the model
+carries it so a view shows what the descriptor will hold.
 
 Format 6 drops `blocks`, `parameter_when` and `ref_values`, and a
 parameter's `default` is its own `Value` (format 5 and older gave a parameter with one

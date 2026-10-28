@@ -420,8 +420,8 @@ pub fn sys7_config_byte(flags: bussard_model::Flags, priority: Priority) -> u8 {
     if flags.contains(Flags::COMMUNICATION) {
         c |= 1 << 2;
     }
-    // Priority in bits 1-0. The System-B `Priority::code()` gives the same 2-bit
-    // KNX priority codes (00 system, 01 high, 10 alarm, 11 low).
+    // Priority in bits 1-0: the same 2-bit codes as System B (00 system,
+    // 01 normal, 10 urgent, 11 low; Resources 3/5/1 §4.18.3.1.2.1).
     c |= (priority.code() as u8) & 0b11;
     c
 }

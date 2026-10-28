@@ -93,6 +93,9 @@ pub struct ObjectDef {
     pub dpt: Option<String>,
     /// The communication flags, as written.
     pub flags: Option<String>,
+    /// The transmission priority the product declares, where it is not Low
+    /// (format 8, issue #541).
+    pub priority: Option<crate::flags::Priority>,
 }
 
 /// The product-model format this build writes: `model_format:` at the top of
@@ -104,8 +107,9 @@ pub struct ObjectDef {
 /// and integer width, issue #345; format 6 drops `blocks:`,
 /// `parameter_when:` and `ref_values:`, which the tree gives, and writes a
 /// parameter's own default, issue #345; format 7 a text type's
-/// `encoding:`, issue #401).
-pub const MODEL_FORMAT: u32 = 7;
+/// `encoding:`, issue #401; format 8 a com-object's `priority:` where it is
+/// not Low, issue #541).
+pub const MODEL_FORMAT: u32 = 8;
 
 /// Whether the model file at `path` is of the current [`MODEL_FORMAT`]. Reads
 /// only the head of the file, where the emitter puts the key.
@@ -222,6 +226,8 @@ struct RawComObject {
     dpt: Option<String>,
     #[serde(default)]
     flags: Option<String>,
+    #[serde(default)]
+    priority: Option<crate::flags::Priority>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -384,6 +390,7 @@ impl ProductModel {
             function: o.function_text,
             dpt: o.dpt,
             flags: o.flags,
+            priority: o.priority,
         };
         let com_objects = raw
             .com_objects

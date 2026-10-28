@@ -51,6 +51,9 @@ pub struct ComObject {
     pub dpt: Option<Dpt>,
     /// Flags declared on the base object.
     pub flags: FlagSet,
+    /// The declared `Priority`, if any (absent means Low).
+    #[serde(default)]
+    pub priority: Option<bussard_model::Priority>,
     /// For a module com-object: the argument id (its `BaseNumber` attribute)
     /// whose value is added to `number` to compute the instance's effective
     /// object number.
@@ -76,6 +79,9 @@ pub struct ComObjectRef {
     pub dpt: Option<Dpt>,
     /// Flags declared on the ref (override the base's).
     pub flags: FlagSet,
+    /// Optional `Priority` override.
+    #[serde(default)]
+    pub priority: Option<bussard_model::Priority>,
     /// The `TextParameterRefId`, app-relative (e.g. `MD-1_P-1_R-1`): the
     /// parameter ref whose value replaces the `{{0}}`/`{{0:…}}` placeholder in
     /// [`Self::text`] (see [`crate::label::substitute_label`]).
@@ -249,6 +255,17 @@ impl ResolvedComObject<'_> {
     /// The effective flags: base merged with the ref (ref wins per-flag).
     pub fn flags(&self) -> bussard_model::Flags {
         self.base.flags.merge(self.cref.flags).to_flags()
+    }
+
+    /// The declared priority (ref overrides base), `None` when neither
+    /// declares one.
+    pub fn declared_priority(&self) -> Option<bussard_model::Priority> {
+        self.cref.priority.or(self.base.priority)
+    }
+
+    /// The effective priority: the declared one, else Low.
+    pub fn priority(&self) -> bussard_model::Priority {
+        self.declared_priority().unwrap_or_default()
     }
 }
 
@@ -1730,6 +1747,7 @@ fn insert_com_object(app: &mut ApplicationProgram, m: &Attrs) {
             object_size: get(m, b"ObjectSize").map(str::to_string),
             dpt: get(m, b"DatapointType").and_then(parse_ets_dpt),
             flags: flagset_from(m),
+            priority: get(m, b"Priority").and_then(bussard_model::Priority::from_ets),
             base_number_ref: get(m, b"BaseNumber").map(str::to_string),
         },
     );
@@ -1751,6 +1769,7 @@ fn insert_com_object_ref(app: &mut ApplicationProgram, m: &Attrs) {
             object_size: get(m, b"ObjectSize").map(str::to_string),
             dpt: get(m, b"DatapointType").and_then(parse_ets_dpt),
             flags: flagset_from(m),
+            priority: get(m, b"Priority").and_then(bussard_model::Priority::from_ets),
             text_parameter_ref: relative_attr(m, b"TextParameterRefId", &app.id),
         },
     );
@@ -2568,6 +2587,51 @@ mod tests {
 
     fn sample() -> std::result::Result<ApplicationProgram, Box<dyn std::error::Error>> {
         Ok(parse_application_program_str("M-00FA_A-1", SAMPLE)?)
+    }
+
+    /// Three com-objects: base `High` overridden to `Low` by its ref, base
+    /// `Alert` kept by a ref that declares none, and one declaring nothing.
+    const PRIORITY_SAMPLE: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<KNX xmlns="http://knx.org/xml/project/23">
+ <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
+  <ApplicationProgram Id="M-00FA_A-2" ApplicationNumber="8" ApplicationVersion="16" MaskVersion="MV-07B0" Name="Prio">
+   <Static>
+    <ComObjectTable>
+     <ComObject Id="M-00FA_A-2_O-0" Number="0" Text="a" ObjectSize="1 Bit" Priority="High" CommunicationFlag="Enabled" />
+     <ComObject Id="M-00FA_A-2_O-1" Number="1" Text="b" ObjectSize="1 Bit" Priority="Alert" CommunicationFlag="Enabled" />
+     <ComObject Id="M-00FA_A-2_O-2" Number="2" Text="c" ObjectSize="1 Bit" CommunicationFlag="Enabled" />
+    </ComObjectTable>
+    <ComObjectRefs>
+     <ComObjectRef Id="M-00FA_A-2_O-0_R-1" RefId="M-00FA_A-2_O-0" Priority="Low" />
+     <ComObjectRef Id="M-00FA_A-2_O-1_R-1" RefId="M-00FA_A-2_O-1" />
+     <ComObjectRef Id="M-00FA_A-2_O-2_R-1" RefId="M-00FA_A-2_O-2" />
+    </ComObjectRefs>
+   </Static>
+  </ApplicationProgram>
+ </ApplicationPrograms></Manufacturer></ManufacturerData>
+</KNX>"#;
+
+    #[test]
+    fn test_insert_com_object_ref_priority_overrides_base()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        use bussard_model::Priority;
+        let app = parse_application_program_str("M-00FA_A-2", PRIORITY_SAMPLE)?;
+        let base = app.com_objects.get("M-00FA_A-2_O-0").ok_or("missing O-0")?;
+        assert_eq!(base.priority, Some(Priority::High));
+        let resolved: Vec<(u16, Option<Priority>, Priority)> = app
+            .resolved_com_objects()
+            .iter()
+            .map(|c| (c.number(), c.declared_priority(), c.priority()))
+            .collect();
+        assert_eq!(
+            resolved,
+            vec![
+                (0, Some(Priority::Low), Priority::Low),
+                (1, Some(Priority::Alarm), Priority::Alarm),
+                (2, None, Priority::Low),
+            ]
+        );
+        Ok(())
     }
 
     #[test]

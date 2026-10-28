@@ -27,7 +27,7 @@ use sha2::{Digest, Sha256};
 use crate::{ApplicationProgram, ProductCatalog};
 
 /// Bumped whenever the stored shape changes incompatibly.
-const FORMAT: &str = "bussard-parsed-product-v4";
+const FORMAT: &str = "bussard-parsed-product-v5";
 
 /// The archive entries kept under one cache directory.
 pub const MAX_ENTRIES: usize = 32;

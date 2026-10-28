@@ -466,6 +466,10 @@ struct ComObjectModel {
     /// The object size, carried when there is no DPT to imply it.
     #[serde(skip_serializing_if = "Option::is_none")]
     size: Option<String>,
+    /// The transmission priority (ref overrides base), carried only when it
+    /// is not Low, the default of an object that declares none (issue #541).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    priority: Option<bussard_model::Priority>,
     /// The application ref id this com-object resolves through (stable handle).
     ref_id: String,
 }
@@ -745,6 +749,7 @@ fn com_object_model(rc: &ResolvedComObject<'_>) -> ComObjectModel {
         } else {
             None
         },
+        priority: Some(rc.priority()).filter(|p| *p != bussard_model::Priority::Low),
         ref_id: rc.cref.id.clone(),
     }
 }
