@@ -98,6 +98,8 @@ $ bussard write 3/0/4 on
 ```
 
 The value is human-typed: `on`/`off`, `up`/`down`, a number, or a percentage like `75%`.
+A scene number is the raw field, 0 to 63. ETS and Home Assistant show scenes counted from
+1 (KNX 03_07_02 Datapoint Types §3.19 NOTE 9), so ETS scene 4 is `scene 3` here (#495).
 
 | Flag / arg | Default | Meaning |
 |---|---|---|

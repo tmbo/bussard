@@ -254,22 +254,7 @@ pub async fn restart_device(
     if let Some(process_time) = process_time {
         tokio::time::sleep(process_time).await;
     }
-    let after = wait_for_answer(target, wait, async || {
-        service
-            .with_device(target, options, async |dev| {
-                Ok::<u16, ServiceError>(dev.device_descriptor().await?)
-            })
-            .await
-            .map_err(|err| err.to_string())
-    })
-    .await?;
-    if after != before {
-        return Err(RestartError::MaskChanged {
-            address: target,
-            before,
-            after,
-        });
-    }
+    wait_until_back(service, target, options, before, wait).await?;
     Ok(RestartOutcome {
         form,
         confirmed: process_time.is_some(),
@@ -279,15 +264,51 @@ pub async fn restart_device(
     })
 }
 
+/// Waits for `target` to answer its descriptor read again after a restart
+/// another write sent (the basic restart that ends a System 7 table apply),
+/// reconnecting as [`restart_device`] does, and checks it comes back as
+/// `mask`. Returns how long after the call it answered.
+pub async fn wait_until_back(
+    service: &BusService,
+    target: IndividualAddress,
+    options: &L4Options,
+    mask: u16,
+    wait: RestartWait,
+) -> Result<Duration, RestartError> {
+    let started = Instant::now();
+    let after = wait_for_answer(target, wait, move || async move {
+        service
+            .with_device(target, options, async |dev| {
+                Ok::<u16, ServiceError>(dev.device_descriptor().await?)
+            })
+            .await
+            .map_err(|err| err.to_string())
+    })
+    .await?;
+    if after != mask {
+        return Err(RestartError::MaskChanged {
+            address: target,
+            before: mask,
+            after,
+        });
+    }
+    Ok(started.elapsed())
+}
+
 /// Runs `probe` after `wait.settle`, then every `wait.retry`, until it answers
 /// or `wait.timeout` has passed since the call.
-async fn wait_for_answer<F>(
+///
+/// `probe` is a plain closure returning a future, not an `AsyncFnMut`: an
+/// async closure's future is not provably `Send` here, and the MCP server runs
+/// this inside a spawned job.
+async fn wait_for_answer<F, Fut>(
     target: IndividualAddress,
     wait: RestartWait,
     mut probe: F,
 ) -> Result<u16, RestartError>
 where
-    F: AsyncFnMut() -> Result<u16, String>,
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<u16, String>>,
 {
     let deadline = Instant::now() + wait.timeout;
     tokio::time::sleep(wait.settle).await;
@@ -509,13 +530,14 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let target: IndividualAddress = "1.1.39".parse()?;
         let mut calls = 0;
-        let mask = wait_for_answer(target, quick(), async || {
+        let mask = wait_for_answer(target, quick(), || {
             calls += 1;
-            if calls < 3 {
+            let answer = if calls < 3 {
                 Err("no response".to_string())
             } else {
                 Ok(0x0705)
-            }
+            };
+            async move { answer }
         })
         .await?;
         assert_eq!(mask, 0x0705);
@@ -527,7 +549,7 @@ mod tests {
     async fn test_wait_for_answer_gives_up_at_the_timeout() -> Result<(), Box<dyn std::error::Error>>
     {
         let target: IndividualAddress = "1.1.39".parse()?;
-        let err = wait_for_answer(target, quick(), async || Err("no response".to_string()))
+        let err = wait_for_answer(target, quick(), || async { Err("no response".to_string()) })
             .await
             .err()
             .ok_or("a device that never answers is an error")?;

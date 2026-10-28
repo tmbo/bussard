@@ -344,9 +344,16 @@ writing nothing and echoing no elements. Two ETS captures taken alongside it (a
 Jung F50 sibling at 1.1.18, and the KNX Virtual DA.tp) show ETS never attempts
 that path. After each `StartLoading` it writes a 10-octet
 `AdditionalLoadControls` / `LdCtrlRelSegment` sized to the whole image (the
-2-octet count word plus `n * elem_size`), reads `PID_TABLE_REFERENCE` for the
-placement, streams the image with `A_Memory_Write` / `A_MemoryExtended_Write`,
-and only then sends `LoadCompleted`.
+2-octet count word plus `n * elem_size`; the Data Relative Allocation, subtype
+0Bh, of Management Procedures 3/5/2 §3.31.3.4), reads `PID_TABLE_REFERENCE` for
+the placement (Resources 3/5/1 §4.2.7), streams the image with `A_Memory_Write` /
+`A_MemoryExtended_Write`, and only then sends `LoadCompleted`. That is the
+complete download of Configuration Procedures 3/5/3 §3.5.2 step by step. The
+standard's partial downloads (§3.5.3) start each object with an `Unload` and
+re-allocate it with Mode 0 (keep the contents); `apply` opens a `Loaded` table
+with `StartLoading` directly, which the transition table of Resources §4.23.2.3.3
+allows, and the parameters-only download should run the product's `par` ops
+(#543).
 
 Only the lenient KNX Virtual stack also accepts a property write to `PID_TABLE`,
 which is why the mock device and `knx-sim` both let the bug through. `apply` now
@@ -409,7 +416,11 @@ confirmed restart is T_ACKed and answered with `A_Restart_Response`, which ETS
 T_ACKs before closing, with no T_Disconnect and no reconnect. A basic restart
 may or may not be T_ACKed (1.1.44 and 1.1.45 do, 1.1.52 does not), and ETS
 sends T_Disconnect 1 to 3 s later. ETS does not check that the device comes
-back.
+back. Both shapes are what the standard allows: after an `A_Restart` on a
+connection-oriented session the device may or may not tear the transport
+connection down, and may or may not send a T_Disconnect when it does
+(03/03/07 Application Layer §3.4.2.2, error handling); only the master reset
+is a confirmed service.
 
 These captures are the capture plan for `bussard restart` (#347): no oracle
 row compares a restart. To turn them into rows, re-take them over a plain

@@ -37,7 +37,7 @@ use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, bail};
-use bussard_download::{DesiredTables, compute_tables, plan, sys7_table_images};
+use bussard_download::{DesiredTables, compute_tables, plan, sys7_flag_writes, sys7_table_images};
 use bussard_mgmt::{MaskProfile, system_type};
 use bussard_model::{IndividualAddress, Model};
 use bussard_service::{Authorize, BusService, L4Options, ServiceError, SourcePolicy, WritePolicy};
@@ -666,7 +666,36 @@ async fn visit_one(
     });
     let secure_seq = bussard_secure::SequenceHighWater::new();
 
-    let live = match read_device(service, source, target.address, &tool_key, &secure_seq).await {
+    // The product data places a System 7 device's tables and its group-object
+    // table, as `apply` reads them; without it the communication flags go
+    // unchecked and the plan says so.
+    let product = match bussard_service::params::resolve_product(
+        dir,
+        bussard_service::params::Selection::default(),
+        Some(model),
+        target.address,
+        bussard_service::params::MissingProduct::Warn,
+        Some(crate::product_cache::record_parse),
+    ) {
+        Ok(lookup) => {
+            if let Some(warning) = lookup.warning {
+                eprintln!("  warning: {warning}");
+            }
+            lookup.source
+        }
+        Err(err) => return make(None, DeviceStatus::Failed(one_line(&err.to_string()))),
+    };
+
+    let live = match read_device(
+        service,
+        source,
+        target.address,
+        product.as_ref(),
+        &tool_key,
+        &secure_seq,
+    )
+    .await
+    {
         Ok(plan_cmd::LiveRead::Tables(live)) => live,
         Ok(plan_cmd::LiveRead::UnsupportedMask { mask, .. }) => {
             return make(
@@ -697,8 +726,18 @@ async fn visit_one(
     }
 
     let report = plan(live, desired);
-    let changes = report.additions.len() + report.removals.len();
-    if report.is_noop() {
+    // A System 7 communication flag that does not follow its links is a change
+    // too: `apply` writes it with the tables.
+    let (flag_writes, unchecked) = sys7_live.as_ref().map_or((0, Vec::new()), |s7| {
+        let linked = desired.associations.iter().map(|&(_, a)| a).collect();
+        let (writes, unchecked) = sys7_flag_writes(s7, &linked);
+        (writes.len(), unchecked)
+    });
+    if !unchecked.is_empty() {
+        eprintln!("  {}", unchecked_flags_note(&unchecked));
+    }
+    let changes = report.additions.len() + report.removals.len() + flag_writes;
+    if report.is_noop() && flag_writes == 0 {
         return make(Some(mask), DeviceStatus::Unchanged);
     }
     if mode == Mode::Plan {
@@ -750,7 +789,7 @@ async fn visit_one(
             &secure_seq,
         )
         .await
-        .map(|v| (v.ok(), format!("{v:?}")))
+        .map(|v| (v.ok(), v.restarted, format!("{v:?}")))
         .map_err(|e| e.to_string()),
         None => apply_cmd::execute(
             channel,
@@ -762,12 +801,39 @@ async fn visit_one(
             security.as_ref(),
         )
         .await
-        .map(|v| (v.ok(), format!("{v:?}")))
+        .map(|v| (v.ok(), false, format!("{v:?}")))
         .map_err(|e| e.to_string()),
     };
 
     match verified {
-        Ok((true, _)) => {
+        Ok((true, true, _)) => {
+            // A System 7 write ends with a basic restart: wait for the device,
+            // then read its tables back on a fresh connection, which also shows
+            // the write survived the restart.
+            match verify_after_restart(
+                service,
+                source,
+                target.address,
+                mask,
+                desired,
+                product.as_ref(),
+                &tool_key,
+                &secure_seq,
+            )
+            .await
+            {
+                Ok(()) => make(Some(mask), DeviceStatus::Applied(changes)),
+                Err(why) => make(
+                    Some(mask),
+                    DeviceStatus::Failed(format!(
+                        "{}; pre-state backed up to {}",
+                        one_line(&why),
+                        backup_path.display()
+                    )),
+                ),
+            }
+        }
+        Ok((true, _, _)) => {
             // A verified secured System B write put this PID 54 table on the
             // device: record it in the lock, as `adopt` does (issue #297).
             if let (Some(inputs), None) = (&security, &sys7_live)
@@ -781,7 +847,7 @@ async fn visit_one(
             }
             make(Some(mask), DeviceStatus::Applied(changes))
         }
-        Ok((false, detail)) => make(
+        Ok((false, _, detail)) => make(
             Some(mask),
             DeviceStatus::Failed(format!(
                 "did not verify: {}; pre-state backed up to {}",
@@ -800,17 +866,29 @@ async fn visit_one(
     }
 }
 
-/// Reads one device's live tables on a fresh lease, mirroring the single-device
-/// `apply` read phase (connect, best-effort free-access authorize, read,
-/// disconnect).
-async fn read_device(
-    service: &BusService,
+/// The note for newly linked System 7 objects whose communication flag could
+/// not be checked.
+fn unchecked_flags_note(objects: &[u16]) -> String {
+    let list = objects
+        .iter()
+        .map(u16::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "object(s) {list}: newly linked, but the communication flag was not checked (the \
+         group-object table was not read: no product data places it, or the device refused \
+         the read); the device may ignore these links"
+    )
+}
+
+/// The read options of a line run: free-access authorize, best-effort, as the
+/// single-device `apply` read phase.
+fn read_options(
     source: IndividualAddress,
-    target: IndividualAddress,
     tool_key: &Option<bussard_secure::Key16>,
     secure_seq: &bussard_secure::SequenceHighWater,
-) -> anyhow::Result<plan_cmd::LiveRead> {
-    let options = L4Options {
+) -> L4Options {
+    L4Options {
         source: SourcePolicy::Known(source),
         tool_key: tool_key.clone(),
         high_water: secure_seq.clone(),
@@ -819,10 +897,74 @@ async fn read_device(
         // Best-effort.
         authorize: Authorize::BestEffort(bussard_mgmt::apci::FREE_ACCESS_KEY),
         ..L4Options::default()
+    }
+}
+
+/// After a System 7 write's closing restart: waits for the device to answer
+/// again as `mask`, reads its tables back and checks they and the
+/// communication flags match `desired`.
+#[allow(clippy::too_many_arguments)] // the read phase's inputs plus what to compare
+async fn verify_after_restart(
+    service: &BusService,
+    source: IndividualAddress,
+    target: IndividualAddress,
+    mask: u16,
+    desired: &DesiredTables,
+    product: Option<&crate::param_readback::ProductSource>,
+    tool_key: &Option<bussard_secure::Key16>,
+    secure_seq: &bussard_secure::SequenceHighWater,
+) -> Result<(), String> {
+    bussard_service::restart::wait_until_back(
+        service,
+        target,
+        &read_options(source, tool_key, secure_seq),
+        mask,
+        bussard_service::restart::RestartWait::default(),
+    )
+    .await
+    .map_err(|err| err.to_string())?;
+    let live = match read_device(service, source, target, product, tool_key, secure_seq).await {
+        Ok(plan_cmd::LiveRead::Tables(live)) => live,
+        Ok(plan_cmd::LiveRead::UnsupportedMask { mask, .. }) => {
+            return Err(format!(
+                "read back after the restart: mask {mask:04X} is not supported"
+            ));
+        }
+        Err(err) => return Err(format!("read back after the restart: {err:#}")),
     };
+    if !plan(live.tables(), desired).is_noop() {
+        return Err("read back after the restart: the tables do not match the model".to_string());
+    }
+    if let Some(s7) = live.sys7() {
+        let linked = desired.associations.iter().map(|&(_, a)| a).collect();
+        let (writes, _) = sys7_flag_writes(s7, &linked);
+        if let Some(flag) = writes.first() {
+            return Err(format!(
+                "read back after the restart: object {}'s communication flag reads {:02X}, \
+                 the model needs {:02X}",
+                flag.object, flag.from, flag.to
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Reads one device's live tables on a fresh lease, mirroring the single-device
+/// `apply` read phase (connect, best-effort free-access authorize, read,
+/// disconnect). With the device's `product`, a System 7 device is read where
+/// the product puts its tables, and its group-object table too.
+async fn read_device(
+    service: &BusService,
+    source: IndividualAddress,
+    target: IndividualAddress,
+    product: Option<&crate::param_readback::ProductSource>,
+    tool_key: &Option<bussard_secure::Key16>,
+    secure_seq: &bussard_secure::SequenceHighWater,
+) -> anyhow::Result<plan_cmd::LiveRead> {
+    let options = read_options(source, tool_key, secure_seq);
     service
         .with_l4(target, &options, async |l4| {
-            Ok::<_, ServiceError>(plan_cmd::read_live_tables(l4, None).await)
+            Ok::<_, ServiceError>(plan_cmd::read_live_tables(l4, product).await)
         })
         .await
         .map_err(|err| session_open_error(err, || "connecting to the device".to_string()))?

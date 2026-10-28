@@ -1,0 +1,1 @@
+- The KNXnet/IP and IP Secure developer notes cite the KNX Standard 3.0.0 clauses they rest on and correct three statements: unicast secure sessions are TCP-only (no UDP carrier exists in the standard), the smallest SECURE_WRAPPER is 44 octets, and a tunnelling slot's "authorised" bit read outside a session means "no authorisation required" (#513, #518, #522).

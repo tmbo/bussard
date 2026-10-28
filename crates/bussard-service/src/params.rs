@@ -17,7 +17,7 @@
 //! One implementation for every surface, so the image the MCP tier writes is
 //! the CLI's, octet for octet.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -1251,6 +1251,49 @@ pub fn ignored_override_notes(model: &Model, target: IndividualAddress, dir: &Pa
         .collect()
 }
 
+/// The System 7 objects whose communication flag a write switches so that it
+/// follows the model's links ([`bussard_download::sys7_flag_writes`]), with a
+/// note for each switch and for each newly linked object whose flag could not
+/// be checked. Empty for System B.
+fn sys7_flag_plan(live: &LiveTables, report: &PlanReport, notes: &mut Vec<String>) -> Vec<u16> {
+    let Some(s7) = live.sys7() else {
+        return Vec::new();
+    };
+    let linked: BTreeSet<u16> = report
+        .unchanged
+        .iter()
+        .chain(&report.additions)
+        .map(|link| link.object)
+        .collect();
+    let (writes, unchecked) = bussard_download::sys7_flag_writes(s7, &linked);
+    for write in &writes {
+        notes.push(format!(
+            "object {}: communication flag {} (CONFIG {:02X} → {:02X} at {:#06X})",
+            write.object,
+            if write.enables() { "on" } else { "off" },
+            write.from,
+            write.to,
+            write.address
+        ));
+    }
+    for object in unchecked {
+        notes.push(match s7.group_object_base {
+            Some(base) => format!(
+                "object {object} gains its first link, but its communication flag was not \
+                 checked: the group-object table at {base:#06X} holds {} descriptor(s), none \
+                 for it, and a device ignores an object whose flag is off",
+                s7.group_objects.len()
+            ),
+            None => format!(
+                "object {object} gains its first link, but its communication flag was not \
+                 checked: the group-object table was not read (no product data places it, or \
+                 the device refused the read), and a device ignores an object whose flag is off"
+            ),
+        });
+    }
+    writes.iter().map(|write| write.object).collect()
+}
+
 /// Builds the plan of writing the model to `target`.
 ///
 /// `params` is the parameter read-back, `None` when no product data was at
@@ -1412,6 +1455,7 @@ pub fn build_device_plan(
         .cloned();
 
     let tables_change = !report.is_noop();
+    let communication_flags = sys7_flag_plan(live, report, &mut notes);
     let writes = PlanWrites {
         address_table: tables_change.then_some(report.resulting_address_count),
         association_table: tables_change.then_some(report.resulting_association_count),
@@ -1427,6 +1471,12 @@ pub fn build_device_plan(
             tables_change,
         }),
         interface_properties: Vec::new(),
+        // A System 7 table write ends with a basic restart, as ETS's does; a
+        // full download names its own.
+        restart: live.sys7().is_some()
+            && needs_flash.is_none()
+            && (tables_change || !communication_flags.is_empty()),
+        communication_flags,
     };
     let root = backups_root(dir);
     let backup_dir = if parameter_octets > 0 {

@@ -108,10 +108,13 @@ pub struct Sys7Detail {
     /// The device's own individual address, as stored in address-table slot 0
     /// (four hex digits).
     pub own_ia: String,
-    /// Where the group-object descriptor table started inside the `0x4000`
-    /// region (four hex digits).
-    pub group_object_base: String,
-    /// The group-object table image exactly as read, hex-encoded.
+    /// Where the group-object descriptor table starts, as the product declares
+    /// it (four hex digits). Absent when it was not read (no product data).
+    /// Older backups recorded the octets behind the address table here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_object_base: Option<String>,
+    /// The group-object table image exactly as read, hex-encoded (empty when
+    /// it was not read).
     pub group_object_image: String,
 }
 
@@ -199,7 +202,7 @@ impl DeviceBackup {
             read_time: Some(rfc3339_utc(read_at)),
             system7: sys7.map(|s7| Sys7Detail {
                 own_ia: format!("{:04X}", s7.own_ia),
-                group_object_base: format!("{:04X}", s7.group_object_base),
+                group_object_base: s7.group_object_base.map(|b| format!("{b:04X}")),
                 group_object_image: encode_hex(&s7.group_object_image),
             }),
             addresses: live.addresses.iter().map(|g| g.to_string()).collect(),

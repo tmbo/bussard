@@ -45,7 +45,7 @@ A KNX device's configuration is three separable things with very different diffi
 | Layer | What | Difficulty |
 |---|---|---|
 | (a) Individual address | `1.1.4` | Standardised management procedure. Trivial. |
-| (b) Links | group address table, association table, com-object table | Standardised loadable parts; on System B / mask 07B0+ property-based and writable through documented interface objects. Moderate. |
+| (b) Links | group address table, association table, com-object table | Standardised loadable parts. On System B (mask 07B0 and its 27B0/57B0 variants) each table is an interface object: its load state machine is driven through `PID_LOAD_STATE_CONTROL`, and the content is written into the segment the device places on a Data Relative Allocation, at the address `PID_TABLE_REFERENCE` reports (Resources 3/5/1 §4.16.8, §4.17.5, §4.18.6; Configuration Procedures 3/5/3 §3.5.2). `PID_TABLE` is readable, not a download path. Moderate. |
 | (c) Parameters | channel mode, runtime, wind-alarm behaviour, ... | Device-specific memory layout described only in the `.knxprod`. Hard. |
 
 Most day-to-day changes are (b), but all three layers are in scope: the goal is the
@@ -55,7 +55,7 @@ device files carry parameter values per channel (imported from the ETS project,
 validated against the product model, #46), and `flash` computes the parameter memory image from
 vendor defaults plus those overrides and streams it, using per-module-instance base
 offsets (recorded in `bussard.lock`, #48) to place per-channel parameters. Which path links take
-(properties on System B vs. memory writes on older System 1/2) depends on the mask
+(a load state machine plus memory-mapped segments on System B, absolute memory writes on System 7 and System 1/2) depends on the mask
 version each device reports; `bussard scan` reports this.
 
 ## 3. What's inside a `.knxprod`
@@ -102,7 +102,17 @@ Consequence: the transport + cEMI layer is written from scratch (MIT). The wire 
 is small (~1-2 KLOC): KNXnet/IP framing, tunneling (CONNECT / CONNECTIONSTATE heartbeat /
 TUNNELING_REQUEST+ACK sequence counters / DISCONNECT), routing (multicast
 224.0.23.12:3671, ROUTING_INDICATION / LOST_MESSAGE / BUSY), and cEMI `L_Data` decode
-including 6-bit small APDUs. The `.knxprod` reader (`bussard-prod`) is likewise written
+including 6-bit small APDUs. The small form is the standard's rule for sub-octet DPTs, not
+an optimisation for small values: a DPT shorter than one octet travels in the low bits of
+the APCI octet (KNX 03_07_02 Datapoint Types §1.3.1), which is main types 1, 2, 3 and 23;
+a byte-sized value always goes as a separate data octet, whatever its value (issue #59;
+23 is not in the size registry yet, #498). The KNXnet/IP clauses it implements: 3/8/2 Core §5.2 to §5.5 (connect
+within 10 s, per-channel sequence counters from 0, heartbeat every 60 s answered within
+10 s and repeated three times before a DISCONNECT, control versus data endpoint), 3/8/4
+Tunnelling §2.6 (1 s ACK timeout, one repeat, ACK on the expected sequence and on seq-1
+only, no ACKs over TCP) and 3/8/5 Routing §2.3.5 (ROUTING_BUSY wait plus random back-off).
+Where the code deviates, the spec-review issues say how (#512, #514, #516, #519). The
+`.knxprod` reader (`bussard-prod`) is likewise written
 from scratch: parsing XML from a ZIP; signing is never needed since bussard only reads
 vendor files.
 
@@ -256,12 +266,21 @@ the human reads the final plan, the tool executes.
 Strict parsing, then rule passes with rustc-style diagnostics and `--json`. The
 diagnostic table lives in [reference.md](../docs/reference/index.md#validation-diagnostics); the
 rules tied to the file format (E020 to E026) are in
-[the file reference](../docs/reference/files/errors.md).
+[the file reference](../docs/reference/files/errors.md). Two DPT rules follow the standard's
+scheme that the main number fixes format and encoding and the sub number only range and
+unit (03_07_02 Datapoint Types §1.1): E004 compares the sizes `Dpt::expected_size` models
+(the format column of §1.4; a main type without a modelled size is skipped, not flagged,
+#498), and W005 treats differing sub types of one main as agreement, not a conflict.
 
 ### 5.4 Monitor and capture
 
 cEMI → `{timestamp, source, destination GA, APCI, payload}` → resolve GA to name + DPT →
-typed value; source resolves to device name, and (source, GA) to the sending com object's
+typed value (the codecs follow 03_07_02 Datapoint Types: a 2-octet float is
+`0.01 * M * 2^E` and 7FFFh is its invalid marker, §3.10; 11.001 pivots the two-digit year
+at 90, §3.12; 19.001 carries eight validity and quality flags, §3.20; a scene field is the
+raw 0..63 value, one less than ETS displays, §3.19 NOTE 9 and #495; the size registry in
+`dpt.rs` covers 21 main types and the rest decode to raw hex, #498); source resolves to
+device name, and (source, GA) to the sending com object's
 name (from the device file). Unknown GAs/DPTs degrade gracefully to raw hex, never a
 failure; decode-size mismatches are shown inline as a debugging signal. `capture` stores
 raw cEMI bytes plus a decoded snapshot in SQLite so telegrams can be re-decoded after
@@ -295,6 +314,50 @@ buffer. The tool list, parameters and tiers are in
   reversible without git (`bussard undo`) and reach nothing physical; the bus is where a
   human confirms.
 
+### 5.6 Protocol stack references (cEMI, TL, AL)
+
+The clauses the clean-room transport is written against, so a reader can check a
+frame without re-deriving it. Volume and clause numbers are from KNX Standard 3.0.0
+under `dev/knx-standard-3.0.0/`.
+
+- cEMI `L_Data` layout, control fields and the length octet: 03/06/03 EMI/IMI
+  §4.1.5.3.2 and §4.1.5.3.3. Control field 1 bit 7 selects the frame type (1 =
+  standard), bit 5 the repeat flag (1 = repetitions allowed), bit 4 the system
+  broadcast flag (1 = ordinary broadcast; "don't care" on TP1), bits 3-2 the
+  priority (`00` system, `01` normal, `10` urgent, `11` low, 03/02/02 TP1 §2.2.4),
+  bit 1 the L2 acknowledge request, bit 0 the confirm/error flag of an `L_Data.con`.
+  The length octet counts the octets after the TPCI octet. An APDU longer than 15
+  octets needs an extended frame (length 0 to 254, 03/02/02 §2.2.5.6); a receiver
+  must accept an extended frame for a short payload too (03/06/03 §4.1.5.2.3).
+  `cemi.rs` picks the frame type from the encoded length. The
+  `Control1::system_broadcast` field name is the inverse of the wire meaning (#508).
+- Transport layer: timings and the connection-oriented state machine are 03/03/04
+  Transport Layer §4 (acknowledge timeout 3 s, three repetitions, connection
+  timeout 6 s) and §5 (events, actions, Style 3 table), as amended by AN210 v02
+  (T_ACK with a wrong sequence closes the connection, T_NAK with a wrong sequence
+  is ignored). The current test spec 08/03/04 v01.06.07 §3 tests only Style 3 and
+  says new stacks shall implement it; Styles 1 and 2 are phased out.
+  `Layer4Connection` has the happy path and the duplicate rule (`SeqNoRcv - 1` is
+  re-acknowledged, not re-delivered) right; its error paths are tracked in #507 and
+  `knx-sim`'s server side in #511. T_Connect, T_Disconnect, T_ACK and T_NAK are
+  system-priority telegrams (03/03/04 §3.7, §3.8, §5.3), as are the
+  `A_IndividualAddress*` broadcasts (03/03/07 §3.2); bussard sends them at normal
+  priority (#506).
+- Application layer: the APCI table is 03/03/07 Application Layer §2. The six-bit
+  packed form of the group-value services is for values of six bits or less
+  (§3.1.2); a byte-sized value with a small number still travels as a data octet
+  (#59). `A_Memory_Read/Write` carry 1 to 63 octets and a 16-bit address (§3.5.3,
+  §3.5.4); the extended services carry 1 to 250 octets and a 24-bit address, and
+  answer with a return code (§3.4.9). A response with `number = 0`, `nr_of_elem = 0`
+  or descriptor type 3Fh is the defined negative answer, not a malformed frame
+  (§3.5.3, §3.4.4.1, §3.4.2.1; bussard's reading of these is #509). `A_Restart`
+  carries the restart type in the low APCI bit; a basic restart is never answered,
+  a master reset is answered with an error code and a process time, and the device
+  may or may not drop the transport connection afterwards (§3.4.2.2). Reading a
+  property with `start_index = 0` returns its element count (§3.4.4.1).
+  `PID_MAX_APDULENGTH` of the device object bounds every chunk (§3.5.3 note 17);
+  without it the standard-frame budget of 15 applies.
+
 ## 6. Roadmap
 
 **Phase 0, read-only and zero risk. Shipped.** Import an existing `.knxproj` (ETS 6,
@@ -319,8 +382,15 @@ ETS-free application download from a `.knxprod` into a System B device: pre-flig
 verification. The parameter image is computed from vendor defaults plus the device file's
 parameter values, with the lock's module bases resolving per-channel placement. Hardening
 shipped along the way: A_Authorize on every management connect (`flash --bcu-key` for
-keyed devices, free access otherwise, #52), per-chunk read-back verification, and strict
-load-state checking that fails fast when a device does not honour a segment allocation.
+keyed devices, free access otherwise, #52), verification by the device-computed CRC in
+`PID_MCB_TABLE` read after each `LoadCompleted` (Resources 3/5/1 §4.2.27, the "read and save
+CRC" step of Configuration Procedures 3/5/3 §3.5.2) plus a post-restart spot check of every
+written segment, and strict load-state checking that fails fast when a device does not honour
+a segment allocation. There is no per-chunk read-back on System B: a plain `A_Memory_Write`
+is only acknowledged at the transport layer and confirmed by the device solely in verify mode
+(03/03/07 Application Layer §3.5.4; the extended service confirms each chunk inline, §3.4.9.2),
+the verify flag of DM_MemWrite (Management Procedures 3/5/2 §3.16.2) is a procedure option ETS
+does not set there, and the MCB CRC covers the whole segment.
 The download runs over a single management connection for its whole duration, exactly as
 ETS does; a genuinely dead connection fails cleanly, and re-running `flash` is safe
 because the download is idempotent.
@@ -330,12 +400,22 @@ absolute-addressed procedures (`LdCtrlAbsSegment` allocation and streaming,
 `LdCtrlTaskSegment`, `LdCtrlTaskCtrl1`, the obj0/PID78 compare, `LdCtrlCompareMem`) run on
 their own lowering, driven by the per-mask profile (see
 [system7-spec.md](system7-spec.md)). The System B family covers `07B0` and its `57B0`
-(KNX-IP) and `27B0` (RF) variants. The per-mask support table lives in one place,
+(KNX-IP) and `27B0` (RF) variants (Volume 6 profile 06_01_35 lists the same load controls
+for 27B0: Start Loading, Load Completed, Data Relative Allocation and Unload mandatory, the
+absolute and task records optional). The RF masks `2705` and `2920` sit beside it in
+Volume 6 but are not System B downloads: in the corpus the 2705 procedures are System 7
+shaped (`LdCtrlAbsSegment`, `LdCtrlTaskSegment`) and the 2920 ones property-only
+(`LdCtrlDeclarePropDesc`, `LdCtrlWriteProp`); neither is flash-gated today. The per-mask support table lives in one place,
 `MaskProfile::capabilities`, and is rendered into
 [SAFETY.md](../docs/explanation/safety.md#supported-device-masks). Unrecognized ops (notably
 `LdCtrlCompareRelMem`, a read-and-compare that blocks two otherwise-executable MDT apps)
 are refused whole before any write; `LdCtrlCompareRelMem` is the top roadmap op. System 1
-and System 2 masks remain ETS-only.
+and System 2 masks remain ETS-only, except the property-only procedures of the 0021 IP
+interface (#390). The BCU2 memory download is fully specified (KNX 3/5/1 §4.16.4, §4.17.4,
+§4.18.4; 9/4/1 §5.1.2.12.5) and #525 lists what it takes. The System 7 lowering was checked
+against the standard in the 3.0.0 review (notes in [system7-spec.md](system7-spec.md)); the
+load-state machine realisation per mask comes from Volume 6 Profiles §4.2, not from vendor
+habit.
 
 ### The interop wall
 
@@ -463,6 +543,8 @@ the everyday win is a group-address change in ~2 seconds instead of a minute.
 
 - **ETS DCA plugin devices**: configured by compiled .NET, no XML to interpret. These
   stay ETS-only, permanently. Audit target installations for them early.
-- **KNX Data Secure**: secure commissioning with the FDSK is additional work where
-  enabled.
+- **KNX Data Secure**: operating ETS-activated devices is done; activating a
+  factory-fresh device from its FDSK (#201 tier 2) and retrying a refused
+  S-A_Sync under the FDSK when somebody reset a device to default (KNX 3/5/2
+  §4.1 NOTE 18) are additional work.
 - Per-manufacturer quirks that ETS handles by special-casing.

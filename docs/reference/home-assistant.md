@@ -77,6 +77,8 @@ Roles come from the object flags:
 | binary_sensor | DPT `1.019` | `window` |
 | binary_sensor | name hints | `motion`, `window`, `door`, `moisture`, `safety` |
 
+`1.019` is 0 = closed, 1 = open; `1.009` is the inverse, 0 = open, 1 = close (KNX 03_07_02 Datapoint Types §3.1). bussard does not yet emit `invert: true` for a `1.009` contact under `window` or `door`, so such a contact reads inverted in Home Assistant (#496).
+
 Sensor `type` per DPT sub:
 
 | DPT | `type` |
@@ -89,6 +91,10 @@ Sensor `type` per DPT sub:
 | `9.008` | `ppm` |
 | `9.024` | `power_2byte` |
 | other `9.x` | `2byte_float` |
+| any `7.x` | `pulse_2byte` (also for `7.600` colour temperature in K and `7.005` seconds, KNX 03_07_02 §3.8; per-sub types are #505) |
+| any `12.x` | `pulse_4byte` |
+| `13.010`, `13.013`, other `13.x` | `active_energy`, `active_energy_kwh`, `4byte_signed` |
+| any `14.x` | `4byte_float` |
 
 The `_2byte` types matter: Home Assistant's plain `power` and `temperature` types decode four bytes, so a 2-byte KNX value mapped to them reads wrong.
 

@@ -188,6 +188,9 @@ struct DeviceState {
     /// data, so the verify's combined status read falls back to one read per
     /// LSM (issue #215).
     refuse_multi_octet_status: bool,
+    /// Refuse every `A_Memory_Read` that starts in this range (an answer with
+    /// no data), as a device does for memory its access level does not open.
+    refused_reads: Option<std::ops::Range<u16>>,
     /// Every numbered request the device answered or acknowledged.
     requests_seen: usize,
     /// A gateway link outage in the reconnect phase after a restart (issue
@@ -265,6 +268,7 @@ fn fresh_device(mode: LsmMode, fault: Fault) -> Shared {
         verify_echoes_sent: 0,
         lsm_state_reads: 0,
         refuse_multi_octet_status: false,
+        refused_reads: None,
         requests_seen: 0,
         restart_outage: None,
         restart_outage_armed: false,
@@ -474,6 +478,9 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
             if s.refuse_multi_octet_status && count > 1 {
                 return Reaction::Answer(A_MEMORY_RESPONSE, addr.to_be_bytes().to_vec());
             }
+        }
+        if s.refused_reads.as_ref().is_some_and(|r| r.contains(&addr)) {
+            return Reaction::Answer(A_MEMORY_RESPONSE, addr.to_be_bytes().to_vec());
         }
         // Memory-mapped LSM status: read at 0xB6EA + (lsm-1).
         let mut data = Vec::with_capacity(count as usize);
@@ -2272,48 +2279,361 @@ async fn authed_connection<'a>(
     Ok(l4)
 }
 
+/// Where the products of the incremental-apply tests declare their group-object
+/// table (`<ComObjectTable>`): an application segment of its own, as on the
+/// Ekinex EK-E72 (`0x41D8`) and the Jung A-2088 (`0x43FF`).
+const OBJECT_TABLE: u16 = 0x4400;
+
+/// The table bases a product with a declared group-object table gives the
+/// reader.
+fn bases_with_object_table() -> bussard_download::Sys7TableBases {
+    bussard_download::Sys7TableBases {
+        address: Some(0x4000),
+        association: Some(0x4201),
+        packed_end: None,
+        address_size: Some(0x201),
+        association_size: None,
+        object_table: Some(OBJECT_TABLE),
+        task_identity: Some(JUNG_TASK_IDENTITY),
+    }
+}
+
+/// The table bases of a product that sizes its address segment but declares
+/// no group-object table.
+fn bases_without_object_table() -> bussard_download::Sys7TableBases {
+    bussard_download::Sys7TableBases {
+        object_table: None,
+        ..bases_with_object_table()
+    }
+}
+
+/// The device of the incremental-apply tests: one link (object 1 on 1/0/1)
+/// and the declared group-object table, objects 0..=2 with the communication
+/// flag on the linked object 1 (4F) and off on object 2 (DB). Returns the
+/// group-object table image.
+fn seed_apply_device(state: &Shared, own_ia: u16) -> Vec<u8> {
+    seed_tables(state, own_ia, &[0x0801], &[(1, 1)], &[0x08, 0x05]);
+    let go_image = vec![
+        0x03, 0x07, 0x00, // CNT + RAM-flags ptr
+        0x07, 0x75, 0x13, 0x00, // object 0
+        0x07, 0x76, 0x4F, 0x08, // object 1
+        0x07, 0x78, 0xDB, 0x08, // object 2
+    ];
+    let mut s = lock(state);
+    for (i, &b) in go_image.iter().enumerate() {
+        s.memory.insert(OBJECT_TABLE + i as u16, b);
+    }
+    go_image
+}
+
+/// Object 1 keeps 1/0/1; object 2 gains its first link, 1/0/3.
+fn desired_first_link_on_object_2()
+-> Result<bussard_download::DesiredTables, Box<dyn std::error::Error>> {
+    Ok(compute_tables(&[
+        bussard_model::schema::Link {
+            object: 1,
+            name: None,
+            send: Some(ga("1/0/1")?),
+            listen: Vec::new(),
+        },
+        bussard_model::schema::Link {
+            object: 2,
+            name: None,
+            send: None,
+            listen: vec![ga("1/0/3")?],
+        },
+    ]))
+}
+
+/// A device that refuses the read of its group-object table: the address and
+/// association tables are still read, and the flags go unchecked with a note
+/// (review of #433).
+#[tokio::test]
+async fn test_read_sys7_tables_at_survives_a_refused_object_table_read()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (mut bus, state, handle) = setup(LsmMode::Property, Fault::None).await?;
+    let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
+    seed_apply_device(&state, target.raw());
+    lock(&state).refused_reads = Some(OBJECT_TABLE..OBJECT_TABLE + 0x400);
+    let mut l4 = authed_connection(&mut bus, target).await?;
+    let live = bussard_download::read_sys7_tables_at(&mut l4, bases_with_object_table()).await?;
+    assert_eq!(live.tables.addresses, vec![ga("1/0/1")?]);
+    assert_eq!(live.tables.associations, vec![(1, 1)]);
+    assert_eq!(live.group_object_base, None);
+    assert!(live.group_objects.is_empty());
+    let notes = live.tables.notes.join(" | ");
+    assert!(
+        notes.contains("not readable") && notes.contains("not checked"),
+        "{notes}"
+    );
+    // The newly linked object is then named as unchecked, and no flag written.
+    let images = sys7_table_images(&live, &desired_first_link_on_object_2()?, target.raw())?;
+    assert!(images.flag_writes.is_empty());
+    assert!(images.group_object_image.is_empty());
+    assert_eq!(images.unchecked_flags, vec![2]);
+    let _ = l4.disconnect().await;
+    drop(handle);
+    Ok(())
+}
+
+/// Without product data and without a reported association table the address
+/// segment's end is unknown: the table may be rewritten at its length but not
+/// grown, so it can never reach a group-object table such as the EK-E72's at
+/// 0x41D8 (review of #433).
+#[tokio::test]
+async fn test_sys7_table_images_refuses_growth_without_a_known_segment_end()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (mut bus, state, handle) = setup(LsmMode::Property, Fault::None).await?;
+    let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
+    seed_apply_device(&state, target.raw());
+    let mut l4 = authed_connection(&mut bus, target).await?;
+    let live = read_sys7_tables(&mut l4).await?;
+    assert_eq!(live.address_capacity, 5, "CNT + own IA + one GA");
+    let notes = live.tables.notes.join(" | ");
+    assert!(notes.contains("segment end is unknown"), "{notes}");
+    let err = sys7_table_images(&live, &desired_first_link_on_object_2()?, target.raw())
+        .err()
+        .ok_or("growing the table past its current length is refused")?;
+    assert!(
+        matches!(
+            err,
+            bussard_download::Sys7ApplyError::RegionOverflow {
+                table: "address",
+                len: 7,
+                capacity: 5,
+                ..
+            }
+        ),
+        "{err}"
+    );
+    // A rewrite at the same length (another GA in place of 1/0/1) is fine.
+    let same = compute_tables(&[bussard_model::schema::Link {
+        object: 1,
+        name: None,
+        send: Some(ga("1/0/9")?),
+        listen: Vec::new(),
+    }]);
+    assert_eq!(
+        sys7_table_images(&live, &same, target.raw())?
+            .address_region
+            .len(),
+        5
+    );
+    let _ = l4.disconnect().await;
+    drop(handle);
+    Ok(())
+}
+
+/// The group-object table belongs to the application's LSM: a device whose
+/// application is not Loaded is refused before anything is written.
+#[tokio::test]
+async fn test_apply_sys7_tables_refuses_an_unloaded_application()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (mut bus, state, handle) = setup(LsmMode::Property, Fault::None).await?;
+    let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
+    seed_apply_device(&state, target.raw());
+    let mut l4 = authed_connection(&mut bus, target).await?;
+    let live = bussard_download::read_sys7_tables_at(&mut l4, bases_with_object_table()).await?;
+    let images = sys7_table_images(&live, &desired_first_link_on_object_2()?, target.raw())?;
+    assert!(!images.group_object_image.is_empty());
+    {
+        let mut s = lock(&state);
+        s.lsm_states.insert(3, LS_UNLOADED);
+        s.memory_writes_seen = 0;
+        s.lsm_events.clear();
+    }
+    let profile = bussard_mgmt::MaskProfile::from_mask(MASK_0705)
+        .sys7_default_profile()
+        .ok_or("a System 7 profile")?;
+    let err = apply_sys7_tables(
+        &mut l4,
+        &lsm_access_for(LsmMode::Property),
+        &profile,
+        &images,
+        &JUNG_TASK_IDENTITY,
+    )
+    .await
+    .err()
+    .ok_or("an unloaded application is refused")?;
+    assert!(
+        matches!(
+            err,
+            bussard_download::Sys7ApplyError::ApplicationNotLoaded { .. }
+        ),
+        "{err}"
+    );
+    {
+        let s = lock(&state);
+        assert_eq!(s.memory_writes_seen, 0, "nothing written");
+        assert!(s.lsm_events.is_empty(), "no load event: {:?}", s.lsm_events);
+        assert_eq!(s.restarts_seen, 0);
+    }
+    let _ = l4.disconnect().await;
+    drop(handle);
+    Ok(())
+}
+
+/// A group-object table write that fails part-way still closes LSM 3: the
+/// application keeps running on a table that is the one read with at most
+/// some flag octets changed, and the write error reaches the caller.
+#[tokio::test]
+async fn test_apply_sys7_tables_completes_lsm_3_after_a_failed_object_write()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (mut bus, state, handle) = setup(LsmMode::Property, Fault::None).await?;
+    let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
+    seed_apply_device(&state, target.raw());
+    let mut l4 = authed_connection(&mut bus, target).await?;
+    let live = bussard_download::read_sys7_tables_at(&mut l4, bases_with_object_table()).await?;
+    let images = sys7_table_images(&live, &desired_first_link_on_object_2()?, target.raw())?;
+    let flag = images
+        .flag_writes
+        .first()
+        .ok_or("object 2's flag switches on")?;
+    {
+        // The device does not store object 2's CONFIG octet: the verify fails.
+        let mut s = lock(&state);
+        s.frozen.push(flag.address);
+        s.lsm_events.clear();
+    }
+    let profile = bussard_mgmt::MaskProfile::from_mask(MASK_0705)
+        .sys7_default_profile()
+        .ok_or("a System 7 profile")?;
+    let result = apply_sys7_tables(
+        &mut l4,
+        &lsm_access_for(LsmMode::Property),
+        &profile,
+        &images,
+        &JUNG_TASK_IDENTITY,
+    )
+    .await;
+    assert!(result.is_err(), "{result:?}");
+    {
+        let s = lock(&state);
+        assert_eq!(s.lsm_state(3), LS_LOADED, "the application keeps running");
+        assert_eq!(
+            s.lsm_events.iter().rev().find(|&&(lsm, _)| lsm == 3),
+            Some(&(3, LE_LOAD_COMPLETED))
+        );
+        assert_eq!(s.restarts_seen, 0, "no restart after a failed write");
+    }
+    let _ = l4.disconnect().await;
+    drop(handle);
+    Ok(())
+}
+
+/// A second address on an already linked object changes no flag: the
+/// group-object table and LSM 3 are left alone, and the device still restarts.
+#[tokio::test]
+async fn test_apply_sys7_tables_leaves_lsm_3_alone_without_a_flag_change()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (mut bus, state, handle) = setup(LsmMode::Property, Fault::None).await?;
+    let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
+    seed_apply_device(&state, target.raw());
+    let mut l4 = authed_connection(&mut bus, target).await?;
+    let live = bussard_download::read_sys7_tables_at(&mut l4, bases_with_object_table()).await?;
+    let images = sys7_table_images(&live, &desired_links()?, target.raw())?;
+    assert!(images.flag_writes.is_empty());
+    lock(&state).lsm_events.clear();
+    let profile = bussard_mgmt::MaskProfile::from_mask(MASK_0705)
+        .sys7_default_profile()
+        .ok_or("a System 7 profile")?;
+    let outcome = apply_sys7_tables(
+        &mut l4,
+        &lsm_access_for(LsmMode::Property),
+        &profile,
+        &images,
+        &JUNG_TASK_IDENTITY,
+    )
+    .await?;
+    assert!(outcome.ok(), "{outcome:?}");
+    assert_eq!(outcome.object_state, None);
+    assert!(outcome.restarted);
+    {
+        let s = lock(&state);
+        assert!(
+            s.lsm_events.iter().all(|&(lsm, _)| lsm != 3),
+            "LSM 3 untouched: {:?}",
+            s.lsm_events
+        );
+        assert_eq!(s.restarts_seen, 1);
+    }
+    let _ = l4.disconnect().await;
+    drop(handle);
+    Ok(())
+}
+
 async fn run_table_apply(mode: LsmMode) -> Result<(), Box<dyn std::error::Error>> {
     let (mut bus, state, handle) = setup(mode, Fault::None).await?;
     let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
     let own_ia = target.raw();
-    // Two descriptors the download put there; `apply` must carry them over
-    // untouched even though the address table in front of them changes length.
+    // Behind the address table, the unused rest of its segment: the EK-E72
+    // reads `08 05 08 06 …` there. It is not a group-object table and must
+    // never be read or moved as one.
+    let filler = vec![0x08, 0x05, 0x08, 0x06, 0x08, 0x07, 0x08, 0x08];
+    seed_tables(&state, own_ia, &[0x0801], &[(1, 1)], &filler);
+    // The group-object table the product declares: objects 0..=2, the
+    // communication flag on the linked object 1 (4F), off on object 2 (DB).
     let go_image = vec![
-        0x02, 0x07, 0x00, // CNT + RAM-flags ptr
-        0x07, 0x00, 0xDF, 0x00, // descriptor 1
-        0x07, 0x02, 0x87, 0x00, // descriptor 2
+        0x03, 0x07, 0x00, // CNT + RAM-flags ptr
+        0x07, 0x75, 0x13, 0x00, // object 0
+        0x07, 0x76, 0x4F, 0x08, // object 1
+        0x07, 0x78, 0xDB, 0x08, // object 2
     ];
-    let go_base = seed_tables(&state, own_ia, &[0x0801], &[(1, 1)], &go_image);
-    assert_eq!(go_base, 0x4005, "CNT + own IA + one GA");
+    {
+        let mut s = lock(&state);
+        for (i, &b) in go_image.iter().enumerate() {
+            s.memory.insert(OBJECT_TABLE + i as u16, b);
+        }
+    }
 
     let mut l4 = authed_connection(&mut bus, target).await?;
 
     // --- plan: read the live tables and diff them -----------------------------
-    let live = read_sys7_tables(&mut l4).await?;
+    let live = bussard_download::read_sys7_tables_at(&mut l4, bases_with_object_table()).await?;
     assert_eq!(live.tables.mask, MASK_0705);
     assert_eq!(live.own_ia, own_ia, "entry 0 is the device's own IA");
     assert_eq!(live.tables.addresses, vec![ga("1/0/1")?]);
     assert_eq!(live.tables.associations, vec![(1, 1)]);
-    assert_eq!(live.tables.resolved.len(), 1);
-    assert_eq!(live.tables.resolved[0].object, 1);
-    assert_eq!(live.tables.resolved[0].ga, ga("1/0/1")?);
-    assert_eq!(live.group_object_base, go_base);
+    assert_eq!(live.group_object_base, Some(OBJECT_TABLE));
     assert_eq!(live.group_object_image, go_image);
-    assert_eq!(live.group_objects.len(), 2);
+    assert_eq!(live.group_objects.len(), 3);
 
-    let desired = desired_links()?;
+    // Object 1 sends 1/0/1 and listens on 1/0/2; object 2 gains its first
+    // link, 1/0/3.
+    let desired = compute_tables(&[
+        bussard_model::schema::Link {
+            object: 1,
+            name: None,
+            send: Some(ga("1/0/1")?),
+            listen: vec![ga("1/0/2")?],
+        },
+        bussard_model::schema::Link {
+            object: 2,
+            name: None,
+            send: None,
+            listen: vec![ga("1/0/3")?],
+        },
+    ]);
     let report = plan(&live.tables, &desired);
-    assert_eq!(report.additions.len(), 1, "one new link: {report:?}");
-    assert_eq!(report.additions[0].ga, ga("1/0/2")?);
+    assert_eq!(report.additions.len(), 2, "two new links: {report:?}");
     assert_eq!(report.unchanged.len(), 1);
     assert!(report.removals.is_empty());
 
-    // --- apply: write only the two table LSMs ---------------------------------
+    // --- apply: the two table LSMs, then object 2's communication flag -------
     let images = sys7_table_images(&live, &desired, own_ia)?;
     assert_eq!(
-        images.group_object_moved,
-        Some((0x4005, 0x4007)),
-        "the address table grew by one entry, so the descriptors move with it"
+        images.address_region.len(),
+        9,
+        "the address table alone: CNT + own IA + three GAs"
+    );
+    assert_eq!(
+        images.flag_writes,
+        vec![bussard_download::Sys7FlagWrite {
+            object: 2,
+            address: OBJECT_TABLE + 3 + 4 * 2 + 2,
+            from: 0xDB,
+            to: 0xDF,
+        }]
     );
     let profile = bussard_mgmt::MaskProfile::from_mask(MASK_0705)
         .sys7_default_profile()
@@ -2329,7 +2649,7 @@ async fn run_table_apply(mode: LsmMode) -> Result<(), Box<dyn std::error::Error>
     assert!(outcome.ok(), "apply must verify: {outcome:?}");
 
     // --- reconstruct: read it all back and confirm the model is on the device --
-    let after = read_sys7_tables(&mut l4).await?;
+    let after = bussard_download::read_sys7_tables_at(&mut l4, bases_with_object_table()).await?;
     assert_eq!(after.tables.addresses, desired.addresses);
     assert_eq!(after.tables.associations, desired.associations);
     assert!(
@@ -2338,28 +2658,65 @@ async fn run_table_apply(mode: LsmMode) -> Result<(), Box<dyn std::error::Error>
         plan(&after.tables, &desired)
     );
     assert_eq!(after.own_ia, own_ia, "the own-IA slot survived the rewrite");
+    let mut flagged = go_image.clone();
+    flagged[3 + 4 * 2 + 2] = 0xDF;
     assert_eq!(
-        after.group_object_base, 0x4007,
-        "the descriptors moved with the longer address table"
+        after.group_object_image, flagged,
+        "only object 2's CONFIG octet changed in the group-object table"
     );
-    assert_eq!(
-        after.group_object_image, go_image,
-        "the descriptors are byte-identical after the move"
+    let linked = desired.associations.iter().map(|&(_, a)| a).collect();
+    assert!(
+        bussard_download::sys7_flag_writes(&after, &linked)
+            .0
+            .is_empty(),
+        "a re-plan after apply leaves the flags alone"
     );
 
     {
         let s = lock(&state);
-        assert_eq!(
-            s.restarts_seen, 0,
-            "a table-only apply must not restart the device"
-        );
-        for lsm in [1u8, 2] {
+        // The new address table ends at 0x4009; the rest of the segment behind
+        // it is exactly as it was.
+        for (i, &b) in filler.iter().enumerate().skip(4) {
+            assert_eq!(
+                s.memory.get(&(0x4005 + i as u16)),
+                Some(&b),
+                "octet {:#06X} behind the address table is untouched",
+                0x4005 + i
+            );
+        }
+        // ETS's table-only download ends with one basic restart, after every
+        // write (the read-back above ran before it on the open connection).
+        assert_eq!(s.restarts_seen, 1, "one closing restart");
+        assert_eq!(s.restart_at_writes, vec![s.memory_writes_seen]);
+        for lsm in [1u8, 2, 3] {
             assert_eq!(s.lsm_state(lsm), LS_LOADED, "LSM {lsm} must end Loaded");
         }
+        // The ETS order: both table LSMs unloaded, each loaded to completion in
+        // turn, then the group-object table in an LSM 3 bracket with no Unload.
+        let events: Vec<(u8, u8)> = s
+            .lsm_events
+            .iter()
+            .copied()
+            .filter(|&(_, op)| op != LE_ADDITIONAL)
+            .collect();
         assert_eq!(
-            s.lsm_state(3),
-            LS_LOADED,
-            "the parameter LSM must never be touched"
+            events,
+            vec![
+                (1, LE_UNLOAD),
+                (2, LE_UNLOAD),
+                (1, LE_START_LOADING),
+                (1, LE_LOAD_COMPLETED),
+                (2, LE_START_LOADING),
+                (2, LE_LOAD_COMPLETED),
+                (3, LE_START_LOADING),
+                (3, LE_LOAD_COMPLETED),
+            ]
+        );
+        assert!(
+            s.lsm_events
+                .iter()
+                .all(|&(lsm, op)| lsm != 3 || op != LE_ADDITIONAL),
+            "no segment record on LSM 3"
         );
         if mode == LsmMode::MemoryMapped {
             assert_eq!(
@@ -2551,7 +2908,7 @@ async fn apply_system7_tables_fails_on_a_verify_mismatch() -> Result<(), Box<dyn
     seed_tables(&state, own_ia, &[0x0801], &[(1, 1)], &go_image);
 
     let mut l4 = authed_connection(&mut bus, target).await?;
-    let live = read_sys7_tables(&mut l4).await?;
+    let live = bussard_download::read_sys7_tables_at(&mut l4, bases_without_object_table()).await?;
     let desired = desired_links()?;
     let images = sys7_table_images(&live, &desired, own_ia)?;
     let profile = bussard_mgmt::MaskProfile::from_mask(MASK_0705)
@@ -3429,7 +3786,13 @@ async fn test_write_sys7_refuses_without_task_identity() -> Result<(), Box<dyn s
     seed_tables(&state, target.raw(), &[0x0801], &[(1, 1)], &[]);
     let live = {
         let mut l4 = authed_connection(&mut bus, target).await?;
-        let live = read_sys7_tables(&mut l4).await?;
+        // The segment size lets the address table grow (#431): without it the
+        // table is not grown and the write is refused earlier.
+        let bases = bussard_download::Sys7TableBases {
+            address_size: Some(0x201),
+            ..Default::default()
+        };
+        let live = bussard_download::read_sys7_tables_at(&mut l4, bases).await?;
         let _ = l4.disconnect().await;
         live
     };
@@ -3478,6 +3841,7 @@ async fn test_write_sys7_task_segments_carry_the_product_identity()
     };
     let bases = bussard_download::Sys7TableBases {
         task_identity: Some(e72),
+        address_size: Some(0x201),
         ..Default::default()
     };
     let live = {

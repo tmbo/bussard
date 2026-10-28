@@ -744,7 +744,11 @@ impl BussardMcp {
 
         // A security-object change of its own rewrites the tables too (issue
         // #297): the security object is written inside the table download.
-        let tables_noop = report.is_noop() && !built.plan.writes.security_object;
+        // A System 7 communication flag that does not follow its links is written
+        // with the tables too.
+        let tables_noop = report.is_noop()
+            && !built.plan.writes.security_object
+            && built.plan.writes.communication_flags.is_empty();
         let noop = tables_noop && built.partial.is_none() && flash.is_none();
         if noop {
             // The device already holds the model: nothing this session
@@ -1224,7 +1228,9 @@ impl BussardMcp {
         }
         // The plan is consumed from here on: one digest, one write.
         tier.plans().remove(digest);
-        let tables_change = !report.is_noop() || built.plan.writes.security_object;
+        let tables_change = !report.is_noop()
+            || built.plan.writes.security_object
+            || !built.plan.writes.communication_flags.is_empty();
         let images = match live.sys7() {
             Some(s7) if tables_change => Some(
                 sys7_table_images(s7, &desired, target.raw())
@@ -1381,7 +1387,9 @@ impl BussardMcp {
         }
         let live = &read.live;
         let tables = live.tables();
-        let tables_change = !report.is_noop() || built.plan.writes.security_object;
+        let tables_change = !report.is_noop()
+            || built.plan.writes.security_object
+            || !built.plan.writes.communication_flags.is_empty();
         let param_write = match (
             &built.partial,
             read.params.as_ref().and_then(|p| p.detail.as_ref()),
@@ -1471,6 +1479,7 @@ impl BussardMcp {
                 )
                 .await;
                 let verified = matches!(&outcome, Ok(summary) if summary.ok);
+                let restarted = matches!(&outcome, Ok(summary) if summary.restarted);
                 stopped = outcome.is_err();
                 tracing::info!(
                     "audit: knx_apply_device {target} tables via {gateway}: {}; backup {backup_path}",
@@ -1511,6 +1520,54 @@ impl BussardMcp {
                         });
                     }
                     break 'write;
+                }
+                // A System 7 table write ends with a basic restart, as ETS's
+                // does: the parameters and the read-back need the device back.
+                if restarted {
+                    tier.jobs.step(job, "waiting for the device to restart");
+                    let back = match self.state().bus.service() {
+                        Some(service) => {
+                            let options = L4Options {
+                                source: SourcePolicy::Known(source),
+                                tool_key: tool_key.clone(),
+                                high_water: high_water.clone(),
+                                authorize: Authorize::BestEffort(
+                                    bussard_mgmt::apci::FREE_ACCESS_KEY,
+                                ),
+                                ..L4Options::default()
+                            };
+                            bussard_service::restart::wait_until_back(
+                                service,
+                                target,
+                                &options,
+                                tables.mask,
+                                bussard_service::restart::RestartWait::default(),
+                            )
+                            .await
+                            .map_err(|err| err.to_string())
+                        }
+                        None => Err("the bus is not wired".to_string()),
+                    };
+                    match back {
+                        Ok(after) => {
+                            result["restarted"] = json!({
+                                "answered_after_ms": after.as_millis() as u64,
+                            });
+                        }
+                        Err(reason) => {
+                            stopped = true;
+                            merge(
+                                &mut result,
+                                json!({
+                                    "ok": false,
+                                    "verified": false,
+                                    "reason": format!("the device did not come back after its restart: {reason}"),
+                                    "recovery": recovery.clone(),
+                                }),
+                            );
+                            break 'write;
+                        }
+                    }
                 }
                 // The security object was written with this PID 54 table and the
                 // write verified: record it in the lock, as `adopt` does (issue
@@ -2423,7 +2480,10 @@ fn live_digest(read: &DeviceRead) -> [u8; 32] {
             put(&mut h, &s7.address_base.to_be_bytes());
             put(&mut h, &s7.association_base.to_be_bytes());
             put(&mut h, &s7.own_ia.to_be_bytes());
-            put(&mut h, &s7.group_object_base.to_be_bytes());
+            match s7.group_object_base {
+                Some(base) => put(&mut h, &base.to_be_bytes()),
+                None => put(&mut h, b"no-object-table"),
+            }
             put(&mut h, &s7.group_object_image);
         }
         None => put(&mut h, b"system-b"),

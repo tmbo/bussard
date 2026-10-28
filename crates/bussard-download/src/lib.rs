@@ -44,8 +44,8 @@ pub use apply::{
     negotiate_session_apdu, read_states,
 };
 pub use apply_sys7::{
-    SYS7_ADDRESS_LSM, SYS7_ASSOCIATION_LSM, Sys7ApplyError, Sys7TableImages, Sys7VerifyOutcome,
-    apply_sys7_tables, sys7_table_images,
+    SYS7_ADDRESS_LSM, SYS7_ASSOCIATION_LSM, Sys7ApplyError, Sys7FlagWrite, Sys7TableImages,
+    Sys7VerifyOutcome, apply_sys7_tables, sys7_flag_writes, sys7_table_images,
 };
 pub use backup::{
     AssociationEntry, BackupError, BackupManifest, BackupStatus, DeviceBackup, ManifestEntry,

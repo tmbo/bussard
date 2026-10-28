@@ -13,11 +13,12 @@ is rendered there.
 | [DESIGN.md](DESIGN.md) | The living design document: goals, feasibility, architecture, roadmap. |
 | [testing.md](testing.md) | How to run the test suites, the gated corpus tests, the simulator loop and the test knobs. |
 | [testing-campaign.md](testing-campaign.md) | Runbook for the physical-device campaign and the offline oracle. |
-| [flash-op-coverage.md](flash-op-coverage.md) | Which LoadProcedure ops the corpus uses and which `flash` executes. |
+| [flash-op-coverage.md](flash-op-coverage.md) | Which LoadProcedure ops the corpus uses, which `flash` executes, and the clause of the standard behind each (System B). |
 | [system7-spec.md](system7-spec.md) | Implementation spec for the System 7 download path (masks 0705 and 0701). |
 | [knx-secure-spec.md](knx-secure-spec.md) | Implementation spec for KNX Data Secure and KNXnet/IP Secure. |
 | [product-model-format.md](product-model-format.md) | Field-by-field description of the generated product model files. |
 | [personas/](personas/README.md) | The owner and integrator personas, their journeys and the issue drafts derived from them. |
+| `knx-standard-3.0.0/` | The KNX Standard 3.0.0 text (`_txt/`, pdftotext of every volume), licensed and read-only: cite document, section and page in notes and issues, never paste paragraphs or tables; it is not committed. The 3.0.0 review of the System 7 and System 2 clauses is folded into [system7-spec.md](system7-spec.md). |
 
 ## Private data
 

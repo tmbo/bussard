@@ -345,7 +345,8 @@ pub async fn write_system_b_seeded<Ch: L4Channel>(
 }
 
 /// Runs the on-bus write sequence for a **System 7** device: authorize, then
-/// drive the two table load-state machines (see [`crate::apply_sys7`]).
+/// drive the table load-state machines and restart the device (see
+/// [`crate::apply_sys7`]).
 ///
 /// The LSM realisation (property-based on `0705`, memory-mapped on `0701`) comes
 /// from the mask-family default profile, exactly as the flash path selects it.
@@ -398,6 +399,10 @@ pub struct TableWriteSummary {
     pub association_state: LoadState,
     /// The full outcome, for a report when something did not verify.
     pub detail: String,
+    /// Whether the write ended with a restart (System 7, after it verified):
+    /// the device drops off the bus while it starts, so the caller waits for
+    /// it to answer again before the next connection.
+    pub restarted: bool,
 }
 
 /// Runs the write for whichever family the device is: the System 7 path when
@@ -478,6 +483,7 @@ pub async fn write_tables_seeded<Ch: L4Channel>(
                 address_state: v.address_state,
                 association_state: v.association_state,
                 detail: format!("{v:?}"),
+                restarted: v.restarted,
             })
             .map_err(|e| e.to_string()),
         None => write_system_b_seeded(channel, target, source, desired, secure, security, seed)
@@ -487,6 +493,7 @@ pub async fn write_tables_seeded<Ch: L4Channel>(
                 address_state: v.address_state,
                 association_state: v.association_state,
                 detail: format!("{v:?}"),
+                restarted: false,
             })
             .map_err(|e| e.to_string()),
     }

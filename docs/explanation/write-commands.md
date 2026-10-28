@@ -43,7 +43,9 @@ would change, then refuse at the prompt.
   `<dir>/captures/backups/<ia>-<timestamp>.json`, and the parameter memory to
   `<dir>/captures/backups/parameters/` when parameters change. If a backup
   cannot be written, the apply refuses.
-- **Verifies** by reading the tables and parameters back.
+- **Verifies** by reading the tables and parameters back. A System 7 table
+  write ends with a basic restart, as in ETS, and the read-back waits for the
+  device to answer again.
 
 The prompt reads `apply these N changes to <ia> through <gateway>? [y/N]`. To
 go back, re-apply from the model or `restore` the backup. The parameter half is

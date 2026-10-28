@@ -126,10 +126,19 @@ pub struct PlanWrites {
     /// the tables, whatever else differs (issue #326).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub full_image: Option<FullImage>,
+    /// The System 7 objects whose communication flag the write switches, so
+    /// that the flag follows the links (the CONFIG octet of each descriptor in
+    /// the group-object table, see [`crate::sys7_flag_writes`]).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub communication_flags: Vec<u16>,
     /// The properties of the KNXnet/IP parameter object the write sets, by
     /// PID in write order (issue #391).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub interface_properties: Vec<u8>,
+    /// The write ends with a basic restart: a System 7 table write, as ETS's
+    /// table-only downloads do (see [`crate::apply_sys7`]).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub restart: bool,
 }
 
 /// What a full application download writes, for the plan's `writes` line.
@@ -188,6 +197,7 @@ impl PlanWrites {
             && !self.security_object
             && self.full_image.is_none()
             && self.interface_properties.is_empty()
+            && self.communication_flags.is_empty()
     }
 
     /// `address table (4 entries), association table (5 entries), 1 parameter
@@ -211,6 +221,19 @@ impl PlanWrites {
         if self.security_object {
             parts.push("security object (PID 53, 54, 61)".to_string());
         }
+        if !self.communication_flags.is_empty() {
+            let objects: Vec<String> = self
+                .communication_flags
+                .iter()
+                .map(u16::to_string)
+                .collect();
+            parts.push(format!(
+                "communication flag{} (object{} {})",
+                if objects.len() == 1 { "" } else { "s" },
+                if objects.len() == 1 { "" } else { "s" },
+                objects.join(", ")
+            ));
+        }
         if self.parameter_octets > 0 {
             parts.push(format!(
                 "{} parameter octet{}",
@@ -227,9 +250,13 @@ impl PlanWrites {
             parts.push(format!("KNXnet/IP parameter object ({})", pids.join(", ")));
         }
         if parts.is_empty() {
-            "nothing".to_string()
+            return "nothing".to_string();
+        }
+        let parts = parts.join(", ");
+        if self.restart {
+            format!("{parts}, then a restart")
         } else {
-            parts.join(", ")
+            parts
         }
     }
 }
@@ -499,7 +526,10 @@ pub fn state_hash(live: &LiveTables, params: Option<&ParamRegions>) -> String {
             put(&mut h, &s7.address_base.to_be_bytes());
             put(&mut h, &s7.association_base.to_be_bytes());
             put(&mut h, &s7.own_ia.to_be_bytes());
-            put(&mut h, &s7.group_object_base.to_be_bytes());
+            match s7.group_object_base {
+                Some(base) => put(&mut h, &base.to_be_bytes()),
+                None => put(&mut h, b"no-object-table"),
+            }
             put(&mut h, &s7.group_object_image);
         }
         None => put(&mut h, b"system-b"),
@@ -694,6 +724,8 @@ mod tests {
                 security_object: false,
                 full_image: None,
                 interface_properties: Vec::new(),
+                communication_flags: Vec::new(),
+                restart: false,
             },
             backup_dir: "knx/captures/backups/".to_string(),
             notes: Vec::new(),
@@ -715,6 +747,33 @@ mod tests {
             "apply these 3 changes to 1.1.47 through 127.0.0.1:3671?"
         );
         Ok(())
+    }
+
+    /// A System 7 communication-flag change is a write of its own.
+    #[test]
+    fn test_plan_writes_describe_communication_flags() {
+        // A flag-only write (tables already match) is a write, and says so.
+        let mut writes = PlanWrites {
+            communication_flags: vec![32],
+            ..PlanWrites::default()
+        };
+        assert!(!writes.is_empty());
+        assert_eq!(writes.describe(), "communication flag (object 32)");
+        writes.address_table = Some(6);
+        writes.association_table = Some(6);
+        writes.communication_flags = vec![32, 33];
+        assert_eq!(
+            writes.describe(),
+            "address table (6 entries), association table (6 entries), \
+             communication flags (objects 32, 33)"
+        );
+        // A System 7 table write ends with a restart, and says so.
+        writes.restart = true;
+        assert_eq!(
+            writes.describe(),
+            "address table (6 entries), association table (6 entries), \
+             communication flags (objects 32, 33), then a restart"
+        );
     }
 
     /// Issue #326: a full download with parameter changes and unchanged

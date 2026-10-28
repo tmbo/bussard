@@ -1460,6 +1460,19 @@ pub struct Sys7TableBases {
     /// ([`sys7_task_identity`]); `None` without product data, or when the
     /// product lacks part of it.
     pub task_identity: Option<bussard_mgmt::Sys7TaskIdentity>,
+    /// The size of the LSM 1 segment the procedure allocates: the most octets
+    /// the address table may take. The Ekinex EK-E72 (`M-00B6_A-4537-03`)
+    /// allocates 237 octets at `0x4000` and puts its association table at
+    /// `0x40ED`, right behind.
+    pub address_size: Option<u16>,
+    /// The size of the LSM 2 segment the procedure allocates: the most octets
+    /// the association table may take (the EK-E72: 235 at `0x40ED`).
+    pub association_size: Option<u16>,
+    /// The absolute address of the group-object table the program declares
+    /// (`<ComObjectTable CodeSegment Offset>` in an absolute segment). A System 7
+    /// program keeps it in its own application segment, never behind the
+    /// address table: the EK-E72 at `0x41D8`, the Jung `A-2088` at `0x43FF`.
+    pub object_table: Option<u16>,
 }
 
 /// The first `LdCtrlAbsSegment` (address, size) `app`'s procedure allocates on
@@ -1482,6 +1495,14 @@ fn table_allocations(app: &ApplicationProgram) -> [Option<(u32, u32)>; 2] {
         })
     };
     [alloc(1), alloc(2)]
+}
+
+/// A table segment's size as a bound: unknown when the procedure gives none
+/// (a missing `Size` reads as 0) or one past 16 bits.
+fn segment_size(alloc: Option<(u32, u32)>) -> Option<u16> {
+    alloc
+        .and_then(|(_, size)| u16::try_from(size).ok())
+        .filter(|size| *size > 0)
 }
 
 /// Whether ETS packs `app`'s tables (see [`Sys7TableBases::packed_end`]): the
@@ -1520,7 +1541,22 @@ pub fn sys7_table_bases(app: &ApplicationProgram) -> Sys7TableBases {
         association: base(1),
         packed_end,
         task_identity: sys7_task_identity(app).ok(),
+        address_size: segment_size(allocs[0]),
+        association_size: segment_size(allocs[1]),
+        object_table: declared_object_table(app),
     }
+}
+
+/// The absolute address of the group-object table `app` declares, when its
+/// `<ComObjectTable>` names an absolute segment.
+fn declared_object_table(app: &ApplicationProgram) -> Option<u16> {
+    let table = app.com_object_table.as_ref()?;
+    let segment = app.code_segments.get(&table.code_segment)?;
+    if segment.kind != SegmentKind::Absolute {
+        return None;
+    }
+    let at = segment.address_or_offset?.checked_add(table.offset)?;
+    u16::try_from(at).ok()
 }
 
 /// The two table segments ETS allocates for a System 7 product with
@@ -2724,6 +2760,72 @@ mod tests {
                     application_number: 0x7066,
                     application_version: 0x11,
                 }),
+                address_size: Some(511),
+                association_size: Some(255),
+                object_table: None,
+            }
+        );
+        Ok(())
+    }
+
+    /// The Ekinex EK-E72-TP (`M-00B6_A-4537-03`) shape: a 237-octet address
+    /// segment, the association table right behind it at `0x40ED`, and the
+    /// group-object table declared in its own segment at `0x41D8`.
+    #[test]
+    fn test_segment_size_treats_a_missing_size_as_unknown() {
+        assert_eq!(segment_size(Some((0x4000, 0))), None);
+        assert_eq!(segment_size(Some((0x4000, 0x1_0000))), None);
+        assert_eq!(segment_size(Some((0x4000, 237))), Some(237));
+        assert_eq!(segment_size(None), None);
+    }
+
+    #[test]
+    fn test_sys7_table_bases_reads_the_declared_object_table()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-00B6_A-4537-03-9C38" PeiType="1" ApplicationNumber="17719"
+            ApplicationVersion="3" MaskVersion="MV-0705" Name="EK-E72"
+            LoadProcedureStyle="ProductProcedure">
+          <Static>
+           <Code>
+            <AbsoluteSegment Id="M-00B6_A-4537-03-9C38_AS-4000" Address="16384" Size="237" />
+            <AbsoluteSegment Id="M-00B6_A-4537-03-9C38_AS-40ED" Address="16621" Size="235" />
+            <AbsoluteSegment Id="M-00B6_A-4537-03-9C38_AS-41D8" Address="16856" Size="472" />
+           </Code>
+           <AddressTable CodeSegment="M-00B6_A-4537-03-9C38_AS-4000" Offset="0" MaxEntries="114" />
+           <AssociationTable CodeSegment="M-00B6_A-4537-03-9C38_AS-40ED" Offset="0" MaxEntries="114" />
+           <ComObjectTable CodeSegment="M-00B6_A-4537-03-9C38_AS-41D8" Offset="0" />
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlLoad LsmIdx="1" />
+             <LdCtrlAbsSegment LsmIdx="1" SegType="0" Address="16384" Size="237" />
+             <LdCtrlLoadCompleted LsmIdx="1" />
+             <LdCtrlLoad LsmIdx="2" />
+             <LdCtrlAbsSegment LsmIdx="2" SegType="0" Address="16621" Size="235" />
+             <LdCtrlLoadCompleted LsmIdx="2" />
+             <LdCtrlLoad LsmIdx="3" />
+             <LdCtrlAbsSegment LsmIdx="3" SegType="0" Address="16856" Size="472" />
+             <LdCtrlLoadCompleted LsmIdx="3" />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-00B6_A-4537-03-9C38", xml.as_bytes())?;
+        assert_eq!(
+            sys7_table_bases(&app),
+            Sys7TableBases {
+                address: Some(0x4000),
+                association: Some(0x40ED),
+                packed_end: None,
+                address_size: Some(237),
+                association_size: Some(235),
+                object_table: Some(0x41D8),
+                task_identity: Some(bussard_mgmt::Sys7TaskIdentity {
+                    pei_type: 1,
+                    manufacturer: 0x00B6,
+                    application_number: 0x4537,
+                    application_version: 3,
+                }),
             }
         );
         Ok(())
@@ -2866,6 +2968,9 @@ mod tests {
                     application_number: 14,
                     application_version: 35,
                 }),
+                address_size: Some(511),
+                association_size: Some(511),
+                object_table: None,
             }
         );
         Ok(())

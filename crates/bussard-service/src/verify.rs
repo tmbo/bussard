@@ -266,6 +266,8 @@ pub enum LeftoverKind {
     AssociationTable,
     /// The group-object table's element count.
     GroupObjects,
+    /// A System 7 group object's communication flag (C, in its CONFIG octet).
+    CommunicationFlag,
     /// A parameter value.
     Parameter,
     /// The group key table's (PID 53) element count.
@@ -468,7 +470,12 @@ pub async fn read_back<Ch: L4Channel>(
     let mut out = WriteReadback::default();
     if expected.tables.is_some() || expected.group_objects.is_some() {
         match bussard_download::read_live_tables_at(l4, expected.table_bases).await {
-            Ok(LiveRead::Tables(live)) => compare_tables(&mut out, live.tables(), expected),
+            Ok(LiveRead::Tables(live)) => {
+                compare_tables(&mut out, live.tables(), expected);
+                if let (Some(s7), Some(desired)) = (live.sys7(), &expected.tables) {
+                    compare_sys7_flags(&mut out, s7, desired);
+                }
+            }
             Ok(LiveRead::UnsupportedMask { mask, .. }) => out.notes.push(format!(
                 "tables not compared: mask {mask:04X} has no table reader"
             )),
@@ -627,6 +634,37 @@ fn compare_tables(out: &mut WriteReadback, live: &DeviceTables, expected: &Expec
     }
 }
 
+/// The System 7 communication flags against the model's links: C on for
+/// every linked object, off for every object `s7` shows linked before but the
+/// model does not (see [`bussard_download::sys7_flag_writes`]). A device whose
+/// group-object table did not read gets a note, never a silent pass.
+fn compare_sys7_flags(
+    out: &mut WriteReadback,
+    s7: &bussard_download::Sys7LiveTables,
+    desired: &DesiredTables,
+) {
+    let linked: BTreeSet<u16> = desired.associations.iter().map(|&(_, a)| a).collect();
+    let (writes, unchecked) = bussard_download::sys7_flag_writes(s7, &linked);
+    for flag in &writes {
+        out.push(
+            LeftoverKind::CommunicationFlag,
+            format!("object {} communication flag", flag.object),
+            format!("CONFIG {:02X}", flag.from),
+            format!("CONFIG {:02X}", flag.to),
+        );
+    }
+    if s7.group_object_base.is_none() && !linked.is_empty() {
+        out.notes.push(
+            "communication flags not compared: the group-object table was not read".to_string(),
+        );
+    } else if !unchecked.is_empty() {
+        out.notes.push(format!(
+            "communication flags not compared for objects the group-object table does not \
+             describe: {unchecked:?}"
+        ));
+    }
+}
+
 /// The parameter comparison as leftovers.
 fn compare_parameters(out: &mut WriteReadback, flashed: &FlashedParameters) {
     if let Some(note) = &flashed.note {
@@ -729,6 +767,81 @@ async fn compare_security<Ch: L4Channel>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A System 7 device linking object 1 (TSAP 1) whose group-object table at
+    /// `base` holds objects 0..=2 with the given CONFIG octets.
+    fn sys7_live(
+        base: Option<u16>,
+        configs: [u8; 3],
+    ) -> TestResult<bussard_download::Sys7LiveTables> {
+        Ok(bussard_download::Sys7LiveTables {
+            tables: tables(&["1/0/1"], &[(1, 1)])?,
+            address_base: 0x4000,
+            association_base: 0x40ED,
+            packed_end: None,
+            own_ia: 0x1163,
+            address_capacity: 237,
+            association_capacity: 235,
+            group_object_base: base,
+            group_object_image: Vec::new(),
+            group_objects: if base.is_some() {
+                configs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &config)| bussard_download::Sys7GroupObject {
+                        asap: i as u16,
+                        data_ptr: 0,
+                        config,
+                        type_code: 0,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            task_identity: None,
+        })
+    }
+
+    #[test]
+    fn test_compare_sys7_flags_reports_a_flag_left_off() -> TestResult<()> {
+        let desired = DesiredTables {
+            addresses: vec!["1/0/1".parse()?],
+            associations: vec![(1, 1)],
+        };
+        let mut out = WriteReadback::default();
+        compare_sys7_flags(
+            &mut out,
+            &sys7_live(Some(0x41D8), [0xDB, 0xDB, 0xDB])?,
+            &desired,
+        );
+        assert_eq!(out.leftovers.len(), 1, "{:?}", out.leftovers);
+        assert_eq!(out.leftovers[0].kind, LeftoverKind::CommunicationFlag);
+        let mut ok = WriteReadback::default();
+        compare_sys7_flags(
+            &mut ok,
+            &sys7_live(Some(0x41D8), [0xDB, 0xDF, 0xDB])?,
+            &desired,
+        );
+        assert!(
+            ok.leftovers.is_empty() && ok.notes.is_empty(),
+            "{:?}",
+            ok.notes
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_compare_sys7_flags_notes_an_unread_table() -> TestResult<()> {
+        let desired = DesiredTables {
+            addresses: vec!["1/0/1".parse()?],
+            associations: vec![(1, 1)],
+        };
+        let mut out = WriteReadback::default();
+        compare_sys7_flags(&mut out, &sys7_live(None, [0; 3])?, &desired);
+        assert!(out.leftovers.is_empty());
+        assert_eq!(out.notes.len(), 1, "{:?}", out.notes);
+        Ok(())
+    }
 
     fn tables(addresses: &[&str], links: &[(u16, u16)]) -> TestResult<DeviceTables> {
         let addresses: Vec<GroupAddress> = addresses

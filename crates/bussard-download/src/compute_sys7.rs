@@ -279,8 +279,8 @@ pub fn decode_sys7_association_table(
 /// the per-object descriptors — the exact inverse of [`sys7_group_object_table`]
 /// (`[system7-spec §7.3]`).
 ///
-/// Descriptors are returned 1-based by ASAP exactly as
-/// [`sys7_group_object_table`] packs them (descriptor `k` is ASAP `k + 1`);
+/// Descriptors are returned by ASAP exactly as [`sys7_group_object_table`]
+/// packs them (descriptor `k` is ASAP `k`);
 /// all-zero gap descriptors are preserved so a re-encode is byte-identical.
 pub fn decode_sys7_group_object_table(
     image: &[u8],
@@ -302,7 +302,7 @@ pub fn decode_sys7_group_object_table(
         .iter()
         .enumerate()
         .map(|(i, d)| Sys7GroupObject {
-            asap: (i + 1) as u16,
+            asap: i as u16,
             data_ptr: u16::from_be_bytes([d[0], d[1]]),
             config: d[2],
             type_code: d[3],
@@ -427,11 +427,11 @@ pub fn sys7_config_byte(flags: bussard_model::Flags, priority: Priority) -> u8 {
 }
 
 /// One System 7 group-object entry as it will be packed: the 4-byte descriptor
-/// `[data-ptr:2 BE][CONFIG:1][TYPE:1]` plus the descriptor's ASAP (1-based object
-/// number) so [`sys7_group_object_table`] can place it.
+/// `[data-ptr:2 BE][CONFIG:1][TYPE:1]` plus the descriptor's ASAP (the com-object
+/// number, from 0) so [`sys7_group_object_table`] can place it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Sys7GroupObject {
-    /// The com-object number (ASAP), 1-based; word `asap` in the table.
+    /// The com-object number (ASAP), from 0; descriptor `asap` in the table.
     pub asap: u16,
     /// The live-value RAM pointer (`data-ptr`), big-endian in the descriptor.
     pub data_ptr: u16,
@@ -450,8 +450,12 @@ pub struct Sys7GroupObject {
 /// [data-ptr:2 BE][CONFIG:1][TYPE:1]
 /// ```
 ///
-/// `CNT` is the descriptor count (the maximum ASAP); descriptors are placed 1-based
-/// by ASAP, with zero-filled gaps for unused ASAPs. `ram_flags_ptr` is the base of
+/// `CNT` is the descriptor count (the highest ASAP plus one); descriptor `k`
+/// describes com-object `k`, from 0, with zero-filled gaps for unused ASAPs. The
+/// live EK-E72 (`M-00B6_A-4537-03`) confirms it: descriptor 1 points at `0x0776`,
+/// the RAM of object 1 (temperature value), and setting the communication flag
+/// of descriptor 32 enabled object 32. The flash post-pass
+/// ([`crate::flash`]) indexes the vendor templates the same way. `ram_flags_ptr` is the base of
 /// the per-object RAM-flags table (default `0x0700`, the low-RAM working region).
 /// Returns `None` when there are no descriptors (nothing to program).
 ///
@@ -459,15 +463,12 @@ pub struct Sys7GroupObject {
 /// rule against a live 0705 group-object segment.`
 pub fn sys7_group_object_table(ram_flags_ptr: u16, objects: &[Sys7GroupObject]) -> Option<Vec<u8>> {
     let max_asap = objects.iter().map(|o| o.asap).max()?;
-    let count = usize::from(max_asap);
-    // 1-based descriptor array: descriptor `asap` sits at index `asap - 1`.
+    let count = usize::from(max_asap) + 1;
+    // Descriptor `asap` sits at index `asap`.
     let mut descriptors: Vec<[u8; 4]> = vec![[0u8; 4]; count];
     for o in objects {
-        if o.asap == 0 {
-            continue;
-        }
         let ptr = o.data_ptr.to_be_bytes();
-        descriptors[usize::from(o.asap) - 1] = [ptr[0], ptr[1], o.config, o.type_code];
+        descriptors[usize::from(o.asap)] = [ptr[0], ptr[1], o.config, o.type_code];
     }
     let mut out = Vec::with_capacity(1 + 2 + count * 4);
     out.push(count.min(usize::from(u8::MAX)) as u8);
@@ -483,7 +484,7 @@ pub fn sys7_group_object_table(ram_flags_ptr: u16, objects: &[Sys7GroupObject]) 
 /// [`crate::compute::descriptors_for_linked_objects`]) plus a per-object data
 /// pointer.
 ///
-/// `data_ptr_for` maps a 1-based ASAP to its live-value RAM pointer; on real 0705
+/// `data_ptr_for` maps an ASAP to its live-value RAM pointer; on real 0705
 /// devices these come from the product data / `HawkConfigurationData`. When the
 /// caller has no per-object pointer it may return a constant placeholder — the
 /// pointer only affects the runtime value location, not the table's structure.
@@ -595,13 +596,13 @@ mod tests {
         // CONFIG 0x87, TYPE 0x00 (1 bit).
         let objects = vec![
             Sys7GroupObject {
-                asap: 1,
+                asap: 0,
                 data_ptr: 0x075C,
                 config: 0xDF,
                 type_code: 0x03,
             },
             Sys7GroupObject {
-                asap: 2,
+                asap: 1,
                 data_ptr: 0x0760,
                 config: 0x87,
                 type_code: 0x00,
@@ -613,17 +614,17 @@ mod tests {
             vec![
                 0x02, // CNT = 2 objects
                 0x07, 0x00, // RAM-flags ptr 0x0700
-                0x07, 0x5C, 0xDF, 0x03, // obj1 descriptor
-                0x07, 0x60, 0x87, 0x00, // obj2 descriptor
+                0x07, 0x5C, 0xDF, 0x03, // obj0 descriptor
+                0x07, 0x60, 0x87, 0x00, // obj1 descriptor
             ]
         );
     }
 
     #[test]
     fn test_sys7_group_object_table_zero_fills_gaps() {
-        // Only ASAP 3 present → CNT 3, descriptors 1 and 2 zero-filled.
+        // Only ASAP 2 present → CNT 3, descriptors 0 and 1 zero-filled.
         let objects = vec![Sys7GroupObject {
-            asap: 3,
+            asap: 2,
             data_ptr: 0x0710,
             config: 0x84,
             type_code: 0x07,
@@ -632,11 +633,11 @@ mod tests {
         assert_eq!(
             img,
             vec![
-                0x03, // CNT = 3 (max ASAP)
+                0x03, // CNT = 3 (max ASAP + 1)
                 0x07, 0x00, // RAM-flags ptr
+                0x00, 0x00, 0x00, 0x00, // gap ASAP 0
                 0x00, 0x00, 0x00, 0x00, // gap ASAP 1
-                0x00, 0x00, 0x00, 0x00, // gap ASAP 2
-                0x07, 0x10, 0x84, 0x07, // ASAP 3 descriptor
+                0x07, 0x10, 0x84, 0x07, // ASAP 2 descriptor
             ]
         );
     }
@@ -705,16 +706,16 @@ mod tests {
 
     #[test]
     fn test_decode_sys7_group_object_table_round_trips() -> Result<(), Sys7DecodeError> {
-        // Gaps included: only ASAP 1 and 3 are real, ASAP 2 is a zero descriptor.
+        // Gaps included: only ASAP 0 and 2 are real, ASAP 1 is a zero descriptor.
         let objects = vec![
             Sys7GroupObject {
-                asap: 1,
+                asap: 0,
                 data_ptr: 0x075C,
                 config: 0xDF,
                 type_code: 0x03,
             },
             Sys7GroupObject {
-                asap: 3,
+                asap: 2,
                 data_ptr: 0x0760,
                 config: 0x87,
                 type_code: 0x00,
@@ -723,7 +724,7 @@ mod tests {
         let img = sys7_group_object_table(0x0700, &objects).expect("a table");
         let (ram_ptr, decoded) = decode_sys7_group_object_table(&img, SYS7_ADDRESS_REGION_LEN)?;
         assert_eq!(ram_ptr, 0x0700);
-        assert_eq!(decoded.len(), 3, "CNT covers the gap at ASAP 2");
+        assert_eq!(decoded.len(), 3, "CNT covers the gap at ASAP 1");
         assert_eq!(decoded[0], objects[0]);
         assert_eq!(decoded[2], objects[1]);
         // Re-encoding the decoded descriptors reproduces the image byte-for-byte.
@@ -731,6 +732,28 @@ mod tests {
             sys7_group_object_table(ram_ptr, &decoded).expect("a table"),
             img
         );
+        Ok(())
+    }
+
+    /// The head of the EK-E72-TP's (1.1.39) group-object table at `0x41D8`, as
+    /// read live: descriptor `k` is com-object `k`, from 0. Object 1, the
+    /// temperature value, keeps its value at `0x0776`, where the device's RAM
+    /// holds the room temperature.
+    #[test]
+    fn test_decode_sys7_group_object_table_numbers_from_zero() -> Result<(), Sys7DecodeError> {
+        let mut img = vec![0x02, 0x07, 0x00];
+        img.extend_from_slice(&[0x07, 0x75, 0x13, 0x00, 0x07, 0x76, 0x4B, 0x08]);
+        let (_, decoded) = decode_sys7_group_object_table(&img, img.len())?;
+        assert_eq!(
+            decoded[1],
+            Sys7GroupObject {
+                asap: 1,
+                data_ptr: 0x0776,
+                config: 0x4B,
+                type_code: 0x08,
+            }
+        );
+        assert_eq!(decoded[0].asap, 0);
         Ok(())
     }
 

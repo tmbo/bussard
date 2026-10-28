@@ -52,19 +52,53 @@ interface, and ends with a read-back of every property it wrote.
   its tables elsewhere reads back as an empty table set, never as wrong links,
   and must be programmed with `bussard flash`, which takes the addresses from
   the product data.
+- **System 7 `apply` needs product data.** Each table write ends with a
+  record naming the application it belongs to (PEI type, manufacturer,
+  application number and version), taken from the product data. Without it,
+  `apply` refuses before it connects; `plan` still runs.
+- **System 7 communication flags.** A System 7 device ignores every telegram
+  for an object whose communication flag is off, and ETS switches it off on
+  every object without a link. So a new link on such an object only works once
+  its flag is on. With the device's product data, `apply` switches the flag on
+  for each newly linked object and off for an object that loses its last link,
+  and `plan` lists each switch. `apply --line` does the same with each
+  device's pinned product data. Without product data bussard does not know
+  where the group-object table is: `plan` names each newly linked object whose
+  flag it could not check. A device that refuses the read of its group-object
+  table is handled the same way; its tables are still read.
+- **System 7 restart.** Like ETS, `apply` restarts a System 7 device after
+  writing its tables (a basic restart). It waits for the device to answer
+  again, then reads the tables back, so the read-back also shows that the
+  write survived the restart.
 
 ??? note "Details"
     On System B each table lives in a segment the device allocates: `apply`
     opens the table object, requests a segment with `LdCtrlRelSegment`, reads
     the placement from `PID_TABLE_REFERENCE` and writes the image there. It
     never writes the `PID_TABLE` property array, which real devices refuse.
-    On System 7 the tables are the memory regions at `0x4000` (address table
-    and group-object descriptors) and `0x4201` (association table). `apply`
-    rewrites only those two table load-state machines, never the parameters
-    or the application, and does not restart the device. Every System 7 table
-    read is bounded by its region: a count octet claiming more entries than
-    the region holds (virgin EEPROM reads `0xFF`) is refused, and an image
-    that would not fit is refused before anything is written.
+    On System 7 the tables are the memory regions at `0x4000` (address table)
+    and `0x4201` (association table), or wherever the product's load
+    procedure puts them. `apply` follows the order of ETS 6.4.1's table-only
+    downloads: `Unload` on LSM 1 and 2, then each table loaded to completion
+    in turn, then, when a flag changes, the group-object table inside a
+    `StartLoading`/`LoadCompleted` bracket on LSM 3 (no `Unload`), then a
+    basic restart. It never rewrites the parameters or the application. The
+    address table is written alone and may fill its segment and no more: the
+    product's segment size, else up to the association table the device
+    reports or the product places. With none of these known (no product data,
+    and a device that does not answer `PID_TABLE_REFERENCE`), the table may
+    be rewritten at its current length but not grown, and `plan` says so.
+    Every System 7 table read is bounded the same way: a
+    count octet claiming more entries than the region holds (virgin EEPROM
+    reads `0xFF`) is refused, and an image that would not fit is refused
+    before anything is written.
+
+    The group-object table is not behind the address table: the program
+    declares it in a segment of its own (`<ComObjectTable>`), on the Ekinex
+    EK-E72 at `0x41D8`. `apply` reads it there. When a flag changes it
+    rewrites the whole table from the image it read, with only those flag
+    octets changed, as ETS does, and reads the table back. It refuses to do
+    so on a device whose application (LSM 3) is not `Loaded`.
 
 ## Source address check
 
