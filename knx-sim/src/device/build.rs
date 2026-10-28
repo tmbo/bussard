@@ -339,7 +339,7 @@ impl Device {
             prog_mode,
             security_object: secure.as_ref().map(|_| SecurityObject::new_activated()),
             knxnet_by_type: None,
-            typed_objects: BTreeMap::new(),
+            typed_objects: typed_objects_for(product, address, false).1,
             knxnet_slots: 0,
             ip_secure: None,
             secure,
@@ -498,7 +498,7 @@ impl Device {
             prog_mode,
             security_object: secure.as_ref().map(|_| SecurityObject::new_activated()),
             knxnet_by_type: None,
-            typed_objects: BTreeMap::new(),
+            typed_objects: typed_objects_for(product, address, false).1,
             knxnet_slots: 0,
             ip_secure: None,
             secure,
@@ -553,33 +553,7 @@ impl Device {
         );
         objects.insert(1, address_table);
 
-        let mut knxnet = None;
-        let mut typed_objects: BTreeMap<u16, InterfaceObject> = BTreeMap::new();
-        for typed in &product.typed_props {
-            let obj = if typed.object_type == super::knxnet_object::IOT_KNXNET_IP_PARAMETER {
-                knxnet.get_or_insert_with(|| {
-                    super::knxnet_object::KnxnetParameters::dhcp(address.raw(), Vec::new()).object()
-                })
-            } else {
-                typed_objects.entry(typed.object_type).or_insert_with(|| {
-                    let mut io = InterfaceObject::new();
-                    io.set_property(
-                        PID_OBJECT_TYPE,
-                        Property::read_only(typed.object_type.to_be_bytes().to_vec()),
-                    );
-                    io
-                })
-            };
-            if let Some(value) = &typed.compare {
-                obj.set_property(typed.pid, Property::read_only(value.clone()));
-            }
-            if typed.written {
-                match obj.property_mut(typed.pid) {
-                    Some(prop) => prop.read_only = false,
-                    None => obj.set_property(typed.pid, Property::writable(vec![0x00])),
-                }
-            }
-        }
+        let (knxnet, typed_objects) = typed_objects_for(product, address, true);
         Self {
             address,
             profile,
@@ -605,6 +579,51 @@ impl Device {
             events,
         }
     }
+}
+
+/// The objects a product's load procedure reaches by type (`ObjType`), with
+/// the values it compares and the properties it writes (bussard issue #390).
+/// The KNXnet/IP parameter object (type 11) is returned apart, and only when
+/// `with_knxnet`: a System B or System 7 device gets that one from its
+/// `knxnet` option. A vendor object such as the ABB Modbus RTU gateway's type
+/// 65281 (PID 207 compared with 01) is seeded on every device kind; ETS
+/// describes and reads it before the download (2026-10-28).
+fn typed_objects_for(
+    product: &ProductData,
+    address: IndividualAddress,
+    with_knxnet: bool,
+) -> (Option<InterfaceObject>, BTreeMap<u16, InterfaceObject>) {
+    let mut knxnet = None;
+    let mut typed_objects: BTreeMap<u16, InterfaceObject> = BTreeMap::new();
+    for typed in &product.typed_props {
+        let obj = if typed.object_type == super::knxnet_object::IOT_KNXNET_IP_PARAMETER {
+            if !with_knxnet {
+                continue;
+            }
+            knxnet.get_or_insert_with(|| {
+                super::knxnet_object::KnxnetParameters::dhcp(address.raw(), Vec::new()).object()
+            })
+        } else {
+            typed_objects.entry(typed.object_type).or_insert_with(|| {
+                let mut io = InterfaceObject::new();
+                io.set_property(
+                    PID_OBJECT_TYPE,
+                    Property::read_only(typed.object_type.to_be_bytes().to_vec()),
+                );
+                io
+            })
+        };
+        if let Some(value) = &typed.compare {
+            obj.set_property(typed.pid, Property::read_only(value.clone()));
+        }
+        if typed.written {
+            match obj.property_mut(typed.pid) {
+                Some(prop) => prop.read_only = false,
+                None => obj.set_property(typed.pid, Property::writable(vec![0x00])),
+            }
+        }
+    }
+    (knxnet, typed_objects)
 }
 
 #[cfg(test)]

@@ -341,6 +341,34 @@ impl Device {
                 did_master_reset: false,
             });
         }
+        // Any other object reached by type: a vendor object the procedure
+        // compares (typed_objects) or an indexed object by its type.
+        if apdu.apci == Apci::PropertyExtDescriptionRead
+            && let Some(object_type) = object_type
+            && object_type != super::knxnet_object::IOT_KNXNET_IP_PARAMETER
+            && object_type != super::security_object::IOT_SECURITY
+        {
+            let by_index = self
+                .objects
+                .iter()
+                .find(|(idx, o)| {
+                    o.property(super::interface_object::PID_OBJECT_TYPE)
+                        .map(|p| p.value.as_slice() == object_type.to_be_bytes())
+                        .unwrap_or(object_type == 0 && **idx == 0)
+                })
+                .map(|(_, o)| o);
+            let obj = self.typed_objects.get(&object_type).or(by_index);
+            if let Some(data) =
+                obj.and_then(|o| super::knxnet_object::typed_ext_description(o, &apdu.data))
+            {
+                let resp =
+                    self.respond(tool, super::knxnet_object::EXT_DESCRIPTION_RESPONSE, &data);
+                return Ok(DeviceReaction {
+                    responses: vec![resp],
+                    did_master_reset: false,
+                });
+            }
+        }
         let limits = self.security_limits();
         let Some(obj) = self.security_object.as_mut() else {
             return Ok(DeviceReaction::default());
