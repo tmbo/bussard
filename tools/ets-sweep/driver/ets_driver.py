@@ -738,14 +738,7 @@ def flow_catalog_add(req: dict) -> dict:
         want = _canon(term)
         rows: list[dict] = []
         for attempt in range(4):
-            click(sx, sy + dy)
-            time.sleep(0.3)
-            keys("^a")
-            keys("{DEL}")
-            time.sleep(0.5)
-            keys(term)
-            time.sleep(0.4)
-            keys("{DEL}{ENTER}")  # drop ETS's autocompleted suffix (ZPR1612 -> ZPR1612V3)
+            type_search(term, dy)
             time.sleep(3 + 2 * attempt)
             click(1000, 1380 + dy)  # a neutral spot: closes the search-history dropdown
             time.sleep(0.5)
@@ -1245,6 +1238,23 @@ def catalog_import_button() -> dict | None:
     return min(hits, key=lambda l: abs(l["y"] - 1354)) if hits else None
 
 
+def type_search(term: str, dy: int) -> None:
+    """Type `term` into the Katalog search box and run the search. Delete is
+    pressed only once OCR shows the term in the box: a missed click once left
+    the focus on the Topologie tree and Ctrl+A, Delete removed line 1.1 (ETS
+    asks no confirmation; 2026-10-28). Letters typed elsewhere do no harm."""
+    sx, sy = LAYOUT["catalog_search"]
+    click(sx, sy + dy)
+    time.sleep(0.3)
+    keys("^a")
+    keys(term)  # replaces the selected old term
+    time.sleep(0.6)
+    box = " ".join(l["text"] for l in ocr((sx - 260, sy + dy - 30, sx + 420, sy + dy + 30), zoom=2))
+    if _canon(term) not in _canon(box):
+        raise RuntimeError(f"the search box did not take {term!r} (shows {box!r}); no Delete pressed")
+    keys("{DEL}{ENTER}")  # drop ETS's autocompleted suffix (ZPR1612 -> ZPR1612V3)
+
+
 def catalog_dy() -> int:
     """Vertical offset of the Katalog panel from the layout LAYOUT was
     measured in (Import button at y=1354): ETS reopens panels with other
@@ -1435,12 +1445,7 @@ def flow_catalog_search(req: dict) -> dict:
     rows (order number, name, application) read magnified."""
     dy = catalog_dy()
     sx, sy = LAYOUT["catalog_search"]
-    click(sx, sy + dy)
-    time.sleep(0.3)
-    keys("^a")
-    keys(req["term"])
-    time.sleep(0.4)
-    keys("{DEL}{ENTER}")  # drop ETS's autocompleted suffix
+    type_search(req["term"], dy)
     time.sleep(float(req.get("wait", 3)))
     click(1000, 1380 + dy)  # closes the search-history dropdown
     time.sleep(0.5)
@@ -1452,38 +1457,6 @@ def flow_catalog_search(req: dict) -> dict:
     return {"term": req["term"], "rows": rows}
 
 
-@flow("catalog_remove")
-def flow_catalog_remove(req: dict) -> dict:
-    """Delete the imported catalog products a search for `term` lists (not
-    online-catalog entries), one row at a time, until none is left. ETS
-    deletes a catalog product on the Delete key without asking. Keeps the
-    catalog small: the sweep imports a product file, runs it and removes it,
-    since ETS slowed down and broke with the whole corpus in its store."""
-    require_project(req["project"])
-    removed = []
-    rows: list[dict] = []
-    for _ in range(int(req.get("max", 40))):
-        rows = [r for r in catalog_search_rows(req["term"]) if not r.get("online")]
-        if not rows:
-            break
-        row = rows[0]
-        click(1300, row["y"])
-        time.sleep(0.8)
-        keys("{DELETE}")
-        time.sleep(2)
-        # A confirmation, should one appear for some product.
-        text = " ".join(l["text"] for l in ocr((1200, 700, 3000, 1800)))
-        if "Möchten Sie" in text:
-            for label in ("Ja", "OK"):
-                hit = find_text(label, (1800, 1300, 3000, 1800), min_ratio=0.95)
-                if hit:
-                    click(hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2)
-                    break
-        wait_busy()
-        removed.append(f"{row['order']} {row['version']}")
-    return {"removed": removed, "left": rows}
-
-
 def catalog_search_rows(term: str) -> list[dict]:
     """Type `term` into the catalog search and return the rows of that search."""
     dy = catalog_dy()
@@ -1491,14 +1464,7 @@ def catalog_search_rows(term: str) -> list[dict]:
     want = _canon(term)
     rows: list[dict] = []
     for attempt in range(3):
-        click(sx, sy + dy)
-        time.sleep(0.3)
-        keys("^a")
-        keys("{DEL}")
-        time.sleep(0.5)
-        keys(term)
-        time.sleep(0.4)
-        keys("{DEL}{ENTER}")  # drop ETS's autocompleted suffix
+        type_search(term, dy)
         time.sleep(3 + 2 * attempt)
         click(1000, 1380 + dy)
         time.sleep(0.5)
