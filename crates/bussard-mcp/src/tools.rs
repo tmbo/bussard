@@ -690,6 +690,12 @@ pub(crate) fn typed_value_json(v: &TypedValue) -> Value {
         TypedValue::Unsigned { value, unit } => json!({ "unsigned": value, "unit": unit }),
         TypedValue::Signed { value, unit } => json!({ "signed": value, "unit": unit }),
         TypedValue::Float { value, unit } => json!({ "float": value, "unit": unit }),
+        TypedValue::Scaled { count, unit, .. } => json!({
+            "scaled": v.scaled_f64(),
+            "count": count,
+            "unit": unit,
+            "display": v.to_string(),
+        }),
         other => json!({ "display": other.to_string() }),
     }
 }

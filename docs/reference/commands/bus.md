@@ -100,6 +100,10 @@ $ bussard write 3/0/4 on
 The value is human-typed: `on`/`off`, `up`/`down`, a number, or a percentage like `75%`.
 A scene number is the raw field, 0 to 63. ETS and Home Assistant show scenes counted from
 1 (KNX 03_07_02 Datapoint Types §3.19 NOTE 9), so ETS scene 4 is `scene 3` here (#495).
+A scaled sub-type takes the scaled value, never the raw count: `50 %` on an `8.010` address
+sends `13 88`, `1.5 s` (or `1500 ms`) on `7.004` sends `00 0F`, `1.5 m3/h` on `13.002` sends
+`00 00 3A 98` (KNX 03_07_02 §3.8.2, §3.9.1, §3.9.2, §3.14.1). A value outside the range or finer
+than the resolution is refused; `read` and `monitor` show these values with their unit.
 
 | Flag / arg | Default | Meaning |
 |---|---|---|

@@ -164,7 +164,8 @@ pub struct WriteArgs {
     pub ga: String,
     /// The value to write, in human form: `on`/`off`, `up`/`down`, a number, a
     /// percentage like `75%`, a temperature like `21.5`, an HVAC mode name, etc.
-    /// Interpreted according to the resolved DPT.
+    /// Interpreted according to the resolved DPT; a scaled sub-type takes the
+    /// scaled value (8.010 `50 %`, 7.004 `1.5 s`), never the raw count.
     pub value: String,
     /// Override the DPT to encode as (e.g. `"1.001"`). Defaults to the GA's DPT
     /// from `groups.toml`.
@@ -921,7 +922,8 @@ impl BussardMcp {
         This has real-world effects: lights toggle, blinds and actuators MOVE, setpoints change. \
         Only available when the server was started with --allow-writes. The value is human-typed \
         (e.g. on/off, up/down, 75%, 21.5, a scene number, or an HVAC mode name) and is interpreted \
-        against the group address's DPT (override with `dpt`). Rate-limited (minimum 250ms between \
+        against the group address's DPT (override with `dpt`). Scaled sub-types take the scaled \
+        value, never the raw count: 8.010 `50 %`, 7.003/7.004/8.003/8.004 `1.5 s`, 13.002 `1.5 m3/h`. Rate-limited (minimum 250ms between \
         bus operations). Protected group addresses (safety-critical objects such as a wind alarm or \
         central functions) are REFUSED outright — there is no override via MCP. When you are \
         uncertain whether a write is safe or intended, ASK THE HUMAN before calling this tool. \

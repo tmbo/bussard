@@ -251,6 +251,28 @@ fn test_sensor_type_for_two_byte_power_and_temperature_difference()
 }
 
 #[test]
+fn test_sensor_type_for_scaled_subtypes() -> Result<(), Box<dyn std::error::Error>> {
+    // 7.003 / 7.004 count 10 ms / 100 ms and 13.002 counts 0.0001 m³/h (KNX
+    // 03_07_02 §3.8.2, §3.14.1): a raw-count type would show 10 for 1.0 s.
+    let model = ModelBuilder::new("1.1.205", "Lueftung", None)
+        .group("4/5/0", "Nachlaufzeit", "7.004")
+        .group("4/5/1", "Verzoegerung", "7.003")
+        .group("4/5/2", "Volumenstrom", "13.002")
+        .object(0, "7.004", "CRT", None, Some("4/5/0"), &[])
+        .object(1, "7.003", "CRT", None, Some("4/5/1"), &[])
+        .object(2, "13.002", "CRT", None, Some("4/5/2"), &[])
+        .build();
+
+    let yaml = generate(&model, &Overrides::default())?;
+    assert!(yaml.contains("type: time_period_100msec"), "{yaml}");
+    assert!(yaml.contains("type: time_period_10msec"), "{yaml}");
+    assert!(yaml.contains("type: flow_rate_m3h"), "{yaml}");
+    assert!(!yaml.contains("type: pulse_2byte"), "{yaml}");
+    assert!(!yaml.contains("type: 4byte_signed"), "{yaml}");
+    Ok(())
+}
+
+#[test]
 fn test_try_sensor_skips_write_only_command_objects() -> Result<(), Box<dyn std::error::Error>> {
     // A write-only input (CW) receives a setpoint; it never publishes one. A
     // `sensor` on it would sit permanently unknown in Home Assistant.

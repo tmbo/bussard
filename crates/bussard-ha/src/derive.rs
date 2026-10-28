@@ -904,10 +904,15 @@ fn sensor_type_for(dpt: Dpt) -> Option<String> {
         (9, _) => "2byte_float",
         (5, Some(1)) => "percent",
         (5, Some(4)) => "percentU8",
+        // Scaled sub-types (KNX 03_07_02 §3.8.2, §3.14.1): a raw-count type
+        // would show 10 for 1.0 s. Per-sub types for the rest are #505.
+        (7, Some(3)) => "time_period_10msec",
+        (7, Some(4)) => "time_period_100msec",
         (7, Some(_)) | (7, None) => "pulse_2byte",
         (12, _) => "pulse_4byte",
         (13, Some(10)) => "active_energy",
         (13, Some(13)) => "active_energy_kwh",
+        (13, Some(2)) => "flow_rate_m3h",
         (13, _) => "4byte_signed",
         (14, _) => "4byte_float",
         _ => return None,

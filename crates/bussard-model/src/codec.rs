@@ -100,6 +100,21 @@ pub enum TypedValue {
         /// Unit label, if any (e.g. `"°C"`).
         unit: Option<&'static str>,
     },
+    /// An exact fixed-point value: `count` steps of `10^-decimals` in `unit`.
+    ///
+    /// Used for the 7.x, 8.x and 13.x sub-types whose resolution is not 1
+    /// (8.010 percent in 0.01 %, 7.003/7.004 and 8.003/8.004 time periods in
+    /// 10 ms / 100 ms, 13.002 flow rate in 0.0001 m³/h). The wire carries the
+    /// integer `count`; keeping it integral avoids float rounding on the
+    /// 32-bit 13.002 range.
+    Scaled {
+        /// The raw count as it travels on the bus.
+        count: i64,
+        /// Number of decimal places one count represents (`2` = 0.01).
+        decimals: u8,
+        /// Unit label of the scaled value (e.g. `"%"`, `"s"`).
+        unit: &'static str,
+    },
     /// A control-dimming or control-blinds step (DPT 3.007 / 3.008).
     Step {
         /// Direction bit label (e.g. `"Increase"`/`"Decrease"`, `"Up"`/`"Down"`).
@@ -342,6 +357,11 @@ impl fmt::Display for TypedValue {
                 Some(u) => write!(f, "{value} {u}"),
                 None => write!(f, "{value}"),
             },
+            TypedValue::Scaled {
+                count,
+                decimals,
+                unit,
+            } => write!(f, "{} {unit}", format_fixed(*count, *decimals)),
             TypedValue::Step { direction, step } => {
                 if *step == 0 {
                     write!(f, "{direction} break")
@@ -390,6 +410,156 @@ impl fmt::Display for TypedValue {
             }
         }
     }
+}
+
+impl TypedValue {
+    /// The scaled value of a [`TypedValue::Scaled`] as a float, `None` for
+    /// every other variant.
+    pub fn scaled_f64(&self) -> Option<f64> {
+        match self {
+            TypedValue::Scaled {
+                count, decimals, ..
+            } => Some(*count as f64 / 10f64.powi(i32::from(*decimals))),
+            _ => None,
+        }
+    }
+}
+
+/// Renders `count * 10^-decimals` exactly, e.g. `(5000, 2)` as `50.00`.
+fn format_fixed(count: i64, decimals: u8) -> String {
+    let sign = if count < 0 { "-" } else { "" };
+    let abs = count.unsigned_abs();
+    if decimals == 0 {
+        return format!("{sign}{abs}");
+    }
+    let div = 10u64.pow(u32::from(decimals));
+    let width = usize::from(decimals);
+    format!("{sign}{}.{:0width$}", abs / div, abs % div)
+}
+
+/// Fixed-point scaling of a 7.x, 8.x or 13.x sub-type whose resolution is not
+/// one count.
+#[derive(Debug, Clone, Copy)]
+struct Scaling {
+    /// Decimal places one count represents.
+    decimals: u8,
+    /// Unit of the scaled value.
+    unit: &'static str,
+    /// A raw count the standard reserves for "invalid data".
+    invalid: Option<i64>,
+}
+
+/// The scaling of `dpt`, if its resolution is not one count.
+///
+/// KNX 03_07_02 Datapoint Types v02.02.01: §3.8.2 (7.003 counts 10 ms, 7.004
+/// counts 100 ms), §3.9.1 (8.010 `DPT_Percent_V16` counts 0.01 % and reserves
+/// 7FFFh for invalid data), §3.9.2 (8.003 / 8.004 count 10 ms / 100 ms),
+/// §3.14.1 (13.002 `DPT_FlowRate_m3/h` counts 0.0001 m³/h). Every other
+/// sub-type in §3.8, §3.9, §3.13 and §3.14 has a resolution of one unit.
+/// Time periods are shown in seconds, the spec's "Range" column unit.
+fn scaling(dpt: &Dpt) -> Option<Scaling> {
+    let (decimals, unit, invalid) = match (dpt.main, dpt.sub?) {
+        (7, 3) | (8, 3) => (2, "s", None),
+        (7, 4) | (8, 4) => (1, "s", None),
+        (8, 10) => (2, "%", Some(0x7FFF)),
+        (13, 2) => (4, "m³/h", None),
+        _ => return None,
+    };
+    Some(Scaling {
+        decimals,
+        unit,
+        invalid,
+    })
+}
+
+/// The raw count range of the integer families that carry a [`Scaling`].
+fn count_range(main: u16) -> Option<(i64, i64)> {
+    match main {
+        7 => Some((0, i64::from(u16::MAX))),
+        8 => Some((i64::from(i16::MIN), i64::from(i16::MAX))),
+        13 => Some((i64::from(i32::MIN), i64::from(i32::MAX))),
+        _ => None,
+    }
+}
+
+/// The writable count range of a scaled DPT: the family's range minus the
+/// invalid marker when it sits on an end of the range.
+fn writable_range(main: u16, sc: Scaling) -> Option<(i64, i64)> {
+    let (lo, mut hi) = count_range(main)?;
+    if sc.invalid == Some(hi) {
+        hi -= 1;
+    }
+    Some((lo, hi))
+}
+
+/// Why [`parse_fixed`] refused its input.
+#[derive(Debug, PartialEq, Eq)]
+enum FixedError {
+    /// Not a decimal number.
+    Syntax,
+    /// More significant decimal places than the resolution.
+    Precision,
+    /// Does not fit an `i64` count.
+    Overflow,
+}
+
+/// Parses an exact decimal (`-1.25`, `50`, `+0.5`) into a count of
+/// `10^-decimals` steps, refusing digits finer than one step rather than
+/// rounding them away.
+fn parse_fixed(input: &str, decimals: u8) -> Result<i64, FixedError> {
+    let s = input.trim();
+    let (neg, digits) = match s.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, s.strip_prefix('+').unwrap_or(s)),
+    };
+    let (int, frac) = digits.split_once('.').unwrap_or((digits, ""));
+    let all_digits = |t: &str| t.bytes().all(|b| b.is_ascii_digit());
+    if (int.is_empty() && frac.is_empty()) || !all_digits(int) || !all_digits(frac) {
+        return Err(FixedError::Syntax);
+    }
+    let d = usize::from(decimals);
+    let (kept, dropped) = frac.split_at(frac.len().min(d));
+    if dropped.bytes().any(|b| b != b'0') {
+        return Err(FixedError::Precision);
+    }
+    let padding = std::iter::repeat_n(b'0', d - kept.len());
+    let mut count: i64 = 0;
+    for b in int.bytes().chain(kept.bytes()).chain(padding) {
+        count = count
+            .checked_mul(10)
+            .and_then(|c| c.checked_add(i64::from(b - b'0')))
+            .ok_or(FixedError::Overflow)?;
+    }
+    Ok(if neg { -count } else { count })
+}
+
+/// Parses human input for a scaled DPT into its raw count.
+///
+/// Accepts the scaled value with or without its unit (`50`, `50 %`, `1.5 s`,
+/// `1.5s`); time periods also take milliseconds (`1500 ms`). A bare number is
+/// in the scaled unit, never a raw count.
+fn parse_scaled(input: &str, sc: Scaling) -> Result<i64, FixedError> {
+    let s = input.trim();
+    if sc.unit == "s"
+        && let Some(ms) = strip_suffix_ci(s, "ms")
+    {
+        // One count is 10 ms (2 decimals) or 100 ms (1 decimal) here.
+        let ms = parse_fixed(ms, 0)?;
+        let per_count = 10i64.pow(3 - u32::from(sc.decimals));
+        if ms % per_count != 0 {
+            return Err(FixedError::Precision);
+        }
+        return Ok(ms / per_count);
+    }
+    let units: &[&str] = match sc.unit {
+        "m³/h" => &["m³/h", "m3/h"],
+        other => &[other],
+    };
+    let bare = units
+        .iter()
+        .find_map(|u| strip_suffix_ci(s, u))
+        .unwrap_or(s);
+    parse_fixed(bare, sc.decimals)
 }
 
 /// Returns the `(false_label, true_label)` for a DPT 1.x subtype.
@@ -589,6 +759,13 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
         }
         7 => {
             let v = u16::from_be_bytes([*payload.first()?, *payload.get(1)?]);
+            if let Some(sc) = scaling(dpt) {
+                return Some(TypedValue::Scaled {
+                    count: i64::from(v),
+                    decimals: sc.decimals,
+                    unit: sc.unit,
+                });
+            }
             Some(TypedValue::Unsigned {
                 value: v as u32,
                 unit: None,
@@ -596,6 +773,18 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
         }
         8 => {
             let v = i16::from_be_bytes([*payload.first()?, *payload.get(1)?]);
+            if let Some(sc) = scaling(dpt) {
+                // 8.010 reserves 7FFFh for invalid data (03_07_02 §3.9.1):
+                // fall back to `Raw` like the DPT 9 sentinel.
+                if sc.invalid == Some(i64::from(v)) {
+                    return None;
+                }
+                return Some(TypedValue::Scaled {
+                    count: i64::from(v),
+                    decimals: sc.decimals,
+                    unit: sc.unit,
+                });
+            }
             Some(TypedValue::Signed {
                 value: v as i64,
                 unit: None,
@@ -657,6 +846,13 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
                 *payload.get(2)?,
                 *payload.get(3)?,
             ]);
+            if let Some(sc) = scaling(dpt) {
+                return Some(TypedValue::Scaled {
+                    count: i64::from(v),
+                    decimals: sc.decimals,
+                    unit: sc.unit,
+                });
+            }
             let unit = match dpt.sub {
                 Some(10) => Some("Wh"),
                 Some(13) => Some("kWh"),
@@ -810,6 +1006,11 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
 /// - **6.x** — a signed integer `-128`–`127`.
 /// - **7.x** — an unsigned integer `0`–`65535`.
 /// - **8.x** — a signed integer `-32768`–`32767`.
+/// - **7.003 / 7.004 / 8.003 / 8.004** — a time period in seconds
+///   (`1.5`, `1.5 s`) or milliseconds (`1500 ms`), a multiple of the 10 ms or
+///   100 ms resolution.
+/// - **8.010** — a percentage `-327.68`–`327.66` in steps of 0.01 (`50 %`).
+/// - **13.002** — a flow rate in m³/h in steps of 0.0001 (`1.5 m³/h`).
 /// - **9.x** — a decimal, optionally with the subtype's unit suffix
 ///   (`21.5`, `21.5°C`).
 /// - **12.x** — an unsigned integer `0`–`4294967295`.
@@ -834,6 +1035,38 @@ pub fn parse_value(dpt: &Dpt, input: &str) -> Result<TypedValue, ParseValueError
         input: raw.to_string(),
         range: range.to_string(),
     };
+
+    if let Some(sc) = scaling(dpt)
+        && let Some((lo, hi)) = writable_range(dpt.main, sc)
+    {
+        let step = format_fixed(1, sc.decimals);
+        let accepted = format!(
+            "a number in {} with at most {} decimals",
+            sc.unit, sc.decimals
+        );
+        let range = format!(
+            "{}..{} {} in steps of {step}",
+            format_fixed(lo, sc.decimals),
+            format_fixed(hi, sc.decimals),
+            sc.unit
+        );
+        let count = match parse_scaled(raw, sc) {
+            Ok(c) => c,
+            Err(FixedError::Syntax) => return Err(invalid(&accepted)),
+            Err(FixedError::Precision) => {
+                return Err(invalid(&format!("{accepted}, a multiple of {step}")));
+            }
+            Err(FixedError::Overflow) => return Err(out_of_range(&range)),
+        };
+        if !(lo..=hi).contains(&count) {
+            return Err(out_of_range(&range));
+        }
+        return Ok(TypedValue::Scaled {
+            count,
+            decimals: sc.decimals,
+            unit: sc.unit,
+        });
+    }
 
     match dpt.main {
         1 => {
@@ -1136,6 +1369,32 @@ pub fn encode(dpt: &Dpt, value: &TypedValue) -> Result<Vec<u8>, EncodeError> {
         dpt: dpt.to_string(),
         value: value.to_string(),
     };
+    if let Some(sc) = scaling(dpt)
+        && let Some((lo, hi)) = writable_range(dpt.main, sc)
+    {
+        // A scaled sub-type takes only its scaled value: a bare `Signed` or
+        // `Unsigned` count would be ambiguous (50 meaning 50 % or 0.50 %).
+        let TypedValue::Scaled {
+            count, decimals, ..
+        } = value
+        else {
+            return Err(mismatch());
+        };
+        if *decimals != sc.decimals {
+            return Err(mismatch());
+        }
+        if !(lo..=hi).contains(count) {
+            return Err(EncodeError::OutOfRange {
+                dpt: dpt.to_string(),
+                value: value.to_string(),
+            });
+        }
+        return Ok(match dpt.main {
+            7 => (*count as u16).to_be_bytes().to_vec(),
+            8 => (*count as i16).to_be_bytes().to_vec(),
+            _ => (*count as i32).to_be_bytes().to_vec(),
+        });
+    }
     match dpt.main {
         1 => match value {
             TypedValue::Bool { value, .. } => Ok(vec![*value as u8]),
@@ -2273,5 +2532,177 @@ mod tests {
                 _ => assert_eq!(&parsed, &back, "{d} {input} roundtrip"),
             }
         }
+    }
+
+    #[test]
+    fn test_decode_scaled_percent_v16() -> Result<(), Box<dyn std::error::Error>> {
+        let v = decode(&dpt("8.010"), &[0x13, 0x88]);
+        assert_eq!(
+            v,
+            TypedValue::Scaled {
+                count: 5000,
+                decimals: 2,
+                unit: "%"
+            }
+        );
+        assert_eq!(v.to_string(), "50.00 %");
+        assert_eq!(v.scaled_f64(), Some(50.0));
+        assert_eq!(decode(&dpt("8.010"), &[0xEC, 0x78]).to_string(), "-50.00 %");
+        // 7FFFh is the 8.010 invalid marker (03_07_02 §3.9.1): Raw, not 327.67 %.
+        assert_eq!(
+            decode(&dpt("8.010"), &[0x7F, 0xFF]),
+            TypedValue::Raw(vec![0x7F, 0xFF])
+        );
+        // 8.001 is a plain count and keeps 7FFFh as a number.
+        assert_eq!(
+            decode(&dpt("8.001"), &[0x7F, 0xFF]),
+            TypedValue::Signed {
+                value: 32767,
+                unit: None
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_encode_scaled_percent_v16() -> Result<(), Box<dyn std::error::Error>> {
+        let d = dpt("8.010");
+        assert_eq!(encode(&d, &parse_value(&d, "50 %")?)?, vec![0x13, 0x88]);
+        assert_eq!(encode(&d, &parse_value(&d, "50%")?)?, vec![0x13, 0x88]);
+        assert_eq!(encode(&d, &parse_value(&d, "50")?)?, vec![0x13, 0x88]);
+        assert_eq!(encode(&d, &parse_value(&d, "-327.68")?)?, vec![0x80, 0x00]);
+        assert_eq!(encode(&d, &parse_value(&d, "327.66 %")?)?, vec![0x7F, 0xFE]);
+        // 327.67 % would be the invalid marker; never write it.
+        assert!(matches!(
+            parse_value(&d, "327.67"),
+            Err(ParseValueError::OutOfRange { .. })
+        ));
+        assert!(matches!(
+            parse_value(&d, "400 %"),
+            Err(ParseValueError::OutOfRange { .. })
+        ));
+        // Finer than 0.01 % is refused, not rounded.
+        assert!(matches!(
+            parse_value(&d, "50.005"),
+            Err(ParseValueError::Invalid { .. })
+        ));
+        assert!(matches!(
+            encode(
+                &d,
+                &TypedValue::Scaled {
+                    count: 0x7FFF,
+                    decimals: 2,
+                    unit: "%"
+                }
+            ),
+            Err(EncodeError::OutOfRange { .. })
+        ));
+        // A raw count is ambiguous for a scaled sub-type and refused.
+        assert!(matches!(
+            encode(
+                &d,
+                &TypedValue::Signed {
+                    value: 50,
+                    unit: None
+                }
+            ),
+            Err(EncodeError::Mismatch { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn test_decode_scaled_time_periods() {
+        assert_eq!(decode(&dpt("7.004"), &[0, 10]).to_string(), "1.0 s");
+        assert_eq!(decode(&dpt("7.004"), &[0, 10]).scaled_f64(), Some(1.0));
+        assert_eq!(decode(&dpt("7.003"), &[0, 150]).to_string(), "1.50 s");
+        assert_eq!(decode(&dpt("8.003"), &[0xFF, 0x9C]).to_string(), "-1.00 s");
+        assert_eq!(decode(&dpt("8.004"), &[0, 15]).to_string(), "1.5 s");
+        // Resolution-1 sub-types stay plain counts.
+        assert_eq!(
+            decode(&dpt("7.005"), &[0, 10]),
+            TypedValue::Unsigned {
+                value: 10,
+                unit: None
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_value_scaled_time_periods() -> Result<(), Box<dyn std::error::Error>> {
+        let d = dpt("7.004");
+        assert_eq!(encode(&d, &parse_value(&d, "1.0 s")?)?, vec![0, 10]);
+        assert_eq!(encode(&d, &parse_value(&d, "1.5s")?)?, vec![0, 15]);
+        assert_eq!(encode(&d, &parse_value(&d, "1500 ms")?)?, vec![0, 15]);
+        assert_eq!(encode(&d, &parse_value(&d, "6553.5")?)?, vec![0xFF, 0xFF]);
+        assert!(matches!(
+            parse_value(&d, "6553.6"),
+            Err(ParseValueError::OutOfRange { .. })
+        ));
+        assert!(matches!(
+            parse_value(&d, "-1 s"),
+            Err(ParseValueError::OutOfRange { .. })
+        ));
+        assert!(matches!(
+            parse_value(&d, "1550 ms"),
+            Err(ParseValueError::Invalid { .. })
+        ));
+        let d = dpt("7.003");
+        assert_eq!(encode(&d, &parse_value(&d, "1.5 s")?)?, vec![0, 150]);
+        assert_eq!(encode(&d, &parse_value(&d, "20 ms")?)?, vec![0, 2]);
+        let d = dpt("8.003");
+        assert_eq!(encode(&d, &parse_value(&d, "-1 s")?)?, vec![0xFF, 0x9C]);
+        let d = dpt("8.004");
+        assert_eq!(encode(&d, &parse_value(&d, "-3276.8")?)?, vec![0x80, 0x00]);
+        assert!(matches!(
+            parse_value(&d, "3276.8"),
+            Err(ParseValueError::OutOfRange { .. })
+        ));
+        assert!(matches!(
+            parse_value(&d, "abc"),
+            Err(ParseValueError::Invalid { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn test_decode_scaled_flow_rate() -> Result<(), Box<dyn std::error::Error>> {
+        let d = dpt("13.002");
+        let v = decode(&d, &10000i32.to_be_bytes());
+        assert_eq!(v.to_string(), "1.0000 m³/h");
+        assert_eq!(v.scaled_f64(), Some(1.0));
+        assert_eq!(
+            encode(&d, &parse_value(&d, "1.0 m³/h")?)?,
+            vec![0, 0, 0x27, 0x10]
+        );
+        assert_eq!(
+            encode(&d, &parse_value(&d, "1 m3/h")?)?,
+            vec![0, 0, 0x27, 0x10]
+        );
+        // The full 32-bit range round-trips exactly (no f32 rounding).
+        let max = parse_value(&d, "214748.3647")?;
+        assert_eq!(encode(&d, &max)?, i32::MAX.to_be_bytes().to_vec());
+        assert_eq!(decode(&d, &i32::MAX.to_be_bytes()), max);
+        assert!(matches!(
+            parse_value(&d, "214748.3648"),
+            Err(ParseValueError::OutOfRange { .. })
+        ));
+        assert!(matches!(
+            parse_value(&d, "99999999999999999999"),
+            Err(ParseValueError::OutOfRange { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_fixed_exact_decimals() {
+        assert_eq!(parse_fixed("1.5", 2), Ok(150));
+        assert_eq!(parse_fixed("-0.01", 2), Ok(-1));
+        assert_eq!(parse_fixed("+.5", 1), Ok(5));
+        assert_eq!(parse_fixed("2.500", 1), Ok(25));
+        assert_eq!(parse_fixed("2.55", 1), Err(FixedError::Precision));
+        assert_eq!(parse_fixed("", 1), Err(FixedError::Syntax));
+        assert_eq!(parse_fixed("1e3", 1), Err(FixedError::Syntax));
+        assert_eq!(parse_fixed("1.2.3", 1), Err(FixedError::Syntax));
     }
 }
