@@ -86,9 +86,11 @@ Field notes:
   device file) and its `application` (pinned in `bussard.lock`) both point here.
 - `com_objects`: keyed by com-object number, in the same field style as the `objects`
   of `bussard.lock`. `dpt` and `flags` (compact `CRWTUI` string) are the effective, ref-resolved
-  values. `size` appears only when there is no DPT to imply it (the DPT main number fixes
-  the format and so the size, the sub number only range and unit: KNX 03_07_02 Datapoint
-  Types §1.1 and the format column of §1.4). `ref_id` is the
+  values. The System B group-object descriptor also carries a transmission priority
+  (Resources 3/5/1 §4.18.6, Table 87, bits 9 to 8); the model does not carry the product's
+  `Priority` yet, so every descriptor is written Low (#541). `size` appears only when there is
+  no DPT to imply it (the DPT main number fixes the format and so the size, the sub number only
+  range and unit: KNX 03_07_02 Datapoint Types §1.1 and the format column of §1.4). `ref_id` is the
   application ref the value was resolved through.
 - `parameters`: each with its resolved `type`, `default`, and `memory` location. The
   `type` is a tagged union: `!int {min, max, size, signed}`,
@@ -96,7 +98,8 @@ Field notes:
   `!none`, or `!other {kind, size}`. `memory` (`segment` + `offset` + `bit_offset`) is
   what the parameter phase needs to place the value into the device's parameter memory.
 - `load_procedure`: the ordered op summary, a faithful view of the download script.
-  `bussard flash` executes the supported subset
+  `bussard flash` executes the supported subset; the op set and the standard clause behind
+  each op are in [flash-op-coverage.md](flash-op-coverage.md)
   ([reference](../docs/reference/commands/programming.md)).
 - `com_object_refs`: the com-object refs of the Dynamic section whose number
   `com_objects` describes through another ref, with their own text, function and DPT

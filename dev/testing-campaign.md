@@ -344,9 +344,16 @@ writing nothing and echoing no elements. Two ETS captures taken alongside it (a
 Jung F50 sibling at 1.1.18, and the KNX Virtual DA.tp) show ETS never attempts
 that path. After each `StartLoading` it writes a 10-octet
 `AdditionalLoadControls` / `LdCtrlRelSegment` sized to the whole image (the
-2-octet count word plus `n * elem_size`), reads `PID_TABLE_REFERENCE` for the
-placement, streams the image with `A_Memory_Write` / `A_MemoryExtended_Write`,
-and only then sends `LoadCompleted`.
+2-octet count word plus `n * elem_size`; the Data Relative Allocation, subtype
+0Bh, of Management Procedures 3/5/2 §3.31.3.4), reads `PID_TABLE_REFERENCE` for
+the placement (Resources 3/5/1 §4.2.7), streams the image with `A_Memory_Write` /
+`A_MemoryExtended_Write`, and only then sends `LoadCompleted`. That is the
+complete download of Configuration Procedures 3/5/3 §3.5.2 step by step. The
+standard's partial downloads (§3.5.3) start each object with an `Unload` and
+re-allocate it with Mode 0 (keep the contents); `apply` opens a `Loaded` table
+with `StartLoading` directly, which the transition table of Resources §4.23.2.3.3
+allows, and the parameters-only download should run the product's `par` ops
+(#543).
 
 Only the lenient KNX Virtual stack also accepts a property write to `PID_TABLE`,
 which is why the mock device and `knx-sim` both let the bug through. `apply` now

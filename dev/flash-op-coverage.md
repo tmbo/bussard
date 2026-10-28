@@ -1,150 +1,116 @@
 # `bussard flash` LoadProcedure op coverage
 
-A data-driven gap analysis of the `LdCtrl*` LoadProcedure interpreter in
-`crates/bussard-download/src/flash.rs`. It answers: across real KNX product
-files, which LoadProcedure ops appear, how often, and which ones `bussard flash`
-does not yet execute; so we know what to implement next and in what order.
+Which `LdCtrl*` ops the product corpus uses, which ones `bussard flash`
+executes on System B, and the clause of the KNX Standard 3.0.0 each op
+realises. It answers two questions: can bussard run a given product's
+download, and does each step do what the standard says. The System 7 lowering
+(masks 0705, 0701, 0700) has its own spec in [system7-spec.md](system7-spec.md).
+
+Spec references use the chapter numbers of the standard: Resources is 3/5/1
+(`03_05_01 Resources v01.10.01`), Management Procedures 3/5/2
+(`03_05_02 v02.01.02`), Configuration Procedures 3/5/3 (`03_05_03 v02.01.01`),
+and the 27B0 profile is Volume 6 `06_01_35`. The text lives under
+`dev/knx-standard-3.0.0/_txt/` (read-only).
 
 ## Corpus
 
-80 application programs extracted from 36 vendor `.knxprod` files (the full
-`data/product-index.json`), spanning 7 manufacturers: MDT, Zennio, Theben,
-Lingg & Janke, Elsner Elektronik, Steinel, EAE Technology.
+The local cache `tests-support/product-corpus/cache/vendor/` holds 502
+`.knxprod` files, 1353 application programs. The System B family is 885 of
+them (scan of the `<LdCtrl*>` elements of each application XML, 2026-10-28;
+`analyze-load-ops.py` tallies the same from the rendered models):
 
-The `.knxprod` files and the extracted model YAMLs are copyrighted vendor data
-and are gitignored (`tests-support/product-corpus/cache/`). Regenerate with
-`tests-support/product-corpus/fetch.sh`, then re-run the tally:
+| mask | apps | load ops that appear | flash |
+|---|---:|---|---|
+| 07B0 | 850 | RelSegment, WriteRelMem, LoadImageProp (770), WriteProp (416), CompareProp (183), CompareRelMem (2); Connect/Unload/Load/LoadCompleted/Restart/Disconnect in the 26 that carry a full procedure, the rest come from the `knx_master` template | yes |
+| 27B0 (RF) | 6 | RelSegment, WriteRelMem, LoadImageProp | gated with 07B0 |
+| 57B0 (IP) | 1 | RelSegment, WriteRelMem, LoadImageProp, WriteProp | gated with 07B0 |
+| 2705 (RF) | 26 | AbsSegment, TaskSegment, Load, Unload, LoadCompleted, CompareProp, Restart | no: System 7 shaped, not gated |
+| 2920 (RF) | 2 | DeclarePropDesc, WriteProp, CompareProp | no: property-only, not gated |
 
-```
-tests-support/product-corpus/analyze-load-ops.py
-```
+The `.knxprod` files and the extracted models are vendor data and gitignored;
+`tests-support/product-corpus/fetch.sh` regenerates the cache.
 
-Ops are classified against bussard's supported set by reading each model's
-rendered `load_procedure:` block. Unknown `LdCtrl*` ops render as
-`raw LdCtrl<Name>` and are counted by their verbatim name.
+## The System B op set
 
-## The decisive split: mask family, not op richness
+What the load state machine accepts is Resources §4.23 (Table 93 events, Table
+94 transitions) and Management Procedures §3.31.3
+(`DMP_LoadStateMachineWrite_RCo_IO`: a 10-octet write to
+`PID_LOAD_STATE_CONTROL`, the first octet the event). Configuration Procedures
+§3.5.1.2 Table 4 names the controls a System B device supports: Start Loading
+(01h), Load Completed (02h), Additional Load Controls 03h with subtype 0Bh Data
+Relative Allocation, and Unload (04h). The 27B0 profile (06_01_35 §6.3.1,
+Table 1) lists the same four as mandatory and the absolute and task records
+(subtypes 00h to 05h) as optional.
 
-> **Update: System 7 is supported.** This analysis predates System 7 flash
-> support. `bussard flash` now also targets the System 7 masks `0705`, `0701`
-> and `0700` through a separate absolute-addressed lowering (`LdCtrlAbsSegment`,
-> `LdCtrlTaskSegment`, `LdCtrlTaskCtrl1`, `LdCtrlCompareMem`, the obj0/PID78
-> compare); see [system7-spec.md](system7-spec.md). The per-mask support table
-> lives in [SAFETY.md](../docs/explanation/safety.md#supported-device-masks). The tallies below are
-> the original System-B-only snapshot and have not been re-run against the
-> System 7 lowering.
+| op | standard | bussard (`crates/bussard-download/src/flash/plan.rs` unless noted) | status |
+|---|---|---|---|
+| `LdCtrlConnect`, `LdCtrlDisconnect` | DM_Connect 3/5/2 §3.2, steps 01 and 12 of 3/5/3 §3.5.2 | one connection for the whole procedure, no step | supported |
+| `LdCtrlUnload` | event 04h, 3/5/2 §3.31.3.1; step 05 of §3.5.2 | `FlashStep::Unload` | supported |
+| `LdCtrlLoad` | event 01h, §3.31.3.2 | `FlashStep::StartLoading`, skipped for an object that gets no segment | supported |
+| `LdCtrlLoadCompleted` | event 02h, §3.31.3.3; the device computes the MCB CRC on this transition (3/5/1 §4.2.27.1.2) | `FlashStep::LoadCompleted` | supported |
+| `LdCtrlRelSegment` | 03h/0Bh Data Relative Allocation, §3.31.3.4; 3/5/3 §3.5.1.2 (Mode, Fill, same base on re-allocation) | `FlashStep::AllocateSegment`, then `PID_TABLE_REFERENCE` read (`bussard-mgmt/src/load.rs` `allocate_segment`); table objects always no-fill | supported; Mode 0 with a Fill byte: #480 |
+| `LdCtrlWriteRelMem` | memory write at base + offset; 3/5/3 §3.5.1.4 Table 5 (`A_Memory_Write` up to 64k, `A_UserMemory_Write` above); DM_MemWrite §3.16.2 chunks sized to `PID_MAX_APDU_LENGTH` (3/5/1 §4.3.7, 12 octets without it) | `FlashStep::WriteRelMem`; `A_MemoryExtended_Write` above 0xFFFF | supported; `A_UserMemory_Write` for products without extended memory services: #472 |
+| `LdCtrlWriteMem` | absolute `A_Memory_Write` | `FlashStep::WriteMem` | supported |
+| `LdCtrlWriteProp` | DM_InterfaceObjectWrite §3.25; PID 13 is `PID_PROGRAM_VERSION`, 5 octets manufacturer, device type, version (3/5/1 §4.2.13), written before `LoadCompleted` (§3.5.2 step 06); PID 27 one 8-octet element per write (§4.2.27) | `FlashStep::WriteProp`; the zero placeholder for PID 13 is replaced by the application id | supported |
+| `LdCtrlLoadImageProp` | read `PID_MCB_TABLE` and compare the CRC16-CCITT (init FFFFh, check value E5CCh) with the image (§4.2.27, §4.18.6.2.5); the "read and save CRC" step of §3.5.2 | `FlashStep::LoadImageProp`, `read_mcb_table` | supported |
+| `LdCtrlCompareProp` | DM_InterfaceObjectRead §3.27 plus compare | `FlashStep::CompareProp` (mask honoured, `Range` kept as a no-op) | supported |
+| `LdCtrlCompareRelMem` | memory read at base + offset plus compare | `FlashStep::CompareRelMem` (mask, invert) | supported (2 MDT apps) |
+| `LdCtrlRestart` | Basic Restart §3.7.1.1 (unconfirmed `A_Restart`); the confirmed restart is the Master Reset with erase code 01h (§3.7.1.2 Table 4) | `FlashStep::Restart`; confirmed form for secure-capable applications, bare otherwise | supported |
+| `LdCtrlMasterReset` | Master Reset §3.7.1.2: restart type 1, erase code, channel, confirmed by `A_Restart_Response` | `FlashStep::MasterReset`, sent as a bare `A_Restart` (the ETS to KNX Virtual capture) | parity with one capture: #546 |
+| `LdCtrlMerge` | none: the `knx_master` splice marker | spliced | supported |
+| `LdCtrlAbsSegment`, `LdCtrlTaskSegment`, `LdCtrlTaskCtrl1`, `LdCtrlTaskPtr`, `LdCtrlTaskCtrl2` | Additional Load Controls subtypes 00h to 05h, §3.31.3.4; optional in the 27B0 profile | System 7 lowering only; refused on System B | by design | Record layout in KNX 3/5/2 §3.31.2, mandatory on 0701/0705 per Profiles Annex A.2.4.1 (#527).
+| `LdCtrlDeclarePropDesc`, `LdCtrlDelay`, other `Raw` | | refused before any write | 2920 only in the corpus |
 
-When this analysis was taken, `bussard flash` targeted **System B (mask 07B0)
-only**: `plan_flash` refused any other device at the `NotSystemB` gate *before*
-it inspected a single op. The corpus splits cleanly along that line:
+The factory reset that opens a download of a secure-capable application
+(erase code 07h, Master Reset §3.7.1.2 Table 4, AN194 for what it resets) is
+not an op: `plan_flash` inserts it from the restart form.
 
-| mask | family | apps | flashable today |
-|------|--------|-----:|-----------------|
-| 07B0 | System B | 24 | **all 24** |
-| 0705 | System 7 (BIM M112) | 44 | none (gated: not System B) |
-| 0701 | System 7 (BIM M112) | 5 | none (gated: not System B) |
-| 0021 | System 2 / Secure | 5 | none (gated: not System B) |
-| 091A, 0012 | other | 2 | 2 (no refused ops present) |
+## Steps of the standard's procedure with no op
 
-**Every System B app in the corpus is fully executable by bussard today.** Not
-one 07B0 app uses a refused op. All the refused ops below belong to the
-non-System-B families that `flash` does not target yet.
+Configuration Procedures §3.5.2 (complete download) and §3.5.3 (partial
+downloads) have steps a product procedure never spells out:
 
-26 of 80 apps (24 × 07B0 + 2 outliers) are fully executable end to end.
+| step | bussard |
+|---|---|
+| 02 descriptor type 0, 03 authorize | done at connect |
+| 04 manufacturer id equals `PID_MANUFACTURER_ID` | not done (#547) |
+| read `PID_TABLE_REFERENCE` after every allocation, zero means failure | done |
+| read and save the CRC after each `LoadCompleted` | the application's `LoadImageProp` ops, else the template's |
+| 11 modify access keys | not done (no product in the corpus sets keys) |
+| partial download: `Unload`, `Load`, Mode 0 allocation around a parameter write | parameters-only download skips the first two (#543) |
+| LoadCompleting (5) and Unloading (4): poll `PID_LOAD_STATE_CONTROL` every 3 s for up to 30 s (3/5/1 §4.23.2.4.1) | not done (#479) |
 
-## Support matrix
+## Table images
 
-| op | status | occurrences | apps | mfrs |
-|----|--------|-----------:|-----:|-----:|
-| `abs_segment` | **REFUSED** | 326 | 54 | 7 |
-| `load` | supported | 163 | 54 | 7 |
-| `unload` | supported | 162 | 54 | 7 |
-| `task_segment` | **REFUSED** | 162 | 52 | 6 |
-| `load_completed` | supported | 162 | 54 | 7 |
-| `load_image_prop` | supported | 66 | 24 | 2 |
-| `connect` | supported | 54 | 54 | 7 |
-| `disconnect` | supported | 54 | 54 | 7 |
-| `compare_prop` | supported | 50 | 47 | 2 |
-| `restart` | supported | 47 | 47 | 5 |
-| `rel_segment` | supported | 46 | 24 | 2 |
-| `write_rel_mem` | supported | 24 | 24 | 2 |
-| `task_ctrl1` | **REFUSED** | 8 | 8 | 4 |
-| `write_prop` | supported | 5 | 5 | 2 |
-| `LdCtrlTaskPtr` | **REFUSED** (raw); record layout in KNX 3/5/2 §3.31.2, mandatory on 0701/0705 per Profiles Annex A.2.4.1 (#527) | 5 | 5 | 2 |
-| `LdCtrlTaskCtrl2` | **REFUSED** (raw); same source (#527) | 5 | 5 | 2 |
-| `write_mem` | supported | 3 | 1 | 1 |
-| `LdCtrlCompareMem` | **REFUSED** (raw) | 1 | 1 | 1 |
+The images the table ops stream are built in `crates/bussard-download/src/compute.rs`:
 
-Supported set (verified in `flash.rs`): `connect`, `disconnect`, `unload`,
-`load`, `load_completed`, `rel_segment`, `write_rel_mem`, `write_mem`,
-`write_prop`, `compare_prop`, `load_image_prop`, `restart`.
-
-## Ranked unimplemented ops
-
-Ranked by number of distinct apps. "Blocked only by this op" = apps whose every
-*other* op is already supported.
-
-| rank | op | apps | mfrs | example vendors | blocked only by this | mask family |
-|-----:|----|-----:|-----:|-----------------|:--------------------:|-------------|
-| 1 | `abs_segment` | 54 | 7 | all 7 | 1 | 0705/0701/0021 |
-| 2 | `task_segment` | 52 | 6 | MDT, Theben, L&J, Elsner, Steinel, EAE | 0 | 0705/0701/0021 |
-| 3 | `task_ctrl1` | 8 | 4 | Theben, L&J, Elsner, Steinel | 0 | 0705/0021 |
-| 4 | `LdCtrlTaskPtr` (raw) | 5 | 2 | Theben, L&J | 0 | 0705/0021 |
-| 5 | `LdCtrlTaskCtrl2` (raw) | 5 | 2 | Theben, L&J | 0 | 0705/0021 |
-| 6 | `LdCtrlCompareMem` (raw) | 1 | 1 | Zennio | 0 | 0701 |
-
-What each would take to implement:
-
-- `abs_segment`: absolute-segment allocate (`LdCtrlAbsSegment`) plus absolute
-  `A_Memory` placement. `bussard-mgmt`'s allocate is a stub today.
-- `task_segment` / `task_ctrl1` / `LdCtrlTaskPtr` / `LdCtrlTaskCtrl2`: the
-  BCU1/BCU2 task-and-segment descriptor programming set. These co-occur:
-  **52 of the 54 `abs_segment` apps also use `task_segment`**, and the task-ptr
-  / task-ctrl2 ops only ever appear alongside them. They are the classic
-  absolute-download machinery of the pre-System-B mask families, not independent
-  features.
-- `LdCtrlCompareMem`: read absolute memory (`A_Memory_Read`) and byte-compare;
-  one Zennio 0701 app.
-- `LdCtrlCompareRelMem` (issue #51): **does not appear in any file in the
-  corpus.**
+- Group address table, realisation type 7 (3/5/1 §4.16.8, Table 78): count
+  word, then the addresses in ascending order; TSAP is the 1-based index. No
+  own-address slot (that is the System 1/2/7 layout).
+- Association table, realisation type 6 (§4.17.5, Table 82): count word, then
+  format 1 entries of TSAP and ASAP, two octets each, the sending association
+  first per object. Format 0 (one octet each) is never checked for (#545).
+- Group object table, realisation type 7 (§4.18.6, Tables 86 to 88): count
+  word, then one descriptor word per ASAP: bit 15 update, 14 transmit, 13 read
+  on init, 12 write, 11 read, 10 communication, 9 to 8 priority, 7 to 0 value
+  field type. Priority is always written Low (#541); value field types above
+  14 fall back to 0 (#545). An unlinked object gets communication cleared,
+  which is why `apply` has to rewrite this table when a link set changes
+  (#540).
 
 ## Master reset
 
-**No real vendor device uses `LdCtrlMasterReset`.** It appears in zero of the 80
-apps across all 7 manufacturers. Its only known user is KNX Virtual's own apps,
-which are not vendor product files. bussard would currently refuse it (it parses
-as a `raw` op and `plan_flash` returns `UnsupportedOp`), and that gap is real,
-but it is a KNX-Virtual-interop gap, not a real-device gap.
+No vendor device in the corpus uses `LdCtrlMasterReset`; its only user is KNX
+Virtual. The factory reset bussard sends itself (erase code 7) and the
+confirmed restart (erase code 1) are the Master Reset of 3/5/2 §3.7.1.2 with
+the process time of §3.7.1.2.2 honoured as a minimum wait (capped at 60 s,
+#546).
 
 ## Recommendation
 
-**The System B interpreter is complete for the products we can reach.** All 24
-System B apps flash end to end; no 07B0 app needs anything unimplemented. There
-is no highest-value single op to add for real System B hardware; that surface is
-done.
-
-The ranked table is dominated by `abs_segment` + `task_segment`, but those
-numbers are misleading in isolation: every one of those apps is a non-System-B
-device (0705/0701/0021) that `plan_flash` already refuses at the mask gate.
-Implementing `abs_segment` alone unlocks nothing; 52 of its 54 apps also need
-the full task-segment set, and all of them need a BCU1/BCU2 absolute-download
-device layer bussard does not have.
-
-Priority order:
-
-1. **`LdCtrlMasterReset`**: smallest change, clears the known KNX-Virtual
-   interop blocker that motivated this analysis. It is one `A_Restart` variant
-   (master-reset erase code), not a new device family. Do this first even though
-   it has zero real-vendor frequency: it is cheap and it is the actual bug.
-2. **Absolute-download family as one unit** (`abs_segment` + `task_segment` +
-   `task_ctrl1` + `LdCtrlTaskPtr` + `LdCtrlTaskCtrl2`); only worth starting once
-   bussard decides to support System 7 (0705, the BIM M112 profile, not BCU2)
-   devices, which is 44 apps / the single largest family in the field.
-   (Done since, except TaskPtr and TaskCtrl2, #527; the family labels above were
-   corrected in the 3.0.0 spec review: 0705 and 0701 are System 7, 0020/0021 BCU2.) This is a device-support project (a new mask
-   family behind the `NotSystemB` gate), not an isolated op. Treat the five ops
-   as one milestone; they never appear apart.
-3. **`LdCtrlCompareMem` / `LdCtrlCompareRelMem`**: lowest priority.
-   `CompareMem` is one app; `CompareRelMem` (issue #51) appears in no file at
-   all. Both are read-and-verify precondition checks, not writers, so their
-   absence never leaves a device half-flashed; they can stay refused safely.
+The System B op set is complete for every 07B0, 27B0 and 57B0 application in
+the corpus. The open items are the issues above: the group-object table on
+`apply` (#540, P1), the descriptor priority (#541, P1), the parameters-only
+procedure (#543), the format checks (#545), the restart details (#546) and the
+manufacturer check (#547). The RF masks 2705 and 2920 need their own lowering
+before their ops matter.

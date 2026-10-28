@@ -45,7 +45,7 @@ A KNX device's configuration is three separable things with very different diffi
 | Layer | What | Difficulty |
 |---|---|---|
 | (a) Individual address | `1.1.4` | Standardised management procedure. Trivial. |
-| (b) Links | group address table, association table, com-object table | Standardised loadable parts; on System B / mask 07B0+ property-based and writable through documented interface objects. Moderate. |
+| (b) Links | group address table, association table, com-object table | Standardised loadable parts. On System B (mask 07B0 and its 27B0/57B0 variants) each table is an interface object: its load state machine is driven through `PID_LOAD_STATE_CONTROL`, and the content is written into the segment the device places on a Data Relative Allocation, at the address `PID_TABLE_REFERENCE` reports (Resources 3/5/1 §4.16.8, §4.17.5, §4.18.6; Configuration Procedures 3/5/3 §3.5.2). `PID_TABLE` is readable, not a download path. Moderate. |
 | (c) Parameters | channel mode, runtime, wind-alarm behaviour, ... | Device-specific memory layout described only in the `.knxprod`. Hard. |
 
 Most day-to-day changes are (b), but all three layers are in scope: the goal is the
@@ -55,7 +55,7 @@ device files carry parameter values per channel (imported from the ETS project,
 validated against the product model, #46), and `flash` computes the parameter memory image from
 vendor defaults plus those overrides and streams it, using per-module-instance base
 offsets (recorded in `bussard.lock`, #48) to place per-channel parameters. Which path links take
-(properties on System B vs. memory writes on older System 1/2) depends on the mask
+(a load state machine plus memory-mapped segments on System B, absolute memory writes on System 7 and System 1/2) depends on the mask
 version each device reports; `bussard scan` reports this.
 
 ## 3. What's inside a `.knxprod`
@@ -382,12 +382,15 @@ ETS-free application download from a `.knxprod` into a System B device: pre-flig
 verification. The parameter image is computed from vendor defaults plus the device file's
 parameter values, with the lock's module bases resolving per-channel placement. Hardening
 shipped along the way: A_Authorize on every management connect (`flash --bcu-key` for
-keyed devices, free access otherwise, #52), end-of-segment read-back and the device's own
-MCB check (a plain `A_Memory_Write` is only acknowledged at the transport layer and is
-confirmed by the device solely in verify mode, 03/03/07 Application Layer §3.5.4, so the
-plain path streams chunks without a per-chunk read-back, as ETS does; the extended
-service confirms each chunk inline, §3.4.9.2), and strict load-state checking that fails
-fast when a device does not honour a segment allocation.
+keyed devices, free access otherwise, #52), verification by the device-computed CRC in
+`PID_MCB_TABLE` read after each `LoadCompleted` (Resources 3/5/1 §4.2.27, the "read and save
+CRC" step of Configuration Procedures 3/5/3 §3.5.2) plus a post-restart spot check of every
+written segment, and strict load-state checking that fails fast when a device does not honour
+a segment allocation. There is no per-chunk read-back on System B: a plain `A_Memory_Write`
+is only acknowledged at the transport layer and confirmed by the device solely in verify mode
+(03/03/07 Application Layer §3.5.4; the extended service confirms each chunk inline, §3.4.9.2),
+the verify flag of DM_MemWrite (Management Procedures 3/5/2 §3.16.2) is a procedure option ETS
+does not set there, and the MCB CRC covers the whole segment.
 The download runs over a single management connection for its whole duration, exactly as
 ETS does; a genuinely dead connection fails cleanly, and re-running `flash` is safe
 because the download is idempotent.
@@ -397,7 +400,12 @@ absolute-addressed procedures (`LdCtrlAbsSegment` allocation and streaming,
 `LdCtrlTaskSegment`, `LdCtrlTaskCtrl1`, the obj0/PID78 compare, `LdCtrlCompareMem`) run on
 their own lowering, driven by the per-mask profile (see
 [system7-spec.md](system7-spec.md)). The System B family covers `07B0` and its `57B0`
-(KNX-IP) and `27B0` (RF) variants. The per-mask support table lives in one place,
+(KNX-IP) and `27B0` (RF) variants (Volume 6 profile 06_01_35 lists the same load controls
+for 27B0: Start Loading, Load Completed, Data Relative Allocation and Unload mandatory, the
+absolute and task records optional). The RF masks `2705` and `2920` sit beside it in
+Volume 6 but are not System B downloads: in the corpus the 2705 procedures are System 7
+shaped (`LdCtrlAbsSegment`, `LdCtrlTaskSegment`) and the 2920 ones property-only
+(`LdCtrlDeclarePropDesc`, `LdCtrlWriteProp`); neither is flash-gated today. The per-mask support table lives in one place,
 `MaskProfile::capabilities`, and is rendered into
 [SAFETY.md](../docs/explanation/safety.md#supported-device-masks). Unrecognized ops (notably
 `LdCtrlCompareRelMem`, a read-and-compare that blocks two otherwise-executable MDT apps)
