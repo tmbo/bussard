@@ -101,6 +101,14 @@ pub enum Apci {
     MemoryResponse(u8),
     /// `A_Memory_Write` with byte count.
     MemoryWrite(u8),
+    /// `A_UserMemory_Read` (0x2C0): `[ext:4|count:4][addr:16]`, a 20-bit address.
+    UserMemoryRead,
+    /// `A_UserMemory_Response` (0x2C1): `[ext:4|count:4][addr:16][data]`.
+    UserMemoryResponse,
+    /// `A_UserMemory_Write` (0x2C2): `[ext:4|count:4][addr:16][data]`. ETS
+    /// writes a segment above 0xFFFF with it on devices without the extended
+    /// memory service (Zennio DALIBOX, 2026-10-28).
+    UserMemoryWrite,
     /// `A_MemoryExtended_Write` (0x1FB) — write memory at a 24-bit address.
     MemoryExtendedWrite,
     /// `A_MemoryExtended_Write_Response` (0x1FC).
@@ -192,6 +200,9 @@ impl Apci {
             0x1D4 => Apci::FunctionPropertyExtCommand,
             0x1D5 => Apci::FunctionPropertyExtStateRead,
             0x1D6 => Apci::FunctionPropertyExtStateResponse,
+            0x2C0 => Apci::UserMemoryRead,
+            0x2C1 => Apci::UserMemoryResponse,
+            0x2C2 => Apci::UserMemoryWrite,
             0x1FB => Apci::MemoryExtendedWrite,
             0x1FC => Apci::MemoryExtendedWriteResponse,
             0x1FD => Apci::MemoryExtendedRead,
@@ -231,6 +242,9 @@ impl Apci {
             Apci::FunctionPropertyExtCommand => 0x1D4,
             Apci::FunctionPropertyExtStateRead => 0x1D5,
             Apci::FunctionPropertyExtStateResponse => 0x1D6,
+            Apci::UserMemoryRead => 0x2C0,
+            Apci::UserMemoryResponse => 0x2C1,
+            Apci::UserMemoryWrite => 0x2C2,
             Apci::MemoryExtendedWrite => 0x1FB,
             Apci::MemoryExtendedWriteResponse => 0x1FC,
             Apci::MemoryExtendedRead => 0x1FD,

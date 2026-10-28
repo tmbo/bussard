@@ -136,6 +136,8 @@ impl Device {
             Apci::MemoryRead(_) => self.on_memory_read(tool, apdu),
             Apci::MemoryWrite(_) => self.on_memory_write(tool, apdu),
             Apci::MemoryExtendedWrite => self.on_memory_extended_write(tool, apdu),
+            Apci::UserMemoryWrite => self.on_user_memory_write(tool, apdu),
+            Apci::UserMemoryRead => self.on_user_memory_read(tool, apdu),
             Apci::MemoryExtendedRead => self.on_memory_extended_read(tool, apdu),
             Apci::DeviceDescriptorRead(t) => self.on_device_descriptor_read(tool, t),
             Apci::Restart => self.on_restart(tool, apdu),

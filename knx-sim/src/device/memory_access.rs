@@ -141,12 +141,7 @@ impl Device {
         // retries the write after 5 s without it (ETS-against-sim capture,
         // 2026-10-27). The read-back is what the tool compares, not a copy of
         // the request.
-        let verify = self
-            .objects
-            .get(&0)
-            .and_then(|o| o.property(super::interface_object::PID_DEVICE_CONTROL))
-            .is_some_and(|p| p.value.first().is_some_and(|b| b & 0x04 != 0));
-        if verify {
+        if self.verify_mode() {
             let mut data = Vec::with_capacity(2 + n);
             data.extend_from_slice(&addr.to_be_bytes());
             data.extend_from_slice(&self.memory.read(addr32, n));
@@ -213,6 +208,93 @@ impl Device {
         })
     }
 
+    /// The `[ext:4|count:4][addr:16]` header of a user-memory request: the
+    /// 20-bit address and the octet count.
+    fn user_memory_header(data: &[u8], service: &str) -> Result<(u32, usize), DeviceError> {
+        let h = data.get(..3).ok_or(DeviceError::Malformed {
+            service: service.into(),
+            detail: "payload shorter than [ext|count][addr:2]".into(),
+        })?;
+        let addr = (u32::from(h[0] >> 4) << 16) | u32::from(u16::from_be_bytes([h[1], h[2]]));
+        Ok((addr, usize::from(h[0] & 0x0F)))
+    }
+
+    /// Whether the device is in verify mode (PID_DEVICE_CONTROL bit 2): it then
+    /// echoes every write as a read-back response.
+    fn verify_mode(&self) -> bool {
+        self.objects
+            .get(&0)
+            .and_then(|o| o.property(super::interface_object::PID_DEVICE_CONTROL))
+            .is_some_and(|p| p.value.first().is_some_and(|b| b & 0x04 != 0))
+    }
+
+    /// Handle an `A_UserMemory_Write` (APCI 0x2C2): `[ext:4|count:4][addr:16]
+    /// [data]`, a 20-bit address. ETS writes a segment above 0xFFFF with it on a
+    /// device without the extended memory service (Zennio DALIBOX object 4,
+    /// 418 kB at 0x10000, 2026-10-28). Same segment discipline as the plain
+    /// write; in verify mode the device answers with an `A_UserMemory_Response`
+    /// carrying the read-back, which ETS waits for (it repeats the write and
+    /// gives up without it).
+    pub(super) fn on_user_memory_write(
+        &mut self,
+        tool: IndividualAddress,
+        apdu: &Apdu,
+    ) -> Result<DeviceReaction, DeviceError> {
+        if self.access_level != 0 {
+            return Err(DeviceError::Unauthorized {
+                level: self.access_level,
+            });
+        }
+        let (addr, n) = Self::user_memory_header(&apdu.data, "A_UserMemory_Write")?;
+        let payload = apdu.data.get(3..3 + n).ok_or(DeviceError::Malformed {
+            service: "A_UserMemory_Write".into(),
+            detail: "payload shorter than declared count".into(),
+        })?;
+        let seg = self
+            .memory
+            .segment_at(addr)
+            .ok_or(MemoryError::OutOfSegment { addr, len: n })?;
+        let owner = seg.owner;
+        if self.load_state(owner) != Some(LoadState::Loading) {
+            return Err(DeviceError::LoadControl(format!(
+                "user memory write to object {owner} while not Loading"
+            )));
+        }
+        self.memory.write(owner, addr, payload)?;
+        self.emit(Event::MemoryWritten {
+            device: self.address,
+            addr,
+            len: n,
+        });
+        if !self.verify_mode() {
+            return Ok(DeviceReaction::default());
+        }
+        let mut data = apdu.data[..3].to_vec();
+        data.extend_from_slice(&self.memory.read(addr, n));
+        let resp = self.respond(tool, Apci::UserMemoryResponse.to_u10(), &data);
+        Ok(DeviceReaction {
+            responses: vec![resp],
+            did_master_reset: false,
+        })
+    }
+
+    /// Handle an `A_UserMemory_Read` (APCI 0x2C0): answer with an
+    /// `A_UserMemory_Response` carrying the request header and the octets.
+    pub(super) fn on_user_memory_read(
+        &mut self,
+        tool: IndividualAddress,
+        apdu: &Apdu,
+    ) -> Result<DeviceReaction, DeviceError> {
+        let (addr, n) = Self::user_memory_header(&apdu.data, "A_UserMemory_Read")?;
+        let mut data = apdu.data[..3].to_vec();
+        data.extend_from_slice(&self.memory.read(addr, n));
+        let resp = self.respond(tool, Apci::UserMemoryResponse.to_u10(), &data);
+        Ok(DeviceReaction {
+            responses: vec![resp],
+            did_master_reset: false,
+        })
+    }
+
     /// Handle an `A_MemoryExtended_Read` (APCI 0x1FD): read `count` octets at the
     /// 24-bit address and answer with an `A_MemoryExtended_Read_Response` (0x1FE)
     /// carrying `[return_code][addr:3][data]`. The read is served from the sparse
@@ -245,6 +327,32 @@ impl Device {
 mod tests {
     use crate::device::test_support::*;
     use crate::device::*;
+
+    #[test]
+    fn test_user_memory_write_above_64k_reads_back() -> Result<(), Box<dyn std::error::Error>> {
+        // A 418 kB object (Zennio DALIBOX object 4) sits at 0x10000; ETS writes
+        // it with A_UserMemory_Write (ext nibble 1, count 3) and reads it back.
+        let mut dev = system_b_device()?;
+        connect(&mut dev)?;
+        dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
+        dev.handle_cemi(&data(&dev, 0x3D7, &[0x05, 0x05, 0x10, 0x01, 0x01]))?;
+        dev.handle_cemi(&data(
+            &dev,
+            0x3D7,
+            &[0x05, 0x05, 0x10, 0x01, 0x03, 0x0b, 0x00, 0x06, 0x60, 0x2f],
+        ))?;
+        let seg = dev.memory().segment_of(5).ok_or("object 5 has a segment")?;
+        assert_eq!(seg.base, 0x1_0000);
+        dev.handle_cemi(&data(&dev, 0x2C2, &[0x13, 0x00, 0x00, 0xaa, 0xbb, 0xcc]))?;
+        let reaction = dev.handle_cemi(&data(&dev, 0x2C0, &[0x13, 0x00, 0x00]))?;
+        let resp = reaction.responses.first().ok_or("a user-memory response")?;
+        assert!(
+            resp.tpdu.ends_with(&[0x13, 0x00, 0x00, 0xaa, 0xbb, 0xcc]),
+            "{:02x?}",
+            resp.tpdu
+        );
+        Ok(())
+    }
 
     #[test]
     fn test_memory_write_without_auth_rejected() -> Result<(), Box<dyn std::error::Error>> {
