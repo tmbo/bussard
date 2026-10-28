@@ -66,6 +66,15 @@ interface, and ends with a read-back of every property it wrote.
   where the group-object table is: `plan` names each newly linked object whose
   flag it could not check. A device that refuses the read of its group-object
   table is handled the same way; its tables are still read.
+- **System B communication flags.** The same holds on System B: a full flash
+  clears the flag of every object the model does not link. With the device's
+  product data, `plan` reads the group-object table and compares it with the
+  table a full flash would write; when they differ, `apply` reloads the table
+  before the link tables and reads it back, and `plan` names each object whose
+  descriptor changes. `apply --line` does the same. Without product data `plan`
+  names each newly linked object whose flag it could not check. No ETS capture
+  of such a partial download exists yet, so the order follows the KNX
+  standard's partial download of the group-object table.
 - **System 7 restart.** Like ETS, `apply` restarts a System 7 device after
   writing its tables (a basic restart). It waits for the device to answer
   again, then reads the tables back, so the read-back also shows that the
