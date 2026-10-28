@@ -162,7 +162,9 @@ class RemoteSim:
             # Hardware with a KNX IP interface built in: ETS looks for its
             # KNXnet/IP parameter object (type 11) after the download and
             # aborts without it (Zennio ALLinBOX 1612, 2026-10-28).
-            dev["knxnet"] = {}
+            # ETS writes as many additional tunnelling addresses (PID 53)
+            # as the product declares (5 on the ALLinBOX 1612): room for 16.
+            dev["knxnet"] = {"tunnel_slots": 16}
         # tunnel_address on the TP line 1.1: ETS compares the tunnel's line medium
         # with the project's and asks otherwise (the sim's default 1.0.0 is on the IP main line).
         # The sim records its own datagrams (gateway.pcap): dumpcap killed over
@@ -364,8 +366,17 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
             if not seen and time.time() - started > first_traffic:
                 result["end"] = "no traffic"
                 break
-        result["history"] = vm.driver(c, "POST", "/ets/history", {}, timeout=120).get("lines")
-        result["ets"] = ets_status(result["history"])
+        # ETS may go on after the restart (an IP-enabled device gets its
+        # KNXnet/IP parameters written next, ALLinBOX 1612, 2026-10-28): while
+        # the newest entry still reads 'Herunterladen', keep the sim up and look
+        # again.
+        settle = time.time()
+        while True:
+            result["history"] = vm.driver(c, "POST", "/ets/history", {}, timeout=120).get("lines")
+            result["ets"] = ets_status(result["history"])
+            if result["ets"] != "unknown" or time.time() - settle > 120:
+                break
+            time.sleep(5)
     except Exception as exc:  # noqa: BLE001 - recorded per application, the batch goes on
         result["error"] = str(exc)[:600]
     finally:

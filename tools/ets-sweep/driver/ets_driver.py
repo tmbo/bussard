@@ -400,7 +400,13 @@ IA_RE = re.compile(r"\b(\d{1,2})\.(\d{1,2})\.(\d{1,3})\b")
 
 
 def _ia_in(text: str) -> str | None:
-    m = IA_RE.search(text.replace(" ", ""))
+    t = text.replace(" ", "")
+    # Every sweep device sits on line 1.1; the device icon left of the
+    # address reads as a digit at times ('91.1.1'), so look for 1.1.N.
+    m = re.search(r"1\.1\.(\d{1,3})\b", t)
+    if m:
+        return f"1.1.{m.group(1)}"
+    m = IA_RE.search(t)
     return ".".join(m.groups()) if m else None
 
 
@@ -584,7 +590,10 @@ def wait_busy(timeout: float = 300) -> float:
     t0 = time.time()
     while time.time() - t0 < timeout:
         text = " ".join(l["text"] for l in ocr((1550, 900, 2560, 1100)))
-        if not re.search(r"(Löschen|Hinzufügen|Einfügen|Speichern|Laden|Konvertiere)\s*(…|\.\.\.)", text):
+        # 'Importiere Daten...' / 'Download aus dem Online-Katalog' /
+        # 'Zusammenführen der Produktdaten': ETS merges an added product with
+        # its online-catalog entry for ~10 s before the device appears.
+        if not re.search(r"(Löschen|Hinzufügen|Einfügen|Speichern|Laden|Konvertiere|Importiere|Download aus|Zusammenführen)", text):
             return time.time() - t0
         time.sleep(2)
     raise RuntimeError(f"ETS still busy after {int(timeout)} s")
@@ -705,7 +714,9 @@ def flow_catalog_add(req: dict) -> dict:
             keys("^a")
             keys("{DEL}")
             time.sleep(0.5)
-            keys(term + "{ENTER}")
+            keys(term)
+            time.sleep(0.4)
+            keys("{DEL}{ENTER}")  # drop ETS's autocompleted suffix (ZPR1612 -> ZPR1612V3)
             time.sleep(3 + 2 * attempt)
             click(1000, 1380 + dy)  # a neutral spot: closes the search-history dropdown
             time.sleep(0.5)
@@ -797,8 +808,19 @@ def flow_catalog_add(req: dict) -> dict:
             password_dialog = True
             break
         time.sleep(1)
-    after = flow_devices(req)["devices"]
-    new = [d for d in after if d["ia"] not in before]
+    # When ETS merges the product with its online-catalog entry ('Importiere
+    # Daten... / Zusammenführen der Produktdaten', ALLinBOX 1612 1.3,
+    # 2026-10-28) the device shows up 10-30 s after the click: poll.
+    t0 = time.time()
+    while True:
+        wait_busy()
+        after = flow_devices(req)["devices"]
+        new = [d for d in after if d["ia"] not in before]
+        if new or time.time() - t0 > float(req.get("add_wait", 60)):
+            break
+        if dismiss_password_dialog():
+            password_dialog = True
+        time.sleep(2)
     return {"devices": after, "added": new, "row": row, "password_dialog": password_dialog}
 
 
@@ -818,6 +840,13 @@ def flow_delete_device(req: dict) -> dict:
     confirmed = False
     while time.time() - t0 < float(req.get("confirm_wait", 10)):
         time.sleep(1)
+        if time.time() - t0 > 3 and not find_text("Möchten Sie", LAYOUT["delete_dialog"]):
+            # ETS deletes without asking once its confirmation is switched off
+            # (it was, 2026-10-28): the device leaving the list is the answer.
+            wait_busy()
+            if all(d["ia"] != req["ia"] for d in flow_devices(req)["devices"]):
+                confirmed = True
+                break
         if find_text("Möchten Sie die markierten Objekte", LAYOUT["delete_dialog"]):
             # Confirm only when the dialog names the device: an interrupted
             # flow once left the line selected, and 'Ja' deleted line 1.1
@@ -832,7 +861,17 @@ def flow_delete_device(req: dict) -> dict:
             break
     time.sleep(2)
     waited = wait_busy()
-    after = flow_devices(req)["devices"]
+    # A large product leaves the list seconds after the key press (ALLinBOX
+    # 1612, 2026-10-28): poll before calling the delete failed.
+    t1 = time.time()
+    while True:
+        after = flow_devices(req)["devices"]
+        gone = all(d["ia"] != req["ia"] for d in after)
+        if gone or time.time() - t1 > 20:
+            break
+        time.sleep(2)
+        waited += wait_busy()
+    confirmed = confirmed or gone
     return {"deleted": confirmed and all(d["ia"] != req["ia"] for d in after), "devices": after, "busy_wait": round(waited)}
 
 
@@ -1115,7 +1154,9 @@ def flow_catalog_search(req: dict) -> dict:
     click(sx, sy + dy)
     time.sleep(0.3)
     keys("^a")
-    keys(req["term"] + "{ENTER}")
+    keys(req["term"])
+    time.sleep(0.4)
+    keys("{DEL}{ENTER}")  # drop ETS's autocompleted suffix
     time.sleep(float(req.get("wait", 3)))
     click(1000, 1380 + dy)  # closes the search-history dropdown
     time.sleep(0.5)
@@ -1171,7 +1212,9 @@ def catalog_search_rows(term: str) -> list[dict]:
         keys("^a")
         keys("{DEL}")
         time.sleep(0.5)
-        keys(term + "{ENTER}")
+        keys(term)
+        time.sleep(0.4)
+        keys("{DEL}{ENTER}")  # drop ETS's autocompleted suffix
         time.sleep(3 + 2 * attempt)
         click(1000, 1380 + dy)
         time.sleep(0.5)

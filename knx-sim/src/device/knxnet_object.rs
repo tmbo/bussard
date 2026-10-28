@@ -63,8 +63,10 @@ pub struct KnxnetParameters {
 }
 
 /// The PIDs a simulated interface takes writes on: the tunnelling addresses,
-/// the assignment method, the static address set and the friendly name.
-pub const WRITABLE: [u8; 6] = [53, 55, 60, 61, 62, 76];
+/// the assignment method, the static address set, the routing multicast
+/// address and TTL (ETS writes 66 on a router download, ALLinBOX 1612) and the
+/// friendly name.
+pub const WRITABLE: [u8; 9] = [51, 53, 55, 60, 61, 62, 66, 67, 76];
 
 /// The `A_PropertyExtValue_WriteConResponse` APCI.
 pub const EXT_WRITE_CON_RESPONSE: u16 = 0x1CF;
@@ -108,7 +110,11 @@ impl KnxnetParameters {
             .take(30)
             .collect();
         name.resize(30, 0);
-        let values: [(u8, Vec<u8>); 17] = [
+        let values: [(u8, Vec<u8>); 21] = [
+            // PID 51 project installation id: ETS writes it first when it
+            // configures the IP part of a device (Zennio ALLinBOX 1612,
+            // ETS-against-sim capture 2026-10-28).
+            (51, vec![0, 0]),
             (52, self.individual_address.to_be_bytes().to_vec()),
             (
                 53,
@@ -122,12 +128,15 @@ impl KnxnetParameters {
             (60, self.configured[0].to_vec()),
             (61, self.configured[1].to_vec()),
             (62, self.configured[2].to_vec()),
+            (56, vec![0x07]),       // IP capabilities: BootP, DHCP, AutoIP
+            (63, vec![0, 0, 0, 0]), // DHCP/BootP server
             (64, self.mac.to_vec()),
             (65, self.system_setup_multicast.to_vec()),
             (66, self.routing_multicast.to_vec()),
             (67, vec![self.ttl]),
             (68, self.capabilities.to_be_bytes().to_vec()),
             (69, vec![self.state]),
+            (70, vec![0x00]), // routing capabilities: none listed
             (76, name),
         ];
         for (pid, value) in values {
@@ -301,10 +310,10 @@ pub fn ext_description(obj: &InterfaceObject, request: &[u8], slots: u16) -> Opt
 /// The element size in octets of a KNXnet/IP parameter object property.
 pub fn element_size(pid: u8) -> usize {
     match pid {
-        52 | 53 | 68 => 2,
+        51 | 52 | 53 | 68 => 2,
         // 205: the Jung IPS 300 SREG's preferred tunnel IP addresses
         // (`PID_ENX_BASICCRI_TUNNELLING_Preferred_IP`, bussard issue #390).
-        57..=62 | 65 | 66 | 205 => 4,
+        57..=63 | 65 | 66 | 205 => 4,
         64 => 6,
         _ => 1,
     }

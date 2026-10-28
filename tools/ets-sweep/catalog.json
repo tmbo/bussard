@@ -3226,14 +3226,11 @@
   "verified": false
  },
  "MDT_KP_SCN_01_Rain_Sensor_V11.knxprod": {
-  "outcome": "imported",
-  "products": [
-   "SCN-RSIR.OI Regensensor"
-  ],
-  "message": "Import erfolgreich. Datei: WOT_KP SCN Produkt: SCN-RSIR.OI Regensensar Version OK SL Ready &1.11",
-  "seconds": 21,
-  "when": "2026-10-27T13:42:48.184579+00:00",
-  "verified": false
+  "outcome": "error",
+  "products": [],
+  "message": "RuntimeError('desktop in use: ETS is not the foreground window; the sweep waits')",
+  "seconds": 1,
+  "when": "2026-10-28T10:52:44.734907+00:00"
  },
  "MDT_KP_SCN_01_Room_Temperature_Controller_Sensor_V14a.knxprod": {
   "outcome": "imported",
