@@ -83,6 +83,24 @@ def guessed_identity(app: str) -> list[dict] | None:
     return None
 
 
+def catalog_sibling(job: dict, r: dict, everything: dict[str, dict]) -> dict | None:
+    """When ETS's catalog shows another version of the same application for
+    this product (a catalog version mismatch), the job of that version."""
+    if r.get("outcome") != "skipped-catalog-version":
+        return None
+    m = APP_ID.match(job["id"])
+    shown = re.findall(r"\('[^']*', '([^']*)'", r.get("error") or "")
+    if not m or not shown:
+        return None
+    wanted = {re.sub(r"[^0-9a-z]", "", re.sub(r"^[^0-9]+", "", v.lower())) for v in shown}
+    for other in everything.values():
+        o = APP_ID.match(other["id"])
+        if (o and other["id"] != job["id"] and o.group(1) == m.group(1) and o.group(2) == m.group(2)
+                and other["order_numbers"] == job["order_numbers"] and o.group(3).lower() in wanted):
+            return other
+    return None
+
+
 def jobs() -> list[dict]:
     """One job per application, and per hardware only the newest version of
     an application: the same order numbers and application number in several
@@ -129,6 +147,7 @@ def main() -> int:
 
     results = json.loads(RESULTS.read_text()) if RESULTS.exists() else {}
     todo = jobs()
+    everything = {j["id"]: j for j in todo}
     wanted = [w.lower() for w in args.filter.split(",") if w]
     if wanted:
         todo = [j for j in todo if any(w in (j["id"] + " " + (j["name"] or "") + " " + j["file"]).lower() for w in wanted)]
@@ -207,7 +226,9 @@ def main() -> int:
                 print(f"stopping: the VM desktop is not usable: {imp.get('error', '')[:160]}", flush=True)
                 break
             continue
-        for job in file_jobs:
+        queue = list(file_jobs)
+        while queue:
+            job = queue.pop(0)
             prev = results.get(job["id"])
             base = {"file": job["file"], "name": job["name"], "mask": job["mask"], "when": datetime.now(timezone.utc).isoformat()}
             try:
@@ -243,6 +264,13 @@ def main() -> int:
                 print(f"stopping: the VM desktop is not usable: {r.get('error', '')[:160]}", flush=True)
                 stop = True
                 break
+            sibling = catalog_sibling(job, r, everything)
+            if sibling and sibling["id"] not in [q["id"] for q in queue]:
+                # One Hardware2Program maps several versions of the application
+                # to the hardware (ABB BM/A4.11-13x: 8.2 and 8.3) and ETS's
+                # catalog row offers only the first: run that one instead.
+                print(f"sibling {sibling['id']} is the version ETS's catalog offers", flush=True)
+                queue.insert(0, {**sibling, "older": None})
             done += 1
             if args.limit and done >= args.limit:
                 stop = True
