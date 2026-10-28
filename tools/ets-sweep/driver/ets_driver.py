@@ -254,8 +254,10 @@ def click(x: int, y: int, button: str = "left", double: bool = False) -> None:
         except Exception as exc:  # noqa: BLE001 - pywintypes.error is no OSError
             # SetCursorPos fails with 258 'Wartevorgang abgebrochen' while the
             # session's input desktop is busy (just after an RDP reconnect,
-            # and once mid-sweep, 2026-10-28).
-            if attempt == 5 or "SetCursorPos" not in str(exc) and not isinstance(exc, OSError):
+            # and once mid-sweep, 2026-10-28); pywinauto reports 'There is no
+            # active desktop' for the same moment.
+            transient = "SetCursorPos" in str(exc) or "no active desktop" in str(exc)
+            if attempt == 5 or not transient and not isinstance(exc, OSError):
                 raise
             time.sleep(3)
 
