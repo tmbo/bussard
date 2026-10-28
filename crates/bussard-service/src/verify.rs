@@ -186,6 +186,9 @@ pub struct Expected<'a> {
     pub tables: Option<DesiredTables>,
     /// The group-object table's element count.
     pub group_objects: Option<u16>,
+    /// The System B group-object table image an `apply` reloaded (issue
+    /// #540): its count and every descriptor are compared.
+    pub object_table: Option<Vec<u8>>,
     /// The parameter values.
     pub parameters: Option<ExpectedParameters<'a>>,
     /// The security object.
@@ -241,6 +244,7 @@ impl<'a> Expected<'a> {
         Expected {
             tables,
             group_objects,
+            object_table: None,
             parameters: Some(ExpectedParameters {
                 product,
                 app,
@@ -268,6 +272,9 @@ pub enum LeftoverKind {
     GroupObjects,
     /// A System 7 group object's communication flag (C, in its CONFIG octet).
     CommunicationFlag,
+    /// A System B group-object descriptor, or the table it sits in (issue
+    /// #540).
+    GroupObjectDescriptor,
     /// A parameter value.
     Parameter,
     /// The group key table's (PID 53) element count.
@@ -484,6 +491,9 @@ pub async fn read_back<Ch: L4Channel>(
                 .push(format!("tables not compared: {}", chain(&err))),
         }
     }
+    if let Some(model) = &expected.object_table {
+        compare_object_table(l4, &mut out, model).await;
+    }
     if let Some(p) = &expected.parameters {
         let target = l4.target();
         let flashed = crate::params::read_flashed_parameters(
@@ -632,6 +642,57 @@ fn compare_tables(out: &mut WriteReadback, live: &DeviceTables, expected: &Expec
                 .push("group-object count not compared: the table did not read".to_string()),
         }
     }
+}
+
+/// The System B group-object table against the image an `apply` reloaded
+/// (issue #540): every descriptor that differs is a leftover, and so is a
+/// table that cannot be read (the reload cannot be confirmed).
+async fn compare_object_table<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    out: &mut WriteReadback,
+    model: &[u8],
+) {
+    let count = model
+        .get(..2)
+        .map_or(0, |w| usize::from(u16::from_be_bytes([w[0], w[1]])));
+    let read = match bussard_download::find_object_table(l4).await {
+        Ok(Some(index)) => bussard_download::read_object_table_at(l4, index, count)
+            .await
+            .map_err(|e| chain(&e)),
+        Ok(None) => Err("no group-object table object (type 9)".to_string()),
+        Err(e) => Err(chain(&e)),
+    };
+    let live = match read {
+        Ok(live) => live,
+        Err(why) => {
+            out.push(
+                LeftoverKind::GroupObjectDescriptor,
+                "group-object table".to_string(),
+                format!("no answer ({why})"),
+                entries(count),
+            );
+            return;
+        }
+    };
+    if let Some(change) = bussard_download::ObjectTableChange::between(&live, model) {
+        for c in &change.objects {
+            out.push(
+                LeftoverKind::GroupObjectDescriptor,
+                format!("object {} descriptor", c.object),
+                format!("{:04X}", c.from),
+                format!("{:04X}", c.to),
+            );
+        }
+        if change.from_count != change.to_count {
+            out.push(
+                LeftoverKind::GroupObjects,
+                "group-object table".to_string(),
+                entries(change.from_count),
+                entries(change.to_count),
+            );
+        }
+    }
+    out.compared.group_objects = Some(live.count);
 }
 
 /// The System 7 communication flags against the model's links: C on for

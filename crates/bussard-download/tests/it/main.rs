@@ -5,6 +5,7 @@
 //! nextest still runs every test in its own process.
 
 mod apply_mock;
+mod apply_object_table_mock;
 mod compare_rel_mem;
 mod enum_default_plan;
 mod ets_golden;

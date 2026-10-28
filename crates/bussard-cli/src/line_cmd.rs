@@ -686,9 +686,10 @@ async fn visit_one(
         Err(err) => return make(None, DeviceStatus::Failed(one_line(&err.to_string()))),
     };
 
-    let live = match read_device(
+    let (live, object_table) = match read_device_and_object_table(
         service,
         source,
+        model,
         target.address,
         product.as_ref(),
         &tool_key,
@@ -696,8 +697,8 @@ async fn visit_one(
     )
     .await
     {
-        Ok(plan_cmd::LiveRead::Tables(live)) => live,
-        Ok(plan_cmd::LiveRead::UnsupportedMask { mask, .. }) => {
+        Ok((plan_cmd::LiveRead::Tables(live), object_table)) => (live, object_table),
+        Ok((plan_cmd::LiveRead::UnsupportedMask { mask, .. }, _)) => {
             return make(
                 Some(mask),
                 DeviceStatus::Skipped(format!(
@@ -736,8 +737,34 @@ async fn visit_one(
     if !unchecked.is_empty() {
         eprintln!("  {}", unchecked_flags_note(&unchecked));
     }
-    let changes = report.additions.len() + report.removals.len() + flag_writes;
-    if report.is_noop() && flag_writes == 0 {
+    // A System B group-object table that differs from the image the full
+    // flash writes is reloaded first (issue #540), as the single-device apply
+    // does; without a comparison a newly linked object is named.
+    let reload = match &object_table {
+        Some(check) => match &check.live {
+            Ok(_) => check.change().map(|change| {
+                for sentence in change.sentences() {
+                    eprintln!("  group-object table: {sentence}");
+                }
+                (check.model.clone(), change.objects.len().max(1))
+            }),
+            Err(why) => {
+                note_unchecked_object_table(&report, why);
+                None
+            }
+        },
+        None if sys7_live.is_none() => {
+            note_unchecked_object_table(&report, "no product data writes it");
+            None
+        }
+        None => None,
+    };
+    let tables_change = !report.is_noop() || flag_writes > 0;
+    let changes = report.additions.len()
+        + report.removals.len()
+        + flag_writes
+        + reload.as_ref().map_or(0, |(_, n)| *n);
+    if !tables_change && reload.is_none() {
         return make(Some(mask), DeviceStatus::Unchanged);
     }
     if mode == Mode::Plan {
@@ -798,7 +825,11 @@ async fn visit_one(
             desired,
             &tool_key,
             &secure_seq,
-            security.as_ref(),
+            bussard_download::SystemBLoad {
+                security: security.as_ref(),
+                object_table: reload.as_ref().map(|(image, _)| image.as_slice()),
+                keep_tables: !tables_change,
+            },
         )
         .await
         .map(|v| (v.ok(), false, format!("{v:?}")))
@@ -835,8 +866,9 @@ async fn visit_one(
         }
         Ok((true, _, _)) => {
             // A verified secured System B write put this PID 54 table on the
-            // device: record it in the lock, as `adopt` does (issue #297).
-            if let (Some(inputs), None) = (&security, &sys7_live)
+            // device: record it in the lock, as `adopt` does (issue #297). A
+            // reload of the group-object table alone does not write it.
+            if let (Some(inputs), None, true) = (&security, &sys7_live, tables_change)
                 && let Err(err) = bussard_service::admission::record_secure_senders(
                     dir,
                     target.address,
@@ -968,6 +1000,67 @@ async fn read_device(
         })
         .await
         .map_err(|err| session_open_error(err, || "connecting to the device".to_string()))?
+}
+
+/// [`read_device`] that, on a System B device with product data, also reads
+/// its group-object table against the image the full flash writes (issue
+/// #540), over the same session.
+async fn read_device_and_object_table(
+    service: &BusService,
+    source: IndividualAddress,
+    model: &Model,
+    target: IndividualAddress,
+    product: Option<&crate::param_readback::ProductSource>,
+    tool_key: &Option<bussard_secure::Key16>,
+    secure_seq: &bussard_secure::SequenceHighWater,
+) -> anyhow::Result<(
+    plan_cmd::LiveRead,
+    Option<bussard_download::ObjectTableCheck>,
+)> {
+    let options = read_options(source, tool_key, secure_seq);
+    service
+        .with_l4(target, &options, async |l4| {
+            let read = plan_cmd::read_live_tables(l4, product).await;
+            let check = match (&read, product) {
+                (Ok(plan_cmd::LiveRead::Tables(live)), Some(product)) if live.sys7().is_none() => {
+                    match product.app().map(|app| {
+                        bussard_download::plan_for_readback(
+                            &product.product,
+                            app,
+                            Some(model),
+                            target,
+                            live.tables().mask,
+                        )
+                    }) {
+                        Some(Ok(plan)) => bussard_download::check_object_table(l4, &plan).await,
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            Ok::<_, ServiceError>(read.map(|read| (read, check)))
+        })
+        .await
+        .map_err(|err| session_open_error(err, || "connecting to the device".to_string()))?
+}
+
+/// Prints the note for newly linked System B objects whose communication flag
+/// was not checked, because the group-object table was not compared.
+fn note_unchecked_object_table(report: &bussard_download::PlanReport, why: &str) {
+    let objects: std::collections::BTreeSet<u16> =
+        report.additions.iter().map(|a| a.object).collect();
+    if objects.is_empty() {
+        return;
+    }
+    let list = objects
+        .iter()
+        .map(u16::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    eprintln!(
+        "  object(s) {list}: newly linked, but the communication flag was not checked (the \
+         group-object table was not compared: {why}); the device may ignore these links"
+    );
 }
 
 /// Flattens a multi-line error into one summary-table cell.

@@ -139,6 +139,40 @@ pub struct PlanWrites {
     /// table-only downloads do (see [`crate::apply_sys7`]).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub restart: bool,
+    /// The System B group-object table is reloaded from the image the full
+    /// flash writes, because the device's differs from it (issue #540, see
+    /// [`crate::object_table`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_object_table: Option<ObjectTableWrite>,
+}
+
+/// A System B group-object table reload, for the plan's `writes` line.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ObjectTableWrite {
+    /// The table's entry count after the write.
+    pub entries: usize,
+    /// The objects whose descriptor changes, ascending.
+    pub objects: Vec<u16>,
+}
+
+impl ObjectTableWrite {
+    /// `group-object table (12 entries; object 7 changes)`.
+    pub fn describe(&self) -> String {
+        let objects: Vec<String> = self.objects.iter().map(u16::to_string).collect();
+        match objects.len() {
+            0 => format!("group-object table ({})", entries(self.entries)),
+            1 => format!(
+                "group-object table ({}; object {} changes)",
+                entries(self.entries),
+                objects[0]
+            ),
+            _ => format!(
+                "group-object table ({}; objects {} change)",
+                entries(self.entries),
+                objects.join(", ")
+            ),
+        }
+    }
 }
 
 /// What a full application download writes, for the plan's `writes` line.
@@ -198,6 +232,7 @@ impl PlanWrites {
             && self.full_image.is_none()
             && self.interface_properties.is_empty()
             && self.communication_flags.is_empty()
+            && self.group_object_table.is_none()
     }
 
     /// `address table (4 entries), association table (5 entries), 1 parameter
@@ -211,6 +246,10 @@ impl PlanWrites {
                 parts.push("security object (PID 53, 54, 61)".to_string());
             }
             return parts.join(", ");
+        }
+        // The group-object table is loaded first (issue #540).
+        if let Some(table) = &self.group_object_table {
+            parts.push(table.describe());
         }
         if let Some(n) = self.address_table {
             parts.push(format!("address table ({})", entries(n)));
@@ -500,6 +539,17 @@ fn put(hasher: &mut Sha256, bytes: &[u8]) {
 /// `plan --json` prints it; `apply --plan <hash>` and `knx_apply_device`
 /// with `plan_hash` recompute it from a fresh read and refuse on a mismatch.
 pub fn state_hash(live: &LiveTables, params: Option<&ParamRegions>) -> String {
+    state_hash_with(live, params, None)
+}
+
+/// [`state_hash`] that also covers the System B group-object table as read
+/// (issue #540): `object_table` is the octets read
+/// ([`crate::LiveObjectTable::image`]). `None` hashes as [`state_hash`].
+pub fn state_hash_with(
+    live: &LiveTables,
+    params: Option<&ParamRegions>,
+    object_table: Option<&[u8]>,
+) -> String {
     let tables = live.tables();
     let mut h = Sha256::new();
     put(&mut h, b"bussard-device-state-v1");
@@ -544,6 +594,12 @@ pub fn state_hash(live: &LiveTables, params: Option<&ParamRegions>) -> String {
             }
         }
         None => put(&mut h, b"no-parameters"),
+    }
+    // Only a read table is hashed, so every hash computed without one stays
+    // what it was.
+    if let Some(image) = object_table {
+        put(&mut h, b"object-table");
+        put(&mut h, image);
     }
     let bytes: [u8; 32] = h.finalize().into();
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -726,6 +782,7 @@ mod tests {
                 interface_properties: Vec::new(),
                 communication_flags: Vec::new(),
                 restart: false,
+                group_object_table: None,
             },
             backup_dir: "knx/captures/backups/".to_string(),
             notes: Vec::new(),
@@ -774,6 +831,46 @@ mod tests {
             "address table (6 entries), association table (6 entries), \
              communication flags (objects 32, 33), then a restart"
         );
+    }
+
+    /// Issue #540: a System B group-object table reload is a write of its
+    /// own, named first (it is loaded before the link tables).
+    #[test]
+    fn test_plan_writes_describe_a_group_object_table_reload() {
+        let mut writes = PlanWrites {
+            group_object_table: Some(ObjectTableWrite {
+                entries: 12,
+                objects: vec![7],
+            }),
+            ..PlanWrites::default()
+        };
+        assert!(!writes.is_empty());
+        assert_eq!(
+            writes.describe(),
+            "group-object table (12 entries; object 7 changes)"
+        );
+        writes.address_table = Some(3);
+        writes.association_table = Some(4);
+        writes.group_object_table = Some(ObjectTableWrite {
+            entries: 12,
+            objects: vec![7, 9],
+        });
+        assert_eq!(
+            writes.describe(),
+            "group-object table (12 entries; objects 7, 9 change), address table (3 entries), \
+             association table (4 entries)"
+        );
+    }
+
+    /// Issue #540: the group-object table as read is part of the state hash,
+    /// and a hash without one is the plain [`state_hash`].
+    #[test]
+    fn test_state_hash_with_covers_the_object_table() {
+        let a = live(&[0x0A00]);
+        assert_eq!(state_hash_with(&a, None, None), state_hash(&a, None));
+        let one = state_hash_with(&a, None, Some(&[0, 1, 0x18, 0]));
+        assert_ne!(one, state_hash(&a, None));
+        assert_ne!(one, state_hash_with(&a, None, Some(&[0, 1, 0x1C, 0])));
     }
 
     /// Issue #326: a full download with parameter changes and unchanged

@@ -568,7 +568,15 @@ fn run_loop(
     // a full flash of the same model must change nothing the plan sees.
     let partial = last.partial_change(app, &mut rng);
     bench.write_device(&partial).map_err(infra("setup"))?;
-    bench.apply("apply partial change")?;
+    // Issue #540: a link to an object the flash left unlinked changes the
+    // group-object table on System B. The plan names the reload, `apply`
+    // runs it, and the plan after it (which compares the table) is a no-op.
+    let reload = bench.object_table_reload("plan before apply")?;
+    eprintln!(
+        "sim-loop: {}: the partial change reloads the group-object table: {reload}",
+        app.id
+    );
+    bench.apply("apply partial change", reload)?;
     bench.plan_noop("plan after apply")?;
     bench.flash("flash after apply")?;
     bench.plan_noop("plan after flash after apply")?;
@@ -937,7 +945,8 @@ impl Configuration {
     }
 
     /// The partial change set: up to three shown parameters take another
-    /// value that keeps the object table, one link is added and one removed.
+    /// value that keeps the object table, one link is added on an object
+    /// that had none and one removed.
     fn partial_change(&self, app: &ApplicationProgram, rng: &mut SplitMix64) -> Configuration {
         let mut out = self.clone();
         out.label = format!("{} + partial change", self.label);
@@ -970,15 +979,18 @@ impl Configuration {
                 changed += 1;
             }
         }
-        // One link out (when another stays), one in.
-        if out.links.len() > 1 {
-            let keys: Vec<u16> = out.links.keys().copied().collect();
-            let i = rng.below(keys.len() as u64) as usize;
-            if let Some(k) = keys.get(i) {
+        // One link in, on an object the flashed configuration leaves
+        // unlinked (issue #540: the flash cleared its communication flag, so
+        // `apply` must reload the group-object table), then one of the old
+        // links out (when another stays).
+        let old: Vec<u16> = out.links.keys().copied().collect();
+        out.add_links(app, rng, 1);
+        if old.len() > 1 {
+            let i = rng.below(old.len() as u64) as usize;
+            if let Some(k) = old.get(i) {
                 out.links.remove(k);
             }
         }
-        out.add_links(app, rng, 1);
         out
     }
 
@@ -1382,15 +1394,58 @@ impl Bench<'_> {
         }
     }
 
-    fn apply(&self, step: &str) -> Result<(), Stop> {
+    /// `apply`; with `reload`, its output must report the group-object
+    /// table reloaded and read back (issue #540).
+    fn apply(&self, step: &str, reload: bool) -> Result<(), Stop> {
         let run = self
             .bussard(&["apply", DEVICE, "--yes"])
             .map_err(infra(step))?;
-        if run.ok {
-            Ok(())
-        } else {
-            Err(Stop::Fail(step.to_string(), run.tail()))
+        if !run.ok {
+            return Err(Stop::Fail(step.to_string(), run.tail()));
         }
+        if reload && !run.stdout.contains("group-object table reloaded") {
+            return Err(Stop::Fail(
+                step.to_string(),
+                format!(
+                    "the plan named a group-object table reload, apply did not report one\n{}",
+                    run.tail()
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// `plan --json` before an `apply`: whether it reloads the System B
+    /// group-object table (issue #540). A plan that left a newly linked
+    /// object's communication flag unchecked fails the step: the loop has
+    /// product data, so the table must have been compared.
+    fn object_table_reload(&self, step: &str) -> Result<bool, Stop> {
+        let run = self
+            .bussard(&["plan", DEVICE, "--json"])
+            .map_err(infra(step))?;
+        if !run.ok {
+            return Err(Stop::Fail(step.to_string(), run.tail()));
+        }
+        let plan: serde_json::Value = serde_json::from_str(&run.stdout).map_err(|e| {
+            Stop::Fail(
+                step.to_string(),
+                format!("plan --json: {e}\n{}", run.tail()),
+            )
+        })?;
+        let unchecked = plan
+            .get("notes")
+            .and_then(|n| n.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|n| n.as_str())
+            .find(|n| n.contains("communication flag not checked"));
+        if let Some(note) = unchecked {
+            return Err(Stop::Fail(step.to_string(), note.to_string()));
+        }
+        Ok(plan
+            .get("writes")
+            .and_then(|w| w.get("group_object_table"))
+            .is_some_and(|t| t.is_object()))
     }
 
     /// `plan --json` must be a no-op with the parameters decoded.
@@ -1420,7 +1475,14 @@ impl Bench<'_> {
         }
         if let Some(writes) = plan.get("writes").and_then(|w| w.as_object()) {
             for (what, n) in writes {
-                if n.as_u64().is_some_and(|n| n > 0) || n.as_bool() == Some(true) {
+                // A count, a flag, or a write described by an object or a
+                // list (the group-object table reload of issue #540, the
+                // System 7 communication flags, a full image).
+                if n.as_u64().is_some_and(|n| n > 0)
+                    || n.as_bool() == Some(true)
+                    || n.is_object()
+                    || n.as_array().is_some_and(|a| !a.is_empty())
+                {
                     problems.push(format!("writes {what}: {n}"));
                 }
             }

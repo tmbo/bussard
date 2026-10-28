@@ -292,7 +292,11 @@ pub async fn write_system_b_secured<Ch: L4Channel>(
     secure: SecureLayer,
     security: Option<&crate::security::SecurityInputs>,
 ) -> Result<VerifyOutcome, WriteError> {
-    write_system_b_seeded(channel, target, source, desired, secure, security, None).await
+    let load = crate::apply::SystemBLoad {
+        security,
+        ..Default::default()
+    };
+    write_system_b_seeded(channel, target, source, desired, secure, load, None).await
 }
 
 /// [`write_system_b_secured`] on a connection seeded with the device facts the
@@ -300,14 +304,16 @@ pub async fn write_system_b_secured<Ch: L4Channel>(
 /// `PID_OBJECT_TYPE` walks of the table discovery and of the read-back, the
 /// max APDU replaces the `PID_MAX_APDU_LENGTH` read, and the mask replaces the
 /// read-back's descriptor read. The written frames are the same with or
-/// without a seed; `None` is [`write_system_b_secured`].
+/// without a seed; `None` is [`write_system_b_secured`]. `load` adds the
+/// security object and the group-object table reload (issue #540, see
+/// [`crate::apply::apply_tables_with`]).
 pub async fn write_system_b_seeded<Ch: L4Channel>(
     channel: Ch,
     target: IndividualAddress,
     source: IndividualAddress,
     desired: &DesiredTables,
     secure: SecureLayer,
-    security: Option<&crate::security::SecurityInputs>,
+    load: crate::apply::SystemBLoad<'_>,
     seed: Option<bussard_mgmt::ConnectionSeed>,
 ) -> Result<VerifyOutcome, WriteError> {
     let mut l4 = Layer4Connection::connect_with_secure(
@@ -339,7 +345,7 @@ pub async fn write_system_b_seeded<Ch: L4Channel>(
     // opening property read (#116); the table writes then use its chunk size.
     negotiate_session_apdu(&mut l4).await?;
     let objects = discover_table_objects(&mut l4).await?;
-    let result = crate::apply::apply_tables_secured(&mut l4, objects, desired, security).await;
+    let result = crate::apply::apply_tables_with(&mut l4, objects, desired, load).await;
     let _ = l4.disconnect().await;
     result
 }
@@ -403,6 +409,9 @@ pub struct TableWriteSummary {
     /// the device drops off the bus while it starts, so the caller waits for
     /// it to answer again before the next connection.
     pub restarted: bool,
+    /// The System B group-object table reload, when the write carried one
+    /// (issue #540).
+    pub object_table: Option<crate::object_table::ObjectTableOutcome>,
 }
 
 /// Runs the write for whichever family the device is: the System 7 path when
@@ -446,6 +455,10 @@ pub async fn write_tables_secured<Ch: L4Channel>(
     secure: SecureLayer,
     security: Option<&crate::security::SecurityInputs>,
 ) -> Result<TableWriteSummary, String> {
+    let load = crate::apply::SystemBLoad {
+        security,
+        ..Default::default()
+    };
     write_tables_seeded(
         channel,
         target,
@@ -454,15 +467,17 @@ pub async fn write_tables_secured<Ch: L4Channel>(
         desired,
         sys7_images,
         secure,
-        security,
+        load,
         None,
     )
     .await
 }
 
 /// [`write_tables_secured`] with the verified device facts of the read phase
-/// seeded into the System B write connection (see [`write_system_b_seeded`]).
-/// The System 7 path takes no seed.
+/// seeded into the System B write connection (see [`write_system_b_seeded`]),
+/// and the System B `load` beyond the link tables: the security object and
+/// the group-object table reload (issue #540). The System 7 path takes no
+/// seed and ignores `load`.
 #[allow(clippy::too_many_arguments)] // `write_tables_secured`' inputs plus the seed
 pub async fn write_tables_seeded<Ch: L4Channel>(
     channel: Ch,
@@ -472,7 +487,7 @@ pub async fn write_tables_seeded<Ch: L4Channel>(
     desired: &DesiredTables,
     sys7_images: Option<&Sys7TableImages>,
     secure: SecureLayer,
-    security: Option<&crate::security::SecurityInputs>,
+    load: crate::apply::SystemBLoad<'_>,
     seed: Option<bussard_mgmt::ConnectionSeed>,
 ) -> Result<TableWriteSummary, String> {
     match sys7_images {
@@ -484,9 +499,10 @@ pub async fn write_tables_seeded<Ch: L4Channel>(
                 association_state: v.association_state,
                 detail: format!("{v:?}"),
                 restarted: v.restarted,
+                object_table: None,
             })
             .map_err(|e| e.to_string()),
-        None => write_system_b_seeded(channel, target, source, desired, secure, security, seed)
+        None => write_system_b_seeded(channel, target, source, desired, secure, load, seed)
             .await
             .map(|v| TableWriteSummary {
                 ok: v.ok(),
@@ -494,6 +510,7 @@ pub async fn write_tables_seeded<Ch: L4Channel>(
                 association_state: v.association_state,
                 detail: format!("{v:?}"),
                 restarted: false,
+                object_table: v.object_table.clone(),
             })
             .map_err(|e| e.to_string()),
     }

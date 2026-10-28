@@ -525,7 +525,11 @@ pub(crate) fn apply_desired(
         .as_ref()
         .is_some_and(|(_, images)| !images.flag_writes.is_empty());
     let tables_change = !report.is_noop() || admits || flags_change || object_flags;
-    if !tables_change && partial.is_none() {
+    // A System B group-object table that differs from the image the full
+    // flash writes is reloaded first (issue #540): a link the last flash did
+    // not know left its object's communication flag off.
+    let object_table = built.as_ref().and_then(|b| b.object_table.clone());
+    if !tables_change && object_table.is_none() && partial.is_none() {
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -581,6 +585,7 @@ pub(crate) fn apply_desired(
     let expected = bussard_service::verify::Expected {
         tables: Some(desired.clone()),
         group_objects: None,
+        object_table: object_table.clone(),
         parameters: match (partial, param_detail, write.product) {
             (Some(_), Some(_), Some(product)) => {
                 product
@@ -604,7 +609,7 @@ pub(crate) fn apply_desired(
         properties: Vec::new(),
         table_bases: plan_cmd::table_bases(write.product),
     };
-    let (code, read_back) = if tables_change {
+    let (code, read_back) = if tables_change || object_table.is_some() {
         write_tables_then_parameters(
             &runtime,
             service,
@@ -613,7 +618,11 @@ pub(crate) fn apply_desired(
             source,
             &desired,
             sys7.as_ref().map(|(_, images)| images),
-            security.as_ref(),
+            bussard_download::SystemBLoad {
+                security: security.as_ref(),
+                object_table: object_table.as_deref(),
+                keep_tables: !tables_change,
+            },
             &report,
             origin,
             model,
@@ -703,10 +712,11 @@ struct ParamWrite<'a> {
     backup: Option<&'a Path>,
 }
 
-/// Writes the tables (and the security object of a secured System B write),
-/// records what a verified write programmed, then writes the parameter
-/// octets that differ. Returns the exit code of the write sequence; the
-/// read-back after it decides whether the apply verified.
+/// Writes the tables (with, on System B, the group-object table reload and
+/// the security object `load` carries), records what a verified write
+/// programmed, then writes the parameter octets that differ. Returns the exit
+/// code of the write sequence; the read-back after it decides whether the
+/// apply verified.
 #[allow(clippy::too_many_arguments)] // one write phase's context
 fn write_tables_then_parameters(
     runtime: &tokio::runtime::Runtime,
@@ -716,7 +726,7 @@ fn write_tables_then_parameters(
     source: IndividualAddress,
     desired: &DesiredTables,
     images: Option<&Sys7TableImages>,
-    security: Option<&bussard_download::SecurityInputs>,
+    load: bussard_download::SystemBLoad<'_>,
     report: &PlanReport,
     origin: &DesiredSource,
     model: Option<&bussard_model::Model>,
@@ -743,7 +753,7 @@ fn write_tables_then_parameters(
         let secure = crate::secure_key::layer(tool_key, secure_seq);
         anyhow::Ok(
             write_tables_seeded(
-                channel, target, source, mask, desired, images, secure, security, write_seed,
+                channel, target, source, mask, desired, images, secure, load, write_seed,
             )
             .await,
         )
@@ -753,6 +763,12 @@ fn write_tables_then_parameters(
 
     match outcome {
         Ok(summary) if summary.ok => {
+            if let Some(table) = &summary.object_table {
+                println!(
+                    "\ngroup-object table reloaded and read back: {} ({} entries)",
+                    table.state, table.entries
+                );
+            }
             println!(
                 "\n{} verified: address table {} ({} entries), association table {} ({} entries)",
                 origin.verb(),
@@ -785,7 +801,9 @@ fn write_tables_then_parameters(
             }
             // The security object was written with this PID 54 table and the
             // write verified: record it in the lock, as `adopt` does (issue
-            // #297), so the sender admission check sees it.
+            // #297), so the sender admission check sees it. A reload of the
+            // group-object table alone does not write it.
+            let security = load.security.filter(|_| !load.keep_tables);
             if let (Some(inputs), Some(_)) = (security, model) {
                 match bussard_service::admission::record_secure_senders(
                     dir,
@@ -864,7 +882,9 @@ pub(crate) async fn execute_sys7(
     bussard_download::write_sys7(channel, target, source, mask, images, secure).await
 }
 
-/// Runs the on-bus write sequence: discover the table objects, then apply.
+/// Runs the on-bus write sequence: discover the table objects, then apply,
+/// with the security object and the group-object table reload `load`
+/// carries (issue #540).
 pub(crate) async fn execute(
     channel: LeaseChannel,
     target: IndividualAddress,
@@ -872,10 +892,10 @@ pub(crate) async fn execute(
     desired: &DesiredTables,
     tool_key: &Option<bussard_secure::Key16>,
     secure_seq: &bussard_secure::SequenceHighWater,
-    security: Option<&bussard_download::SecurityInputs>,
+    load: bussard_download::SystemBLoad<'_>,
 ) -> Result<VerifyOutcome, bussard_mgmt::load::WriteError> {
     let secure = crate::secure_key::layer(tool_key, secure_seq);
-    bussard_download::write_system_b_secured(channel, target, source, desired, secure, security)
+    bussard_download::write_system_b_seeded(channel, target, source, desired, secure, load, None)
         .await
 }
 

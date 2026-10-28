@@ -86,7 +86,7 @@ use bussard_bus::BusHandle;
 use bussard_download::{
     DesiredTables, LiveRead, LiveTables, PlanReport, SecureSenderEntry, SecurityInputs,
     Sys7TableImages, desired_tables_for_app, plan, render_full_image_plan_text, render_plan_text,
-    sys7_table_images, write_pre_write_backup, write_tables_secured,
+    sys7_table_images, write_pre_write_backup, write_tables_seeded,
 };
 use bussard_mgmt::{Layer4Connection, LeaseChannel, MaskProfile, Timeouts, system_type};
 use bussard_model::history::{History, SnapshotReason};
@@ -748,7 +748,8 @@ impl BussardMcp {
         // with the tables too.
         let tables_noop = report.is_noop()
             && !built.plan.writes.security_object
-            && built.plan.writes.communication_flags.is_empty();
+            && built.plan.writes.communication_flags.is_empty()
+            && built.object_table.is_none();
         let noop = tables_noop && built.partial.is_none() && flash.is_none();
         if noop {
             // The device already holds the model: nothing this session
@@ -1390,6 +1391,8 @@ impl BussardMcp {
         let tables_change = !report.is_noop()
             || built.plan.writes.security_object
             || !built.plan.writes.communication_flags.is_empty();
+        // The System B group-object table reload (issue #540), written first.
+        let object_table = built.object_table.clone();
         let param_write = match (
             &built.partial,
             read.params.as_ref().and_then(|p| p.detail.as_ref()),
@@ -1409,6 +1412,7 @@ impl BussardMcp {
         let expected = bussard_service::verify::Expected {
             tables: Some(desired.clone()),
             group_objects: None,
+            object_table: object_table.clone(),
             parameters: match (&param_write, &product) {
                 (Some(_), Some(source)) => {
                     source
@@ -1445,8 +1449,9 @@ impl BussardMcp {
         // to read back.
         let mut stopped = false;
         'write: {
-            // The tables first, when a link changes.
-            if tables_change {
+            // The tables first, when a link changes (with the group-object
+            // table reload before them, issue #540).
+            if tables_change || object_table.is_some() {
                 tier.jobs.step(
                     job,
                     "writing the group-address and association tables, then reading them back",
@@ -1467,7 +1472,7 @@ impl BussardMcp {
                         break 'write;
                     }
                 };
-                let outcome = write_tables_secured(
+                let outcome = write_tables_seeded(
                     LeaseChannel::new(lease),
                     target,
                     source,
@@ -1475,7 +1480,12 @@ impl BussardMcp {
                     &desired,
                     images.as_ref(),
                     bussard_service::secure::layer(&tool_key, &high_water),
-                    security.as_ref(),
+                    bussard_download::SystemBLoad {
+                        security: security.as_ref(),
+                        object_table: object_table.as_deref(),
+                        keep_tables: !tables_change,
+                    },
+                    None,
                 )
                 .await;
                 let verified = matches!(&outcome, Ok(summary) if summary.ok);
@@ -1501,6 +1511,11 @@ impl BussardMcp {
                             "association_state": summary.association_state.to_string(),
                             "resulting_address_count": report.resulting_address_count,
                             "resulting_association_count": report.resulting_association_count,
+                            "group_object_table": summary.object_table.as_ref().map(|t| json!({
+                                "state": t.state.to_string(),
+                                "entries": t.entries,
+                                "read_back_matches": t.matches,
+                            })),
                             "detail": if summary.ok { Value::Null } else { Value::String(summary.detail) },
                             "recovery": if summary.ok { Value::Null } else { Value::String(recovery.clone()) },
                         }),
@@ -1571,8 +1586,9 @@ impl BussardMcp {
                 }
                 // The security object was written with this PID 54 table and the
                 // write verified: record it in the lock, as `adopt` does (issue
-                // #297), so the sender admission check sees it.
-                if let Some(inputs) = &security {
+                // #297), so the sender admission check sees it. A reload of the
+                // group-object table alone does not write it (issue #540).
+                if let Some(inputs) = security.as_ref().filter(|_| tables_change) {
                     match bussard_service::admission::record_secure_senders(
                         &dir,
                         target,
@@ -2509,6 +2525,18 @@ fn live_digest(read: &DeviceRead) -> [u8; 32] {
     if let Some(flags) = &read.go_flags {
         put(&mut h, b"pid61");
         put(&mut h, flags);
+    }
+    // The System B group-object table when it was read (issue #540),
+    // likewise.
+    if let Some(table) = read
+        .params
+        .as_ref()
+        .and_then(|p| p.detail.as_ref())
+        .and_then(|d| d.object_table.as_ref())
+        .and_then(|c| c.live.as_ref().ok())
+    {
+        put(&mut h, b"object-table");
+        put(&mut h, &table.image());
     }
     h.finalize().into()
 }

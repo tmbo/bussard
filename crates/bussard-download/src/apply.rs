@@ -92,6 +92,7 @@ use bussard_mgmt::load::{
 use bussard_mgmt::tables::{OT_ADDRESS_TABLE, OT_ASSOCIATION_TABLE, read_tables};
 
 use crate::compute::DesiredTables;
+use crate::object_table::ObjectTableOutcome;
 
 /// One octet-width per table element.
 const ADDRESS_ELEM_SIZE: usize = 2;
@@ -117,16 +118,40 @@ pub struct VerifyOutcome {
     pub addresses_match: bool,
     /// Whether the read-back association table equals the desired one.
     pub associations_match: bool,
+    /// The group-object table reload, when the write carried one (issue
+    /// #540): its load state and whether it read back as written.
+    pub object_table: Option<ObjectTableOutcome>,
 }
 
 impl VerifyOutcome {
-    /// The whole apply verified: both loaded and both byte-equal to desired.
+    /// The whole apply verified: both loaded and both byte-equal to desired,
+    /// and a reloaded group-object table loaded and read back as written.
     pub fn ok(&self) -> bool {
         self.address_state == LoadState::Loaded
             && self.association_state == LoadState::Loaded
             && self.addresses_match
             && self.associations_match
+            && self
+                .object_table
+                .as_ref()
+                .is_none_or(ObjectTableOutcome::ok)
     }
+}
+
+/// What a System B write loads besides the address and association tables.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SystemBLoad<'a> {
+    /// The KNX Data Secure security object to reprogram for the new address
+    /// table (issue #156). Written inside the link-table download, so only
+    /// when the link tables are loaded.
+    pub security: Option<&'a crate::security::SecurityInputs>,
+    /// The group-object table image to reload first (issue #540, see
+    /// [`crate::object_table`]): the image the full flash writes, given when
+    /// the device's table differs from it.
+    pub object_table: Option<&'a [u8]>,
+    /// The link tables already hold the model: load only the group-object
+    /// table, and read the link tables back unchanged.
+    pub keep_tables: bool,
 }
 
 /// Discovers the two table objects' indexes by probing `PID_OBJECT_TYPE`.
@@ -187,11 +212,81 @@ pub async fn apply_tables_secured<Ch: L4Channel>(
     desired: &DesiredTables,
     security: Option<&crate::security::SecurityInputs>,
 ) -> Result<VerifyOutcome, WriteError> {
-    let addr_elems = desired.address_elements();
-    let assoc_elems = desired.association_elements();
+    apply_tables_with(
+        l4,
+        objects,
+        desired,
+        SystemBLoad {
+            security,
+            ..SystemBLoad::default()
+        },
+    )
+    .await
+}
 
+/// [`apply_tables_secured`] that also reloads the group-object table when
+/// `load` carries its image (issue #540).
+///
+/// The group-object table goes first, in its own `StartLoading` /
+/// `LoadCompleted` bracket ([`crate::object_table::write_object_table`],
+/// the standard's partial download of the table, 03_05_03 §3.5.3), and is
+/// read back before the link tables are opened. A newly linked object thus
+/// has its Communication flag before its association becomes active. With
+/// [`SystemBLoad::keep_tables`] the link tables are not written, only read
+/// back.
+pub async fn apply_tables_with<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    objects: TableObjectIndexes,
+    desired: &DesiredTables,
+    load: SystemBLoad<'_>,
+) -> Result<VerifyOutcome, WriteError> {
     // 0: negotiate the APDU size before any table write (issue #116).
     negotiate_session_apdu(l4).await?;
+
+    let object_table = match load.object_table {
+        Some(image) => {
+            let index = crate::object_table::find_object_table(l4)
+                .await?
+                .ok_or_else(|| {
+                    WriteError::Mgmt(bussard_mgmt::MgmtError::MalformedResponse {
+                        address: l4.target(),
+                        reason: "device is missing the group-object table object (type 9)"
+                            .to_string(),
+                    })
+                })?;
+            Some(crate::object_table::write_object_table(l4, index, image).await?)
+        }
+        None => None,
+    };
+
+    if load.keep_tables {
+        let (address_state, association_state) = read_states(l4, objects).await?;
+        let read_back = read_tables(l4)
+            .await
+            .map_err(|e| WriteError::Mgmt(map_tables_err(e)))?;
+        return Ok(VerifyOutcome {
+            address_state,
+            association_state,
+            addresses_match: read_back.addresses == desired.addresses,
+            associations_match: read_back.associations == desired.associations,
+            object_table,
+        });
+    }
+    let mut outcome = write_link_tables(l4, objects, desired, load.security).await?;
+    outcome.object_table = object_table;
+    Ok(outcome)
+}
+
+/// The address and association table download of the module docs, with the
+/// security object between the images and the completions.
+async fn write_link_tables<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    objects: TableObjectIndexes,
+    desired: &DesiredTables,
+    security: Option<&crate::security::SecurityInputs>,
+) -> Result<VerifyOutcome, WriteError> {
+    let addr_elems = desired.address_elements();
+    let assoc_elems = desired.association_elements();
 
     // 1 + 2: open both tables for writing, each followed by its `RelSegment`
     // allocation (ETS allocates right after each StartLoading — both captures).
@@ -230,6 +325,7 @@ pub async fn apply_tables_secured<Ch: L4Channel>(
         association_state,
         addresses_match,
         associations_match,
+        object_table: None,
     })
 }
 
@@ -339,8 +435,17 @@ mod tests {
             association_state: LoadState::Loaded,
             addresses_match: true,
             associations_match: true,
+            object_table: None,
         };
         assert!(base.ok());
+
+        let mut bad = base.clone();
+        bad.object_table = Some(ObjectTableOutcome {
+            state: LoadState::Loaded,
+            matches: false,
+            entries: 3,
+        });
+        assert!(!bad.ok());
 
         let mut bad = base.clone();
         bad.address_state = LoadState::Error;

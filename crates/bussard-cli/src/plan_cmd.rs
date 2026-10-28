@@ -569,8 +569,11 @@ fn to_json(
             .collect()
     };
     let question = (!device_plan.is_empty()).then(|| device_plan.question());
-    // The tables are rewritten for a security-object change too (issue #297).
-    let noop = report.is_noop() && !device_plan.writes.security_object;
+    // The tables are rewritten for a security-object change too (issue #297),
+    // and a System B group-object table that differs is reloaded (issue #540).
+    let noop = report.is_noop()
+        && !device_plan.writes.security_object
+        && device_plan.writes.group_object_table.is_none();
     PlanJson {
         plan: device_plan,
         question,

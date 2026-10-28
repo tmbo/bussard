@@ -24,9 +24,9 @@ use std::time::Duration;
 use bussard_download::backup::backups_root;
 use bussard_download::{
     ChangeMark, ChangeSubject, DecodedParameters, DevicePlan, FlashPlan, FullImage, LiveTables,
-    OctetRange, OctetRole, ParamRegions, ParamValue, PlanChange, PlanReport, PlanWrites,
-    ResidentState, Sys7Identity, object_changes, probe_resident_state, read_parameter_regions,
-    regions_memory, select_application, sort_changes, state_hash,
+    ObjectTableWrite, OctetRange, OctetRole, ParamRegions, ParamValue, PlanChange, PlanReport,
+    PlanWrites, ResidentState, Sys7Identity, object_changes, probe_resident_state,
+    read_parameter_regions, regions_memory, select_application, sort_changes, state_hash_with,
 };
 use bussard_mgmt::{L4Channel, Layer4Connection};
 use bussard_model::schema::{Device, ProductEntry};
@@ -497,6 +497,10 @@ pub struct ParamDetail {
     /// write them, so neither does the parameter-only download. Listed, never
     /// written or counted.
     pub unwritten: Vec<OctetRange>,
+    /// The System B group-object table as read next to the image the full
+    /// flash writes (issue #540); `None` when the plan does not write the
+    /// table (System 7, or a procedure whose code image carries it).
+    pub object_table: Option<bussard_download::ObjectTableCheck>,
 }
 
 /// A parameter read-back: the report, and the detail when the memory was
@@ -583,6 +587,10 @@ pub async fn read_state<Ch: L4Channel>(
         return state;
     }
     let regions = read_parameter_regions(l4, &plan).await;
+    // The group-object table the full flash writes, against the device's
+    // (issue #540): a link the last flash did not know left its object's
+    // Communication flag off, and `apply` reloads the table to switch it on.
+    let object_table = bussard_download::check_object_table(l4, &plan).await;
     if regions.is_empty() {
         return ParamState::noted(&app.id, "the parameter memory could not be read".into());
     }
@@ -645,6 +653,7 @@ pub async fn read_state<Ch: L4Channel>(
             needs_flash,
             octets,
             unwritten,
+            object_table,
         }),
         sys7_identity,
     }
@@ -851,6 +860,11 @@ pub struct BuiltPlan {
     /// Every run of parameter octets the plan writes, with the parameters
     /// behind it (issue #279). Empty when no parameter octet is written.
     pub octet_ranges: Vec<OctetAttribution>,
+    /// The System B group-object table image `apply` reloads, because the
+    /// device's differs from the one the full flash writes (issue #540).
+    /// `None` when it matches, was not compared, or a full download is
+    /// needed anyway.
+    pub object_table: Option<Vec<u8>>,
 }
 
 /// A run of parameter octets a plan writes, in the model's words (issue
@@ -1294,6 +1308,73 @@ fn sys7_flag_plan(live: &LiveTables, report: &PlanReport, notes: &mut Vec<String
     writes.iter().map(|write| write.object).collect()
 }
 
+/// The System B group-object table half of a plan (issue #540): the reload
+/// `apply` writes when the device's table differs from the image the full
+/// flash writes, its notes, and the octets read for the state hash.
+///
+/// Without a comparison (no product data, a parameter read that stopped, a
+/// refused table read) a link the plan adds is named in a note: its object's
+/// Communication flag was not checked, and a device ignores an object whose
+/// flag is off.
+fn object_table_plan(
+    live: &LiveTables,
+    report: &PlanReport,
+    params: Option<&ParamState>,
+    full_download: bool,
+    notes: &mut Vec<String>,
+) -> (Option<ObjectTableWrite>, Option<Vec<u8>>, Option<Vec<u8>>) {
+    if live.sys7().is_some() || full_download {
+        return (None, None, None);
+    }
+    let detail = params.and_then(|p| p.detail.as_ref());
+    let check = detail.and_then(|d| d.object_table.as_ref());
+    let read = check.and_then(|c| c.live.as_ref().ok()).map(|t| t.image());
+    let unchecked = |why: &str, notes: &mut Vec<String>| {
+        let objects: BTreeSet<u16> = report.additions.iter().map(|a| a.object).collect();
+        if objects.is_empty() {
+            return;
+        }
+        let objects: Vec<String> = objects.iter().map(u16::to_string).collect();
+        notes.push(format!(
+            "newly linked object(s) {}: communication flag not checked, the group-object table \
+             was not compared ({why}); a device ignores an object whose flag is off",
+            objects.join(", ")
+        ));
+    };
+    match check {
+        Some(check) => match (&check.live, check.change()) {
+            (Err(why), _) => {
+                unchecked(why, notes);
+                (None, None, None)
+            }
+            (Ok(_), None) => (None, None, read),
+            (Ok(_), Some(change)) => {
+                notes.extend(
+                    change
+                        .sentences()
+                        .into_iter()
+                        .map(|s| format!("group-object table: {s}")),
+                );
+                let write = ObjectTableWrite {
+                    entries: change.to_count,
+                    objects: change.objects.iter().map(|c| c.object).collect(),
+                };
+                (Some(write), Some(check.model.clone()), read)
+            }
+        },
+        None if detail.is_some() => (None, None, None),
+        None => {
+            let why = if params.is_some() {
+                "the application was not read back"
+            } else {
+                "no product data"
+            };
+            unchecked(why, notes);
+            (None, None, None)
+        }
+    }
+}
+
 /// Builds the plan of writing the model to `target`.
 ///
 /// `params` is the parameter read-back, `None` when no product data was at
@@ -1456,6 +1537,8 @@ pub fn build_device_plan(
 
     let tables_change = !report.is_noop();
     let communication_flags = sys7_flag_plan(live, report, &mut notes);
+    let (group_object_table, object_table, object_table_read) =
+        object_table_plan(live, report, params, needs_flash.is_some(), &mut notes);
     let writes = PlanWrites {
         address_table: tables_change.then_some(report.resulting_address_count),
         association_table: tables_change.then_some(report.resulting_association_count),
@@ -1477,6 +1560,7 @@ pub fn build_device_plan(
             && needs_flash.is_none()
             && (tables_change || !communication_flags.is_empty()),
         communication_flags,
+        group_object_table,
     };
     let root = backups_root(dir);
     let backup_dir = if parameter_octets > 0 {
@@ -1509,7 +1593,7 @@ pub fn build_device_plan(
             writes,
             backup_dir,
             notes,
-            state_hash: state_hash(live, regions),
+            state_hash: state_hash_with(live, regions, object_table_read.as_deref()),
         },
         partial,
         parameters,
@@ -1517,6 +1601,7 @@ pub fn build_device_plan(
         needs_flash,
         parameters_skipped,
         octet_ranges,
+        object_table,
     }
 }
 

@@ -30,6 +30,7 @@ pub mod compute_sys7;
 pub mod device_plan;
 pub mod flash;
 pub mod model_params;
+pub mod object_table;
 pub mod param_decode;
 pub mod param_plan;
 pub mod plan;
@@ -40,8 +41,8 @@ pub mod sweep;
 pub mod tables_sys7;
 
 pub use apply::{
-    TableObjectIndexes, VerifyOutcome, apply_tables, apply_tables_secured, discover_table_objects,
-    negotiate_session_apdu, read_states,
+    SystemBLoad, TableObjectIndexes, VerifyOutcome, apply_tables, apply_tables_secured,
+    apply_tables_with, discover_table_objects, negotiate_session_apdu, read_states,
 };
 pub use apply_sys7::{
     SYS7_ADDRESS_LSM, SYS7_ASSOCIATION_LSM, Sys7ApplyError, Sys7FlagWrite, Sys7TableImages,
@@ -68,8 +69,8 @@ pub use compute_sys7::{
     sys7_association_table, sys7_config_byte, sys7_group_object_table, sys7_group_objects,
 };
 pub use device_plan::{
-    ChangeMark, ChangeSubject, DevicePlan, FullImage, PlanChange, PlanWrites, object_changes,
-    sort_changes, state_hash,
+    ChangeMark, ChangeSubject, DevicePlan, FullImage, ObjectTableWrite, PlanChange, PlanWrites,
+    object_changes, sort_changes, state_hash, state_hash_with,
 };
 pub use flash::{
     AppIdentity, Connector, DeviceFacts, FlashOptions, FlashOutcome, FlashPlan, FlashStep,
@@ -87,6 +88,11 @@ pub use model_params::{
     parameter_overrides, plan_for_readback, plan_for_readback_with, product_display, region_rows,
     resolve_by_order_number, runtime_segments, sys7_code_mismatch, sys7_identity, template_ops_for,
     verify_readback, write_parameter_memory_backup,
+};
+pub use object_table::{
+    DescriptorChange, LiveObjectTable, OBJECT_TABLE_INDEX, ObjectTableChange, ObjectTableCheck,
+    ObjectTableOutcome, check_object_table, find_object_table, object_table_image,
+    read_object_table_at, write_object_table,
 };
 pub use param_decode::{
     DecodedParameters, OctetOwner, OctetRange, OctetRole, attribute_octets, attribute_octets_with,
