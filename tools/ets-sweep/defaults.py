@@ -70,6 +70,19 @@ def product_path(file: str) -> Path:
 APP_ID = re.compile(r"(M-[0-9A-F]{4})_A-([0-9A-F]{4})-([0-9A-F]{2})-")
 
 
+def guessed_identity(app: str) -> list[dict] | None:
+    """The hardware type (PID 78) ETS requires, where a manufacturer's rule is
+    known, so the first download does not fail just to learn it. The value is
+    not in the product file. Zennio: manufacturer, 0000, the application
+    number with its last digit 0 (23 of 23 learned values, 2026-10-28). A
+    wrong guess costs nothing extra: ETS logs the mismatch and the sweep
+    learns the real value as before."""
+    m = re.match(r"M-0071_A-([0-9A-Fa-f]{3})[0-9A-Fa-f]-", app)
+    if m:
+        return [{"object": 0, "pid": 78, "value": f"00710000{m.group(1).lower()}0"}]
+    return None
+
+
 def jobs() -> list[dict]:
     """One job per application, and per hardware only the newest version of
     an application: the same order numbers and application number in several
@@ -204,7 +217,7 @@ def main() -> int:
                 # Start from the identity a previous run learned from ETS.
                 r = sweep.run_learning(c, path, job["id"], str(job["order_numbers"][0]),
                                        mask=job["mask"], fallback_search=fallback,
-                                       properties=(prev or {}).get("learned_properties") or None)
+                                       properties=(prev or {}).get("learned_properties") or guessed_identity(job["id"]))
             except Exception as exc:  # noqa: BLE001 - a lost ssh link: reconnect and go on
                 r = {"outcome": "driver-error", "error": f"{type(exc).__name__}: {exc}"[:600]}
                 c = vm.connect()

@@ -732,12 +732,16 @@ def flow_catalog_add(req: dict) -> dict:
     order = _canon(search_term(req["search"]))
     want_version = _digits(req.get("version", ""))
 
-    def pick(hits: list[dict]) -> dict | None:
+    def pick(hits: list[dict], name: str = "") -> dict | None:
         # Imported products only: an online-catalog row would make ETS fetch
         # product data from the internet instead of our corpus file.
         hits = [r for r in hits if not r.get("online")]
         # The order number exactly (ZPR1612 is not ZPR1612V2), else a prefix.
         exact = [r for r in hits if _canon(r["order"]) == order] or [r for r in hits if _canon(r["order"]).startswith(order)]
+        if not exact and name:
+            # A search by product name whose order cell OCR left empty
+            # (ALLinBOX 88 v2, 2026-10-28): the exact name stands in for it.
+            exact = [r for r in hits if not r["order"].strip() and _canon(r["name"]) == _canon(name)]
         match = [r for r in exact if want_version and _digits(r["version"]) == want_version]
         if match:
             return match[0]
@@ -754,10 +758,10 @@ def flow_catalog_add(req: dict) -> dict:
         # name lists them all.
         rows, more = search(req["fallback_search"])
         hits = hits + more
-        row = pick(more)
+        row = pick(more, req["fallback_search"])
     if row is None:
         if hits:
-            raise RuntimeError(f"catalog version mismatch: {req['search']!r} shows {[(r['order'], r['version']) for r in hits][:8]}, wanted {req.get('version')!r}")
+            raise RuntimeError(f"catalog version mismatch: {req['search']!r} shows {[(r['order'], r['version'], 'online' if r.get('online') else 'local') for r in hits][:8]}, wanted {req.get('version')!r}")
         raise RuntimeError(f"not found in catalog search: {req['search']!r}; rows {rows[:4]}")
     click(1300, row["y"])
     time.sleep(1)
