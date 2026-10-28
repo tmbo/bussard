@@ -396,7 +396,12 @@ their own lowering, driven by the per-mask profile (see
 [SAFETY.md](../docs/explanation/safety.md#supported-device-masks). Unrecognized ops (notably
 `LdCtrlCompareRelMem`, a read-and-compare that blocks two otherwise-executable MDT apps)
 are refused whole before any write; `LdCtrlCompareRelMem` is the top roadmap op. System 1
-and System 2 masks remain ETS-only.
+and System 2 masks remain ETS-only, except the property-only procedures of the 0021 IP
+interface (#390). The BCU2 memory download is fully specified (KNX 3/5/1 §4.16.4, §4.17.4,
+§4.18.4; 9/4/1 §5.1.2.12.5) and #525 lists what it takes. The System 7 lowering was checked
+against the standard in the 3.0.0 review (notes in [system7-spec.md](system7-spec.md)); the
+load-state machine realisation per mask comes from Volume 6 Profiles §4.2, not from vendor
+habit.
 
 ### The interop wall
 

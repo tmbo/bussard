@@ -41,8 +41,8 @@ it inspected a single op. The corpus splits cleanly along that line:
 | mask | family | apps | flashable today |
 |------|--------|-----:|-----------------|
 | 07B0 | System B | 24 | **all 24** |
-| 0705 | BCU2 | 44 | none (gated: not System B) |
-| 0701 | BCU1 | 5 | none (gated: not System B) |
+| 0705 | System 7 (BIM M112) | 44 | none (gated: not System B) |
+| 0701 | System 7 (BIM M112) | 5 | none (gated: not System B) |
 | 0021 | System 2 / Secure | 5 | none (gated: not System B) |
 | 091A, 0012 | other | 2 | 2 (no refused ops present) |
 
@@ -70,8 +70,8 @@ non-System-B families that `flash` does not target yet.
 | `write_rel_mem` | supported | 24 | 24 | 2 |
 | `task_ctrl1` | **REFUSED** | 8 | 8 | 4 |
 | `write_prop` | supported | 5 | 5 | 2 |
-| `LdCtrlTaskPtr` | **REFUSED** (raw) | 5 | 5 | 2 |
-| `LdCtrlTaskCtrl2` | **REFUSED** (raw) | 5 | 5 | 2 |
+| `LdCtrlTaskPtr` | **REFUSED** (raw); record layout in KNX 3/5/2 §3.31.2, mandatory on 0701/0705 per Profiles Annex A.2.4.1 (#527) | 5 | 5 | 2 |
+| `LdCtrlTaskCtrl2` | **REFUSED** (raw); same source (#527) | 5 | 5 | 2 |
 | `write_mem` | supported | 3 | 1 | 1 |
 | `LdCtrlCompareMem` | **REFUSED** (raw) | 1 | 1 | 1 |
 
@@ -138,8 +138,10 @@ Priority order:
    it has zero real-vendor frequency: it is cheap and it is the actual bug.
 2. **Absolute-download family as one unit** (`abs_segment` + `task_segment` +
    `task_ctrl1` + `LdCtrlTaskPtr` + `LdCtrlTaskCtrl2`); only worth starting once
-   bussard decides to support BCU2 (0705) devices, which is 44 apps / the single
-   largest family in the field. This is a device-support project (a new mask
+   bussard decides to support System 7 (0705, the BIM M112 profile, not BCU2)
+   devices, which is 44 apps / the single largest family in the field.
+   (Done since, except TaskPtr and TaskCtrl2, #527; the family labels above were
+   corrected in the 3.0.0 spec review: 0705 and 0701 are System 7, 0020/0021 BCU2.) This is a device-support project (a new mask
    family behind the `NotSystemB` gate), not an isolated op. Treat the five ops
    as one milestone; they never appear apart.
 3. **`LdCtrlCompareMem` / `LdCtrlCompareRelMem`**: lowest priority.
