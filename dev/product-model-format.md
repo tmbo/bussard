@@ -86,7 +86,9 @@ Field notes:
   device file) and its `application` (pinned in `bussard.lock`) both point here.
 - `com_objects`: keyed by com-object number, in the same field style as the `objects`
   of `bussard.lock`. `dpt` and `flags` (compact `CRWTUI` string) are the effective, ref-resolved
-  values. `size` appears only when there is no DPT to imply it. `ref_id` is the
+  values. `size` appears only when there is no DPT to imply it (the DPT main number fixes
+  the format and so the size, the sub number only range and unit: KNX 03_07_02 Datapoint
+  Types §1.1 and the format column of §1.4). `ref_id` is the
   application ref the value was resolved through.
 - `parameters`: each with its resolved `type`, `default`, and `memory` location. The
   `type` is a tagged union: `!int {min, max, size, signed}`,

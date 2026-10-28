@@ -102,7 +102,11 @@ Consequence: the transport + cEMI layer is written from scratch (MIT). The wire 
 is small (~1-2 KLOC): KNXnet/IP framing, tunneling (CONNECT / CONNECTIONSTATE heartbeat /
 TUNNELING_REQUEST+ACK sequence counters / DISCONNECT), routing (multicast
 224.0.23.12:3671, ROUTING_INDICATION / LOST_MESSAGE / BUSY), and cEMI `L_Data` decode
-including 6-bit small APDUs. The `.knxprod` reader (`bussard-prod`) is likewise written
+including 6-bit small APDUs. The small form is the standard's rule for sub-octet DPTs, not
+an optimisation for small values: a DPT shorter than one octet travels in the low bits of
+the APCI octet (KNX 03_07_02 Datapoint Types §1.3.1), which is main types 1, 2, 3 and 23;
+a byte-sized value always goes as a separate data octet, whatever its value (issue #59;
+23 is not in the size registry yet, #498). The `.knxprod` reader (`bussard-prod`) is likewise written
 from scratch: parsing XML from a ZIP; signing is never needed since bussard only reads
 vendor files.
 
@@ -256,12 +260,21 @@ the human reads the final plan, the tool executes.
 Strict parsing, then rule passes with rustc-style diagnostics and `--json`. The
 diagnostic table lives in [reference.md](../docs/reference/index.md#validation-diagnostics); the
 rules tied to the file format (E020 to E026) are in
-[the file reference](../docs/reference/files/errors.md).
+[the file reference](../docs/reference/files/errors.md). Two DPT rules follow the standard's
+scheme that the main number fixes format and encoding and the sub number only range and
+unit (03_07_02 Datapoint Types §1.1): E004 compares the sizes `Dpt::expected_size` models
+(the format column of §1.4; a main type without a modelled size is skipped, not flagged,
+#498), and W005 treats differing sub types of one main as agreement, not a conflict.
 
 ### 5.4 Monitor and capture
 
 cEMI → `{timestamp, source, destination GA, APCI, payload}` → resolve GA to name + DPT →
-typed value; source resolves to device name, and (source, GA) to the sending com object's
+typed value (the codecs follow 03_07_02 Datapoint Types: a 2-octet float is
+`0.01 * M * 2^E` and 7FFFh is its invalid marker, §3.10; 11.001 pivots the two-digit year
+at 90, §3.12; 19.001 carries eight validity and quality flags, §3.20; a scene field is the
+raw 0..63 value, one less than ETS displays, §3.19 NOTE 9 and #495; the size registry in
+`dpt.rs` covers 21 main types and the rest decode to raw hex, #498); source resolves to
+device name, and (source, GA) to the sending com object's
 name (from the device file). Unknown GAs/DPTs degrade gracefully to raw hex, never a
 failure; decode-size mismatches are shown inline as a debugging signal. `capture` stores
 raw cEMI bytes plus a decoded snapshot in SQLite so telegrams can be re-decoded after
