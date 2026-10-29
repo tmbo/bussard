@@ -14,7 +14,8 @@
 //! ```
 //!
 //! - **CTL1** (control field 1): bit7 frame type (1 = standard/short, 0 = extended),
-//!   bit5 repeat (0 = repeated), bit4 system-broadcast, bits3-2 priority,
+//!   bit5 repeat (0 = repeated), bit4 broadcast kind (0 = system broadcast,
+//!   1 = broadcast), bits3-2 priority,
 //!   bit1 ack-request, bit0 confirm/error.
 //! - **CTL2** (control field 2): bit7 destination address type (1 = group,
 //!   0 = individual), bits6-4 hop count, bits3-0 extended frame format.
@@ -80,6 +81,32 @@ impl Priority {
     }
 }
 
+/// The broadcast kind of a frame: control field 1, bit 4 (03_06_03 EMI/IMI
+/// §4.1.5.3.2, the "System Broadcast flag").
+///
+/// The bit is set for an ordinary broadcast and cleared for a system
+/// broadcast. On closed media such as TP1 the cEMI server ignores it
+/// (§4.1.5.3.3); it only means something on open media (RF, PL110).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BroadcastKind {
+    /// A system broadcast (bit 4 cleared).
+    System,
+    /// An ordinary broadcast (bit 4 set). What every TP1 frame carries.
+    #[default]
+    Normal,
+}
+
+impl BroadcastKind {
+    /// The kind bit 4 encodes: `set` is an ordinary broadcast.
+    fn from_bit(set: bool) -> Self {
+        if set {
+            BroadcastKind::Normal
+        } else {
+            BroadcastKind::System
+        }
+    }
+}
+
 /// Control field 1: transmission attributes of the frame.
 ///
 /// Bit meanings follow EN 50090 / the cEMI spec. Defaults match a typical
@@ -91,8 +118,8 @@ pub struct Control1 {
     pub standard_frame: bool,
     /// Repeat flag: `true` means this frame is a repetition.
     pub repeated: bool,
-    /// System-broadcast flag (bit 4). `true` = broadcast on the domain.
-    pub system_broadcast: bool,
+    /// The broadcast kind (bit 4, the "System Broadcast flag").
+    pub broadcast: BroadcastKind,
     /// Telegram priority.
     pub priority: Priority,
     /// Acknowledge-request flag.
@@ -106,7 +133,7 @@ impl Default for Control1 {
         Control1 {
             standard_frame: true,
             repeated: false,
-            system_broadcast: true,
+            broadcast: BroadcastKind::Normal,
             priority: Priority::Normal,
             ack_requested: true,
             error: false,
@@ -129,7 +156,7 @@ impl Control1 {
             standard_frame: b & 0x80 != 0,
             // Bit 5: 0 = repeated (repetition allowed / this is a repeat), 1 = not repeated.
             repeated: b & 0x20 == 0,
-            system_broadcast: b & 0x10 != 0,
+            broadcast: BroadcastKind::from_bit(b & 0x10 != 0),
             priority: Priority::from_bits(b >> 2),
             ack_requested: b & 0x02 != 0,
             error: b & 0x01 != 0,
@@ -144,7 +171,7 @@ impl Control1 {
         if !self.repeated {
             b |= 0x20;
         }
-        if self.system_broadcast {
+        if self.broadcast == BroadcastKind::Normal {
             b |= 0x10;
         }
         b |= (self.priority as u8) << 2;
@@ -675,8 +702,10 @@ impl CemiFrame {
     /// `T_Data_Broadcast`, unnumbered) to the broadcast group address `0/0/0`.
     ///
     /// Broadcast management services (`A_IndividualAddress_Read`,
-    /// `A_IndividualAddress_Write`, …) use TPCI `0x00` with a `system_broadcast`
-    /// frame and a group destination of raw `0x0000`. They go out at
+    /// `A_IndividualAddress_Write`, …) use TPCI `0x00`, a group destination of
+    /// raw `0x0000` and an ordinary broadcast (control field 1 bit 4 set,
+    /// [`BroadcastKind::Normal`]): 03_03_07 §3.2 puts them on broadcast, not on
+    /// system broadcast. They go out at
     /// [`Priority::System`]: the application layer hands them to the transport
     /// layer with priority "implicitly system" (03_03_07 Application Layer
     /// §3.2.2-§3.2.5).
@@ -685,7 +714,7 @@ impl CemiFrame {
             message_code: MessageCode::LDataReq,
             additional_info: Vec::new(),
             control1: Control1 {
-                system_broadcast: true,
+                broadcast: BroadcastKind::Normal,
                 ..Control1::system()
             },
             control2: Control2 {
@@ -1088,7 +1117,7 @@ mod tests {
         let c1 = Control1::from_byte(0xBC);
         assert!(c1.standard_frame);
         assert!(!c1.repeated); // bit5 set => not repeated
-        assert!(c1.system_broadcast);
+        assert_eq!(c1.broadcast, BroadcastKind::Normal);
         assert_eq!(c1.priority, Priority::Low);
         assert!(!c1.ack_requested);
         assert!(!c1.error);
@@ -1206,6 +1235,24 @@ mod tests {
     }
 
     #[test]
+    fn test_control1_bit4_cleared_decodes_as_system_broadcast()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // 03_06_03 §4.1.5.3.2: bit 4 = 0 is a system broadcast. An RF or PL
+        // coupler's system-broadcast indication: ctrl1 0xA0 (standard, not
+        // repeated, bit 4 clear, system priority).
+        let hex: &[u8] = &[
+            0x29, 0x00, 0xA0, 0xE0, 0x11, 0x01, 0x00, 0x00, 0x01, 0x01, 0x00,
+        ];
+        let frame = CemiFrame::decode(hex)?;
+        assert_eq!(frame.control1.broadcast, BroadcastKind::System);
+        assert_eq!(frame.encode(), hex, "round-trips with bit 4 cleared");
+        let mut normal = frame.clone();
+        normal.control1.broadcast = BroadcastKind::Normal;
+        assert_eq!(normal.encode()[2], 0xB0);
+        Ok(())
+    }
+
+    #[test]
     fn t_ack_control_frame_roundtrips() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // T_ACK for seq 3 = 0xC2 | (3<<2) = 0xCE.
         let frame = CemiFrame::t_control(ia("1.1.4"), ia("0.0.255"), 0xCE);
@@ -1262,10 +1309,11 @@ mod tests {
 
     #[test]
     fn broadcast_frame_targets_zero_group() -> std::result::Result<(), Box<dyn std::error::Error>> {
-        // A_IndividualAddress_Read (0x100) as a system broadcast.
+        // A_IndividualAddress_Read (0x100) as an ordinary broadcast.
         let frame = CemiFrame::t_broadcast(ia("0.0.255"), 0x100, &[]);
         assert_eq!(frame.group_destination(), Some(GroupAddress::from_raw(0)));
-        assert!(frame.control1.system_broadcast);
+        assert_eq!(frame.control1.broadcast, BroadcastKind::Normal);
+        assert_eq!(frame.encode()[2] & 0x10, 0x10, "bit 4 set: broadcast");
         let back = CemiFrame::decode(&frame.encode())?;
         match back.apdu {
             Apdu::Other { apci, .. } => assert_eq!(apci, 0x100),
