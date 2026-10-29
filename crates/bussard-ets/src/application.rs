@@ -995,28 +995,30 @@ impl ApplicationProgram {
     /// Whether a download writes the parameters the configuration does not
     /// show, with their defaults.
     ///
-    /// ETS does for a System B program (mask `xxB0`) whose `<Options>` does
-    /// not declare `DownloadInvisibleParameters`; a System 7 (or any other)
-    /// program, and one that declares `None` or `Background`, keeps the
-    /// segment template for them (issues #89 and #448).
-    /// `PreferPartialDownloadIfApplicationLoaded` plays no part, nor does the
-    /// schema version. The split is by system and declaration, established
-    /// from full-download captures of the defaults sweep (#422):
+    /// ETS does for a System B program (mask `xxB0`) whose `<Options>`
+    /// declares neither `DownloadInvisibleParameters` nor
+    /// `PreferPartialDownloadIfApplicationLoaded="true"`; every other program
+    /// keeps the segment template for them (issues #89 and #448). Established
+    /// from full-download captures of the defaults sweep (#422), compared on
+    /// a build that has the sweep's other fixes:
     ///
-    /// * System B, not declared, defaults written: Busch-Wächter PRO 280
-    ///   (`M-0007_A-6179-82`, project/20) and Steinel ControlPro
-    ///   (`M-008E_A-7188-31`, project/11); the Busch-Jaeger fan coil
-    ///   (`A-A0B1`, `A-A0B3`, `A-A0B5`, `A-A0C5`) and valve drive (`A-A0BB`,
-    ///   `A-A0BC`) controllers, which prefer a partial download.
-    /// * System 7, not declared, template kept: Steinel HPD 2 and
+    /// * System B, neither attribute, defaults written: Busch-Wächter PRO
+    ///   280 / 2800 (`M-0007_A-6179-82`), Steinel ControlPro
+    ///   (`M-008E_A-7188-31`), ABB Modbus RTU Gateway (`M-0002_A-3002-11`).
+    /// * System B, partial download preferred, template kept: Busch-Jaeger
+    ///   DALI gateways `A-A0AC`, `A-A0AD`, Zennio DALI-BOX `A-3131`,
+    ///   `A-3311`, `A-3331` (each loses its ETS-identical image when the
+    ///   hidden defaults are written), Jung 230021SU, 390041SR, F50, ABB
+    ///   BE/S16.
+    /// * System 7, neither attribute, template kept: Steinel HPD 2 and
     ///   TruePresence, ekinex, B.E.G. DIM, Zennio Sensato and the Elsner
     ///   sensors (project/11), Busch-Jaeger `A-FF11-15` (project/20, empty
-    ///   `<Options/>`), ABB / Busch-Jaeger 0701 programs and Jung 2116REG,
-    ///   3181, 3361 (partial download preferred).
-    /// * Declared `None` or `Background`, template kept on both systems: Jung
-    ///   230021SU, 390041SR, F50, ABB BE/S16 and `A-20DE`, Zennio `A-7141`.
+    ///   `<Options/>`); the schema version plays no part.
+    /// * Declared `None` or `Background`, template kept on both systems.
     pub fn downloads_invisible_parameters(&self) -> bool {
-        self.download_invisible_parameters.is_none() && self.is_system_b()
+        self.download_invisible_parameters.is_none()
+            && !self.prefer_partial_download
+            && self.is_system_b()
     }
 
     /// Whether the program is a System B one: its `MaskVersion` is `xxB0`
@@ -2957,13 +2959,11 @@ mod tests {
                 true,
                 false,
             ),
-            // System B prefers a partial download, but still writes hidden
-            // defaults (the Busch-Jaeger fan coil, issue #448).
             (
                 r#"<Options PreferPartialDownloadIfApplicationLoaded="true"></Options>"#,
                 None,
                 true,
-                true,
+                false,
             ),
         ] {
             let app = parse_application_program_str("M-1_A-1", &xml(options))?;

@@ -3872,12 +3872,11 @@ mod tests {
         Ok(())
     }
 
-    /// Issue #448: whether hidden parameters carry their defaults depends on
-    /// the system, not on `PreferPartialDownloadIfApplicationLoaded`. A System
-    /// B program without `DownloadInvisibleParameters` writes them even when
-    /// it prefers a partial download (the Busch-Jaeger fan coil controllers);
-    /// a System 7 one keeps the template (Steinel HPD 2, Busch-Jaeger
-    /// `A-FF11-15`).
+    /// Issue #448: a System 7 program without `DownloadInvisibleParameters`
+    /// keeps the template for hidden parameters (Steinel HPD 2, Busch-Jaeger
+    /// `A-FF11-15`), where the same System B program writes their defaults;
+    /// a System B one that prefers a partial download keeps the template too
+    /// (Zennio DALI-BOX `A-3311`).
     #[test]
     fn test_compute_parameter_image_dynamic_hidden_defaults_follow_the_system() -> Result<()> {
         let options = r#"<Options TextParameterEncoding="utf-8" Comparable="false" Reconstructable="false" />"#;
@@ -3886,9 +3885,9 @@ mod tests {
             r#"<Options PreferPartialDownloadIfApplicationLoaded="true" />"#,
         );
         let app = parse_application_program("A", partial.as_bytes())?;
-        assert!(app.downloads_invisible_parameters());
+        assert!(!app.downloads_invisible_parameters());
         let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
-        assert_eq!(images["A_RS-1"], [0x02, 0x58, 5, 1]);
+        assert_eq!(images["A_RS-1"], [0, 0, 0, 1]);
         for mask in ["MV-0705", "MV-0701"] {
             let system7 = HIDDEN_XML.replace("MV-07B0", mask);
             let app = parse_application_program("A", system7.as_bytes())?;
