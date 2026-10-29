@@ -33,8 +33,13 @@ pub enum TransportError {
     #[error("bad KNXnet/IP header: expected 06 10, got {0:02x} {1:02x}")]
     BadHeader(u8, u8),
 
-    /// The gateway rejected a request with a non-zero status byte.
-    #[error("gateway returned error status {status:#04x} ({context})")]
+    /// The gateway rejected a request with a non-zero status byte. The
+    /// message names the status code and its meaning when the KNXnet/IP
+    /// specification defines it (issue #517).
+    #[error(
+        "gateway returned error status {status:#04x} ({context}){}",
+        status_detail(.status)
+    )]
     GatewayStatus {
         /// The status byte from the response.
         status: u8,
@@ -183,6 +188,87 @@ pub enum TransportError {
 /// (every tunnelling slot is occupied).
 pub const E_NO_MORE_CONNECTIONS: u8 = 0x24;
 
+/// The name and meaning of a KNXnet/IP status code, or `None` for a code the
+/// specification does not define.
+///
+/// The common codes are KNXnet/IP Core 3/8/2 §7.3; the CONNECT_RESPONSE codes
+/// §7.8.2 Table 8 and Tunnelling 3/8/4 §2.2.2 and Table 11; the
+/// CONNECTIONSTATE_RESPONSE codes Core §7.8.4 Table 9. No value is defined
+/// twice, so one table serves every context.
+pub fn status_name(status: u8) -> Option<(&'static str, &'static str)> {
+    Some(match status {
+        0x01 => (
+            "E_HOST_PROTOCOL_TYPE",
+            "the gateway does not support the requested host protocol",
+        ),
+        0x02 => (
+            "E_VERSION_NOT_SUPPORTED",
+            "the gateway does not support this KNXnet/IP protocol version",
+        ),
+        0x04 => (
+            "E_SEQUENCE_NUMBER",
+            "the gateway received a sequence number out of order",
+        ),
+        0x21 => (
+            "E_CONNECTION_ID",
+            "the gateway has no active connection with this channel id",
+        ),
+        0x22 => (
+            "E_CONNECTION_TYPE",
+            "the gateway does not support the requested connection type",
+        ),
+        0x23 => (
+            "E_CONNECTION_OPTION",
+            "the gateway does not support a requested connection option",
+        ),
+        E_NO_MORE_CONNECTIONS => (
+            "E_NO_MORE_CONNECTIONS",
+            "every tunnelling slot of the gateway is in use",
+        ),
+        0x25 => (
+            "E_NO_MORE_UNIQUE_CONNECTIONS",
+            "the gateway's free tunnelling slots share an individual address that \
+             another connection already uses. Give every tunnelling address (PID 53, \
+             the `[knxnet]` table of the interface's device file) a distinct value, with \
+             ETS or `bussard apply` through another connection",
+        ),
+        0x26 => (
+            "E_DATA_CONNECTION",
+            "the gateway detected an error on the data connection",
+        ),
+        0x27 => (
+            "E_KNX_CONNECTION",
+            "the gateway detected an error on its KNX bus connection",
+        ),
+        0x28 => (
+            "E_AUTHORISATION_ERROR",
+            "the client is not authorised to use the requested individual address",
+        ),
+        0x29 => (
+            "E_TUNNELLING_LAYER",
+            "the gateway does not support the requested tunnelling layer",
+        ),
+        0x2D => (
+            "E_NO_TUNNELLING_ADDRESS",
+            "the requested individual address is not a tunnelling address",
+        ),
+        0x2E => (
+            "E_CONNECTION_IN_USE",
+            "the requested individual address is already in use",
+        ),
+        _ => return None,
+    })
+}
+
+/// The `: NAME, meaning` suffix of a [`TransportError::GatewayStatus`]
+/// message, empty for an undefined code.
+fn status_detail(status: &u8) -> String {
+    match status_name(*status) {
+        Some((name, meaning)) => format!(": {name}, {meaning}"),
+        None => String::new(),
+    }
+}
+
 impl TransportError {
     /// Whether retrying the connect cannot succeed without the operator
     /// changing something: a secure-only interface without credentials, a
@@ -222,5 +308,55 @@ impl TransportError {
 impl From<io::Error> for TransportError {
     fn from(source: io::Error) -> Self {
         TransportError::Io { peer: None, source }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_gateway_status_display_names_the_code() {
+        let err = TransportError::GatewayStatus {
+            status: 0x25,
+            context: "CONNECT_RESPONSE",
+        };
+        let text = err.to_string();
+        assert!(
+            text.starts_with(
+                "gateway returned error status 0x25 (CONNECT_RESPONSE): \
+                 E_NO_MORE_UNIQUE_CONNECTIONS, "
+            ),
+            "{text}"
+        );
+        assert!(text.contains("PID 53"), "{text}");
+
+        let err = TransportError::GatewayStatus {
+            status: 0x27,
+            context: "CONNECTIONSTATE_RESPONSE",
+        };
+        assert!(err.to_string().contains("E_KNX_CONNECTION"));
+    }
+
+    #[test]
+    fn test_gateway_status_display_keeps_an_undefined_code_bare() {
+        let err = TransportError::GatewayStatus {
+            status: 0x7F,
+            context: "TUNNELING_ACK",
+        };
+        assert_eq!(
+            err.to_string(),
+            "gateway returned error status 0x7f (TUNNELING_ACK)"
+        );
+    }
+
+    #[test]
+    fn test_status_name_covers_the_spec_tables() {
+        for code in [
+            0x01, 0x02, 0x04, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2D, 0x2E,
+        ] {
+            assert!(status_name(code).is_some(), "{code:#04x}");
+        }
+        assert_eq!(status_name(0x00), None);
     }
 }

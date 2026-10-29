@@ -21,8 +21,9 @@
 //! connected UDP socket: SESSION_REQUEST carries that socket's real endpoint
 //! as its HPAI, the CONNECT_REQUEST names it as control and data endpoint (as
 //! the plain UDP tunnel does), and TUNNELING_ACK is back in the loop, wrapped
-//! like every other frame. Every frame goes to the control endpoint; the data
-//! endpoint of the CONNECT_RESPONSE is not used, as on the plain UDP tunnel.
+//! like every other frame. Every frame goes to the session's endpoint; the
+//! data endpoint of the CONNECT_RESPONSE is not used. The plain UDP tunnel
+//! does use it (issue #512, see the `tunnel` module docs).
 //! No real UDP-only interface has been captured or tested, so UDP is an
 //! explicit opt-in (`--secure-transport udp`): the default `auto` stays on TCP
 //! and reports an interface that refuses TCP but advertises Secure with

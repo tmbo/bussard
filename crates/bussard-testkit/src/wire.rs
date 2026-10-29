@@ -3,7 +3,9 @@
 //! [`RawGateway`] owns a loopback UDP socket and has one helper per protocol
 //! step: receive and parse, expect a service, accept a CONNECT, push an
 //! indication, ACK. The protocol-probe suites (sequence windows, retransmits,
-//! heartbeats, HPAIs) use it directly. The higher-level
+//! heartbeats, HPAIs) use it directly. [`RawGateway::bind_with_data_port`]
+//! serves the tunnel's data connection on a second port, as KNXnet/IP Core
+//! 3/8/2 §8.6.3.1 allows (issue #512). The higher-level
 //! [`MockGateway`](crate::MockGateway) is built on the same frame builders.
 
 use std::net::{SocketAddr, SocketAddrV4};
@@ -128,21 +130,56 @@ impl Datagram {
 pub struct RawGateway {
     sock: UdpSocket,
     addr: SocketAddrV4,
+    /// The distinct data endpoint, if [`RawGateway::bind_with_data_port`]
+    /// made one.
+    data: Option<(SocketAddrV4, UdpSocket)>,
 }
 
 impl RawGateway {
-    /// Binds `127.0.0.1:0`.
+    /// Binds `127.0.0.1:0`, one port for control and data.
     ///
     /// # Errors
     /// Fails when the socket cannot be bound.
     pub async fn bind() -> Result<Self, MockError> {
         let (addr, sock) = bind().await?;
-        Ok(Self { sock, addr })
+        Ok(Self {
+            sock,
+            addr,
+            data: None,
+        })
     }
 
-    /// The address to hand to the client under test.
+    /// Binds a control port and a distinct data port on `127.0.0.1`. The
+    /// CONNECT_RESPONSE of [`RawGateway::accept_connect`] names the data port,
+    /// and [`push`](RawGateway::push), [`ack`](RawGateway::ack),
+    /// [`recv_data`](RawGateway::recv_data) and
+    /// [`await_client_ack`](RawGateway::await_client_ack) use it.
+    ///
+    /// # Errors
+    /// Fails when a socket cannot be bound.
+    pub async fn bind_with_data_port() -> Result<Self, MockError> {
+        let (addr, sock) = bind().await?;
+        let data = bind().await?;
+        Ok(Self {
+            sock,
+            addr,
+            data: Some(data),
+        })
+    }
+
+    /// The address to hand to the client under test (the control endpoint).
     pub fn addr(&self) -> SocketAddrV4 {
         self.addr
+    }
+
+    /// The data endpoint: the distinct data port, or the control endpoint.
+    pub fn data_addr(&self) -> SocketAddrV4 {
+        self.data.as_ref().map_or(self.addr, |(addr, _)| *addr)
+    }
+
+    /// The socket of the data endpoint.
+    fn data_sock(&self) -> &UdpSocket {
+        self.data.as_ref().map_or(&self.sock, |(_, sock)| sock)
     }
 
     /// The bound port.
@@ -161,14 +198,44 @@ impl RawGateway {
     /// # Errors
     /// Fails on a socket error or a datagram that is not KNXnet/IP.
     pub async fn recv(&self) -> Result<Datagram, MockError> {
-        let mut buf = [0u8; MAX_DATAGRAM];
-        let (n, peer) = self.sock.recv_from(&mut buf).await?;
-        let parsed = knxnet::parse(&buf[..n])?;
-        Ok(Datagram {
-            peer,
-            service: parsed.service,
-            body: parsed.body.to_vec(),
-        })
+        recv_on(&self.sock).await
+    }
+
+    /// Receives and parses one datagram on the data endpoint (the control
+    /// socket when there is no distinct data port). No deadline.
+    ///
+    /// # Errors
+    /// Fails on a socket error or a datagram that is not KNXnet/IP.
+    pub async fn recv_data(&self) -> Result<Datagram, MockError> {
+        recv_on(self.data_sock()).await
+    }
+
+    /// Like [`RawGateway::recv_data`], but gives up after `within` and returns
+    /// `None`.
+    ///
+    /// # Errors
+    /// Fails on a socket error or a datagram that is not KNXnet/IP.
+    pub async fn recv_data_within(&self, within: Duration) -> Result<Option<Datagram>, MockError> {
+        match tokio::time::timeout(within, self.recv_data()).await {
+            Ok(result) => result.map(Some),
+            Err(_) => Ok(None),
+        }
+    }
+
+    /// Receives one datagram on the data endpoint and requires it to be
+    /// `service`.
+    ///
+    /// # Errors
+    /// Fails when a different service arrives, or as [`RawGateway::recv_data`].
+    pub async fn expect_data(&self, service: ServiceType) -> Result<Datagram, MockError> {
+        let dgram = self.recv_data().await?;
+        if dgram.service != service {
+            return Err(MockError::UnexpectedService {
+                expected: service,
+                got: dgram.service,
+            });
+        }
+        Ok(dgram)
     }
 
     /// Like [`RawGateway::recv`], but gives up after `within` and returns
@@ -220,8 +287,8 @@ impl RawGateway {
         self.send(&frame(service, body), peer).await
     }
 
-    /// Waits for a CONNECT_REQUEST, grants `channel`, and returns the client's
-    /// address.
+    /// Waits for a CONNECT_REQUEST, grants `channel` with the data endpoint's
+    /// port in the response, and returns the client's address.
     ///
     /// # Errors
     /// Fails when anything other than a CONNECT_REQUEST arrives first.
@@ -229,14 +296,24 @@ impl RawGateway {
         let req = self.expect(ServiceType::ConnectRequest).await?;
         self.send_frame(
             ServiceType::ConnectResponse,
-            &connect_response_body(channel, self.port()),
+            &connect_response_body(channel, self.data_addr().port()),
             req.peer,
         )
         .await?;
         Ok(req.peer)
     }
 
-    /// Pushes `cemi` to `peer` as a TUNNELLING_REQUEST on `channel` with `seq`.
+    /// Sends raw bytes to `peer` from the data endpoint.
+    ///
+    /// # Errors
+    /// Fails on a socket error.
+    pub async fn send_data(&self, bytes: &[u8], peer: SocketAddr) -> Result<(), MockError> {
+        self.data_sock().send_to(bytes, peer).await?;
+        Ok(())
+    }
+
+    /// Pushes `cemi` to `peer` as a TUNNELLING_REQUEST on `channel` with `seq`,
+    /// from the data endpoint.
     ///
     /// # Errors
     /// Fails on a socket error.
@@ -251,11 +328,11 @@ impl RawGateway {
             channel_id: channel,
             seq,
         };
-        self.send(&knxnet::tunneling_request(header, cemi), peer)
+        self.send_data(&knxnet::tunneling_request(header, cemi), peer)
             .await
     }
 
-    /// Sends a TUNNELLING_ACK for `seq` with `status`.
+    /// Sends a TUNNELLING_ACK for `seq` with `status`, from the data endpoint.
     ///
     /// # Errors
     /// Fails on a socket error.
@@ -266,20 +343,20 @@ impl RawGateway {
         seq: u8,
         status: u8,
     ) -> Result<(), MockError> {
-        self.send(&knxnet::tunneling_ack(channel, seq, status), peer)
+        self.send_data(&knxnet::tunneling_ack(channel, seq, status), peer)
             .await
     }
 
-    /// Receives until the client's TUNNELLING_ACK for `seq` arrives, skipping
-    /// anything else, such as a retransmit of the client's own request. Returns
-    /// the ACK status. Gives up after `within`.
+    /// Receives on the data endpoint until the client's TUNNELLING_ACK for
+    /// `seq` arrives, skipping anything else, such as a retransmit of the
+    /// client's own request. Returns the ACK status. Gives up after `within`.
     ///
     /// # Errors
     /// Fails with [`MockError::Timeout`] when the ACK does not arrive in time.
     pub async fn await_client_ack(&self, seq: u8, within: Duration) -> Result<u8, MockError> {
         let wait = async {
             loop {
-                let dgram = self.recv().await?;
+                let dgram = self.recv_data().await?;
                 if dgram.service == ServiceType::TunnelingAck {
                     let (header, status) = dgram.tunneling_ack()?;
                     if header.seq == seq {
@@ -292,6 +369,18 @@ impl RawGateway {
             .await
             .map_err(|_| MockError::Timeout("the client's TUNNELING_ACK"))?
     }
+}
+
+/// Receives and parses one datagram on `sock`.
+async fn recv_on(sock: &UdpSocket) -> Result<Datagram, MockError> {
+    let mut buf = [0u8; MAX_DATAGRAM];
+    let (n, peer) = sock.recv_from(&mut buf).await?;
+    let parsed = knxnet::parse(&buf[..n])?;
+    Ok(Datagram {
+        peer,
+        service: parsed.service,
+        body: parsed.body.to_vec(),
+    })
 }
 
 #[cfg(test)]

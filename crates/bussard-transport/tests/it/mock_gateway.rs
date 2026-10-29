@@ -709,10 +709,10 @@ async fn disconnect_request_during_ack_wait_ends_the_send_and_the_stream() -> Te
 #[tokio::test]
 async fn heartbeat_lost_after_retries_is_surfaced_to_the_consumer() -> TestResult {
     // A gateway that stops answering CONNECTIONSTATE_REQUESTs (the cable-pull
-    // drill) must be declared dead after HEARTBEAT_RETRIES attempts, and the
+    // drill) must be declared dead after HEARTBEAT_ATTEMPTS requests, and the
     // consumer must see HeartbeatLost rather than a silently wedged stream.
     //
-    // The real schedule is 60 s + 3 x 10 s, so the clock is paused *after* the
+    // The real schedule is 60 s + 4 x 10 s, so the clock is paused *after* the
     // handshake (pausing before it would auto-advance through the real round
     // trip) and the runtime auto-advances it while both sides idle. The raw
     // gateway's `recv` has no deadline of its own, so it does not race the
@@ -725,7 +725,7 @@ async fn heartbeat_lost_after_retries_is_surfaced_to_the_consumer() -> TestResul
 
         // Count the heartbeat attempts, answering none of them.
         let mut attempts = 0u32;
-        while attempts < bussard_transport::config::HEARTBEAT_RETRIES {
+        while attempts < bussard_transport::config::HEARTBEAT_ATTEMPTS {
             if gw.recv().await?.service == ServiceType::ConnectionstateRequest {
                 attempts += 1;
             }
@@ -753,7 +753,7 @@ async fn heartbeat_lost_after_retries_is_surfaced_to_the_consumer() -> TestResul
     let attempts = gw_task.await??;
     assert_eq!(
         attempts,
-        bussard_transport::config::HEARTBEAT_RETRIES,
+        bussard_transport::config::HEARTBEAT_ATTEMPTS,
         "every heartbeat retry must actually be sent"
     );
     Ok(())
@@ -1038,7 +1038,7 @@ async fn test_tunnel_reestablish_after_heartbeat_loss() -> TestResult {
     // stream, and an indication on the new channel still arrives.
     //
     // As in the bare heartbeat test, the clock is paused after the handshake and
-    // auto-advances through the 60 s + 3 x 10 s schedule. It resumes as soon as
+    // auto-advances through the 60 s + 4 x 10 s schedule. It resumes as soon as
     // the re-establish starts (the DISCONNECT for the old channel): a paused
     // clock auto-advances whenever the runtime is idle, even while a loopback
     // datagram is still in flight, so it could expire reconnect attempts before
@@ -1053,7 +1053,7 @@ async fn test_tunnel_reestablish_after_heartbeat_loss() -> TestResult {
     let gw_task = tokio::spawn(async move {
         gw.accept_connect(0x1D).await?;
         let mut attempts = 0u32;
-        while attempts < bussard_transport::config::HEARTBEAT_RETRIES {
+        while attempts < bussard_transport::config::HEARTBEAT_ATTEMPTS {
             if gw.recv().await?.service == ServiceType::ConnectionstateRequest {
                 attempts += 1;
             }
@@ -1141,5 +1141,112 @@ async fn test_tunnel_lost_after_budget_names_the_gateway() -> TestResult {
         .filter(|s| **s == ServiceType::ConnectRequest)
         .count();
     assert!(connect_requests >= 2, "re-establish attempts were made");
+    Ok(())
+}
+
+// --- a distinct data endpoint (issue #512) ----------------------------------
+
+#[tokio::test]
+async fn test_tunnel_distinct_data_endpoint_carries_tunnelling_frames() -> TestResult {
+    // The CONNECT_RESPONSE names a data port distinct from the control port
+    // (KNXnet/IP Core 3/8/2 §5.2, §8.6.3.1). TUNNELLING_REQUESTs and ACKs go
+    // to and come from the data port in both directions; CONNECTIONSTATE and
+    // DISCONNECT stay on the control port. Every `expect` is strict, so a
+    // frame on the wrong port fails the test.
+    let gw = RawGateway::bind_with_data_port().await?;
+    let addr = gw.addr();
+    assert_ne!(gw.data_addr(), addr, "two distinct gateway ports");
+    let (heartbeat_tx, heartbeat_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let gw_task = tokio::spawn(async move {
+        let peer = gw.accept_connect(0x31).await?;
+
+        // The client's frame arrives on the data port; the ACK leaves from it.
+        let req = gw.expect_data(ServiceType::TunnelingRequest).await?;
+        let tr = req.tunneling_request()?;
+        assert_eq!((tr.header.channel_id, tr.header.seq), (0x31, 0));
+        assert_eq!(req.peer, peer, "one client endpoint for control and data");
+        gw.ack(req.peer, 0x31, 0, 0).await?;
+
+        // An indication from the data port is ACKed back to the data port.
+        let ind = CemiFrame::group_write_packed(ga("1/2/3")?, ia("1.1.10")?, &[1]);
+        gw.push(peer, 0x31, 0, &ind).await?;
+        let status = gw.await_client_ack(0, Duration::from_secs(2)).await?;
+        assert_eq!(status, 0);
+
+        // The heartbeat comes to the control port. The client paused its
+        // clock to reach it; resume before answering so the answer cannot
+        // race an auto-advanced 10 s timeout.
+        let hb = gw.expect(ServiceType::ConnectionstateRequest).await?;
+        tokio::time::resume();
+        assert_eq!(knxnet::parse_channel_status(&hb.body)?.channel_id, 0x31);
+        gw.send(&knxnet::connectionstate_response(0x31, 0), hb.peer)
+            .await?;
+        let _ = heartbeat_tx.send(());
+
+        // So does the DISCONNECT.
+        let disc = gw.expect(ServiceType::DisconnectRequest).await?;
+        assert_eq!(knxnet::parse_disconnect_request(&disc.body)?, 0x31);
+        gw.send(&knxnet::disconnect_response(0x31, 0), disc.peer)
+            .await?;
+
+        // Nothing else reached the data port.
+        let stray = gw.recv_data_within(Duration::from_millis(200)).await?;
+        assert!(
+            stray.is_none(),
+            "unexpected datagram on the data port: {stray:?}"
+        );
+        TestResult::Ok(())
+    });
+
+    let config = ConnectionConfig::tunnel(addr).with_reconnect(TunnelReconnect::disabled());
+    let mut conn = Transport::connect(&config).await?;
+    conn.send(CemiFrame::group_write_packed(
+        ga("3/0/4")?,
+        ia("1.1.255")?,
+        &[1],
+    ))
+    .await?;
+    let stamped = tokio::time::timeout(Duration::from_secs(2), conn.recv()).await??;
+    assert_eq!(group_dest(&stamped.frame)?, "1/2/3");
+
+    // Skip ahead to the first heartbeat (60 s); the mock resumes the clock.
+    tokio::time::pause();
+    heartbeat_rx.await?;
+    conn.close().await?;
+    gw_task.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_tunnel_mock_gateway_with_data_port_serves_the_session() -> TestResult {
+    // The same split against the testkit's MockGateway, which drops (and
+    // counts) any datagram on the wrong port.
+    let ind = CemiFrame::group_write_packed(ga("1/2/3")?, ia("1.1.10")?, &[1]);
+    let gw = MockGateway::builder()
+        .data_port()
+        .push_after_connect(Duration::from_millis(50), ind)
+        .start()
+        .await?;
+    assert_ne!(gw.data_port(), gw.port());
+    let mut conn = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
+    for v in [1u8, 0] {
+        conn.send(CemiFrame::group_write_packed(
+            ga("3/0/4")?,
+            ia("1.1.255")?,
+            &[v],
+        ))
+        .await?;
+    }
+    let stamped = tokio::time::timeout(Duration::from_secs(2), conn.recv()).await??;
+    assert_eq!(group_dest(&stamped.frame)?, "1/2/3");
+    conn.close().await?;
+
+    let stats = gw.finish(Duration::from_secs(2)).await?;
+    assert_eq!(stats.misrouted, 0, "every datagram on its endpoint");
+    assert_eq!(stats.requests, 2);
+    assert_eq!(stats.client_acks, 1);
+    assert_eq!(stats.connects, 1);
+    assert_eq!(stats.disconnects, 1);
     Ok(())
 }

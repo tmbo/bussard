@@ -111,6 +111,10 @@ enum SessionState {
 /// A blocking KNXnet/IP tunnelling gateway over UDP.
 pub struct KnxnetIpServer {
     socket: UdpSocket,
+    /// The distinct data endpoint of plain UDP tunnels, when
+    /// [`enable_data_port`](Self::enable_data_port) opened one (bussard issue
+    /// #512). Non-blocking; [`serve`](Self::serve) drains it every wake.
+    data_socket: Option<UdpSocket>,
     bus: Bus,
     channel: u8,
     /// Per-client sequence counters for TUNNELLING_REQUESTs we send toward each
@@ -172,6 +176,7 @@ impl KnxnetIpServer {
         let socket = UdpSocket::bind(addr)?;
         Ok(Self {
             socket,
+            data_socket: None,
             bus,
             channel: 1,
             tx_seqs: BTreeMap::new(),
@@ -186,6 +191,28 @@ impl KnxnetIpServer {
             mgmt: BTreeMap::new(),
             mgmt_transport: BTreeMap::new(),
         })
+    }
+
+    /// Serves the data connection of plain UDP tunnels on a second socket bound
+    /// to `addr` (port 0 picks one) and returns its address (bussard issue
+    /// #512). KNXnet/IP Core 3/8/2 §8.6.3.1 lets a server return any port as
+    /// the data endpoint of a CONNECT_RESPONSE; a conforming client then
+    /// sends its TUNNELLING_REQUESTs and ACKs there (§8.6.3.4) and keeps
+    /// CONNECTIONSTATE and DISCONNECT on the control endpoint (§8.6.3.3).
+    /// The server is strict about it: a TUNNELLING_REQUEST/ACK on the
+    /// control port, or any other plain frame on the data port, is dropped.
+    /// Secure sessions and device management connections are unaffected.
+    pub fn enable_data_port(&mut self, addr: SocketAddr) -> std::io::Result<SocketAddr> {
+        let socket = UdpSocket::bind(addr)?;
+        socket.set_nonblocking(true)?;
+        let local = socket.local_addr()?;
+        self.data_socket = Some(socket);
+        Ok(local)
+    }
+
+    /// The address of the distinct data port, if one is enabled.
+    pub fn data_addr(&self) -> Option<SocketAddr> {
+        self.data_socket.as_ref().and_then(|s| s.local_addr().ok())
     }
 
     /// Makes the gateway the KNXnet/IP server of the bus device `address`
@@ -356,7 +383,10 @@ impl KnxnetIpServer {
         // stimulus periods while keeping the loop responsive to client traffic.
         // With a TCP side the loop also polls the secure connections, so it
         // wakes every few milliseconds instead.
-        let wake = if self.secure.is_some() || self.interface_device.is_some() {
+        let wake = if self.secure.is_some()
+            || self.interface_device.is_some()
+            || self.data_socket.is_some()
+        {
             5
         } else {
             100
@@ -390,10 +420,48 @@ impl KnxnetIpServer {
                 }
                 Err(e) => return Err(ServerError::Io(e)),
             }
+            self.poll_data()?;
             self.poll_tcp();
             self.pump_stimulus();
             self.sync_interface_secure();
         }
+    }
+
+    /// Handles every datagram waiting on the data port, if one is enabled.
+    /// A refused datagram (ICMP from a client that went away) is transient,
+    /// as on the control port.
+    pub fn poll_data(&mut self) -> Result<(), ServerError> {
+        let mut buf = [0u8; 1024];
+        loop {
+            let Some(socket) = &self.data_socket else {
+                return Ok(());
+            };
+            match socket.recv_from(&mut buf) {
+                Ok((n, peer)) => self.handle_data_datagram(&buf[..n], peer)?,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::ConnectionReset
+                    ) => {}
+                Err(e) => return Err(ServerError::Io(e)),
+            }
+        }
+    }
+
+    /// Process one datagram that arrived on the data port: only a plain
+    /// TUNNELLING_REQUEST or TUNNELLING_ACK belongs there.
+    pub fn handle_data_datagram(
+        &mut self,
+        data: &[u8],
+        peer: SocketAddr,
+    ) -> Result<(), ServerError> {
+        self.record(data, Peer::Udp(peer), true);
+        if !is_data_service(data) {
+            tracing::debug!(?peer, "dropping a non-tunnelling frame on the data port");
+            return Ok(());
+        }
+        self.handle_frame(data, Peer::Udp(peer))
     }
 
     /// Tick the stimulus schedule and forward any produced telegrams to the
@@ -459,6 +527,10 @@ impl KnxnetIpServer {
                 }
                 return Ok(());
             }
+        }
+        if self.data_socket.is_some() && is_data_service(data) {
+            tracing::debug!(?peer, "dropping a tunnelling frame on the control port");
+            return Ok(());
         }
         self.handle_frame(data, Peer::Udp(peer))
     }
@@ -642,7 +714,13 @@ impl KnxnetIpServer {
     fn send_frame(&mut self, frame: &[u8], peer: Peer) -> Result<(), ServerError> {
         match peer {
             Peer::Udp(addr) => {
-                self.socket.send_to(frame, addr)?;
+                // Tunnelling frames leave from the data port when one is
+                // enabled (Core §8.6.3.4).
+                let socket = match &self.data_socket {
+                    Some(data) if is_data_service(frame) => data,
+                    _ => &self.socket,
+                };
+                socket.send_to(frame, addr)?;
                 self.record(frame, peer, false);
                 Ok(())
             }
@@ -917,8 +995,16 @@ impl KnxnetIpServer {
             Some(SessionState::Established { tunnel_ia, .. }) => *tunnel_ia,
             _ => plain,
         };
+        let control = self.socket.local_addr()?;
+        let data = self
+            .data_socket
+            .as_ref()
+            .map(UdpSocket::local_addr)
+            .transpose()?
+            .unwrap_or(control);
         let (hpai_bytes, tunnel_ia) = match peer {
-            Peer::Udp(_) => (hpai(self.socket.local_addr()?), plain),
+            // The data endpoint: the distinct data port when one is enabled.
+            Peer::Udp(_) => (hpai(data), plain),
             Peer::Tcp(_) => (
                 [0x08, 0x02, 0, 0, 0, 0, 0, 0],
                 session_ia(self.session_state(peer)),
@@ -1369,6 +1455,16 @@ fn write_all_nonblocking(stream: &mut TcpStream, mut bytes: &[u8]) -> std::io::R
         }
     }
     Ok(())
+}
+
+/// Whether a plain KNXnet/IP frame belongs to a tunnel's data connection
+/// (TUNNELLING_REQUEST or TUNNELLING_ACK) rather than its control endpoint.
+fn is_data_service(frame: &[u8]) -> bool {
+    frame.len() >= 4
+        && matches!(
+            u16::from_be_bytes([frame[2], frame[3]]),
+            service::TUNNELLING_REQUEST | service::TUNNELLING_ACK
+        )
 }
 
 /// Serialize a HPAI (Host Protocol Address Information) block for a UDP

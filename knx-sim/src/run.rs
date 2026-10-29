@@ -82,6 +82,13 @@ pub fn serve_config(config_path: &Path) -> Result<()> {
             .with_context(|| format!("creating pcap {}", path.display()))?;
         tracing::info!(path = %path.display(), "recording UDP datagrams to pcap");
     }
+    if let Some(port) = cfg.gateway.data_port {
+        let data = SocketAddr::new(addr.ip(), port);
+        let bound = server
+            .enable_data_port(data)
+            .context("binding the KNXnet/IP data port")?;
+        tracing::info!(%bound, "tunnelling data endpoint on a distinct port");
+    }
     if let Some(addr) = &cfg.gateway.tunnel_address {
         let ia: crate::wire::IndividualAddress = addr
             .parse()

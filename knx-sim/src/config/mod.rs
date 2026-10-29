@@ -48,6 +48,13 @@ pub struct GatewayConfig {
     /// project, so an ETS run against a TP line sets e.g. `1.1.254`.
     #[serde(default)]
     pub tunnel_address: Option<String>,
+    /// Serve the data connection of plain UDP tunnels on this second UDP port
+    /// (`0` picks a free one), as KNXnet/IP Core 3/8/2 §8.6.3.1 allows
+    /// (bussard issue #512). The CONNECT_RESPONSE names it as the data
+    /// endpoint, and TUNNELLING_REQUEST/ACK travel through it only. Absent:
+    /// one port for control and data, as before.
+    #[serde(default)]
+    pub data_port: Option<u16>,
     /// Write every UDP datagram in and out to this pcap file (relative to
     /// the config file), so a tool run against the sim is captured without a
     /// sniffer. `tools/knxtrace` reads it.

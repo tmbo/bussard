@@ -35,6 +35,23 @@
 //! refused by a secure-only interface becomes
 //! [`TransportError::SecureRequired`] (issue #182).
 //!
+//! # Control and data endpoints (issue #512)
+//!
+//! The CONNECT_RESPONSE names the data endpoint the server prepared for the
+//! channel (KNXnet/IP Core 3/8/2 §5.2, §7.8.2), and that port may differ
+//! from the control endpoint (Core §8.6.3.1). On a plain UDP tunnel the
+//! TUNNELING_REQUESTs and TUNNELING_ACKs go to that data endpoint, while
+//! CONNECT, CONNECTIONSTATE and DISCONNECT stay on the control endpoint (Core
+//! §8.6.3.3, §8.6.3.4; Tunnelling 3/8/4). A route-back data HPAI (`0.0.0.0:0`)
+//! means the endpoint the response came from. While both are the same
+//! endpoint, as on most interfaces, knx-sim by default and the testkit mocks,
+//! the socket stays connected to it and nothing changes on the wire. A
+//! distinct data endpoint swaps the socket for an unconnected one on the same
+//! local endpoint (a connected socket drops datagrams from any other port),
+//! which accepts datagrams from both gateway endpoints and drops the rest. A secure session keeps route-back semantics: over
+//! TCP every endpoint is the connection itself (Core §8.4.3), and over UDP the
+//! session's own socket carries every frame.
+//!
 //! # Re-establishing a lost tunnel (issue #177)
 //!
 //! A pulled LAN cable on the IP interface, a switch reboot or a Wi-Fi hiccup
@@ -114,7 +131,7 @@ use tokio::time::{self, Instant};
 
 use crate::cemi::CemiFrame;
 use crate::config::{
-    CONNECT_TIMEOUT, ConnectionConfig, DISCONNECT_TIMEOUT, HEARTBEAT_INTERVAL, HEARTBEAT_RETRIES,
+    CONNECT_TIMEOUT, ConnectionConfig, DISCONNECT_TIMEOUT, HEARTBEAT_ATTEMPTS, HEARTBEAT_INTERVAL,
     HEARTBEAT_TIMEOUT, SECURE_KEEPALIVE_INTERVAL, SECURE_PROBE_TIMEOUT, SecureSource,
     SecureTransport, SecureUser, TUNNELING_ACK_TIMEOUT, TUNNELING_RETRANSMITS, TunnelReconnect,
 };
@@ -131,6 +148,13 @@ use crate::secure::{SecureLink, UserKeys};
 /// leaves the gateway retransmitting forever with no chance to resync (issue
 /// #58). The window is kept small so a genuinely fresh (ahead) sequence is never
 /// mistaken for a duplicate.
+///
+/// A deliberate deviation from KNXnet/IP Tunnelling 3/8/4 §2.6.1, which ACKs
+/// only the frame one behind the expected sequence and drops any other
+/// unexpected one without an ACK. A conforming server repeats a frame once,
+/// so one behind would do; the wider window keeps a gateway that resends
+/// older frames after lost ACKs from stalling (issue #58, recorded in #516).
+/// Frames inside the window are still never re-delivered.
 const DUP_ACK_WINDOW: u8 = 8;
 
 /// Inbound queue depth at which the tunnel starts warning that its consumer is
@@ -162,20 +186,143 @@ pub enum LinkState {
 /// TCP or UDP (issue #71 Phase B, #197). The tunnel state machine talks plain
 /// KNXnet/IP frames to either.
 enum Link {
-    /// A connected UDP socket (the classic tunnel).
-    Udp(UdpSocket),
+    /// The classic tunnel: one UDP socket talking to the gateway's control and
+    /// data endpoints.
+    Udp(UdpLink),
     /// An authenticated secure session.
     Secure(Box<SecureLink>),
 }
 
+/// The socket of a plain UDP tunnel and the two gateway endpoints it talks to
+/// (see "Control and data endpoints" in the module docs).
+struct UdpLink {
+    /// Connected to the control endpoint while the data endpoint is the same
+    /// one (the kernel filters inbound datagrams and reports a refused port),
+    /// unconnected once a CONNECT_RESPONSE names a distinct data endpoint,
+    /// since a connected socket would drop every datagram from that port.
+    socket: UdpSocket,
+    /// Whether `socket` is still connected to `control`.
+    connected: bool,
+    /// The gateway's control endpoint: CONNECT, CONNECTIONSTATE, DISCONNECT.
+    control: SocketAddrV4,
+    /// The data endpoint of the latest CONNECT_RESPONSE: TUNNELING_REQUEST
+    /// and TUNNELING_ACK. The control endpoint until a response names one.
+    data: SocketAddrV4,
+}
+
+impl UdpLink {
+    /// A link over `socket`, connected to the gateway's `control` endpoint
+    /// (see [`udp_socket`]), with the data endpoint not yet known.
+    fn new(socket: UdpSocket, control: SocketAddrV4) -> Self {
+        UdpLink {
+            socket,
+            connected: true,
+            control,
+            data: control,
+        }
+    }
+
+    /// Adopts the data endpoint HPAI of a CONNECT_RESPONSE. A route-back HPAI
+    /// (zero address or port, Core §8.6.3) stands for the endpoint the
+    /// response came from, the control endpoint. A distinct data endpoint
+    /// replaces the connected socket with an unconnected one on the same
+    /// local endpoint, the one the CONNECT_REQUEST advertised.
+    async fn adopt_data_endpoint(&mut self, hpai: Option<SocketAddrV4>) -> Result<()> {
+        self.data = resolve_data_endpoint(hpai, self.control);
+        if self.data == self.control || !self.connected {
+            return Ok(());
+        }
+        tracing::debug!(
+            control = %self.control,
+            data = %self.data,
+            "gateway uses a distinct data endpoint for the tunnel"
+        );
+        let local = self.socket.local_addr()?;
+        // A UDP port has no TIME_WAIT, so the old socket can go and the new
+        // one bind the same endpoint right away. A datagram arriving in
+        // between is lost; the gateway repeats an unacknowledged
+        // TUNNELLING_REQUEST (Tunnelling 3/8/4 §2.6.1).
+        let placeholder = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).await?;
+        drop(std::mem::replace(&mut self.socket, placeholder));
+        self.socket = UdpSocket::bind(local).await?;
+        self.connected = false;
+        Ok(())
+    }
+
+    /// Whether a datagram from `from` belongs to this tunnel: it comes from
+    /// the gateway's control or data endpoint.
+    fn is_gateway_endpoint(&self, from: std::net::SocketAddr) -> bool {
+        match from {
+            std::net::SocketAddr::V4(v4) => v4 == self.control || v4 == self.data,
+            std::net::SocketAddr::V6(_) => false,
+        }
+    }
+
+    /// Sends `frame` to `to`, one of the gateway's endpoints.
+    async fn send_to(&self, frame: &[u8], to: SocketAddrV4) -> Result<()> {
+        if self.connected {
+            // Connected, so `to` is the control endpoint (and the data one).
+            self.socket.send(frame).await?;
+        } else {
+            self.socket.send_to(frame, to).await?;
+        }
+        Ok(())
+    }
+
+    /// Receives the next datagram from the gateway into `buf`. Unconnected,
+    /// datagrams from any other source are dropped here, as the kernel does
+    /// for a connected socket. Cancel-safe: each `recv`/`recv_from` is.
+    async fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {
+        if self.connected {
+            return Ok(self.socket.recv(buf).await?);
+        }
+        loop {
+            let (n, from) = self.socket.recv_from(buf).await?;
+            if self.is_gateway_endpoint(from) {
+                return Ok(n);
+            }
+            tracing::debug!(%from, "dropped a datagram from outside the tunnel's gateway endpoints");
+        }
+    }
+}
+
+/// The data endpoint a CONNECT_RESPONSE names, with a route-back zero address
+/// or port (Core §8.6.3) replaced by the control endpoint's; the control
+/// endpoint when the response named none.
+fn resolve_data_endpoint(hpai: Option<SocketAddrV4>, control: SocketAddrV4) -> SocketAddrV4 {
+    match hpai {
+        Some(addr) => {
+            let ip = if addr.ip().is_unspecified() {
+                *control.ip()
+            } else {
+                *addr.ip()
+            };
+            let port = if addr.port() == 0 {
+                control.port()
+            } else {
+                addr.port()
+            };
+            SocketAddrV4::new(ip, port)
+        }
+        None => control,
+    }
+}
+
 impl Link {
-    /// Sends one plain KNXnet/IP frame (wrapped on a secure link).
+    /// Sends one plain KNXnet/IP frame (wrapped on a secure link) to the
+    /// control endpoint.
     async fn send(&mut self, frame: &[u8]) -> Result<()> {
         match self {
-            Link::Udp(socket) => {
-                socket.send(frame).await?;
-                Ok(())
-            }
+            Link::Udp(udp) => udp.send_to(frame, udp.control).await,
+            Link::Secure(link) => link.send(frame).await,
+        }
+    }
+
+    /// Sends a TUNNELING_REQUEST or TUNNELING_ACK: to the data endpoint on a
+    /// plain UDP tunnel, through the session on a secure link.
+    async fn send_data(&mut self, frame: &[u8]) -> Result<()> {
+        match self {
+            Link::Udp(udp) => udp.send_to(frame, udp.data).await,
             Link::Secure(link) => link.send(frame).await,
         }
     }
@@ -183,8 +330,17 @@ impl Link {
     /// Receives the next plain KNXnet/IP frame into `buf`. Cancel-safe.
     async fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {
         match self {
-            Link::Udp(socket) => Ok(socket.recv(buf).await?),
+            Link::Udp(udp) => udp.recv(buf).await,
             Link::Secure(link) => link.recv(buf).await,
+        }
+    }
+
+    /// Adopts the data endpoint of a CONNECT_RESPONSE. A secure session keeps
+    /// route-back semantics, so only the plain UDP tunnel uses it.
+    async fn adopt_data_endpoint(&mut self, hpai: Option<SocketAddrV4>) -> Result<()> {
+        match self {
+            Link::Udp(udp) => udp.adopt_data_endpoint(hpai).await,
+            Link::Secure(_) => Ok(()),
         }
     }
 
@@ -194,7 +350,7 @@ impl Link {
     /// A connected UDP socket whose peer port is closed gets an ICMP port
     /// unreachable for a datagram it sent earlier; Linux reports it as
     /// `ECONNREFUSED` on the NEXT `send` or `recv` (Windows as `WSAECONNRESET`
-    /// on `recv`), macOS mostly not at all. The error is consumed by the call
+    /// on `recv`, there also unconnected), macOS mostly not at all. The error is consumed by the call
     /// that returns it and the socket stays usable, so while re-establishing a
     /// tunnel it is one more sign the gateway is away, not a reason to abandon
     /// the attempt (issue #177). Never true on a secure TCP link, where a
@@ -338,9 +494,13 @@ impl Tunnel {
                 keyring_note,
             } => {
                 let (socket, local_hpai) = udp_socket(gateway, config.local_interface).await?;
-                let mut link = Link::Udp(socket);
+                let mut link = Link::Udp(UdpLink::new(socket, gateway));
                 match Self::handshake(&mut link, local_hpai).await {
-                    Ok((channel_id, assigned_ia)) => Opened {
+                    Ok(Granted {
+                        channel_id,
+                        assigned_ia,
+                        ..
+                    }) => Opened {
                         link,
                         local_hpai,
                         channel_id,
@@ -446,8 +606,9 @@ impl Tunnel {
     }
 
     /// Runs the CONNECT / CONNECT_RESPONSE handshake, returning the channel id
-    /// and any assigned individual address.
-    async fn handshake(link: &mut Link, hpai: Hpai) -> Result<(u8, Option<u16>)> {
+    /// and any assigned individual address. A plain UDP link adopts the data
+    /// endpoint the response names.
+    async fn handshake(link: &mut Link, hpai: Hpai) -> Result<Granted> {
         let req = knxnet::connect_request(hpai, hpai);
         link.send(&req)
             .await
@@ -463,7 +624,9 @@ impl Tunnel {
                 .map_err(|e| crate::secure::at_stage(e, "CONNECT_RESPONSE"))?;
             let parsed = knxnet::parse(&buf[..n])?;
             if parsed.service == ServiceType::ConnectResponse {
-                return accept_connect_response(parsed.body);
+                let granted = accept_connect_response(parsed.body)?;
+                link.adopt_data_endpoint(granted.data_endpoint).await?;
+                return Ok(granted);
             }
             if matches!(link, Link::Udp(_)) {
                 return Err(TransportError::InvalidField {
@@ -479,8 +642,9 @@ impl Tunnel {
     }
 }
 
-/// Binds the UDP socket of a plain tunnel (or a secure session over UDP) and
-/// returns it with the HPAI it advertises.
+/// Binds the UDP socket of a plain tunnel (or a secure session over UDP),
+/// connected to the gateway's control endpoint, and returns it with the HPAI
+/// it advertises.
 pub(crate) async fn udp_socket(
     gateway: SocketAddrV4,
     local_interface: Ipv4Addr,
@@ -803,7 +967,11 @@ async fn connect_secure_user(
     let hpai = link.hpai();
     let mut link = Link::Secure(Box::new(link));
     match Tunnel::handshake(&mut link, hpai).await {
-        Ok((channel_id, assigned_ia)) => Ok((link, hpai, channel_id, assigned_ia)),
+        Ok(Granted {
+            channel_id,
+            assigned_ia,
+            ..
+        }) => Ok((link, hpai, channel_id, assigned_ia)),
         Err(err) => {
             link.close().await;
             Err(err)
@@ -898,9 +1066,20 @@ async fn refusal(
     TransportError::GatewayStatus { status, context }
 }
 
-/// Decodes a CONNECT_RESPONSE body into the granted channel id and assigned
-/// individual address, turning a refusal into its error.
-fn accept_connect_response(body: &[u8]) -> Result<(u8, Option<u16>)> {
+/// What a successful CONNECT_RESPONSE granted.
+struct Granted {
+    /// The channel id.
+    channel_id: u8,
+    /// The individual address the gateway assigned, if it named one.
+    assigned_ia: Option<u16>,
+    /// The data endpoint HPAI the server prepared for the channel (Core
+    /// §5.2), as sent: route-back zeros are resolved by the link.
+    data_endpoint: Option<SocketAddrV4>,
+}
+
+/// Decodes a CONNECT_RESPONSE body into what it granted, turning a refusal
+/// into its error.
+fn accept_connect_response(body: &[u8]) -> Result<Granted> {
     let resp = knxnet::parse_connect_response(body)?;
     // A full interface is a capacity refusal, not a transport fault: give it
     // its own variant so the CLI can name the likely other clients and exit
@@ -914,7 +1093,11 @@ fn accept_connect_response(body: &[u8]) -> Result<(u8, Option<u16>)> {
             context: "CONNECT_RESPONSE",
         });
     }
-    Ok((resp.channel_id, resp.assigned_ia))
+    Ok(Granted {
+        channel_id: resp.channel_id,
+        assigned_ia: resp.assigned_ia,
+        data_endpoint: resp.data_endpoint,
+    })
 }
 
 impl BusConnection for Tunnel {
@@ -1236,14 +1419,14 @@ impl TaskState {
         if !self.link.acks() {
             // Over TCP there is no TUNNELING_ACK: the stream is reliable and a
             // broken one surfaces as a socket error (CONFIRMED, ETS capture).
-            self.link.send(&datagram).await?;
+            self.link.send_data(&datagram).await?;
             self.outgoing_seq = self.outgoing_seq.wrapping_add(1);
             return Ok(());
         }
 
         let mut attempt = 0;
         loop {
-            self.link.send(&datagram).await?;
+            self.link.send_data(&datagram).await?;
             match self.await_ack(seq, buf).await {
                 Ok(()) => {
                     self.outgoing_seq = self.outgoing_seq.wrapping_add(1);
@@ -1369,7 +1552,7 @@ impl TaskState {
             // cEMI decodes (C3 — an unknown message code must not stall the tunnel).
             if self.link.acks() {
                 let ack = knxnet::tunneling_ack(self.channel_id, seq, 0);
-                let _ = self.link.send(&ack).await;
+                let _ = self.link.send_data(&ack).await;
             }
             self.incoming_seq = self.incoming_seq.wrapping_add(1);
 
@@ -1403,7 +1586,7 @@ impl TaskState {
             // resync `incoming_seq` (issue #58).
             if self.link.acks() {
                 let ack = knxnet::tunneling_ack(self.channel_id, seq, 0);
-                let _ = self.link.send(&ack).await;
+                let _ = self.link.send_data(&ack).await;
             }
             tracing::debug!(
                 seq,
@@ -1425,7 +1608,7 @@ impl TaskState {
     /// Sends a heartbeat and awaits its response, retrying per the spec.
     async fn do_heartbeat(&mut self, buf: &mut [u8]) -> Result<()> {
         let r = self
-            .heartbeat_with(HEARTBEAT_RETRIES, HEARTBEAT_TIMEOUT, buf)
+            .heartbeat_with(HEARTBEAT_ATTEMPTS, HEARTBEAT_TIMEOUT, buf)
             .await;
         if r.is_ok() {
             self.last_rx = Instant::now();
@@ -1527,7 +1710,11 @@ impl TaskState {
                 .connect_attempt(wait, old_channel, &mut old_open, buf)
                 .await
             {
-                Ok((channel, assigned_ia)) => {
+                Ok(Granted {
+                    channel_id: channel,
+                    assigned_ia,
+                    ..
+                }) => {
                     self.channel_id = channel;
                     self.outgoing_seq = 0;
                     self.incoming_seq = 0;
@@ -1572,7 +1759,7 @@ impl TaskState {
         old_channel: u8,
         old_open: &mut bool,
         buf: &mut [u8],
-    ) -> Result<(u8, Option<u16>)> {
+    ) -> Result<Granted> {
         let deadline = Instant::now() + wait;
         if let Some(user) = &self.secure_user {
             // A secure tunnel needs a fresh session on the same carrier: the
@@ -1625,7 +1812,11 @@ impl TaskState {
                 continue;
             };
             match parsed.service {
-                ServiceType::ConnectResponse => return accept_connect_response(parsed.body),
+                ServiceType::ConnectResponse => {
+                    let granted = accept_connect_response(parsed.body)?;
+                    self.link.adopt_data_endpoint(granted.data_endpoint).await?;
+                    return Ok(granted);
+                }
                 ServiceType::DisconnectResponse => {
                     if parsed.body.first() == Some(&old_channel) {
                         *old_open = false;
@@ -1694,11 +1885,52 @@ mod tests {
 
     #[tokio::test]
     async fn test_is_deferred_refusal_only_icmp_kinds_on_udp() -> Result<()> {
-        let link = Link::Udp(UdpSocket::bind("127.0.0.1:0").await?);
+        let link = Link::Udp(UdpLink::new(UdpSocket::bind("127.0.0.1:0").await?, CONTROL));
         assert!(link.is_deferred_refusal(&io(std::io::ErrorKind::ConnectionRefused)));
         assert!(link.is_deferred_refusal(&io(std::io::ErrorKind::ConnectionReset)));
         assert!(!link.is_deferred_refusal(&io(std::io::ErrorKind::PermissionDenied)));
         assert!(!link.is_deferred_refusal(&TransportError::HeartbeatLost));
+        Ok(())
+    }
+
+    /// A gateway control endpoint for the endpoint tests.
+    const CONTROL: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 10), 3671);
+
+    #[test]
+    fn test_resolve_data_endpoint_takes_the_hpai_and_resolves_route_back() {
+        let distinct = SocketAddrV4::new(*CONTROL.ip(), 50_100);
+        assert_eq!(resolve_data_endpoint(Some(distinct), CONTROL), distinct);
+        // Route-back (Core §8.6.3): the endpoint the response came from.
+        let route_back = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
+        assert_eq!(resolve_data_endpoint(Some(route_back), CONTROL), CONTROL);
+        let port_only = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 50_100);
+        assert_eq!(resolve_data_endpoint(Some(port_only), CONTROL), distinct);
+        assert_eq!(resolve_data_endpoint(None, CONTROL), CONTROL);
+    }
+
+    #[tokio::test]
+    async fn test_adopt_data_endpoint_unconnects_only_for_a_distinct_endpoint() -> Result<()> {
+        let control = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 3671);
+        let (socket, hpai) = udp_socket(control, Ipv4Addr::LOCALHOST).await?;
+        let mut link = UdpLink::new(socket, control);
+
+        // The same endpoint: the connected socket stays.
+        link.adopt_data_endpoint(Some(control)).await?;
+        assert!(link.connected);
+        assert_eq!(link.data, control);
+
+        // A distinct one: unconnected, on the advertised local endpoint.
+        let distinct = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 3672);
+        link.adopt_data_endpoint(Some(distinct)).await?;
+        assert!(!link.connected);
+        assert_eq!(link.data, distinct);
+        assert_eq!(
+            link.socket.local_addr()?,
+            std::net::SocketAddr::V4(hpai.addr)
+        );
+        assert!(link.is_gateway_endpoint(control.into()));
+        assert!(link.is_gateway_endpoint(distinct.into()));
+        assert!(!link.is_gateway_endpoint(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 3673).into()));
         Ok(())
     }
 

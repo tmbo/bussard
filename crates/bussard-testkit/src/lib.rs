@@ -44,6 +44,9 @@
 //! KNXnet/IP:
 //! - CONNECT for a tunnel link-layer connection. The response hands out tunnel
 //!   IA 1.1.255 and carries a data HPAI of `127.0.0.1:port` *(native)*.
+//! - A distinct data port: the data HPAI names a second port that carries the
+//!   TUNNELLING_REQUESTs and ACKs ([`GatewayBuilder::data_port`],
+//!   [`RawGateway::bind_with_data_port`], issue #512) *(native)*.
 //! - CONNECT refusal with a status, e.g. `0x24` E_NO_MORE_CONNECTIONS or `0x22`
 //!   *(native)*.
 //! - CONNECTIONSTATE answered, or deliberately left unanswered *(native)*.

@@ -24,8 +24,15 @@ pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
 /// Per-attempt timeout waiting for a CONNECTIONSTATE_RESPONSE (spec: 10 s).
 pub const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Number of heartbeat attempts before the connection is declared dead (spec: 3).
+/// How often an unanswered or failed CONNECTIONSTATE_REQUEST is repeated
+/// before the connection is declared dead: three times, after the first
+/// request (KNXnet/IP Core 3/8/2 §5.4, issue #516).
 pub const HEARTBEAT_RETRIES: u32 = 3;
+
+/// CONNECTIONSTATE_REQUESTs sent in total before the connection is declared
+/// dead: the first one plus [`HEARTBEAT_RETRIES`] repeats, 40 s at
+/// [`HEARTBEAT_TIMEOUT`] each, inside the server's 120 s heartbeat timeout.
+pub const HEARTBEAT_ATTEMPTS: u32 = HEARTBEAT_RETRIES + 1;
 
 /// Timeout waiting for a TUNNELING_ACK to one of our requests (spec: 1 s).
 pub const TUNNELING_ACK_TIMEOUT: Duration = Duration::from_secs(1);
