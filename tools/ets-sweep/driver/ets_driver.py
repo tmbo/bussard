@@ -699,40 +699,155 @@ def enter_certificate(certificate: str) -> bool:
     return True
 
 
-@flow("export_keyring")
-def flow_export_keyring(req: dict) -> dict:
-    """Exports the project's keyring (`.knxkeys`) to `path` in the VM with
-    `password`: the project tab's context menu, the entry whose text names the
-    keyring export, ETS's save dialog (a Win32 dialog, UI Automation), then the
-    export password twice. Refuses unless the active tab is the project."""
-    require_project(req["project"])
-    hit = find_text(req["project"], LAYOUT["tab_strip"])
+def export_from_tab_menu(project: str, entry_re: str, path: str, password: str | None = None,
+                         wait: float = 120) -> dict:
+    """An export ETS offers in the project tab's context menu: the entry
+    matching `entry_re`, ETS's save dialog (a Win32 dialog, UI Automation:
+    the file name field set to `path`, then Enter), the export password when
+    one is asked for, and the file appearing at `path` in the VM."""
+    require_project(project)
+    hit = find_text(project, LAYOUT["tab_strip"])
     if not hit:
-        raise RuntimeError(f"no tab for project {req['project']!r}")
+        raise RuntimeError(f"no tab for project {project!r}")
     click(hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2, button="right")
     time.sleep(1.5)
     items = menu_items()
-    entry = next((i for i in items if re.search(r"(Schlüsselbund|Keyring|knxkeys)", i, re.I)), None)
+    entry = next((i for i in items if re.search(entry_re, i, re.I)), None)
     if entry is None:
         keys("{ESC}")
-        raise RuntimeError(f"no keyring export in the project tab's menu: {items[:16]}")
+        raise RuntimeError(f"no entry like {entry_re!r} in the project tab's menu: {items[:16]}")
     menu_click(entry)
     time.sleep(2)
-    # The save dialog: the file name field, then Enter.
     dialog = wait_popup(10)
     edits = [e for e in dialog.descendants(control_type="Edit") if e.is_visible()]
     if not edits:
         keys("{ESC}")
         raise RuntimeError(f"the save dialog has no file name field: {popup_tree(4, 3000)[:400]}")
-    edits[0].set_edit_text(req["path"])
+    edits[0].set_edit_text(path)
     keys("{ENTER}")
     time.sleep(2)
-    answered = set_project_password(req["password"])
-    deadline = time.time() + 30
-    while time.time() < deadline and not os.path.exists(req["path"]):
+    answered = set_project_password(password) if password else False
+    deadline = time.time() + wait
+    while time.time() < deadline and not os.path.exists(path):
         time.sleep(1)
-    return {"path": req["path"], "exported": os.path.exists(req["path"]), "password_dialog": answered,
-            "menu_entry": entry}
+    wait_busy()
+    return {"path": path, "exported": os.path.exists(path), "password_dialog": answered, "menu_entry": entry}
+
+
+@flow("export_keyring")
+def flow_export_keyring(req: dict) -> dict:
+    """Exports the project's keyring (`.knxkeys`) to `path` in the VM,
+    protected with `password` (#423)."""
+    return export_from_tab_menu(req["project"], r"(Schlüsselbund|Keyring|knxkeys)", req["path"], req["password"])
+
+
+@flow("export_project")
+def flow_export_project(req: dict) -> dict:
+    """Exports the project (`.knxproj`) to `path` in the VM (#424): `bussard
+    import` of it is the model state a parameter-set row compares against."""
+    return export_from_tab_menu(req["project"], r"^(Projekt )?export", req["path"], req.get("project_password"))
+
+
+# ---------------------------------------------------------------- parameter editor (#424)
+# UNVERIFIED against ETS (written offline, 2026-10-30). The parameter view is
+# part of the main window, so it is read by OCR: the page list on the left,
+# each parameter a row of label and control. Regions are first guesses of the
+# 4112-wide layout and are the first thing to correct from a screenshot.
+PARAM_PAGES = (680, 260, 1250, 2400)
+PARAM_AREA = (1250, 260, 3300, 2400)
+
+
+def open_device_parameters(ia: str) -> str:
+    """Opens the parameter view of device `ia`: its Topologie node's context
+    menu, the entry that names the parameters."""
+    from pywinauto import mouse
+
+    click(*line_1_1())
+    time.sleep(1)
+    tree = [l for l in ocr(LAYOUT["tree"]) if re.match(rf"^\W*{re.escape(ia)}\b", l["text"].strip())]
+    if not tree:
+        raise RuntimeError(f"device {ia} not in the Topologie tree")
+    t = tree[0]
+    s = scale()
+    mouse.right_click(coords=(int((t["x"] + t["w"] // 2) * s), int((t["y"] + t["h"] // 2) * s)))
+    time.sleep(1.2)
+    items = menu_items()
+    entry = next((i for i in items if re.match(r"^Parameter", i)), None)
+    if entry is None:
+        keys("{ESC}")
+        raise RuntimeError(f"no parameter entry in the device's menu: {items[:16]}")
+    menu_click(entry)
+    time.sleep(3)
+    wait_busy()
+    return entry
+
+
+def param_page_lines() -> list[dict]:
+    return [l for l in ocr(PARAM_PAGES) if len(l["text"].strip()) > 1]
+
+
+@flow("param_pages")
+def flow_param_pages(req: dict) -> dict:
+    """The pages of device `ia`'s parameter view, as ETS lists them."""
+    require_project(req["project"])
+    entry = open_device_parameters(req["ia"])
+    return {"pages": [l["text"].strip() for l in param_page_lines()], "menu_entry": entry}
+
+
+def _row_cells(label: dict, lines: list[dict]) -> list[dict]:
+    """The OCR lines on the label's row right of it (the control's text)."""
+    cy = label["y"] + label["h"] // 2
+    return sorted((l for l in lines if abs(l["y"] + l["h"] // 2 - cy) < 18 and l["x"] > label["x"] + label["w"]),
+                  key=lambda l: l["x"])
+
+
+@flow("set_param")
+def flow_set_param(req: dict) -> dict:
+    """Sets the parameter labelled `text` to `value` (as ETS shows it) on the
+    first page of `pages` that shows it. `kind` enum: the option of that name
+    on the label's row (radio buttons), else the row's dropdown (a popup,
+    UI Automation). `kind` int: the row's field, select all, type, Tab. The
+    row is read again afterwards. A label on no page: {"set": false}."""
+    require_project(req["project"])
+    want, value = _norm(req["text"]), str(req["value"])
+    seen: list[str] = []
+    for page in req.get("pages") or [None]:
+        if page is not None:
+            hit = next((l for l in param_page_lines() if l["text"].strip() == page), None)
+            if hit is None:
+                continue
+            click(hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2)
+            time.sleep(1.5)
+        lines = ocr(PARAM_AREA)
+        label = next((l for l in lines if _norm(l["text"]) == want), None) \
+            or next((l for l in lines if want and want in _norm(l["text"])), None)
+        if label is None:
+            seen += [l["text"] for l in lines[:6]]
+            continue
+        cells = _row_cells(label, lines)
+        if not cells:
+            raise RuntimeError(f"no control on the row of {req['text']!r} (page {page!r})")
+        option = next((c for c in cells if _norm(c["text"]) == _norm(value)), None)
+        if req.get("kind") == "enum" and option is not None and len(cells) > 1:
+            click(option["x"] - 30, option["y"] + option["h"] // 2)  # the radio button left of its text
+        elif req.get("kind") == "enum":
+            cell = cells[0]
+            click(cell["x"] + cell["w"] // 2, cell["y"] + cell["h"] // 2)
+            time.sleep(1)
+            choose(value, (cell["x"] - 50, cell["y"], cell["x"] + 1200, min(cell["y"] + 1400, 2484)))
+        else:
+            cell = cells[0]
+            click(cell["x"] + cell["w"] // 2, cell["y"] + cell["h"] // 2)
+            time.sleep(0.5)
+            keys("^a")
+            keys(value)
+            keys("{TAB}")
+        time.sleep(1.5)
+        wait_busy()
+        after = _row_cells(label, ocr(PARAM_AREA))
+        shown = " ".join(c["text"] for c in after)
+        return {"set": _norm(value) in _norm(shown), "page": page, "row": shown[:200]}
+    return {"set": False, "seen": seen[:24]}
 
 
 def _digits(t: str) -> str:

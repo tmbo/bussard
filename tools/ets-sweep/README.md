@@ -373,3 +373,27 @@ keeps a screenshot. The certificate's 4-bit check is not confirmed either:
 `secure.py cert --check "<label>"` on a real device's FDSK label prints its
 serial and which check (`crc4-itu`, `crc4-plain`, `none`) it carries, never
 the key; `run --check-variant` picks the one ETS takes.
+
+## Part 5: generated parameter sets (#424), not yet run
+
+    uv run tools/ets-sweep/params.py plan --app <application id> [--seed 1] [--n 3]   # offline
+    uv run tools/ets-sweep/params.py run --filter <application id> --limit 1
+    uv run tools/ets-sweep/params.py oracle --filter <application id>
+
+`plan` draws N configurations per application, seeded: half of each
+configuration's changes switch a page on (the parameter and value bussard's
+`device --json` names for an inactive page, so only parameters ETS shows at
+defaults), the rest are other enumeration and integer parameters of the
+product model, each off its default. `run` adds the device as the defaults
+sweep does, sets the changes through the driver (`param_pages`, `set_param`:
+the device's parameter view, the page list and each parameter's row read by
+OCR), downloads, and exports the project (`export_project`) next to the
+capture in `captures/ets-sweep/<app>/params-<seed>-<n>/`; `params.json` there
+says per change whether it was set, unreachable (not on any page the editor
+found) or failed. `oracle` imports each export with `bussard import` and runs
+the oracle row with the export as the product data, so the model holds
+exactly what ETS downloaded; verdicts in `results/oracle-params.json`.
+
+The parameter editor was written without ETS at hand (2026-10-30): the
+regions of the page list and the parameter area (`PARAM_PAGES`, `PARAM_AREA`
+in the driver) are first guesses to correct from a screenshot.

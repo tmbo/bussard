@@ -20,9 +20,65 @@ import defaults  # noqa: E402
 import followups  # noqa: E402
 import nightly  # noqa: E402
 import oracle_model  # noqa: E402
+import params  # noqa: E402
 import secure  # noqa: E402
 import series  # noqa: E402
 import summary  # noqa: E402
+
+
+class TestParams(unittest.TestCase):
+    MODEL = {"parameters": {
+        "P-1": {"kind": {"Enum": {"values": [0, 1]}}, "default": "0", "text": "Lesen beim Start",
+                "labels": [[0, "nein"], [1, "ja"]]},
+        "P-2": {"kind": {"Int": {"min": 0, "max": 255, "signed": False}}, "default": "1", "text": "Zyklus"},
+        "P-3": {"kind": "Float", "default": "4.5E1", "text": "Wert"},
+        "P-4": {"kind": {"Enum": {"values": [0]}}, "default": "0", "text": "Nur einer", "labels": [[0, "x"]]},
+        "P-5": {"kind": {"Enum": {"values": [0, 1]}}, "default": "0", "text": "", "labels": [[0, "a"], [1, "b"]]},
+    }}
+    DEVICE = {"blocks": [
+        {"text": "Kühlung", "inactive": {"enable": [{"reference": "P-95_R-138", "text": "Raumtemperaturregler Funktion",
+                                                      "set_to": "Kühlung", "default": "Heizung"}]}},
+        {"text": "Lüftung", "inactive": {"enable": [{"reference": "P-9_R-9", "text": "VentilationEnabled",
+                                                      "set_to": ">0", "default": "0"}]}},
+        {"text": "Allgemein", "active": True},
+    ]}
+
+    def test_candidates_enum_and_int_with_labels_only(self):
+        self.assertEqual([c["id"] for c in params.candidates(self.MODEL)], ["P-1", "P-2"])
+
+    def test_visible_enablers_skip_conditions(self):
+        self.assertEqual([(e["text"], e["shown"], e["enables"]) for e in params.visible_enablers(self.DEVICE)],
+                         [("Raumtemperaturregler Funktion", "Kühlung", "Kühlung")])
+
+    def test_generate_deterministic_enablers_first_values_off_default(self):
+        visible = params.visible_enablers(self.DEVICE)
+        a = params.generate(self.MODEL, seed=7, n=3, changes=3, visible=visible)
+        self.assertEqual(a, params.generate(self.MODEL, seed=7, n=3, changes=3, visible=visible))
+        for config in a:
+            self.assertEqual(config["changes"][0]["text"], "Raumtemperaturregler Funktion")
+            for ch in config["changes"][1:]:
+                self.assertNotEqual(ch["shown"], {"P-1": "nein", "P-2": "1"}[ch["id"]])
+        self.assertEqual(params.variant_name(7, 2), "params-7-2")
+
+    def test_apply_hook_records_set_unreachable_failed(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        config = {"seed": 1, "index": 0, "changes": [
+            {"id": "a", "text": "A", "kind": "enum", "value": "1", "shown": "ja"},
+            {"id": "b", "text": "B", "kind": "int", "value": "5", "shown": "5"},
+            {"id": "c", "text": "C", "kind": "enum", "value": "0", "shown": "nein"}]}
+
+        def flow(name, **body):
+            if name == "param_pages":
+                return {"pages": ["Allgemein"]}
+            if body["text"] == "C":
+                raise RuntimeError("set_param: no control on the row")
+            return {"set": body["text"] == "A", "page": "Allgemein"}
+
+        summary_ = params.apply_hook(config)(flow, tmp)
+        self.assertEqual(summary_, {"set": 1, "unreachable": 1, "failed": 1})
+        saved = json.loads((tmp / "params.json").read_text())
+        self.assertEqual([c["result"] for c in saved["changes"]], ["set", "unreachable", "failed"])
 
 
 class TestSecure(unittest.TestCase):
