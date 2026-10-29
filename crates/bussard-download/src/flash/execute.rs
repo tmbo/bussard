@@ -1215,6 +1215,9 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                     }
                     // System 7 steps are executed by `flash_sys7` (dispatched at the
                     // top of `flash`); a System B plan never carries them.
+                    FlashStep::KnxnetIpParameters { program } => {
+                        super::knxnet_ip::write_knxnet_ip(session.l4(), program).await?;
+                    }
                     FlashStep::Sys7Unload { .. }
                     | FlashStep::Sys7StartLoading { .. }
                     | FlashStep::Sys7AbsSegment { .. }

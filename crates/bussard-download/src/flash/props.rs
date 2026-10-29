@@ -50,7 +50,7 @@ fn ext_address(object_type: u16, occurrence: u16, prop_id: u32) -> PropertyExtAd
 /// KNXnet/IP parameter object (object 7 on 1.1.200, issue #393); its own
 /// writes go out on the extended services, so this is the fallback for a
 /// device that refuses those.
-async fn index_of_type<Ch: L4Channel>(
+pub(super) async fn index_of_type<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     object_type: u16,
     occurrence: u16,

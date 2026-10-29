@@ -318,6 +318,8 @@ pub struct MockPropertyDescription {
 /// interface at 1.1.200 with two tunnels.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MockKnxnet {
+    /// PID 51 (project installation id).
+    pub project_installation_id: u16,
     /// PID 52.
     pub individual_address: IndividualAddress,
     /// PID 53.
@@ -347,6 +349,7 @@ pub struct MockKnxnet {
 impl Default for MockKnxnet {
     fn default() -> Self {
         MockKnxnet {
+            project_installation_id: 0,
             individual_address: IndividualAddress::from_raw(0x11C8),
             tunnels: vec![
                 IndividualAddress::from_raw(0x1116),
@@ -376,6 +379,7 @@ impl MockKnxnet {
             .collect();
         name.resize(30, 0);
         vec![
+            (51, 2, self.project_installation_id.to_be_bytes().to_vec()),
             (52, 2, self.individual_address.raw().to_be_bytes().to_vec()),
             (
                 53,
@@ -404,9 +408,11 @@ impl MockKnxnet {
 }
 
 /// The PIDs of the KNXnet/IP parameter object a writable mock interface
-/// takes writes on: the tunnelling addresses, the assignment method, the
-/// static address set and the friendly name.
-const KNXNET_WRITABLE: [u8; 6] = [53, 55, 60, 61, 62, 76];
+/// takes writes on: the project installation id, the tunnelling addresses,
+/// the assignment method, the static address set, the routing multicast
+/// address and TTL (the writes of an IP-enabled device's download, issue
+/// #455) and the friendly name.
+const KNXNET_WRITABLE: [u8; 9] = [51, 53, 55, 60, 61, 62, 66, 67, 76];
 
 /// The property descriptions of a mock KNXnet/IP parameter object, in
 /// property order: the values of `knxnet`, PID 53 with `tunnel_slots`

@@ -39,7 +39,7 @@
 use std::collections::BTreeSet;
 
 use bussard_download::{
-    DesiredTables, FlashPlan, FlashStep, LiveRead, SecurityInputs, build_table_images,
+    DesiredTables, FlashPlan, FlashStep, LiveRead, PropObject, SecurityInputs, build_table_images,
     parameter_overrides, plan,
 };
 use bussard_mgmt::load::LoadState;
@@ -147,12 +147,29 @@ pub struct ExpectedProperty {
 
 impl ExpectedProperty {
     /// The property writes of `flash` a read-back compares: those of a System
-    /// 7 or property-only plan. A System B plan's program-version writes keep
-    /// the read-back they had before issue #390 (none).
+    /// 7 or property-only plan, and the KNXnet/IP parameters of any plan. A
+    /// System B plan's program-version writes keep the read-back they had
+    /// before issue #390 (none).
     pub fn from_flash_plan(flash: &FlashPlan) -> Vec<ExpectedProperty> {
+        // The KNXnet/IP parameters of a device with a KNX IP interface built
+        // in (issue #455), on every plan: read back by object type 11, which
+        // finds the object whatever index the executor wrote it at.
+        let knxnet = flash.knxnet_ip().into_iter().flat_map(|program| {
+            program.writes.iter().map(|w| ExpectedProperty {
+                object: PropObject::Type {
+                    object_type: bussard_mgmt::knxnet::OT_KNXNET_IP_PARAMETER,
+                    occurrence: 0,
+                },
+                prop_id: u32::from(w.prop_id),
+                start: w.start,
+                count: w.count.max(1),
+                value: w.value.clone(),
+            })
+        });
         if !flash.is_sys7() && !flash.is_property_only() {
-            return Vec::new();
+            return knxnet.collect();
         }
+        let knxnet: Vec<ExpectedProperty> = knxnet.collect();
         flash
             .steps
             .iter()
@@ -173,6 +190,7 @@ impl ExpectedProperty {
                 }),
                 _ => None,
             })
+            .chain(knxnet)
             .collect()
     }
 

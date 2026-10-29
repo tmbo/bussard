@@ -457,6 +457,45 @@ pub fn write_dump(
                 prop["source"] = json!("load-procedure");
                 record["property"] = prop;
             }
+            // The KNXnet/IP parameters of an IP-enabled device (issue #455),
+            // one record per write as the executor sends them: plain at the
+            // index ETS uses, or by type 11 on the extended services. The
+            // values are configuration (tunnel addresses, the name), no key
+            // material.
+            FlashStep::KnxnetIpParameters { program } => {
+                let records: Vec<Value> = program
+                    .writes
+                    .iter()
+                    .map(|w| {
+                        let mut prop = match program.object {
+                            bussard_download::PropObject::Index(index) => {
+                                json!({ "object": index })
+                            }
+                            bussard_download::PropObject::Type {
+                                object_type,
+                                occurrence,
+                            } => json!({
+                                "object_type": object_type,
+                                "instance": u32::from(occurrence) + 1,
+                            }),
+                        };
+                        prop["pid"] = json!(w.prop_id);
+                        prop["start_element"] = json!(w.start);
+                        prop["count"] = json!(w.count);
+                        prop["length"] = json!(w.value.len());
+                        prop["data"] = json!(
+                            w.value
+                                .iter()
+                                .map(|b| format!("{b:02x}"))
+                                .collect::<String>()
+                        );
+                        prop["verify"] = json!(true);
+                        prop["source"] = json!("knxnet");
+                        prop
+                    })
+                    .collect();
+                record["properties"] = json!(records);
+            }
             FlashStep::SecurityLoadControl { .. }
             | FlashStep::SecurityClearAddressTable
             | FlashStep::SecuritySenders { .. }

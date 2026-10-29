@@ -860,6 +860,13 @@ pub struct ApplicationProgram {
     /// the application declares none.
     #[serde(default)]
     pub security_capacity: SecurityCapacity,
+    /// `AdditionalAddressesCount`: how many tunnelling addresses the device's
+    /// KNXnet/IP parameter object holds (`PID_ADDITIONAL_INDIVIDUAL_ADDRESSES`)
+    /// on hardware with a KNX IP interface built in (the Zennio ALLinBOX 1612
+    /// declares 5). ETS writes exactly that many after the download (issue
+    /// #455). `None` when the application declares none.
+    #[serde(default)]
+    pub additional_addresses_count: Option<u16>,
     /// The XML schema version this file declared, e.g. `"20"`, `"21"`, `"23"`.
     pub schema_version: Option<String>,
     /// The `<Options DownloadInvisibleParameters>` value (`None`, `Background`),
@@ -1382,6 +1389,8 @@ fn handle_start(
                 individual_address_entries: count(b"MaxSecurityIndividualAddressEntries"),
                 p2p_key_table_entries: count(b"MaxSecurityP2PKeyTableEntries"),
             };
+            app.additional_addresses_count =
+                get(m, b"AdditionalAddressesCount").and_then(|v| v.trim().parse::<u16>().ok());
             app.dynamic_table_management = get(m, b"DynamicTableManagement")
                 .is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1");
         }
@@ -2826,6 +2835,23 @@ mod tests {
                 .security_capacity
                 .is_empty()
         );
+        Ok(())
+    }
+
+    /// Issue #455: `AdditionalAddressesCount` (5 on the Zennio ALLinBOX 1612
+    /// `M-0071_A-4A11-13-48E1`), absent when undeclared.
+    #[test]
+    fn test_parse_application_program_additional_addresses_count() -> Result<()> {
+        let xml = |attr: &str| {
+            format!(
+                r#"<KNX xmlns="http://knx.org/xml/project/20"><ApplicationProgram Id="M-1_A-1" Name="t"{attr}><Static /></ApplicationProgram></KNX>"#
+            )
+        };
+        let app =
+            parse_application_program_str("M-1_A-1", &xml(r#" AdditionalAddressesCount="5""#))?;
+        assert_eq!(app.additional_addresses_count, Some(5));
+        let app = parse_application_program_str("M-1_A-1", &xml(""))?;
+        assert_eq!(app.additional_addresses_count, None);
         Ok(())
     }
 

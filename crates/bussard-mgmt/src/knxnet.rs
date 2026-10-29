@@ -48,6 +48,10 @@ use crate::property_ext::{
 /// The KNXnet/IP parameter object (`OT_KNXIP_PARAMETER`, knx_master.xml `OT-11`).
 pub const OT_KNXNET_IP_PARAMETER: u16 = 11;
 
+/// `PID_PROJECT_INSTALLATION_ID` (51, PDT_UNSIGNED_INT): the project and
+/// installation number (KNX 3/8/3). ETS writes it on an IP-enabled device's
+/// download (issue #455).
+pub const PID_PROJECT_INSTALLATION_ID: u8 = 51;
 /// `PID_KNX_INDIVIDUAL_ADDRESS` (52, PDT_UNSIGNED_INT): the interface's own address.
 pub const PID_KNX_INDIVIDUAL_ADDRESS: u8 = 52;
 /// `PID_ADDITIONAL_INDIVIDUAL_ADDRESSES` (53, PDT_UNSIGNED_INT array): the

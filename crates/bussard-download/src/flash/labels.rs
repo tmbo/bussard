@@ -262,6 +262,22 @@ pub(super) fn step_label(step: &FlashStep) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+        FlashStep::KnxnetIpParameters { program } => {
+            let mut pids: Vec<String> = Vec::new();
+            for w in &program.writes {
+                let pid = w.prop_id.to_string();
+                if !pids.contains(&pid) {
+                    pids.push(pid);
+                }
+            }
+            format!(
+                "write the KNXnet/IP parameters of [knxnet] ({}: PIDs {}, {} write(s), each read \
+                 back)",
+                program.object,
+                pids.join(", "),
+                program.writes.len()
+            )
+        }
         FlashStep::Sys7EnableVerifyMode => {
             "[S7] enable verify mode (object 0 PID_DEVICE_CONTROL bit 2, written only when clear)"
                 .to_string()

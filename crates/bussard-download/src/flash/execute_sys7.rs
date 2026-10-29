@@ -410,6 +410,11 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                             _ => {}
                         }
                     }
+                    // The KNXnet/IP parameters of an IP-enabled device (issue
+                    // #455, the COMIP2 on 0701), as on System B.
+                    FlashStep::KnxnetIpParameters { program } => {
+                        super::knxnet_ip::write_knxnet_ip(session.l4(), program).await?;
+                    }
                     // System B steps never appear in a System 7 plan.
                     other => {
                         return Err(WriteError::Mgmt(

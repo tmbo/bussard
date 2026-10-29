@@ -61,6 +61,18 @@ def load_control_summary(diff_json: Path) -> dict:
     return out
 
 
+def catalog_row_name(run_dir: Path) -> str | None:
+    """The catalog row ETS added the device from (its product text, the
+    device's name in the project): ETS writes it as the friendly name of an
+    IP-enabled device (bussard issue #455)."""
+    try:
+        driver = json.loads((run_dir / "driver.json").read_text())
+    except (OSError, ValueError):
+        return None
+    row = (driver.get("driver") or {}).get("catalog_add", {}).get("row") or {}
+    return row.get("name")
+
+
 def run_row(app: str, entry: dict, captures: Path, work: Path | None, seed: bool = False) -> dict:
     run_dir = captures / app / "plain-defaults"
     work_dir = work / app if work else run_dir
@@ -73,7 +85,10 @@ def run_row(app: str, entry: dict, captures: Path, work: Path | None, seed: bool
         shutil.copytree(run_dir / "model", model, symlinks=True)
     lock = model / "bussard.lock"
     if not (seed and lock.exists() and "[[device]]" in lock.read_text()):
-        model = oracle_model.build(model, product, app, mask=entry.get("mask", ""))
+        model = oracle_model.build(model, product, app, mask=entry.get("mask", ""),
+                                   friendly_name=catalog_row_name(run_dir))
+    else:
+        oracle_model.ensure_knxnet(model, product, app, friendly_name=catalog_row_name(run_dir))
     row = f"1.1.1|{capture}|{product}|{app}"
     r = subprocess.run(["bash", str(ORACLE), "--dir", str(model), "--out", str(work_dir / "oracle"), "--row", row],
                        capture_output=True, text=True, timeout=1800, env={**os.environ, "BUSSARD_NO_DOTENV": "1"})

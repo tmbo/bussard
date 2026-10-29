@@ -1119,6 +1119,34 @@ fn link_or_copy(target: &Path, link: &Path) -> std::io::Result<()> {
     }
 }
 
+/// How many tunnelling addresses the download of `app` writes to the
+/// device's KNXnet/IP parameter object (issue #455): its
+/// `AdditionalAddressesCount`, except on a property-only procedure (mask
+/// 0021), which writes the object itself.
+fn knxnet_tunnels(app: &ApplicationProgram, mask: &str) -> u16 {
+    if mask == "0021" {
+        return 0;
+    }
+    app.additional_addresses_count.unwrap_or(0)
+}
+
+/// The `[knxnet]` table ETS's project gives a device with a KNX IP interface
+/// built in (the ETS sweep, issue #455): DHCP, a friendly name, and the
+/// highest tunnelling addresses of the device's line. Empty for any other.
+fn knxnet_table(app: &ApplicationProgram, mask: &str) -> String {
+    let n = knxnet_tunnels(app, mask);
+    if n == 0 {
+        return String::new();
+    }
+    let tunnels: Vec<String> = (0..n)
+        .map(|i| format!("\"1.1.{}\"", 256 - u32::from(n) + u32::from(i)))
+        .collect();
+    format!(
+        "\n[knxnet]\nassignment = \"dhcp\"\nfriendly_name = \"sim loop\"\ntunnels = [{}]\n",
+        tunnels.join(", ")
+    )
+}
+
 /// A running knx-sim, killed on drop.
 struct Sim {
     child: Child,
@@ -1136,12 +1164,18 @@ impl Sim {
         // Theben's 0701 family drives its load-state machines memory-mapped;
         // bussard picks that from the mask, and the sim must match.
         let lsm = if mask == "0701" { "memory" } else { "property" };
-        let yaml = format!(
+        let mut yaml = format!(
             "gateway:\n  host: \"127.0.0.1\"\n  port: {port}\n\ndevices:\n  - address: \"{DEVICE}\"\n    \
              knxprod: \"{}\"\n    application: \"{}\"\n    initial_state: unloaded\n    lsm_access: {lsm}\n",
             work.archive.display(),
             app.id
         );
+        // A device with a KNX IP interface built in has the KNXnet/IP
+        // parameter object the download writes (issue #455), as the ETS sweep
+        // configures it.
+        if knxnet_tunnels(app, mask) > 0 {
+            yaml.push_str("    knxnet:\n      tunnel_slots: 16\n");
+        }
         let config = work.root.join("sim.yaml");
         std::fs::write(&config, yaml)?;
         let log = work.root.join("sim.log");
@@ -1300,16 +1334,15 @@ impl Bench<'_> {
     fn write_device(&self, config: &Configuration) -> std::io::Result<()> {
         // Kept next to the model so a failure can be replayed by hand.
         let keep = config.label.replace([' ', '+'], "-").replace("--", "-");
-        std::fs::write(
-            self.work.root.join(format!("device-{keep}.toml")),
-            config.device_toml(),
-        )?;
+        let mut toml = config.device_toml();
+        toml.push_str(&knxnet_table(self.app, self.mask));
+        std::fs::write(self.work.root.join(format!("device-{keep}.toml")), &toml)?;
         std::fs::write(
             self.work
                 .model
                 .join("devices")
                 .join(format!("{DEVICE}.toml")),
-            config.device_toml(),
+            toml,
         )?;
         std::fs::write(self.work.model.join("groups.toml"), config.groups_toml())
     }

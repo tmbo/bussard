@@ -16,6 +16,7 @@ mod flash_mock;
 mod flash_mock_system7;
 mod golden_images;
 mod golden_tables;
+mod knxnet_ip_mock;
 mod param_readback_roundtrip;
 mod property_procedure;
 mod sweep_fixtures;

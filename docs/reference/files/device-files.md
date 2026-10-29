@@ -45,7 +45,7 @@ This device carries no `[security]` table, because Data Secure has not been acti
 | `replaced` | string, optional | RFC 3339 timestamp, written by `bussard replace`. |
 | `[location]` | `floor`, `room` | Physical location. Optional. |
 | `[security]` | `activated`, `secure_commissioning` | Intent only. What the device and project generated (`secure_capable`, `has_fdsk_certificate`, `sequence_number`) lives in the lock; key material never appears in either. |
-| `[knxnet]` | table | An IP interface's KNXnet/IP settings, intent only. See [`[knxnet]`](#the-knxnet-table). |
+| `[knxnet]` | table | The KNXnet/IP settings of an IP interface, or of a device with one built in, intent only. See [`[knxnet]`](#the-knxnet-table). |
 | `[parameters]` | table | Device-level parameters. |
 | `[links]` | table | Device-level objects. |
 | `[channel.<handle>]` | table | One per channel: `name`, parameters, objects and parameter pages. |
@@ -169,6 +169,17 @@ Where the values come from:
     `plan` and `apply` of an interface with this table and no links write it to the device, and read each value back after the write. A field the table leaves out, and an empty `tunnels`, stays as the device holds it. Changing the assignment, the static address or the tunnel addresses of the interface the command tunnels through needs `apply --allow-self-reconfigure`.
 
 Over MCP, `knx_set_interface` edits the table and `knx_plan_device` and `knx_apply_device` write it.
+
+### A device with a KNX IP interface built in
+
+A bus device whose application declares tunnelling addresses (`AdditionalAddressesCount`, for example the Zennio ALLinBOX family) has a KNXnet/IP parameter object too. A full `flash` of such a device writes it after the application and before the closing restart, as ETS does, and reads each value back:
+
+- the routing multicast address 224.0.23.12, the routing TTL 32 and installation id 0, the values ETS writes for a project with its default backbone settings;
+- `friendly_name`, required;
+- the assignment method, which must be `dhcp`: no ETS capture shows what a download writes for a static address, so `static` is refused;
+- `tunnels`, exactly as many as the application declares.
+
+A `flash` whose device file lacks the table, or one of these values, is refused before anything is written. `import` fills `tunnels` and `assignment` from the project; add `friendly_name` by hand (ETS uses the device's name).
 
 ??? note "Details"
     The writes are property writes on the KNXnet/IP parameter object: the friendly name (PID 76), the tunnel addresses (PID 53), the static address set (PIDs 60 to 62) and the assignment method (PID 55).
