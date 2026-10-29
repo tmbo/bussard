@@ -812,9 +812,30 @@ pub struct AppIdentity {
     pub application_version: Option<u32>,
     /// The mask version, e.g. `"07B0"`.
     pub mask_version: String,
+    /// The application's `OriginalManufacturer` (`M-0002`), when another
+    /// manufacturer made it: a device of that manufacturer also matches the
+    /// download's manufacturer check.
+    pub original_manufacturer: Option<String>,
 }
 
 impl AppIdentity {
+    /// The manufacturer ids a device this application is downloaded to may
+    /// report in `PID_MANUFACTURER_ID` (object 0, PID 12): the manufacturer of
+    /// the application id and, for an application made by another
+    /// manufacturer, its `OriginalManufacturer`. Empty when neither parses.
+    pub fn expected_manufacturers(&self) -> Vec<u16> {
+        let mut out: Vec<u16> = manufacturer_from_app_id(&self.id).into_iter().collect();
+        if let Some(original) = self
+            .original_manufacturer
+            .as_deref()
+            .and_then(manufacturer_from_app_id)
+            && !out.contains(&original)
+        {
+            out.push(original);
+        }
+        out
+    }
+
     /// The 5-octet `PID_PROGRAM_VERSION` value a completed flash of this
     /// application stamps on the device (`[manufacturer:2][number:2][version:1]`),
     /// or `None` when the identity is too incomplete to build one.

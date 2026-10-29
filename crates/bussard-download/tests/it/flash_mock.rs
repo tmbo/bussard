@@ -5756,6 +5756,39 @@ async fn test_flash_after_a_fresh_probe_is_unchanged() -> TestResult {
     Ok(())
 }
 
+/// The manufacturer check of the download procedure (Configuration Procedures
+/// §3.5.2 step 04, issue #547): a fresh device that reports another
+/// manufacturer than the application's is refused before anything is
+/// unloaded; one that reports the application's passes.
+#[tokio::test]
+async fn test_probe_resident_state_manufacturer_check() -> TestResult {
+    let app = identified_app()?;
+    let plan = identified_plan(&app)?;
+    for (device, refused) in [(0x0004u16, true), (0x00FA, false)] {
+        let state = fresh_device(Fault::None);
+        lock(&state)?
+            .compare_props
+            .insert((0, 12), device.to_be_bytes().to_vec());
+        let (mut bus, state, handle) = setup_device(state).await?;
+        let resident = probe(&mut bus).await?;
+        assert_eq!(resident.manufacturer_id, Some(device));
+        let verdict = bussard_download::assess_freshness(&resident, &plan.identity);
+        assert_eq!(
+            matches!(verdict, bussard_download::Freshness::Mismatch { .. }),
+            refused,
+            "{device:04X}: {verdict:?}"
+        );
+        if refused {
+            assert!(!verdict.allows_flash());
+            assert!(format!("{verdict:?}").contains("M-0004"), "{verdict:?}");
+        }
+        // Read-only: nothing unloaded or written.
+        assert_eq!(lock(&state)?.load_events.len(), 0);
+        drop(handle);
+    }
+    Ok(())
+}
+
 // ===========================================================================
 // KNX Data Secure (issue #71, spec §5/§6): flashing a security-ACTIVATED device
 // through A_SecureData tool-access.

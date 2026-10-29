@@ -678,6 +678,30 @@ pub async fn read_program_version<Ch: L4Channel>(
     Ok(Some(resp.data))
 }
 
+/// Reads the device's `PID_MANUFACTURER_ID` (device object 0, PID 12, two
+/// octets; Resources §4.2.12), the value the download procedure compares to
+/// the expected manufacturer before its first Unload (Configuration
+/// Procedures §3.5.2 step 04).
+///
+/// `Ok(None)` when the device answers without a value (zero elements or a
+/// short one). A transport failure propagates as [`WriteError`].
+pub async fn read_manufacturer_id<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+) -> Result<Option<u16>> {
+    let resp = property_request(
+        l4,
+        crate::apci::DEVICE_OBJECT_INDEX,
+        crate::apci::PID_MANUFACTURER_ID,
+        1,
+        1,
+    )
+    .await?;
+    if resp.count == 0 || resp.data.len() < 2 {
+        return Ok(None);
+    }
+    Ok(Some(u16::from_be_bytes([resp.data[0], resp.data[1]])))
+}
+
 /// Realises an `LdCtrlMasterReset` op the way ETS→KNX-Virtual does on the wire:
 /// as a **bare `A_Restart`** (APCI [`A_RESTART`](crate::apci::A_RESTART) = `0x380`,
 /// no payload), not the confirmed master-reset `A_Restart` (`0x381` + erase/channel).

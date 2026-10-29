@@ -1016,6 +1016,7 @@ pub fn plan_flash_with_memo(
             application_number: app.application_number,
             application_version: app.application_version,
             mask_version: app_mask,
+            original_manufacturer: app.original_manufacturer.clone(),
         },
         device_mask,
         steps,
