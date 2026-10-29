@@ -646,20 +646,62 @@ fn parse_scaled(input: &str, sc: Scaling) -> Result<i64, FixedError> {
 }
 
 /// Returns the `(false_label, true_label)` for a DPT 1.x subtype.
+///
+/// The word pairs of KNX 03_07_02 Datapoint Types v02.02.01 §3.1 (1.001 to
+/// 1.024) and 1.100 `DPT_Heat/Cool` from the §4 HVAC types. Note the pairs that
+/// run opposite ways: 1.009 is 0 = open, 1 = close, while 1.019 is 0 = closed,
+/// 1 = open. An unknown sub-type shows the bit.
 fn bool_labels(sub: Option<u16>) -> (&'static str, &'static str) {
     match sub {
         Some(1) => ("Off", "On"),
         Some(2) => ("False", "True"),
         Some(3) => ("Disable", "Enable"),
+        Some(4) => ("No ramp", "Ramp"),
         Some(5) => ("No Alarm", "Alarm"),
+        Some(6) => ("Low", "High"),
         Some(7) => ("Decrease", "Increase"),
         Some(8) => ("Up", "Down"),
-        Some(9) => ("Open", "Closed"),
+        Some(9) => ("Open", "Close"),
         Some(10) => ("Stop", "Start"),
+        Some(11) => ("Inactive", "Active"),
+        Some(12) => ("Not inverted", "Inverted"),
+        Some(13) => ("Start/stop", "Cyclically"),
+        Some(14) => ("Fixed", "Calculated"),
+        Some(15) => ("No action", "Reset"),
+        Some(16) => ("No action", "Acknowledge"),
+        // 1.017: both values trigger and shall not be told apart (§3.1
+        // footnote 1); the bit is shown so a capture still reads exactly.
+        Some(17) => ("Trigger (raw 0)", "Trigger (raw 1)"),
+        Some(18) => ("Not occupied", "Occupied"),
+        Some(19) => ("Closed", "Open"),
+        Some(21) => ("OR", "AND"),
         // 1.022 DPT_Scene_AB: shown as scenes 1 and 2 (03_07_02 §3.1
         // footnote 2), with the transmitted bit next to it.
         Some(22) => ("scene 1 (raw 0)", "scene 2 (raw 1)"),
+        Some(23) => ("Up/Down only (shutter)", "Up/Down + Step/Stop (blind)"),
+        Some(24) => ("Day", "Night"),
+        Some(100) => ("Cooling", "Heating"),
         _ => ("0", "1"),
+    }
+}
+
+/// The extra words [`parse_bool`] accepts for a DPT 1.x subtype, beside the
+/// lowercased labels of [`bool_labels`]: `(words for 0, words for 1)`.
+fn bool_aliases(sub: Option<u16>) -> (&'static [&'static str], &'static [&'static str]) {
+    match sub {
+        Some(5) => (&["no-alarm", "noalarm"], &[]),
+        Some(9) => (&[], &["closed"]),
+        Some(12) => (&["normal"], &[]),
+        Some(13) => (&["start-stop", "start stop"], &["cyclic"]),
+        Some(15) => (&["none"], &[]),
+        Some(16) => (&["none"], &["ack"]),
+        Some(17) => (&[], &["trigger"]),
+        Some(18) => (&["unoccupied", "not-occupied", "vacant"], &[]),
+        Some(19) => (&["close"], &[]),
+        Some(21) => (&["or"], &["and"]),
+        Some(23) => (&["shutter"], &["blind", "blinds"]),
+        Some(100) => (&["cool", "cooling"], &["heat", "heating"]),
+        _ => (&[], &[]),
     }
 }
 
@@ -1093,9 +1135,11 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
 /// `21.5°C`, `comfort`, a scene number) into the [`TypedValue`] that [`encode`]
 /// serializes. Accepted forms, by DPT main type:
 ///
-/// - **1.x** — `on`/`off`, `true`/`false`, `1`/`0`, and subtype words:
-///   `up`/`down` (1.008), `open`/`closed` (1.009), `start`/`stop` (1.010),
-///   `enable`/`disable` (1.003), `alarm`/`no-alarm` (1.005).
+/// - **1.x** — `on`/`off`, `true`/`false`, `1`/`0`, and the word pair of the
+///   sub-type (03_07_02 §3.1, and 1.100): `up`/`down` (1.008), `open`/`close`
+///   (1.009), `closed`/`open` (1.019), `occupied`/`not occupied` (1.018),
+///   `day`/`night` (1.024), `heating`/`cooling` (1.100), `active`/`inactive`
+///   (1.011), `trigger` (1.017), `reset` (1.015), `ack` (1.016), and so on.
 /// - **2.x** — `control <value>` (or `force <value>`) with the matching 1.x
 ///   word (`control on`, 2.008 `control down`), and `release` or
 ///   `no control` to drop the control bit.
@@ -1391,19 +1435,14 @@ fn parse_bool(input: &str, sub: Option<u16>) -> Option<bool> {
         "off" | "false" | "0" | "no" => return Some(false),
         _ => {}
     }
-    // Subtype-specific words. The `true` word maps to the raw bit 1.
-    let (false_word, true_word): (&[&str], &[&str]) = match sub {
-        Some(3) => (&["disable"], &["enable"]),
-        Some(5) => (&["no-alarm", "no alarm", "noalarm"], &["alarm"]),
-        Some(8) => (&["up"], &["down"]),
-        Some(9) => (&["open"], &["closed", "close"]),
-        Some(10) => (&["stop"], &["start"]),
-        _ => (&[], &[]),
-    };
-    if true_word.contains(&s.as_str()) {
+    // Subtype words: the labels themselves (`occupied`, `night`), then the
+    // aliases. Labels that are a bare bit (`0`/`1`) were handled above.
+    let (false_label, true_label) = bool_labels(sub);
+    let (false_alias, true_alias) = bool_aliases(sub);
+    if s == true_label.to_lowercase() || true_alias.contains(&s.as_str()) {
         return Some(true);
     }
-    if false_word.contains(&s.as_str()) {
+    if s == false_label.to_lowercase() || false_alias.contains(&s.as_str()) {
         return Some(false);
     }
     None
@@ -1813,6 +1852,81 @@ mod tests {
 
     fn dpt(s: &str) -> Dpt {
         s.parse().expect("test fixture")
+    }
+
+    #[test]
+    fn test_bool_labels_cover_standard_subtypes() -> Result<(), Box<dyn std::error::Error>> {
+        // (sub-type, 0-word, 1-word): every row of 03_07_02 §3.1 plus 1.100.
+        let rows: &[(&str, &str, &str)] = &[
+            ("1.001", "Off", "On"),
+            ("1.002", "False", "True"),
+            ("1.003", "Disable", "Enable"),
+            ("1.004", "No ramp", "Ramp"),
+            ("1.005", "No Alarm", "Alarm"),
+            ("1.006", "Low", "High"),
+            ("1.007", "Decrease", "Increase"),
+            ("1.008", "Up", "Down"),
+            ("1.009", "Open", "Close"),
+            ("1.010", "Stop", "Start"),
+            ("1.011", "Inactive", "Active"),
+            ("1.012", "Not inverted", "Inverted"),
+            ("1.013", "Start/stop", "Cyclically"),
+            ("1.014", "Fixed", "Calculated"),
+            ("1.015", "No action", "Reset"),
+            ("1.016", "No action", "Acknowledge"),
+            ("1.017", "Trigger (raw 0)", "Trigger (raw 1)"),
+            ("1.018", "Not occupied", "Occupied"),
+            ("1.019", "Closed", "Open"),
+            ("1.021", "OR", "AND"),
+            ("1.022", "scene 1 (raw 0)", "scene 2 (raw 1)"),
+            ("1.023", "Up/Down only (shutter)", "Up/Down + Step/Stop (blind)"),
+            ("1.024", "Day", "Night"),
+            ("1.100", "Cooling", "Heating"),
+        ];
+        for (sub, zero, one) in rows {
+            let d = dpt(sub);
+            for (bit, label) in [(false, *zero), (true, *one)] {
+                let payload = [u8::from(bit)];
+                assert_eq!(
+                    decode(&d, &payload),
+                    TypedValue::Bool { value: bit, label },
+                    "{sub} bit {bit}"
+                );
+                // The label is accepted back as input and encodes the bit.
+                let typed = parse_value(&d, &label.to_lowercase())?;
+                assert_eq!(encode(&d, &typed)?, payload.to_vec(), "{sub} {label}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_value_bool_subtype_words() -> Result<(), Box<dyn std::error::Error>> {
+        let cases: &[(&str, &str, bool)] = &[
+            ("1.018", "occupied", true),
+            ("1.018", "unoccupied", false),
+            ("1.019", "closed", false),
+            ("1.019", "open", true),
+            ("1.024", "night", true),
+            ("1.024", "Day", false),
+            ("1.100", "heat", true),
+            ("1.100", "cooling", false),
+            ("1.016", "ack", true),
+            ("1.015", "reset", true),
+            ("1.017", "trigger", true),
+            ("1.011", "active", true),
+            ("1.006", "high", true),
+            ("1.021", "and", true),
+            ("1.023", "blind", true),
+        ];
+        for (sub, input, bit) in cases {
+            match parse_value(&dpt(sub), input)? {
+                TypedValue::Bool { value, .. } => assert_eq!(value, *bit, "{sub} {input}"),
+                other => return Err(format!("{sub} {input}: {other:?}").into()),
+            }
+        }
+        assert!(parse_value(&dpt("1.024"), "occupied").is_err());
+        Ok(())
     }
 
     #[test]
@@ -2351,7 +2465,7 @@ mod tests {
             parse_value(&dpt("1.009"), "closed")?,
             TypedValue::Bool {
                 value: true,
-                label: "Closed"
+                label: "Close"
             }
         );
         assert_eq!(

@@ -102,6 +102,9 @@ $ bussard write 3/0/4 on
 ```
 
 The value is human-typed: `on`/`off`, `up`/`down`, a number, or a percentage like `75%`.
+A `1.xxx` value also takes the word pair of its sub-type (KNX 03_07_02 §3.1, and `1.100`):
+`occupied` on `1.018`, `night` on `1.024`, `heating` on `1.100`, `closed`/`open` on `1.019`
+(0 = closed) and `open`/`close` on `1.009` (0 = open); `read` and `monitor` print the same words.
 A forced-operation value (`2.001`-`2.012`, KNX 03_07_02 §3.2) is `control` plus the word of the
 matching `1.xxx` sub-type, `control on` or `control down` on `2.008`, or `release` to drop the
 control bit; `read` and `monitor` show `Control: On` or `No control`.
