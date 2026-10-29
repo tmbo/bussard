@@ -120,16 +120,14 @@ impl Device {
             .sys7
             .as_mut()
             .ok_or_else(|| DeviceError::LoadControl("not a System 7 device".into()))?;
-        // A post-restart LSM (spec §3/§4.7, the Theben 0701 LSM 5) is opened by the
-        // device *after* the terminal restart, so it is not among the canonical
-        // 1..4 seeded at construction. Only the memory-mapped realisation drives
-        // such an LSM through the control record (the property realisation would
-        // address an interface object that must already exist), so lazily register
-        // a memory-mapped LSM the device has not seen, starting in `Unloaded`: the
-        // post-restart descriptor-commit dance (TaskSegment then StartLoading, no
-        // LoadCompleted) opens it (see the LSM transition table). A property PID-5
-        // access to an unknown object is still rejected below (and by
-        // `on_property_write`).
+        // A record for an LSM index beyond the canonical 1..4 seeded at
+        // construction (the Theben 0701 LSM 5 of a vendor procedure) lazily
+        // registers a memory-mapped LSM in `Unloaded`; Table 94 then decides
+        // (a record before StartLoading is ignored, #529). Only the
+        // memory-mapped realisation addresses LSMs through the control record
+        // (the property realisation would address an interface object that
+        // must already exist); a property PID-5 access to an unknown object is
+        // still rejected below (and by `on_property_write`).
         if !s7.lsms.contains_key(&lsm_index)
             && s7.profile.lsm_access == profile::LsmAccess::MemoryMapped
         {
@@ -157,7 +155,8 @@ impl Device {
         // `ApplicationId` resource, object 3). ETS reads it back before a
         // partial download and refuses when it is missing (Ekinex EK-E72,
         // 2026-10-28).
-        let program_id = if event_record.get(..2) == Some(&[0x03, 0x02]) {
+        let committed = !matches!(step, Sys7Step::Ignored | Sys7Step::NoOp);
+        let program_id = if committed && event_record.get(..2) == Some(&[0x03, 0x02]) {
             event_record.get(5..10)
         } else {
             None
@@ -212,7 +211,7 @@ impl Device {
                 // goes silent mid-reload and comes back on the new tables.
                 self.refresh_group_comm();
             }
-            Sys7Step::NoOp => {}
+            Sys7Step::NoOp | Sys7Step::Ignored => {}
         }
         Ok(())
     }

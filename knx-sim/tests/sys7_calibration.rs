@@ -305,18 +305,15 @@ fn test_sys7_dd0_reports_true_mask() {
 
 #[test]
 fn test_sys7_load_completed_without_start_does_not_reach_loaded() {
-    // Negative: a write before StartLoading (LoadCompleted straight from
-    // Unloaded) must be rejected and must NOT reach Loaded.
+    // Negative: LoadCompleted straight from Unloaded must NOT reach Loaded.
+    // Table 94 (Resources §4.23.2.3.3) recommends ignoring it, so the LSM
+    // stays Unloaded.
     let mut d = Driver::new(LsmAccess::MemoryMapped);
     d.control(0x80);
     d.authorize_free();
     // LoadCompleted on LSM 1 with no StartLoading.
     MemMapped::send_event(&mut d, 1, &event::completed());
-    assert!(
-        !d.rejections().is_empty(),
-        "LoadCompleted-before-Start must be rejected"
-    );
-    assert_ne!(d.device().load_state(1), Some(LoadState::Loaded));
+    assert_eq!(d.device().load_state(1), Some(LoadState::Unloaded));
 }
 
 #[test]
