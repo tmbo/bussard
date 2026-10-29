@@ -71,6 +71,7 @@ fn build_server_over(model: Model, passive: bool, allow_writes: bool) -> TestRes
         transport: TransportKind::Tunnel,
         gateway: Some(SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 1), 3671)),
         multicast: SocketAddrV4::new(Ipv4Addr::new(224, 0, 23, 12), 3671),
+        multicast_ttl: bussard_transport::config::DEFAULT_MULTICAST_TTL,
         local_interface: Ipv4Addr::UNSPECIFIED,
         reconnect: bussard_transport::TunnelReconnect::default(),
         secure: None,

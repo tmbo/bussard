@@ -14,7 +14,7 @@ use bussard_model::IndividualAddress;
 use bussard_model::Model;
 use bussard_model::schema::Transport as ModelTransport;
 use bussard_service::{BusService, ServiceError, WritePolicy};
-use bussard_transport::config::{DEFAULT_MULTICAST, DEFAULT_PORT};
+use bussard_transport::config::{DEFAULT_MULTICAST, DEFAULT_MULTICAST_TTL, DEFAULT_PORT};
 use bussard_transport::write_gate::WriteGate;
 use bussard_transport::{ConnectionConfig, SecureTunnelConfig, TransportKind, TunnelReconnect};
 
@@ -530,6 +530,7 @@ pub fn resolve_config(
             transport: TransportKind::Routing,
             gateway: None,
             multicast,
+            multicast_ttl: DEFAULT_MULTICAST_TTL,
             local_interface: Ipv4Addr::UNSPECIFIED,
             reconnect: tunnel_reconnect(),
             secure: None,
@@ -550,6 +551,7 @@ pub fn resolve_config(
         transport: TransportKind::Tunnel,
         gateway: Some(gateway),
         multicast: SocketAddrV4::new(DEFAULT_MULTICAST, DEFAULT_PORT),
+        multicast_ttl: DEFAULT_MULTICAST_TTL,
         local_interface: Ipv4Addr::UNSPECIFIED,
         reconnect: tunnel_reconnect(),
         secure: secure_tunnel().map(|secure| {

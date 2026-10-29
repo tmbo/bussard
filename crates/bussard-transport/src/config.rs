@@ -12,6 +12,10 @@ use std::time::Duration;
 /// The default KNXnet/IP UDP port (unicast and multicast).
 pub const DEFAULT_PORT: u16 = 3671;
 
+/// The default multicast TTL of routing datagrams: PID_TTL's default
+/// (KNXnet/IP Device Management 3/8/3 §2.5.18, issue #519).
+pub const DEFAULT_MULTICAST_TTL: u32 = 16;
+
 /// The KNX routing multicast group (`224.0.23.12`).
 pub const DEFAULT_MULTICAST: Ipv4Addr = Ipv4Addr::new(224, 0, 23, 12);
 
@@ -377,6 +381,9 @@ pub struct ConnectionConfig {
     pub gateway: Option<SocketAddrV4>,
     /// For routing: the multicast group and port. Defaults to `224.0.23.12:3671`.
     pub multicast: SocketAddrV4,
+    /// For routing: the IP TTL of the multicast datagrams,
+    /// [`DEFAULT_MULTICAST_TTL`] unless configured.
+    pub multicast_ttl: u32,
     /// The local IPv4 interface to bind / join the group on. `0.0.0.0` lets the
     /// OS choose.
     pub local_interface: Ipv4Addr,
@@ -396,6 +403,7 @@ impl ConnectionConfig {
             transport: TransportKind::Tunnel,
             gateway: Some(gateway),
             multicast: SocketAddrV4::new(DEFAULT_MULTICAST, DEFAULT_PORT),
+            multicast_ttl: DEFAULT_MULTICAST_TTL,
             local_interface: Ipv4Addr::UNSPECIFIED,
             reconnect: TunnelReconnect::default(),
             secure: None,
@@ -409,6 +417,7 @@ impl ConnectionConfig {
             transport: TransportKind::Routing,
             gateway: None,
             multicast: SocketAddrV4::new(DEFAULT_MULTICAST, DEFAULT_PORT),
+            multicast_ttl: DEFAULT_MULTICAST_TTL,
             local_interface: Ipv4Addr::UNSPECIFIED,
             reconnect: TunnelReconnect::default(),
             secure: None,
@@ -418,6 +427,12 @@ impl ConnectionConfig {
     /// This configuration with KNXnet/IP Secure tunnelling credentials.
     pub fn with_secure(mut self, secure: Option<SecureTunnelConfig>) -> Self {
         self.secure = secure;
+        self
+    }
+
+    /// This configuration with a different multicast TTL for routing.
+    pub fn with_multicast_ttl(mut self, ttl: u32) -> Self {
+        self.multicast_ttl = ttl;
         self
     }
 
