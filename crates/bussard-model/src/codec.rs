@@ -203,6 +203,22 @@ pub enum TypedValue {
     },
     /// An RGBW colour (DPT 251.600).
     Rgbw(Rgbw),
+    /// A colour in the CIE xyY space (DPT 242.600, 03_07_02 §6.9).
+    ColourXyY {
+        /// x coordinate, 0..65535 for 0..1.
+        x: u16,
+        /// y coordinate, 0..65535 for 0..1.
+        y: u16,
+        /// Brightness Y, encoded as 5.001 (0..255 for 0..100 %).
+        brightness: u8,
+        /// The x and y fields are valid (bit C).
+        colour_valid: bool,
+        /// The brightness field is valid (bit B).
+        brightness_valid: bool,
+    },
+    /// A compound value shown as named fields (249.600, 250.600, 252.600,
+    /// 254.600): `(field name, rendered value)` in wire order.
+    Fields(Vec<(&'static str, String)>),
     /// Fallback: the raw payload bytes as hex.
     Raw(Vec<u8>),
 }
@@ -450,6 +466,38 @@ impl fmt::Display for TypedValue {
             }
             TypedValue::Rgb { r, g, b } => write!(f, "#{r:02X}{g:02X}{b:02X}"),
             TypedValue::Rgbw(c) => write!(f, "{c}"),
+            TypedValue::ColourXyY {
+                x,
+                y,
+                brightness,
+                colour_valid,
+                brightness_valid,
+            } => {
+                if *colour_valid {
+                    write!(
+                        f,
+                        "x {:.3}, y {:.3}",
+                        f64::from(*x) / 65535.0,
+                        f64::from(*y) / 65535.0
+                    )?;
+                } else {
+                    write!(f, "x --, y --")?;
+                }
+                if *brightness_valid {
+                    write!(f, ", brightness {:.1} %", f64::from(*brightness) * 100.0 / 255.0)
+                } else {
+                    write!(f, ", brightness --")
+                }
+            }
+            TypedValue::Fields(fields) => {
+                for (i, (name, value)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{name} {value}")?;
+                }
+                Ok(())
+            }
             TypedValue::Raw(bytes) => {
                 write!(f, "0x")?;
                 for b in bytes {
@@ -976,6 +1024,20 @@ pub fn encode_float16(value: f32) -> Result<[u8; 2], Float16RangeError> {
     Ok(raw.to_be_bytes())
 }
 
+/// Renders one r4B1U3 relative-control field of 250.600, 252.600 and 254.600
+/// (03_07_02 §6.17 ff.): bit 3 increase/decrease, bits 2..0 the step code as
+/// in 3.007 (0 = break). `--` when the mask marks the field invalid.
+fn relative_step(b: u8, valid: bool) -> String {
+    if !valid {
+        return "--".to_string();
+    }
+    let direction = if b & 0x08 != 0 { "Increase" } else { "Decrease" };
+    match step_percent(b & 0x07) {
+        Some(pct) => format!("{direction} {pct} %"),
+        None => "break".to_string(),
+    }
+}
+
 /// Generic bit names for a 21.xxx / 22.xxx sub-type bussard has no table for.
 const BIT_NAMES: [&str; 16] = [
     "b0", "b1", "b2", "b3", "b4", "b5", "b6", "b7", "b8", "b9", "b10", "b11", "b12", "b13",
@@ -1132,6 +1194,29 @@ fn validity_problems(dpt: &Dpt, payload: &[u8]) -> Vec<String> {
             if !payload.contains(&0) {
                 out.push("the string has no terminating 00h".to_string());
             }
+        }
+        // §6.18 251.600: octet 5 reserved, the high nibble of the mask reserved.
+        (251, _) if payload.len() >= 6 => {
+            reserved("the reserved octet", payload[4], 0xFF);
+            reserved("the validity octet", payload[5], 0xF0);
+        }
+        // §6.9 242.600: r6 before C B.
+        (242, _) if payload.len() >= 6 => reserved("the validity octet", payload[5], 0xFC),
+        // §6.16 249.600: mask b7..b3 reserved.
+        (249, _) if payload.len() >= 6 => reserved("the mask", payload[5], 0xF8),
+        // §6.17 250.600: r4 in each step octet, mask b7..b2 reserved.
+        (250, _) if payload.len() >= 3 => {
+            reserved("a step octet", payload[0] | payload[1], 0xF0);
+            reserved("the mask", payload[2], 0xFC);
+        }
+        // §6.19 252.600: r4 in each step octet, mask b7..b4 reserved.
+        (252, _) if payload.len() >= 5 => {
+            reserved("a step octet", payload[..4].iter().fold(0, |a, b| a | b), 0xF0);
+            reserved("the mask", payload[4], 0xF0);
+        }
+        // §6.21 254.600: r4 in each step octet.
+        (254, _) if payload.len() >= 3 => {
+            reserved("a step octet", payload[..3].iter().fold(0, |a, b| a | b), 0xF0);
         }
         // 17.001 (§3.18): r r SceneNumber.
         (17, _) => {
@@ -1528,6 +1613,64 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
                 w_valid: (valid & 0x01) != 0,
             }))
         }
+        // 242.600 DPT_Colour_xyY (03_07_02 §6.9): x U16, y U16, Y as 5.001,
+        // then r6 C B.
+        242 => {
+            let x = u16::from_be_bytes([*payload.first()?, *payload.get(1)?]);
+            let y = u16::from_be_bytes([*payload.get(2)?, *payload.get(3)?]);
+            let brightness = *payload.get(4)?;
+            let valid = *payload.get(5)?;
+            Some(TypedValue::ColourXyY {
+                x,
+                y,
+                brightness,
+                colour_valid: valid & 0x02 != 0,
+                brightness_valid: valid & 0x01 != 0,
+            })
+        }
+        // 249.600 DPT_Brightness_Colour_Temperature_Transition (§6.16): time
+        // period in 100 ms, colour temperature in K, brightness as 5.001, then
+        // the validity mask b2 time, b1 colour temperature, b0 brightness.
+        249 => {
+            let time = u16::from_be_bytes([*payload.first()?, *payload.get(1)?]);
+            let kelvin = u16::from_be_bytes([*payload.get(2)?, *payload.get(3)?]);
+            let brightness = *payload.get(4)?;
+            let mask = *payload.get(5)?;
+            let field = |bit: u8, text: String| if mask & bit != 0 { text } else { "--".to_string() };
+            Some(TypedValue::Fields(vec![
+                ("time", field(0x04, format!("{} s", format_fixed(i64::from(time), 1)))),
+                ("colour temperature", field(0x02, format!("{kelvin} K"))),
+                ("brightness", field(0x01, format!("{:.1} %", f64::from(brightness) * 100.0 / 255.0))),
+            ]))
+        }
+        // 250.600 DPT_Brightness_Colour_Temperature_Control (§6.17): two
+        // r4B1U3 steps (colour temperature, brightness), then the mask b1
+        // colour temperature, b0 brightness.
+        250 => {
+            let (ct, br, mask) = (*payload.first()?, *payload.get(1)?, *payload.get(2)?);
+            Some(TypedValue::Fields(vec![
+                ("colour temperature", relative_step(ct, mask & 0x02 != 0)),
+                ("brightness", relative_step(br, mask & 0x01 != 0)),
+            ]))
+        }
+        // 252.600 DPT_Relative_Control_RGBW (§6.19): four r4B1U3 steps R, G,
+        // B, W, then the mask b3 R, b2 G, b1 B, b0 W.
+        252 => {
+            let mask = *payload.get(4)?;
+            Some(TypedValue::Fields(vec![
+                ("red", relative_step(*payload.first()?, mask & 0x08 != 0)),
+                ("green", relative_step(*payload.get(1)?, mask & 0x04 != 0)),
+                ("blue", relative_step(*payload.get(2)?, mask & 0x02 != 0)),
+                ("white", relative_step(*payload.get(3)?, mask & 0x01 != 0)),
+            ]))
+        }
+        // 254.600 DPT_Relative_Control_RGB (§6.21): three r4B1U3 steps, no
+        // mask.
+        254 => Some(TypedValue::Fields(vec![
+            ("red", relative_step(*payload.first()?, true)),
+            ("green", relative_step(*payload.get(1)?, true)),
+            ("blue", relative_step(*payload.get(2)?, true)),
+        ])),
         _ => None,
     }
 }
@@ -1585,6 +1728,9 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
 ///   `activate`.
 /// - **1.022** — scene `1` or `2` (`scene a`/`scene b`, or the bit as
 ///   `raw 0`/`raw 1`).
+/// - **232.600** — `#RRGGBB` or `rgb(r, g, b)`.
+/// - **251.600** — `#RRGGBBWW`, `#RRGGBB` (white marked invalid) or
+///   `rgbw(r, g, b, w)` with `-` for a channel marked invalid (§6.18).
 /// - **20.102** — a mode name: `auto`, `comfort`, `standby`, `economy`,
 ///   `building-protection` (aliases `frost`, `protection`).
 /// - **20.xxx** (the enumerations of 03_07_02 §3.21, §4.3, §6.3) — the label
@@ -1935,10 +2081,74 @@ pub fn parse_value(dpt: &Dpt, input: &str) -> Result<TypedValue, ParseValueError
                 names: flag_names(dpt.main, dpt.sub, bits),
             })
         }
+        232 => {
+            let [r, g, b, _] = parse_colour(raw)
+                .filter(|c| c[3].is_none() && c[..3].iter().all(Option::is_some))
+                .ok_or_else(|| invalid("`#RRGGBB` or `rgb(r, g, b)` with 0-255 per channel"))?
+                .map(Option::unwrap_or_default);
+            Ok(TypedValue::Rgb { r, g, b })
+        }
+        251 => {
+            let [r, g, b, w] = parse_colour(raw).ok_or_else(|| {
+                invalid(
+                    "`#RRGGBBWW`, `#RRGGBB` (white not set), or `rgbw(r, g, b, w)` with \
+                     0-255 per channel and `-` for a channel to leave unchanged",
+                )
+            })?;
+            Ok(TypedValue::Rgbw(Rgbw {
+                r: r.unwrap_or_default(),
+                g: g.unwrap_or_default(),
+                b: b.unwrap_or_default(),
+                w: w.unwrap_or_default(),
+                r_valid: r.is_some(),
+                g_valid: g.is_some(),
+                b_valid: b.is_some(),
+                w_valid: w.is_some(),
+            }))
+        }
         _ => Err(ParseValueError::Unsupported {
             dpt: dpt.to_string(),
         }),
     }
+}
+
+/// Parses a colour into up to four channels `[r, g, b, w]`, `None` for a
+/// channel the input leaves out.
+///
+/// Forms: `#RRGGBB`, `#RRGGBBWW` (hex), `rgb(r, g, b)` and `rgbw(r, g, b, w)`
+/// with decimal 0..255 channels, where `-` (or nothing) leaves a channel out.
+/// White is absent from the 3-channel forms.
+fn parse_colour(input: &str) -> Option<[Option<u8>; 4]> {
+    let s = input.trim();
+    if let Some(hex) = s.strip_prefix('#') {
+        if !(hex.len() == 6 || hex.len() == 8) || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        let mut out = [None; 4];
+        for (i, slot) in out.iter_mut().enumerate().take(hex.len() / 2) {
+            *slot = Some(u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()?);
+        }
+        return Some(out);
+    }
+    let lower = s.to_lowercase();
+    let (n, body) = if let Some(rest) = lower.strip_prefix("rgbw") {
+        (4, rest)
+    } else {
+        (3, lower.strip_prefix("rgb")?)
+    };
+    let body = body.trim().strip_prefix('(')?.strip_suffix(')')?;
+    let parts: Vec<&str> = body.split(',').map(str::trim).collect();
+    if parts.len() != n {
+        return None;
+    }
+    let mut out = [None; 4];
+    for (slot, part) in out.iter_mut().zip(&parts) {
+        *slot = match *part {
+            "" | "-" | "--" | "_" => None,
+            num => Some(num.parse::<u8>().ok()?),
+        };
+    }
+    Some(out)
 }
 
 /// The longest 28.001 text bussard writes, in UTF-8 bytes, so the string and
@@ -3054,6 +3264,86 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_value_colours() -> Result<(), Box<dyn std::error::Error>> {
+        let rgb = dpt("232.600");
+        assert_eq!(encode(&rgb, &parse_value(&rgb, "#FF8000")?)?, vec![0xFF, 0x80, 0x00]);
+        assert_eq!(encode(&rgb, &parse_value(&rgb, "rgb(255, 128, 0)")?)?, vec![0xFF, 0x80, 0x00]);
+        // The display form parses back.
+        assert_eq!(decode(&rgb, &[0xFF, 0x80, 0x00]).to_string(), "#FF8000");
+        assert!(parse_value(&rgb, "#FF800000").is_err());
+        assert!(parse_value(&rgb, "rgb(256,0,0)").is_err());
+        let rgbw = dpt("251.600");
+        assert_eq!(
+            encode(&rgbw, &parse_value(&rgbw, "rgbw(255,128,0,0)")?)?,
+            vec![0xFF, 0x80, 0x00, 0x00, 0x00, 0x0F]
+        );
+        assert_eq!(
+            encode(&rgbw, &parse_value(&rgbw, "#FF800010")?)?,
+            vec![0xFF, 0x80, 0x00, 0x10, 0x00, 0x0F]
+        );
+        // Absent channels are marked invalid in the mask.
+        assert_eq!(
+            encode(&rgbw, &parse_value(&rgbw, "#FF8000")?)?,
+            vec![0xFF, 0x80, 0x00, 0x00, 0x00, 0x0E]
+        );
+        assert_eq!(
+            encode(&rgbw, &parse_value(&rgbw, "rgbw(-, -, -, 200)")?)?,
+            vec![0x00, 0x00, 0x00, 0xC8, 0x00, 0x01]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_decode_colour_compounds() {
+        // 242.600: x = 4F5Ch / 65535, y = 568Fh / 65535, Y = 64h as 5.001.
+        let v = decode(&dpt("242.600"), &[0x4F, 0x5C, 0x56, 0x8F, 0x64, 0x03]);
+        assert_eq!(
+            v,
+            TypedValue::ColourXyY {
+                x: 0x4F5C,
+                y: 0x568F,
+                brightness: 0x64,
+                colour_valid: true,
+                brightness_valid: true
+            }
+        );
+        assert_eq!(v.to_string(), "x 0.310, y 0.338, brightness 39.2 %");
+        assert_eq!(
+            decode(&dpt("242.600"), &[0x4F, 0x5C, 0x56, 0x8F, 0xFF, 0x01]).to_string(),
+            "x --, y --, brightness 100.0 %"
+        );
+        // 249.600: 1.5 s, 2700 K, 100 %, all valid.
+        assert_eq!(
+            decode(&dpt("249.600"), &[0x00, 0x0F, 0x0A, 0x8C, 0xFF, 0x07]).to_string(),
+            "time 1.5 s, colour temperature 2700 K, brightness 100.0 %"
+        );
+        assert_eq!(
+            decode(&dpt("249.600"), &[0x00, 0x0F, 0x0A, 0x8C, 0xFF, 0x02]).to_string(),
+            "time --, colour temperature 2700 K, brightness --"
+        );
+        // 250.600: colour temperature increase 25 %, brightness break.
+        assert_eq!(
+            decode(&dpt("250.600"), &[0x0B, 0x00, 0x03]).to_string(),
+            "colour temperature Increase 25 %, brightness break"
+        );
+        // 252.600: red decrease 100 %, the rest invalid.
+        assert_eq!(
+            decode(&dpt("252.600"), &[0x01, 0x0B, 0x0B, 0x0B, 0x08]).to_string(),
+            "red Decrease 100 %, green --, blue --, white --"
+        );
+        // 254.600: no mask.
+        assert_eq!(
+            decode(&dpt("254.600"), &[0x09, 0x00, 0x02]).to_string(),
+            "red Increase 100 %, green break, blue Decrease 50 %"
+        );
+        // Reserved bits get a note.
+        assert!(validity_note(&dpt("242.600"), &[0, 0, 0, 0, 0, 0x07]).is_some());
+        assert!(validity_note(&dpt("250.600"), &[0x1B, 0x00, 0x03]).is_some());
+        assert!(validity_note(&dpt("251.600"), &[0, 0, 0, 0, 0x01, 0x0F]).is_some());
+        assert!(validity_note(&dpt("251.600"), &[0, 0, 0, 0, 0x00, 0x0F]).is_none());
+    }
+
+    #[test]
     fn bool_subtype_labels() {
         assert_eq!(
             decode(&dpt("1.001"), &[1]),
@@ -3500,7 +3790,7 @@ mod tests {
     #[test]
     fn unknown_falls_back_to_raw() {
         assert_eq!(
-            decode(&dpt("250"), &[1, 2, 3]),
+            decode(&dpt("299"), &[1, 2, 3]),
             TypedValue::Raw(vec![1, 2, 3])
         );
     }

@@ -124,6 +124,10 @@ characters, padded with `00`; `16.001` takes Latin-1) and any UTF-8 text on `28.
 §3.12); `2026-10-29 12:30:00` on `19.001`, with an optional weekday and the flags `summer`,
 `fault`, `working-day`, `bank-day`, `sync` and `reliable`. A `19.001` value without a weekday
 sends the date's own one.
+A colour is `#FF8000` or `rgb(255, 128, 0)` on `232.600`, and `#FF800010`, `#FF8000` or
+`rgbw(255, 128, 0, -)` on `251.600`, where a channel left out (or `-`) is sent marked invalid
+(KNX 03_07_02 §6.18). `read` and `monitor` decode `242.600` to x, y and brightness, and
+`249.600`, `250.600`, `252.600` and `254.600` to their named fields.
 An enumeration (`20.xxx`, KNX 03_07_02 §3.21, §4.3, §6.3) takes its label or code: `cool` or `3`
 on `20.105`; `read` and `monitor` print the label, and `Unknown(18)` for a reserved code. A bit
 set (`21.xxx`, `22.xxx`) reads as the names of its set bits, `0A` on `21.001` is

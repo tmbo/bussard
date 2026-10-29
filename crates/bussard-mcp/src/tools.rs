@@ -716,6 +716,13 @@ pub(crate) fn typed_value_json(v: &TypedValue) -> Value {
             "flags": names,
             "display": v.to_string(),
         }),
+        TypedValue::Fields(fields) => {
+            let map: serde_json::Map<String, Value> = fields
+                .iter()
+                .map(|(name, value)| ((*name).to_string(), json!(value)))
+                .collect();
+            json!({ "fields": map, "display": v.to_string() })
+        }
         other => json!({ "display": other.to_string() }),
     }
 }
