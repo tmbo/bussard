@@ -292,6 +292,12 @@ impl KnxnetIpServer {
             users = state.users.len(),
             "interface {address:#06x}: KNXnet/IP Secure on, secure-only tunnelling"
         );
+        for (user, _, tunnel_ia) in &state.users {
+            tracing::info!(
+                "interface {address:#06x}: tunnelling user {user} on {}",
+                IndividualAddress(*tunnel_ia)
+            );
+        }
         self.secure = Some(SecureGateway {
             individual_address: address,
             device_key: state.device_key,

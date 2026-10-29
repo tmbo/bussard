@@ -21,7 +21,11 @@
 //! `A_PropertyExtValue_WriteCon` element by element (element 0 of PID 53 sets
 //! the element count, up to the tunnel slots its description declares), and
 //! both description services describe every property with its real element
-//! count. KNXnet/IP Secure PIDs (91 and up) are not modelled.
+//! count. PID 78 (`PID_ROUTING_BUSY_WAIT_TIME`, default 100 ms) and PID 79
+//! (`PID_TUNNELLING_ADDRESSES`, read-only: per tunnelling connection 0 for
+//! the own address or the 1-based index into PID 53, KNXnet/IP Device
+//! Management 3/8/3 §2.5.28, §2.5.29; bussard issue #520) are read-only.
+//! The KNXnet/IP Secure PIDs (91 and up) live in `ip_secure`.
 
 use super::interface_object::{InterfaceObject, PID_OBJECT_TYPE, Property, PropertyDescription};
 
@@ -57,6 +61,11 @@ pub struct KnxnetParameters {
     pub state: u8,
     /// PID 76.
     pub friendly_name: String,
+    /// PID 78, the ROUTING_BUSY wait time in ms (default 100).
+    pub routing_busy_wait: u16,
+    /// PID 79, the tunnelling addresses: 0 the interface's own address, n
+    /// the n-th entry of PID 53. Default: every PID 53 entry, `1..=n`.
+    pub tunnelling_addresses: Vec<u8>,
     /// How many tunnelling addresses PID 53 holds at most (its description's
     /// maximum element count).
     pub tunnel_slots: u16,
@@ -78,7 +87,12 @@ impl KnxnetParameters {
     /// A DHCP interface at `individual_address` with `tunnels`.
     pub fn dhcp(individual_address: u16, tunnels: Vec<u16>) -> Self {
         let tunnel_slots = u16::try_from(tunnels.len()).unwrap_or(u16::MAX);
+        let tunnelling_addresses = (1..=tunnels.len())
+            .map(|i| u8::try_from(i).unwrap_or(u8::MAX))
+            .collect();
         KnxnetParameters {
+            routing_busy_wait: 100,
+            tunnelling_addresses,
             tunnel_slots,
             individual_address,
             tunnels,
@@ -110,7 +124,7 @@ impl KnxnetParameters {
             .take(30)
             .collect();
         name.resize(30, 0);
-        let values: [(u8, Vec<u8>); 21] = [
+        let values: [(u8, Vec<u8>); 23] = [
             // PID 51 project installation id: ETS writes it first when it
             // configures the IP part of a device (Zennio ALLinBOX 1612,
             // ETS-against-sim capture 2026-10-28).
@@ -138,6 +152,8 @@ impl KnxnetParameters {
             (69, vec![self.state]),
             (70, vec![0x00]), // routing capabilities: none listed
             (76, name),
+            (78, self.routing_busy_wait.to_be_bytes().to_vec()),
+            (79, self.tunnelling_addresses.clone()),
         ];
         for (pid, value) in values {
             let prop = if WRITABLE.contains(&pid) {
@@ -326,7 +342,7 @@ fn describe_ext(obj: &InterfaceObject, request: &[u8], slots: Option<u16>) -> Op
 /// The element size in octets of a KNXnet/IP parameter object property.
 pub fn element_size(pid: u8) -> usize {
     match pid {
-        51 | 52 | 53 | 68 => 2,
+        51 | 52 | 53 | 68 | 78 => 2,
         // 205: the Jung IPS 300 SREG's preferred tunnel IP addresses
         // (`PID_ENX_BASICCRI_TUNNELLING_Preferred_IP`, bussard issue #390).
         57..=63 | 65 | 66 | 205 => 4,

@@ -256,16 +256,32 @@ impl IpSecureObject {
     /// The master reset: what the properties say takes effect. Tunnelling
     /// secured with a device authentication code and at least one user with a
     /// written hash makes the interface secure; anything else plain.
-    /// `tunnels` is `PID_ADDITIONAL_INDIVIDUAL_ADDRESSES` (raw), slot order.
-    pub fn apply(&mut self, tunnels: &[u16]) {
+    ///
+    /// A `PID_TUNNELLING_USERS` entry names its address through two tables
+    /// (KNX IP Secure 3/8/9 §2.3.1.8.3; Device Management 3/8/3 §2.5.29;
+    /// bussard issue #520): its index points into `table`
+    /// (`PID_TUNNELLING_ADDRESSES`, 1-based), whose value is 0 for the
+    /// interface's `own` address or the 1-based index into `tunnels`
+    /// (`PID_ADDITIONAL_INDIVIDUAL_ADDRESSES`, raw, slot order). Without a
+    /// table the index points into `tunnels` directly.
+    pub fn apply(&mut self, own: u16, tunnels: &[u16], table: Option<&[u8]>) {
         self.epoch += 1;
+        let resolve = |index: u8| -> Option<u16> {
+            let id = match table {
+                Some(table) => *table.get(usize::from(index).checked_sub(1)?)?,
+                None => index,
+            };
+            match id {
+                0 => Some(own),
+                n => tunnels.get(usize::from(n) - 1).copied(),
+            }
+        };
         let users: Vec<(u8, [u8; 16], u16)> = self
             .users
             .iter()
-            .filter_map(|&(user, slot)| {
+            .filter_map(|&(user, index)| {
                 let key = *self.hashes.get(usize::from(user).checked_sub(1)?)?;
-                let ia = *tunnels.get(usize::from(slot).checked_sub(1)?)?;
-                Some((user, key, ia))
+                Some((user, key, resolve(index)?))
             })
             .collect();
         let families: Vec<u8> = self
@@ -328,7 +344,7 @@ mod tests {
             obj.applied().is_none(),
             "nothing in effect before the reset"
         );
-        obj.apply(&[0x1116]);
+        obj.apply(0x11C8, &[0x1116], None);
         let state = obj.applied().cloned().unwrap_or(IpSecureState {
             device_key: [0; 16],
             users: Vec::new(),
@@ -342,9 +358,32 @@ mod tests {
             obj.function(&hex("000b 00105e 00 00 04 00"), true)
                 .is_some()
         );
-        obj.apply(&[0x1116]);
+        obj.apply(0x11C8, &[0x1116], None);
         assert!(obj.applied().is_none());
         assert_eq!(obj.epoch(), 2);
+    }
+
+    #[test]
+    fn test_apply_resolves_users_through_the_tunnelling_addresses() {
+        // PID 79 [0, 2, 3]: the own address, then PID 53 entries 2 and 3.
+        let mut obj = IpSecureObject::new();
+        let mut auth = hex("000b 00105c 01 0001");
+        auth.extend_from_slice(&[0x11; 16]);
+        obj.write(&auth);
+        obj.write(&hex("000b 00105d 01 0000 0003"));
+        let mut hashes = hex("000b 00105d 03 0001");
+        hashes.extend_from_slice(&[0x21; 48]);
+        obj.write(&hashes);
+        obj.write(&hex("000b 001061 01 0000 0002"));
+        // User 2 on table entry 1 (own address), user 3 on entry 3 (1.1.24).
+        obj.write(&hex("000b 001061 02 0001 0201 0303"));
+        obj.function(&hex("000b 00105e 00 00 04 01"), true);
+        obj.apply(0x11C8, &[0x1116, 0x1117, 0x1118], Some(&[0, 2, 3]));
+        let users: Vec<(u8, u16)> = obj
+            .applied()
+            .map(|s| s.users.iter().map(|&(u, _, ia)| (u, ia)).collect())
+            .unwrap_or_default();
+        assert_eq!(users, vec![(2, 0x11C8), (3, 0x1118)]);
     }
 
     #[test]

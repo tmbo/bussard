@@ -321,6 +321,11 @@ pub struct KnxnetSimConfig {
     /// maximum element count; default: as many as `tunnels` lists).
     #[serde(default)]
     pub tunnel_slots: Option<u16>,
+    /// PID 79, the tunnelling addresses: 0 the interface's own address, n the
+    /// n-th entry of `tunnels` (default `1..=n`, every tunnel; bussard issue
+    /// #520).
+    #[serde(default)]
+    pub tunnelling_addresses: Option<Vec<u8>>,
     /// Whether the object appears in the object-index walk (default `true`).
     /// `false` serves it by object type and instance only, through the
     /// extended property services, as the Jung IPS 300 SREG does.
@@ -365,6 +370,15 @@ impl KnxnetSimConfig {
         }
         if let Some(name) = &self.friendly_name {
             p.friendly_name = name.clone();
+        }
+        if let Some(list) = &self.tunnelling_addresses {
+            if list.iter().any(|&i| usize::from(i) > p.tunnels.len()) {
+                return Err(format!(
+                    "tunnelling_addresses {list:?}: an index past the {} tunnels",
+                    p.tunnels.len()
+                ));
+            }
+            p.tunnelling_addresses = list.clone();
         }
         if let Some(slots) = self.tunnel_slots {
             p.tunnel_slots = p.tunnel_slots.max(slots);

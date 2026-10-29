@@ -126,7 +126,7 @@ pub(crate) fn run(
                 KeyStore::path(dir).display()
             )
         })?;
-    let plan = match switch {
+    let mut plan = match switch {
         Switch::On => plan_on(&store, target, &knxnet.tunnels)?,
         Switch::Off => plan_off(&store, target)?,
     };
@@ -185,7 +185,7 @@ pub(crate) fn run(
             println!("  -> {line}");
         }
     };
-    let outcome = runtime.block_on(run_switch(&ctx, &plan, &store, &mut progress));
+    let outcome = runtime.block_on(run_switch(&ctx, &mut plan, &store, &mut progress));
     let outcome = match outcome {
         Ok(outcome) => outcome,
         Err(err) => {

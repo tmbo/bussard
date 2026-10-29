@@ -184,7 +184,8 @@ impl Sim {
              devices:\n  - address: \"1.1.200\"\n    initial_state: loaded\n    security:\n      \
              status: factory\n      tool_key: \"{FDSK_HEX}\"\n      initial_tx_seq: 1000\n    \
              knxnet:\n      \
-             tunnels: [\"1.1.22\", \"1.1.23\"]\n      tunnel_slots: 8\n      listed: false\n"
+             tunnels: [\"1.1.22\", \"1.1.23\"]\n      tunnel_slots: 8\n      listed: false\n      \
+             tunnelling_addresses: [0, 1, 2]\n"
         );
         let config = root.join("sim.yaml");
         std::fs::write(&config, yaml)?;
@@ -257,6 +258,14 @@ fn test_interface_secure_on_then_off_against_knx_sim() -> TestResult {
         log.contains("KNXnet/IP Secure on, secure-only tunnelling"),
         "{log}"
     );
+    // PID 79 is [0, 1, 2] (the own address first): PID 97 must name table
+    // entries 2 and 3, or user 2 would land on 1.1.200 itself (issue #520).
+    assert!(
+        out.contains("PID_TUNNELLING_ADDRESSES (79) reads [0, 1, 2]"),
+        "{out}"
+    );
+    assert!(log.contains("tunnelling user 2 on 1.1.22"), "{log}");
+    assert!(log.contains("tunnelling user 3 on 1.1.23"), "{log}");
 
     // The key store now holds the tool key and every credential; the device
     // file holds none.

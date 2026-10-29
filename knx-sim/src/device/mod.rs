@@ -587,8 +587,10 @@ impl Device {
     /// properties take effect.
     pub(super) fn apply_ip_secure(&mut self) {
         let tunnels = self.tunnel_addresses();
+        let table = self.knxnet_property(79).map(<[u8]>::to_vec);
+        let own = self.address.raw();
         if let Some(ip) = self.ip_secure.as_mut() {
-            ip.apply(&tunnels);
+            ip.apply(own, &tunnels, table.as_deref());
         }
     }
 

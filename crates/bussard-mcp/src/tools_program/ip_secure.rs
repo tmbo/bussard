@@ -62,7 +62,7 @@ impl BussardMcp {
                  import the ETS keyring export with `bussard keys import`"
                     .to_string()
             })?;
-        let plan = match switch {
+        let mut plan = match switch {
             Switch::On => plan_on(&store, target, &knxnet.tunnels),
             Switch::Off => plan_off(&store, target),
         }
@@ -118,7 +118,7 @@ impl BussardMcp {
         };
         let mut steps_done = Vec::new();
         let mut progress = |line: &str| steps_done.push(line.to_string());
-        match run_switch(&ctx, &plan, &store, &mut progress).await {
+        match run_switch(&ctx, &mut plan, &store, &mut progress).await {
             Ok(outcome) => Ok(json!({
                 "ok": outcome.verified(switch),
                 "verified": outcome.verified(switch),

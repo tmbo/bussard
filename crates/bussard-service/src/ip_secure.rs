@@ -171,6 +171,24 @@ pub enum IpSecureError {
     /// More users than one property write carries.
     #[error("{0} tunnelling addresses; one PID 93/97 write carries at most 14 users")]
     TooManyTunnels(usize),
+    /// A `[knxnet]` tunnel address the interface does not use for tunnelling
+    /// (its PID 53 entry is not in `PID_TUNNELLING_ADDRESSES`, issue #520).
+    #[error(
+        "{address} (entry {slot} of {target}'s additional individual addresses) is not one of \
+         its tunnelling addresses: PID_TUNNELLING_ADDRESSES (79) reads {table:?} (0 the \
+         interface's own address, n the n-th additional address); a tunnelling user on it could \
+         never connect"
+    )]
+    NotATunnellingAddress {
+        /// The interface.
+        target: IndividualAddress,
+        /// The tunnel address.
+        address: IndividualAddress,
+        /// Its 1-based PID 53 entry.
+        slot: u8,
+        /// PID 79 as read.
+        table: Vec<u8>,
+    },
     /// Two tunnelling addresses share a user id, or a user id is out of range.
     #[error("the key store's tunnelling users for {target} are not usable: {why}")]
     BadUsers {
@@ -201,8 +219,16 @@ pub struct SwitchPlan {
     /// The steps in wire order. For `off`, the steps after the first master
     /// reset run on a second connection, after the restart.
     pub steps: Vec<PlannedStep>,
-    /// The `PID_TUNNELLING_USERS` entries, `(user id, address index)`.
+    /// The `PID_TUNNELLING_USERS` entries, `(user id, address index)`, the
+    /// index pointing into `PID_TUNNELLING_ADDRESSES` (PID 79). Planned for
+    /// the identity table `1..n`; the run reads PID 79 first and
+    /// [resolves](Self::resolve_tunnel_users) them against it (issue #520).
     pub tunnel_users: Vec<(u8, u8)>,
+    /// The tunnelling users by address: `(user id, 1-based PID 53 entry,
+    /// the address)`, user id order.
+    pub tunnel_slots: Vec<(u8, u8, IndividualAddress)>,
+    /// What the run found out about the plan (PID 79 as read).
+    pub notes: Vec<String>,
     /// Credentials the plan generated (names, never values); the key store
     /// gains them before the first write.
     pub generated: Vec<String>,
@@ -212,6 +238,51 @@ pub struct SwitchPlan {
 }
 
 impl SwitchPlan {
+    /// Resolves the `PID_TUNNELLING_USERS` entries against `table`, the
+    /// interface's `PID_TUNNELLING_ADDRESSES` (PID 79) as read: each user's
+    /// index becomes the 1-based position of its PID 53 entry in the table
+    /// (KNX IP Secure 3/8/9 §2.3.1.8.3, Device Management 3/8/3 §2.5.29,
+    /// issue #520). `None` (the device does not serve PID 79) keeps the
+    /// identity mapping and records a note.
+    ///
+    /// # Errors
+    ///
+    /// [`IpSecureError::NotATunnellingAddress`] when a tunnel's PID 53 entry
+    /// is not in the table.
+    pub fn resolve_tunnel_users(&mut self, table: Option<&[u8]>) -> Result<(), IpSecureError> {
+        let Some(table) = table else {
+            self.notes.push(
+                "the interface does not serve PID_TUNNELLING_ADDRESSES (79): the tunnelling users \
+                 assume its tunnelling addresses are the additional addresses 1..n in order"
+                    .to_string(),
+            );
+            return Ok(());
+        };
+        let mut users = Vec::with_capacity(self.tunnel_slots.len());
+        for &(user, slot, address) in &self.tunnel_slots {
+            let Some(position) = table.iter().position(|&id| id == slot) else {
+                return Err(IpSecureError::NotATunnellingAddress {
+                    target: self.target,
+                    address,
+                    slot,
+                    table: table.to_vec(),
+                });
+            };
+            users.push((user, u8::try_from(position + 1).unwrap_or(u8::MAX)));
+        }
+        users.sort_unstable();
+        if users != self.tunnel_users {
+            self.notes.push(format!(
+                "PID_TUNNELLING_ADDRESSES (79) reads {table:?}: tunnelling users {} instead of \
+                 the planned {}",
+                pairs(&users),
+                pairs(&self.tunnel_users)
+            ));
+        }
+        self.tunnel_users = users;
+        Ok(())
+    }
+
     /// Whether the key store must be saved before the first write.
     pub fn changes_store(&self) -> bool {
         self.store_update.is_some()
@@ -299,14 +370,12 @@ impl SwitchPlan {
                 "password hashes of users 1 to {} (type 11 PID 93)",
                 self.secrets.user_keys.len()
             ),
-            Step::TunnellingUsers => format!(
-                "tunnelling users {} (type 11 PID 97)",
-                self.tunnel_users
-                    .iter()
-                    .map(|(u, i)| format!("{u}->{i}"))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            ),
+            Step::TunnellingUsers => {
+                format!(
+                    "tunnelling users {} (type 11 PID 97)",
+                    pairs(&self.tunnel_users)
+                )
+            }
             Step::MasterReset => "master reset (erase code 1)".to_string(),
         };
         format!("{what}, under the {key}")
@@ -465,6 +534,15 @@ impl Value {
     }
 }
 
+/// `user->index` pairs, space-separated.
+fn pairs(users: &[(u8, u8)]) -> String {
+    users
+        .iter()
+        .map(|(u, i)| format!("{u}->{i}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut out = String::with_capacity(bytes.len() * 2);
@@ -594,7 +672,7 @@ pub fn plan_on(
     };
 
     // The tunnelling users, by slot.
-    let mut users: BTreeMap<u8, (u8, Password)> = BTreeMap::new();
+    let mut users: BTreeMap<u8, (u8, Password, IndividualAddress)> = BTreeMap::new();
     for (slot0, ia) in tunnels.iter().enumerate() {
         let slot = u8::try_from(slot0 + 1).unwrap_or(u8::MAX);
         let known = updated.interfaces.iter_mut().find(|i| {
@@ -638,7 +716,7 @@ pub fn plan_on(
                 why: format!("{ia} has user id {user_id}; tunnelling users start at 2"),
             });
         }
-        if users.insert(user_id, (slot, password)).is_some() {
+        if users.insert(user_id, (slot, password, *ia)).is_some() {
             return Err(IpSecureError::BadUsers {
                 target,
                 why: format!("user id {user_id} is used by two tunnelling addresses"),
@@ -649,7 +727,7 @@ pub fn plan_on(
     let max = users.keys().copied().max().unwrap_or(1);
     let mut user_keys = vec![management.derive(salt::USER_PASSWORD)];
     for id in 2..=max {
-        let Some((_, password)) = users.get(&id) else {
+        let Some((_, password, _)) = users.get(&id) else {
             return Err(IpSecureError::BadUsers {
                 target,
                 why: format!(
@@ -660,7 +738,12 @@ pub fn plan_on(
         };
         user_keys.push(password.derive(salt::USER_PASSWORD));
     }
-    let tunnel_users: Vec<(u8, u8)> = users.iter().map(|(&u, (slot, _))| (u, *slot)).collect();
+    // Planned for the identity PID 79 table; the run resolves them (#520).
+    let tunnel_users: Vec<(u8, u8)> = users.iter().map(|(&u, (slot, _, _))| (u, *slot)).collect();
+    let tunnel_slots: Vec<(u8, u8, IndividualAddress)> = users
+        .iter()
+        .map(|(&u, (slot, _, ia))| (u, *slot, *ia))
+        .collect();
     let changed = !generated.is_empty() || !same_credentials(store, &updated, target);
     let steps = on_steps();
     Ok(SwitchPlan {
@@ -668,6 +751,8 @@ pub fn plan_on(
         switch: Switch::On,
         steps,
         tunnel_users,
+        tunnel_slots,
+        notes: Vec::new(),
         generated,
         store_update: changed.then_some(updated),
         secrets: Secrets {
@@ -697,6 +782,8 @@ pub fn plan_off(store: &KeyStore, target: IndividualAddress) -> Result<SwitchPla
         switch: Switch::Off,
         steps: off_steps(),
         tunnel_users: Vec::new(),
+        tunnel_slots: Vec::new(),
+        notes: Vec::new(),
         generated: Vec::new(),
         store_update: None,
         secrets: Secrets {
@@ -1120,11 +1207,14 @@ async fn open(
     Ok(service)
 }
 
-/// Runs `steps` on one management connection opened under `key`.
+/// Runs `steps` on one management connection opened under `key`. When they
+/// write `PID_TUNNELLING_USERS`, the connection first reads
+/// `PID_TUNNELLING_ADDRESSES` (PID 79) and resolves the users against it
+/// (issue #520), before anything is written.
 async fn connection(
     ctx: &SwitchContext<'_>,
     config: bussard_transport::ConnectionConfig,
-    plan: &SwitchPlan,
+    plan: &mut SwitchPlan,
     steps: &[PlannedStep],
     key: Key16,
     stage: &'static str,
@@ -1151,7 +1241,18 @@ async fn connection(
             .connect_l4(plan.target, &options)
             .await
             .map_err(|source| SwitchError::Service { stage, source })?;
-        let result = run_steps(&mut l4, plan, steps, progress).await;
+        let result = async {
+            if steps.iter().any(|s| s.step == Step::TunnellingUsers) {
+                let table = wire::read_tunnelling_addresses(&mut l4).await?;
+                let known = plan.notes.len();
+                plan.resolve_tunnel_users(table.as_deref())?;
+                for note in &plan.notes[known..] {
+                    progress(note);
+                }
+            }
+            run_steps(&mut l4, plan, steps, progress).await
+        }
+        .await;
         // After the master reset the device has dropped the connection and
         // is rebooting: a T_Disconnect would go unanswered.
         if !matches!(&result, Ok(r) if r.restart_seconds.is_some()) {
@@ -1180,7 +1281,7 @@ async fn connection(
 /// it (see the module docs for the recovery).
 pub async fn run_switch(
     ctx: &SwitchContext<'_>,
-    plan: &SwitchPlan,
+    plan: &mut SwitchPlan,
     store: &KeyStore,
     progress: &mut (dyn FnMut(&str) + Send),
 ) -> Result<SwitchOutcome, SwitchError> {
@@ -1193,12 +1294,14 @@ pub async fn run_switch(
             source,
         })?;
 
+    let first_steps = plan.first_connection().to_vec();
+    let opening_key = plan.opening_key();
     let first = connection(
         ctx,
         ctx.config.clone(),
         plan,
-        plan.first_connection(),
-        plan.opening_key(),
+        &first_steps,
+        opening_key,
         "the switch",
         progress,
     )
@@ -1207,10 +1310,11 @@ pub async fn run_switch(
 
     // After the restart: through the target itself the tunnel is plain after
     // `off` and secure after `on`.
+    let switch = plan.switch;
     let after_config = || -> Result<bussard_transport::ConnectionConfig, SwitchError> {
         let mut config = ctx.config.clone();
         if target_is_gateway {
-            config.secure = match plan.switch {
+            config.secure = match switch {
                 Switch::On => {
                     crate::secure::tunnel_config(crate::secure::TunnelCredentialSource {
                         keyring: Some(&KeyStore::path(ctx.dir)),
@@ -1224,15 +1328,17 @@ pub async fn run_switch(
         Ok(config)
     };
 
-    let second = if plan.second_connection().is_empty() {
+    let second_steps = plan.second_connection().to_vec();
+    let second = if second_steps.is_empty() {
         None
     } else {
+        let fdsk = plan.fdsk();
         let report = connection(
             ctx,
             after_config()?,
             plan,
-            plan.second_connection(),
-            plan.fdsk(),
+            &second_steps,
+            fdsk,
             "the factory-key pass after the restart",
             progress,
         )
@@ -1363,6 +1469,49 @@ mod tests {
         assert_eq!(plan.tunnel_users, vec![(2, 1), (3, 2)]);
         assert!(plan.generated.is_empty());
         assert!(!plan.changes_store());
+        Ok(())
+    }
+
+    #[test]
+    fn test_resolve_tunnel_users_maps_through_pid_79() -> TestResult {
+        let tunnels = [ia("1.1.22")?, ia("1.1.23")?];
+        // PID 79 [0, 1, 2]: the own address first, so user 2 (PID 53 entry
+        // 1) is table entry 2 and user 3 entry 3 (issue #520).
+        let mut plan = plan_on(&store(true)?, ia("1.1.200")?, &tunnels)?;
+        assert_eq!(plan.tunnel_users, vec![(2, 1), (3, 2)], "identity plan");
+        plan.resolve_tunnel_users(Some(&[0, 1, 2]))?;
+        assert_eq!(plan.tunnel_users, vec![(2, 2), (3, 3)]);
+        assert!(plan.lines().iter().any(|l| l.contains("2->2 3->3")));
+        assert_eq!(plan.notes.len(), 1, "{:?}", plan.notes);
+
+        // The identity table changes nothing and notes nothing.
+        let mut plan = plan_on(&store(true)?, ia("1.1.200")?, &tunnels)?;
+        plan.resolve_tunnel_users(Some(&[1, 2]))?;
+        assert_eq!(plan.tunnel_users, vec![(2, 1), (3, 2)]);
+        assert!(plan.notes.is_empty());
+
+        // No PID 79: the identity mapping, with a note.
+        let mut plan = plan_on(&store(true)?, ia("1.1.200")?, &tunnels)?;
+        plan.resolve_tunnel_users(None)?;
+        assert_eq!(plan.tunnel_users, vec![(2, 1), (3, 2)]);
+        assert!(plan.notes[0].contains("does not serve"), "{:?}", plan.notes);
+        Ok(())
+    }
+
+    #[test]
+    fn test_resolve_tunnel_users_refuses_an_address_outside_pid_79() -> TestResult {
+        let mut plan = plan_on(
+            &store(true)?,
+            ia("1.1.200")?,
+            &[ia("1.1.22")?, ia("1.1.23")?],
+        )?;
+        match plan.resolve_tunnel_users(Some(&[0, 2])) {
+            Err(IpSecureError::NotATunnellingAddress { address, slot, .. }) => {
+                assert_eq!(address, ia("1.1.22")?);
+                assert_eq!(slot, 1);
+            }
+            other => return Err(format!("expected a refusal, got {other:?}").into()),
+        }
         Ok(())
     }
 
