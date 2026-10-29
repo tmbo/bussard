@@ -1350,6 +1350,18 @@ with count 0, as a real device is expected to. Whether a real device serves
 multi-element reads of PID 61 and PID 54 has not been observed yet; the halving
 falls back to single elements if it does not.
 
+**Diagnostics (PID 55, 57, 58)** `[KNX 3/5/1 §6.3.9, §6.3.11, §6.3.12; bussard + knx-sim, no capture yet; issue #533]`.
+`bussard secure diag <ia>`, `status <ia>` and `knx_describe_device` read
+the security failures log with `A_FunctionPropertyExt_State_Read` PID 55
+(`00 00 00`: the counters; `00 01 00`: the latest failure), the report
+(PID 57) and the report control (PID 58) with `A_PropertyExtValue_Read`;
+`--clear` sends `A_FunctionPropertyExt_Command` PID 55 `00 00 00` and writes
+PID 57 := 0, then reads both back. What counts is in KNX 3/3/7 §5.4 and KNX
+3/5/1 §6.3.15.3 Table 108: an unlisted sender is dropped without a count
+(KNX 3/3/7 §5.2.1.1), a MAC failure counts cryptographic, a stale sequence
+SeqNr, a flag mismatch access. knx-sim models those counts; the layout of a
+real device's answer is not captured yet.
+
 ### 11.2 Switching one group address's security off or on `[issue #331; the write shape follows §11.1, the removal is VERIFIED against the 2026-10-24 capture `1-1-5-no-secure-ga.pcapng`, see SAFETY.md]`
 
 KNX lets one group address run plain on a device that stays Data Secure: the

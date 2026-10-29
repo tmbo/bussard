@@ -770,8 +770,12 @@ impl BussardMcp {
         known), data type, element count and read/write access levels. This is READ-ONLY on the \
         bus (it sends A_DeviceDescriptor_Read, A_PropertyValue_Read for object discovery, and \
         A_PropertyDescription_Read; it never writes). Use it to describe an unknown device's \
-        property set. Rate-limited and only available when the server is NOT in passive mode, \
-        since it actively transmits management traffic on the bus."
+        property set. On a KNX Data Secure device addressed with its tool key it also returns \
+        `security_diagnostics`: the security failures log (sequence, cryptographic and access \
+        error counts, the latest failure), the security report and whether the device \
+        broadcasts it; read it after a secured write that did nothing. Rate-limited and only \
+        available when the server is NOT in passive mode, since it actively transmits \
+        management traffic on the bus."
     )]
     async fn knx_describe_device(
         &self,
@@ -905,11 +909,17 @@ impl BussardMcp {
         drop(warm);
 
         match result {
-            Ok(objects) => ok(json!({
-                "address": target.to_string(),
-                "ok": true,
-                "objects": objects,
-            })),
+            Ok((objects, security)) => {
+                let mut out = json!({
+                    "address": target.to_string(),
+                    "ok": true,
+                    "objects": objects,
+                });
+                if let Some(security) = security {
+                    out["security_diagnostics"] = security;
+                }
+                ok(out)
+            }
             Err(reason) => ok(json!({
                 "address": target.to_string(),
                 "ok": false,
@@ -1144,14 +1154,31 @@ fn write_refusal_json(ga: GroupAddress, refusal: &WriteRefusal) -> Value {
 /// reason string (the tool surfaces it as `ok:false`), never a panic.
 async fn describe_over_l4<Ch: bussard_mgmt::L4Channel>(
     l4: &mut bussard_mgmt::Layer4Connection<Ch>,
-) -> Result<Vec<Value>, String> {
+) -> Result<(Vec<Value>, Option<Value>), String> {
     // Scale property reads to the device's max APDU when it exposes it.
     let _ = l4.negotiate_max_apdu().await;
     let objects = walk_objects(l4).await.map_err(|e| error_chain(&e))?;
-    Ok(objects
-        .iter()
-        .map(|o| tools::describe_object_json(o.index, o.object_type, &o.properties))
-        .collect())
+    // A Data Secure device read with its tool key: the security failures log,
+    // report and report control too (issue #533).
+    let security = if l4.is_secure() {
+        Some(
+            match bussard_download::read_security_diagnostics(l4).await {
+                Ok(diag) => json!(diag),
+                Err(err) => {
+                    json!({ "notes": [format!("Data Secure diagnostics not read: {err}")] })
+                }
+            },
+        )
+    } else {
+        None
+    };
+    Ok((
+        objects
+            .iter()
+            .map(|o| tools::describe_object_json(o.index, o.object_type, &o.properties))
+            .collect(),
+        security,
+    ))
 }
 
 /// Renders an error with its source chain on one line (`outer: inner: ...`),

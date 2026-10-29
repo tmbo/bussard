@@ -20,7 +20,18 @@
 //! - a secured telegram from a sender the security individual address table
 //!   (PID 54) does not list is dropped, and one whose sequence does not exceed
 //!   the sender's table entry too (issue #181: ETS lists every secured sender
-//!   of a device there).
+//!   of a device there);
+//! - a verified telegram whose security (auth+conf or auth only) does not
+//!   match the group-object security flags of every object linked to the
+//!   group address is ignored (KNX 3/5/1 §6.3.15.3 Table 108).
+//!
+//! The failures land in the security failures log (PID 55, bussard issue
+//! #533) as the standard counts them: a MAC that does not verify or a frame
+//! too short is a cryptographic error, a stale sequence a SeqNr error (KNX
+//! 3/3/7 §5.4), a flag mismatch an access error; an unlisted sender is
+//! dropped without a count (§5.2.1.1). Each sets the security report, and
+//! with the report control on the device broadcasts it as an
+//! `A_NetworkParameter_InfoReport` (KNX 3/5/1 §6.3.11.4).
 //!
 //! Every outcome lands on the event log as a key-free, plaintext-free line
 //! (`SECURE group recv ...`, `SECURE group send ...`, `REJECTED SECURE group
@@ -31,7 +42,12 @@ use crate::bus::{decode_group, response_as_write};
 use crate::secure::{A_SECURE_DATA_APCI, Key16, Scf, SecAlgorithm};
 use crate::wire::{CemiLData, GroupAddress};
 
+use super::security_object::FailureKind;
 use super::{Device, LoadState, SecLoadState, group_comm};
+
+/// `A_NetworkParameter_Response`, the APCI of an InfoReport (KNX 3/3/7
+/// §3.2.8).
+const A_NETWORK_PARAMETER_RESPONSE: u16 = 0x3DB;
 
 /// The algorithm a device uses for group telegrams it originates (stimulus):
 /// authentication + encryption, SCF `0x10`, what ETS configures by default.
@@ -160,6 +176,10 @@ impl Device {
             return Vec::new();
         };
         let asdu = &cemi.tpdu[2..];
+        let mut wire_seq = [0u8; 6];
+        if let Some(s) = asdu.get(1..7) {
+            wire_seq.copy_from_slice(s);
+        }
         let opened = match self.secure.as_mut() {
             Some(session) => session.unwrap_group_incoming(&key, cemi, asdu),
             None => return Vec::new(),
@@ -171,7 +191,18 @@ impl Device {
                     device: self.address,
                     summary: format!("REJECTED SECURE group recv {source} -> {ga}: {err}"),
                 });
-                return Vec::new();
+                let kind = match err {
+                    crate::secure::SecureError::StaleSequence { .. } => Some(FailureKind::SeqNr),
+                    crate::secure::SecureError::BadMac
+                    | crate::secure::SecureError::TooShort { .. } => {
+                        Some(FailureKind::Cryptographic)
+                    }
+                    _ => None,
+                };
+                return match kind {
+                    Some(kind) => self.security_failure(kind, source.raw(), wire_seq),
+                    None => Vec::new(),
+                };
             }
         };
         if seq_value(&unwrapped.seq) <= listed_seq {
@@ -183,7 +214,25 @@ impl Device {
                     seq_value(&unwrapped.seq)
                 ),
             });
-            return Vec::new();
+            return self.security_failure(FailureKind::SeqNr, source.raw(), unwrapped.seq);
+        }
+        // Table 108: the telegram's A/C must match the flags of the objects
+        // linked to the group address exactly.
+        let used = match unwrapped.scf.algorithm {
+            SecAlgorithm::AuthOnly => 0x01,
+            SecAlgorithm::AuthEnc => 0x03,
+        };
+        if let Some(object) = self.flag_mismatch(ga, used) {
+            self.emit(Event::SecureFrame {
+                device: self.address,
+                summary: format!(
+                    "REJECTED SECURE group recv {source} -> {ga}: group object {object} security \
+                     flags do not match scf=0x{:02x}[{}] (access error)",
+                    unwrapped.scf.to_byte(),
+                    scf_tag(unwrapped.scf),
+                ),
+            });
+            return self.security_failure(FailureKind::Access, source.raw(), unwrapped.seq);
         }
         let inner_carrier = CemiLData {
             tpdu: unwrapped.inner_tpdu.clone(),
@@ -218,6 +267,52 @@ impl Device {
             .into_iter()
             .filter_map(|r| self.seal_group_telegram(r, unwrapped.scf.algorithm))
             .collect()
+    }
+
+    /// The first object linked to `ga` whose group-object security flags are
+    /// not `used` (the telegram's A/C bits), if any.
+    fn flag_mismatch(&self, ga: GroupAddress, used: u8) -> Option<u16> {
+        let gc = self.group_comm.as_ref()?;
+        let obj = self.security_object.as_ref()?;
+        gc.objects()
+            .values()
+            .filter(|o| o.gas.contains(&ga))
+            .map(|o| o.asap)
+            .find(|&asap| obj.go_flag(asap).unwrap_or(0) & 0x03 != used)
+    }
+
+    /// Records a security failure in the security object and returns the
+    /// broadcast security report when the report control asks for one.
+    fn security_failure(&mut self, kind: FailureKind, sender: u16, seq: [u8; 6]) -> Vec<CemiLData> {
+        let Some(obj) = self.security_object.as_mut() else {
+            return Vec::new();
+        };
+        if !obj.record_failure(kind, sender, seq) {
+            return Vec::new();
+        }
+        let report = obj.security_report();
+        self.emit(Event::SecureFrame {
+            device: self.address,
+            summary: format!("SECURE report broadcast 0x{report:02x} (PID 57)"),
+        });
+        let apci = A_NETWORK_PARAMETER_RESPONSE;
+        vec![CemiLData {
+            message_code: crate::wire::cemi::MessageCode::LDataInd,
+            // Urgent priority, broadcast (group destination 0/0/0), hop count 6.
+            ctrl1: 0xb8,
+            ctrl2: 0xe0,
+            source: self.address,
+            dest: 0x0000,
+            tpdu: vec![
+                (apci >> 8) as u8 & 0x03,
+                (apci & 0xFF) as u8,
+                0x00,
+                0x11,
+                57,
+                0x00,
+                report,
+            ],
+        }]
     }
 
     /// Seal a plain outgoing group telegram into `A_SecureData` with the group

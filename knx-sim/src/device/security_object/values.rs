@@ -96,6 +96,8 @@ impl SecurityObject {
             pid::LOAD_STATE_CONTROL => scalar(vec![self.load_state.to_byte()]),
             pid::SECURITY_MODE => scalar(vec![self.security_mode]),
             pid::SEQUENCE_NUMBER_SENDING => scalar(self.seq_sending.to_vec()),
+            pid::SECURITY_REPORT => scalar(vec![self.report]),
+            pid::SECURITY_REPORT_CONTROL => scalar(vec![self.report_control]),
             pid::SECURITY_IA_TABLE => table(&self.ia_table.bytes, IA_ROW, self.ia_table.count()),
             // Unwritten flags within the group-object count read as 0x00.
             pid::GO_SECURITY_FLAGS => {
@@ -171,6 +173,7 @@ impl SecurityObject {
             pid::OBJECT_TYPE => return rc::ACCESS_READ_ONLY,
             pid::LOAD_STATE_CONTROL | pid::SECURITY_MODE => return rc::INVALID_COMMAND,
             pid::TOOL_KEY | pid::SEQUENCE_NUMBER_SENDING | pid::GRP_KEY_TABLE => {}
+            pid::SECURITY_REPORT | pid::SECURITY_REPORT_CONTROL => {}
             pid::SECURITY_IA_TABLE | pid::GO_SECURITY_FLAGS => {}
             _ => return rc::ADDRESS_VOID,
         }
@@ -186,6 +189,27 @@ impl SecurityObject {
                 let mut key = [0u8; TOOL_KEY_LEN];
                 key.copy_from_slice(value);
                 self.pending_tool_key = Some(key);
+                return rc::SUCCESS;
+            }
+            // The report is reset by the tool (KNX 3/5/1 §6.3.11.5): only 0
+            // is taken. The control is a DPT_Enable bit (§6.3.12.3).
+            pid::SECURITY_REPORT | pid::SECURITY_REPORT_CONTROL => {
+                if start != 1 || count != 1 || value.len() != 1 {
+                    return rc::INVALID_COMMAND;
+                }
+                let allowed = if h.pid == pid::SECURITY_REPORT {
+                    0x00
+                } else {
+                    0x01
+                };
+                if value[0] > allowed {
+                    return rc::OUT_OF_MAX_RANGE;
+                }
+                if h.pid == pid::SECURITY_REPORT {
+                    self.report = value[0];
+                } else {
+                    self.report_control = value[0];
+                }
                 return rc::SUCCESS;
             }
             pid::SEQUENCE_NUMBER_SENDING => {

@@ -160,6 +160,11 @@ impl DecodedTelegram {
 
         // Decode the value using the DPT, if the service carries a payload.
         let (value, decode_note) = decode_value(apci, &payload, dpt);
+        // A Data Secure device's broadcast security report (issue #533).
+        let decode_note = decode_note.or_else(|| {
+            security_report(apci, &payload)
+                .map(|report| security_report_note(source, source_name.as_deref(), report))
+        });
 
         DecodedTelegram {
             timestamp: frame.received_at,
@@ -227,6 +232,51 @@ fn sending_object_name(
         }
     }
     None
+}
+
+/// `A_NetworkParameter_Response`, the APCI an `A_NetworkParameter_InfoReport`
+/// rides (KNX 3/3/7 §3.2.8).
+pub const A_NETWORK_PARAMETER_RESPONSE: u16 = 0x3DB;
+
+/// The security report octet (DPT_Security_Report, 21.1002) of a Data Secure
+/// device's InfoReport, or `None` for any other telegram (issue #533).
+///
+/// With its security report control (PID 58) enabled, a device announces
+/// every security failure with `DMP_InterfaceObjectInfoReport_RCl`: an
+/// `A_NetworkParameter_InfoReport` broadcast whose parameter type is the
+/// security interface object (type 17) and PID 57, `test_info` 00h and the
+/// report as `test_result` (KNX 3/5/1 §6.3.11.4).
+pub fn security_report(apci: ApciKind, payload: &[u8]) -> Option<u8> {
+    if apci != ApciKind::Other(A_NETWORK_PARAMETER_RESPONSE) {
+        return None;
+    }
+    match payload {
+        [0x00, 0x11, 57, _test_info, report, ..] => Some(*report),
+        _ => None,
+    }
+}
+
+/// The monitor line for a security report from `source` (issue #533).
+fn security_report_note(source: IndividualAddress, name: Option<&str>, report: u8) -> String {
+    let who = match name {
+        Some(n) => format!("{source} ({n})"),
+        None => source.to_string(),
+    };
+    let flags = if report & 0x01 != 0 {
+        "Security Failure set".to_string()
+    } else {
+        "no flag set".to_string()
+    };
+    let reserved = report & 0xFE;
+    let reserved = if reserved != 0 {
+        format!(", reserved bits {reserved:#04x}")
+    } else {
+        String::new()
+    };
+    format!(
+        "KNX Data Secure security report from {who}: {flags}{reserved}; `bussard secure diag \
+         {source}` reads its failures log"
+    )
 }
 
 /// Classifies an APDU into an [`ApciKind`] and extracts its raw payload bytes.
@@ -484,6 +534,31 @@ mod tests {
         assert_eq!(d.destination_name.as_deref(), Some("Meteodata"));
         assert!(matches!(d.apci, ApciKind::Other(_)));
         assert_eq!(d.value, None);
+        Ok(())
+    }
+
+    #[test]
+    fn test_from_frame_names_a_broadcast_security_report() -> TestResult {
+        // 1.1.5 broadcasts A_NetworkParameter_InfoReport: object type 17,
+        // PID 57, test_info 00, report 01 (Security Failure).
+        let hex: &[u8] = &[
+            0x29, 0x00, 0xB0, 0xE0, 0x11, 0x05, 0x00, 0x00, 0x06, 0x03, 0xDB, 0x00, 0x11, 0x39,
+            0x00, 0x01,
+        ];
+        let frame = stamped(CemiFrame::decode(hex)?);
+        let d = DecodedTelegram::from_frame(&frame, None);
+        assert_eq!(security_report(d.apci, &d.payload), Some(0x01));
+        let note = d.decode_note.ok_or("no note")?;
+        assert!(
+            note.starts_with("KNX Data Secure security report from 1.1.5: Security Failure set"),
+            "{note}"
+        );
+        assert!(note.contains("bussard secure diag 1.1.5"), "{note}");
+        // Another InfoReport (not the security object) gets no note.
+        assert_eq!(
+            security_report(d.apci, &[0x00, 0x0B, 0x39, 0x00, 0x01]),
+            None
+        );
         Ok(())
     }
 

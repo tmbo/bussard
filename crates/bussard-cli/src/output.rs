@@ -67,6 +67,8 @@ pub mod schema {
     pub const RESTART: u32 = 1;
     /// `bussard scan --json`.
     pub const SCAN: u32 = 1;
+    /// `bussard secure diag <ADDRESS> --json` (issue #533).
+    pub const SECURE_DIAG: u32 = 1;
     /// `bussard show --json`.
     pub const SHOW: u32 = 1;
     /// `bussard status --json`.

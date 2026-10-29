@@ -300,9 +300,15 @@ impl Admission {
                 "do",
             ),
         };
+        // Issue #533: where to look when the device ignores the telegram.
+        let diag = if receivers.is_empty() {
+            String::new()
+        } else {
+            format!("; {}", crate::security_diag::dropped_write_hint(receivers))
+        };
         Some(format!(
             "sent secured from {sender}; delivery to {who} is not confirmed by KNX; if nothing \
-             happens, {who} probably {verb} not admit {sender}"
+             happens, {who} probably {verb} not admit {sender}{diag}"
         ))
     }
 }
@@ -993,12 +999,14 @@ mod tests {
             &AdmissionEvidence::default(),
         );
         assert_eq!(verdict.label(), "unknown", "{verdict:?}");
-        assert_eq!(
-            verdict.note().as_deref(),
-            Some(
+        let note = verdict.note().unwrap_or_default();
+        assert!(
+            note.starts_with(
                 "sent secured from 1.1.25; delivery to 1.1.5 is not confirmed by KNX; if \
-                 nothing happens, 1.1.5 probably does not admit 1.1.25"
-            )
+                 nothing happens, 1.1.5 probably does not admit 1.1.25; if nothing happens, \
+                 `bussard secure diag 1.1.5`"
+            ),
+            "{note}"
         );
         // The read side: the status 1/0/5 is sent by 1.1.5, its responder.
         let read = check_sender_admission(

@@ -66,6 +66,7 @@ pub mod restart;
 pub mod restore;
 pub mod secure;
 pub mod security_change;
+pub mod security_diag;
 pub mod verify;
 pub mod write;
 

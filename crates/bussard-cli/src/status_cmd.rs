@@ -12,7 +12,9 @@
 //!
 //! Read-only on the bus: a descriptor read, the facts reads `describe` makes
 //! (without the property descriptions) and property value reads. No
-//! KNXnet/IP Secure property (PID 91 and up) is read.
+//! KNXnet/IP Secure property (PID 91 and up) is read. On a Data Secure device
+//! read with its tool key, the security failures log, report and report
+//! control (PID 55, 57, 58) are read too (issue #533).
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -51,6 +53,10 @@ struct Report {
     /// Where the device differs from `[knxnet]`, one sentence each.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     knxnet_drift: Vec<String>,
+    /// The Data Secure diagnostics (PID 55, 57, 58), read on a device
+    /// managed with its tool key (issue #533).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    security: Option<bussard_download::SecurityDiagnostics>,
 }
 
 /// What the session read.
@@ -60,6 +66,8 @@ struct Read {
     knxnet: Option<KnxnetFacts>,
     /// Why the KNXnet/IP object could not be read, when it could not.
     knxnet_error: Option<String>,
+    /// The Data Secure diagnostics, on a secured session.
+    security: Option<bussard_download::SecurityDiagnostics>,
 }
 
 /// Runs `bussard status <ADDRESS>`.
@@ -130,6 +138,7 @@ pub fn run(
         knxnet: read.knxnet,
         model_knxnet,
         knxnet_drift,
+        security: read.security,
     };
     if json {
         crate::output::print(crate::output::schema::STATUS_DEVICE, &report)?;
@@ -168,11 +177,24 @@ async fn read_device<Ch: bussard_mgmt::L4Channel>(
             Ok(knxnet) => (knxnet, None),
             Err(err) => (None, Some(err.to_string())),
         };
+    // Issue #533: a secured session also reads the failures log and report.
+    let security = if l4.is_secure() {
+        match bussard_download::read_security_diagnostics(l4).await {
+            Ok(diag) => Some(diag),
+            Err(err) => Some(bussard_download::SecurityDiagnostics {
+                notes: vec![format!("Data Secure diagnostics not read: {err}")],
+                ..Default::default()
+            }),
+        }
+    } else {
+        None
+    };
     Ok(Read {
         mask,
         application_id,
         knxnet,
         knxnet_error,
+        security,
     })
 }
 
@@ -208,6 +230,12 @@ fn print_text(target: IndividualAddress, report: &Report, knxnet_error: Option<&
         }
         (None, Some(err)) => println!("  KNXnet/IP parameter object: not read ({err})"),
         (None, None) => println!("  no KNXnet/IP parameter object (not an IP interface)"),
+    }
+    if let Some(diag) = &report.security {
+        println!("  KNX Data Secure:");
+        for line in diag.lines() {
+            println!("    {line}");
+        }
     }
 }
 

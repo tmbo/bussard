@@ -52,6 +52,7 @@ mod restart_cmd;
 mod restore_cmd;
 
 mod scan_cmd;
+mod secure_diag_cmd;
 mod secure_key;
 mod status_cmd;
 mod test_cmd;
@@ -218,6 +219,7 @@ impl Command {
             | Command::Plan { .. }
             | Command::Apply { .. }
             | Command::Interface { .. }
+            | Command::Secure { .. }
             | Command::Commission { .. }
             | Command::Backup { .. }
             | Command::Restore { .. }
@@ -254,6 +256,9 @@ impl Command {
             | Command::Restore { tool_key, .. }
             | Command::Restart { tool_key, .. }
             | Command::Replace { tool_key, .. } => tool_key.is_some(),
+            Command::Secure {
+                command: SecureCommand::Diag { tool_key, .. },
+            } => tool_key.is_some(),
             _ => false,
         }
     }
@@ -312,6 +317,7 @@ impl Command {
                 | Command::Validate { .. }
                 | Command::Groups { .. }
                 | Command::Interface { .. }
+                | Command::Secure { .. }
                 | Command::Doc { .. }
                 | Command::Monitor { .. }
                 | Command::Test { .. }
@@ -643,6 +649,36 @@ enum KeysCommand {
     /// Summarize the key store: devices, interfaces and group addresses,
     /// never a key.
     Show,
+}
+
+/// The `bussard secure` subcommands (issue #533).
+#[derive(Debug, Subcommand)]
+enum SecureCommand {
+    /// Read a Data Secure device's security failures log (PID 55: the
+    /// sequence, cryptographic and access error counters and the latest
+    /// failure), its security report (PID 57) and whether it broadcasts the
+    /// report (PID 58), with its tool key.
+    ///
+    /// After a secured write that did nothing, the counts tell the causes
+    /// apart: no new count means the sender is not in the device's security
+    /// individual address table, a cryptographic count a wrong or stale group
+    /// key, an access count a group-object security flag mismatch.
+    Diag {
+        /// The device, e.g. `1.1.5`.
+        #[arg(value_name = "ADDRESS")]
+        address: String,
+        /// Clear the log and reset the report after a confirmation, then read
+        /// both back.
+        #[arg(long)]
+        clear: bool,
+        /// Skip the confirmation prompt of --clear.
+        #[arg(long)]
+        yes: bool,
+        /// The raw 32-hex-character KNX Data Secure tool key, for a test
+        /// device. Prefer `--keyring`.
+        #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
+        tool_key: Option<String>,
+    },
 }
 
 /// The `bussard interface` subcommands (issue #398).
@@ -1314,6 +1350,11 @@ enum Command {
     Interface {
         #[command(subcommand)]
         command: InterfaceCommand,
+    },
+    /// KNX Data Secure device diagnostics: `secure diag <address>`.
+    Secure {
+        #[command(subcommand)]
+        command: SecureCommand,
     },
     /// Export the group-address plan in a format ETS can import.
     ExportGroups {
@@ -2053,6 +2094,23 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
                     json,
                 },
                 &g.mgmt(),
+            ),
+        },
+        Command::Secure { command } => match command {
+            SecureCommand::Diag {
+                address,
+                clear,
+                yes,
+                tool_key,
+            } => secure_diag_cmd::run(
+                &address,
+                dir,
+                json,
+                clear,
+                yes,
+                g.allow_remote_gateway,
+                g.tool_keys(tool_key.as_deref()),
+                g.mgmt(),
             ),
         },
         Command::ExportGroups { format, out } => export_groups_cmd::run(dir, format, &out),

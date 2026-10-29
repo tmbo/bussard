@@ -192,12 +192,35 @@ impl Rig {
         let apci10 = (u16::from(apdu[0] & 0x03) << 8) | u16::from(apdu[1]);
         let resp = self.mgmt(apci10, &apdu[2..])?;
         let [one] = resp.as_slice() else {
-            return Err(format!("expected one response to {req}, got {}", resp.len()).into());
+            let tail: Vec<String> = self
+                .sink
+                .events()
+                .into_iter()
+                .rev()
+                .take(6)
+                .map(|e| format!("{e:?}"))
+                .collect();
+            return Err(format!(
+                "expected one response to {req}, got {}: {tail:#?}",
+                resp.len()
+            )
+            .into());
         };
         let mut got = one.inner_tpdu.clone();
         got[0] &= 0x03;
         assert_eq!(to_hex(&got), to_hex(&hex(want)?), "response to {req}");
         Ok(())
+    }
+
+    /// [`Rig::secobj`] on a fresh connection (the programming one is closed).
+    fn diag(&mut self, req: &str, want: &str) -> TestResult {
+        self.bus
+            .deliver_from_tool(&cemi(TOOL, DEV, false, vec![0x80]));
+        self.seq = 0;
+        let out = self.secobj(req, want);
+        self.bus
+            .deliver_from_tool(&cemi(TOOL, DEV, false, vec![0x81]));
+        out
     }
 
     /// Load a table object through PID 5 + A_MemoryExtended_Write.
@@ -324,21 +347,30 @@ fn test_secure_group_write_then_read_answered_secured() -> TestResult {
     assert!(rig.has_line("SECURE group send 1.1.10 -> 1/2/3 scf=0x10[auth+enc] seq="));
     assert!(rig.has_line("inner=GroupValueResponse"));
 
-    // Auth-only is answered auth-only (SCF 0x00).
+    // Auth-only on an object flagged auth+conf (0x03) does not match the
+    // flags exactly: ignored, and counted as an access error (KNX 3/5/1
+    // §6.3.15.3 Table 108; bussard issue #533).
     let replies = rig.secure_group(&key, SecAlgorithm::AuthOnly, 2003, &[0x00, 0x00]);
-    let [reply] = replies.as_slice() else {
-        return Err(format!("expected one reply, got {replies:?}").into());
-    };
-    let un2 = open_reply(reply)?;
-    assert_eq!(un2.scf.to_byte(), 0x00);
+    assert!(replies.is_empty(), "{replies:?}");
     assert!(
-        u64::from_be_bytes([
-            0, 0, un2.seq[0], un2.seq[1], un2.seq[2], un2.seq[3], un2.seq[4], un2.seq[5]
-        ]) > u64::from_be_bytes([
-            0, 0, un.seq[0], un.seq[1], un.seq[2], un.seq[3], un.seq[4], un.seq[5]
-        ]),
-        "the device's send sequence increases"
+        rig.has_line("REJECTED SECURE group recv 1.1.1 -> 1/2/3: group object 1 security flags"),
+        "{:#?}",
+        rig.secure_lines()
     );
+    rig.diag(
+        "01d5 0011 001037 000000",
+        "01d6 0011 001037 00 000000 00 0000 0000 0001",
+    )?;
+    // The latest failure: sender 1.1.1, error type 04h (its sequence is
+    // not interpreted for an access error, the sim logs it anyway).
+    rig.diag(
+        "01d5 0011 001037 000100",
+        "01d6 0011 001037 00 0100 1101 000000 0000000007d3 04",
+    )?;
+    // The report flags it; the tool resets it (only 0 is taken).
+    rig.diag("01cc 0011 001039 01 0001", "01cd 0011 001039 01 0001 01")?;
+    rig.diag("01ce 0011 001039 01 0001 00", "01cf 0011 001039 01 0001 00")?;
+    rig.diag("01cc 0011 001039 01 0001", "01cd 0011 001039 01 0001 00")?;
     Ok(())
 }
 
@@ -358,6 +390,11 @@ fn test_secure_group_wrong_key_and_replay_refused() -> TestResult {
         "{:#?}",
         rig.secure_lines()
     );
+    // A cryptographic error in the failures log (bussard issue #533).
+    rig.diag(
+        "01d5 0011 001037 000000",
+        "01d6 0011 001037 00 000000 00 0000 0001 0000",
+    )?;
 
     let key = Key16::new(GROUP_KEY);
     assert!(
@@ -372,6 +409,10 @@ fn test_secure_group_wrong_key_and_replay_refused() -> TestResult {
     assert!(rig.has_line(
         "REJECTED SECURE group recv 1.1.1 -> 1/2/3: stale/replayed sequence 3001 (last seen 3001)"
     ));
+    rig.diag(
+        "01d5 0011 001037 000000",
+        "01d6 0011 001037 00 000000 00 0001 0001 0000",
+    )?;
     // Below the receive floor for a fresh source is stale too.
     assert!(
         rig.secure_group(&key, SecAlgorithm::AuthEnc, 42, &[0x00, 0x00])
@@ -475,6 +516,12 @@ fn test_secure_group_unlisted_sender_and_table_sequence_refused() -> TestResult 
         "{:#?}",
         rig.secure_lines()
     );
+    // An unlisted sender is dropped without a count (KNX 3/3/7 §5.2.1.1;
+    // bussard issue #533).
+    rig.diag(
+        "01d5 0011 001037 000000",
+        "01d6 0011 001037 00 000000 00 0000 0000 0000",
+    )?;
     // Above the receive floor (1000) but not above the peer's entry (1500).
     assert!(
         rig.secure_group(&key, SecAlgorithm::AuthEnc, 1200, &[0x00, 0x81])

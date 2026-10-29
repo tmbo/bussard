@@ -88,6 +88,15 @@ pub const PID_P2P_KEY_TABLE: u16 = 52;
 pub const PID_GRP_KEY_TABLE: u16 = 53;
 /// Security object `PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE` (54).
 pub const PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE: u16 = 54;
+/// Security object `PID_SECURITY_FAILURES_LOG` (55): a function property
+/// with the failure counters and the latest failures (KNX 3/5/1 §6.3.9).
+pub const PID_SECURITY_FAILURES_LOG: u16 = 55;
+/// Security object `PID_SECURITY_REPORT` (57): DPT_Security_Report, b0 =
+/// a security failure since the tool last reset it (KNX 3/5/1 §6.3.11).
+pub const PID_SECURITY_REPORT: u16 = 57;
+/// Security object `PID_SECURITY_REPORT_CONTROL` (58): DPT_Enable, whether
+/// the device broadcasts the report on every failure (KNX 3/5/1 §6.3.12).
+pub const PID_SECURITY_REPORT_CONTROL: u16 = 58;
 /// Security object `PID_TOOL_KEY` (56).
 pub const PID_TOOL_KEY: u16 = 56;
 /// Security object `PID_SEQUENCE_NUMBER_SENDING` (59).

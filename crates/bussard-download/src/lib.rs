@@ -37,6 +37,7 @@ pub mod plan;
 pub mod preflight;
 pub mod program;
 pub mod security;
+pub mod security_diag;
 pub mod sweep;
 pub mod tables_sys7;
 
@@ -123,6 +124,10 @@ pub use security::{
     decode_sender_table, device_security_view, program_security_object, read_security_flags,
     read_security_object, read_security_sender_table, secured_senders, security_inputs_for,
     sender_table_bytes,
+};
+pub use security_diag::{
+    FailureCounters, FailureKind, LatestFailure, SecurityDiagnostics, clear_security_diagnostics,
+    read_security_diagnostics,
 };
 pub use sweep::{
     AppSweep, FamilyCoverage, ImageClass, ParseClass, PlanClass, ProductSweep, RankedReason,

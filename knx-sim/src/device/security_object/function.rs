@@ -28,6 +28,10 @@ impl SecurityObject {
                     let (rc, service) = self.apply_security_mode(body);
                     (rc, vec![service], format!(" mode={}", self.security_mode))
                 }
+                pid::SECURITY_FAILURES_LOG => {
+                    let (rc, data) = self.failures_log_command(body);
+                    (rc, data, " sfl=clear".to_string())
+                }
                 // Any other PID is not a function property of this object.
                 _ => (rc::ADDRESS_VOID, Vec::new(), String::new()),
             }
@@ -98,8 +102,64 @@ impl SecurityObject {
         (rc::SUCCESS, *service)
     }
 
+    /// The PID 55 command (KNX 3/5/1 §6.3.9.3.1): `[00][WriteServiceID 00]
+    /// [ServiceInfo 00]` clears the counters and the latest failure (not the
+    /// report) and answers `[rc 00][00]`. Another service id is
+    /// `INVALID_COMMAND`, another reserved or info octet `DATA_VOID`, each
+    /// with the service id repeated (§6.3.9.3.3).
+    fn failures_log_command(&mut self, body: &[u8]) -> (u8, Vec<u8>) {
+        let [reserved, service, info] = body else {
+            return (rc::DATA_VOID, body.get(1).copied().into_iter().collect());
+        };
+        if *service != 0x00 {
+            return (rc::INVALID_COMMAND, vec![*service]);
+        }
+        if *reserved != 0x00 || *info != 0x00 {
+            return (rc::DATA_VOID, vec![*service]);
+        }
+        self.failures = super::FailuresLog::default();
+        (rc::SUCCESS, vec![0x00])
+    }
+
+    /// The PID 55 state read (KNX 3/5/1 §6.3.9.3.2): `[00][00][00]` answers
+    /// the counters `[00][00][0000][seq:2][crypto:2][access:2]`, `[00][01][n]`
+    /// the latest failure `[01][n][ia:2][xx xx][xx][seq:6][type]` for n = 0
+    /// when one is logged; no logged failure or n > 0 is `DATA_VOID`.
+    fn failures_log_read(&self, body: &[u8]) -> (u8, Vec<u8>) {
+        let [reserved, service, info] = body else {
+            return (rc::DATA_VOID, body.get(1).copied().into_iter().collect());
+        };
+        if *reserved != 0x00 {
+            return (rc::DATA_VOID, vec![*service]);
+        }
+        match (*service, *info) {
+            (0x00, 0x00) => {
+                let f = self.failures;
+                let mut out = vec![0x00, 0x00, 0x00, 0x00];
+                out.extend_from_slice(&f.seq.to_be_bytes());
+                out.extend_from_slice(&f.crypto.to_be_bytes());
+                out.extend_from_slice(&f.access.to_be_bytes());
+                (rc::SUCCESS, out)
+            }
+            (0x01, 0x00) => match self.failures.latest {
+                Some((ia, seq, kind)) => {
+                    let mut out = vec![0x01, 0x00];
+                    out.extend_from_slice(&ia.to_be_bytes());
+                    out.extend_from_slice(&[0x00, 0x00, 0x00]);
+                    out.extend_from_slice(&seq);
+                    out.push(kind.to_byte());
+                    (rc::SUCCESS, out)
+                }
+                None => (rc::DATA_VOID, vec![0x01]),
+            },
+            (0x00 | 0x01, _) => (rc::DATA_VOID, vec![*service]),
+            (other, _) => (rc::INVALID_COMMAND, vec![other]),
+        }
+    }
+
     /// `A_FunctionPropertyExt_State_Read`: PID 5 answers `[rc][state]`, PID 51
-    /// answers `[rc][mode]`; anything else answers `ADDRESS_VOID`.
+    /// answers `[rc][mode]`, PID 55 the failures log; anything else answers
+    /// `ADDRESS_VOID`.
     pub(super) fn on_function_state_read(
         &mut self,
         data: &[u8],
@@ -108,6 +168,7 @@ impl SecurityObject {
         let (rc, state_data) = match (h.is_security_object(), h.pid) {
             (true, pid::LOAD_STATE_CONTROL) => (rc::SUCCESS, vec![self.load_state.to_byte()]),
             (true, pid::SECURITY_MODE) => (rc::SUCCESS, vec![self.security_mode]),
+            (true, pid::SECURITY_FAILURES_LOG) => self.failures_log_read(&data[5..]),
             _ => (rc::ADDRESS_VOID, Vec::new()),
         };
         let mut out = h.encode().to_vec();
@@ -184,6 +245,55 @@ mod tests {
         assert_eq!(
             cmd(&mut obj, "01d5 0011 001005")?,
             hex("01d6 0011 001005 00 02")?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_failures_log_counts_reads_and_clears() -> TestResult {
+        let mut obj = SecurityObject::new_activated();
+        // Empty log: zero counters, no latest failure.
+        assert_eq!(
+            cmd(&mut obj, "01d5 0011 001037 000000")?,
+            hex("01d6 0011 001037 00 000000 00 0000 0000 0000")?
+        );
+        assert_eq!(
+            cmd(&mut obj, "01d5 0011 001037 000100")?,
+            hex("01d6 0011 001037 f8 01")?
+        );
+        assert!(!obj.record_failure(
+            super::super::FailureKind::Access,
+            0x1118,
+            [0, 0, 0, 0, 0, 9]
+        ));
+        obj.record_failure(
+            super::super::FailureKind::Cryptographic,
+            0x1118,
+            [0, 0, 0, 0, 0, 7],
+        );
+        assert_eq!(
+            cmd(&mut obj, "01d5 0011 001037 000000")?,
+            hex("01d6 0011 001037 00 000000 00 0000 0001 0001")?
+        );
+        assert_eq!(
+            cmd(&mut obj, "01d5 0011 001037 000100")?,
+            hex("01d6 0011 001037 00 0100 1118 000000 000000000007 03")?
+        );
+        assert_eq!(obj.security_report(), 0x01);
+        // Clear: counters and latest gone, the report stays.
+        assert_eq!(
+            cmd(&mut obj, "01d4 0011 001037 000000")?,
+            hex("01d6 0011 001037 00 00")?
+        );
+        assert_eq!(
+            cmd(&mut obj, "01d5 0011 001037 000000")?,
+            hex("01d6 0011 001037 00 000000 00 0000 0000 0000")?
+        );
+        assert_eq!(obj.security_report(), 0x01);
+        // An unknown service id.
+        assert_eq!(
+            cmd(&mut obj, "01d4 0011 001037 000500")?,
+            hex("01d6 0011 001037 f2 05")?
         );
         Ok(())
     }

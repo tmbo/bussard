@@ -91,8 +91,28 @@ $ bussard interface secure on 1.1.200
 
 If a switch stops half way, retry the command. If the interface answers to no credential in the store, factory-reset it with its reset button: it returns to its FDSK and plain tunnelling, and `interface secure on` sets it up again. The previous store is in `bussard.keys.bak`.
 
+## When a secured write does nothing
+
+`bussard write` and `knx_write_group` report that the interface acknowledged a secured telegram. KNX reports nothing back from the devices, so a light that stays off needs a look at the receiving device:
+
+```console
+$ bussard secure diag 1.1.5
+device 1.1.5 — KNX Data Secure diagnostics
+  security failures (PID 55): 0 sequence, 0 cryptographic, 1 access
+  latest failure: from 1.1.24: access error (a group object's security flags do not match the telegram, or a refused access)
+  ...
+```
+
+Write again, then read the counters again:
+
+- No counter moved: the device does not list the sender in its security individual address table (PID 54) and dropped the telegram without counting it. Set `admit_tunnel_senders = true` under `[connection]` and run `bussard plan` and `bussard apply` on the device.
+- The cryptographic count went up: the device holds another group key for the address than the sender used. Re-import the current keyring and apply the device.
+- The access count went up: a group object's security flags do not match the telegram's security (for example authentication only against authentication and encryption).
+
+`bussard secure diag 1.1.5 --clear` resets the counters and the report after a confirmation, so the next write starts from zero. A device found on its factory key instead (it was reset to default) is named as such by every command; commission it again with ETS and import the new keyring.
+
 ## Next steps
 
 - [KNX Secure explained](../explanation/knx-secure.md): what the key store holds and what secured means.
-- [Secure commands](../reference/commands/secure.md): every flag of `keys`, `groups secure` and `interface secure`.
+- [Secure commands](../reference/commands/secure.md): every flag of `keys`, `groups secure`, `interface secure` and `secure diag`.
 - [Environment](../reference/environment.md): the `.env` file and the password variables.
