@@ -16,12 +16,13 @@
 //! These reuse [`crate::compute::compute_tables`] (the TSAP/ASAP ordering is
 //! system-agnostic) and [`crate::compute::size_code_from_object_size`] (the TYPE
 //! byte is the same KNX length code), but the packing is System-7-specific. The
-//! CONFIG/TYPE synthesis and the data-pointer defaults are best-evidence from the
-//! spec; every uncertain constant carries an `S7-CAL:` marker.
+//! CONFIG octet follows Group Object Table Realisation Type 2 (Resources
+//! §4.18.4.1, see [`sys7_config_byte`]); every uncertain constant carries an
+//! `S7-CAL:` marker.
 
 use bussard_model::GroupAddress;
 
-use crate::compute::{DesiredTables, GroupObjectDescriptor, Priority};
+use crate::compute::DesiredTables;
 
 // --- Layout constants (the single definition of the System 7 table forms) ----
 //
@@ -52,10 +53,6 @@ pub const SYS7_GROUP_OBJECT_HEADER_LEN: usize = 3;
 
 /// Octets per group-object descriptor: `[data-ptr:2 BE][CONFIG:1][TYPE:1]`.
 pub const SYS7_GROUP_OBJECT_DESCRIPTOR_LEN: usize = 4;
-
-/// The default RAM-flags table pointer written into the group-object table
-/// header (the low-RAM working region, `[system7-spec §2.3/§7.3]`).
-pub const SYS7_DEFAULT_RAM_FLAGS_PTR: u16 = 0x0700;
 
 /// How many octets the LSM 1 table region spans: from
 /// [`SYS7_ADDRESS_TABLE_ADDR`] up to (not including) the LSM 2 region at
@@ -387,42 +384,44 @@ pub fn sys7_association_table(tables: &DesiredTables) -> Vec<u8> {
     out
 }
 
-/// Synthesizes the System 7 group-object descriptor **CONFIG** byte from a
-/// com-object's flags and priority (`[system7-spec §7.3]`).
+/// The System 7 group-object descriptor **CONFIG** octet for a linked object:
+/// `template` (the octet the product's own image carries) with the project's
+/// flags written into the flag bits (`[system7-spec §7.3]`).
 ///
-/// On-device bit order (differs from the ETS UI "C R W T U I" order):
+/// System 7 (BIM M112, a BCU2 descendant) uses Group Object Table Realisation
+/// Type 2 (KNX 3/5/1 Resources §4.18.4.1), whose Config Octet is the Type 1
+/// octet (§4.18.3.1.2.1) with bit 7 as Update Enable instead of a fixed 1:
 ///
 /// ```text
-/// bit 7   reserved, must be 1
-/// bit 6   Transmit enable (T)
-/// bit 5   Segment selector type (0 = value in user RAM segment)
-/// bit 4   Write enable (W)
-/// bit 3   Read enable (R)
-/// bit 2   Communication enable (C)
-/// bits 1-0 transmission priority (11 = low)
+/// bit 7    Update enable (U)          from the project
+/// bit 6    Transmit enable (T)        from the project
+/// bit 5    Segment selector           kept from the template
+/// bit 4    Write enable (W)           from the project
+/// bit 3    Read enable (R)            from the project
+/// bit 2    Communication enable (C)   from the project
+/// bits 1-0 transmission priority      kept from the template
 /// ```
 ///
-/// `S7-CAL: exact CONFIG synthesis rule + priority codes for bits 1-0 other than
-/// 11=low.`
-pub fn sys7_config_byte(flags: bussard_model::Flags, priority: Priority) -> u8 {
+/// Bit 5 names the segment a one-octet data pointer refers to; the BIM M112
+/// descriptors carry two-octet pointers and the standard gives it no meaning
+/// there, so the template's value stays until a capture shows a product
+/// flipping it. The read-on-init flag (I) is not in this octet. The flash
+/// post-pass applies this rule (the 1.1.31, 1.1.46 and 1.1.1 captures:
+/// template `db` with U clear writes `4b`, `df` writes `5f`).
+pub fn sys7_config_byte(template: u8, flags: bussard_model::Flags) -> u8 {
     use bussard_model::Flags;
-    let mut c: u8 = 1 << 7; // bit 7 reserved, must be 1
-    if flags.contains(Flags::TRANSMIT) {
-        c |= 1 << 6;
+    let mut c = template & 0b0010_0011;
+    for (bit, flag) in [
+        (7, Flags::UPDATE),
+        (6, Flags::TRANSMIT),
+        (4, Flags::WRITE),
+        (3, Flags::READ),
+        (2, Flags::COMMUNICATION),
+    ] {
+        if flags.contains(flag) {
+            c |= 1 << bit;
+        }
     }
-    // bit 5 (segment selector) left 0 = value in user RAM segment.
-    if flags.contains(Flags::WRITE) {
-        c |= 1 << 4;
-    }
-    if flags.contains(Flags::READ) {
-        c |= 1 << 3;
-    }
-    if flags.contains(Flags::COMMUNICATION) {
-        c |= 1 << 2;
-    }
-    // Priority in bits 1-0: the same 2-bit codes as System B (00 system,
-    // 01 normal, 10 urgent, 11 low; Resources 3/5/1 §4.18.3.1.2.1).
-    c |= (priority.code() as u8) & 0b11;
     c
 }
 
@@ -435,7 +434,7 @@ pub struct Sys7GroupObject {
     pub asap: u16,
     /// The live-value RAM pointer (`data-ptr`), big-endian in the descriptor.
     pub data_ptr: u16,
-    /// The synthesized CONFIG byte (see [`sys7_config_byte`]).
+    /// The CONFIG octet (see [`sys7_config_byte`]).
     pub config: u8,
     /// The object size / TYPE code (see
     /// [`crate::compute::size_code_from_object_size`]).
@@ -479,30 +478,6 @@ pub fn sys7_group_object_table(ram_flags_ptr: u16, objects: &[Sys7GroupObject]) 
     Some(out)
 }
 
-/// Builds System 7 group-object descriptors from a device's group-object
-/// descriptors (as computed for System B by
-/// [`crate::compute::descriptors_for_linked_objects`]) plus a per-object data
-/// pointer.
-///
-/// `data_ptr_for` maps an ASAP to its live-value RAM pointer; on real 0705
-/// devices these come from the product data / `HawkConfigurationData`. When the
-/// caller has no per-object pointer it may return a constant placeholder — the
-/// pointer only affects the runtime value location, not the table's structure.
-pub fn sys7_group_objects(
-    descriptors: &[GroupObjectDescriptor],
-    mut data_ptr_for: impl FnMut(u16) -> u16,
-) -> Vec<Sys7GroupObject> {
-    descriptors
-        .iter()
-        .map(|d| Sys7GroupObject {
-            asap: d.asap,
-            data_ptr: data_ptr_for(d.asap),
-            config: sys7_config_byte(d.flags, d.priority),
-            type_code: d.size_code,
-        })
-        .collect()
-}
-
 /// A convenience helper: the own individual address of a device as a raw `u16`,
 /// for the address table's entry 0.
 pub fn own_ia_raw(ia: bussard_model::IndividualAddress) -> u16 {
@@ -515,7 +490,7 @@ pub type Ga = GroupAddress;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compute::{Priority, compute_tables};
+    use crate::compute::compute_tables;
     use bussard_model::schema::Link;
 
     fn ga(s: &str) -> GroupAddress {
@@ -579,14 +554,46 @@ mod tests {
     }
 
     #[test]
-    fn test_sys7_config_byte_worked_example() {
+    fn test_sys7_config_byte_sets_each_flag_bit() {
         use bussard_model::Flags;
-        // C+R+W+T set, priority low: reserved(1<<7) | T(1<<6) | W(1<<4) | R(1<<3)
-        // | C(1<<2) | low(0b11) = 0xDF — the spec's worked example.
-        let flags = Flags::COMMUNICATION | Flags::READ | Flags::WRITE | Flags::TRANSMIT;
-        assert_eq!(sys7_config_byte(flags, Priority::Low), 0xDF);
-        // Communication-only, low priority: reserved | C | low = 0x87.
-        assert_eq!(sys7_config_byte(Flags::COMMUNICATION, Priority::Low), 0x87);
+        // Resources §4.18.4.1 (Realisation Type 2): one flag at a time, a zero
+        // template, lands on its own bit.
+        for (flag, bit) in [
+            (Flags::UPDATE, 7),
+            (Flags::TRANSMIT, 6),
+            (Flags::WRITE, 4),
+            (Flags::READ, 3),
+            (Flags::COMMUNICATION, 2),
+        ] {
+            assert_eq!(sys7_config_byte(0x00, flag), 1 << bit, "{flag:?}");
+        }
+        // The read-on-init flag has no bit in the octet.
+        assert_eq!(sys7_config_byte(0x00, Flags::INIT), 0x00);
+    }
+
+    #[test]
+    fn test_sys7_config_byte_keeps_template_segment_and_priority() {
+        use bussard_model::Flags;
+        // Bits 5, 1 and 0 come from the template; every flag bit from the
+        // project, so a template with all flag bits set and no project flags
+        // keeps only the segment selector and the priority.
+        assert_eq!(sys7_config_byte(0xFF, Flags::empty()), 0b0010_0011);
+        // Each priority code (00 system, 01 normal, 10 urgent, 11 low) survives.
+        for prio in 0u8..=3 {
+            assert_eq!(sys7_config_byte(prio, Flags::COMMUNICATION), 0x04 | prio);
+        }
+    }
+
+    #[test]
+    fn test_sys7_config_byte_matches_the_captures() {
+        use bussard_model::Flags;
+        // The flash captures: template `db` (U T W C, low) for an object the
+        // project links with R T writes `4b`; `df` with C R W T writes `5f`.
+        assert_eq!(sys7_config_byte(0xDB, Flags::READ | Flags::TRANSMIT), 0x4B);
+        let crwt = Flags::COMMUNICATION | Flags::READ | Flags::WRITE | Flags::TRANSMIT;
+        assert_eq!(sys7_config_byte(0xDF, crwt), 0x5F);
+        // With U set, bit 7 follows the project.
+        assert_eq!(sys7_config_byte(0xDF, crwt | Flags::UPDATE), 0xDF);
     }
 
     #[test]
@@ -640,24 +647,6 @@ mod tests {
                 0x07, 0x10, 0x84, 0x07, // ASAP 2 descriptor
             ]
         );
-    }
-
-    #[test]
-    fn test_sys7_group_objects_builds_descriptors() {
-        use bussard_model::Flags;
-        let descriptors = vec![GroupObjectDescriptor {
-            asap: 1,
-            flags: Flags::COMMUNICATION | Flags::WRITE,
-            size_code: 0,
-            priority: Priority::Low,
-        }];
-        let objs = sys7_group_objects(&descriptors, |_asap| 0x0700);
-        assert_eq!(objs.len(), 1);
-        assert_eq!(objs[0].asap, 1);
-        assert_eq!(objs[0].data_ptr, 0x0700);
-        // CONFIG: reserved | W(1<<4) | C(1<<2) | low(0b11) = 0x80|0x10|0x04|0x03 = 0x97.
-        assert_eq!(objs[0].config, 0x97);
-        assert_eq!(objs[0].type_code, 0);
     }
 
     #[test]

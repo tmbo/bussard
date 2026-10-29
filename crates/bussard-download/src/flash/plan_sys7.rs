@@ -897,25 +897,6 @@ pub(super) fn sys7_type_code(object_size: &str) -> Option<u8> {
     (code != 0 || one_bit).then_some(code)
 }
 
-/// The System 7 CONFIG octet for a linked object: the project's flags in bits
-/// 7 (U), 6 (T), 4 (W), 3 (R) and 2 (C), the template's bits 5, 1 and 0 kept.
-pub(super) fn sys7_config_from_flags(template: u8, flags: bussard_model::Flags) -> u8 {
-    use bussard_model::Flags;
-    let mut c = template & 0b0010_0011;
-    for (bit, flag) in [
-        (7, Flags::UPDATE),
-        (6, Flags::TRANSMIT),
-        (4, Flags::WRITE),
-        (3, Flags::READ),
-        (2, Flags::COMMUNICATION),
-    ] {
-        if flags.contains(flag) {
-            c |= 1 << bit;
-        }
-    }
-    c
-}
-
 /// The ASAPs a System 7 association-table image (`[CNT][TSAP ASAP]…`) links.
 pub(super) fn sys7_linked_asaps(assoc_image: &[u8]) -> BTreeSet<u16> {
     let Some((&count, pairs)) = assoc_image.split_first() else {
@@ -1003,12 +984,15 @@ pub(super) fn apply_sys7_group_object_links(
                 .copied()
                 .or_else(|| default.map(|o| o.flags | Flags::COMMUNICATION))
             {
-                Some(flags) => d[2] = sys7_config_from_flags(d[2], flags),
+                Some(flags) => d[2] = crate::compute_sys7::sys7_config_byte(d[2], flags),
                 None => d[2] |= 0x04,
             }
         } else {
             match default {
-                Some(o) => d[2] = sys7_config_from_flags(d[2], o.flags - Flags::COMMUNICATION),
+                Some(o) => {
+                    d[2] =
+                        crate::compute_sys7::sys7_config_byte(d[2], o.flags - Flags::COMMUNICATION)
+                }
                 None => d[2] &= !0x04,
             }
         }

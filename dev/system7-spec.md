@@ -840,8 +840,9 @@ descriptors like `07 5C DF 03`.
           (ETS "alarm"), 11 low [Res §4.18.3.1.2.1, p. 263]
   ```
   This on-device order differs from the ETS UI "C R W T U I"; I is not in this
-  byte, U is bit 7. The flash post-pass (`sys7_config_from_flags`) applies this;
-  the older public `sys7_config_byte` still forces bit 7 (#528).
+  byte, U is bit 7. `compute_sys7::sys7_config_byte(template, flags)` is the one
+  definition, used by the flash post-pass: the flag bits from the project,
+  bits 5, 1 and 0 from the product's template octet (#528).
 - **TYPE** = object size code `[Res §4.18.3.1.2.1, p. 264-265]`: 0..6 = 1..7
   bits, 7 = 1 octet, 8 = 2, 9 = 3, 10 = 4, 11 = 6, 12 = 8, 13 = 10, 14 = 14
   octets; bits 7-6 reserved 0. `compute::size_code_from_object_size` matches.

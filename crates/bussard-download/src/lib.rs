@@ -67,7 +67,7 @@ pub use compute_sys7::{
     SYS7_ADDRESS_REGION_LEN, SYS7_ADDRESS_TABLE_ADDR, SYS7_ASSOCIATION_REGION_LEN,
     SYS7_ASSOCIATION_TABLE_ADDR, Sys7DecodeError, Sys7GroupObject, decode_sys7_address_table,
     decode_sys7_association_table, decode_sys7_group_object_table, sys7_address_table,
-    sys7_association_table, sys7_config_byte, sys7_group_object_table, sys7_group_objects,
+    sys7_association_table, sys7_config_byte, sys7_group_object_table,
 };
 pub use device_plan::{
     ChangeMark, ChangeSubject, DevicePlan, FullImage, ObjectTableWrite, PlanChange, PlanWrites,
