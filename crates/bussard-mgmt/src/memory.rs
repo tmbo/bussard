@@ -297,6 +297,83 @@ pub async fn write_memory_chunked<Ch: L4Channel, F: FnMut(usize)>(
     Ok(())
 }
 
+/// Writes `data` to device memory at `addr` like [`write_memory_chunked`],
+/// and compares every verify-mode echo with the chunk it answers.
+///
+/// This is the write half of Management Procedures 03_05_02 §3.16.3
+/// (DMP_MemWrite_RCoV): the caller has switched the device's verify mode on
+/// ([`crate::enable_verify_mode`]) on **this** connection, so the device
+/// answers each plain `A_Memory_Write` with an `A_Memory_Response` carrying
+/// the octets it stored. Each echo must name the chunk's address and carry
+/// exactly the octets written; a different echo fails with
+/// [`MgmtError::MemoryEchoMismatch`], a missing one with the connection's
+/// silence error (the response timeout closes the connection). A write whose
+/// top address needs the extended service is confirmed inline by
+/// `A_MemoryExtended_Write_Response` already and goes through
+/// [`write_memory_chunked`] unchanged.
+pub async fn write_memory_echoed<Ch: L4Channel, F: FnMut(usize)>(
+    l4: &mut Layer4Connection<Ch>,
+    addr: u32,
+    data: &[u8],
+    mut on_written: F,
+) -> Result<()> {
+    if data.is_empty() {
+        return Ok(());
+    }
+    if select_extended_memory(addr, data.len()) {
+        return write_memory_chunked(l4, addr, data, on_written).await;
+    }
+    let write_chunk = usize::from(l4.max_memory_chunk());
+    let mut offset = 0usize;
+    while offset < data.len() {
+        let take = write_chunk.min(data.len() - offset);
+        let piece = &data[offset..offset + take];
+        write_one_chunk_echoed(l4, addr, offset, piece).await?;
+        offset += take;
+        on_written(offset);
+    }
+    Ok(())
+}
+
+/// Writes one plain chunk at `base + offset` and checks the device's
+/// verify-mode echo against it (see [`write_memory_echoed`]).
+async fn write_one_chunk_echoed<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    base: u32,
+    offset: usize,
+    piece: &[u8],
+) -> Result<()> {
+    let chunk_addr = chunk_address(l4, base, offset)?;
+    let addr16 = u16::try_from(chunk_addr).map_err(|_| {
+        WriteError::Mgmt(MgmtError::MalformedResponse {
+            address: l4.target(),
+            reason: format!("plain memory write at {chunk_addr:#X} exceeds 16 bits"),
+        })
+    })?;
+    let (req_apci, payload) = apci::encode_memory_write(addr16, piece);
+    let (resp_apci, data) = l4.request_memory_write_echo(req_apci, &payload).await?;
+    let echo = apci::decode_memory_response(resp_apci, &data).ok_or_else(|| {
+        WriteError::Mgmt(MgmtError::MalformedResponse {
+            address: l4.target(),
+            reason: format!(
+                "expected the verify echo (A_Memory_Response) of the write at {chunk_addr:#06X} \
+                 ({})",
+                raw_response_detail(resp_apci, &data)
+            ),
+        })
+    })?;
+    if echo.addr != addr16 || echo.data != piece {
+        return Err(WriteError::Mgmt(MgmtError::MemoryEchoMismatch {
+            address: l4.target(),
+            addr: chunk_addr,
+            echo_addr: u32::from(echo.addr),
+            expected: piece.to_vec(),
+            got: echo.data,
+        }));
+    }
+    Ok(())
+}
+
 /// The historical name of [`write_memory_chunked`], kept so callers outside this
 /// crate keep compiling.
 ///

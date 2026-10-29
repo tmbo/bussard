@@ -132,7 +132,9 @@ pub use plan_sys7::{
 };
 pub use props::{compare_property_value, read_property_value, write_property_value};
 pub use restart_form::{RestartForm, restart_form};
-pub use session::{Connector, DeviceFacts, RebootReadiness, RestartKind, Session, SingleConnector};
+pub use session::{
+    Connector, DeviceFacts, RebootReadiness, RestartKind, Session, SingleConnector, VerifyEchoes,
+};
 
 /// How a property step names its interface object (issue #390).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -1351,6 +1353,9 @@ pub struct FlashOutcome {
     /// confirmed (issue #212), for `flash -v`'s timing line. Empty when the
     /// plan restarts nothing the device confirms.
     pub reboot_readiness: Vec<RebootReadiness>,
+    /// The verify-mode echoes a System 7 download compared (issue #524), for
+    /// `flash -v`. `None` when the download ran without verify mode.
+    pub verify_echoes: Option<VerifyEchoes>,
     /// The plan was property-only (issue #390): it loads no object, so
     /// [`Self::load_state`] and [`Self::object_states`] say nothing (`Loaded`
     /// and empty), and [`Self::spot_checks_match`] is the read-back of every

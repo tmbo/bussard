@@ -76,8 +76,8 @@ pub use flash::{
     AppIdentity, Connector, DeviceFacts, FlashOptions, FlashOutcome, FlashPlan, FlashStep,
     ImageKind, ImageRef, LoadControlForm, LoadControlRecord, PartialPlanError, PlanError, Progress,
     PropObject, RebootReadiness, RestartForm, RestartKind, Session, SingleConnector, Sys7Context,
-    Sys7TableBases, compare_property_value, discover_application_object, flash, plan_flash,
-    plan_flash_sys7_with_hawk, plan_flash_with_memo, plan_flash_with_object_flags,
+    Sys7TableBases, VerifyEchoes, compare_property_value, discover_application_object, flash,
+    plan_flash, plan_flash_sys7_with_hawk, plan_flash_with_memo, plan_flash_with_object_flags,
     read_property_value, restart_form, same_program, select_application, sys7_profile_from_hawk,
     sys7_table_bases, trace, write_property_value,
 };

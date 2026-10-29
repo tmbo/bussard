@@ -228,6 +228,19 @@ impl Device {
             .is_some_and(|p| p.value.first().is_some_and(|b| b & 0x04 != 0))
     }
 
+    /// Clears verify mode (PID_DEVICE_CONTROL bit 2), as the device does when
+    /// its transport connection closes (Resources 03_05_01 §4.2.14).
+    pub(super) fn clear_verify_mode(&mut self) {
+        if let Some(byte) = self
+            .objects
+            .get_mut(&0)
+            .and_then(|o| o.property_mut(super::interface_object::PID_DEVICE_CONTROL))
+            .and_then(|p| p.value.first_mut())
+        {
+            *byte &= !0x04;
+        }
+    }
+
     /// Handle an `A_UserMemory_Write` (APCI 0x2C2): `[ext:4|count:4][addr:16]
     /// [data]`, a 20-bit address. ETS writes a segment above 0xFFFF with it on a
     /// device without the extended memory service (Zennio DALIBOX object 4,
@@ -351,6 +364,43 @@ mod tests {
             "{:02x?}",
             resp.tpdu
         );
+        Ok(())
+    }
+
+    /// Writes `PID_DEVICE_CONTROL` on object 0 and returns the reaction.
+    fn write_device_control(
+        dev: &mut Device,
+        value: u8,
+    ) -> Result<DeviceReaction, Box<dyn std::error::Error>> {
+        Ok(dev.handle_cemi(&data(dev, 0x3D7, &[0x00, 0x0E, 0x10, 0x01, value]))?)
+    }
+
+    /// Reads `PID_DEVICE_CONTROL` on object 0.
+    fn read_device_control(dev: &mut Device) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let reaction = dev.handle_cemi(&data(dev, 0x3D5, &[0x00, 0x0E, 0x10, 0x01]))?;
+        Ok(prop_response_value(&reaction))
+    }
+
+    #[test]
+    fn test_verify_mode_is_cleared_with_the_connection() -> Result<(), Box<dyn std::error::Error>> {
+        // Resources 03_05_01 §4.2.14: verify mode lives with the transport
+        // connection (issue #524).
+        let mut dev = sys7_device(crate::device::profile::LsmAccess::Property);
+        connect(&mut dev)?;
+        dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
+        write_device_control(&mut dev, 0x04)?;
+        assert_eq!(read_device_control(&mut dev)?, vec![0x04]);
+        let disconnect = CemiLData {
+            tpdu: vec![0x81],
+            ..data(&dev, 0, &[])
+        };
+        dev.handle_cemi(&disconnect)?;
+        connect(&mut dev)?;
+        assert_eq!(read_device_control(&mut dev)?, vec![0x00]);
+        // A new connection without a disconnect (the old one dropped) too.
+        write_device_control(&mut dev, 0x04)?;
+        connect(&mut dev)?;
+        assert_eq!(read_device_control(&mut dev)?, vec![0x00]);
         Ok(())
     }
 

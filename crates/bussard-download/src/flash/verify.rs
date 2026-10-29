@@ -205,6 +205,7 @@ pub(super) async fn verify_outcome<C: Connector>(
         spot_checks_match,
         warnings: Vec::new(),
         reboot_readiness: Vec::new(),
+        verify_echoes: None,
         property_only: false,
     })
 }
@@ -293,6 +294,7 @@ pub(super) async fn verify_after_reboot<C: Connector>(
         spot_checks_match,
         warnings: Vec::new(),
         reboot_readiness: Vec::new(),
+        verify_echoes: None,
         property_only: false,
     })
 }

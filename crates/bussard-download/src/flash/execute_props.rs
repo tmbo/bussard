@@ -146,6 +146,7 @@ pub(super) async fn flash_properties<C: Connector, F: FnMut(Progress)>(
         spot_checks_match: all_match,
         warnings,
         reboot_readiness: Vec::new(),
+        verify_echoes: None,
         property_only: true,
     })
 }

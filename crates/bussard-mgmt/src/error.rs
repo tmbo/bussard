@@ -87,6 +87,28 @@ pub enum MgmtError {
         got: Vec<u8>,
     },
 
+    /// A verify-mode echo did not match the write it answers (Management
+    /// Procedures 03_05_02 §3.16.3, DMP_MemWrite_RCoV): with verify mode on,
+    /// the device answers every `A_Memory_Write` with an `A_Memory_Response`
+    /// carrying what it stored, and a different answer is an error. Names the
+    /// written address, the echoed one, and both octet strings.
+    #[error(
+        "{address}: verify echo for the memory write at {addr:#06X} does not match (echo at \
+         {echo_addr:#06X}, wrote {expected:02X?}, device stored {got:02X?})"
+    )]
+    MemoryEchoMismatch {
+        /// The device.
+        address: IndividualAddress,
+        /// The address the chunk was written to.
+        addr: u32,
+        /// The address the echo names.
+        echo_addr: u32,
+        /// The octets that were written.
+        expected: Vec<u8>,
+        /// The octets the echo carries.
+        got: Vec<u8>,
+    },
+
     /// A `NoResponse`/`Disconnected` that struck **mid-session**, after at least
     /// one numbered exchange had already completed on this connection. It folds
     /// the exchange count and sequence-wrap count into the message so a stall is

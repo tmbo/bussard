@@ -323,6 +323,7 @@ impl<Ch: L4Channel> Session<SingleConnector<Ch>> {
             max_apdu: None,
             readiness: Vec::new(),
             pending_readiness: None,
+            verify: VerifyModeState::default(),
         }
     }
 }
@@ -450,6 +451,45 @@ pub struct Session<C: Connector> {
     readiness: Vec<RebootReadiness>,
     /// The measurement of the confirmed restart being waited out, if any.
     pending_readiness: Option<PendingReadiness>,
+    /// Verify mode of a System 7 download (issue #524): whether the plan
+    /// switched it on, and whether the current connection has it.
+    verify: VerifyModeState,
+}
+
+/// The verify-mode bookkeeping of a [`Session`] (issue #524).
+///
+/// The device clears verify mode whenever the transport connection closes
+/// (Resources 03_05_01 §4.2.14), so the session remembers that the download
+/// wants it and sets it again on the first write of every later connection.
+#[derive(Debug, Default)]
+struct VerifyModeState {
+    /// The plan switched verify mode on and the device took it.
+    wanted: bool,
+    /// The current connection has verify mode on. Cleared by every new
+    /// connection the session adopts.
+    on_connection: bool,
+    /// Echoes compared and memory chunks written while verify mode was wanted.
+    echoes: VerifyEchoes,
+}
+
+impl VerifyModeState {
+    /// Counts one re-enable on a new connection.
+    fn re_enabled_note(&mut self) {
+        self.echoes.re_enabled = self.echoes.re_enabled.saturating_add(1);
+    }
+}
+
+/// How many verify-mode echoes a System 7 download compared (issue #524),
+/// for `flash -v`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VerifyEchoes {
+    /// Plain memory-write chunks the download wrote while verify mode was on.
+    pub chunks_written: u64,
+    /// Echoes compared with the chunk they answer; equal to
+    /// [`chunks_written`](Self::chunks_written) on a download that verified.
+    pub echoes_compared: u64,
+    /// Times verify mode was set again on a new connection.
+    pub re_enabled: u32,
 }
 
 impl<C: Connector> Session<C> {
@@ -618,6 +658,7 @@ impl<C: Connector> Session<C> {
             max_apdu,
             readiness: Vec::new(),
             pending_readiness: None,
+            verify: VerifyModeState::default(),
         })
     }
 
@@ -800,7 +841,84 @@ impl<C: Connector> Session<C> {
         // exchange against the tight per-connection budget (issue #58).
         l4.set_max_apdu(self.max_apdu);
         self.l4 = Some(l4);
+        // A new transport connection: the device cleared verify mode
+        // (Resources 03_05_01 §4.2.14); the next write sets it again.
+        self.verify.on_connection = false;
         Ok(())
+    }
+
+    /// Switches the device's verify mode on for the download (issue #524,
+    /// Management Procedures 03_05_02 §3.16.3) and remembers it, so every
+    /// later connection sets it again before its first write.
+    pub(super) async fn enable_verify_mode(
+        &mut self,
+    ) -> Result<bussard_mgmt::VerifyModeOutcome, WriteError> {
+        let outcome = bussard_mgmt::enable_verify_mode(self.l4()).await?;
+        let on = matches!(
+            outcome,
+            bussard_mgmt::VerifyModeOutcome::Enabled { .. }
+                | bussard_mgmt::VerifyModeOutcome::AlreadyOn(_)
+        );
+        self.verify.wanted = on;
+        self.verify.on_connection = on;
+        Ok(outcome)
+    }
+
+    /// Whether the next plain memory write must have its verify echo
+    /// compared. When the download wants verify mode and the current
+    /// connection is a new one, this sets it again first (Resources 03_05_01
+    /// §4.2.14: the device cleared it when the previous connection closed).
+    ///
+    /// # Errors
+    ///
+    /// The property exchange's error, or a [`MgmtError::MalformedResponse`]
+    /// when the device refuses verify mode on the new connection after taking
+    /// it on an earlier one: the writes would go out unverified.
+    pub(super) async fn ensure_verify_mode(&mut self) -> Result<bool, WriteError> {
+        if !self.verify.wanted {
+            return Ok(false);
+        }
+        if self.verify.on_connection {
+            return Ok(true);
+        }
+        let outcome = bussard_mgmt::enable_verify_mode(self.l4()).await?;
+        match outcome {
+            bussard_mgmt::VerifyModeOutcome::Enabled { .. }
+            | bussard_mgmt::VerifyModeOutcome::AlreadyOn(_) => {
+                self.verify.on_connection = true;
+                self.verify.re_enabled_note();
+                tracing::info!(
+                    "verify mode set again on the new connection to {}",
+                    self.target
+                );
+                Ok(true)
+            }
+            other => Err(WriteError::Mgmt(MgmtError::MalformedResponse {
+                address: self.target,
+                reason: format!(
+                    "the device took verify mode earlier in this download but not on the \
+                     new connection ({other:?}); the writes would go out unverified"
+                ),
+            })),
+        }
+    }
+
+    /// Counts `chunks` plain memory-write chunks, compared against their
+    /// echo when `echoed`.
+    pub(super) fn note_memory_chunks(&mut self, chunks: u64, echoed: bool) {
+        if !self.verify.wanted {
+            return;
+        }
+        self.verify.echoes.chunks_written += chunks;
+        if echoed {
+            self.verify.echoes.echoes_compared += chunks;
+        }
+    }
+
+    /// The verify-mode echo counts of the download, `None` when verify mode
+    /// was never switched on.
+    pub(super) fn verify_echoes(&self) -> Option<VerifyEchoes> {
+        (self.verify.wanted || self.verify.echoes.chunks_written > 0).then_some(self.verify.echoes)
     }
 
     /// Waits out a device reboot with a **bounded poll**, then re-establishes the

@@ -394,6 +394,10 @@ pub struct Layer4Connection<Ch: L4Channel> {
     /// receive sequence; [`recv_response`](Self::recv_response) drains this
     /// first so the folded answer is not lost.
     pending_response: Option<(u16, Vec<u8>)>,
+    /// Set for the duration of [`request_memory_write_echo`](Self::request_memory_write_echo):
+    /// the `A_Memory_Response` that follows the `A_Memory_Write` is the verify
+    /// echo the caller compares, not a stray to drain.
+    expect_memory_echo: bool,
     /// The device's advertised `PID_MAX_APDU_LENGTH` (NPDU octet budget), read
     /// once and cached for the life of this connection. `None` until
     /// [`negotiate_max_apdu`](Self::negotiate_max_apdu) runs; once negotiated it
@@ -523,6 +527,7 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
             last_send_apci: 0,
             numbered_exchanges: 0,
             pending_response: None,
+            expect_memory_echo: false,
             max_apdu: None,
             max_apdu_absent: None,
             closed: false,
@@ -797,8 +802,35 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
     /// or, if folded in during a later write's `T_ACK` wait, it is mistaken for
     /// that write's completion and desyncs the sequence.
     fn is_stale_memory_echo(&self, apci: u16) -> bool {
-        (apci & crate::apci::APCI_SELECTOR_MASK) == crate::apci::A_MEMORY_RESPONSE
+        !self.expect_memory_echo
+            && (apci & crate::apci::APCI_SELECTOR_MASK) == crate::apci::A_MEMORY_RESPONSE
             && (self.last_send_apci & crate::apci::APCI_SELECTOR_MASK) != crate::apci::A_MEMORY_READ
+    }
+
+    /// Sends an `A_Memory_Write` and returns the device's verify-mode echo,
+    /// the `A_Memory_Response` a device in verify mode answers every write
+    /// with (Management Procedures 03_05_02 §3.16.3, DMP_MemWrite_RCoV).
+    ///
+    /// The echo is delivered whether the device sends it after its `T_ACK` or
+    /// folds it in before. Only the response to *this* write counts: a stray
+    /// echo from an earlier write cannot be pending, because every write on a
+    /// verify-mode connection goes through here and takes its own echo.
+    ///
+    /// # Errors
+    ///
+    /// As [`request`](Self::request); a device that acknowledges the write but
+    /// sends no echo within the response timeout ends in
+    /// [`MgmtError::NoResponse`] / [`MgmtError::MidSessionSilence`] and closes
+    /// the connection.
+    pub async fn request_memory_write_echo(
+        &mut self,
+        apci: u16,
+        data: &[u8],
+    ) -> Result<(u16, Vec<u8>)> {
+        self.expect_memory_echo = true;
+        let result = self.request(apci, data).await;
+        self.expect_memory_echo = false;
+        result
     }
 
     /// Extracts the inbound `(apci, data)` from `frame`, applying the KNX Data

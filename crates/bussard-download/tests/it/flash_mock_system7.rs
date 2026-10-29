@@ -219,6 +219,15 @@ struct DeviceState {
     /// Addresses whose memory writes the device acknowledges but does not
     /// store (issue #320): the octet keeps its old value.
     frozen: Vec<u16>,
+    /// Echo every verify-mode write with its first octet flipped (issue #524):
+    /// the device stored the right octets, the echo says otherwise.
+    corrupt_echo: bool,
+    /// Drop the L4 connection once (silent until a fresh `T_Connect`) right
+    /// after this many verify echoes were sent (issue #524).
+    drop_after_echoes: Option<usize>,
+    /// For each segment content write, whether verify mode was on when it
+    /// arrived (issue #524).
+    writes_in_verify_mode: Vec<bool>,
 }
 
 impl DeviceState {
@@ -279,6 +288,9 @@ fn fresh_device(mode: LsmMode, fault: Fault) -> Shared {
         l4_connects: 0,
         tunnel_connects: 0,
         frozen: Vec::new(),
+        corrupt_echo: false,
+        drop_after_echoes: None,
+        writes_in_verify_mode: Vec::new(),
     }))
 }
 
@@ -527,6 +539,8 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
         // the fault). The read-back verify then sees exactly what we stored.
         s.memory_writes_seen += 1;
         s.segment_writes.push((addr, data.len()));
+        let verify_on = s.device_control & DEVICE_CONTROL_VERIFY_MODE != 0;
+        s.writes_in_verify_mode.push(verify_on);
         for (i, &b) in data.iter().enumerate() {
             let a = addr.wrapping_add(i as u16);
             if s.frozen.contains(&a) {
@@ -547,6 +561,18 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
             for i in 0..data.len() {
                 let a = addr.wrapping_add(i as u16);
                 echo.push(s.memory.get(&a).copied().unwrap_or(0));
+            }
+            if s.corrupt_echo
+                && let Some(first) = echo.get_mut(2)
+            {
+                *first ^= 0xFF;
+            }
+            if s.drop_after_echoes == Some(s.verify_echoes_sent) {
+                // The link drops before the echo goes out; the device keeps
+                // the write and answers nothing more on this connection.
+                s.drop_after_echoes = None;
+                s.l4_dead_after_outage = true;
+                return Reaction::Silent;
             }
             return Reaction::Answer(A_MEMORY_RESPONSE | count as u16, echo);
         }
@@ -819,6 +845,12 @@ fn on_t_connect(state: &Shared) {
         s.deaths_remaining -= 1;
     }
     s.exchanges_this_connection = 0;
+    // Verify mode lives with the transport connection: the device cleared it
+    // when the previous one closed (Resources 03_05_01 §4.2.14, issue #524).
+    // The first connection keeps what the test seeded.
+    if s.l4_connects > 0 {
+        s.device_control &= !DEVICE_CONTROL_VERIFY_MODE;
+    }
     s.l4_connects += 1;
     s.authorized = false;
     // The tool reconnecting after a reboot: the device is back up and answers
@@ -3545,6 +3577,69 @@ async fn test_flash_sys7_leaves_verify_mode_alone_when_already_on()
     }
     drop(handle);
     let _ = session.into_disconnect().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_sys7_compares_every_verify_echo() -> Result<(), Box<dyn std::error::Error>> {
+    // Issue #524: every segment write's echo is compared (DMP_MemWrite_RCoV).
+    let (outcome, state) = run_parity_flash(LsmMode::Property, 0x00).await?;
+    assert!(outcome.ok(), "flash should reach Loaded: {outcome:?}");
+    let echoes = outcome.verify_echoes.ok_or("no verify echo counts")?;
+    let s = lock(&state);
+    assert!(echoes.chunks_written > 0);
+    assert_eq!(echoes.echoes_compared, echoes.chunks_written);
+    assert_eq!(echoes.echoes_compared, s.verify_echoes_sent as u64);
+    assert_eq!(echoes.re_enabled, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_sys7_fails_on_a_verify_echo_that_differs()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Issue #524: an echo that differs from the octets written fails the
+    // step, naming the address and both values.
+    let result = run_parity_flash_with(LsmMode::Property, 0x00, |s| s.corrupt_echo = true).await;
+    let err = match result {
+        Ok((outcome, _)) => return Err(format!("flash passed: {outcome:?}").into()),
+        Err(err) => err.to_string(),
+    };
+    assert!(err.contains("verify echo"), "{err}");
+    assert!(err.contains("wrote"), "{err}");
+    assert!(err.contains("device stored"), "{err}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_sys7_sets_verify_mode_again_after_a_drop()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Issue #524: the device clears verify mode with the connection, so a
+    // resumed download sets it again before its next write and every write
+    // after the first verify-mode one still draws an echo.
+    let (outcome, state) =
+        run_parity_flash_with(LsmMode::Property, 0x00, |s| s.drop_after_echoes = Some(3)).await?;
+    assert!(
+        outcome.ok(),
+        "flash should resume and reach Loaded: {outcome:?}"
+    );
+    let echoes = outcome.verify_echoes.ok_or("no verify echo counts")?;
+    let s = lock(&state);
+    assert_eq!(
+        s.device_control_writes,
+        vec![DEVICE_CONTROL_VERIFY_MODE, DEVICE_CONTROL_VERIFY_MODE]
+    );
+    let first = s
+        .writes_in_verify_mode
+        .iter()
+        .position(|on| *on)
+        .ok_or("no write in verify mode")?;
+    assert!(
+        s.writes_in_verify_mode[first..].iter().all(|on| *on),
+        "a write went out without verify mode: {:?}",
+        s.writes_in_verify_mode
+    );
+    assert_eq!(echoes.re_enabled, 1);
+    assert_eq!(echoes.echoes_compared, echoes.chunks_written);
     Ok(())
 }
 

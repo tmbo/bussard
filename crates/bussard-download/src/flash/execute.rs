@@ -239,6 +239,7 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
 ) -> Result<FlashOutcome, WriteError> {
     let mut outcome = flash_steps(session, plan, options, progress).await?;
     outcome.reboot_readiness = session.reboot_readiness().to_vec();
+    outcome.verify_echoes = session.verify_echoes();
     Ok(outcome)
 }
 
@@ -1323,21 +1324,43 @@ pub(super) async fn write_image<C: Connector, F: FnMut(Progress)>(
         // (reset the stall bound) from one that did not.
         let base = confirmed;
         let mut call_confirmed = confirmed;
+        let mut chunks = 0u64;
         let mut on_written = |written_in_call: usize| {
             call_confirmed = base + written_in_call;
+            chunks += 1;
             progress(Progress::Bytes {
                 written: call_confirmed,
                 total,
             });
         };
         let tail_addr = addr.saturating_add(confirmed as u32);
-        let result = bussard_mgmt::write_memory_chunked(
-            session.l4(),
-            tail_addr,
-            &bytes[confirmed..],
-            &mut on_written,
-        )
-        .await;
+        // A System 7 download in verify mode compares every echo (issue #524,
+        // Management Procedures 03_05_02 §3.16.3); a new connection sets the
+        // mode again first. Every other download writes as before.
+        let (echoed, result) = match session.ensure_verify_mode().await {
+            Ok(true) => (
+                true,
+                bussard_mgmt::write_memory_echoed(
+                    session.l4(),
+                    tail_addr,
+                    &bytes[confirmed..],
+                    &mut on_written,
+                )
+                .await,
+            ),
+            Ok(false) => (
+                false,
+                bussard_mgmt::write_memory_chunked(
+                    session.l4(),
+                    tail_addr,
+                    &bytes[confirmed..],
+                    &mut on_written,
+                )
+                .await,
+            ),
+            Err(e) => (false, Err(e)),
+        };
+        session.note_memory_chunks(chunks, echoed);
         let made_progress = call_confirmed > confirmed;
         confirmed = call_confirmed;
         match result {

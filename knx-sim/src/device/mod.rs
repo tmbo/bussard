@@ -813,6 +813,15 @@ impl Device {
                 // budget: each L4 connection gets its own allowance, so a tool
                 // that periodically reconnects (as ETS does) never exhausts it.
                 self.l4_exchanges = 0;
+                // Verify mode (PID_DEVICE_CONTROL bit 2) belongs to the
+                // transport connection: the device clears it when the
+                // connection closes, and a client sets it again on every new
+                // one (Resources 03_05_01 §4.2.14). A System 7 device follows
+                // the standard here; the System B KNX Virtual model keeps the
+                // `04` it reports permanently.
+                if self.sys7.is_some() {
+                    self.clear_verify_mode();
+                }
                 // Authorization is NOT reset on connect. In the ETS capture the
                 // tool authorizes once (Phase A) and, after the pre-flash basic
                 // restart + reconnect (Phase C), issues PID5/memory writes with
@@ -823,6 +832,9 @@ impl Device {
             }
             Tpci::Disconnect => {
                 self.connected = false;
+                if self.sys7.is_some() {
+                    self.clear_verify_mode();
+                }
                 Ok(DeviceReaction::default())
             }
             Tpci::Ack(_) => Ok(DeviceReaction::default()),

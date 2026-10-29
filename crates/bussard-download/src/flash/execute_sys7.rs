@@ -360,14 +360,28 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                         }
                     }
                     FlashStep::Sys7EnableVerifyMode => {
-                        if let bussard_mgmt::VerifyModeOutcome::Refused { previous } =
-                            bussard_mgmt::enable_verify_mode(session.l4()).await?
-                        {
-                            warnings.push(format!(
-                                "step {}: the device refused verify mode \
-                                 (PID_DEVICE_CONTROL stays {previous:#04X})",
-                                i + 1
-                            ));
+                        // From here every segment write's echo is compared
+                        // with the chunk (DMP_MemWrite_RCoV, Management
+                        // Procedures 03_05_02 §3.16.3), and the session sets
+                        // the mode again on every later connection (issue
+                        // #524). A device without it streams as before.
+                        match session.enable_verify_mode().await? {
+                            bussard_mgmt::VerifyModeOutcome::Refused { previous } => {
+                                warnings.push(format!(
+                                    "step {}: the device refused verify mode \
+                                     (PID_DEVICE_CONTROL stays {previous:#04X}); the segment \
+                                     writes were not verified by echo",
+                                    i + 1
+                                ));
+                            }
+                            bussard_mgmt::VerifyModeOutcome::Unsupported => {
+                                warnings.push(format!(
+                                    "step {}: the device has no readable PID_DEVICE_CONTROL; \
+                                     the segment writes were not verified by echo",
+                                    i + 1
+                                ));
+                            }
+                            _ => {}
                         }
                     }
                     // System B steps never appear in a System 7 plan.
@@ -602,6 +616,7 @@ pub(super) async fn verify_sys7<C: Connector>(
         spot_checks_match,
         warnings: Vec::new(),
         reboot_readiness: Vec::new(),
+        verify_echoes: None,
         property_only: false,
     })
 }

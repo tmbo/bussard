@@ -550,7 +550,10 @@ pub enum VerifyModeOutcome {
 /// `bad-eg-pm-1-1-18`) reads `obj0/PID_DEVICE_CONTROL` (answer `00`) and writes
 /// back `04`, the verify-mode bit, right after the first allocation record. The
 /// device then answers each segment write with an `A_Memory_Response` echo,
-/// which [`Layer4Connection`] drains. Reads first and writes only when the bit
+/// which [`crate::write_memory_echoed`] compares with the chunk written. The
+/// device clears the bit when the transport connection closes (Resources
+/// 03_05_01 §4.2.14), so a caller runs this again on every connection it
+/// opens before the next write. Reads first and writes only when the bit
 /// is clear, keeping every other bit as the device holds it. The bit lives in
 /// RAM: the terminal restart clears it again.
 pub async fn enable_verify_mode<Ch: L4Channel>(
@@ -580,7 +583,14 @@ pub async fn enable_verify_mode<Ch: L4Channel>(
         &[written],
     )
     .await?;
-    if resp.count == 0 {
+    // DMP_MemWrite_RCoV (Management Procedures 03_05_02 §3.16.3): the
+    // response must carry the bit, a different or empty answer means the
+    // device did not take it.
+    let took = resp
+        .data
+        .first()
+        .is_none_or(|v| v & DEVICE_CONTROL_VERIFY_MODE != 0);
+    if resp.count == 0 || !took {
         return Ok(VerifyModeOutcome::Refused { previous });
     }
     Ok(VerifyModeOutcome::Enabled { previous, written })

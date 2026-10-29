@@ -94,7 +94,7 @@ pub use load::{
 // resolves, so no caller had to change.
 pub use memory::{
     read_memory, read_memory_range, select_extended_memory, write_memory, write_memory_chunked,
-    write_memory_verified,
+    write_memory_echoed, write_memory_verified,
 };
 pub use probe::{
     ADDRESS_PROBE_MS_ENV, AddressProbe, ProbeMemo, SourceCheckError, checked_source,

@@ -290,8 +290,9 @@ bit lives in RAM; the device clears it whenever the TL connection closes, and
 a client shall set it again on every connection it opens `[Res §4.2.14.7.3,
 §4.2.14.7.4, p. 36]`. With it on, every `A_Memory_Write` is answered by an
 `A_Memory_Response` and the client treats a different or missing answer as an
-error `[MP §3.16.3 DMP_MemWrite_RCoV, p. 101-102]`; bussard drops the echo
-today and does not re-set the bit after a reconnect (#524). Verify Mode is
+error `[MP §3.16.3 DMP_MemWrite_RCoV, p. 101-102]`. bussard compares every
+echo with the chunk it wrote and sets the bit again on every new connection
+before its next write (#524). Verify Mode is
 mandatory on 0700, 0701 and 0705 alike `[Prof §4.2 row 3]`; that the 0701
 Meteodata gets no PID 14 access is ETS following the Hawk `VerifyMode` flag of
 MV-0701, not a device limitation, and ETS read-compare-writes it instead
@@ -312,7 +313,13 @@ MV-0701, not a device limitation, and ETS read-compare-writes it instead
   write it back with bit 2 set, only when the bit is clear, keeping the other
   bits. It goes right after the first `StartLoading`, one record earlier than
   ETS (the allocation and its stream are one step in bussard; nothing depends
-  on the order). The connection drains the echoes, and `read_memory` skips a
+  on the order). Each segment write waits for its echo, which must name the
+  chunk's address and carry the octets written, or the step fails with both
+  values (#524); a missing echo is a silence the resume path retries on a new
+  connection. The session sets verify mode again on every connection it
+  opens after the step, before the next write; a device that refuses or lacks
+  PID 14 streams blind with a warning. An LSM record write (0701, memory-mapped)
+  is not echo-checked; its echo, if any, is drained, and `read_memory` skips a
   late echo whose address is not the one it asked for.
 - **State read-backs follow the realisation.** On the property realisation
   (0705) the state comes from each PID 5 write's answer, as for ETS, including
@@ -746,7 +753,7 @@ record's octets 6 to 8 are the op's `Access`, `MemType` and `SegFlags` verbatim
   stream either by a read-back after each block (`DMP_MemWrite_RCo` with verify,
   `[MP §3.16.2]`, the 0701 read-compare-write) or by the echo Verify Mode
   produces for each write (`DMP_MemWrite_RCoV`, `[MP §3.16.3]`, the 0705 path,
-  where bussard still drops the echo, #524); a short or different answer is an
+  where bussard compares each echo since #524); a short or different answer is an
   error `[research 3.1, AL 03.03.07 §3.5, CONFIRMED]`. MCB is
   app-dependent on System 7: absent from the MDT-era corpus but demanded by
   Jung `A-A011` via `LoadImageProp` PID 27; see the section 2 amendment. **M2

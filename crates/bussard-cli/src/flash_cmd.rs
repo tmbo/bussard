@@ -874,6 +874,14 @@ pub fn run(
             ),
             readiness_summary(&plan.identity.id, readiness)
         );
+        // Issue #524: the verify-mode echoes the System 7 stream compared.
+        if let Some(echoes) = outcome.as_ref().ok().and_then(|o| o.verify_echoes) {
+            eprintln!(
+                "verify mode: {} of {} memory-write echoes compared, set again on {} \
+                 reconnect(s)",
+                echoes.echoes_compared, echoes.chunks_written, echoes.re_enabled
+            );
+        }
     }
 
     match outcome {
