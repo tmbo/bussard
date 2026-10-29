@@ -238,7 +238,7 @@ Because there is no backup, `flash` checks in its read-only pre-flight that the 
 - `--force` prints one loud line naming the device, the gateway and what is destroyed, and the confirmation prompt repeats it.
 - Unreadable is not fresh: a device that refuses the state reads is refused.
 - Re-flashing the same application is still a full rewrite: the parameters are reset to the vendor defaults plus the device file's values, and the tables are rewritten from the model's links.
-- System 7 has no application-id property, so a loaded System 7 device is never recognised as "the same application" and always needs `--force`.
+- A loaded System 7 device is asked for `PID_PROGRAM_VERSION` of its application object. An id that names another application is refused by that id. A matching id, or none (the property is optional there), leaves the decision to the code sample below.
 
 ### The factory reset (System B)
 
@@ -340,7 +340,7 @@ It refuses before any write when:
 
     System 7: `StartLoading` on the load-state machine that holds the parameter segments (LSM 3), the differing octets written in place into each parameter segment, `LoadCompleted`, the procedure's MCB reads of objects 1 to 3, and the restart. No `AbsSegment` record, no task segment, no task control: re-sending the allocation put a device into load state Error. The executor reads LSM 3 first and writes nothing unless it is `Loaded`. LSM 1 and 2 (the tables) are not touched.
 
-    "Another application": on System B, `PID_PROGRAM_VERSION` differs from the product's or cannot be read. System 7 has no readable application id, so every load-state machine must be `Loaded` and the first octets of each application code segment must read back as the product's bytes. A code segment is one streamed verbatim from the product, never a link table, the group-object descriptor table or parameter memory. A product with no code segment is judged by the load-state machines alone.
+    "Another application": on System B, `PID_PROGRAM_VERSION` differs from the product's or cannot be read. On System 7, a `PID_PROGRAM_VERSION` of the application object that names another application refuses on its own; otherwise every load-state machine must be `Loaded` and the first octets of each application code segment must read back as the product's bytes. A code segment is one streamed verbatim from the product, never a link table, the group-object descriptor table or parameter memory. A product with no code segment is judged by the load-state machines alone.
 
     "Placed under the configuration" covers applications without `DownloadInvisibleParameters` and without `PreferPartialDownloadIfApplicationLoaded`, where a hidden parameter is downloaded at its default. Segments not compared after the restart: System 7 `checksum_ctrl` 0, and the Jung `0x4916` region.
 

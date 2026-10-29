@@ -176,6 +176,9 @@ struct DeviceState {
     device_control: u8,
     /// Every value written to `obj0/PID_DEVICE_CONTROL`, in order.
     device_control_writes: Vec<u8>,
+    /// `obj3/PID_PROGRAM_VERSION`, the resident application's id (issue
+    /// #481); `None` answers count 0, as a device without it.
+    program_version: Option<Vec<u8>>,
     /// The segment-write count at each restart, so a test can place the
     /// restarts relative to the download (issue #116).
     restart_at_writes: Vec<usize>,
@@ -273,6 +276,7 @@ fn fresh_device(mode: LsmMode, fault: Fault) -> Shared {
         absent_objects: Vec::new(),
         device_control: 0,
         device_control_writes: Vec::new(),
+        program_version: None,
         restart_at_writes: Vec::new(),
         verify_echoes_sent: 0,
         lsm_state_reads: 0,
@@ -593,6 +597,17 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
                 s.lsm5_property_accesses += 1;
             }
             return Reaction::Nak;
+        }
+        // The application object's PID_PROGRAM_VERSION (issue #481).
+        if obj == 3 && pid == 13 {
+            let held = s.program_version.clone();
+            return Reaction::Answer(
+                A_PROPERTY_VALUE_RESPONSE,
+                match held {
+                    Some(id) => prop_response(obj, pid, 1, start, &id),
+                    None => prop_response(obj, pid, 0, start, &[]),
+                },
+            );
         }
         // Object-type discovery (PID 1 on each object).
         if pid == PID_OBJECT_TYPE {
@@ -4029,6 +4044,60 @@ async fn test_flash_sys7_skip_prelude_unloads_only_the_procedure_lsms()
         }
         drop(handle);
         let _ = session.into_disconnect().await;
+    }
+    Ok(())
+}
+
+/// Issue #481: a loaded System 7 device that answers `PID_PROGRAM_VERSION`
+/// of object 3 with another application's id is refused by that id, before
+/// any code sample; one that answers this application's id, or answers
+/// nothing, stays unidentified for the code sample to decide, as before. The
+/// probe writes nothing either way.
+#[tokio::test]
+async fn test_probe_resident_state_sys7_reads_the_application_id()
+-> Result<(), Box<dyn std::error::Error>> {
+    for mode in [LsmMode::Property, LsmMode::MemoryMapped] {
+        set_sys7_lsm_env(mode);
+        let plan = sys7_plan()?;
+        let own = plan.identity.program_version().ok_or("identity")?.to_vec();
+        for (held, refused_by_id) in [
+            (Some(vec![0x00, 0x83, 0x00, 0x0F, 0x23]), true),
+            (Some(vec![0x00, 0x83, 0x00, 0x0E, 0x24]), true),
+            (Some(own.clone()), false),
+            (Some(vec![0; 5]), false),
+            (None, false),
+        ] {
+            let (mut bus, state, handle) = setup(mode, Fault::None).await?;
+            {
+                let mut s = lock(&state);
+                s.lsm_states.insert(3, LS_LOADED);
+                s.program_version = held.clone();
+            }
+            let resident = sys7_probe(&mut bus, &plan).await?;
+            assert!(resident.unreadable.is_none(), "{resident:?}");
+            match bussard_download::assess_freshness(&resident, &plan.identity) {
+                bussard_download::Freshness::Resident {
+                    resident: id,
+                    reason,
+                    ..
+                } => {
+                    assert_eq!(id.is_some(), refused_by_id, "{held:?}: {id:?}");
+                    assert_eq!(
+                        reason.is_some_and(|r| r.contains("PID_PROGRAM_VERSION")),
+                        refused_by_id,
+                        "{held:?}"
+                    );
+                }
+                other => panic!("expected a refusal verdict, got {other:?}"),
+            }
+            assert_eq!(
+                bussard_download::needs_sys7_identity(&plan, &resident),
+                !refused_by_id,
+                "{held:?}"
+            );
+            assert_eq!(lock(&state).memory_writes_seen, 0);
+            drop(handle);
+        }
     }
     Ok(())
 }

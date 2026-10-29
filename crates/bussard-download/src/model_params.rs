@@ -726,7 +726,9 @@ impl Sys7Identity {
                 reason: Some(reason.clone()),
             },
             Sys7Identity::Unknown { reason } => Freshness::Unknown {
-                reason: format!("System 7 has no readable application id and {reason}"),
+                reason: format!(
+                    "the System 7 application id did not identify the application and {reason}"
+                ),
             },
         }
     }

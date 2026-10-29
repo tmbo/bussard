@@ -137,8 +137,10 @@ reads the device's load state (whether an application is loaded) first:
 A refusal names the resident application and the ways forward: capture the
 device first (`reconstruct`, or `apply`, which backs up), or `--force`, which
 prints one loud line naming device, gateway and what is destroyed. Unreadable
-is never fresh. System 7 has no application id, so a loaded System 7 device
-always needs `--force`.
+is never fresh. A loaded System 7 device is asked for its application id
+(`PID_PROGRAM_VERSION` of the application object): an id that names another
+application is refused by that id, and otherwise the load state and the first
+octets of its code decide whether it runs the same application.
 
 **The factory reset (System B).** Many applications write only the octets
 that differ from a fill byte, so on a re-flash the octets the new image leaves
