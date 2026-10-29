@@ -201,10 +201,12 @@ impl DataSecureSession {
     ///
     /// This is what an activated device does (and what bussard's mock devices use
     /// to stand in for one): the response reports this session's own next send
-    /// sequence and the sequence it accepts next from the requester,
-    /// `max(request sequence, last accepted + 1)`. The Sync_Req itself does not
-    /// update the freshness table, so the requester's first S-A_Data may reuse
-    /// the request's sequence, as ETS does. `req_addr` is the request frame's
+    /// sequence and the sequence it accepts next from the requester. Like a
+    /// device, it raises its stored counter for the requester to
+    /// `max(stored, request sequence - 1)` and answers `stored + 1` (KNX 3/3/7
+    /// §5.3.2, KNX 3/5/1 §6.2 NOTE 94, issue #536): the requester's first
+    /// S-A_Data may reuse the request's sequence, as ETS does, and nothing
+    /// below it is accepted any more. `req_addr` is the request frame's
     /// addressing, `res_addr` the response frame's.
     ///
     /// # Errors
@@ -217,11 +219,14 @@ impl DataSecureSession {
         res_addr: &TpAddressing,
     ) -> Result<(u16, Vec<u8>), AsduError> {
         let (_, req) = asdu::decode_sync_req(&self.tool_key, asdu_bytes, req_addr)?;
-        let accepted_next = self
+        let requested = req.sequence.value().saturating_sub(1);
+        let stored = self
             .last_seen
             .get(&req_addr.source)
-            .map(|s| s.next())
-            .map_or(req.sequence, |n| n.max(req.sequence));
+            .map_or(requested, |s| s.value().max(requested));
+        self.last_seen
+            .insert(req_addr.source, Sequence::new(stored));
+        let accepted_next = Sequence::new(stored).next();
         let res = asdu::SyncResponse {
             responder_sequence: self.send_seq,
             requester_sequence: accepted_next,
@@ -716,6 +721,45 @@ mod tests {
         let (_, new) = device.wrap(&a, 0x1CF, &[0x00])?;
         assert!(matches!(
             tool.unwrap(&a, asdu::A_SECURE_DATA, &new)?,
+            UnwrapOutcome::Secured { .. }
+        ));
+        Ok(())
+    }
+
+    /// The device role raises its stored counter on a Sync (issue #536): a
+    /// frame above the old counter but below the Sync's sequence is refused.
+    #[test]
+    fn test_answer_sync_request_raises_stored_counter() -> Result<(), AsduError> {
+        let key = [0x31u8; 16];
+        let to_dev = addr(0x1119);
+        let from_dev = TpAddressing {
+            source: 0x110A,
+            destination: 0x1119,
+            ..addr(0x110A)
+        };
+        let mut device = DataSecureSession::new(Key16::new(key));
+        let mut old = DataSecureSession::new(Key16::new(key)).with_send_sequence(Sequence::new(10));
+        let (_, first) = old.wrap(&to_dev, 0x300, &[0x00])?;
+        device.unwrap(&to_dev, asdu::A_SECURE_DATA, &first)?;
+
+        let mut tool =
+            DataSecureSession::new(Key16::new(key)).with_send_sequence(Sequence::new(5_000));
+        let (_, req) = tool.sync_request(&to_dev)?;
+        let (_, res) = device.answer_sync_request(&to_dev, &req, &from_dev)?;
+        tool.unwrap(&from_dev, asdu::A_SECURE_DATA, &res)?;
+        assert_eq!(tool.send_sequence(), Sequence::new(5_000));
+        assert_eq!(
+            device.peer_next_sequence(0x1119),
+            Some(Sequence::new(5_000))
+        );
+        let (_, replay) = old.wrap(&to_dev, 0x300, &[0x00])?;
+        assert!(matches!(
+            device.unwrap(&to_dev, asdu::A_SECURE_DATA, &replay),
+            Err(AsduError::StaleSequence { .. })
+        ));
+        let (_, data) = tool.wrap(&to_dev, 0x300, &[0x00])?;
+        assert!(matches!(
+            device.unwrap(&to_dev, asdu::A_SECURE_DATA, &data)?,
             UnwrapOutcome::Secured { .. }
         ));
         Ok(())

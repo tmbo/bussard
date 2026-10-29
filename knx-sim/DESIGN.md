@@ -209,6 +209,32 @@ drives the canonical MDT `M-0083_A-000E` op sequence (encoded as raw TPDUs by th
 test) to `Loaded` on all three LSMs, for *both* `LsmAccess` variants, and asserts
 the strictness refusals.
 
+## KNX Data Secure device model
+
+The secure device (`src/secure/`, `src/device/data_secure.rs`,
+`src/device/secure_group.rs`, `src/device/security_object/`) is bussard's
+conformance peer for Data Secure, so it follows the clauses rather than the
+lenient reading. The rules it enforces and where they come from (KNX Standard
+3.0.0; TSS J v1.11 test names as the oracle):
+
+- S-A_Sync_Req (KNX 3/3/7 §5.3.2): a request within 1 s of the last
+  Sync_Res is ignored unevaluated (step 1); the serial field must be 0 on
+  point-to-point or the device's own serial (PID 11), only the own serial on
+  a broadcast, checked before the security (step 2; TSS J §3.3.10 to
+  §3.3.12); the stored tool-access counter becomes `max(stored, SeqNrlocal -
+  1)` and the answer is `stored + 1` (KNX 3/5/1 §6.2 NOTE 94; TSS J §3.3.1).
+- S-A_Data: the sequence must exceed the last valid one (§5.3; TSS J
+  §3.1.9); after a positive MAC check the six reserved bits above the inner
+  APCI must be zero, else the frame is dropped without a count and its
+  sequence still counts (§5.2.1.4; TSS J §3.1.12).
+- Group reception (§5.5.3.2, §5.2.1.1): the group address's key, the
+  tool-access flag (set: an attack, access error 04h), the sender table
+  (PID 54, unlisted: dropped without a count), the sequence, the MAC, then the
+  group-object flags (KNX 3/5/1 Table 108; TSS J §3.2.3, §3.2.18). Each
+  counted failure lands in PID 55.
+- PID 61 (KNX 3/5/1 §6.3.15.2 Figure 81): any octet is taken, bits b7..b2
+  are reserved and ignored.
+
 ## Non-goals (Phase 1)
 
 - No HTML viz yet (event stream exposed; `TracingSink` is the placeholder).

@@ -132,10 +132,11 @@ const GO_FLAG: usize = 1;
 const TOOL_KEY_LEN: usize = 16;
 /// Size of the sending sequence number.
 const SEQ_LEN: usize = 6;
-/// The highest valid group-object security flag: bit 0 and bit 1 are the
-/// authentication and confidentiality flags; ETS writes 0x03 for a secured
+/// The used bits of a group-object security flag octet: bit 0 and bit 1 are
+/// the authentication and confidentiality flags, b7..b2 are reserved and
+/// ignored (KNX 3/5/1 §6.3.15.2 Figure 81). ETS writes 0x03 for a secured
 /// group object and 0x00 for a plain one.
-const MAX_GO_FLAG: u8 = 0x03;
+const GO_FLAG_MASK: u8 = 0x03;
 
 /// PDT codes for the property descriptions.
 const PDT_CONTROL: u8 = 0x00;
@@ -450,10 +451,11 @@ impl SecurityObject {
         self.go_flags.count()
     }
 
-    /// The security flags of group object `n` (1-based), if written.
+    /// The security flags of group object `n` (1-based), if written: the
+    /// authentication and confidentiality bits, the reserved bits cleared.
     pub fn go_flag(&self, n: u16) -> Option<u8> {
         let off = usize::from(n).checked_sub(1)?;
-        self.go_flags.bytes.get(off).copied()
+        self.go_flags.bytes.get(off).map(|f| f & GO_FLAG_MASK)
     }
 
     /// How many times the tool key was written.

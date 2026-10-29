@@ -25,6 +25,13 @@
 //!   match the group-object security flags of every object linked to the
 //!   group address is ignored (KNX 3/5/1 §6.3.15.3 Table 108).
 //!
+//! The checks run in the order of KNX 3/3/7 §5.5.3.2 and §5.2.1.1: the key
+//! of the group address (none: ignored), the tool-access flag (set on a
+//! group telegram: an attack, counted as an access error), the sender table,
+//! the sequence (PID 54 entry and the per-sender table), the MAC, the
+//! reserved bits of the inner APDU (§5.2.1.4: dropped, not counted), then the
+//! group-object flags.
+//!
 //! The failures land in the security failures log (PID 55, bussard issue
 //! #533) as the standard counts them: a MAC that does not verify or a frame
 //! too short is a cryptographic error, a stale sequence a SeqNr error (KNX
@@ -161,6 +168,24 @@ impl Device {
             return Vec::new();
         };
         let source = cemi.source;
+        let asdu = &cemi.tpdu[2..];
+        let mut wire_seq = [0u8; 6];
+        if let Some(s) = asdu.get(1..7) {
+            wire_seq.copy_from_slice(s);
+        }
+        // KNX 3/3/7 §5.5.3.2 step 1.1.1: a group telegram that claims tool
+        // access is an attack, counted as an access or roles error (04h).
+        if asdu.first().is_some_and(|scf| scf & 0x80 != 0) {
+            self.emit(Event::SecureFrame {
+                device: self.address,
+                summary: format!(
+                    "REJECTED SECURE group recv {source} -> {ga}: tool access flag on a group \
+                     telegram (access error)"
+                ),
+            });
+            return self.security_failure(FailureKind::Access, source.raw(), wire_seq);
+        }
+        // §5.2.1.1: the sender table, then the sequence, then the MAC.
         let Some(listed_seq) = self
             .security_object
             .as_ref()
@@ -175,10 +200,16 @@ impl Device {
             });
             return Vec::new();
         };
-        let asdu = &cemi.tpdu[2..];
-        let mut wire_seq = [0u8; 6];
-        if let Some(s) = asdu.get(1..7) {
-            wire_seq.copy_from_slice(s);
+        if seq_value(&wire_seq) <= listed_seq {
+            self.emit(Event::SecureFrame {
+                device: self.address,
+                summary: format!(
+                    "REJECTED SECURE group recv {source} -> {ga}: sequence {} not above the PID 54 \
+                     entry {listed_seq}",
+                    seq_value(&wire_seq)
+                ),
+            });
+            return self.security_failure(FailureKind::SeqNr, source.raw(), wire_seq);
         }
         let opened = match self.secure.as_mut() {
             Some(session) => session.unwrap_group_incoming(&key, cemi, asdu),
@@ -205,17 +236,6 @@ impl Device {
                 };
             }
         };
-        if seq_value(&unwrapped.seq) <= listed_seq {
-            self.emit(Event::SecureFrame {
-                device: self.address,
-                summary: format!(
-                    "REJECTED SECURE group recv {source} -> {ga}: sequence {} not above the PID 54 \
-                     entry {listed_seq}",
-                    seq_value(&unwrapped.seq)
-                ),
-            });
-            return self.security_failure(FailureKind::SeqNr, source.raw(), unwrapped.seq);
-        }
         // Table 108: the telegram's A/C must match the flags of the objects
         // linked to the group address exactly.
         let used = match unwrapped.scf.algorithm {

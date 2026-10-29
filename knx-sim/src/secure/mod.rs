@@ -185,10 +185,15 @@ pub enum SecureError {
         /// The offending SCF byte.
         scf: u8,
     },
-    /// A Sync_Req named a serial number that is not this device's. The sim
-    /// models only the connection-oriented form, whose serial field is zero.
+    /// A Sync_Req named a serial number that is not this device's (or zero on
+    /// a broadcast): ignored before any security check, without a failure
+    /// count (KNX 3/3/7 §5.3.2 step 2).
     #[error("Sync_Req addressed to another serial number")]
     SyncSerialMismatch,
+    /// A Sync_Req less than 1 s after this device's last Sync_Res: ignored
+    /// without evaluating it (KNX 3/3/7 §5.3.2 step 1).
+    #[error("Sync_Req within 1 s of the last Sync_Res, ignored")]
+    SyncWithinWindow,
     /// An authentic S-A_Data whose inner APDU has one of the six reserved bits
     /// above the APCI set (KNX 3/3/7 §5.2.1.4; TSS J §3.1.12). Dropped without
     /// a failure count; the sequence still counts as received.
@@ -400,6 +405,24 @@ pub struct DataSecureSession {
     /// `true` a plain management APDU to a protected function is refused (spec
     /// §6.4). Activated devices set this.
     require_secure: bool,
+    /// When this device last sent an S-A_Sync_Res: a Sync_Req within 1 s of
+    /// it is ignored (KNX 3/3/7 §5.3.2 step 1).
+    last_sync_res: Option<std::time::Instant>,
+}
+
+/// The minimum gap between two S-A_Sync_Res of a device (KNX 3/3/7 §5.3.2
+/// step 1): a Sync_Req that arrives sooner is ignored.
+pub const SYNC_IGNORE_WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// What the receiving device brings to an S-A_Sync_Req: its own KNX serial
+/// number (the device object's PID 11, `None` when it has none) and the
+/// arrival time, for the serial check and the 1 s window (KNX 3/3/7 §5.3.2).
+#[derive(Debug, Clone, Copy)]
+pub struct SyncReceiver {
+    /// The device's own KNX serial number.
+    pub serial: Option<[u8; 6]>,
+    /// When the request arrived.
+    pub now: std::time::Instant,
 }
 
 impl DataSecureSession {
@@ -414,6 +437,7 @@ impl DataSecureSession {
             group_rx_last: std::collections::HashMap::new(),
             rx_floor: initial_rx_seq,
             require_secure: true,
+            last_sync_res: None,
         }
     }
 
@@ -741,9 +765,16 @@ impl DataSecureSession {
     /// Response `SCF(0x93) || masked(6) || enc(tx_seq(6) || accepted(6)) ||
     /// MAC(4)`: the device picks a nonce sequence, sends it XOR the challenge in
     /// the sequence slot, and encrypts its own next send sequence followed by the
-    /// sequence it accepts next from the tool: `max(request seq, last + 1)`. The
-    /// Sync_Req does not commit the freshness table, so the tool's first
-    /// S-A_Data may carry the request's sequence (ETS does exactly that).
+    /// sequence it accepts next from the tool. The device raises its stored
+    /// tool-access counter to `max(stored, request seq - 1)` and answers
+    /// `stored + 1` (KNX 3/3/7 §5.3.2, KNX 3/5/1 §6.2 NOTE 94), so the tool's
+    /// first S-A_Data may carry the request's sequence (ETS does exactly that)
+    /// and nothing below it is accepted any more.
+    ///
+    /// Before the security check the device ignores a request within 1 s of
+    /// its last Sync_Res ([`SYNC_IGNORE_WINDOW`]) and one whose serial field
+    /// is neither zero (point-to-point only) nor its own serial (§5.3.2 steps
+    /// 1 and 2).
     ///
     /// `carrier`/`tpci_int` describe the request frame, `resp_carrier` /
     /// `resp_tpci_int` the response frame. Returns the response ASDU.
@@ -754,6 +785,7 @@ impl DataSecureSession {
         asdu: &[u8],
         resp_carrier: &CemiLData,
         resp_tpci_int: u8,
+        receiver: SyncReceiver,
     ) -> Result<Vec<u8>, SecureError> {
         const CHALLENGE_LEN: usize = 6;
         if asdu.len() != 1 + SEQ_LEN + 6 + CHALLENGE_LEN + TP_MAC_LEN {
@@ -769,6 +801,22 @@ impl DataSecureSession {
         let serial = &asdu[7..13];
         let enc_challenge = &asdu[13..19];
         let wire_mac = &asdu[19..23];
+
+        // §5.3.2 step 1: not evaluated at all within 1 s of the last answer.
+        if self
+            .last_sync_res
+            .is_some_and(|t| receiver.now.saturating_duration_since(t) < SYNC_IGNORE_WINDOW)
+        {
+            return Err(SecureError::SyncWithinWindow);
+        }
+        // §5.3.2 step 2: zero (point-to-point only) or the own serial number.
+        // A broadcast or system broadcast travels to group address 0.
+        let broadcast = carrier.ctrl2 & 0x80 != 0 && carrier.dest == 0;
+        let zero = serial.iter().all(|&b| b == 0);
+        let own = receiver.serial.is_some_and(|own| own.as_slice() == serial);
+        if !(own || (zero && !broadcast)) {
+            return Err(SecureError::SyncSerialMismatch);
+        }
 
         let key = self.tool_key.bytes();
         let ctx = FrameContext::from_cemi(carrier, tpci_int);
@@ -786,13 +834,15 @@ impl DataSecureSession {
         if !crypto::ct_eq(&expected, wire_mac) {
             return Err(SecureError::BadMac);
         }
-        if serial.iter().any(|&b| b != 0) {
-            return Err(SecureError::SyncSerialMismatch);
-        }
 
+        // The stored counter becomes max(stored, SeqNrlocal - 1) and the
+        // answer is stored + 1 (§5.3.2; a SeqNrlocal of 0 raises nothing).
         let source = carrier.source.raw();
         let last = self.rx_last.get(&source).copied().unwrap_or(self.rx_floor);
-        let accepted = Self::seq_from_bytes(&seq).max(last.saturating_add(1));
+        let stored = last.max(Self::seq_from_bytes(&seq).saturating_sub(1));
+        self.rx_last.insert(source, stored);
+        let accepted = stored.saturating_add(1);
+        self.last_sync_res = Some(receiver.now);
         let mut plain = Vec::with_capacity(12);
         plain.extend_from_slice(&Self::seq_to_bytes(self.tx_seq));
         plain.extend_from_slice(&Self::seq_to_bytes(accepted));
@@ -1057,6 +1107,145 @@ mod tests {
             Err(SecureError::ReservedBits { octet: 0x80, .. })
         ));
         assert_eq!(dev.group_rx_last(0x1101), Some(77));
+    }
+
+    /// A Sync_Req from `c`'s source under `key` with `seq` and `serial`
+    /// (connection-oriented carrier, tpci_int 0), built from the primitives.
+    fn sync_req(key: &[u8; 16], c: &CemiLData, seq: u64, serial: [u8; 6]) -> Vec<u8> {
+        let seq = DataSecureSession::seq_to_bytes(seq);
+        let ctx = FrameContext::from_cemi(c, 0);
+        let challenge = [0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6];
+        let mut ad = vec![0x92];
+        ad.extend_from_slice(&serial);
+        let mac = crypto::cbc_mac(key, &ad, &challenge, &ctx.block_0(&seq, 6));
+        let (enc, enc_mac) =
+            crypto::encrypt_data_ctr(key, &ctx.counter_0(&seq), &mac[..TP_MAC_LEN], &challenge);
+        let mut asdu = vec![0x92];
+        asdu.extend_from_slice(&seq);
+        asdu.extend_from_slice(&serial);
+        asdu.extend_from_slice(&enc);
+        asdu.extend_from_slice(&enc_mac);
+        asdu
+    }
+
+    fn receiver(now: std::time::Instant) -> SyncReceiver {
+        SyncReceiver {
+            serial: Some([0x00, 0xFA, 0x00, 0x00, 0x00, 0x01]),
+            now,
+        }
+    }
+
+    /// TSS J §3.3.1: the Sync raises the stored tool-access counter to
+    /// `SeqNrlocal - 1` (KNX 3/3/7 §5.3.2, KNX 3/5/1 §6.2 NOTE 94): a replay
+    /// above the old counter but below the Sync's value is refused after it.
+    #[test]
+    fn test_answer_sync_request_raises_stored_counter() -> Result<(), SecureError> {
+        let key = [9u8; 16];
+        let mut dev = DataSecureSession::new(Key16::new(key), 1, 100);
+        let c = carrier(0x0000, 0x1102);
+        let req = sync_req(&key, &c, 5000, [0; 6]);
+        dev.answer_sync_request(&c, 0, &req, &c, 0, receiver(std::time::Instant::now()))?;
+        assert_eq!(dev.rx_last(0x0000), Some(4999));
+        let mut old = DataSecureSession::new(Key16::new(key), 3000, 0);
+        let (replay, _) = old.wrap_outgoing(&c, 0, SecAlgorithm::AuthEnc, &[0x03, 0x80]);
+        assert!(matches!(
+            dev.unwrap_incoming(&c, 0, &replay),
+            Err(SecureError::StaleSequence { .. })
+        ));
+        // The tool's first S-A_Data reuses the request's sequence.
+        let mut tool = DataSecureSession::new(Key16::new(key), 5000, 0);
+        let (first, _) = tool.wrap_outgoing(&c, 0, SecAlgorithm::AuthEnc, &[0x03, 0x80]);
+        dev.unwrap_incoming(&c, 0, &first)?;
+        // A Sync with a lower sequence (or 0) lowers nothing.
+        let later = std::time::Instant::now() + SYNC_IGNORE_WINDOW;
+        dev.answer_sync_request(
+            &c,
+            0,
+            &sync_req(&key, &c, 0, [0; 6]),
+            &c,
+            0,
+            receiver(later),
+        )?;
+        assert_eq!(dev.rx_last(0x0000), Some(5000));
+        Ok(())
+    }
+
+    /// A Sync_Req less than 1 s after the last Sync_Res is
+    /// ignored without evaluation (KNX 3/3/7 §5.3.2 step 1).
+    #[test]
+    fn test_answer_sync_request_ignores_within_one_second() -> Result<(), SecureError> {
+        let key = [9u8; 16];
+        let mut dev = DataSecureSession::new(Key16::new(key), 1, 0);
+        let c = carrier(0x0000, 0x1102);
+        let t0 = std::time::Instant::now();
+        dev.answer_sync_request(&c, 0, &sync_req(&key, &c, 10, [0; 6]), &c, 0, receiver(t0))?;
+        let soon = t0 + std::time::Duration::from_millis(999);
+        assert_eq!(
+            dev.answer_sync_request(
+                &c,
+                0,
+                &sync_req(&key, &c, 20, [0; 6]),
+                &c,
+                0,
+                receiver(soon)
+            ),
+            Err(SecureError::SyncWithinWindow)
+        );
+        // Not evaluated: the counter did not move.
+        assert_eq!(dev.rx_last(0x0000), Some(9));
+        let later = t0 + SYNC_IGNORE_WINDOW;
+        dev.answer_sync_request(
+            &c,
+            0,
+            &sync_req(&key, &c, 20, [0; 6]),
+            &c,
+            0,
+            receiver(later),
+        )?;
+        assert_eq!(dev.rx_last(0x0000), Some(19));
+        Ok(())
+    }
+
+    /// TSS J §3.3.10 to §3.3.12: point-to-point takes 0 or the own serial number, a
+    /// broadcast only the own serial (KNX 3/3/7 §5.3.2 step 2).
+    #[test]
+    fn test_answer_sync_request_serial_number() -> Result<(), SecureError> {
+        let key = [9u8; 16];
+        let own = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x01];
+        let c = carrier(0x0000, 0x1102);
+        let t0 = std::time::Instant::now();
+        let mut dev = DataSecureSession::new(Key16::new(key), 1, 0);
+        dev.answer_sync_request(&c, 0, &sync_req(&key, &c, 10, own), &c, 0, receiver(t0))?;
+        let mut dev = DataSecureSession::new(Key16::new(key), 1, 0);
+        assert_eq!(
+            dev.answer_sync_request(
+                &c,
+                0,
+                &sync_req(&key, &c, 10, [0, 0xFA, 0, 0, 0, 2]),
+                &c,
+                0,
+                receiver(t0)
+            ),
+            Err(SecureError::SyncSerialMismatch)
+        );
+        let bc = CemiLData {
+            ctrl2: 0xE0,
+            dest: 0,
+            ..carrier(0x0000, 0)
+        };
+        assert_eq!(
+            dev.answer_sync_request(
+                &bc,
+                0,
+                &sync_req(&key, &bc, 10, [0; 6]),
+                &bc,
+                0,
+                receiver(t0)
+            ),
+            Err(SecureError::SyncSerialMismatch)
+        );
+        dev.answer_sync_request(&bc, 0, &sync_req(&key, &bc, 10, own), &bc, 0, receiver(t0))?;
+        Ok(())
     }
 
     #[test]

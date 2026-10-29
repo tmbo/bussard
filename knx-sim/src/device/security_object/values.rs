@@ -7,8 +7,8 @@ use crate::wire::apdu::Apci;
 
 use super::{
     ExtHeader, ExtReply, ExtServiceError, FALLBACK_MAX_GROUP_OBJECTS, GO_FLAG, GRP_KEY_ROW, IA_ROW,
-    IOT_SECURITY, MAX_GO_FLAG, MAX_GROUP_KEY_ROWS, MAX_IA_TABLE_ROWS, SEQ_LEN, SecLoadState,
-    SecurityLimits, SecurityObject, TOOL_KEY_LEN, pid, rc,
+    IOT_SECURITY, MAX_GROUP_KEY_ROWS, MAX_IA_TABLE_ROWS, SEQ_LEN, SecLoadState, SecurityLimits,
+    SecurityObject, TOOL_KEY_LEN, pid, rc,
 };
 
 impl SecurityObject {
@@ -127,7 +127,8 @@ impl SecurityObject {
     /// 6. `data.len() == count * element size` (`INVALID_COMMAND`);
     /// 7. no holes: `start <= element count + 1`, and the last element within
     ///    the table capacity (group-object count for PID 61) (`OUT_OF_MAX_RANGE`);
-    /// 8. PID 61 flag octets 0x00..=0x03 (`OUT_OF_MAX_RANGE`); PID 53 rows name
+    /// 8. PID 61 flag octets are taken whole, their reserved bits b7..b2 are
+    ///    ignored where the flags are used; PID 53 rows name
     ///    an address-table index `>= 1` (`OUT_OF_MIN_RANGE`) and, when the
     ///    address table is known, `<=` its length (`OUT_OF_MAX_RANGE`).
     pub(super) fn on_value_write(
@@ -263,24 +264,19 @@ impl SecurityObject {
         if usize::from(start) > table.count() + 1 || last > usize::from(capacity) {
             return rc::OUT_OF_MAX_RANGE;
         }
-        match h.pid {
-            pid::GO_SECURITY_FLAGS => {
-                if value.iter().any(|&f| f > MAX_GO_FLAG) {
+        // PID 61 octets are taken whole: bits b7..b2 are reserved and ignored
+        // where the flags are used (KNX 3/5/1 §6.3.15.2 Figure 81; TSS J
+        // §2.3.1 Table 4 lists 0x02 as a configured value).
+        if h.pid == pid::GRP_KEY_TABLE {
+            for row in value.as_chunks::<GRP_KEY_ROW>().0 {
+                let index = u16::from_be_bytes([row[0], row[1]]);
+                if index == 0 {
+                    return rc::OUT_OF_MIN_RANGE;
+                }
+                if limits.address_table_len.is_some_and(|len| index > len) {
                     return rc::OUT_OF_MAX_RANGE;
                 }
             }
-            pid::GRP_KEY_TABLE => {
-                for row in value.as_chunks::<GRP_KEY_ROW>().0 {
-                    let index = u16::from_be_bytes([row[0], row[1]]);
-                    if index == 0 {
-                        return rc::OUT_OF_MIN_RANGE;
-                    }
-                    if limits.address_table_len.is_some_and(|len| index > len) {
-                        return rc::OUT_OF_MAX_RANGE;
-                    }
-                }
-            }
-            _ => {}
         }
         table.write(start, value);
         rc::SUCCESS
@@ -397,11 +393,6 @@ mod tests {
             exchange(&mut obj, &short, limits)?,
             hex("01cf 0011 001035 01 0001 f2")?
         );
-        // Flag octet 0x04.
-        assert_eq!(
-            exchange(&mut obj, "01ce 0011 00103d 01 0001 04", limits)?,
-            hex("01cf 0011 00103d 01 0001 f7")?
-        );
         // Beyond the 10 group objects.
         assert_eq!(
             exchange(&mut obj, &go_flags_write(1, 11), limits)?,
@@ -441,6 +432,27 @@ mod tests {
         );
         assert_eq!(obj.go_flag_count(), 0);
         assert_eq!(obj.group_key_rows(), 0);
+        Ok(())
+    }
+
+    /// TSS J §2.3.1: a PID 61 octet with reserved bits set is accepted and
+    /// the bits are ignored (KNX 3/5/1 §6.3.15.2 Figure 81); 0x02 (C only)
+    /// is a configured value.
+    #[test]
+    fn test_go_flag_reserved_bits_accepted_and_ignored() -> TestResult {
+        let limits = SecurityLimits {
+            group_objects: Some(10),
+            address_table_len: Some(5),
+        };
+        let mut obj = SecurityObject::new_activated();
+        exchange(&mut obj, START, limits)?;
+        assert_eq!(
+            exchange(&mut obj, "01ce 0011 00103d 03 0001 fc 02 07", limits)?,
+            hex("01cf 0011 00103d 03 0001 00")?
+        );
+        assert_eq!(obj.go_flag(1), Some(0x00));
+        assert_eq!(obj.go_flag(2), Some(0x02));
+        assert_eq!(obj.go_flag(3), Some(0x03));
         Ok(())
     }
 

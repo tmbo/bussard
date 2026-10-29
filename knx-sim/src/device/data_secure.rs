@@ -167,12 +167,23 @@ impl Device {
         // the frame that carries it (connected NDT with the device's sequence).
         let mut resp = self.respond(tool, crate::secure::A_SECURE_DATA_APCI, &[]);
         let resp_tpci_int = Self::carrier_tpci_int(&resp);
+        let receiver = crate::secure::SyncReceiver {
+            serial: self.own_serial(),
+            now: std::time::Instant::now(),
+        };
         let asdu = {
             let session = self
                 .secure
                 .as_mut()
                 .expect("handle_sync_request requires an activated session");
-            match session.answer_sync_request(cemi, tpci_int, &apdu.data, &resp, resp_tpci_int) {
+            match session.answer_sync_request(
+                cemi,
+                tpci_int,
+                &apdu.data,
+                &resp,
+                resp_tpci_int,
+                receiver,
+            ) {
                 Ok(asdu) => asdu,
                 Err(err) => {
                     // The response sequence was reserved by `respond`; give it
@@ -191,6 +202,13 @@ impl Device {
             responses: vec![resp],
             did_master_reset: false,
         })
+    }
+
+    /// The device's KNX serial number, the device object's `PID_SERIAL_NUMBER`
+    /// (11), when it holds a 6-octet value.
+    fn own_serial(&self) -> Option<[u8; 6]> {
+        let prop = self.objects.get(&0)?.property(11)?;
+        <[u8; 6]>::try_from(prop.value.as_slice()).ok()
     }
 
     /// Strip the connected-transport sequence bits from a response TPDU, leaving
