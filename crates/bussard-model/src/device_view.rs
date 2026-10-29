@@ -27,8 +27,13 @@
 //! walk reaches with its enabling values applied. The value-free
 //! [`RefIndex`] gives the conditions in front of a ref, in words. Pages stay
 //! those of the application's own Dynamic section; module instances are
-//! evaluated but not listed as pages. Internal refs (`Access="None"`) are
-//! reached but never listed.
+//! evaluated but not listed as pages. The channels of a module instance the
+//! configuration does not reach are listed with the inactive channels
+//! ([`crate::blocks::module_channels_of`], issue #302), except an
+//! alternative inside a reached instance, one only ETS enables, and one
+//! titled like an earlier one. Internal refs (`Access="None"`) are reached
+//! but never listed, and an enable step never names one: it names the
+//! parameter the user sets that changes it, or says "enabled by ETS only".
 //!
 //! [`DeviceView::render_table`] is the terminal rendering, and
 //! [`DeviceView::render_toml`] the paste-ready device-file snippet: what the
@@ -43,7 +48,7 @@ use serde::Serialize;
 
 use crate::address::IndividualAddress;
 use crate::blocks::{
-    BlockDef, BlockKind, Gate, object_number, parent_indexes, ref_param_id, subtree,
+    BlockDef, BlockKind, Gate, def_ref, object_number, parent_indexes, ref_param_id, subtree,
 };
 use crate::dynamic::{
     ChannelRef, CompareOp, DynamicConfig, RefGate, RefIndex, RefOccurrence, WhenTest,
@@ -67,6 +72,11 @@ pub const NEEDS_PUSH: &str = "a parameter push (the com-objects stay as they are
 /// enabled: the push is a full download.
 pub const NEEDS_FLASH: &str = "shows com-objects, so the push is a flash (a parameter push \
      does not change the object table)";
+
+/// The `needs` of an inactive page or channel an `enable` step of which is
+/// [`EnableStep::ets_only`] (issue #302): no parameter the user sets shows it.
+pub const NEEDS_ETS: &str = "ETS only: a condition on an internal parameter (Access=None) that no \
+                             parameter the user sets changes, so no edit here enables it";
 
 /// One channel in the list.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -167,6 +177,12 @@ pub struct EnableStep {
     /// The device's value now (stored, else the default).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current: Option<String>,
+    /// The condition is on an internal parameter (`Access="None"`) that no
+    /// parameter the user can set changes: only ETS (a product update or
+    /// another application) enables it (issue #302). `text` then says
+    /// "enabled by ETS only" and `key` is absent.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub ets_only: bool,
 }
 
 /// A com-object an inactive block would show once enabled.
@@ -188,6 +204,11 @@ pub struct ShownObject {
     pub flags: Option<String>,
 }
 
+/// Whether `n` is zero (a count serde leaves out).
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
 /// Why a block or channel is inactive and what enabling it takes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Inactive {
@@ -197,7 +218,12 @@ pub struct Inactive {
     /// The com-objects it shows with the vendor defaults once enabled.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub would_show: Vec<ShownObject>,
-    /// What kind of push the change takes: [`NEEDS_PUSH`] or
+    /// How many com-objects of a module instance it shows besides
+    /// `would_show` (issue #302): the product model does not give their
+    /// numbers, which the instance's arguments set.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub module_objects: usize,
+    /// What kind of push the change takes: [`NEEDS_PUSH`], [`NEEDS_ETS`] or
     /// [`NEEDS_FLASH`]. How to run it is the caller's to say.
     pub needs: String,
     /// The handles of earlier inactive pages or channels whose `enable`
@@ -599,7 +625,7 @@ struct Pages<'a> {
     blocks: &'a [BlockDef],
     parents: Vec<Option<usize>>,
     states: Vec<PageState>,
-    index: RefIndex,
+    index: &'a RefIndex,
     /// The block indexes of each container id (several for an id the
     /// Dynamic section repeats).
     by_id: HashMap<&'a str, Vec<usize>>,
@@ -624,6 +650,12 @@ struct Pages<'a> {
     /// Those configurations by their enabling values: inactive channels of
     /// one switch share one evaluation.
     by_values: RefCell<HashMap<EnablingValues, Rc<DynamicConfig>>>,
+    /// The blocks whose inactive rows get their detail (enable steps, the
+    /// objects they would show, counts); `None` for every block. An
+    /// inactive row of another block has neither detail nor counts.
+    detail: Option<HashSet<String>>,
+    /// The `<Assign>`s of the product by target ref, collected on first use.
+    assigns: OnceCell<HashMap<String, Vec<AssignSite>>>,
 }
 
 /// The innermost container id of a placement: its last block, else its
@@ -647,18 +679,24 @@ impl<'a> Pages<'a> {
     ) -> Self {
         let product = evaluated.product;
         let config = &evaluated.config;
-        let blocks = product.blocks();
+        let blocks = product.blocks_with_module_channels();
         let parents = parent_indexes(blocks);
         let mut by_id: HashMap<&str, Vec<usize>> = HashMap::new();
         for (i, b) in blocks.iter().enumerate() {
             by_id.entry(b.id.as_str()).or_default().push(i);
         }
-        let index = RefIndex::new(product);
-        let reached_containers: HashSet<&str> = config
+        let index = product.ref_index();
+        // A module instance's containers by their selector key, as the lock
+        // and [`crate::blocks::module_channels_of`] key them.
+        let reached_containers: HashSet<String> = config
             .containers
             .iter()
-            .filter(|c| c.placement.module.is_none())
-            .map(|c| c.container.id())
+            .map(|c| match &c.placement.module_instance {
+                Some(instance) if c.placement.module.is_some() => {
+                    crate::dynamic::selector_key(Some(instance), c.container.id())
+                }
+                _ => c.container.id().to_string(),
+            })
             .collect();
         let mut active_params: HashSet<String> = HashSet::new();
         let mut reached: HashSet<String> = HashSet::new();
@@ -686,7 +724,7 @@ impl<'a> Pages<'a> {
         let mut states: Vec<PageState> = Vec::with_capacity(blocks.len());
         for (i, b) in blocks.iter().enumerate() {
             let parent_active = parents[i].is_none_or(|p| states.get(p).is_none_or(|s| s.active));
-            let active = parent_active && reached_containers.contains(b.id.as_str());
+            let active = parent_active && reached_containers.contains(&b.id);
             states.push(PageState {
                 active,
                 failing: Vec::new(),
@@ -711,6 +749,8 @@ impl<'a> Pages<'a> {
             object_block: HashMap::new(),
             enabled: (0..blocks.len()).map(|_| OnceCell::new()).collect(),
             by_values: RefCell::new(HashMap::new()),
+            detail: None,
+            assigns: OnceCell::new(),
         };
         for (i, b) in blocks.iter().enumerate() {
             if !pages.states[i].active && !pages.states[i].parent_inactive {
@@ -852,7 +892,7 @@ impl<'a> Pages<'a> {
         let param = self
             .product
             .parameter_refs
-            .get(&gate.param_ref_id)
+            .get(&def_ref(&gate.param_ref_id))
             .map(|r| r.parameter.as_str());
         let active =
             param.is_none_or(|p| !self.placed_params.contains(p) || self.active_params.contains(p));
@@ -872,9 +912,16 @@ impl<'a> Pages<'a> {
         depth
     }
 
+    /// The definition of the parameter of a ref, app-relative or in a
+    /// module instance's selector form.
+    fn def_of(&self, reference: &str) -> Option<&'a ParamDef> {
+        let product: &'a ProductModel = self.product;
+        product.parameters.get(ref_param_id(&def_ref(reference)))
+    }
+
     /// The device's value of a parameter ref, rendered as the file writes it.
     fn current(&self, reference: &str) -> Option<String> {
-        let def = self.product.parameters.get(ref_param_id(reference));
+        let def = self.def_of(reference);
         let raw = self.evaluated.value(reference)?;
         Some(display_value(def, &raw))
     }
@@ -888,7 +935,7 @@ impl<'a> Pages<'a> {
             .iter()
             .filter_map(|n| blocks[i].when.get(*n))
             .map(|g| {
-                let def = self.product.parameters.get(ref_param_id(&g.reference));
+                let def = self.def_of(&g.reference);
                 let codes = def.map(enum_codes).unwrap_or_default();
                 let code = enabling_code(&ref_gate(g), &codes);
                 let set_to = code
@@ -959,32 +1006,49 @@ impl<'a> Pages<'a> {
         let product: &'a ProductModel = self.product;
         let blocks: &'a [BlockDef] = self.blocks;
         let config = self.enabled(members[0]);
-        let reached: HashSet<&str> = config
+        let reached: HashSet<String> = config
             .parameters
             .iter()
             .zip(&config.parameter_placements)
-            .filter(|(p, place)| p.module.is_none() && place.module.is_none() && place.shown)
-            .map(|(p, _)| p.param_ref_id.as_str())
+            .filter(|(_, place)| place.shown)
+            .filter_map(|(p, place)| match p.module {
+                None if place.module.is_none() => Some(p.param_ref_id.clone()),
+                None => None,
+                // A module instance's ref by its selector key, as a module
+                // channel holds it.
+                Some(m) => config.modules.get(m).map(|instance| {
+                    crate::dynamic::selector_key(Some(&instance.id), &p.param_ref_id)
+                }),
+            })
             .collect();
-        let mut seen: HashMap<&str, (usize, bool)> = HashMap::new();
+        let mut seen: HashMap<String, (usize, bool)> = HashMap::new();
         let mut out = Vec::new();
         let all = members
             .iter()
             .flat_map(|i| subtree(blocks, &self.parents, *i));
         for j in all {
             for r in &blocks[j].parameters {
-                if product.parameter_refs.get(r).is_some_and(|d| d.internal) {
+                let reference = def_ref(r);
+                if product
+                    .parameter_refs
+                    .get(&reference)
+                    .is_some_and(|d| d.internal)
+                {
                     continue;
                 }
-                let id = ref_param_id(r);
-                let Some(def) = product.parameters.get(id) else {
+                let Some(def) = self.def_of(r) else {
                     continue;
                 };
                 if matches!(def.kind, ParamKind::None) {
                     continue;
                 }
                 let holds = reached.contains(r.as_str());
-                match seen.get_mut(id) {
+                // One row per parameter (of one instance, for a module's).
+                let id = r
+                    .rsplit_once("_R-")
+                    .map_or(r.as_str(), |(head, _)| head)
+                    .to_string();
+                match seen.get_mut(&id) {
                     Some((at, taken)) => {
                         if holds && !*taken {
                             out[*at] = (r.as_str(), def);
@@ -1003,15 +1067,29 @@ impl<'a> Pages<'a> {
 
     /// The objects blocks `members` show once enabled: what the evaluator
     /// reaches in them and their nested blocks with the enabling values.
-    fn would_show(&self, members: &[usize]) -> Vec<ShownObject> {
+    /// Of a module channel, the objects of its instance count separately:
+    /// (the application's, the module instance's).
+    fn would_show(&self, members: &[usize]) -> (Vec<ShownObject>, usize) {
         let tree = self.tree(members);
         let config = self.enabled(members[0]);
         let mut out: Vec<ShownObject> = Vec::new();
+        let mut module_objects: HashSet<&str> = HashSet::new();
         for (c, place) in config.com_objects.iter().zip(&config.com_object_placements) {
-            if c.module.is_some()
-                || place.module.is_some()
-                || !self.placed_in(&tree, &place.blocks, place.channel.as_ref())
-            {
+            if let (Some(_), Some(instance)) = (place.module, place.module_instance.as_deref()) {
+                // A module channel holds its instance's objects by the
+                // selector key of the channel they sit in.
+                let held = place.channel.as_ref().is_some_and(|ch| {
+                    let id = crate::dynamic::selector_key(Some(instance), &ch.id);
+                    self.by_id
+                        .get(id.as_str())
+                        .is_some_and(|all| all.iter().any(|i| tree.contains(i)))
+                });
+                if held {
+                    module_objects.insert(c.com_object_ref_id.as_str());
+                }
+                continue;
+            }
+            if c.module.is_some() || !self.placed_in(&tree, &place.blocks, place.channel.as_ref()) {
                 continue;
             }
             let r = c.com_object_ref_id.as_str();
@@ -1031,7 +1109,7 @@ impl<'a> Pages<'a> {
             });
         }
         out.sort_by_key(|o| o.number);
-        out
+        (out, module_objects.len())
     }
 
     /// The application-level occurrences of parameter ref `reference`
@@ -1109,7 +1187,7 @@ impl<'a> Pages<'a> {
                 if !needs.contains(&words) {
                     needs.push(words);
                 }
-                let def = self.product.parameters.get(ref_param_id(&g.reference));
+                let def = self.def_of(&g.reference);
                 let name = def
                     .and_then(|d| d.text.clone().or_else(|| d.name.clone()))
                     .unwrap_or_else(|| g.reference.clone());
@@ -1153,7 +1231,7 @@ impl<'a> Pages<'a> {
     /// that satisfy the test, as the device file writes them ("Funktion des
     /// Kanals = Helligkeit").
     fn gate_words(&self, gate: &Gate) -> String {
-        let def = self.product.parameters.get(ref_param_id(&gate.reference));
+        let def = self.def_of(&gate.reference);
         let name = def
             .and_then(|d| d.text.clone().or_else(|| d.name.clone()))
             .unwrap_or_else(|| gate.reference.clone());
@@ -1186,29 +1264,16 @@ impl<'a> Pages<'a> {
 
     /// What enables inactive block `i` (shown together with `members`).
     fn inactive(&self, i: usize, members: &[usize]) -> Inactive {
-        let enable = self
+        let enable: Vec<EnableStep> = self
             .enable_values(i)
             .into_iter()
-            .map(|(g, set_to, _)| {
-                let def = self.product.parameters.get(ref_param_id(&g.reference));
-                EnableStep {
-                    key: self
-                        .entries
-                        .get(g.reference.as_str())
-                        .map(|e| e.key.clone()),
-                    reference: g.reference.clone(),
-                    text: def.and_then(|d| d.text.clone().or_else(|| d.name.clone())),
-                    set_to,
-                    default: self
-                        .evaluated
-                        .vendor_default(&g.reference)
-                        .map(|d| display_value(def, &d)),
-                    current: self.current(&g.reference),
-                }
-            })
+            .map(|(g, set_to, code)| self.enable_step(g, set_to, code))
             .collect();
-        let would_show = self.would_show(members);
-        let needs = if would_show.is_empty() {
+        let (would_show, module_objects) = self.would_show(members);
+        let ets_only = enable.iter().any(|e| e.ets_only);
+        let needs = if ets_only {
+            NEEDS_ETS
+        } else if would_show.is_empty() && module_objects == 0 {
             NEEDS_PUSH
         } else {
             NEEDS_FLASH
@@ -1217,9 +1282,128 @@ impl<'a> Pages<'a> {
         Inactive {
             enable,
             would_show,
+            module_objects,
             needs,
             also_needs: Vec::new(),
         }
+    }
+
+    /// The step that makes `gate` hold, `set_to` (`code`) its enabling value.
+    /// A gate on an internal parameter (`Access="None"`) names the parameter
+    /// the user sets instead (issue #302): the source of an `<Assign>` that
+    /// copies into it, else the controlling parameter of the nearest
+    /// `<choose>` in front of an `<Assign>` of a value that enables it; with
+    /// neither the step says "enabled by ETS only".
+    fn enable_step(&self, gate: &Gate, set_to: String, code: Option<i64>) -> EnableStep {
+        let step = |reference: &str, set_to: String| {
+            let def = self.def_of(reference);
+            EnableStep {
+                key: self.entries.get(reference).map(|e| e.key.clone()),
+                reference: reference.to_string(),
+                text: def.and_then(|d| d.text.clone().or_else(|| d.name.clone())),
+                set_to,
+                default: self
+                    .evaluated
+                    .vendor_default(reference)
+                    .map(|d| display_value(def, &d)),
+                current: self.current(reference),
+                ets_only: false,
+            }
+        };
+        if !self.internal(&gate.reference) {
+            return step(&gate.reference, set_to);
+        }
+        let (instance, _) = split_selector(&gate.reference);
+        let in_scope = |r: &str| match instance.as_deref() {
+            Some(i) if r.starts_with("MD-") => crate::dynamic::selector_key(Some(i), r),
+            _ => r.to_string(),
+        };
+        let test = ref_gate(gate);
+        let assigns = self.assigns.get_or_init(|| assign_sites(self.product));
+        let none = Vec::new();
+        let sites = assigns.get(&def_ref(&gate.reference)).unwrap_or(&none);
+        for assign in sites {
+            if let Some(source) = assign.source.as_deref().map(in_scope)
+                && !self.internal(&source)
+            {
+                let def = self.def_of(&source);
+                let value = code
+                    .map(|c| display_value(def, &c.to_string()))
+                    .unwrap_or_else(|| set_to.clone());
+                return step(&source, value);
+            }
+            let enables = assign
+                .value
+                .as_deref()
+                .and_then(|v| v.trim().parse::<f64>().ok())
+                .is_some_and(|v| test.holds(Some(v)));
+            if !enables {
+                continue;
+            }
+            for g in assign.gates.iter().rev() {
+                let reference = in_scope(&g.param_ref_id);
+                if self.internal(&reference) {
+                    continue;
+                }
+                let def = self.def_of(&reference);
+                let codes = def.map(enum_codes).unwrap_or_default();
+                if let Some(c) = enabling_code(g, &codes) {
+                    return step(&reference, display_value(def, &c.to_string()));
+                }
+            }
+        }
+        EnableStep {
+            key: None,
+            reference: gate.reference.clone(),
+            text: Some("enabled by ETS only".to_string()),
+            set_to,
+            default: None,
+            current: self.current(&gate.reference),
+            ets_only: true,
+        }
+    }
+
+    /// Whether inactive channel `i`, when it is a module instance's, is spare
+    /// capacity worth listing (issue #302); any other channel is. Not one of
+    /// an instance the configuration reaches (an alternative inside a shown
+    /// module), not one only ETS enables (a condition on an internal
+    /// parameter no shown one sets), and not one titled like an earlier one
+    /// (the same output under another of the module's variants), whose
+    /// titles `titles` collects.
+    fn spare_module_channel(&self, i: usize, titles: &mut HashSet<String>) -> bool {
+        let Some(instance) = self.blocks[i].module.as_deref() else {
+            return true;
+        };
+        if self
+            .evaluated
+            .config
+            .modules
+            .iter()
+            .any(|m| m.id == instance)
+        {
+            return false;
+        }
+        let ets_only = self
+            .enable_values(i)
+            .into_iter()
+            .any(|(g, set_to, code)| self.enable_step(g, set_to, code).ets_only);
+        if ets_only {
+            return false;
+        }
+        let title = self.blocks[i]
+            .text
+            .clone()
+            .unwrap_or_else(|| self.blocks[i].id.clone());
+        titles.insert(title)
+    }
+
+    /// Whether parameter ref `reference` (app-relative or in a module
+    /// instance's selector form) is internal (`Access="None"`).
+    fn internal(&self, reference: &str) -> bool {
+        self.product
+            .parameter_refs
+            .get(&def_ref(reference))
+            .is_some_and(|r| r.internal)
     }
 
     /// Whether the device has a parameter or object on active block `i` or a
@@ -1237,9 +1421,7 @@ impl<'a> Pages<'a> {
             let b = &self.blocks[j];
             !b.objects.is_empty()
                 || b.parameters.iter().any(|r| {
-                    self.product
-                        .parameters
-                        .get(ref_param_id(r))
+                    self.def_of(r)
                         .is_some_and(|d| !matches!(d.kind, ParamKind::None))
                 })
         })
@@ -1252,17 +1434,24 @@ impl<'a> Pages<'a> {
         let members = listed.members.as_slice();
         let b = &self.blocks[i];
         let active = self.states[i].active;
+        let detailed = self.detail.as_ref().is_none_or(|wanted| {
+            members
+                .iter()
+                .any(|m| wanted.contains(self.blocks[*m].id.as_str()))
+        });
         let (parameters, objects, inactive) = if active {
             (
                 self.param_block.values().filter(|j| **j == i).count(),
                 self.object_block.values().filter(|j| **j == i).count(),
                 None,
             )
+        } else if !detailed {
+            (0, 0, None)
         } else {
             let inactive = self.inactive(i, members);
             (
                 self.held_params(members).len(),
-                inactive.would_show.len(),
+                inactive.would_show.len() + inactive.module_objects,
                 Some(inactive),
             )
         };
@@ -1374,6 +1563,67 @@ impl<'a> Pages<'a> {
     }
 }
 
+/// One `<Assign>` of a product's Dynamic section: what it copies or sets,
+/// and the `<when>` branches in front of it, outermost first.
+struct AssignSite {
+    source: Option<String>,
+    value: Option<String>,
+    gates: Vec<RefGate>,
+}
+
+/// The `<Assign>`s of the application's Dynamic section and the module
+/// definitions' bodies, by app-relative target ref.
+fn assign_sites(product: &ProductModel) -> HashMap<String, Vec<AssignSite>> {
+    fn walk(
+        nodes: &[crate::dynamic::DynamicNode],
+        gates: &mut Vec<RefGate>,
+        out: &mut HashMap<String, Vec<AssignSite>>,
+    ) {
+        use crate::dynamic::DynamicNode;
+        for node in nodes {
+            match node {
+                DynamicNode::Assign {
+                    target,
+                    source,
+                    value,
+                } => out.entry(target.clone()).or_default().push(AssignSite {
+                    source: source.clone(),
+                    value: value.clone(),
+                    gates: gates.clone(),
+                }),
+                DynamicNode::Channel { children, .. }
+                | DynamicNode::ParameterBlock { children, .. }
+                | DynamicNode::Repeat { children, .. } => walk(children, gates, out),
+                DynamicNode::Choose {
+                    param_ref_id,
+                    whens,
+                } => {
+                    for when in whens {
+                        gates.push(RefGate {
+                            param_ref_id: param_ref_id.clone(),
+                            test: when.test.clone(),
+                            siblings: whens
+                                .iter()
+                                .filter(|w| !std::ptr::eq(*w, when))
+                                .map(|w| w.test.clone())
+                                .collect(),
+                        });
+                        walk(&when.children, gates, out);
+                        gates.pop();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut out = HashMap::new();
+    walk(&product.dynamic, &mut Vec::new(), &mut out);
+    for body in product.module_dynamics.values() {
+        walk(body, &mut Vec::new(), &mut out);
+    }
+    out
+}
+
 /// A block a device lists: its index, handle and the blocks shown with it.
 struct Listed {
     index: usize,
@@ -1386,7 +1636,7 @@ struct Listed {
 /// A title with its numbering taken out: digit runs and single-letter words
 /// become `#`, so "Universalkanal C4" and "Universalkanal C10", or "Channel
 /// A" and "Channel B", have the same shape.
-fn title_shape(text: Option<&str>) -> String {
+pub(crate) fn title_shape(text: Option<&str>) -> String {
     let text = text.unwrap_or("");
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::new();
@@ -1576,6 +1826,32 @@ pub fn device_view(
     address: IndividualAddress,
     channel: Option<&str>,
 ) -> Result<DeviceView, ViewError> {
+    build_view(model, products, address, channel, None)
+}
+
+/// The unscoped [`device_view`] of `address` with the inactive detail
+/// (`inactive`, the parameter and object counts) only on the rows of
+/// `blocks` (block or channel ids, or a block folded into a row): what the
+/// capability lookup needs, without evaluating every inactive page of the
+/// device with its enabling values (issue #302). Every other inactive row
+/// has `inactive: None` and zero counts.
+pub fn device_view_for_blocks(
+    model: &Model,
+    products: &ProductModels,
+    address: IndividualAddress,
+    blocks: HashSet<String>,
+) -> Result<DeviceView, ViewError> {
+    build_view(model, products, address, None, Some(blocks))
+}
+
+/// [`device_view`], with the inactive detail limited to `detail` when given.
+fn build_view(
+    model: &Model,
+    products: &ProductModels,
+    address: IndividualAddress,
+    channel: Option<&str>,
+    detail: Option<HashSet<String>>,
+) -> Result<DeviceView, ViewError> {
     let device = &model
         .devices
         .get(&address)
@@ -1630,7 +1906,11 @@ pub fn device_view(
     let pages = evaluated
         .as_ref()
         .filter(|e| has_pages(e.product))
-        .map(|e| Pages::new(device, e, &overrides, &params));
+        .map(|e| {
+            let mut pages = Pages::new(device, e, &overrides, &params);
+            pages.detail = detail;
+            pages
+        });
     let channel_less = device.channels.len() <= 1;
     let listed: Vec<Listed> = match &pages {
         Some(pg) if channel_less => pg.listed(
@@ -1645,6 +1925,9 @@ pub fn device_view(
         Some(pg) => listed.iter().map(|l| pg.row(l)).collect(),
         None => Vec::new(),
     };
+    let mut used_handles: HashSet<String> = channels.iter().map(|c| c.handle.clone()).collect();
+    let mut module_titles: HashSet<String> = HashSet::new();
+    used_handles.insert(DEVICE_SCOPE.to_string());
     let inactive_channels: Vec<BlockRow> = match &pages {
         Some(pg) if !channel_less => pg
             .blocks
@@ -1656,14 +1939,24 @@ pub fn device_view(
                     && !pg.states[*i].parent_inactive
                     && !device.channels.contains_key(&b.id)
                     && pg.has_content(*i)
+                    && pg.spare_module_channel(*i, &mut module_titles)
             })
             .map(|(i, b)| {
-                let handle = b
+                // The slug of the title, made unique with `-2`, `-3`, …: the
+                // channels of a module's instances share their title.
+                let base = b
                     .text
                     .as_deref()
                     .map(crate::slug)
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| b.id.to_lowercase());
+                let mut handle = base.clone();
+                let mut n = 2;
+                while used_handles.contains(&handle) {
+                    handle = format!("{base}-{n}");
+                    n += 1;
+                }
+                used_handles.insert(handle.clone());
                 pg.row(&Listed {
                     index: i,
                     handle,
@@ -1679,11 +1972,9 @@ pub fn device_view(
                 .iter()
                 .map(|r| r.text.clone().unwrap_or_else(|| r.id.clone()))
                 .collect();
-            format!(
-                "{} channel(s) inactive: {}",
-                inactive_channels.len(),
-                names.join(", ")
-            )
+            let n = inactive_channels.len();
+            let noun = if n == 1 { "channel" } else { "channels" };
+            format!("{n} {noun} inactive: {}", names.join(", "))
         })
     });
     let block_hit = channel.and_then(|wanted| {
@@ -2223,7 +2514,12 @@ impl Pages<'_> {
     /// [`parameter_visibility`] of every ref the pages hold.
     fn visibility(&self) -> BTreeMap<String, RefVisibility> {
         let mut out: BTreeMap<String, RefVisibility> = BTreeMap::new();
+        // The application's own pages: a module channel's refs are keyed by
+        // instance and the value-free index has no conditions for them.
         for (i, b) in self.blocks.iter().enumerate() {
+            if b.module.is_some() {
+                continue;
+            }
             for reference in &b.parameters {
                 let seen = self.ref_visibility(i, reference);
                 match out.get_mut(reference) {

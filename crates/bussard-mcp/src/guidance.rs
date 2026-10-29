@@ -217,6 +217,9 @@ impl Tiers {
     /// ([`bussard_model::device_view::NEEDS_FLASH`] or
     /// [`bussard_model::device_view::NEEDS_PUSH`]), this says how.
     pub fn needs_how(&self, needs: &str, ia: Option<IndividualAddress>) -> String {
+        if needs == bussard_model::device_view::NEEDS_ETS {
+            return needs.to_string();
+        }
         let at = ia.map_or_else(|| "<ia>".to_string(), |ia| ia.to_string());
         let flash = needs == bussard_model::device_view::NEEDS_FLASH;
         let how = match (flash, self.programming) {

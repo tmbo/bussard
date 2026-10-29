@@ -77,6 +77,13 @@ pub struct ProductModel {
     /// on first use ([`Self::blocks`]).
     #[serde(skip)]
     pages: std::sync::OnceLock<Vec<crate::blocks::BlockDef>>,
+    /// [`Self::blocks`] followed by the channels of the module instances
+    /// ([`Self::blocks_with_module_channels`]).
+    #[serde(skip)]
+    pages_with_modules: std::sync::OnceLock<Vec<crate::blocks::BlockDef>>,
+    /// The conditions in front of every ref ([`Self::ref_index`]).
+    #[serde(skip)]
+    ref_index: std::sync::OnceLock<crate::dynamic::RefIndex>,
 }
 
 /// The Data Secure table capacities a product declares (the application's
@@ -476,6 +483,8 @@ impl ProductModel {
             allocators: raw.allocators,
             argument_allocates: raw.argument_allocates,
             pages: std::sync::OnceLock::new(),
+            pages_with_modules: std::sync::OnceLock::new(),
+            ref_index: std::sync::OnceLock::new(),
         })
     }
 
@@ -484,6 +493,26 @@ impl ProductModel {
     /// ([`crate::blocks::pages_of`]).
     pub fn blocks(&self) -> &[crate::blocks::BlockDef] {
         self.pages.get_or_init(|| crate::blocks::pages_of(self))
+    }
+
+    /// The value-free index of the conditions in front of every parameter
+    /// and com-object ref ([`crate::dynamic::RefIndex`]), built once: every
+    /// device view of the application reads it (issue #302).
+    pub fn ref_index(&self) -> &crate::dynamic::RefIndex {
+        self.ref_index
+            .get_or_init(|| crate::dynamic::RefIndex::new(self))
+    }
+
+    /// [`Self::blocks`] followed by the `<Channel>`s of the module instances
+    /// the Dynamic section places ([`crate::blocks::module_channels_of`],
+    /// issue #302), derived once. The first `blocks().len()` entries are
+    /// [`Self::blocks`], so an index into either means the same block.
+    pub fn blocks_with_module_channels(&self) -> &[crate::blocks::BlockDef] {
+        self.pages_with_modules.get_or_init(|| {
+            let mut all = self.blocks().to_vec();
+            all.extend(crate::blocks::module_channels_of(self));
+            all
+        })
     }
 
     /// The vendor default of app-relative parameter ref `reference`: a text

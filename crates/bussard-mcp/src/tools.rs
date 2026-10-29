@@ -318,8 +318,19 @@ pub fn get_group(model: &Model, ring: &TelegramRing, ga: GroupAddress) -> Value 
     })
 }
 
-/// `knx_get_device`: the full device definition plus its links.
-pub fn get_device(model: &Model, ia: IndividualAddress) -> Value {
+/// Whether a device-file parameter key is an ETS-internal value the device
+/// file does not show: a stored value of a ref the configuration hides
+/// (`hidden@<ref>`) or a channel's label parameter (`label@<ref>`, the
+/// channel `name`).
+fn technical_param_key(key: &str) -> bool {
+    bussard_model::is_hidden_mem_key(key) || key.starts_with(&bussard_model::label_mem_key(""))
+}
+
+/// `knx_get_device`: the full device definition plus its links. Without
+/// `technical` the `parameters` map keeps the keyed values only and
+/// `hidden_parameters` counts the ETS-internal ones it leaves out (issue
+/// #311).
+pub fn get_device(model: &Model, ia: IndividualAddress, technical: bool) -> Value {
     let Some(loaded) = model.devices.get(&ia) else {
         return json!({
             "address": ia.to_string(),
@@ -330,7 +341,22 @@ pub fn get_device(model: &Model, ia: IndividualAddress) -> Value {
 
     // Serialize the whole device via serde (identity, product, location,
     // channels, com_objects) — the schema is already the on-disk shape.
-    let device_value = serde_json::to_value(dev).unwrap_or_else(|_| json!({}));
+    let mut device_value = serde_json::to_value(dev).unwrap_or_else(|_| json!({}));
+    let mut hidden = 0usize;
+    if let Some(params) = device_value
+        .get_mut("parameters")
+        .and_then(Value::as_object_mut)
+    {
+        let before = params.len();
+        if !technical {
+            params.retain(|k, _| !technical_param_key(k));
+        }
+        hidden = if technical {
+            params.keys().filter(|k| technical_param_key(k)).count()
+        } else {
+            before - params.len()
+        };
+    }
 
     let links: Vec<Value> = model
         .links
@@ -356,6 +382,7 @@ pub fn get_device(model: &Model, ia: IndividualAddress) -> Value {
         "found": true,
         "file_stem": loaded.file_stem,
         "device": device_value,
+        "hidden_parameters": hidden,
         "links": links,
     })
 }
@@ -990,7 +1017,7 @@ mod tests {
     #[test]
     fn get_device_full_and_links() -> TestResult {
         let m = model()?;
-        let v = get_device(&m, ia("1.1.4")?);
+        let v = get_device(&m, ia("1.1.4")?, false);
         assert_eq!(v["found"], true);
         assert_eq!(v["device"]["name"], "Blind Actuator 4-fold");
         assert_eq!(v["device"]["location"]["room"], "Wohnzimmer");
@@ -1000,9 +1027,64 @@ mod tests {
     }
 
     #[test]
+    fn test_get_device_hides_technical_parameters() -> TestResult {
+        let mut m = model()?;
+        let dev = &mut m.devices.get_mut(&ia("1.1.4")?).ok_or("no 1.1.4")?.device;
+        dev.parameters
+            .insert("fahrzeit@P-1_R-1".to_string(), "60".to_string());
+        dev.parameters
+            .insert(bussard_model::hidden_mem_key("P-2_R-2"), "0".to_string());
+        dev.parameters.insert(
+            bussard_model::label_mem_key("P-3_R-3"),
+            "Kanal A".to_string(),
+        );
+        let v = get_device(&m, ia("1.1.4")?, false);
+        let keys: Vec<&String> = v["device"]["parameters"]
+            .as_object()
+            .ok_or("no parameters")?
+            .keys()
+            .collect();
+        assert_eq!(keys, ["fahrzeit@P-1_R-1"]);
+        assert_eq!(v["hidden_parameters"], 2);
+        let v = get_device(&m, ia("1.1.4")?, true);
+        assert_eq!(
+            v["device"]["parameters"]
+                .as_object()
+                .ok_or("no parameters")?
+                .len(),
+            3
+        );
+        assert_eq!(v["hidden_parameters"], 2);
+        Ok(())
+    }
+
+    #[test]
+    fn test_compact_row_pluralises_the_counts() {
+        let row = |parameters, objects| bussard_model::device_view::BlockRow {
+            handle: "logik".to_string(),
+            id: "CH-7".to_string(),
+            text: Some("Logik".to_string()),
+            depth: 0,
+            active: false,
+            parameters,
+            objects,
+            inactive: None,
+            includes: Vec::new(),
+        };
+        assert_eq!(
+            compact_row(&row(1, 1)),
+            "logik \"Logik\": inactive, 1 parameter, 1 object"
+        );
+        assert_eq!(
+            compact_row(&row(2, 0)),
+            "logik \"Logik\": inactive, 2 parameters, 0 objects"
+        );
+    }
+
+    #[test]
     fn get_device_not_found() -> TestResult {
         let m = model()?;
-        let v = get_device(&m, ia("9.9.9")?);
+        let v = get_device(&m, ia("9.9.9")?, false);
         assert_eq!(v["found"], false);
         Ok(())
     }

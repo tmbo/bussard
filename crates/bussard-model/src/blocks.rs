@@ -8,6 +8,13 @@
 //! container and the block ([`Gate`]), and the parameter and com-object refs
 //! it holds on any branch. Containers inside a `<ModuleDef>` are not listed.
 //!
+//! [`module_channels_of`] adds the `<Channel>`s of the module instances the
+//! application's Dynamic section places (issue #302): one [`BlockDef`] per
+//! (instance, channel), keyed the way device files key module channels
+//! (`MD-4_M-19_MI-1_CH-1`), with the conditions in front of the `<Module>`
+//! and in front of the channel inside the module body, and every parameter
+//! and com-object ref of the channel in the same instance-selector form.
+//!
 //! Which of them a device's configuration shows is the Dynamic evaluator's
 //! answer ([`crate::dynamic::evaluate_dynamic`], issue #345), not this
 //! module's: [`Gate`] is only the words a page condition is written in.
@@ -88,6 +95,11 @@ pub struct BlockDef {
     /// document order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub objects: Vec<String>,
+    /// For a channel of a module instance ([`module_channels_of`]): the
+    /// instance (`MD-4_M-19`). Its id, conditions and refs carry the
+    /// instance selector, and its refs are those of the whole channel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module: Option<String>,
 }
 
 /// The pages and channels of `product`'s own Dynamic section, in document
@@ -244,6 +256,202 @@ impl PageWalk<'_> {
             .map(|t| clean_text(&t))
             .filter(|t| !t.is_empty())
     }
+}
+
+/// The `<Channel>`s of the module instances `product`'s own Dynamic section
+/// places (issue #302), in document order: for each `<Module>` outside a
+/// `<Repeat>` (whose instance keys depend on the count), the channels of its
+/// module definition's body reached through `<choose>` branches only. Each is
+/// keyed with the instance selector ([`crate::dynamic::selector_key`]), as the
+/// lock keys the channels of a reached instance, and holds the parameter and
+/// com-object refs anywhere inside it, in the same form. Its `parent` is the
+/// application container holding the `<Module>`, and its `when` the
+/// conditions between that container and the `<Module>` followed by those
+/// inside the body.
+pub fn module_channels_of(product: &ProductModel) -> Vec<BlockDef> {
+    let mut out = Vec::new();
+    app_modules(product, &product.dynamic, None, &mut Vec::new(), &mut out);
+    out
+}
+
+/// The [`module_channels_of`] walk over the application's nodes inside
+/// container `current`; `gates` are the conditions since it began.
+fn app_modules(
+    product: &ProductModel,
+    nodes: &[DynamicNode],
+    current: Option<&str>,
+    gates: &mut Vec<Gate>,
+    out: &mut Vec<BlockDef>,
+) {
+    for node in nodes {
+        match node {
+            DynamicNode::Channel { id, children, .. }
+            | DynamicNode::ParameterBlock { id, children, .. } => {
+                app_modules(product, children, Some(id), &mut Vec::new(), out);
+            }
+            DynamicNode::Choose {
+                param_ref_id,
+                whens,
+            } => {
+                for_each_when(param_ref_id, whens, gates, |when, gates| {
+                    app_modules(product, &when.children, current, gates, out);
+                });
+            }
+            DynamicNode::Module { id, module_def, .. } => {
+                let Some(body) = product.module_dynamics.get(module_def) else {
+                    continue;
+                };
+                let instance = ModuleInstance {
+                    id,
+                    module_def,
+                    parent: current,
+                };
+                instance.channels(body, &mut gates.clone(), out);
+            }
+            DynamicNode::Repeat { .. }
+            | DynamicNode::ParameterRefRef(_)
+            | DynamicNode::ComObjectRefRef(_)
+            | DynamicNode::Assign { .. } => {}
+        }
+    }
+}
+
+/// Calls `visit` with each branch of a `<choose>` on `param_ref_id` and the
+/// conditions up to and including that branch.
+fn for_each_when(
+    param_ref_id: &str,
+    whens: &[crate::dynamic::DynamicWhen],
+    gates: &mut Vec<Gate>,
+    mut visit: impl FnMut(&crate::dynamic::DynamicWhen, &mut Vec<Gate>),
+) {
+    let explicit: Vec<&WhenTest> = whens
+        .iter()
+        .map(|w| &w.test)
+        .filter(|t| **t != WhenTest::Default)
+        .collect();
+    for when in whens {
+        let is_default = when.test == WhenTest::Default;
+        gates.push(Gate {
+            reference: param_ref_id.to_string(),
+            test: test_string(&when.test),
+            others: if is_default {
+                explicit.iter().map(|t| test_string(t)).collect()
+            } else {
+                Vec::new()
+            },
+        });
+        visit(when, gates);
+        gates.pop();
+    }
+}
+
+/// One `<Module>` of the application's Dynamic section, as
+/// [`module_channels_of`] walks its definition's body.
+struct ModuleInstance<'a> {
+    /// The `<Module>` id, the instance key (`MD-4_M-19`).
+    id: &'a str,
+    /// Its module definition (`MD-4`).
+    module_def: &'a str,
+    /// The application container holding the `<Module>`.
+    parent: Option<&'a str>,
+}
+
+impl ModuleInstance<'_> {
+    /// An id of the module definition's body in the instance's selector form
+    /// (`MD-4_CH-1` → `MD-4_M-19_MI-1_CH-1`); an id of another scope as is.
+    fn key(&self, id: &str) -> String {
+        let own = id
+            .strip_prefix(self.module_def)
+            .is_some_and(|rest| rest.starts_with('_'));
+        if own {
+            crate::dynamic::selector_key(Some(self.id), id)
+        } else {
+            id.to_string()
+        }
+    }
+
+    /// The channels in `nodes` of the body, through `<choose>` branches.
+    fn channels(&self, nodes: &[DynamicNode], gates: &mut Vec<Gate>, out: &mut Vec<BlockDef>) {
+        for node in nodes {
+            match node {
+                DynamicNode::Channel {
+                    id,
+                    name,
+                    text,
+                    number,
+                    children,
+                    ..
+                } => {
+                    let title = text
+                        .as_deref()
+                        .map(|t| clean_text(t).replace("(...)", ""))
+                        .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "))
+                        .filter(|t| !t.is_empty())
+                        .or_else(|| name.clone());
+                    let mut block = BlockDef {
+                        id: self.key(id),
+                        kind: BlockKind::Channel,
+                        name: name.clone().filter(|n| Some(n) != title.as_ref()),
+                        text: title,
+                        number: *number,
+                        parent: self.parent.map(str::to_string),
+                        channel: None,
+                        when: gates.clone(),
+                        module: Some(self.id.to_string()),
+                        ..BlockDef::default()
+                    };
+                    self.refs(children, &mut block);
+                    out.push(block);
+                }
+                DynamicNode::Choose {
+                    param_ref_id,
+                    whens,
+                } => {
+                    let reference = self.key(param_ref_id);
+                    for_each_when(&reference, whens, gates, |when, gates| {
+                        self.channels(&when.children, gates, out);
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Adds every parameter and com-object ref inside `nodes` to `block`,
+    /// once each, in the instance's selector form.
+    fn refs(&self, nodes: &[DynamicNode], block: &mut BlockDef) {
+        for node in nodes {
+            match node {
+                DynamicNode::ParameterRefRef(r) => {
+                    let key = self.key(r);
+                    if !block.parameters.contains(&key) {
+                        block.parameters.push(key);
+                    }
+                }
+                DynamicNode::ComObjectRefRef(r) => {
+                    let key = self.key(r);
+                    if !block.objects.contains(&key) {
+                        block.objects.push(key);
+                    }
+                }
+                DynamicNode::Channel { children, .. }
+                | DynamicNode::ParameterBlock { children, .. }
+                | DynamicNode::Repeat { children, .. } => self.refs(children, block),
+                DynamicNode::Choose { whens, .. } => {
+                    for when in whens {
+                        self.refs(&when.children, block);
+                    }
+                }
+                DynamicNode::Module { .. } | DynamicNode::Assign { .. } => {}
+            }
+        }
+    }
+}
+
+/// The parameter ref an app-relative or instance-selector ref key stands
+/// for, app-relative (`MD-4_M-19_MI-1_P-3_R-5` → `MD-4_P-3_R-5`).
+pub fn def_ref(reference: &str) -> String {
+    crate::dynamic::split_selector(reference).1
 }
 
 /// A `<when>` test as [`Gate::test`] writes it.

@@ -14,6 +14,7 @@ mod labels;
 mod lint_rules;
 mod loader_adversarial;
 mod lock_v2;
+mod module_capabilities;
 mod parameter_names;
 mod parse_hints;
 mod reimport_merge;
