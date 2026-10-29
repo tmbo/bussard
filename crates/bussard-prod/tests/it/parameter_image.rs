@@ -174,10 +174,13 @@ fn union_default_member_overlays_shared_region_exact_bytes()
 /// Env-gated real-product union regression: the Zennio FIX2 dimmer
 /// (`T4940275_KNX_FIX2_Dimmaktor_V1.0_ETS4.knxprod`) declares a `<Union>` at
 /// segment `AS-48D0` offset 56 whose `DefaultUnionParameter` member is an 8-bit
-/// value 75 (0x4B). Its base `<Data>` byte there is 0x00, so the computed image
-/// byte must be exactly 0x4B — the value ETS itself would write. Set
-/// `BUSSARD_PRODUCT_CORPUS=<corpus>` to run it; skipped when unset (CI never
-/// ships the copyrighted vendor file, which the fabricated union test covers).
+/// value 75 (0x4B). The configuration does not show the union at the defaults,
+/// and the program is System 7 (`MV-0701`) without `DownloadInvisibleParameters`,
+/// so ETS keeps the segment template there (issue #448: hidden parameters
+/// carry their defaults on System B only): the byte stays 0x00. The default
+/// member's value lands once the union is shown, which the fabricated union
+/// test covers. Set `BUSSARD_PRODUCT_CORPUS=<corpus>` to run it; skipped when
+/// unset (CI never ships the copyrighted vendor file).
 #[test]
 fn real_zennio_fix2_union_byte_is_vendor_default() -> Result<(), Box<dyn std::error::Error>> {
     let Some(dir) = std::env::var_os("BUSSARD_PRODUCT_CORPUS") else {
@@ -210,9 +213,10 @@ fn real_zennio_fix2_union_byte_is_vendor_default() -> Result<(), Box<dyn std::er
         "segment image too short: {} bytes",
         img.len()
     );
+    assert!(!app.downloads_invisible_parameters());
     assert_eq!(
-        img[56], 0x4B,
-        "union default member (value 75) must land at offset 56, got {:#04X}",
+        img[56], 0x00,
+        "the hidden union keeps the template at offset 56, got {:#04X}",
         img[56]
     );
     Ok(())
