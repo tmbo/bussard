@@ -29,7 +29,7 @@ use std::time::Duration;
 
 use bussard_bus::{BusError, BusLease, FrameSubscription};
 use bussard_model::IndividualAddress;
-use bussard_transport::cemi::{Apdu, CemiFrame, Tpci};
+use bussard_transport::cemi::{Apdu, CemiFrame, Priority, Tpci};
 use bussard_transport::tpci::{self, TpciKind};
 use bussard_transport::{BusConnection, TimestampedFrame, TransportError};
 use tokio::time::{Instant, timeout};
@@ -430,6 +430,11 @@ pub struct Layer4Connection<Ch: L4Channel> {
     /// The outcome of the last [`authorize`](Self::authorize) on this
     /// connection, kept so the device facts can record the verdict.
     last_authorize: Option<AuthorizeOutcome>,
+    /// The priority of the numbered data telegrams. The transport layer
+    /// leaves it to its user (03_03_04 §5.3 A7); [`Priority::System`] by
+    /// default, as ETS sends them. The control frames are always system
+    /// priority (§5.3 A2-A4, A6).
+    data_priority: Priority,
 }
 
 /// Why [`Layer4Connection::negotiate_max_apdu`] found no `PID_MAX_APDU_LENGTH`.
@@ -535,6 +540,7 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
             sync_retry: SyncRetry::default(),
             seed: None,
             last_authorize: None,
+            data_priority: Priority::System,
         })
     }
 
@@ -574,6 +580,18 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
     /// and the sequence numbers agree, so a fallback read may follow.
     pub(crate) fn reopen_after_unanswered(&mut self) {
         self.closed = false;
+    }
+
+    /// Sets the priority of the numbered data telegrams this connection sends
+    /// from now on ([`Priority::System`] unless changed). The transport-layer
+    /// control frames stay at system priority whatever is set here.
+    pub fn set_data_priority(&mut self, priority: Priority) {
+        self.data_priority = priority;
+    }
+
+    /// The priority of the numbered data telegrams this connection sends.
+    pub fn data_priority(&self) -> Priority {
+        self.data_priority
     }
 
     /// The outcome of the last [`authorize`](Self::authorize) on this
@@ -616,7 +634,8 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
     ) -> Result<()> {
         let seq = self.send_seq;
         let frame =
-            CemiFrame::t_data_connected(self.target, self.source, tpci_octet, wire_apci, wire_data);
+            CemiFrame::t_data_connected(self.target, self.source, tpci_octet, wire_apci, wire_data)
+                .with_priority(self.data_priority);
 
         let mut attempt = 0;
         loop {
@@ -910,7 +929,8 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
             tpci_octet,
             wire_apci,
             &wire_data,
-        );
+        )
+        .with_priority(self.data_priority);
         self.conn.send(frame).await?;
         self.send_seq = (self.send_seq + 1) & 0x0f;
         self.numbered_exchanges = self.numbered_exchanges.saturating_add(1);

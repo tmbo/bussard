@@ -115,6 +115,15 @@ impl Default for Control1 {
 }
 
 impl Control1 {
+    /// The defaults with [`Priority::System`]: the control field of the
+    /// transport-layer control frames and of the management services.
+    pub fn system() -> Self {
+        Control1 {
+            priority: Priority::System,
+            ..Control1::default()
+        }
+    }
+
     fn from_byte(b: u8) -> Self {
         Control1 {
             standard_frame: b & 0x80 != 0,
@@ -603,12 +612,17 @@ impl CemiFrame {
     /// `tpci` byte is placed verbatim as the first (and only) TPDU octet; the
     /// on-wire NPDU length is 0.
     ///
+    /// The frame goes out with [`Priority::System`]: the transport layer sends
+    /// every `T_Connect`, `T_Disconnect`, `T_ACK` and `T_NAK` at system priority
+    /// (03_03_04 Transport Layer §3.7, §3.8 and actions A2-A4, A6, A10, A14 of
+    /// §5.3; ETS does the same).
+    ///
     /// See [`tpci`](crate::tpci) for the control-octet constants.
     pub fn t_control(destination: IndividualAddress, source: IndividualAddress, tpci: u8) -> Self {
         CemiFrame {
             message_code: MessageCode::LDataReq,
             additional_info: Vec::new(),
-            control1: Control1::default(),
+            control1: Control1::system(),
             control2: Control2 {
                 group_address: false,
                 ..Control2::default()
@@ -627,6 +641,11 @@ impl CemiFrame {
     /// 10-bit application service and `data` its trailing octets. This is how
     /// every A_* management service (device descriptor, property, memory, …) is
     /// carried once a connection is open.
+    ///
+    /// The priority is [`Priority::System`], what ETS sends its management
+    /// telegrams with; the transport layer leaves the data priority to its user
+    /// (03_03_04 §5.3 A7), so a caller may change it with
+    /// [`with_priority`](Self::with_priority).
     pub fn t_data_connected(
         destination: IndividualAddress,
         source: IndividualAddress,
@@ -637,7 +656,7 @@ impl CemiFrame {
         CemiFrame {
             message_code: MessageCode::LDataReq,
             additional_info: Vec::new(),
-            control1: Control1::default(),
+            control1: Control1::system(),
             control2: Control2 {
                 group_address: false,
                 ..Control2::default()
@@ -657,14 +676,17 @@ impl CemiFrame {
     ///
     /// Broadcast management services (`A_IndividualAddress_Read`,
     /// `A_IndividualAddress_Write`, …) use TPCI `0x00` with a `system_broadcast`
-    /// frame and a group destination of raw `0x0000`.
+    /// frame and a group destination of raw `0x0000`. They go out at
+    /// [`Priority::System`]: the application layer hands them to the transport
+    /// layer with priority "implicitly system" (03_03_07 Application Layer
+    /// §3.2.2-§3.2.5).
     pub fn t_broadcast(source: IndividualAddress, apci: u16, data: &[u8]) -> Self {
         CemiFrame {
             message_code: MessageCode::LDataReq,
             additional_info: Vec::new(),
             control1: Control1 {
                 system_broadcast: true,
-                ..Control1::default()
+                ..Control1::system()
             },
             control2: Control2 {
                 group_address: true,
@@ -678,6 +700,13 @@ impl CemiFrame {
                 data: data.to_vec(),
             },
         }
+    }
+
+    /// This frame with its priority (control field 1, bits 3-2) set to
+    /// `priority`.
+    pub fn with_priority(mut self, priority: Priority) -> Self {
+        self.control1.priority = priority;
+        self
     }
 
     /// The raw TPCI octet of this frame, whatever its kind.
@@ -1132,6 +1161,48 @@ mod tests {
         assert_eq!(back.tpci_octet(), 0x80);
         assert_eq!(back.encode(), bytes);
         Ok(())
+    }
+
+    #[test]
+    fn test_t_control_sends_system_priority() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
+        // 03_03_04 §3.7/§3.8/§5.3: T_Connect, T_Disconnect, T_ACK and T_NAK go
+        // out at system priority. Control field 1 is 0xB2: standard frame, not
+        // repeated, broadcast, priority 00 (system), ack requested.
+        for octet in [0x80, 0x81, 0xC2, 0xC3] {
+            let frame = CemiFrame::t_control(ia("1.1.4"), ia("0.0.255"), octet);
+            assert_eq!(frame.control1.priority, Priority::System);
+            let bytes = frame.encode();
+            assert_eq!(bytes[2], 0xB2, "control field 1 of TPCI {octet:#04x}");
+            assert_eq!(
+                CemiFrame::decode(&bytes)?.control1.priority,
+                Priority::System
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_t_data_connected_defaults_to_system_priority() {
+        let frame = CemiFrame::t_data_connected(ia("1.1.4"), ia("0.0.255"), 0x40, 0x300, &[]);
+        assert_eq!(frame.encode()[2], 0xB2);
+        let low = frame.with_priority(Priority::Low);
+        assert_eq!(low.encode()[2], 0xBE);
+    }
+
+    #[test]
+    fn test_t_broadcast_sends_system_priority() {
+        // 03_03_07 §3.2.2: A_IndividualAddress_Write is passed down at system
+        // priority.
+        let frame = CemiFrame::t_broadcast(ia("0.0.255"), 0x0C0, &[0x11, 0x05]);
+        assert_eq!(frame.control1.priority, Priority::System);
+        assert_eq!(frame.encode()[2], 0xB2);
+    }
+
+    #[test]
+    fn test_group_write_keeps_normal_priority() {
+        let frame = CemiFrame::group_write_packed(ga("1/1/1"), ia("1.1.1"), &[0x01]);
+        assert_eq!(frame.control1.priority, Priority::Normal);
     }
 
     #[test]

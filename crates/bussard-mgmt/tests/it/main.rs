@@ -14,3 +14,4 @@ mod mock_device;
 mod property_ext_mock;
 mod tables_memory_mock;
 mod tables_mock;
+mod tl_style3_mock;
