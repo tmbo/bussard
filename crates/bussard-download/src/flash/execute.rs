@@ -335,6 +335,9 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
     // device (after which it is unreachable and cannot be verified). `None` until
     // then; the post-loop verify runs only if it is still `None`.
     let mut verified: Option<FlashOutcome> = None;
+    // The objects a parameter-only download found `Loaded` before its first
+    // `Unload` (issue #543), so a replayed `Unload` does not check again.
+    let mut partial_checked: BTreeSet<u8> = BTreeSet::new();
 
     // The proactive-reconnect exchange threshold (0 = disabled, the default for
     // every device but KNX Virtual, issue #116), read once.
@@ -352,11 +355,13 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
     // A plan that factory-resets the device first erases every object, so no
     // resident image can survive to be matched: the pre-pass is skipped and every
     // object streams in full.
-    let skip_objects: BTreeSet<u8> = if options.skip_matching_mcb && !plan.has_factory_reset() {
-        resident_match_objects(session, plan, app_obj, &object_table).await?
-    } else {
-        BTreeSet::new()
-    };
+    // A parameter-only download diffs against the resident memory instead.
+    let skip_objects: BTreeSet<u8> =
+        if options.skip_matching_mcb && !plan.has_factory_reset() && !plan.is_parameters_only() {
+            resident_match_objects(session, plan, app_obj, &object_table).await?
+        } else {
+            BTreeSet::new()
+        };
 
     for (i, step) in plan.steps.iter().enumerate() {
         // A resident-match object (its MCB already matched the image bussard
@@ -476,6 +481,22 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                         ) else {
                             return Ok(());
                         };
+                        // A parameter-only download rewrites the resident
+                        // application (Configuration Procedures 03_05_03
+                        // §3.5.3): the object must hold it, or the diff against
+                        // the memory read before the download means nothing.
+                        // Checked once, before anything is unloaded.
+                        if plan.is_parameters_only() && !partial_checked.contains(&obj) {
+                            let actual = read_load_state_resumable(session, obj).await?;
+                            if actual != LoadState::Loaded {
+                                return Err(WriteError::NotLoaded {
+                                    address: session.l4().target(),
+                                    object_index: obj,
+                                    actual,
+                                });
+                            }
+                            partial_checked.insert(obj);
+                        }
                         write_load_control_resumable(session, obj, LoadControl::Unload).await?;
                     }
                     FlashStep::StartLoading { target } => {
@@ -561,11 +582,66 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                             .get(&image.segment_id)
                             .cloned()
                             .unwrap_or_default();
-                        match fill {
+                        let partial = plan
+                            .baseline
+                            .get(&image.segment_id)
+                            .map(|current| (current, plan.baseline_address(&image.segment_id)));
+                        match (partial, fill) {
+                            // A parameter-only download (issue #543): the
+                            // allocation in Mode 0 kept the memory contents at
+                            // the base it reported (Configuration Procedures
+                            // 03_05_03 §3.5.1.2, §3.5.3). A zero reference means
+                            // the allocation failed; nothing is written.
+                            (Some(_), _) if base == 0 => {
+                                return Err(WriteError::AddressOutOfRange {
+                                    address: session.l4().target(),
+                                    detail: format!(
+                                        "PID_TABLE_REFERENCE reads 0 after the allocation of \
+                                         segment {} (the device did not allocate it); run a \
+                                         full `bussard flash`",
+                                        image.segment_id
+                                    ),
+                                });
+                            }
+                            // Where the base read before the download holds,
+                            // write only the octets that differ from it.
+                            (Some((current, expected)), _) if expected == Some(addr) => {
+                                let (plain, extended) = (
+                                    session.l4().max_memory_chunk(),
+                                    session.l4().max_extended_memory_chunk(),
+                                );
+                                let chunk = |start: usize, len: usize| {
+                                    chunk_at(addr + start as u32, len, plain, extended)
+                                };
+                                let regions =
+                                    diff_regions(&bytes, current, None, sparse_merge_gap(), &chunk);
+                                for (start, end) in regions {
+                                    write_image(
+                                        session,
+                                        addr + start as u32,
+                                        &bytes[start..end],
+                                        &mut progress,
+                                    )
+                                    .await?;
+                                }
+                            }
+                            // The device placed the segment elsewhere: what it
+                            // holds there is unknown, so the whole image goes.
+                            (Some((_, expected)), _) => {
+                                warnings.push(format!(
+                                    "segment {} moved from {} to {addr:#X} on the allocation; \
+                                     the whole parameter image was written",
+                                    image.segment_id,
+                                    expected.map_or("an unknown base".to_string(), |a| format!(
+                                        "{a:#X}"
+                                    )),
+                                ));
+                                write_image(session, addr, &bytes, &mut progress).await?;
+                            }
                             // A pre-filled segment already holds the fill byte
                             // everywhere: write only the runs that differ, as ETS
                             // does (the F50 obj4 image is 276 of 6152 octets).
-                            Some(fill) => {
+                            (None, Some(fill)) => {
                                 let (plain, extended) = (
                                     session.l4().max_memory_chunk(),
                                     session.l4().max_extended_memory_chunk(),
@@ -580,7 +656,9 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                                         .await?;
                                 }
                             }
-                            None => write_image(session, addr, &bytes, &mut progress).await?,
+                            (None, None) => {
+                                write_image(session, addr, &bytes, &mut progress).await?
+                            }
                         }
                         if let Some(sample) = bytes.first().map(|_| take_sample(&bytes)) {
                             written_samples.push(WrittenSample {

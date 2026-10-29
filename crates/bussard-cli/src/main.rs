@@ -984,9 +984,11 @@ enum Command {
         #[arg(long)]
         no_factory_reset: bool,
         /// Rewrite only the parameter memory of a device that already runs this
-        /// application (issue #119): no unload, no segment allocation, no table
-        /// write. Only the octets that differ from what the device holds are
-        /// written, then the load completes and the device restarts. Refused when
+        /// application (issue #119): no table write. On System B it runs the
+        /// standard's partial download (unload, load, Mode 0 re-allocation that
+        /// keeps the memory, issue #543). Only the octets that differ from what
+        /// the device holds are written, then the load completes and the device
+        /// restarts. Refused when
         /// the device runs another application or is not Loaded, and when a
         /// changed parameter shows or hides a com-object (that needs a full flash).
         /// The parameter memory is backed up first. With `--dry-run`, prints the

@@ -260,6 +260,16 @@ struct DeviceState {
     /// The size (octets) of the most-recently allocated segment, so a
     /// `PID_MCB_TABLE` read can CRC exactly the segment the device stored.
     last_segment_size: u32,
+    /// The segment the last `Unload` freed, `(base, size)` (issue #543): a
+    /// Mode 0 re-allocation of the same size lands at that base again and
+    /// keeps the memory contents (Configuration Procedures 03_05_03
+    /// §3.5.1.2).
+    freed_segment: Option<(u32, u32)>,
+    /// Place a re-allocation at a fresh base instead (issue #543): the device
+    /// moved the segment.
+    relocate_on_realloc: bool,
+    /// Every relative allocation as `(size, mode octet)`.
+    rel_segments: Vec<(u32, u8)>,
     /// Sparse device memory: 24-bit address → octet.
     memory: HashMap<u32, u8>,
     fault: Fault,
@@ -1074,13 +1084,25 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
                 } else {
                     0
                 };
-                let base = s
-                    .segment_base_override
+                let mode = value.get(6).copied().unwrap_or(0);
+                s.rel_segments.push((size, mode));
+                let kept = s
+                    .freed_segment
                     .take()
-                    .unwrap_or(s.next_segment_base);
+                    .filter(|(_, freed)| mode == 0 && *freed == size && !s.relocate_on_realloc);
+                let base = match kept {
+                    Some((base, _)) => base,
+                    None => {
+                        let base = s
+                            .segment_base_override
+                            .take()
+                            .unwrap_or(s.next_segment_base);
+                        s.next_segment_base = base.wrapping_add(size.max(1));
+                        base
+                    }
+                };
                 s.last_segment_base = base;
                 s.last_segment_size = size;
-                s.next_segment_base = base.wrapping_add(size.max(1));
                 // Normally stays in Loading; the LoadedOnAllocate fault drops to
                 // Loaded here, so the allocate's own re-read trips the strict check.
                 if fault == Fault::LoadedOnAllocate && is_app {
@@ -1135,6 +1157,11 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
                     }
                     LE_UNLOAD => {
                         s.app_load_state = LS_UNLOADED;
+                        // The reference reads zero until the next allocation.
+                        if s.last_segment_base != 0 {
+                            s.freed_segment = Some((s.last_segment_base, s.last_segment_size));
+                        }
+                        s.last_segment_base = 0;
                         LS_UNLOADED
                     }
                     _ => s.app_load_state,
@@ -1714,6 +1741,9 @@ fn fresh_device(fault: Fault) -> Shared {
         next_segment_base: 0x4000,
         last_segment_base: 0,
         last_segment_size: 0,
+        freed_segment: None,
+        relocate_on_realloc: false,
+        rel_segments: Vec::new(),
         memory: HashMap::new(),
         fault,
         control_writes: 0,
@@ -6634,12 +6664,106 @@ async fn test_parameters_only_download_writes_only_the_changed_parameter() -> Te
         .map(|a| s.memory.get(&a).copied().unwrap_or(0))
         .collect();
     assert_eq!(code, vec![0, 1, 2, 3, 4, 5]);
-    // StartLoading then LoadCompleted on the app object: no Unload, no
-    // allocation, no table object touched.
+    // The partial download of Configuration Procedures 03_05_03 §3.5.3 on
+    // the app object (issue #543): Unload, StartLoading, the Mode 0
+    // allocation of the parameter segment, LoadCompleted; no table object.
     let events: Vec<u8> = s.load_events.iter().map(|(_, e)| *e).collect();
-    assert_eq!(events, vec![LE_START_LOADING, LE_LOAD_COMPLETED]);
+    assert_eq!(
+        events,
+        vec![
+            LE_UNLOAD,
+            LE_START_LOADING,
+            LE_ADDITIONAL,
+            LE_LOAD_COMPLETED
+        ]
+    );
     assert!(s.load_events.iter().all(|(oi, _)| *oi == 3));
+    assert_eq!(s.rel_segments.last(), Some(&(1, 0)), "Mode 0, size 1");
     assert!(s.saw_basic_restart, "the device is restarted");
+    Ok(())
+}
+
+/// Plans the fabricated app with its parameter at 9, reads the parameter
+/// regions off `device` and runs the parameter-only download (issue #543).
+async fn run_partial_download(
+    device: Shared,
+    configure: impl FnOnce(&mut DeviceState),
+) -> TestResult<(Result<bussard_download::FlashOutcome, WriteError>, Shared)> {
+    let (mut bus, state, handle) = setup_device(device).await?;
+    let app = fabricated_app()?;
+    let overrides = BTreeMap::from([("P-0_R-0".to_string(), "9".to_string())]);
+    let full = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &overrides,
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    let l4 = Layer4Connection::connect(&mut bus, "1.1.4".parse()?, "0.0.255".parse()?).await?;
+    let mut session = authed_session(l4).await?;
+    let regions = bussard_download::read_parameter_regions(session.l4(), &full).await;
+    let partial = full.parameters_only(&regions)?;
+    {
+        let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+        s.load_events.clear();
+        s.memory_writes_seen = 0;
+        configure(&mut s);
+    }
+    let result = flash(
+        &mut session,
+        &partial,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await;
+    let _ = session.into_disconnect().await;
+    drop(handle);
+    Ok((result, state))
+}
+
+#[tokio::test]
+async fn test_parameters_only_download_writes_the_whole_image_where_the_segment_moved() -> TestResult
+{
+    // Issue #543: the base read before the download no longer holds after the
+    // allocation, so the diff against the old memory proves nothing there.
+    let (result, state) = run_partial_download(device_running_fabricated_app(7), |s| {
+        s.relocate_on_realloc = true;
+    })
+    .await?;
+    let outcome = result?;
+    assert!(outcome.ok(), "{outcome:?}");
+    assert!(
+        outcome
+            .warnings
+            .iter()
+            .any(|w| w.contains("moved from 0x4006")),
+        "{:?}",
+        outcome.warnings
+    );
+    let s = state.lock().unwrap_or_else(|e| e.into_inner());
+    let base = s.last_segment_base;
+    assert_ne!(base, 0x4006);
+    assert_eq!(s.memory.get(&base).copied(), Some(9));
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_parameters_only_download_refuses_an_unloaded_object() -> TestResult {
+    // Issue #543: a partial download rewrites a resident application; an
+    // object that is not Loaded is refused before anything is unloaded.
+    let (result, state) = run_partial_download(device_running_fabricated_app(7), |s| {
+        s.app_load_state = LS_ERROR;
+    })
+    .await?;
+    assert!(
+        matches!(result, Err(WriteError::NotLoaded { .. })),
+        "{result:?}"
+    );
+    let s = state.lock().unwrap_or_else(|e| e.into_inner());
+    assert!(s.load_events.is_empty(), "{:?}", s.load_events);
+    assert_eq!(s.memory_writes_seen, 0);
     Ok(())
 }
 

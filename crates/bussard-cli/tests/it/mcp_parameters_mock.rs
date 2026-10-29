@@ -260,13 +260,7 @@ fn test_mcp_plan_and_apply_write_the_differing_parameter_octet() -> TestResult {
     assert_eq!(dev.memory_writes, vec![(PARAM_BASE, 1)]);
     assert_eq!(dev.memory.get(&PARAM_BASE).copied(), Some(12));
     // Only the application object loads: the link tables are left alone.
-    assert_eq!(
-        dev.load_events,
-        vec![
-            (APP_OBJECT, LE_START_LOADING),
-            (APP_OBJECT, LE_LOAD_COMPLETED)
-        ]
-    );
+    assert_eq!(dev.load_events, PARTIAL_DOWNLOAD_EVENTS.to_vec());
     assert!(dev.property_writes.is_empty(), "{:?}", dev.property_writes);
 
     // Read back: a fresh plan has nothing to do.

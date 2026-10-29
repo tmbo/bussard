@@ -9,13 +9,19 @@
 //! that shape from the full plan, so the op sequence, the object indices and the
 //! images all come from the same vendor procedure the full flash interprets:
 //!
-//! - **System B**: `StartLoading` the object that holds the parameter segment
-//!   (no `Unload`, no `RelSegment`: the segment stays where it is), the
-//!   procedure's property writes on that object (the `PID_MCB_TABLE` seed and
-//!   the program version, which ETS rewrites on a partial download too), each
-//!   parameter image as an absolute write at the base the device reported
-//!   through `PID_TABLE_REFERENCE`, `LoadCompleted`, the procedure's MCB checks
-//!   on that object, and the terminal restart.
+//! - **System B** (issue #543): the partial download of Configuration
+//!   Procedures 03_05_03 §3.5.3 on the object that holds the parameter
+//!   segment, as ETS runs the product's `AppliesTo="par"` procedure: `Unload`,
+//!   `StartLoading`, the segment's relative allocation in Mode 0 with no fill
+//!   (it keeps the memory contents and lands at the original base,
+//!   §3.5.1.2), the procedure's property writes on that object (the
+//!   `PID_MCB_TABLE` seed and the program version), each parameter image at
+//!   the base the device reports through `PID_TABLE_REFERENCE` after the
+//!   allocation, `LoadCompleted`, the procedure's MCB checks on that object,
+//!   and the terminal restart. The executor refuses before the `Unload`
+//!   unless the object reads `Loaded`, writes only the differing octets when
+//!   the base is the one read before the download, the whole image when the
+//!   device moved the segment, and nothing when the reference reads zero.
 //! - **System 7** (issue #146): `StartLoading` the load-state machine that
 //!   holds the parameter segments, each parameter image as an absolute write at
 //!   its segment address, `LoadCompleted`, the procedure's MCB reads, and the
@@ -77,11 +83,15 @@ impl FlashPlan {
         let baseline: BTreeMap<String, Vec<u8>> = steps
             .iter()
             .filter_map(|step| match step {
-                FlashStep::WriteMem { image, .. } => regions
+                FlashStep::WriteMem { image, .. } | FlashStep::WriteRelMem { image, .. } => regions
                     .get(&image.segment_id)
                     .map(|r| (image.segment_id.clone(), r.bytes.clone())),
                 _ => None,
             })
+            .collect();
+        let baseline_address: BTreeMap<String, u32> = baseline
+            .keys()
+            .filter_map(|segment| regions.get(segment).map(|r| (segment.clone(), r.address)))
             .collect();
         // Issue #290: only the octets a parameter placement covers are
         // compared and written. Every other octet of the image (the segment's
@@ -127,6 +137,7 @@ impl FlashPlan {
             baseline,
             placed: self.placed.clone(),
             unwritten,
+            baseline_address,
         })
     }
 
@@ -229,21 +240,23 @@ impl FlashPlan {
         &self,
         regions: &ParamRegions,
     ) -> Result<Vec<FlashStep>, PartialPlanError> {
-        // Pass 1: the parameter writes, and the load-state machine that owns
-        // their segment: the allocation naming the write's own object index
-        // (the master template allocates obj4, obj3, obj1, obj2 before writing
-        // any), else the most recent allocation (the single-object shape, whose
-        // write names `ObjIdx=0`).
+        // Pass 1: the parameter writes, the load-state machine that owns
+        // their segment, and the allocation each write lands in: the
+        // allocation naming the write's own object index (the master template
+        // allocates obj4, obj3, obj1, obj2 before writing any), else the most
+        // recent allocation (the single-object shape, whose write names
+        // `ObjIdx=0`).
         let mut lsms: BTreeSet<Option<u32>> = BTreeSet::new();
         let mut objects: BTreeSet<u32> = BTreeSet::new();
-        let mut allocated: BTreeSet<Option<u32>> = BTreeSet::new();
-        let mut last_alloc: Option<Option<u32>> = None;
+        let mut alloc_at: BTreeMap<Option<u32>, usize> = BTreeMap::new();
+        let mut last_alloc: Option<(Option<u32>, usize)> = None;
+        let mut kept_allocs: BTreeSet<usize> = BTreeSet::new();
         let mut writes = 0usize;
-        for step in &self.steps {
+        for (i, step) in self.steps.iter().enumerate() {
             match step {
                 FlashStep::AllocateSegment { target, .. } => {
-                    allocated.insert(*target);
-                    last_alloc = Some(*target);
+                    alloc_at.insert(*target, i);
+                    last_alloc = Some((*target, i));
                 }
                 FlashStep::WriteRelMem { image, target, .. }
                     if image.kind == ImageKind::Parameters =>
@@ -254,11 +267,11 @@ impl FlashPlan {
                         });
                     }
                     writes += 1;
-                    let lsm = if allocated.contains(target) {
-                        *target
-                    } else {
-                        last_alloc.unwrap_or(*target)
+                    let (lsm, alloc) = match alloc_at.get(target) {
+                        Some(&at) => (*target, Some(at)),
+                        None => last_alloc.map_or((*target, None), |(t, at)| (t, Some(at))),
                     };
+                    kept_allocs.extend(alloc);
                     lsms.insert(lsm);
                     objects.extend(lsm);
                     objects.extend(target.filter(|t| *t != 0));
@@ -270,15 +283,31 @@ impl FlashPlan {
             return Err(PartialPlanError::NoParameterSegment);
         }
 
-        // Pass 2: keep only what touches that object.
+        // Pass 2: the partial download of Configuration Procedures 03_05_03
+        // §3.5.3 on that object, as ETS runs the product's `AppliesTo="par"`
+        // procedure (issue #543, the #490 rows): Unload, Load, the relative
+        // allocation in Mode 0 (keep the memory contents, §3.5.1.2), the
+        // procedure's property writes, the parameter writes at the base the
+        // device reports after the allocation, LoadCompleted, the MCB checks
+        // and the restart.
         let mut written: BTreeSet<String> = BTreeSet::new();
         let mut steps = Vec::new();
-        for step in &self.steps {
+        for (i, step) in self.steps.iter().enumerate() {
             match step {
-                FlashStep::StartLoading { target } | FlashStep::LoadCompleted { target }
+                FlashStep::Unload { target }
+                | FlashStep::StartLoading { target }
+                | FlashStep::LoadCompleted { target }
                     if lsms.contains(target) =>
                 {
                     steps.push(step.clone());
+                }
+                FlashStep::AllocateSegment { size, target, .. } if kept_allocs.contains(&i) => {
+                    // Mode 0, no fill: the `par` form of the allocation.
+                    steps.push(FlashStep::AllocateSegment {
+                        size: *size,
+                        target: *target,
+                        fill: None,
+                    });
                 }
                 FlashStep::WriteRelMem { image, .. } if image.kind == ImageKind::Parameters => {
                     // A segment the procedure writes twice is written once: the
@@ -286,12 +315,7 @@ impl FlashPlan {
                     if !written.insert(image.segment_id.clone()) {
                         continue;
                     }
-                    if let Some(region) = regions.get(&image.segment_id) {
-                        steps.push(FlashStep::WriteMem {
-                            address: region.address,
-                            image: image.clone(),
-                        });
-                    }
+                    steps.push(step.clone());
                 }
                 FlashStep::WriteProp {
                     object: super::PropObject::Index(obj_idx),
@@ -458,8 +482,11 @@ mod tests {
     }
 
     #[test]
-    fn test_parameters_only_system_b_keeps_only_the_parameter_write()
+    fn test_parameters_only_system_b_runs_the_partial_download_procedure()
     -> Result<(), Box<dyn std::error::Error>> {
+        // Issue #543: Configuration Procedures 03_05_03 §3.5.3, as ETS runs
+        // the `par` procedure: Unload, Load, the Mode 0 allocation the
+        // parameter write lands in, the write, LoadCompleted, restart.
         let app = fabricated_app();
         let overrides = BTreeMap::from([("P-0_R-0".to_string(), "9".to_string())]);
         let full = plan_flash(
@@ -475,33 +502,35 @@ mod tests {
         let regions = ParamRegions::from([region(segment, 0x4006, &[7])]);
         let partial = full.parameters_only(&regions)?;
         assert!(partial.is_parameters_only());
-        assert!(
-            !partial.steps.iter().any(|s| matches!(
-                s,
-                FlashStep::Unload { .. }
-                    | FlashStep::AllocateSegment { .. }
-                    | FlashStep::WriteRelMem { .. }
-                    | FlashStep::FactoryReset { .. }
-            )),
-            "no unload, allocation or relative write: {:?}",
-            partial.steps
-        );
-        let writes: Vec<_> = partial
+        let shape: Vec<String> = partial
             .steps
             .iter()
-            .filter_map(|s| match s {
-                FlashStep::WriteMem { address, image } => {
-                    Some((*address, image.segment_id.clone()))
+            .map(|s| match s {
+                FlashStep::Unload { target } => format!("unload {target:?}"),
+                FlashStep::StartLoading { target } => format!("load {target:?}"),
+                FlashStep::AllocateSegment { size, target, fill } => {
+                    format!("alloc {target:?} {size} {fill:?}")
                 }
-                _ => None,
+                FlashStep::WriteRelMem { offset, image, .. } => {
+                    format!("write {} +{offset}", image.segment_id)
+                }
+                FlashStep::LoadCompleted { target } => format!("complete {target:?}"),
+                other => format!("{other:?}"),
             })
             .collect();
-        assert_eq!(writes, vec![(0x4006, segment.to_string())]);
-        assert!(matches!(
-            partial.steps.first(),
-            Some(FlashStep::StartLoading { .. })
-        ));
-        assert!(matches!(partial.steps.last(), Some(FlashStep::Restart)));
+        assert_eq!(
+            shape,
+            vec![
+                "unload Some(4)".to_string(),
+                "load Some(4)".to_string(),
+                // The `par` allocation (Size 1), not the code segment's.
+                "alloc Some(4) 1 None".to_string(),
+                format!("write {segment} +0"),
+                "complete Some(4)".to_string(),
+                "Restart".to_string(),
+            ]
+        );
+        assert_eq!(partial.baseline_address(segment), Some(0x4006));
         assert_eq!(partial.changed_octets(), 1);
         assert_eq!(partial.baseline(segment), Some(&[7u8][..]));
         Ok(())

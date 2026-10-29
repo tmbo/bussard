@@ -430,6 +430,24 @@ restart` capture of the same device. Until then, the mock tests in
 `bussard_service::restart` cover the confirmed (answered, unanswered, error
 code, Data Secure) and basic forms.
 
+**Parameter-only download on System B** (issue #543). bussard's
+`flash --parameters-only` and the parameter part of `apply` run the partial
+download of Configuration Procedures 03_05_03 §3.5.3: Unload the parameter
+object, Load, the relative allocation in Mode 0 with no fill, the procedure's
+property writes, the differing octets at the base the device reports after
+the allocation, LoadCompleted, the MCB check, restart. The ETS side is on
+file: the #490 rows hold ETS `par` downloads of house devices
+(`rows-2026-10-26.txt` 1.1.18, `rows-2026-10-26-006plain.txt` 1.1.12,
+`rows-secure-s3.txt` 1.1.5, 1.1.7, 1.1.9, 1.1.16, 1.1.47, 1.1.48), each with
+obj 4 Unload, Load, `RelSegment` Mode 0 Fill 0, the writes and LoadCompleted.
+No oracle row compares bussard's partial download: the oracle plans offline,
+and a parameter-only plan needs the device's parameter memory. This is the
+capture plan: record one `bussard flash --parameters-only` of 1.1.18 under
+`00-preflight.sh` and compare its load-control records with the ETS `par`
+capture of the same device in knxtrace. Until then the mock tests in
+`bussard-download` (`flash_mock::test_parameters_only_*`) pin the sequence,
+the Mode 0 allocation and the base handling.
+
 ## Rehearsing on the simulator
 
 Every script has a loopback dry-run mode, so the runbook can be rehearsed

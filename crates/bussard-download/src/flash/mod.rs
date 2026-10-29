@@ -874,6 +874,12 @@ pub struct FlashPlan {
     /// although the model's image differs there (issue #290): per segment,
     /// each octet's offset and the model's byte. Empty for a full flash.
     unwritten: BTreeMap<String, Vec<(usize, u8)>>,
+    /// The address each [`Self::baseline`] region was read at before the
+    /// download (segment id → absolute address, issue #543). A System B
+    /// parameter-only download re-allocates the segment and writes at the base
+    /// the device reports then; the diff against the baseline only holds when
+    /// that base is this one. Empty for every full flash.
+    baseline_address: BTreeMap<String, u32>,
 }
 
 /// The System 7 execution context attached to a [`FlashPlan`] for a mask
@@ -1042,6 +1048,26 @@ impl FlashPlan {
             FlashStep::Sys7StartLoading { lsm } if self.is_parameters_only() => {
                 format!("[S7] check LSM {lsm} is Loaded, then open it for loading (no allocation)")
             }
+            FlashStep::Unload { target } if self.is_parameters_only() => format!(
+                "check obj{} is Loaded, then unload it (partial download, kept memory)",
+                target.unwrap_or(0)
+            ),
+            FlashStep::AllocateSegment { size, target, .. } if self.is_parameters_only() => {
+                format!(
+                    "re-allocate the {size}-octet segment of obj{} in Mode 0 (keeps its contents)",
+                    target.unwrap_or(0)
+                )
+            }
+            FlashStep::WriteRelMem { offset, image, .. } if self.is_parameters_only() => {
+                let before = self
+                    .baseline_address(&image.segment_id)
+                    .map_or(String::new(), |a| format!(", {a:#06X} before the download"));
+                format!(
+                    "write the differing parameter octets (segment of {} bytes) at the allocated \
+                     base + {offset:#X}{before}",
+                    image.len
+                )
+            }
             FlashStep::WriteMem { address, image } if self.is_parameters_only() => {
                 let how = if self.sys7_read_compare() {
                     ", read-compare"
@@ -1143,6 +1169,12 @@ impl FlashPlan {
     /// against, when this plan is one (see [`FlashPlan::parameters_only`]).
     pub fn baseline(&self, segment_id: &str) -> Option<&[u8]> {
         self.baseline.get(segment_id).map(Vec::as_slice)
+    }
+
+    /// The address the baseline of `segment_id` was read at before the
+    /// download (issue #543), `None` for a full flash.
+    pub fn baseline_address(&self, segment_id: &str) -> Option<u32> {
+        self.baseline_address.get(segment_id).copied()
     }
 
     /// Whether this plan programs a KNX Virtual device: its application comes

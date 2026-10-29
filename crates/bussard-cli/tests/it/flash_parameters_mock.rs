@@ -9,8 +9,8 @@
 //! load-state machines, `PID_TABLE_REFERENCE` / `PID_PROGRAM_VERSION`, the two
 //! link tables (`PID_TABLE`), and `A_Memory_Read` / `A_Memory_Write`. Every
 //! load event and memory write is recorded, which is how the tests prove a
-//! parameter-only download unloads nothing, allocates nothing, touches no table
-//! and writes only the changed octet.
+//! parameter-only download unloads and re-allocates only the application
+//! object (issue #543), touches no table and writes only the changed octet.
 //!
 //! The synthetic `.knxprod` is zipped with the `zip` CLI at test time; the
 //! tests skip green when `zip` is unavailable, like `flash_dry_run.rs`. The
@@ -47,17 +47,14 @@ fn test_flash_parameters_only_writes_only_the_changed_octet() -> TestResult {
     assert_eq!(dev.memory_writes, vec![(PARAM_BASE, 1)], "{stderr}");
     assert_eq!(dev.memory.get(&PARAM_BASE).copied(), Some(12));
     assert_eq!(dev.memory.get(&(PARAM_BASE + 1)).copied(), Some(0));
-    // StartLoading + LoadCompleted on the app object only: no Unload, no
-    // segment allocation, no table object.
+    // The partial download of 03_05_03 §3.5.3 on the app object only
+    // (issue #543): Unload, StartLoading, the Mode 0 allocation,
+    // LoadCompleted; no table object.
     assert_eq!(
         dev.load_events,
-        vec![
-            (APP_OBJECT, LE_START_LOADING),
-            (APP_OBJECT, LE_LOAD_COMPLETED)
-        ],
+        PARTIAL_DOWNLOAD_EVENTS.to_vec(),
         "{stderr}"
     );
-    assert!(!dev.load_events.iter().any(|(_, e)| *e == LE_ADDITIONAL));
     assert!(dev.property_writes.is_empty(), "{:?}", dev.property_writes);
     assert_eq!(dev.restarts, 1, "the device restarts");
     assert_eq!(dev.load_states.get(&APP_OBJECT).copied(), Some(LS_LOADED));
@@ -271,9 +268,11 @@ fn test_flash_parameters_only_piped_output_is_unchanged() -> TestResult {
          \x20     Threshold: 7 to 12\n\
          \x20 memory      :\n\
          \x20     M-00FA_A-0002_RS-2 at 0x004006: 1 of 2 octet(s) change\n\
-         \x20 procedure   : open for loading (obj 4); write the differing parameter octets \
-         (segment of 2 bytes) at 0x4006; complete load (obj 4); restart device (no unload, no \
-         table write)\n\
+         \x20 procedure   : check obj4 is Loaded, then unload it (partial download, kept \
+         memory); open for loading (obj 4); re-allocate the 2-octet segment of obj4 in Mode 0 \
+         (keeps its contents); write the differing parameter octets (segment of 2 bytes) at the \
+         allocated base + 0x0, 0x4006 before the download; complete load (obj 4); restart device \
+         (no table write)\n\
          parameter backup written to <backup>\n\
          \n\
          parameters verified: 1 changed octet(s) read back from 1.1.4; the application is Loaded\n"
@@ -287,11 +286,14 @@ fn test_flash_parameters_only_piped_output_is_unchanged() -> TestResult {
     );
     assert_eq!(
         progress,
-        "  [1/4] open for loading (obj 4)\n\
-         \x20 [2/4] write the differing parameter octets (segment of 2 bytes) at 0x4006\n\
+        "  [1/6] check obj4 is Loaded, then unload it (partial download, kept memory)\n\
+         \x20 [2/6] open for loading (obj 4)\n\
+         \x20 [3/6] re-allocate the 2-octet segment of obj4 in Mode 0 (keeps its contents)\n\
+         \x20 [4/6] write the differing parameter octets (segment of 2 bytes) at the allocated \
+         base + 0x0, 0x4006 before the download\n\
          \r      1/1 bytes\n\
-         \x20 [3/4] complete load (obj 4)\n\
-         \x20 [4/4] restart device\n"
+         \x20 [5/6] complete load (obj 4)\n\
+         \x20 [6/6] restart device\n"
     );
     Ok(())
 }
@@ -846,10 +848,7 @@ fn test_apply_writes_only_the_differing_parameter_octet() -> TestResult {
     // Only the application object loads: the link tables are left alone.
     assert_eq!(
         dev.load_events,
-        vec![
-            (APP_OBJECT, LE_START_LOADING),
-            (APP_OBJECT, LE_LOAD_COMPLETED)
-        ],
+        PARTIAL_DOWNLOAD_EVENTS.to_vec(),
         "{stderr}"
     );
     assert!(dev.property_writes.is_empty(), "{:?}", dev.property_writes);

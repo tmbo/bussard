@@ -421,7 +421,7 @@ fn print_plan(
         );
     }
     println!(
-        "  procedure   : {} (no unload, no table write)",
+        "  procedure   : {} (no table write)",
         procedure_summary(partial)
     );
 }

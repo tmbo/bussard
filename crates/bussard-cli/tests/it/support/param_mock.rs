@@ -35,6 +35,14 @@ const LE_ADDITIONAL: u8 = 3;
 const LE_UNLOAD: u8 = 4;
 
 const APP_OBJECT: u8 = 3;
+/// The load events of a System B parameter-only download (issue #543): the
+/// partial download of 03_05_03 §3.5.3 on the application object.
+const PARTIAL_DOWNLOAD_EVENTS: [(u8, u8); 4] = [
+    (APP_OBJECT, LE_UNLOAD),
+    (APP_OBJECT, LE_START_LOADING),
+    (APP_OBJECT, LE_ADDITIONAL),
+    (APP_OBJECT, LE_LOAD_COMPLETED),
+];
 /// Where the code segment sits.
 const CODE_BASE: u32 = 0x4000;
 /// Where the parameter segment sits: the app object's last allocation.

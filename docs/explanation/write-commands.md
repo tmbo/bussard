@@ -195,9 +195,16 @@ resume; run them again. A pending group write goes out up to a minute late.
 ## `flash --parameters-only` patches parameters
 
 - **Writes** only the parameter octets that differ, on a device that already
-  runs the application, then completes the load and restarts the device. It
-  never unloads, allocates, factory-resets or touches the link tables. `apply`
-  runs the same download after the tables.
+  runs the application, then completes the load and restarts the device. On
+  System B it runs the standard's partial download (Configuration Procedures
+  03_05_03 §3.5.3), as ETS runs the product's `par` procedure: it unloads the
+  parameter object, opens it, re-allocates its segment in Mode 0 (the device
+  keeps the memory and the base), and writes at the base the device reports
+  after the allocation. Where the device moved the segment it writes the whole
+  image there; where the reference reads zero it stops. On System 7 it opens
+  and completes the load-state machine without an allocation. It never
+  factory-resets or touches the link tables. `apply` runs the same download
+  after the tables.
 - **Backs up** the parameter memory to
   `<dir>/captures/backups/parameters/<ia>-<unix time>.json` after showing the
   changes and confirming.
