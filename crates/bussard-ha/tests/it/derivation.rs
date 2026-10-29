@@ -310,6 +310,39 @@ fn binary_sensor_device_class_from_dpt_and_name() -> Result<(), Box<dyn std::err
 }
 
 #[test]
+fn test_binary_sensor_invert_for_open_close_contact() -> Result<(), Box<dyn std::error::Error>> {
+    // 1.009 is 0 = open, 1 = close; 1.019 is 0 = closed, 1 = open (03_07_02
+    // §3.1). HA reads "on" as open for a window, so only 1.009 is inverted.
+    let model = ModelBuilder::new("1.1.31", "Binary Input", None)
+        .group("4/2/1", "Fenster Bad", "1.009")
+        .group("4/2/2", "Fenster Küche", "1.019")
+        .group("4/2/3", "Taster Status", "1.009")
+        .object(1, "1.009", "CRT", None, Some("4/2/1"), &[])
+        .object(2, "1.019", "CRT", None, Some("4/2/2"), &[])
+        .object(3, "1.009", "CRT", None, Some("4/2/3"), &[])
+        .build();
+
+    let yaml = generate(&model, &Overrides::default())?;
+    let entry = |name: &str| -> Result<String, Box<dyn std::error::Error>> {
+        let start = yaml
+            .find(&format!("name: {name}"))
+            .ok_or_else(|| format!("{name} missing:\n{yaml}"))?;
+        let rest = &yaml[start..];
+        let end = rest[1..].find("- name:").map_or(rest.len(), |i| i + 1);
+        Ok(rest[..end].to_string())
+    };
+    let bad = entry("Fenster Bad")?;
+    assert!(bad.contains("device_class: window"), "{bad}");
+    assert!(bad.contains("invert: true"), "{bad}");
+    let kitchen = entry("Fenster Küche")?;
+    assert!(!kitchen.contains("invert"), "{kitchen}");
+    // No opening class, no inversion: "on" is just the bit.
+    let button = entry("Taster Status")?;
+    assert!(!button.contains("invert"), "{button}");
+    Ok(())
+}
+
+#[test]
 fn exclusions_skip_gas() -> Result<(), Box<dyn std::error::Error>> {
     let model = ModelBuilder::new("1.1.5", "Aktor", None)
         .group("0/0/1", "Licht schalten", "1.001")

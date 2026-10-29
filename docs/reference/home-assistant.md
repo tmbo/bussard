@@ -77,7 +77,7 @@ Roles come from the object flags:
 | binary_sensor | DPT `1.019` | `window` |
 | binary_sensor | name hints | `motion`, `window`, `door`, `moisture`, `safety` |
 
-`1.019` is 0 = closed, 1 = open; `1.009` is the inverse, 0 = open, 1 = close (KNX 03_07_02 Datapoint Types §3.1). bussard does not yet emit `invert: true` for a `1.009` contact under `window` or `door`, so such a contact reads inverted in Home Assistant (#496).
+`1.019` is 0 = closed, 1 = open; `1.009` is the inverse, 0 = open, 1 = close (KNX 03_07_02 Datapoint Types §3.1). Home Assistant reads a binary_sensor's "on" as open for the `window`, `door`, `opening` and `garage_door` classes, so a `1.009` contact under one of them gets `invert: true` (#496). A `1.019` contact needs none.
 
 Sensor `type` per DPT sub:
 

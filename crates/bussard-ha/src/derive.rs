@@ -877,11 +877,27 @@ fn try_binary_sensor(
     let (name, device_class, _) =
         apply_entity_override(overrides, state, name, device_class, None)?;
 
+    let invert = binary_sensor_invert(dpt, device_class.as_deref());
     Some(Entity::BinarySensor(BinarySensor {
         name,
         state_address: state,
         device_class,
+        invert,
     }))
+}
+
+/// Whether a 1.x binary_sensor needs the HA KNX `invert` option.
+///
+/// Home Assistant shows a binary_sensor's "on" as open for the opening
+/// classes. 1.019 `DPT_Window_Door` is 0 = closed, 1 = open and matches;
+/// 1.009 `DPT_OpenClose` is its inverse, 0 = open, 1 = close (03_07_02 §3.1),
+/// so a 1.009 contact under an opening class is inverted.
+fn binary_sensor_invert(dpt: Dpt, device_class: Option<&str>) -> bool {
+    let opening = matches!(
+        device_class,
+        Some("window" | "door" | "opening" | "garage_door")
+    );
+    dpt.main == 1 && dpt.sub == Some(9) && opening
 }
 
 /// The HA sensor `type` for a numeric DPT, or `None` if bussard does not map it.

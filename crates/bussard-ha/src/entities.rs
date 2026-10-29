@@ -127,6 +127,11 @@ pub struct BinarySensor {
     /// HA device class (`motion`, `window`, `safety`, …).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device_class: Option<String>,
+    /// The HA KNX `invert` option: the telegram's 1 is HA's "off". Set for a
+    /// 1.009 contact (0 = open) under an opening class, where HA reads "on"
+    /// as open. Emitted only when true.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub invert: bool,
 }
 
 /// A `climate` entity (a room heating controller).
