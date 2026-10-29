@@ -705,31 +705,146 @@ fn bool_aliases(sub: Option<u16>) -> (&'static [&'static str], &'static [&'stati
     }
 }
 
-/// Returns the unit label for a DPT 9.x subtype (2-byte float).
-fn float16_unit(sub: Option<u16>) -> Option<&'static str> {
-    match sub {
-        Some(1) => Some("°C"),
-        Some(4) => Some("lux"),
-        Some(5) => Some("m/s"),
-        Some(6) => Some("Pa"),
-        Some(7) => Some("%"),
-        Some(21) => Some("mA"),
-        Some(28) => Some("km/h"),
-        _ => None,
-    }
+/// The unit of an integer sub-type of DPT 5, 6, 7, 8, 12 or 13, `None` when
+/// the sub-type has none (or bussard does not know it).
+///
+/// KNX 03_07_02 Datapoint Types v02.02.01: §3.5 (5.004 %, 5.010 counter
+/// pulses; 5.003 is decoded as a float, see [`decode`]), §3.6.1 (6.001 %,
+/// 6.010 counter pulses), §3.8 (7.001 pulses, 7.002 ms, 7.005 s, 7.006 min,
+/// 7.007 h, 7.011 mm, 7.012 mA, 7.013 lux; 7.600
+/// `DPT_Absolute_Colour_Temperature` in K from the §1.4 overview), §3.9
+/// (8.001 pulses, 8.002 ms, 8.005 s, 8.006 min, 8.007 h, 8.011 °, 8.012 m),
+/// §3.13 (12.001 counter pulses, 12.100-12.102 s/min/h, 12.1200 l, 12.1201
+/// m³) and §3.14 (13.001 counter pulses, 13.010-13.016 energy, 13.100 s,
+/// 13.1200 l, 13.1201 m³). The 10 ms and 100 ms periods and the other scaled
+/// sub-types carry their unit in [`scaling`] instead.
+fn int_unit(main: u16, sub: Option<u16>) -> Option<&'static str> {
+    let unit = match (main, sub?) {
+        (5, 4) => "%",
+        (5, 10) | (6, 10) | (7, 1) | (8, 1) | (12, 1) | (13, 1) => "pulses",
+        (6, 1) => "%",
+        (7, 2) | (8, 2) => "ms",
+        (7, 5) | (8, 5) | (12, 100) | (13, 100) => "s",
+        (7, 6) | (8, 6) | (12, 101) => "min",
+        (7, 7) | (8, 7) | (12, 102) => "h",
+        (7, 11) => "mm",
+        (7, 12) => "mA",
+        (7, 13) => "lux",
+        (7, 600) => "K",
+        (8, 11) => "°",
+        (8, 12) => "m",
+        (12, 1200) | (13, 1200) => "l",
+        (12, 1201) | (13, 1201) => "m³",
+        (13, 10) => "Wh",
+        (13, 11) => "VAh",
+        (13, 12) => "VARh",
+        (13, 13) => "kWh",
+        (13, 14) => "kVAh",
+        (13, 15) => "kVARh",
+        (13, 16) => "MWh",
+        _ => return None,
+    };
+    Some(unit)
 }
 
-/// Returns the unit label for a DPT 14.x subtype (IEEE float).
+/// Returns the unit label for a DPT 9.x subtype (2-byte float), per the unit
+/// column of KNX 03_07_02 §3.10 (9.001 to 9.030).
+fn float16_unit(sub: Option<u16>) -> Option<&'static str> {
+    let unit = match sub? {
+        1 => "°C",
+        2 => "K",
+        3 => "K/h",
+        4 => "lux",
+        5 => "m/s",
+        6 => "Pa",
+        7 => "%",
+        8 => "ppm",
+        9 => "m³/h",
+        10 => "s",
+        11 => "ms",
+        20 => "mV",
+        21 => "mA",
+        22 => "W/m²",
+        23 => "K/%",
+        24 => "kW",
+        25 => "l/h",
+        26 => "l/m²",
+        27 => "°F",
+        28 => "km/h",
+        29 => "g/m³",
+        30 => "µg/m³",
+        _ => return None,
+    };
+    Some(unit)
+}
+
+/// Returns the unit label for a DPT 14.x subtype (IEEE float), per the unit
+/// column of KNX 03_07_02 §3.15 (14.000 to 14.080) and the 14.1200/14.1201
+/// volume flux types of the §1.4 overview. 14.005 amplitude and 14.057 power
+/// factor have no unit.
 fn float32_unit(sub: Option<u16>) -> Option<&'static str> {
-    match sub {
-        Some(19) => Some("A"),
-        Some(27) => Some("V"),
-        Some(28) => Some("V"),
-        Some(56) => Some("W"),
-        Some(76) => Some("m³"),
-        Some(68) => Some("°C"),
-        _ => None,
-    }
+    let unit = match sub? {
+        0 => "m/s²",
+        1 => "rad/s²",
+        2 => "J/mol",
+        3 => "1/s",
+        4 => "mol",
+        6 | 54 => "rad",
+        7 | 55 => "°",
+        8 => "J s",
+        9 | 34 => "rad/s",
+        10 => "m²",
+        11 => "F",
+        12 | 22 | 25 | 26 => "C/m²",
+        13 => "C/m³",
+        14 => "m²/N",
+        15 => "S",
+        16 => "S/m",
+        17 => "kg/m³",
+        18 | 24 => "C",
+        19 | 50 => "A",
+        20 => "A/m²",
+        21 => "C m",
+        23 => "V/m",
+        27 | 28 | 30 => "V",
+        29 | 47 => "A m²",
+        31 | 37 | 40 | 79 => "J",
+        32 | 78 => "N",
+        33 => "Hz",
+        35 | 71 => "J/K",
+        36 | 56 => "W",
+        38 | 59 | 60 => "Ω",
+        39 => "m",
+        41 => "cd/m²",
+        42 => "lm",
+        43 => "cd",
+        44 | 49 => "A/m",
+        45 => "Wb",
+        46 | 48 => "T",
+        51 => "kg",
+        52 => "kg/s",
+        53 => "N s",
+        58 | 66 => "Pa",
+        61 => "Ω m",
+        62 => "H",
+        63 => "sr",
+        64 => "W/m²",
+        65 => "m/s",
+        67 => "N/m",
+        68 => "°C",
+        69 | 70 => "K",
+        72 => "W/(m K)",
+        73 => "V/K",
+        74 => "s",
+        75 => "N m",
+        76 => "m³",
+        77 => "m³/s",
+        80 => "VA",
+        1200 => "m³/h",
+        1201 => "l/s",
+        _ => return None,
+    };
+    Some(unit)
 }
 
 /// Decodes a KNX 2-byte float (DPT 9.x) from two bytes.
@@ -878,13 +993,15 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
             let b = *payload.first()?;
             match dpt.sub {
                 Some(1) => Some(TypedValue::Percent((b as f32) * 100.0 / 255.0)),
-                Some(3) => Some(TypedValue::Unsigned {
-                    value: ((b as u32) * 360 / 255),
+                // 5.003: 0..255 spans 0..360 ° (03_07_02 §3.5.1, about 1.4 °
+                // per step); shown to one decimal rather than truncated.
+                Some(3) => Some(TypedValue::Float {
+                    value: (f32::from(b) * 3600.0 / 255.0).round() / 10.0,
                     unit: Some("°"),
                 }),
                 _ => Some(TypedValue::Unsigned {
                     value: b as u32,
-                    unit: None,
+                    unit: int_unit(5, dpt.sub),
                 }),
             }
         }
@@ -892,7 +1009,7 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
             let b = *payload.first()? as i8;
             Some(TypedValue::Signed {
                 value: b as i64,
-                unit: None,
+                unit: int_unit(6, dpt.sub),
             })
         }
         7 => {
@@ -906,7 +1023,7 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
             }
             Some(TypedValue::Unsigned {
                 value: v as u32,
-                unit: None,
+                unit: int_unit(7, dpt.sub),
             })
         }
         8 => {
@@ -925,7 +1042,7 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
             }
             Some(TypedValue::Signed {
                 value: v as i64,
-                unit: None,
+                unit: int_unit(8, dpt.sub),
             })
         }
         9 => {
@@ -974,7 +1091,7 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
             ]);
             Some(TypedValue::Unsigned {
                 value: v,
-                unit: None,
+                unit: int_unit(12, dpt.sub),
             })
         }
         13 => {
@@ -991,14 +1108,9 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
                     unit: sc.unit,
                 });
             }
-            let unit = match dpt.sub {
-                Some(10) => Some("Wh"),
-                Some(13) => Some("kWh"),
-                _ => None,
-            };
             Some(TypedValue::Signed {
                 value: v as i64,
-                unit,
+                unit: int_unit(13, dpt.sub),
             })
         }
         14 => {
@@ -1148,11 +1260,14 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
 ///   `stop`. The step is the size of one step in percent (100, 50, 25,
 ///   12.5, 6.25, 3.125, 1.5625) or the code 1-7; no step means 100 %.
 /// - **5.001** — a percentage: `75%` or a bare `0`–`100`.
-/// - **5.003** — an angle `0`–`360` (bare number).
+/// - **5.003** — an angle `0`–`360`, decimals allowed (`22.5`, `90°`).
 /// - **5.x** (other) — an integer `0`–`255`.
 /// - **6.x** — a signed integer `-128`–`127`.
 /// - **7.x** — an unsigned integer `0`–`65535`.
 /// - **8.x** — a signed integer `-32768`–`32767`.
+/// - Every integer and float sub-type with a unit takes the unit as a suffix
+///   (`6500 K` on 7.600, `3600 s` on 13.100, `2 K` on 9.002, `50 %` on
+///   5.004); a bare number is in the same unit.
 /// - **7.003 / 7.004 / 8.003 / 8.004** — a time period in seconds
 ///   (`1.5`, `1.5 s`) or milliseconds (`1500 ms`), a multiple of the 10 ms or
 ///   100 ms resolution.
@@ -1270,56 +1385,60 @@ pub fn parse_value(dpt: &Dpt, input: &str) -> Result<TypedValue, ParseValueError
                 Ok(TypedValue::Percent(p))
             }
             Some(3) => {
-                let v = parse_uint(strip_unit(raw, Some("°")))
-                    .ok_or_else(|| invalid("an angle 0-360"))?;
-                if v > 360 {
+                let v = parse_float(raw, Some("°"))
+                    .filter(|v| v.is_finite())
+                    .ok_or_else(|| invalid("an angle 0-360 (`90`, `90°`, `22.5`)"))?;
+                if !(0.0..=360.0).contains(&v) {
                     return Err(out_of_range("0-360 degrees"));
                 }
-                Ok(TypedValue::Unsigned {
-                    value: v as u32,
+                Ok(TypedValue::Float {
+                    value: v,
                     unit: Some("°"),
                 })
             }
             _ => {
-                let v = parse_uint(raw).ok_or_else(|| invalid("an integer 0-255"))?;
+                let unit = int_unit(5, dpt.sub);
+                let v = parse_uint(strip_unit(raw, unit))
+                    .ok_or_else(|| invalid("an integer 0-255 (optionally with unit)"))?;
                 if v > 255 {
                     return Err(out_of_range("0-255"));
                 }
                 Ok(TypedValue::Unsigned {
                     value: v as u32,
-                    unit: None,
+                    unit,
                 })
             }
         },
         6 => {
-            let v = parse_int(raw).ok_or_else(|| invalid("a signed integer -128..127"))?;
+            let unit = int_unit(6, dpt.sub);
+            let v = parse_int_with_unit(raw, unit)
+                .ok_or_else(|| invalid("a signed integer -128..127 (optionally with unit)"))?;
             if !(-128..=127).contains(&v) {
                 return Err(out_of_range("-128..127"));
             }
-            Ok(TypedValue::Signed {
-                value: v,
-                unit: None,
-            })
+            Ok(TypedValue::Signed { value: v, unit })
         }
         7 => {
-            let v = parse_uint(raw).ok_or_else(|| invalid("an unsigned integer 0-65535"))?;
+            let unit = int_unit(7, dpt.sub);
+            let v = parse_uint(strip_unit(raw, unit))
+                .ok_or_else(|| invalid("an unsigned integer 0-65535 (optionally with unit)"))?;
             if v > 0xffff {
                 return Err(out_of_range("0-65535"));
             }
             Ok(TypedValue::Unsigned {
                 value: v as u32,
-                unit: None,
+                unit,
             })
         }
         8 => {
-            let v = parse_int(raw).ok_or_else(|| invalid("a signed integer -32768..32767"))?;
+            let unit = int_unit(8, dpt.sub);
+            let v = parse_int_with_unit(raw, unit).ok_or_else(|| {
+                invalid("a signed integer -32768..32767 (optionally with unit)")
+            })?;
             if !(-32768..=32767).contains(&v) {
                 return Err(out_of_range("-32768..32767"));
             }
-            Ok(TypedValue::Signed {
-                value: v,
-                unit: None,
-            })
+            Ok(TypedValue::Signed { value: v, unit })
         }
         9 => {
             let unit = float16_unit(dpt.sub);
@@ -1332,21 +1451,20 @@ pub fn parse_value(dpt: &Dpt, input: &str) -> Result<TypedValue, ParseValueError
             Ok(TypedValue::Float { value: v, unit })
         }
         12 => {
-            let v = parse_uint(raw).ok_or_else(|| invalid("an unsigned integer 0-4294967295"))?;
+            let unit = int_unit(12, dpt.sub);
+            let v = parse_uint(strip_unit(raw, unit)).ok_or_else(|| {
+                invalid("an unsigned integer 0-4294967295 (optionally with unit)")
+            })?;
             if v > u32::MAX as u64 {
                 return Err(out_of_range("0-4294967295"));
             }
             Ok(TypedValue::Unsigned {
                 value: v as u32,
-                unit: None,
+                unit,
             })
         }
         13 => {
-            let unit = match dpt.sub {
-                Some(10) => Some("Wh"),
-                Some(13) => Some("kWh"),
-                _ => None,
-            };
+            let unit = int_unit(13, dpt.sub);
             let v = parse_int_with_unit(raw, unit)
                 .ok_or_else(|| invalid("a signed 32-bit integer (optionally with unit)"))?;
             if !(i32::MIN as i64..=i32::MAX as i64).contains(&v) {
@@ -1483,11 +1601,6 @@ fn parse_uint(input: &str) -> Option<u64> {
     input.trim().parse::<u64>().ok()
 }
 
-/// Parses a signed integer.
-fn parse_int(input: &str) -> Option<i64> {
-    input.trim().parse::<i64>().ok()
-}
-
 /// Parses a signed integer, tolerating a trailing known unit suffix.
 fn parse_int_with_unit(input: &str, unit: Option<&str>) -> Option<i64> {
     let s = strip_unit(input.trim(), unit);
@@ -1542,6 +1655,14 @@ fn parse_float(input: &str, unit: Option<&str>) -> Option<f32> {
 fn strip_unit<'a>(input: &'a str, unit: Option<&str>) -> &'a str {
     if let Some(u) = unit {
         if let Some(stripped) = strip_suffix_ci(input, u) {
+            return stripped;
+        }
+        // The ASCII spelling of a unit with a superscript or micro sign:
+        // `m3/h` for `m³/h`, `W/m2` for `W/m²`, `ug/m3` for `µg/m³`.
+        let ascii = u.replace('³', "3").replace('²', "2").replace('µ', "u");
+        if ascii != u
+            && let Some(stripped) = strip_suffix_ci(input, &ascii)
+        {
             return stripped;
         }
         // `°C` also matches a bare `C`, `m/s` a bare unit, etc.: try the unit
@@ -1679,6 +1800,15 @@ pub fn encode(dpt: &Dpt, value: &TypedValue) -> Result<Vec<u8>, EncodeError> {
             // the inverse of the `b * 360 / 255` decode scaling. Encoding is
             // therefore lossy (quantized to ~1.41°/step) but round-trips within
             // one raw step.
+            (Some(3), TypedValue::Float { value: v, .. }) => {
+                if !(0.0..=360.0).contains(v) {
+                    return Err(EncodeError::OutOfRange {
+                        dpt: dpt.to_string(),
+                        value: value.to_string(),
+                    });
+                }
+                Ok(vec![(v * 255.0 / 360.0).round() as u8])
+            }
             (Some(3), TypedValue::Unsigned { value: v, .. }) => {
                 if *v > 360 {
                     return Err(EncodeError::OutOfRange {
@@ -1930,6 +2060,114 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_units_cover_subtypes() -> Result<(), Box<dyn std::error::Error>> {
+        // (DPT, payload, display): one row per sub-type with a unit in
+        // 03_07_02 §3.5, §3.6, §3.8, §3.9, §3.10, §3.13, §3.14 and §3.15.
+        let rows: &[(&str, &[u8], &str)] = &[
+            ("5.004", &[0x32], "50 %"),
+            ("5.010", &[7], "7 pulses"),
+            ("6.001", &[0xF6], "-10 %"),
+            ("6.010", &[3], "3 pulses"),
+            ("7.001", &[0, 5], "5 pulses"),
+            ("7.002", &[0x01, 0xF4], "500 ms"),
+            ("7.005", &[0x0E, 0x10], "3600 s"),
+            ("7.006", &[0, 90], "90 min"),
+            ("7.007", &[0, 24], "24 h"),
+            ("7.011", &[0x05, 0xDC], "1500 mm"),
+            ("7.012", &[0, 20], "20 mA"),
+            ("7.013", &[0x01, 0xF4], "500 lux"),
+            ("7.600", &[0x19, 0x64], "6500 K"),
+            ("8.002", &[0xFF, 0x9C], "-100 ms"),
+            ("8.005", &[0, 60], "60 s"),
+            ("8.006", &[0, 5], "5 min"),
+            ("8.007", &[0, 2], "2 h"),
+            ("8.011", &[0, 90], "90 °"),
+            ("8.012", &[0, 12], "12 m"),
+            ("9.002", &[0x07, 0xD0], "20 K"),
+            ("9.003", &[0x00, 0x64], "1 K/h"),
+            ("9.008", &[0x07, 0xD0], "20 ppm"),
+            ("9.009", &[0x00, 0x64], "1 m³/h"),
+            ("9.010", &[0x00, 0x64], "1 s"),
+            ("9.011", &[0x00, 0x64], "1 ms"),
+            ("9.020", &[0x00, 0x64], "1 mV"),
+            ("9.022", &[0x00, 0x64], "1 W/m²"),
+            ("9.023", &[0x00, 0x64], "1 K/%"),
+            ("9.024", &[0x00, 0x64], "1 kW"),
+            ("9.025", &[0x00, 0x64], "1 l/h"),
+            ("9.026", &[0x00, 0x64], "1 l/m²"),
+            ("9.027", &[0x00, 0x64], "1 °F"),
+            ("9.029", &[0x00, 0x64], "1 g/m³"),
+            ("9.030", &[0x00, 0x64], "1 µg/m³"),
+            ("12.001", &[0, 0, 0, 9], "9 pulses"),
+            ("12.100", &[0, 0, 0x0E, 0x10], "3600 s"),
+            ("12.101", &[0, 0, 0, 60], "60 min"),
+            ("12.102", &[0, 0, 0, 12], "12 h"),
+            ("13.001", &[0, 0, 0, 9], "9 pulses"),
+            ("13.010", &[0, 0, 0, 9], "9 Wh"),
+            ("13.011", &[0, 0, 0, 9], "9 VAh"),
+            ("13.012", &[0, 0, 0, 9], "9 VARh"),
+            ("13.013", &[0, 0, 0, 9], "9 kWh"),
+            ("13.014", &[0, 0, 0, 9], "9 kVAh"),
+            ("13.015", &[0, 0, 0, 9], "9 kVARh"),
+            ("13.016", &[0, 0, 0, 9], "9 MWh"),
+            ("13.100", &[0, 0, 0x0E, 0x10], "3600 s"),
+            ("14.007", &1.5f32.to_be_bytes(), "1.5 °"),
+            ("14.033", &50f32.to_be_bytes(), "50 Hz"),
+            ("14.057", &0.5f32.to_be_bytes(), "0.5"),
+            ("14.080", &100f32.to_be_bytes(), "100 VA"),
+        ];
+        for (sub, payload, shown) in rows {
+            let d = dpt(sub);
+            let value = decode(&d, payload);
+            assert_eq!(value.to_string(), *shown, "{sub}");
+            // The display form, unit and all, parses back to the same octets.
+            let typed = parse_value(&d, shown)?;
+            assert_eq!(encode(&d, &typed)?, payload.to_vec(), "{sub} {shown}");
+        }
+        // Every 9.xxx and 14.xxx sub-type of §3.10 / §3.15 has a unit except
+        // 14.005 amplitude and 14.057 power factor.
+        for sub in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30] {
+            assert!(float16_unit(Some(sub)).is_some(), "9.{sub:03}");
+        }
+        for sub in (0..=80).filter(|s| *s != 5 && *s != 57) {
+            assert!(float32_unit(Some(sub)).is_some(), "14.{sub:03}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_value_unit_suffix() -> Result<(), Box<dyn std::error::Error>> {
+        for (sub, input, payload) in [
+            ("7.600", "6500 K", vec![0x19, 0x64]),
+            ("7.600", "6500", vec![0x19, 0x64]),
+            ("9.002", "2 K", vec![0x00, 0xC8]),
+            ("13.100", "3600 s", vec![0, 0, 0x0E, 0x10]),
+            ("9.009", "1 m3/h", vec![0x00, 0x64]),
+            ("5.004", "50%", vec![0x32]),
+        ] {
+            let d = dpt(sub);
+            assert_eq!(encode(&d, &parse_value(&d, input)?)?, payload, "{sub} {input}");
+        }
+        // A wrong unit is refused rather than ignored.
+        assert!(parse_value(&dpt("7.600"), "6500 s").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_decode_angle_one_decimal() -> Result<(), Box<dyn std::error::Error>> {
+        let d = dpt("5.003");
+        assert_eq!(decode(&d, &[0x80]).to_string(), "180.7 °");
+        assert_eq!(decode(&d, &[0x01]).to_string(), "1.4 °");
+        assert_eq!(decode(&d, &[0xFF]).to_string(), "360 °");
+        // Every code survives decode then parse then encode.
+        for raw in 0u8..=255 {
+            let shown = decode(&d, &[raw]).to_string();
+            assert_eq!(encode(&d, &parse_value(&d, &shown)?)?, vec![raw], "{shown}");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn bool_subtype_labels() {
         assert_eq!(
             decode(&dpt("1.001"), &[1]),
@@ -2097,7 +2335,7 @@ mod tests {
             decode(&dpt("6.010"), &[0xff]),
             TypedValue::Signed {
                 value: -1,
-                unit: None
+                unit: Some("pulses")
             }
         );
     }
@@ -2210,14 +2448,14 @@ mod tests {
             decode(&dpt("7.001"), &[0x12, 0x34]),
             TypedValue::Unsigned {
                 value: 0x1234,
-                unit: None
+                unit: Some("pulses")
             }
         );
         assert_eq!(
             decode(&dpt("8.001"), &[0xff, 0xff]),
             TypedValue::Signed {
                 value: -1,
-                unit: None
+                unit: Some("pulses")
             }
         );
     }
@@ -2532,15 +2770,15 @@ mod tests {
             parse_value(&dpt("5.010"), "200")?,
             TypedValue::Unsigned {
                 value: 200,
-                unit: None
+                unit: Some("pulses")
             }
         );
         assert!(parse_value(&dpt("5.010"), "300").is_err());
         // 5.003 angle with a stray degree sign.
         assert_eq!(
             parse_value(&dpt("5.003"), "180°")?,
-            TypedValue::Unsigned {
-                value: 180,
+            TypedValue::Float {
+                value: 180.0,
                 unit: Some("°")
             }
         );
@@ -2553,7 +2791,7 @@ mod tests {
             parse_value(&dpt("6.010"), "-5")?,
             TypedValue::Signed {
                 value: -5,
-                unit: None
+                unit: Some("pulses")
             }
         );
         assert!(parse_value(&dpt("6.010"), "200").is_err());
@@ -2561,7 +2799,7 @@ mod tests {
             parse_value(&dpt("7.001"), "1000")?,
             TypedValue::Unsigned {
                 value: 1000,
-                unit: None
+                unit: Some("pulses")
             }
         );
         assert!(parse_value(&dpt("7.001"), "70000").is_err());
@@ -2569,14 +2807,14 @@ mod tests {
             parse_value(&dpt("8.001"), "-1000")?,
             TypedValue::Signed {
                 value: -1000,
-                unit: None
+                unit: Some("pulses")
             }
         );
         assert_eq!(
             parse_value(&dpt("12.001"), "4000000000")?,
             TypedValue::Unsigned {
                 value: 4_000_000_000,
-                unit: None
+                unit: Some("pulses")
             }
         );
         Ok(())
@@ -2828,25 +3066,10 @@ mod tests {
             ),
             Err(EncodeError::OutOfRange { .. })
         ));
-        // Round-trip within one raw step: decode(encode(v)) stays close, and
-        // encode(decode(x)) is stable.
+        // encode(decode(x)) is exact now that decode keeps one decimal.
         for raw in [0u8, 1, 90, 128, 200, 255] {
-            if let TypedValue::Unsigned { value: deg, .. } = decode(&dpt("5.003"), &[raw]) {
-                let back = encode(
-                    &dpt("5.003"),
-                    &TypedValue::Unsigned {
-                        value: deg,
-                        unit: Some("°"),
-                    },
-                )?;
-                assert!(
-                    (back[0] as i16 - raw as i16).abs() <= 1,
-                    "raw {raw} -> {deg}° -> {}",
-                    back[0]
-                );
-            } else {
-                panic!("expected unsigned angle");
-            }
+            let back = encode(&dpt("5.003"), &decode(&dpt("5.003"), &[raw]))?;
+            assert_eq!(back, vec![raw]);
         }
         Ok(())
     }
@@ -3119,7 +3342,7 @@ mod tests {
             decode(&dpt("8.001"), &[0x7F, 0xFF]),
             TypedValue::Signed {
                 value: 32767,
-                unit: None
+                unit: Some("pulses")
             }
         );
         Ok(())
@@ -3179,12 +3402,12 @@ mod tests {
         assert_eq!(decode(&dpt("7.003"), &[0, 150]).to_string(), "1.50 s");
         assert_eq!(decode(&dpt("8.003"), &[0xFF, 0x9C]).to_string(), "-1.00 s");
         assert_eq!(decode(&dpt("8.004"), &[0, 15]).to_string(), "1.5 s");
-        // Resolution-1 sub-types stay plain counts.
+        // Resolution-1 sub-types stay plain counts, with their unit (#501).
         assert_eq!(
             decode(&dpt("7.005"), &[0, 10]),
             TypedValue::Unsigned {
                 value: 10,
-                unit: None
+                unit: Some("s")
             }
         );
     }

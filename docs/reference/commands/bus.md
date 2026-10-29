@@ -121,6 +121,10 @@ A scaled sub-type takes the scaled value, never the raw count: `50 %` on an `8.0
 sends `13 88`, `1.5 s` (or `1500 ms`) on `7.004` sends `00 0F`, `1.5 m3/h` on `13.002` sends
 `00 00 3A 98` (KNX 03_07_02 §3.8.2, §3.9.1, §3.9.2, §3.14.1). A value outside the range or finer
 than the resolution is refused; `read` and `monitor` show these values with their unit.
+Every integer and float sub-type with a unit in KNX 03_07_02 §3.5-§3.15 shows it and takes it
+as a suffix: `6500 K` on `7.600`, `3600 s` on `13.100` or `7.005`, `2 K` on `9.002`, `50 %` on
+`5.004`; ASCII spellings work too (`1 m3/h`). A `5.003` angle keeps one decimal, so `80` reads
+`180.7 °` and `22.5` is a valid input.
 
 | Flag / arg | Default | Meaning |
 |---|---|---|

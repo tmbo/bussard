@@ -381,27 +381,11 @@ fn dpt_5003_angle_above_255_encodes() {
         vec![255]
     );
 
-    // Round-trip both directions within the quantization: encode(decode(raw)) is
-    // stable to within one raw step, and decode(encode(deg)) preserves degrees to
-    // within the ~1.41°/step resolution.
+    // Round-trip: decode keeps one decimal (#501), so encode(decode(raw)) is
+    // exact, and decode(encode(deg)) is within the ~1.41°/step resolution.
     for raw in 0u8..=255 {
-        if let TypedValue::Unsigned { value: deg, .. } = decode(&dpt("5.003"), &[raw]) {
-            let re = encode(
-                &dpt("5.003"),
-                &TypedValue::Unsigned {
-                    value: deg,
-                    unit: Some("°"),
-                },
-            )
-            .expect("re-encode angle");
-            assert!(
-                (re[0] as i16 - raw as i16).abs() <= 1,
-                "raw {raw} -> {deg}° -> {} not within one step",
-                re[0]
-            );
-        } else {
-            panic!("5.003 decode should be Unsigned");
-        }
+        let re = encode(&dpt("5.003"), &decode(&dpt("5.003"), &[raw])).expect("re-encode angle");
+        assert_eq!(re, vec![raw], "raw {raw} did not round-trip");
     }
     for deg in [0u32, 45, 90, 180, 270, 360] {
         let bytes = encode(
@@ -412,13 +396,13 @@ fn dpt_5003_angle_above_255_encodes() {
             },
         )
         .expect("encode angle");
-        if let TypedValue::Unsigned { value: back, .. } = decode(&dpt("5.003"), &bytes) {
+        if let TypedValue::Float { value: back, .. } = decode(&dpt("5.003"), &bytes) {
             assert!(
-                (back as i64 - deg as i64).abs() <= 2,
+                (f64::from(back) - f64::from(deg)).abs() <= 1.0,
                 "{deg}° -> {back}° round-trip drifted"
             );
         } else {
-            panic!("expected unsigned angle");
+            panic!("expected float angle");
         }
     }
 }
