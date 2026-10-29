@@ -680,15 +680,21 @@ pub(super) fn plan_flash_sys7(
         .chain(linked.iter().copied())
         .max();
     let declared = app.com_object_table.as_ref();
-    apply_sys7_group_object_links(
-        &steps,
-        &mut images,
-        declared,
-        &linked,
-        linked_flags,
-        &default_flags,
-        last_object,
-    );
+    // An application that declares no com-object, no module object and no
+    // link has every descriptor past its last declared object: ETS writes the
+    // template unchanged (issue #475, COMIP2 `M-00E1_A-A00D-10-12FB-O00C5`,
+    // all 8 CONFIG octets kept at `df`). Only a declaration rewrites.
+    if let Some(last_object) = last_object {
+        apply_sys7_group_object_links(
+            &steps,
+            &mut images,
+            declared,
+            &linked,
+            linked_flags,
+            &default_flags,
+            Some(last_object),
+        );
+    }
     let code_segments = sys7_code_segments(&steps, &images, declared, &param_images, &placed);
 
     Ok(FlashPlan {
@@ -2244,6 +2250,77 @@ mod tests {
         );
         Ok(())
     }
+    /// A System 7 (0701) app whose LSM 3 segment `AS-43FF` carries a three-slot
+    /// descriptor table (template C set, `df`) that `<ComObjectTable>` names;
+    /// `objects` goes into `<Static>` and `dynamic` is the Dynamic section.
+    fn sys7_descriptor_app(
+        objects: &str,
+        dynamic: &str,
+    ) -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram PeiType="0" Id="A" ApplicationNumber="1" ApplicationVersion="16"
+            MaskVersion="MV-0701" Name="Descriptors" LoadProcedureStyle="ProductProcedure">
+          <Static>
+           <Code>
+            <AbsoluteSegment Id="A_AS-43FF" Size="15" Address="17407"><Data>AwcPBwDfAAcB3wcHAt8A</Data></AbsoluteSegment>
+           </Code>
+           <ParameterTypes><ParameterType Id="A_PT-1" Name="t"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="1" /></ParameterType></ParameterTypes>
+           <Parameters><Parameter Id="A_P-1" Name="enable" ParameterType="A_PT-1" Value="0" /></Parameters>
+           <ParameterRefs><ParameterRef Id="A_P-1_R-1" RefId="A_P-1" /></ParameterRefs>
+           {objects}
+           <ComObjectTable CodeSegment="A_AS-43FF" Offset="0" />
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlConnect />
+             <LdCtrlLoad LsmIdx="3" />
+             <LdCtrlAbsSegment LsmIdx="3" Address="17407" Size="15" />
+             <LdCtrlLoadCompleted LsmIdx="3" />
+             <LdCtrlDisconnect />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+          {dynamic}
+         </ApplicationProgram></KNX>"#
+        );
+        Ok(parse_application_program("A", xml.as_bytes())?)
+    }
+
+    fn plan_descriptor_table(
+        app: &ApplicationProgram,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let plan = plan_flash(
+            app,
+            "1.1.99",
+            0x0701,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )?;
+        Ok(plan
+            .image_bytes("A_AS-43FF")
+            .map(<[u8]>::to_vec)
+            .unwrap_or_default())
+    }
+
+    /// Issue #475 (COMIP2 `M-00E1_A-A00D-10-12FB-O00C5`): an application that
+    /// declares no com-object, no module object and no link writes the
+    /// descriptor table as the template has it, C kept on every slot.
+    #[test]
+    fn test_plan_flash_sys7_template_only_table_keeps_the_template()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let app = sys7_descriptor_app("", "")?;
+        assert_eq!(
+            plan_descriptor_table(&app)?,
+            vec![
+                0x03, 0x07, 0x0F, 0x07, 0x00, 0xDF, 0x00, 0x07, 0x01, 0xDF, 0x07, 0x07, 0x02, 0xDF,
+                0x00
+            ]
+        );
+        Ok(())
+    }
+
     /// A fabricated System 7 (mask 0705) app in the MDT canonical LSM 1/2/3 shape
     /// (`[system7-spec §3]`): obj0/PID78 preflight, three LSMs, an AbsSegment with
     /// a per-byte `<Mask>` on LSM 1, an allocate-only RAM segment on LSM 3, a
