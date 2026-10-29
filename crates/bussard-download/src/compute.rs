@@ -30,7 +30,7 @@
 //!   non-decreasing within each block — the shape seen in the live association
 //!   table. An object with no GA at all contributes nothing.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use bussard_model::GroupAddress;
 use bussard_model::schema::Link;
@@ -701,9 +701,48 @@ pub fn dynamic_group_object_table_with(
     memo: &bussard_prod::dynamic::DynamicMemo<'_, bussard_prod::ApplicationProgram>,
 ) -> Option<Vec<u8>> {
     let config = memo.evaluate_for(app, overrides);
-    let descriptors = dynamic_group_object_descriptors(app, &config, linked);
+    let mut descriptors = dynamic_group_object_descriptors(app, &config, linked);
+    if app.ets_download_plugin {
+        ets_download_plugin_descriptors(app, &mut descriptors);
+    }
     let count = group_object_table_count(app, &descriptors);
     compute_group_object_table_with_count(&descriptors, count)
+}
+
+/// The group-object table of a program with an ETS download plugin (issue
+/// #565): ETS sets the communication flag on every declared object. A shown
+/// object keeps its flags with C added; a declared object the configuration
+/// does not show gets `04 00` (C only, system priority, size code 0); only
+/// the numbers no object declares stay `00 00`.
+///
+/// From the defaults sweep of the four Busch-Jaeger DALI gateways
+/// (`M-0007_A-A0AA`..`A0AD`, `<Extension EtsDownloadPlugin="">`): A0AA's 1058
+/// unshown objects were written `04 00`, its shown unlinked ones `17`, `5f`,
+/// `4f` where the plain rule writes `13`, `5b`, `4b`. The likely writer is the
+/// plugin; what it does in a non-default configuration is not captured.
+fn ets_download_plugin_descriptors(
+    app: &bussard_prod::ApplicationProgram,
+    descriptors: &mut Vec<GroupObjectDescriptor>,
+) {
+    use bussard_model::Flags;
+    for d in descriptors.iter_mut() {
+        d.flags |= Flags::COMMUNICATION;
+    }
+    let shown: BTreeSet<u16> = descriptors.iter().map(|d| d.asap).collect();
+    let declared: BTreeSet<u16> = app
+        .com_objects
+        .values()
+        .filter(|c| c.base_number_ref.is_none() && !c.id.contains("_MD-"))
+        .map(|c| c.number)
+        .filter(|&n| n != 0 && !shown.contains(&n))
+        .collect();
+    descriptors.extend(declared.into_iter().map(|asap| GroupObjectDescriptor {
+        asap,
+        flags: Flags::COMMUNICATION,
+        size_code: 0,
+        priority: Priority::System,
+    }));
+    descriptors.sort_by_key(|d| d.asap);
 }
 
 /// The declared default value of a parameter a `<choose>` gates, by its
@@ -1208,6 +1247,73 @@ mod tests {
             app_program_version(0x00FA, 9472, 16),
             [0x00, 0xFA, 0x25, 0x00, 0x10]
         );
+    }
+
+    /// Issue #565: a program with `<Extension EtsDownloadPlugin>` (the
+    /// Busch-Jaeger DALI gateway A0AA) gets C on every declared object: the
+    /// shown ones keep their flags with C (`5f 00`, `17 00`), the unshown
+    /// ones `04 00`, the undeclared numbers `00 00`. Without the plugin the
+    /// same program keeps the plain rule.
+    #[test]
+    fn test_dynamic_group_object_table_ets_download_plugin_sets_c_everywhere()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let xml = |extension: &str| {
+            format!(
+                r#"<KNX xmlns="http://knx.org/xml/project/21">
+         <ApplicationProgram Id="A" MaskVersion="MV-07B0" Name="dali">
+          <Static>
+           <Parameters><Parameter Id="A_P-1" Name="sel" Value="0" /></Parameters>
+           <ParameterRefs><ParameterRef Id="A_P-1_R-1" RefId="A_P-1" /></ParameterRefs>
+           <ComObjects>
+            <ComObject Id="A_O-1" Number="1" ObjectSize="1 Bit" ReadFlag="Enabled" TransmitFlag="Enabled" CommunicationFlag="Enabled" />
+            <ComObject Id="A_O-2" Number="2" ObjectSize="1 Bit" ReadFlag="Enabled" WriteFlag="Enabled" TransmitFlag="Enabled" CommunicationFlag="Enabled" />
+            <ComObject Id="A_O-3" Number="3" ObjectSize="1 Bit" WriteFlag="Enabled" CommunicationFlag="Enabled" />
+            <ComObject Id="A_O-7" Number="7" ObjectSize="1 Bit" WriteFlag="Enabled" CommunicationFlag="Enabled" />
+           </ComObjects>
+           <ComObjectRefs>
+            <ComObjectRef Id="A_O-1_R-1" RefId="A_O-1" /><ComObjectRef Id="A_O-2_R-2" RefId="A_O-2" />
+            <ComObjectRef Id="A_O-3_R-3" RefId="A_O-3" /><ComObjectRef Id="A_O-7_R-7" RefId="A_O-7" />
+           </ComObjectRefs>
+           {extension}
+          </Static>
+          <Dynamic>
+           <ChannelIndependentBlock><ParameterBlock Id="A_PB-1">
+            <ParameterRefRef RefId="A_P-1_R-1" />
+            <ComObjectRefRef RefId="A_O-2_R-2" />
+            <ComObjectRefRef RefId="A_O-7_R-7" />
+            <choose ParamRefId="A_P-1_R-1">
+             <when test="1"><ComObjectRefRef RefId="A_O-1_R-1" /><ComObjectRefRef RefId="A_O-3_R-3" /></when>
+            </choose>
+           </ParameterBlock></ChannelIndependentBlock>
+          </Dynamic>
+         </ApplicationProgram></KNX>"#
+            )
+        };
+        let table = |extension: &str| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+            let app = bussard_prod::parse_application_program("A", xml(extension).as_bytes())?;
+            Ok(
+                dynamic_group_object_table(&app, &BTreeMap::new(), &BTreeMap::new())
+                    .ok_or("empty table")?,
+            )
+        };
+        let plugin =
+            table(r#"<Extension EtsDownloadPlugin="" EtsUiPlugin="" EtsDataHandler="" />"#)?;
+        assert_eq!(
+            plugin,
+            vec![
+                0x00, 0x07, 0x04, 0x00, 0x5f, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x17, 0x00
+            ]
+        );
+        let plain = table("")?;
+        assert_eq!(
+            plain,
+            vec![
+                0x00, 0x07, 0x00, 0x00, 0x5b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x13, 0x00
+            ]
+        );
+        Ok(())
     }
 
     /// The Jung F50 shape (issue #123): placeholder application com-objects
