@@ -895,9 +895,15 @@ def flow_delete_device(req: dict) -> dict:
     r, g, b = Counter(light).most_common(1)[0][0] if light else (0, 0, 0)
     if not (b > r + 20 and b > 230):
         raise RuntimeError(f"delete: the row of {req['ia']} is not highlighted (rgb {r},{g},{b})")
-    mouse.right_click(coords=(int(1000 * s_), int(y * s_)))
-    time.sleep(1.2)
-    items = menu_items()
+    items: list[str] = []
+    for _ in range(3):
+        # The menu stayed away once right after an ETS restart: try again.
+        mouse.right_click(coords=(int(1000 * s_), int(y * s_)))
+        time.sleep(1.2)
+        items = menu_items()
+        if items:
+            break
+        time.sleep(2)
     # A device's menu offers 'Gerät neu starten'; a line's or area's does not.
     if "Gerät neu starten" not in items or "Löschen" not in items:
         keys("{ESC}")

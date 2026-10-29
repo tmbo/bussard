@@ -454,7 +454,11 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
         result["ops"] = sum(1 for l in ops.stdout.splitlines() if re.match(r"\s+\d+\s", l))
     err = result.get("error") or ""
     result["outcome"] = (
-        "skipped-compat-mode" if "compatibility mode" in err
+        # A prompt met before this product was even added belongs to the
+        # previous one (it kept coming back for a device left in the project,
+        # 2026-10-29): retry, do not skip.
+        "driver-error" if "compatibility mode before project_tab" in err
+        else "skipped-compat-mode" if "compatibility mode" in err
         else "skipped-ets-invalid-product" if "ETS product data invalid" in err
         else "skipped-catalog-version" if "catalog version mismatch" in err
         else "skipped-not-in-catalog" if "not found in catalog search" in err

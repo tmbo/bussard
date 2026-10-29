@@ -367,6 +367,20 @@ def main() -> int:
                 print(f"stopping: the VM desktop is not usable: {r.get('error', '')[:160]}", flush=True)
                 stop = True
                 break
+            if "compatibility mode before project_tab" in (r.get("error") or "") and not job.get("retried"):
+                # A compatibility prompt that keeps coming back for a device the
+                # previous product left in the project: restart ETS (with a
+                # cleared store) and run this product again once.
+                try:
+                    rs = vm.driver(c, "POST", "/ets/reset_catalog", {"project": "ets-sweep"}, timeout=900)
+                    print(f"reset   after a stale compatibility prompt: {rs.get('did', rs.get('error'))}", flush=True)
+                    in_catalog = 0
+                    remote = catalog.upload_if_missing(c, path)
+                    vm.driver(c, "POST", "/ets/catalog_import", {"path": remote, "timeout": 3600, "project": "ets-sweep"}, timeout=3700)
+                    queue.insert(0, {**job, "retried": True})
+                    continue
+                except Exception as exc:  # noqa: BLE001
+                    print(f"reset   failed: {exc}", flush=True)
             sibling = catalog_sibling(job, r, everything)
             if sibling and r["outcome"] != "skipped-catalog-version":
                 # Recorded as what it was: ETS ran the sibling's application.
