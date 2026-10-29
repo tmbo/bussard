@@ -502,6 +502,9 @@ struct ParameterModel {
     /// memory (issue #474: a parameter with neither only steers).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     property: bool,
+    /// A text parameter's `InitialValue`, translated (issue #473).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    initial_value: Option<String>,
     /// The `BaseValue` argument, app-relative (issue #126).
     #[serde(skip_serializing_if = "Option::is_none")]
     base_value: Option<String>,
@@ -826,6 +829,7 @@ fn parameters_for(app: &ApplicationProgram) -> Vec<ParameterModel> {
                     bit_offset: m.bit_offset,
                 }),
                 property: param.property.is_some(),
+                initial_value: param.initial_value.clone(),
                 base_value: param
                     .base_value
                     .as_deref()

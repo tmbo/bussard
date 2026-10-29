@@ -372,6 +372,23 @@ pub struct Parameter {
     /// the application's `DownloadInvisibleParameters` says (issue #450).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub legacy_patch_always: bool,
+    /// For a `TypeText` parameter, the `InitialValue` ETS starts a new device
+    /// with, in the language the program was parsed in (its
+    /// `<Translation AttributeName="InitialValue">`, else the untranslated
+    /// attribute). It wins over the parameter's and its refs' `Value` as the
+    /// default (issue #473: the Busch-Wächter PRO 2800's device name is
+    /// "Busch-Wächter Pro" in a German project). `None` for any other type
+    /// and for a text parameter without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_value: Option<String>,
+}
+
+impl Parameter {
+    /// The value ETS gives the parameter on a new device: its
+    /// [`Self::initial_value`], else its `Value`.
+    pub fn starting_value(&self) -> Option<&str> {
+        self.initial_value.as_deref().or(self.default.as_deref())
+    }
 }
 
 /// Where a property-located parameter sits: the interface object (by index or
@@ -1321,6 +1338,18 @@ pub fn parse_application_program_in(
     }
 
     apply_translations(&mut app, &translations);
+    // `InitialValue` is the starting value of a text parameter only.
+    let types = &app.parameter_types;
+    for param in app.parameters.values_mut() {
+        let text = param
+            .parameter_type
+            .as_deref()
+            .and_then(|t| types.get(t))
+            .is_some_and(|d| matches!(d.kind, ParameterType::Text { .. }));
+        if !text {
+            param.initial_value = None;
+        }
+    }
     Ok(app)
 }
 
@@ -1760,7 +1789,7 @@ fn handle_empty(
 }
 
 /// The attributes a translation may replace.
-const TRANSLATED: &[&str] = &["Name", "Text", "FunctionText"];
+const TRANSLATED: &[&str] = &["Name", "Text", "FunctionText", "InitialValue"];
 
 /// Applies the collected translations to names, texts, function texts and
 /// enumeration texts.
@@ -1803,6 +1832,9 @@ fn apply_translations(app: &mut ApplicationProgram, translations: &TranslationCo
     for (id, param) in app.parameters.iter_mut() {
         if let Some(t) = translations.get(id, "Text") {
             param.text = Some(t.to_string());
+        }
+        if let Some(t) = translations.get(id, "InitialValue") {
+            param.initial_value = Some(t.to_string());
         }
     }
     for (id, pref) in app.parameter_refs.iter_mut() {
@@ -2004,6 +2036,7 @@ fn insert_parameter_start(app: &mut ApplicationProgram, m: &Attrs) -> Option<Str
             base_value: get(m, b"BaseValue").map(str::to_string),
             property: None,
             legacy_patch_always: get(m, b"LegacyPatchAlways").is_some_and(parse_xml_bool),
+            initial_value: get(m, b"InitialValue").map(str::to_string),
         },
     );
     Some(id)

@@ -758,7 +758,7 @@ fn dynamic_placements<'a>(
                     canonical(config.vendor_default(app, slot.module, ref_id)),
                 ),
                 None => {
-                    let d = canonical(slot.parameter.default.clone());
+                    let d = canonical(slot.parameter.starting_value().map(str::to_string));
                     (relative_id(app, &slot.parameter.id), false, d.clone(), d)
                 }
             };
@@ -852,10 +852,12 @@ fn static_placements<'a>(
         }
     }
     let default_of = |param: &Parameter| -> Option<String> {
-        ref_value
-            .get(param.id.as_str())
-            .map(|s| s.to_string())
-            .or_else(|| param.default.clone())
+        param.initial_value.clone().or_else(|| {
+            ref_value
+                .get(param.id.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| param.default.clone())
+        })
     };
     let mut placed = Vec::new();
 

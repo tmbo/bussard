@@ -7,5 +7,5 @@ pub use bussard_ets::application::{
     ConditionalGroup, EnumValue, LoadChoose, LoadGuard, LoadOp, LoadProcedure, Memory,
     ModuleInstance, Parameter, ParameterRef, ParameterType, ParameterTypeDecl, PropertyLocation,
     ResolvedComObject, ResolvedParameter, SecurityCapacity, SegmentKind, TableLocation,
-    parse_application_program,
+    parse_application_program, parse_application_program_in,
 };

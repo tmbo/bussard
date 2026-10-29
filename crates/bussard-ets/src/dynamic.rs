@@ -110,6 +110,10 @@ impl DynamicSource for ApplicationProgram {
                 .is_none_or(|d| matches!(d.kind, ParameterType::None))
         })
     }
+
+    fn initial_value(&self, param_id: &str) -> Option<&str> {
+        self.parameters.get(param_id)?.initial_value.as_deref()
+    }
 }
 
 #[cfg(test)]

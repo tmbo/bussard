@@ -153,7 +153,8 @@ pub struct ObjectDef {
 /// not Low, issue #541; format 9 a Data-Secure-capable application's table
 /// capacities, `data_secure:`, issue #537; format 10 `<Repeat>` nodes, a
 /// module's computed arguments, `allocators:` and `argument_allocates:`,
-/// issue #449).
+/// issue #449, a parameter's `property:` flag, issue #474, and a text
+/// parameter's `initial_value:`, issue #473).
 pub const MODEL_FORMAT: u32 = 10;
 
 /// Whether the model file at `path` is of the current [`MODEL_FORMAT`]. Reads
@@ -208,6 +209,11 @@ pub struct ParamDef {
     /// one only steers the Dynamic section (issue #474).
     #[serde(default)]
     pub stored: bool,
+    /// A text parameter's `InitialValue` in the model's language
+    /// (`initial_value:`, format 10, issue #473): the value a new device
+    /// starts with, which wins over the `Value`s as the default.
+    #[serde(default)]
+    pub initial_value: Option<String>,
 }
 
 /// A parameter's type, mirroring the `type:` tag in the model YAML.
@@ -309,6 +315,8 @@ struct RawParam {
     memory: Option<serde::de::IgnoredAny>,
     #[serde(default)]
     property: bool,
+    #[serde(default)]
+    initial_value: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -443,6 +451,7 @@ impl ProductModel {
                     integer_width: p.bits.map(|bits| (bits, p.signed)),
                     enum_values,
                     stored: p.memory.is_some() || p.property,
+                    initial_value: p.initial_value,
                 },
             );
         }
@@ -487,20 +496,24 @@ impl ProductModel {
         self.pages.get_or_init(|| crate::blocks::pages_of(self))
     }
 
-    /// The vendor default of app-relative parameter ref `reference`: the
-    /// ref's own `Value` when the model records one, else the parameter's
-    /// default. This is the value ETS shows, and a download writes, when
-    /// nothing is stored (issue #326).
+    /// The vendor default of app-relative parameter ref `reference`: a text
+    /// parameter's `InitialValue` (issue #473), else the ref's own `Value`
+    /// when the model records one, else the parameter's default. This is the
+    /// value ETS shows, and a download writes, when nothing is stored (issue
+    /// #326).
     pub fn ref_default(&self, reference: &str) -> Option<&str> {
         match self.parameter_refs.get(reference) {
-            Some(r) => r
-                .value
-                .as_deref()
-                .or_else(|| self.parameters.get(&r.parameter)?.default.as_deref()),
+            Some(r) => {
+                let def = self.parameters.get(&r.parameter);
+                // A text parameter's `InitialValue` comes first (issue #473).
+                def.and_then(|d| d.initial_value.as_deref())
+                    .or(r.value.as_deref())
+                    .or_else(|| def?.default.as_deref())
+            }
             None => self
                 .parameters
                 .get(crate::blocks::ref_param_id(reference))
-                .and_then(|d| d.default.as_deref()),
+                .and_then(|d| d.initial_value.as_deref().or(d.default.as_deref())),
         }
     }
 
@@ -628,6 +641,10 @@ impl crate::dynamic::DynamicSource for ProductModel {
         self.parameters
             .get(param_id)
             .is_some_and(|p| matches!(p.kind, ParamKind::None))
+    }
+
+    fn initial_value(&self, param_id: &str) -> Option<&str> {
+        self.parameters.get(param_id)?.initial_value.as_deref()
     }
 }
 

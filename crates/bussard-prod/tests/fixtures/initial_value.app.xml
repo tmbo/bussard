@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Fabricated System B application (bussard's own work, MIT; no vendor data)
+     for issue #473: a text parameter's InitialValue. "Device name" (P-1) has
+     Value and InitialValue "Watchdog", its ref a Value of its own, and a de-DE
+     translation of the InitialValue, "Wächter": a German project starts the
+     device with "Wächter" (UTF-8, as the program declares), an English one
+     with "Watchdog". "Level" (P-2) is a number: an InitialValue there is not
+     a starting value. -->
+<KNX xmlns="http://knx.org/xml/project/20">
+  <ManufacturerData>
+    <Manufacturer RefId="M-00FA">
+      <ApplicationPrograms>
+        <ApplicationProgram Id="M-00FA_A-0473-10-0000" ApplicationNumber="1139" ApplicationVersion="16"
+            MaskVersion="MV-07B0" Name="bussard initial value test app" LoadProcedureStyle="MergedProcedure" DefaultLanguage="en-US">
+          <Static>
+            <Code>
+              <RelativeSegment Id="M-00FA_A-0473-10-0000_RS-04-00000" Name="Parameters" Offset="0" Size="12" LoadStateMachine="4" />
+            </Code>
+            <ParameterTypes>
+              <ParameterType Id="M-00FA_A-0473-10-0000_PT-Text" Name="text10"><TypeText SizeInBit="80" /></ParameterType>
+              <ParameterType Id="M-00FA_A-0473-10-0000_PT-Byte" Name="byte"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+            </ParameterTypes>
+            <Parameters>
+              <Parameter Id="M-00FA_A-0473-10-0000_P-1" Name="deviceName" ParameterType="M-00FA_A-0473-10-0000_PT-Text" Text="Device name" Value="Watchdog" InitialValue="Watchdog">
+                <Memory CodeSegment="M-00FA_A-0473-10-0000_RS-04-00000" Offset="0" BitOffset="0" />
+              </Parameter>
+              <Parameter Id="M-00FA_A-0473-10-0000_P-2" Name="level" ParameterType="M-00FA_A-0473-10-0000_PT-Byte" Text="Level" Value="5" InitialValue="9">
+                <Memory CodeSegment="M-00FA_A-0473-10-0000_RS-04-00000" Offset="10" BitOffset="0" />
+              </Parameter>
+            </Parameters>
+            <ParameterRefs>
+              <ParameterRef Id="M-00FA_A-0473-10-0000_P-1_R-1" RefId="M-00FA_A-0473-10-0000_P-1" Value="Guard" />
+              <ParameterRef Id="M-00FA_A-0473-10-0000_P-2_R-2" RefId="M-00FA_A-0473-10-0000_P-2" />
+            </ParameterRefs>
+            <Options DownloadInvisibleParameters="None" TextParameterEncoding="utf-8" />
+          </Static>
+          <Dynamic>
+            <ChannelIndependentBlock>
+              <ParameterBlock Id="M-00FA_A-0473-10-0000_PB-1" Name="General" Text="General">
+                <ParameterRefRef RefId="M-00FA_A-0473-10-0000_P-1_R-1" />
+                <ParameterRefRef RefId="M-00FA_A-0473-10-0000_P-2_R-2" />
+              </ParameterBlock>
+            </ChannelIndependentBlock>
+          </Dynamic>
+        </ApplicationProgram>
+      </ApplicationPrograms>
+      <Languages>
+        <Language Identifier="de-DE">
+          <TranslationUnit RefId="M-00FA_A-0473-10-0000" Version="1">
+            <TranslationElement RefId="M-00FA_A-0473-10-0000_P-1">
+              <Translation AttributeName="Text" Text="Gerätename" />
+              <Translation AttributeName="InitialValue" Text="Wächter" />
+            </TranslationElement>
+          </TranslationUnit>
+        </Language>
+      </Languages>
+    </Manufacturer>
+  </ManufacturerData>
+</KNX>

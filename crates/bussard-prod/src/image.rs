@@ -277,10 +277,12 @@ pub fn compute_parameter_image_placed_with(
         // ref-id overrides (step 4) are applied in a second pass so a module
         // parameter's default lands at its declared offset while each overridden
         // instance lands at its own instance offset.
-        let value: Option<String> = ref_value
-            .get(param.id.as_str())
-            .map(|s| s.to_string())
-            .or_else(|| param.default.clone());
+        let value: Option<String> = param.initial_value.clone().or_else(|| {
+            ref_value
+                .get(param.id.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| param.default.clone())
+        });
 
         let ptype = param
             .parameter_type
@@ -411,10 +413,12 @@ pub fn compute_parameter_image_placed_with(
         let pname = param.name.as_deref().unwrap_or(&param.id);
 
         // The member's default value (a ref override may also target it).
-        let value: Option<String> = ref_value
-            .get(param.id.as_str())
-            .map(|s| s.to_string())
-            .or_else(|| param.default.clone());
+        let value: Option<String> = param.initial_value.clone().or_else(|| {
+            ref_value
+                .get(param.id.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| param.default.clone())
+        });
         let ptype = param
             .parameter_type
             .as_deref()
@@ -699,7 +703,10 @@ fn dynamic_image(
                     ValueSource::VendorDefault
                 },
             ),
-            None => (slot.parameter.default.clone(), ValueSource::VendorDefault),
+            None => (
+                slot.parameter.starting_value().map(str::to_string),
+                ValueSource::VendorDefault,
+            ),
         };
         let range = write_slot(app, &mut images, &slot, value.as_deref(), source)?;
         mark(placed, slot.segment, range);

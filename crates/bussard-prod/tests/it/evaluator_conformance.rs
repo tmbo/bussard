@@ -700,3 +700,54 @@ fn test_evaluate_dynamic_never_shown_steering_parameter_takes_no_default_branch(
     assert_eq!(seg.get(5), Some(&0xFF));
     Ok(())
 }
+
+/// The issue #473 fixture: a text parameter's translated `InitialValue`.
+const INITIAL_VALUE: &[u8] = include_bytes!("../fixtures/initial_value.app.xml");
+/// Its program id.
+const INITIAL_VALUE_ID: &str = "M-00FA_A-0473-10-0000";
+
+/// The fixture's parameter segment under `values`, parsed in `language`.
+fn initial_value_image(
+    language: &str,
+    values: &[(&str, &str)],
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let app = bussard_prod::application::parse_application_program_in(
+        INITIAL_VALUE_ID,
+        INITIAL_VALUE,
+        language,
+    )?;
+    let values: BTreeMap<String, String> = values
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    let mut image = bussard_prod::compute_dynamic_parameter_image(&app, &values)?;
+    image
+        .remove(&format!("{INITIAL_VALUE_ID}_RS-04-00000"))
+        .ok_or_else(|| "no parameter segment".into())
+}
+
+#[test]
+fn test_compute_dynamic_parameter_image_text_starts_from_the_translated_initial_value() -> TestResult
+{
+    // German: the translated InitialValue, in UTF-8, over the ref's Value.
+    let de = initial_value_image("de-DE", &[])?;
+    assert_eq!(&de[..10], "Wächter\0\0".as_bytes());
+    // English (the default language): the untranslated InitialValue.
+    let en = initial_value_image("en-US", &[])?;
+    assert_eq!(&en[..10], b"Watchdog\0\0");
+    // A number's InitialValue is not its default.
+    assert_eq!((de[10], en[10]), (5, 5));
+    // An explicit value still wins.
+    let set = initial_value_image("de-DE", &[("P-1_R-1", "Hall")])?;
+    assert_eq!(&set[..10], b"Hall\0\0\0\0\0\0");
+    // The product model gives the view the same default.
+    let app = bussard_prod::application::parse_application_program_in(
+        INITIAL_VALUE_ID,
+        INITIAL_VALUE,
+        "de-DE",
+    )?;
+    let model = product_model(&app)?;
+    assert_eq!(model.ref_default("P-1_R-1"), Some("Wächter"));
+    assert_eq!(model.ref_default("P-2_R-2"), Some("5"));
+    Ok(())
+}

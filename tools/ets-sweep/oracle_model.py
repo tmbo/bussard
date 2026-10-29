@@ -9,7 +9,10 @@
 The model holds one device at `--ia` with the application at its vendor
 defaults and no links (and, for a device with a KNX IP interface built in, the
 `[knxnet]` table ETS's project gives it), which is what the sweep has ETS download into the
-simulator (a catalog device added to an empty line, nothing configured). It is
+simulator (a catalog device added to an empty line, nothing configured). Its
+import language is the sweep's ETS project language, de-DE: ETS starts a new
+device's text parameters from the `InitialValue` translated into the project
+language (issue #473, the Busch-Wächter PRO 2800's device name). It is
 the same shape the sim catalog loop uses (bussard-cli tests/it/sim_catalog_loop.rs,
 `write_model`): `bussard import-product`, then the device pinned in the lock.
 """
@@ -22,6 +25,8 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
+# The language of the sweep's ETS project (issue #473).
+LANGUAGE = "de-DE"
 BUSSARD = Path(os.environ.get("BUSSARD_BIN", REPO / "target" / "debug" / "bussard"))
 
 
@@ -70,7 +75,8 @@ def ensure_knxnet(out: Path, product: Path, app: str, ia: str = "1.1.1",
 def build(out: Path, product: Path, app: str, ia: str = "1.1.1", mask: str = "",
           friendly_name: str | None = None) -> Path:
     out.mkdir(parents=True, exist_ok=True)
-    (out / "bussard.toml").write_text('[connection]\ntransport = "tunnel"\ngateway = "127.0.0.1:3671"\n')
+    (out / "bussard.toml").write_text('[connection]\ntransport = "tunnel"\ngateway = "127.0.0.1:3671"\n'
+                                      f'\n[import]\nlanguage = "{LANGUAGE}"\n')
     r = subprocess.run([str(BUSSARD), "import-product", "--dir", str(out), str(product)],
                        capture_output=True, text=True, env={**os.environ, "BUSSARD_NO_DOTENV": "1"})
     if r.returncode != 0:

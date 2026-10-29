@@ -128,6 +128,13 @@ pub trait DynamicSource {
     fn is_type_none(&self, _param_id: &str) -> bool {
         false
     }
+    /// The `InitialValue` of a text parameter, in the source's language:
+    /// the value ETS starts a new device with, which wins over the
+    /// parameter's and its refs' `Value` (issue #473). `None` when there is
+    /// none.
+    fn initial_value(&self, _param_id: &str) -> Option<&str> {
+        None
+    }
 }
 
 impl<T: DynamicSource + ?Sized> DynamicSource for &T {
@@ -172,6 +179,9 @@ impl<T: DynamicSource + ?Sized> DynamicSource for &T {
     }
     fn is_type_none(&self, param_id: &str) -> bool {
         (**self).is_type_none(param_id)
+    }
+    fn initial_value(&self, param_id: &str) -> Option<&str> {
+        (**self).initial_value(param_id)
     }
 }
 
@@ -1541,8 +1551,9 @@ fn enum_code_of<S: DynamicSource + ?Sized>(app: &S, param_id: &str, value: &str)
 }
 
 /// The effective value of an app-relative `ParameterRef` in one instance: an
-/// override or `<Assign>` result, else the ref's `Value`, else the parameter's
-/// `Value`. A default of a parameter with a `BaseValue` argument has that
+/// override or `<Assign>` result, else a text parameter's `InitialValue`
+/// (issue #473), else the ref's `Value`, else the parameter's `Value`. A
+/// default of a parameter with a `BaseValue` argument has that
 /// argument's value in the instance (`args`) added to it, as ETS does (issue
 /// #126: the Jung 230021SU input module's "internal group communication"
 /// parameter is `Value="0" BaseValue="MD-1_A-19"`, 4 in one instance and 5 in
@@ -1559,7 +1570,9 @@ fn value_of<S: DynamicSource + ?Sized>(
         return Some(v.clone());
     }
     let param = app.parameter(param_id);
-    let default = ref_value
+    let default = app
+        .initial_value(param_id)
+        .or(ref_value)
         .map(str::to_string)
         .or_else(|| param.and_then(|(default, _)| default).map(str::to_string));
     let base = param
