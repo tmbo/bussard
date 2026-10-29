@@ -1351,6 +1351,49 @@ parameters:
     }
 
     #[test]
+    fn test_validate_e004_between_status_byte_object_and_float_group() {
+        // 21.001 is one octet, 9.001 two (03_07_02 §2): the GA cannot carry
+        // both, which E004 only saw once 21.x had a size (#498).
+        let mut groups = BTreeMap::new();
+        groups.insert(ga("5/1/1"), group("Status", Some("9.001")));
+        let mut links_map = BTreeMap::new();
+        links_map.insert(
+            ia("1.1.1"),
+            vec![Link {
+                object: 1,
+                name: None,
+                send: Some(ga("5/1/1")),
+                listen: vec![],
+            }],
+        );
+        let mut devices = BTreeMap::new();
+        devices.insert(
+            ia("1.1.1"),
+            device(
+                "1.1.1",
+                "1.1.1",
+                vec![(1, com_object("Status", Some("21.001"), "CRT"))],
+            ),
+        );
+        let model = Model {
+            config: BussardConfig::default(),
+            groups: Groups {
+                project: None,
+                imported_from: None,
+                ranges: BTreeMap::new(),
+                groups,
+            },
+            links: Links { links: links_map },
+            devices,
+        };
+        let diags = validate(&model);
+        assert!(
+            diags.iter().any(|d| d.code == "E004"),
+            "21.001 against 9.001 must raise E004: {diags:#?}"
+        );
+    }
+
+    #[test]
     fn test_check_knxnet_mutations_raise_e043_to_e046() -> Result<(), Box<dyn std::error::Error>> {
         use crate::knxnet::{IpAssignment, KnxnetConfig};
         let model_with = |config: KnxnetConfig| {

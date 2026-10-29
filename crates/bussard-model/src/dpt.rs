@@ -34,7 +34,7 @@ pub enum DptParseError {
 /// occupy whole bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApduSize {
-    /// A sub-byte payload of the given number of bits (1, 2 or 4).
+    /// A sub-byte payload of the given number of bits (1, 2, 3 or 4).
     Bits(u8),
     /// A payload of the given whole number of bytes.
     Bytes(u8),
@@ -71,8 +71,9 @@ impl Dpt {
 
     /// Whether this DPT's value may be packed into the 6-bit "small" APDU form.
     ///
-    /// The small form is legal ONLY for sub-byte DPTs — main 1 (1-bit), 2 (2-bit)
-    /// and 3 (4-bit) — whose whole value fits in the APCI's low 6 bits. A
+    /// The small form is legal ONLY for sub-byte DPTs — main 1 (1-bit), 2 and 23
+    /// (2-bit), 31 (3-bit) and 3 (4-bit) — whose whole value fits in the APCI's
+    /// low 6 bits (03_07_02 §1.3.1). A
     /// byte-sized-or-larger DPT (5.x, 6.x, 17.x, 18.x, 20.x, …) MUST be sent as a
     /// separate data octet even when its value happens to be `<= 0x3F`; packing it
     /// emits a malformed telegram the device misreads (issue #59). A DPT whose
@@ -83,32 +84,38 @@ impl Dpt {
 
     /// The expected APDU payload size for known main types.
     ///
-    /// Returns `None` for main types whose size bussard does not model.
+    /// Covers every main type of the 03_07_02 §2 overview with a fixed width:
+    /// the sub-octet B1, B2, B1U3, N2 and N3 types travel in the APCI's low
+    /// bits (§1.3.1), every other type in whole octets as its section's format
+    /// declares. Where a section's octet count disagrees with its own field
+    /// layout (240.800, 249.600), the field layout wins.
+    ///
+    /// Returns `None` for the variable-length types (24.x, 28.x, 267.x and the
+    /// 277..=284 energy registers) and for main types the standard does not
+    /// define.
     pub fn expected_size(&self) -> Option<ApduSize> {
-        Some(match self.main {
-            1 => ApduSize::Bits(1),
-            2 => ApduSize::Bits(2),
-            3 => ApduSize::Bits(4),
-            4 => ApduSize::Bytes(1),
-            5 => ApduSize::Bytes(1),
-            6 => ApduSize::Bytes(1),
-            7 => ApduSize::Bytes(2),
-            8 => ApduSize::Bytes(2),
-            9 => ApduSize::Bytes(2),
-            10 => ApduSize::Bytes(3),
-            11 => ApduSize::Bytes(3),
-            12 => ApduSize::Bytes(4),
-            13 => ApduSize::Bytes(4),
-            14 => ApduSize::Bytes(4),
-            16 => ApduSize::Bytes(14),
-            17 => ApduSize::Bytes(1),
-            18 => ApduSize::Bytes(1),
-            19 => ApduSize::Bytes(8),
-            20 => ApduSize::Bytes(1),
-            232 => ApduSize::Bytes(3),
-            251 => ApduSize::Bytes(6),
+        let bytes = match self.main {
+            1 => return Some(ApduSize::Bits(1)),
+            2 | 23 => return Some(ApduSize::Bits(2)),
+            31 => return Some(ApduSize::Bits(3)),
+            3 => return Some(ApduSize::Bits(4)),
+            4 | 5 | 6 | 17 | 18 | 20 | 21 | 25 | 26 | 236 | 238 => 1,
+            7 | 8 | 9 | 22 | 200 | 201 | 202 | 204 | 207 | 211 | 217 | 234 | 237 | 239 | 244
+            | 246 => 2,
+            10 | 11 | 30 | 203 | 205 | 206 | 209 | 223 | 225 | 232 | 240 | 250 | 254 => 3,
+            12 | 13 | 14 | 15 | 27 | 210 | 214 | 220 | 231 | 241 | 253 | 276 => 4,
+            215 | 216 | 218 | 248 | 252 => 5,
+            212 | 219 | 221 | 222 | 224 | 229 | 235 | 242 | 245 | 249 | 251 | 274 => 6,
+            271 | 272 => 7,
+            19 | 29 | 213 | 230 | 243 | 255 | 273 => 8,
+            265 | 268 => 9,
+            247 | 257 | 266 => 12,
+            16 | 269 => 14,
+            256 => 16,
+            270 => 20,
             _ => return None,
-        })
+        };
+        Some(ApduSize::Bytes(bytes))
     }
 }
 
@@ -231,6 +238,44 @@ mod tests {
             Some(ApduSize::Bytes(14))
         );
         assert_eq!("99".parse::<Dpt>()?.expected_size(), None);
+        Ok(())
+    }
+
+    #[test]
+    fn test_expected_size_structured_and_sub_octet_families()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (dpt, size) in [
+            ("23.001", ApduSize::Bits(2)),
+            ("23.102", ApduSize::Bits(2)),
+            ("31.101", ApduSize::Bits(3)),
+            ("15.000", ApduSize::Bytes(4)),
+            ("21.001", ApduSize::Bytes(1)),
+            ("22.101", ApduSize::Bytes(2)),
+            ("26.001", ApduSize::Bytes(1)),
+            ("27.001", ApduSize::Bytes(4)),
+            ("29.010", ApduSize::Bytes(8)),
+            ("235.001", ApduSize::Bytes(6)),
+            ("236.001", ApduSize::Bytes(1)),
+            ("237.600", ApduSize::Bytes(2)),
+            ("238.001", ApduSize::Bytes(1)),
+            ("241.800", ApduSize::Bytes(4)),
+            ("242.600", ApduSize::Bytes(6)),
+            ("244.600", ApduSize::Bytes(2)),
+            ("245.600", ApduSize::Bytes(6)),
+            ("249.600", ApduSize::Bytes(6)),
+            ("250.600", ApduSize::Bytes(3)),
+            ("252.600", ApduSize::Bytes(5)),
+            ("254.600", ApduSize::Bytes(3)),
+        ] {
+            assert_eq!(dpt.parse::<Dpt>()?.expected_size(), Some(size), "{dpt}");
+        }
+        // Variable-length strings have no fixed width.
+        assert_eq!("24.001".parse::<Dpt>()?.expected_size(), None);
+        assert_eq!("28.001".parse::<Dpt>()?.expected_size(), None);
+        // 03_07_02 §1.3.1: sub-octet types are packed, octet types never.
+        assert!("23.001".parse::<Dpt>()?.is_packable());
+        assert!("31.101".parse::<Dpt>()?.is_packable());
+        assert!(!"21.001".parse::<Dpt>()?.is_packable());
         Ok(())
     }
 

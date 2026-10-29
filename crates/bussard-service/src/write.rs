@@ -440,7 +440,8 @@ impl BusService {
 ///
 /// A packable DPT ([`ApduSize::Bits`]) expects exactly one byte holding a value
 /// that fits in the 6-bit APDU (`<= 0x3F`); a byte-sized DPT expects exactly that
-/// many whole octets. A DPT whose size bussard does not model is not validated.
+/// many whole octets. A DPT without a fixed width (a variable-length string)
+/// is not validated.
 fn validate_payload_size(dpt: Dpt, payload: &[u8], ga: GroupAddress) -> Result<(), WriteRefusal> {
     match dpt.expected_size() {
         Some(ApduSize::Bits(_)) => {
@@ -467,7 +468,8 @@ fn validate_payload_size(dpt: Dpt, payload: &[u8], ga: GroupAddress) -> Result<(
             }
             Ok(())
         }
-        // Size not modelled: allow any length (mirrors is_packable's None case).
+        // No fixed width (24.x, 28.x, ...): allow any length (mirrors
+        // is_packable's None case).
         None => Ok(()),
     }
 }
@@ -713,6 +715,32 @@ mod tests {
             &trust(None, false),
         )?;
         assert!(ok.packed);
+        Ok(())
+    }
+
+    #[test]
+    fn test_prepare_group_write_hex_packs_n2_and_sizes_structured() -> TestResult {
+        // 23.001 is two bits (03_07_02 §3.23): packed into the APCI (#498).
+        let m = model_with(false, Some("23.001"))?;
+        let n2 = prepare_group_write(
+            Some(&m),
+            ga("3/0/4")?,
+            WriteValue::Hex("02"),
+            &trust(None, false),
+        )?;
+        assert!(n2.packed);
+        // 245.600 is six octets: a one-octet payload is refused.
+        let m = model_with(false, Some("245.600"))?;
+        let short = prepare_group_write(
+            Some(&m),
+            ga("3/0/4")?,
+            WriteValue::Hex("01"),
+            &trust(None, false),
+        );
+        assert!(
+            matches!(short, Err(WriteRefusal::PayloadSize(_))),
+            "{short:?}"
+        );
         Ok(())
     }
 

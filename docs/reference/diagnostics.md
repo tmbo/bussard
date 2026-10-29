@@ -11,7 +11,7 @@ Every code `bussard validate` and the `knx_validate` MCP tool report, with its s
 | E001 | warning | A link references a group address not defined in `groups.toml`. `import`, `apply` and the MCP edit tools declare it; `validate` alone warns. |
 | E002 | error | A device file's name does not match its `address`. |
 | E003 | error | A link references a communication object the device does not have. A warning when the device has no object table at all, because nothing can be checked without product data. |
-| E004 | error | Conflicting object or DPT sizes on one group address, for the DPT main types whose size bussard models (the main number fixes the format, KNX 03_07_02 §1.1; an unmodelled main type is skipped, #498). |
+| E004 | error | Conflicting object or DPT sizes on one group address. The main number fixes the format (KNX 03_07_02 §1.1); every fixed-width main type of the §2 overview is sized, and only the variable-length strings (24.x, 28.x) are skipped (#498). |
 | W005 | warning | Same size but different DPT main types on one group address (`5.001` against `6.010`). Subtypes of one main type agree (`1.001`, `1.005`, `1.019` on one 1-bit address is normal in ETS), as does a main type alone (`1`). |
 | I006 | info | More than one sending object on a group address. Normal in KNX: two push buttons on one light, a central function next to a local one. Listed for review. |
 | E007 | error | Impossible flags: no C flag, or `send` without T. |
