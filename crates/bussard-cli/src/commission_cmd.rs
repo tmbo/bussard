@@ -232,10 +232,13 @@ pub fn run(
         }
     }
 
-    // Phase 1 (read-only): which model devices already answer at their address?
-    // Those are commissioned already and are not part of the bench ritual.
+    // Phase 1 (read-only): which model addresses already answer? NM_IndividualAddress_Write
+    // step 1 (Management Procedures 03_05_02 §2.3, issue #530): an answer
+    // means the address is in use. It is the modelled device, commissioned
+    // already, only when its order number says so; anything else holds the
+    // address and that device is refused.
     let runtime = tokio::runtime::Runtime::new()?;
-    let present = {
+    let occupied = {
         let config = config.clone();
         let addresses: Vec<IndividualAddress> = targets.iter().map(|t| t.address).collect();
         let conn = overrides.clone();
@@ -246,21 +249,28 @@ pub fn run(
                 .wait_connected(crate::conn_cmd::connect_wait())
                 .await;
             let source = checked_source_or_close(&service, &conn).await?;
-            let mut present = Vec::new();
+            let mut occupied = Vec::new();
             for addr in addresses {
                 eprint!("\rchecking {addr}…   ");
                 let _ = std::io::stderr().flush();
-                if answers(&service, source, addr).await {
-                    present.push(addr);
+                if let Some(occupant) = assign_cmd::probe_occupant(&service, source, addr).await {
+                    occupied.push((addr, occupant));
                 }
             }
             eprintln!("\r                       ");
             service.close().await;
-            anyhow::Ok(present)
+            anyhow::Ok(occupied)
         })?
     };
+    let verdicts: Vec<(IndividualAddress, Status)> = occupied
+        .iter()
+        .filter_map(|(addr, occupant)| {
+            let target = targets.iter().find(|t| t.address == *addr)?;
+            Some((*addr, occupied_status(target, occupant)))
+        })
+        .collect();
 
-    let pending = targets.len() - present.len();
+    let pending = targets.len() - verdicts.len();
     if pending == 0 {
         eprintln!("every device the model has on line {line} already answers at its address.");
     } else if !confirm(&line, pending, &gateway, options.yes)? {
@@ -282,12 +292,15 @@ pub fn run(
     // Phase 2: the bench ritual, one device at a time.
     let mut outcomes = Vec::new();
     for (index, target) in targets.iter().enumerate() {
-        if present.contains(&target.address) {
+        if let Some((_, status)) = verdicts.iter().find(|(a, _)| *a == target.address) {
+            if let Some(detail) = status.detail() {
+                eprintln!("{}: {detail}", target.address);
+            }
             outcomes.push(Outcome {
                 address: target.address,
                 name: target.name.clone(),
                 order_number: target.order_number.clone(),
-                status: Status::AlreadyPresent,
+                status: status.clone(),
                 label: None,
             });
             continue;
@@ -625,20 +638,35 @@ fn check_order_number(target: &Target, identity: &Identity) -> anyhow::Result<()
     )
 }
 
-/// Whether the device at `addr` answers a descriptor read.
-async fn answers(service: &BusService, source: IndividualAddress, addr: IndividualAddress) -> bool {
-    let options = L4Options {
-        source: SourcePolicy::Known(source),
-        timeouts: crate::scan_cmd::discovery_timeouts(),
-        authorize: Authorize::Skip,
-        ..L4Options::default()
-    };
-    service
-        .with_device(addr, &options, async |dev| {
-            Ok::<_, ServiceError>(dev.device_descriptor().await.is_ok())
-        })
-        .await
-        .unwrap_or(false)
+/// What an answer at a model address means for that device (issue #530):
+/// the modelled device is already there when the order number it reports
+/// matches the model's; otherwise another device holds the address, or it
+/// cannot be told which, and the device is refused before anything is
+/// pressed or written.
+fn occupied_status(target: &Target, occupant: &assign_cmd::Occupant) -> Status {
+    match (target.order_number.as_deref(), occupant.order.as_deref()) {
+        (Some(expected), Some(read))
+            if normalize_order_number(read) == normalize_order_number(expected) =>
+        {
+            Status::AlreadyPresent
+        }
+        (Some(expected), Some(read)) => Status::Failed(format!(
+            "the address is in use by another device ({}), not the modelled {expected:?} \
+             (it reports {read:?}); nothing was written. Re-address or remove that device, \
+             then re-run",
+            occupant.describe()
+        )),
+        (Some(expected), None) => Status::Failed(format!(
+            "the address is in use ({}) and the device there did not report an order number, \
+             so it cannot be told from the modelled {expected:?}; nothing was written",
+            occupant.describe()
+        )),
+        (None, _) => Status::Failed(format!(
+            "the address is in use ({}) and the model has no order number to tell whether \
+             that is the modelled device; nothing was written",
+            occupant.describe()
+        )),
+    }
 }
 
 /// Builds the label line stuck on the device, e.g.
@@ -900,6 +928,35 @@ mod tests {
         t.order_number = None;
         check_order_number(&t, &identity(None))?;
         Ok(())
+    }
+
+    fn occupant(order: Option<&str>) -> assign_cmd::Occupant {
+        assign_cmd::Occupant {
+            mask: Some(0x07B0),
+            manufacturer_id: Some(0x0083),
+            order: order.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn test_occupied_status_the_modelled_device_is_present() {
+        // Issue #530: the order number the occupant reports is the model's.
+        let status = occupied_status(&target(), &occupant(Some("jal-0810.03")));
+        assert_eq!(status, Status::AlreadyPresent);
+    }
+
+    #[test]
+    fn test_occupied_status_refuses_another_device() {
+        let status = occupied_status(&target(), &occupant(Some("AKK-0216.03")));
+        let detail = status.detail().unwrap_or_default();
+        assert!(detail.contains("in use by another device"), "{detail}");
+        assert!(detail.contains("mask 07B0"), "{detail}");
+    }
+
+    #[test]
+    fn test_occupied_status_refuses_an_unidentified_occupant() {
+        let status = occupied_status(&target(), &occupant(None));
+        assert!(matches!(status, Status::Failed(_)), "{status:?}");
     }
 
     #[test]

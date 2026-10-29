@@ -388,7 +388,7 @@ Bench mode: commission the devices the model has on a line, one programming butt
 $ bussard commission --line 1.1 --flash --apply --labels labels.csv
 ```
 
-The command first checks which model devices already answer at their address; those are reported as `present` and left alone. After one confirmation naming the gateway, it walks the rest in address order:
+The command first checks which model addresses already answer on the bus. An answer means the address is in use: when the device there reports the model's order number it is reported as `present` and left alone; otherwise (another order number, none, or no order number in the model) that device is `failed: the address is in use ...`, naming what answers, and nothing is pressed or written for it. After one confirmation naming the gateway, it walks the rest in address order:
 
 1. Prompts `press the programming button on <name> (<order number>)` and waits for exactly one device in programming mode, as `assign` does.
 2. Reads that device's order number and compares it with the model's `product.order_number`, ignoring case and surrounding space.

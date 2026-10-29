@@ -51,6 +51,7 @@ mod restart_mock;
 mod scan_mock;
 mod secure_capture_oracle;
 mod secure_group_mock;
+mod sim_assign_occupied;
 mod sim_catalog_loop;
 mod sim_interface_loop;
 mod sim_interface_secure;

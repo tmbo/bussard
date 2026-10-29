@@ -281,18 +281,21 @@ async fn swap_flow(
     force: bool,
 ) -> anyhow::Result<Option<Pressed>> {
     // 1. The old device must be gone.
-    if let Some(mask) = probe_present(service, source, target).await {
+    if let Some(occupant) = crate::assign_cmd::probe_occupant(service, source, target).await {
         if !force {
             eprintln!(
-                "{target} still answers on the bus (mask {mask:04X}, {}).\n\
+                "{target} still answers on the bus ({}).\n\
                  `replace` is for a device that has failed or been removed. If you really mean \
                  to re-address whatever is in programming mode onto {target}, re-run with \
                  --force.",
-                system_type(mask)
+                occupant.describe()
             );
             return Ok(None);
         }
-        eprintln!("warning: {target} still answers (mask {mask:04X}); --force given, continuing");
+        eprintln!(
+            "warning: {target} still answers ({}); --force given, continuing",
+            occupant.describe()
+        );
     } else {
         println!("{target} does not answer, consistent with a failed or removed device");
     }
@@ -358,27 +361,6 @@ async fn swap_flow(
         application_id: pressed.application_id,
         serial: verified.serial.clone().or(pressed.serial),
     }))
-}
-
-/// Probes `target` with the fast discovery budget; `Some(mask)` if it answers.
-async fn probe_present(
-    service: &BusService,
-    source: IndividualAddress,
-    target: IndividualAddress,
-) -> Option<u16> {
-    let options = L4Options {
-        source: SourcePolicy::Known(source),
-        timeouts: crate::scan_cmd::discovery_timeouts(),
-        authorize: Authorize::Skip,
-        ..L4Options::default()
-    };
-    service
-        .with_device(target, &options, async |dev| {
-            Ok::<_, ServiceError>(dev.device_descriptor().await.ok())
-        })
-        .await
-        .ok()
-        .flatten()
 }
 
 /// Reads the identity of the device that answered the programming-mode

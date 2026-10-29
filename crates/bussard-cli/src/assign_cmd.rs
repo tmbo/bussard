@@ -53,16 +53,33 @@ const INITIAL_POLL_TOTAL: Duration = Duration::from_secs(3);
 /// apply. Behaviour is unchanged without the variable.
 const WAIT_MS_ENV: &str = "BUSSARD_ASSIGN_WAIT_MS";
 
+/// The on/off flags of one `bussard assign` run.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AssignFlags {
+    /// `--yes`: skip the confirmation prompt.
+    pub yes: bool,
+    /// `--allow-remote-gateway`: permit a write through a non-loopback gateway.
+    pub allow_remote_gateway: bool,
+    /// `--json`: print the result as a JSON document.
+    pub json: bool,
+    /// `--force`: write the address although another device answers at it.
+    pub force: bool,
+}
+
 /// Runs `bussard assign`.
 pub fn run(
     address: Option<&str>,
     dir: &Path,
-    yes: bool,
-    allow_remote_gateway: bool,
-    json: bool,
+    flags: AssignFlags,
     tool_key_source: crate::secure_key::ToolKeySource<'_>,
     overrides: ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
+    let AssignFlags {
+        yes,
+        allow_remote_gateway,
+        json,
+        force,
+    } = flags;
     // A non-TTY run without --yes was refused before this (issue #74), by
     // `confirm::require_terminal_or_yes` in `main`.
     // 1. Load the model. Address allocation needs it; an explicit --address on an
@@ -90,7 +107,7 @@ pub fn run(
         // clean `service.close()` so the gateway tunnel slot is released rather
         // than leaked — see issue #31.
         let result = tokio::select! {
-            result = assign_flow(&service, source, address, AssignRun { yes, json, gateway: &gateway }, model.as_ref(), dir, &keys) => result,
+            result = assign_flow(&service, source, address, AssignRun { yes, json, force, gateway: &gateway }, model.as_ref(), dir, &keys) => result,
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\ninterrupted; closing the bus connection");
                 Err(anyhow!("assign interrupted by Ctrl-C"))
@@ -108,6 +125,8 @@ struct AssignRun<'a> {
     yes: bool,
     /// `--json`: print the result as a JSON document.
     json: bool,
+    /// `--force`: write the address although another device answers at it.
+    force: bool,
     /// The resolved gateway, for the prompt.
     gateway: &'a str,
 }
@@ -180,15 +199,14 @@ async fn assign_flow(
     dir: &Path,
     keys: &ToolKeys,
 ) -> anyhow::Result<ExitCode> {
-    let AssignRun { yes, json, gateway } = run;
-    // 2. Find exactly one device in programming mode.
-    let current = match wait_for_single_device(service, source).await? {
-        Some(addr) => addr,
-        None => return Ok(ExitCode::FAILURE),
-    };
-    eprintln!("device in programming mode: {current} (its current address)");
-
-    // 3. Decide the target address.
+    let AssignRun {
+        yes,
+        json,
+        force,
+        gateway,
+    } = run;
+    // 2. Decide the target address. The model says it is free; the bus has
+    //    the last word (step 3).
     let target = match address {
         Some(s) => validate_explicit_address(s, model)?,
         None => match allocate_address(model) {
@@ -199,6 +217,20 @@ async fn assign_flow(
             ),
         },
     };
+
+    // 3. NM_IndividualAddress_Write step 1 (Management Procedures 03_05_02
+    //    §2.3, issue #530): nothing may answer at the target before it is
+    //    given away, or two devices end up on one address.
+    if !target_is_free(service, source, target, force, "assign").await {
+        return Ok(ExitCode::FAILURE);
+    }
+
+    // 4. Find exactly one device in programming mode.
+    let current = match wait_for_single_device(service, source).await? {
+        Some(addr) => addr,
+        None => return Ok(ExitCode::FAILURE),
+    };
+    eprintln!("device in programming mode: {current} (its current address)");
 
     // The tool key the verification needs, if the device is Data Secure
     // activated (issue #203): the keyring lists devices by IA, so look for the
@@ -299,6 +331,114 @@ async fn assign_flow(
     );
 
     Ok(ExitCode::SUCCESS)
+}
+
+/// What answers at an address bussard is about to give a device: the
+/// occupant step 1 of NM_IndividualAddress_Write looks for (Management
+/// Procedures 03_05_02 §2.3, issue #530).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Occupant {
+    /// The mask version, `None` when the device closed the connection
+    /// instead of answering the descriptor read (occupied all the same).
+    pub(crate) mask: Option<u16>,
+    /// The KNX manufacturer id, when readable.
+    pub(crate) manufacturer_id: Option<u16>,
+    /// The order info string, when readable.
+    pub(crate) order: Option<String>,
+}
+
+impl Occupant {
+    /// One line naming what answered: mask, system, manufacturer, order number.
+    pub(crate) fn describe(&self) -> String {
+        let mut parts = vec![match self.mask {
+            Some(mask) => format!("mask {mask:04X}, {}", system_type(mask)),
+            None => "it closed the connection instead of answering".to_string(),
+        }];
+        if let Some(id) = self.manufacturer_id {
+            parts.push(format!("manufacturer {}", manufacturers::display(id)));
+        }
+        if let Some(order) = &self.order {
+            parts.push(format!("order number {order:?}"));
+        }
+        parts.join(", ")
+    }
+}
+
+/// Step 1 of NM_IndividualAddress_Write (Management Procedures 03_05_02
+/// §2.3, issue #530): connects to `target` and reads its device descriptor.
+/// Any answer means the address is taken, and so does a `T_Disconnect` in
+/// reply; silence means it is free (`None`). An answering device is asked
+/// for its manufacturer and order number too, best-effort, so the refusal
+/// can name it. `replace`, `assign`, `adopt` and `commission` share this.
+pub(crate) async fn probe_occupant(
+    service: &BusService,
+    source: IndividualAddress,
+    target: IndividualAddress,
+) -> Option<Occupant> {
+    let options = L4Options {
+        source: SourcePolicy::Known(source),
+        timeouts: crate::scan_cmd::discovery_timeouts(),
+        authorize: Authorize::Skip,
+        ..L4Options::default()
+    };
+    service
+        .with_device(target, &options, async |dev| {
+            let mask = match dev.device_descriptor().await {
+                Ok(mask) => mask,
+                Err(bussard_mgmt::MgmtError::Disconnected { .. }) => {
+                    return Ok::<_, ServiceError>(Some(Occupant::default()));
+                }
+                Err(_) => return Ok(None),
+            };
+            let manufacturer_id = match dev.read_device_property(PID_MANUFACTURER_ID).await {
+                Ok(bytes) if bytes.len() >= 2 => Some(u16::from_be_bytes([bytes[0], bytes[1]])),
+                _ => None,
+            };
+            let order = dev
+                .read_device_property(PID_ORDER_INFO)
+                .await
+                .ok()
+                .map(|v| clean_ascii(&v))
+                .filter(|s| !s.is_empty());
+            Ok(Some(Occupant {
+                mask: Some(mask),
+                manufacturer_id,
+                order,
+            }))
+        })
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Whether `verb` may write `target`: nothing answers there, or `force`
+/// overrides an occupant (with a warning). Prints the refusal otherwise.
+pub(crate) async fn target_is_free(
+    service: &BusService,
+    source: IndividualAddress,
+    target: IndividualAddress,
+    force: bool,
+    verb: &str,
+) -> bool {
+    let Some(occupant) = probe_occupant(service, source, target).await else {
+        return true;
+    };
+    if force {
+        eprintln!(
+            "warning: {target} already answers on the bus ({}); --force given, continuing",
+            occupant.describe()
+        );
+        return true;
+    }
+    eprintln!(
+        "{target} is already in use: a device answers there ({}). Two devices on one \
+         address answer the same connection, so a later write can land on the wrong one. \
+         Pick a free address, or remove or re-address that device first; if you mean to give \
+         {target} to the device in programming mode anyway, re-run `bussard {verb}` with \
+         --force. Nothing was written.",
+        occupant.describe()
+    );
+    false
 }
 
 /// Polls for devices in programming mode, nagging the user to press the button

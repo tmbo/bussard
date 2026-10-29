@@ -655,3 +655,103 @@ fn test_assign_listed_but_plain_device_falls_back_to_a_plain_verify() -> TestRes
     );
     Ok(())
 }
+
+/// A device already at `addr`, not in programming mode: what `assign` must
+/// find with NM_IndividualAddress_Write step 1 (issue #530).
+fn occupant_device(addr: &str) -> TestResult<MockDevice> {
+    let identity = Identity {
+        mask: 0x0705,
+        manufacturer: 0x0004,
+        serial: [0x00, 0x04, 0x10, 0x20, 0x30, 0x40],
+        order: b"2308.16REGHM".to_vec(),
+    };
+    Ok(
+        MockDevice::new(ia(addr)?).with_hook(move |_dev, apci, data| {
+            Some(match device_response(&identity, apci, data) {
+                Some((rapci, rdata)) => Reaction::Answer(rapci, rdata),
+                None => Reaction::Ack,
+            })
+        }),
+    )
+}
+
+/// Runs `bussard assign 1.1.7` with a factory device in programming mode and
+/// another device already at 1.1.7; returns the exit status, stderr and the
+/// devices' final addresses.
+fn assign_onto_occupied(extra: &[&str]) -> TestResult<(bool, String, Vec<String>)> {
+    let rt = tokio::runtime::Runtime::new()?;
+    let gw = rt.block_on(
+        MockGateway::builder()
+            .channel(CHANNEL)
+            .idle_timeout(Duration::from_secs(30))
+            .devices([factory_device(false)?, occupant_device("1.1.7")?])
+            .start(),
+    )?;
+    let port = gw.port();
+    let tmp = std::env::temp_dir().join(format!(
+        "bussard-assign-occupied-{}-{}",
+        std::process::id(),
+        extra.len()
+    ));
+    let model_dir = tmp.join("knx");
+    write_model(&model_dir)?;
+    let mut args = vec![
+        "assign".to_string(),
+        "1.1.7".to_string(),
+        "--yes".to_string(),
+        "--dir".to_string(),
+        model_dir
+            .to_str()
+            .ok_or("temp path is not UTF-8")?
+            .to_string(),
+        "--gateway".to_string(),
+        format!("127.0.0.1:{port}"),
+    ];
+    args.extend(extra.iter().map(|s| s.to_string()));
+    let output = Command::new(env!("CARGO_BIN_EXE_bussard"))
+        .env("BUSSARD_MGMT_TIMEOUT_MS", "300")
+        .env("BUSSARD_ADDRESS_PROBE_MS", "200")
+        .env("BUSSARD_ASSIGN_WAIT_MS", "200")
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()?;
+    let addresses = gw
+        .devices()?
+        .iter()
+        .map(|d| d.address.to_string())
+        .collect();
+    drop(gw);
+    let _ = std::fs::remove_dir_all(&tmp);
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    Ok((output.status.success(), stderr, addresses))
+}
+
+#[test]
+fn test_assign_refuses_an_address_another_device_answers_at() -> TestResult {
+    // Issue #530: connect + descriptor read to the target before anything is
+    // broadcast; the occupant answers, so nothing is written.
+    let (ok, stderr, addresses) = assign_onto_occupied(&[])?;
+    assert!(!ok, "assign must fail; stderr:\n{stderr}");
+    assert!(stderr.contains("1.1.7 is already in use"), "{stderr}");
+    assert!(stderr.contains("mask 0705"), "{stderr}");
+    assert!(stderr.contains("--force"), "{stderr}");
+    assert!(
+        !stderr.contains("device in programming mode:"),
+        "refused before the programming-mode broadcast: {stderr}"
+    );
+    assert_eq!(
+        addresses,
+        vec!["15.15.255".to_string(), "1.1.7".to_string()]
+    );
+    Ok(())
+}
+
+#[test]
+fn test_assign_force_writes_onto_an_occupied_address() -> TestResult {
+    let (_, stderr, addresses) = assign_onto_occupied(&["--force"])?;
+    assert!(stderr.contains("--force given, continuing"), "{stderr}");
+    assert_eq!(addresses, vec!["1.1.7".to_string(), "1.1.7".to_string()]);
+    Ok(())
+}

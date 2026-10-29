@@ -65,9 +65,9 @@ use bussard_service::secure::{SecureKeyError, SecureMaterial, ToolKeySource, Too
 use bussard_service::{Authorize, BusService, L4Options, SourcePolicy, WritePolicy};
 
 use crate::assign_cmd::{
-    Verified, VerifyKey, allocate_address, hex, load_model_optional, validate_explicit_address,
-    verify_assignment_with, wait_for_single_device_as, warn_if_still_in_programming_mode,
-    write_device_file,
+    Verified, VerifyKey, allocate_address, hex, load_model_optional, target_is_free,
+    validate_explicit_address, verify_assignment_with, wait_for_single_device_as,
+    warn_if_still_in_programming_mode, write_device_file,
 };
 use crate::conn_cmd::{
     ConnOverrides, checked_source_or_close, enforce_write_gate, gateway_display, open_service,
@@ -86,6 +86,8 @@ pub(crate) struct AdoptOptions<'a> {
     pub(crate) product: Option<&'a Path>,
     /// `--yes`: skip the confirmation prompt.
     pub(crate) yes: bool,
+    /// `--force`: write the address although another device answers at it.
+    pub(crate) force: bool,
     /// How the product-data download question is answered.
     pub(crate) consent: crate::product_fetch::Consent,
 }
@@ -102,6 +104,7 @@ pub(crate) fn run(
         address: scripted_address,
         product,
         yes,
+        force,
         consent,
     } = options;
     // A run without a terminal and without --yes was refused before this, by
@@ -172,8 +175,7 @@ pub(crate) fn run(
                 model.as_ref(),
                 selected.as_ref(),
                 scripted_address,
-                yes,
-                &gateway,
+                AdoptRun { yes, force, gateway: &gateway },
                 consent,
                 &adopt_keys,
             ) => result,
@@ -383,6 +385,17 @@ fn shape_one(rc: &ResolvedComObject<'_>) -> ComObjectShape {
 // The bus-touching flow (steps 2–5)
 // ---------------------------------------------------------------------------
 
+/// The per-run choices `adopt_flow` needs besides the bus and the model.
+#[derive(Clone, Copy)]
+struct AdoptRun<'a> {
+    /// `--yes`: skip the confirmation prompt.
+    yes: bool,
+    /// `--force`: write the address although another device answers at it.
+    force: bool,
+    /// The resolved gateway, for the prompt.
+    gateway: &'a str,
+}
+
 /// The end-to-end adopt flow over the bus actor. Each broadcast and each
 /// connected verify leases the bus for the duration of that step.
 #[allow(clippy::too_many_arguments)]
@@ -393,11 +406,15 @@ async fn adopt_flow(
     model: Option<&Model>,
     selected: Option<&SelectedProduct>,
     scripted_address: Option<&str>,
-    yes: bool,
-    gateway: &str,
+    run: AdoptRun<'_>,
     fetch: crate::product_fetch::Consent,
     adopt_keys: &AdoptKeys<'_>,
 ) -> anyhow::Result<ExitCode> {
+    let AdoptRun {
+        yes,
+        force,
+        gateway,
+    } = run;
     println!("  step 2/5  assign an address");
 
     // Find exactly one device in programming mode.
@@ -439,6 +456,13 @@ async fn adopt_flow(
     } else {
         SecureMaterial::default()
     };
+
+    // NM_IndividualAddress_Write step 1 (Management Procedures 03_05_02
+    // §2.3, issue #530): a new address must be free on the bus, not only in
+    // the model. A device that keeps its address is the one answering there.
+    if target != current && !target_is_free(service, source, target, force, "adopt").await {
+        return Ok(ExitCode::FAILURE);
+    }
 
     // Confirm.
     if !crate::confirm::confirm(

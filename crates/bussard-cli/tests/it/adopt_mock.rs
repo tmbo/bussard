@@ -1056,3 +1056,66 @@ fn test_adopt_ip_interface_writes_the_knxnet_table() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn test_adopt_refuses_an_address_another_device_answers_at() -> TestResult {
+    // Issue #530: NM_IndividualAddress_Write step 1. A device already answers
+    // at 1.1.7, so adopt writes nothing and names it.
+    let occupant = Identity {
+        mask: 0x0705,
+        manufacturer: 0x0004,
+        serial: [0x00, 0x04, 0x10, 0x20, 0x30, 0x40],
+        order: b"2308.16REGHM".to_vec(),
+    };
+    let occupant = MockDevice::new(ia("1.1.7")?).with_hook(move |_, apci, data| {
+        Some(match device_response(&occupant, apci, data) {
+            Some((rapci, rdata)) => Reaction::Answer(rapci, rdata),
+            None => Reaction::Ack,
+        })
+    });
+    let (_rt, gw) = start_gateway(vec![factory_device(b"MDT-BE-04001.02")?, occupant])?;
+    let port = gw.port();
+    let tmp = std::env::temp_dir().join(format!("bussard-adopt-occupied-{}", std::process::id()));
+    let model_dir = tmp.join("knx");
+    write_model(&model_dir)?;
+    let knxprod = tmp.join("fixture.knxprod");
+    build_knxprod(&knxprod)?;
+    let output = Command::new(env!("CARGO_BIN_EXE_bussard"))
+        .env("BUSSARD_MGMT_TIMEOUT_MS", "300")
+        .env("BUSSARD_ADDRESS_PROBE_MS", "200")
+        .env("BUSSARD_ASSIGN_WAIT_MS", "200")
+        .args([
+            "adopt",
+            "1.1.7",
+            "--yes",
+            "--product",
+            knxprod.to_str().ok_or("temp path is not UTF-8")?,
+            "--dir",
+            model_dir.to_str().ok_or("temp path is not UTF-8")?,
+            "--gateway",
+            &format!("127.0.0.1:{port}"),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()?;
+    let addresses: Vec<String> = gw
+        .devices()?
+        .iter()
+        .map(|d| d.address.to_string())
+        .collect();
+    drop(gw);
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let _ = std::fs::remove_dir_all(&tmp);
+    assert!(
+        !output.status.success(),
+        "adopt must fail; stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("1.1.7 is already in use"), "{stderr}");
+    assert!(stderr.contains("mask 0705"), "{stderr}");
+    assert_eq!(
+        addresses,
+        vec!["15.15.255".to_string(), "1.1.7".to_string()]
+    );
+    Ok(())
+}

@@ -365,3 +365,87 @@ fn test_commission_hard_stops_on_an_order_number_mismatch() -> anyhow::Result<()
     assert_eq!(json["commissioned"], 1);
     Ok(())
 }
+
+/// Runs `commission --line 1.1 --json` for a model with 1.1.7 (`JAL-0810.03`)
+/// against a line where a device reporting `occupant_order` already answers at
+/// 1.1.7 and the bench device waits in programming mode (issue #530). Returns
+/// the 1.1.7 row and the bench device's final address.
+fn commission_onto_occupied(
+    occupant_order: &str,
+) -> anyhow::Result<(serde_json::Value, IndividualAddress)> {
+    let rt = tokio::runtime::Runtime::new()?;
+    let occupant = DeviceState {
+        address: "1.1.7".parse()?,
+        programming: false,
+        mask: 0x07B0,
+        manufacturer: 0x0083,
+        serial: [0x00, 0x09, 0x08, 0x07, 0x06, 0x05],
+        order: occupant_order.as_bytes().to_vec(),
+    };
+    let gw = rt.block_on(
+        MockGateway::builder()
+            .channel(CHANNEL)
+            .keep_serving()
+            .idle_timeout(Duration::from_secs(60))
+            .devices([
+                gateway_device(bench_device("JAL-0810.03")?),
+                gateway_device(occupant),
+            ])
+            .start(),
+    )?;
+    let tmp = tmp_dir(&format!("occupied-{occupant_order}"));
+    let model_dir = tmp.join("knx");
+    write_device(&model_dir, "1.1.7", "Blind actuator", "JAL-0810.03")?;
+    let model_arg = model_dir
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("non-UTF-8 temp path"))?
+        .to_string();
+    let output = run_commission(
+        gw.port(),
+        &[
+            "commission",
+            "--line",
+            "1.1",
+            "--yes",
+            "--json",
+            "--dir",
+            &model_arg,
+        ],
+    )?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let bench = gw
+        .devices()?
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("the bench device is gone"))?
+        .address;
+    drop(gw);
+    let _ = std::fs::remove_dir_all(&tmp);
+    let json: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| anyhow::anyhow!("--json must emit valid JSON: {e}\n{stdout}"))?;
+    Ok((row(&json, "1.1.7")?.clone(), bench))
+}
+
+#[test]
+fn test_commission_refuses_an_address_another_device_holds() -> anyhow::Result<()> {
+    // Issue #530: an answer at the model address is "in use", not
+    // "already commissioned", unless the order number is the model's.
+    let (row, bench) = commission_onto_occupied("AKK-0216.03")?;
+    assert_eq!(row["status"], "failed", "{row}");
+    let detail = row["detail"].as_str().unwrap_or_default();
+    assert!(detail.contains("in use by another device"), "{detail}");
+    assert!(detail.contains("AKK-0216.03"), "{detail}");
+    assert_eq!(
+        bench,
+        "15.15.255".parse::<IndividualAddress>()?,
+        "nothing written"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_commission_reads_the_modelled_device_as_present() -> anyhow::Result<()> {
+    let (row, bench) = commission_onto_occupied("JAL-0810.03")?;
+    assert_eq!(row["status"], "present", "{row}");
+    assert_eq!(bench, "15.15.255".parse::<IndividualAddress>()?);
+    Ok(())
+}
