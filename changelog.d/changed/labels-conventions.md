@@ -1,0 +1,1 @@
+- Issue and label conventions documented in `dev/agent-brief.md` and `CLAUDE.md` (type labels, area labels, `needs-capture`, `needs-decision`).

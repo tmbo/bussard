@@ -134,6 +134,14 @@ to a device follows these rules, and the PR template asks for each one.
 - A silent success is a P1 bug: a result that says ok while the device does not
   match the model.
 
+## Issues and Labels
+
+Issues are edited in the body, never commented; every issue has one type label and
+the area labels that apply (`mcp`, `knx-sim`, `secure`, `oracle`, `performance`,
+`spec-review`, `ets-sweep`, `follow-up`), and `needs-capture` or `needs-decision`
+when it waits on the owner. The table of labels and when to use them is in
+`dev/agent-brief.md` ("Issues and labels").
+
 ## Rust Edition and Toolchain
 
 - Edition: **2024**, set once in `[workspace.package]` (do not set it per crate).

@@ -58,6 +58,37 @@ CLAUDE.md applies in full. The ones agents most often miss:
 - Unit tests in `#[cfg(test)]` at the bottom of the file, integration tests in
   the crate's `tests/it/`. Name them `test_<function>_<scenario>`.
 
+## Issues and labels
+
+Issues are the project's memory: edit the body (`gh issue edit --body-file`),
+never add comments. A body states the problem, the evidence (capture, measurement,
+spec clause with document and section, decision with its date), what "done" means,
+and the related issues and PRs. Close with the reason written into the body first
+(`gh issue close -r completed|"not planned"`). Quote at most a short phrase of the
+KNX Standard; the repository is public and the standard is licensed.
+
+Every issue carries one type label and the area labels that apply:
+
+| label | use it when |
+|---|---|
+| `bug` / `enhancement` / `documentation` / `question` | the type; exactly one |
+| `epic` | an umbrella with a checklist of linked issues; closed when every item and every done-when clause is settled |
+| `mcp` | the MCP server or how the assistant uses it |
+| `knx-sim` | the simulator or the sim catalog loop |
+| `secure` | KNX Data Secure, KNXnet/IP Secure, the key store |
+| `oracle` | the offline oracle, ETS captures, the capture plan, rows files |
+| `performance` | wall-clock or request-count work; bound by the Speed Changes rules in `CLAUDE.md` |
+| `spec-review` | a finding of the review against the KNX Standard 3.0.0 (umbrella #550) |
+| `ets-sweep` | a finding or task of the ETS sweep over the product catalog (`tools/ets-sweep`) |
+| `follow-up` | an open point a merged PR left behind; the body names the PR |
+| `needs-capture` | blocked on an ETS capture or a live recording only the owner can make; the body names the capture and it is listed in the owner's capture plan (#572) |
+| `needs-decision` | blocked on an owner decision named in the body (a convention, a scope, a live run) |
+
+`needs-capture` and `needs-decision` mark why an issue is not being worked on; an
+agent that picks up such an issue implements what the evidence already settles and
+leaves the rest as a `## Status` section in the body. A PR that fixes an issue says
+`Closes #n`; a PR that does part of it says `Refs #n` and adds the status.
+
 ## Commit and PR
 
 1. Commit with the `Co-Authored-By` trailer your own system sets. Do not
