@@ -40,21 +40,26 @@
 //! one ref per parameter from the result, and [`DynamicConfig::label`] reads a
 //! `TextParameterRefId` label for [`crate::label::substitute_label`].
 //!
-//! A `<choose>` whose controlling parameter is itself inactive selects no
-//! branch at all, not even a `<when default="true">` one (issue #159). ETS
-//! decides activity by the same walk: a parameter is active while one of its
-//! `<ParameterRefRef>`s is reached, i.e. its enclosing channel, parameter
-//! block, `<when>` branch and module instance are all shown under the current
-//! values. In the ETS schema a `<Channel>` or `<ParameterBlock>` is never
-//! gated by an attribute of its own (its `Number`/`Text` only label it); it is
-//! shown or hidden by the `<choose>`/`<when>` it sits in, and a module
-//! instance is shown when its `<Module>` element is reached. So the reached
-//! set of this walk is exactly the active set. Two cases stay active without
-//! a reached `<ParameterRefRef>`: a parameter the Dynamic section never shows
-//! anywhere (a pure steering parameter, which only ever has its value), and an
-//! unreached `<Union>` member whose union has a reached member (its shared
-//! memory is live, see `SharedUnions`). The target of a reached `<Assign>`
-//! counts as active too: ETS writes it.
+//! A `<choose>` whose controlling `ParameterRef` is itself inactive selects
+//! no branch at all, not even a `<when default="true">` one (issue #159). ETS
+//! decides activity by the same walk, per `ParameterRef` (issue #563): the
+//! ref a `<choose>` names is active while a `<ParameterRefRef>` to that very
+//! ref is reached, i.e. its enclosing channel, parameter block, `<when>`
+//! branch and module instance are all shown under the current values. A
+//! reached ref of the same parameter does not make another ref of it active
+//! (the Busch-Jaeger fan coil shows `R-12` of its changeover parameter, and
+//! ETS takes no branch of a `<choose>` on `R-13`), nor does a reached sibling
+//! of a `<Union>` member: the member reads the shared memory, but a
+//! `<choose>` on it selects a branch only when its own ref is reached (the
+//! ABB 20DF's one-member union `UP-84`). In the ETS schema a `<Channel>` or
+//! `<ParameterBlock>` is never gated by an attribute of its own (its
+//! `Number`/`Text` only label it); it is shown or hidden by the
+//! `<choose>`/`<when>` it sits in, and a module instance is shown when its
+//! `<Module>` element is reached. So the reached set of this walk is exactly
+//! the active set. A parameter the Dynamic section never shows anywhere (a
+//! pure steering parameter, which only ever has its value) stays active
+//! without a reached ref. The target ref of a reached `<Assign>` counts as
+//! active too: ETS writes it.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
@@ -1009,7 +1014,7 @@ pub fn evaluate_dynamic<S: DynamicSource + ?Sized>(
         let next = unions.shared_memory(app, &values, &walk);
         let mut changed = next.images != walk.shared.images;
         shared = next;
-        let now = walk.active_set(app);
+        let now = walk.active_set();
         changed |= now != walk.active_before;
         active = now;
         for assign in &walk.assigns {
@@ -1644,10 +1649,10 @@ struct Walk {
     /// The parameters the Dynamic section shows somewhere
     /// ([`placed_parameters`]).
     placed: Rc<HashSet<String>>,
-    /// The active parameters the previous pass reached, keyed by (module
-    /// instance id or `""`, full `Parameter` id).
+    /// The active parameter refs the previous pass reached, keyed by (module
+    /// instance id or `""`, app-relative `ParameterRef` id; issue #563).
     active_before: HashSet<(String, String)>,
-    /// The parameters this pass has reached so far, same keys.
+    /// The parameter refs this pass has reached so far, same keys.
     active_now: HashSet<(String, String)>,
     /// The current value of every allocator this pass drew from, keyed by
     /// the instance owning it (`None` for an application allocator, the
@@ -1810,23 +1815,23 @@ fn get_bits(image: &[u8], pos: u32, bits: u32) -> u64 {
 }
 
 impl Walk {
-    /// The active parameters this pass reached: every reached
+    /// The active parameter refs this pass reached: every reached
     /// `<ParameterRefRef>` and every reached `<Assign>` target.
-    fn active_set<S: DynamicSource + ?Sized>(&self, app: &S) -> HashSet<(String, String)> {
+    fn active_set(&self) -> HashSet<(String, String)> {
         let mut out = self.active_now.clone();
         for a in &self.assigns {
-            if let Some(id) = parameter_id(app, &a.target) {
-                out.insert((
-                    self.instance_id(a.target_module).to_string(),
-                    id.to_string(),
-                ));
-            }
+            out.insert((
+                self.instance_id(a.target_module).to_string(),
+                a.target.clone(),
+            ));
         }
         out
     }
 
-    /// Whether the parameter of `param_ref_id` in `instance` is active, so a
-    /// `<choose>` on it may select a branch (issue #159, see the module docs).
+    /// Whether the ref `param_ref_id` in `instance` is active, so a
+    /// `<choose>` on it may select a branch (issues #159 and #563, see the
+    /// module docs): the ref itself is reached, or its parameter is never
+    /// shown anywhere.
     fn is_active<S: DynamicSource + ?Sized>(
         &self,
         app: &S,
@@ -1839,7 +1844,7 @@ impl Walk {
         if !self.placed.contains(id) {
             return true;
         }
-        let key = (instance.to_string(), id.to_string());
+        let key = (instance.to_string(), param_ref_id.to_string());
         self.active_now.contains(&key) || self.active_before.contains(&key)
     }
 
@@ -1965,10 +1970,8 @@ impl Walk {
             match node {
                 DynamicNode::ParameterRefRef(r) => {
                     let scope = self.scope(module, r);
-                    if let Some(id) = parameter_id(app, r) {
-                        self.active_now
-                            .insert((self.instance_id(scope).to_string(), id.to_string()));
-                    }
+                    self.active_now
+                        .insert((self.instance_id(scope).to_string(), r.clone()));
                     self.parameters.push(ActiveParameter {
                         module: scope,
                         param_ref_id: r.clone(),
@@ -2022,10 +2025,10 @@ impl Walk {
                     let shared = (!values.contains_key(&key))
                         .then(|| self.shared.values.get(&key).cloned())
                         .flatten();
-                    // An inactive controlling parameter selects no branch, not
-                    // even the default one; a union member reading live shared
-                    // memory is active.
-                    if shared.is_none() && !self.is_active(app, instance, param_ref_id) {
+                    // An inactive controlling ref selects no branch, not even
+                    // the default one; a union member reading live shared
+                    // memory too (issue #563).
+                    if !self.is_active(app, instance, param_ref_id) {
                         continue;
                     }
                     let value = shared

@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Fabricated System B application (bussard's own work, MIT; no vendor data)
+     for the activity of a <choose> (issues #563 and #474).
+
+     #563: ETS decides activity per ParameterRef. "Changeover" (P-1) is shown
+     through R-1; a <choose> on its second ref R-2 (Access="Read", never
+     shown) selects no branch, so object 2 and "Cycle" (P-3) stay out. The
+     one-member union holds "Mode" (UP-1), shown through R-4; its ref R-5
+     is shown only when "Selector" (P-5) is 0 (it is 1), so a <choose> on R-5
+     selects no branch either, although R-5 reads the live shared memory:
+     object 3 and "Offset" (P-6) stay out.
+
+     #474: a <choose> on a never-shown parameter without memory. "AlwaysFalse"
+     (P-7, a checkbox with Access="Read" and Value 0, the Zennio Flat
+     construct) takes no branch, not even its default one: object 4 and
+     "Dummy" (P-8) stay out. "Input A" (P-9, TypeNone, Access="None", empty
+     Value, the ABB construct) steers a whole channel and its default branch
+     is taken: object 5. "Variant" (P-10, Access="None", Value 1) steers by a
+     matching test: object 6. -->
+<KNX xmlns="http://knx.org/xml/project/20">
+  <ManufacturerData>
+    <Manufacturer RefId="M-00FA">
+      <ApplicationPrograms>
+        <ApplicationProgram Id="M-00FA_A-0563-10-0000" ApplicationNumber="1379" ApplicationVersion="16"
+            MaskVersion="MV-07B0" Name="bussard choose activity test app" LoadProcedureStyle="MergedProcedure" DefaultLanguage="en-US">
+          <Static>
+            <Code>
+              <RelativeSegment Id="M-00FA_A-0563-10-0000_RS-04-00000" Name="Parameters" Offset="0" Size="8" LoadStateMachine="4" />
+            </Code>
+            <ParameterTypes>
+              <ParameterType Id="M-00FA_A-0563-10-0000_PT-YesNo" Name="checkbox"><TypeRestriction Base="Value" SizeInBit="1">
+                <Enumeration Text="no" Value="0" Id="M-00FA_A-0563-10-0000_PT-YesNo_EN-0" />
+                <Enumeration Text="yes" Value="1" Id="M-00FA_A-0563-10-0000_PT-YesNo_EN-1" />
+              </TypeRestriction></ParameterType>
+              <ParameterType Id="M-00FA_A-0563-10-0000_PT-Byte" Name="byte"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+              <ParameterType Id="M-00FA_A-0563-10-0000_PT-Mode" Name="mode"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="3" /></ParameterType>
+              <ParameterType Id="M-00FA_A-0563-10-0000_PT-None" Name="none"><TypeNone /></ParameterType>
+            </ParameterTypes>
+            <Parameters>
+              <Parameter Id="M-00FA_A-0563-10-0000_P-1" Name="changeover" ParameterType="M-00FA_A-0563-10-0000_PT-YesNo" Text="Changeover" Value="1">
+                <Memory CodeSegment="M-00FA_A-0563-10-0000_RS-04-00000" Offset="0" BitOffset="7" />
+              </Parameter>
+              <Parameter Id="M-00FA_A-0563-10-0000_P-3" Name="cycle" ParameterType="M-00FA_A-0563-10-0000_PT-Byte" Text="Cycle" Value="17">
+                <Memory CodeSegment="M-00FA_A-0563-10-0000_RS-04-00000" Offset="1" BitOffset="0" />
+              </Parameter>
+              <Parameter Id="M-00FA_A-0563-10-0000_P-5" Name="selector" ParameterType="M-00FA_A-0563-10-0000_PT-YesNo" Text="Selector" Value="1">
+                <Memory CodeSegment="M-00FA_A-0563-10-0000_RS-04-00000" Offset="2" BitOffset="7" />
+              </Parameter>
+              <Union SizeInBit="8">
+                <Memory CodeSegment="M-00FA_A-0563-10-0000_RS-04-00000" Offset="3" BitOffset="0" />
+                <Parameter Id="M-00FA_A-0563-10-0000_UP-1" Name="mode" ParameterType="M-00FA_A-0563-10-0000_PT-Mode" Text="Mode" Offset="0" BitOffset="0" Value="0" DefaultUnionParameter="true" />
+              </Union>
+              <Parameter Id="M-00FA_A-0563-10-0000_P-6" Name="offset" ParameterType="M-00FA_A-0563-10-0000_PT-Byte" Text="Offset" Value="34">
+                <Memory CodeSegment="M-00FA_A-0563-10-0000_RS-04-00000" Offset="4" BitOffset="0" />
+              </Parameter>
+              <Parameter Id="M-00FA_A-0563-10-0000_P-7" Name="AlwaysFalse" ParameterType="M-00FA_A-0563-10-0000_PT-YesNo" Text="AlwaysFalse" Access="Read" Value="0" />
+              <Parameter Id="M-00FA_A-0563-10-0000_P-8" Name="dummy" ParameterType="M-00FA_A-0563-10-0000_PT-Byte" Text="Dummy" Value="51">
+                <Memory CodeSegment="M-00FA_A-0563-10-0000_RS-04-00000" Offset="5" BitOffset="0" />
+              </Parameter>
+              <Parameter Id="M-00FA_A-0563-10-0000_P-9" Name="Eingang_A" ParameterType="M-00FA_A-0563-10-0000_PT-None" Text="" Access="None" Value="" />
+              <Parameter Id="M-00FA_A-0563-10-0000_P-10" Name="variant" ParameterType="M-00FA_A-0563-10-0000_PT-Mode" Text="Variant" Access="None" Value="1" />
+            </Parameters>
+            <ParameterRefs>
+              <ParameterRef Id="M-00FA_A-0563-10-0000_P-1_R-1" RefId="M-00FA_A-0563-10-0000_P-1" />
+              <ParameterRef Id="M-00FA_A-0563-10-0000_P-1_R-2" RefId="M-00FA_A-0563-10-0000_P-1" Access="Read" />
+              <ParameterRef Id="M-00FA_A-0563-10-0000_P-3_R-3" RefId="M-00FA_A-0563-10-0000_P-3" />
+              <ParameterRef Id="M-00FA_A-0563-10-0000_UP-1_R-4" RefId="M-00FA_A-0563-10-0000_UP-1" />
+              <ParameterRef Id="M-00FA_A-0563-10-0000_UP-1_R-5" RefId="M-00FA_A-0563-10-0000_UP-1" />
+              <ParameterRef Id="M-00FA_A-0563-10-0000_P-5_R-5" RefId="M-00FA_A-0563-10-0000_P-5" />
+              <ParameterRef Id="M-00FA_A-0563-10-0000_P-6_R-6" RefId="M-00FA_A-0563-10-0000_P-6" />
+              <ParameterRef Id="M-00FA_A-0563-10-0000_P-7_R-7" RefId="M-00FA_A-0563-10-0000_P-7" />
+              <ParameterRef Id="M-00FA_A-0563-10-0000_P-8_R-8" RefId="M-00FA_A-0563-10-0000_P-8" />
+              <ParameterRef Id="M-00FA_A-0563-10-0000_P-9_R-9" RefId="M-00FA_A-0563-10-0000_P-9" />
+              <ParameterRef Id="M-00FA_A-0563-10-0000_P-10_R-10" RefId="M-00FA_A-0563-10-0000_P-10" />
+            </ParameterRefs>
+            <ComObjects>
+              <ComObject Id="M-00FA_A-0563-10-0000_O-1" Name="o1" Text="Object 1" Number="1" FunctionText="f" ObjectSize="1 Bit" ReadFlag="Enabled" WriteFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Enabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" DatapointType="DPST-1-1" />
+              <ComObject Id="M-00FA_A-0563-10-0000_O-2" Name="o2" Text="Object 2" Number="2" FunctionText="f" ObjectSize="1 Bit" ReadFlag="Enabled" WriteFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Enabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" DatapointType="DPST-1-1" />
+              <ComObject Id="M-00FA_A-0563-10-0000_O-3" Name="o3" Text="Object 3" Number="3" FunctionText="f" ObjectSize="1 Bit" ReadFlag="Enabled" WriteFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Enabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" DatapointType="DPST-1-1" />
+              <ComObject Id="M-00FA_A-0563-10-0000_O-4" Name="o4" Text="Object 4" Number="4" FunctionText="f" ObjectSize="1 Bit" ReadFlag="Enabled" WriteFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Enabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" DatapointType="DPST-1-1" />
+              <ComObject Id="M-00FA_A-0563-10-0000_O-5" Name="o5" Text="Object 5" Number="5" FunctionText="f" ObjectSize="1 Bit" ReadFlag="Enabled" WriteFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Enabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" DatapointType="DPST-1-1" />
+              <ComObject Id="M-00FA_A-0563-10-0000_O-6" Name="o6" Text="Object 6" Number="6" FunctionText="f" ObjectSize="1 Bit" ReadFlag="Enabled" WriteFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Enabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" DatapointType="DPST-1-1" />
+            </ComObjects>
+            <ComObjectRefs>
+              <ComObjectRef Id="M-00FA_A-0563-10-0000_O-1_R-1" RefId="M-00FA_A-0563-10-0000_O-1" />
+              <ComObjectRef Id="M-00FA_A-0563-10-0000_O-2_R-2" RefId="M-00FA_A-0563-10-0000_O-2" />
+              <ComObjectRef Id="M-00FA_A-0563-10-0000_O-3_R-3" RefId="M-00FA_A-0563-10-0000_O-3" />
+              <ComObjectRef Id="M-00FA_A-0563-10-0000_O-4_R-4" RefId="M-00FA_A-0563-10-0000_O-4" />
+              <ComObjectRef Id="M-00FA_A-0563-10-0000_O-5_R-5" RefId="M-00FA_A-0563-10-0000_O-5" />
+              <ComObjectRef Id="M-00FA_A-0563-10-0000_O-6_R-6" RefId="M-00FA_A-0563-10-0000_O-6" />
+            </ComObjectRefs>
+            <Options DownloadInvisibleParameters="None" />
+          </Static>
+          <Dynamic>
+            <Channel Id="M-00FA_A-0563-10-0000_CH-1" Name="Main" Text="Main" Number="1">
+              <ParameterBlock Id="M-00FA_A-0563-10-0000_PB-1" Name="General" Text="General">
+                <ParameterRefRef RefId="M-00FA_A-0563-10-0000_P-1_R-1" />
+                <ComObjectRefRef RefId="M-00FA_A-0563-10-0000_O-1_R-1" />
+                <choose ParamRefId="M-00FA_A-0563-10-0000_P-1_R-2">
+                  <when default="true">
+                    <ParameterRefRef RefId="M-00FA_A-0563-10-0000_P-3_R-3" />
+                    <ComObjectRefRef RefId="M-00FA_A-0563-10-0000_O-2_R-2" />
+                  </when>
+                </choose>
+                <ParameterRefRef RefId="M-00FA_A-0563-10-0000_P-5_R-5" />
+                <ParameterRefRef RefId="M-00FA_A-0563-10-0000_UP-1_R-4" />
+                <choose ParamRefId="M-00FA_A-0563-10-0000_P-5_R-5">
+                  <when test="0">
+                    <ParameterRefRef RefId="M-00FA_A-0563-10-0000_UP-1_R-5" />
+                  </when>
+                </choose>
+                <choose ParamRefId="M-00FA_A-0563-10-0000_UP-1_R-5">
+                  <when test="0">
+                    <ParameterRefRef RefId="M-00FA_A-0563-10-0000_P-6_R-6" />
+                    <ComObjectRefRef RefId="M-00FA_A-0563-10-0000_O-3_R-3" />
+                  </when>
+                </choose>
+              </ParameterBlock>
+            </Channel>
+            <choose ParamRefId="M-00FA_A-0563-10-0000_P-7_R-7">
+              <when default="true">
+                <ParameterBlock Id="M-00FA_A-0563-10-0000_PB-2" Name="Ref only" Text="Ref only">
+                  <ParameterRefRef RefId="M-00FA_A-0563-10-0000_P-8_R-8" />
+                  <ComObjectRefRef RefId="M-00FA_A-0563-10-0000_O-4_R-4" />
+                </ParameterBlock>
+              </when>
+            </choose>
+            <choose ParamRefId="M-00FA_A-0563-10-0000_P-9_R-9">
+              <when default="true">
+                <Channel Id="M-00FA_A-0563-10-0000_CH-2" Name="Input A" Text="Input A" Number="2">
+                  <ParameterBlock Id="M-00FA_A-0563-10-0000_PB-3" Name="Input" Text="Input">
+                    <ComObjectRefRef RefId="M-00FA_A-0563-10-0000_O-5_R-5" />
+                  </ParameterBlock>
+                </Channel>
+              </when>
+            </choose>
+            <choose ParamRefId="M-00FA_A-0563-10-0000_P-10_R-10">
+              <when test="1">
+                <ComObjectRefRef RefId="M-00FA_A-0563-10-0000_O-6_R-6" />
+              </when>
+            </choose>
+          </Dynamic>
+        </ApplicationProgram>
+      </ApplicationPrograms>
+    </Manufacturer>
+  </ManufacturerData>
+</KNX>

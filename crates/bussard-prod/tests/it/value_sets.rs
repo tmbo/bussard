@@ -34,6 +34,10 @@ pub const FIXTURES: &[(&str, &[u8])] = &[
         "M-00FA_A-0449-10-0000",
         include_bytes!("../fixtures/allocators.app.xml"),
     ),
+    (
+        "M-00FA_A-0563-10-0000",
+        include_bytes!("../fixtures/choose_activity.app.xml"),
+    ),
 ];
 
 /// A small seeded generator (SplitMix64) for the random value sets.

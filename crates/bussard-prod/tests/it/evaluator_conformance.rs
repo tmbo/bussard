@@ -628,3 +628,54 @@ fn test_compute_dynamic_parameter_image_refuses_an_exhausted_allocator() -> Test
     assert!(err.to_string().contains("BaseOffset"), "{err}");
     Ok(())
 }
+
+/// The issues #563 and #474 fixture: the activity of a `<choose>`.
+const CHOOSE_ACTIVITY: &[u8] = include_bytes!("../fixtures/choose_activity.app.xml");
+/// Its program id.
+const CHOOSE_ACTIVITY_ID: &str = "M-00FA_A-0563-10-0000";
+
+/// The objects and parameter refs the evaluation reaches with `values`.
+fn reached(
+    app: &ApplicationProgram,
+    values: &[(&str, &str)],
+) -> (BTreeSet<String>, BTreeSet<String>) {
+    let values: BTreeMap<String, String> = values
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    let config = bussard_prod::dynamic::evaluate_dynamic(app, &values);
+    (
+        config
+            .com_objects
+            .iter()
+            .map(|c| c.com_object_ref_id.clone())
+            .collect(),
+        config
+            .parameters
+            .iter()
+            .map(|p| p.param_ref_id.clone())
+            .collect(),
+    )
+}
+
+#[test]
+fn test_evaluate_dynamic_choose_on_an_unreached_ref_selects_no_branch() -> TestResult {
+    let app = parse_application_program(CHOOSE_ACTIVITY_ID, CHOOSE_ACTIVITY)?;
+    let (objects, refs) = reached(&app, &[]);
+    // R-1 of "Changeover" is shown, R-2 is not: the choose on R-2 takes no
+    // branch. The union member is shown through R-4 only: the choose on R-5
+    // takes none either, though R-5 reads the shared memory's 0.
+    for absent in ["O-2_R-2", "O-3_R-3"] {
+        assert!(!objects.contains(absent), "{absent} reached: {objects:?}");
+    }
+    for absent in ["P-3_R-3", "P-6_R-6"] {
+        assert!(!refs.contains(absent), "{absent} reached: {refs:?}");
+    }
+    assert!(objects.contains("O-1_R-1"), "{objects:?}");
+    // Once "Selector" shows R-5, the choose on it is active and its branch
+    // (the shared memory's 0) is taken.
+    let (objects, refs) = reached(&app, &[("P-5_R-5", "0")]);
+    assert!(objects.contains("O-3_R-3"), "{objects:?}");
+    assert!(refs.contains("P-6_R-6"), "{refs:?}");
+    Ok(())
+}
