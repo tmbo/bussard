@@ -42,6 +42,10 @@ pub struct ProductModel {
     /// The application program id (`M-0002_A-A0ED-10-9B4E`), the prefix the
     /// app-relative ids drop.
     pub program_id: String,
+    /// The Data Secure table capacities of a Data-Secure-capable application
+    /// (`data_secure:`, format 9, issue #537); `None` for an application that
+    /// does not declare `IsSecureEnabled`.
+    pub data_secure: Option<DataSecureCapacity>,
     /// The application's own Dynamic section (`dynamic:`, format 5, issue
     /// #345), app-relative ids throughout: what [`crate::dynamic::evaluate_dynamic`]
     /// walks through this model's [`crate::dynamic::DynamicSource`] impl.
@@ -64,6 +68,35 @@ pub struct ProductModel {
     /// on first use ([`Self::blocks`]).
     #[serde(skip)]
     pages: std::sync::OnceLock<Vec<crate::blocks::BlockDef>>,
+}
+
+/// The Data Secure table capacities a product declares (the application's
+/// `MaxSecurity*` attributes, issue #537): how many entries the group key
+/// table (PID 53), the security individual address table (PID 54) and the
+/// point-to-point key table hold. `None` where the product gives no figure.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, Deserialize)]
+pub struct DataSecureCapacity {
+    /// `MaxSecurityGroupKeyTableEntries`.
+    #[serde(
+        default,
+        rename = "max_group_key_table_entries",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub group_key_table_entries: Option<u32>,
+    /// `MaxSecurityIndividualAddressEntries`.
+    #[serde(
+        default,
+        rename = "max_individual_address_entries",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub individual_address_entries: Option<u32>,
+    /// `MaxSecurityP2PKeyTableEntries`.
+    #[serde(
+        default,
+        rename = "max_p2p_key_table_entries",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub p2p_key_table_entries: Option<u32>,
 }
 
 /// One `ParameterRef` of a product model (an entry of a parameter's `refs:`).
@@ -108,8 +141,9 @@ pub struct ObjectDef {
 /// `parameter_when:` and `ref_values:`, which the tree gives, and writes a
 /// parameter's own default, issue #345; format 7 a text type's
 /// `encoding:`, issue #401; format 8 a com-object's `priority:` where it is
-/// not Low, issue #541).
-pub const MODEL_FORMAT: u32 = 8;
+/// not Low, issue #541; format 9 a Data-Secure-capable application's table
+/// capacities, `data_secure:`, issue #537).
+pub const MODEL_FORMAT: u32 = 9;
 
 /// Whether the model file at `path` is of the current [`MODEL_FORMAT`]. Reads
 /// only the head of the file, where the emitter puts the key.
@@ -214,6 +248,8 @@ struct RawModel {
     module_dynamics: BTreeMap<String, Vec<crate::dynamic::DynamicNode>>,
     #[serde(default, with = "crate::dynamic_compact::unions")]
     unions: Vec<crate::dynamic::Union>,
+    #[serde(default)]
+    data_secure: Option<DataSecureCapacity>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -408,6 +444,7 @@ impl ProductModel {
             com_objects,
             com_object_refs,
             program_id: app_ref.to_string(),
+            data_secure: raw.data_secure,
             dynamic: raw.dynamic,
             module_dynamics: raw.module_dynamics,
             unions: raw.unions,

@@ -628,6 +628,7 @@ pub(super) fn plan_flash_sys7(
         placed,
         unwritten: BTreeMap::new(),
         baseline_address: BTreeMap::new(),
+        security_capacity: Default::default(),
     })
 }
 

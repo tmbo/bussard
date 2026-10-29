@@ -100,7 +100,7 @@ Behaviour:
 | `unsecured_management` | refused walk, no key | `"refused"`: the device answered the descriptor read but not the plain walk. |
 | `secured_management` | refused walk, with a key | `"unanswered"`: the secured walk returned no interface object. |
 | `error` | refused walk | The error message, with the KNX Secure hint. |
-| `secure.model` | the model has a security block | What the import recorded: `secure_capable`, `activated`, `has_fdsk_certificate`. An export made before ETS activated the device says `activated: false`. |
+| `secure.model` | the model has a security block | What the import recorded: `secure_capable`, `activated`, `has_fdsk_certificate`. An export made before ETS activated the device says `activated: false`. `tables` (a Data-Secure-capable product) holds the capacities the product declares: `max_group_key_table_entries`, `max_individual_address_entries`, `max_p2p_key_table_entries`; a download that does not fit is refused before anything is unloaded. |
 | `secure.device` | model security, a tool key, or a refused walk | What the device did in this run: `plain_management` (`answered`, `refused`, or `not_attempted` with a key) and `secured_management` (`used`, `not_attempted` without a key, `unanswered`, or `factory_key` when the device refused plain access and answered under its FDSK from the key store, issue #532). |
 
 ??? note "Details"

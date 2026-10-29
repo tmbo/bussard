@@ -880,6 +880,10 @@ pub struct FlashPlan {
     /// the device reports then; the diff against the baseline only holds when
     /// that base is this one. Empty for every full flash.
     baseline_address: BTreeMap<String, u32>,
+    /// The Data Secure table capacities the product declares (issue #537):
+    /// the executor checks the security program against them, reading any
+    /// that is missing from the device, before the first step.
+    security_capacity: crate::security::TableCapacity,
 }
 
 /// The System 7 execution context attached to a [`FlashPlan`] for a mask
@@ -1010,6 +1014,33 @@ impl FlashPlan {
                 control: bussard_mgmt::LoadControl::Unload,
             },
         );
+    }
+
+    /// Sets the Data Secure table capacities the product declares (issue
+    /// #537), checked against the security program before the flash starts.
+    pub fn set_security_capacity(&mut self, capacity: crate::security::TableCapacity) {
+        self.security_capacity = capacity;
+    }
+
+    /// The Data Secure table capacities the product declares (see
+    /// [`set_security_capacity`](Self::set_security_capacity)).
+    pub fn security_capacity(&self) -> crate::security::TableCapacity {
+        self.security_capacity
+    }
+
+    /// The entries the plan writes into the group key table (PID 53) and
+    /// the security individual address table (PID 54).
+    pub fn security_table_counts(&self) -> (usize, usize) {
+        let mut keys = 0;
+        let mut senders = 0;
+        for step in &self.steps {
+            match step {
+                FlashStep::SecurityGroupKeys { entries } => keys += entries.len(),
+                FlashStep::SecuritySenders { entries } => senders += entries.len(),
+                _ => {}
+            }
+        }
+        (keys, senders)
     }
 
     /// Whether the plan programs the security object (see

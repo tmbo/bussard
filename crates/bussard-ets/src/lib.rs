@@ -39,8 +39,9 @@ pub mod zip_util;
 pub use application::{
     ApplicationProgram, BlockRef, ChannelDef, ChannelRef, CodeSegment, ComObject, ComObjectRef,
     EnumValue, LoadOp, LoadProcedure, Memory, Parameter, ParameterRef, ParameterType,
-    ParameterTypeDecl, ProgramLanguages, ResolvedComObject, ResolvedParameter, SegmentKind,
-    TableLocation, parse_application_program, parse_application_program_in, program_languages,
+    ParameterTypeDecl, ProgramLanguages, ResolvedComObject, ResolvedParameter, SecurityCapacity,
+    SegmentKind, TableLocation, parse_application_program, parse_application_program_in,
+    program_languages,
 };
 pub use attrs::{Attrs, attr_value, attrs_map, flagset_from, get, strip_bom, strip_bom_bytes};
 pub use dpt::{dpt_from_object_size, parse_ets_dpt};

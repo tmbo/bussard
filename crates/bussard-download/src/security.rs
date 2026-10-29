@@ -310,6 +310,26 @@ pub enum SecurityPlanError {
         /// The group address.
         ga: GroupAddress,
     },
+    /// A table holds more entries than the device does (issue #537): refused
+    /// before the security object is unloaded.
+    #[error(
+        "{device}: the {table} needs {needed} entries but the device holds at most {capacity} \
+         ({origin}); the download is refused before anything is unloaded"
+    )]
+    OverCapacity {
+        /// The device.
+        device: IndividualAddress,
+        /// Which table: the group key table (PID 53) or the security
+        /// individual address table (PID 54).
+        table: &'static str,
+        /// The entries the download would write.
+        needed: usize,
+        /// The capacity.
+        capacity: u32,
+        /// Where the capacity comes from: the product data or the device's
+        /// property description.
+        origin: &'static str,
+    },
     /// A secured group object number lies outside the device's group-object
     /// table.
     #[error(
@@ -324,6 +344,198 @@ pub enum SecurityPlanError {
         /// The group-object table's size.
         count: u16,
     },
+}
+
+/// The name of the group key table in [`SecurityPlanError::OverCapacity`].
+pub const GROUP_KEY_TABLE: &str = "group key table (PID 53)";
+/// The name of the security individual address table in
+/// [`SecurityPlanError::OverCapacity`].
+pub const SENDER_TABLE: &str = "security individual address table (PID 54)";
+
+/// One table capacity and where it comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Capacity {
+    /// The number of entries the table holds.
+    pub entries: u32,
+    /// `"product data"` or `"property description"`.
+    pub source: &'static str,
+}
+
+/// How many entries a device's group key table (PID 53) and security
+/// individual address table (PID 54) hold (issue #537), where known.
+///
+/// Both are array properties whose capacity is the device's (KNX 3/5/1
+/// §6.3.7, §6.3.8). The product data declares them as the application's
+/// `MaxSecurityGroupKeyTableEntries` and `MaxSecurityIndividualAddressEntries`;
+/// a device also reports them as the `max_nr_of_elem` of the property
+/// description, which a tool with tool access may read (AN193 §2.2.4.4).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TableCapacity {
+    /// The group key table (PID 53).
+    pub group_keys: Option<Capacity>,
+    /// The security individual address table (PID 54).
+    pub senders: Option<Capacity>,
+}
+
+impl TableCapacity {
+    /// The capacities the application's product data declares.
+    pub fn from_product(capacity: &bussard_prod::SecurityCapacity) -> Self {
+        let product = |entries: Option<u32>| {
+            entries.map(|entries| Capacity {
+                entries,
+                source: "product data",
+            })
+        };
+        TableCapacity {
+            group_keys: product(capacity.group_key_table_entries),
+            senders: product(capacity.individual_address_entries),
+        }
+    }
+
+    /// The capacities a product model carries (`data_secure:`, format 9).
+    pub fn from_model(capacity: &bussard_model::param_model::DataSecureCapacity) -> Self {
+        Self::from_product(&bussard_prod::SecurityCapacity {
+            group_key_table_entries: capacity.group_key_table_entries,
+            individual_address_entries: capacity.individual_address_entries,
+            p2p_key_table_entries: capacity.p2p_key_table_entries,
+        })
+    }
+
+    /// The capacities of `device`'s product, from the product model of the
+    /// application its lock entry pins under `dir`; empty when there is none.
+    pub fn for_device(
+        dir: &std::path::Path,
+        model: Option<&Model>,
+        device: IndividualAddress,
+    ) -> Self {
+        let Some(app) = model
+            .and_then(|m| m.devices.get(&device))
+            .and_then(|d| d.device.product.as_ref())
+            .and_then(|p| p.application_ref.clone())
+        else {
+            return Self::default();
+        };
+        // A pinned archive whose model is missing or outdated gets it now.
+        bussard_prod::product_model::complete_models(dir, Some(&app));
+        bussard_model::param_model::ProductModels::load_apps(dir, [app.as_str()])
+            .get(&app)
+            .and_then(|p| p.data_secure.as_ref())
+            .map(Self::from_model)
+            .unwrap_or_default()
+    }
+
+    /// Whether both capacities are known.
+    pub fn is_complete(&self) -> bool {
+        self.group_keys.is_some() && self.senders.is_some()
+    }
+
+    /// Refuses `program` when one of its tables holds more entries than the
+    /// known capacity; an unknown capacity checks nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`SecurityPlanError::OverCapacity`] with the counts.
+    pub fn check(
+        &self,
+        device: IndividualAddress,
+        program: &SecurityProgram,
+    ) -> Result<(), SecurityPlanError> {
+        self.check_counts(device, program.group_keys.len(), program.senders.len())
+    }
+
+    /// [`check`](Self::check) on entry counts.
+    ///
+    /// # Errors
+    ///
+    /// [`SecurityPlanError::OverCapacity`] with the counts.
+    pub fn check_counts(
+        &self,
+        device: IndividualAddress,
+        group_keys: usize,
+        senders: usize,
+    ) -> Result<(), SecurityPlanError> {
+        for (table, needed, capacity) in [
+            (GROUP_KEY_TABLE, group_keys, self.group_keys),
+            (SENDER_TABLE, senders, self.senders),
+        ] {
+            if let Some(cap) = capacity
+                && needed > cap.entries as usize
+            {
+                return Err(SecurityPlanError::OverCapacity {
+                    device,
+                    table,
+                    needed,
+                    capacity: cap.entries,
+                    origin: cap.source,
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Checks the security program `inputs` give for the address table
+/// `addresses` against the capacities the product declares
+/// ([`SecurityInputs::capacity`]), without a device: what `apply` and the MCP
+/// plan refuse before they connect (issue #537).
+///
+/// # Errors
+///
+/// The program cannot be built, or [`SecurityPlanError::OverCapacity`].
+pub fn check_planned_capacity(
+    device: IndividualAddress,
+    addresses: &[GroupAddress],
+    inputs: &SecurityInputs,
+) -> Result<(), SecurityPlanError> {
+    let program = build_security_program(
+        device,
+        addresses,
+        inputs.fallback_go_count,
+        &inputs.secure_objects,
+        &inputs.secure_gas,
+        &inputs.group_keys,
+    )?;
+    inputs
+        .capacity
+        .check_counts(device, program.group_keys.len(), inputs.senders.len())
+}
+
+/// Fills in the capacities `known` lacks from the device's property
+/// descriptions of PID 53 and PID 54 (`max_nr_of_elem`, AN193 §2.2.4.4), read
+/// over the open (tool-key) connection. A device that declines a description,
+/// or reports 0 elements, leaves that capacity unknown.
+///
+/// # Errors
+///
+/// A transport failure.
+pub async fn resolve_table_capacity<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    known: TableCapacity,
+) -> Result<TableCapacity, MgmtError> {
+    let mut out = known;
+    for (pid, slot) in [
+        (property_ext::PID_GRP_KEY_TABLE, &mut out.group_keys),
+        (
+            property_ext::PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE,
+            &mut out.senders,
+        ),
+    ] {
+        if slot.is_some() {
+            continue;
+        }
+        let desc = property_ext::declined_as_none(l4, async |l4| {
+            property_ext::read_property_ext_description(l4, PropertyExtAddress::security(pid), 0)
+                .await
+        })
+        .await?;
+        *slot = desc
+            .filter(|d| d.addr.property_id == pid && d.max_elements > 0)
+            .map(|d| Capacity {
+                entries: u32::from(d.max_elements),
+                source: "property description",
+            });
+    }
+    Ok(out)
 }
 
 /// Builds the security program for `device` from its final address table
@@ -454,6 +666,9 @@ pub struct SecurityInputs {
     /// [`senders`](Self::senders) (issue #297), ascending; empty when the
     /// option is off. Only for the summary: the entries are in `senders`.
     pub admitted_tunnel: Vec<IndividualAddress>,
+    /// The table capacities the product declares (issue #537); the download
+    /// reads what is missing from the device before it unloads anything.
+    pub capacity: TableCapacity,
 }
 
 /// Derives the [`SecurityInputs`] for writing `desired` (an address and
@@ -871,6 +1086,25 @@ pub async fn program_security_object<Ch: L4Channel>(
     addresses: &[GroupAddress],
     inputs: &SecurityInputs,
 ) -> Result<SecurityProgram, WriteError> {
+    let program = prepare_security_program(l4, addresses, inputs).await?;
+    write_security_program(l4, &program).await?;
+    Ok(program)
+}
+
+/// The read-only half of [`program_security_object`]: reads the group-object
+/// count, builds the program and checks it against the table capacities
+/// (issue #537), reading those the product does not give from the device.
+/// Nothing is written, so a refusal leaves the device as it was.
+///
+/// # Errors
+///
+/// [`WriteError::SecurityProgram`] when the program cannot be built or does
+/// not fit; the connection's errors.
+pub async fn prepare_security_program<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    addresses: &[GroupAddress],
+    inputs: &SecurityInputs,
+) -> Result<SecurityProgram, WriteError> {
     let go_count = match property_ext::read_property_ext_element_count(
         l4,
         PropertyExtAddress::security(property_ext::PID_GO_SECURITY_FLAGS),
@@ -899,6 +1133,33 @@ pub async fn program_security_object<Ch: L4Channel>(
         senders: inputs.senders.clone(),
         ..program
     };
+    let capacity = if inputs.capacity.is_complete() {
+        inputs.capacity
+    } else {
+        resolve_table_capacity(l4, inputs.capacity)
+            .await
+            .map_err(WriteError::Mgmt)?
+    };
+    capacity
+        .check(l4.target(), &program)
+        .map_err(|e| WriteError::SecurityProgram {
+            address: l4.target(),
+            reason: e.to_string(),
+        })?;
+    Ok(program)
+}
+
+/// The write half of [`program_security_object`]: `Unload`, `StartLoading`,
+/// the IA-table clear and entries, the group key table, the group-object
+/// flags, `LoadCompleted`.
+///
+/// # Errors
+///
+/// [`WriteError::SecurityObjectNotLoaded`] for a failure after the `Unload`.
+pub async fn write_security_program<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    program: &SecurityProgram,
+) -> Result<(), WriteError> {
     // From the `Unload` on, a failure leaves the object out of `Loaded`, and
     // the device deaf and mute on its secured group addresses (issue #534):
     // the error says so.
@@ -912,8 +1173,7 @@ pub async fn program_security_object<Ch: L4Channel>(
         security_transition(l4, LoadControl::LoadCompleted).await
     }
     .await;
-    written.map_err(|err| left_not_loaded(l4.target(), err))?;
-    Ok(program)
+    written.map_err(|err| left_not_loaded(l4.target(), err))
 }
 
 /// Wraps `err`, a failure between the security object's `Unload` and its
@@ -981,6 +1241,58 @@ mod tests {
         assert_eq!(program.secured_objects(), vec![1289]);
         // The last ETS chunk (index 1267, 67 elements) carries 0x03 at offset 22.
         assert_eq!(program.go_flags[1266 + 22], GO_FLAGS_SECURE);
+        Ok(())
+    }
+
+    /// Issue #537: one group key more than the product declares is refused
+    /// with the counts; exactly the capacity passes; no figure checks nothing.
+    #[test]
+    fn test_check_planned_capacity_refuses_one_entry_too_many() -> TestResult {
+        let device: IndividualAddress = "1.1.12".parse()?;
+        let addresses = vec![ga("0/0/5")?, ga("0/0/6")?];
+        let mut inputs = SecurityInputs {
+            fallback_go_count: 4,
+            ..SecurityInputs::default()
+        };
+        for a in &addresses {
+            inputs.group_keys.insert(*a, Key16::new([0x11; 16]));
+        }
+        check_planned_capacity(device, &addresses, &inputs)?;
+        inputs.capacity = TableCapacity::from_product(&bussard_prod::SecurityCapacity {
+            group_key_table_entries: Some(1),
+            individual_address_entries: Some(5000),
+            p2p_key_table_entries: None,
+        });
+        let err = check_planned_capacity(device, &addresses, &inputs)
+            .err()
+            .ok_or("expected a refusal")?;
+        assert_eq!(
+            err,
+            SecurityPlanError::OverCapacity {
+                device,
+                table: GROUP_KEY_TABLE,
+                needed: 2,
+                capacity: 1,
+                origin: "product data",
+            }
+        );
+        assert!(
+            err.to_string().contains(
+                "group key table (PID 53) needs 2 entries but the device holds at most 1"
+            )
+        );
+        check_planned_capacity(device, &addresses[..1], &inputs)?;
+        // The sender table is checked the same way.
+        let senders = TableCapacity {
+            group_keys: None,
+            senders: Some(Capacity {
+                entries: 2,
+                source: "property description",
+            }),
+        };
+        senders.check_counts(device, 100, 2)?;
+        assert!(senders.check_counts(device, 0, 3).is_err());
+        assert!(!senders.is_complete());
         Ok(())
     }
 

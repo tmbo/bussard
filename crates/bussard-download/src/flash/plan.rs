@@ -1006,6 +1006,7 @@ pub fn plan_flash_with_memo(
         placed,
         unwritten: BTreeMap::new(),
         baseline_address: BTreeMap::new(),
+        security_capacity: Default::default(),
     })
 }
 

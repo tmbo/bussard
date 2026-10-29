@@ -114,12 +114,14 @@ pub mod rc {
 /// 12-bit `max_elements` field can describe.
 pub const FALLBACK_MAX_GROUP_OBJECTS: u16 = 4095;
 
-/// Capacity of the group key table (rows). A plausible device limit; the real
-/// Jung device's capacity is not captured.
+/// Capacity of the group key table (rows) when the product declares none
+/// (`MaxSecurityGroupKeyTableEntries`, bussard issue #537). A plausible
+/// device limit.
 pub const MAX_GROUP_KEY_ROWS: u16 = 1024;
 
-/// Capacity of the security individual address table (rows). A plausible device
-/// limit; the real device's capacity is not captured.
+/// Capacity of the security individual address table (rows) when the product
+/// declares none (`MaxSecurityIndividualAddressEntries`). A plausible device
+/// limit.
 pub const MAX_IA_TABLE_ROWS: u16 = 64;
 
 /// Size of one group key table row: address-table index (2) + key (16).
@@ -348,6 +350,10 @@ pub struct SecurityObject {
     report: u8,
     /// The security report control (PID 58): 1 = broadcast on a failure.
     report_control: u8,
+    /// Rows the group key table (PID 53) holds.
+    group_key_capacity: u16,
+    /// Rows the security individual address table (PID 54) holds.
+    ia_capacity: u16,
 }
 
 impl std::fmt::Debug for SecurityObject {
@@ -387,7 +393,23 @@ impl SecurityObject {
             failures: FailuresLog::default(),
             report: 0,
             report_control: 0,
+            group_key_capacity: MAX_GROUP_KEY_ROWS,
+            ia_capacity: MAX_IA_TABLE_ROWS,
         }
+    }
+
+    /// Takes the table capacities from the product data (bussard issue #537):
+    /// a declared figure replaces [`MAX_GROUP_KEY_ROWS`] or
+    /// [`MAX_IA_TABLE_ROWS`]. The writes refuse rows beyond them and the
+    /// property descriptions report them.
+    pub fn with_capacity(mut self, capacity: crate::prod::SecurityCapacity) -> Self {
+        if let Some(rows) = capacity.group_key_rows {
+            self.group_key_capacity = rows;
+        }
+        if let Some(rows) = capacity.ia_rows {
+            self.ia_capacity = rows;
+        }
+        self
     }
 
     /// A security object in factory state for a device that takes Data Secure

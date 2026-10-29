@@ -287,6 +287,15 @@ async fn write_link_tables<Ch: L4Channel>(
 ) -> Result<VerifyOutcome, WriteError> {
     let addr_elems = desired.address_elements();
     let assoc_elems = desired.association_elements();
+    // Data Secure: build the security program and check it against the
+    // table capacities before anything is opened (issue #537), so a program
+    // the device cannot hold is refused with every object still loaded.
+    let security_program = match security {
+        Some(inputs) => {
+            Some(crate::security::prepare_security_program(l4, &desired.addresses, inputs).await?)
+        }
+        None => None,
+    };
 
     // 1 + 2: open both tables for writing, each followed by its `RelSegment`
     // allocation (ETS allocates right after each StartLoading — both captures).
@@ -301,8 +310,8 @@ async fn write_link_tables<Ch: L4Channel>(
     // 4: write the association table (TSAPs now index the new address content).
     write_table_image(l4, assoc_seg, ASSOCIATION_ELEM_SIZE, &assoc_elems).await?;
     // 4b (Data Secure): reprogram the security object for the new address table.
-    if let Some(inputs) = security {
-        crate::security::program_security_object(l4, &desired.addresses, inputs).await?;
+    if let Some(program) = &security_program {
+        crate::security::write_security_program(l4, program).await?;
     }
 
     // 5: complete the address load first (activate the GA table).

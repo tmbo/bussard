@@ -255,6 +255,30 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
     Ok(outcome)
 }
 
+/// Refuses a plan whose security tables exceed the device's capacity (issue
+/// #537), reading the capacities the product does not declare from the device.
+async fn check_security_capacity<C: Connector>(
+    session: &mut Session<C>,
+    plan: &FlashPlan,
+) -> Result<(), WriteError> {
+    let (keys, senders) = plan.security_table_counts();
+    let known = plan.security_capacity();
+    let capacity = if known.is_complete() {
+        known
+    } else {
+        crate::security::resolve_table_capacity(session.l4(), known)
+            .await
+            .map_err(WriteError::Mgmt)?
+    };
+    let target = session.l4().target();
+    capacity
+        .check_counts(target, keys, senders)
+        .map_err(|e| WriteError::SecurityProgram {
+            address: target,
+            reason: e.to_string(),
+        })
+}
+
 /// The body of [`flash`]: runs the plan and verifies it.
 async fn flash_steps<C: Connector, F: FnMut(Progress)>(
     session: &mut Session<C>,
@@ -375,6 +399,14 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
         } else {
             BTreeSet::new()
         };
+
+    // Data Secure (issue #537): the group key table and the security
+    // individual address table must fit the device. A capacity the product
+    // does not declare is read from the property description, over the
+    // tool-key connection, before the first step erases or unloads anything.
+    if plan.has_security_program() {
+        check_security_capacity(session, plan).await?;
+    }
 
     for (i, step) in plan.steps.iter().enumerate() {
         // A resident-match object (its MCB already matched the image bussard

@@ -702,7 +702,7 @@ impl BussardMcp {
         let tables = live.tables();
         let report = plan(tables, &desired);
         refuse_protected(&model, &report)?;
-        let security = security_inputs(&model, target, &desired, &material, live, &tunnel)?;
+        let security = security_inputs(&model, target, &desired, &material, live, &tunnel, &dir)?;
         // A System 7 image that would not fit its memory region must refuse at
         // plan time, before the human is asked anything.
         if let Some(s7) = live.sys7() {
@@ -1146,7 +1146,7 @@ impl BussardMcp {
         )
         .await?;
         let live = &read.live;
-        let security = security_inputs(&model, target, &desired, &material, live, &tunnel)?;
+        let security = security_inputs(&model, target, &desired, &material, live, &tunnel, &dir)?;
         let tables = live.tables();
         let report = plan(tables, &desired);
         let mut built = built_plan(&model, target, &gateway, &dir, &read, &report, &product);
@@ -1966,6 +1966,7 @@ fn security_inputs(
     material: &SecureMaterial,
     live: &LiveTables,
     tunnel: &[IndividualAddress],
+    dir: &std::path::Path,
 ) -> Result<Option<SecurityInputs>, String> {
     if material.tool_key.is_none() || live.sys7().is_some() {
         return Ok(None);
@@ -1983,19 +1984,19 @@ fn security_inputs(
         tunnel,
     );
     inputs.admitted_tunnel = tunnel.iter().copied().filter(|ia| *ia != target).collect();
-    bussard_download::build_security_program(
-        target,
-        &desired.addresses,
-        inputs.fallback_go_count,
-        &inputs.secure_objects,
-        &inputs.secure_gas,
-        &inputs.group_keys,
-    )
-    .map_err(|e| {
-        format!(
-            "{target}'s security object cannot be programmed: {e}; export a current keyring \
-             from ETS or fix the group's `secure` flag in groups.toml"
-        )
+    // The table capacities the product declares (issue #537): a program the
+    // device cannot hold refuses here, at plan time.
+    inputs.capacity = bussard_download::TableCapacity::for_device(dir, Some(model), target);
+    bussard_download::check_planned_capacity(target, &desired.addresses, &inputs).map_err(|e| {
+        match e {
+            bussard_download::SecurityPlanError::OverCapacity { .. } => {
+                format!("{target}'s security object cannot be programmed: {e}")
+            }
+            e => format!(
+                "{target}'s security object cannot be programmed: {e}; export a current keyring \
+                 from ETS or fix the group's `secure` flag in groups.toml"
+            ),
+        }
     })?;
     Ok(Some(inputs))
 }

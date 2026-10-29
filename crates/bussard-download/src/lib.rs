@@ -119,11 +119,12 @@ pub use program::{
     write_tables_secured, write_tables_seeded,
 };
 pub use security::{
-    DeviceSecurityView, GO_FLAGS_SECURE, GroupKeyEntry, MAX_SEQUENCE, SecureSenderEntry,
-    SecurityInputs, SecurityPlanError, SecurityProgram, SecurityReadback, build_security_program,
-    decode_sender_table, device_security_view, program_security_object, read_security_flags,
-    read_security_object, read_security_sender_table, secured_senders, security_inputs_for,
-    sender_table_bytes,
+    Capacity, DeviceSecurityView, GO_FLAGS_SECURE, GroupKeyEntry, MAX_SEQUENCE, SecureSenderEntry,
+    SecurityInputs, SecurityPlanError, SecurityProgram, SecurityReadback, TableCapacity,
+    build_security_program, check_planned_capacity, decode_sender_table, device_security_view,
+    prepare_security_program, program_security_object, read_security_flags, read_security_object,
+    read_security_sender_table, resolve_table_capacity, secured_senders, security_inputs_for,
+    sender_table_bytes, write_security_program,
 };
 pub use security_diag::{
     FailureCounters, FailureKind, LatestFailure, SecurityDiagnostics, clear_security_diagnostics,

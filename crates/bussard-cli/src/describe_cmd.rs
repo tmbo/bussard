@@ -126,6 +126,10 @@ struct ModelSecure {
     activated: bool,
     /// A factory FDSK certificate was present in the imported knxproj.
     has_fdsk_certificate: bool,
+    /// The Data Secure table capacities the product declares (issue #537),
+    /// for a Data-Secure-capable application whose product model is at hand.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tables: Option<bussard_model::param_model::DataSecureCapacity>,
 }
 
 /// How the device answered management in this run.
@@ -277,14 +281,23 @@ pub fn run(
             },
         ));
     }
-    let model_secure = model
-        .as_ref()
-        .and_then(|m| m.devices.get(&target))
+    let loaded = model.as_ref().and_then(|m| m.devices.get(&target));
+    // The product's Data Secure table capacities (issue #537).
+    let tables = loaded
+        .and_then(|d| d.device.product.as_ref())
+        .and_then(|p| p.application_ref.as_deref())
+        .and_then(|app| {
+            bussard_model::param_model::ProductModels::load_apps(dir, [app])
+                .get(app)
+                .and_then(|p| p.data_secure)
+        });
+    let model_secure = loaded
         .and_then(|d| d.device.security.as_ref())
         .map(|sec| ModelSecure {
             secure_capable: sec.secure_capable,
             activated: sec.activated,
             has_fdsk_certificate: sec.has_fdsk_certificate,
+            tables: tables.filter(|_| sec.secure_capable),
         });
     if model_secure.is_some() || presented_tool_key || refused {
         report.secure = Some(SecureReport {
@@ -489,6 +502,18 @@ fn property_report(p: &PropertyDesc) -> PropertyReport {
 }
 
 /// Prints the aligned human-readable report.
+/// `group keys 1500, security IAs 5000, P2P keys 100`, "not declared" for a
+/// figure the product leaves out.
+fn table_capacity_line(tables: &bussard_model::param_model::DataSecureCapacity) -> String {
+    let n = |v: Option<u32>| v.map_or_else(|| "not declared".to_string(), |v| v.to_string());
+    format!(
+        "group keys {}, security individual addresses {}, P2P keys {}",
+        n(tables.group_key_table_entries),
+        n(tables.individual_address_entries),
+        n(tables.p2p_key_table_entries)
+    )
+}
+
 fn print_text(report: &Report) {
     println!(
         "device {} — mask {} ({})",
@@ -508,6 +533,12 @@ fn print_text(report: &Report) {
                 print!("; FDSK certificate present");
             }
             println!();
+            if let Some(tables) = &model.tables {
+                println!(
+                    "  Data Secure tables (product): {}",
+                    table_capacity_line(tables)
+                );
+            }
         }
         let plain = match sec.device.plain_management {
             PlainManagement::Answered => "answered",

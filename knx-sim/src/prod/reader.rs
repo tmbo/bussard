@@ -281,6 +281,7 @@ fn parse_application_program(
     let mut app_number: u32 = 0;
     let mut app_version: u32 = 0;
     let mut mask_version = String::new();
+    let mut security_capacity = super::model::SecurityCapacity::default();
     let mut in_app = false;
 
     let mut has_address_table = false;
@@ -349,6 +350,14 @@ fn parse_application_program(
                     app_number = parse_u32(&e, "ApplicationNumber")?.unwrap_or(0);
                     app_version = parse_u32(&e, "ApplicationVersion")?.unwrap_or(0);
                     mask_version = attr(&e, "MaskVersion").unwrap_or_default();
+                    // The Data Secure table capacities (bussard issue #537).
+                    let rows = |key: &str| -> Result<Option<u16>, ProdError> {
+                        Ok(parse_u32(&e, key)?.map(|n| u16::try_from(n).unwrap_or(u16::MAX)))
+                    };
+                    security_capacity = super::model::SecurityCapacity {
+                        group_key_rows: rows("MaxSecurityGroupKeyTableEntries")?,
+                        ia_rows: rows("MaxSecurityIndividualAddressEntries")?,
+                    };
                     in_app = true;
                 }
                 b"Parameter" if in_app => {
@@ -677,6 +686,7 @@ fn parse_application_program(
         typed_props,
         object_types,
         property_only: property_ops && !other_ops,
+        security_capacity,
     }))
 }
 
@@ -934,6 +944,21 @@ mod tests {
         assert!(pd.typed_props.iter().all(|t| t.written));
         assert_eq!(pd.typed_props[0].object_type, 11);
         assert_eq!(pd.typed_props[1].object_type, 50001);
+        Ok(())
+    }
+
+    /// Bussard issue #537: the Data Secure table capacities of the application.
+    #[test]
+    fn test_reader_records_security_capacity() -> Result<(), Box<dyn std::error::Error>> {
+        let xml = r#"<KNX><ManufacturerData><Manufacturer RefId="M-0004"><ApplicationPrograms>
+          <ApplicationProgram Id="M-0004_A-2" ApplicationNumber="1" ApplicationVersion="1" MaskVersion="MV-07B0"
+            IsSecureEnabled="true" MaxSecurityGroupKeyTableEntries="1500" MaxSecurityIndividualAddressEntries="70000">
+           <Static />
+          </ApplicationProgram>
+         </ApplicationPrograms></Manufacturer></ManufacturerData></KNX>"#;
+        let pd = parse_application_program(xml, None)?.ok_or("parsed")?;
+        assert_eq!(pd.security_capacity.group_key_rows, Some(1500));
+        assert_eq!(pd.security_capacity.ia_rows, Some(u16::MAX));
         Ok(())
     }
 }

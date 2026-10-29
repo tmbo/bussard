@@ -27,10 +27,11 @@ use std::time::Duration;
 
 use bussard_mgmt::property_ext::{
     A_FUNCTION_PROPERTY_EXT_COMMAND, A_FUNCTION_PROPERTY_EXT_STATE_READ,
-    A_FUNCTION_PROPERTY_EXT_STATE_RESPONSE, A_PROPERTY_EXT_VALUE_READ,
-    A_PROPERTY_EXT_VALUE_RESPONSE, A_PROPERTY_EXT_VALUE_WRITE_CON,
-    A_PROPERTY_EXT_VALUE_WRITE_CON_RESPONSE, OT_SECURITY, PID_GO_SECURITY_FLAGS, PID_GRP_KEY_TABLE,
-    PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE, PID_SECURITY_LOAD_STATE_CONTROL,
+    A_FUNCTION_PROPERTY_EXT_STATE_RESPONSE, A_PROPERTY_EXT_DESCRIPTION_READ,
+    A_PROPERTY_EXT_DESCRIPTION_RESPONSE, A_PROPERTY_EXT_VALUE_READ, A_PROPERTY_EXT_VALUE_RESPONSE,
+    A_PROPERTY_EXT_VALUE_WRITE_CON, A_PROPERTY_EXT_VALUE_WRITE_CON_RESPONSE, OT_SECURITY,
+    PID_GO_SECURITY_FLAGS, PID_GRP_KEY_TABLE, PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE,
+    PID_SECURITY_LOAD_STATE_CONTROL,
 };
 use bussard_model::GroupAddress;
 use bussard_secure::{Key16, SecurityAlgorithm, Sequence, encode_group};
@@ -53,9 +54,9 @@ const APP_OBJECT: u8 = 4;
 
 include!("support/param_app.rs");
 
-/// Zips the synthetic application into `<dir>/products/param-test.knxprod`
+/// Zips the application XML `xml` into `<dir>/products/param-test.knxprod`
 /// and returns its SHA-256, for the lock to pin.
-fn store_product(dir: &Path) -> TestResult<String> {
+fn store_product_xml(dir: &Path, xml: &str) -> TestResult<String> {
     use sha2::Digest as _;
     let store = dir.join("products");
     std::fs::create_dir_all(&store)?;
@@ -65,7 +66,7 @@ fn store_product(dir: &Path) -> TestResult<String> {
         "M-00FA/M-00FA_A-0002.xml",
         zip::write::SimpleFileOptions::default(),
     )?;
-    zip.write_all(APP_XML.as_bytes())?;
+    zip.write_all(xml.as_bytes())?;
     zip.finish()?;
     Ok(sha2::Sha256::digest(std::fs::read(&path)?)
         .iter()
@@ -103,6 +104,11 @@ fn group_key() -> TestResult<Key16> {
 /// A fresh model directory: device 1.1.10 (security activated) sending 1/2/0
 /// from object 20 and listening on the secured 1/2/3 with object 22.
 fn model_dir(tag: &str) -> TestResult<PathBuf> {
+    model_dir_with(tag, APP_XML)
+}
+
+/// [`model_dir`] whose product holds the application XML `xml`.
+fn model_dir_with(tag: &str, xml: &str) -> TestResult<PathBuf> {
     let dir = std::env::temp_dir().join(format!(
         "bussard-mcp-secure-{tag}-{}-{}",
         std::process::id(),
@@ -130,7 +136,7 @@ fn model_dir(tag: &str) -> TestResult<PathBuf> {
          [links]\n20.send = \"1/2/0\"\n22.listen = [\"1/2/3\"]\n",
     )?;
     // The device runs the synthetic application; the lock pins its archive.
-    let sha = store_product(&dir)?;
+    let sha = store_product_xml(&dir, xml)?;
     std::fs::write(
         dir.join("bussard.lock"),
         format!(
@@ -175,6 +181,9 @@ struct SecurityLog {
     /// The state the device falls back to after it answered
     /// `LoadCompleted` (a device that does not persist the object, #534).
     reverts_to: Option<u8>,
+    /// The `max_nr_of_elem` the property description of PID 54 reports
+    /// (issue #537); `None` answers the default description (0 elements).
+    pid54_capacity: Option<u16>,
 }
 
 /// A write the mock device acknowledges as written and does not store, so
@@ -326,6 +335,25 @@ fn secure_device_with(
                     Some(Reaction::Answer(
                         A_FUNCTION_PROPERTY_EXT_STATE_RESPONSE,
                         out,
+                    ))
+                }
+                A_PROPERTY_EXT_DESCRIPTION_READ if pid == PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE => {
+                    let max = log.lock().ok()?.pid54_capacity?;
+                    let desc = bussard_mgmt::property_ext::PropertyExtDescription {
+                        addr: bussard_mgmt::property_ext::PropertyExtAddress::decode(data)?,
+                        description_type: 0,
+                        property_index: 5,
+                        dpt_main: 0,
+                        dpt_sub: 0,
+                        write_enable: true,
+                        pdt: 0x18,
+                        max_elements: max,
+                        read_level: 3,
+                        write_level: 0,
+                    };
+                    Some(Reaction::Answer(
+                        A_PROPERTY_EXT_DESCRIPTION_RESPONSE,
+                        bussard_mgmt::property_ext::encode_property_ext_description_response(&desc),
                     ))
                 }
                 A_PROPERTY_EXT_VALUE_READ if pid == PID_GO_SECURITY_FLAGS => {
@@ -1407,6 +1435,116 @@ fn test_cli_apply_readback_names_a_dropped_link() -> TestResult {
 fn test_cli_apply_readback_names_a_dropped_parameter() -> TestResult {
     let run = apply_over_cli("cli-drop-param", Some(Dropped::Parameters), false)?;
     assert_cli_names(&run, "thr");
+    Ok(())
+}
+
+/// `bussard apply 1.1.10 --secure-sender 1.1.30` with tunnel admission on:
+/// two PID 54 entries, the tunnel address and 1.1.30.
+fn run_cli_apply_two_senders(gw: &MockGateway, dir: &Path) -> TestResult<(bool, String, String)> {
+    let out = Command::new(env!("CARGO_BIN_EXE_bussard"))
+        .env("BUSSARD_MGMT_TIMEOUT_MS", "300")
+        .env("BUSSARD_ADDRESS_PROBE_MS", "200")
+        .env("BUSSARD_KEYRING_PASSWORD", PASSWORD)
+        .env_remove("BUSSARD_ALLOW_REAL_GATEWAY")
+        .env_remove("BUSSARD_KEYRING")
+        .arg("apply")
+        .arg("1.1.10")
+        .arg("--yes")
+        .arg("--secure-sender")
+        .arg("1.1.30")
+        .arg("--dir")
+        .arg(dir)
+        .arg("--gateway")
+        .arg(format!("127.0.0.1:{}", gw.port()))
+        .arg("--keyring")
+        .arg(keyring_path())
+        .stdin(Stdio::null())
+        .output()?;
+    Ok((
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    ))
+}
+
+/// Issue #537: the device's PID 54 holds one entry (its property
+/// description says so) and the apply needs two: refused with the counts
+/// before the security object, or any table, is opened.
+#[test]
+fn test_cli_apply_refuses_a_sender_table_over_the_described_capacity() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
+    let (gw, log, dir) = faulty_bench(
+        &rt,
+        "cli-capacity-desc",
+        SecurityLog {
+            pid54_capacity: Some(1),
+            ..SecurityLog::default()
+        },
+        true,
+    )?;
+    let run = run_cli_apply_two_senders(&gw, &dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    let (success, stdout, stderr) = run?;
+    assert!(!success, "the apply must refuse: {stdout}\n{stderr}");
+    assert!(
+        stderr.contains(
+            "the security individual address table (PID 54) needs 2 entries but the device \
+             holds at most 1 (property description)"
+        ),
+        "{stderr}"
+    );
+    let log = log.lock().map_err(|_| "log poisoned")?;
+    assert!(
+        log.controls.is_empty(),
+        "nothing unloaded: {:?}",
+        log.controls
+    );
+    assert!(log.writes.is_empty(), "nothing written");
+    // The address table was never opened (2 = Loading).
+    let address_state = gw.with_device(ia("1.1.10")?, |dev| dev.load_state(1))?;
+    assert_ne!(address_state, 2);
+    Ok(())
+}
+
+/// Issue #537: the product declares one PID 54 entry: the apply refuses at
+/// plan time, before it contacts the gateway.
+#[test]
+fn test_cli_apply_refuses_a_sender_table_over_the_product_capacity() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
+    let log = Arc::new(Mutex::new(SecurityLog::default()));
+    let gw = rt.block_on(
+        MockGateway::builder()
+            .channel(0x5A)
+            .tunnel_address(0x11C8)
+            .keep_serving()
+            .idle_timeout(Duration::from_secs(120))
+            .device(secure_device(Arc::clone(&log))?)
+            .start(),
+    )?;
+    let xml = APP_XML.replacen(
+        "<ApplicationProgram ",
+        "<ApplicationProgram IsSecureEnabled=\"true\" MaxSecurityIndividualAddressEntries=\"1\" ",
+        1,
+    );
+    let dir = model_dir_with("cli-capacity-product", &xml)?;
+    std::fs::write(
+        dir.join("bussard.toml"),
+        "[connection]\ntransport = \"tunnel\"\ngateway = \"192.0.2.1:3671\"\n\
+         admit_tunnel_senders = true\n",
+    )?;
+    let run = run_cli_apply_two_senders(&gw, &dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    let (success, stdout, stderr) = run?;
+    assert!(!success, "the apply must refuse: {stdout}\n{stderr}");
+    assert!(
+        stderr.contains(
+            "the security individual address table (PID 54) needs 2 entries but the device \
+             holds at most 1 (product data)"
+        ),
+        "{stderr}"
+    );
+    let log = log.lock().map_err(|_| "log poisoned")?;
+    assert!(log.controls.is_empty() && log.writes.is_empty());
     Ok(())
 }
 

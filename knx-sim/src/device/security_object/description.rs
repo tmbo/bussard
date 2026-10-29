@@ -4,9 +4,9 @@
 use crate::wire::apdu::Apci;
 
 use super::{
-    ExtHeader, ExtReply, ExtServiceError, FALLBACK_MAX_GROUP_OBJECTS, MAX_GROUP_KEY_ROWS,
-    MAX_IA_TABLE_ROWS, PDT_CONTROL, PDT_FUNCTION, PDT_GENERIC_01, PDT_GENERIC_06, PDT_GENERIC_08,
-    PDT_GENERIC_16, PDT_GENERIC_18, PDT_UNSIGNED_INT, SecurityLimits, SecurityObject, pid, rc,
+    ExtHeader, ExtReply, ExtServiceError, FALLBACK_MAX_GROUP_OBJECTS, PDT_CONTROL, PDT_FUNCTION,
+    PDT_GENERIC_01, PDT_GENERIC_06, PDT_GENERIC_08, PDT_GENERIC_16, PDT_GENERIC_18,
+    PDT_UNSIGNED_INT, SecurityLimits, SecurityObject, pid, rc,
 };
 
 /// One entry of the object's property list, used for description reads.
@@ -21,7 +21,7 @@ struct PropDesc {
 
 impl SecurityObject {
     /// The object's property list, in property-index order (index 1 first).
-    fn properties(limits: SecurityLimits) -> [PropDesc; 8] {
+    fn properties(&self, limits: SecurityLimits) -> [PropDesc; 8] {
         let go_max = limits
             .group_objects
             .unwrap_or(FALLBACK_MAX_GROUP_OBJECTS)
@@ -39,11 +39,13 @@ impl SecurityObject {
             d(pid::LOAD_STATE_CONTROL, PDT_CONTROL, true, 1, 3, 0),
             d(pid::SECURITY_MODE, PDT_FUNCTION, true, 1, 3, 0),
             // Key tables: not readable at any level (read level 15).
+            // The capacities the product declares (bussard issue #537), which
+            // a tool reads as max_nr_of_elem (AN193 §2.2.4.4).
             d(
                 pid::GRP_KEY_TABLE,
                 PDT_GENERIC_18,
                 true,
-                MAX_GROUP_KEY_ROWS,
+                self.group_key_capacity.min(0x0FFF),
                 15,
                 0,
             ),
@@ -51,7 +53,7 @@ impl SecurityObject {
                 pid::SECURITY_IA_TABLE,
                 PDT_GENERIC_08,
                 true,
-                MAX_IA_TABLE_ROWS,
+                self.ia_capacity.min(0x0FFF),
                 3,
                 0,
             ),
@@ -80,7 +82,7 @@ impl SecurityObject {
         };
         let desc_type = idx[0] >> 4;
         let req_index = (u16::from(idx[0] & 0x0F) << 8) | u16::from(idx[1]);
-        let props = Self::properties(limits);
+        let props = self.properties(limits);
         let found = if !h.is_security_object() {
             None
         } else if h.pid != 0 {
@@ -136,6 +138,41 @@ impl SecurityObject {
 mod tests {
     use super::super::test_support::*;
     use super::super::{SecurityLimits, SecurityObject};
+
+    /// Bussard issue #537: the product's table capacities are what PID 53 and
+    /// PID 54 describe as max_nr_of_elem, and what their writes accept.
+    #[test]
+    fn test_description_reports_product_capacity() -> TestResult {
+        let limits = SecurityLimits::default();
+        let mut obj =
+            SecurityObject::new_activated().with_capacity(crate::prod::SecurityCapacity {
+                group_key_rows: Some(2),
+                ia_rows: Some(3),
+            });
+        assert_eq!(
+            exchange(&mut obj, "01d2 0011 001035 0000", limits)?,
+            hex("01d3 0011 001035 0004 0000 0000 a2 0002 f0")?
+        );
+        assert_eq!(
+            exchange(&mut obj, "01d2 0011 001036 0000", limits)?,
+            hex("01d3 0011 001036 0005 0000 0000 98 0003 30")?
+        );
+        exchange(&mut obj, START, limits)?;
+        assert_eq!(
+            exchange(&mut obj, &group_key_write(1, 1), limits)?,
+            hex("01cf 0011 001035 01 0001 00")?
+        );
+        assert_eq!(
+            exchange(&mut obj, &group_key_write(2, 2), limits)?,
+            hex("01cf 0011 001035 01 0002 00")?
+        );
+        // One row more than the device holds.
+        assert_eq!(
+            exchange(&mut obj, &group_key_write(3, 3), limits)?,
+            hex("01cf 0011 001035 01 0003 f7")?
+        );
+        Ok(())
+    }
 
     #[test]
     fn test_description_read_by_pid_and_index() -> TestResult {

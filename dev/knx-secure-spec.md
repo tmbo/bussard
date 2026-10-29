@@ -88,8 +88,8 @@ download` path.
 Phase A delivers:
 
 1. **Importer stops dropping secure material** (`bussard-ets` / `bussard-prod`):
-   preserve `IsSecureEnabled` and `MaxSecurity*` sizing attrs (currently
-   dropped, zero references in any crate `[corpus §1]`); surface FDSK-certificate
+   preserve `IsSecureEnabled` and `MaxSecurity*` sizing attrs (both kept
+   now; the sizing since #537, see §11); surface FDSK-certificate
    presence and `<Security>` seqnum state from the knxproj import. **Flags and
    structure only in the committed model files** - key values must NEVER touch `knx/` (a
    reviewable, committed tree). See §2 and §11.
@@ -1202,9 +1202,16 @@ together (a bigger change). `[research §6.2, CONFIRMED crate licenses/versions]
 Cheap, independent of the crypto, do first `[corpus §5]`:
 
 - `bussard-prod`/`bussard-ets`: preserve `ApplicationProgram/@IsSecureEnabled`
-  and the `MaxSecurity{IndividualAddress,GroupKeyTable,P2PKey}Entries` sizing
-  attrs (currently dropped). Surface them as a `secure` flag + sizing on the
-  model.
+  and the `MaxSecurity{GroupKeyTable,IndividualAddress,P2PKeyTable}Entries`
+  sizing attrs. Done (#537): `ApplicationProgram::security_capacity`, the
+  product model's `data_secure:` (format 9) and `describe`'s `tables`. A
+  download checks the group key table (PID 53) and the security individual
+  address table (PID 54) against them before anything is opened; when the
+  product gives no figure, it reads the property description's
+  `max_nr_of_elem` over the tool-key connection (`[AN193 §2.2.4.4]`; the
+  capacity is the device's, `[KNX 3/5/1 §6.3.7, §6.3.8]`) and checks that.
+  `apply`, `flash` and the MCP plan refuse with the product figures before
+  they connect.
 - knxproj import: surface `<DeviceCertificate>` **presence** (a boolean "has
   FDSK") and the `<Security SequenceNumber SequenceNumberTimestamp>` state per
   device.

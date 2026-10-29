@@ -140,6 +140,14 @@ Format 7 adds a text type's `encoding` (#401). Format 8 adds a com-object's
 program, whose cache format moved to `bussard-parsed-product-v5` with it; the model
 carries it so a view shows what the descriptor will hold.
 
+Format 9 adds `data_secure:` to an application that declares `IsSecureEnabled`
+(#537): its Data Secure table capacities, `max_group_key_table_entries`,
+`max_individual_address_entries` and `max_p2p_key_table_entries`, the
+application's `MaxSecurity*` attributes (each left out when the product gives no
+figure). `describe` shows them; the download checks the group key table (PID 53)
+and the security individual address table (PID 54) against the parsed
+application program, whose cache format moved to `bussard-parsed-product-v6`.
+
 Format 6 drops `blocks`, `parameter_when` and `ref_values`, and a
 parameter's `default` is its own `Value` (format 5 and older gave a parameter with one
 ref that ref's `Value`; the ref's `value` carries it now). The ETS pages `bussard

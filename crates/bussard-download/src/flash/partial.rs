@@ -138,6 +138,7 @@ impl FlashPlan {
             placed: self.placed.clone(),
             unwritten,
             baseline_address,
+            security_capacity: self.security_capacity,
         })
     }
 

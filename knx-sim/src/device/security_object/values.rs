@@ -7,8 +7,7 @@ use crate::wire::apdu::Apci;
 
 use super::{
     ExtHeader, ExtReply, ExtServiceError, FALLBACK_MAX_GROUP_OBJECTS, GO_FLAG, GRP_KEY_ROW, IA_ROW,
-    IOT_SECURITY, MAX_GROUP_KEY_ROWS, MAX_IA_TABLE_ROWS, SEQ_LEN, SecLoadState, SecurityLimits,
-    SecurityObject, TOOL_KEY_LEN, pid, rc,
+    IOT_SECURITY, SEQ_LEN, SecLoadState, SecurityLimits, SecurityObject, TOOL_KEY_LEN, pid, rc,
 };
 
 impl SecurityObject {
@@ -233,9 +232,9 @@ impl SecurityObject {
                 GRP_KEY_ROW,
                 limits
                     .address_table_len
-                    .map_or(MAX_GROUP_KEY_ROWS, |n| n.min(MAX_GROUP_KEY_ROWS)),
+                    .map_or(self.group_key_capacity, |n| n.min(self.group_key_capacity)),
             ),
-            pid::SECURITY_IA_TABLE => (IA_ROW, MAX_IA_TABLE_ROWS),
+            pid::SECURITY_IA_TABLE => (IA_ROW, self.ia_capacity),
             _ => (
                 GO_FLAG,
                 limits.group_objects.unwrap_or(FALLBACK_MAX_GROUP_OBJECTS),

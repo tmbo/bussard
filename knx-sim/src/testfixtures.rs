@@ -120,6 +120,7 @@ pub fn synthetic_mdt_sys7_product() -> crate::prod::ProductData {
         typed_props: Vec::new(),
         object_types: Vec::new(),
         property_only: false,
+        security_capacity: Default::default(),
     }
 }
 
@@ -152,6 +153,7 @@ pub fn synthetic_system_b_product() -> crate::prod::ProductData {
         typed_props: Vec::new(),
         object_types: Vec::new(),
         property_only: false,
+        security_capacity: Default::default(),
     }
 }
 

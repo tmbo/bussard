@@ -337,7 +337,9 @@ impl Device {
             l4_exchanges: 0,
             group_comm: None,
             prog_mode,
-            security_object: secure.as_ref().map(|_| SecurityObject::new_activated()),
+            security_object: secure
+                .as_ref()
+                .map(|_| SecurityObject::new_activated().with_capacity(product.security_capacity)),
             knxnet_by_type: None,
             typed_objects: typed_objects_for(product, address, false).1,
             knxnet_slots: 0,
@@ -519,7 +521,9 @@ impl Device {
             l4_exchanges: 0,
             group_comm: None,
             prog_mode,
-            security_object: secure.as_ref().map(|_| SecurityObject::new_activated()),
+            security_object: secure
+                .as_ref()
+                .map(|_| SecurityObject::new_activated().with_capacity(product.security_capacity)),
             knxnet_by_type: None,
             typed_objects: typed_objects_for(product, address, false).1,
             knxnet_slots: 0,

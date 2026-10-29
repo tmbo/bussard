@@ -40,7 +40,7 @@ use std::path::Path;
 pub use application::{
     ApplicationProgram, CodeSegment, ComObject, ComObjectRef, EnumValue, LoadOp, LoadProcedure,
     Memory, Parameter, ParameterRef, ParameterType, ParameterTypeDecl, ResolvedComObject,
-    ResolvedParameter, SegmentKind, parse_application_program,
+    ResolvedParameter, SecurityCapacity, SegmentKind, parse_application_program,
 };
 /// Dynamic-section evaluation (what a device configuration shows), re-exported
 /// for the image and table builders.

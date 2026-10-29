@@ -755,6 +755,30 @@ pub struct TableLocation {
     pub offset: u32,
 }
 
+/// The Data Secure table capacities an application declares (issue #537):
+/// how many entries the device's group key table (PID 53), security
+/// individual address table (PID 54) and point-to-point key table hold. ETS
+/// sizes the download with them; KNX 3/5/1 §6.3.7 and §6.3.8 leave the
+/// capacity to the device.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SecurityCapacity {
+    /// `MaxSecurityGroupKeyTableEntries`.
+    pub group_key_table_entries: Option<u32>,
+    /// `MaxSecurityIndividualAddressEntries`.
+    pub individual_address_entries: Option<u32>,
+    /// `MaxSecurityP2PKeyTableEntries`.
+    pub p2p_key_table_entries: Option<u32>,
+}
+
+impl SecurityCapacity {
+    /// Whether the application declares none of the figures.
+    pub fn is_empty(&self) -> bool {
+        self.group_key_table_entries.is_none()
+            && self.individual_address_entries.is_none()
+            && self.p2p_key_table_entries.is_none()
+    }
+}
+
 /// One parsed ApplicationProgram.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ApplicationProgram {
@@ -803,6 +827,11 @@ pub struct ApplicationProgram {
     /// Whether the application declares `IsSecureEnabled="true"`: it is KNX
     /// Data-Secure-capable (issue #71, spec §11). Capability, not activation.
     pub is_secure_enabled: bool,
+    /// The application's Data Secure table capacities (issue #537): the
+    /// `MaxSecurity*` attributes of `<ApplicationProgram>`. All `None` when
+    /// the application declares none.
+    #[serde(default)]
+    pub security_capacity: SecurityCapacity,
     /// The XML schema version this file declared, e.g. `"20"`, `"21"`, `"23"`.
     pub schema_version: Option<String>,
     /// The `<Options DownloadInvisibleParameters>` value (`None`, `Background`),
@@ -1318,6 +1347,13 @@ fn handle_start(
             app.is_secure_enabled = get(m, b"IsSecureEnabled")
                 .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
                 .unwrap_or(false);
+            // The Data Secure table capacities (issue #537).
+            let count = |name: &[u8]| get(m, name).and_then(|v| v.trim().parse::<u32>().ok());
+            app.security_capacity = SecurityCapacity {
+                group_key_table_entries: count(b"MaxSecurityGroupKeyTableEntries"),
+                individual_address_entries: count(b"MaxSecurityIndividualAddressEntries"),
+                p2p_key_table_entries: count(b"MaxSecurityP2PKeyTableEntries"),
+            };
             app.dynamic_table_management = get(m, b"DynamicTableManagement")
                 .is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1");
         }
@@ -2727,6 +2763,28 @@ mod tests {
             let app = parse_application_program_str("M-1_A-1", &xml)?;
             assert_eq!(app.dynamic_table_management, expected, "{attr}");
         }
+        Ok(())
+    }
+
+    /// Issue #537: the Data Secure table capacities, absent when undeclared.
+    #[test]
+    fn test_parse_application_program_security_capacity() -> Result<()> {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/20"><ApplicationProgram Id="M-1_A-1" Name="t" IsSecureEnabled="true" MaxSecurityGroupKeyTableEntries="1500" MaxSecurityIndividualAddressEntries="5000" MaxSecurityP2PKeyTableEntries="100"><Static /></ApplicationProgram></KNX>"#;
+        let app = parse_application_program_str("M-1_A-1", xml)?;
+        assert_eq!(
+            app.security_capacity,
+            SecurityCapacity {
+                group_key_table_entries: Some(1500),
+                individual_address_entries: Some(5000),
+                p2p_key_table_entries: Some(100),
+            }
+        );
+        let plain = r#"<KNX xmlns="http://knx.org/xml/project/20"><ApplicationProgram Id="M-1_A-1" Name="t"><Static /></ApplicationProgram></KNX>"#;
+        assert!(
+            parse_application_program_str("M-1_A-1", plain)?
+                .security_capacity
+                .is_empty()
+        );
         Ok(())
     }
 

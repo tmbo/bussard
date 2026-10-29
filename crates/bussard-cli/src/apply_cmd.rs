@@ -302,8 +302,16 @@ pub(crate) fn apply_desired(
             &extra,
         );
         inputs.admitted_tunnel = tunnel.iter().copied().filter(|ia| *ia != target).collect();
+        // The table capacities the product declares (issue #537).
+        inputs.capacity = bussard_download::TableCapacity::for_device(dir, model, target);
         inputs
     });
+    // A security program the device cannot hold refuses here, before the
+    // gateway is contacted (issue #537).
+    if let Some(inputs) = &security {
+        bussard_download::check_planned_capacity(target, &desired.addresses, inputs)
+            .map_err(|e| anyhow::anyhow!("{target}'s security object cannot be programmed: {e}"))?;
+    }
 
     // Safety envelope (issue #74): refuse a write to a real (non-loopback)
     // gateway unless the operator opted in.

@@ -219,8 +219,14 @@ impl<'a> FlashInputs<'a> {
             &material.device_sequences,
             extra_senders,
         );
+        // The table capacities the product declares (issue #537): a program
+        // that does not fit is refused here, at plan time; the executor reads
+        // the ones the product leaves out from the device before any step.
+        let capacity = bussard_download::TableCapacity::from_product(&self.app.security_capacity);
+        capacity.check(target, &program)?;
         let senders = program.senders.clone();
         plan.add_security_program(program);
+        plan.set_security_capacity(capacity);
         Ok(Some(senders))
     }
 

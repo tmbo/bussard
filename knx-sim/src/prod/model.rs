@@ -149,6 +149,23 @@ pub struct ProductData {
     /// compares and writes (and the session around them): a property-only
     /// device, the Jung IPS 300 SREG (mask 0021).
     pub property_only: bool,
+    /// The Data Secure table capacities the application declares (bussard
+    /// issue #537): `MaxSecurityGroupKeyTableEntries` and
+    /// `MaxSecurityIndividualAddressEntries`. A device holds at most that many
+    /// entries in PID 53 and PID 54 and reports them in the property
+    /// descriptions.
+    pub security_capacity: SecurityCapacity,
+}
+
+/// The Data Secure table capacities of an application program (KNX 3/5/1
+/// §6.3.7, §6.3.8: the capacity is the device's; the product data declares
+/// it). `None` where the product gives no figure.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SecurityCapacity {
+    /// Rows of the group key table (PID 53).
+    pub group_key_rows: Option<u16>,
+    /// Rows of the security individual address table (PID 54).
+    pub ia_rows: Option<u16>,
 }
 
 /// A property a load procedure addresses on an object named by type.

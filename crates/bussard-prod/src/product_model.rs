@@ -407,6 +407,10 @@ struct Model<'a> {
     /// read by the `L002` topology lint to total a line's draw.
     #[serde(skip_serializing_if = "Option::is_none")]
     bus_current_ma: Option<u32>,
+    /// The Data Secure table capacities of a Data-Secure-capable application
+    /// (issue #537); absent for any other.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data_secure: Option<bussard_model::param_model::DataSecureCapacity>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     com_objects: BTreeMap<u16, ComObjectModel>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -594,6 +598,13 @@ fn build_model<'a>(app: &'a ApplicationProgram, product: &ProductData) -> Model<
         },
         order_numbers: order_numbers_for(app, product),
         bus_current_ma: bus_current_for(app, product),
+        data_secure: app.is_secure_enabled.then_some(
+            bussard_model::param_model::DataSecureCapacity {
+                group_key_table_entries: app.security_capacity.group_key_table_entries,
+                individual_address_entries: app.security_capacity.individual_address_entries,
+                p2p_key_table_entries: app.security_capacity.p2p_key_table_entries,
+            },
+        ),
         com_objects,
         parameters: parameters_for(app),
         load_procedure: load_procedure_summary(&app.load_procedures),
@@ -1133,6 +1144,37 @@ mod tests {
             applications: Vec::new(),
             order_numbers: Vec::new(),
         }
+    }
+
+    /// Issue #537: a Data-Secure-capable application's model carries its
+    /// table capacities and reads them back; any other carries none.
+    #[test]
+    fn test_model_yaml_data_secure_capacity_round_trip() -> TestResult {
+        let mut app = ApplicationProgram {
+            id: "M-00FA_A-0001-01-0000".to_string(),
+            is_secure_enabled: true,
+            ..ApplicationProgram::default()
+        };
+        app.security_capacity.group_key_table_entries = Some(1500);
+        app.security_capacity.individual_address_entries = Some(64);
+        let product = ProductData::default();
+        let yaml = model_yaml(&app, &product)?;
+        assert!(yaml.contains("data_secure:"), "{yaml}");
+        let model = bussard_model::param_model::ProductModel::from_yaml(&yaml, &app.id)?;
+        assert_eq!(
+            model.data_secure,
+            Some(bussard_model::param_model::DataSecureCapacity {
+                group_key_table_entries: Some(1500),
+                individual_address_entries: Some(64),
+                p2p_key_table_entries: None,
+            })
+        );
+        app.is_secure_enabled = false;
+        let plain = model_yaml(&app, &product)?;
+        assert!(!plain.contains("data_secure"));
+        let model = bussard_model::param_model::ProductModel::from_yaml(&plain, &app.id)?;
+        assert_eq!(model.data_secure, None);
+        Ok(())
     }
 
     #[test]
