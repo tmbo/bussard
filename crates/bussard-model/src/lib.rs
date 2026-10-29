@@ -62,7 +62,7 @@ pub use change::{
 };
 pub use codec::{
     DateTime, EncodeError, Float16RangeError, HvacMode, ParseValueError, Rgbw, TypedValue, decode,
-    encode, encode_float16, parse_value,
+    encode, encode_float16, encode_float16_raw, parse_value,
 };
 pub use declare::{DeclaredGroup, declare_used_groups};
 pub use discover::{DEFAULT_MODEL_DIR, NESTED_MODEL_DIR, discover};

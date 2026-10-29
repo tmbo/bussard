@@ -648,40 +648,50 @@ const FLOAT16_MAX: f32 = 0.01 * 2046.0 * 32768.0;
 #[error("value is not representable as a KNX 2-byte float (DPT 9)")]
 pub struct Float16RangeError;
 
-/// Encodes a value into a KNX 2-byte float (DPT 9.x), big-endian.
+/// The raw 16-bit DPT 9 pattern nearest to `value`, or `None` when `value` is
+/// not finite or lies outside the two octets' raw range.
 ///
-/// This is the single DPT-9 encoder in the workspace: `bussard-prod` places
-/// `<TypeFloat Encoding="DPT 9">` parameter values into device images with it,
-/// so an image byte and a bus byte can never disagree.
-pub fn encode_float16(value: f32) -> Result<[u8; 2], Float16RangeError> {
-    // Reject non-finite (NaN/±Inf) and anything outside the representable range
-    // *before* any integer math: `(value * 100.0).round() as i32` otherwise
-    // saturates to `i32::MAX`/`i32::MIN` for huge inputs and the mantissa-
-    // halving loop below then overflows on `mantissa ± 1` (panic in debug).
-    if !value.is_finite() || !(FLOAT16_MIN..=FLOAT16_MAX).contains(&value) {
-        return Err(Float16RangeError);
+/// 03_07_02 §3.10 defines the value as `0.01 * M * 2^E`, `M` in
+/// `-2048..=2047`, `E` in `0..=15`. The code is the smallest exponent whose
+/// mantissa fits, with the mantissa `value * 100 / 2^E` rounded once, ties to
+/// even. A larger exponent only has a coarser grid, so the smallest fitting
+/// one holds the nearest code; rounding once (issue #493) is what keeps it
+/// nearest, where halving an already rounded mantissa per exponent step drifted
+/// up to two resolution steps. Ties go to even like ETS does for parameter
+/// images (issue #89), so a group value and a parameter octet pair agree.
+///
+/// This does not refuse `7F FF` (the group-value "invalid data" marker):
+/// [`encode_float16`] does, and `bussard-prod` decides it per parameter type.
+/// It is the single DPT 9 rounding rule in the workspace.
+pub fn encode_float16_raw(value: f64) -> Option<u16> {
+    if !value.is_finite() {
+        return None;
     }
-    // Representable range of DPT 9: mantissa in -2048..=2047, exponent 0..=15.
-    let mut mantissa = (value * 100.0).round() as i32;
-    let mut exponent = 0i32;
-    while !(-2048..=2047).contains(&mantissa) {
-        if exponent >= 15 {
-            return Err(Float16RangeError);
-        }
-        // Round-halves-away division by two to keep precision reasonable.
-        mantissa = if mantissa >= 0 {
-            (mantissa + 1) / 2
-        } else {
-            (mantissa - 1) / 2
-        };
-        exponent += 1;
-    }
-    let (sign, mant_bits) = if mantissa < 0 {
+    let scaled = value * 100.0;
+    let (exponent, mantissa) = (0u16..=15).find_map(|e| {
+        let m = (scaled / f64::from(1u32 << e)).round_ties_even();
+        (-2048.0..=2047.0).contains(&m).then_some((e, m as i32))
+    })?;
+    let (sign, bits) = if mantissa < 0 {
         (0x8000u16, (mantissa + 2048) as u16)
     } else {
         (0u16, mantissa as u16)
     };
-    let raw = sign | ((exponent as u16) << 11) | (mant_bits & 0x07ff);
+    Some(sign | (exponent << 11) | (bits & 0x07ff))
+}
+
+/// Encodes a value into a KNX 2-byte float (DPT 9.x), big-endian.
+///
+/// The code is the nearest representable one (see [`encode_float16_raw`],
+/// which `bussard-prod` shares for `<TypeFloat Encoding="DPT 9">` parameter
+/// images, so an image byte and a bus byte can never disagree).
+pub fn encode_float16(value: f32) -> Result<[u8; 2], Float16RangeError> {
+    // Reject non-finite (NaN/±Inf) and anything above the largest valid value
+    // up front: the top raw pattern 0x7FFF is the "invalid data" marker.
+    if !value.is_finite() || !(FLOAT16_MIN..=FLOAT16_MAX).contains(&value) {
+        return Err(Float16RangeError);
+    }
+    let raw = encode_float16_raw(f64::from(value)).ok_or(Float16RangeError)?;
     // Defence in depth: 0x7FFF is the DPT 9 "invalid data" marker, never a value.
     // The `FLOAT16_MAX` cap above (mantissa <= 2046) already makes this pattern
     // unreachable for in-range inputs, but guard explicitly so a future change to
@@ -689,7 +699,7 @@ pub fn encode_float16(value: f32) -> Result<[u8; 2], Float16RangeError> {
     if raw == 0x7FFF {
         return Err(Float16RangeError);
     }
-    Ok([(raw >> 8) as u8, (raw & 0xff) as u8])
+    Ok(raw.to_be_bytes())
 }
 
 /// Decodes a group-value payload into a [`TypedValue`] under the given DPT.
@@ -1695,6 +1705,72 @@ mod tests {
             let back = decode_float16(bytes[0], bytes[1]);
             let tol = 0.1_f32.max(t.abs() * 0.001);
             assert!((back - t).abs() <= tol, "roundtrip {t} -> {back}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_encode_float16_nearest_code_examples() -> Result<(), Float16RangeError> {
+        // Issue #493: halving a rounded mantissa per exponent step drifted.
+        // 50.01: M = 1250, E = 2 (50.00), not 1251 (50.04). The issue text
+        // gives 0x0CE2, which is E = 1 (25.00); E = 2 is 0x14E2.
+        assert_eq!(encode_float16(50.01)?, [0x14, 0xE2]);
+        // 1000.33: M = 1563, E = 6 (1000.32), not 1564 (1000.96).
+        assert_eq!(encode_float16(1000.33)?, [0x36, 0x1B]);
+        // -2621.45: M = -2048, E = 7 (-2621.44), not M = -1025, E = 8.
+        assert_eq!(encode_float16(-2621.45)?, [0xB8, 0x00]);
+        // A tie goes to the even mantissa, like ETS's parameter images (#89):
+        // 1000 lux is 100000 / 64 = 1562.5 -> 1562.
+        assert_eq!(encode_float16(1000.0)?, [0x36, 0x1A]);
+        Ok(())
+    }
+
+    /// The distance from `x` to the nearest valid DPT 9 code, found by trying
+    /// the two mantissas around `x` at every exponent (independent of the
+    /// encoder's smallest-exponent search).
+    fn nearest_float16_distance(x: f64) -> f64 {
+        let mut best = f64::INFINITY;
+        for e in 0..=15u32 {
+            let step = f64::from(1u32 << e) / 100.0;
+            let q = x / step;
+            for m in [q.floor(), q.ceil()] {
+                let m = m.clamp(-2048.0, 2047.0);
+                if e == 15 && m == 2047.0 {
+                    continue; // 0x7FFF, the invalid marker
+                }
+                best = best.min((m * step - x).abs());
+            }
+        }
+        best
+    }
+
+    #[test]
+    fn test_encode_float16_never_further_than_nearest_code() -> Result<(), Float16RangeError> {
+        // Deterministic pseudo-random inputs over every exponent's range.
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        for i in 0..200_000u32 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let unit = (state >> 11) as f64 / (1u64 << 53) as f64; // 0..1
+            let e = i % 16;
+            let mag = unit * 2048.0 * f64::from(1u32 << e) / 100.0;
+            let v = if state & 1 == 0 { mag } else { -mag } as f32;
+            if !(FLOAT16_MIN..=FLOAT16_MAX).contains(&v) {
+                continue;
+            }
+            let b = encode_float16(v)?;
+            let got = f64::from(decode_float16(b[0], b[1]));
+            let x = f64::from(v);
+            let want = nearest_float16_distance(x);
+            // Tolerance for the f32 decode of large values only.
+            let tol = 1e-6 * x.abs().max(1.0);
+            assert!(
+                (got - x).abs() <= want + tol,
+                "{v}: encoded {:02X}{:02X} = {got}, nearest is {want} away",
+                b[0],
+                b[1]
+            );
         }
         Ok(())
     }

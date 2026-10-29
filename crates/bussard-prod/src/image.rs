@@ -1467,9 +1467,10 @@ fn encode_float(
 ///
 /// Issue #89: the Busch-Wächter PRO 280 (`M-0007_A-6179-82`) has a brightness
 /// threshold defaulting to 1000 lux; `100000 / 64 = 1562.5` and ETS writes
-/// `36 1A` (mantissa 1562), where the group-value encoder's halving with
+/// `36 1A` (mantissa 1562), where the old group-value encoder's halving with
 /// rounding away from zero wrote `36 1B`. Its 65535 default is `66 40`
-/// (`6553500 / 4096 = 1599.98`, rounded to 1600).
+/// (`6553500 / 4096 = 1599.98`, rounded to 1600). Both now share
+/// [`bussard_model::encode_float16_raw`] (issue #493).
 ///
 /// `7F FF` (mantissa 2047, exponent 15, `670760.96`) is the "invalid data"
 /// marker of a DPT 9 group value, but a parameter is memory, not a group
@@ -1478,20 +1479,8 @@ fn encode_float(
 /// `None` when the value is not finite, out of range, or encodes to `7F FF`
 /// without `admits_top`.
 fn encode_dpt9_parameter(value: f64, admits_top: bool) -> Option<[u8; 2]> {
-    if !value.is_finite() {
-        return None;
-    }
-    let scaled = value * 100.0;
-    let (exponent, mantissa) = (0u16..=15).find_map(|e| {
-        let m = (scaled / f64::from(1u32 << e)).round_ties_even();
-        (-2048.0..=2047.0).contains(&m).then_some((e, m as i32))
-    })?;
-    let (sign, bits) = if mantissa < 0 {
-        (0x8000u16, (mantissa + 2048) as u16)
-    } else {
-        (0, mantissa as u16)
-    };
-    let raw = sign | (exponent << 11) | (bits & 0x07ff);
+    // The rounding rule is shared with the group-value encoder (issue #493).
+    let raw = bussard_model::encode_float16_raw(value)?;
     (raw != 0x7FFF || admits_top).then_some(raw.to_be_bytes())
 }
 
