@@ -53,10 +53,31 @@ pub fn serve_config(config_path: &Path) -> Result<()> {
     // A future HTML visualization is just another EventSink added to this fan-out.
     let events: Arc<dyn EventSink> = Arc::new(FanoutSink::new(vec![Arc::new(TracingSink)]));
 
-    let bus = cfg
+    let mut bus = cfg
         .build_bus(base_dir, events.clone())
         .context("building virtual bus")?;
     tracing::info!(devices = bus.device_count(), "virtual bus ready");
+
+    // The gateway's tunnel address (1.0.0 unless configured): a request with
+    // source 0.0.0 goes out under it, replayed or live.
+    let tunnel_address = match &cfg.gateway.tunnel_address {
+        Some(addr) => {
+            let ia: crate::wire::IndividualAddress = addr
+                .parse()
+                .map_err(|e| anyhow::anyhow!("gateway.tunnel_address {addr:?}: {e}"))?;
+            Some(ia.0)
+        }
+        None => None,
+    };
+    if !cfg.replay.is_empty() {
+        let paths: Vec<_> = cfg.replay.iter().map(|p| base_dir.join(p)).collect();
+        let counts =
+            crate::replay::replay_files(&mut bus, &paths, tunnel_address.unwrap_or(0x1000))
+                .context("replaying captures")?;
+        for (path, n) in paths.iter().zip(counts) {
+            tracing::info!(capture = %path.display(), requests = n, "replayed");
+        }
+    }
 
     let addr: SocketAddr = format!("{}:{}", cfg.gateway.host, cfg.gateway.port)
         .parse()
@@ -88,11 +109,8 @@ pub fn serve_config(config_path: &Path) -> Result<()> {
             .context("binding the KNXnet/IP data port")?;
         tracing::info!(%bound, "tunnelling data endpoint on a distinct port");
     }
-    if let Some(addr) = &cfg.gateway.tunnel_address {
-        let ia: crate::wire::IndividualAddress = addr
-            .parse()
-            .map_err(|e| anyhow::anyhow!("gateway.tunnel_address {addr:?}: {e}"))?;
-        server.set_plain_address(ia.0);
+    if let Some(ia) = tunnel_address {
+        server.set_plain_address(ia);
     }
     if let Some(device) = &cfg.gateway.interface_device {
         let ia: crate::wire::IndividualAddress = device

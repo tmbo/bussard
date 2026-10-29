@@ -488,6 +488,11 @@ pub struct SimConfig {
     /// alive for observation. Empty (the default) means a quiet bus.
     #[serde(default)]
     pub stimulus: Vec<StimulusConfig>,
+    /// Captures whose tool requests are replayed into the devices, in order,
+    /// before the gateway opens (relative to the config file): the bus starts
+    /// in the state the recorded downloads left it in (`crate::replay`).
+    #[serde(default)]
+    pub replay: Vec<String>,
 }
 
 /// Errors from loading a config.

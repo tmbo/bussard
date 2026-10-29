@@ -15,9 +15,51 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import apply_rows  # noqa: E402
 import defaults  # noqa: E402
 import oracle_model  # noqa: E402
 import summary  # noqa: E402
+
+
+class TestApplyRows(unittest.TestCase):
+    def test_links_from_objects_send_first_listen_rest(self):
+        objects = [
+            {"number": 1, "gas": ["1/0/1", "1/0/4"], "flags": "KLÜ"},
+            {"number": 22, "gas": [], "flags": "KS"},
+            {"number": 29, "gas": ["1/0/7"], "flags": "KS"},
+            {"number": None, "gas": ["1/0/8"], "flags": "KLÜ"},
+            {"number": 31, "gas": ["1/0/9", "noise"], "flags": "KLSÜA"},
+        ]
+        self.assertEqual(apply_rows.links_from_objects(objects), {
+            "1": {"send": "1/0/1", "listen": ["1/0/4"]},
+            "29": {"send": None, "listen": ["1/0/7"]},
+            "31": {"send": "1/0/9", "listen": []},
+        })
+
+    def test_rows_one_apply_row_per_partial_step(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        product = tmp / "p.knxprod"
+        product.write_bytes(b"x")
+        shared = tmp / "shared"
+        (shared / "products").mkdir(parents=True)
+        for name in oracle_model.SHARED_CACHES:
+            (shared / ".bussard" / name).mkdir(parents=True)
+        (shared / "bussard.lock").write_text("version = 3\n")
+        series = tmp / "M-00B6_A-4537-03-DE59"
+        for step, objs in (("a-full-links", []), ("b-partial-add", [{"number": 31, "gas": ["1/0/9"], "flags": "KLSÜA"}])):
+            (series / step).mkdir(parents=True)
+            (series / step / "ets.pcapng").write_bytes(b"")
+            (series / step / "objects.json").write_text(json.dumps(objs))
+            (series / step / "sim.yaml").write_text("devices:\n- lsm_access: property\n")
+        lines = apply_rows.rows(series, product, "M-00B6_A-4537-03-DE59", tmp / "work", shared=shared)
+        row = [l for l in lines if not l.startswith("#")]
+        self.assertEqual(len(row), 1)
+        self.assertIn(f"run=apply base={series / 'a-full-links' / 'ets.pcapng'} dir=", row[0])
+        self.assertTrue(row[0].endswith("lsm=property"))
+        self.assertIn(f"#@ --dir {shared}", lines)
+        model = tmp / "work" / "b-partial-add" / "model"
+        self.assertIn('31.send = "1/0/9"', (model / "devices" / "1.1.1.toml").read_text())
 
 
 class TestRowVersion(unittest.TestCase):

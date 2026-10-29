@@ -191,6 +191,13 @@ the version octet's nibbles in decimal (0x1C is `1.12`, 0xB1 is `11.1`).
 `defaults.py --relabel` applies the rule to the results already recorded,
 without the VM.
 
+What ETS needed from the sim in this part: connectionless
+`A_DeviceDescriptor_Read` / `A_PropertyValue_Read` (ETS probes KNX Secure
+capable devices before connecting), and the device identity above. A KNX
+Secure capable product makes ETS ask for a project password a few seconds
+after it is added and again at download; the plain pass answers Abbrechen,
+which leaves the device's secure commissioning off.
+
 ## Manifest and parity summary
 
     uv run tools/ets-sweep/summary.py [--results DIR] [--no-history]
@@ -207,9 +214,40 @@ manifest is also kept as `history/manifest-<stamp>.json`. `benign.json`
 
 Offline tests of the Mac-side pieces: `uv run tools/ets-sweep/test_ets_sweep.py`.
 
-What ETS needed from the sim in this part: connectionless
-`A_DeviceDescriptor_Read` / `A_PropertyValue_Read` (ETS probes KNX Secure
-capable devices before connecting), and the device identity above. A KNX
-Secure capable product makes ETS ask for a project password a few seconds
-after it is added and again at download; the plain pass answers Abbrechen,
-which leaves the device's secure commissioning off.
+## Partial-download rows (#469)
+
+A partial download (`bussard apply`, ETS's "Partiell") writes into a device
+that already holds a full download, so its oracle row needs that device:
+
+    uv run tools/ets-sweep/apply_rows.py captures/ets-sweep/<app> --product <file.knxprod> \
+        --app <application id> [--work DIR] --run
+
+reads a series directory (one run directory per step in name order, the first
+a full download with links, each later one an ETS partial download after a
+link change, each with `ets.pcapng`, `sim.yaml` and the `objects.json` the
+driver read after the change), builds the bussard model of every partial step
+(links from `objects.json`: an object with the transmit flag sends on its
+first address and listens to the others) and writes one `run=apply` row per
+step. `95-offline-oracle.sh` then starts knx-sim on loopback with the
+captures of every earlier step replayed (`replay:` in the sim config, knx-sim
+`src/replay.rs`), runs `bussard apply` against it, and `knxtrace statediff`
+compares the device memory after it and the load-control records with ETS's
+step. ETS rewrites a whole table in 12-octet chunks where bussard writes one
+octet, so the comparison is on the final state of every octet either side
+wrote, not on frames.
+
+The captures stay where the sweep recorded them, under `captures/` (gitignored,
+like every sweep capture); the rows file and the step models are generated
+next to them or under `--work` with absolute paths and are not committed.
+`apply_rows.py` is the tracked part. knx-sim must be built
+(`cargo build` in `knx-sim/`, or `KNX_SIM_BIN`).
+
+First run, EK-E72 series of 2026-10-28 (`M-00B6_A-4537-03-DE59`, steps B, C, D):
+association table, group-object table and C flags identical in all three;
+two differences in every step, both in `apply` only (the full download of step
+A is identical under `flash`): `apply` writes the address table's first entry
+(the device's own address, 2 octets) that ETS never writes, and its
+`AbsSegment` records allocate the written table length with access `f2`
+where ETS allocates the whole segment (`0x00ED`, `0x00EB`) with `ff`. In step
+D ETS also restarts LSM 3 and rewrites the unchanged group-object table, which
+`apply` skips.

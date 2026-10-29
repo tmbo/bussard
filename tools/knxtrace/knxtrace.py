@@ -10,6 +10,8 @@
     uv run tools/knxtrace/knxtrace.py diff ets.pcapng bussard.pcapng --device 1.1.5
     uv run tools/knxtrace/knxtrace.py image ets.pcapng --device 1.1.5 --out ets-img/
     uv run tools/knxtrace/knxtrace.py imgdiff bussard-dump/ ets-img/
+    uv run tools/knxtrace/knxtrace.py statediff --base full.pcapng --ets ets-partial.pcapng \
+        --bussard bussard-apply.pcapng --device 1.1.5
     BUSSARD_KEYRING_PASSWORD=... uv run tools/knxtrace/knxtrace.py \
         trace secure.pcapng --device 1.1.12 --keyring project.knxkeys --seq-check
     BUSSARD_KEYRING_PASSWORD=... uv run tools/knxtrace/knxtrace.py \
@@ -52,6 +54,7 @@ from normalize import (  # noqa: E402
 )
 from opsdiff import DIFFERENT, diff  # noqa: E402
 import image as memimage  # noqa: E402
+import statediff  # noqa: E402
 
 TPDU_SUFFIXES = (".txt", ".tpdu")
 KEYRING_PASSWORD_ENV = "BUSSARD_KEYRING_PASSWORD"
@@ -449,6 +452,26 @@ def cmd_imgdiff(args) -> int:
     return 1 if report["verdict"] == memimage.DIFFERS else 0
 
 
+def cmd_statediff(args) -> int:
+    keyring = load_keyring(args)
+
+    def ops_of(path: str):
+        try:
+            return resolve(load_ops(path, keyring), args.device, path, keyring)
+        except SystemExit:
+            # No operation for the device in this capture: that side wrote nothing.
+            return None
+
+    base = [o for o in (ops_of(p) for p in args.base or []) if o is not None]
+    report = statediff.compare_states(base, ops_of(args.ets), ops_of(args.bussard), args.device or "")
+    if args.json:
+        print(json.dumps(report, indent=2))
+    else:
+        for line in statediff.render(report):
+            print(line)
+    return 1 if report["verdict"] == memimage.DIFFERS else 0
+
+
 # --------------------------------------------------------------------------
 
 
@@ -559,6 +582,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="an `interface secure` plan: compare only the writes bussard sends under this key",
     )
     p.set_defaults(func=cmd_imgdiff)
+
+    p = sub.add_parser(
+        "statediff",
+        help="compare the device state after a partial download: ETS's step capture against "
+        "bussard's, both on top of the base captures (issue #469)",
+    )
+    p.add_argument("--base", action="append", help="a capture that led to the step, in order (repeatable)")
+    p.add_argument("--ets", required=True, help="ETS's capture of the step")
+    p.add_argument("--bussard", required=True, help="bussard's capture of the same step")
+    p.add_argument("--device", required=True, help="the target individual address, e.g. 1.1.1")
+    p.add_argument("--json", action="store_true")
+    _keyring_arg(p)
+    p.set_defaults(func=cmd_statediff)
 
     return parser
 

@@ -1397,6 +1397,15 @@ def compare_load_controls(plan: dict, image_dir: str) -> Dict[str, object]:
                 "reason": "no %s (re-run `knxtrace image`)" % LOAD_CONTROLS_FILE}
     with open(path, encoding="utf-8") as fh:
         ets_all = [dict(e, event=load_event_name(e["form"], e["data"])) for e in json.load(fh)]
+    return compare_load_control_records(ours_all, ets_all)
+
+
+def compare_load_control_records(
+    ours_all: List[Dict[str, object]], ets_all: List[Dict[str, object]]
+) -> Dict[str, object]:
+    """Compares two lists of load-control records (each with `form`, `data`,
+    `event` and `object` or `lsm`) per load-state object, by the rule in the
+    module doc. `ours_all` is bussard's side."""
     base = {"bussard_records": len(ours_all), "ets_records": len(ets_all)}
     if not ets_all:
         return dict(base, verdict=NOT_COMPARABLE, reason="ETS sent no load-control record",

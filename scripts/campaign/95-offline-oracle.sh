@@ -58,6 +58,22 @@
 #                                against the capture's, key material by hash.
 #                                The product field is `-`; the verdict is the
 #                                property parity
+#                run=apply       a partial download (issue #469): knx-sim
+#                                ($KNX_SIM_BIN, default knx-sim/target/debug/
+#                                knx-sim) starts from ETS's state before the
+#                                step (base=, replayed), `bussard apply` runs
+#                                against it on loopback with the model in dir=,
+#                                and `knxtrace statediff` compares the device
+#                                state after it, and the load-control records,
+#                                with the capture's (ETS's partial download).
+#                                Not frame by frame: ETS rewrites a table in
+#                                12-octet chunks where bussard writes an octet
+#                                base=A,B      the captures that led to the step,
+#                                              in order (comma-separated)
+#                                dir=MODEL     the model of the step (its links)
+#                                lsm=memory|property  the sim's load-state
+#                                              realisation (default property;
+#                                              memory for mask 0701)
 #                phase=fdsk|tool with run=: compare only bussard's writes under
 #                                that key (the decoded half of a capture whose
 #                                other half ran in a KNXnet/IP Secure session)
@@ -327,6 +343,73 @@ EOF
   esac
 }
 
+# A run=apply row (issue #469): knx-sim starts from ETS's state before the
+# step (the base captures replayed into the device), `bussard apply` runs
+# against it on loopback, and knxtrace compares the device state after it with
+# the state after ETS's partial download (the row's capture). The sim records
+# bussard's session as $dir/sim/bussard.pcap.
+apply_row() {
+  local dir="$1" device="$2" capture="$3" product="$4" application="$5" base="$6" model="$7" lsm="$8"
+  local sim_bin="${KNX_SIM_BIN:-$REPO/knx-sim/target/debug/knx-sim}"
+  if [ ! -x "$sim_bin" ]; then
+    not_comparable "$dir" "$device" "no knx-sim at $sim_bin (cargo build in knx-sim/, or export KNX_SIM_BIN)"
+    return 0
+  fi
+  if [ -z "$model" ] || [ ! -d "$model" ]; then
+    not_comparable "$dir" "$device" "run=apply needs dir=<model of the step>${model:+ ($model not found)}"
+    return 0
+  fi
+  local prod
+  if ! prod="$(resolve_product "$product")" || [ ! -f "$prod" ]; then
+    not_comparable "$dir" "$device" "product file not found"
+    return 0
+  fi
+  local b base_args=()
+  IFS=',' read -r -a bases <<<"$base"
+  for b in ${bases+"${bases[@]}"}; do
+    [ -f "$b" ] || { not_comparable "$dir" "$device" "base capture not found: $b"; return 0; }
+    base_args+=(--base "$b")
+  done
+  local sim="$dir/sim" port pid
+  ensure_dir "$sim"
+  port="$("$PYTHON" -c 'import socket; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
+  # JSON is YAML: the sim reads it as its config.
+  "$PYTHON" - "$sim/sim.yaml" "$port" "$device" "$prod" "$application" "${lsm:-property}" "$base" <<'PY'
+import json, os, sys
+path, port, device, prod, app, lsm, base = sys.argv[1:8]
+dev = {"address": device, "knxprod": os.path.abspath(prod), "initial_state": "unloaded", "lsm_access": lsm}
+if app:
+    dev["application"] = app
+cfg = {"gateway": {"host": "127.0.0.1", "port": int(port), "tunnel_address": "1.1.254", "pcap": "bussard.pcap"},
+       "devices": [dev], "replay": [os.path.abspath(p) for p in base.split(",") if p]}
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump(cfg, fh, indent=1)
+PY
+  RUST_LOG=info NO_COLOR=1 "$sim_bin" "$sim/sim.yaml" >"$sim/sim.log" 2>&1 &
+  pid=$!
+  local waited=0
+  while ! grep -q "gateway listening" "$sim/sim.log" 2>/dev/null; do
+    if ! kill -0 "$pid" 2>/dev/null || [ "$waited" -ge 600 ]; then
+      kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+      not_comparable "$dir" "$device" "knx-sim did not start: $(grep -v '^\s*$' "$sim/sim.log" | tail -1 | cut -c1-160)"
+      return 0
+    fi
+    sleep 0.2; waited=$((waited + 1))
+  done
+  note "knx-sim on 127.0.0.1:$port, $(grep -c '"replayed"\|replayed' "$sim/sim.log") capture(s) replayed"
+  local rc=0
+  env -u BUSSARD_KEYRING BUSSARD_NO_DOTENV=1 "$BUSSARD_BIN" --gateway "127.0.0.1:$port" \
+    apply "$device" --dir "$model" --yes >"$dir/apply.log" 2>"$dir/apply.err" || rc=$?
+  kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+  # A refused apply writes nothing; the state comparison then says so.
+  [ "$rc" = 0 ] || note "bussard apply exited $rc: $(grep -v '^\s*$' "$dir/apply.err" | tail -1 | cut -c1-160)"
+  "$PYTHON" "$KNXTRACE" statediff ${base_args+"${base_args[@]}"} --ets "$capture" \
+    --bussard "$sim/bussard.pcap" --device "$device" --json >"$dir/diff.json" || true
+  "$PYTHON" "$KNXTRACE" statediff ${base_args+"${base_args[@]}"} --ets "$capture" \
+    --bussard "$sim/bussard.pcap" --device "$device" >"$dir/diff.txt" || true
+  sed 's/^/  /' "$dir/diff.txt"
+}
+
 # Runs one row into $OUT/<key> (the device address, with ~2, ~3 for a device
 # that has more than one row).
 run_row() {
@@ -336,7 +419,7 @@ run_row() {
   product="$(trim "${product:-}")"; application="$(trim "${application:-}")"
   note_text="$(trim "${note_text:-}")"; recorded="$(trim "${recorded:-}")"
   options="$(trim "${options:-}")"
-  local expect="" confirmed="" props="" loadctl="" scope="" run="" phase="" word
+  local expect="" confirmed="" props="" loadctl="" scope="" run="" phase="" base="" rowdir="" lsm="" word
   for word in $options; do
     case "$word" in
       expect=*)    expect="${word#expect=}" ;;
@@ -346,15 +429,18 @@ run_row() {
       run=*)       run="${word#run=}" ;;
       phase=*)     phase="${word#phase=}" ;;
       scope=*)     scope="${word#scope=}" ;;
-      *)           die "$device: unknown row option: $word (expect=..., confirmed=..., props=..., loadctl=..., run=..., phase=..., scope=...)" ;;
+      base=*)      base="${word#base=}" ;;
+      dir=*)       rowdir="${word#dir=}" ;;
+      lsm=*)       lsm="${word#lsm=}" ;;
+      *)           die "$device: unknown row option: $word (expect=..., confirmed=..., props=..., loadctl=..., run=..., phase=..., scope=..., base=..., dir=..., lsm=...)" ;;
     esac
   done
   local scope_args=()
   [ -n "$scope" ] && scope_args=(--scope "$scope")
   [ -n "$phase" ] && scope_args+=(--phase "$phase")
   case "$run" in
-    ""|secure-on|secure-off) ;;
-    *) die "$device: unknown run=$run (secure-on or secure-off)" ;;
+    ""|secure-on|secure-off|apply) ;;
+    *) die "$device: unknown run=$run (secure-on, secure-off or apply)" ;;
   esac
   [ -n "$device" ] || return 0
   local dir="$OUT/$key"
@@ -381,6 +467,10 @@ PY
   if [ ! -f "$capture" ]; then
     not_comparable "$dir" "$device" "capture not found"
     mark_skipped "$dir" "capture not found"
+    return 0
+  fi
+  if [ "$run" = apply ]; then
+    apply_row "$dir" "$device" "$capture" "$product" "$application" "$base" "$rowdir" "$lsm"
     return 0
   fi
 

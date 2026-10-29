@@ -2345,5 +2345,72 @@ class TestLoadControls(unittest.TestCase):
         self.assertTrue(lc["notes"])
 
 
+class TestStateDiff(unittest.TestCase):
+    """`statediff`: the device state after a partial download (issue #469)."""
+
+    START = bytes([1]) + bytes(9)
+    DONE = bytes([2]) + bytes(9)
+    # AbsSegment of the address table at 0x4000, 0x20 octets.
+    SEG = bytes.fromhex("030040000020ff038000")
+
+    def capture(self, writes, records=()) -> str:
+        """A capture of 1.1.5: the load-control records of object 1, then the
+        memory writes."""
+        path = tempfile.mkstemp(suffix=".pcapng")[1]
+        self.addCleanup(os.unlink, path)
+        tool, dev = "0.0.0", "1.1.5"
+        frames = [cemi_ldata(tool, dev, t_connect())]
+        seq = 0
+        for rec in records:
+            frames.append(cemi_ldata(tool, dev, prop_write(1, 5, 1, 1, rec, seq=seq)))
+            seq += 1
+        for addr, data in writes:
+            frames.append(cemi_ldata(tool, dev, mem_write(addr, data, seq=seq)))
+            seq += 1
+        frames.append(cemi_ldata(tool, dev, t_disconnect()))
+        udp_capture(path, [(tunneling_request(f, seq=n), True) for n, f in enumerate(frames)])
+        return path
+
+    def run_cli(self, *argv) -> dict:
+        import contextlib
+        import io
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main(["statediff", *argv, "--device", "1.1.5", "--json"])
+        return json.loads(buf.getvalue())
+
+    def test_statediff_chunked_rewrite_equals_single_octet(self):
+        # The base holds a table; ETS rewrites all of it, bussard one octet,
+        # and both end in the same state.
+        base = self.capture([(0x4000, b"\x02\x0a\x0b\x0c")], [self.START, self.SEG, self.DONE])
+        ets = self.capture([(0x4000, b"\x02\x0a"), (0x4002, b"\x1b\x0c")], [self.START, self.SEG, self.DONE])
+        ours = self.capture([(0x4002, b"\x1b")], [self.START, self.SEG, self.DONE])
+        r = self.run_cli("--base", base, "--ets", ets, "--bussard", ours)
+        self.assertEqual(r["verdict"], memimage.IDENTICAL)
+        self.assertEqual([(g["region"], g["compared"]) for g in r["regions"]], [("address table", 4)])
+        self.assertEqual(r["load_controls"]["verdict"], memimage.IDENTICAL)
+
+    def test_statediff_value_and_unknown_octets_differ(self):
+        base = self.capture([(0x4000, b"\x02\x0a")])
+        ets = self.capture([(0x4000, b"\x03")])
+        # bussard writes the count wrong and an octet ETS never had a value for.
+        ours = self.capture([(0x4000, b"\x04"), (0x4010, b"\x11")])
+        r = self.run_cli("--base", base, "--ets", ets, "--bussard", ours)
+        self.assertEqual(r["verdict"], memimage.DIFFERS)
+        reg = r["regions"][0]
+        self.assertEqual((reg["diff_octets"], reg["unknown_octets"]), (2, 1))
+        self.assertEqual(reg["differences"][1], {"address": 0x4010, "bussard": "11", "ets": "--"})
+
+    def test_statediff_load_control_ets_only(self):
+        base = self.capture([(0x4000, b"\x02")])
+        ets = self.capture([(0x4000, b"\x02")], [self.START, self.DONE])
+        ours = self.capture([(0x4000, b"\x02")])
+        r = self.run_cli("--base", base, "--ets", ets, "--bussard", ours)
+        self.assertEqual(r["verdict"], memimage.IDENTICAL)
+        self.assertEqual(r["load_controls"]["verdict"], memimage.DIFFERS)
+        self.assertEqual([d["kind"] for d in r["load_controls"]["differences"]], ["ets-only", "ets-only"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
