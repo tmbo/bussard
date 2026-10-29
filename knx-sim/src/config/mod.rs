@@ -81,11 +81,17 @@ pub struct IpSecureConfig {
     /// refused).
     #[serde(default = "default_true")]
     pub tcp: bool,
-    /// End a secure session after this many milliseconds without a frame from
-    /// the client, with a wrapped SESSION_STATUS `STATUS_TIMEOUT` (the KNX
-    /// specification names 60 s). Absent: sessions never time out.
+    /// End an authenticated secure session after this many milliseconds
+    /// without a valid frame from the client, with a wrapped SESSION_STATUS
+    /// `STATUS_TIMEOUT`. Default 60 000, `timeoutSession` of KNX IP Secure
+    /// 3/8/9 §2.2.3.5.2.1.1.
     #[serde(default)]
     pub session_timeout_ms: Option<u64>,
+    /// End a session that has not authenticated this many milliseconds after
+    /// its SESSION_RESPONSE, with a wrapped `STATUS_TIMEOUT`. Default 10 000,
+    /// `timeoutAuthentication` of 3/8/9 §2.2.3.5.2.1.1 (bussard issue #521).
+    #[serde(default)]
+    pub authentication_timeout_ms: Option<u64>,
     /// The tunnelling users.
     pub users: Vec<IpSecureUserConfig>,
 }

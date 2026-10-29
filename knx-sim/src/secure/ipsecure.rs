@@ -38,6 +38,8 @@ pub const SESSION_STATUS: u16 = 0x0954;
 pub const STATUS_SUCCESS: u8 = 0x00;
 /// SESSION_STATUS: authentication failed.
 pub const STATUS_AUTH_FAILED: u8 = 0x01;
+/// SESSION_STATUS: the session is not authenticated yet (3/8/9 §2.2.3.9.2).
+pub const STATUS_UNAUTHENTICATED: u8 = 0x02;
 /// SESSION_STATUS: the session timed out (idle).
 pub const STATUS_TIMEOUT: u8 = 0x03;
 /// SESSION_STATUS: keepalive.
@@ -262,9 +264,16 @@ impl SecureSession {
         out
     }
 
+    /// The secure session id.
+    pub fn session_id(&self) -> u16 {
+        self.session_id
+    }
+
     /// Verifies and unwraps a SECURE_WRAPPER frame into the plain inner frame.
+    /// A wrapper shorter than 44 octets (no room for an inner header) is
+    /// refused before any MAC check (3/8/9 §2.2.1.3.3).
     pub fn open(&mut self, wrapper: &[u8]) -> Result<Vec<u8>, IpSecureRefusal> {
-        if wrapper.len() < 38 {
+        if wrapper.len() < 44 {
             return Err(IpSecureRefusal::Short);
         }
         if u16::from_be_bytes([wrapper[6], wrapper[7]]) != self.session_id {

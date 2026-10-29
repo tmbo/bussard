@@ -31,13 +31,15 @@ const USER_PASSWORD: &str = "sim-tunnel-user-2";
 /// Starts a secure-only sim with one synthetic device at 1.1.2, serving on a
 /// background thread.
 fn start() -> Result<SocketAddr, Box<dyn std::error::Error>> {
-    start_with(true, None)
+    start_with(true, None, None)
 }
 
-/// [`start`] with the TCP endpoint and the session timeout chosen.
+/// [`start`] with the TCP endpoint and the session and authentication
+/// timeouts chosen.
 fn start_with(
     tcp: bool,
     session_timeout_ms: Option<u64>,
+    authentication_timeout_ms: Option<u64>,
 ) -> Result<SocketAddr, Box<dyn std::error::Error>> {
     let sink = Arc::new(TracingSink);
     let pd = synthetic_system_b_product();
@@ -56,6 +58,7 @@ fn start_with(
         secure_only: true,
         tcp,
         session_timeout_ms,
+        authentication_timeout_ms,
         users: vec![IpSecureUserConfig {
             id: 2,
             password: USER_PASSWORD.into(),
@@ -218,12 +221,14 @@ impl Keys {
     }
 }
 
-/// The handshake on any [`Wire`].
-fn handshake_on(
+/// SESSION_REQUEST and SESSION_RESPONSE on `wire`: the client session (not
+/// yet authenticated) and `client_public XOR server_public` for the
+/// authenticate MAC.
+fn open_session(
     wire: &mut impl Wire,
     keys: &Keys,
 ) -> Result<(Client, Vec<u8>), Box<dyn std::error::Error>> {
-    let (device, user) = (keys.device, keys.user);
+    let device = keys.device;
     let secret = x25519_dalek::StaticSecret::from([0x21u8; 32]);
     let public = x25519_dalek::PublicKey::from(&secret).to_bytes();
     let mut body = wire.hpai()?;
@@ -254,22 +259,37 @@ fn handshake_on(
 
     let shared = secret.diffie_hellman(&x25519_dalek::PublicKey::from(server));
     let digest = <sha2::Sha256 as sha2::Digest>::digest(shared.as_bytes());
-    let mut client = Client {
+    let client = Client {
         key: digest[..16].try_into()?,
         session_id,
         tx: 0,
     };
-    let mut auth = vec![0x06, 0x10, 0x09, 0x53, 0x00, 0x18, 0x00, 0x02];
-    let mut auth_ad = auth.clone();
-    auth_ad.extend_from_slice(&xor);
+    Ok((client, xor))
+}
+
+/// The 24-octet SESSION_AUTHENTICATE of user 2 under `user` (the password
+/// key), with `reserved` as its reserved octet.
+fn authenticate_frame(user: &[u8; 16], xor: &[u8], reserved: u8) -> Vec<u8> {
+    let mut auth = vec![0x06, 0x10, 0x09, 0x53, 0x00, 0x18, reserved, 0x02];
+    let mut auth_ad = vec![0x06, 0x10, 0x09, 0x53, 0x00, 0x18, 0x00, 0x02];
+    auth_ad.extend_from_slice(xor);
     let (_, auth_mac) = encrypt_data_ctr(
-        &user,
+        user,
         &CTR_HANDSHAKE,
-        &cbc_mac(&user, &auth_ad, &[], &[0; 16]),
+        &cbc_mac(user, &auth_ad, &[], &[0; 16]),
         &[],
     );
     auth.extend_from_slice(&auth_mac);
-    let wrapped = client.seal(&auth);
+    auth
+}
+
+/// The handshake on any [`Wire`].
+fn handshake_on(
+    wire: &mut impl Wire,
+    keys: &Keys,
+) -> Result<(Client, Vec<u8>), Box<dyn std::error::Error>> {
+    let (mut client, xor) = open_session(wire, keys)?;
+    let wrapped = client.seal(&authenticate_frame(&keys.user, &xor, 0x00));
     wire.send_frame(&wrapped)?;
     let status = client.open(&wire.recv_frame()?)?;
     Ok((client, status))
@@ -432,11 +452,198 @@ fn test_session_request_over_udp_is_ignored() -> TestResult {
 fn test_idle_secure_session_times_out_with_status_timeout() -> TestResult {
     // The keys are derived before each session starts, so the timeout only
     // has to cover the handshake itself.
-    let addr = start_with(true, Some(1500))?;
+    let addr = start_with(true, Some(1500), None)?;
     // A wrapped STATUS_TIMEOUT, then the connection closes.
     let (mut stream, client, _) = handshake(addr, USER_PASSWORD)?;
     let notice = client.open(&read_frame(&mut stream)?)?;
     assert_eq!(&notice[2..4], &[0x09, 0x54], "SESSION_STATUS");
     assert_eq!(notice[6], 0x03, "STATUS_TIMEOUT");
+    Ok(())
+}
+
+// --- The session state machine (3/8/9 §2.2.3.5.2, TSSK; bussard #521) ------
+
+/// A TCP connection to the sim with keys derived and a read timeout.
+fn tcp_to(addr: SocketAddr) -> Result<(TcpStream, Keys), Box<dyn std::error::Error>> {
+    let keys = Keys::derive(USER_PASSWORD);
+    let stream = TcpStream::connect(addr)?;
+    stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+    Ok((stream, keys))
+}
+
+/// The wrapped SESSION_STATUS the server sends next, then whether it closed
+/// the connection.
+fn status_then_close(
+    stream: &mut TcpStream,
+    client: &Client,
+) -> Result<(u8, bool), Box<dyn std::error::Error>> {
+    let inner = client.open(&read_frame(stream)?)?;
+    assert_eq!(&inner[2..4], &[0x09, 0x54], "a SESSION_STATUS");
+    let mut buf = [0u8; 16];
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    let closed = matches!(stream.read(&mut buf), Ok(0) | Err(_));
+    Ok((inner[6], closed))
+}
+
+/// Nothing arrives on `stream` for `wait`.
+fn silent(stream: &mut TcpStream, wait: Duration) -> Result<bool, Box<dyn std::error::Error>> {
+    stream.set_read_timeout(Some(wait))?;
+    let mut buf = [0u8; 1];
+    let quiet = match stream.read(&mut buf) {
+        Err(e) => matches!(
+            e.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ),
+        Ok(_) => false,
+    };
+    stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+    Ok(quiet)
+}
+
+/// A wrapped CONNECT_REQUEST with TCP route-back HPAIs.
+fn connect_request() -> Vec<u8> {
+    let mut connect = vec![0x08, 0x02, 0, 0, 0, 0, 0, 0, 0x08, 0x02, 0, 0, 0, 0, 0, 0];
+    connect.extend_from_slice(&[0x04, 0x04, 0x02, 0x00]);
+    frame(service::CONNECT_REQUEST, &connect)
+}
+
+#[test]
+fn test_keepalive_keeps_a_session_alive() -> TestResult {
+    // TSSK 2.2.18: an authenticated session lives on while keepalives come.
+    let addr = start_with(true, Some(600), None)?;
+    let (mut stream, mut client, _) = handshake(addr, USER_PASSWORD)?;
+    for _ in 0..6 {
+        std::thread::sleep(Duration::from_millis(200));
+        stream.write_all(&client.seal(&frame(0x0954, &[0x04, 0x00])))?;
+    }
+    stream.write_all(&client.seal(&connect_request()))?;
+    let resp = KnxnetIpFrame::decode(&client.open(&read_frame(&mut stream)?)?)?;
+    assert_eq!(
+        resp.service,
+        service::CONNECT_RESPONSE,
+        "still alive after 1.2 s"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_keepalive_before_authentication_is_unauthenticated() -> TestResult {
+    // TSSK 2.2.20 (E04 in UNAUTHENTICATED, A6).
+    let addr = start()?;
+    let (mut stream, keys) = tcp_to(addr)?;
+    let (mut client, _) = open_session(&mut stream, &keys)?;
+    stream.write_all(&client.seal(&frame(0x0954, &[0x04, 0x00])))?;
+    assert_eq!(status_then_close(&mut stream, &client)?, (0x02, true));
+    Ok(())
+}
+
+#[test]
+fn test_frame_before_authentication_is_unauthenticated() -> TestResult {
+    // E05 in UNAUTHENTICATED, A6: a wrapped CONNECT_REQUEST.
+    let addr = start()?;
+    let (mut stream, keys) = tcp_to(addr)?;
+    let (mut client, _) = open_session(&mut stream, &keys)?;
+    stream.write_all(&client.seal(&connect_request()))?;
+    assert_eq!(status_then_close(&mut stream, &client)?, (0x02, true));
+    Ok(())
+}
+
+#[test]
+fn test_close_before_authentication_is_answered_with_close() -> TestResult {
+    // E03 in UNAUTHENTICATED, A3.
+    let addr = start()?;
+    let (mut stream, keys) = tcp_to(addr)?;
+    let (mut client, _) = open_session(&mut stream, &keys)?;
+    stream.write_all(&client.seal(&frame(0x0954, &[0x05, 0x00])))?;
+    assert_eq!(status_then_close(&mut stream, &client)?, (0x05, true));
+    Ok(())
+}
+
+#[test]
+fn test_authentication_timeout_ends_an_unauthenticated_session() -> TestResult {
+    // E06 in UNAUTHENTICATED, A5 (the 10 s timer, shortened here).
+    let addr = start_with(true, None, Some(300))?;
+    let (mut stream, keys) = tcp_to(addr)?;
+    let (client, _) = open_session(&mut stream, &keys)?;
+    assert_eq!(status_then_close(&mut stream, &client)?, (0x03, true));
+    Ok(())
+}
+
+#[test]
+fn test_invalid_wrapper_is_ignored_before_authentication() -> TestResult {
+    // An invalid SECURE_WRAPPER is ignored in every state (§2.2.3.5.2.3).
+    let addr = start()?;
+    let (mut stream, keys) = tcp_to(addr)?;
+    let (mut client, xor) = open_session(&mut stream, &keys)?;
+    let mut forged = Client {
+        key: [0x5A; 16],
+        session_id: client.session_id,
+        tx: 7,
+    };
+    stream.write_all(&forged.seal(&frame(0x0954, &[0x04, 0x00])))?;
+    assert!(
+        silent(&mut stream, Duration::from_millis(400))?,
+        "no answer"
+    );
+    stream.write_all(&client.seal(&authenticate_frame(&keys.user, &xor, 0x00)))?;
+    let status = client.open(&read_frame(&mut stream)?)?;
+    assert_eq!(status[6], 0x00, "the session still authenticates");
+    Ok(())
+}
+
+#[test]
+fn test_session_ids_are_unique_and_never_zero() -> TestResult {
+    let addr = start()?;
+    let (mut a, keys) = tcp_to(addr)?;
+    let (mut b, _) = tcp_to(addr)?;
+    let (first, _) = open_session(&mut a, &keys)?;
+    let (second, _) = open_session(&mut b, &keys)?;
+    assert_ne!(first.session_id, 0);
+    assert_ne!(second.session_id, 0);
+    assert_ne!(first.session_id, second.session_id);
+    Ok(())
+}
+
+#[test]
+fn test_malformed_session_frames_are_discarded() -> TestResult {
+    let addr = start()?;
+    let (mut stream, keys) = tcp_to(addr)?;
+    // 47 octets, and a UDP HPAI over TCP: both discarded (§2.2.3.6.4).
+    let mut long = vec![0x08, 0x02, 0, 0, 0, 0, 0, 0];
+    long.extend_from_slice(&[0x21; 33]);
+    stream.write_all(&frame(0x0951, &long))?;
+    let mut udp_hpai = vec![0x08, 0x01, 127, 0, 0, 1, 0x0E, 0x57];
+    udp_hpai.extend_from_slice(&[0x21; 32]);
+    stream.write_all(&frame(0x0951, &udp_hpai))?;
+    assert!(
+        silent(&mut stream, Duration::from_millis(400))?,
+        "no answer"
+    );
+    // A proper request; then an authenticate with a non-zero reserved octet
+    // is discarded (§2.2.3.8.2), the proper one succeeds.
+    let (mut client, xor) = open_session(&mut stream, &keys)?;
+    stream.write_all(&client.seal(&authenticate_frame(&keys.user, &xor, 0x01)))?;
+    assert!(
+        silent(&mut stream, Duration::from_millis(400))?,
+        "no answer"
+    );
+    stream.write_all(&client.seal(&authenticate_frame(&keys.user, &xor, 0x00)))?;
+    let status = client.open(&read_frame(&mut stream)?)?;
+    assert_eq!(status[6], 0x00);
+    Ok(())
+}
+
+#[test]
+fn test_plain_session_status_is_ignored() -> TestResult {
+    // TSSK: an unsecured SESSION_STATUS (here STATUS_CLOSE) changes nothing.
+    let addr = start()?;
+    let (mut stream, mut client, _) = handshake(addr, USER_PASSWORD)?;
+    stream.write_all(&frame(0x0954, &[0x05, 0x00]))?;
+    stream.write_all(&client.seal(&connect_request()))?;
+    let resp = KnxnetIpFrame::decode(&client.open(&read_frame(&mut stream)?)?)?;
+    assert_eq!(resp.service, service::CONNECT_RESPONSE);
+    // A wrapped close is answered with a close.
+    stream.write_all(&client.seal(&frame(0x0954, &[0x05, 0x00])))?;
+    assert_eq!(status_then_close(&mut stream, &client)?, (0x05, true));
     Ok(())
 }
