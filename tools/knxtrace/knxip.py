@@ -179,17 +179,22 @@ PRIORITY_NAMES = {0: "system", 1: "normal", 2: "urgent", 3: "low"}
 A_SECURE_DATA = 0x03F1
 FREE_ACCESS_KEY = bytes.fromhex("ffffffff")
 
-# APCIs whose full 10 bits are the service selector.
+# APCIs whose full 10 bits are the service selector (KNX 03_03_07 Application
+# Layer, section 2, APCI coding table).
 APCI_EXACT = {
     0x000: "A_GroupValue_Read",
     0x0C0: "A_IndividualAddress_Write",
     0x100: "A_IndividualAddress_Read",
     0x140: "A_IndividualAddress_Response",
+    0x1C8: "A_SystemNetworkParameter_Read",
+    0x1C9: "A_SystemNetworkParameter_Response",
+    0x1CA: "A_SystemNetworkParameter_Write",
     0x1CC: "A_PropertyExtValue_Read",
     0x1CD: "A_PropertyExtValue_Response",
     0x1CE: "A_PropertyExtValue_WriteCon",
     0x1CF: "A_PropertyExtValue_WriteConResponse",
     0x1D0: "A_PropertyExtValue_WriteUnCon",
+    0x1D1: "A_PropertyExtValue_InfoReport",
     0x1D2: "A_PropertyExtDescription_Read",
     0x1D3: "A_PropertyExtDescription_Response",
     0x1D4: "A_FunctionPropertyExt_Command",
@@ -202,10 +207,24 @@ APCI_EXACT = {
     0x2C0: "A_UserMemory_Read",
     0x2C1: "A_UserMemory_Response",
     0x2C2: "A_UserMemory_Write",
+    0x2C4: "A_UserMemoryBit_Write",
     0x2C5: "A_UserManufacturerInfo_Read",
     0x2C6: "A_UserManufacturerInfo_Response",
+    0x2C7: "A_FunctionPropertyCommand",
+    0x2C8: "A_FunctionPropertyState_Read",
+    0x2C9: "A_FunctionPropertyState_Response",
     0x3A1: "A_Restart_Response",
-    0x3D0: "A_ADC_Read",
+    0x3C0: "A_FilterTable_Open",
+    0x3C1: "A_FilterTable_Read",
+    0x3C2: "A_FilterTable_Response",
+    0x3C3: "A_FilterTable_Write",
+    0x3C8: "A_RouterMemory_Read",
+    0x3C9: "A_RouterMemory_Response",
+    0x3CA: "A_RouterMemory_Write",
+    0x3CD: "A_RouterStatus_Read",
+    0x3CE: "A_RouterStatus_Response",
+    0x3CF: "A_RouterStatus_Write",
+    0x3D0: "A_MemoryBit_Write",
     0x3D1: "A_Authorize_Request",
     0x3D2: "A_Authorize_Response",
     0x3D3: "A_Key_Write",
@@ -223,12 +242,28 @@ APCI_EXACT = {
     0x3E0: "A_DomainAddress_Write",
     0x3E1: "A_DomainAddress_Read",
     0x3E2: "A_DomainAddress_Response",
+    0x3E3: "A_DomainAddressSelective_Read",
+    0x3E4: "A_NetworkParameter_Write",
+    0x3E5: "A_Link_Read",
+    0x3E6: "A_Link_Response",
+    0x3E7: "A_Link_Write",
+    0x3E8: "A_GroupPropValue_Read",
+    0x3E9: "A_GroupPropValue_Response",
+    0x3EA: "A_GroupPropValue_Write",
+    0x3EB: "A_GroupPropValue_InfoReport",
+    0x3EC: "A_DomainAddressSerialNumber_Read",
+    0x3ED: "A_DomainAddressSerialNumber_Response",
+    0x3EE: "A_DomainAddressSerialNumber_Write",
+    0x3F0: "A_FileStream_InfoReport",
     A_SECURE_DATA: "A_SecureData",
 }
-# APCIs whose low 6 bits carry a parameter (count, descriptor type, restart type).
+# APCIs whose low 6 bits carry a parameter (count, descriptor type, restart
+# type, ADC channel).
 APCI_MASKED = {
     0x040: "A_GroupValue_Response",
     0x080: "A_GroupValue_Write",
+    0x180: "A_ADC_Read",
+    0x1C0: "A_ADC_Response",
     0x200: "A_Memory_Read",
     0x240: "A_Memory_Response",
     0x280: "A_Memory_Write",
@@ -568,6 +603,9 @@ def _decode_apdu(apci: int, payload: bytes, small_data: int) -> Apdu:
             fields["descriptor"] = payload.hex()
             fields["mask"] = "%04X" % struct.unpack("!H", payload[0:2])[0]
         return Apdu(apci, name, fields, payload)
+
+    if selector in (0x180, 0x1C0):  # A_ADC_Read/_Response: low 6 bits = channel
+        return Apdu(apci, name, {"channel": small_data, "len": len(payload)}, payload)
 
     if selector == 0x380:  # A_Restart
         master = bool(apci & 0x01)

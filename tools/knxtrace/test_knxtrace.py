@@ -347,6 +347,22 @@ class TestApciDecoding(unittest.TestCase):
         self.assertEqual(master.fields["type"], "master-reset")
         self.assertEqual(master.fields["erase_code"], 1)
 
+    def test_decode_apdu_memory_bit_write_and_adc(self):
+        # 03_03_07 section 2: 0x3D0 is A_MemoryBit_Write; A_ADC_Read/_Response
+        # are the 4-bit codes 0110/0111 with the channel in the low 6 bits.
+        self.assertEqual(self.apdu(numbered(0, 0x3D0)).apdu.name, "A_MemoryBit_Write")
+        adc = self.apdu(numbered(0, 0x182, b"\x08")).apdu
+        self.assertEqual(adc.name, "A_ADC_Read")
+        self.assertEqual(adc.fields["channel"], 2)
+        resp = self.apdu(numbered(0, 0x1C2, b"\x08\x01\x00")).apdu
+        self.assertEqual(resp.name, "A_ADC_Response")
+        self.assertEqual(resp.fields["channel"], 2)
+        # The exact codes in the 0111 range stay their own services.
+        self.assertEqual(
+            self.apdu(numbered(0, 0x1D1)).apdu.name, "A_PropertyExtValue_InfoReport"
+        )
+        self.assertEqual(self.apdu(numbered(0, 0x3E4)).apdu.name, "A_NetworkParameter_Write")
+
     def test_decode_apdu_individual_address(self):
         apdu = self.apdu(numbered(0, 0x0C0, struct.pack("!H", ia("1.1.47")))).apdu
         self.assertEqual(apdu.name, "A_IndividualAddress_Write")
