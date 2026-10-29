@@ -120,13 +120,14 @@ fn sys7_events(step: &FlashStep) -> Vec<(u32, &'static str, [u8; sys7::LOAD_EVEN
             mem_type,
             seg_flags,
             checksum_ctrl,
+            seg_type,
             ..
         } => match (u16::try_from(*address), u16::try_from(*size)) {
             (Ok(address), Ok(size)) => vec![(
                 *lsm,
                 "abs-segment",
                 sys7::encode_alloc_segment(
-                    sys7::S7_SUB_ALLOC_DATA,
+                    *seg_type,
                     address,
                     size,
                     *seg_flags,
@@ -293,6 +294,30 @@ mod tests {
             records
                 .iter()
                 .all(|r| r.bytes[0] == 0x04 && r.bytes.len() == 10)
+        );
+    }
+
+    #[test]
+    fn test_sys7_records_stack_segment_matches_ets() {
+        // Issue #487, MDT `M-0083_A-0222-21-0004` LSM 3 record 4: ETS sends
+        // `03 01 07 f6 00 01 00 02 00 00` for the `SegType="1"` allocation.
+        let records = sys7_records(
+            &LsmAccess::Property,
+            &FlashStep::Sys7AbsSegment {
+                lsm: 3,
+                address: 0x07F6,
+                size: 1,
+                mem_type: 2,
+                seg_flags: 0,
+                checksum_ctrl: 0,
+                seg_type: sys7::S7_SUB_ALLOC_STACK,
+                image: None,
+            },
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].bytes,
+            vec![0x03, 0x01, 0x07, 0xF6, 0x00, 0x01, 0x00, 0x02, 0x00, 0x00]
         );
     }
 

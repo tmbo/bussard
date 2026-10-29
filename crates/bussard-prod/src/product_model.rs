@@ -974,6 +974,7 @@ fn load_op_summary(op: &LoadOp) -> String {
             access,
             mem_type,
             seg_flags,
+            ..
         } => format!(
             "abs_segment lsm={} addr={} size={} access={} mem_type={} seg_flags={}",
             opt(lsm_idx),

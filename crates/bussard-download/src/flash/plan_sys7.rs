@@ -355,6 +355,7 @@ pub(super) fn plan_flash_sys7(
                 access,
                 mem_type,
                 seg_flags,
+                seg_type,
             } => {
                 // Validate before anything is bound: the executor folds the LSM
                 // index into the record's opcode nibble and the address/size into
@@ -467,6 +468,21 @@ pub(super) fn plan_flash_sys7(
                         })
                     }
                 };
+                // `SegType="1"` allocates a stack segment: ETS sends it as
+                // AllocAbsStackSeg (subtype 01), every other octet as for a
+                // data segment (issue #487, MDT `A-0222` LSM 3 record 4).
+                let seg_type = match seg_type.unwrap_or(0) {
+                    0 => bussard_mgmt::sys7::S7_SUB_ALLOC_DATA,
+                    1 => bussard_mgmt::sys7::S7_SUB_ALLOC_STACK,
+                    other => {
+                        return Err(PlanError::UnresolvableImage {
+                            step: step_no,
+                            reason: format!(
+                                "LdCtrlAbsSegment SegType {other} is not a data (0) or stack (1) segment"
+                            ),
+                        });
+                    }
+                };
                 steps.push(FlashStep::Sys7AbsSegment {
                     lsm,
                     address: addr,
@@ -474,6 +490,7 @@ pub(super) fn plan_flash_sys7(
                     mem_type,
                     seg_flags,
                     checksum_ctrl,
+                    seg_type,
                     image,
                 });
             }
@@ -1766,6 +1783,7 @@ mod tests {
             mem_type: 3,
             seg_flags: 0x80,
             checksum_ctrl: 0x00,
+            seg_type: 0,
             image: Some(ImageRef {
                 segment_id: seg_id.clone(),
                 kind: ImageKind::Code,
@@ -1874,6 +1892,7 @@ mod tests {
                 mem_type: 2,
                 seg_flags: 0xF2,
                 checksum_ctrl: 0x00,
+                seg_type: 0,
                 image: None,
             },
             FlashStep::Sys7AbsSegment {
@@ -1883,6 +1902,7 @@ mod tests {
                 mem_type: 3,
                 seg_flags: 0xF2,
                 checksum_ctrl: 0x80,
+                seg_type: 0,
                 image: Some(ImageRef {
                     segment_id: seg_id.clone(),
                     kind: ImageKind::Code,
@@ -2001,6 +2021,7 @@ mod tests {
                 mem_type,
                 seg_flags: 0xF2,
                 checksum_ctrl,
+                seg_type: 0,
                 image: Some(ImageRef {
                     segment_id: id.to_string(),
                     kind,
@@ -2059,6 +2080,7 @@ mod tests {
                 mem_type: 2,
                 seg_flags: 0xF2,
                 checksum_ctrl: 0x00,
+                seg_type: 0,
                 image: None,
             },
             FlashStep::Sys7AbsSegment {
@@ -2068,6 +2090,7 @@ mod tests {
                 mem_type: 3,
                 seg_flags: 0xF2,
                 checksum_ctrl: 0x80,
+                seg_type: 0,
                 image: Some(ImageRef {
                     segment_id: seg_id.clone(),
                     kind: ImageKind::Code,
@@ -2155,6 +2178,7 @@ mod tests {
                 mem_type: 2,
                 seg_flags: 0xF2,
                 checksum_ctrl: 0x00,
+                seg_type: 0,
                 image: None,
             },
             FlashStep::Sys7AbsSegment {
@@ -2164,6 +2188,7 @@ mod tests {
                 mem_type: 3,
                 seg_flags: 0xF2,
                 checksum_ctrl: 0x80,
+                seg_type: 0,
                 image: Some(ImageRef {
                     segment_id: seg_id.clone(),
                     kind: ImageKind::Code,
@@ -2283,6 +2308,83 @@ mod tests {
          </ApplicationProgram></KNX>"#
         );
         parse_application_program("M-0083_A-F", xml.as_bytes()).expect("the fixture app parses")
+    }
+
+    /// A minimal System 7 app with a data segment and a stack segment on LSM 3,
+    /// the second carrying `SegType="{seg_type}"` (issue #487).
+    fn sys7_app_with_seg_type(
+        seg_type: &str,
+    ) -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram PeiType="0" Id="M-0083_A-G" ApplicationNumber="14" ApplicationVersion="35"
+            MaskVersion="MV-0705" Name="FabS7Stack" LoadProcedureStyle="ProductProcedure">
+          <Static>
+           <Code />
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlConnect />
+             <LdCtrlLoad LsmIdx="3" />
+             <LdCtrlAbsSegment LsmIdx="3" Address="1792" Size="8" MemType="2" />
+             <LdCtrlAbsSegment LsmIdx="3" Address="2038" Size="1" Access="0" MemType="2" SegFlags="0" SegType="{seg_type}" />
+             <LdCtrlLoadCompleted LsmIdx="3" />
+             <LdCtrlDisconnect />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#
+        );
+        Ok(parse_application_program("M-0083_A-G", xml.as_bytes())?)
+    }
+
+    #[test]
+    fn test_plan_flash_sys7_stack_segment_keeps_seg_type() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let plan = plan_flash(
+            &sys7_app_with_seg_type("1")?,
+            "1.1.99",
+            0x0705,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )?;
+        let seg_types: Vec<(u32, u8)> = plan
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                FlashStep::Sys7AbsSegment {
+                    address, seg_type, ..
+                } => Some((*address, *seg_type)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            seg_types,
+            vec![
+                (0x0700, bussard_mgmt::sys7::S7_SUB_ALLOC_DATA),
+                (0x07F6, bussard_mgmt::sys7::S7_SUB_ALLOC_STACK)
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_sys7_unknown_seg_type_refuses() -> Result<(), Box<dyn std::error::Error>> {
+        let err = plan_flash(
+            &sys7_app_with_seg_type("2")?,
+            "1.1.99",
+            0x0705,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        );
+        assert!(
+            matches!(&err, Err(PlanError::UnresolvableImage { reason, .. }) if reason.contains("SegType 2")),
+            "{err:?}"
+        );
+        Ok(())
     }
 
     fn plan_sys7_range(

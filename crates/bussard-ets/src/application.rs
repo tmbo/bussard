@@ -579,6 +579,10 @@ pub enum LoadOp {
         /// `SegFlags` attribute: `128` marks a checksum-controlled segment,
         /// `0` a segment the application rewrites at runtime.
         seg_flags: Option<u32>,
+        /// `SegType` attribute: the Additional Load Controls segment type the
+        /// allocation goes out as, `0` = AllocAbsDataSeg (absent), `1` =
+        /// AllocAbsStackSeg (KNX 3/5/2 §3.31.2, §3.31.3.4; issue #487).
+        seg_type: Option<u32>,
     },
     /// `<LdCtrlWriteRelMem …>`: write into relative (parameter) memory.
     WriteRelMem {
@@ -2519,6 +2523,7 @@ pub(crate) fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m
             access: u(b"Access"),
             mem_type: u(b"MemType"),
             seg_flags: u(b"SegFlags"),
+            seg_type: u(b"SegType"),
         },
         b"LdCtrlWriteRelMem" => LoadOp::WriteRelMem {
             obj_idx: u(b"ObjIdx"),

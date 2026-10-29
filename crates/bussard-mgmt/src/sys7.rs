@@ -35,7 +35,8 @@ pub const LOAD_EVENT_SIZE: usize = 10;
 /// (subtype `0x00`, `[system7-spec §4.1]`).
 pub const S7_SUB_ALLOC_DATA: u8 = 0x00;
 /// `AdditionalLoadControls` sub-command — allocate an absolute **Stack** segment
-/// (subtype `0x01`). Not in the corpus; provided for completeness.
+/// (subtype `0x01`): an `LdCtrlAbsSegment SegType="1"`, about 229 corpus
+/// System 7 programs (KNX 3/5/2 §3.31.2; issue #487).
 pub const S7_SUB_ALLOC_STACK: u8 = 0x01;
 /// `AdditionalLoadControls` sub-command — allocate an absolute **Task** segment
 /// (subtype `0x02`); the default realisation of `LdCtrlTaskSegment`

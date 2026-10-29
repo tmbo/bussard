@@ -472,6 +472,10 @@ pub enum FlashStep {
         /// from `mem_type`. A `0x00` segment is not spot-checked after the
         /// restart: the application rewrites it (issue #89, 1.1.36 `0x4916`).
         checksum_ctrl: u8,
+        /// The Additional Load Controls segment type the allocation goes out
+        /// as: the op's `SegType`, `0x00` AllocAbsDataSeg (absent) or `0x01`
+        /// AllocAbsStackSeg (KNX 3/5/2 §3.31.2; issue #487).
+        seg_type: u8,
         /// The segment image to stream, when the segment carries `<Data>` (or a
         /// computed table image replaces it); `None` for an allocate-only record.
         image: Option<ImageRef>,

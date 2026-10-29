@@ -124,6 +124,7 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                         mem_type,
                         seg_flags,
                         checksum_ctrl,
+                        seg_type,
                         image,
                     } => {
                         // 1. Allocate the absolute segment on the LSM. The captures pin
@@ -138,7 +139,7 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                         let seg_addr = sys7_u16(target, "segment address", *address)?;
                         let seg_size = sys7_u16(target, "segment size", *size)?;
                         let event = bussard_mgmt::encode_alloc_segment(
-                            bussard_mgmt::sys7::S7_SUB_ALLOC_DATA,
+                            *seg_type,
                             seg_addr,
                             seg_size,
                             seg_flags,

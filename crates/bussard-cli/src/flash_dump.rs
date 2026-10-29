@@ -362,6 +362,7 @@ pub fn write_dump(
                 seg_flags,
                 checksum_ctrl,
                 image,
+                ..
             } => {
                 allocations.push(json!({
                     "step": n,
