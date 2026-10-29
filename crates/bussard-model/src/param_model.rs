@@ -203,6 +203,11 @@ pub struct ParamDef {
     /// For an enumeration, its members (code and label): what an override
     /// written as a label is matched against. Empty for other kinds.
     pub enum_values: Vec<crate::dynamic::EnumValue>,
+    /// Whether the value is stored: the parameter has a `memory:` location,
+    /// a `property: true` one, or is a `<Union>` member. A parameter without
+    /// one only steers the Dynamic section (issue #474).
+    #[serde(default)]
+    pub stored: bool,
 }
 
 /// A parameter's type, mirroring the `type:` tag in the model YAML.
@@ -300,6 +305,10 @@ struct RawParam {
     bits: Option<u32>,
     #[serde(default)]
     signed: bool,
+    #[serde(default)]
+    memory: Option<serde::de::IgnoredAny>,
+    #[serde(default)]
+    property: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -433,6 +442,7 @@ impl ProductModel {
                     base_value: p.base_value,
                     integer_width: p.bits.map(|bits| (bits, p.signed)),
                     enum_values,
+                    stored: p.memory.is_some() || p.property,
                 },
             );
         }
@@ -604,6 +614,20 @@ impl crate::dynamic::DynamicSource for ProductModel {
 
     fn argument_allocates(&self, arg_id: &str) -> Option<i64> {
         self.argument_allocates.get(arg_id).copied()
+    }
+
+    fn steers_only(&self, param_id: &str) -> bool {
+        self.parameters.get(param_id).is_some_and(|p| !p.stored)
+            && !self
+                .unions
+                .iter()
+                .any(|u| u.members.iter().any(|m| m.parameter == param_id))
+    }
+
+    fn is_type_none(&self, param_id: &str) -> bool {
+        self.parameters
+            .get(param_id)
+            .is_some_and(|p| matches!(p.kind, ParamKind::None))
     }
 }
 

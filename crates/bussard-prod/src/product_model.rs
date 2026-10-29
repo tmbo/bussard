@@ -498,6 +498,10 @@ struct ParameterModel {
     default: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     memory: Option<MemoryModel>,
+    /// Whether the value lives in an interface-object property instead of
+    /// memory (issue #474: a parameter with neither only steers).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    property: bool,
     /// The `BaseValue` argument, app-relative (issue #126).
     #[serde(skip_serializing_if = "Option::is_none")]
     base_value: Option<String>,
@@ -821,6 +825,7 @@ fn parameters_for(app: &ApplicationProgram) -> Vec<ParameterModel> {
                     offset: m.offset,
                     bit_offset: m.bit_offset,
                 }),
+                property: param.property.is_some(),
                 base_value: param
                     .base_value
                     .as_deref()

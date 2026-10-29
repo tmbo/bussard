@@ -58,8 +58,15 @@
 //! `<Module>` element is reached. So the reached set of this walk is exactly
 //! the active set. A parameter the Dynamic section never shows anywhere (a
 //! pure steering parameter, which only ever has its value) stays active
-//! without a reached ref. The target ref of a reached `<Assign>` counts as
-//! active too: ETS writes it.
+//! without a reached ref, with one exception (issue #474): when it also has
+//! no location (no memory, property or union) and a type other than
+//! `TypeNone`, its `<choose>` takes a branch whose test matches but never a
+//! `<when default="true">` one. The Zennio Flat push buttons hold their dummy
+//! objects behind such a choose on `Flat_AlwaysFALSE` (a checkbox,
+//! `Access="Read"`, `Value="0"`) and ETS leaves them out, while the ABB and
+//! Busch-Jaeger programs steer whole channels through default branches on
+//! never-shown `TypeNone` parameters (`Eingang_A`) and ETS takes those. The
+//! target ref of a reached `<Assign>` counts as active too: ETS writes it.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
@@ -110,6 +117,17 @@ pub trait DynamicSource {
     fn argument_allocates(&self, _arg_id: &str) -> Option<i64> {
         None
     }
+    /// Whether the parameter `param_id` only steers the Dynamic section: it
+    /// has no location (no `<Memory>`, no `<Property>`, no `<Union>`), so its
+    /// value is never written (issue #474). `false` when unknown.
+    fn steers_only(&self, _param_id: &str) -> bool {
+        false
+    }
+    /// Whether the parameter `param_id` has a `TypeNone` type, or a type the
+    /// source does not know (issue #474). `false` when unknown.
+    fn is_type_none(&self, _param_id: &str) -> bool {
+        false
+    }
 }
 
 impl<T: DynamicSource + ?Sized> DynamicSource for &T {
@@ -148,6 +166,12 @@ impl<T: DynamicSource + ?Sized> DynamicSource for &T {
     }
     fn argument_allocates(&self, arg_id: &str) -> Option<i64> {
         (**self).argument_allocates(arg_id)
+    }
+    fn steers_only(&self, param_id: &str) -> bool {
+        (**self).steers_only(param_id)
+    }
+    fn is_type_none(&self, param_id: &str) -> bool {
+        (**self).is_type_none(param_id)
     }
 }
 
@@ -2036,8 +2060,18 @@ impl Walk {
                             value_of(app, values, instance, self.module_args(scope), param_ref_id)
                         })
                         .and_then(|v| v.trim().parse::<f64>().ok());
+                    // A never-shown parameter that only steers and has a
+                    // type takes a matching branch, never its default one
+                    // (issue #474: the Zennio Flat `AlwaysFALSE` checkbox);
+                    // a `TypeNone` one takes its default too (the ABB
+                    // `Eingang_A` channel switches).
+                    let no_default = parameter_id(app, param_ref_id).is_some_and(|id| {
+                        !self.placed.contains(id) && app.steers_only(id) && !app.is_type_none(id)
+                    });
                     for i in taken_branches(whens.iter().map(|w| &w.test), value) {
-                        if let Some(w) = whens.get(i) {
+                        if let Some(w) = whens.get(i)
+                            && !(no_default && w.test == WhenTest::Default)
+                        {
                             self.run(app, values, &w.children, module, depth);
                         }
                     }

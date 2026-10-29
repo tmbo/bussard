@@ -89,6 +89,27 @@ impl DynamicSource for ApplicationProgram {
     fn argument_allocates(&self, arg_id: &str) -> Option<i64> {
         self.argument_allocates.get(arg_id).copied()
     }
+
+    fn steers_only(&self, param_id: &str) -> bool {
+        self.parameters
+            .get(param_id)
+            .is_some_and(|p| p.memory.is_none() && p.property.is_none())
+            && !self
+                .unions
+                .iter()
+                .any(|u| u.members.iter().any(|m| m.parameter == param_id))
+    }
+
+    fn is_type_none(&self, param_id: &str) -> bool {
+        // A parameter without a known type is `!none` in the product model
+        // too, so both sources answer alike.
+        self.parameters.get(param_id).is_some_and(|p| {
+            p.parameter_type
+                .as_deref()
+                .and_then(|t| self.parameter_types.get(t))
+                .is_none_or(|d| matches!(d.kind, ParameterType::None))
+        })
+    }
 }
 
 #[cfg(test)]
