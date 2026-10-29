@@ -8,7 +8,9 @@ use bussard_testkit::wire::description_response_body;
 use bussard_testkit::{AckPolicy, MockDevice, MockGateway, TestResult, ga, group_dest, ia};
 use bussard_transport::cemi::{Apdu, CemiFrame};
 use bussard_transport::tpci::{self, TpciKind};
-use bussard_transport::{BusConnection, ConnectionConfig, Transport, TransportError};
+use bussard_transport::{
+    BusConnection, ConnectionConfig, Transport, TransportError, TunnelReconnect,
+};
 
 const WAIT: Duration = Duration::from_secs(3);
 
@@ -102,7 +104,10 @@ async fn test_mock_gateway_ack_status_fails_the_send() -> TestResult {
         .ack_policy(AckPolicy::Status(0x29))
         .start()
         .await?;
-    let mut conn = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
+    // The request is repeated once, then the link counts as lost (3/8/4
+    // §2.6.1, issue #516); with re-establishing off that surfaces the status.
+    let config = ConnectionConfig::tunnel(gw.addr()).with_reconnect(TunnelReconnect::disabled());
+    let mut conn = Transport::connect(&config).await?;
     let result = conn
         .send(CemiFrame::group_write_packed(
             ga("1/2/3")?,

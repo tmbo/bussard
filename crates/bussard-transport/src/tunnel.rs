@@ -9,8 +9,9 @@
 //! - transmits our TUNNELING_REQUESTs with an incrementing sequence counter and
 //!   awaits the matching TUNNELING_ACK (retransmitting once on timeout),
 //! - re-establishes the tunnel when the gateway link is lost (see below),
-//! - ACKs inbound TUNNELING_REQUESTs, delivering their cEMI to the caller, and
-//!   drops duplicate sequence numbers (ACKing them but not re-delivering),
+//! - ACKs inbound TUNNELING_REQUESTs, delivering their cEMI to the caller; a
+//!   frame one behind the expected sequence is ACKed and dropped, any other
+//!   unexpected sequence dropped without an ACK (Tunnelling 3/8/4 §2.6.1),
 //! - handles a server-initiated DISCONNECT_REQUEST.
 //!
 //! The public [`Tunnel`] handle talks to the task over channels.
@@ -139,22 +140,6 @@ use crate::host_lock::{Holder, HostLock};
 use crate::knxnet::{self, ConnectionHeader, GatewayDescription, Hpai, ServiceType};
 use crate::secure::{SecureLink, UserKeys};
 
-/// How many sequence numbers *behind* the expected inbound sequence are still
-/// treated as a retransmitted duplicate (ACK-and-drop) rather than silently
-/// discarded. One frame is not enough: a gateway can retransmit a frame two or a
-/// few behind after several of our ACKs were lost, and silently dropping those
-/// leaves the gateway retransmitting forever with no chance to resync (issue
-/// #58). The window is kept small so a genuinely fresh (ahead) sequence is never
-/// mistaken for a duplicate.
-///
-/// A deliberate deviation from KNXnet/IP Tunnelling 3/8/4 §2.6.1, which ACKs
-/// only the frame one behind the expected sequence and drops any other
-/// unexpected one without an ACK. A conforming server repeats a frame once,
-/// so one behind would do; the wider window keeps a gateway that resends
-/// older frames after lost ACKs from stalling (issue #58, recorded in #516).
-/// Frames inside the window are still never re-delivered.
-const DUP_ACK_WINDOW: u8 = 8;
-
 /// Inbound queue depth at which the tunnel starts warning that its consumer is
 /// falling behind.
 ///
@@ -164,6 +149,9 @@ const DUP_ACK_WINDOW: u8 = 8;
 /// delivered, in order, but something upstream is wedged. The warning repeats
 /// every further `INBOUND_WARN_DEPTH` frames rather than once per frame.
 const INBOUND_WARN_DEPTH: usize = 512;
+
+/// The context of a [`TransportError::GatewayStatus`] from a TUNNELING_ACK.
+const ACK_CONTEXT: &str = "TUNNELING_ACK";
 
 /// The state of a tunnel's link to its gateway, as published by
 /// [`Tunnel::link_state`].
@@ -1335,7 +1323,9 @@ impl TaskState {
     }
 
     /// Whether `err` signals a lost gateway link that the task should
-    /// re-establish (issue #177) rather than surface.
+    /// re-establish (issue #177) rather than surface. A TUNNELING_ACK whose
+    /// error status persisted through the repeat counts as one: Tunnelling
+    /// 3/8/4 §2.6.1 disconnects after it as after a missing ACK (issue #516).
     fn should_reestablish(&self, err: &TransportError) -> bool {
         self.reconnect.enabled()
             && matches!(
@@ -1345,6 +1335,10 @@ impl TaskState {
                     | TransportError::Io { .. }
                     | TransportError::SecureSessionEnded(_)
                     | TransportError::BadHeader(..)
+                    | TransportError::GatewayStatus {
+                        context: ACK_CONTEXT,
+                        ..
+                    }
             )
     }
 
@@ -1383,7 +1377,10 @@ impl TaskState {
     }
 
     /// One TUNNELING_REQUEST on the current channel: send, await the ACK, and
-    /// retransmit once on timeout.
+    /// repeat once when the ACK is missing or carries an error status
+    /// (Tunnelling 3/8/4 §2.6.1, issue #516). A second failure is returned;
+    /// [`should_reestablish`](Self::should_reestablish) treats it as a lost
+    /// link.
     async fn send_once(&mut self, frame: &CemiFrame, buf: &mut [u8]) -> Result<()> {
         let seq = self.outgoing_seq;
         let header = ConnectionHeader {
@@ -1411,6 +1408,18 @@ impl TaskState {
                 Err(TransportError::Timeout(_)) if attempt < TUNNELING_RETRANSMITS => {
                     attempt += 1;
                     tracing::warn!(seq, attempt, "tunneling ACK timeout; retransmitting");
+                }
+                Err(TransportError::GatewayStatus {
+                    status,
+                    context: ACK_CONTEXT,
+                }) if attempt < TUNNELING_RETRANSMITS => {
+                    attempt += 1;
+                    tracing::warn!(
+                        seq,
+                        attempt,
+                        status,
+                        "tunneling ACK with an error status; repeating the request"
+                    );
                 }
                 Err(e) => return Err(e),
             }
@@ -1445,7 +1454,7 @@ impl TaskState {
                         if status != 0 {
                             return Err(TransportError::GatewayStatus {
                                 status,
-                                context: "TUNNELING_ACK",
+                                context: ACK_CONTEXT,
                             });
                         }
                         return Ok(());
@@ -1501,8 +1510,11 @@ impl TaskState {
     ///   simply not delivered.
     /// * **Exact previous seq (seq-1)** — a retransmitted duplicate: ACK it (so
     ///   the gateway stops resending) but drop it without advancing.
-    /// * **Any other out-of-window seq** — SILENTLY DISCARD, no ACK (C2). ACKing
-    ///   a frame we then drop would wrongly tell the gateway we accepted it.
+    /// * **Any other seq** — SILENTLY DISCARD, no ACK (C2; Tunnelling 3/8/4
+    ///   §2.6.1). ACKing a frame we then drop would wrongly tell the gateway we
+    ///   accepted it. A conforming server repeats a frame once, so a frame two
+    ///   or more behind is never its retransmission (issue #516 retired the
+    ///   wider window of #58).
     async fn handle_tunneling_request(&mut self, body: &[u8]) {
         // Read the connection header (sequence) without committing to a cEMI
         // decode, so an unknown-message-code frame can still be ACKed.
@@ -1519,8 +1531,7 @@ impl TaskState {
         }
 
         // How far `seq` is *behind* the expected sequence, modulo the 8-bit space
-        // (0 means it is the expected frame). A small window of behind values are
-        // treated as retransmitted duplicates.
+        // (0 means it is the expected frame, 1 the repeated previous one).
         let behind = self.incoming_seq.wrapping_sub(seq);
 
         if seq == self.incoming_seq {
@@ -1550,16 +1561,11 @@ impl TaskState {
                     );
                 }
             }
-        } else if (1..=DUP_ACK_WINDOW).contains(&behind) {
-            // A recently-seen sequence, up to `DUP_ACK_WINDOW` frames behind the
-            // one we expect next: a retransmitted duplicate we already accepted.
-            // ACK it with its OWN sequence (so the gateway stops resending) but do
-            // NOT advance and do NOT re-deliver. The window is wider than one frame
-            // because a gateway can retransmit a frame two (or a few) behind after
-            // several of our ACKs were lost; the old one-frame window silently
-            // discarded those, so the gateway retransmitted forever and its next
-            // in-order frame — which we would have accepted — never got a chance to
-            // resync `incoming_seq` (issue #58).
+        } else if behind == 1 {
+            // The previous sequence: the gateway's repeat of a frame we already
+            // accepted (our ACK was lost). ACK it with its OWN sequence (so the
+            // gateway stops resending) but do NOT advance and do NOT re-deliver
+            // (Tunnelling 3/8/4 §2.6.1).
             if self.link.acks() {
                 let ack = knxnet::tunneling_ack(self.channel_id, seq, 0);
                 let _ = self.link.send_data(&ack).await;
@@ -1570,9 +1576,9 @@ impl TaskState {
                 "ACK-and-drop duplicate (behind) tunneling request"
             );
         } else {
-            // Ahead of the window, or too far behind to be a plausible retransmit:
-            // silently discard, NO ACK (C2). ACKing a frame we then drop would
-            // wrongly tell the gateway we accepted it.
+            // Any other sequence: silently discard, NO ACK (C2; 3/8/4 §2.6.1).
+            // ACKing a frame we then drop would wrongly tell the gateway we
+            // accepted it.
             tracing::warn!(
                 seq,
                 expected = self.incoming_seq,

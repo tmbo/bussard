@@ -60,7 +60,7 @@
 //!   then the old channel is dropped and the next CONNECT gets a new channel id,
 //!   so the client re-establishes the tunnel ([`GatewayBuilder::outage`],
 //!   issue #177) *(native)*.
-//! - Protocol probes: duplicate, out-of-window and two-behind sequence numbers;
+//! - Protocol probes: seq-1 duplicate, out-of-window and two-behind sequence numbers;
 //!   unknown message codes; bursts during an ACK wait; a server-initiated
 //!   DISCONNECT; control HPAI checks. All use [`wire::RawGateway`].
 //!
