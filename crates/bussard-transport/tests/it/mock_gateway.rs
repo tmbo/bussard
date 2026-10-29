@@ -855,7 +855,7 @@ async fn description_response_reports_tunnel_slots() -> TestResult {
     assert_eq!(description.max_apdu_length, Some(248));
     let slots = description.tunnel_slots.as_ref().expect("a tunnelling DIB");
     assert_eq!(slots.len(), 4);
-    assert!(slots.iter().all(|s| s.usable && s.authorized));
+    assert!(slots.iter().all(|s| s.usable && !s.authorisation_required));
     assert_eq!(slots.iter().filter(|s| s.free).count(), 1);
     assert_eq!(slots[0].individual_address, 0x10F1);
 

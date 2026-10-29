@@ -615,8 +615,10 @@ impl KnxnetIpServer {
             out.push(0x07); // TUNNELLING_INFO
             out.extend_from_slice(&248u16.to_be_bytes());
             for (_, _, tunnel_ia) in &secure.users {
-                // usable (0x04) | free (0x01); a secure slot is not
-                // pre-authorized (0x02), as on the real interface.
+                // usable (0x04) | free (0x01). Bit 1 (0x02) read outside a
+                // session means "no authorisation required" (Core 3/8/2
+                // §7.5.4.8); a secure slot needs credentials, so it is clear,
+                // as on the real interface.
                 let status: u16 = if in_use.contains(tunnel_ia) {
                     0x04
                 } else {

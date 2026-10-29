@@ -294,7 +294,15 @@ pub fn gateway_report(
                                 "individual_address":
                                     IndividualAddress::from_raw(s.individual_address).to_string(),
                                 "free": s.free,
-                                "authorized": s.authorized,
+                                // Read outside a secure session, the bit
+                                // says whether the slot needs credentials
+                                // (Core 3/8/2 §7.5.4.8, issue #518).
+                                "authorisation_required": s.authorisation_required,
+                                "access": if s.authorisation_required {
+                                    "needs tunnelling credentials"
+                                } else {
+                                    "open"
+                                },
                                 "usable": s.usable,
                             })
                         })

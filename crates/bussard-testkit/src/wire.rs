@@ -69,7 +69,7 @@ pub fn hpai_matches(hpai: &[u8], peer: SocketAddr) -> bool {
 /// A DESCRIPTION_RESPONSE body: a 54-octet device-info DIB named `name` (IA
 /// 1.0.0, TP1), followed by a tunnelling-info DIB with `slots` slots, of which
 /// the first `in_use` are occupied. Slot IAs start at 1.0.241. Every slot is
-/// usable and authorized. With `slots == 0` the tunnelling DIB is still
+/// usable and needs no authorisation. With `slots == 0` the tunnelling DIB is still
 /// appended (4 octets); slice `[..54]` to model an interface without one.
 pub fn description_response_body(name: &str, slots: usize, in_use: usize) -> Vec<u8> {
     let mut body = vec![0u8; 54];
@@ -86,7 +86,8 @@ pub fn description_response_body(name: &str, slots: usize, in_use: usize) -> Vec
     body.extend_from_slice(&248u16.to_be_bytes()); // max APDU
     for slot in 0..slots {
         body.extend_from_slice(&(0x10F1u16 + slot as u16).to_be_bytes());
-        // Status bits: free = 0x01, authorized = 0x02, usable = 0x04.
+        // Status bits: free = 0x01, no authorisation required = 0x02 (read
+        // outside a secure session), usable = 0x04.
         let mut status = 0x0006u16;
         if slot >= in_use {
             status |= 0x0001;

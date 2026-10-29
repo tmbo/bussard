@@ -191,6 +191,11 @@ async fn test_knx_audit_live_reports_tunnel_slots() -> TestResult {
     assert_eq!(gateway["name"], "Mock Gate");
     assert_eq!(gateway["tunnels"], 2);
     assert_eq!(gateway["tunnels_in_use"], 1);
+    // The slot bit read outside a session (issue #518): these slots are open.
+    let slot = &gateway["tunnel_slots"][0];
+    assert_eq!(slot["authorisation_required"], false, "{slot}");
+    assert_eq!(slot["access"], "open", "{slot}");
+    assert!(slot.get("authorized").is_none(), "{slot}");
     assert!(report["live"]["scan"].is_null());
     assert_eq!(report["live"]["traffic"]["telegrams"], 0);
     Ok(())
