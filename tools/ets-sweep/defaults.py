@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -49,7 +50,9 @@ def sweep_search_term(order: str) -> str:
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
-CORPUS = REPO / "tests-support" / "product-corpus" / "cache" / "vendor"
+# The product corpus (vendor data, never committed): $BUSSARD_PRODUCT_CORPUS
+# as the sim catalog loop takes it (a worktree points it at the main checkout's).
+CORPUS = Path(os.environ.get("BUSSARD_PRODUCT_CORPUS", REPO / "tests-support" / "product-corpus")) / "cache" / "vendor"
 APPS = HERE / "catalog-apps.json"
 CATALOG = HERE / "catalog.json"
 RESULTS = HERE / "results" / "defaults.json"
@@ -118,6 +121,52 @@ def catalog_sibling(job: dict, r: dict, everything: dict[str, dict]) -> dict | N
                 and other["order_numbers"] == job["order_numbers"] and o.group(3).lower() in wanted):
             return other
     return None
+
+
+def shown_version(text: str) -> tuple[int, int] | None:
+    """The application version a catalog row's Version cell shows, as
+    (major, minor), or None when OCR read no clean version. ETS prints the
+    version octet's nibbles in decimal: 0x1C is '1.12', 0xB1 is '11.1'.
+    Leading noise goes ('. 11.1', '...1.13')."""
+    m = re.search(r"(\d+)\.(\d+)[a-z]?\s*$", text.strip().lower())
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def row_version_mismatch(app: str, row: dict | None) -> str | None:
+    """Why the catalog row ETS added is not the job's application, or None.
+
+    The driver takes the sole local row of an order number without reading
+    its version (OCR truncates that cell), so ETS can download another
+    version of the application than the sim plays: Busch-Jaeger
+    `A-6109-50-71A0` ran against the row of version 1.1 and its capture was
+    `A-6109-11` byte for byte (2026-10-29). A shown version that ends in the
+    job's version passes (OCR adds a digit in front at times: '21.2' for
+    1.2); an unreadable one passes too, the image comparison catches it."""
+    m = APP_ID.match(app)
+    shown = shown_version((row or {}).get("version") or "")
+    if not m or shown is None:
+        return None
+    v = int(m.group(3), 16)
+    want = f"{v >> 4}.{v & 0xF}"
+    have = f"{shown[0]}.{shown[1]}"
+    if have == want or have.endswith(want) and have[-len(want) - 1].isdigit():
+        return None
+    return f"catalog row shows version {have}, the job is {want}"
+
+
+def relabel_wrong_rows(results: dict) -> list[str]:
+    """Marks every `captured` result whose catalog row shows another
+    application version as `skipped-catalog-version` (no VM needed);
+    returns the application ids it changed."""
+    changed = []
+    for app, r in results.items():
+        if r.get("outcome") != "captured":
+            continue
+        why = row_version_mismatch(app, r.get("row"))
+        if why:
+            r.update(outcome="skipped-catalog-version", error=why)
+            changed.append(app)
+    return changed
 
 
 def seed_properties(path: Path, app: str, prev: dict | None) -> list[dict] | None:
@@ -230,9 +279,17 @@ def main() -> int:
                     help="close ETS and clear its product store once this many products were imported")
     ap.add_argument("--in-catalog", type=int, default=0, help="products already in ETS's catalog at the start")
     ap.add_argument("--redo-failed", action="store_true", help="run again what is not `captured` or skipped")
+    ap.add_argument("--relabel", action="store_true",
+                    help="only mark captured results whose catalog row shows another version (no VM)")
     args = ap.parse_args()
 
     results = json.loads(RESULTS.read_text()) if RESULTS.exists() else {}
+    if args.relabel:
+        changed = relabel_wrong_rows(results)
+        if changed:
+            RESULTS.write_text(json.dumps(dict(sorted(results.items())), indent=1, ensure_ascii=False) + "\n")
+        print(f"relabelled {len(changed)}: {', '.join(changed)}")
+        return 0
     todo = jobs()
     everything = {j["id"]: j for j in todo}
     wanted = [w.lower() for w in args.filter.split(",") if w]
@@ -385,6 +442,13 @@ def main() -> int:
                     queue.insert(0, {**job, "retried": True})
                     continue
             sibling = catalog_sibling(job, r, everything)
+            wrong_row = row_version_mismatch(job["id"], r.get("catalog_row"))
+            if not sibling and wrong_row and r["outcome"] == "captured":
+                # ETS downloaded another version of the application than the
+                # sim plays: the capture is not this job's.
+                results[job["id"]].update(outcome="skipped-catalog-version", error=wrong_row)
+                save()
+                print(f"refused {job['id']}: {wrong_row}", flush=True)
             if sibling and r["outcome"] != "skipped-catalog-version":
                 # Recorded as what it was: ETS ran the sibling's application.
                 results[job["id"]].update(outcome="skipped-catalog-version",

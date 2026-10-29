@@ -172,10 +172,40 @@ the knx-sim device config); the learned values are kept per application.
 `oracle.py` builds a scratch model per captured application (one device
 1.1.1 at its defaults, no links; `oracle_model.py`) and runs the offline
 oracle row against the capture into `results/oracle.json`, the load-control
-verdict and its differences under `loadctl` (#419). From a worktree, read the
+verdict and its differences under `loadctl` (#419). Each product file is
+imported once, into `.oracle-products/<sha>/`, and every row's model links
+that import and pins its own device: a row of the 152 MB ABB catalogue takes
+seconds and 228 KB instead of 3.5 minutes and 1.6 GB. From a worktree, read the
 main checkout's captures and write nothing under them:
 `--captures <main>/captures/ets-sweep --work <scratch> --seed-models` (the last
-copies the model the sweep already imported instead of importing again).
+takes the model the sweep already imported as the product import, once per
+file). `BUSSARD_PRODUCT_CORPUS` points a worktree at the main checkout's
+corpus (`<main>/tests-support/product-corpus`).
+
+**Wrong catalog row.** The driver takes the sole local catalog row of an order
+number without checking its version cell (OCR truncates it). When the version
+the row shows is readable and is not the job's, `defaults.py` records the job
+as `skipped-catalog-version` instead of `captured` (Busch-Jaeger
+`A-6109-50-71A0` ran against the row of version 1.1, 2026-10-29). ETS prints
+the version octet's nibbles in decimal (0x1C is `1.12`, 0xB1 is `11.1`).
+`defaults.py --relabel` applies the rule to the results already recorded,
+without the VM.
+
+## Manifest and parity summary
+
+    uv run tools/ets-sweep/summary.py [--results DIR] [--no-history]
+
+writes, next to the results: `manifest.json` (per application its labels only:
+product file, mask, manufacturer, sweep outcome, oracle and load-control
+verdict, coverage, and the ETS version of the run), `summary.md` (outcome
+counts, identical / benign / differs per mask family and per manufacturer,
+the verdict changes since the previous manifest) and `changes.json`; each
+manifest is also kept as `history/manifest-<stamp>.json`. `benign.json`
+(application id to reason, kept by hand) turns an explained `differs` into
+`benign`. An application whose capture is newer than its oracle row is
+`pending`.
+
+Offline tests of the Mac-side pieces: `uv run tools/ets-sweep/test_ets_sweep.py`.
 
 What ETS needed from the sim in this part: connectionless
 `A_DeviceDescriptor_Read` / `A_PropertyValue_Read` (ETS probes KNX Secure

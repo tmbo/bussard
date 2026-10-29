@@ -1,0 +1,183 @@
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["paramiko", "pyyaml"]
+# ///
+"""Offline tests of the ETS sweep's Mac-side tooling (no VM, no ETS, no bus).
+
+    uv run tools/ets-sweep/test_ets_sweep.py [-v]
+"""
+from __future__ import annotations
+
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import defaults  # noqa: E402
+import oracle_model  # noqa: E402
+import summary  # noqa: E402
+
+
+class TestRowVersion(unittest.TestCase):
+    def test_shown_version_noise_and_suffix(self):
+        self.assertEqual(defaults.shown_version(". 11.1"), (11, 1))
+        self.assertEqual(defaults.shown_version("...1.13"), (1, 13))
+        self.assertEqual(defaults.shown_version("1.0a"), (1, 0))
+        self.assertIsNone(defaults.shown_version(""))
+        self.assertIsNone(defaults.shown_version("Ver"))
+
+    def test_row_version_mismatch_wrong_row_refused(self):
+        # Busch-Jaeger A-6109-50 ran against the catalog row of version 1.1.
+        why = defaults.row_version_mismatch("M-0007_A-6109-50-71A0", {"version": "1.1"})
+        self.assertEqual(why, "catalog row shows version 1.1, the job is 5.0")
+
+    def test_row_version_mismatch_decimal_minor_passes(self):
+        # ETS prints the nibbles in decimal: 0x1C is 1.12, 0xB1 is 11.1.
+        self.assertIsNone(defaults.row_version_mismatch("M-0071_A-45C1-1C-7989", {"version": "1.12"}))
+        self.assertIsNone(defaults.row_version_mismatch("M-0002_A-0806-B1-C2E4-O0007", {"version": ". 11.1"}))
+        self.assertIsNone(defaults.row_version_mismatch("M-0071_A-4B51-1D-B865", {"version": "...1.13"}))
+
+    def test_row_version_mismatch_ocr_digit_in_front_passes(self):
+        self.assertIsNone(defaults.row_version_mismatch("M-0071_A-4821-12-2859", {"version": "21.2"}))
+
+    def test_row_version_mismatch_unreadable_passes(self):
+        self.assertIsNone(defaults.row_version_mismatch("M-0007_A-6109-50-71A0", {"version": ""}))
+        self.assertIsNone(defaults.row_version_mismatch("M-0007_A-6109-50-71A0", None))
+
+    def test_relabel_wrong_rows_only_captured(self):
+        results = {
+            "M-0007_A-6109-50-71A0": {"outcome": "captured", "row": {"version": "1.1"}},
+            "M-0002_A-6109-50-8FF2-O0007": {"outcome": "captured", "row": {"version": "5.0"}},
+            "M-0007_A-6109-40-0000": {"outcome": "ets-failed", "row": {"version": "1.1"}},
+        }
+        self.assertEqual(defaults.relabel_wrong_rows(results), ["M-0007_A-6109-50-71A0"])
+        self.assertEqual(results["M-0007_A-6109-50-71A0"]["outcome"], "skipped-catalog-version")
+        self.assertEqual(results["M-0002_A-6109-50-8FF2-O0007"]["outcome"], "captured")
+        self.assertEqual(results["M-0007_A-6109-40-0000"]["outcome"], "ets-failed")
+
+
+LOCK = """# @generated
+version = 3
+
+[[product]]
+sha256 = "SHA"
+file = "products/p.knxprod"
+applications = ["M-00FA_A-0001-10-0000"]
+
+[[device]]
+address = "1.1.1"
+application = "M-00FA_A-0001-10-0000"
+product_sha256 = "SHA"
+"""
+
+
+class TestOracleModel(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, ignore_errors=True))
+        self.product = self.tmp / "p.knxprod"
+        self.product.write_bytes(b"not a zip, only hashed")
+
+    def shared(self) -> Path:
+        """A fake shared import (what `bussard import-product` leaves)."""
+        sha = oracle_model.product_sha(self.product)
+        d = self.tmp / "shared"
+        (d / "products").mkdir(parents=True)
+        for name in oracle_model.SHARED_CACHES:
+            (d / ".bussard" / name).mkdir(parents=True)
+        (d / "bussard.lock").write_text(LOCK.replace("SHA", sha))
+        return d
+
+    def test_strip_devices_keeps_products(self):
+        out = oracle_model.strip_devices(LOCK)
+        self.assertIn("[[product]]", out)
+        self.assertNotIn("[[device]]", out)
+        self.assertNotIn('address = "1.1.1"', out)
+
+    def test_build_shared_links_caches_and_pins_one_device(self):
+        shared = self.shared()
+        model = oracle_model.build(self.tmp / "row" / "model", self.product, "M-00FA_A-0001-10-0000",
+                                   mask="07B0", shared=shared)
+        self.assertTrue((model / "products").is_symlink())
+        for name in oracle_model.SHARED_CACHES:
+            self.assertTrue((model / ".bussard" / name).is_symlink())
+        lock = (model / "bussard.lock").read_text()
+        self.assertEqual(lock.count("[[device]]"), 1)
+        self.assertIn('mask = "07B0"', lock)
+        self.assertIn(oracle_model.product_sha(self.product), lock)
+        # A rebuild replaces the links and still pins exactly one device.
+        oracle_model.build(model, self.product, "M-00FA_A-0001-10-0000", shared=shared)
+        self.assertEqual((model / "bussard.lock").read_text().count("[[device]]"), 1)
+
+    def test_build_links_writes_send_listen_and_groups(self):
+        model = oracle_model.build(self.tmp / "m", self.product, "M-00FA_A-0001-10-0000", shared=self.shared(),
+                                   links={"31": {"send": "1/0/9", "listen": []},
+                                          "1": {"send": "1/0/1", "listen": ["1/0/4"]}})
+        dev = (model / "devices" / "1.1.1.toml").read_text()
+        self.assertIn('1.send = "1/0/1"\n1.listen = ["1/0/4"]\n31.send = "1/0/9"\n', dev)
+        groups = (model / "groups.toml").read_text()
+        self.assertLess(groups.index('"1/0/1"'), groups.index('"1/0/4"'))
+        self.assertLess(groups.index('"1/0/4"'), groups.index('"1/0/9"'))
+
+    def test_shared_import_seed_copies_without_devices(self):
+        seed = self.shared()
+        (seed / "devices").mkdir()
+        out = oracle_model.shared_import(self.tmp / "root", self.product, seed=seed)
+        self.assertEqual(out, oracle_model.shared_dir(self.tmp / "root", self.product))
+        self.assertNotIn("[[device]]", (out / "bussard.lock").read_text())
+        # A second call finds the import and returns it as is.
+        (out / "marker").write_text("x")
+        self.assertTrue((oracle_model.shared_import(self.tmp / "root", self.product) / "marker").exists())
+
+
+class TestSummary(unittest.TestCase):
+    DEFAULTS = {
+        "M-0002_A-0001-10-0000": {"outcome": "captured", "when": "t1", "mask": "07B0", "file": "abb.knxprod"},
+        "M-0002_A-0002-10-0000": {"outcome": "captured", "when": "t1", "mask": "0701", "file": "abb.knxprod"},
+        "M-0083_A-0003-10-0000": {"outcome": "captured", "when": "t2", "mask": "07B0", "file": "mdt.knxprod"},
+        "M-0083_A-0004-10-0000": {"outcome": "ets-failed", "when": "t1", "mask": "07B0", "file": "mdt.knxprod"},
+        "M-0083_A-0005-10-0000": {"outcome": "captured", "when": "t3", "mask": "07B0", "file": "mdt.knxprod"},
+    }
+    ORACLE = {
+        "M-0002_A-0001-10-0000": {"verdict": "identical", "capture_when": "t1", "loadctl": {"verdict": "identical"}},
+        "M-0002_A-0002-10-0000": {"verdict": "differs", "capture_when": "t1"},
+        "M-0083_A-0003-10-0000": {"verdict": "differs", "capture_when": "t2"},
+        # Compared against an older capture: pending.
+        "M-0083_A-0005-10-0000": {"verdict": "identical", "capture_when": "t0"},
+    }
+
+    def manifest(self, oracle=None, benign=None):
+        return summary.build_manifest(self.DEFAULTS, oracle or self.ORACLE, benign or {}, {"ets_version": "6.4.1"}, "now")
+
+    def test_verdict_of_pending_benign_and_outcome(self):
+        m = self.manifest(benign={"M-0002_A-0002-10-0000": "known template tail"})["apps"]
+        self.assertEqual(m["M-0002_A-0001-10-0000"]["verdict"], "identical")
+        self.assertEqual(m["M-0002_A-0002-10-0000"]["verdict"], "benign")
+        self.assertEqual(m["M-0083_A-0003-10-0000"]["verdict"], "differs")
+        self.assertEqual(m["M-0083_A-0004-10-0000"]["verdict"], "ets-failed")
+        self.assertEqual(m["M-0083_A-0005-10-0000"]["verdict"], "pending")
+        self.assertEqual(m["M-0083_A-0003-10-0000"]["manufacturer"], "M-0083")
+
+    def test_changes_flags_identical_to_differs(self):
+        before = self.manifest()
+        oracle = json.loads(json.dumps(self.ORACLE))
+        oracle["M-0002_A-0001-10-0000"]["verdict"] = "differs"
+        oracle["M-0083_A-0003-10-0000"]["verdict"] = "identical"
+        delta = summary.changes(before, self.manifest(oracle))
+        self.assertEqual([(d["app"], d["before"], d["after"], d["regression"]) for d in delta],
+                         [("M-0002_A-0001-10-0000", "identical", "differs", True),
+                          ("M-0083_A-0003-10-0000", "differs", "identical", False)])
+        self.assertEqual(summary.changes(None, before), [])
+
+    def test_render_tables(self):
+        text = summary.render(self.manifest(), [])
+        self.assertIn("ETS 6.4.1", text)
+        self.assertIn("| 07B0 | 1 | 1 |", text.replace("|  |", "|"))
+        self.assertIn("| M-0083 | mdt.knxprod |", text)
+        self.assertIn("None.", text)
+
+
+if __name__ == "__main__":
+    unittest.main()

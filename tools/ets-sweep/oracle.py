@@ -15,8 +15,15 @@ row `1.1.1|<capture>|<product>|<application>`. The verdict, coverage and the
 region summary land in results/oracle.json, keyed by application id, with the
 load-control verdict and its differences under `loadctl` (issue #419). Nothing
 touches a bus; the model and the oracle output live next to the capture under
-captures/ (ignored), or under --work DIR/<application> (a worktree reads the
-main checkout's captures with --captures and writes nowhere under them).
+captures/ (ignored), or under --work DIR/<application>/<variant> (a worktree
+reads the main checkout's captures with --captures and writes nowhere under
+them).
+
+Each product file is imported once, into `.oracle-products/<sha>/` under
+--work (else under the captures directory), and every row's model links that
+import (`oracle_model.shared_import`): a row of the 152 MB ABB catalogue costs
+seconds instead of minutes and 1.6 GB. --seed-models takes the model the
+sweep imported next to a capture as that import.
 """
 from __future__ import annotations
 
@@ -24,7 +31,6 @@ import argparse
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -73,22 +79,25 @@ def catalog_row_name(run_dir: Path) -> str | None:
     return row.get("name")
 
 
-def run_row(app: str, entry: dict, captures: Path, work: Path | None, seed: bool = False) -> dict:
-    run_dir = captures / app / "plain-defaults"
-    work_dir = work / app if work else run_dir
+def shared_root(captures: Path, work: Path | None) -> Path:
+    """Where the per-product imports live: under --work, else next to the
+    captures (both outside git)."""
+    return (work or captures) / ".oracle-products"
+
+
+def run_row(app: str, entry: dict, captures: Path, work: Path | None, seed: bool = False,
+            variant: str = "plain-defaults", links: dict | None = None) -> dict:
+    run_dir = captures / app / variant
+    work_dir = work / app / variant if work else run_dir
     capture = run_dir / "ets.pcapng"
     product = defaults.product_path(entry["file"])
-    model = work_dir / "model"
-    if seed and work and not model.exists() and (run_dir / "model" / "bussard.lock").exists():
-        # A copy of the model the sweep already imported: a large product
-        # takes minutes to import with a debug build.
-        shutil.copytree(run_dir / "model", model, symlinks=True)
-    lock = model / "bussard.lock"
-    if not (seed and lock.exists() and "[[device]]" in lock.read_text()):
-        model = oracle_model.build(model, product, app, mask=entry.get("mask", ""),
-                                   friendly_name=catalog_row_name(run_dir))
-    else:
-        oracle_model.ensure_knxnet(model, product, app, friendly_name=catalog_row_name(run_dir))
+    # The product file is imported once and shared by every row of it; with
+    # --seed-models the model the sweep imported for this row stands in for
+    # the import.
+    seed_dir = run_dir / "model" if seed else None
+    shared = oracle_model.shared_import(shared_root(captures, work), product, seed=seed_dir)
+    model = oracle_model.build(work_dir / "model", product, app, mask=entry.get("mask", ""),
+                               friendly_name=catalog_row_name(run_dir), shared=shared, links=links)
     row = f"1.1.1|{capture}|{product}|{app}"
     r = subprocess.run(["bash", str(ORACLE), "--dir", str(model), "--out", str(work_dir / "oracle"), "--row", row],
                        capture_output=True, text=True, timeout=1800, env={**os.environ, "BUSSARD_NO_DOTENV": "1"})
@@ -119,7 +128,7 @@ def main() -> int:
     ap.add_argument("--work", type=Path, help="write the models and oracle output here, not next to the captures")
     ap.add_argument("--out", type=Path, default=OUT, help="the results file (default %(default)s)")
     ap.add_argument("--seed-models", action="store_true",
-                    help="with --work: start from a copy of the model next to the capture instead of importing")
+                    help="take the model the sweep imported next to a capture as the product import instead of importing (once per product file)")
     ap.add_argument("--defaults", type=Path, default=defaults.RESULTS, help="the sweep results (default %(default)s)")
     args = ap.parse_args()
     res = json.loads(args.defaults.read_text())
