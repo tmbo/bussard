@@ -1206,8 +1206,11 @@ def dismiss_ets_error() -> str | None:
     joined = " ".join(l["text"] for l in lines)
     if "Fehler" not in joined:
         return None
-    ok = find_text("OK", (2400, 1180, 2800, 1260), min_ratio=0.6)
-    if ok:
+    # The dialog grows with its text: its OK sat at y=1226 once and y=1460
+    # another time (2026-10-29), so look for it in the whole lower half.
+    oks = [l for l in ocr((1300, 1100, 2800, 1700)) if l["text"].strip() == "OK"]
+    if oks:
+        ok = oks[0]
         click(ok["x"] + ok["w"] // 2, ok["y"] + ok["h"] // 2)
     else:
         click(2600, 1226)
