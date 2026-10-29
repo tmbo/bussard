@@ -1254,7 +1254,7 @@ fn run_cli_apply(gw: &MockGateway, dir: &Path) -> TestResult<(bool, String, Stri
         .arg("1.1.10")
         .arg("--yes")
         .arg("--dir")
-        .arg(&dir)
+        .arg(dir)
         .arg("--gateway")
         .arg(format!("127.0.0.1:{}", gw.port()))
         .arg("--keyring")
