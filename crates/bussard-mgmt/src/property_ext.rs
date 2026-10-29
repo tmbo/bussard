@@ -34,11 +34,13 @@
 //! function-property state response carries a return code and then the data.
 //! A return code of `0x00` is success.
 //!
-//! The `A_PropertyExtDescription_*` layout is not in the capture. It follows the
-//! published KNX application layer (KNX 3/3/7): the read carries a 4-bit
-//! description type and a 12-bit property index after the header, and the
-//! response adds a 4-octet datapoint type, the PDT octet with the write-enable
-//! bit, a 12-bit maximum element count and the access-level octet (INFERRED).
+//! The `A_PropertyExtDescription_*` layout is not in a capture; it is the one
+//! KNX 3/3/7 §3.4.3.2 Figures 44 and 45 give (CONFIRMED by clause, issue
+//! #197): the read carries a 4-bit description type and a 12-bit property
+//! index after the header, and the response the same word, a 4-octet
+//! datapoint type (main, sub), the octet with the write-enable bit, a reserved
+//! bit and the 6-bit PDT, the 2-octet maximum element count and the
+//! access-level octet (read level, write level).
 //!
 //! Key material: the group key table (PID 53) and the tool key (PID 56) are
 //! written with these services. Nothing in this module logs a value, and the
@@ -309,7 +311,8 @@ pub struct PropertyExtDescription {
     pub write_enable: bool,
     /// The property data type (PDT, 6 bits).
     pub pdt: u8,
-    /// The maximum number of elements (12 bits); 0 means "no such property".
+    /// The maximum number of elements (the 2-octet `max_nr_of_elem` of KNX
+    /// 3/3/7 Figure 45); 0 means "no such property".
     pub max_elements: u16,
     /// The read access level (upper nibble of the access octet).
     pub read_level: u8,
@@ -326,13 +329,13 @@ pub fn encode_property_ext_description_response(desc: &PropertyExtDescription) -
     out.extend_from_slice(&desc.dpt_main.to_be_bytes());
     out.extend_from_slice(&desc.dpt_sub.to_be_bytes());
     out.push(if desc.write_enable { 0x80 } else { 0x00 } | (desc.pdt & 0x3F));
-    out.extend_from_slice(&(desc.max_elements & 0x0FFF).to_be_bytes());
+    out.extend_from_slice(&desc.max_elements.to_be_bytes());
     out.push((desc.read_level << 4) | (desc.write_level & 0x0F));
     out
 }
 
-/// Decodes an `A_PropertyExtDescription_Response` (15 octets, see the module
-/// docs; INFERRED from the KNX application layer, not yet seen in a capture).
+/// Decodes an `A_PropertyExtDescription_Response` (15 octets, KNX 3/3/7
+/// §3.4.3.2 Figure 45, see the module docs; not yet seen in a capture).
 pub fn decode_property_ext_description_response(payload: &[u8]) -> Option<PropertyExtDescription> {
     let addr = PropertyExtAddress::decode(payload)?;
     let p = payload.get(5..15)?;
@@ -345,7 +348,7 @@ pub fn decode_property_ext_description_response(payload: &[u8]) -> Option<Proper
         dpt_sub: u16::from_be_bytes([p[4], p[5]]),
         write_enable: p[6] & 0x80 != 0,
         pdt: p[6] & 0x3F,
-        max_elements: u16::from_be_bytes([p[7], p[8]]) & 0x0FFF,
+        max_elements: u16::from_be_bytes([p[7], p[8]]),
         read_level: p[9] >> 4,
         write_level: p[9] & 0x0F,
     })
@@ -1043,7 +1046,8 @@ mod tests {
             dpt_sub: 0,
             write_enable: true,
             pdt: 0x11,
-            max_elements: 1333,
+            // Above 4095: the field is two full octets (Figure 45).
+            max_elements: 5000,
             read_level: 3,
             write_level: 0,
         };
@@ -1093,7 +1097,9 @@ mod tests {
         // as 11 + 5 elements (secure-1-1-5.pcapng, issue #197).
         assert_eq!((inner - PROPERTY_EXT_WRITE_OVERHEAD) / 18, 11);
         // The security IA table (8-octet elements) packs the same way: 26
-        // per telegram (INFERRED, no capture has more than one entry).
+        // per telegram. The ascending order is the standard's (KNX 3/5/1
+        // §6.3.8.3, §6.3.8.5, issue #197); the packing is INFERRED from PID
+        // 53, no capture has more than one entry.
         assert_eq!((inner - PROPERTY_EXT_WRITE_OVERHEAD) / 8, 26);
     }
 

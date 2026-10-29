@@ -178,8 +178,11 @@ pub fn sender_table_bytes(entries: &[SecureSenderEntry]) -> Vec<u8> {
 /// - `extra` adds more senders with sequence 0 (bussard's own tunnel address
 ///   via `--secure-sender`), unless already listed or equal to `device`.
 ///
-/// The entries are in ascending individual address, packed like the other
-/// tables of the security object. Evidence (issue #197): all eight decrypted
+/// The entries are in ascending individual address, the order the standard
+/// asks of the tool: the MaC sorts the table by the numerical value of the IA
+/// and rewrites the whole table when an entry changes (KNX 3/5/1 §6.3.8.3,
+/// §6.3.8.5; issue #197), which the count-0 clear before the entries does.
+/// Capture evidence (issue #197): all eight decrypted
 /// ETS downloads (`secure-1-1-{5,7,9,12,16,47,48}.pcapng`,
 /// `secure-1-1-12-group.pcapng`) write PID 54 as the count-0 clear at element
 /// 0 and then at most ONE entry at element 1 (1.1.5: `1110 000000000000`,
@@ -188,9 +191,9 @@ pub fn sender_table_bytes(entries: &[SecureSenderEntry]) -> Vec<u8> {
 /// has no GA with two secured senders. ETS writes the group key table (PID 53)
 /// of the same object in ascending element order, packed to the APDU budget
 /// (CONFIRMED, module docs), and the multi-entry PID 54 follows that shape:
-/// ascending IA, 26 entries per telegram at `PID_MAX_APDU_LENGTH` 233. The
-/// order of several entries stays INFERRED until a device with two secured
-/// senders is captured.
+/// ascending IA, 26 entries per telegram at `PID_MAX_APDU_LENGTH` 233. Only
+/// that packing stays INFERRED until a device with two secured senders is
+/// captured.
 pub fn secured_senders(
     model: Option<&Model>,
     device: IndividualAddress,

@@ -1546,8 +1546,10 @@ greppable.
    2026-09-25: 60 s on the Jung interface (idle probe, alive at 45 s,
    `STATUS_TIMEOUT` at 59.97 s, 3 of 3); the 30 s keepalive is CONFIRMED
    adequate.
-7. **`A_PropertyExtDescription_Response` layout**: not in any capture; bussard
-   follows KNX 3/3/7 (`crates/bussard-mgmt/src/property_ext.rs`), INFERRED.
+7. ~~**`A_PropertyExtDescription_Response` layout**~~ **Settled by the
+   standard** (#197): `[KNX 3/3/7 §3.4.3.2 Figures 44, 45]` give the layout
+   bussard encodes and decodes (`crates/bussard-mgmt/src/property_ext.rs`),
+   with `max_nr_of_elem` as two full octets. No capture holds one yet.
 8. **FDSK QR/label string encoding** - only if commissioning from a scanned label
    (a non-goal, §1.4). `[research §2.6, UNKNOWN]`; the standard does not define
    it either (`[KNX 3/5/1 §6.1.3]`: no standardised access to the FDSK).
