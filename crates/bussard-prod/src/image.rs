@@ -3800,13 +3800,39 @@ mod tests {
         for replacement in [
             r#"<Options DownloadInvisibleParameters="None" />"#,
             r#"<Options DownloadInvisibleParameters="Background" />"#,
-            r#"<Options PreferPartialDownloadIfApplicationLoaded="true" />"#,
         ] {
             let xml = HIDDEN_XML.replace(options, replacement);
             let app = parse_application_program("A", xml.as_bytes())?;
             assert!(!app.downloads_invisible_parameters(), "{replacement}");
             let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
             assert_eq!(images["A_RS-1"], [0, 0, 0, 1], "{replacement}");
+        }
+        Ok(())
+    }
+
+    /// Issue #448: whether hidden parameters carry their defaults depends on
+    /// the system, not on `PreferPartialDownloadIfApplicationLoaded`. A System
+    /// B program without `DownloadInvisibleParameters` writes them even when
+    /// it prefers a partial download (the Busch-Jaeger fan coil controllers);
+    /// a System 7 one keeps the template (Steinel HPD 2, Busch-Jaeger
+    /// `A-FF11-15`).
+    #[test]
+    fn test_compute_parameter_image_dynamic_hidden_defaults_follow_the_system() -> Result<()> {
+        let options = r#"<Options TextParameterEncoding="utf-8" Comparable="false" Reconstructable="false" />"#;
+        let partial = HIDDEN_XML.replace(
+            options,
+            r#"<Options PreferPartialDownloadIfApplicationLoaded="true" />"#,
+        );
+        let app = parse_application_program("A", partial.as_bytes())?;
+        assert!(app.downloads_invisible_parameters());
+        let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
+        assert_eq!(images["A_RS-1"], [0x02, 0x58, 5, 1]);
+        for mask in ["MV-0705", "MV-0701"] {
+            let system7 = HIDDEN_XML.replace("MV-07B0", mask);
+            let app = parse_application_program("A", system7.as_bytes())?;
+            assert!(!app.downloads_invisible_parameters(), "{mask}");
+            let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
+            assert_eq!(images["A_RS-1"], [0, 0, 0, 1], "{mask}");
         }
         Ok(())
     }

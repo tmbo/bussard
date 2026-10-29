@@ -973,21 +973,37 @@ impl ApplicationProgram {
     /// Whether a download writes the parameters the configuration does not
     /// show, with their defaults.
     ///
-    /// ETS does when `<Options>` declares neither `DownloadInvisibleParameters`
-    /// nor `PreferPartialDownloadIfApplicationLoaded="true"` (issue #89),
-    /// established from full-download captures:
+    /// ETS does for a System B program (mask `xxB0`) whose `<Options>` does
+    /// not declare `DownloadInvisibleParameters`; a System 7 (or any other)
+    /// program, and one that declares `None` or `Background`, keeps the
+    /// segment template for them (issues #89 and #448).
+    /// `PreferPartialDownloadIfApplicationLoaded` plays no part, nor does the
+    /// schema version. The split is by system and declaration, established
+    /// from full-download captures of the defaults sweep (#422):
     ///
-    /// * Busch-Jaeger Busch-Wächter PRO 280 (`M-0007_A-6179-82`) and Steinel
-    ///   ControlPro (`M-008E_A-7188-31`), neither attribute: hidden parameters
-    ///   carry their defaults (the Busch-Jaeger's sending cycle 600 behind
-    ///   "Enable group object In operation = No").
-    /// * Jung 230021SU, 390041SR, F50 (`None`) and ABB BE/S16 (`Background`),
-    ///   all with partial download preferred: hidden parameters keep the
-    ///   segment template (the ABB hides the same sending cycle and gets 0).
-    /// * Jung System 7 2116REG, 3181, 3361 (no `DownloadInvisibleParameters`,
-    ///   partial download preferred): the template too.
+    /// * System B, not declared, defaults written: Busch-Wächter PRO 280
+    ///   (`M-0007_A-6179-82`, project/20) and Steinel ControlPro
+    ///   (`M-008E_A-7188-31`, project/11); the Busch-Jaeger fan coil
+    ///   (`A-A0B1`, `A-A0B3`, `A-A0B5`, `A-A0C5`) and valve drive (`A-A0BB`,
+    ///   `A-A0BC`) controllers, which prefer a partial download.
+    /// * System 7, not declared, template kept: Steinel HPD 2 and
+    ///   TruePresence, ekinex, B.E.G. DIM, Zennio Sensato and the Elsner
+    ///   sensors (project/11), Busch-Jaeger `A-FF11-15` (project/20, empty
+    ///   `<Options/>`), ABB / Busch-Jaeger 0701 programs and Jung 2116REG,
+    ///   3181, 3361 (partial download preferred).
+    /// * Declared `None` or `Background`, template kept on both systems: Jung
+    ///   230021SU, 390041SR, F50, ABB BE/S16 and `A-20DE`, Zennio `A-7141`.
     pub fn downloads_invisible_parameters(&self) -> bool {
-        self.download_invisible_parameters.is_none() && !self.prefer_partial_download
+        self.download_invisible_parameters.is_none() && self.is_system_b()
+    }
+
+    /// Whether the program is a System B one: its `MaskVersion` is `xxB0`
+    /// (`07B0` on TP, `27B0`/`57B0` on other media).
+    pub fn is_system_b(&self) -> bool {
+        self.mask_version
+            .as_deref()
+            .and_then(|m| u16::from_str_radix(m.trim(), 16).ok())
+            .is_some_and(|m| m & 0x0FFF == 0x07B0)
     }
 
     /// Whether this is a `PeiProgram` (a second loadable program, not an
@@ -2884,7 +2900,7 @@ mod tests {
     fn test_parse_application_program_download_invisible_parameters() -> Result<()> {
         let xml = |options: &str| {
             format!(
-                r#"<KNX xmlns="http://knx.org/xml/project/20"><ApplicationProgram Id="M-1_A-1" Name="t"><Static>{options}</Static></ApplicationProgram></KNX>"#
+                r#"<KNX xmlns="http://knx.org/xml/project/20"><ApplicationProgram Id="M-1_A-1" Name="t" MaskVersion="MV-07B0"><Static>{options}</Static></ApplicationProgram></KNX>"#
             )
         };
         for (options, declared, partial, writes) in [
@@ -2902,11 +2918,13 @@ mod tests {
                 true,
                 false,
             ),
+            // System B prefers a partial download, but still writes hidden
+            // defaults (the Busch-Jaeger fan coil, issue #448).
             (
                 r#"<Options PreferPartialDownloadIfApplicationLoaded="true"></Options>"#,
                 None,
                 true,
-                false,
+                true,
             ),
         ] {
             let app = parse_application_program_str("M-1_A-1", &xml(options))?;
