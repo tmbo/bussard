@@ -58,19 +58,8 @@
 //! `<Module>` element is reached. So the reached set of this walk is exactly
 //! the active set. A parameter the Dynamic section never shows anywhere (a
 //! pure steering parameter, which only ever has its value) stays active
-//! without a reached ref, with one exception (issue #474): when it also has
-//! no location (no memory, property or union), a type other than `TypeNone`
-//! and the effective `Access="Read"`, a `<choose>` on it whose only branch is
-//! `<when default="true">` takes no branch. The Zennio Flat push buttons
-//! hold their dummy objects behind such a choose on `Flat_AlwaysFALSE` (a
-//! checkbox, `Access="Read"`, `Value="0"`) and ETS leaves them out. ETS
-//! takes the default branch beside another `<when>` (the ABB Modbus
-//! gateway's `signal_N_device_active`, the Flat `numOfButtons`), the only,
-//! default branch on a read-write or `Access="None"` parameter (the ABB
-//! 0701 actuators' `R_Allgemein` and `A_Funktion` channel switches, the
-//! Zennio IRSC `GENERAL` block) and on a `TypeNone` one (the ABB and
-//! Busch-Jaeger `Eingang_A`). The target ref of a reached `<Assign>` counts
-//! as active too: ETS writes it.
+//! without a reached ref. The target ref of a reached `<Assign>` counts as
+//! active too: ETS writes it.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
@@ -121,29 +110,12 @@ pub trait DynamicSource {
     fn argument_allocates(&self, _arg_id: &str) -> Option<i64> {
         None
     }
-    /// Whether the parameter `param_id` only steers the Dynamic section: it
-    /// has no location (no `<Memory>`, no `<Property>`, no `<Union>`), so its
-    /// value is never written (issue #474). `false` when unknown.
-    fn steers_only(&self, _param_id: &str) -> bool {
-        false
-    }
-    /// Whether the parameter `param_id` has a `TypeNone` type, or a type the
-    /// source does not know (issue #474). `false` when unknown.
-    fn is_type_none(&self, _param_id: &str) -> bool {
-        false
-    }
     /// The `InitialValue` of a text parameter, in the source's language:
     /// the value ETS starts a new device with, which wins over the
     /// parameter's and its refs' `Value` (issue #473). `None` when there is
     /// none.
     fn initial_value(&self, _param_id: &str) -> Option<&str> {
         None
-    }
-    /// Whether the app-relative ref `param_ref_id` has the effective
-    /// `Access="Read"` (its own, else its parameter's): ETS shows it read-only
-    /// (issue #474). `false` when unknown.
-    fn ref_read_only(&self, _param_ref_id: &str) -> bool {
-        false
     }
 }
 
@@ -184,17 +156,8 @@ impl<T: DynamicSource + ?Sized> DynamicSource for &T {
     fn argument_allocates(&self, arg_id: &str) -> Option<i64> {
         (**self).argument_allocates(arg_id)
     }
-    fn steers_only(&self, param_id: &str) -> bool {
-        (**self).steers_only(param_id)
-    }
-    fn is_type_none(&self, param_id: &str) -> bool {
-        (**self).is_type_none(param_id)
-    }
     fn initial_value(&self, param_id: &str) -> Option<&str> {
         (**self).initial_value(param_id)
-    }
-    fn ref_read_only(&self, param_ref_id: &str) -> bool {
-        (**self).ref_read_only(param_ref_id)
     }
 }
 
@@ -2086,27 +2049,8 @@ impl Walk {
                             value_of(app, values, instance, self.module_args(scope), param_ref_id)
                         })
                         .and_then(|v| v.trim().parse::<f64>().ok());
-                    // A `<choose>` whose only branch is `default`, on a
-                    // never-shown `Access="Read"` parameter that only steers
-                    // and has a type, takes no branch (issue #474: the Zennio
-                    // Flat `AlwaysFALSE` checkbox). With another `<when>`
-                    // beside it the default is taken (the ABB Modbus
-                    // gateway's `signal_N_device_active`, the Flat
-                    // `numOfButtons`), and so it is on a read-write or
-                    // `Access="None"` one (the ABB `R_Allgemein` and
-                    // `A_Funktion` channel switches, the Zennio IRSC
-                    // `GENERAL`) and on a `TypeNone` one (`Eingang_A`).
-                    let no_default = whens.iter().all(|w| w.test == WhenTest::Default)
-                        && app.ref_read_only(param_ref_id)
-                        && parameter_id(app, param_ref_id).is_some_and(|id| {
-                            !self.placed.contains(id)
-                                && app.steers_only(id)
-                                && !app.is_type_none(id)
-                        });
                     for i in taken_branches(whens.iter().map(|w| &w.test), value) {
-                        if let Some(w) = whens.get(i)
-                            && !(no_default && w.test == WhenTest::Default)
-                        {
+                        if let Some(w) = whens.get(i) {
                             self.run(app, values, &w.children, module, depth);
                         }
                     }

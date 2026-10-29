@@ -1,7 +1,5 @@
-- A `<choose>` whose only branch is `<when default="true">`, on a read-only
-  (`Access="Read"`) parameter that is never shown, has no memory and is not a
-  `TypeNone` label, takes no branch, as in ETS (#474): the Zennio Flat push buttons
-  no longer enable the 4 or 5 dummy objects ETS leaves out of the group-object
-  table. A default branch beside other `<when>`s, and the only default branch on a
-  read-write, `Access="None"` or `TypeNone` steering parameter (ABB and
-  Busch-Jaeger channel switches, Zennio IRSC), is still taken.
+- The group-object table leaves out a reached, unlinked object whose flags are all
+  disabled, as ETS does (#474): the Zennio Flat push buttons no longer enable the
+  4 or 5 "dummy" objects behind `Flat_AlwaysFALSE`. The `<choose>` that reaches them
+  still takes its default branch, as ETS does on the ABB and Busch-Jaeger steering
+  parameters of the same shape.

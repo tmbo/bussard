@@ -182,7 +182,11 @@ fn compare(
     let view_objects: BTreeSet<u16> = shown_objects(&model, products, address)
         .map_err(|e| e.to_string())?
         .iter()
-        .filter_map(|r| app.resolve(r).map(|(base, _)| base.number))
+        // An object with every flag disabled is shown but gets no
+        // descriptor (issue #474).
+        .filter_map(|r| app.resolve(r))
+        .filter(|(base, cref)| !base.flags.merge(cref.flags).to_flags().is_empty())
+        .map(|(base, _)| base.number)
         .filter(|n| *n != 0)
         .collect();
     tally.objects += view_objects.len();
@@ -461,5 +465,31 @@ fn test_parameter_image_is_the_same_under_hidden_and_visible_keys() -> TestResul
     }
     assert!(compared > 0);
     assert!(moved > 0 && kept > 0, "moved {moved}, kept {kept}");
+    Ok(())
+}
+
+/// Issue #474: a reached, unlinked com-object whose flags are all disabled
+/// gets no group-object descriptor, as ETS leaves the Zennio Flat "dummy"
+/// objects out of the table; the fixture's object 4 is one, objects 5 to 8
+/// (reached the same way, with flags) keep theirs. Linked, it gets one.
+#[test]
+fn test_dynamic_group_object_descriptors_leave_out_flagless_objects() -> TestResult {
+    let (id, xml) = FIXTURES
+        .iter()
+        .find(|(id, _)| *id == "M-00FA_A-0563-10-0000")
+        .ok_or("choose activity fixture")?;
+    let app = parse_application_program(id, xml)?;
+    let config = evaluate_dynamic(&app, &BTreeMap::new());
+    let asaps: BTreeSet<u16> = dynamic_group_object_descriptors(&app, &config, &BTreeMap::new())
+        .iter()
+        .map(|d| d.asap)
+        .collect();
+    assert_eq!(asaps, BTreeSet::from([1, 5, 6, 7, 8]));
+    let linked = BTreeMap::from([(4u16, bussard_download::compute::LinkedObject::default())]);
+    let asaps: BTreeSet<u16> = dynamic_group_object_descriptors(&app, &config, &linked)
+        .iter()
+        .map(|d| d.asap)
+        .collect();
+    assert!(asaps.contains(&4), "{asaps:?}");
     Ok(())
 }

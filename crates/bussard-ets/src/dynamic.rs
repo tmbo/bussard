@@ -90,40 +90,8 @@ impl DynamicSource for ApplicationProgram {
         self.argument_allocates.get(arg_id).copied()
     }
 
-    fn steers_only(&self, param_id: &str) -> bool {
-        self.parameters
-            .get(param_id)
-            .is_some_and(|p| p.memory.is_none() && p.property.is_none())
-            && !self
-                .unions
-                .iter()
-                .any(|u| u.members.iter().any(|m| m.parameter == param_id))
-    }
-
-    fn is_type_none(&self, param_id: &str) -> bool {
-        // A parameter without a known type is `!none` in the product model
-        // too, so both sources answer alike.
-        self.parameters.get(param_id).is_some_and(|p| {
-            p.parameter_type
-                .as_deref()
-                .and_then(|t| self.parameter_types.get(t))
-                .is_none_or(|d| matches!(d.kind, ParameterType::None))
-        })
-    }
-
     fn initial_value(&self, param_id: &str) -> Option<&str> {
         self.parameters.get(param_id)?.initial_value.as_deref()
-    }
-
-    fn ref_read_only(&self, param_ref_id: &str) -> bool {
-        let Some(pref) = ApplicationProgram::parameter_ref(self, param_ref_id) else {
-            return false;
-        };
-        let param = self.parameters.get(&pref.ref_id);
-        pref.access
-            .as_deref()
-            .or(param.and_then(|p| p.access.as_deref()))
-            == Some("Read")
     }
 }
 

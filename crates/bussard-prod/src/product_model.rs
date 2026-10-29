@@ -498,10 +498,6 @@ struct ParameterModel {
     default: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     memory: Option<MemoryModel>,
-    /// Whether the value lives in an interface-object property instead of
-    /// memory (issue #474: a parameter with neither only steers).
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    property: bool,
     /// A text parameter's `InitialValue`, translated (issue #473).
     #[serde(skip_serializing_if = "Option::is_none")]
     initial_value: Option<String>,
@@ -534,9 +530,6 @@ struct RefModel {
     /// title of a page the ref names (`ParamRefId`).
     #[serde(skip_serializing_if = "Option::is_none")]
     text: Option<String>,
-    /// The effective `Access` is `Read` (issue #474).
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    read_only: bool,
 }
 
 /// A parameter's type, tagged by shape.
@@ -831,7 +824,6 @@ fn parameters_for(app: &ApplicationProgram) -> Vec<ParameterModel> {
                     offset: m.offset,
                     bit_offset: m.bit_offset,
                 }),
-                property: param.property.is_some(),
                 initial_value: param.initial_value.clone(),
                 base_value: param
                     .base_value
@@ -865,7 +857,6 @@ fn ref_model(
             .flatten(),
         internal: pref.access.as_deref().or(param.access.as_deref()) == Some("None"),
         text: pref.text.clone().filter(|_| pref.text != param.text),
-        read_only: pref.access.as_deref().or(param.access.as_deref()) == Some("Read"),
     }
 }
 

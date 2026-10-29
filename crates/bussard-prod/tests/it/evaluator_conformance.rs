@@ -681,25 +681,23 @@ fn test_evaluate_dynamic_choose_on_an_unreached_ref_selects_no_branch() -> TestR
 }
 
 #[test]
-fn test_evaluate_dynamic_never_shown_steering_parameter_takes_no_default_branch() -> TestResult {
+fn test_evaluate_dynamic_never_shown_steering_parameter_takes_its_default_branch() -> TestResult {
     let app = parse_application_program(CHOOSE_ACTIVITY_ID, CHOOSE_ACTIVITY)?;
     let (objects, refs) = reached(&app, &[]);
-    // "AlwaysFalse" (a checkbox without memory, never shown): its only,
-    // default branch is not taken. "Input A" (TypeNone) takes its default
-    // branch, "Variant" its matching one, "Device active" its default one
-    // beside a "0" branch, and the read-write "General" its only, default
-    // one.
-    assert!(!objects.contains("O-4_R-4"), "{objects:?}");
-    assert!(!refs.contains("P-8_R-8"), "{refs:?}");
-    for present in ["O-5_R-5", "O-6_R-6", "O-7_R-7", "O-8_R-8"] {
+    // ETS takes the default branch on a never-shown steering parameter,
+    // read-only or not, typed or `TypeNone` (issue #474: the sweep oracle
+    // over the Busch-Jaeger A-A072 and ABB A-A00F). The Flat "dummy" objects
+    // are left out by the table builder, not the walk.
+    for present in ["O-4_R-4", "O-5_R-5", "O-6_R-6", "O-7_R-7", "O-8_R-8"] {
         assert!(objects.contains(present), "{present} missing: {objects:?}");
     }
-    // The image leaves "Dummy" at the erased fill.
+    assert!(refs.contains("P-8_R-8"), "{refs:?}");
+    // "Dummy" is written at its default.
     let image = bussard_prod::compute_dynamic_parameter_image(&app, &BTreeMap::new())?;
     let seg = image
         .get(&format!("{CHOOSE_ACTIVITY_ID}_RS-04-00000"))
         .ok_or("no parameter segment")?;
-    assert_eq!(seg.get(5), Some(&0xFF));
+    assert_eq!(seg.get(5), Some(&51));
     Ok(())
 }
 

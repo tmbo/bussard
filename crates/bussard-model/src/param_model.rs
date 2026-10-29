@@ -122,10 +122,6 @@ pub struct RefDef {
     /// The ref's own `Text`, where it differs from its parameter's: what
     /// titles a page whose `ParamRefId` names the ref.
     pub text: Option<String>,
-    /// Whether the ref's effective `Access` is `Read` (`read_only:`, format
-    /// 10, issue #474).
-    #[serde(default)]
-    pub read_only: bool,
 }
 
 /// One com-object of a product model, reduced to what a view shows.
@@ -157,8 +153,7 @@ pub struct ObjectDef {
 /// not Low, issue #541; format 9 a Data-Secure-capable application's table
 /// capacities, `data_secure:`, issue #537; format 10 `<Repeat>` nodes, a
 /// module's computed arguments, `allocators:` and `argument_allocates:`,
-/// issue #449, a parameter's `property:` flag and a ref's `read_only:`,
-/// issue #474, and a text
+/// issue #449, and a text
 /// parameter's `initial_value:`, issue #473).
 pub const MODEL_FORMAT: u32 = 10;
 
@@ -209,11 +204,6 @@ pub struct ParamDef {
     /// For an enumeration, its members (code and label): what an override
     /// written as a label is matched against. Empty for other kinds.
     pub enum_values: Vec<crate::dynamic::EnumValue>,
-    /// Whether the value is stored: the parameter has a `memory:` location,
-    /// a `property: true` one, or is a `<Union>` member. A parameter without
-    /// one only steers the Dynamic section (issue #474).
-    #[serde(default)]
-    pub stored: bool,
     /// A text parameter's `InitialValue` in the model's language
     /// (`initial_value:`, format 10, issue #473): the value a new device
     /// starts with, which wins over the `Value`s as the default.
@@ -317,10 +307,6 @@ struct RawParam {
     #[serde(default)]
     signed: bool,
     #[serde(default)]
-    memory: Option<serde::de::IgnoredAny>,
-    #[serde(default)]
-    property: bool,
-    #[serde(default)]
     initial_value: Option<String>,
 }
 
@@ -332,8 +318,6 @@ struct RawRef {
     internal: bool,
     #[serde(default)]
     text: Option<String>,
-    #[serde(default)]
-    read_only: bool,
 }
 
 // Some fields exist only to consume the YAML shape faithfully; the validator
@@ -442,7 +426,6 @@ impl ProductModel {
                         value: def.value,
                         internal: def.internal,
                         text: def.text,
-                        read_only: def.read_only,
                     },
                 );
             }
@@ -458,7 +441,6 @@ impl ProductModel {
                     base_value: p.base_value,
                     integer_width: p.bits.map(|bits| (bits, p.signed)),
                     enum_values,
-                    stored: p.memory.is_some() || p.property,
                     initial_value: p.initial_value,
                 },
             );
@@ -637,28 +619,8 @@ impl crate::dynamic::DynamicSource for ProductModel {
         self.argument_allocates.get(arg_id).copied()
     }
 
-    fn steers_only(&self, param_id: &str) -> bool {
-        self.parameters.get(param_id).is_some_and(|p| !p.stored)
-            && !self
-                .unions
-                .iter()
-                .any(|u| u.members.iter().any(|m| m.parameter == param_id))
-    }
-
-    fn is_type_none(&self, param_id: &str) -> bool {
-        self.parameters
-            .get(param_id)
-            .is_some_and(|p| matches!(p.kind, ParamKind::None))
-    }
-
     fn initial_value(&self, param_id: &str) -> Option<&str> {
         self.parameters.get(param_id)?.initial_value.as_deref()
-    }
-
-    fn ref_read_only(&self, param_ref_id: &str) -> bool {
-        self.parameter_refs
-            .get(param_ref_id)
-            .is_some_and(|r| r.read_only)
     }
 }
 
