@@ -993,17 +993,26 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                         erase_code,
                         channel_number,
                     } => {
-                        // Send the master reset as a BARE A_Restart (0x380), exactly as
-                        // ETS→KNX-Virtual does on the wire for an LdCtrlMasterReset — NOT
-                        // the confirmed master-reset A_Restart (0x381 + erase/channel).
-                        // The device T_ACKs it at the transport layer and then reboots,
-                        // dropping the L4 connection — the SPEC-REQUIRED single reconnect:
-                        // wait out the reboot, re-establish the connection and re-authorize.
-                        master_reset_via_basic_restart(session.l4(), *erase_code, *channel_number)
+                        // KNX 3/5/2 §3.7.1.2.3: a Master Reset is the confirmed
+                        // A_Restart (restart type 1) with the op's erase code and
+                        // channel number, answered by A_Restart_Response with an
+                        // error code and a process time. KNX Virtual alone gets the
+                        // bare A_Restart (0x380) its ETS capture shows. Either way
+                        // the device reboots and drops the L4 connection: wait it
+                        // out, reconnect and re-authorize. The support rule (error
+                        // code 2 falls back to a basic restart) is in the
+                        // `restart_form` module docs.
+                        if plan.targets_knx_virtual() {
+                            master_reset_via_basic_restart(
+                                session.l4(),
+                                *erase_code,
+                                *channel_number,
+                            )
                             .await?;
-                        // Wait out the reboot with a bounded poll (not a fixed
-                        // sleep) and re-establish the authorized connection.
-                        session.reconnect_after_reboot().await?;
+                            session.reconnect_after_reboot().await?;
+                        } else {
+                            master_reset_confirmed(session, *erase_code, *channel_number).await?;
+                        }
 
                         // The master reset ERASES the app object's load state (back to
                         // `Unloaded`) and drops the segment allocated before it (erase
@@ -1506,6 +1515,49 @@ pub(super) async fn write_image<C: Connector, F: FnMut(Progress)>(
                 session.reconnect().await?;
             }
             Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Runs a load procedure's `LdCtrlMasterReset` in the confirmed form (KNX
+/// 3/5/2 §3.7.1.2.3) and waits out the reboot.
+///
+/// - Error code 0: wait at least the announced process time (§3.7.1.2.2),
+///   then reconnect.
+/// - Error code 2, "unsupported erase code": the device does not support this
+///   Master Reset, so, as §3.7.1.2.3.1 requires of a client that finds no
+///   support, only a Basic Restart is sent.
+/// - Any other error code (access denied, invalid channel) fails the flash.
+/// - No answer: the device may have rebooted without one; the bounded
+///   reboot poll decides, as for the confirmed restart at the end.
+async fn master_reset_confirmed<C: Connector>(
+    session: &mut Session<C>,
+    erase_code: u8,
+    channel_number: u8,
+) -> Result<(), WriteError> {
+    match bussard_mgmt::master_reset(session.l4(), erase_code, channel_number).await {
+        Ok(response) => {
+            session
+                .reconnect_after_master_reset(
+                    RestartKind::MasterReset,
+                    bussard_mgmt::restart_process_wait(&response),
+                )
+                .await
+        }
+        Err(WriteError::RestartRefused { error_code: 2, .. }) => {
+            tracing::warn!(
+                erase_code,
+                channel_number,
+                "master reset answered \"unsupported erase code\"; sending a basic restart \
+                 instead (KNX 3/5/2 §3.7.1.2.3.1)"
+            );
+            master_reset_via_basic_restart(session.l4(), erase_code, channel_number).await?;
+            session.reconnect_after_reboot().await
+        }
+        Err(err @ WriteError::RestartRefused { .. }) => Err(err),
+        Err(err) => {
+            tracing::debug!(%err, "master reset not answered; polling for the reboot");
+            session.reconnect_after_reboot().await
         }
     }
 }

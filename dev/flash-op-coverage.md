@@ -56,7 +56,7 @@ Table 1) lists the same four as mandatory and the absolute and task records
 | `LdCtrlCompareProp` | DM_InterfaceObjectRead §3.27 plus compare | `FlashStep::CompareProp` (mask honoured, `Range` kept as a no-op) | supported |
 | `LdCtrlCompareRelMem` | memory read at base + offset plus compare | `FlashStep::CompareRelMem` (mask, invert) | supported (2 MDT apps) |
 | `LdCtrlRestart` | Basic Restart §3.7.1.1 (unconfirmed `A_Restart`); the confirmed restart is the Master Reset with erase code 01h (§3.7.1.2 Table 4) | `FlashStep::Restart`; confirmed form for secure-capable applications, bare otherwise | supported |
-| `LdCtrlMasterReset` | Master Reset §3.7.1.2: restart type 1, erase code, channel, confirmed by `A_Restart_Response` | `FlashStep::MasterReset`, sent as a bare `A_Restart` (the ETS to KNX Virtual capture) | parity with one capture: #546 |
+| `LdCtrlMasterReset` | Master Reset §3.7.1.2: restart type 1, erase code, channel, confirmed by `A_Restart_Response` | `FlashStep::MasterReset`: the confirmed form with the op's erase code and channel; a bare `A_Restart` on KNX Virtual only (its ETS capture); error code 2 falls back to a basic restart | no vendor capture; capture plan in `testing-campaign.md` (#546) |
 | `LdCtrlMerge` | none: the `knx_master` splice marker | spliced | supported |
 | `LdCtrlAbsSegment`, `LdCtrlTaskSegment`, `LdCtrlTaskCtrl1`, `LdCtrlTaskPtr`, `LdCtrlTaskCtrl2` | Additional Load Controls subtypes 00h to 05h, §3.31.3.4; optional in the 27B0 profile | System 7 lowering only; refused on System B | by design | Record layout in KNX 3/5/2 §3.31.2, mandatory on 0701/0705 per Profiles Annex A.2.4.1 (#527).
 | `LdCtrlDeclarePropDesc`, `LdCtrlDelay`, other `Raw` | | refused before any write | 2920 only in the corpus |
@@ -103,8 +103,8 @@ The images the table ops stream are built in `crates/bussard-download/src/comput
 No vendor device in the corpus uses `LdCtrlMasterReset`; its only user is KNX
 Virtual. The factory reset bussard sends itself (erase code 7) and the
 confirmed restart (erase code 1) are the Master Reset of 3/5/2 §3.7.1.2 with
-the process time of §3.7.1.2.2 honoured as a minimum wait (capped at 60 s,
-#546).
+the process time of §3.7.1.2.2 honoured as a minimum wait; above 60 s bussard
+logs a warning and still waits it out (#546).
 
 ## Recommendation
 

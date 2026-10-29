@@ -26,6 +26,25 @@
 //! never with a master reset. [`FlashPlan`](super::FlashPlan) therefore adds
 //! its factory reset only where [`restart_form`] is
 //! [`RestartForm::Confirmed`].
+//!
+//! # Master Reset support
+//!
+//! KNX 3/5/2 §3.7.1.2.3.1 has a client verify that the server supports a
+//! Master Reset before it calls one, and call only a Basic Restart otherwise.
+//! The clause names no resource that announces the support, so bussard checks
+//! on the device itself, with the confirmed restart's own error code:
+//!
+//! - The factory reset (erase code 7) opens a download only where this module
+//!   says ETS sends one. Error code 2 ("unsupported erase code") or no answer
+//!   fails the flash before anything is written; `--no-factory-reset` is the
+//!   way past it.
+//! - A load procedure's `LdCtrlMasterReset` goes out in the confirmed form
+//!   with the op's erase code and channel number (§3.7.1.2.3) on every device
+//!   but KNX Virtual, whose ETS capture shows a bare `A_Restart`. Error code 2
+//!   means the device does not support that Master Reset, so the flash sends a
+//!   Basic Restart instead and goes on; any other error code fails it. No
+//!   vendor application in the corpus carries the op (only KNX Virtual's
+//!   DA.tp does), so no capture of the confirmed form exists yet.
 
 use bussard_mgmt::MaskProfile;
 use bussard_prod::ApplicationProgram;

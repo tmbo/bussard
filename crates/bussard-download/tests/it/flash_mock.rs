@@ -710,8 +710,8 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
             s.last_segment_base = 0;
             s.last_segment_size = 0;
         }
-        // error_code = 0x00, process_time = 0x0064 (100, a plausible reboot time).
-        return Reaction::Answer(A_RESTART_RESPONSE, vec![0x00, 0x00, 0x64]);
+        // error_code = 0x00, process_time = 1 s (the tool waits at least that).
+        return Reaction::Answer(A_RESTART_RESPONSE, vec![0x00, 0x00, 0x01]);
     }
     // Basic restart (bare A_Restart, 0x380, no payload). This is BOTH the terminal
     // restart AND — matching ETS→KNX-Virtual — the mid-procedure master reset
@@ -1977,16 +1977,16 @@ fn app_with_write_prop() -> TestResult<ApplicationProgram> {
 
 /// A single-application System B app whose procedure carries an
 /// `LdCtrlMasterReset` (EraseCode 4, ChannelNumber 0) mid-procedure, in the
-/// KNX-Virtual shape: allocate the segment, master-reset the device, then write
+/// KNX-Virtual shape (manufacturer 00FA, so the bare `A_Restart`): allocate the segment, master-reset the device, then write
 /// the segment and complete the load. The master reset reboots the device and
 /// drops the L4 connection, so the download engine must reconnect and resume.
 fn app_with_master_reset() -> TestResult<ApplicationProgram> {
     let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
-     <ApplicationProgram Id="M-5_A-1" ApplicationNumber="1" ApplicationVersion="1"
+     <ApplicationProgram Id="M-00FA_A-0005" ApplicationNumber="1" ApplicationVersion="1"
         MaskVersion="MV-07B0" Name="MasterReset" LoadProcedureStyle="ProductDefault">
       <Static>
        <Code>
-        <RelativeSegment Id="M-5_A-1_RS-1" Size="6" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment>
+        <RelativeSegment Id="M-00FA_A-0005_RS-1" Size="6" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment>
        </Code>
        <LoadProcedures>
         <LoadProcedure>
@@ -2003,7 +2003,7 @@ fn app_with_master_reset() -> TestResult<ApplicationProgram> {
        </LoadProcedures>
       </Static>
      </ApplicationProgram></KNX>"#;
-    Ok(parse_application_program("M-5_A-1", xml.as_bytes())?)
+    Ok(parse_application_program("M-00FA_A-0005", xml.as_bytes())?)
 }
 
 async fn setup(fault: Fault) -> TestResult<(Transport, Shared, MockGateway)> {
@@ -3507,6 +3507,63 @@ async fn flash_master_reset_reconnects_and_reaches_loaded() -> TestResult {
         );
     }
 
+    let _ = handle.close().await;
+    drop(gw);
+    unsafe {
+        std::env::remove_var("BUSSARD_FLASH_REBOOT_WAIT_MS");
+    }
+    Ok(())
+}
+
+/// A load procedure's `LdCtrlMasterReset` on a device other than KNX Virtual
+/// goes out in the confirmed form (KNX 3/5/2 §3.7.1.2.3): `A_Restart` master
+/// reset with the op's erase code and channel number, answered by
+/// `A_Restart_Response`; the flash waits the process time, reconnects and
+/// resumes (issue #546).
+#[tokio::test]
+async fn test_flash_master_reset_uses_the_confirmed_form() -> TestResult {
+    // SAFETY of env: nextest runs this test in its own process; the var only
+    // shortens the post-reboot poll.
+    unsafe {
+        std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
+    }
+    let (handle, state, gw) = setup_bus(Fault::None).await?;
+    lock(&state)?.wipe_app_on_master_reset = true;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source = bussard_bus::ops::group_source(&handle);
+
+    let mut app = app_with_master_reset()?;
+    app.id = "M-0083_A-0005".to_string();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    let connector = LeaseConnector::plain(handle.clone(), target, source, None);
+    let mut session = Session::open_with_key(connector, None).await?;
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await?;
+    let _ = session.into_disconnect().await;
+    assert!(outcome.ok(), "{outcome:?}");
+    {
+        let s = lock(&state)?;
+        assert_eq!(s.master_resets_seen, 1);
+        assert_eq!(
+            s.last_master_reset_payload,
+            vec![4, 0],
+            "the confirmed form carries the erase code and the channel number"
+        );
+        assert!(s.connects >= 2, "reconnected after the reboot");
+    }
     let _ = handle.close().await;
     drop(gw);
     unsafe {

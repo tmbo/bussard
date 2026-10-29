@@ -2422,15 +2422,17 @@ mod tests {
     }
 
     #[test]
-    fn test_restart_process_wait_is_bounded() -> std::result::Result<(), Box<dyn std::error::Error>>
-    {
-        let huge = crate::apci::RestartResponse {
+    fn test_restart_process_wait_is_at_least_the_process_time()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // KNX 3/5/2 §3.7.1.2.2: the process time is a minimum wait; above
+        // MAX_RESTART_PROCESS_WAIT it is logged, not clamped.
+        let long = crate::apci::RestartResponse {
             error_code: 0,
-            process_time_s: u16::MAX,
+            process_time_s: 90,
         };
         assert_eq!(
-            crate::load::restart_process_wait(&huge),
-            crate::load::MAX_RESTART_PROCESS_WAIT
+            crate::load::restart_process_wait(&long),
+            Duration::from_secs(90)
         );
         Ok(())
     }

@@ -430,6 +430,18 @@ restart` capture of the same device. Until then, the mock tests in
 `bussard_service::restart` cover the confirmed (answered, unanswered, error
 code, Data Secure) and basic forms.
 
+**`LdCtrlMasterReset` on a vendor product** (issue #546). A procedure's
+master reset now goes out in the confirmed form of Management Procedures
+03_05_02 §3.7.1.2.3 (`A_Restart` restart type 1 with the op's erase code and
+channel number, answered by `A_Restart_Response`) on every device but KNX
+Virtual, which keeps the bare `A_Restart` its ETS capture shows. An error
+code 2 answer falls back to a basic restart (§3.7.1.2.3.1). No vendor
+application in the corpus carries the op, so no capture exists. This is the
+capture plan: when a product with `LdCtrlMasterReset` turns up, record its ETS
+download and a loopback `bussard flash` of it and compare the restart form,
+the erase code, the channel and the wait after the answer. Until then
+`flash_mock::test_flash_master_reset_uses_the_confirmed_form` pins the form.
+
 **Parameter-only download on System B** (issue #543). bussard's
 `flash --parameters-only` and the parameter part of `apply` run the partial
 download of Configuration Procedures 03_05_03 §3.5.3: Unload the parameter

@@ -702,7 +702,8 @@ pub async fn read_manufacturer_id<Ch: L4Channel>(
     Ok(Some(u16::from_be_bytes([resp.data[0], resp.data[1]])))
 }
 
-/// Realises an `LdCtrlMasterReset` op the way ETS→KNX-Virtual does on the wire:
+/// Realises an `LdCtrlMasterReset` op the way ETS→KNX-Virtual does on the wire
+/// (only there; every other device gets the confirmed [`master_reset`]):
 /// as a **bare `A_Restart`** (APCI [`A_RESTART`](crate::apci::A_RESTART) = `0x380`,
 /// no payload), not the confirmed master-reset `A_Restart` (`0x381` + erase/channel).
 ///
@@ -733,17 +734,35 @@ pub async fn master_reset_via_basic_restart<Ch: L4Channel>(
     Ok(())
 }
 
-/// The longest bussard waits on a device's `A_Restart_Response` process time.
+/// The process time above which bussard warns before it waits it out.
 ///
-/// The process time is a 16-bit count of seconds, so a corrupt or hostile answer
-/// could ask for 18 hours. The ETS captures (issue #117) show 8 s for a factory
-/// reset and 0 s for a confirmed restart; a minute is well past both.
+/// KNX 3/5/2 §3.7.1.2.2 makes the process time a minimum the client waits
+/// before further services, so bussard waits the whole announced time. The
+/// ETS captures (issue #117) show 8 s for a factory reset and 0 s for a
+/// confirmed restart; a device announcing more than a minute is unusual (or
+/// its answer is corrupt: the field reaches 18 hours), so the wait is logged
+/// as a warning rather than silently clamped.
 pub const MAX_RESTART_PROCESS_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// How long to wait before the next service after a restart that announced
+/// `seconds` of process time: at least that time (KNX 3/5/2 §3.7.1.2.2),
+/// with a warning above [`MAX_RESTART_PROCESS_WAIT`].
+pub fn process_time_wait(seconds: u16) -> std::time::Duration {
+    let wait = std::time::Duration::from_secs(u64::from(seconds));
+    if wait > MAX_RESTART_PROCESS_WAIT {
+        tracing::warn!(
+            process_time_s = seconds,
+            "the device announced a restart process time above {} s; waiting it out",
+            MAX_RESTART_PROCESS_WAIT.as_secs()
+        );
+    }
+    wait
+}
+
 /// How long to wait after a confirmed master reset before reconnecting: the
-/// device's reported process time, capped at [`MAX_RESTART_PROCESS_WAIT`].
+/// device's reported process time, as a minimum ([`process_time_wait`]).
 pub fn restart_process_wait(response: &RestartResponse) -> std::time::Duration {
-    std::time::Duration::from_secs(u64::from(response.process_time_s)).min(MAX_RESTART_PROCESS_WAIT)
+    process_time_wait(response.process_time_s)
 }
 
 /// Sends a **confirmed master reset**: `A_Restart` with the master-reset
@@ -762,8 +781,9 @@ pub fn restart_process_wait(response: &RestartResponse) -> std::time::Duration {
 /// [`WriteError::RestartRefused`]; a response with another APCI is
 /// [`MgmtError::MalformedResponse`]; silence surfaces the connection's own error.
 ///
-/// `LdCtrlMasterReset` ops in a load procedure keep using
-/// [`master_reset_via_basic_restart`], which is what KNX Virtual expects.
+/// A load procedure's `LdCtrlMasterReset` uses this form with the op's erase
+/// code and channel number on every device but KNX Virtual, which gets
+/// [`master_reset_via_basic_restart`] as its capture shows.
 pub async fn master_reset<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     erase_code: u8,

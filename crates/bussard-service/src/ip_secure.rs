@@ -1029,10 +1029,11 @@ pub async fn verify<Ch: L4Channel>(
     })
 }
 
-/// The longest wait for a restart, whatever the device reports.
+/// The wait for a restart: the process time the device reports (8 s when it
+/// reports none), as a minimum (KNX 3/5/2 §3.7.1.2.2; a warning above a
+/// minute, [`bussard_mgmt::process_time_wait`]).
 pub fn restart_wait(seconds: Option<u16>) -> std::time::Duration {
-    std::time::Duration::from_secs(u64::from(seconds.unwrap_or(8)))
-        .min(bussard_mgmt::load::MAX_RESTART_PROCESS_WAIT)
+    bussard_mgmt::process_time_wait(seconds.unwrap_or(8))
 }
 
 /// The steps' wire addresses, for tests and the oracle: `(object type, PID)`.
