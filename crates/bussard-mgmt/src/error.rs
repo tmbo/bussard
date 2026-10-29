@@ -70,6 +70,56 @@ pub enum MgmtError {
         reason: String,
     },
 
+    /// The device answered a memory access with the defined negative answer:
+    /// an `A_Memory_Response` with number 0 and no data (03_03_07 Application
+    /// Layer §3.5.3, §3.5.4). The memory is protected or not reachable, or
+    /// the count was illegal or above what one APDU carries. The device
+    /// refused; the frame was well formed.
+    #[error(
+        "{address} refused the memory {op} at {addr:#06X} ({count} octet(s)): it answered \
+         A_Memory_Response with number 0 (protected or unreachable memory, or an illegal count)"
+    )]
+    MemoryRefused {
+        /// The device.
+        address: IndividualAddress,
+        /// `"read"` or `"write"`.
+        op: &'static str,
+        /// The memory address of the refused access.
+        addr: u32,
+        /// The octet count that was asked for.
+        count: u8,
+    },
+
+    /// An `A_MemoryExtended_Read` or `_Write` came back with a negative return
+    /// code (03_03_07 §3.4.9.1.1, §3.4.9.2.1): `name` is the code's spec name,
+    /// for example `E_ACCESS_DENIED` (FCh) or
+    /// `E_LENGTH_EXCEEDS_MAX_APDU_LENGTH` (F4h).
+    #[error(
+        "{address} answered the {service} at {addr:#08X} with return code {code:#04X} ({name})"
+    )]
+    MemoryReturnCode {
+        /// The device.
+        address: IndividualAddress,
+        /// The service that was answered.
+        service: &'static str,
+        /// The 24-bit memory address of the access.
+        addr: u32,
+        /// The return code octet.
+        code: u8,
+        /// The code's name, from [`return_code_name`].
+        name: &'static str,
+    },
+
+    /// The device answered an `A_DeviceDescriptor_Read` with descriptor type
+    /// 3Fh, "unsupported type" (03_03_07 §3.4.2.1).
+    #[error("{address} does not support device descriptor type {requested}")]
+    DescriptorTypeUnsupported {
+        /// The device.
+        address: IndividualAddress,
+        /// The descriptor type that was asked for.
+        requested: u8,
+    },
+
     /// A memory write-back verification failed: after writing a chunk, an
     /// `A_Memory_Read` of the same address returned octets that differ from what
     /// was written. Names the exact address, what was expected and what was read
@@ -141,19 +191,21 @@ pub enum MgmtError {
         wraps: u32,
     },
 
-    /// An `A_Authorize_Request` was answered, but the device granted a
-    /// **non-zero** access level: the key presented does not unlock the access
-    /// the management session needs. Distinct from a device that does not
-    /// implement authorize at all (that is tolerated and continues) — a granted
-    /// level is a real, explicit access-denied that must fail loudly.
+    /// An `A_Authorize_Request` was answered with the minimum access level (3
+    /// or 15), which a device sets for an invalid key (03_03_07 §3.5.7): the
+    /// key presented unlocks nothing. Distinct from a device that does not
+    /// implement authorize at all (that is tolerated and continues) and from a
+    /// level between maximum and minimum (granted) — this is a real, explicit
+    /// access-denied that must fail loudly.
     #[error(
-        "{address} denied access: A_Authorize granted level {level} (0 = full access) for the \
-         presented key — the device is keyed and needs its BCU key (pass --bcu-key <hex>)"
+        "{address} denied access: A_Authorize granted level {level}, the minimum level a device \
+         sets for an invalid key (0 = full access) — the device is keyed and needs its BCU key \
+         (pass --bcu-key <hex>)"
     )]
     AccessDenied {
         /// The device that granted limited access.
         address: IndividualAddress,
-        /// The non-zero access level the device granted.
+        /// The minimum access level (3 or 15) the device set.
         level: u8,
     },
 
@@ -229,6 +281,30 @@ impl std::fmt::Display for SilenceKind {
             SilenceKind::NoResponse => write!(f, "no response (device absent)"),
             SilenceKind::Disconnected => write!(f, "connection was disconnected"),
         }
+    }
+}
+
+/// The spec name of an application-layer return code (03_03_07 §3.4.9, the
+/// generic return codes shared by the extended memory, property and function
+/// property services). An undefined code reads `"undefined"`.
+pub fn return_code_name(code: u8) -> &'static str {
+    match code {
+        0x00 => "E_SUCCESS",
+        0x01 => "E_SUCCESS_WITH_CRC",
+        0xF1 => "E_MEMORY_ERROR",
+        0xF4 => "E_LENGTH_EXCEEDS_MAX_APDU_LENGTH",
+        0xF5 => "E_DATA_OVERFLOW",
+        0xF6 => "E_DATA_MIN",
+        0xF7 => "E_DATA_MAX",
+        0xF8 => "E_DATA_VOID",
+        0xF9 => "E_TEMPORARILY_NOT_AVAILABLE",
+        0xFA => "E_ACCESS_WRITE_ONLY",
+        0xFB => "E_ACCESS_READ_ONLY",
+        0xFC => "E_ACCESS_DENIED",
+        0xFD => "E_ADDRESS_VOID",
+        0xFE => "E_DATA_TYPE_CONFLICT",
+        0xFF => "E_ERROR",
+        _ => "undefined",
     }
 }
 
@@ -310,6 +386,18 @@ mod tests {
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         assert_eq!(raw_response_detail(0x0000, &[]), "APCI 0x0000, payload []");
         Ok(())
+    }
+
+    #[test]
+    fn test_return_code_name_covers_the_memory_codes() {
+        assert_eq!(return_code_name(0xFC), "E_ACCESS_DENIED");
+        assert_eq!(return_code_name(0xF4), "E_LENGTH_EXCEEDS_MAX_APDU_LENGTH");
+        assert_eq!(return_code_name(0xF9), "E_TEMPORARILY_NOT_AVAILABLE");
+        assert_eq!(return_code_name(0xFA), "E_ACCESS_WRITE_ONLY");
+        assert_eq!(return_code_name(0xFD), "E_ADDRESS_VOID");
+        assert_eq!(return_code_name(0xF1), "E_MEMORY_ERROR");
+        assert_eq!(return_code_name(0xFF), "E_ERROR");
+        assert_eq!(return_code_name(0x42), "undefined");
     }
 
     #[test]

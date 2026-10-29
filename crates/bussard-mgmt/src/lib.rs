@@ -79,7 +79,7 @@ pub use connection::{
     read_device_descriptor_unsecured,
 };
 pub use device::DeviceConnection;
-pub use error::{MgmtError, Result, SilenceKind};
+pub use error::{MgmtError, Result, SilenceKind, return_code_name};
 pub use io_list::{ObjectTableSource, PID_IO_LIST, discover_object_table, read_io_list};
 pub use load::{
     LD_CTRL_REL_SEGMENT, LoadControl, LoadState, LoadStateContext, MAX_RESTART_PROCESS_WAIT,
@@ -93,8 +93,8 @@ pub use load::{
 // every historical `bussard_mgmt::…` and `bussard_mgmt::load::…` path still
 // resolves, so no caller had to change.
 pub use memory::{
-    read_memory, read_memory_range, select_extended_memory, write_memory, write_memory_chunked,
-    write_memory_echoed, write_memory_verified,
+    read_memory, read_memory_range, read_memory_strict, select_extended_memory, write_memory,
+    write_memory_chunked, write_memory_echoed, write_memory_verified,
 };
 pub use probe::{
     ADDRESS_PROBE_MS_ENV, AddressProbe, ProbeMemo, SourceCheckError, checked_source,

@@ -514,7 +514,10 @@ fn test_apply_refresh_facts_presents_the_authorize_again() -> TestResult {
 /// skipped: both phases present the key and the write refuses loudly.
 #[test]
 fn test_apply_never_skips_the_authorize_of_a_device_that_wants_a_key() -> TestResult {
-    let bench = Bench::start("apply-authorize-keyed", device()?.with_authorize_level(2))?;
+    // Level 15, the minimum: what a keyed device sets for the free key it
+    // does not accept (03_03_07 §3.5.7; a level between 0 and the minimum is
+    // a grant, issue #509).
+    let bench = Bench::start("apply-authorize-keyed", device()?.with_authorize_level(15))?;
     ok_stdout(&bench.run(&["plan", "1.1.12", "--json"])?)?;
     assert_eq!(
         bench.facts()?.authorize,

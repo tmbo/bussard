@@ -118,7 +118,38 @@ pub async fn read_memory<Ch: L4Channel>(
             ),
         })
     })?;
+    if resp.is_refusal() && len > 0 {
+        tracing::debug!(
+            target = %l4.target(),
+            addr = format_args!("{addr16:#06X}"),
+            "the device refused the memory read (A_Memory_Response with number 0)"
+        );
+    }
     Ok(resp.data)
+}
+
+/// [`read_memory`] for a caller that needs the octets: the device's defined
+/// refusal (an `A_Memory_Response` with number 0, 03_03_07 §3.5.3) fails
+/// with [`MgmtError::MemoryRefused`] instead of returning no data, so it is
+/// not mistaken for a short or malformed answer.
+///
+/// [`read_memory`] keeps returning the empty answer for the callers that
+/// treat it as a soft outcome (a read-back compare that reports a mismatch).
+pub async fn read_memory_strict<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    addr: u32,
+    len: u8,
+) -> Result<Vec<u8>> {
+    let got = read_memory(l4, addr, len).await?;
+    if got.is_empty() && len > 0 && !select_extended_memory(addr, usize::from(len)) {
+        return Err(WriteError::Mgmt(MgmtError::MemoryRefused {
+            address: l4.target(),
+            op: "read",
+            addr,
+            count: len,
+        }));
+    }
+    Ok(got)
 }
 
 /// How many late verify-mode write echoes [`read_memory`] skips before it takes
@@ -145,12 +176,14 @@ async fn read_memory_extended<Ch: L4Channel>(
         })
     })?;
     if resp.return_code != 0 {
-        return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
+        // A negative code names the failure and carries no data (03_03_07
+        // §3.4.9.1.1).
+        return Err(WriteError::Mgmt(MgmtError::MemoryReturnCode {
             address: l4.target(),
-            reason: format!(
-                "A_MemoryExtended_Read at {addr:#08X} returned non-zero code {:#04X}",
-                resp.return_code
-            ),
+            service: "A_MemoryExtended_Read",
+            addr,
+            code: resp.return_code,
+            name: crate::error::return_code_name(resp.return_code),
         }));
     }
     Ok(resp.data)
@@ -204,7 +237,7 @@ pub async fn read_memory_range<Ch: L4Channel>(
                 address: l4.target(),
                 detail: format!("read chunk at {addr:#X} + {}", out.len()),
             })?;
-        let got = read_memory(l4, at, want as u8).await?;
+        let got = read_memory_strict(l4, at, want as u8).await?;
         if got.is_empty() {
             return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
                 address: l4.target(),
@@ -362,6 +395,15 @@ async fn write_one_chunk_echoed<Ch: L4Channel>(
             ),
         })
     })?;
+    if echo.addr == addr16 && echo.is_refusal() && !piece.is_empty() {
+        // The defined negative answer to the write (03_03_07 §3.5.4).
+        return Err(WriteError::Mgmt(MgmtError::MemoryRefused {
+            address: l4.target(),
+            op: "write",
+            addr: chunk_addr,
+            count: piece.len() as u8,
+        }));
+    }
     if echo.addr != addr16 || echo.data != piece {
         return Err(WriteError::Mgmt(MgmtError::MemoryEchoMismatch {
             address: l4.target(),
@@ -421,11 +463,14 @@ async fn write_one_chunk<Ch: L4Channel>(
             })
         })?;
         if resp.return_code != 0 {
-            return Err(WriteError::Mgmt(MgmtError::MemoryVerifyFailed {
+            // The return code names the failure (03_03_07 §3.4.9.2.1): an
+            // access or sizing problem is not a verify mismatch.
+            return Err(WriteError::Mgmt(MgmtError::MemoryReturnCode {
                 address: l4.target(),
+                service: "A_MemoryExtended_Write",
                 addr: chunk_addr,
-                expected: piece.to_vec(),
-                got: Vec::new(),
+                code: resp.return_code,
+                name: crate::error::return_code_name(resp.return_code),
             }));
         }
         return Ok(());

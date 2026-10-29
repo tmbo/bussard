@@ -333,12 +333,14 @@ pub const MAX_MEMORY_WRITE_LEN: u8 = 63;
 /// `count` is 1–15; `start` is a 12-bit element index (usually 1 for the first
 /// element).
 ///
-/// A count larger than 15 is **clamped to 15**, not masked. Masking would turn a
-/// count of 16 into `0`, and `count == 0` is a different request — "read the
-/// property's element count" — so the device would answer a 2-octet element count
-/// where the caller expected 16 elements. Clamping asks for as many elements as
-/// the field can carry and lets the caller loop for the rest, which is what every
-/// chunked reader here already does.
+/// A count larger than 15 is **clamped to 15**, not masked: a count of 0 is
+/// not a request a reader means to send (in a response, `nr_of_elem == 0`
+/// signals a problem, 03_03_07 §3.4.4.1), so masking 16 to 0 would turn a
+/// chunked read into a refusal. Clamping asks for as many elements as the
+/// field can carry and lets the caller loop for the rest, which is what every
+/// chunked reader here already does. Reading the property's current number of
+/// elements is a different request: `start == 0` with a count of 1, which
+/// answers 2 octets (§3.4.4.1).
 pub fn encode_property_value_read(
     object_index: u8,
     property_id: u8,
@@ -667,9 +669,9 @@ pub fn encode_authorize_request(key: u32) -> Vec<u8> {
 /// Decodes an `A_Authorize_Response` payload into the granted access **level**
 /// octet.
 ///
-/// The response carries a single level octet (`0` = highest access; a non-zero
-/// level means the key granted only limited access). Returns `None` if the
-/// payload is empty. The captured free-access response was `[00]` (level 0). The
+/// The response carries a single level octet: `0` is the maximum access, `3`
+/// or `15` the minimum, which a device sets for an invalid key (03_03_07
+/// §3.5.7). Returns `None` if the payload is empty. The captured free-access response was `[00]` (level 0). The
 /// caller validates the response APCI is [`A_AUTHORIZE_RESPONSE`] separately.
 pub fn decode_authorize_response(payload: &[u8]) -> Option<u8> {
     payload.first().copied()
@@ -710,6 +712,15 @@ pub struct MemoryResponse {
     pub addr: u16,
     /// The memory octets.
     pub data: Vec<u8>,
+}
+
+impl MemoryResponse {
+    /// Whether this is the defined negative answer to an `A_Memory_Read` or
+    /// `A_Memory_Write`: number 0 and no data (03_03_07 §3.5.3, §3.5.4). The
+    /// memory is protected or not reachable, or the count was illegal.
+    pub fn is_refusal(&self) -> bool {
+        self.count == 0
+    }
 }
 
 /// Decodes an `A_Memory_Response`, given the response APCI and its payload.

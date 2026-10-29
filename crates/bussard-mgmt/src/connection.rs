@@ -63,22 +63,28 @@ use crate::error::{MgmtError, Result, SilenceKind};
 /// The outcome of an `A_Authorize_Request` (issue #52 finding #1).
 ///
 /// Authorization policy is **tolerate-absence, fail-on-denied**: a device that
-/// grants full access proceeds, a device that grants only limited access is a
-/// hard failure, and a device that does not implement authorize at all is
-/// tolerated (older/simpler devices never needed a key).
+/// grants an access level proceeds, a device that sets the minimum level (its
+/// answer to an invalid key) is a hard failure, and a device that does not
+/// implement authorize at all is tolerated (older/simpler devices never needed
+/// a key).
+///
+/// Levels run from 0 (maximum access) to 3 or 15 (minimum access), and the
+/// free key `FFFFFFFFh` maps to the highest level a device leaves unprotected,
+/// which can be above 0 (03_03_07 §3.5.7). A caller that needs a specific
+/// level compares with [`AuthorizeOutcome::grants`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthorizeOutcome {
-    /// The device granted access at `level` (always `0` here — the full-access
-    /// level; any non-zero grant is [`AuthorizeOutcome::Denied`]).
+    /// The device granted access at `level` (0 = full access; any level below
+    /// the minimum).
     Granted {
         /// The granted access level (0 = full access).
         level: u8,
     },
-    /// The device answered but granted a **non-zero** access level: the presented
-    /// key does not unlock the access a management session needs. A real
-    /// access-denied — callers turn this into [`MgmtError::AccessDenied`].
+    /// The device answered with the minimum access level, 3 or 15, which is
+    /// what it sets for an invalid key (03_03_07 §3.5.7): the presented key
+    /// unlocks nothing. Callers turn this into [`MgmtError::AccessDenied`].
     Denied {
-        /// The non-zero level the device granted.
+        /// The minimum level the device set.
         level: u8,
     },
     /// The device does not implement authorize: it did not answer, or answered
@@ -92,10 +98,33 @@ pub enum AuthorizeOutcome {
 }
 
 impl AuthorizeOutcome {
-    /// Whether the device implements authorize and granted full access.
+    /// Whether the device implements authorize and granted an access level.
     pub fn granted(&self) -> bool {
         matches!(self, AuthorizeOutcome::Granted { .. })
     }
+
+    /// The access level the device answered with, granted or denied.
+    pub fn level(&self) -> Option<u8> {
+        match self {
+            AuthorizeOutcome::Granted { level } | AuthorizeOutcome::Denied { level } => {
+                Some(*level)
+            }
+            AuthorizeOutcome::Unsupported { .. } => None,
+        }
+    }
+
+    /// Whether the granted level allows an access that requires `required`
+    /// (a lower number is more access, 03_03_07 §3.5.7).
+    pub fn grants(&self, required: u8) -> bool {
+        matches!(self, AuthorizeOutcome::Granted { level } if *level <= required)
+    }
+}
+
+/// Whether `level` is a minimum access level: 3 on a device with four levels,
+/// 15 on one with sixteen (03_03_07 §3.5.7). A device sets it for an invalid
+/// key. A level above 15 is out of range and read the same way.
+fn is_minimum_access_level(level: u8) -> bool {
+    level == 3 || level >= 15
 }
 
 /// The two operations the layer-4 state machine needs from whatever carries its
@@ -1157,9 +1186,11 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
     ///
     /// The policy is **tolerate-absence, fail-on-denied** (see
     /// [`AuthorizeOutcome`]):
-    /// - a level-0 grant → [`AuthorizeOutcome::Granted`];
-    /// - a non-zero level → [`AuthorizeOutcome::Denied`] (a real access problem,
-    ///   surfaced by callers as [`MgmtError::AccessDenied`]);
+    /// - a granted level (0, or any level above it short of the minimum) →
+    ///   [`AuthorizeOutcome::Granted`] carrying the level;
+    /// - the minimum level 3 or 15 → [`AuthorizeOutcome::Denied`] (the device's
+    ///   answer to an invalid key, surfaced by callers as
+    ///   [`MgmtError::AccessDenied`]);
     /// - a device that does not answer at all, or answers with a non-authorize
     ///   APCI (older/simpler devices that do not implement authorize) →
     ///   [`AuthorizeOutcome::Unsupported`], carrying the raw response detail for a
@@ -1218,8 +1249,8 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
         }
 
         match crate::apci::decode_authorize_response(&data) {
-            Some(0) => Ok(AuthorizeOutcome::Granted { level: 0 }),
-            Some(level) => Ok(AuthorizeOutcome::Denied { level }),
+            Some(level) if is_minimum_access_level(level) => Ok(AuthorizeOutcome::Denied { level }),
+            Some(level) => Ok(AuthorizeOutcome::Granted { level }),
             None => Ok(AuthorizeOutcome::Unsupported {
                 detail: format!(
                     "A_Authorize_Response carried no level octet ({})",
@@ -1230,8 +1261,8 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
     }
 
     /// Presents `key` with [`authorize`](Self::authorize) and applies the
-    /// **tolerate-absence, fail-on-denied** policy directly: a granted (level-0)
-    /// or unsupported authorize returns `Ok`, a non-zero level returns
+    /// **tolerate-absence, fail-on-denied** policy directly: a granted or
+    /// unsupported authorize returns `Ok`, the minimum level returns
     /// [`MgmtError::AccessDenied`]. The `Unsupported` case is logged at debug.
     ///
     /// This is the one-call helper the management connect paths use so every
@@ -2022,15 +2053,42 @@ pub async fn read_device_descriptor_unsecured<Ch: L4Channel>(
     decode_device_descriptor(l4.target(), resp_apci, &data)
 }
 
+/// The descriptor type a device echoes to say it does not support the type
+/// asked for (03_03_07 §3.4.2.1).
+const DESCRIPTOR_TYPE_UNSUPPORTED: u16 = 0x3F;
+
 /// Decodes an `A_DeviceDescriptor_Response` for descriptor type 0.
+///
+/// The response echoes the descriptor type in its low six APCI bits (03_03_07
+/// §3.4.2.1): type 3Fh is the device saying it does not support the type,
+/// and a device without descriptor type 0 answers with its lowest supported
+/// type, whose value is not a mask version. Both fail with what the device
+/// said instead of being read as type 0.
 fn decode_device_descriptor(
     address: IndividualAddress,
     resp_apci: u16,
     data: &[u8],
 ) -> Result<u16> {
-    if resp_apci & crate::apci::APCI_SELECTOR_MASK != crate::apci::A_DEVICE_DESCRIPTOR_RESPONSE
-        || data.len() < 2
-    {
+    let is_response =
+        resp_apci & crate::apci::APCI_SELECTOR_MASK == crate::apci::A_DEVICE_DESCRIPTOR_RESPONSE;
+    let echoed_type = resp_apci & !crate::apci::APCI_SELECTOR_MASK;
+    if is_response && echoed_type == DESCRIPTOR_TYPE_UNSUPPORTED {
+        return Err(MgmtError::DescriptorTypeUnsupported {
+            address,
+            requested: 0,
+        });
+    }
+    if is_response && echoed_type != 0 {
+        return Err(MgmtError::MalformedResponse {
+            address,
+            reason: format!(
+                "answered descriptor type {echoed_type} instead of type 0 (a device without \
+                 type 0 answers with its lowest supported type): {}",
+                crate::error::raw_response_detail(resp_apci, data)
+            ),
+        });
+    }
+    if !is_response || data.len() < 2 {
         return Err(MgmtError::MalformedResponse {
             address,
             reason: crate::error::descriptor_response_reason(resp_apci, data),
@@ -2842,6 +2900,47 @@ mod tests {
             err.device_present(),
             "access-denied means the device is present"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_authorize_minimum_level_15_is_denied()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // 03_03_07 §3.5.7: an invalid key sets the minimum level, 15 on a
+        // device with sixteen levels.
+        let inbox = vec![
+            control_from_dev(tpci::t_ack(0)),
+            ndt_from_dev(0, crate::apci::A_AUTHORIZE_RESPONSE, &[0x0F]),
+        ];
+        let mut bus = ScriptedBus::new(inbox);
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool()).await?;
+        let outcome = l4.authorize(0x0011_2233).await?;
+        assert_eq!(outcome, AuthorizeOutcome::Denied { level: 15 });
+        assert!(!outcome.grants(15));
+        Ok(())
+    }
+
+    #[test]
+    fn test_decode_device_descriptor_checks_the_echoed_type()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let ok = decode_device_descriptor(
+            dev(),
+            crate::apci::A_DEVICE_DESCRIPTOR_RESPONSE,
+            &[0x07, 0xB0],
+        )?;
+        assert_eq!(ok, 0x07B0);
+        let unsupported =
+            decode_device_descriptor(dev(), crate::apci::A_DEVICE_DESCRIPTOR_RESPONSE | 0x3F, &[]);
+        assert!(matches!(
+            unsupported,
+            Err(MgmtError::DescriptorTypeUnsupported { requested: 0, .. })
+        ));
+        let other = decode_device_descriptor(
+            dev(),
+            crate::apci::A_DEVICE_DESCRIPTOR_RESPONSE | 0x02,
+            &[0x07, 0xB0],
+        );
+        assert!(matches!(other, Err(MgmtError::MalformedResponse { .. })));
         Ok(())
     }
 

@@ -24,7 +24,7 @@
 //! ETS 6 sweep captures of nine manufacturers.
 
 use crate::connection::{L4Channel, Layer4Connection, property_request, property_write_request};
-use crate::load::{LoadControl, LoadState, Result, WriteError, read_memory, write_memory};
+use crate::load::{LoadControl, LoadState, Result, WriteError, read_memory_strict, write_memory};
 
 /// The size of a standard KNX load-event record: 10 octets (`[XKNX
 /// LOAD_EVENT_SIZE=10]`, KNX 3/5/1 §4.23.2). Octet 0 is the event opcode; the
@@ -370,7 +370,7 @@ impl LsmAccess {
         match self {
             LsmAccess::MemoryMapped { status_addr, .. } => {
                 let addr = status_addr.saturating_add(u16::from(lsm.saturating_sub(1)));
-                let data = read_memory(l4, u32::from(addr), 1).await?;
+                let data = read_memory_strict(l4, u32::from(addr), 1).await?;
                 let octet = data.first().copied().ok_or_else(|| {
                     WriteError::Mgmt(crate::MgmtError::MalformedResponse {
                         address: l4.target(),

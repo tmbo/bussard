@@ -603,8 +603,9 @@ async fn read_counted_table_via_memory<Ch: L4Channel>(
 /// Folds a device-level refusal of a fast-path read into `Ok(None)` (the caller
 /// falls back to the property path) and passes a transport failure through.
 ///
-/// A refusal is a malformed or off-service answer (a zero-octet memory
-/// response, a non-zero `A_MemoryExtended_Read` return code), an out-of-range
+/// A refusal is a malformed or off-service answer, the defined negative answer
+/// (a memory response with number 0, a non-zero `A_MemoryExtended_Read`
+/// return code, 03_03_07 §3.5.3, §3.4.9.1.1), an out-of-range
 /// span, or a request the device `T_ACK`ed but never answered: that one keeps
 /// the connection usable for the fallback, as [`Layer4Connection::authorize`]
 /// does. A disconnect, a NAK or a device that never acknowledged is an `Err`.
@@ -616,7 +617,11 @@ fn refusal<Ch: L4Channel, T>(
     step: &str,
 ) -> Result<Option<T>> {
     let fallback = match &err {
-        TablesError::Mgmt(MgmtError::MalformedResponse { .. })
+        TablesError::Mgmt(
+            MgmtError::MalformedResponse { .. }
+            | MgmtError::MemoryRefused { .. }
+            | MgmtError::MemoryReturnCode { .. },
+        )
         | TablesError::TableUnreadable { .. } => true,
         TablesError::Mgmt(
             MgmtError::NoResponse { .. }

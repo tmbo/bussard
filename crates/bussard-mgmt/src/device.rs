@@ -333,11 +333,13 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
                         }
                     })?;
                 if parsed.return_code != 0 {
-                    return Err(MgmtError::MemoryVerifyFailed {
+                    // 03_03_07 §3.4.9.2.1: the code names the failure.
+                    return Err(MgmtError::MemoryReturnCode {
                         address: self.inner.target(),
+                        service: "A_MemoryExtended_Write",
                         addr: chunk_addr,
-                        expected: piece.to_vec(),
-                        got: Vec::new(),
+                        code: parsed.return_code,
+                        name: crate::error::return_code_name(parsed.return_code),
                     });
                 }
                 offset += take;
@@ -350,7 +352,9 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
             self.inner.send_data(req_apci, &payload).await?;
 
             // Verify: read the same address back and compare octet-for-octet.
-            let got = self.read_memory(chunk_addr, take as u8).await?;
+            let got = crate::memory::read_memory_strict(&mut self.inner, chunk_addr, take as u8)
+                .await
+                .map_err(|e| self.memory_error(e))?;
             if got != piece {
                 return Err(MgmtError::MemoryVerifyFailed {
                     address: self.inner.target(),
