@@ -85,7 +85,10 @@
 # ETS read and never wrote in the capture equals ETS's image; knxtrace compares
 # bussard's planned octets against those separately and reports their own
 # coverage and verdict (`confirmed` column; same thin rule). A written octet is
-# never a confirmed one, even when ETS read it first.
+# never a confirmed one, even when ETS read it first. When none of a row's
+# read-confirmed octets differs, they also count toward the row's coverage
+# (issue #422): a page whose placed octets ETS only read and kept (the 0701
+# association table) is compared, not blind.
 #
 # --check turns the run into a gate (the corpus-gated CI test uses it): every
 # row whose capture and product exist must give its expected verdict, its

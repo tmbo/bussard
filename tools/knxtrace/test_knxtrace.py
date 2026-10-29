@@ -976,22 +976,65 @@ class TestReadConfirmed(unittest.TestCase):
         self.assertEqual(ets.confirmed, {0x4000: 0xAA, 0x4002: 0xCC, 0x4003: 0xDD})
         self.assertEqual(ets.get(0x4001), 0x11)
 
-    def test_compare_confirmed_identical_while_written_is_thin(self):
+    def test_compare_confirmed_equal_octets_count_toward_coverage(self):
+        # 1 of 4 placed octets written; the other 3 read-confirmed and equal
+        # (issue #422): they count, so the row is compared in full.
         report = memimage.compare(self.plan(b"\xaa\x11\xcc\xdd"), self.image())
-        self.assertEqual(report["verdict"], memimage.NOT_COMPARABLE)  # 1 of 4 written
+        self.assertEqual(report["verdict"], memimage.IDENTICAL)
+        cov = report["coverage"]
+        self.assertEqual((cov["compared"], cov["written_compared"], cov["confirmed_counted"], cov["percent"]),
+                         (4, 1, 3, 100.0))
         conf = report["confirmed"]
         self.assertEqual((conf["verdict"], conf["octets"], conf["compared"], conf["placed"]),
                          (memimage.IDENTICAL, 3, 3, 4))
         self.assertEqual(conf["percent"], 75.0)
         text = "\n".join(memimage.render(report))
-        self.assertIn("written: not-comparable, confirmed: identical (3 octets)", text)
+        self.assertIn("written: identical, confirmed: identical (3 octets)", text)
+        self.assertIn("4 of 4 placed octets compared, 3 of them read-confirmed", text)
         self.assertIn("confirmed coverage 75.0 %", text)
+
+    def test_compare_confirmed_equal_page_is_not_blind(self):
+        # The association table of a 0701 read-compare download: one page
+        # written in full, the other page's placed octets only read and equal.
+        path = tempfile.mkstemp(suffix=".pcapng")[1]
+        self.addCleanup(os.unlink, path)
+        tool, dev = "0.0.0", "1.1.5"
+        frames = [
+            cemi_ldata(tool, dev, t_connect()),
+            cemi_ldata(tool, dev, mem_write(0x4000, b"\x01\x02\x03\x04", seq=0)),
+            cemi_ldata(tool, dev, mem_read(0x4100, 2, seq=1)),
+            cemi_ldata(dev, tool, mem_response(0x4100, b"\x05\x06", seq=0), mc=0x29),
+            cemi_ldata(tool, dev, t_disconnect()),
+        ]
+        udp_capture(path, [(tunneling_request(f, seq=n), True) for n, f in enumerate(frames)])
+        out = self.tmpdir()
+        self.assertEqual(main(["image", path, "--device", "1.1.5", "--out", out]), 0)
+        plan_dir = self.tmpdir()
+        steps = []
+        for n, (addr, data) in enumerate(((0x4000, b"\x01\x02\x03\x04"), (0x4100, b"\x05\x06"))):
+            with open(os.path.join(plan_dir, "p%d.bin" % n), "wb") as fh:
+                fh.write(data)
+            steps.append({"index": n + 1, "label": "", "image": {
+                "image_kind": "parameters", "object": None, "offset": 0, "address": addr,
+                "file": "p%d.bin" % n, "length": len(data), "mask_file": None}})
+        with open(os.path.join(plan_dir, "plan.json"), "w") as fh:
+            json.dump({"device": "1.1.5", "system": "7", "application": {"id": "M-00FA_A-1"},
+                       "steps": steps, "tables": []}, fh)
+        report = memimage.compare(plan_dir, out)
+        self.assertEqual(report["verdict"], memimage.IDENTICAL)
+        self.assertEqual(report["coverage"]["blind_pages"], [])
+        # The page's region itself still says ETS wrote nothing there.
+        self.assertEqual(report["regions"][1]["verdict"], memimage.NOT_COMPARABLE)
 
     def test_compare_confirmed_mismatch_is_reported_separately(self):
         report = memimage.compare(self.plan(b"\xaa\x11\xcc\x00"), self.image())
         par = report["regions"][0]
         # The written octet matches; the confirmed side names the mismatch.
         self.assertEqual(par["verdict"], memimage.IDENTICAL)
+        # A differing read-confirmed octet: the coverage is the written
+        # octets' alone, 1 of 4, so the row is thin.
+        self.assertEqual(report["verdict"], memimage.NOT_COMPARABLE)
+        self.assertEqual((report["coverage"]["compared"], report["coverage"]["confirmed_counted"]), (1, 0))
         conf = report["confirmed"]
         self.assertEqual(conf["verdict"], memimage.DIFFERS)
         self.assertEqual(conf["mismatches"], [{"address": 0x4003, "offset": 3, "bussard": "00",

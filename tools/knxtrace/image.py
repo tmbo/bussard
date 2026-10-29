@@ -78,7 +78,11 @@ default). A row whose images match but whose coverage is below the threshold
 (50 % of the placed octets by default), or that has a page with placed octets
 and none compared, is "not comparable" (thin), never "identical": ETS
 read-compared or skipped what the device already held, so the capture carries
-no evidence for those octets.
+no evidence for those octets. A read-confirmed octet is such evidence (issue
+#422): when every read-confirmed octet of the row equals bussard's, those
+octets count as compared next to the written ones (`confirmed_counted`), so a
+page whose placed octets ETS only read and kept is not blind. One differing
+read-confirmed octet and the coverage is the written octets' alone.
 """
 
 from __future__ import annotations
@@ -652,6 +656,7 @@ def compare(
                 rec = _result(step, name, ours, NOT_COMPARABLE, "no ETS base for object %s" % obj)
                 rec["compared"] = 0
                 _add_coverage(rec, placed_offsets, set(), None, "obj%s" % obj, page_size)
+                rec["with_confirmed"] = {k: rec[k] for k in ("placed", "placed_compared", "pages")}
                 results.append(rec)
                 continue
             addr = base + int(image.get("offset") or 0)
@@ -692,6 +697,13 @@ def compare(
         conf_known = {i for i in placed_offsets if (addr + i) in ets.confirmed}
         conf_rec: Dict[str, object] = {}
         _add_coverage(conf_rec, placed_offsets, conf_known, addr, None, page_size)
+        # The coverage when read-confirmed octets that equal bussard's count
+        # as compared (issue #422); the row takes it only when none of its
+        # read-confirmed octets differs (see `compare` below).
+        with_confirmed: Dict[str, object] = {}
+        equal = {i for i in conf_known if ets.confirmed[addr + i] == ours[i]}
+        _add_coverage(with_confirmed, placed_offsets, known | equal, addr, None, page_size)
+        rec["with_confirmed"] = with_confirmed
         conf_rec.update(
             {
                 "verdict": DIFFERS if conf_mismatches else IDENTICAL if conf_compared
@@ -735,9 +747,25 @@ def compare(
         r["in_scope"] = scope is None or region_short(r["region"]) in scope
     judged = [r for r in results if r["in_scope"]]
     verdicts = {r["verdict"] for r in judged}
-    cov = coverage(judged, min_coverage)
-    cov["scope"] = list(scope) if scope is not None else None
     confirmed = _confirmed_summary(judged, min_coverage, len(ets.confirmed))
+    # Read-confirmed octets are evidence too (issue #422): ETS read them from
+    # the device and kept them, so its image holds the value read. When every
+    # read-confirmed octet equals bussard's, they count toward the coverage
+    # next to the written ones; a page whose only placed octets were read and
+    # matched (the association table of a mask 0701 read-compare download) is
+    # then compared, not blind. One differing read-confirmed octet and the
+    # coverage is the written octets' alone, as before.
+    use_confirmed = bool(confirmed["octets"]) and not confirmed["diff_octets"]
+    written = coverage(judged, min_coverage)
+    if use_confirmed:
+        cov = coverage(
+            [dict(r.get("with_confirmed") or r, region=r["region"]) for r in judged], min_coverage
+        )
+    else:
+        cov = written
+    cov["written_compared"] = written["compared"]
+    cov["confirmed_counted"] = cov["compared"] - written["compared"]
+    cov["scope"] = list(scope) if scope is not None else None
     reason = ""
     if DIFFERS in verdicts:
         overall = DIFFERS
@@ -1538,12 +1566,14 @@ def render(report: Dict[str, object]) -> List[str]:
     cov = report.get("coverage")
     if cov:
         blind = cov["blind_pages"]
+        counted = cov.get("confirmed_counted") or 0
         lines.append(
-            "  coverage %.1f %% (%d of %d placed octets compared; %d of %d page(s) uncompared%s)%s"
+            "  coverage %.1f %% (%d of %d placed octets compared%s; %d of %d page(s) uncompared%s)%s"
             % (
                 cov["percent"],
                 cov["compared"],
                 cov["placed"],
+                ", %d of them read-confirmed" % counted if counted else "",
                 len(blind),
                 cov["pages"],
                 ": " + ", ".join(blind[:8]) + (", ..." if len(blind) > 8 else "") if blind else "",
