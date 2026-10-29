@@ -285,3 +285,63 @@ properties), MDT AKK (0705, through memory), Ekinex EK-E72 (0705,
 group-object table in its own segment), Zennio ACTinBOX MAX6 (0701; the
 Theben 4940275 the issue names failed the defaults sweep), KNX Virtual DA.tp
 (07B0).
+
+## Part 6: nightly run, manifests and the repair loop (#425)
+
+**What runs.** `uv run tools/ets-sweep/nightly.py` (`--dry-run` prints the
+commands): preflight (the driver answers and ETS is among its windows, else
+the run stops), `cargo build` of bussard and knx-sim, every shard of
+`defaults.py --redo-failed` one after the other and the links variant, the
+oracle over every row again (`--redo`, so a bussard change shows as a verdict
+change), `summary.py`, and `followups.py`. Log: `results/nightly/<stamp>.log`;
+`results/run.json` holds the run id, the ETS version (the file version of
+`ETS6N.exe`) and every command's exit code and seconds. A lock directory
+(`results/nightly/lock`) keeps a second run out. Nothing is committed.
+
+**Install (launchd, the default).** The agent is
+`dev.bussard.ets-sweep.nightly`, 01:30 local time:
+
+    sed -e "s|__REPO__|$PWD|g" -e "s|__HOME__|$HOME|g" \
+        tools/ets-sweep/schedule/dev.bussard.ets-sweep.nightly.plist \
+        > ~/Library/LaunchAgents/dev.bussard.ets-sweep.nightly.plist
+    mkdir -p tools/ets-sweep/results/nightly
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.bussard.ets-sweep.nightly.plist
+    launchctl kickstart gui/$(id -u)/dev.bussard.ets-sweep.nightly   # one run now, to check
+
+Remove it with `launchctl bootout gui/$(id -u)/dev.bussard.ets-sweep.nightly`.
+`schedule/crontab.txt` is the cron alternative (cron skips a night the Mac
+slept through). The checkout the agent points at must not be a worktree that
+gets removed, and nothing else may drive ETS during the run.
+
+**Follow-up issues.** `followups.py` drafts an issue for every application
+whose verdict went from identical to differs (application id, mask, product
+file, capture path, the oracle summary and the first 30 lines of its diff)
+and prints it; `--create` (`nightly.py --create-issues`) opens them with the
+labels `bug`, `ets-sweep`, `oracle`, skipping an application an open issue
+already names; `results/followups.json` remembers what was opened.
+
+**Repair loop.** When a run of `sweep.run_one` fails, it keeps
+`<run dir>/repair/`: `screen.png` (the desktop at half size), `popups.txt`
+and `tree.txt` (UI Automation trees of ETS's popups and main window; the main
+window has none, see above), `error.txt` (the error and the failing flow's
+trace from the driver) and `repair.json` (the ETS version, which of these
+worked). After an ETS update the fix is a diff against `driver/ets_driver.py`
+made from those; the sweep is pinned to 6.4.1 build 6.4.8718.
+
+**Manifest format** (`results/manifest.json`, labels only):
+
+    {"generated": "<UTC iso>", "ets_version": "6.4.8718.0", "run": "<stamp>",
+     "apps": {"<application id>": {"file": "<product file>", "mask": "07B0",
+              "manufacturer": "M-0083", "outcome": "captured",
+              "verdict": "identical|benign|differs|differs-props|not-comparable|oracle-error|pending|<outcome>",
+              "loadctl": "identical", "coverage": "100.0%", "benign": "<reason>"}},
+     "links": {...same per application, the links variant...},
+     "series": {"<application id>": {"why": "...", "steps": {...}}}}
+
+**One application by hand**: `uv run tools/ets-sweep/defaults.py --filter <application id> --redo`
+then `uv run tools/ets-sweep/oracle.py --filter <application id> --redo`.
+
+**Ports and names**: the driver on `127.0.0.1:8765` in the VM (reached over
+ssh), the sim on `127.0.0.1:3672` in the VM, ETS's connection `knx-sim` and
+project `ets-sweep`; on the Mac the `run=apply` rows bind a free loopback UDP
+port per row.

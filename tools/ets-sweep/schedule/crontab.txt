@@ -1,0 +1,5 @@
+# The nightly ETS sweep run (#425) as a cron entry, the alternative to the
+# launchd agent next to this file. Replace __REPO__ with the checkout the run
+# uses and add the line with `crontab -e`. cron skips a run the Mac slept
+# through; launchd does not.
+30 1 * * * cd "__REPO__" && PATH="$HOME/.local/bin:$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" uv run tools/ets-sweep/nightly.py >> tools/ets-sweep/results/nightly/cron.log 2>&1

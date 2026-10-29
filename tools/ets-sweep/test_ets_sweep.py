@@ -17,9 +17,84 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import apply_rows  # noqa: E402
 import defaults  # noqa: E402
+import followups  # noqa: E402
+import nightly  # noqa: E402
 import oracle_model  # noqa: E402
 import series  # noqa: E402
 import summary  # noqa: E402
+
+
+class TestNightly(unittest.TestCase):
+    def test_commands_shards_in_order_then_links(self):
+        cmds = [c[3:] for c in nightly.commands("sweep", 3, False)]
+        self.assertEqual([c[1:] for c in cmds],
+                         [["--redo-failed", "--shard", "0/3"], ["--redo-failed", "--shard", "1/3"],
+                          ["--redo-failed", "--shard", "2/3"], ["--variant", "links"]])
+        self.assertEqual(nightly.commands("followups", 1, False)[0][-1][-12:], "followups.py")
+        self.assertEqual(nightly.commands("followups", 1, True)[0][-1], "--create")
+        self.assertIn("--redo", nightly.commands("oracle", 1, False)[0])
+
+    def test_preflight_ok_needs_ets_window(self):
+        self.assertIsNone(nightly.preflight_ok('{"ok": true, "windows": [{"title": "ETS6 - ets-sweep"}]}'))
+        self.assertIn("not among", nightly.preflight_ok('{"ok": true, "windows": [{"title": "Explorer"}]}'))
+        self.assertIn("did not answer", nightly.preflight_ok("ssh: connect timed out"))
+
+    def test_lock_refuses_a_second_run(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        with nightly.Lock(tmp / "lock"):
+            with self.assertRaises(SystemExit):
+                with nightly.Lock(tmp / "lock"):
+                    pass
+        self.assertFalse((tmp / "lock").exists())
+
+
+class TestRepair(unittest.TestCase):
+    def test_save_repair_keeps_screen_trees_trace_and_version(self):
+        import base64
+        from unittest import mock
+
+        import sweep
+
+        def driver(c, method, path, body=None, timeout=600):
+            if path == "/screenshot":
+                return {"png_base64": base64.b64encode(b"PNG").decode()}
+            if path == "/popups":
+                return {"tree": "Menu - 'Löschen'"}
+            raise OSError("channel closed")
+
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        sweep._ETS_VERSION.clear()
+        with mock.patch.object(sweep.vm, "driver", driver), \
+                mock.patch.object(sweep.vm, "run", lambda c, cmd, t=60: (0, "6.4.8718.0\r\n")):
+            saved = sweep.save_repair(None, tmp, "catalog_add: text 'OK' not on screen",
+                                      {"ok": False, "trace": "Traceback ... RuntimeError"})
+        repair = tmp / "repair"
+        self.assertEqual((repair / "screen.png").read_bytes(), b"PNG")
+        self.assertEqual((repair / "popups.txt").read_text(), "Menu - 'Löschen'")
+        self.assertIn("Traceback", (repair / "error.txt").read_text())
+        self.assertEqual(saved["ets_version"], "6.4.8718.0")
+        self.assertTrue(saved["tree.txt"].startswith("failed:"))
+        self.assertEqual(json.loads((repair / "repair.json").read_text())["screen.png"], "ok")
+
+
+class TestFollowups(unittest.TestCase):
+    def test_draft_names_app_capture_and_diff(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        app = "M-0083_A-0003-10-0000"
+        oracle_dir = tmp / app / "plain-defaults" / "oracle" / "1.1.1"
+        oracle_dir.mkdir(parents=True)
+        (oracle_dir / "diff.txt").write_text("\n".join(f"line {i}" for i in range(40)))
+        d = followups.draft({"app": app, "before": "identical", "after": "differs", "mask": "07B0",
+                             "file": "mdt.knxprod", "regression": True},
+                            {app: {"summary": "1.1.1 B differs par=1/10@+0x3"}}, tmp, None,
+                            {"id": "20261030T013000Z", "ets_version": "6.4.8718"})
+        self.assertEqual(d["title"], f"ETS sweep: {app} went from identical to differs (07B0)")
+        self.assertIn(str(tmp / app / "plain-defaults" / "ets.pcapng"), d["body"])
+        self.assertIn("line 29\n... 10 more lines", d["body"])
+        self.assertIn("ETS 6.4.8718", d["body"])
 
 
 class TestSeries(unittest.TestCase):

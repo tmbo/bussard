@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The nightly ETS sweep run (#425) as a launchd user agent. A template:
+  install it with the sed line in tools/ets-sweep/README.md ("Nightly run"),
+  which replaces __REPO__ (the checkout the run uses) and __HOME__.
+  It runs at 01:30 local time; launchd runs a missed start once the Mac wakes.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.bussard.ets-sweep.nightly</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-lc</string>
+    <string>cd "__REPO__" &amp;&amp; uv run tools/ets-sweep/nightly.py</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__HOME__/.local/bin:__HOME__/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>1</integer>
+    <key>Minute</key>
+    <integer>30</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>__REPO__/tools/ets-sweep/results/nightly/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__REPO__/tools/ets-sweep/results/nightly/launchd.err.log</string>
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>
