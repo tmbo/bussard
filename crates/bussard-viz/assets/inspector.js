@@ -646,9 +646,9 @@ class Inspector {
       this._numberControl(controls, send, numberRange(main));
       return;
     }
-    // DPT 17/18 - scene number.
+    // DPT 17/18 - scene number, counted from 1 like ETS (03_07_02 §3.19 NOTE 9).
     if (main === 17 || main === 18) {
-      this._numberControl(controls, send, { min: 0, max: 63, step: 1, label: "scene" });
+      this._numberControl(controls, send, { min: 1, max: 64, step: 1, label: "scene" });
       return;
     }
     // DPT 10/11/19 (time/date/datetime) and anything else: raw payload only.

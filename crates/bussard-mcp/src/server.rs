@@ -922,7 +922,11 @@ impl BussardMcp {
         This has real-world effects: lights toggle, blinds and actuators MOVE, setpoints change. \
         Only available when the server was started with --allow-writes. The value is human-typed \
         (e.g. on/off, up/down, 75%, 21.5, a scene number, or an HVAC mode name) and is interpreted \
-        against the group address's DPT (override with `dpt`). Scaled sub-types take the scaled \
+        against the group address's DPT (override with `dpt`). Scene numbers (17.001, 18.001, \
+        1.022) count from 1 as ETS and Home Assistant show them (KNX 03_07_02 §3.19 NOTE 9): \
+        `scene 3` sends the field 2, `raw 2` sends the field directly; reads show both, \
+        `scene 3 (raw 2)`. Relative dimming/blind steps (3.007, 3.008) take a direction and a \
+        step size: `increase 25%`, `down 50%`, `up`, `break`. Scaled sub-types take the scaled \
         value, never the raw count: 8.010 `50 %`, 7.003/7.004/8.003/8.004 `1.5 s`, 13.002 `1.5 m3/h`. Rate-limited (minimum 250ms between \
         bus operations). Protected group addresses (safety-critical objects such as a wind alarm or \
         central functions) are REFUSED outright — there is no override via MCP. When you are \

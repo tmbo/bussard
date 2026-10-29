@@ -103,8 +103,10 @@ A relative dimming or blind step (`3.007`, `3.008`) is a direction and a step si
 2^(code-1) intervals (KNX 03_07_02 §3.3), so the step sizes are 100, 50, 25, 12.5, 6.25,
 3.125 and 1.5625 %; `increase 3` names the code directly, and a direction alone is 100 %.
 `read` and `monitor` print the step size: `0B` on a `3.007` address is `Increase 25 %`.
-A scene number is the raw field, 0 to 63. ETS and Home Assistant show scenes counted from
-1 (KNX 03_07_02 Datapoint Types §3.19 NOTE 9), so ETS scene 4 is `scene 3` here (#495).
+A scene number (`17.001`, `18.001`, and scenes A/B of `1.022`) counts from 1, as ETS and Home
+Assistant show it (KNX 03_07_02 Datapoint Types §3.19 NOTE 9, §3.1 footnote 2): `scene 3` sends
+the field 2, so ETS scene 3 is `scene 3` here. `raw 2` sends the field itself. `read` and
+`monitor` show both: `activate scene 3 (raw 2)`.
 A scaled sub-type takes the scaled value, never the raw count: `50 %` on an `8.010` address
 sends `13 88`, `1.5 s` (or `1500 ms`) on `7.004` sends `00 0F`, `1.5 m3/h` on `13.002` sends
 `00 00 3A 98` (KNX 03_07_02 §3.8.2, §3.9.1, §3.9.2, §3.14.1). A value outside the range or finer

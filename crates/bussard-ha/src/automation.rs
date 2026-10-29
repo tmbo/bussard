@@ -472,7 +472,8 @@ mod tests {
             "{{ trigger.payload | list == [255] }}"
         );
         assert_eq!(r.actions[0]["data"]["payload"], json!([128]));
-        assert!(r.actions[1]["data"]["payload"].is_array());
+        // Scene 3 as ETS and HA number it is the field 2 (03_07_02 §3.19 NOTE 9).
+        assert_eq!(r.actions[1]["data"]["payload"], json!([2]));
         assert_eq!(r.alias, "Dim");
         assert_eq!(r.description, "managed by bussard (model knx)");
         Ok(())

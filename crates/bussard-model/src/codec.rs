@@ -148,13 +148,16 @@ pub enum TypedValue {
     DateTime(DateTime),
     /// A text string (DPT 16.x), up to 14 characters.
     Text(String),
-    /// A scene number (DPT 17.001), 0-based.
+    /// A scene number (DPT 17.001): the transmitted field `0..=63`.
+    ///
+    /// Displayed and parsed counted from 1, the way ETS and Home Assistant
+    /// number scenes (03_07_02 §3.19 NOTE 9): field 2 is `scene 3 (raw 2)`.
     Scene(u8),
     /// A scene control (DPT 18.001): activate or learn a scene.
     SceneControl {
         /// `true` = learn the scene, `false` = activate it.
         learn: bool,
-        /// Scene number 0–63.
+        /// The transmitted scene field `0..=63`; displayed as `scene + 1`.
         scene: u8,
     },
     /// An HVAC operating mode (DPT 20.102).
@@ -389,13 +392,12 @@ impl fmt::Display for TypedValue {
             TypedValue::Date { day, month, year } => write!(f, "{year:04}-{month:02}-{day:02}"),
             TypedValue::DateTime(dt) => write!(f, "{dt}"),
             TypedValue::Text(s) => write!(f, "{s:?}"),
-            TypedValue::Scene(n) => write!(f, "scene {n}"),
+            // Scene numbers count from 1 on screen and the transmitted field
+            // from 0 (03_07_02 §3.19 NOTE 9); show both.
+            TypedValue::Scene(n) => write!(f, "scene {} (raw {n})", u16::from(*n) + 1),
             TypedValue::SceneControl { learn, scene } => {
-                if *learn {
-                    write!(f, "learn scene {scene}")
-                } else {
-                    write!(f, "activate scene {scene}")
-                }
+                let verb = if *learn { "learn" } else { "activate" };
+                write!(f, "{verb} scene {} (raw {scene})", u16::from(*scene) + 1)
             }
             TypedValue::HvacMode(m) => write!(f, "{m}"),
             TypedValue::Rgb { r, g, b } => write!(f, "#{r:02X}{g:02X}{b:02X}"),
@@ -637,6 +639,9 @@ fn bool_labels(sub: Option<u16>) -> (&'static str, &'static str) {
         Some(8) => ("Up", "Down"),
         Some(9) => ("Open", "Closed"),
         Some(10) => ("Stop", "Start"),
+        // 1.022 DPT_Scene_AB: shown as scenes 1 and 2 (03_07_02 §3.1
+        // footnote 2), with the transmitted bit next to it.
+        Some(22) => ("scene 1 (raw 0)", "scene 2 (raw 1)"),
         _ => ("0", "1"),
     }
 }
@@ -1082,8 +1087,12 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
 /// - **12.x** — an unsigned integer `0`–`4294967295`.
 /// - **13.x** — a signed 32-bit integer, optional unit suffix.
 /// - **14.x** — a decimal (IEEE float), optional unit suffix.
-/// - **17.001 / 18.001** — a scene number `0`–`63` (18.001 accepts a leading
-///   `learn ` prefix).
+/// - **17.001 / 18.001** — a scene number `1`–`64` counted like ETS and Home
+///   Assistant (`scene 3` sends field 2, 03_07_02 §3.19 NOTE 9), or the field
+///   itself as `raw 0`–`raw 63`; 18.001 accepts a leading `learn` or
+///   `activate`.
+/// - **1.022** — scene `1` or `2` (`scene a`/`scene b`, or the bit as
+///   `raw 0`/`raw 1`).
 /// - **20.102** — a mode name: `auto`, `comfort`, `standby`, `economy`,
 ///   `building-protection` (aliases `frost`, `protection`).
 ///
@@ -1266,10 +1275,9 @@ pub fn parse_value(dpt: &Dpt, input: &str) -> Result<TypedValue, ParseValueError
             Ok(TypedValue::Float { value: v, unit })
         }
         17 => {
-            let v = parse_scene(raw).ok_or_else(|| invalid("a scene number 0-63"))?;
-            if v > 63 {
-                return Err(out_of_range("0-63"));
-            }
+            let v = parse_scene(raw)
+                .ok_or_else(|| invalid("a scene number 1-64, or `raw 0`-`raw 63`"))?
+                .map_err(|()| out_of_range("scene 1-64 (raw 0-63)"))?;
             Ok(TypedValue::Scene(v))
         }
         18 => {
@@ -1278,11 +1286,15 @@ pub fn parse_value(dpt: &Dpt, input: &str) -> Result<TypedValue, ParseValueError
                 Some(r) => (true, r.trim()),
                 None => (false, lower.as_str()),
             };
+            let rest = rest.strip_prefix("activate").map_or(rest, str::trim);
             let v = parse_scene(rest)
-                .ok_or_else(|| invalid("a scene number 0-63 (optionally prefixed `learn`)"))?;
-            if v > 63 {
-                return Err(out_of_range("0-63"));
-            }
+                .ok_or_else(|| {
+                    invalid(
+                        "a scene number 1-64 or `raw 0`-`raw 63`, optionally prefixed \
+                         `learn` or `activate`",
+                    )
+                })?
+                .map_err(|()| out_of_range("scene 1-64 (raw 0-63)"))?;
             Ok(TypedValue::SceneControl { learn, scene: v })
         }
         20 if dpt.sub == Some(102) => {
@@ -1315,6 +1327,17 @@ pub fn parse_value(dpt: &Dpt, input: &str) -> Result<TypedValue, ParseValueError
 /// Parses a boolean from human text, honoring the DPT 1.x subtype's word pair.
 fn parse_bool(input: &str, sub: Option<u16>) -> Option<bool> {
     let s = input.trim().to_lowercase();
+    // 1.022 numbers its two scenes 1 and 2 (03_07_02 §3.1 footnote 2), so a
+    // bare number is a scene number, not the bit; `raw 0`/`raw 1` is the bit.
+    if sub == Some(22) {
+        let compact = s.split_whitespace().collect::<Vec<_>>().join(" ");
+        match compact.as_str() {
+            "1" | "scene 1" | "a" | "scene a" | "raw 0" => return Some(false),
+            "2" | "scene 2" | "b" | "scene b" | "raw 1" => return Some(true),
+            "0" => return None,
+            _ => {}
+        }
+    }
     // Universal forms first.
     match s.as_str() {
         "on" | "true" | "1" | "yes" => return Some(true),
@@ -1366,11 +1389,40 @@ fn parse_int_with_unit(input: &str, unit: Option<&str>) -> Option<i64> {
     s.trim().parse::<i64>().ok()
 }
 
-/// Parses a scene number, tolerating a leading `scene ` word.
-fn parse_scene(input: &str) -> Option<u8> {
+/// Parses a scene as the transmitted field `0..=63`.
+///
+/// `3` and `scene 3` are scene numbers counted from 1, as ETS and Home
+/// Assistant show them (03_07_02 §3.19 NOTE 9), and travel as field 2;
+/// `raw 2` (or `scene raw 2`) is the field itself. `None` for text that is
+/// not a scene, `Some(Err(()))` for a number out of range. The display form
+/// `scene 3 (raw 2)` parses too, when its two numbers agree.
+fn parse_scene(input: &str) -> Option<Result<u8, ()>> {
+    let lower = input.trim().to_lowercase();
+    if let Some((head, tail)) = lower.split_once('(') {
+        let field = parse_scene_number(&format!(
+            "raw {}",
+            tail.strip_suffix(')')?.trim().strip_prefix("raw")?
+        ))?;
+        let number = parse_scene_number(head)?;
+        return (field == number).then_some(field);
+    }
+    parse_scene_number(&lower)
+}
+
+/// [`parse_scene`] without the display form's `(raw N)` suffix.
+fn parse_scene_number(input: &str) -> Option<Result<u8, ()>> {
     let s = input.trim().to_lowercase();
     let s = s.strip_prefix("scene").map(str::trim).unwrap_or(s.as_str());
-    s.trim().parse::<u8>().ok()
+    if let Some(field) = s.strip_prefix("raw") {
+        let n = field.trim().parse::<u16>().ok()?;
+        return Some(u8::try_from(n).ok().filter(|n| *n <= 63).ok_or(()));
+    }
+    let n = s.trim().parse::<u16>().ok()?;
+    Some(if (1..=64).contains(&n) {
+        Ok((n - 1) as u8)
+    } else {
+        Err(())
+    })
 }
 
 /// Parses a float, tolerating a trailing known unit suffix (`21.5°C` → `21.5`).
@@ -2014,6 +2066,60 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_scene_displays_one_based_and_raw() {
+        // 03_07_02 §3.19 NOTE 9: field 2 is ETS's scene 3.
+        assert_eq!(
+            decode(&dpt("18.001"), &[0x02]).to_string(),
+            "activate scene 3 (raw 2)"
+        );
+        assert_eq!(
+            decode(&dpt("18.001"), &[0x80]).to_string(),
+            "learn scene 1 (raw 0)"
+        );
+        assert_eq!(
+            decode(&dpt("17.001"), &[63]).to_string(),
+            "scene 64 (raw 63)"
+        );
+        assert_eq!(decode(&dpt("1.022"), &[0]).to_string(), "scene 1 (raw 0)");
+    }
+
+    #[test]
+    fn test_parse_value_scene_one_based() -> Result<(), Box<dyn std::error::Error>> {
+        let d18 = dpt("18.001");
+        assert_eq!(encode(&d18, &parse_value(&d18, "scene 3")?)?, vec![0x02]);
+        assert_eq!(encode(&d18, &parse_value(&d18, "3")?)?, vec![0x02]);
+        assert_eq!(encode(&d18, &parse_value(&d18, "raw 2")?)?, vec![0x02]);
+        assert_eq!(
+            encode(&d18, &parse_value(&d18, "learn scene 1")?)?,
+            vec![0x80]
+        );
+        assert_eq!(
+            encode(&d18, &parse_value(&d18, "activate scene 64")?)?,
+            vec![0x3F]
+        );
+        assert!(matches!(
+            parse_value(&d18, "scene 0"),
+            Err(ParseValueError::OutOfRange { .. })
+        ));
+        assert!(matches!(
+            parse_value(&d18, "raw 64"),
+            Err(ParseValueError::OutOfRange { .. })
+        ));
+        let d17 = dpt("17.001");
+        assert_eq!(encode(&d17, &parse_value(&d17, "scene 1")?)?, vec![0x00]);
+        assert_eq!(encode(&d17, &parse_value(&d17, "raw 0")?)?, vec![0x00]);
+        // The display form parses back to the same field.
+        let shown = decode(&d17, &[7]).to_string();
+        assert_eq!(encode(&d17, &parse_value(&d17, &shown)?)?, vec![7]);
+        let d22 = dpt("1.022");
+        assert_eq!(encode(&d22, &parse_value(&d22, "scene 2")?)?, vec![1]);
+        assert_eq!(encode(&d22, &parse_value(&d22, "1")?)?, vec![0]);
+        assert_eq!(encode(&d22, &parse_value(&d22, "raw 1")?)?, vec![1]);
+        assert!(parse_value(&d22, "0").is_err());
+        Ok(())
+    }
+
+    #[test]
     fn hvac_mode() {
         assert_eq!(
             decode(&dpt("20.102"), &[1]),
@@ -2298,24 +2404,26 @@ mod tests {
 
     #[test]
     fn parse_scene_and_scene_control() -> Result<(), Box<dyn std::error::Error>> {
-        assert_eq!(parse_value(&dpt("17.001"), "5")?, TypedValue::Scene(5));
+        // Scene numbers count from 1 (03_07_02 §3.19 NOTE 9).
+        assert_eq!(parse_value(&dpt("17.001"), "5")?, TypedValue::Scene(4));
         assert_eq!(
             parse_value(&dpt("17.001"), "scene 5")?,
-            TypedValue::Scene(5)
+            TypedValue::Scene(4)
         );
-        assert!(parse_value(&dpt("17.001"), "64").is_err());
+        assert!(parse_value(&dpt("17.001"), "65").is_err());
+        assert!(parse_value(&dpt("17.001"), "0").is_err());
         assert_eq!(
             parse_value(&dpt("18.001"), "3")?,
             TypedValue::SceneControl {
                 learn: false,
-                scene: 3
+                scene: 2
             }
         );
         assert_eq!(
             parse_value(&dpt("18.001"), "learn 3")?,
             TypedValue::SceneControl {
                 learn: true,
-                scene: 3
+                scene: 2
             }
         );
         Ok(())
