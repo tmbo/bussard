@@ -1220,6 +1220,8 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                     | FlashStep::Sys7AbsSegment { .. }
                     | FlashStep::Sys7TaskSegment { .. }
                     | FlashStep::Sys7TaskCtrl1 { .. }
+                    | FlashStep::Sys7TaskPtr { .. }
+                    | FlashStep::Sys7TaskCtrl2 { .. }
                     | FlashStep::Sys7LoadCompleted { .. }
                     | FlashStep::Sys7CompareMem { .. }
                     | FlashStep::Sys7PreDownloadRestart { .. }

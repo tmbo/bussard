@@ -207,6 +207,32 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                         let octet = lsm_octet(target, *idx)?;
                         lsm.send_control(session.l4(), octet, &event).await?;
                     }
+                    FlashStep::Sys7TaskPtr {
+                        lsm: idx,
+                        init,
+                        save,
+                        pei_handler,
+                    } => {
+                        let event = bussard_mgmt::encode_task_ptr(*init, *save, *pei_handler);
+                        let octet = lsm_octet(session.l4().target(), *idx)?;
+                        lsm.send_control(session.l4(), octet, &event).await?;
+                    }
+                    FlashStep::Sys7TaskCtrl2 {
+                        lsm: idx,
+                        callback,
+                        com_objects,
+                        segment_1,
+                        segment_2,
+                    } => {
+                        let event = bussard_mgmt::encode_task_ctrl2(
+                            *callback,
+                            *com_objects,
+                            *segment_1,
+                            *segment_2,
+                        );
+                        let octet = lsm_octet(session.l4().target(), *idx)?;
+                        lsm.send_control(session.l4(), octet, &event).await?;
+                    }
                     FlashStep::Sys7LoadCompleted { lsm: idx } => {
                         let octet = lsm_octet(session.l4().target(), *idx)?;
                         lsm.drive(session.l4(), octet, LoadControl::LoadCompleted)

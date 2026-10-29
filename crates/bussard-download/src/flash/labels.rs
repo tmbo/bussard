@@ -226,6 +226,25 @@ pub(super) fn step_label(step: &FlashStep) -> String {
             address,
             count,
         } => format!("[S7] task control 1 at {address:#06X} x{count} on LSM {lsm}"),
+        FlashStep::Sys7TaskPtr {
+            lsm,
+            init,
+            save,
+            pei_handler,
+        } => format!(
+            "[S7] task pointers on LSM {lsm}: init {init:#06X}, save {save:#06X}, PEI handler \
+             {pei_handler:#06X}"
+        ),
+        FlashStep::Sys7TaskCtrl2 {
+            lsm,
+            callback,
+            com_objects,
+            segment_1,
+            segment_2,
+        } => format!(
+            "[S7] task control 2 on LSM {lsm}: callback {callback:#06X}, group objects \
+             {com_objects:#06X}, segments {segment_1:#06X}/{segment_2:#06X}"
+        ),
         FlashStep::Sys7LoadCompleted { lsm } => format!("[S7] complete load of LSM {lsm}"),
         FlashStep::Sys7CompareMem { address, expected } => format!(
             "[S7] verify memory at {address:#06X} == {} byte(s)",

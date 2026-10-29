@@ -402,6 +402,10 @@ impl Sys7LoadStateMachine {
             (LoadState::Loading, E::TaskCtrl1 { address, count }) => {
                 Ok(Sys7Step::TaskCtrl1 { address, count })
             }
+            // The Task Pointer Record and Task Control Record 2 (KNX 3/5/2
+            // §3.31.2), mandatory on 0701/0705 (Profiles Annex A.2.4.1):
+            // accepted while Loading, no memory side effect in the sim.
+            (LoadState::Loading, E::TaskPtr { .. } | E::TaskCtrl2 { .. }) => Ok(Sys7Step::NoOp),
             // LoadCompleted finalises to Loaded, but only after a committed task
             // descriptor (spec §4.3 precondition).
             (LoadState::Loading, E::LoadCompleted) => {
@@ -423,6 +427,8 @@ impl Sys7LoadStateMachine {
                 E::AllocAbsSegment { .. }
                 | E::TaskSegment { .. }
                 | E::TaskCtrl1 { .. }
+                | E::TaskPtr { .. }
+                | E::TaskCtrl2 { .. }
                 | E::LoadCompleted,
             )
             | (LoadState::Loaded, E::LoadCompleted) => Ok(Sys7Step::Ignored),
@@ -703,6 +709,30 @@ mod tests {
                 lsm.apply(E::LoadCompleted),
                 Ok(Sys7Step::State(LoadState::Loaded))
             );
+        }
+
+        #[test]
+        fn test_sys7_task_ptr_and_task_ctrl2_accepted_while_loading() {
+            let mut lsm = Sys7LoadStateMachine::default();
+            assert!(lsm.apply(E::StartLoading).is_ok());
+            assert!(
+                lsm.apply(E::TaskPtr {
+                    init: 284,
+                    save: 285,
+                    pei_handler: 0,
+                })
+                .is_ok()
+            );
+            assert!(
+                lsm.apply(E::TaskCtrl2 {
+                    callback: 20609,
+                    com_objects: 282,
+                    segment_1: 208,
+                    segment_2: 208,
+                })
+                .is_ok()
+            );
+            assert_eq!(lsm.state(), LoadState::Loading);
         }
 
         #[test]

@@ -499,6 +499,32 @@ pub enum FlashStep {
         /// The repeat count.
         count: u32,
     },
+    /// Write the Task Pointer Record on `lsm` (`LdCtrlTaskPtr`, Additional
+    /// Load Controls segment type 03h, KNX 3/5/2 §3.31.2).
+    Sys7TaskPtr {
+        /// The 1-based LSM index.
+        lsm: u32,
+        /// The init address (`InitPtr`).
+        init: u16,
+        /// The save address (`SavePtr`).
+        save: u16,
+        /// The PEI handler address (`SerialPtr`).
+        pei_handler: u16,
+    },
+    /// Write Task Control Record 2 on `lsm` (`LdCtrlTaskCtrl2`, Additional
+    /// Load Controls segment type 05h, KNX 3/5/2 §3.31.2).
+    Sys7TaskCtrl2 {
+        /// The 1-based LSM index.
+        lsm: u32,
+        /// The callback address (`Callback`).
+        callback: u16,
+        /// The group-object table pointer (`Address`).
+        com_objects: u16,
+        /// The first group-object segment pointer (`Seg0`).
+        segment_1: u16,
+        /// The second group-object segment pointer (`Seg1`).
+        segment_2: u16,
+    },
     /// Persist and activate System 7 load-state machine `lsm` → `Loaded`
     /// (`LdCtrlLoadCompleted`).
     Sys7LoadCompleted {

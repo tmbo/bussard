@@ -51,6 +51,29 @@ pub enum Sys7Event {
         /// The number of entries.
         count: u8,
     },
+    /// `AdditionalLoadControls` → the Task Pointer Record (segment type 03h,
+    /// KNX 3/5/2 §3.31.2): `[init:2][save:2][PEI handler:2][reserved:2]`.
+    TaskPtr {
+        /// The init address.
+        init: u16,
+        /// The save address.
+        save: u16,
+        /// The PEI handler address.
+        pei_handler: u16,
+    },
+    /// `AdditionalLoadControls` → Task Control Record 2 (segment type 05h,
+    /// KNX 3/5/2 §3.31.2): `[callback:2][group-object pointer:2][segment
+    /// pointer 1:2][segment pointer 2:2]`.
+    TaskCtrl2 {
+        /// The callback address.
+        callback: u16,
+        /// The group-object table pointer.
+        com_objects: u16,
+        /// The first group-object segment pointer.
+        segment_1: u16,
+        /// The second group-object segment pointer.
+        segment_2: u16,
+    },
 }
 
 /// Error decoding a System 7 load event.
@@ -117,6 +140,29 @@ impl Sys7Event {
                         let count = *record.get(4).unwrap_or(&0);
                         Ok(Sys7Event::TaskCtrl1 { address, count })
                     }
+                    // Task Pointer Record and Task Control Record 2 (KNX
+                    // 3/5/2 §3.31.2): four 2-octet fields each, the last one
+                    // of the Task Pointer Record reserved.
+                    0x03 | 0x05 => {
+                        if record.len() < 10 {
+                            return Err(Sys7EventError::TooShort(sub));
+                        }
+                        let field = |i: usize| u16::from_be_bytes([record[i], record[i + 1]]);
+                        Ok(if sub == 0x03 {
+                            Sys7Event::TaskPtr {
+                                init: field(2),
+                                save: field(4),
+                                pei_handler: field(6),
+                            }
+                        } else {
+                            Sys7Event::TaskCtrl2 {
+                                callback: field(2),
+                                com_objects: field(4),
+                                segment_1: field(6),
+                                segment_2: field(8),
+                            }
+                        })
+                    }
                     other => Err(Sys7EventError::UnsupportedSubCommand(other)),
                 }
             }
@@ -162,6 +208,36 @@ pub fn decode_memory_lsm_record(record: &[u8]) -> Result<(u8, [u8; 10]), Sys7Eve
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_decode_memory_task_ptr_and_task_ctrl2() -> Result<(), Sys7EventError> {
+        // KNX 3/5/2 §3.31.2, the 11-octet memory-mapped forms.
+        let (lsm, event) = decode_memory_lsm_record(&[
+            0x33, 0x03, 0x00, 0x01, 0x1C, 0x01, 0x1D, 0x00, 0x00, 0x00, 0x00,
+        ])?;
+        assert_eq!(lsm, 3);
+        assert_eq!(
+            Sys7Event::decode(&event)?,
+            Sys7Event::TaskPtr {
+                init: 284,
+                save: 285,
+                pei_handler: 0,
+            }
+        );
+        let (_, event) = decode_memory_lsm_record(&[
+            0x33, 0x05, 0x00, 0x50, 0x81, 0x01, 0x1A, 0x00, 0xD0, 0x00, 0xD0,
+        ])?;
+        assert_eq!(
+            Sys7Event::decode(&event)?,
+            Sys7Event::TaskCtrl2 {
+                callback: 20609,
+                com_objects: 282,
+                segment_1: 208,
+                segment_2: 208,
+            }
+        );
+        Ok(())
+    }
 
     #[test]
     fn test_decode_basic_events() {

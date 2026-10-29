@@ -985,6 +985,16 @@ pub fn plan_flash_with_memo(
                     op: "LdCtrlTaskCtrl1".to_string(),
                 });
             }
+            LoadOp::TaskPtr { .. } => {
+                return Err(PlanError::UnsupportedOp {
+                    op: "LdCtrlTaskPtr".to_string(),
+                });
+            }
+            LoadOp::TaskCtrl2 { .. } => {
+                return Err(PlanError::UnsupportedOp {
+                    op: "LdCtrlTaskCtrl2".to_string(),
+                });
+            }
             LoadOp::Raw { name, .. } => {
                 return Err(PlanError::UnsupportedOp { op: name.clone() });
             }

@@ -439,9 +439,9 @@ endian, total 10 octets `[XKNX, CONFIRMED]`:
 | AllocAbsDataSeg | 0x00 | `[start:2][length:2][access attributes:1][memory type:1][memory attributes:1]` |
 | AllocAbsStackSeg | 0x01 | same as 0x00 (#487: send the product's `SegType`) |
 | AllocAbsTaskSeg ("Segment Control Record") | 0x02 | `[start:2][PEI type:1][manufacturer:2][application id:2][version:1]` (§4.3) |
-| TaskPtr | 0x03 | `[init address:2][save address:2][PEI handler:2][reserved:2]` (#527) |
+| TaskPtr | 0x03 | `[init address:2][save address:2][PEI handler:2][reserved:2]` |
 | TaskCtrl1 | 0x04 | `[interface object table address:2][object count:1]` (§4.4) |
-| TaskCtrl2 | 0x05 | `[callback address:2][com-object pointer:2][com-object segment pointer 1:2][pointer 2:2]` (#527) |
+| TaskCtrl2 | 0x05 | `[callback address:2][com-object pointer:2][com-object segment pointer 1:2][pointer 2:2]` |
 
 The property form is the same record without the leading state-machine octet
 (10 octets); the segment ID octet is 00 in every capture. Access attributes:
@@ -449,7 +449,13 @@ bits 0–3 write level, bits 4–7 read level (16 levels on BIM M112, `[Prof §4
 row 12]`). Memory type bits 0–2: 1 = zero-page RAM, 2 = RAM, 3 = EEPROM.
 Memory attributes bit 7 = checksum control. The profile requires types 00, 02,
 03, 04 and 05 on 0701 and 0705 `[Prof Annex A.2.4.1, Table 7]`; bussard
-refuses 03 and 05 today (#527).
+lowers all five (`encode_task_ptr` and `encode_task_ctrl2` for 03 and 05, #527;
+`LdCtrlTaskPtr` `InitPtr`/`SavePtr`/`SerialPtr` are the init, save and PEI
+handler addresses, `LdCtrlTaskCtrl2` `Callback`/`Address`/`Seg0`/`Seg1` the
+callback, group-object pointer and the two segment pointers). In the local
+corpus the two ops appear only on masks 0020, 0021 and 0025 (and the
+knx_master procedures of 0020/0021), which bussard does not flash; no ETS
+capture of either record exists yet.
 
 ### 4.2 AbsSegment: allocation record + payload
 

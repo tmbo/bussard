@@ -928,6 +928,32 @@ fn load_op_summary(op: &LoadOp) -> String {
             opt(address),
             opt(count)
         ),
+        LoadOp::TaskPtr {
+            lsm_idx,
+            init_ptr,
+            save_ptr,
+            serial_ptr,
+        } => format!(
+            "task_ptr lsm={} init={} save={} serial={}",
+            opt(lsm_idx),
+            opt(init_ptr),
+            opt(save_ptr),
+            opt(serial_ptr)
+        ),
+        LoadOp::TaskCtrl2 {
+            lsm_idx,
+            callback,
+            address,
+            seg0,
+            seg1,
+        } => format!(
+            "task_ctrl2 lsm={} callback={} addr={} seg0={} seg1={}",
+            opt(lsm_idx),
+            opt(callback),
+            opt(address),
+            opt(seg0),
+            opt(seg1)
+        ),
         LoadOp::RelSegment {
             lsm_idx,
             size,

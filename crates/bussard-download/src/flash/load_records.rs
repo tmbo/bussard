@@ -158,6 +158,27 @@ fn sys7_events(step: &FlashStep) -> Vec<(u32, &'static str, [u8; sys7::LOAD_EVEN
             }
             _ => Vec::new(),
         },
+        FlashStep::Sys7TaskPtr {
+            lsm,
+            init,
+            save,
+            pei_handler,
+        } => vec![(
+            *lsm,
+            "task-ptr",
+            sys7::encode_task_ptr(*init, *save, *pei_handler),
+        )],
+        FlashStep::Sys7TaskCtrl2 {
+            lsm,
+            callback,
+            com_objects,
+            segment_1,
+            segment_2,
+        } => vec![(
+            *lsm,
+            "task-ctrl2",
+            sys7::encode_task_ctrl2(*callback, *com_objects, *segment_1, *segment_2),
+        )],
         _ => Vec::new(),
     }
 }

@@ -109,7 +109,7 @@ pub use secure::SecureLayer;
 pub use sys7::{
     DEVICE_CONTROL_VERIFY_MODE, LsmAccess, PID_DEVICE_CONTROL, Sys7TaskIdentity, VerifyModeOutcome,
     alloc_attr_octets, enable_verify_mode, encode_alloc_segment, encode_task_ctrl1,
-    encode_task_segment, lsm_access_from_profile,
+    encode_task_ctrl2, encode_task_ptr, encode_task_segment, lsm_access_from_profile,
 };
 pub use tables::{
     DeviceTables, ResolvedLink, TableSource, TablesError, discover_interface_objects, read_tables,

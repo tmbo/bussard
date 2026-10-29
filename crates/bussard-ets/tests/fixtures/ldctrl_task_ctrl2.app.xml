@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- FABRICATED fixture. Reproduces <LdCtrlTaskCtrl2> (task-control variant 2),
      found on KNX-RF / coupler masks (2705/27B0) in the sweep. It is the sibling
-     of the already-typed LdCtrlTaskCtrl1. Fake attribute values. Parses as
-     LoadOp::Raw{name:"LdCtrlTaskCtrl2"}. -->
+     of LdCtrlTaskCtrl1. Fake attribute values. Parses as
+     LoadOp::TaskCtrl2 (issue #527). -->
 <KNX xmlns="http://knx.org/xml/project/20">
  <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
   <ApplicationProgram Id="M-00FA_A-0003-11-ABCD-O000A" ApplicationNumber="3" ApplicationVersion="11" MaskVersion="MV-2705" Name="TaskCtrl2 Fixture" LoadProcedureStyle="ProductProcedure">

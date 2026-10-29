@@ -515,6 +515,34 @@ pub enum LoadOp {
         /// Repeat count.
         count: Option<u32>,
     },
+    /// `<LdCtrlTaskPtr LsmIdx=… InitPtr=… SavePtr=… SerialPtr=…>`: the Task
+    /// Pointer Record (Additional Load Controls segment type 03h, KNX 3/5/2
+    /// §3.31.2).
+    TaskPtr {
+        /// Load-state-machine index.
+        lsm_idx: Option<u32>,
+        /// `InitPtr`: the init address.
+        init_ptr: Option<u32>,
+        /// `SavePtr`: the save address.
+        save_ptr: Option<u32>,
+        /// `SerialPtr`: the PEI handler address.
+        serial_ptr: Option<u32>,
+    },
+    /// `<LdCtrlTaskCtrl2 LsmIdx=… Callback=… Address=… Seg0=… Seg1=…>`: Task
+    /// Control Record 2 (Additional Load Controls segment type 05h, KNX 3/5/2
+    /// §3.31.2).
+    TaskCtrl2 {
+        /// Load-state-machine index.
+        lsm_idx: Option<u32>,
+        /// `Callback`: the callback address.
+        callback: Option<u32>,
+        /// `Address`: the group-object table pointer.
+        address: Option<u32>,
+        /// `Seg0`: the first group-object segment pointer.
+        seg0: Option<u32>,
+        /// `Seg1`: the second group-object segment pointer.
+        seg1: Option<u32>,
+    },
     /// `<LdCtrlRelSegment …>`: a relative-segment control op.
     RelSegment {
         /// Load-state-machine index.
@@ -2465,6 +2493,19 @@ pub(crate) fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m
             address: u(b"Address"),
             count: u(b"Count"),
         },
+        b"LdCtrlTaskPtr" => LoadOp::TaskPtr {
+            lsm_idx: u(b"LsmIdx"),
+            init_ptr: u(b"InitPtr"),
+            save_ptr: u(b"SavePtr"),
+            serial_ptr: u(b"SerialPtr"),
+        },
+        b"LdCtrlTaskCtrl2" => LoadOp::TaskCtrl2 {
+            lsm_idx: u(b"LsmIdx"),
+            callback: u(b"Callback"),
+            address: u(b"Address"),
+            seg0: u(b"Seg0"),
+            seg1: u(b"Seg1"),
+        },
         b"LdCtrlRelSegment" => LoadOp::RelSegment {
             lsm_idx: u(b"LsmIdx"),
             size: u(b"Size"),
@@ -3919,6 +3960,37 @@ mod tests {
                 verify: Some(false),
                 count: None,
                 ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_task_ptr_and_task_ctrl2() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let xml = br#"<KNX xmlns="http://knx.org/xml/project/20"><ApplicationProgram Id="M-00FA_A-0003" MaskVersion="MV-0701">
+          <Static><LoadProcedures><LoadProcedure>
+            <LdCtrlTaskPtr LsmIdx="3" InitPtr="284" SavePtr="285" SerialPtr="0" />
+            <LdCtrlTaskCtrl2 LsmIdx="3" Callback="20609" Address="282" Seg0="208" Seg1="200" />
+          </LoadProcedure></LoadProcedures></Static></ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-00FA_A-0003", &xml[..])?;
+        let ops = &app.load_procedures.first().ok_or("a procedure")?.ops;
+        assert!(matches!(
+            ops[0],
+            LoadOp::TaskPtr {
+                lsm_idx: Some(3),
+                init_ptr: Some(284),
+                save_ptr: Some(285),
+                serial_ptr: Some(0),
+            }
+        ));
+        assert!(matches!(
+            ops[1],
+            LoadOp::TaskCtrl2 {
+                lsm_idx: Some(3),
+                callback: Some(20609),
+                address: Some(282),
+                seg0: Some(208),
+                seg1: Some(200),
             }
         ));
         Ok(())

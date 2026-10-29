@@ -49,6 +49,21 @@ pub(super) fn check_sys7_u16(
     }
 }
 
+/// [`check_sys7_u16`] for a field the record carries as a `u16`.
+fn sys7_u16_field(
+    step: usize,
+    field: &'static str,
+    value: u32,
+) -> std::result::Result<u16, PlanError> {
+    let value = check_sys7_u16(step, field, value)?;
+    u16::try_from(value).map_err(|_| PlanError::Sys7FieldOutOfRange {
+        step,
+        field,
+        value: u64::from(value),
+        max: u64::from(u16::MAX),
+    })
+}
+
 /// Environment variable that overrides the System 7 LSM realisation the product
 /// data selected (`memory` for [`LsmRealisation::MemoryMapped`], `property` for
 /// [`LsmRealisation::Property`]).
@@ -513,6 +528,60 @@ pub(super) fn plan_flash_sys7(
                     lsm,
                     address: addr,
                     count,
+                });
+            }
+            LoadOp::TaskPtr {
+                lsm_idx,
+                init_ptr,
+                save_ptr,
+                serial_ptr,
+            } => {
+                // The Task Pointer Record, mandatory on 0701/0705 (Profiles
+                // Annex A.2.4.1 Table 7), laid out per KNX 3/5/2 §3.31.2.
+                let lsm = check_sys7_lsm(step_no, lsm_idx.unwrap_or(0))?;
+                steps.push(FlashStep::Sys7TaskPtr {
+                    lsm,
+                    init: sys7_u16_field(step_no, "task pointer init", init_ptr.unwrap_or(0))?,
+                    save: sys7_u16_field(step_no, "task pointer save", save_ptr.unwrap_or(0))?,
+                    pei_handler: sys7_u16_field(
+                        step_no,
+                        "task pointer PEI handler",
+                        serial_ptr.unwrap_or(0),
+                    )?,
+                });
+            }
+            LoadOp::TaskCtrl2 {
+                lsm_idx,
+                callback,
+                address,
+                seg0,
+                seg1,
+            } => {
+                // Task Control Record 2, mandatory on 0701/0705 (Profiles
+                // Annex A.2.4.1 Table 7), laid out per KNX 3/5/2 §3.31.2.
+                let lsm = check_sys7_lsm(step_no, lsm_idx.unwrap_or(0))?;
+                steps.push(FlashStep::Sys7TaskCtrl2 {
+                    lsm,
+                    callback: sys7_u16_field(
+                        step_no,
+                        "task control 2 callback",
+                        callback.unwrap_or(0),
+                    )?,
+                    com_objects: sys7_u16_field(
+                        step_no,
+                        "task control 2 group-object pointer",
+                        address.unwrap_or(0),
+                    )?,
+                    segment_1: sys7_u16_field(
+                        step_no,
+                        "task control 2 segment 1",
+                        seg0.unwrap_or(0),
+                    )?,
+                    segment_2: sys7_u16_field(
+                        step_no,
+                        "task control 2 segment 2",
+                        seg1.unwrap_or(0),
+                    )?,
                 });
             }
             LoadOp::CompareProp { .. } => {
@@ -2558,6 +2627,73 @@ mod tests {
             FlashStep::Sys7TaskSegment { lsm: 5, .. } | FlashStep::Sys7StartLoading { lsm: 5 }
         )));
         Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_sys7_lowers_task_ptr_and_task_ctrl2()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // The Task Pointer Record and Task Control Record 2 (KNX 3/5/2
+        // §3.31.2), with the attribute values of the knx_master MV-0021
+        // procedure (issue #527).
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram PeiType="0" Id="M-0048_A-4947" ApplicationNumber="18759" ApplicationVersion="16"
+            MaskVersion="MV-0701" Name="FIX2" LoadProcedureStyle="ProductProcedure">
+          <Static>
+           <Code>
+            <AbsoluteSegment Id="M-0048_A-4947_AS-1" Size="4" Address="16384"><Data>AAECAw==</Data></AbsoluteSegment>
+           </Code>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlConnect />
+             <LdCtrlUnload LsmIdx="3" />
+             <LdCtrlLoad LsmIdx="3" />
+             <LdCtrlAbsSegment LsmIdx="3" Address="16384" Size="4" />
+             <LdCtrlTaskSegment LsmIdx="3" Address="16384" />
+             <LdCtrlTaskPtr LsmIdx="3" InitPtr="284" SavePtr="285" SerialPtr="0" />
+             <LdCtrlTaskCtrl2 LsmIdx="3" Callback="20609" Address="282" Seg0="208" Seg1="208" />
+             <LdCtrlLoadCompleted LsmIdx="3" />
+             <LdCtrlRestart />
+             <LdCtrlDisconnect />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-0048_A-4947", xml.as_bytes())?;
+        let plan = plan_flash(
+            &app,
+            "1.1.99",
+            0x0701,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )?;
+        assert!(plan.steps.contains(&FlashStep::Sys7TaskPtr {
+            lsm: 3,
+            init: 284,
+            save: 285,
+            pei_handler: 0,
+        }));
+        assert!(plan.steps.contains(&FlashStep::Sys7TaskCtrl2 {
+            lsm: 3,
+            callback: 20609,
+            com_objects: 282,
+            segment_1: 208,
+            segment_2: 208,
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn test_sys7_u16_field_out_of_range_is_refused() {
+        assert!(matches!(
+            sys7_u16_field(1, "task pointer init", 0x1_0000),
+            Err(PlanError::Sys7FieldOutOfRange { .. })
+        ));
+        assert!(matches!(
+            sys7_u16_field(1, "task pointer init", 284),
+            Ok(284)
+        ));
     }
 
     #[test]
