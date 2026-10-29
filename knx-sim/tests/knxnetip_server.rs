@@ -1053,3 +1053,49 @@ fn flash_two_object_device(
     flash_object(bus, addr, 3, &mut seq, &go_tbl)?;
     Ok(())
 }
+
+#[test]
+fn test_feature_get_is_acked_and_answered_on_the_data_port()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Bussard issue #514: a TUNNELLING_FEATURE_GET belongs to the data
+    // connection like a TUNNELLING_REQUEST (Tunnelling 3/8/4 §3.1). It is
+    // ACKed under the client's sequence and answered with a
+    // TUNNELLING_FEATURE_RESPONSE under the server's own sequence.
+    let mut server = build_synthetic_server();
+    let control = server.local_addr()?;
+    let data = server.enable_data_port("127.0.0.1:0".parse()?)?;
+
+    let client = UdpSocket::bind("127.0.0.1:0")?;
+    client.set_read_timeout(Some(std::time::Duration::from_millis(300)))?;
+    let mut buf = [0u8; 1024];
+    let connect = KnxnetIpFrame::encode(service::CONNECT_REQUEST, &[0x00; 10]);
+    client.send_to(&connect, control)?;
+    server.serve_n(1)?;
+    let (n, _) = client.recv_from(&mut buf)?;
+    let channel = KnxnetIpFrame::decode(&buf[..n])?.body[0];
+
+    // GET feature 07 (max APDU length) under sequence 0, on the data port.
+    let get = KnxnetIpFrame::encode(
+        service::TUNNELLING_FEATURE_GET,
+        &[0x04, channel, 0x00, 0x00, 0x07, 0x00],
+    );
+    client.send_to(&get, data)?;
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    server.poll_data()?;
+    let mut frames = Vec::new();
+    while let Ok((n, from)) = client.recv_from(&mut buf) {
+        assert_eq!(from, data, "feature frames leave from the data port");
+        frames.push(KnxnetIpFrame::decode(&buf[..n])?);
+    }
+    let ack = frames
+        .iter()
+        .find(|f| f.service == service::TUNNELLING_ACK)
+        .ok_or("no TUNNELLING_ACK")?;
+    assert_eq!(&ack.body[..], &[0x04, channel, 0x00, 0x00]);
+    let response = frames
+        .iter()
+        .find(|f| f.service == service::TUNNELLING_FEATURE_RESPONSE)
+        .ok_or("no TUNNELLING_FEATURE_RESPONSE")?;
+    assert_eq!(&response.body[4..], &[0x07, 0x00, 0x00, 0xFE]);
+    Ok(())
+}

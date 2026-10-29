@@ -1388,12 +1388,18 @@ fn write_all_nonblocking(stream: &mut TcpStream, mut bytes: &[u8]) -> std::io::R
 }
 
 /// Whether a plain KNXnet/IP frame belongs to a tunnel's data connection
-/// (TUNNELLING_REQUEST or TUNNELLING_ACK) rather than its control endpoint.
+/// (TUNNELLING_REQUEST, TUNNELLING_ACK or a tunnelling feature service,
+/// Tunnelling 3/8/4 §3.1) rather than its control endpoint.
 fn is_data_service(frame: &[u8]) -> bool {
     frame.len() >= 4
         && matches!(
             u16::from_be_bytes([frame[2], frame[3]]),
-            service::TUNNELLING_REQUEST | service::TUNNELLING_ACK
+            service::TUNNELLING_REQUEST
+                | service::TUNNELLING_ACK
+                | service::TUNNELLING_FEATURE_GET
+                | service::TUNNELLING_FEATURE_RESPONSE
+                | service::TUNNELLING_FEATURE_SET
+                | service::TUNNELLING_FEATURE_INFO
         )
 }
 

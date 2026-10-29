@@ -12,9 +12,27 @@
 //! - ACKs inbound TUNNELING_REQUESTs, delivering their cEMI to the caller; a
 //!   frame one behind the expected sequence is ACKed and dropped, any other
 //!   unexpected sequence dropped without an ACK (Tunnelling 3/8/4 §2.6.1),
-//! - handles a server-initiated DISCONNECT_REQUEST.
+//! - handles a server-initiated DISCONNECT_REQUEST,
+//! - reads interface features (TUNNELLING_FEATURE_GET / RESPONSE) and counts
+//!   inbound feature frames in the same sequence as tunnelling requests.
 //!
 //! The public [`Tunnel`] handle talks to the task over channels.
+//!
+//! # Tunnelling feature services (issue #514)
+//!
+//! TUNNELLING_FEATURE_GET/RESPONSE/SET/INFO are confirmed exactly like a
+//! TUNNELLING_REQUEST and share its sequence counters (Tunnelling 3/8/4
+//! §3.1, §2.6.1): an inbound feature frame is ACKed over UDP when its
+//! sequence is the expected one or one behind, and silently dropped
+//! otherwise; a FEATURE_INFO is logged, a FEATURE_RESPONSE answers the
+//! pending [`Tunnel::feature_get`]. A server without feature services ignores
+//! a GET, without even a TUNNELLING_ACK (§3.5), which over UDP would look like
+//! a lost link and over TCP would desynchronise the sequence. So the tunnel
+//! reads feature 07 (max APDU length, §3.6.8) after CONNECT, as ETS does, only
+//! when the interface's extended description carried the tunnelling-info DIB
+//! that marks a server with feature services (§3.5 NOTE 3); the answer is
+//! [`Tunnel::max_apdu_length`]. An interface that does not answer within 3 s
+//! leaves it `None`.
 //!
 //! # KNXnet/IP Secure (issue #71 Phase B)
 //!
@@ -130,9 +148,10 @@ use tokio::time::{self, Instant};
 
 use crate::cemi::CemiFrame;
 use crate::config::{
-    CONNECT_TIMEOUT, ConnectionConfig, DISCONNECT_TIMEOUT, HEARTBEAT_ATTEMPTS, HEARTBEAT_INTERVAL,
-    HEARTBEAT_TIMEOUT, SECURE_KEEPALIVE_INTERVAL, SECURE_PROBE_TIMEOUT, SecureSource,
-    SecureTransport, SecureUser, TUNNELING_ACK_TIMEOUT, TUNNELING_RETRANSMITS, TunnelReconnect,
+    CONNECT_TIMEOUT, ConnectionConfig, DISCONNECT_TIMEOUT, FEATURE_RESPONSE_TIMEOUT,
+    HEARTBEAT_ATTEMPTS, HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT, SECURE_KEEPALIVE_INTERVAL,
+    SECURE_PROBE_TIMEOUT, SecureSource, SecureTransport, SecureUser, TUNNELING_ACK_TIMEOUT,
+    TUNNELING_RETRANSMITS, TunnelReconnect,
 };
 use crate::conn::{BusConnection, TimestampedFrame};
 use crate::error::{Result, TransportError};
@@ -152,6 +171,14 @@ const INBOUND_WARN_DEPTH: usize = 512;
 
 /// The context of a [`TransportError::GatewayStatus`] from a TUNNELING_ACK.
 const ACK_CONTEXT: &str = "TUNNELING_ACK";
+
+/// Interface feature 03, the bus connection status (Tunnelling 3/8/4 §3.6.4).
+pub const FEATURE_BUS_CONNECTION_STATUS: u8 = 0x03;
+/// Interface feature 06, the interface individual address (3/8/4 §3.6.7).
+pub const FEATURE_INDIVIDUAL_ADDRESS: u8 = 0x06;
+/// Interface feature 07, the max APDU length for bus access, equal to
+/// PID_MAX_INTERFACE_APDU_LENGTH (3/8/4 §3.6.8).
+pub const FEATURE_MAX_APDU_LENGTH: u8 = 0x07;
 
 /// The state of a tunnel's link to its gateway, as published by
 /// [`Tunnel::link_state`].
@@ -429,6 +456,13 @@ enum Command {
     },
     /// Cleanly disconnect; reply when done.
     Close { reply: oneshot::Sender<Result<()>> },
+    /// Read one interface feature with up to `attempts` GETs; reply with the
+    /// value, or `None` when the interface did not answer.
+    FeatureGet {
+        feature: u8,
+        attempts: u32,
+        reply: oneshot::Sender<Result<Option<Vec<u8>>>>,
+    },
 }
 
 /// A KNXnet/IP tunneling connection.
@@ -445,6 +479,8 @@ pub struct Tunnel {
     link: watch::Receiver<LinkState>,
     /// The KNXnet/IP Secure user this tunnel authenticated as, if secure.
     secure_user: Option<u8>,
+    /// Interface feature 07 as read after CONNECT, if the interface answered.
+    max_apdu: Option<u16>,
 }
 
 impl Tunnel {
@@ -465,6 +501,13 @@ impl Tunnel {
         })?;
 
         let plan = plan_connection(config, gateway).await?;
+        // Only a server whose extended description carries the
+        // tunnelling-info DIB is known to serve feature services (3/8/4
+        // §3.5 NOTE 3); any other one may ignore a GET without an ACK.
+        let feature_services = match &plan {
+            Plan::Secure { probed, .. } => probed.as_deref().is_some_and(serves_features),
+            Plan::Plain { probed, .. } => probed.as_ref().is_some_and(serves_features),
+        };
         let requested = config
             .secure
             .as_ref()
@@ -551,12 +594,13 @@ impl Tunnel {
             reconnect: config.reconnect,
             link_state: link_tx,
             last_rx: Instant::now(),
+            feature_answer: None,
             _user_lock: user_lock,
         };
         let secure_user = task_state.secure_user.as_ref().map(|u| u.user_id);
         let task = tokio::spawn(task_state.run());
 
-        Ok(Tunnel {
+        let mut tunnel = Tunnel {
             commands: cmd_tx,
             frames: frame_rx,
             queued,
@@ -564,7 +608,65 @@ impl Tunnel {
             assigned_ia,
             link: link_rx,
             secure_user,
-        })
+            max_apdu: None,
+        };
+        if feature_services {
+            // ETS reads the max APDU length right after CONNECT; one GET, no
+            // repeat, so an interface that stays silent costs one 3 s wait.
+            match tunnel.request_feature(FEATURE_MAX_APDU_LENGTH, 1).await {
+                Ok(Some(value)) if value.len() == 2 => {
+                    let apdu = u16::from_be_bytes([value[0], value[1]]);
+                    tracing::debug!(apdu, "interface feature 07: max APDU length");
+                    tunnel.max_apdu = Some(apdu);
+                }
+                Ok(Some(value)) => {
+                    tracing::debug!(?value, "interface feature 07 with an unexpected size");
+                }
+                Ok(None) => tracing::debug!("interface feature 07 not answered"),
+                Err(err) => tracing::debug!(%err, "interface feature 07 not read"),
+            }
+        }
+        Ok(tunnel)
+    }
+
+    /// Reads interface feature `feature` (Tunnelling 3/8/4 §3.2): sends a
+    /// TUNNELLING_FEATURE_GET, waits 3 s for the TUNNELLING_FEATURE_RESPONSE
+    /// and repeats the GET once if none came.
+    ///
+    /// Returns the feature value, or `None` when the interface did not answer
+    /// either GET. Only call it on an interface that serves feature services
+    /// (its extended description lists tunnelling slots): one that does not
+    /// ignores the GET without an ACK, which over UDP fails the request like
+    /// a lost link (§3.5).
+    ///
+    /// # Errors
+    ///
+    /// [`TransportError::GatewayStatus`] with the response's return code when
+    /// the interface refused the read (for example `E_ADDRESS_VOID` for an
+    /// unknown feature), and the errors of a send.
+    pub async fn feature_get(&self, feature: u8) -> Result<Option<Vec<u8>>> {
+        self.request_feature(feature, 2).await
+    }
+
+    /// The interface's max APDU length for bus access (feature 07, equal to
+    /// PID_MAX_INTERFACE_APDU_LENGTH), as read after CONNECT. `None` when the
+    /// interface is not known to serve feature services or did not answer.
+    pub fn max_apdu_length(&self) -> Option<u16> {
+        self.max_apdu
+    }
+
+    /// Hands a feature read with `attempts` GETs to the task.
+    async fn request_feature(&self, feature: u8, attempts: u32) -> Result<Option<Vec<u8>>> {
+        let (reply, rx) = oneshot::channel();
+        self.commands
+            .send(Command::FeatureGet {
+                feature,
+                attempts,
+                reply,
+            })
+            .await
+            .map_err(|_| TransportError::Closed)?;
+        rx.await.map_err(|_| TransportError::Closed)?
     }
 
     /// The KNXnet/IP Secure tunnelling user this tunnel authenticated as, or
@@ -997,6 +1099,13 @@ pub(crate) async fn open_secure(
     }
 }
 
+/// Whether `description` marks a server with tunnelling feature services:
+/// its extended description carried the tunnelling-info DIB (Tunnelling
+/// 3/8/4 §3.5 NOTE 3).
+fn serves_features(description: &GatewayDescription) -> bool {
+    description.tunnel_slots.is_some()
+}
+
 /// Whether `err` is a refused TCP connect (nothing listens on the port).
 fn is_tcp_refusal(err: &TransportError) -> bool {
     matches!(
@@ -1160,6 +1269,9 @@ struct TaskState {
     /// When the link last delivered anything, for the TCP read deadline
     /// (issue #192).
     last_rx: Instant,
+    /// The last in-sequence TUNNELLING_FEATURE_RESPONSE: feature, return
+    /// code, value. Taken by [`do_feature_get`](Self::do_feature_get).
+    feature_answer: Option<(u8, u8, Vec<u8>)>,
     /// Marks the secure user as held by this tunnel for other bussard
     /// processes on the host (issue #287); released when the task ends.
     _user_lock: Option<HostLock>,
@@ -1222,6 +1334,10 @@ impl TaskState {
                     match cmd {
                         Some(Command::Send { frame, reply }) => {
                             let r = self.do_send(&frame, &mut buf).await;
+                            let _ = reply.send(r);
+                        }
+                        Some(Command::FeatureGet { feature, attempts, reply }) => {
+                            let r = self.feature_get_command(feature, attempts, &mut buf).await;
                             let _ = reply.send(r);
                         }
                         Some(Command::Close { reply }) => {
@@ -1382,12 +1498,26 @@ impl TaskState {
     /// [`should_reestablish`](Self::should_reestablish) treats it as a lost
     /// link.
     async fn send_once(&mut self, frame: &CemiFrame, buf: &mut [u8]) -> Result<()> {
+        self.send_sequenced(|header| knxnet::tunneling_request(header, frame), buf)
+            .await
+    }
+
+    /// Sends one frame of the tunnelling family under the next outgoing
+    /// sequence (`build` makes it from the connection header) and awaits its
+    /// confirmation as [`send_once`](Self::send_once) describes: TUNNELLING
+    /// REQUESTs and feature services share the counter and the rules
+    /// (Tunnelling 3/8/4 §3.1).
+    async fn send_sequenced(
+        &mut self,
+        build: impl Fn(ConnectionHeader) -> Vec<u8>,
+        buf: &mut [u8],
+    ) -> Result<()> {
         let seq = self.outgoing_seq;
         let header = ConnectionHeader {
             channel_id: self.channel_id,
             seq,
         };
-        let datagram = knxnet::tunneling_request(header, frame);
+        let datagram = build(header);
 
         if !self.link.acks() {
             // Over TCP there is no TUNNELING_ACK: the stream is reliable and a
@@ -1478,8 +1608,13 @@ impl TaskState {
             Err(_) => return true, // ignore malformed
         };
         match parsed.service {
-            ServiceType::TunnelingRequest => {
-                self.handle_tunneling_request(parsed.body).await;
+            ServiceType::TunnelingRequest
+            | ServiceType::TunnelingFeatureGet
+            | ServiceType::TunnelingFeatureResponse
+            | ServiceType::TunnelingFeatureSet
+            | ServiceType::TunnelingFeatureInfo => {
+                self.handle_tunneling_request(parsed.service, parsed.body)
+                    .await;
                 true
             }
             ServiceType::DisconnectRequest => {
@@ -1497,8 +1632,10 @@ impl TaskState {
         }
     }
 
-    /// Handles an inbound TUNNELING_REQUEST per the KNXnet/IP tunnelling ACK rules
-    /// (issue #60).
+    /// Handles an inbound TUNNELING_REQUEST, or a tunnelling feature frame,
+    /// per the KNXnet/IP tunnelling ACK rules (issue #60): the feature services
+    /// are confirmed and sequence-counted exactly like a TUNNELING_REQUEST
+    /// (Tunnelling 3/8/4 §3.1, issue #514).
     ///
     /// The sequence number decides the ACK, and it is read *before* the cEMI is
     /// decoded so an un-decodable-but-in-sequence frame is still ACKed:
@@ -1515,7 +1652,7 @@ impl TaskState {
     ///   accepted it. A conforming server repeats a frame once, so a frame two
     ///   or more behind is never its retransmission (issue #516 retired the
     ///   wider window of #58).
-    async fn handle_tunneling_request(&mut self, body: &[u8]) {
+    async fn handle_tunneling_request(&mut self, service: ServiceType, body: &[u8]) {
         // Read the connection header (sequence) without committing to a cEMI
         // decode, so an unknown-message-code frame can still be ACKed.
         let (header, cemi_bytes) = match knxnet::parse_tunneling_header(body) {
@@ -1542,6 +1679,10 @@ impl TaskState {
                 let _ = self.link.send_data(&ack).await;
             }
             self.incoming_seq = self.incoming_seq.wrapping_add(1);
+            if service != ServiceType::TunnelingRequest {
+                self.handle_feature_frame(service, cemi_bytes);
+                return;
+            }
 
             match CemiFrame::decode(cemi_bytes) {
                 Ok(cemi) => {
@@ -1585,6 +1726,101 @@ impl TaskState {
                 "out-of-window tunneling sequence; silently discarding (no ACK)"
             );
         }
+    }
+
+    /// Takes an in-sequence feature frame (its body after the connection
+    /// header): a FEATURE_RESPONSE answers the pending read, a FEATURE_INFO
+    /// is logged, a GET or SET from the server has no meaning for a client.
+    fn handle_feature_frame(&mut self, service: ServiceType, body: &[u8]) {
+        let (Some(&feature), Some(&code)) = (body.first(), body.get(1)) else {
+            tracing::debug!(?service, "dropping a feature frame without a feature id");
+            return;
+        };
+        let value = body.get(2..).unwrap_or_default().to_vec();
+        match service {
+            ServiceType::TunnelingFeatureResponse => {
+                self.feature_answer = Some((feature, code, value));
+            }
+            ServiceType::TunnelingFeatureInfo => {
+                tracing::debug!(
+                    feature = format!("0x{feature:02x}"),
+                    ?value,
+                    "TUNNELLING_FEATURE_INFO from the interface"
+                );
+            }
+            other => tracing::debug!(?other, "ignoring a feature request from the interface"),
+        }
+    }
+
+    /// Runs a [`Command::FeatureGet`]: [`do_feature_get`](Self::do_feature_get),
+    /// re-establishing the tunnel when the GET found the link lost (the read
+    /// itself is then reported as unanswered).
+    async fn feature_get_command(
+        &mut self,
+        feature: u8,
+        attempts: u32,
+        buf: &mut [u8],
+    ) -> Result<Option<Vec<u8>>> {
+        match self.do_feature_get(feature, attempts, buf).await {
+            Err(err) if self.should_reestablish(&err) => {
+                self.reestablish(err, Instant::now(), buf).await?;
+                Ok(None)
+            }
+            other => other,
+        }
+    }
+
+    /// Sends up to `attempts` TUNNELLING_FEATURE_GETs for `feature`, each
+    /// confirmed like a TUNNELING_REQUEST and followed by a wait of
+    /// [`FEATURE_RESPONSE_TIMEOUT`] for the response (3/8/4 §3.2), serving
+    /// other inbound traffic meanwhile.
+    async fn do_feature_get(
+        &mut self,
+        feature: u8,
+        attempts: u32,
+        buf: &mut [u8],
+    ) -> Result<Option<Vec<u8>>> {
+        for attempt in 0..attempts {
+            self.feature_answer = None;
+            self.send_sequenced(|header| knxnet::tunneling_feature_get(header, feature), buf)
+                .await?;
+            let deadline = Instant::now() + FEATURE_RESPONSE_TIMEOUT;
+            loop {
+                if let Some((answered, code, value)) = self.feature_answer.take() {
+                    if answered != feature {
+                        tracing::debug!(answered, feature, "a response for another feature");
+                        continue;
+                    }
+                    if code != 0 {
+                        return Err(TransportError::GatewayStatus {
+                            status: code,
+                            context: "TUNNELLING_FEATURE_RESPONSE",
+                        });
+                    }
+                    return Ok(Some(value));
+                }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                let n = match time::timeout(remaining, self.link.recv(buf)).await {
+                    Ok(Ok(n)) => n,
+                    Ok(Err(e)) => return Err(e),
+                    Err(_) => break,
+                };
+                self.last_rx = Instant::now();
+                let datagram = buf[..n].to_vec();
+                if !self.handle_inbound(&datagram).await {
+                    return Err(TransportError::Disconnected(self.channel_id));
+                }
+            }
+            tracing::debug!(
+                feature,
+                attempt = attempt + 1,
+                "no TUNNELLING_FEATURE_RESPONSE within 3 s"
+            );
+        }
+        Ok(None)
     }
 
     /// Sends a heartbeat and awaits its response, retrying per the spec.

@@ -1321,3 +1321,192 @@ async fn test_tunnel_mock_gateway_with_data_port_serves_the_session() -> TestRes
     assert_eq!(stats.disconnects, 1);
     Ok(())
 }
+
+// --- Tunnelling feature services (issue #514) ------------------------------
+
+/// The tunnel inside a [`Transport`] opened on a tunnelling config.
+fn tunnel_of(conn: &Transport) -> TestResult<&bussard_transport::Tunnel> {
+    match conn {
+        Transport::Tunnel(t) => Ok(t),
+        Transport::Router(_) => Err("expected a tunnel".into()),
+    }
+}
+
+#[tokio::test]
+async fn test_handle_inbound_acks_a_feature_info_between_requests() -> TestResult {
+    // Tunnelling 3/8/4 §3.1: a TUNNELLING_FEATURE_INFO is confirmed and
+    // sequence-counted like a TUNNELLING_REQUEST, so the request after it is
+    // still in sequence.
+    let gw = RawGateway::bind().await?;
+    let addr = gw.addr();
+
+    let gw_task = tokio::spawn(async move {
+        let peer = gw.accept_connect(0x0C).await?;
+        let src = ia("1.1.10")?;
+        gw.push(
+            peer,
+            0x0C,
+            0,
+            &CemiFrame::group_write_packed(ga("1/2/3")?, src, &[0]),
+        )
+        .await?;
+        let (h, _) = gw
+            .expect(ServiceType::TunnelingAck)
+            .await?
+            .tunneling_ack()?;
+        assert_eq!(h.seq, 0);
+        // Feature 03 (bus connection status) = 1, sequence 1.
+        let info = knxnet::frame(
+            ServiceType::TunnelingFeatureInfo,
+            &[0x04, 0x0C, 0x01, 0x00, 0x03, 0x00, 0x01],
+        );
+        gw.send_data(&info, peer).await?;
+        let (h, status) = gw
+            .expect(ServiceType::TunnelingAck)
+            .await?
+            .tunneling_ack()?;
+        assert_eq!(
+            (h.seq, status),
+            (1, 0),
+            "the FEATURE_INFO is ACKed in sequence"
+        );
+        gw.push(
+            peer,
+            0x0C,
+            2,
+            &CemiFrame::group_write_packed(ga("1/2/4")?, src, &[1]),
+        )
+        .await?;
+        let (h, _) = gw
+            .expect(ServiceType::TunnelingAck)
+            .await?
+            .tunneling_ack()?;
+        assert_eq!(h.seq, 2, "the next request is still in sequence");
+        TestResult::Ok(())
+    });
+
+    let mut conn = Transport::connect(&ConnectionConfig::tunnel(addr)).await?;
+    for expect in ["1/2/3", "1/2/4"] {
+        let f = tokio::time::timeout(Duration::from_secs(2), conn.recv()).await??;
+        assert_eq!(group_dest(&f.frame)?, expect);
+    }
+    gw_task.await??;
+    let _ = conn.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_feature_get_reads_the_value_over_udp() -> TestResult {
+    let gw = RawGateway::bind().await?;
+    let addr = gw.addr();
+
+    let gw_task = tokio::spawn(async move {
+        let peer = gw.accept_connect(0x0D).await?;
+        let get = gw.expect(ServiceType::TunnelingFeatureGet).await?;
+        assert_eq!(
+            &get.body[..],
+            &[0x04, 0x0D, 0x00, 0x00, 0x07, 0x00],
+            "GET of feature 07 under sequence 0"
+        );
+        gw.ack(get.peer, 0x0D, 0, 0).await?;
+        // The response carries the server's own sequence: 0.
+        let response = knxnet::frame(
+            ServiceType::TunnelingFeatureResponse,
+            &[0x04, 0x0D, 0x00, 0x00, 0x07, 0x00, 0x00, 0xFE],
+        );
+        gw.send_data(&response, peer).await?;
+        let (h, _) = gw
+            .expect(ServiceType::TunnelingAck)
+            .await?
+            .tunneling_ack()?;
+        assert_eq!(h.seq, 0, "the client ACKs the FEATURE_RESPONSE");
+        // The GET used sequence 0, so the next request is sequence 1.
+        let req = gw.expect(ServiceType::TunnelingRequest).await?;
+        let tr = req.tunneling_request()?;
+        assert_eq!(tr.header.seq, 1, "feature services share the counter");
+        gw.ack(req.peer, 0x0D, 1, 0).await?;
+        TestResult::Ok(())
+    });
+
+    let mut conn = Transport::connect(&ConnectionConfig::tunnel(addr)).await?;
+    assert_eq!(conn.max_apdu_length(), None, "no read without a probe");
+    let value = tunnel_of(&conn)?
+        .feature_get(bussard_transport::FEATURE_MAX_APDU_LENGTH)
+        .await?;
+    assert_eq!(value, Some(vec![0x00, 0xFE]));
+    conn.send(CemiFrame::group_write_packed(
+        ga("3/0/4")?,
+        ia("1.1.255")?,
+        &[1],
+    ))
+    .await?;
+    gw_task.await??;
+    let _ = conn.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_feature_get_tolerates_a_silent_interface() -> TestResult {
+    // No FEATURE_RESPONSE within 3 s: the GET is repeated once (3/8/4 §3.2),
+    // then the read reports `None` and the tunnel carries on.
+    let gw = RawGateway::bind().await?;
+    let addr = gw.addr();
+
+    let gw_task = tokio::spawn(async move {
+        gw.accept_connect(0x0E).await?;
+        for seq in [0u8, 1] {
+            let get = gw.expect(ServiceType::TunnelingFeatureGet).await?;
+            assert_eq!(get.body[2], seq);
+            gw.ack(get.peer, 0x0E, seq, 0).await?;
+        }
+        let req = gw.expect(ServiceType::TunnelingRequest).await?;
+        let tr = req.tunneling_request()?;
+        assert_eq!(tr.header.seq, 2);
+        gw.ack(req.peer, 0x0E, 2, 0).await?;
+        TestResult::Ok(())
+    });
+
+    let mut conn = Transport::connect(&ConnectionConfig::tunnel(addr)).await?;
+    let value = tunnel_of(&conn)?
+        .feature_get(bussard_transport::FEATURE_BUS_CONNECTION_STATUS)
+        .await?;
+    assert_eq!(value, None);
+    conn.send(CemiFrame::group_write_packed(
+        ga("3/0/4")?,
+        ia("1.1.255")?,
+        &[1],
+    ))
+    .await?;
+    gw_task.await??;
+    let _ = conn.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_feature_get_reports_a_refused_feature() -> TestResult {
+    let gw = RawGateway::bind().await?;
+    let addr = gw.addr();
+
+    let gw_task = tokio::spawn(async move {
+        let peer = gw.accept_connect(0x0F).await?;
+        let get = gw.expect(ServiceType::TunnelingFeatureGet).await?;
+        gw.ack(get.peer, 0x0F, 0, 0).await?;
+        // E_ADDRESS_VOID (0x22), no value (3/8/4 §3.5).
+        let response = knxnet::frame(
+            ServiceType::TunnelingFeatureResponse,
+            &[0x04, 0x0F, 0x00, 0x00, 0x09, 0x22],
+        );
+        gw.send_data(&response, peer).await?;
+        gw.expect(ServiceType::TunnelingAck).await?;
+        TestResult::Ok(())
+    });
+
+    let conn = Transport::connect(&ConnectionConfig::tunnel(addr)).await?;
+    match tunnel_of(&conn)?.feature_get(0x09).await {
+        Err(TransportError::GatewayStatus { status: 0x22, .. }) => {}
+        other => return Err(format!("expected E_ADDRESS_VOID, got {other:?}").into()),
+    }
+    gw_task.await??;
+    let _ = conn.close().await;
+    Ok(())
+}

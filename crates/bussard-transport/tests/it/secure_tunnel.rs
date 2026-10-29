@@ -501,6 +501,39 @@ async fn test_secure_link_ignores_plain_session_status() -> TestResult {
 }
 
 #[tokio::test]
+async fn test_tunnel_connect_reads_the_max_apdu_after_connect() -> TestResult {
+    // An interface whose extended description lists tunnelling slots serves
+    // feature services, so the tunnel reads feature 07 after CONNECT as ETS
+    // does (Tunnelling 3/8/4 §3.6.8, issue #514).
+    let gw = MockSecureGateway::builder()
+        .device_auth(device_key())
+        .user(2, user_key(USER2_KEY), TUNNEL_22)
+        .start()
+        .await?;
+    let secure = SecureTunnelConfig::new(
+        vec![user(2, USER2_KEY, TUNNEL_22, Some(SECURE_GATEWAY_IA))],
+        SecureSource::Keyring,
+    );
+    let mut conn = Transport::connect(&config(&gw, Some(secure))).await?;
+    assert_eq!(conn.max_apdu_length(), Some(248));
+    // The GET took sequence 0; the tunnel still works afterwards.
+    let frame = CemiFrame::group_write_packed(ga("1/2/3")?, ia("1.1.22")?, &[1]);
+    conn.send(frame).await?;
+    let _ = expect_con(&mut conn).await?;
+    conn.close().await?;
+    assert_eq!(gw.stats()?.feature_gets, vec![0x07]);
+
+    // Explicit credentials skip the probe: nothing says the interface serves
+    // feature services, so no GET is sent.
+    let gw = gateway().await?;
+    let conn = Transport::connect(&explicit(&gw, SecureTransport::Tcp)).await?;
+    assert_eq!(conn.max_apdu_length(), None);
+    conn.close().await?;
+    assert!(gw.stats()?.feature_gets.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_secure_tunnel_keepalive_interval_is_configurable() -> TestResult {
     let gw = gateway().await?;
     let fast = explicit(&gw, SecureTransport::Tcp);

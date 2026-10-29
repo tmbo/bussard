@@ -75,7 +75,10 @@ pub use discovery::{
 pub use error::{E_NO_MORE_CONNECTIONS, Result, TransportError, status_name};
 pub use router::Router;
 pub use secure_idle::{SecureIdleOutcome, SecureIdleReport, probe_secure_idle};
-pub use tunnel::{LinkState, Tunnel};
+pub use tunnel::{
+    FEATURE_BUS_CONNECTION_STATUS, FEATURE_INDIVIDUAL_ADDRESS, FEATURE_MAX_APDU_LENGTH, LinkState,
+    Tunnel,
+};
 
 use crate::cemi::CemiFrame;
 
@@ -118,6 +121,16 @@ impl Transport {
     pub fn secure_user_id(&self) -> Option<u8> {
         match self {
             Transport::Tunnel(t) => t.secure_user_id(),
+            Transport::Router(_) => None,
+        }
+    }
+
+    /// The interface's max APDU length (tunnelling feature 07) as the tunnel
+    /// read it after CONNECT (issue #514). `None` for routing, and for a
+    /// tunnel whose interface did not report it.
+    pub fn max_apdu_length(&self) -> Option<u16> {
+        match self {
+            Transport::Tunnel(t) => t.max_apdu_length(),
             Transport::Router(_) => None,
         }
     }

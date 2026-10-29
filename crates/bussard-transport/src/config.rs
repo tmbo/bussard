@@ -41,6 +41,11 @@ pub const TUNNELING_ACK_TIMEOUT: Duration = Duration::from_secs(1);
 /// erroring. The spec allows one retransmit, i.e. two sends total.
 pub const TUNNELING_RETRANSMITS: u32 = 1;
 
+/// How long a TUNNELLING_FEATURE_GET waits for its TUNNELLING_FEATURE_RESPONSE
+/// after the GET was confirmed: the server answers within 3 s (KNXnet/IP
+/// Tunnelling 3/8/4 §3.2, issue #514).
+pub const FEATURE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// Timeout waiting for a CONNECT_RESPONSE during the handshake.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 

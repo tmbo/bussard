@@ -42,6 +42,8 @@ pub mod service {
     pub const TUNNELLING_FEATURE_RESPONSE: u16 = 0x0423;
     /// TUNNELLING_FEATURE_SET: the client writes a feature (info-service enable).
     pub const TUNNELLING_FEATURE_SET: u16 = 0x0424;
+    /// TUNNELLING_FEATURE_INFO: the server reports a feature change.
+    pub const TUNNELLING_FEATURE_INFO: u16 = 0x0425;
     /// DESCRIPTION_REQUEST.
     pub const DESCRIPTION_REQUEST: u16 = 0x0203;
     /// DESCRIPTION_RESPONSE.

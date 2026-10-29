@@ -65,7 +65,8 @@ pub enum ServiceType {
     /// SEARCH_RESPONSE_EXTENDED — the answer, carrying the requested DIBs
     /// (including the KNXnet/IP Secure ones).
     SearchResponseExtended = 0x020C,
-    /// TUNNELLING_FEATURE_GET (Tunnelling v2; ETS sends it, bussard ignores it).
+    /// TUNNELLING_FEATURE_GET (Tunnelling v2): reads an interface feature;
+    /// bussard reads feature 07 after CONNECT, as ETS does (issue #514).
     TunnelingFeatureGet = 0x0422,
     /// TUNNELLING_FEATURE_RESPONSE.
     TunnelingFeatureResponse = 0x0423,
@@ -437,6 +438,16 @@ pub fn tunneling_request(header: ConnectionHeader, cemi: &CemiFrame) -> Vec<u8> 
     header.encode(&mut body);
     body.extend_from_slice(&cemi.encode());
     frame(ServiceType::TunnelingRequest, &body)
+}
+
+/// Builds a TUNNELLING_FEATURE_GET for interface feature `feature` (KNXnet/IP
+/// Tunnelling 3/8/4 §5.4.8): the connection header, the feature id and one
+/// reserved octet.
+pub fn tunneling_feature_get(header: ConnectionHeader, feature: u8) -> Vec<u8> {
+    let mut body = Vec::with_capacity(6);
+    header.encode(&mut body);
+    body.extend_from_slice(&[feature, 0x00]);
+    frame(ServiceType::TunnelingFeatureGet, &body)
 }
 
 /// Builds a TUNNELING_ACK: connection header only, with a status byte in place

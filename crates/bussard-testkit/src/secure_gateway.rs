@@ -81,6 +81,10 @@ pub struct SecureGatewayStats {
     pub disconnects: usize,
     /// TUNNELING_ACKs the client sent (must stay 0 over TCP).
     pub client_acks: usize,
+    /// TUNNELLING_FEATURE_GETs the client sent (issue #514). Feature 07 is
+    /// answered with a max APDU length of 248, any other with
+    /// `E_ADDRESS_VOID`.
+    pub feature_gets: Vec<u8>,
     /// Every cEMI frame the client tunnelled.
     pub requests: Vec<CemiFrame>,
     /// Wrappers that failed to verify.
@@ -761,6 +765,20 @@ fn tunnel_step(
             replies.push(knxnet::disconnect_response(channel, 0));
         }
         ServiceType::TunnelingAck => bump(stats, |s| s.client_acks += 1),
+        ServiceType::TunnelingFeatureGet => {
+            if let Some(&feature) = parsed.body.get(4) {
+                bump(stats, |s| s.feature_gets.push(feature));
+                // Feature id, return code, value (Tunnelling 3/8/4 §5.4.9).
+                let mut body = vec![0x04, channel, side.tx_seq, 0x00, feature];
+                if feature == 0x07 {
+                    body.extend_from_slice(&[0x00, 0x00, 0xF8]);
+                } else {
+                    body.push(0x22);
+                }
+                replies.push(knxnet::frame(ServiceType::TunnelingFeatureResponse, &body));
+                side.tx_seq = side.tx_seq.wrapping_add(1);
+            }
+        }
         ServiceType::TunnelingRequest => {
             if let Ok(req) = knxnet::parse_tunneling_request(parsed.body) {
                 side.requests += 1;

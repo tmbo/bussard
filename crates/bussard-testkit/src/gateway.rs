@@ -118,6 +118,10 @@ pub struct GatewayStats {
     pub requests: usize,
     /// TUNNELLING_ACKs received from the client.
     pub client_acks: usize,
+    /// The interface features the client read with TUNNELLING_FEATURE_GET
+    /// (issue #514). Feature 07 is answered with a max APDU length of 248,
+    /// any other with `E_ADDRESS_VOID`.
+    pub feature_gets: Vec<u8>,
     /// Every KNXnet/IP service received, in order (including the datagrams an
     /// [`Outage`] swallowed).
     pub services: Vec<ServiceType>,
@@ -751,7 +755,12 @@ impl Server {
         if self.data_sock.is_some() {
             let data_service = matches!(
                 service,
-                ServiceType::TunnelingRequest | ServiceType::TunnelingAck
+                ServiceType::TunnelingRequest
+                    | ServiceType::TunnelingAck
+                    | ServiceType::TunnelingFeatureGet
+                    | ServiceType::TunnelingFeatureResponse
+                    | ServiceType::TunnelingFeatureSet
+                    | ServiceType::TunnelingFeatureInfo
             );
             if data_service != on_data {
                 self.stats.send_modify(|s| s.misrouted += 1);
@@ -817,8 +826,33 @@ impl Server {
                 Flow::Continue
             }
             ServiceType::TunnelingRequest => self.on_tunneling_request(&body, from).await,
+            ServiceType::TunnelingFeatureGet => self.on_feature_get(&body, from).await,
             _ => Flow::Continue,
         }
+    }
+
+    /// Answers a TUNNELLING_FEATURE_GET as a Tunnelling v2 server does
+    /// (Tunnelling 3/8/4 §3.2): the ACK under the client's sequence, then a
+    /// TUNNELLING_FEATURE_RESPONSE under the gateway's own.
+    async fn on_feature_get(&mut self, body: &[u8], from: SocketAddr) -> Flow {
+        let (Ok((header, _)), Some(&feature)) = (knxnet::parse_tunneling_header(body), body.get(4))
+        else {
+            return Flow::Continue;
+        };
+        self.stats.send_modify(|s| s.feature_gets.push(feature));
+        let ack = knxnet::tunneling_ack(header.channel_id, header.seq, 0);
+        if matches!(self.send_data(&ack, from).await, Flow::Stop) {
+            return Flow::Stop;
+        }
+        let mut response = vec![0x04, self.channel, self.gw_seq, 0x00, feature];
+        if feature == 0x07 {
+            response.extend_from_slice(&[0x00, 0x00, 0xF8]);
+        } else {
+            response.push(0x22);
+        }
+        self.gw_seq = self.gw_seq.wrapping_add(1);
+        let frame = wire::frame(ServiceType::TunnelingFeatureResponse, &response);
+        self.send_data(&frame, from).await
     }
 
     async fn on_connect(&mut self, from: SocketAddr) -> Flow {
