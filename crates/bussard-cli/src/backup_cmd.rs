@@ -124,7 +124,7 @@ pub fn run(
         let service = open_service(config, WritePolicy::ReadOnly).await?;
         let source = checked_source_or_close(&service, &overrides).await?;
         let captured = tokio::select! {
-            captured = capture_all(&service, source, &targets, &activated, tool_key_source, &facts, &model) => captured,
+            captured = capture_all(&service, source, &targets, &activated, tool_key_source, &facts, ModelDir { model: &model, dir }) => captured,
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\ninterrupted; closing the bus connection");
                 Vec::new()
@@ -222,6 +222,35 @@ fn parse_line(line: &str) -> anyhow::Result<(u8, u8)> {
     Ok((area, line_no))
 }
 
+/// The model and the directory it was loaded from.
+#[derive(Clone, Copy)]
+struct ModelDir<'a> {
+    model: &'a Model,
+    dir: &'a Path,
+}
+
+/// A target's model device file, if the model has one, and the model
+/// directory whose lock pins its product data.
+#[derive(Clone, Copy)]
+struct KnownDevice<'a> {
+    device: Option<&'a bussard_model::schema::Device>,
+    dir: &'a Path,
+}
+
+/// Whether `device`'s application, from the product data the lock pins,
+/// leaves `SupportsExtendedMemoryServices` unset, so memory above `0xFFFF`
+/// is read with `A_UserMemory_Read` (issue #472). `false` (the extended
+/// service, as before) when the model names no application or no archive
+/// carries it.
+fn user_memory_above_64k(known: KnownDevice<'_>) -> bool {
+    let app = known
+        .device
+        .and_then(|d| d.product.as_ref())
+        .and_then(|p| p.application_ref.as_deref())
+        .and_then(|app| crate::product_store::pinned_application(known.dir, app));
+    bussard_download::uses_user_memory(app.as_ref())
+}
+
 /// Reads every target in turn over one bus connection, leasing it per device.
 async fn capture_all(
     service: &BusService,
@@ -230,13 +259,16 @@ async fn capture_all(
     activated: &std::collections::BTreeSet<IndividualAddress>,
     tool_key_source: crate::secure_key::ToolKeySource<'_>,
     facts: &bussard_service::FactsCache,
-    model: &Model,
+    model: ModelDir<'_>,
 ) -> Vec<Capture> {
     let mut out = Vec::with_capacity(targets.len());
     for (n, &target) in targets.iter().enumerate() {
         eprintln!("[{}/{}] reading {target}…", n + 1, targets.len());
         let is_activated = activated.contains(&target);
-        let device = model.devices.get(&target).map(|d| &d.device);
+        let device = KnownDevice {
+            device: model.model.devices.get(&target).map(|d| &d.device),
+            dir: model.dir,
+        };
         let capture = capture_one(
             service,
             source,
@@ -263,8 +295,9 @@ async fn capture_one(
     activated: bool,
     tool_key_source: crate::secure_key::ToolKeySource<'_>,
     facts: &bussard_service::FactsCache,
-    device: Option<&bussard_model::schema::Device>,
+    known: KnownDevice<'_>,
 ) -> Capture {
+    let device = known.device;
     let tool_key = match crate::secure_key::resolve(target, tool_key_source, activated) {
         Ok(key) => key,
         Err(err) => return Capture::failed(target, format!("resolving the tool key: {err}")),
@@ -299,7 +332,7 @@ async fn capture_one(
                     None
                 }
             };
-            let mut capture = read_one(dev, target).await;
+            let mut capture = read_one(dev, target, || user_memory_above_64k(known)).await;
             capture.entry.identity = check;
             Ok::<_, ServiceError>(capture)
         })
@@ -315,7 +348,11 @@ async fn capture_one(
 
 /// Reads one device's identity, tables and parameter memory on an open,
 /// authorized session.
-async fn read_one(dev: &mut Device, target: IndividualAddress) -> Capture {
+async fn read_one(
+    dev: &mut Device,
+    target: IndividualAddress,
+    user_memory: impl FnOnce() -> bool,
+) -> Capture {
     let order = dev
         .read_device_property(PID_ORDER_INFO)
         .await
@@ -351,7 +388,7 @@ async fn read_one(dev: &mut Device, target: IndividualAddress) -> Capture {
             let tables = live.tables().clone();
             let sys7 = live.sys7().cloned();
             let (application, parameters, parameter_status) =
-                read_application_state(dev.l4_mut(), tables.mask).await;
+                read_application_state(dev.l4_mut(), tables.mask, user_memory).await;
             let backup = DeviceBackup::capture(target, &tables, sys7.as_ref(), parameters, read_at);
             Capture {
                 entry: ManifestEntry {
@@ -463,6 +500,7 @@ impl Capture {
 async fn read_application_state<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     mask: u16,
+    user_memory: impl FnOnce() -> bool,
 ) -> (Option<String>, Option<ParameterMemory>, ParameterStatus) {
     if !MaskProfile::from_mask(mask).is_system_b() {
         return (
@@ -538,6 +576,12 @@ async fn read_application_state<Ch: L4Channel>(
                  {MAX_PARAMETER_BYTES}-octet backup limit; refusing to stream it"
             )),
         );
+    }
+    // A segment above 0xFFFF is read with A_UserMemory_Read when the
+    // device's application does not announce extended memory services, as
+    // ETS does (issue #472). Only then is the product data consulted.
+    if bussard_mgmt::select_extended_memory(base, length) {
+        l4.set_user_memory_above_64k(user_memory());
     }
     match read_memory_range(l4, base, length).await {
         Ok(bytes) => {

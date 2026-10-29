@@ -1047,6 +1047,7 @@ pub fn plan_flash_with_memo(
         unwritten: BTreeMap::new(),
         baseline_address: BTreeMap::new(),
         security_capacity: Default::default(),
+        user_memory_above_64k: crate::apply::uses_user_memory(Some(app)),
     })
 }
 

@@ -1,8 +1,8 @@
 """Memory images: what a download wrote, and how it compares to bussard's plan.
 
 `compose` turns one device's normalized operation sequence into the memory it
-wrote: one region per contiguous run of `A_Memory_Write`/`A_MemoryExtended_Write`
-octets (later writes win, like the device), plus the segment allocation records
+wrote: one region per contiguous run of `A_Memory_Write`/`A_MemoryExtended_Write`/
+`A_UserMemory_Write` octets (later writes win, like the device), plus the segment allocation records
 seen along the way. A System B `LdCtrlRelSegment` does not name an address; the
 device picks the base and the tool reads it back as `PID_TABLE_REFERENCE`, so
 the first table reference read for that object after the allocation is taken as
@@ -212,7 +212,11 @@ def table_refs(ops: DeviceOps) -> Dict[int, int]:
 
 # Responses that carry memory the device holds (an extended write response
 # carries a return code and maybe a CRC, never memory).
-MEMORY_READ_RESPONSES = ("A_Memory_Response", "A_MemoryExtended_Read_Response")
+MEMORY_READ_RESPONSES = (
+    "A_Memory_Response",
+    "A_MemoryExtended_Read_Response",
+    "A_UserMemory_Response",
+)
 
 
 def memory_reads(ops: DeviceOps) -> List[Tuple[int, bytes]]:

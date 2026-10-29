@@ -947,6 +947,10 @@ pub struct FlashPlan {
     /// the executor checks the security program against them, reading any
     /// that is missing from the device, before the first step.
     security_capacity: crate::security::TableCapacity,
+    /// Whether the application leaves `SupportsExtendedMemoryServices` unset,
+    /// so memory above `0xFFFF` is written and read with `A_UserMemory_*`
+    /// as ETS does (issue #472). `false` on System 7 and property plans.
+    user_memory_above_64k: bool,
 }
 
 /// The System 7 execution context attached to a [`FlashPlan`] for a mask
@@ -1089,6 +1093,14 @@ impl FlashPlan {
     /// [`set_security_capacity`](Self::set_security_capacity)).
     pub fn security_capacity(&self) -> crate::security::TableCapacity {
         self.security_capacity
+    }
+
+    /// Whether memory above `0xFFFF` goes over `A_UserMemory_*` for this
+    /// plan: the application does not announce extended memory services
+    /// (issue #472). The executor sets it on the session before the first
+    /// step.
+    pub fn user_memory_above_64k(&self) -> bool {
+        self.user_memory_above_64k
     }
 
     /// The entries the plan writes into the group key table (PID 53) and

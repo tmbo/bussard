@@ -66,6 +66,11 @@ const A_MEMORY_EXTENDED_WRITE: u16 = 0x1FB;
 const A_MEMORY_EXTENDED_WRITE_RESPONSE: u16 = 0x1FC;
 const A_MEMORY_EXTENDED_READ: u16 = 0x1FD;
 const A_MEMORY_EXTENDED_READ_RESPONSE: u16 = 0x1FE;
+// A_UserMemory_* (20-bit address, 03_03_07 §3.5.6): what ETS uses above
+// 0xFFFF for an application without extended memory services (issue #472).
+const A_USER_MEMORY_READ: u16 = 0x2C0;
+const A_USER_MEMORY_RESPONSE: u16 = 0x2C1;
+const A_USER_MEMORY_WRITE: u16 = 0x2C2;
 // A_Authorize_Request/Response (issue #52 finding #1): ETS presents a key before
 // any configuration access. De-mirrored from the spec here so the mock models an
 // authorization gate — config writes are refused until an authorize is granted.
@@ -318,6 +323,11 @@ struct DeviceState {
     /// Count of `A_MemoryExtended_Write` frames seen — a test asserts the extended
     /// service (not the plain `A_Memory_Write`) carried the >0xFFFF segment.
     extended_writes_seen: usize,
+    /// `A_UserMemory_Write`s the device stored (issue #472).
+    user_writes_seen: usize,
+    /// The device leaves `A_MemoryExtended_*` unanswered: its application
+    /// announces no extended memory services (issue #472).
+    no_extended_memory: bool,
     /// If set, the device answers `PID_MAX_APDU_LENGTH` (PID 56 on obj0) with this
     /// value, so the tool scales its extended-write chunks to it (e.g. 233 -> 228).
     /// `None` (the default) leaves the property absent — the tool falls back to the
@@ -777,6 +787,56 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
         let mut payload = addr.to_be_bytes().to_vec();
         payload.extend_from_slice(&out);
         return Reaction::Answer(A_MEMORY_RESPONSE | (count as u16 & 0x3f), payload);
+    }
+
+    // A device without the extended services refuses them (issue #472), so
+    // a test fails loudly when one goes out.
+    if s.no_extended_memory
+        && (req_apci == A_MEMORY_EXTENDED_READ || req_apci == A_MEMORY_EXTENDED_WRITE)
+    {
+        return Reaction::Nak;
+    }
+
+    // User memory read: [ext:4|count:4][addr:2]. Answer with an
+    // A_UserMemory_Response carrying the header and the octets.
+    if req_apci == A_USER_MEMORY_READ {
+        if data.len() < 3 {
+            return Reaction::Nak;
+        }
+        let count = usize::from(data[0] & 0x0F);
+        let addr =
+            (u32::from(data[0] >> 4) << 16) | u32::from(u16::from_be_bytes([data[1], data[2]]));
+        let mut payload = data[..3].to_vec();
+        for i in 0..count {
+            payload.push(*s.memory.get(&addr.wrapping_add(i as u32)).unwrap_or(&0));
+        }
+        return Reaction::Answer(A_USER_MEMORY_RESPONSE, payload);
+    }
+
+    // User memory write: [ext:4|count:4][addr:2][data]. Acknowledged only,
+    // like the plain write (the mock is not in verify mode).
+    if req_apci == A_USER_MEMORY_WRITE {
+        if !s.authorized && !s.authorize_unsupported {
+            return Reaction::Nak;
+        }
+        if s.fault == Fault::NakMemoryWrite || data.len() < 3 {
+            return Reaction::Nak;
+        }
+        let count = usize::from(data[0] & 0x0F);
+        let addr =
+            (u32::from(data[0] >> 4) << 16) | u32::from(u16::from_be_bytes([data[1], data[2]]));
+        let Some(value) = data.get(3..3 + count) else {
+            return Reaction::Nak;
+        };
+        for (i, b) in value.iter().enumerate() {
+            s.memory.insert(addr.wrapping_add(i as u32), *b);
+        }
+        s.memory_writes_seen += 1;
+        s.user_writes_seen += 1;
+        if s.write_phase_exchanges.is_none() {
+            s.write_phase_exchanges = Some(0);
+        }
+        return Reaction::Ack;
     }
 
     // Extended memory read: [count][addr:3 BE]. Answer with an
@@ -1768,6 +1828,8 @@ fn fresh_device(fault: Fault) -> Shared {
         write_phase_exchanges: None,
         memory_writes_seen: 0,
         extended_writes_seen: 0,
+        user_writes_seen: 0,
+        no_extended_memory: false,
         max_apdu: None,
         segment_base_override: None,
         drop_loading_on_reconnect: false,
@@ -5283,6 +5345,15 @@ fn base64_encode(bytes: &[u8]) -> String {
 /// a flash chunks it (with the extended service, into ~228-octet pieces). The
 /// data is a deterministic ramp so a test can byte-compare what landed.
 fn app_with_segment_of(size: usize) -> TestResult<(ApplicationProgram, Vec<u8>)> {
+    app_with_segment_of_options(size, r#"<Options SupportsExtendedMemoryServices="true" />"#)
+}
+
+/// [`app_with_segment_of`] with `options` as the program's `<Options>`
+/// element (empty: the application announces no extended memory services).
+fn app_with_segment_of_options(
+    size: usize,
+    options: &str,
+) -> TestResult<(ApplicationProgram, Vec<u8>)> {
     let data: Vec<u8> = (0..size).map(|i| (i as u8).wrapping_mul(3)).collect();
     let b64 = base64_encode(&data);
     let xml = format!(
@@ -5293,6 +5364,7 @@ fn app_with_segment_of(size: usize) -> TestResult<(ApplicationProgram, Vec<u8>)>
        <Code>
         <RelativeSegment Id="M-1_A-EXT_RS-1" Size="{size}" LoadStateMachine="4" Offset="0"><Data>{b64}</Data></RelativeSegment>
        </Code>
+       {options}
        <LoadProcedures>
         <LoadProcedure>
          <LdCtrlConnect />
@@ -5381,6 +5453,61 @@ async fn flash_extended_memory_segment_above_64k_loads_and_verifies() -> TestRes
         .map(|i| *s.memory.get(&(0x01_6000u32 + i)).unwrap_or(&0))
         .collect();
     assert_eq!(landed, data, "the image landed verbatim at 0x016000");
+    drop(handle);
+    Ok(())
+}
+
+/// Issue #472: an application without `SupportsExtendedMemoryServices`
+/// (the Zennio DIMinBOX shape, its parameters at 0x10000) is written above
+/// 0xFFFF with `A_UserMemory_Write`, 15 octets per request, and read back
+/// with `A_UserMemory_Read`; the device does not answer the extended
+/// services at all.
+#[tokio::test]
+async fn test_flash_user_memory_above_64k_without_extended_services() -> TestResult {
+    let (mut bus, state, handle) = setup(Fault::None).await?;
+    {
+        let mut s = lock(&state)?;
+        s.max_apdu = Some(233);
+        s.segment_base_override = Some(0x01_0000);
+        s.no_extended_memory = true;
+    }
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
+
+    let (app, data) = app_with_segment_of_options(40, "")?;
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    assert!(plan.user_memory_above_64k());
+
+    let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    l4.negotiate_max_apdu().await?;
+    let mut session = authed_session(l4).await?;
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await?;
+    let _ = session.into_disconnect().await;
+
+    assert!(outcome.ok(), "user-memory flash must verify: {outcome:?}");
+    assert!(outcome.spot_checks_match);
+    let s = lock(&state)?;
+    assert_eq!(s.extended_writes_seen, 0);
+    // 40 octets at 15 per A_UserMemory_Write: 15 + 15 + 10.
+    assert_eq!(s.user_writes_seen, 3);
+    let landed: Vec<u8> = (0..data.len() as u32)
+        .map(|i| *s.memory.get(&(0x01_0000u32 + i)).unwrap_or(&0))
+        .collect();
+    assert_eq!(landed, data, "the image landed verbatim at 0x010000");
     drop(handle);
     Ok(())
 }
@@ -7294,6 +7421,7 @@ fn app_with_filled_segment(image: &[u8]) -> TestResult<ApplicationProgram> {
        <Code>
         <RelativeSegment Id="M-2_A-9_RS-1" Size="{size}" LoadStateMachine="4" Offset="0"><Data>{b64}</Data></RelativeSegment>
        </Code>
+       <Options SupportsExtendedMemoryServices="true" />
        <LoadProcedures>
         <LoadProcedure MergeId="1">
          <LdCtrlConnect />

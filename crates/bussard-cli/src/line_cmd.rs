@@ -686,6 +686,10 @@ async fn visit_one(
         Err(err) => return make(None, DeviceStatus::Failed(one_line(&err.to_string()))),
     };
 
+    // An application without extended memory services gets its tables above
+    // 0xFFFF written with A_UserMemory_Write (issue #472).
+    let user_memory_above_64k =
+        bussard_download::uses_user_memory(product.as_ref().and_then(|p| p.app()));
     let (live, object_table) = match read_device_and_object_table(
         service,
         source,
@@ -829,6 +833,7 @@ async fn visit_one(
                 security: security.as_ref(),
                 object_table: reload.as_ref().map(|(image, _)| image.as_slice()),
                 keep_tables: !tables_change,
+                user_memory_above_64k,
             },
         )
         .await

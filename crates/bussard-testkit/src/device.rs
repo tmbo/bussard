@@ -33,12 +33,12 @@ use crate::consts::{
     A_PROPERTY_DESCRIPTION_RESPONSE, A_PROPERTY_EXT_DESCRIPTION_READ,
     A_PROPERTY_EXT_DESCRIPTION_RESPONSE, A_PROPERTY_EXT_VALUE_READ, A_PROPERTY_EXT_VALUE_RESPONSE,
     A_PROPERTY_EXT_VALUE_WRITE_CON, A_PROPERTY_EXT_VALUE_WRITE_CON_RESPONSE, A_PROPERTY_VALUE_READ,
-    A_PROPERTY_VALUE_RESPONSE, A_PROPERTY_VALUE_WRITE, A_RESTART, APCI_SELECTOR, LE_ADDITIONAL,
-    LE_LOAD_COMPLETED, LE_START_LOADING, LE_UNLOAD, LS_LOADED, LS_LOADING, LS_UNLOADED,
-    OT_ADDRESS_TABLE, OT_ASSOCIATION_TABLE, OT_DEVICE, OT_GROUP_OBJECT_TABLE,
-    OT_KNXNET_IP_PARAMETER, PID_IO_LIST, PID_LOAD_STATE_CONTROL, PID_MANUFACTURER_ID,
-    PID_OBJECT_TYPE, PID_ORDER_INFO, PID_PROGMODE, PID_SERIAL_NUMBER, PID_TABLE,
-    PID_TABLE_REFERENCE, SUB_REL_SEGMENT,
+    A_PROPERTY_VALUE_RESPONSE, A_PROPERTY_VALUE_WRITE, A_RESTART, A_USER_MEMORY_READ,
+    A_USER_MEMORY_RESPONSE, A_USER_MEMORY_WRITE, APCI_SELECTOR, LE_ADDITIONAL, LE_LOAD_COMPLETED,
+    LE_START_LOADING, LE_UNLOAD, LS_LOADED, LS_LOADING, LS_UNLOADED, OT_ADDRESS_TABLE,
+    OT_ASSOCIATION_TABLE, OT_DEVICE, OT_GROUP_OBJECT_TABLE, OT_KNXNET_IP_PARAMETER, PID_IO_LIST,
+    PID_LOAD_STATE_CONTROL, PID_MANUFACTURER_ID, PID_OBJECT_TYPE, PID_ORDER_INFO, PID_PROGMODE,
+    PID_SERIAL_NUMBER, PID_TABLE, PID_TABLE_REFERENCE, SUB_REL_SEGMENT,
 };
 
 /// The Data Secure SCF octet of an `S-A_Sync_Req` (tool access).
@@ -176,8 +176,18 @@ pub struct MockDevice {
     /// Where memory writes may land.
     pub memory_write_policy: MemoryWritePolicy,
     /// Answer `A_Memory_Write` with an `A_Memory_Response` echo (verify mode)
-    /// instead of a bare `T_ACK`.
+    /// instead of a bare `T_ACK`. `A_UserMemory_Write` likewise.
     pub echo_memory_writes: bool,
+    /// Whether the device serves `A_MemoryExtended_Read`/`_Write`. A device
+    /// whose application does not announce the services leaves them
+    /// unanswered (issue #472); `true` by default.
+    pub extended_memory: bool,
+    /// Where `LdCtrlRelSegment` places an object's segment instead of
+    /// [`segment_base_for`] (e.g. above `0xFFFF`, as the Zennio DALIBOX
+    /// places its parameter segment at `0x10000`).
+    pub segment_bases: HashMap<u8, u32>,
+    /// `A_UserMemory_Write`s seen, across every connection.
+    pub user_memory_writes: usize,
     /// The group-object table's element count, served as its `PID_TABLE` count.
     pub go_count: u16,
     /// `T_NAK` every memory write into a segment of this object type.
@@ -540,6 +550,9 @@ impl MockDevice {
             memory: HashMap::new(),
             memory_write_policy: MemoryWritePolicy::Anywhere,
             echo_memory_writes: true,
+            extended_memory: true,
+            segment_bases: HashMap::new(),
+            user_memory_writes: 0,
             go_count: 0,
             nak_writes_into: None,
             silent: false,
@@ -749,6 +762,20 @@ impl MockDevice {
     /// Answers `A_Memory_Write` with a bare `T_ACK` instead of an echo.
     pub fn without_memory_write_echo(mut self) -> Self {
         self.echo_memory_writes = false;
+        self
+    }
+
+    /// Leaves `A_MemoryExtended_Read`/`_Write` unanswered: an application
+    /// without extended memory services (issue #472).
+    pub fn without_extended_memory(mut self) -> Self {
+        self.extended_memory = false;
+        self
+    }
+
+    /// Places `object_index`'s segment at `base` when `LdCtrlRelSegment`
+    /// allocates it.
+    pub fn with_segment_base(mut self, object_index: u8, base: u32) -> Self {
+        self.segment_bases.insert(object_index, base);
         self
     }
 
@@ -1070,8 +1097,13 @@ impl MockDevice {
             return self.memory_write(data);
         }
         match apci {
+            A_MEMORY_EXTENDED_READ | A_MEMORY_EXTENDED_WRITE if !self.extended_memory => {
+                Reaction::Silent
+            }
             A_MEMORY_EXTENDED_READ => self.memory_extended_read(data),
             A_MEMORY_EXTENDED_WRITE => self.memory_extended_write(data),
+            A_USER_MEMORY_READ => self.user_memory_read(data),
+            A_USER_MEMORY_WRITE => self.user_memory_write(data),
             A_PROPERTY_VALUE_READ => self.property_read(data),
             A_PROPERTY_EXT_VALUE_READ => self.property_ext_read(data),
             A_PROPERTY_EXT_VALUE_WRITE_CON => self.property_ext_write(data),
@@ -1142,6 +1174,44 @@ impl MockDevice {
         let mut payload = addr.to_be_bytes().to_vec();
         payload.extend_from_slice(&value);
         Reaction::Answer(A_MEMORY_RESPONSE | (value.len() as u16 & 0x3f), payload)
+    }
+
+    /// The 20-bit address and the count of a user-memory header.
+    fn user_memory_header(data: &[u8]) -> Option<(u32, usize)> {
+        let h = data.get(..3)?;
+        let addr = (u32::from(h[0] >> 4) << 16) | u32::from(u16::from_be_bytes([h[1], h[2]]));
+        Some((addr, usize::from(h[0] & 0x0F)))
+    }
+
+    fn user_memory_read(&self, data: &[u8]) -> Reaction {
+        let Some((addr, count)) = Self::user_memory_header(data) else {
+            return Reaction::Nak;
+        };
+        let mut payload = data[..3].to_vec();
+        payload.extend_from_slice(&self.read_mem(addr, count));
+        Reaction::Answer(A_USER_MEMORY_RESPONSE, payload)
+    }
+
+    fn user_memory_write(&mut self, data: &[u8]) -> Reaction {
+        self.writes += 1;
+        self.user_memory_writes += 1;
+        let Some((addr, count)) = Self::user_memory_header(data) else {
+            return Reaction::Nak;
+        };
+        let Some(value) = data.get(3..3 + count) else {
+            return Reaction::Nak;
+        };
+        if !self.write_mem(addr, value) {
+            return Reaction::Nak;
+        }
+        if !self.echo_memory_writes {
+            return Reaction::Ack;
+        }
+        // Verify mode: the device reads the area back and answers with it
+        // (03_03_07 §3.5.6.3).
+        let mut payload = data[..3].to_vec();
+        payload.extend_from_slice(&self.read_mem(addr, count));
+        Reaction::Answer(A_USER_MEMORY_RESPONSE, payload)
     }
 
     fn memory_extended_read(&self, data: &[u8]) -> Reaction {
@@ -1471,7 +1541,12 @@ impl MockDevice {
                         self.memory.remove(&old_base.wrapping_add(i));
                     }
                 }
-                self.segments.insert(oi, (segment_base_for(oi), size));
+                let base = self
+                    .segment_bases
+                    .get(&oi)
+                    .copied()
+                    .unwrap_or_else(|| segment_base_for(oi));
+                self.segments.insert(oi, (base, size));
             }
             return answer(self.load_state(oi));
         }

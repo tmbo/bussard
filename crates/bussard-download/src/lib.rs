@@ -44,6 +44,7 @@ pub mod tables_sys7;
 pub use apply::{
     SystemBLoad, TableObjectIndexes, VerifyOutcome, apply_tables, apply_tables_secured,
     apply_tables_with, discover_table_objects, negotiate_session_apdu, read_states,
+    uses_user_memory,
 };
 pub use apply_sys7::{
     SYS7_ADDRESS_LSM, SYS7_ASSOCIATION_LSM, Sys7ApplyError, Sys7FlagWrite, Sys7TableImages,

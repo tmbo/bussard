@@ -506,6 +506,9 @@ pub async fn read_parameter_regions_with_objects<Ch: L4Channel>(
     objects: &[(u8, u16)],
 ) -> ParamRegions {
     let mut out = ParamRegions::new();
+    // Read memory above 0xFFFF with the service the flash will write it with
+    // (issue #472).
+    l4.set_user_memory_above_64k(plan.user_memory_above_64k());
     // Cached when the caller negotiated or seeded it: then no request goes out.
     // A dead connection surfaces on the first memory read below.
     let _ = l4.negotiate_max_apdu().await;

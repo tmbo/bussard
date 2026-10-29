@@ -846,6 +846,12 @@ pub struct ApplicationProgram {
     /// on every declared object (issue #565, the Busch-Jaeger DALI gateways).
     #[serde(default)]
     pub ets_download_plugin: bool,
+    /// Whether `<Options>` declares `SupportsExtendedMemoryServices="true"`.
+    /// ETS reads and writes memory above `0xFFFF` with
+    /// `A_MemoryExtended_*` when it does and with `A_UserMemory_*` when it
+    /// does not (issue #472, the sweep over Zennio, ABB and Busch-Jaeger).
+    #[serde(default)]
+    pub supports_extended_memory_services: bool,
     /// Application-program display name (translation applied).
     pub name: Option<String>,
     /// The declared `DefaultLanguage`: the language of the untranslated
@@ -1538,6 +1544,7 @@ fn insert_options(app: &mut ApplicationProgram, m: &Attrs) {
         get(m, b"ParameterByteOrder").is_some_and(|v| v.eq_ignore_ascii_case("LittleEndian"));
     app.text_parameter_encoding = get(m, b"TextParameterEncoding").map(str::to_string);
     app.legacy_patch_manufacturer_in_task_segment = flag(b"LegacyPatchManufacturerIdInTaskSegment");
+    app.supports_extended_memory_services = flag(b"SupportsExtendedMemoryServices");
 }
 
 /// Reads a `<Extension>` element: whether it names an ETS download plugin
@@ -2804,6 +2811,27 @@ mod tests {
             );
             assert_eq!(app.prefer_partial_download, partial, "{options}");
             assert_eq!(app.downloads_invisible_parameters(), writes, "{options}");
+        }
+        Ok(())
+    }
+
+    /// `SupportsExtendedMemoryServices` decides the memory service above
+    /// `0xFFFF` (issue #472); absent means no.
+    #[test]
+    fn test_parse_application_program_supports_extended_memory_services() -> Result<()> {
+        for (options, expected) in [
+            (r#"<Options SupportsExtendedMemoryServices="true" />"#, true),
+            (
+                r#"<Options SupportsExtendedMemoryServices="false" />"#,
+                false,
+            ),
+            (r#"<Options Comparable="true" />"#, false),
+        ] {
+            let xml = format!(
+                r#"<KNX xmlns="http://knx.org/xml/project/20"><ApplicationProgram Id="M-1_A-1" Name="t"><Static>{options}</Static></ApplicationProgram></KNX>"#
+            );
+            let app = parse_application_program_str("M-1_A-1", &xml)?;
+            assert_eq!(app.supports_extended_memory_services, expected, "{options}");
         }
         Ok(())
     }

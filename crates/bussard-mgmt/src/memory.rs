@@ -60,20 +60,55 @@ pub fn select_extended_memory(addr: u32, len: usize) -> bool {
     top > 0xFFFF
 }
 
+/// The memory service an access goes out on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryService {
+    /// `A_Memory_Read`/`_Write`: 16-bit address, up to 63 octets.
+    Plain,
+    /// `A_MemoryExtended_Read`/`_Write`: 24-bit address, confirmed inline.
+    Extended,
+    /// `A_UserMemory_Read`/`_Write`: 20-bit address, up to 15 octets, for an
+    /// application without extended memory services (issue #472).
+    User,
+}
+
+/// The service an access at `addr` spanning `len` octets uses on `l4`: plain
+/// up to `0xFFFF` ([`select_extended_memory`]), above it the user-memory
+/// services when the connection is set to them
+/// ([`Layer4Connection::set_user_memory_above_64k`]), else the extended ones.
+pub fn memory_service(
+    l4: &Layer4Connection<impl L4Channel>,
+    addr: u32,
+    len: usize,
+) -> MemoryService {
+    if !select_extended_memory(addr, len) {
+        MemoryService::Plain
+    } else if l4.user_memory_above_64k() {
+        MemoryService::User
+    } else {
+        MemoryService::Extended
+    }
+}
+
 /// The data-octet chunk this connection may carry for an access at `addr`
-/// spanning `len` octets, on whichever service [`select_extended_memory`] picks.
+/// spanning `len` octets, on whichever service [`memory_service`] picks.
 ///
-/// Both caps come from the negotiated `PID_MAX_APDU_LENGTH` (issue #58) and fall
+/// The caps come from the negotiated `PID_MAX_APDU_LENGTH` (issue #58) and fall
 /// back to the conservative standard-frame floor when it was never read. The
 /// result is clamped to `1..=255` because the single-telegram primitives take a
 /// `u8` count.
-pub(crate) fn chunk_for(l4: &Layer4Connection<impl L4Channel>, addr: u32, len: usize) -> usize {
-    let raw = if select_extended_memory(addr, len) {
-        usize::from(l4.max_extended_memory_chunk())
-    } else {
-        usize::from(l4.max_memory_chunk())
+pub fn memory_chunk_for(l4: &Layer4Connection<impl L4Channel>, addr: u32, len: usize) -> usize {
+    let raw = match memory_service(l4, addr, len) {
+        MemoryService::Plain => usize::from(l4.max_memory_chunk()),
+        MemoryService::Extended => usize::from(l4.max_extended_memory_chunk()),
+        MemoryService::User => usize::from(l4.max_user_memory_chunk()),
     };
     raw.clamp(1, usize::from(u8::MAX))
+}
+
+/// [`memory_chunk_for`] under its historical crate-internal name.
+pub(crate) fn chunk_for(l4: &Layer4Connection<impl L4Channel>, addr: u32, len: usize) -> usize {
+    memory_chunk_for(l4, addr, len)
 }
 
 /// Reads `len` octets of device memory starting at `addr` over a borrowed
@@ -90,8 +125,10 @@ pub async fn read_memory<Ch: L4Channel>(
     addr: u32,
     len: u8,
 ) -> Result<Vec<u8>> {
-    if select_extended_memory(addr, usize::from(len)) {
-        return read_memory_extended(l4, addr, len).await;
+    match memory_service(l4, addr, usize::from(len)) {
+        MemoryService::Extended => return read_memory_extended(l4, addr, len).await,
+        MemoryService::User => return read_memory_user(l4, addr, len).await,
+        MemoryService::Plain => {}
     }
     let addr16 = addr as u16;
     let (req_apci, payload) = apci::encode_memory_read(addr16, len);
@@ -150,6 +187,54 @@ pub async fn read_memory_strict<Ch: L4Channel>(
         }));
     }
     Ok(got)
+}
+
+/// Reads up to 15 octets at the 20-bit `addr` via `A_UserMemory_Read` (03_03_07
+/// §3.5.6.2). The answer must name the requested address; a late verify-mode
+/// echo of an earlier write (it names that write's address) is skipped, and
+/// the device's refusal (count 0) fails with [`MgmtError::MemoryRefused`].
+async fn read_memory_user<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    addr: u32,
+    len: u8,
+) -> Result<Vec<u8>> {
+    if addr.saturating_add(u32::from(len).max(1) - 1) > apci::MAX_USER_MEMORY_ADDRESS {
+        return Err(WriteError::AddressOutOfRange {
+            address: l4.target(),
+            detail: format!("user-memory read of {len} octet(s) at {addr:#X} past 20 bits"),
+        });
+    }
+    let len = len.min(apci::MAX_USER_MEMORY_LEN);
+    let (req_apci, payload) = apci::encode_user_memory_read(addr, len);
+    let (mut resp_apci, mut data) = l4.request(req_apci, &payload).await?;
+    for _ in 0..STALE_ECHO_SKIPS {
+        match apci::decode_user_memory(resp_apci, &data) {
+            Some(echo) if resp_apci == apci::A_USER_MEMORY_RESPONSE && echo.addr != addr => {
+                (resp_apci, data) = l4.recv_response().await?;
+            }
+            _ => break,
+        }
+    }
+    let resp = apci::decode_user_memory(resp_apci, &data)
+        .filter(|r| resp_apci == apci::A_USER_MEMORY_RESPONSE && r.addr == addr)
+        .ok_or_else(|| {
+            WriteError::Mgmt(MgmtError::MalformedResponse {
+                address: l4.target(),
+                reason: format!(
+                    "expected A_UserMemory_Response for {addr:#07X} ({})",
+                    raw_response_detail(resp_apci, &data)
+                ),
+            })
+        })?;
+    if resp.count == 0 && len > 0 {
+        return Err(WriteError::Mgmt(MgmtError::MemoryRefused {
+            address: l4.target(),
+            op: "read",
+            addr,
+            count: len,
+        }));
+    }
+    Ok(resp.data)
 }
 
 /// How many late verify-mode write echoes [`read_memory`] skips before it takes
@@ -309,21 +394,18 @@ pub async fn write_memory_chunked<Ch: L4Channel, F: FnMut(usize)>(
     // `select_extended_memory`): a segment that fits 16 bits stays byte-identical
     // to the historical plain `A_Memory_Write` path; one that runs past `0xFFFF`
     // uses the System B extended service.
-    let extended = select_extended_memory(addr, data.len());
+    let service = memory_service(l4, addr, data.len());
     // Scale the chunk to the device's negotiated max APDU (issue #58). The plain
     // service caps at 63 (the 6-bit count field); the extended service scales to
-    // the 228-octet extended-frame budget ETS uses. Both fall back to the
-    // conservative cap when `PID_MAX_APDU_LENGTH` was never negotiated.
-    let write_chunk = if extended {
-        usize::from(l4.max_extended_memory_chunk())
-    } else {
-        usize::from(l4.max_memory_chunk())
-    };
+    // the 228-octet extended-frame budget ETS uses; the user-memory service to
+    // the 15 octets of its 4-bit count. All fall back to the conservative cap
+    // when `PID_MAX_APDU_LENGTH` was never negotiated.
+    let write_chunk = memory_chunk_for(l4, addr, data.len());
     let mut offset = 0usize;
     while offset < data.len() {
         let take = write_chunk.min(data.len() - offset);
         let piece = &data[offset..offset + take];
-        write_one_chunk(l4, addr, offset, piece, extended).await?;
+        write_one_chunk(l4, addr, offset, piece, service).await?;
         offset += take;
         on_written(offset);
     }
@@ -353,19 +435,87 @@ pub async fn write_memory_echoed<Ch: L4Channel, F: FnMut(usize)>(
     if data.is_empty() {
         return Ok(());
     }
-    if select_extended_memory(addr, data.len()) {
+    let service = memory_service(l4, addr, data.len());
+    if service == MemoryService::Extended {
         return write_memory_chunked(l4, addr, data, on_written).await;
     }
-    let write_chunk = usize::from(l4.max_memory_chunk());
+    let write_chunk = memory_chunk_for(l4, addr, data.len());
     let mut offset = 0usize;
     while offset < data.len() {
         let take = write_chunk.min(data.len() - offset);
         let piece = &data[offset..offset + take];
-        write_one_chunk_echoed(l4, addr, offset, piece).await?;
+        if service == MemoryService::User {
+            write_one_user_chunk_echoed(l4, addr, offset, piece).await?;
+        } else {
+            write_one_chunk_echoed(l4, addr, offset, piece).await?;
+        }
         offset += take;
         on_written(offset);
     }
     Ok(())
+}
+
+/// Writes one `A_UserMemory_Write` chunk at `base + offset` and checks the
+/// device's verify-mode `A_UserMemory_Response` against it (03_03_07
+/// §3.5.6.3: in verify mode the device reads the area back after writing it).
+async fn write_one_user_chunk_echoed<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    base: u32,
+    offset: usize,
+    piece: &[u8],
+) -> Result<()> {
+    let chunk_addr = user_chunk_address(l4, base, offset, piece.len())?;
+    let (req_apci, payload) = apci::encode_user_memory_write(chunk_addr, piece);
+    let (resp_apci, data) = l4.request_memory_write_echo(req_apci, &payload).await?;
+    let echo = apci::decode_user_memory(resp_apci, &data)
+        .filter(|_| resp_apci == apci::A_USER_MEMORY_RESPONSE)
+        .ok_or_else(|| {
+            WriteError::Mgmt(MgmtError::MalformedResponse {
+                address: l4.target(),
+                reason: format!(
+                    "expected the verify echo (A_UserMemory_Response) of the write at \
+                     {chunk_addr:#07X} ({})",
+                    raw_response_detail(resp_apci, &data)
+                ),
+            })
+        })?;
+    if echo.addr == chunk_addr && echo.count == 0 && !piece.is_empty() {
+        return Err(WriteError::Mgmt(MgmtError::MemoryRefused {
+            address: l4.target(),
+            op: "write",
+            addr: chunk_addr,
+            count: piece.len() as u8,
+        }));
+    }
+    if echo.addr != chunk_addr || echo.data != piece {
+        return Err(WriteError::Mgmt(MgmtError::MemoryEchoMismatch {
+            address: l4.target(),
+            addr: chunk_addr,
+            echo_addr: echo.addr,
+            expected: piece.to_vec(),
+            got: echo.data,
+        }));
+    }
+    Ok(())
+}
+
+/// `base + offset` for a user-memory chunk of `len` octets, refused when the
+/// chunk would run past the 20-bit address space of the service.
+fn user_chunk_address<Ch: L4Channel>(
+    l4: &Layer4Connection<Ch>,
+    base: u32,
+    offset: usize,
+    len: usize,
+) -> Result<u32> {
+    let at = chunk_address(l4, base, offset)?;
+    let top = u64::from(at) + len.max(1) as u64 - 1;
+    if top > u64::from(apci::MAX_USER_MEMORY_ADDRESS) {
+        return Err(WriteError::AddressOutOfRange {
+            address: l4.target(),
+            detail: format!("user-memory write of {len} octet(s) at {at:#X} past 20 bits"),
+        });
+    }
+    Ok(at)
 }
 
 /// Writes one plain chunk at `base + offset` and checks the device's
@@ -434,10 +584,10 @@ pub async fn write_memory_verified<Ch: L4Channel, F: FnMut(usize)>(
 
 /// Writes one memory chunk at `base + offset`.
 ///
-/// When `extended` is false this is the historical plain `A_Memory_Write` path,
+/// On [`MemoryService::Plain`] this is the historical plain `A_Memory_Write` path,
 /// byte-identical to before: a fire-and-forget write whose optional echo is
 /// discarded (integrity is confirmed later by the MCB CRC and the end-of-segment
-/// spot-check). When `extended` is true it sends `A_MemoryExtended_Write` (APCI
+/// spot-check). On [`MemoryService::Extended`] it sends `A_MemoryExtended_Write` (APCI
 /// `0x1FB`, 3-octet address) and awaits the device's inline
 /// `A_MemoryExtended_Write_Response` (`0x1FC`), failing on a non-zero return code
 /// — the extended service confirms every chunk on the wire, so no separate
@@ -447,10 +597,20 @@ async fn write_one_chunk<Ch: L4Channel>(
     base: u32,
     offset: usize,
     piece: &[u8],
-    extended: bool,
+    service: MemoryService,
 ) -> Result<()> {
+    if service == MemoryService::User {
+        // Acknowledged only outside verify mode (03_03_07 §3.5.6.3), like the
+        // plain write: integrity comes from the MCB check and the read-back.
+        // A verify-mode echo the device sends anyway is dropped.
+        let chunk_addr = user_chunk_address(l4, base, offset, piece.len())?;
+        let (req_apci, payload) = apci::encode_user_memory_write(chunk_addr, piece);
+        l4.send_data(req_apci, &payload).await?;
+        l4.discard_pending_response();
+        return Ok(());
+    }
     let chunk_addr = chunk_address(l4, base, offset)?;
-    if extended {
+    if service == MemoryService::Extended {
         let (req_apci, payload) = apci::encode_memory_extended_write(chunk_addr, piece);
         let (resp_apci, data) = l4.request(req_apci, &payload).await?;
         let resp = apci::decode_memory_extended_response(resp_apci, &data).ok_or_else(|| {

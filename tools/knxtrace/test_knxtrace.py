@@ -340,6 +340,22 @@ class TestApciDecoding(unittest.TestCase):
         self.assertEqual(apdu.fields["addr"], "0x012345")
         self.assertEqual(apdu.fields["count"], 4)
 
+    def test_decode_apdu_user_memory(self):
+        """The 20-bit address form ETS uses above 64 KB on an application
+        without extended memory services (issue #472)."""
+        payload = bytes([0x13, 0x00, 0x10]) + b"\xaa\xbb\xcc"
+        write = self.apdu(numbered(0, 0x2C2, payload)).apdu
+        self.assertEqual(write.name, "A_UserMemory_Write")
+        self.assertEqual(write.fields["addr"], "0x010010")
+        self.assertEqual((write.fields["count"], write.fields["data"]), (3, "aabbcc"))
+        read = self.apdu(numbered(0, 0x2C0, bytes([0x12, 0x34, 0x56]))).apdu
+        self.assertEqual((read.name, read.fields["addr"], read.fields["count"]), ("A_UserMemory_Read", "0x013456", 2))
+        resp = self.apdu(numbered(0, 0x2C1, payload)).apdu
+        self.assertEqual((resp.name, resp.fields["data"]), ("A_UserMemory_Response", "aabbcc"))
+        op = norm.op_from_apdu(write, "req", 0.0)
+        self.assertEqual((op.kind, op.detail["addr_int"], op.data), (norm.KIND_MEM_WRITE, 0x10010, b"\xaa\xbb\xcc"))
+        self.assertTrue(op.detail["user"])
+
     def test_decode_apdu_restart_variants(self):
         basic = self.apdu(numbered(0, 0x380)).apdu
         self.assertEqual(basic.fields["type"], "basic")

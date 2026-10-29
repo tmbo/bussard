@@ -633,6 +633,9 @@ pub(crate) fn apply_desired(
                 security: security.as_ref(),
                 object_table: object_table.as_deref(),
                 keep_tables: !tables_change,
+                user_memory_above_64k: bussard_download::uses_user_memory(
+                    write.product.and_then(|p| p.app()),
+                ),
             },
             &report,
             origin,

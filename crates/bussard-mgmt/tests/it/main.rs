@@ -16,3 +16,4 @@ mod property_ext_mock;
 mod tables_memory_mock;
 mod tables_mock;
 mod tl_style3_mock;
+mod user_memory_mock;

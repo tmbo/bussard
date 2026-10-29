@@ -667,10 +667,16 @@ fn test_reconstruct_without_key_on_a_secure_device_fails_with_hint() -> TestResu
 
 /// The synthetic application with a `size`-octet parameter segment (a multiple
 /// of 3, so its zero `Data` is `AAAA` repeated). The two parameters stay at
-/// offsets 0 and 1.
+/// offsets 0 and 1. It announces extended memory services, as the 07B0
+/// actuators it models do, so its segment above `0xFFFF` goes over
+/// `A_MemoryExtended_*` (issue #472).
 fn large_app_xml(size: usize) -> String {
     let data = "AAAA".repeat(size / 3);
     APP_XML
+        .replace(
+            "</Code>",
+            r#"</Code><Options SupportsExtendedMemoryServices="true" />"#,
+        )
         .replace(
             r#"<RelativeSegment Id="M-00FA_A-0002_RS-2" Size="2" LoadStateMachine="4" Offset="0"><Data>AAA=</Data>"#,
             &format!(

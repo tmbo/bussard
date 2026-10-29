@@ -495,6 +495,7 @@ pub(super) fn plan_flash_properties(
         unwritten: BTreeMap::new(),
         baseline_address: BTreeMap::new(),
         security_capacity: Default::default(),
+        user_memory_above_64k: false,
     })
 }
 

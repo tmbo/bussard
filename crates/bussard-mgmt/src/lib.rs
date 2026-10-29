@@ -94,8 +94,9 @@ pub use load::{
 // every historical `bussard_mgmt::…` and `bussard_mgmt::load::…` path still
 // resolves, so no caller had to change.
 pub use memory::{
-    read_memory, read_memory_range, read_memory_strict, select_extended_memory, write_memory,
-    write_memory_chunked, write_memory_echoed, write_memory_verified,
+    MemoryService, memory_chunk_for, memory_service, read_memory, read_memory_range,
+    read_memory_strict, select_extended_memory, write_memory, write_memory_chunked,
+    write_memory_echoed, write_memory_verified,
 };
 pub use probe::{
     ADDRESS_PROBE_MS_ENV, AddressProbe, ProbeMemo, SourceCheckError, checked_source,

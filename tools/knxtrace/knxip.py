@@ -709,6 +709,22 @@ def _decode_exact(apci: int, name: str, payload: bytes) -> Apdu:
             fields["data"] = data.hex()
         return Apdu(apci, name, fields, payload)
 
+    if apci in (0x2C0, 0x2C1, 0x2C2):  # A_UserMemory_Read / _Response / _Write
+        # [ext:4|number:4][addr high][addr low][data]: a 20-bit address and
+        # 1..15 octets (03_03_07 §3.5.6.2, §3.5.6.3). ETS writes a segment
+        # above 0xFFFF with it on an application without extended memory
+        # services (issue #472).
+        if len(payload) < 3:
+            return Apdu(apci, name, {"truncated": True}, payload)
+        addr = ((payload[0] >> 4) << 16) | (payload[1] << 8) | payload[2]
+        fields = {"addr": "0x%06x" % addr, "count": payload[0] & 0x0F}
+        data = payload[3:]
+        if apci != 0x2C0 and data:
+            fields["len"] = len(data)
+            fields["sha"] = sha8(data)
+            fields["data"] = data.hex()
+        return Apdu(apci, name, fields, payload)
+
     if apci in (0x1FC, 0x1FE):  # A_MemoryExtended_*_Response
         if len(payload) < 4:
             return Apdu(apci, name, {"truncated": True}, payload)

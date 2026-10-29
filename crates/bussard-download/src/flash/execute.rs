@@ -237,6 +237,10 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
     options: FlashOptions,
     progress: F,
 ) -> Result<FlashOutcome, WriteError> {
+    // An application without extended memory services is written and read
+    // above 0xFFFF with A_UserMemory_* on every connection of the flash, as
+    // ETS does (issue #472).
+    session.set_user_memory_above_64k(plan.user_memory_above_64k());
     // Set between the security object's `Unload` and its `LoadCompleted`: a
     // failure there leaves the device dropping every secured group telegram,
     // and the error says so (issue #534).
@@ -657,13 +661,9 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                             // Where the base read before the download holds,
                             // write only the octets that differ from it.
                             (Some((current, expected)), _) if expected == Some(addr) => {
-                                let (plain, extended) = (
-                                    session.l4().max_memory_chunk(),
-                                    session.l4().max_extended_memory_chunk(),
-                                );
-                                let chunk = |start: usize, len: usize| {
-                                    chunk_at(addr + start as u32, len, plain, extended)
-                                };
+                                let caps = ChunkCaps::of(session.l4());
+                                let chunk =
+                                    |start: usize, len: usize| caps.at(addr + start as u32, len);
                                 let regions =
                                     diff_regions(&bytes, current, None, sparse_merge_gap(), &chunk);
                                 for (start, end) in regions {
@@ -693,13 +693,9 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                             // everywhere: write only the runs that differ, as ETS
                             // does (the F50 obj4 image is 276 of 6152 octets).
                             (None, Some(fill)) => {
-                                let (plain, extended) = (
-                                    session.l4().max_memory_chunk(),
-                                    session.l4().max_extended_memory_chunk(),
-                                );
-                                let chunk = |start: usize, len: usize| {
-                                    chunk_at(addr + start as u32, len, plain, extended)
-                                };
+                                let caps = ChunkCaps::of(session.l4());
+                                let chunk =
+                                    |start: usize, len: usize| caps.at(addr + start as u32, len);
                                 let regions =
                                     fill_regions(&bytes, fill, sparse_merge_gap(), &chunk);
                                 for (start, run) in regions {
@@ -739,13 +735,9 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                             // A parameter-only download (issue #119): write only
                             // the octets that differ from what the device holds.
                             Some(current) => {
-                                let (plain, extended) = (
-                                    session.l4().max_memory_chunk(),
-                                    session.l4().max_extended_memory_chunk(),
-                                );
-                                let chunk = |start: usize, len: usize| {
-                                    chunk_at(addr + start as u32, len, plain, extended)
-                                };
+                                let caps = ChunkCaps::of(session.l4());
+                                let chunk =
+                                    |start: usize, len: usize| caps.at(addr + start as u32, len);
                                 let regions =
                                     diff_regions(&bytes, current, None, sparse_merge_gap(), &chunk);
                                 for (start, end) in regions {
@@ -1418,14 +1410,38 @@ pub(super) fn diff_regions(
     })
 }
 
-/// The write chunk [`write_image`] uses for a run of `len` octets at `addr`:
-/// the extended service's chunk when the run reaches past `0xFFFF`, else the
-/// plain one (see [`bussard_mgmt::write_memory_chunked`]).
-fn chunk_at(addr: u32, len: usize, plain: u8, extended: u16) -> usize {
-    if bussard_mgmt::select_extended_memory(addr, len) {
-        usize::from(extended)
-    } else {
-        usize::from(plain)
+/// The write chunks of a connection, per memory service, so the region
+/// planners can size runs without borrowing the session.
+#[derive(Debug, Clone, Copy)]
+struct ChunkCaps {
+    plain: u8,
+    extended: u16,
+    user: u8,
+    user_above_64k: bool,
+}
+
+impl ChunkCaps {
+    fn of<Ch: bussard_mgmt::L4Channel>(l4: &bussard_mgmt::Layer4Connection<Ch>) -> ChunkCaps {
+        ChunkCaps {
+            plain: l4.max_memory_chunk(),
+            extended: l4.max_extended_memory_chunk(),
+            user: l4.max_user_memory_chunk(),
+            user_above_64k: l4.user_memory_above_64k(),
+        }
+    }
+
+    /// The write chunk [`write_image`] uses for a run of `len` octets at
+    /// `addr`: the plain service's up to `0xFFFF`, above it the user-memory
+    /// (issue #472) or the extended service's (see
+    /// [`bussard_mgmt::write_memory_chunked`]).
+    fn at(&self, addr: u32, len: usize) -> usize {
+        if !bussard_mgmt::select_extended_memory(addr, len) {
+            usize::from(self.plain)
+        } else if self.user_above_64k {
+            usize::from(self.user)
+        } else {
+            usize::from(self.extended)
+        }
     }
 }
 

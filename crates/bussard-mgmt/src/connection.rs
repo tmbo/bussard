@@ -504,6 +504,11 @@ pub struct Layer4Connection<Ch: L4Channel> {
     /// default, as ETS sends them. The control frames are always system
     /// priority (§5.3 A2-A4, A6).
     data_priority: Priority,
+    /// Whether memory above `0xFFFF` goes over the user-memory services
+    /// (`A_UserMemory_*`, 20-bit address) instead of `A_MemoryExtended_*`:
+    /// set for an application that does not announce
+    /// `SupportsExtendedMemoryServices` (issue #472). `false` by default.
+    user_memory_above_64k: bool,
 }
 
 /// Why [`Layer4Connection::negotiate_max_apdu`] found no `PID_MAX_APDU_LENGTH`.
@@ -612,6 +617,7 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
             seed: None,
             last_authorize: None,
             data_priority: Priority::System,
+            user_memory_above_64k: false,
         })
     }
 
@@ -954,8 +960,15 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
     /// or, if folded in during a later write's `T_ACK` wait, it is mistaken for
     /// that write's completion and desyncs the sequence.
     fn is_stale_memory_echo(&self, apci: u16) -> bool {
-        !self.expect_memory_echo
-            && (apci & crate::apci::APCI_SELECTOR_MASK) == crate::apci::A_MEMORY_RESPONSE
+        if self.expect_memory_echo {
+            return false;
+        }
+        // The user-memory twin (issue #472): an `A_UserMemory_Response` that
+        // answers no `A_UserMemory_Read` is a write's verify echo.
+        if apci == crate::apci::A_USER_MEMORY_RESPONSE {
+            return self.last_send_apci != crate::apci::A_USER_MEMORY_READ;
+        }
+        (apci & crate::apci::APCI_SELECTOR_MASK) == crate::apci::A_MEMORY_RESPONSE
             && (self.last_send_apci & crate::apci::APCI_SELECTOR_MASK) != crate::apci::A_MEMORY_READ
     }
 
@@ -1594,6 +1607,30 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
     /// The cached `PID_MAX_APDU_LENGTH`, if it has been negotiated or seeded.
     pub fn max_apdu(&self) -> Option<u16> {
         self.max_apdu
+    }
+
+    /// Sends memory above `0xFFFF` over the user-memory services
+    /// (`A_UserMemory_Read`/`_Write`, 20-bit address) instead of
+    /// `A_MemoryExtended_*`, the way ETS does for an application that does not
+    /// announce `SupportsExtendedMemoryServices` (issue #472). Memory up to
+    /// `0xFFFF` keeps `A_Memory_*` either way.
+    pub fn set_user_memory_above_64k(&mut self, user: bool) {
+        self.user_memory_above_64k = user;
+    }
+
+    /// Whether memory above `0xFFFF` goes over the user-memory services (see
+    /// [`set_user_memory_above_64k`](Self::set_user_memory_above_64k)).
+    pub fn user_memory_above_64k(&self) -> bool {
+        self.user_memory_above_64k
+    }
+
+    /// The `A_UserMemory_Write`/`_Read` data-octet cap for this connection:
+    /// scaled from `PID_MAX_APDU_LENGTH` up to the 15 octets of the 4-bit
+    /// count, else 10, the standard-frame floor.
+    pub fn max_user_memory_chunk(&self) -> u8 {
+        crate::apci::user_memory_chunk_for_apdu(
+            self.inner_max_apdu().unwrap_or(STANDARD_FRAME_APDU),
+        )
     }
 
     // --- internals ---

@@ -324,6 +324,7 @@ impl<Ch: L4Channel> Session<SingleConnector<Ch>> {
             readiness: Vec::new(),
             pending_readiness: None,
             verify: VerifyModeState::default(),
+            user_memory_above_64k: false,
         }
     }
 }
@@ -458,6 +459,10 @@ pub struct Session<C: Connector> {
     /// Verify mode of a System 7 download (issue #524): whether the plan
     /// switched it on, and whether the current connection has it.
     verify: VerifyModeState,
+    /// Whether memory above `0xFFFF` goes over `A_UserMemory_*` (an
+    /// application without extended memory services, issue #472), set on
+    /// every connection the session adopts.
+    user_memory_above_64k: bool,
 }
 
 /// The verify-mode bookkeeping of a [`Session`] (issue #524).
@@ -663,6 +668,7 @@ impl<C: Connector> Session<C> {
             readiness: Vec::new(),
             pending_readiness: None,
             verify: VerifyModeState::default(),
+            user_memory_above_64k: false,
         })
     }
 
@@ -715,6 +721,16 @@ impl<C: Connector> Session<C> {
         }
         cache.insert(target, outcome);
         Ok(())
+    }
+
+    /// Sends memory above `0xFFFF` over the user-memory services on this and
+    /// every later connection of the session (issue #472), see
+    /// [`Layer4Connection::set_user_memory_above_64k`].
+    pub fn set_user_memory_above_64k(&mut self, user: bool) {
+        self.user_memory_above_64k = user;
+        if let Some(l4) = self.l4.as_mut() {
+            l4.set_user_memory_above_64k(user);
+        }
     }
 
     /// The open connection, for a step to drive.
@@ -844,6 +860,7 @@ impl<C: Connector> Session<C> {
         // round-trip, so scaling persists across the cycle without spending an
         // exchange against the tight per-connection budget (issue #58).
         l4.set_max_apdu(self.max_apdu);
+        l4.set_user_memory_above_64k(self.user_memory_above_64k);
         self.l4 = Some(l4);
         // A new transport connection: the device cleared verify mode
         // (Resources 03_05_01 §4.2.14); the next write sets it again.

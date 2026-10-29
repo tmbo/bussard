@@ -300,24 +300,20 @@ def _op_from_apdu(apdu: Apdu, direction: str, ts: float) -> Optional[Op]:
         key = "obj%s/%s" % (f.get("obj"), f.get("pid_name", f.get("pid")))
         return Op(KIND_PROP_DESC_READ, key, dict(f), direction, ts)
 
-    if name in ("A_Memory_Write", "A_MemoryExtended_Write"):
+    if name in ("A_Memory_Write", "A_MemoryExtended_Write", "A_UserMemory_Write"):
         data = bytes.fromhex(str(f.get("data", ""))) if f.get("data") else b""
         addr = _addr_int(f.get("addr"))
-        return Op(
-            KIND_MEM_WRITE,
-            "%s" % f.get("addr", "?"),
-            {
-                "addr_int": addr,
-                "len": len(data),
-                "sha": sha8(data) if data else "-",
-                "extended": name.startswith("A_MemoryExtended"),
-            },
-            direction,
-            ts,
-            data=data,
-        )
+        detail = {
+            "addr_int": addr,
+            "len": len(data),
+            "sha": sha8(data) if data else "-",
+            "extended": name.startswith("A_MemoryExtended"),
+        }
+        if name == "A_UserMemory_Write":
+            detail["user"] = True
+        return Op(KIND_MEM_WRITE, "%s" % f.get("addr", "?"), detail, direction, ts, data=data)
 
-    if name in ("A_Memory_Read", "A_MemoryExtended_Read"):
+    if name in ("A_Memory_Read", "A_MemoryExtended_Read", "A_UserMemory_Read"):
         return Op(
             KIND_MEM_READ,
             "%s" % f.get("addr", "?"),
@@ -330,6 +326,7 @@ def _op_from_apdu(apdu: Apdu, direction: str, ts: float) -> Optional[Op]:
         "A_Memory_Response",
         "A_MemoryExtended_Read_Response",
         "A_MemoryExtended_Write_Response",
+        "A_UserMemory_Response",
     ):
         data = bytes.fromhex(str(f.get("data", ""))) if f.get("data") else b""
         return Op(

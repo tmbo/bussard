@@ -18,6 +18,12 @@ pub const A_MEMORY_EXTENDED_WRITE_RESPONSE: u16 = 0x1FC;
 pub const A_MEMORY_EXTENDED_READ: u16 = 0x1FD;
 /// `A_MemoryExtended_ReadResponse`.
 pub const A_MEMORY_EXTENDED_READ_RESPONSE: u16 = 0x1FE;
+/// `A_UserMemory_Read`: `[ext:4|count:4][addr:2]`, a 20-bit address.
+pub const A_USER_MEMORY_READ: u16 = 0x2C0;
+/// `A_UserMemory_Response`: `[ext:4|count:4][addr:2][data]`.
+pub const A_USER_MEMORY_RESPONSE: u16 = 0x2C1;
+/// `A_UserMemory_Write`: `[ext:4|count:4][addr:2][data]`.
+pub const A_USER_MEMORY_WRITE: u16 = 0x2C2;
 /// `A_Memory_Read` (the low 6 bits carry the octet count).
 pub const A_MEMORY_READ: u16 = 0x200;
 /// `A_Memory_Response` (the low 6 bits carry the octet count).

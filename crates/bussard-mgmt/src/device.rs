@@ -299,7 +299,15 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
     ///
     /// An empty `data` is a no-op.
     pub async fn write_memory(&mut self, addr: u32, data: &[u8]) -> Result<()> {
-        let chunk = usize::from(apci::MAX_MEMORY_WRITE_LEN);
+        // An application without extended memory services is written above
+        // 0xFFFF with A_UserMemory_Write, 15 octets at most (issue #472).
+        let user = crate::memory::memory_service(&self.inner, addr, data.len())
+            == crate::memory::MemoryService::User;
+        let chunk = if user {
+            usize::from(apci::MAX_USER_MEMORY_LEN)
+        } else {
+            usize::from(apci::MAX_MEMORY_WRITE_LEN)
+        };
         let mut offset = 0usize;
         while offset < data.len() {
             let take = chunk.min(data.len() - offset);
@@ -319,7 +327,7 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
             // from the address, keeping the ≤16-bit path byte-identical. The
             // extended write is confirmed inline; the plain write is verified by a
             // separate read-back compare (the historical dump-primitive discipline).
-            if crate::memory::select_extended_memory(chunk_addr, take) {
+            if !user && crate::memory::select_extended_memory(chunk_addr, take) {
                 let (req_apci, payload) = apci::encode_memory_extended_write(chunk_addr, piece);
                 let (resp_apci, resp) = self.inner.request(req_apci, &payload).await?;
                 let parsed =
@@ -346,10 +354,18 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
                 continue;
             }
 
-            let (req_apci, payload) = apci::encode_memory_write(chunk_addr as u16, piece);
-            // A_Memory_Write is acknowledged (T_ACK) but not answered, so send it
-            // and wait only for the ACK; the read-back is the confirmation.
+            let (req_apci, payload) = if user {
+                apci::encode_user_memory_write(chunk_addr, piece)
+            } else {
+                apci::encode_memory_write(chunk_addr as u16, piece)
+            };
+            // A_Memory_Write (and A_UserMemory_Write) is acknowledged (T_ACK) but
+            // not answered, so send it and wait only for the ACK; the read-back
+            // is the confirmation.
             self.inner.send_data(req_apci, &payload).await?;
+            if user {
+                self.inner.discard_pending_response();
+            }
 
             // Verify: read the same address back and compare octet-for-octet.
             let got = crate::memory::read_memory_strict(&mut self.inner, chunk_addr, take as u8)

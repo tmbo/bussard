@@ -140,6 +140,16 @@ impl VerifyOutcome {
     }
 }
 
+/// Whether `app` has memory above `0xFFFF` written and read with
+/// `A_UserMemory_*` rather than `A_MemoryExtended_*`: it does not announce
+/// `SupportsExtendedMemoryServices`, and ETS then uses the user-memory
+/// services (issue #472; Configuration Procedures 03_05_03 §3.5.1.4). The one
+/// rule the flash, `apply`, `backup` and the MCP tools share; no application
+/// (no product data) keeps the extended service, as before.
+pub fn uses_user_memory(app: Option<&bussard_prod::ApplicationProgram>) -> bool {
+    app.is_some_and(|app| !app.supports_extended_memory_services)
+}
+
 /// What a System B write loads besides the address and association tables.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SystemBLoad<'a> {
@@ -154,6 +164,9 @@ pub struct SystemBLoad<'a> {
     /// The link tables already hold the model: load only the group-object
     /// table, and read the link tables back unchanged.
     pub keep_tables: bool,
+    /// The application does not announce extended memory services: a table
+    /// above `0xFFFF` is written and read with `A_UserMemory_*` (issue #472).
+    pub user_memory_above_64k: bool,
 }
 
 /// Discovers the two table objects' indexes by probing `PID_OBJECT_TYPE`.
@@ -244,6 +257,7 @@ pub async fn apply_tables_with<Ch: L4Channel>(
 ) -> Result<VerifyOutcome, WriteError> {
     // 0: negotiate the APDU size before any table write (issue #116).
     negotiate_session_apdu(l4).await?;
+    l4.set_user_memory_above_64k(load.user_memory_above_64k);
 
     let object_table = match load.object_table {
         Some(image) => {
