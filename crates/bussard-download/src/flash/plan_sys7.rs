@@ -932,14 +932,21 @@ pub(super) struct Sys7ObjectDefault {
 /// the flags of the visible ComObjectRef (the 3361-1MWW and 3181 captures of
 /// issue #117: the same object `Number` has refs with different flags under
 /// different `<when>` branches), and leaves an object no branch shows at the
-/// template (C cleared). An application without a Dynamic section (the walk
-/// reaches no com-object) falls back to the flat product defaults: every
-/// declared ref's flags, with the template's TYPE.
+/// template (C cleared). Only an application whose Dynamic section (module
+/// bodies included) holds no `<ComObjectRefRef>` at all falls back to the
+/// flat product defaults: every declared ref's flags, with the template's
+/// TYPE. One that has them but whose walk reaches none at these values gets
+/// no defaults, so every object keeps the template with C cleared (issue
+/// #562, ABB `A-A04C-13`: every object behind `Eingang_freigeben = 1`,
+/// default 0; ETS wrote `template & !C` on all 20 sweep rows).
 pub(super) fn sys7_object_defaults(
     app: &ApplicationProgram,
     config: &bussard_prod::dynamic::DynamicConfig,
 ) -> BTreeMap<u16, Sys7ObjectDefault> {
     if config.com_objects.is_empty() {
+        if dynamic_declares_com_objects(app) {
+            return BTreeMap::new();
+        }
         return app
             .resolved_com_objects()
             .iter()
@@ -980,6 +987,30 @@ pub(super) fn sys7_object_defaults(
         );
     }
     out
+}
+
+/// Whether the program's Dynamic section or any module body holds a
+/// `<ComObjectRefRef>` on any branch.
+fn dynamic_declares_com_objects(app: &ApplicationProgram) -> bool {
+    use bussard_model::dynamic::DynamicNode;
+    let mut stack: Vec<&[DynamicNode]> = vec![app.dynamic.as_slice()];
+    stack.extend(app.module_dynamics.values().map(Vec::as_slice));
+    while let Some(nodes) = stack.pop() {
+        for node in nodes {
+            match node {
+                DynamicNode::ComObjectRefRef(_) => return true,
+                DynamicNode::Channel { children, .. }
+                | DynamicNode::ParameterBlock { children, .. } => stack.push(children),
+                DynamicNode::Choose { whens, .. } => {
+                    stack.extend(whens.iter().map(|w| w.children.as_slice()));
+                }
+                DynamicNode::ParameterRefRef(_)
+                | DynamicNode::Module { .. }
+                | DynamicNode::Assign { .. } => {}
+            }
+        }
+    }
+    false
 }
 
 /// The System 7 TYPE octet for an `ObjectSize` (the KNX size code: `1 Bit` is
@@ -2315,6 +2346,53 @@ mod tests {
             plan_descriptor_table(&app)?,
             vec![
                 0x03, 0x07, 0x0F, 0x07, 0x00, 0xDF, 0x00, 0x07, 0x01, 0xDF, 0x07, 0x07, 0x02, 0xDF,
+                0x00
+            ]
+        );
+        Ok(())
+    }
+
+    /// Issue #562 (ABB `A-A04C-13-0D6B`): the Dynamic section declares the
+    /// objects, but at the defaults the walk reaches none. ETS writes every
+    /// descriptor as the template with C cleared, not the refs' flags.
+    #[test]
+    fn test_plan_flash_sys7_unreached_objects_keep_the_template_without_c()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let objects = r#"<ComObjects>
+            <ComObject Id="A_O-0" Number="0" ObjectSize="1 Bit" TransmitFlag="Enabled" ReadFlag="Enabled" CommunicationFlag="Enabled" />
+            <ComObject Id="A_O-1" Number="1" ObjectSize="1 Bit" WriteFlag="Enabled" CommunicationFlag="Enabled" />
+           </ComObjects>
+           <ComObjectRefs>
+            <ComObjectRef Id="A_O-0_R-1" RefId="A_O-0" />
+            <ComObjectRef Id="A_O-1_R-2" RefId="A_O-1" />
+           </ComObjectRefs>"#;
+        let dynamic = r#"<Dynamic>
+           <ChannelIndependentBlock>
+            <ParameterBlock Id="A_PB-1" Name="main">
+             <ParameterRefRef RefId="A_P-1_R-1" />
+             <choose ParamRefId="A_P-1_R-1">
+              <when test="1"><ComObjectRefRef RefId="A_O-0_R-1" /><ComObjectRefRef RefId="A_O-1_R-2" /></when>
+             </choose>
+            </ParameterBlock>
+           </ChannelIndependentBlock>
+          </Dynamic>"#;
+        let app = sys7_descriptor_app(objects, dynamic)?;
+        // Objects 0 and 1 are declared: `df & !C` = `db`; slot 2 lies past
+        // the last declared object and keeps the template.
+        assert_eq!(
+            plan_descriptor_table(&app)?,
+            vec![
+                0x03, 0x07, 0x0F, 0x07, 0x00, 0xDB, 0x00, 0x07, 0x01, 0xDB, 0x07, 0x07, 0x02, 0xDF,
+                0x00
+            ]
+        );
+        // Without a Dynamic section the flat defaults still apply: the refs'
+        // flags (T R, W) with C cleared.
+        let flat = sys7_descriptor_app(objects, "")?;
+        assert_eq!(
+            plan_descriptor_table(&flat)?,
+            vec![
+                0x03, 0x07, 0x0F, 0x07, 0x00, 0x4B, 0x00, 0x07, 0x01, 0x13, 0x07, 0x07, 0x02, 0xDF,
                 0x00
             ]
         );
