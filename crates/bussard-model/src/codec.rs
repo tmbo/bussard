@@ -8,7 +8,7 @@ use std::fmt;
 
 use crate::dpt::Dpt;
 use crate::dpt_tables::{
-    enum_code, enum_label, enum_table, flag_table, fold_word,
+    enum_code, enum_label, enum_table, flag_reserved_mask, flag_table, fold_word,
 };
 
 /// Error encoding a typed value into a payload.
@@ -1041,6 +1041,150 @@ fn status_mode3_names(b: u8) -> Vec<&'static str> {
 /// model.
 pub fn decode(dpt: &Dpt, payload: &[u8]) -> TypedValue {
     decode_inner(dpt, payload).unwrap_or_else(|| TypedValue::Raw(payload.to_vec()))
+}
+
+/// Why a conforming receiver would drop this payload, or `None` when it is
+/// well-formed for `dpt`.
+///
+/// KNX 03_07_01 Interworking Model v02.01.01 §2.4: a receiver checks that a
+/// reserved field has its specified value (0) and that an enumeration value is
+/// supported, and otherwise ignores the whole value; a numeric value outside
+/// its range may be ignored or clamped. [`decode`] still returns its best
+/// reading of such a payload; this note says that the bus devices will not act
+/// on it. A payload too short for the DPT is the size check's business, not
+/// this one's, and yields `None`.
+pub fn validity_note(dpt: &Dpt, payload: &[u8]) -> Option<String> {
+    let problems = validity_problems(dpt, payload);
+    if problems.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "DPT {dpt}: {}; a conforming receiver ignores this value (KNX 03_07_01 §2.4)",
+        problems.join(", ")
+    ))
+}
+
+/// The individual findings behind [`validity_note`].
+fn validity_problems(dpt: &Dpt, payload: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut reserved = |what: &str, value: u8, mask: u8| {
+        if value & mask != 0 {
+            out.push(format!("reserved bits {:#04x} of {what} set", value & mask));
+        }
+    };
+    let byte = |i: usize| payload.get(i).copied();
+    match (dpt.main, dpt.sub) {
+        // 5.006 DPT_Tariff (03_07_02 §3.5.2.2): 255 shall be ignored.
+        (5, Some(6)) => {
+            if byte(0) == Some(255) {
+                return vec!["tariff 255 is reserved".to_string()];
+            }
+        }
+        // 6.020 (§3.7): the mode field is one-hot.
+        (6, Some(20)) => {
+            if let Some(b) = byte(0)
+                && !matches!(b & 0x07, 0b001 | 0b010 | 0b100)
+            {
+                return vec![format!("mode field {:03b}b is not one-hot", b & 0x07)];
+            }
+        }
+        // 10.001 (§3.11): r r in front of minutes and seconds, hour 0..23.
+        (10, _) => {
+            let (Some(b0), Some(b1), Some(b2)) = (byte(0), byte(1), byte(2)) else {
+                return out;
+            };
+            reserved("the minutes octet", b1, 0xC0);
+            reserved("the seconds octet", b2, 0xC0);
+            range(&mut out, "hour", b0 & 0x1F, 0, 23);
+            range(&mut out, "minutes", b1 & 0x3F, 0, 59);
+            range(&mut out, "seconds", b2 & 0x3F, 0, 59);
+        }
+        // 11.001 (§3.12): r3 day, r4 month, r1 year; day 1..31, month 1..12,
+        // year 0..99.
+        (11, _) => {
+            let (Some(b0), Some(b1), Some(b2)) = (byte(0), byte(1), byte(2)) else {
+                return out;
+            };
+            reserved("the day octet", b0, 0xE0);
+            reserved("the month octet", b1, 0xF0);
+            reserved("the year octet", b2, 0x80);
+            range(&mut out, "day", b0 & 0x1F, 1, 31);
+            range(&mut out, "month", b1 & 0x0F, 1, 12);
+            range(&mut out, "year", b2 & 0x7F, 0, 99);
+        }
+        // 17.001 (§3.18): r r SceneNumber.
+        (17, _) => {
+            if let Some(b) = byte(0) {
+                reserved("the scene octet", b, 0xC0);
+            }
+        }
+        // 18.001 (§3.19): C r SceneNumber; bit 6 is the worked example of
+        // 03_07_01 §2.4.
+        (18, _) => {
+            if let Some(b) = byte(0) {
+                reserved("the scene octet", b, 0x40);
+            }
+        }
+        // 19.001 (§3.20 and Notes 11, 15): reserved high bits, hour 24 only as
+        // 24:00:00, the low six bits of the last octet reserved.
+        (19, _) => {
+            if payload.len() < 8 {
+                return out;
+            }
+            let flags = payload[6];
+            reserved("the month octet", payload[1], 0xF0);
+            reserved("the day octet", payload[2], 0xE0);
+            reserved("the minutes octet", payload[4], 0xC0);
+            reserved("the seconds octet", payload[5], 0xC0);
+            reserved("the quality octet", payload[7], 0x3F);
+            if flags & 0x08 == 0 {
+                range(&mut out, "month", payload[1] & 0x0F, 1, 12);
+                range(&mut out, "day", payload[2] & 0x1F, 1, 31);
+            }
+            if flags & 0x02 == 0 {
+                let (h, m, sec) = (payload[3] & 0x1F, payload[4] & 0x3F, payload[5] & 0x3F);
+                range(&mut out, "hour", h, 0, 24);
+                range(&mut out, "minutes", m, 0, 59);
+                range(&mut out, "seconds", sec, 0, 59);
+                if h == 24 && (m != 0 || sec != 0) {
+                    out.push("hour 24 with non-zero minutes or seconds".to_string());
+                }
+            }
+        }
+        // The 20.xxx enumerations: a code outside the value list is reserved
+        // (03_07_01 §2.4 rule 3).
+        (20, Some(sub)) => {
+            if let Some(b) = byte(0)
+                && enum_table(sub).is_some()
+                && enum_label(sub, b).is_none()
+            {
+                return vec![format!("code {b} is reserved")];
+            }
+        }
+        (21, Some(sub)) => {
+            if let Some(b) = byte(0) {
+                // The mask of an 8-bit set fits one octet.
+                let mask = flag_reserved_mask(21, sub).to_be_bytes()[1];
+                reserved("the bit set", b, mask);
+            }
+        }
+        (22, Some(sub)) => {
+            if let (Some(hi), Some(lo)) = (byte(0), byte(1)) {
+                let [mhi, mlo] = flag_reserved_mask(22, sub).to_be_bytes();
+                reserved("the high octet", hi, mhi);
+                reserved("the low octet", lo, mlo);
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+/// Records `name` = `value` when it is outside `lo..=hi`.
+fn range(out: &mut Vec<String>, name: &str, value: u8, lo: u8, hi: u8) {
+    if !(lo..=hi).contains(&value) {
+        out.push(format!("{name} {value} is outside {lo}..{hi}"));
+    }
 }
 
 /// The fallible inner decode; `None` means "fall back to raw".
@@ -2459,6 +2603,34 @@ mod tests {
             decode(&dpt("6.020"), &[0x03]).to_string(),
             "A set, B set, C set, D set, E set, mode invalid"
         );
+    }
+
+    #[test]
+    fn test_validity_note_reserved_and_range() {
+        let note = |d: &str, p: &[u8]| validity_note(&dpt(d), p);
+        assert!(note("18.001", &[0x45]).is_some_and(|n| n.contains("0x40")));
+        assert!(note("17.001", &[0xC1]).is_some());
+        assert!(note("10.001", &[0x18, 0, 0]).is_some_and(|n| n.contains("hour 24")));
+        assert!(note("10.001", &[0x0C, 0x40, 0]).is_some_and(|n| n.contains("minutes octet")));
+        assert!(note("11.001", &[0x01, 0x00, 0x18]).is_some_and(|n| n.contains("month 0")));
+        assert!(note("11.001", &[0x01, 0x01, 0x64]).is_some_and(|n| n.contains("year 100")));
+        assert!(
+            note("19.001", &[0x7D, 1, 1, 0x18, 0, 5, 0, 0])
+                .is_some_and(|n| n.contains("hour 24 with non-zero"))
+        );
+        assert!(note("19.001", &[0x7D, 1, 1, 0x18, 0, 0, 0, 0]).is_none());
+        assert!(note("19.001", &[0x7D, 1, 1, 0x0C, 0, 0, 0, 0x81]).is_some());
+        assert!(note("5.006", &[0xFF]).is_some());
+        assert!(note("5.006", &[0xFE]).is_none());
+        assert!(note("20.102", &[0x05]).is_some());
+        assert!(note("20.102", &[0x04]).is_none());
+        assert!(note("21.001", &[0x20]).is_some());
+        assert!(note("22.101", &[0x80, 0x00]).is_some());
+        assert!(note("6.020", &[0x83]).is_some());
+        // Well-formed values and short payloads carry no note.
+        assert!(note("18.001", &[0x85]).is_none());
+        assert!(note("10.001", &[0x2C, 0x1E, 0x3B]).is_none());
+        assert!(note("10.001", &[0x2C]).is_none());
     }
 
     #[test]

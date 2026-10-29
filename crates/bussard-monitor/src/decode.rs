@@ -13,7 +13,7 @@
 
 use std::time::SystemTime;
 
-use bussard_model::codec::{TypedValue, decode};
+use bussard_model::codec::{TypedValue, decode, validity_note};
 use bussard_model::{ApduSize, Dpt, GroupAddress, IndividualAddress, Model};
 use bussard_transport::TimestampedFrame;
 use bussard_transport::cemi::{Apdu, Destination, GroupData};
@@ -301,7 +301,9 @@ fn group_bytes(d: &GroupData) -> Vec<u8> {
 ///
 /// Reads carry no payload, so they decode to `None` with no note. When a DPT is
 /// known, a payload whose length disagrees with the DPT's declared size still
-/// decodes (best-effort) but records a note showing both sizes.
+/// decodes (best-effort) but records a note showing both sizes, and a payload
+/// a conforming receiver ignores (a reserved bit set, a field out of range)
+/// records why.
 fn decode_value(
     apci: ApciKind,
     payload: &[u8],
@@ -318,7 +320,12 @@ fn decode_value(
         return (Some(TypedValue::Raw(payload.to_vec())), None);
     };
 
-    let note = size_mismatch_note(&dpt, payload);
+    // A length mismatch and a malformed field (03_07_01 §2.4) can both apply.
+    let notes: Vec<String> = [size_mismatch_note(&dpt, payload), validity_note(&dpt, payload)]
+        .into_iter()
+        .flatten()
+        .collect();
+    let note = (!notes.is_empty()).then(|| notes.join("; "));
     let value = decode(&dpt, payload);
     (Some(value), note)
 }
@@ -559,6 +566,38 @@ mod tests {
             security_report(d.apci, &[0x00, 0x0B, 0x39, 0x00, 0x01]),
             None
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_decode_value_notes_malformed_payloads() -> TestResult {
+        // (DPT, payload, fragment of the note) per 03_07_01 §2.4.
+        let cases: &[(&str, &[u8], &str)] = &[
+            ("18.001", &[0x45], "reserved bits 0x40"),
+            ("17.001", &[0xC1], "reserved bits 0xc0"),
+            ("10.001", &[0x18, 0x00, 0x00], "hour 24 is outside 0..23"),
+            ("10.001", &[0x1F, 0x00, 0x00], "hour 31"),
+            ("11.001", &[0x01, 0x00, 0x18], "month 0 is outside 1..12"),
+            (
+                "19.001",
+                &[0x7D, 0x01, 0x01, 0x18, 0x00, 0x05, 0x00, 0x00],
+                "hour 24 with non-zero",
+            ),
+            ("5.006", &[0xFF], "tariff 255"),
+            ("20.102", &[0x05], "code 5 is reserved"),
+        ];
+        for (dpt, payload, fragment) in cases {
+            let (value, note) = decode_value(ApciKind::Write, payload, Some(dpt.parse()?));
+            assert!(value.is_some(), "{dpt} still decodes");
+            let note = note.ok_or_else(|| format!("{dpt}: no note"))?;
+            assert!(note.contains(fragment), "{dpt}: {note}");
+            assert!(note.contains("03_07_01 §2.4"), "{dpt}: {note}");
+        }
+        // Well-formed payloads carry no note.
+        for (dpt, payload) in [("18.001", &[0x85][..]), ("10.001", &[0x0C, 0x1E, 0x00])] {
+            let (_, note) = decode_value(ApciKind::Write, payload, Some(dpt.parse()?));
+            assert_eq!(note, None, "{dpt}");
+        }
         Ok(())
     }
 

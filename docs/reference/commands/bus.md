@@ -22,6 +22,7 @@ Behaviour:
 - With a keyring, a secured group telegram is verified and decrypted with the group key of its destination GA, decoded like a plain one and marked `[secured]`.
 - A MAC failure shows `[secured (MAC failed) seq=… raw=…]`, and a GA without a key shows `[secured (no group key) …]`.
 - A sequence number that does not increase per sender adds a warning. Nothing is dropped.
+- A payload a conforming receiver ignores still decodes, with a note saying why (KNX 03_07_01 §2.4): a reserved bit set (`45` on `18.001`), a field out of range (hour 24 on `10.001`, month 0 on `11.001`, `24:30` on `19.001`), tariff 255 on `5.006`, or a reserved enumeration code (`05` on `20.102`). This is the answer to "the bus says X but nothing happened".
 
 ??? note "Details"
     A secured group telegram is `A_SecureData` with the tool-access bit clear.
