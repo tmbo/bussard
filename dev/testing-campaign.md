@@ -460,6 +460,25 @@ capture of the same device in knxtrace. Until then the mock tests in
 `bussard-download` (`flash_mock::test_parameters_only_*`) pin the sequence,
 the Mode 0 allocation and the base handling.
 
+**`LdCtrlWriteRelMem Size` below the segment size** (issue #564). Eight
+corpus applications declare an obj 4 `RelativeSegment` larger than what their
+procedure allocates and writes (`LdCtrlRelSegment Size`, `LdCtrlWriteRelMem
+Size`): the ABB Caldion controllers `M-0002_A-4980-17-A22E-O01EC` (135168,
+written 128444) and `A-4981-16-0AEB-O01EC` (135168, 125744), the ABB Energy
+Analyzer `M-0002_A-A0BF-10-D354` (65535, 17152), the Siemens
+`M-0001_A-9839-01-38C4`, `A-983B-01-6EF2`, `A-983C-01-D7C4` (16384, 512) and
+the M-00C9 `A-10D6-10-FA3B`, `A-10A9-11-77D2` (53248, 50432). bussard now
+streams the written `Size` and checks the MCB over the same length; a
+parameter value past it refuses the plan. The ETS side: the defaults sweep
+holds both Caldion downloads (128444 and 125744 octets, all
+`A_UserMemory_Write`, comparable since #472). This is the capture plan for a
+second manufacturer: run the defaults sweep on the Siemens `N528DB01`
+(`M-0001_A-9839-01-38C4`, 07B0, 512 of 16384 written) and compare its row with
+`tools/ets-sweep/oracle.py --filter A-9839-01`; expect `written 512` in the
+obj 4 region and an MCB length of 512. Until then
+`plan::tests::test_plan_flash_write_rel_mem_honours_size` pins the cut and the
+MCB length.
+
 ## Rehearsing on the simulator
 
 Every script has a loopback dry-run mode, so the runbook can be rehearsed

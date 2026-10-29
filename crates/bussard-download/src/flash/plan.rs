@@ -679,9 +679,9 @@ pub fn plan_flash_with_memo(
 
             LoadOp::WriteRelMem {
                 offset,
+                size,
                 applies_to,
                 obj_idx,
-                ..
             } => {
                 let current = obj_idx
                     .and_then(|idx| rel_segment_by_object.get(&idx))
@@ -696,6 +696,13 @@ pub fn plan_flash_with_memo(
                     step: step_no,
                     reason,
                 })?;
+                // The op's `Size` bounds what is streamed: the write covers the
+                // allocation, not the whole `RelativeSegment` (issue #564).
+                let bytes = bound_write_rel_mem(&segment_id, bytes, *size, placed.get(&segment_id))
+                    .map_err(|reason| PlanError::UnresolvableImage {
+                        step: step_no,
+                        reason,
+                    })?;
                 let len = bytes.len();
                 let offset = offset.unwrap_or(0);
                 // The segment base is device-supplied at execute time (>= 0), so a
@@ -1361,6 +1368,40 @@ pub(super) fn resolve_rel_segment(
             }
         })
         .map(|s| (s.id.clone(), s.size))
+}
+
+/// Cuts a `WriteRelMem` image to the op's `Size` (issue #564).
+///
+/// ABB Caldion `M-0002_A-4980-17-A22E-O01EC` declares a 135168-octet
+/// `RelativeSegment`, allocates 128444 octets (`LdCtrlRelSegment Size`) and
+/// writes 128444 (`LdCtrlWriteRelMem Size`); ETS wrote 128444 octets. The
+/// streamed image, the MCB check that follows (`LoadImageProp`) and the
+/// read-back all use the cut image, so they agree on the length. A `Size`
+/// at or above the image length, or none, keeps the image as it is.
+///
+/// A parameter value placed at or past `Size` refuses: cutting it would drop
+/// a configured value without a word.
+pub(super) fn bound_write_rel_mem(
+    segment_id: &str,
+    mut bytes: Vec<u8>,
+    size: Option<u32>,
+    placed: Option<&std::collections::BTreeSet<usize>>,
+) -> std::result::Result<Vec<u8>, String> {
+    let Some(size) = size.and_then(|s| usize::try_from(s).ok()) else {
+        return Ok(bytes);
+    };
+    if size >= bytes.len() {
+        return Ok(bytes);
+    }
+    if let Some(&octet) = placed.and_then(|p| p.range(size..).next()) {
+        return Err(format!(
+            "segment {segment_id} image is {} octets, its LdCtrlWriteRelMem writes {size}, \
+             but a parameter value sits at octet {octet}",
+            bytes.len()
+        ));
+    }
+    bytes.truncate(size);
+    Ok(bytes)
 }
 
 /// Resolves the bytes a `WriteRelMem` streams from its `AppliesTo` hint. `full`
@@ -2040,6 +2081,105 @@ mod tests {
                 .filter(|s| matches!(s, FlashStep::WriteRelMem { .. }))
                 .count(),
             1
+        );
+        Ok(())
+    }
+
+    /// A System B app whose 16-octet `RelativeSegment` is allocated and written
+    /// with `Size="8"` (the ABB Caldion shape of issue #564), with one 8-bit
+    /// parameter at `param_offset`.
+    fn write_size_app(param_offset: u32) -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-2_A-1" ApplicationNumber="1" ApplicationVersion="1"
+            MaskVersion="MV-07B0" Name="Caldion" LoadProcedureStyle="MergedProcedure">
+          <Static>
+           <Code>
+            <RelativeSegment Id="M-2_A-1_RS-04-00000" Size="16" LoadStateMachine="4" Offset="0"><Data>AAECAwQFBgcICQoLDA0ODw==</Data></RelativeSegment>
+           </Code>
+           <ParameterTypes><ParameterType Id="M-2_A-1_PT-1" Name="u8"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType></ParameterTypes>
+           <Parameters><Parameter Id="M-2_A-1_P-1" Name="p" ParameterType="M-2_A-1_PT-1" Value="170"><Memory CodeSegment="M-2_A-1_RS-04-00000" Offset="{param_offset}" BitOffset="0" /></Parameter></Parameters>
+           <ParameterRefs><ParameterRef Id="M-2_A-1_P-1_R-1" RefId="M-2_A-1_P-1" /></ParameterRefs>
+           <LoadProcedures>
+            <LoadProcedure MergeId="2">
+             <LdCtrlUnload LsmIdx="4" />
+             <LdCtrlLoad LsmIdx="4" />
+             <LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="8" Mode="1" Fill="0" />
+            </LoadProcedure>
+            <LoadProcedure MergeId="4">
+             <LdCtrlWriteRelMem AppliesTo="full,par" ObjIdx="4" Offset="0" Size="8" Verify="true" />
+            </LoadProcedure>
+            <LoadProcedure MergeId="7">
+             <LdCtrlLoadImageProp ObjIdx="4" PropId="27" />
+             <LdCtrlLoadCompleted LsmIdx="4" />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#
+        );
+        Ok(parse_application_program("M-2_A-1", xml.as_bytes())?)
+    }
+
+    /// Issue #564: `LdCtrlWriteRelMem Size` bounds the streamed image; the
+    /// MCB check and the plan image use the same length.
+    #[test]
+    fn test_plan_flash_write_rel_mem_honours_size() -> Result<(), Box<dyn std::error::Error>> {
+        let plan = plan_flash(
+            &write_size_app(2)?,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )?;
+        let seg = "M-2_A-1_RS-04-00000";
+        let write = plan
+            .steps
+            .iter()
+            .find_map(|s| match s {
+                FlashStep::WriteRelMem { image, .. } => Some(image),
+                _ => None,
+            })
+            .ok_or("no write")?;
+        assert_eq!((write.segment_id.as_str(), write.len), (seg, 8));
+        assert_eq!(
+            plan.image_bytes(seg),
+            Some(&[0x00, 0x01, 0xAA, 0x03, 0x04, 0x05, 0x06, 0x07][..])
+        );
+        let check = plan
+            .steps
+            .iter()
+            .find_map(|s| match s {
+                FlashStep::LoadImageProp { image, .. } => image.as_ref(),
+                _ => None,
+            })
+            .ok_or("no MCB check")?;
+        assert_eq!((check.segment_id.as_str(), check.len), (seg, 8));
+        Ok(())
+    }
+
+    /// Issue #564: a parameter value past the written `Size` refuses, naming
+    /// the segment and both sizes, instead of being cut off.
+    #[test]
+    fn test_plan_flash_write_rel_mem_refuses_a_parameter_past_size()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let err = plan_flash(
+            &write_size_app(10)?,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        );
+        assert!(
+            matches!(&err, Err(PlanError::UnresolvableImage { reason, .. })
+                if reason.contains("M-2_A-1_RS-04-00000")
+                    && reason.contains("16 octets")
+                    && reason.contains("writes 8")
+                    && reason.contains("octet 10")),
+            "{err:?}"
         );
         Ok(())
     }
