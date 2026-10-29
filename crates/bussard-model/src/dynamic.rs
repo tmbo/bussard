@@ -60,13 +60,15 @@
 //! pure steering parameter, which only ever has its value) stays active
 //! without a reached ref, with one exception (issue #474): when it also has
 //! no location (no memory, property or union) and a type other than
-//! `TypeNone`, its `<choose>` takes a branch whose test matches but never a
-//! `<when default="true">` one. The Zennio Flat push buttons hold their dummy
-//! objects behind such a choose on `Flat_AlwaysFALSE` (a checkbox,
-//! `Access="Read"`, `Value="0"`) and ETS leaves them out, while the ABB and
-//! Busch-Jaeger programs steer whole channels through default branches on
-//! never-shown `TypeNone` parameters (`Eingang_A`) and ETS takes those. The
-//! target ref of a reached `<Assign>` counts as active too: ETS writes it.
+//! `TypeNone`, a `<choose>` on it whose only branch is `<when
+//! default="true">` takes no branch. The Zennio Flat push buttons hold their
+//! dummy objects behind such a choose on `Flat_AlwaysFALSE` (a checkbox,
+//! `Access="Read"`, `Value="0"`) and ETS leaves them out; the ABB Modbus
+//! gateway's `signal_N_device_active` (`Value="1"`, a `when test="0"` beside
+//! the default) and the Flat `numOfButtons` take their default branches in
+//! ETS, and so do the ABB and Busch-Jaeger channel switches on never-shown
+//! `TypeNone` parameters (`Eingang_A`). The target ref of a reached
+//! `<Assign>` counts as active too: ETS writes it.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
@@ -2073,14 +2075,20 @@ impl Walk {
                             value_of(app, values, instance, self.module_args(scope), param_ref_id)
                         })
                         .and_then(|v| v.trim().parse::<f64>().ok());
-                    // A never-shown parameter that only steers and has a
-                    // type takes a matching branch, never its default one
-                    // (issue #474: the Zennio Flat `AlwaysFALSE` checkbox);
-                    // a `TypeNone` one takes its default too (the ABB
-                    // `Eingang_A` channel switches).
-                    let no_default = parameter_id(app, param_ref_id).is_some_and(|id| {
-                        !self.placed.contains(id) && app.steers_only(id) && !app.is_type_none(id)
-                    });
+                    // A `<choose>` whose only branch is `default`, on a
+                    // never-shown parameter that only steers and has a type,
+                    // takes no branch (issue #474: the Zennio Flat
+                    // `AlwaysFALSE` checkbox). With another `<when>` beside
+                    // it the default is taken (the ABB Modbus gateway's
+                    // `signal_N_device_active`, the Flat `numOfButtons`), and
+                    // so it is on a `TypeNone` one (the ABB `Eingang_A`
+                    // channel switches).
+                    let no_default = whens.iter().all(|w| w.test == WhenTest::Default)
+                        && parameter_id(app, param_ref_id).is_some_and(|id| {
+                            !self.placed.contains(id)
+                                && app.steers_only(id)
+                                && !app.is_type_none(id)
+                        });
                     for i in taken_branches(whens.iter().map(|w| &w.test), value) {
                         if let Some(w) = whens.get(i)
                             && !(no_default && w.test == WhenTest::Default)

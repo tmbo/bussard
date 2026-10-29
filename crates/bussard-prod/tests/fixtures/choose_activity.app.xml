@@ -16,7 +16,9 @@
      "Dummy" (P-8) stay out. "Input A" (P-9, TypeNone, Access="None", empty
      Value, the ABB construct) steers a whole channel and its default branch
      is taken: object 5. "Variant" (P-10, Access="None", Value 1) steers by a
-     matching test: object 6. -->
+     matching test: object 6. "Device active" (P-11, Access="Read", Value 1,
+     the ABB Modbus gateway construct) has a "0" branch beside its default
+     one, and the default is taken: object 7. -->
 <KNX xmlns="http://knx.org/xml/project/20">
   <ManufacturerData>
     <Manufacturer RefId="M-00FA">
@@ -59,6 +61,7 @@
               </Parameter>
               <Parameter Id="M-00FA_A-0563-10-0000_P-9" Name="Eingang_A" ParameterType="M-00FA_A-0563-10-0000_PT-None" Text="" Access="None" Value="" />
               <Parameter Id="M-00FA_A-0563-10-0000_P-10" Name="variant" ParameterType="M-00FA_A-0563-10-0000_PT-Mode" Text="Variant" Access="None" Value="1" />
+              <Parameter Id="M-00FA_A-0563-10-0000_P-11" Name="deviceActive" ParameterType="M-00FA_A-0563-10-0000_PT-Mode" Text="Device active" Access="Read" Value="1" />
             </Parameters>
             <ParameterRefs>
               <ParameterRef Id="M-00FA_A-0563-10-0000_P-1_R-1" RefId="M-00FA_A-0563-10-0000_P-1" />
@@ -72,6 +75,7 @@
               <ParameterRef Id="M-00FA_A-0563-10-0000_P-8_R-8" RefId="M-00FA_A-0563-10-0000_P-8" />
               <ParameterRef Id="M-00FA_A-0563-10-0000_P-9_R-9" RefId="M-00FA_A-0563-10-0000_P-9" />
               <ParameterRef Id="M-00FA_A-0563-10-0000_P-10_R-10" RefId="M-00FA_A-0563-10-0000_P-10" />
+              <ParameterRef Id="M-00FA_A-0563-10-0000_P-11_R-11" RefId="M-00FA_A-0563-10-0000_P-11" />
             </ParameterRefs>
             <ComObjects>
               <ComObject Id="M-00FA_A-0563-10-0000_O-1" Name="o1" Text="Object 1" Number="1" FunctionText="f" ObjectSize="1 Bit" ReadFlag="Enabled" WriteFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Enabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" DatapointType="DPST-1-1" />
@@ -80,6 +84,7 @@
               <ComObject Id="M-00FA_A-0563-10-0000_O-4" Name="o4" Text="Object 4" Number="4" FunctionText="f" ObjectSize="1 Bit" ReadFlag="Enabled" WriteFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Enabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" DatapointType="DPST-1-1" />
               <ComObject Id="M-00FA_A-0563-10-0000_O-5" Name="o5" Text="Object 5" Number="5" FunctionText="f" ObjectSize="1 Bit" ReadFlag="Enabled" WriteFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Enabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" DatapointType="DPST-1-1" />
               <ComObject Id="M-00FA_A-0563-10-0000_O-6" Name="o6" Text="Object 6" Number="6" FunctionText="f" ObjectSize="1 Bit" ReadFlag="Enabled" WriteFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Enabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" DatapointType="DPST-1-1" />
+              <ComObject Id="M-00FA_A-0563-10-0000_O-7" Name="o7" Text="Object 7" Number="7" FunctionText="f" ObjectSize="1 Bit" ReadFlag="Enabled" WriteFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Enabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" DatapointType="DPST-1-1" />
             </ComObjects>
             <ComObjectRefs>
               <ComObjectRef Id="M-00FA_A-0563-10-0000_O-1_R-1" RefId="M-00FA_A-0563-10-0000_O-1" />
@@ -88,6 +93,7 @@
               <ComObjectRef Id="M-00FA_A-0563-10-0000_O-4_R-4" RefId="M-00FA_A-0563-10-0000_O-4" />
               <ComObjectRef Id="M-00FA_A-0563-10-0000_O-5_R-5" RefId="M-00FA_A-0563-10-0000_O-5" />
               <ComObjectRef Id="M-00FA_A-0563-10-0000_O-6_R-6" RefId="M-00FA_A-0563-10-0000_O-6" />
+              <ComObjectRef Id="M-00FA_A-0573-10-0000_O-7_R-7" RefId="M-00FA_A-0573-10-0000_O-7" />
             </ComObjectRefs>
             <Options DownloadInvisibleParameters="None" />
           </Static>
@@ -137,6 +143,12 @@
             <choose ParamRefId="M-00FA_A-0563-10-0000_P-10_R-10">
               <when test="1">
                 <ComObjectRefRef RefId="M-00FA_A-0563-10-0000_O-6_R-6" />
+              </when>
+            </choose>
+            <choose ParamRefId="M-00FA_A-0563-10-0000_P-11_R-11">
+              <when test="0" />
+              <when default="true">
+                <ComObjectRefRef RefId="M-00FA_A-0563-10-0000_O-7_R-7" />
               </when>
             </choose>
           </Dynamic>
