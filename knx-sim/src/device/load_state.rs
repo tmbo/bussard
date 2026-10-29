@@ -645,6 +645,19 @@ mod tests {
     }
 
     #[test]
+    fn test_sys7_application_object_reports_a_program_id() {
+        // ETS reads object 3's PID 13 before a download (ABB A-A054); a
+        // System 7 device always has one.
+        let dev = sys7_device(LsmAccess::Property);
+        let id = dev
+            .objects
+            .get(&3)
+            .and_then(|o| o.property(PID_RUN_STATE_CONTROL))
+            .map(|p| p.value.len());
+        assert_eq!(id, Some(5));
+    }
+
+    #[test]
     fn test_sys7_task_segment_sets_program_id() -> Result<(), Box<dyn std::error::Error>> {
         // ETS's TaskSegment record ends in the program id (EK-E72:
         // `03 02 41 d8 01 00 b6 45 37 03`); the object reports it as PID 13.

@@ -476,6 +476,29 @@ impl Device {
         }
 
         seed_procedure_props(&mut objects, product, 0);
+        // The application object always reports a program id (PID 13,
+        // `mfr:2 app:2 version:1`, the BimM112 `ApplicationId`): ETS reads it
+        // before a download to check the manufacturer, and an absent property
+        // failed the ABB Room Master Premium (A-A054, 2026-10-28). A compare
+        // step has already seeded it; otherwise report this application.
+        if let Some(app) = objects.get_mut(&3)
+            && app.property(PID_RUN_STATE_CONTROL).is_none()
+        {
+            let manufacturer = product
+                .application_id
+                .strip_prefix("M-")
+                .and_then(|m| m.get(..4))
+                .and_then(|m| u16::from_str_radix(m, 16).ok())
+                .unwrap_or(0);
+            let mut id = manufacturer.to_be_bytes().to_vec();
+            id.extend_from_slice(
+                &u16::try_from(product.application_number)
+                    .unwrap_or(0)
+                    .to_be_bytes(),
+            );
+            id.push(u8::try_from(product.application_version).unwrap_or(0));
+            app.set_property(PID_RUN_STATE_CONTROL, Property::read_only(id));
+        }
         // The factory memory the product's CompareMem preflights check.
         let mut memory = Memory::new();
         for (address, value) in &product.compare_mems {
