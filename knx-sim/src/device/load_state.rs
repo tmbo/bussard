@@ -24,6 +24,24 @@ impl Device {
         covers_table || self.memory.overlaps_other(object, base, size)
     }
 
+    /// Sets an object's `PID_TABLE_REFERENCE` (4 octets, big-endian).
+    pub(super) fn set_table_reference(&mut self, object: u8, base: u32) {
+        if let Some(io) = self.objects.get_mut(&object) {
+            io.set_property(
+                PID_TABLE_REFERENCE,
+                Property::read_only(base.to_be_bytes().to_vec()),
+            );
+        }
+    }
+
+    /// Fails every later allocation larger than `max` octets (Configuration
+    /// Procedures §3.5.1.2: the object goes to Error and its
+    /// `PID_TABLE_REFERENCE` to zero). `None` (the default) allocates any size.
+    pub fn with_max_allocation(mut self, max: Option<u32>) -> Self {
+        self.max_allocation = max;
+        self
+    }
+
     pub(super) fn on_load_state_write(
         &mut self,
         tool: IndividualAddress,
@@ -41,7 +59,9 @@ impl Device {
             })?;
         let event =
             LoadEvent::decode(value).map_err(|e| DeviceError::LoadControl(e.to_string()))?;
-        // On allocation, wire the segment into memory at the object's base.
+        // An allocation happens only in Loading and is ignored in every other
+        // state (Configuration Procedures §3.5.1.2), so note the state first.
+        let prior = state.lsm.state();
         let new_state = match state.lsm.apply(event) {
             Ok(s) => s,
             Err(e) => {
@@ -54,28 +74,52 @@ impl Device {
                 return Err(DeviceError::LoadControl(e.to_string()));
             }
         };
-        if let LoadEvent::AllocRelSegment { size } = event {
-            let mut base = state.base;
-            // A real device places a relative segment where it has room and
-            // reports the place via PID_TABLE_REFERENCE. The fixed bases fit
-            // small segments; a large one (the ABB i-bus `M-0002_A-A0ED-10`
-            // sizes object 5 at 75 662 bytes from 0xB000) would cover a
-            // table's base and take its writes. The tables (objects 1 to 3)
-            // keep their low bases, which the group-comm parse reads as u16;
-            // any other object that would overlap one moves above 0xFFFF.
-            if !(1..=3).contains(&object) && self.overlaps_table_base(object, base, size) {
-                base = self.memory.free_base(object, 0x1_0000, size);
-                if let Some(state) = self.loadables.get_mut(&object) {
-                    state.base = base;
-                }
-                if let Some(io) = self.objects.get_mut(&object) {
-                    io.set_property(
-                        PID_TABLE_REFERENCE,
-                        Property::read_only(base.to_be_bytes().to_vec()),
-                    );
-                }
+        match event {
+            // An Unload frees the memory and sets PID_TABLE_REFERENCE to zero
+            // (Configuration Procedures §3.5.1.2). Freeing releases the
+            // allocation; the octets stay, which the partial download of
+            // §3.5.3 (reallocate, write only the differing octets) relies on.
+            LoadEvent::Unload => {
+                self.memory.release_owner(object);
+                self.set_table_reference(object, 0);
             }
-            self.memory.allocate(object, base, size);
+            LoadEvent::AllocRelSegment { size } if prior == LoadState::Loading => {
+                if self.max_allocation.is_some_and(|max| size > max) {
+                    // A failed allocation: the object goes to Error and
+                    // PID_TABLE_REFERENCE to zero (§3.5.1.2).
+                    if let Some(state) = self.loadables.get_mut(&object) {
+                        state.lsm.fail_allocation();
+                    }
+                    self.memory.erase_owner(object);
+                    self.set_table_reference(object, 0);
+                    self.emit(Event::LoadStateChanged {
+                        device: self.address,
+                        object,
+                        state: LoadState::Error.to_byte(),
+                    });
+                    return Err(DeviceError::LoadControl(format!(
+                        "allocation of {size} octets on object {object} exceeds the device's {} octets",
+                        self.max_allocation.unwrap_or(0)
+                    )));
+                }
+                let mut base = self.loadables.get(&object).map_or(0, |o| o.base);
+                // A real device places a relative segment where it has room and
+                // reports the place via PID_TABLE_REFERENCE. The fixed bases fit
+                // small segments; a large one (the ABB i-bus `M-0002_A-A0ED-10`
+                // sizes object 5 at 75 662 bytes from 0xB000) would cover a
+                // table's base and take its writes. The tables (objects 1 to 3)
+                // keep their low bases, which the group-comm parse reads as u16;
+                // any other object that would overlap one moves above 0xFFFF.
+                if !(1..=3).contains(&object) && self.overlaps_table_base(object, base, size) {
+                    base = self.memory.free_base(object, 0x1_0000, size);
+                    if let Some(state) = self.loadables.get_mut(&object) {
+                        state.base = base;
+                    }
+                }
+                self.set_table_reference(object, base);
+                self.memory.allocate(object, base, size);
+            }
+            _ => {}
         }
         self.emit(Event::LoadStateChanged {
             device: self.address,
@@ -304,13 +348,19 @@ mod tests {
         connect(&mut dev)?;
         dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
         // StartLoading obj4
-        dev.handle_cemi(&data(&dev, 0x3D7, &[0x04, 0x05, 0x10, 0x01, 0x01]))?;
+        dev.handle_cemi(&data(
+            &dev,
+            0x3D7,
+            &[0x04, 0x05, 0x10, 0x01, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        ))?;
         assert_eq!(dev.load_state(4), Some(LoadState::Loading));
         // Allocate 256
         dev.handle_cemi(&data(
             &dev,
             0x3D7,
-            &[0x04, 0x05, 0x10, 0x01, 0x03, 0x0b, 0x00, 0x00, 0x01, 0x00],
+            &[
+                0x04, 0x05, 0x10, 0x01, 0x03, 0x0b, 0x00, 0x00, 0x01, 0x00, 0, 0, 0, 0,
+            ],
         ))?;
         assert_eq!(
             dev.memory().segment_of(4).map(|s| (s.base, s.len)),
@@ -319,7 +369,11 @@ mod tests {
         // Memory write at base 0x6000
         dev.handle_cemi(&data(&dev, 0x280 | 4, &[0x60, 0x00, 5, 5, 0xff, 0xff]))?;
         // LoadCompleted
-        dev.handle_cemi(&data(&dev, 0x3D7, &[0x04, 0x05, 0x10, 0x01, 0x02]))?;
+        dev.handle_cemi(&data(
+            &dev,
+            0x3D7,
+            &[0x04, 0x05, 0x10, 0x01, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        ))?;
         assert_eq!(dev.load_state(4), Some(LoadState::Loaded));
         Ok(())
     }
@@ -334,11 +388,17 @@ mod tests {
         let mut dev = system_b_device()?;
         connect(&mut dev)?;
         dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
-        dev.handle_cemi(&data(&dev, 0x3D7, &[0x05, 0x05, 0x10, 0x01, 0x01]))?;
         dev.handle_cemi(&data(
             &dev,
             0x3D7,
-            &[0x05, 0x05, 0x10, 0x01, 0x03, 0x0b, 0x00, 0x01, 0x27, 0x8e],
+            &[0x05, 0x05, 0x10, 0x01, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        ))?;
+        dev.handle_cemi(&data(
+            &dev,
+            0x3D7,
+            &[
+                0x05, 0x05, 0x10, 0x01, 0x03, 0x0b, 0x00, 0x01, 0x27, 0x8e, 0, 0, 0, 0,
+            ],
         ))?;
         let seg = dev.memory().segment_of(5).ok_or("object 5 has a segment")?;
         assert_eq!((seg.base, seg.len), (0x1_0000, 0x0001_278e));
@@ -348,14 +408,24 @@ mod tests {
             .and_then(|o| o.property(PID_TABLE_REFERENCE))
             .map(|p| p.value.clone());
         assert_eq!(reported, Some(vec![0x00, 0x01, 0x00, 0x00]));
-        dev.handle_cemi(&data(&dev, 0x3D7, &[0x05, 0x05, 0x10, 0x01, 0x02]))?;
-
-        // The association table still allocates at, and takes writes to, 0xC000.
-        dev.handle_cemi(&data(&dev, 0x3D7, &[0x02, 0x05, 0x10, 0x01, 0x01]))?;
         dev.handle_cemi(&data(
             &dev,
             0x3D7,
-            &[0x02, 0x05, 0x10, 0x01, 0x03, 0x0b, 0x00, 0x00, 0x00, 0x1e],
+            &[0x05, 0x05, 0x10, 0x01, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        ))?;
+
+        // The association table still allocates at, and takes writes to, 0xC000.
+        dev.handle_cemi(&data(
+            &dev,
+            0x3D7,
+            &[0x02, 0x05, 0x10, 0x01, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        ))?;
+        dev.handle_cemi(&data(
+            &dev,
+            0x3D7,
+            &[
+                0x02, 0x05, 0x10, 0x01, 0x03, 0x0b, 0x00, 0x00, 0x00, 0x1e, 0, 0, 0, 0,
+            ],
         ))?;
         assert_eq!(
             dev.memory().segment_of(2).map(|s| (s.base, s.len)),
@@ -402,16 +472,26 @@ mod tests {
         };
 
         assert_eq!(read_state(&mut dev)?, LoadState::Unloaded.to_byte());
-        dev.handle_cemi(&data(&dev, 0x3D7, &[0x04, 0x05, 0x10, 0x01, 0x01]))?; // StartLoading
+        dev.handle_cemi(&data(
+            &dev,
+            0x3D7,
+            &[0x04, 0x05, 0x10, 0x01, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        ))?; // StartLoading
         assert_eq!(read_state(&mut dev)?, LoadState::Loading.to_byte());
         dev.handle_cemi(&data(
             &dev,
             0x3D7,
-            &[0x04, 0x05, 0x10, 0x01, 0x03, 0x0b, 0x00, 0x00, 0x01, 0x00],
+            &[
+                0x04, 0x05, 0x10, 0x01, 0x03, 0x0b, 0x00, 0x00, 0x01, 0x00, 0, 0, 0, 0,
+            ],
         ))?; // Alloc 256
         assert_eq!(read_state(&mut dev)?, LoadState::Loading.to_byte());
         dev.handle_cemi(&data(&dev, 0x280 | 4, &[0x60, 0x00, 5, 5, 0xff, 0xff]))?; // mem write
-        dev.handle_cemi(&data(&dev, 0x3D7, &[0x04, 0x05, 0x10, 0x01, 0x02]))?; // LoadCompleted
+        dev.handle_cemi(&data(
+            &dev,
+            0x3D7,
+            &[0x04, 0x05, 0x10, 0x01, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        ))?; // LoadCompleted
         assert_eq!(read_state(&mut dev)?, LoadState::Loaded.to_byte());
         Ok(())
     }
@@ -725,6 +805,105 @@ mod tests {
             dev.group_comm().is_none(),
             "an unloaded address table silences the device"
         );
+        Ok(())
+    }
+
+    /// A PID 5 write of a 10-octet load event to `object`.
+    fn pid5(dev: &Device, object: u8, event: &[u8]) -> crate::wire::cemi::CemiLData {
+        let mut payload = vec![object, PID_LOAD_STATE_CONTROL, 0x10, 0x01];
+        payload.extend_from_slice(event);
+        payload.resize(4 + 10, 0x00);
+        data(dev, 0x3D7, &payload)
+    }
+
+    /// Object `object`'s `PID_TABLE_REFERENCE` as a `u32`.
+    fn table_reference(dev: &Device, object: u8) -> Option<u32> {
+        let v = &dev
+            .objects
+            .get(&object)?
+            .property(PID_TABLE_REFERENCE)?
+            .value;
+        Some(u32::from_be_bytes(<[u8; 4]>::try_from(v.as_slice()).ok()?))
+    }
+
+    #[test]
+    fn test_on_load_state_write_unload_zeroes_table_reference()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Configuration Procedures §3.5.1.2: an Unload frees the memory and
+        // sets PID_TABLE_REFERENCE to zero; the next allocation reports the
+        // segment's base again.
+        let mut dev = system_b_device()?;
+        connect(&mut dev)?;
+        dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
+        assert_eq!(table_reference(&dev, 3), Some(0x8000));
+        dev.handle_cemi(&pid5(&dev, 3, &[0x04]))?;
+        assert_eq!(table_reference(&dev, 3), Some(0));
+        dev.handle_cemi(&pid5(&dev, 3, &[0x01]))?;
+        dev.handle_cemi(&pid5(&dev, 3, &[0x03, 0x0b, 0x00, 0x00, 0x01, 0x00]))?;
+        assert_eq!(table_reference(&dev, 3), Some(0x8000));
+        Ok(())
+    }
+
+    #[test]
+    fn test_on_load_state_write_failed_allocation_zeroes_table_reference()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // §3.5.1.2: a failed allocation sets PID_TABLE_REFERENCE to zero; the
+        // object goes to Error.
+        let mut dev = system_b_device()?.with_max_allocation(Some(0x100));
+        connect(&mut dev)?;
+        dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
+        dev.handle_cemi(&pid5(&dev, 3, &[0x01]))?;
+        let r = dev.handle_cemi(&pid5(&dev, 3, &[0x03, 0x0b, 0x00, 0x00, 0x01, 0x01]));
+        assert!(r.is_err());
+        assert_eq!(dev.load_state(3), Some(LoadState::Error));
+        assert_eq!(table_reference(&dev, 3), Some(0));
+        assert!(dev.memory().segment_of(3).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_on_load_state_write_alloc_in_unloaded_is_ignored()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // §3.5.1.2: allocation only happens in Loading; Table 94 keeps the
+        // object Unloaded.
+        let mut dev = system_b_device()?;
+        connect(&mut dev)?;
+        dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
+        dev.handle_cemi(&pid5(&dev, 3, &[0x04]))?;
+        dev.handle_cemi(&pid5(&dev, 3, &[0x03, 0x0b, 0x00, 0x00, 0x01, 0x00]))?;
+        assert_eq!(dev.load_state(3), Some(LoadState::Unloaded));
+        assert!(dev.memory().segment_of(3).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_on_property_write_short_load_event_is_refused() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // Resources §4.2.5: the PID_LOAD_STATE_CONTROL write value is always
+        // 10 octets.
+        let mut dev = system_b_device()?;
+        connect(&mut dev)?;
+        dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
+        let r = dev.handle_cemi(&data(&dev, 0x3D7, &[0x03, 0x05, 0x10, 0x01, 0x01]));
+        assert!(r.is_err());
+        assert_eq!(dev.load_state(3), Some(LoadState::Loaded));
+        Ok(())
+    }
+
+    #[test]
+    fn test_apply_sys7_event_task_record_in_unloaded_stays_unloaded()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #529: a memory-mapped Task record to a fresh LSM 5 does not open it.
+        let access = LsmAccess::MemoryMapped;
+        let mut dev = sys7_device(access);
+        connect(&mut dev)?;
+        dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
+        let mut record = task(0x43FE);
+        record[9] = 0x13;
+        send_event(&mut dev, access, 5, record)?;
+        assert_eq!(dev.load_state(5), Some(LoadState::Unloaded));
+        send_event(&mut dev, access, 5, simple(0x02))?;
+        assert_eq!(dev.load_state(5), Some(LoadState::Unloaded));
         Ok(())
     }
 }

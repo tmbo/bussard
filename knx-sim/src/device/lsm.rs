@@ -147,9 +147,23 @@ impl LoadStateMachine {
         self.allocated_size
     }
 
-    /// Apply a load event, enforcing the transition rules. On success returns
-    /// the new state; on a rule violation returns `Err(())` and moves to
-    /// `Error` (a real device reports `Error` on the next state read).
+    /// Apply a load event per KNX 3/5/1 Resources §4.23.2.3.3, Table 94 (the
+    /// recommended transition wherever the table offers a choice; the optional
+    /// intermediate states 4 and 5 are not modelled). On success returns the
+    /// new state, which is the old one for an event the table ignores; on a
+    /// transition to `Error` returns `Err` (a real device reports `Error` on
+    /// the next state read).
+    ///
+    /// | event \ state | Unloaded | Loaded | Loading | Error |
+    /// |---|---|---|---|---|
+    /// | StartLoading | Loading | Loading | Loading | Error |
+    /// | LoadCompleted | Unloaded (R) | Loaded (R) | Loaded | Error |
+    /// | Additional Load Controls | Unloaded (R) | Error | Loading | Error |
+    /// | Unload | Unloaded | Unloaded | Unloaded | Unloaded |
+    ///
+    /// An allocation is only performed in `Loading` (Configuration Procedures
+    /// §3.5.1.2); the caller checks [`LoadStateMachine::state`] before the
+    /// event to know whether to reserve memory.
     pub fn apply(&mut self, event: LoadEvent) -> Result<LoadState, TransitionError> {
         match (self.state, event) {
             // Unload is always accepted and returns to Unloaded.
@@ -163,6 +177,9 @@ impl LoadStateMachine {
                 self.state = LoadState::Loading;
                 self.allocated_size = None;
             }
+            // StartLoading while Loading stays Loading (mandatory) and keeps
+            // the allocation: a tool resuming a step re-issues it.
+            (LoadState::Loading, LoadEvent::StartLoading) => {}
             // Allocation is only valid while Loading.
             (LoadState::Loading, LoadEvent::AllocRelSegment { size }) => {
                 self.allocated_size = Some(size);
@@ -171,13 +188,26 @@ impl LoadStateMachine {
             (LoadState::Loading, LoadEvent::LoadCompleted) => {
                 self.state = LoadState::Loaded;
             }
-            // Anything else is an illegal transition.
+            // Client errors the table recommends ignoring: LoadCompleted or an
+            // allocation in Unloaded stays Unloaded, LoadCompleted in Loaded
+            // stays Loaded. Nothing is allocated.
+            (LoadState::Unloaded, LoadEvent::LoadCompleted | LoadEvent::AllocRelSegment { .. })
+            | (LoadState::Loaded, LoadEvent::LoadCompleted) => {}
+            // Anything else is an illegal transition: an allocation in Loaded,
+            // and every event but Unload in Error.
             (state, event) => {
                 self.state = LoadState::Error;
                 return Err(TransitionError { from: state, event });
             }
         }
         Ok(self.state)
+    }
+
+    /// Moves the object to `Error`: an allocation the device cannot satisfy
+    /// (Configuration Procedures §3.5.1.2).
+    pub fn fail_allocation(&mut self) {
+        self.state = LoadState::Error;
+        self.allocated_size = None;
     }
 }
 
@@ -443,19 +473,64 @@ mod tests {
         Ok(())
     }
 
+    // One test per Table 94 cell (Resources §4.23.2.3.3) that is not the
+    // happy path, with the recommended transition where the table offers one.
+
     #[test]
-    fn test_load_completed_without_start_is_rejected() {
+    fn test_apply_load_completed_in_unloaded_stays_unloaded() -> Result<(), TransitionError> {
         let mut lsm = LoadStateMachine::default();
-        let err = lsm.apply(LoadEvent::LoadCompleted);
-        assert!(err.is_err());
+        assert_eq!(lsm.apply(LoadEvent::LoadCompleted)?, LoadState::Unloaded);
+        Ok(())
+    }
+
+    #[test]
+    fn test_apply_alloc_in_unloaded_stays_unloaded() -> Result<(), TransitionError> {
+        let mut lsm = LoadStateMachine::default();
+        assert_eq!(
+            lsm.apply(LoadEvent::AllocRelSegment { size: 256 })?,
+            LoadState::Unloaded
+        );
+        assert_eq!(lsm.allocated_size(), None);
+        Ok(())
+    }
+
+    #[test]
+    fn test_apply_start_loading_in_loading_stays_loading() -> Result<(), TransitionError> {
+        let mut lsm = LoadStateMachine::default();
+        lsm.apply(LoadEvent::StartLoading)?;
+        lsm.apply(LoadEvent::AllocRelSegment { size: 16 })?;
+        assert_eq!(lsm.apply(LoadEvent::StartLoading)?, LoadState::Loading);
+        // The allocation survives the repeated StartLoading.
+        assert_eq!(lsm.allocated_size(), Some(16));
+        Ok(())
+    }
+
+    #[test]
+    fn test_apply_load_completed_in_loaded_stays_loaded() -> Result<(), TransitionError> {
+        let mut lsm = LoadStateMachine::new(LoadState::Loaded);
+        assert_eq!(lsm.apply(LoadEvent::LoadCompleted)?, LoadState::Loaded);
+        Ok(())
+    }
+
+    #[test]
+    fn test_apply_alloc_in_loaded_is_error() {
+        let mut lsm = LoadStateMachine::new(LoadState::Loaded);
+        assert!(lsm.apply(LoadEvent::AllocRelSegment { size: 16 }).is_err());
         assert_eq!(lsm.state(), LoadState::Error);
     }
 
     #[test]
-    fn test_alloc_before_start_is_rejected() {
-        let mut lsm = LoadStateMachine::default();
-        assert!(lsm.apply(LoadEvent::AllocRelSegment { size: 256 }).is_err());
+    fn test_apply_start_loading_in_error_stays_error() {
+        let mut lsm = LoadStateMachine::new(LoadState::Error);
+        assert!(lsm.apply(LoadEvent::StartLoading).is_err());
         assert_eq!(lsm.state(), LoadState::Error);
+    }
+
+    #[test]
+    fn test_apply_unload_from_error_is_unloaded() -> Result<(), TransitionError> {
+        let mut lsm = LoadStateMachine::new(LoadState::Error);
+        assert_eq!(lsm.apply(LoadEvent::Unload)?, LoadState::Unloaded);
+        Ok(())
     }
 
     mod sys7 {

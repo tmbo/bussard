@@ -283,6 +283,10 @@ pub struct Device {
     /// The process time (seconds) reported in the `A_Restart_Response` to a
     /// factory reset (erase code 7).
     restart_process_time_s: u16,
+    /// The largest segment an allocation may ask for before it fails
+    /// (Configuration Procedures §3.5.1.2); `None` allocates any size. See
+    /// [`Device::with_max_allocation`].
+    max_allocation: Option<u32>,
     events: std::sync::Arc<dyn EventSink>,
 }
 

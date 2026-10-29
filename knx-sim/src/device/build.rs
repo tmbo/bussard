@@ -347,6 +347,7 @@ impl Device {
             ip_secure: None,
             secure,
             restart_process_time_s: DEFAULT_RESTART_PROCESS_TIME_S,
+            max_allocation: None,
             events,
         };
         // A device constructed already `Loaded` (a previously-programmed device)
@@ -532,6 +533,7 @@ impl Device {
             ip_secure: None,
             secure,
             restart_process_time_s: DEFAULT_RESTART_PROCESS_TIME_S,
+            max_allocation: None,
             events,
         };
         device.refresh_group_comm();
@@ -606,6 +608,7 @@ impl Device {
             ip_secure: None,
             secure: None,
             restart_process_time_s: DEFAULT_RESTART_PROCESS_TIME_S,
+            max_allocation: None,
             events,
         }
     }

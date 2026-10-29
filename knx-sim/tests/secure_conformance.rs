@@ -698,10 +698,15 @@ impl SecureTool {
     /// PID 5 plus A_MemoryExtended_Write, all wrapped in A_SecureData, and
     /// verify the image with A_MemoryExtended_Read.
     fn load_table_extended(&mut self, obj: u8, base: u32, image: &[u8]) -> TestResult {
-        self.secure_ndt(0x3D7, &[obj, 0x05, 0x10, 0x01, 0x01]); // StartLoading
         self.secure_ndt(
             0x3D7,
-            &[obj, 0x05, 0x10, 0x01, 0x03, 0x0b, 0x00, 0x00, 0x01, 0x00],
+            &[obj, 0x05, 0x10, 0x01, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        ); // StartLoading
+        self.secure_ndt(
+            0x3D7,
+            &[
+                obj, 0x05, 0x10, 0x01, 0x03, 0x0b, 0x00, 0x00, 0x01, 0x00, 0, 0, 0, 0,
+            ],
         ); // allocate 256
         let [a2, a1, a0] = [(base >> 16) as u8, (base >> 8) as u8, base as u8];
         let mut write = vec![image.len() as u8, a2, a1, a0];
@@ -716,7 +721,10 @@ impl SecureTool {
             read,
             [vec![0x01, 0xfe, 0x00, a2, a1, a0], image.to_vec()].concat()
         );
-        self.secure_ndt(0x3D7, &[obj, 0x05, 0x10, 0x01, 0x02]); // LoadCompleted
+        self.secure_ndt(
+            0x3D7,
+            &[obj, 0x05, 0x10, 0x01, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        ); // LoadCompleted
         Ok(())
     }
 

@@ -225,10 +225,15 @@ impl Rig {
 
     /// Load a table object through PID 5 + A_MemoryExtended_Write.
     fn load_table(&mut self, obj: u8, base: u32, image: &[u8]) -> TestResult {
-        self.mgmt(0x3D7, &[obj, 0x05, 0x10, 0x01, 0x01])?;
         self.mgmt(
             0x3D7,
-            &[obj, 0x05, 0x10, 0x01, 0x03, 0x0b, 0x00, 0x00, 0x01, 0x00],
+            &[obj, 0x05, 0x10, 0x01, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        )?;
+        self.mgmt(
+            0x3D7,
+            &[
+                obj, 0x05, 0x10, 0x01, 0x03, 0x0b, 0x00, 0x00, 0x01, 0x00, 0, 0, 0, 0,
+            ],
         )?;
         let mut write = vec![
             image.len() as u8,
@@ -238,7 +243,10 @@ impl Rig {
         ];
         write.extend_from_slice(image);
         self.mgmt(0x1FB, &write)?;
-        self.mgmt(0x3D7, &[obj, 0x05, 0x10, 0x01, 0x02])?;
+        self.mgmt(
+            0x3D7,
+            &[obj, 0x05, 0x10, 0x01, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        )?;
         Ok(())
     }
 

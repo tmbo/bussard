@@ -276,6 +276,12 @@ pub struct DeviceConfig {
     /// §5.4.3). Set it to reproduce a tool that stalls after a desync.
     #[serde(default)]
     pub l4_strict_drop: bool,
+    /// The largest segment (octets) a load-control allocation may ask for: a
+    /// larger one fails, the object goes to Error and its
+    /// `PID_TABLE_REFERENCE` to zero (Configuration Procedures §3.5.1.2).
+    /// Omit for no limit (the default).
+    #[serde(default)]
+    pub max_allocation: Option<u32>,
     /// Whether the device starts in KNX programming mode (default `false`). A
     /// device in programming mode answers the broadcast `A_IndividualAddress_Read`
     /// — the discovery step `bussard assign` and `bussard viz --watch-prog` use.
@@ -641,7 +647,8 @@ impl SimConfig {
                 reason,
             })?
             .with_l4_exchange_budget(effective_l4_budget(dc.l4_exchange_budget))
-            .with_strict_l4_drop(dc.l4_strict_drop);
+            .with_strict_l4_drop(dc.l4_strict_drop)
+            .with_max_allocation(dc.max_allocation);
             let device = match &dc.security {
                 Some(sec) if sec.status == SecurityStatus::Factory => {
                     device.with_factory_security()

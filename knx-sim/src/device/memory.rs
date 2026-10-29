@@ -152,6 +152,14 @@ impl Memory {
         self.segments.retain(|s| s.owner != owner);
     }
 
+    /// Release the segment owned by `owner` without clearing its cells (an
+    /// Unload: the allocation is freed, the stored octets stay where they were,
+    /// so a partial download that reallocates the same place and writes only
+    /// the differing octets keeps the rest, as ETS relies on).
+    pub fn release_owner(&mut self, owner: u8) {
+        self.segments.retain(|s| s.owner != owner);
+    }
+
     /// The allocated segment owned by `owner`, if any.
     pub fn segment_of(&self, owner: u8) -> Option<Segment> {
         self.segments.iter().copied().find(|s| s.owner == owner)

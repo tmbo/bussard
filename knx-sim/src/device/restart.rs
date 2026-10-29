@@ -5,22 +5,38 @@ use crate::bus::event::Event;
 use crate::wire::IndividualAddress;
 use crate::wire::apdu::{Apci, Apdu};
 
+use super::interface_object::iot;
 use super::{
     Device, DeviceError, DeviceReaction, ERASE_CODE_FACTORY_RESET_KEEP_IA, LoadState,
-    LoadStateMachine,
+    LoadStateMachine, PID_OBJECT_TYPE, Sys7LoadStateMachine,
 };
 
 impl Device {
-    /// Erase code 7: drop every loadable object back to `Unloaded` and erase its
-    /// segment, so a following download starts from a blank device. The
-    /// individual address, the interface-object table and the object bases are
-    /// not touched. The device's group runtime goes silent with its tables.
-    fn factory_reset_keep_address(&mut self) {
-        let objects: Vec<u8> = self.loadables.keys().copied().collect();
+    /// Unloads the loadable objects `select` picks (by interface-object type)
+    /// and erases their segments: the Unload of Configuration Procedures
+    /// §3.5.1.2 (memory freed, `PID_TABLE_REFERENCE` zero), on both device
+    /// generations. The individual address and the interface-object table are
+    /// not touched. The group runtime is re-evaluated, so a device whose tables
+    /// were reset goes silent.
+    fn unload_objects(&mut self, select: impl Fn(u16) -> bool) {
+        let objects: Vec<u8> = self
+            .loadables
+            .keys()
+            .copied()
+            .filter(|&object| select(self.object_type(object)))
+            .collect();
         for object in objects {
             self.memory.erase_owner(object);
             if let Some(state) = self.loadables.get_mut(&object) {
                 state.lsm = LoadStateMachine::new(LoadState::Unloaded);
+            }
+            if let Some(s7) = self.sys7.as_mut()
+                && let Some(lsm) = s7.lsms.get_mut(&object)
+            {
+                *lsm = Sys7LoadStateMachine::new(LoadState::Unloaded);
+            }
+            if self.sys7.is_none() {
+                self.set_table_reference(object, 0);
             }
             self.emit(Event::LoadStateChanged {
                 device: self.address,
@@ -29,6 +45,55 @@ impl Device {
             });
         }
         self.refresh_group_comm();
+    }
+
+    /// The interface-object type of loadable object `object`: its
+    /// `PID_OBJECT_TYPE` on System B, the LSM index itself on System 7 (whose
+    /// LSMs 1 to 4 are the address table, association table, application and
+    /// PEI program, KNX 3/5/2 §3.31.2).
+    fn object_type(&self, object: u8) -> u16 {
+        if self.sys7.is_some() {
+            return u16::from(object);
+        }
+        self.objects
+            .get(&object)
+            .and_then(|o| o.property(PID_OBJECT_TYPE))
+            .and_then(|p| p.value.get(..2))
+            .map_or(u16::from(object), |v| u16::from_be_bytes([v[0], v[1]]))
+    }
+
+    /// Resets the individual address to the TP1 default `15.15.255` (erase
+    /// codes 2 and 3).
+    fn reset_individual_address(&mut self) {
+        let default = IndividualAddress::new(15, 15, 255);
+        if self.address != default {
+            self.emit(Event::AddressChanged {
+                device: self.address,
+                new_address: default,
+            });
+            self.address = default;
+        }
+    }
+
+    /// Executes the reset an accepted master reset names (KNX 3/5/2
+    /// §3.7.1.2.3, Table 4). The sim models no persistently stored
+    /// application data (code 8 resets nothing) and keeps the parameters in
+    /// the application program's segment, so a parameter reset (code 5)
+    /// unloads the application program with them.
+    fn execute_master_reset(&mut self, erase_code: u8) {
+        match erase_code {
+            // Factory reset: everything, the individual address included.
+            0x02 => {
+                self.unload_objects(|_| true);
+                self.reset_individual_address();
+            }
+            0x03 => self.reset_individual_address(),
+            0x04 | 0x05 => self.unload_objects(|t| t == iot::APPLICATION_PROGRAM),
+            0x06 => self.unload_objects(|t| t == iot::ADDRESS_TABLE || t == iot::ASSOCIATION_TABLE),
+            ERASE_CODE_FACTORY_RESET_KEEP_IA => self.unload_objects(|_| true),
+            // 1 (confirmed restart) and 8 (no persistent data here).
+            _ => {}
+        }
     }
 
     /// Sets the process time (seconds) the device reports in its
@@ -53,8 +118,10 @@ impl Device {
         //     otherwise the just-loaded image would be lost.
         //   * APCI 0x381 with `[erase_code][channel]` = Master Reset: confirmed
         //     with A_Restart_Response (0x3A1) carrying `[error_code][process_time]`.
-        //     erase codes 0x02..=0x08 erase state; 0x01 (ConfirmedRestart) erases
-        //     nothing. Range 0x01..=0x08 is valid; others are refused.
+        //     erase codes 0x02..=0x08 reset the resources of KNX 3/5/2 Table 4;
+        //     0x01 (ConfirmedRestart) resets nothing. Range 0x01..=0x08 is
+        //     valid; others are refused. The mid-procedure master reset ETS
+        //     sends KNX Virtual is the bare form above (`4f 80`).
         let is_master_reset = matches!(apdu.apci, Apci::RestartResponse) // 0x381
             || apdu.apci_raw == 0x381;
 
@@ -63,37 +130,31 @@ impl Device {
         if is_master_reset {
             let erase_code = apdu.data.first().copied().unwrap_or(0x01);
             let channel = apdu.data.get(1).copied().unwrap_or(0);
-            // Strict: reject reserved erase codes (0x00, 0x09..=0xFF).
-            let error_code: u8 = if (0x01..=0x08).contains(&erase_code) {
-                0x00 // success
+            // KNX 3/5/2 §3.7.1.2.3, Tables 4 and 5: erase codes 0 and 9 to 255
+            // are answered "unsupported erase code" (2) and nothing runs. The
+            // sim models no application channels, so a channel number other
+            // than 0 is "invalid channel number" (3) for every code: codes 1,
+            // 3 and 4 fix it at 0, and for the others the server does not
+            // support channels.
+            let error_code: u8 = if !(0x01..=0x08).contains(&erase_code) {
+                0x02
+            } else if channel != 0 {
+                0x03
             } else {
-                0x02 // unsupported erase code
+                0x00
             };
-            // NOTE on erase semantics: in the ETS→KNX-Virtual capture the tool
-            // issues A_RestartMasterReset with erase code 0x04 (ResetApplication-
-            // Program) *mid-flash*, right after allocating object 4's segment,
-            // and the subsequent writes to that segment still succeed with no
-            // re-allocation. So on this real device the master reset does NOT
-            // discard the in-progress load; it reboots and confirms only. The
-            // simulator models that observed behavior: object state is cleared by
-            // the explicit Unload load-event, not by the restart. (A device that
-            // truly erased here would fail the capture.)
-            let _ = channel;
-            // Erase code 0x07 (factory reset without individual address, the
-            // ETS opening of an initial System B download, issue #117): erase
-            // every loadable object's image and load state, keep the individual
-            // address. The KNX-Virtual 0x04 behaviour above is left as observed.
-            // A KNX IP interface: its KNXnet/IP Secure properties take
-            // effect (bussard issue #398).
+            let mut process_time = 0;
             if error_code == 0 {
+                // A KNX IP interface: its KNXnet/IP Secure properties take
+                // effect (bussard issue #398).
                 self.apply_ip_secure();
+                self.execute_master_reset(erase_code);
+                // Erase code 7 opens an initial System B download (issue
+                // #117); the device reports its configured process time.
+                if erase_code == ERASE_CODE_FACTORY_RESET_KEEP_IA {
+                    process_time = self.restart_process_time_s;
+                }
             }
-            let process_time = if erase_code == ERASE_CODE_FACTORY_RESET_KEEP_IA {
-                self.factory_reset_keep_address();
-                self.restart_process_time_s
-            } else {
-                0
-            };
             // A_Restart_Response (0x3A1): [error_code][process_time:2].
             let [pt_hi, pt_lo] = process_time.to_be_bytes();
             responses.push(self.respond(tool, 0x3A1, &[error_code, pt_hi, pt_lo]));
@@ -172,6 +233,114 @@ mod tests {
         assert_eq!(&resp.tpdu[2..], &[0x00, 0x00, 0x00]);
         assert_eq!(dev.load_state(3), Some(LoadState::Loaded));
         assert_eq!(dev.memory().read(base, 2), vec![0x12, 0x34]);
+        Ok(())
+    }
+
+    /// The `[error code][process time:2]` of the master reset `erase` on
+    /// `channel`.
+    fn master_reset(
+        dev: &mut Device,
+        erase: u8,
+        channel: u8,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        connect(dev)?;
+        let reaction = dev.handle_cemi(&data(dev, 0x381, &[erase, channel]))?;
+        let resp = reaction
+            .responses
+            .iter()
+            .find(|r| r.tpdu.len() == 5)
+            .ok_or("an A_Restart_Response")?;
+        Ok(resp.tpdu[2..].to_vec())
+    }
+
+    #[test]
+    fn test_on_restart_channel_number_is_invalid() -> Result<(), Box<dyn std::error::Error>> {
+        // KNX 3/5/2 Table 5: a channel number other than 0 where the code
+        // fixes 0 (1, 3, 4), or on a server without channels, is error 3; the
+        // reset does not run.
+        for erase in [0x01u8, 0x03, 0x04, 0x07] {
+            let mut dev = system_b_device()?;
+            assert_eq!(master_reset(&mut dev, erase, 1)?, vec![0x03, 0x00, 0x00]);
+            assert_eq!(dev.load_state(3), Some(LoadState::Loaded), "{erase}");
+            assert_eq!(dev.address(), IndividualAddress::new(1, 1, 2), "{erase}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_on_restart_reserved_erase_code_is_unsupported() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut dev = system_b_device()?;
+        assert_eq!(master_reset(&mut dev, 0x09, 0)?, vec![0x02, 0x00, 0x00]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_on_restart_reset_ia_keeps_the_application() -> Result<(), Box<dyn std::error::Error>> {
+        let mut dev = system_b_device()?;
+        assert_eq!(master_reset(&mut dev, 0x03, 0)?[0], 0x00);
+        assert_eq!(dev.address(), IndividualAddress::new(15, 15, 255));
+        assert_eq!(dev.load_state(3), Some(LoadState::Loaded));
+        Ok(())
+    }
+
+    #[test]
+    fn test_on_restart_factory_reset_resets_ia_and_application()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut dev = system_b_device()?;
+        assert_eq!(master_reset(&mut dev, 0x02, 0)?[0], 0x00);
+        assert_eq!(dev.address(), IndividualAddress::new(15, 15, 255));
+        for object in 1u8..=3 {
+            assert_eq!(dev.load_state(object), Some(LoadState::Unloaded));
+        }
+        Ok(())
+    }
+
+    /// A loaded System 7 device: its LSM 3 is the application program
+    /// (KNX 3/5/2 §3.31.2).
+    fn sys7_loaded() -> Result<Device, String> {
+        Device::from_product_with_overrides(
+            IndividualAddress::new(1, 1, 5),
+            &crate::testfixtures::synthetic_mdt_sys7_product(),
+            LoadState::Loaded,
+            ProfileOverrides::default(),
+            std::sync::Arc::new(crate::bus::event::RecordingSink::new()),
+        )
+    }
+
+    #[test]
+    fn test_on_restart_reset_ap_unloads_only_the_application()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for erase in [0x04u8, 0x05] {
+            let mut dev = sys7_loaded()?;
+            assert_eq!(master_reset(&mut dev, erase, 0)?[0], 0x00);
+            assert_eq!(dev.load_state(3), Some(LoadState::Unloaded), "{erase}");
+            assert_eq!(dev.load_state(1), Some(LoadState::Loaded), "{erase}");
+            assert_eq!(dev.load_state(2), Some(LoadState::Loaded), "{erase}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_on_restart_reset_links_unloads_the_tables() -> Result<(), Box<dyn std::error::Error>> {
+        let mut dev = system_b_device()?;
+        assert_eq!(master_reset(&mut dev, 0x06, 0)?[0], 0x00);
+        assert_eq!(dev.load_state(1), Some(LoadState::Unloaded));
+        assert_eq!(dev.load_state(2), Some(LoadState::Unloaded));
+        assert_eq!(dev.load_state(3), Some(LoadState::Loaded));
+        Ok(())
+    }
+
+    #[test]
+    fn test_on_restart_erase_persistent_data_keeps_everything()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // The sim stores no persistent application data: code 8 succeeds and
+        // resets nothing.
+        let mut dev = system_b_device()?;
+        assert_eq!(master_reset(&mut dev, 0x08, 0)?[0], 0x00);
+        for object in 1u8..=3 {
+            assert_eq!(dev.load_state(object), Some(LoadState::Loaded));
+        }
         Ok(())
     }
 }

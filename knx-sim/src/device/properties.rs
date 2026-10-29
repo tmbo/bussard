@@ -299,6 +299,14 @@ impl Device {
 
         // PID_LOAD_STATE_CONTROL drives the load-state machine.
         if pid == PID_LOAD_STATE_CONTROL {
+            // The write value is always 10 octets (Resources §4.2.5); a
+            // shorter one is a tool bug a real device need not understand.
+            if value.len() != 10 {
+                return Err(DeviceError::LoadControl(format!(
+                    "PID_LOAD_STATE_CONTROL write of {} octet(s); the value is always 10",
+                    value.len()
+                )));
+            }
             // A System 7 device configured for property-based LSM access decodes
             // the 10-octet load event straight from the PID 5 value and drives the
             // addressed LSM (spec section 5, LsmAccess::Property). A System 7

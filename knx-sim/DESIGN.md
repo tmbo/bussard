@@ -140,6 +140,18 @@ size 256; object 3 (com-object table) → `0x8000`, size 148; object 2
 size 12. The device reports these bases via PID 7; the simulator assigns them
 deterministically so a tool that reads PID 7 gets a stable, real-looking map.
 
+The load state machine follows Resources Table 94 with the recommended
+transition where the table offers one: StartLoading in Loading stays Loading,
+LoadCompleted or an allocation in Unloaded stays Unloaded, LoadCompleted in
+Loaded stays Loaded; an allocation in Loaded and anything but Unload in Error
+is Error. A PID 5 write value is always 10 octets; a shorter one is refused.
+An Unload frees the object's allocation (the octets stay, as the partial
+download relies on) and zeroes PID 7, an allocation sets it
+again, and a device configured with `max_allocation` fails a larger
+allocation (Error, PID 7 zero; Configuration Procedures §3.5.1.2). A master
+reset executes erase codes 2 to 8 (KNX 3/5/2 Table 4) and answers error code 3
+for any channel number other than 0, since the sim models no channels.
+
 A table only ever arrives this way. An `A_PropertyValue_Write` to `PID_TABLE`
 (PID 23) is **refused** with a zero-count `A_PropertyValue_Response`, exactly as
 a Jung F50 52911ST refused it on the physical campaign (issue #89). ETS never
