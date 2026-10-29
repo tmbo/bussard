@@ -104,15 +104,19 @@ impl Bus {
         // it the download ends in "Verbindung zu 1.1.1 fehlgeschlagen" right
         // after the device-descriptor read although the response arrived
         // (ETS-against-sim capture, 2026-10-27).
+        // Only an application answer gets one: a T_ACK, T_NAK or T_Disconnect
+        // the device sends instead is its whole reaction.
         let numbered = cemi.tpdu.first().is_some_and(|b| b & 0xC0 == 0x40);
-        let bare_ack = |r: &CemiLData| r.tpdu.len() == 1 && r.tpdu[0] & 0xC3 == 0xC2;
-        if numbered && !responses.is_empty() && !bare_ack(&responses[0]) {
+        let answer = |r: &CemiLData| r.tpdu.first().is_some_and(|b| b & 0xC0 == 0x40);
+        if numbered && responses.first().is_some_and(answer) {
             let seq = (cemi.tpdu[0] >> 2) & 0x0F;
             responses.insert(
                 0,
                 CemiLData {
                     message_code: crate::wire::cemi::MessageCode::LDataInd,
-                    ctrl1: 0xbc,
+                    // System priority, as every transport control frame
+                    // (03_03_04 §5.3 A2).
+                    ctrl1: 0xb0,
                     ctrl2: 0x60,
                     source: dest,
                     dest: cemi.source.raw(),
@@ -329,6 +333,24 @@ impl Bus {
             }
         }
         self.stimulus = schedule;
+        out
+    }
+
+    /// Runs every device's transport timers at `now` (03_03_04 §5.4.3: the
+    /// 3 s response repetition, the 6 s connection timeout) and returns the
+    /// frames they send toward the tool. Emits each on the event stream.
+    pub fn tick_transport(&mut self, now: std::time::Instant) -> Vec<CemiLData> {
+        let mut out = Vec::new();
+        for dev in self.devices.values_mut() {
+            out.extend(dev.tick_l4(now));
+        }
+        for r in &out {
+            self.events.emit(Event::Telegram {
+                direction: Direction::ToTool,
+                cemi: r.encode(),
+                summary: summarize(r),
+            });
+        }
         out
     }
 
@@ -690,6 +712,37 @@ mod tests {
         )?);
         let responses = bus.deliver_from_tool(&individual_address_read());
         assert!(responses.is_empty(), "no responders when none programming");
+        Ok(())
+    }
+
+    #[test]
+    fn test_bus_sends_t_nak_alone_and_ticks_the_transport_timers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // 03_03_04 §5.4.3: an out-of-window NDT draws only the T_NAK (no
+        // T_ACK in front of it); the 6 s connection timeout ends in a
+        // T_Disconnect from the bus tick.
+        let sink = Arc::new(RecordingSink::new());
+        let target = IndividualAddress::new(1, 1, 2);
+        let mut bus = Bus::new(sink.clone());
+        bus.add_device(prog_device(target, false, sink)?);
+        let frame = |tpdu: Vec<u8>| CemiLData {
+            message_code: MessageCode::LDataReq,
+            ctrl1: 0xb0,
+            ctrl2: 0x60,
+            source: IndividualAddress::new(0, 0, 255),
+            dest: target.raw(),
+            tpdu,
+        };
+        bus.deliver_from_tool(&frame(vec![0x80]));
+        // A_DeviceDescriptor_Read at seq 4, expected 0.
+        let resp = bus.deliver_from_tool(&frame(vec![0x40 | (4 << 2) | 0x03, 0x00]));
+        assert_eq!(resp.len(), 1, "{resp:?}");
+        assert_eq!(resp[0].tpdu, vec![crate::wire::apdu::Tpci::nak_byte(4)]);
+        let later = std::time::Instant::now() + crate::device::CONNECTION_TIMEOUT;
+        let out = bus.tick_transport(later);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].tpdu, vec![0x81]);
+        assert_eq!(out[0].dest, IndividualAddress::new(0, 0, 255).raw());
         Ok(())
     }
 

@@ -275,6 +275,11 @@ pub struct DeviceConfig {
     /// `KNX_SIM_L4_BUDGET` environment variable overrides this for every device.
     #[serde(default)]
     pub l4_exchange_budget: Option<u32>,
+    /// Drop an out-of-window numbered telegram silently instead of answering
+    /// it with `T_NAK` (default `false`, the Style 3 behaviour of 03_03_04
+    /// §5.4.3). Set it to reproduce a tool that stalls after a desync.
+    #[serde(default)]
+    pub l4_strict_drop: bool,
     /// Whether the device starts in KNX programming mode (default `false`). A
     /// device in programming mode answers the broadcast `A_IndividualAddress_Read`
     /// — the discovery step `bussard assign` and `bussard viz --watch-prog` use.
@@ -616,7 +621,8 @@ impl SimConfig {
                 device: dc.address.clone(),
                 reason,
             })?
-            .with_l4_exchange_budget(effective_l4_budget(dc.l4_exchange_budget));
+            .with_l4_exchange_budget(effective_l4_budget(dc.l4_exchange_budget))
+            .with_strict_l4_drop(dc.l4_strict_drop);
             let device = match &dc.security {
                 Some(sec) if sec.status == SecurityStatus::Factory => {
                     device.with_factory_security()

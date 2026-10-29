@@ -69,6 +69,14 @@ impl Tpci {
     pub fn ack_byte(seq: u8) -> u8 {
         0xC0 | ((seq & 0x0F) << 2) | 0x02
     }
+
+    /// The `T_NAK` byte for `seq`.
+    pub fn nak_byte(seq: u8) -> u8 {
+        0xC0 | ((seq & 0x0F) << 2) | 0x03
+    }
+
+    /// The `T_Disconnect` byte.
+    pub const DISCONNECT_BYTE: u8 = 0x81;
 }
 
 /// Application-layer service identifiers relevant to device management.

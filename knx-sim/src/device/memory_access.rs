@@ -397,8 +397,15 @@ mod tests {
         dev.handle_cemi(&disconnect)?;
         connect(&mut dev)?;
         assert_eq!(read_device_control(&mut dev)?, vec![0x00]);
-        // A new connection without a disconnect (the old one dropped) too.
+        // A repeated T_Connect on the open connection changes nothing
+        // (03_03_04 §5.4.3 E00, A0)...
         write_device_control(&mut dev, 0x04)?;
+        connect(&mut dev)?;
+        assert_eq!(read_device_control(&mut dev)?, vec![0x04]);
+        // ...but a connection the device closed on its 6 s timeout (E16) is
+        // gone, and the next one starts without verify mode.
+        let later = std::time::Instant::now() + crate::device::CONNECTION_TIMEOUT;
+        assert_eq!(dev.tick_l4(later).len(), 1, "T_Disconnect to the tool");
         connect(&mut dev)?;
         assert_eq!(read_device_control(&mut dev)?, vec![0x00]);
         Ok(())

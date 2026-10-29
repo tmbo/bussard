@@ -423,6 +423,7 @@ impl KnxnetIpServer {
             self.poll_data()?;
             self.poll_tcp();
             self.pump_stimulus();
+            self.pump_transport();
             self.sync_interface_secure();
         }
     }
@@ -481,6 +482,23 @@ impl KnxnetIpServer {
         for cemi in telegrams {
             if self.send_tunnelling(&cemi, peer).is_err() {
                 // The client is gone; stop forwarding until it reconnects.
+                self.peer = None;
+                break;
+            }
+        }
+    }
+
+    /// Runs the devices' transport timers (the 3 s response repetition and the
+    /// 6 s connection timeout of 03_03_04 §5.4.3) and forwards what they send
+    /// to the connected tunnel client. Without a client the timers still run,
+    /// so a connection nobody uses closes; the frames have nowhere to go.
+    pub fn pump_transport(&mut self) {
+        let telegrams = self.bus.tick_transport(std::time::Instant::now());
+        let Some(peer) = self.peer else {
+            return;
+        };
+        for cemi in telegrams {
+            if self.send_tunnelling(&cemi, peer).is_err() {
                 self.peer = None;
                 break;
             }
@@ -1156,7 +1174,13 @@ impl KnxnetIpServer {
         };
         let mut request = tpdu.to_vec();
         if connected {
-            if !self.mgmt_transport.contains_key(&peer) {
+            // A Style 3 device closes a connection idle for 6 s (03_03_04
+            // §5.4.3 E16): open a fresh one when it did.
+            let open = self
+                .bus
+                .device(IndividualAddress(device))
+                .is_some_and(|d| d.l4_connected_to(IndividualAddress(0)));
+            if !open || !self.mgmt_transport.contains_key(&peer) {
                 self.bus.deliver_from_tool(&frame(vec![0x80]));
                 self.mgmt_transport.insert(peer, 0);
             }

@@ -48,6 +48,7 @@ pub use profile::{
 pub use security_object::{SecLoadState, SecurityLimits, SecurityObject};
 pub use sys7_group_comm::Sys7GroupComm;
 pub use sys7_lsm::{Sys7Event, Sys7EventError};
+pub use transport::{ACKNOWLEDGE_TIMEOUT, CONNECTION_TIMEOUT, MAX_REPETITIONS};
 
 /// The KNX free-access authorize key: an unkeyed device grants full access to
 /// any tool presenting this key (spec section 6).
@@ -224,10 +225,10 @@ pub struct Device {
     /// Sequence number for the next connected response.
     tx_seq: u8,
     /// The **expected** receive sequence number for the next numbered data
-    /// telegram (NDT) from the tool. The KNX style-1 rationalised transport layer
-    /// numbers NDTs mod 16; a strict device accepts only the expected sequence,
-    /// re-acknowledges (without reprocessing) a retransmit of the one it just
-    /// ACKed, and ignores anything else. See [`Device::handle_cemi`].
+    /// telegram (NDT) from the tool. The transport layer numbers NDTs mod 16; a
+    /// Style 3 device accepts only the expected sequence, re-acknowledges
+    /// (without reprocessing) a retransmit of the one it just ACKed, and
+    /// answers anything else with `T_NAK`. See the `transport` module.
     rx_seq: u8,
     /// The device's per-connection numbered-exchange budget: after this many
     /// accepted NDTs on **one** L4 connection, the device drops the connection
@@ -240,6 +241,9 @@ pub struct Device {
     /// Numbered exchanges accepted on the **current** L4 connection, reset to 0
     /// on every `T_Connect`. Metered against [`Device::l4_exchange_budget`].
     l4_exchanges: u32,
+    /// The Style 3 connection state: partner, timers, the response waiting
+    /// for its `T_ACK` (see the `transport` module).
+    l4: transport::L4Session,
     /// The runtime group-communication routing, reconstructed from the device's
     /// own flashed tables once every loadable object reaches `Loaded`. `None`
     /// while the device is not fully loaded (an unloaded device is silent on the
@@ -798,57 +802,42 @@ impl Device {
     /// responses. Control frames (T_Connect/T_Disconnect/T_ACK) are handled
     /// here; data telegrams are dispatched to [`Device::handle_apdu`].
     pub fn handle_cemi(&mut self, cemi: &CemiLData) -> Result<DeviceReaction, DeviceError> {
+        self.handle_cemi_at(cemi, std::time::Instant::now())
+    }
+
+    /// [`handle_cemi`](Self::handle_cemi) at the instant `now`, which the
+    /// transport timers measure against (tests pass a later instant to run
+    /// them).
+    pub fn handle_cemi_at(
+        &mut self,
+        cemi: &CemiLData,
+        now: std::time::Instant,
+    ) -> Result<DeviceReaction, DeviceError> {
         if cemi.tpdu.is_empty() {
             return Ok(DeviceReaction::default());
         }
         let tpci = Tpci::from_byte(cemi.tpdu[0]);
-        match tpci {
-            Tpci::Connect => {
-                self.connected = true;
-                self.tx_seq = 0;
-                // A fresh transport connection resets both sequence counters to 0
-                // (KNX style-1 rationalised: T_Connect restarts the numbering).
-                self.rx_seq = 0;
-                // A fresh connection also resets the per-connection exchange
-                // budget: each L4 connection gets its own allowance, so a tool
-                // that periodically reconnects (as ETS does) never exhausts it.
-                self.l4_exchanges = 0;
-                // Verify mode (PID_DEVICE_CONTROL bit 2) belongs to the
-                // transport connection: the device clears it when the
-                // connection closes, and a client sets it again on every new
-                // one (Resources 03_05_01 §4.2.14). A System 7 device follows
-                // the standard here; the System B KNX Virtual model keeps the
-                // `04` it reports permanently.
-                if self.sys7.is_some() {
-                    self.clear_verify_mode();
-                }
-                // Authorization is NOT reset on connect. In the ETS capture the
-                // tool authorizes once (Phase A) and, after the pre-flash basic
-                // restart + reconnect (Phase C), issues PID5/memory writes with
-                // no re-authorize. A real device with the free-access key granted
-                // stays at level 0 until a key is set, so the grant persists
-                // across a basic restart within the session.
-                Ok(DeviceReaction::default())
+        // The connection timeout runs before the frame is handled, in case
+        // the bus did not tick in time (03_03_04 §5.4.3 E16).
+        let expired = self.expire_l4(now);
+        let mut reaction = match tpci {
+            Tpci::Connect | Tpci::Disconnect | Tpci::Ack(_) | Tpci::Nak(_) => {
+                self.handle_transport_control(cemi, tpci, now)
             }
-            Tpci::Disconnect => {
-                self.connected = false;
-                if self.sys7.is_some() {
-                    self.clear_verify_mode();
-                }
-                Ok(DeviceReaction::default())
-            }
-            Tpci::Ack(_) => Ok(DeviceReaction::default()),
-            Tpci::Nak(_) => Ok(DeviceReaction::default()),
             Tpci::DataUnnumbered => {
                 // Unnumbered (broadcast/individual) data carries no L4 sequence.
                 let apdu = Apdu::parse(&cemi.tpdu).ok_or(DeviceError::Malformed {
                     service: "APDU".into(),
                     detail: "too short".into(),
                 })?;
-                self.handle_apdu(cemi, &apdu)
+                self.handle_apdu(cemi, &apdu)?
             }
-            Tpci::DataConnected(seq) => self.handle_numbered_data(cemi, seq),
+            Tpci::DataConnected(seq) => self.handle_numbered_data(cemi, seq, now)?,
+        };
+        if !expired.is_empty() {
+            reaction.responses.splice(0..0, expired);
         }
+        Ok(reaction)
     }
 }
 
