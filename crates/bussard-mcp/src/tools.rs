@@ -686,6 +686,16 @@ pub fn describe_object_json(index: u8, object_type: u16, properties: &[PropertyD
 pub(crate) fn typed_value_json(v: &TypedValue) -> Value {
     match v {
         TypedValue::Bool { value, label } => json!({ "bool": value, "label": label }),
+        TypedValue::Control {
+            control,
+            value,
+            label,
+        } => json!({
+            "control": control,
+            "value": value,
+            "label": label,
+            "display": v.to_string(),
+        }),
         TypedValue::Percent(p) => json!({ "percent": p }),
         TypedValue::Unsigned { value, unit } => json!({ "unsigned": value, "unit": unit }),
         TypedValue::Signed { value, unit } => json!({ "signed": value, "unit": unit }),

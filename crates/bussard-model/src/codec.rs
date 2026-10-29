@@ -77,6 +77,16 @@ pub enum TypedValue {
         /// Human label for the value under this subtype.
         label: &'static str,
     },
+    /// A 1-bit controlled value (DPT 2.xxx, 03_07_02 §3.2): the control bit
+    /// forces the value, without it the sender releases control.
+    Control {
+        /// `true` = control (the value is forced), `false` = no control.
+        control: bool,
+        /// The value bit, read like the matching 1.xxx sub-type.
+        value: bool,
+        /// Label of `value` under the matching 1.xxx sub-type.
+        label: &'static str,
+    },
     /// A percentage (DPT 5.001), 0–100 %.
     Percent(f32),
     /// An unsigned integer with an optional unit.
@@ -349,6 +359,13 @@ impl fmt::Display for TypedValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TypedValue::Bool { label, .. } => write!(f, "{label}"),
+            TypedValue::Control { control, label, .. } => {
+                if *control {
+                    write!(f, "Control: {label}")
+                } else {
+                    write!(f, "No control")
+                }
+            }
             TypedValue::Percent(p) => write!(f, "{p:.1} %"),
             TypedValue::Unsigned { value, unit } => match unit {
                 Some(u) => write!(f, "{value} {u}"),
@@ -792,6 +809,18 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
                 label: if value { t } else { f },
             })
         }
+        2 => {
+            // B2 (03_07_02 §3.2): bit 1 the control flag, bit 0 the value of
+            // the 1.xxx sub-type with the same number (2.001 follows 1.001).
+            let b = payload.first()?;
+            let value = (b & 0x01) != 0;
+            let (f, t) = bool_labels(dpt.sub);
+            Some(TypedValue::Control {
+                control: (b & 0x02) != 0,
+                value,
+                label: if value { t } else { f },
+            })
+        }
         3 => {
             // 4-bit control (03_07_02 §3.3): bit 3 direction, bits 0..2 the
             // step code.
@@ -1067,6 +1096,9 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
 /// - **1.x** — `on`/`off`, `true`/`false`, `1`/`0`, and subtype words:
 ///   `up`/`down` (1.008), `open`/`closed` (1.009), `start`/`stop` (1.010),
 ///   `enable`/`disable` (1.003), `alarm`/`no-alarm` (1.005).
+/// - **2.x** — `control <value>` (or `force <value>`) with the matching 1.x
+///   word (`control on`, 2.008 `control down`), and `release` or
+///   `no control` to drop the control bit.
 /// - **3.007 / 3.008** — a direction and an optional step: `increase 25%`,
 ///   `up`, `dim up`, `down 50%`, `decrease 3` (the step code), `break`,
 ///   `stop`. The step is the size of one step in percent (100, 50, 25,
@@ -1149,6 +1181,21 @@ pub fn parse_value(dpt: &Dpt, input: &str) -> Result<TypedValue, ParseValueError
             let value = parse_bool(raw, dpt.sub)
                 .ok_or_else(|| invalid(&bool_accepted(false_label, true_label)))?;
             Ok(TypedValue::Bool {
+                value,
+                label: if value { true_label } else { false_label },
+            })
+        }
+        2 => {
+            let (false_label, true_label) = bool_labels(dpt.sub);
+            let (control, value) = parse_control(raw, dpt.sub).ok_or_else(|| {
+                invalid(&format!(
+                    "`control <value>` with {} or {} (or on/off), or `release`/`no control`",
+                    true_label.to_lowercase(),
+                    false_label.to_lowercase()
+                ))
+            })?;
+            Ok(TypedValue::Control {
+                control,
                 value,
                 label: if value { true_label } else { false_label },
             })
@@ -1362,6 +1409,25 @@ fn parse_bool(input: &str, sub: Option<u16>) -> Option<bool> {
     None
 }
 
+/// Parses a 2.x controlled value into `(control, value)`.
+///
+/// `control on`, `force down`, `forced off` set the control bit with the
+/// 1.x value word; `release`, `no control`, `uncontrolled` clear both bits.
+fn parse_control(input: &str, sub: Option<u16>) -> Option<(bool, bool)> {
+    let s = input.trim().to_lowercase();
+    let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if matches!(
+        s.as_str(),
+        "release" | "released" | "no control" | "no-control" | "uncontrolled"
+    ) {
+        return Some((false, false));
+    }
+    let rest = ["control:", "control", "forced", "force"]
+        .iter()
+        .find_map(|p| s.strip_prefix(p))?;
+    Some((true, parse_bool(rest, sub)?))
+}
+
 /// A human description of the accepted words for a 1.x subtype.
 fn bool_accepted(false_label: &str, true_label: &str) -> String {
     format!("on/off, true/false, 1/0, or {true_label}/{false_label}")
@@ -1532,6 +1598,12 @@ pub fn encode(dpt: &Dpt, value: &TypedValue) -> Result<Vec<u8>, EncodeError> {
     match dpt.main {
         1 => match value {
             TypedValue::Bool { value, .. } => Ok(vec![*value as u8]),
+            _ => Err(mismatch()),
+        },
+        2 => match value {
+            TypedValue::Control { control, value, .. } => {
+                Ok(vec![(u8::from(*control) << 1) | u8::from(*value)])
+            }
             _ => Err(mismatch()),
         },
         3 => match value {
@@ -1793,6 +1865,50 @@ mod tests {
                 step: 1
             }
         );
+    }
+
+    #[test]
+    fn test_decode_dpt2_control() {
+        assert_eq!(
+            decode(&dpt("2.001"), &[0b11]),
+            TypedValue::Control {
+                control: true,
+                value: true,
+                label: "On"
+            }
+        );
+        assert_eq!(decode(&dpt("2.001"), &[0b11]).to_string(), "Control: On");
+        assert_eq!(decode(&dpt("2.001"), &[0b00]).to_string(), "No control");
+        assert_eq!(decode(&dpt("2.008"), &[0b11]).to_string(), "Control: Down");
+        assert_eq!(decode(&dpt("2.008"), &[0b10]).to_string(), "Control: Up");
+    }
+
+    #[test]
+    fn test_parse_value_dpt2_control_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
+        let d1 = dpt("2.001");
+        for (input, byte) in [
+            ("control on", 0b11),
+            ("control off", 0b10),
+            ("force on", 0b11),
+            ("Control: On", 0b11),
+            ("release", 0b00),
+            ("no control", 0b00),
+        ] {
+            let v = parse_value(&d1, input)?;
+            assert_eq!(encode(&d1, &v)?, vec![byte], "{input}");
+        }
+        for byte in 0u8..=3 {
+            let v = decode(&d1, &[byte]);
+            // Without control the value bit carries nothing; it encodes as 0.
+            let want = if byte & 0b10 == 0 { 0 } else { byte };
+            assert_eq!(encode(&d1, &parse_value(&d1, &v.to_string())?)?, vec![want]);
+        }
+        let d8 = dpt("2.008");
+        assert_eq!(encode(&d8, &parse_value(&d8, "control down")?)?, vec![0b11]);
+        assert_eq!(encode(&d8, &parse_value(&d8, "control up")?)?, vec![0b10]);
+        assert!(parse_value(&d8, "control sideways").is_err());
+        assert!(parse_value(&d1, "on").is_err());
+        Ok(())
     }
 
     #[test]

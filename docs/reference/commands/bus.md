@@ -98,6 +98,9 @@ $ bussard write 3/0/4 on
 ```
 
 The value is human-typed: `on`/`off`, `up`/`down`, a number, or a percentage like `75%`.
+A forced-operation value (`2.001`-`2.012`, KNX 03_07_02 §3.2) is `control` plus the word of the
+matching `1.xxx` sub-type, `control on` or `control down` on `2.008`, or `release` to drop the
+control bit; `read` and `monitor` show `Control: On` or `No control`.
 A relative dimming or blind step (`3.007`, `3.008`) is a direction and a step size:
 `increase 25%`, `down 50%`, `up`, `break`. The step code divides the full range into
 2^(code-1) intervals (KNX 03_07_02 §3.3), so the step sizes are 100, 50, 25, 12.5, 6.25,
