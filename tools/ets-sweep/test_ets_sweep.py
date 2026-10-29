@@ -20,8 +20,49 @@ import defaults  # noqa: E402
 import followups  # noqa: E402
 import nightly  # noqa: E402
 import oracle_model  # noqa: E402
+import secure  # noqa: E402
 import series  # noqa: E402
 import summary  # noqa: E402
+
+
+class TestSecure(unittest.TestCase):
+    def test_crc4_itu_check_value(self):
+        # CRC-4/G-704 (ITU): check value 0x7 over "123456789".
+        self.assertEqual(secure.crc4(b"123456789"), 0x7)
+
+    def test_certificate_round_trip_and_groups(self):
+        serial, fdsk = bytes.fromhex("00FA12345678"), bytes(range(16))
+        text = secure.certificate_text(serial, fdsk)
+        self.assertRegex(text, r"^([A-Z2-7]{6}-){5}[A-Z2-7]{6}$")
+        info = secure.parse_certificate(text.lower().replace("-", " "))
+        self.assertEqual((info["serial"], info["fdsk"]), (serial, fdsk))
+        self.assertIn("crc4-itu", info["matches"])
+        # This serial and FDSK have a non-zero CRC, so the unchecked label fails it.
+        self.assertNotEqual(secure.crc4(serial + fdsk), 0)
+        unchecked = secure.parse_certificate(secure.certificate_text(serial, fdsk, "none"))
+        self.assertEqual(unchecked["matches"], ["none"])
+
+    def test_parse_certificate_rejects_other_text(self):
+        with self.assertRaises(ValueError):
+            secure.parse_certificate("ABC-018")
+
+    def test_synthetic_identity_is_stable_and_names_the_manufacturer(self):
+        a = secure.synthetic_identity("M-0083_A-000E-23-2274")
+        self.assertEqual(a, secure.synthetic_identity("M-0083_A-000E-23-2274"))
+        self.assertEqual(a[0][:2], b"\x00\x83")
+        self.assertNotEqual(a, secure.synthetic_identity("M-0083_A-000F-23-2274"))
+        block, props = secure.sim_security("M-0083_A-000E-23-2274")
+        self.assertEqual((block["status"], len(block["tool_key"])), ("factory", 32))
+        self.assertEqual(props, [{"object": 0, "pid": 11, "value": a[0].hex()}])
+
+    def test_decode_verdict(self):
+        text = ("data secure: 12 A_SecureData frame(s) (L_Data.con echoes excluded)\n"
+                "  MAC ok (tool key)                                   10  (S-A_Data x10)\n"
+                "  MAC ok (FDSK key)                                    2  (S-A_Data x2)\n")
+        self.assertEqual(secure.decode_verdict(text), {"verdict": "decoded", "frames": 12, "verified": 12})
+        text += "  MAC FAIL (keys tried, none verified)                 3  (S-A_Data x3)\n"
+        self.assertEqual(secure.decode_verdict(text.replace("12 A_Secure", "15 A_Secure"))["verdict"], "partial")
+        self.assertEqual(secure.decode_verdict("no KNX operations")["verdict"], "plain")
 
 
 class TestNightly(unittest.TestCase):

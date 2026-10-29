@@ -629,11 +629,14 @@ def wait_busy(timeout: float = 300) -> float:
     raise RuntimeError(f"ETS still busy after {int(timeout)} s")
 
 
-def dismiss_password_dialog() -> bool:
+def dismiss_password_dialog(password: str | None = None) -> bool:
     """'Projektpasswort setzen': ETS asks for a project password the first
     time a KNX Secure capable product joins a project without one. The plain
-    sweep answers Abbrechen (no project security); the secure pass (part 4)
-    sets one instead. Without this the next keystrokes land in the field."""
+    sweep answers Abbrechen (no project security); the secure pass (part 4,
+    #423) passes `password` and sets it instead (`set_project_password`).
+    Without this the next keystrokes land in the field."""
+    if password:
+        return set_project_password(password)
     if not find_text("Projektpasswort setzen", (1300, 750, 2800, 900), min_ratio=0.8):
         return False
     hit = find_text("Abbrechen", (2200, 1600, 2800, 1760))
@@ -643,6 +646,93 @@ def dismiss_password_dialog() -> bool:
         keys("{ESC}")
     time.sleep(1.5)
     return True
+
+
+# ---------------------------------------------------------------- secure pass (#423)
+# UNVERIFIED against ETS: written offline on 2026-10-30 while a sweep held
+# the VM. Every step anchors on dialog text read by OCR and fails loudly with
+# what it saw; the sweep's repair loop keeps a screenshot. Keystrokes only
+# type text and press Tab, Enter or Escape (never Delete or Backspace).
+
+PASSWORD_DIALOG = (1200, 700, 3000, 1800)
+
+
+def set_project_password(password: str) -> bool:
+    """Answers ETS's project password dialog with `password`: 'Projektpasswort
+    setzen' (two fields, the second a confirmation) or a prompt for the
+    password of a protected project (one field). The first field holds the
+    focus when the dialog opens. Returns whether a dialog was answered."""
+    if re.search(r"[+^%~(){}\[\]]", password):
+        # pywinauto's send_keys reads these as modifiers and groups.
+        raise RuntimeError("the project password must not contain + ^ % ~ ( ) { } [ ]")
+    lines = ocr(PASSWORD_DIALOG)
+    text = " ".join(l["text"] for l in lines)
+    if "Projektpasswort" not in text and not ("Passwort" in text and "Projekt" in text):
+        return False
+    keys(password, pause=0.02)
+    if re.search(r"(bestätig|wiederhol|Bestätig|Wiederhol)", text):
+        keys("{TAB}")
+        keys(password, pause=0.02)
+    keys("{ENTER}")
+    time.sleep(2)
+    after = " ".join(l["text"] for l in ocr(PASSWORD_DIALOG))
+    if "Projektpasswort" in after:
+        keys("{ESC}")
+        raise RuntimeError(f"the project password dialog stayed open: {after[:200]}")
+    return True
+
+
+def enter_certificate(certificate: str) -> bool:
+    """Types the device certificate (the FDSK label, 36 characters in six
+    groups) into ETS's certificate prompt, when one is open: ETS asks for it
+    before the first secure download of a device it holds none for."""
+    text = " ".join(l["text"] for l in ocr(PASSWORD_DIALOG))
+    if "Zertifikat" not in text:
+        return False
+    keys(certificate, pause=0.02)
+    keys("{ENTER}")
+    time.sleep(2)
+    after = " ".join(l["text"] for l in ocr(PASSWORD_DIALOG))
+    if "Zertifikat" in after and re.search(r"(ungültig|Ungültig|falsch|Fehler)", after):
+        keys("{ESC}")
+        raise RuntimeError(f"ETS refused the device certificate: {after[:200]}")
+    return True
+
+
+@flow("export_keyring")
+def flow_export_keyring(req: dict) -> dict:
+    """Exports the project's keyring (`.knxkeys`) to `path` in the VM with
+    `password`: the project tab's context menu, the entry whose text names the
+    keyring export, ETS's save dialog (a Win32 dialog, UI Automation), then the
+    export password twice. Refuses unless the active tab is the project."""
+    require_project(req["project"])
+    hit = find_text(req["project"], LAYOUT["tab_strip"])
+    if not hit:
+        raise RuntimeError(f"no tab for project {req['project']!r}")
+    click(hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2, button="right")
+    time.sleep(1.5)
+    items = menu_items()
+    entry = next((i for i in items if re.search(r"(Schlüsselbund|Keyring|knxkeys)", i, re.I)), None)
+    if entry is None:
+        keys("{ESC}")
+        raise RuntimeError(f"no keyring export in the project tab's menu: {items[:16]}")
+    menu_click(entry)
+    time.sleep(2)
+    # The save dialog: the file name field, then Enter.
+    dialog = wait_popup(10)
+    edits = [e for e in dialog.descendants(control_type="Edit") if e.is_visible()]
+    if not edits:
+        keys("{ESC}")
+        raise RuntimeError(f"the save dialog has no file name field: {popup_tree(4, 3000)[:400]}")
+    edits[0].set_edit_text(req["path"])
+    keys("{ENTER}")
+    time.sleep(2)
+    answered = set_project_password(req["password"])
+    deadline = time.time() + 30
+    while time.time() < deadline and not os.path.exists(req["path"]):
+        time.sleep(1)
+    return {"path": req["path"], "exported": os.path.exists(req["path"]), "password_dialog": answered,
+            "menu_entry": entry}
 
 
 def _digits(t: str) -> str:
@@ -732,7 +822,7 @@ def flow_catalog_add(req: dict) -> dict:
     order number matches and whose application version is `version` (as ETS
     shows it, e.g. "2.3"), and add it to line 1.1. Returns the device list."""
     require_project(req["project"])
-    dismiss_password_dialog()
+    dismiss_password_dialog(req.get("project_password"))
     wait_busy()
     before = {d["ia"] for d in flow_devices(req)["devices"]}
     dy = catalog_dy()
@@ -844,7 +934,7 @@ def flow_catalog_add(req: dict) -> dict:
         compat = decline_compat_mode()
         if compat:
             raise CompatModeRequired(f"ETS asked for compatibility mode on adding: {compat[:200]}")
-        if dismiss_password_dialog():
+        if dismiss_password_dialog(req.get("project_password")):
             password_dialog = True
             break
         time.sleep(1)
@@ -858,7 +948,7 @@ def flow_catalog_add(req: dict) -> dict:
         new = [d for d in after if d["ia"] not in before]
         if new or time.time() - t0 > float(req.get("add_wait", 60)):
             break
-        if dismiss_password_dialog():
+        if dismiss_password_dialog(req.get("project_password")):
             password_dialog = True
         # ETS asks for compatibility mode for some old products only once the
         # add has run for a while (ABB A-A033, 2026-10-28); the next job then
@@ -1191,18 +1281,22 @@ def flow_download(req: dict) -> dict:
     t0 = time.time()
     kept = False
     password = False
+    certificate = False
     while time.time() - t0 < float(req.get("dialog_wait", 20)):
         if find_text("Schnittstellen-Prüfung", LAYOUT["medium_dialog"]):
             click(*LAYOUT["medium_keep"])
             kept = True
             break
-        if dismiss_password_dialog():
+        if dismiss_password_dialog(req.get("project_password")):
             password = True
+        if req.get("certificate") and enter_certificate(req["certificate"]):
+            certificate = True
         compat = decline_compat_mode()
         if compat:
             raise CompatModeRequired(f"ETS asked for compatibility mode on download: {compat[:200]}")
         time.sleep(1)
-    return {"ia": req["ia"], "mode": req.get("mode", "application"), "medium_dialog_kept": kept, "password_dialog": password}
+    return {"ia": req["ia"], "mode": req.get("mode", "application"), "medium_dialog_kept": kept, "password_dialog": password,
+            "certificate_dialog": certificate}
 
 
 @flow("history")
@@ -1664,7 +1758,7 @@ class Handler(BaseHTTPRequestHandler):
                 if compat:
                     raise CompatModeRequired(f"ETS asked for compatibility mode before {name}: {compat[:200]}")
                 watchdog = {"language_dialog": finish_language_dialog(),
-                            "password_dialog": dismiss_password_dialog(), "ets_error": dismiss_ets_error(),
+                            "password_dialog": dismiss_password_dialog(req.get("project_password")), "ets_error": dismiss_ets_error(),
                             "ets_started": started}
                 out = fn(req)
                 out.setdefault("ok", True)

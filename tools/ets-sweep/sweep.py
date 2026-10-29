@@ -408,7 +408,7 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
             connection: str = "knx-sim", sim_port: int = 3672, timeout: int = 900, quiet: int = 45,
             first_traffic: int = 120, mask: str = "", properties: list[dict] | None = None,
             fallback_search: str = "", before_download=None, after_download=None,
-            secure: dict | None = None, repair: bool = True) -> dict:
+            secure: dict | None = None, repair: bool = True, flow_extra: dict | None = None) -> dict:
     """One ETS download of `app` into a sim inside the VM; returns the result
     and leaves capture, sim log, driver.json and ops.txt in the run directory.
 
@@ -416,7 +416,10 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
     connection selected (the links variant links objects there, #478);
     `after_download(flow, out)` once the download ended (the secure variant
     exports the keyring, #423). Each returns a dict kept in the result under
-    `before` / `after`. `secure` is the sim device's `security:` config."""
+    `before` / `after`. `secure` is the sim device's `security:` config.
+    `flow_extra` goes into every driver call's body (the secure pass sends the
+    project password and the device certificate, #423). A failed run keeps
+    the repair artefacts (`save_repair`) unless `repair` is off."""
     out = CAPTURES / app / variant
     out.mkdir(parents=True, exist_ok=True)
     version = app_version(app) if version is None else version
@@ -434,7 +437,7 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
     try:
 
         def flow(flow_name: str, /, **body) -> dict:
-            r = vm.driver(c, "POST", f"/ets/{flow_name}", {"project": project, **body}, timeout=600)
+            r = vm.driver(c, "POST", f"/ets/{flow_name}", {"project": project, **(flow_extra or {}), **body}, timeout=600)
             steps[flow_name if flow_name not in steps else f"{flow_name}#{len(steps)}"] = r
             if not r.get("ok", True):
                 raise RuntimeError(f"{flow_name}: {r.get('error')}")
@@ -487,7 +490,7 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
         # again.
         settle = time.time()
         while True:
-            result["history"] = vm.driver(c, "POST", "/ets/history", {}, timeout=120).get("lines")
+            result["history"] = vm.driver(c, "POST", "/ets/history", dict(flow_extra or {}), timeout=120).get("lines")
             result["ets"] = ets_status(result["history"])
             if result["ets"] != "unknown" or time.time() - settle > 120:
                 break

@@ -345,3 +345,31 @@ then `uv run tools/ets-sweep/oracle.py --filter <application id> --redo`.
 ssh), the sim on `127.0.0.1:3672` in the VM, ETS's connection `knx-sim` and
 project `ets-sweep`; on the Mac the `run=apply` rows bind a free loopback UDP
 port per row.
+
+## Part 4: KNX Data Secure (#423), not yet run
+
+    export ETS_SWEEP_PROJECT_PASSWORD=<8-64 letters and digits>
+    uv run tools/ets-sweep/secure.py jobs                    # the secure-capable captured applications
+    uv run tools/ets-sweep/secure.py run --filter <app> --limit 1
+
+`secure.py` runs every application the defaults sweep captured whose program
+declares `IsSecureEnabled="true"` once more, in a project of its own
+(`ets-sweep-secure`: set up once by hand as a copy of `ets-sweep` with the
+`knx-sim` connection bound to it, because a project password would also lock
+the plain sweep's project). The sim device starts in factory state with a
+synthetic FDSK as its tool key and a synthetic serial number (PID 11), both
+derived from the application id. The driver sets the project password when
+ETS asks (`set_project_password`), types the device certificate when ETS asks
+for one at the download (`enter_certificate`), and after the download exports
+the keyring (`export_keyring`: the project tab's context menu, the save
+dialog, the export password). The keyring lands next to the capture as
+`project.knxkeys` (gitignored with the capture) and `knxtrace devices
+--keyring` decides `decoded` / `partial` / `undecoded`; outcomes in
+`results/secure.json`.
+
+The driver's secure flows were written without ETS at hand (2026-10-30):
+they anchor on dialog text and fail with what they saw, and the repair loop
+keeps a screenshot. The certificate's 4-bit check is not confirmed either:
+`secure.py cert --check "<label>"` on a real device's FDSK label prints its
+serial and which check (`crc4-itu`, `crc4-plain`, `none`) it carries, never
+the key; `run --check-variant` picks the one ETS takes.
