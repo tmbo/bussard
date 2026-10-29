@@ -260,6 +260,8 @@ pub fn run(
             &inputs,
             model.as_ref(),
             dry.dump_images.as_deref(),
+            dry.resident.as_deref(),
+            full,
             no_factory_reset,
             parameters_only,
             &secure_material,
@@ -683,6 +685,7 @@ pub fn run(
     let written_senders = match inputs.finish(
         &mut plan,
         Some(&freshness),
+        resident.as_ref(),
         no_factory_reset,
         model.as_ref(),
         target,
@@ -1007,6 +1010,8 @@ fn dry_run(
     inputs: &FlashInputs<'_>,
     model: Option<&bussard_model::Model>,
     dump_images: Option<&Path>,
+    resident: Option<&Path>,
+    full: bool,
     no_factory_reset: bool,
     parameters_only: bool,
     secure_material: &crate::secure_key::SecureMaterial,
@@ -1033,9 +1038,27 @@ fn dry_run(
     };
     // Offline there is no device to judge freshness on, so only the planner's
     // own factory reset (a sparse, filled-segment download) shows, unless the
-    // operator waived it.
+    // operator waived it. A recorded device state (`--resident`, issue #490)
+    // stands in for the pre-flight probe: the verdict shapes the plan as it
+    // does live.
+    // The recorded objects are System B interface objects: a System 7 or
+    // property-only plan keeps the offline shape.
+    let recorded = match resident {
+        Some(path) if !parameters_only && !plan.is_sys7() && !plan.is_property_only() => {
+            Some(crate::flash_resident::Recorded::read(path)?).filter(|r| r.has_states())
+        }
+        _ => None,
+    };
+    let freshness = recorded
+        .as_ref()
+        .map(|r| assess_freshness(&r.state, &plan.identity));
     let mut plan = plan;
-    bussard_service::flash::apply_freshness(&mut plan, None, no_factory_reset);
+    bussard_service::flash::apply_freshness(
+        &mut plan,
+        freshness.as_ref(),
+        recorded.as_ref().map(|r| &r.state),
+        no_factory_reset,
+    );
     if parameters_only {
         return crate::flash_params::dry_run(target, &plan, output.json);
     }
@@ -1044,6 +1067,35 @@ fn dry_run(
     {
         eprintln!("cannot flash: {err}");
         return Ok(ExitCode::FAILURE);
+    }
+    if let (Some(recorded), Some(freshness)) = (&recorded, &freshness) {
+        let verdict = match freshness {
+            Freshness::Fresh => "no loaded application".to_string(),
+            Freshness::SameApplication { resident } => {
+                format!("holds this application ({resident})")
+            }
+            Freshness::Resident { resident, .. } => format!(
+                "holds another application ({})",
+                resident.as_deref().unwrap_or("unidentified")
+            ),
+            Freshness::Mismatch { reason } | Freshness::Unknown { reason } => reason.clone(),
+        };
+        eprintln!(
+            "dry run: the recorded device {verdict}; load procedure {}",
+            if plan.is_par_procedure() {
+                "par"
+            } else {
+                "full"
+            }
+        );
+        if bussard_service::flash::skip_unchanged(full, &plan, freshness) {
+            let skipped = recorded.skip_matching(&mut plan);
+            if !skipped.is_empty() {
+                eprintln!(
+                    "dry run: object(s) {skipped:?} skipped: the recorded MCB matches the image"
+                );
+            }
+        }
     }
     let params = if plan.is_sys7() {
         ParamPlan {
@@ -1310,6 +1362,9 @@ pub struct DryRun {
     /// `--dump-images <dir>`: write `plan.json` and one `.bin` per streamed
     /// image (plus the table images) into this directory.
     pub dump_images: Option<std::path::PathBuf>,
+    /// `--resident <file>`: plan against this recorded device state
+    /// ([`crate::flash_resident`]) instead of no device.
+    pub resident: Option<std::path::PathBuf>,
 }
 
 /// The note the parameter plan carries when `--force` skipped the read-back.

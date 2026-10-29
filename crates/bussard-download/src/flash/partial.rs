@@ -140,6 +140,8 @@ impl FlashPlan {
             baseline_address,
             security_capacity: self.security_capacity,
             user_memory_above_64k: self.user_memory_above_64k,
+            par_allocations: BTreeMap::new(),
+            par_procedure: false,
         })
     }
 

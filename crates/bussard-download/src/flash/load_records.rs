@@ -118,8 +118,8 @@ fn sys7_events(step: &FlashStep) -> Vec<(u32, &'static str, [u8; sys7::LOAD_EVEN
             address,
             size,
             mem_type,
+            access,
             seg_flags,
-            checksum_ctrl,
             seg_type,
             ..
         } => match (u16::try_from(*address), u16::try_from(*size)) {
@@ -127,12 +127,7 @@ fn sys7_events(step: &FlashStep) -> Vec<(u32, &'static str, [u8; sys7::LOAD_EVEN
                 *lsm,
                 "abs-segment",
                 sys7::encode_alloc_segment(
-                    *seg_type,
-                    address,
-                    size,
-                    *seg_flags,
-                    *mem_type,
-                    *checksum_ctrl,
+                    *seg_type, address, size, *access, *mem_type, *seg_flags,
                 ),
             )],
             _ => Vec::new(),
@@ -308,8 +303,8 @@ mod tests {
                 address: 0x07F6,
                 size: 1,
                 mem_type: 2,
+                access: 0,
                 seg_flags: 0,
-                checksum_ctrl: 0,
                 seg_type: sys7::S7_SUB_ALLOC_STACK,
                 image: None,
             },

@@ -4,9 +4,10 @@
 > parallel from this document alone: (1) the bussard System 7 download path
 > (`bussard-download` lowering + `bussard-mgmt` primitives), and (2) the
 > knx-sim System 7 device model. Both must converge on the same wire bytes.
-> Grounded in `system7-research.md` (standards/clean-room research) and
-> `system7-corpus.md` + `system7-corpus.json` (49-app corpus archaeology).
-> Issue #49.
+> Grounded in a standards research pass and an archaeology of the 49 System 7
+> applications of the product corpus (issue #49); their notes were working
+> files and are not in the repository, so the claims below cite the KNX
+> Standard, the corpus counts and the captures directly (#482).
 
 ## 0. Confidence discipline (read first)
 
@@ -274,9 +275,10 @@ connection:
    `A_Restart`. The device reboots and answers again on a fresh connection.
 3. *Procedure connection*: a second probe, then descriptor,
    `PID_MAX_APDU_LENGTH`, `A_Authorize`, `PID_SERIAL_NUMBER`, a one-octet read
-   of `0xB6EC` (answer `00`; on 0701 the reads of `0xB6EA..0xB6ED` are the
-   LSM status octets), `PID_MANUFACTURER_ID`, `PID_HARDWARE_TYPE`, then the
-   procedure.
+   of `0xB6EC`, the load state of the application program (object type 3,
+   `[MP §3.31.2, p. 134]`; answer `00`, Unloaded after the unload pass; on
+   0701 the reads of `0xB6EA..0xB6ED` are the load states of object types 1
+   to 4), `PID_MANUFACTURER_ID`, `PID_HARDWARE_TYPE`, then the procedure.
 
 **Verify mode (`PID_DEVICE_CONTROL`).** On every 0705 download ETS reads
 `obj0/PID_DEVICE_CONTROL` (PID 14, answer `00`) right after the first
@@ -467,7 +469,9 @@ capture of either record exists yet.
 
 1. **Allocate:** an `AdditionalLoadControls` "Alloc absolute Data segment"
    (subtype 0x00) record for the LSM, filled
-   `[event=3][subtype=0][start:2 BE][length:2 BE][seg_flags][mem_type][checksum_ctrl][reserved]`.
+   `[event=3][subtype=0][start:2 BE][length:2 BE][access][mem_type][seg_flags][reserved]`
+   (`access`, `mem_type` and `seg_flags` are the op's `Access`, `MemType` and
+   `SegFlags`; `seg_flags` is the memory-attributes octet, bit 7 checksum control).
    **M2 CONFIRMED** (cross-checked against the Jung app M-0004_A-A011's declared
    AbsSegment addresses/sizes): the opcode/subtype, the big-endian `start` and
    `length` (= the declared segment size in octets), and `mem_type` at octet 7,
@@ -644,7 +648,7 @@ ALL System 7; that regressed the memory-mapped Theben 0701.
 
 The two research inputs that disagreed before M2:
 
-- **Standards/clean-room research** (`system7-research.md` 2.1): System 7 is a
+- **Standards/clean-room research** (the issue #49 research pass): System 7 is a
   BCU2 descendant; the KNX LSM is property-based; load events written to
   `PID_LOAD_STATE_CONTROL` (PID 5) via `A_PropertyValue_Write`, state read back
   via `A_PropertyValue_Read`. **M2 confirmed this is correct for 0705.**
@@ -653,8 +657,9 @@ The two research inputs that disagreed before M2:
   `LoadControl_M112 @ StandardMemory 0x0104` block with status at `0xB6EA+`, read
   as evidence the LSM is a **12-octet memory record**. **M2 disproved this
   reading:** the `LoadControl_M112 @ 0x0104` Hawk block did NOT predict the wire,
-  control is property; `0xB6EA+` is a readable status region (the single read at
-  `0xB6EC`), not a control-write target. `sys7_profile_from_hawk` no longer feeds
+  control is property; `0xB6EA..0xB6ED` hold the load states of object types 1
+  to 4 (`0xB6EA + OT - 1`, `[MP §3.31.2, p. 134]`; the single read at `0xB6EC`
+  is the application program's), not a control-write target. `sys7_profile_from_hawk` no longer feeds
   the normal CLI flash path (it plans with the property corpus default); the
   helper stays only for the memory-mapped conformance harness.
 

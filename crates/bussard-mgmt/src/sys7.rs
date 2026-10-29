@@ -56,8 +56,9 @@ pub const S7_SUB_TASK_CTRL2: u8 = 0x05;
 /// **absolute segment allocation** (`LdCtrlAbsSegment`).
 ///
 /// Layout (`[system7-spec §4.2, M2 capture CONFIRMED]`):
-/// `[event=3][subtype][start:2 BE][length:2 BE][seg_flags][mem_type][checksum_ctrl]
-/// [reserved]`.
+/// `[event=3][subtype][start:2 BE][length:2 BE][access][mem_type][seg_flags]
+/// [reserved]` (`seg_flags` is the memory-attributes octet, bit 7 checksum
+/// control, KNX 3/5/2 §3.31.2).
 ///
 /// The M2 Jung 0705 capture (issue #70) pins the first six octets exactly: the
 /// `03`/subtype opcode, the big-endian `start` and `length` fields, and
@@ -82,18 +83,18 @@ pub fn encode_alloc_segment(
     subtype: u8,
     start: u16,
     length: u16,
-    seg_flags: u8,
+    access: u8,
     mem_type: u8,
-    checksum_ctrl: u8,
+    seg_flags: u8,
 ) -> [u8; LOAD_EVENT_SIZE] {
     let mut v = [0u8; LOAD_EVENT_SIZE];
     v[0] = LoadControl::AdditionalLoadControls.octet();
     v[1] = subtype;
     v[2..4].copy_from_slice(&start.to_be_bytes());
     v[4..6].copy_from_slice(&length.to_be_bytes());
-    v[6] = seg_flags;
+    v[6] = access;
     v[7] = mem_type;
-    v[8] = checksum_ctrl;
+    v[8] = seg_flags;
     // v[9] reserved 0 (observed 0x00 in every capture record).
     v
 }
@@ -110,9 +111,9 @@ pub fn encode_alloc_segment(
 /// (`13 00 00 40 00 00 1d f2 03 80 00` EEPROM, `33 00 00 1c 00 01 b0 f2 02 00 00`
 /// RAM).
 pub fn alloc_attr_octets(mem_type: u8) -> (u8, u8) {
-    let seg_flags = 0xF2;
-    let checksum_ctrl = if mem_type == 3 { 0x80 } else { 0x00 };
-    (seg_flags, checksum_ctrl)
+    let access = 0xF2;
+    let seg_flags = if mem_type == 3 { 0x80 } else { 0x00 };
+    (access, seg_flags)
 }
 
 /// The application identity a System 7 TaskSegment record carries
@@ -240,19 +241,24 @@ pub const MEMORY_LSM_RECORD_SIZE: usize = 11;
 /// Wraps a 10-octet abstract load event into the **11-octet** memory-mapped LSM
 /// control record written to the LSM control address (default `0x0104`).
 ///
-/// Encoding (`[system7-spec §5]`, Theben `0701` Meteodata capture CONFIRMED):
+/// Encoding (Management Procedures 03_05_02 §3.31.2, `[system7-spec §5]`,
+/// Theben `0701` Meteodata capture CONFIRMED):
 /// ```text
-/// [0]      (lsm_index << 4) | event_opcode   e.g. 0x13 = LSM1 + AdditionalLoadControls(3)
-/// [1]      subtype                           00 alloc / 02 task / 04 taskctrl1
-/// [2]      0x00                              high octet of the 3-octet start address
-/// [3..5]   start:2 BE                        the segment start address (low 16 bits)
+/// [0]      (state machine << 4) | event      e.g. 0x13 = address table + AdditionalLoadControls(3)
+/// [1]      segment type                      00 alloc / 02 task / 04 taskctrl1
+/// [2]      segment ID                        0x00
+/// [3..5]   start:2 BE                        the segment start address
 /// [5..11]  the event's octets 4..10          length/access/mem_type/seg_flags/reserved (alloc)
 ///                                            OR the 6-octet application identity (task segment)
 /// ```
-/// The LSM index is folded into the **high nibble of the event opcode byte**;
-/// there is NO separate `[lsm][00]` prefix. Relative to the abstract 10-octet
-/// event the address field is widened to 3 octets (a leading `0x00`), which is
-/// exactly the byte-for-byte transform that reproduces the captured records:
+/// The state machine is the object type of the loadable part (1 address
+/// table, 2 association table, 3 application program, 4 PEI program), which
+/// is the LSM index bussard numbers them by; it sits in the **high nibble of
+/// the event octet**, with NO separate `[lsm][00]` prefix. Relative to the
+/// abstract 10-octet event the record inserts the segment ID octet (`0x00`)
+/// after the segment type, which is exactly the byte-for-byte transform that
+/// reproduces the captured records (issue #482: octet 2 is the segment ID, not
+/// the high octet of a widened address):
 /// - alloc `13 00 00 40 00 00 1d f2 03 80 00` (LSM1, 0x4000 len 0x1D, EEPROM),
 /// - task  `13 02 00 40 00 00 00 48 14 0c 14` (LSM1, identity `00 00 48 14 0c 14`),
 /// - taskctrl1 `33 04 00 46 eb 01 00 00 00 00 00` (LSM3, addr 0x46EB count 1).
@@ -277,10 +283,10 @@ pub fn wrap_memory_lsm_record(
         "LSM index {lsm_index} is outside 1..=15"
     );
     v[0] = ((lsm_index & 0x0F) << 4) | (event[0] & 0x0F);
-    v[1] = event[1]; // subtype
-    v[2] = 0x00; // high octet of the widened 3-octet start address
-    // Widen the 2-octet address to 3 octets and copy the remaining event fields
-    // (length + tail) verbatim: event[2..10] -> record[3..11].
+    v[1] = event[1]; // segment type
+    v[2] = 0x00; // segment ID
+    // Copy the remaining event fields (start address, length and tail)
+    // verbatim after the segment ID: event[2..10] -> record[3..11].
     v[3..MEMORY_LSM_RECORD_SIZE].copy_from_slice(&event[2..LOAD_EVENT_SIZE]);
     v
 }
@@ -675,10 +681,10 @@ mod tests {
     fn test_encode_alloc_segment_matches_capture_with_derived_attr_octets() {
         // binaereingang-6fach 0705 capture: LSM 3's EEPROM param segment at 0x43FE
         // was `03 00 43 fe 03 73 f2 03 80 00`. With the derived attribute octets
-        // (0xF2 seg_flags, 0x80 checksum for EEPROM) bussard now reproduces it
+        // (0xF2 access, 0x80 seg_flags for EEPROM) bussard now reproduces it
         // byte-for-byte.
-        let (sf, cc) = alloc_attr_octets(0x03);
-        let v = encode_alloc_segment(S7_SUB_ALLOC_DATA, 0x43FE, 0x0373, sf, 0x03, cc);
+        let (access, seg_flags) = alloc_attr_octets(0x03);
+        let v = encode_alloc_segment(S7_SUB_ALLOC_DATA, 0x43FE, 0x0373, access, 0x03, seg_flags);
         assert_eq!(
             v,
             [0x03, 0x00, 0x43, 0xFE, 0x03, 0x73, 0xF2, 0x03, 0x80, 0x00],
@@ -687,8 +693,8 @@ mod tests {
 
         // The 0x0700 low-RAM region is mem_type 2 (RAM), size 450 (0x01C2) —
         // capture `03 00 07 00 01 c2 f2 02 00 00`.
-        let (sf, cc) = alloc_attr_octets(0x02);
-        let ram = encode_alloc_segment(S7_SUB_ALLOC_DATA, 0x0700, 0x01C2, sf, 0x02, cc);
+        let (access, seg_flags) = alloc_attr_octets(0x02);
+        let ram = encode_alloc_segment(S7_SUB_ALLOC_DATA, 0x0700, 0x01C2, access, 0x02, seg_flags);
         assert_eq!(
             ram,
             [0x03, 0x00, 0x07, 0x00, 0x01, 0xC2, 0xF2, 0x02, 0x00, 0x00],
@@ -698,8 +704,8 @@ mod tests {
 
     #[test]
     fn test_alloc_attr_octets_derives_from_mem_type() {
-        // EEPROM (3) is checksum-controlled (0x80); RAM (2) is not (0x00). seg_flags
-        // is the dominant 0xF2 in both.
+        // EEPROM (3) is checksum-controlled (0x80); RAM (2) is not (0x00). The
+        // access octet is the dominant 0xF2 in both.
         assert_eq!(alloc_attr_octets(0x03), (0xF2, 0x80));
         assert_eq!(alloc_attr_octets(0x02), (0xF2, 0x00));
     }

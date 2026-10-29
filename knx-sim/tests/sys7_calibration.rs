@@ -162,8 +162,9 @@ trait LsmDriver {
 }
 
 /// Memory-mapped: the 11-octet record at the control addr (Theben 0701 form).
-/// LSM folds into the high nibble of octet 0; the 2-octet abstract address is
-/// widened to 3 octets. This mirrors the tool-side `wrap_memory_lsm_record`.
+/// The state machine (object type, the LSM index) folds into the high nibble of
+/// octet 0, and the segment ID octet (0x00) follows the segment type. This
+/// mirrors the tool-side `wrap_memory_lsm_record`.
 struct MemMapped;
 impl LsmDriver for MemMapped {
     fn send_event(driver: &mut Driver, lsm: u8, event: &[u8; 10]) {

@@ -107,42 +107,39 @@ fn test_bussard_theben_0701_plan_is_memory_mapped() {
         }
     }
 
-    // 3. The memory-mapped LSM control record is the 11-octet Theben form: the LSM
-    //    index in the high nibble of octet 0, a derived (0xF2, mem_type, checksum)
-    //    tail, and a 3-octet start address. Take an EEPROM segment (mem_type 3) and
+    // 3. The memory-mapped LSM control record is the 11-octet Theben form: the
+    //    state machine (object type, the LSM index) in the high nibble of octet 0,
+    //    the segment type, the segment ID 00, the start address and a derived
+    //    (0xF2, mem_type, checksum) tail. Take an EEPROM segment (mem_type 3) and
     //    reproduce its wrapped record.
     let (&addr, &(size, mem_type)) = segs
         .iter()
         .find(|&(&a, _)| a >= 0x4000)
         .expect("an EEPROM segment");
-    let (seg_flags, checksum_ctrl) = bussard_mgmt::alloc_attr_octets(mem_type);
-    assert_eq!(
-        (seg_flags, checksum_ctrl),
-        (0xF2, 0x80),
-        "EEPROM attr octets"
-    );
+    let (access, seg_flags) = bussard_mgmt::alloc_attr_octets(mem_type);
+    assert_eq!((access, seg_flags), (0xF2, 0x80), "EEPROM attr octets");
     let event = bussard_mgmt::encode_alloc_segment(
         bussard_mgmt::sys7::S7_SUB_ALLOC_DATA,
         (addr & 0xFFFF) as u16,
         (size & 0xFFFF) as u16,
-        seg_flags,
+        access,
         mem_type,
-        checksum_ctrl,
+        seg_flags,
     );
     // Property-form 10-octet event -> 11-octet memory record for LSM 3.
     let record = bussard_mgmt::sys7::wrap_memory_lsm_record(3, &event);
     assert_eq!(record.len(), 11, "the memory-mapped record is 11 octets");
     assert_eq!(record[0], 0x33, "LSM3 (3<<4) | AdditionalLoadControls (3)");
     assert_eq!(record[1], 0x00, "alloc Data subtype");
-    assert_eq!(record[2], 0x00, "high octet of the widened 3-octet address");
+    assert_eq!(record[2], 0x00, "segment ID");
     assert_eq!(
         &record[3..5],
         &(addr as u16).to_be_bytes(),
         "start (low 16 bits)"
     );
-    assert_eq!(record[7], 0xF2, "seg_flags");
+    assert_eq!(record[7], 0xF2, "access");
     assert_eq!(record[8], 3, "mem_type EEPROM");
-    assert_eq!(record[9], 0x80, "checksum_ctrl EEPROM");
+    assert_eq!(record[9], 0x80, "seg_flags EEPROM");
 
     // 4. The plan drives LSM 1/2/3 to LoadCompleted.
     for lsm in [1u32, 2, 3] {

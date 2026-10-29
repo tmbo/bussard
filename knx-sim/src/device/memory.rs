@@ -152,6 +152,23 @@ impl Memory {
         self.segments.retain(|s| s.owner != owner);
     }
 
+    /// Fill the segment owned by `owner` with `byte`: an allocation with
+    /// `Mode` 1 (Configuration Procedures 03_05_03 §3.5.1.2, issue #581). A
+    /// no-op when `owner` holds no segment.
+    pub fn fill_owner(&mut self, owner: u8, byte: u8) {
+        let Some(seg) = self.segment_of(owner) else {
+            return;
+        };
+        for addr in seg.base..seg.base.saturating_add(seg.len) {
+            // An unwritten cell reads 0x00.
+            if byte == 0 {
+                self.cells.remove(&addr);
+            } else {
+                self.cells.insert(addr, byte);
+            }
+        }
+    }
+
     /// Release the segment owned by `owner` without clearing its cells (an
     /// Unload: the allocation is freed, the stored octets stay where they were,
     /// so a partial download that reallocates the same place and writes only
@@ -272,6 +289,34 @@ impl Memory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #581: a Mode 1 re-allocation fills over what a previous image
+    /// left (an Unload keeps the octets), so the segment holds the fill byte
+    /// wherever the new image writes nothing.
+    #[test]
+    fn test_fill_owner_overwrites_a_previous_image() -> Result<(), MemoryError> {
+        let mut m = Memory::new();
+        m.allocate(4, 0x1000, 4);
+        m.write(4, 0x1000, &[0x11, 0x22, 0x33, 0x44])?;
+        m.release_owner(4);
+        m.allocate(4, 0x1000, 4);
+        assert_eq!(
+            m.read(0x1000, 4),
+            vec![0x11, 0x22, 0x33, 0x44],
+            "Mode 0 keeps them"
+        );
+        m.fill_owner(4, 0x00);
+        assert_eq!(m.read(0x1000, 4), vec![0; 4]);
+        m.fill_owner(4, 0xFF);
+        assert_eq!(m.read(0x1000, 4), vec![0xFF; 4]);
+        m.fill_owner(9, 0xAA);
+        assert_eq!(
+            m.read(0x1000, 4),
+            vec![0xFF; 4],
+            "another owner holds no segment"
+        );
+        Ok(())
+    }
 
     #[test]
     fn test_allocate_additional_keeps_the_owners_other_segments() -> Result<(), MemoryError> {

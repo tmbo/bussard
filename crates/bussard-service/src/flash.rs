@@ -15,7 +15,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use bussard_download::{
-    FlashOptions, FlashPlan, Freshness, PlanError, SecureSenderEntry, SecurityPlanError,
+    FlashOptions, FlashPlan, Freshness, PlanError, ResidentState, SecureSenderEntry,
+    SecurityPlanError,
 };
 use bussard_model::{Flags, IndividualAddress, Model};
 use bussard_prod::application::LoadOp;
@@ -163,7 +164,8 @@ impl<'a> FlashInputs<'a> {
     }
 
     /// Shapes a pre-flight plan into what is downloaded: the factory reset
-    /// the freshness verdict asks for ([`apply_freshness`]), then the Data
+    /// or the `par` load procedure the freshness verdict asks for
+    /// ([`apply_freshness`], `resident` is the probe's state), then the Data
     /// Secure security object ([`FlashInputs::add_security_steps`]). Returns
     /// the security individual address table the download writes, when it
     /// writes one, so a verified flash can record it in the lock.
@@ -176,13 +178,14 @@ impl<'a> FlashInputs<'a> {
         &self,
         plan: &mut FlashPlan,
         freshness: Option<&Freshness>,
+        resident: Option<&ResidentState>,
         no_factory_reset: bool,
         model: Option<&Model>,
         target: IndividualAddress,
         material: &SecureMaterial,
         extra_senders: &[IndividualAddress],
     ) -> Result<Option<Vec<SecureSenderEntry>>, SecurityPlanError> {
-        apply_freshness(plan, freshness, no_factory_reset);
+        apply_freshness(plan, freshness, resident, no_factory_reset);
         self.add_security_steps(plan, model, target, material, extra_senders)
     }
 
@@ -318,9 +321,16 @@ pub fn com_object_words(app: &ApplicationProgram, number: u16) -> (Option<String
 /// gets no pre-download unload-and-restart pass, as ETS gives none to a
 /// factory-fresh device (issue #488, [`FlashPlan::skip_sys7_prelude`]). A
 /// device with a loaded application keeps it; offline the plan keeps it too.
+///
+/// A System B device that already holds this application
+/// ([`Freshness::SameApplication`]) gets the product's `AppliesTo="par"`
+/// load procedure, as ETS runs it there (issue #490,
+/// [`FlashPlan::use_par_procedure`]); `resident` is the probe's state, whose
+/// object load states decide which unloads that procedure leaves out.
 pub fn apply_freshness(
     plan: &mut FlashPlan,
     freshness: Option<&Freshness>,
+    resident: Option<&ResidentState>,
     no_factory_reset: bool,
 ) {
     if matches!(
@@ -331,6 +341,9 @@ pub fn apply_freshness(
     }
     if matches!(freshness, Some(Freshness::Fresh)) {
         plan.skip_sys7_prelude();
+    }
+    if matches!(freshness, Some(Freshness::SameApplication { .. })) {
+        plan.use_par_procedure(resident);
     }
     if no_factory_reset {
         plan.skip_factory_reset();
@@ -504,6 +517,9 @@ mod tests {
         ) {
             plan.require_factory_reset();
         }
+        if matches!(freshness, Freshness::SameApplication { .. }) {
+            plan.use_par_procedure(None);
+        }
         Ok(plan)
     }
 
@@ -535,6 +551,7 @@ mod tests {
             cli_inputs.finish(
                 &mut cli,
                 Some(&freshness),
+                None,
                 false,
                 Some(&model),
                 target,
@@ -548,6 +565,7 @@ mod tests {
             mcp_inputs.finish(
                 &mut mcp,
                 Some(&freshness),
+                None,
                 false,
                 Some(&model),
                 target,
@@ -594,18 +612,18 @@ mod tests {
         let (plain, _) =
             FlashInputs::from_model(&product, plain_app, "1.1.4", Some(&model), target);
         let mut plain_plan = plain.plan(0x07B0)?;
-        apply_freshness(&mut plain_plan, Some(&resident), false);
+        apply_freshness(&mut plain_plan, Some(&resident), None, false);
         assert!(!plain_plan.has_factory_reset());
         let mut secure_app = plain_app.clone();
         secure_app.is_secure_enabled = true;
         let app = &secure_app;
         let (inputs, _) = FlashInputs::from_model(&product, app, "1.1.4", Some(&model), target);
         let mut plan = inputs.plan(0x07B0)?;
-        apply_freshness(&mut plan, Some(&resident), false);
+        apply_freshness(&mut plan, Some(&resident), None, false);
         assert!(plan.has_factory_reset());
         assert!(!skip_unchanged(false, &plan, &resident));
         let mut waived = inputs.plan(0x07B0)?;
-        apply_freshness(&mut waived, Some(&resident), true);
+        apply_freshness(&mut waived, Some(&resident), None, true);
         assert!(!waived.has_factory_reset());
         std::fs::remove_dir_all(&dir)?;
         Ok(())
@@ -725,7 +743,7 @@ mod tests {
             (None, true),
         ] {
             let mut plan = planned.clone();
-            apply_freshness(&mut plan, freshness, true);
+            apply_freshness(&mut plan, freshness, None, true);
             assert_eq!(prelude(&plan), kept, "{freshness:?}");
         }
         Ok(())

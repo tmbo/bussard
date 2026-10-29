@@ -207,6 +207,7 @@ The pre-flight report leads with one line per parameter the flash changes, named
 | `--json` | off | Print the pre-flight plan as JSON: a `parameters` array (`key`, `name`, `old`, `new`, `unit`; `old` is `null` when unreadable), the application identity, the write summary and the step trace. The confirmation and the flash are unchanged. |
 | `--dry-run` | off | Build and print the pre-flight plan against the application's own mask, then stop. No gateway is resolved and no connection is opened, so it works with no gateway configured. |
 | `--dump-images <DIR>` | | With `--dry-run`: write `plan.json` and the exact memory images the flash would stream (one `.bin` each, plus the table images) into `DIR`, for offline comparison with an ETS download of the same device. |
+| `--resident <FILE>` | | With `--dry-run`: plan against a recorded device state instead of no device: the application objects' load states, the application id and the MCB entries, as JSON (`knxtrace image` writes `resident.json` from an ETS capture). The plan then takes the shape a live flash takes on that device: the `par` load procedure for a device holding this application, and no re-load of an object whose image already matches. |
 | `-v` | off | Show the memory-level plan (the step trace) and the raw override keys, and end with the wall-clock time per phase (pre-flight, download, restart and verification) plus the reboot readiness per restart. |
 
 Behaviour:
@@ -238,6 +239,7 @@ Because there is no backup, `flash` checks in its read-only pre-flight that the 
 - `--force` prints one loud line naming the device, the gateway and what is destroyed, and the confirmation prompt repeats it.
 - Unreadable is not fresh: a device that refuses the state reads is refused.
 - Re-flashing the same application is still a full rewrite: the parameters are reset to the vendor defaults plus the device file's values, and the tables are rewritten from the model's links.
+- On a System B device that already holds the same application, `flash` runs the product's `par` load procedure, as ETS does: the application segment is allocated without the fill flag (its memory is kept, then written in full), an object the procedure does not load gets no unload when it reads Unloaded, and the download opens with no factory reset. A device that holds another application, or none, gets the `full` procedure. `plan.json` from `--dump-images` names it in `"load_procedure"`.
 - A loaded System 7 device is asked for `PID_PROGRAM_VERSION` of its application object. An id that names another application is refused by that id. A matching id, or none (the property is optional there), leaves the decision to the code sample below.
 
 ### The factory reset (System B)
@@ -342,7 +344,7 @@ It refuses before any write when:
 
     "Another application": on System B, `PID_PROGRAM_VERSION` differs from the product's or cannot be read. On System 7, a `PID_PROGRAM_VERSION` of the application object that names another application refuses on its own; otherwise every load-state machine must be `Loaded` and the first octets of each application code segment must read back as the product's bytes. A code segment is one streamed verbatim from the product, never a link table, the group-object descriptor table or parameter memory. A product with no code segment is judged by the load-state machines alone.
 
-    "Placed under the configuration" covers applications without `DownloadInvisibleParameters` and without `PreferPartialDownloadIfApplicationLoaded`, where a hidden parameter is downloaded at its default. Segments not compared after the restart: System 7 `checksum_ctrl` 0, and the Jung `0x4916` region.
+    "Placed under the configuration" covers applications without `DownloadInvisibleParameters` and without `PreferPartialDownloadIfApplicationLoaded`, where a hidden parameter is downloaded at its default. Segments not compared after the restart: System 7 segments whose `SegFlags` is 0, and the Jung `0x4916` region.
 
 ### Parameter read-back
 

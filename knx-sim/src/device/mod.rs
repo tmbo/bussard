@@ -33,7 +33,7 @@ mod transport;
 pub use group_comm::{ComObject, GroupComm, flag};
 pub use interface_object::{
     InterfaceObject, PDT_GENERIC_01, PID_LOAD_STATE_CONTROL, PID_MCB_TABLE, PID_OBJECT_TYPE,
-    PID_PROGMODE, PID_RUN_STATE_CONTROL, PID_TABLE, PID_TABLE_REFERENCE, Property,
+    PID_PROGMODE, PID_PROGRAM_VERSION, PID_TABLE, PID_TABLE_REFERENCE, Property,
     PropertyDescription, iot,
 };
 pub use lsm::{

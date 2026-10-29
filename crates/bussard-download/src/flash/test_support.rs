@@ -44,3 +44,64 @@ pub(super) fn fabricated_app() -> ApplicationProgram {
 pub(super) fn no_overrides() -> BTreeMap<String, String> {
     BTreeMap::new()
 }
+
+/// A secure-capable 07B0 app with the house shape of issue #490: the
+/// template's unload of object 5, which it never loads, and the `full`
+/// (`Mode="1"`) and `par` (`Mode="0"`) allocations of one six-octet segment
+/// on object 4, written by one `full,par` write.
+fn par_pair_xml(par: bool) -> String {
+    let par_alloc = if par {
+        r#"<LdCtrlRelSegment AppliesTo="par" LsmIdx="4" Size="6" Mode="0" Fill="0" />"#
+    } else {
+        ""
+    };
+    format!(
+        r#"<KNX xmlns="http://knx.org/xml/project/23">
+     <ApplicationProgram Id="M-4_A-1" ApplicationNumber="1" ApplicationVersion="1"
+        MaskVersion="MV-07B0" Name="Pair" LoadProcedureStyle="ProductDefault" IsSecureEnabled="true">
+      <Static>
+       <Code><RelativeSegment Id="M-4_A-1_RS-4" Size="6" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment></Code>
+       <LoadProcedures>
+        <LoadProcedure>
+         <LdCtrlUnload LsmIdx="5" />
+         <LdCtrlUnload LsmIdx="4" />
+         <LdCtrlLoad LsmIdx="4" />
+         <LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="6" Mode="1" Fill="0" />
+         {par_alloc}
+         <LdCtrlWriteRelMem AppliesTo="full,par" ObjIdx="4" Offset="0" Size="6" Verify="true" />
+         <LdCtrlLoadCompleted LsmIdx="4" />
+         <LdCtrlRestart />
+        </LoadProcedure>
+       </LoadProcedures>
+      </Static>
+     </ApplicationProgram></KNX>"#
+    )
+}
+
+/// The full plan of [`par_pair_xml`] with the `par` allocation.
+pub(super) fn par_pair_plan() -> Result<super::FlashPlan, Box<dyn std::error::Error>> {
+    let app = parse_application_program("M-4_A-1", par_pair_xml(true).as_bytes())?;
+    Ok(super::plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?)
+}
+
+/// The full plan of [`par_pair_xml`] without the `par` allocation.
+pub(super) fn full_only_plan() -> Result<super::FlashPlan, Box<dyn std::error::Error>> {
+    let app = parse_application_program("M-4_A-1", par_pair_xml(false).as_bytes())?;
+    Ok(super::plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?)
+}

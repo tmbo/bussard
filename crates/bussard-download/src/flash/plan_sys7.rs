@@ -385,12 +385,11 @@ pub(super) fn plan_flash_sys7(
                 let mem_type = mem_type
                     .and_then(|m| u8::try_from(m).ok())
                     .unwrap_or_else(|| mem_type_for_addr(addr, &s7_profile));
-                let (default_flags, default_checksum) = bussard_mgmt::alloc_attr_octets(mem_type);
-                let op_seg_flags: Option<u32> = seg_flags.to_owned();
-                let checksum_ctrl = seg_flags_octet(op_seg_flags).unwrap_or(default_checksum);
-                let seg_flags = access
+                let (default_access, default_seg_flags) = bussard_mgmt::alloc_attr_octets(mem_type);
+                let seg_flags = seg_flags_octet(*seg_flags).unwrap_or(default_seg_flags);
+                let access = access
                     .and_then(|a| u8::try_from(a).ok())
-                    .unwrap_or(default_flags);
+                    .unwrap_or(default_access);
                 // A table LSM (1 = group addresses, 2 = associations) streams the
                 // table computed from the model, never the product's `<Data>`
                 // template: the Jung 3361-1MWW ships a 255-entry placeholder table
@@ -488,8 +487,8 @@ pub(super) fn plan_flash_sys7(
                     address: addr,
                     size,
                     mem_type,
+                    access,
                     seg_flags,
-                    checksum_ctrl,
                     seg_type,
                     image,
                 });
@@ -723,6 +722,8 @@ pub(super) fn plan_flash_sys7(
         baseline_address: BTreeMap::new(),
         security_capacity: Default::default(),
         user_memory_above_64k: false,
+        par_allocations: BTreeMap::new(),
+        par_procedure: false,
     })
 }
 
@@ -749,9 +750,9 @@ fn sys7_code_segments(
             FlashStep::Sys7AbsSegment {
                 image: Some(image),
                 mem_type,
-                checksum_ctrl,
+                seg_flags,
                 ..
-            } if image.kind == ImageKind::Code && *mem_type != 2 && *checksum_ctrl != 0 => {
+            } if image.kind == ImageKind::Code && *mem_type != 2 && *seg_flags != 0 => {
                 Some(&image.segment_id)
             }
             _ => None,
@@ -1484,8 +1485,9 @@ pub fn sys7_task_identity(
 }
 
 /// Maps an `LdCtrlAbsSegment` `SegFlags` attribute to the allocation record's
-/// checksum-control octet: `128` → `0x80` (checksum-controlled), `0` → `0x00`
-/// (runtime-writable). Any other value is passed through when it fits an octet.
+/// memory-attributes octet (bit 7 checksum control): `128` → `0x80`
+/// (checksum-controlled), `0` → `0x00` (runtime-writable). Any other value is
+/// passed through when it fits an octet.
 pub(super) fn seg_flags_octet(seg_flags: Option<u32>) -> Option<u8> {
     seg_flags.and_then(|f| u8::try_from(f).ok())
 }
@@ -1823,8 +1825,8 @@ mod tests {
             address: 0x43FE,
             size: 123,
             mem_type: 3,
-            seg_flags: 0x80,
-            checksum_ctrl: 0x00,
+            access: 0x80,
+            seg_flags: 0x00,
             seg_type: 0,
             image: Some(ImageRef {
                 segment_id: seg_id.clone(),
@@ -1932,8 +1934,8 @@ mod tests {
                 address: 0x0700,
                 size: 450,
                 mem_type: 2,
-                seg_flags: 0xF2,
-                checksum_ctrl: 0x00,
+                access: 0xF2,
+                seg_flags: 0x00,
                 seg_type: 0,
                 image: None,
             },
@@ -1942,8 +1944,8 @@ mod tests {
                 address: 0x43FF,
                 size: 811,
                 mem_type: 3,
-                seg_flags: 0xF2,
-                checksum_ctrl: 0x80,
+                access: 0xF2,
+                seg_flags: 0x80,
                 seg_type: 0,
                 image: Some(ImageRef {
                     segment_id: seg_id.clone(),
@@ -2055,14 +2057,14 @@ mod tests {
     /// configuration).
     #[test]
     fn test_sys7_code_segments_never_picks_a_table_or_parameter_segment() {
-        let seg = |lsm: u32, address: u32, mem_type: u8, checksum_ctrl: u8, id: &str, kind| {
+        let seg = |lsm: u32, address: u32, mem_type: u8, seg_flags: u8, id: &str, kind| {
             FlashStep::Sys7AbsSegment {
                 lsm,
                 address,
                 size: 16,
                 mem_type,
-                seg_flags: 0xF2,
-                checksum_ctrl,
+                access: 0xF2,
+                seg_flags,
                 seg_type: 0,
                 image: Some(ImageRef {
                     segment_id: id.to_string(),
@@ -2120,8 +2122,8 @@ mod tests {
                 address: 0x0700,
                 size: 450,
                 mem_type: 2,
-                seg_flags: 0xF2,
-                checksum_ctrl: 0x00,
+                access: 0xF2,
+                seg_flags: 0x00,
                 seg_type: 0,
                 image: None,
             },
@@ -2130,8 +2132,8 @@ mod tests {
                 address: 0x43FE,
                 size: 883,
                 mem_type: 3,
-                seg_flags: 0xF2,
-                checksum_ctrl: 0x80,
+                access: 0xF2,
+                seg_flags: 0x80,
                 seg_type: 0,
                 image: Some(ImageRef {
                     segment_id: seg_id.clone(),
@@ -2218,8 +2220,8 @@ mod tests {
                 address: 0x0700,
                 size: 16,
                 mem_type: 2,
-                seg_flags: 0xF2,
-                checksum_ctrl: 0x00,
+                access: 0xF2,
+                seg_flags: 0x00,
                 seg_type: 0,
                 image: None,
             },
@@ -2228,8 +2230,8 @@ mod tests {
                 address: 0x43FF,
                 size: 15,
                 mem_type: 3,
-                seg_flags: 0xF2,
-                checksum_ctrl: 0x80,
+                access: 0xF2,
+                seg_flags: 0x80,
                 seg_type: 0,
                 image: Some(ImageRef {
                     segment_id: seg_id.clone(),

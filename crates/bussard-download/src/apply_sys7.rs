@@ -543,14 +543,14 @@ async fn alloc_region<Ch: L4Channel>(
     len: usize,
 ) -> Result<(), WriteError> {
     let mem_type = profile.eeprom_mem_type;
-    let (seg_flags, checksum_ctrl) = alloc_attr_octets(mem_type);
+    let (access, seg_flags) = alloc_attr_octets(mem_type);
     let record = encode_alloc_segment(
         S7_SUB_ALLOC_DATA,
         base,
         len.min(usize::from(u16::MAX)) as u16,
-        seg_flags,
+        access,
         mem_type,
-        checksum_ctrl,
+        seg_flags,
     );
     lsm.send_control(l4, index, &record).await
 }

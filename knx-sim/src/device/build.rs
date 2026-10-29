@@ -9,7 +9,7 @@ use crate::wire::IndividualAddress;
 
 use super::{
     DEFAULT_RESTART_PROCESS_TIME_S, Device, InterfaceObject, LoadState, LoadStateMachine, Memory,
-    ObjectState, PID_LOAD_STATE_CONTROL, PID_OBJECT_TYPE, PID_PROGMODE, PID_RUN_STATE_CONTROL,
+    ObjectState, PID_LOAD_STATE_CONTROL, PID_OBJECT_TYPE, PID_PROGMODE, PID_PROGRAM_VERSION,
     PID_TABLE_REFERENCE, Profile, Property, SecurityObject, Sys7LoadStateMachine, Sys7Runtime, iot,
     profile,
 };
@@ -304,10 +304,10 @@ impl Device {
                 PID_TABLE_REFERENCE,
                 Property::read_only(base.to_be_bytes().to_vec()),
             );
-            // PID 0x0D (PID_PROGRAM_VERSION / run-state / app-id) is written near
+            // PID 0x0D (PID_PROGRAM_VERSION, the application id) is written near
             // the end of a flash to stamp the application id (ETS writes
             // `00 fa 25 00 10` on object 4). Seed it writable.
-            io.set_property(PID_RUN_STATE_CONTROL, Property::writable(vec![0x00; 5]));
+            io.set_property(PID_PROGRAM_VERSION, Property::writable(vec![0x00; 5]));
             // PID 0x0E (PID_ERROR_CODE) is read during the flow; seed readable.
             io.set_property(0x0E, Property::writable(vec![0x00]));
             objects.insert(obj.lsm_index, io);
@@ -486,7 +486,7 @@ impl Device {
         // failed the ABB Room Master Premium (A-A054, 2026-10-28). A compare
         // step has already seeded it; otherwise report this application.
         if let Some(app) = objects.get_mut(&3)
-            && app.property(PID_RUN_STATE_CONTROL).is_none()
+            && app.property(PID_PROGRAM_VERSION).is_none()
         {
             let manufacturer = product
                 .application_id
@@ -501,7 +501,7 @@ impl Device {
                     .to_be_bytes(),
             );
             id.push(u8::try_from(product.application_version).unwrap_or(0));
-            app.set_property(PID_RUN_STATE_CONTROL, Property::read_only(id));
+            app.set_property(PID_PROGRAM_VERSION, Property::read_only(id));
         }
         // The factory memory the product's CompareMem preflights check.
         let mut memory = Memory::new();

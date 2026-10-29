@@ -4,7 +4,7 @@
 use crate::bus::event::Event;
 use crate::wire::IndividualAddress;
 
-use super::interface_object::PID_RUN_STATE_CONTROL;
+use super::interface_object::PID_PROGRAM_VERSION;
 use super::{
     Device, DeviceError, DeviceReaction, LoadEvent, LoadState, PID_LOAD_STATE_CONTROL,
     PID_TABLE_REFERENCE, Property, Sys7LoadStateMachine, Sys7Step, profile, sys7_lsm,
@@ -83,7 +83,7 @@ impl Device {
                 self.memory.release_owner(object);
                 self.set_table_reference(object, 0);
             }
-            LoadEvent::AllocRelSegment { size } if prior == LoadState::Loading => {
+            LoadEvent::AllocRelSegment { size, fill } if prior == LoadState::Loading => {
                 if self.max_allocation.is_some_and(|max| size > max) {
                     // A failed allocation: the object goes to Error and
                     // PID_TABLE_REFERENCE to zero (§3.5.1.2).
@@ -118,6 +118,14 @@ impl Device {
                 }
                 self.set_table_reference(object, base);
                 self.memory.allocate(object, base, size);
+                // Mode 1 fills the allocated memory with the fill byte; Mode 0
+                // keeps what it holds (Configuration Procedures 03_05_03
+                // §3.5.1.2). Without the fill, a filled download over a
+                // previous image left that image's octets wherever the new one
+                // equals the fill byte, and the MCB CRC told (issue #581).
+                if let Some(byte) = fill {
+                    self.memory.fill_owner(object, byte);
+                }
             }
             _ => {}
         }
@@ -206,7 +214,7 @@ impl Device {
             None
         };
         if let (Some(id), Some(obj)) = (program_id, self.objects.get_mut(&lsm_index)) {
-            obj.set_property(PID_RUN_STATE_CONTROL, Property::read_only(id.to_vec()));
+            obj.set_property(PID_PROGRAM_VERSION, Property::read_only(id.to_vec()));
         }
         match step {
             Sys7Step::Alloc {
@@ -333,7 +341,7 @@ impl Device {
 #[cfg(test)]
 mod tests {
     use crate::bus::event::RecordingSink;
-    use crate::device::interface_object::PID_RUN_STATE_CONTROL;
+    use crate::device::interface_object::PID_PROGRAM_VERSION;
     use crate::device::profile::LsmAccess;
     use crate::device::test_support::*;
     use crate::device::*;
@@ -731,7 +739,7 @@ mod tests {
         let id = dev
             .objects
             .get(&3)
-            .and_then(|o| o.property(PID_RUN_STATE_CONTROL))
+            .and_then(|o| o.property(PID_PROGRAM_VERSION))
             .map(|p| p.value.len());
         assert_eq!(id, Some(5));
     }
@@ -765,7 +773,7 @@ mod tests {
         let id = dev
             .objects
             .get(&3)
-            .and_then(|o| o.property(PID_RUN_STATE_CONTROL))
+            .and_then(|o| o.property(PID_PROGRAM_VERSION))
             .map(|p| p.value.clone());
         assert_eq!(id, Some(vec![0x00, 0xb6, 0x45, 0x37, 0x03]));
         Ok(())

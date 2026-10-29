@@ -146,6 +146,7 @@ pub(super) fn flash_image(
         .finish(
             &mut plan,
             Some(&freshness),
+            Some(&detail.resident),
             false,
             Some(model),
             target,

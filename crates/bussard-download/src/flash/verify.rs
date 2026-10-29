@@ -133,9 +133,7 @@ pub(super) async fn resident_match_objects<C: Connector>(
         let Some(entry) = entries.first() else {
             continue;
         };
-        let want_size = image.len() as u32;
-        let want_crc = bussard_mgmt::crc16_ccitt(image);
-        if entry.segment_size != want_size || entry.crc16 != want_crc {
+        if !mcb_matches(image, entry.segment_size, entry.crc16) {
             continue;
         }
         // A matching MCB alone is not enough: an object left `Unloaded`,
@@ -152,6 +150,67 @@ pub(super) async fn resident_match_objects<C: Connector>(
         }
     }
     Ok(matches)
+}
+
+/// Whether a resident MCB entry (segment size and CRC) describes `image`:
+/// the match [`resident_match_objects`] skips an object's re-load on.
+pub(super) fn mcb_matches(image: &[u8], segment_size: u32, crc16: u16) -> bool {
+    segment_size == image.len() as u32 && crc16 == bussard_mgmt::crc16_ccitt(image)
+}
+
+impl FlashPlan {
+    /// The offline counterpart of the executor's resident-MCB skip (issue
+    /// #73 item 2), for a dry run planned against a recorded device state
+    /// (issue #490): drops the re-load steps of every object whose MCB in
+    /// `mcbs` (object index to segment size and CRC) matches the image a
+    /// single offset-0 write streams into it and that `loaded` reports
+    /// `Loaded`, the steps [`mcb_skip_target`] names and the executor skips.
+    /// Every object the plan names counts as present; `app_obj` is the
+    /// application object an op without an index resolves to. Returns the
+    /// objects dropped.
+    pub fn skip_resident_matches(
+        &mut self,
+        mcbs: &std::collections::BTreeMap<u8, (u32, u16)>,
+        app_obj: u8,
+        loaded: impl Fn(u8) -> bool,
+    ) -> BTreeSet<u8> {
+        let table: Vec<(u8, u16)> = self
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                FlashStep::Unload { target }
+                | FlashStep::StartLoading { target }
+                | FlashStep::AllocateSegment { target, .. }
+                | FlashStep::LoadCompleted { target }
+                | FlashStep::WriteRelMem { target, .. } => *target,
+                _ => None,
+            })
+            .filter_map(|t| u8::try_from(t).ok())
+            .collect::<BTreeSet<u8>>()
+            .into_iter()
+            .map(|idx| (idx, 0))
+            .collect();
+        let mut skip = BTreeSet::new();
+        for (&obj, &(size, crc)) in mcbs {
+            if let Some(image) = sole_object_image(self, obj, app_obj, &table)
+                && mcb_matches(image, size, crc)
+                && loaded(obj)
+            {
+                skip.insert(obj);
+            }
+        }
+        if skip.is_empty() {
+            return skip;
+        }
+        let keep: Vec<bool> = self
+            .steps
+            .iter()
+            .map(|s| mcb_skip_target(s, &table, app_obj, self).is_none_or(|o| !skip.contains(&o)))
+            .collect();
+        let mut keep = keep.into_iter();
+        self.steps.retain(|_| keep.next().unwrap_or(true));
+        skip
+    }
 }
 
 /// Verifies a completed flash over the session's connection: re-reads the load
@@ -426,6 +485,61 @@ mod tests {
         assert!(text.starts_with("warning: MCB check of object 5"), "{text}");
         assert!(text.contains("0xB0DA") && text.contains("0x62E5"), "{text}");
         assert!(text.contains("advisory only"), "{text}");
+        Ok(())
+    }
+
+    /// Issue #490: the offline MCB skip drops the re-load of an object whose
+    /// recorded MCB matches the image, and nothing of an object whose MCB
+    /// differs or is not Loaded.
+    #[test]
+    fn test_skip_resident_matches_drops_a_matching_object() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut plan = super::super::test_support::par_pair_plan()?;
+        let image = plan
+            .steps
+            .iter()
+            .find_map(|s| match s {
+                FlashStep::WriteRelMem { image, .. } => plan.image_bytes(&image.segment_id),
+                _ => None,
+            })
+            .ok_or("no write")?
+            .to_vec();
+        let crc = bussard_mgmt::crc16_ccitt(&image);
+        let len = image.len() as u32;
+        let mut differs = plan.clone();
+        let wrong = std::collections::BTreeMap::from([(4u8, (len, crc ^ 1))]);
+        assert!(
+            differs
+                .skip_resident_matches(&wrong, 4, |_| true)
+                .is_empty()
+        );
+        assert_eq!(differs.steps, plan.steps);
+        let matching = std::collections::BTreeMap::from([(4u8, (len, crc))]);
+        let mut unloaded = plan.clone();
+        assert!(
+            unloaded
+                .skip_resident_matches(&matching, 4, |_| false)
+                .is_empty()
+        );
+        let skipped = plan.skip_resident_matches(&matching, 4, |_| true);
+        assert_eq!(skipped, BTreeSet::from([4u8]));
+        assert!(!plan.steps.iter().any(|s| matches!(
+            s,
+            FlashStep::Unload { target: Some(4) }
+                | FlashStep::StartLoading { target: Some(4) }
+                | FlashStep::AllocateSegment {
+                    target: Some(4),
+                    ..
+                }
+                | FlashStep::WriteRelMem { .. }
+                | FlashStep::LoadCompleted { target: Some(4) }
+        )));
+        assert!(
+            plan.steps
+                .iter()
+                .any(|s| matches!(s, FlashStep::Unload { target: Some(5) })),
+            "another object's steps stay"
+        );
         Ok(())
     }
 }

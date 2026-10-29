@@ -224,6 +224,14 @@ exact bytes the executor sends: `0x<addr>.bin` for an absolute write,
 base), `table-obj<N>.bin` or `table-lsm<N>.bin` for the tables. A System 7
 segment with device-owned octets also gets a `.mask.bin`.
 
+`knxtrace image` also writes `resident.json`, what the device answered ETS
+before the download (the application objects' load states, `PID_PROGRAM_VERSION`,
+the first `PID_MCB_TABLE` entry per object). `flash --dry-run --resident
+out/ets/resident.json` plans against it as a live flash plans against its
+pre-flight probe (issue #490): a device that holds the application gets the
+product's `par` load procedure, and an object whose MCB already matches is not
+re-loaded. `95-offline-oracle.sh` passes it whenever the capture has one.
+
 `knxtrace image` composes what ETS wrote: one `.bin` per contiguous written
 region and `regions.json` with the allocation records. A relative segment's base
 is the `PID_TABLE_REFERENCE` ETS reads back after allocating it, and a

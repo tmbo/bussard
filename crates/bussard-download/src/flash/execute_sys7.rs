@@ -122,8 +122,8 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                         address,
                         size,
                         mem_type,
+                        access,
                         seg_flags,
-                        checksum_ctrl,
                         seg_type,
                         image,
                     } => {
@@ -132,19 +132,14 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                         //    per-segment attribute octets, which the plan takes from the
                         //    op's `Access`/`MemType`/`SegFlags` (ETS reproduces them
                         //    verbatim) or derives from the address when absent.
-                        let (seg_flags, checksum_ctrl) = (*seg_flags, *checksum_ctrl);
+                        let (access, seg_flags) = (*access, *seg_flags);
                         // Checked, not truncated: an out-of-range address used to go out as
                         // a wrong allocation frame before the following write refused.
                         let target = session.l4().target();
                         let seg_addr = sys7_u16(target, "segment address", *address)?;
                         let seg_size = sys7_u16(target, "segment size", *size)?;
                         let event = bussard_mgmt::encode_alloc_segment(
-                            *seg_type,
-                            seg_addr,
-                            seg_size,
-                            seg_flags,
-                            *mem_type,
-                            checksum_ctrl,
+                            *seg_type, seg_addr, seg_size, access, *mem_type, seg_flags,
                         );
                         let octet = lsm_octet(target, *idx)?;
                         lsm.send_control(session.l4(), octet, &event).await?;
@@ -157,14 +152,14 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                             // Spot-check only unmasked, checksum-controlled segments
                             // written blind: a masked segment leaves device-owned
                             // bytes untouched, so the image's leading octets do not
-                            // equal the device's memory; a `checksum_ctrl == 0`
+                            // equal the device's memory; a `seg_flags == 0`
                             // segment is rewritten by the running application after
                             // the restart (1.1.36 `0x4916`: written `0c`, read back
                             // `00`), so its sample proves nothing. A read-compare
                             // write compared every octet already.
                             if blind
                                 && !ctx.segment_masks.contains_key(&img.segment_id)
-                                && checksum_ctrl != 0
+                                && seg_flags != 0
                                 && let Some(bytes) = plan.images.get(&img.segment_id)
                             {
                                 let part = image_part(bytes, img);

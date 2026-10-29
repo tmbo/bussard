@@ -1315,15 +1315,23 @@ pub async fn read_table_reference<Ch: L4Channel>(
 //
 // Reference: KNX 3/5/2 "Management Procedures" (`LdCtrlLoadImageProp`) and 3/5/1
 // (interface-object property definitions). The System B `PID_MCB_TABLE` (27) is a
-// **read-only, device-computed** `PDT_GENERIC_08` (8-octet) property, readable
-// while the object is `Loaded`, laid out as:
+// `PDT_GENERIC_08` (8-octet) array property, readable while the object is
+// `Loaded`, laid out as:
 //
 // | octet | field           | value                                           |
 // |-------|-----------------|-------------------------------------------------|
 // | 0..4  | segment size    | u32 **big-endian**                              |
 // | 4     | CRC control     | `0x00` ("always valid")                         |
-// | 5     | access          | `0xFF` (read 4 bits + write 4 bits)             |
+// | 5     | access          | the product's (read 4 bits + write 4 bits)      |
 // | 6..8  | CRC             | CRC-16/AUG-CCITT over the segment bytes — BE    |
+//
+// It is not read-only everywhere: 685 load procedures of the product corpus
+// seed it with `LdCtrlWriteProp PropId=27` before the segment is written (the
+// house's Jung 07B0 applications write object 4's entries with access `0x33`,
+// the ETS capture of `M-0002_A-0001-01` writes `00 00 00 1a 00 32 00 00`,
+// access `0x32`), and the device fills in the CRC over what it stores. The
+// access octet is therefore the product's, not a fixed `0xFF` (#482).
+// Verification compares the CRC only, so it holds whatever the access is.
 //
 // The CRC is **CRC-16/AUG-CCITT** (the message is augmented with 16 zero bits
 // before reduction): width 16, polynomial `0x1021`, initial value `0xFFFF`, input
@@ -1338,7 +1346,8 @@ pub async fn read_table_reference<Ch: L4Channel>(
 /// `PID_MCB_TABLE` (27) — a loadable object's memory-control-block table, an
 /// array of 8-octet entries each describing a segment (size, access, and a
 /// CRC-16/AUG-CCITT the device computes over the segment's stored bytes).
-/// Read-only and device-computed on System B (KNX 3/5/1).
+/// Many load procedures seed the entries with `LdCtrlWriteProp PropId=27`; the
+/// device computes the CRC (KNX 3/5/1).
 pub const PID_MCB_TABLE: u8 = 27;
 
 /// The octet width of one `PID_MCB_TABLE` entry (`PDT_GENERIC_08`).
@@ -1374,19 +1383,21 @@ pub fn crc16_ccitt(data: &[u8]) -> u16 {
 
 /// Builds the 8-octet `PID_MCB_TABLE` entry a device is expected to report for a
 /// segment holding exactly `segment_data`, per the System B layout (KNX 3/5/1):
-/// `[size:u32 BE][crc_control=0x00][access=0xFF][crc16:u16 BE]`.
+/// `[size:u32 BE][crc_control=0x00][access][crc16:u16 BE]`.
 ///
 /// `crc16` is [`crc16_ccitt`] over `segment_data`; `size` is `segment_data.len()`
-/// (the device reports the segment size it stored). Used to validate a
-/// `LdCtrlLoadImageProp` step: the tool computes this over the bytes it wrote and
-/// compares it to what [`read_mcb_table`] reads back.
-pub fn mcb_entry(segment_data: &[u8]) -> [u8; MCB_ENTRY_LEN] {
+/// (the device reports the segment size it stored); `access` is the product's
+/// access octet, the one its procedure seeds with `LdCtrlWriteProp PropId=27`
+/// (`0x33` on the house's Jung applications, `0x32` on `M-0002_A-0001-01`;
+/// issue #482). [`read_mcb_table`] compares the CRC only, so the access octet
+/// never decides a verification.
+pub fn mcb_entry(segment_data: &[u8], access: u8) -> [u8; MCB_ENTRY_LEN] {
     let size = segment_data.len() as u32;
     let crc = crc16_ccitt(segment_data);
     let mut v = [0u8; MCB_ENTRY_LEN];
     v[0..4].copy_from_slice(&size.to_be_bytes());
     v[4] = 0x00; // CRC control byte: always valid.
-    v[5] = 0xFF; // read/write access.
+    v[5] = access; // read/write access levels, the product's.
     v[6..8].copy_from_slice(&crc.to_be_bytes());
     v
 }
@@ -1431,8 +1442,9 @@ impl McbEntry {
 /// [`WriteError::ImagePropMismatch`]; a device that answers with no readable MCB
 /// entry surfaces [`WriteError::WriteNotConfirmed`]-style malformed responses.
 ///
-/// The MCB property is device-computed and read-only on System B, so this never
-/// writes it — it reads and checks. `expected` is `None` for objects whose image
+/// The device computes the MCB's CRC (a procedure may seed the entry with
+/// `LdCtrlWriteProp PropId=27`, but never its CRC), so this never writes it —
+/// it reads and checks. `expected` is `None` for objects whose image
 /// the tool did not itself write (e.g. an object the procedure names but for
 /// which bussard streamed no segment); those entries are read but not
 /// CRC-checked, so the step still confirms the property is present.
@@ -1871,21 +1883,22 @@ mod tests {
 
     #[test]
     fn mcb_entry_matches_spec_layout() -> std::result::Result<(), Box<dyn std::error::Error>> {
-        // [size u32 BE][crc_ctrl=0x00][access=0xFF][crc16 u16 BE], 8 octets
-        // (KNX 3/5/1 System B PID_MCB_TABLE).
+        // [size u32 BE][crc_ctrl=0x00][access][crc16 u16 BE], 8 octets
+        // (KNX 3/5/1 System B PID_MCB_TABLE); access 0x33 as the house's Jung
+        // applications seed it.
         let data = b"123456789";
-        let e = mcb_entry(data);
+        let e = mcb_entry(data, 0x33);
         assert_eq!(e.len(), MCB_ENTRY_LEN);
         assert_eq!(&e[0..4], &(data.len() as u32).to_be_bytes()); // size = 9
         assert_eq!(e[4], 0x00); // CRC control: always valid
-        assert_eq!(e[5], 0xFF); // access
+        assert_eq!(e[5], 0x33); // access
         assert_eq!(&e[6..8], &0xE5CCu16.to_be_bytes()); // CRC-16/AUG-CCITT of "123456789"
 
         // Round-trips through the decoder.
         let dec = McbEntry::decode(&e).ok_or("missing value")?;
         assert_eq!(dec.segment_size, 9);
         assert_eq!(dec.crc_control, 0x00);
-        assert_eq!(dec.access, 0xFF);
+        assert_eq!(dec.access, 0x33);
         assert_eq!(dec.crc16, 0xE5CC);
         Ok(())
     }

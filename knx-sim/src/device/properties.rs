@@ -685,7 +685,7 @@ mod tests {
         connect(&mut dev)?;
         dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
         // StartLoading + alloc LSM 1 at 0x4000 via the 11-octet memory record
-        // (LSM in the high nibble of octet 0, 3-octet start address).
+        // (state machine in the high nibble of octet 0, segment ID in octet 2).
         let start_rec = [0x11u8, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0];
         dev.handle_cemi(&mem_write_frame(&dev, 0x0104, &start_rec))?;
         let alloc_rec = [

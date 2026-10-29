@@ -23,6 +23,7 @@ mod flash_cmd;
 mod flash_dump;
 mod flash_handover;
 mod flash_params;
+mod flash_resident;
 mod groups_cmd;
 mod ha_config_cmd;
 mod history_cmd;
@@ -1065,6 +1066,15 @@ enum Command {
         /// flash would stream (one `.bin` each, plus the table images) into DIR.
         #[arg(long, value_name = "DIR", requires = "dry_run")]
         dump_images: Option<PathBuf>,
+        /// With `--dry-run`, plan against the device state recorded in FILE
+        /// (JSON: the application objects' load states, the application id
+        /// and the MCB entries, as `knxtrace image` writes it from an ETS
+        /// capture) instead of no device: the freshness verdict, the
+        /// product's `par` procedure for a device holding this application,
+        /// and the skip of objects whose image already matches take the shape
+        /// a live flash takes on that device (issue #490).
+        #[arg(long, value_name = "FILE", requires = "dry_run")]
+        resident: Option<PathBuf>,
     },
     /// Show what `apply` would write to a device (links and, with product
     /// data, parameters) without writing; or (with `--line`) plan every model
@@ -1842,6 +1852,7 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
             secure_sender,
             dry_run,
             dump_images,
+            resident,
         } => flash_cmd::run(
             &address,
             product.as_deref(),
@@ -1861,7 +1872,10 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
             flash_cmd::FlashOutput {
                 json,
                 verbose: g.verbose,
-                dry_run: dry_run.then_some(flash_cmd::DryRun { dump_images }),
+                dry_run: dry_run.then_some(flash_cmd::DryRun {
+                    dump_images,
+                    resident,
+                }),
             },
         ),
         Command::Plan {

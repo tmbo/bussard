@@ -15,6 +15,13 @@
 # `flash --dry-run --dump-images` (no gateway is resolved, no connection is
 # opened) and knxtrace composes the ETS image from the capture offline.
 #
+# The device state ETS read before its download (the application objects'
+# load states, PID_PROGRAM_VERSION, the MCB entries) is what bussard's
+# pre-flight probe reads live: knxtrace writes it as `resident.json` and the
+# dry run plans against it (`--resident`, issue #490), so a device that
+# already holds the application gets the product's `par` load procedure and
+# an object whose MCB already matches is skipped, as on the bus.
+#
 # A row is `device|capture|product|application|note|coverage|options`, one per
 # line in the rows file (a line starting with `#` is a comment, blank lines are
 # skipped; the last two fields are optional):
@@ -407,6 +414,9 @@ PY
     fi
     local app_args=()
     [ -n "$application" ] && app_args=(--application "$application")
+    # The device state ETS read before its download (issue #490): bussard
+    # plans against it as a live flash plans against its pre-flight probe.
+    [ -f "$dir/ets/resident.json" ] && app_args+=(--resident "$dir/ets/resident.json")
     # No --keyring and no $BUSSARD_KEYRING: the model's key store decides.
     if ! env -u BUSSARD_KEYRING "$BUSSARD_BIN" flash "$device" --product "$prod" \
          ${app_args+"${app_args[@]}"} \

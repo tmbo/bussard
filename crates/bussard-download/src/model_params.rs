@@ -872,14 +872,14 @@ pub fn write_parameter_memory_backup(
 }
 
 /// The System 7 segments the running application rewrites after the restart
-/// (`checksum_ctrl == 0`, the Jung `0x4916` region, issue #89): their
+/// (`seg_flags == 0`, the Jung `0x4916` region, issue #89): their
 /// read-back proves nothing, so the verify skips them.
 pub fn runtime_segments(plan: &FlashPlan) -> std::collections::BTreeSet<String> {
     plan.steps
         .iter()
         .filter_map(|step| match step {
             FlashStep::Sys7AbsSegment {
-                checksum_ctrl: 0,
+                seg_flags: 0,
                 image: Some(image),
                 ..
             } => Some(image.segment_id.clone()),

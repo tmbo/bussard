@@ -56,13 +56,16 @@ pub const PID_TABLE: u8 = 23;
 /// memory write is echoed as an A_Memory_Response.
 pub const PID_DEVICE_CONTROL: u8 = 14;
 /// `PID_MCB_TABLE` (27) — a loadable object's memory-control-block table. On
-/// System B it is a device-computed, read-only array of 8-octet entries, each an
-/// integrity block over a stored segment (size + a CRC the device computes). A
-/// modern download's `LdCtrlLoadImageProp` step reads it back to verify the
-/// written image.
+/// System B it is an array of 8-octet entries, each an integrity block over a
+/// stored segment (size + a CRC the device computes). Many load procedures
+/// seed the entries with `LdCtrlWriteProp PropId=27`; a modern download's
+/// `LdCtrlLoadImageProp` step reads it back to verify the written image.
 pub const PID_MCB_TABLE: u8 = 27;
-/// Run-state / app-id finalize property written near the end of a flash.
-pub const PID_RUN_STATE_CONTROL: u8 = 0x0D;
+/// `PID_PROGRAM_VERSION` (13): the application identity (manufacturer,
+/// application number, version) a download writes to the application object
+/// before its `LoadCompleted`. PID 6 is `PID_RUN_STATE_CONTROL`; this constant
+/// carried that name until #482.
+pub const PID_PROGRAM_VERSION: u8 = 0x0D;
 /// `PID_PROGMODE` — the programming-mode flag on the device object.
 pub const PID_PROGMODE: u8 = 0x36;
 

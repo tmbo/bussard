@@ -92,7 +92,15 @@ import struct
 from typing import Dict, List, Optional, Tuple
 
 from datasecure import PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE, SECURITY_OBJECT_TYPE, is_key_material
-from normalize import KIND_ALLOC, KIND_MEM_WRITE, DeviceOps, coalesce
+from normalize import (
+    KIND_ALLOC,
+    KIND_LOAD_EVENT,
+    KIND_MEM_WRITE,
+    KIND_PROP_READ,
+    KIND_RESTART,
+    DeviceOps,
+    coalesce,
+)
 
 # LdCtrl subtypes of an `AdditionalLoadControls` (event 3) record.
 # AbsSegment, data (00h) or stack (01h, SegType 1): [3][sub][start:2][len:2][acc][mem][attr][0]
@@ -411,6 +419,65 @@ def load_control_writes(ops: DeviceOps) -> List[Dict[str, object]]:
     return out
 
 
+# The device state the tool read before the download (issue #490), the file
+# `compose` writes and `bussard flash --dry-run --resident` reads.
+RESIDENT_FILE = "resident.json"
+PID_PROGRAM_VERSION = 13
+PID_MCB_TABLE = 27
+MCB_ENTRY_LEN = 8
+
+
+def resident_state(ops: DeviceOps) -> Optional[Dict[str, object]]:
+    """What the device answered the tool before the download, in the form
+    `bussard flash --dry-run --resident` reads (issue #490): the
+    `PID_LOAD_STATE_CONTROL` octet of every object whose load state was read,
+    the `PID_PROGRAM_VERSION` of the first loaded object that answered one,
+    and the first `PID_MCB_TABLE` entry per object, all hex.
+
+    Only the answers between the last restart before the download and the
+    first load-control write count: a factory reset ETS opens a download with
+    erases what was read before it. `None` when no load state was read (the
+    dry run then plans without a device state, as before).
+    """
+    states: Dict[int, int] = {}
+    versions: Dict[int, bytes] = {}
+    mcb: Dict[int, bytes] = {}
+    for op in ops.ops:
+        if op.direction == "req" and op.kind in (KIND_LOAD_EVENT, KIND_ALLOC, KIND_MEM_WRITE):
+            break
+        if op.direction == "req" and op.kind == KIND_RESTART:
+            states.clear()
+            versions.clear()
+            mcb.clear()
+            continue
+        apdu = op.apdu
+        if op.direction != "res" or op.kind != KIND_PROP_READ or apdu is None or not op.data:
+            continue
+        f = apdu.fields
+        if apdu.name != "A_PropertyValue_Response" or f.get("truncated") or "obj_type" in f:
+            continue
+        obj, pid = f.get("obj"), f.get("pid")
+        if not isinstance(obj, int) or not isinstance(pid, int):
+            continue
+        if pid == PID_LOAD_STATE_CONTROL:
+            states[obj] = op.data[0]
+        elif pid == PID_PROGRAM_VERSION:
+            versions[obj] = op.data
+        elif pid == PID_MCB_TABLE and len(op.data) >= MCB_ENTRY_LEN:
+            mcb[obj] = op.data[:MCB_ENTRY_LEN]
+    if not states:
+        return None
+    out: Dict[str, object] = {
+        "objects": [{"index": obj, "state": state} for obj, state in sorted(states.items())],
+        "mcb": {str(obj): entry.hex() for obj, entry in sorted(mcb.items())},
+    }
+    for obj in sorted(versions):
+        if states.get(obj) == 1 and any(versions[obj]):
+            out["app_id"] = versions[obj].hex()
+            break
+    return out
+
+
 def compose(ops: DeviceOps, out_dir: str, source: str = "") -> Dict[str, object]:
     """Writes the composed image of one device's download into `out_dir`.
 
@@ -472,6 +539,15 @@ def compose(ops: DeviceOps, out_dir: str, source: str = "") -> Dict[str, object]
     with open(os.path.join(out_dir, LOAD_CONTROLS_FILE), "w", encoding="utf-8") as fh:
         json.dump(load_control_writes(ops), fh, indent=2)
         fh.write("\n")
+
+    resident = resident_state(ops)
+    resident_path = os.path.join(out_dir, RESIDENT_FILE)
+    if resident is not None:
+        with open(resident_path, "w", encoding="utf-8") as fh:
+            json.dump(resident, fh, indent=2)
+            fh.write("\n")
+    elif os.path.exists(resident_path):
+        os.remove(resident_path)
 
     props = property_writes(ops)
     with open(os.path.join(out_dir, "properties.json"), "w", encoding="utf-8") as fh:

@@ -359,8 +359,8 @@ pub fn write_dump(
                 address,
                 size,
                 mem_type,
+                access,
                 seg_flags,
-                checksum_ctrl,
                 image,
                 ..
             } => {
@@ -371,8 +371,8 @@ pub fn write_dump(
                     "address": address,
                     "size": size,
                     "mem_type": mem_type,
-                    "access": seg_flags,
-                    "checksum_ctrl": checksum_ctrl,
+                    "access": access,
+                    "seg_flags": seg_flags,
                 }));
                 if let Some(image) = image {
                     let stem = format!("0x{address:06X}");
@@ -573,6 +573,9 @@ pub fn write_dump(
             "mask": plan.identity.mask_version,
         },
         "write_bytes": plan.total_write_bytes(),
+        // Which of the product's load procedures the plan runs (issue #490):
+        // `par` on a device that already holds the application.
+        "load_procedure": if plan.is_par_procedure() { "par" } else { "full" },
         // How many load-control records the steps carry (issue #419); its
         // presence tells the oracle the dump lists them at all.
         "load_control_records": load_control_count,

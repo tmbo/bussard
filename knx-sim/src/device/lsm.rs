@@ -64,6 +64,10 @@ pub enum LoadEvent {
     AllocRelSegment {
         /// The requested segment size in bytes.
         size: u32,
+        /// The fill byte when the `Mode` octet's bit 0 asks for the memory
+        /// to be filled, `None` for Mode 0, "keep the memory contents"
+        /// (Configuration Procedures 03_05_03 §3.5.1.2, issue #581).
+        fill: Option<u8>,
     },
     /// `Unload` (0x04).
     Unload,
@@ -102,7 +106,13 @@ impl LoadEvent {
                     return Err(LoadEventError::MissingSize);
                 }
                 let size = u32::from_be_bytes([data[2], data[3], data[4], data[5]]);
-                Ok(LoadEvent::AllocRelSegment { size })
+                // Octet 6 is `Mode` (bit 0: fill), octet 7 the `Fill` byte; a
+                // record cut after the size keeps the memory, as Mode 0 does.
+                let fill = match (data.get(6), data.get(7)) {
+                    (Some(mode), fill) if mode & 0x01 != 0 => Some(fill.copied().unwrap_or(0)),
+                    _ => None,
+                };
+                Ok(LoadEvent::AllocRelSegment { size, fill })
             }
             0x04 => Ok(LoadEvent::Unload),
             other => Err(LoadEventError::UnknownEvent(other)),
@@ -181,7 +191,7 @@ impl LoadStateMachine {
             // the allocation: a tool resuming a step re-issues it.
             (LoadState::Loading, LoadEvent::StartLoading) => {}
             // Allocation is only valid while Loading.
-            (LoadState::Loading, LoadEvent::AllocRelSegment { size }) => {
+            (LoadState::Loading, LoadEvent::AllocRelSegment { size, .. }) => {
                 self.allocated_size = Some(size);
             }
             // LoadCompleted is only valid from Loading and finalises to Loaded.
@@ -453,7 +463,31 @@ mod tests {
         assert_eq!(LoadEvent::decode(&[0x04])?, LoadEvent::Unload);
         assert_eq!(
             LoadEvent::decode(&[0x03, 0x0b, 0x00, 0x00, 0x01, 0x00])?,
-            LoadEvent::AllocRelSegment { size: 256 }
+            LoadEvent::AllocRelSegment {
+                size: 256,
+                fill: None
+            }
+        );
+        Ok(())
+    }
+
+    /// Issue #581: the `Mode` octet's bit 0 asks for the `Fill` byte; Mode 0
+    /// keeps the memory contents (Configuration Procedures §3.5.1.2).
+    #[test]
+    fn test_decode_rel_segment_mode_and_fill() -> Result<(), LoadEventError> {
+        assert_eq!(
+            LoadEvent::decode(&[0x03, 0x0b, 0x00, 0x00, 0x01, 0x00, 0x01, 0xff, 0x00, 0x00])?,
+            LoadEvent::AllocRelSegment {
+                size: 256,
+                fill: Some(0xFF)
+            }
+        );
+        assert_eq!(
+            LoadEvent::decode(&[0x03, 0x0b, 0x00, 0x00, 0x01, 0x00, 0x00, 0xff, 0x00, 0x00])?,
+            LoadEvent::AllocRelSegment {
+                size: 256,
+                fill: None
+            }
         );
         Ok(())
     }
@@ -471,7 +505,10 @@ mod tests {
         let mut lsm = LoadStateMachine::default();
         assert_eq!(lsm.apply(LoadEvent::StartLoading)?, LoadState::Loading);
         assert_eq!(
-            lsm.apply(LoadEvent::AllocRelSegment { size: 256 })?,
+            lsm.apply(LoadEvent::AllocRelSegment {
+                size: 256,
+                fill: None
+            })?,
             LoadState::Loading
         );
         assert_eq!(lsm.allocated_size(), Some(256));
@@ -493,7 +530,10 @@ mod tests {
     fn test_apply_alloc_in_unloaded_stays_unloaded() -> Result<(), TransitionError> {
         let mut lsm = LoadStateMachine::default();
         assert_eq!(
-            lsm.apply(LoadEvent::AllocRelSegment { size: 256 })?,
+            lsm.apply(LoadEvent::AllocRelSegment {
+                size: 256,
+                fill: None
+            })?,
             LoadState::Unloaded
         );
         assert_eq!(lsm.allocated_size(), None);
@@ -504,7 +544,10 @@ mod tests {
     fn test_apply_start_loading_in_loading_stays_loading() -> Result<(), TransitionError> {
         let mut lsm = LoadStateMachine::default();
         lsm.apply(LoadEvent::StartLoading)?;
-        lsm.apply(LoadEvent::AllocRelSegment { size: 16 })?;
+        lsm.apply(LoadEvent::AllocRelSegment {
+            size: 16,
+            fill: None,
+        })?;
         assert_eq!(lsm.apply(LoadEvent::StartLoading)?, LoadState::Loading);
         // The allocation survives the repeated StartLoading.
         assert_eq!(lsm.allocated_size(), Some(16));
@@ -521,7 +564,13 @@ mod tests {
     #[test]
     fn test_apply_alloc_in_loaded_is_error() {
         let mut lsm = LoadStateMachine::new(LoadState::Loaded);
-        assert!(lsm.apply(LoadEvent::AllocRelSegment { size: 16 }).is_err());
+        assert!(
+            lsm.apply(LoadEvent::AllocRelSegment {
+                size: 16,
+                fill: None
+            })
+            .is_err()
+        );
         assert_eq!(lsm.state(), LoadState::Error);
     }
 

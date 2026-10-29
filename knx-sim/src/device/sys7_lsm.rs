@@ -180,14 +180,15 @@ pub const MEMORY_LSM_RECORD_SIZE: usize = 11;
 ///
 /// The record layout (Theben 0701 Meteodata capture CONFIRMED) is:
 /// ```text
-/// [0] (lsm_index << 4) | event_opcode   [1] subtype   [2] 0x00 (addr high octet)
+/// [0] (lsm_index << 4) | event_opcode   [1] segment type   [2] segment ID (0x00)
 /// [3..5] start:2 BE   [5..7] length:2 BE   [7..11] tail
 /// ```
-/// The LSM index lives in the high nibble of octet 0 (there is no separate
-/// `[lsm][00]` prefix), and the start address occupies 3 octets. This narrows the
-/// 3-octet address back to the 2-octet abstract form ([`Sys7Event::decode`]
-/// consumes a 2-octet address at `record[2..4]`), i.e. the exact inverse of the
-/// tool-side `wrap_memory_lsm_record`.
+/// The state machine, the object type of the loadable part (1 to 4, the LSM
+/// index), lives in the high nibble of octet 0 (there is no separate
+/// `[lsm][00]` prefix), and octet 2 is the segment ID (KNX 3/5/2 §3.31.2). This
+/// drops the segment ID to get the abstract form ([`Sys7Event::decode`]
+/// consumes the 2-octet address at `record[2..4]`), i.e. the exact inverse of
+/// the tool-side `wrap_memory_lsm_record`.
 pub fn decode_memory_lsm_record(record: &[u8]) -> Result<(u8, [u8; 10]), Sys7EventError> {
     if record.len() < MEMORY_LSM_RECORD_SIZE {
         return Err(Sys7EventError::TooShort(
@@ -198,9 +199,9 @@ pub fn decode_memory_lsm_record(record: &[u8]) -> Result<(u8, [u8; 10]), Sys7Eve
     let event_opcode = record[0] & 0x0F;
     let mut event = [0u8; 10];
     event[0] = event_opcode;
-    event[1] = record[1]; // subtype
-    // Narrow the 3-octet start (record[2..5], high octet record[2] is 0x00) to the
-    // 2-octet abstract address, then copy length + tail verbatim.
+    event[1] = record[1]; // segment type
+    // Drop the segment ID (record[2], 0x00, KNX 3/5/2 §3.31.2), then copy the
+    // start address, length and tail verbatim.
     event[2..10].copy_from_slice(&record[3..MEMORY_LSM_RECORD_SIZE]);
     Ok((lsm_index, event))
 }

@@ -2193,6 +2193,52 @@ class TestIpSecureCompare(unittest.TestCase):
         self.assertIn("clock", props["matched"][0]["why"])
 
 
+class TestResidentState(unittest.TestCase):
+    """`resident.json`: what the device answered before the download (#490)."""
+
+    def image_dir(self, frames) -> str:
+        path = tempfile.mkstemp(suffix=".pcapng")[1]
+        self.addCleanup(os.unlink, path)
+        udp_capture(path, [(tunneling_request(f, seq=n), True) for n, f in enumerate(frames)])
+        out = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, out, ignore_errors=True)
+        self.assertEqual(main(["image", path, "--device", "1.1.5", "--out", out]), 0)
+        return out
+
+    def test_compose_writes_the_reads_before_the_first_load_control(self):
+        tool, dev = "0.0.0", "1.1.5"
+        mcb = bytes.fromhex("000005f600330b93")
+        frames = [
+            cemi_ldata(tool, dev, t_connect()),
+            cemi_ldata(dev, tool, prop_response(4, 5, 1, 1, b"\x01", seq=0), mc=0x29),
+            cemi_ldata(dev, tool, prop_response(4, 13, 1, 1, bytes.fromhex("000420de22"), seq=1),
+                       mc=0x29),
+            cemi_ldata(dev, tool, prop_response(5, 5, 1, 1, b"\x00", seq=2), mc=0x29),
+            cemi_ldata(dev, tool, prop_response(3, 27, 1, 1, mcb, seq=3), mc=0x29),
+            cemi_ldata(tool, dev, prop_write(4, 5, 1, 1, bytes([4]) + bytes(9), seq=0)),
+            # After the first load control: not the resident state.
+            cemi_ldata(dev, tool, prop_response(1, 27, 1, 1, mcb, seq=4), mc=0x29),
+            cemi_ldata(tool, dev, t_disconnect()),
+        ]
+        with open(os.path.join(self.image_dir(frames), memimage.RESIDENT_FILE)) as fh:
+            resident = json.load(fh)
+        self.assertEqual(resident, {
+            "objects": [{"index": 4, "state": 1}, {"index": 5, "state": 0}],
+            "mcb": {"3": mcb.hex()},
+            "app_id": "000420de22",
+        })
+
+    def test_compose_writes_no_resident_state_without_a_load_state_read(self):
+        tool, dev = "0.0.0", "1.1.5"
+        frames = [
+            cemi_ldata(tool, dev, t_connect()),
+            cemi_ldata(tool, dev, prop_write(4, 5, 1, 1, bytes([4]) + bytes(9), seq=0)),
+            cemi_ldata(tool, dev, t_disconnect()),
+        ]
+        out = self.image_dir(frames)
+        self.assertFalse(os.path.exists(os.path.join(out, memimage.RESIDENT_FILE)))
+
+
 class TestLoadControls(unittest.TestCase):
     """`load_controls.json` and the load-control parity (issue #419)."""
 

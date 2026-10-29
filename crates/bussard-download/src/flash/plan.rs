@@ -411,6 +411,10 @@ pub fn plan_flash_with_memo(
     // segment and then check each object's MCB in turn.
     let mut written_image_by_object: std::collections::HashMap<u32, ImageRef> =
         std::collections::HashMap::new();
+    // The allocations of the product's `AppliesTo="par"` procedure (issue
+    // #490): the planner lowers the `full` one, and a download onto a device
+    // that already holds this application swaps in these.
+    let mut par_allocations: BTreeMap<Option<u32>, (u32, Option<u8>)> = BTreeMap::new();
 
     // The objects worth loading are exactly the ones that receive a segment
     // (a `RelSegment` allocation). A master template also opens/completes
@@ -538,6 +542,12 @@ pub fn plan_flash_with_memo(
                 let size = size
                     .or_else(|| seg.as_ref().and_then(|(_, s)| *s))
                     .unwrap_or(0);
+                if applies_to
+                    .as_deref()
+                    .is_some_and(super::par_procedure::is_par_only)
+                {
+                    par_allocations.insert(*lsm_idx, (size, *fill));
+                }
                 // The requested segment size drives the device allocation; an
                 // absurd vendor `Size` is corrupt input, refused before it can
                 // become a huge allocation request.
@@ -1048,6 +1058,8 @@ pub fn plan_flash_with_memo(
         baseline_address: BTreeMap::new(),
         security_capacity: Default::default(),
         user_memory_above_64k: crate::apply::uses_user_memory(Some(app)),
+        par_allocations,
+        par_procedure: false,
     })
 }
 

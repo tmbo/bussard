@@ -103,6 +103,7 @@ mod execute_sys7;
 mod knxnet_ip;
 mod labels;
 mod load_records;
+mod par_procedure;
 mod partial;
 mod plan;
 mod plan_props;
@@ -469,14 +470,17 @@ pub enum FlashStep {
         /// The memory type for the allocation (`3` = EEPROM, `2` = RAM): the op's
         /// `MemType`, or derived from the address via the mask profile.
         mem_type: u8,
-        /// The allocation record's access-attribute octet: the op's `Access`
-        /// (`0xF2`/`0xF3` on the Jung System 7 apps), else `0xF2`.
+        /// The allocation record's access-attributes octet (octet 6): the op's
+        /// `Access` (`0xF2`/`0xF3` on the Jung System 7 apps, the product's own
+        /// attribute), else `0xF2`.
+        access: u8,
+        /// The allocation record's memory-attributes octet (octet 8, bit 7
+        /// checksum control, KNX 3/5/2 §3.31.2): the op's `SegFlags` (`0x80`
+        /// checksum-controlled, `0x00` runtime-writable), else derived from
+        /// `mem_type`. A `0x00` segment is not spot-checked after the restart:
+        /// the application rewrites it (issue #89, 1.1.36 `0x4916`). The field
+        /// names were swapped until #482.
         seg_flags: u8,
-        /// The allocation record's checksum-control octet: the op's `SegFlags`
-        /// (`0x80` checksum-controlled, `0x00` runtime-writable), else derived
-        /// from `mem_type`. A `0x00` segment is not spot-checked after the
-        /// restart: the application rewrites it (issue #89, 1.1.36 `0x4916`).
-        checksum_ctrl: u8,
         /// The Additional Load Controls segment type the allocation goes out
         /// as: the op's `SegType`, `0x00` AllocAbsDataSeg (absent) or `0x01`
         /// AllocAbsStackSeg (KNX 3/5/2 §3.31.2; issue #487).
@@ -971,6 +975,15 @@ pub struct FlashPlan {
     /// so memory above `0xFFFF` is written and read with `A_UserMemory_*`
     /// as ETS does (issue #472). `false` on System 7 and property plans.
     user_memory_above_64k: bool,
+    /// The allocations the product's `AppliesTo="par"` load procedure makes
+    /// (object index to size and fill), recorded by the planner so a full
+    /// download onto a device that already holds this application can run
+    /// that procedure instead of the `full` one (issue #490,
+    /// [`FlashPlan::use_par_procedure`]). Empty when the product declares no
+    /// `par` allocation.
+    par_allocations: BTreeMap<Option<u32>, (u32, Option<u8>)>,
+    /// Whether [`FlashPlan::use_par_procedure`] shaped this plan.
+    par_procedure: bool,
 }
 
 /// The System 7 execution context attached to a [`FlashPlan`] for a mask
