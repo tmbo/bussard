@@ -1112,6 +1112,27 @@ fn validity_problems(dpt: &Dpt, payload: &[u8]) -> Vec<String> {
             range(&mut out, "month", b1 & 0x0F, 1, 12);
             range(&mut out, "year", b2 & 0x7F, 0, 99);
         }
+        // 16.x (§3.17, §3.4): 16.000 carries no byte above 7Fh, and the octets
+        // after the first 00h are padding, all 00h.
+        (16, sub) => {
+            let text = &payload[..payload.len().min(14)];
+            if sub == Some(0)
+                && let Some(b) = text.iter().find(|b| **b > 0x7F)
+            {
+                out.push(format!("byte {b:#04x} is outside the 16.000 ASCII range"));
+            }
+            if let Some(nul) = text.iter().position(|b| *b == 0)
+                && text[nul..].iter().any(|b| *b != 0)
+            {
+                out.push("a character follows the 00h padding".to_string());
+            }
+        }
+        // 28.001 (§3.27.1): NUL-terminated UTF-8.
+        (28, _) => {
+            if !payload.contains(&0) {
+                out.push("the string has no terminating 00h".to_string());
+            }
+        }
         // 17.001 (§3.18): r r SceneNumber.
         (17, _) => {
             if let Some(b) = byte(0) {
@@ -1368,15 +1389,22 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
             })
         }
         16 => {
-            // 14-char string; 16.000 ASCII, 16.001 ISO-8859-1 (Latin-1).
-            let mut s = String::new();
-            for &b in payload.iter().take(14) {
-                if b == 0 {
-                    break;
-                }
-                s.push(b as char); // Latin-1: byte value == code point.
-            }
-            Some(TypedValue::Text(s))
+            // 14 octets, filled from the first, unused trailing octets 00h
+            // (03_07_02 §3.17): trim the padding only, so an embedded NUL stays
+            // visible. 16.000 is ASCII, 16.001 ISO 8859-1, where the byte value
+            // is the code point; a high byte on 16.000 is shown the same way
+            // and reported by `validity_note`.
+            let text = &payload[..payload.len().min(14)];
+            let end = text.iter().rposition(|b| *b != 0).map_or(0, |i| i + 1);
+            Some(TypedValue::Text(
+                text[..end].iter().map(|b| char::from(*b)).collect(),
+            ))
+        }
+        28 => {
+            // 28.001 DPT_UTF-8 (03_07_02 §3.27.1): UTF-8, terminated by 00h.
+            let end = payload.iter().position(|b| *b == 0).unwrap_or(payload.len());
+            let text = std::str::from_utf8(&payload[..end]).ok()?;
+            Some(TypedValue::Text(text.to_string()))
         }
         17 => {
             let scene = *payload.first()? & 0x3f;
@@ -1542,6 +1570,15 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
 /// - **12.x** — an unsigned integer `0`–`4294967295`.
 /// - **13.x** — a signed 32-bit integer, optional unit suffix.
 /// - **14.x** — a decimal (IEEE float), optional unit suffix.
+/// - **10.001** — a time `HH:MM[:SS]`, optionally after a weekday
+///   (`Mon 07:30`).
+/// - **11.001** — a date `YYYY-MM-DD` in 1990..2089 (03_07_02 §3.12).
+/// - **16.000 / 16.001** — text of up to 14 characters, ASCII on 16.000 and
+///   Latin-1 on 16.001, padded with 00h (§3.17); quotes keep spaces.
+/// - **19.001** — `YYYY-MM-DD HH:MM[:SS]` (or ISO with `T`), a date or time
+///   alone, an optional weekday and the flags `summer`, `fault`,
+///   `working-day`, `bank-day`, `sync`, `reliable`.
+/// - **28.001** — UTF-8 text, sent NUL-terminated (§3.27.1).
 /// - **17.001 / 18.001** — a scene number `1`–`64` counted like ETS and Home
 ///   Assistant (`scene 3` sends field 2, 03_07_02 §3.19 NOTE 9), or the field
 ///   itself as `raw 0`–`raw 63`; 18.001 accepts a leading `learn` or
@@ -1751,6 +1788,70 @@ pub fn parse_value(dpt: &Dpt, input: &str) -> Result<TypedValue, ParseValueError
             }
             Ok(TypedValue::Float { value: v, unit })
         }
+        10 => {
+            let (weekday, hour, minute, second) = parse_time_of_day(raw)
+                .ok_or_else(|| invalid("a time `HH:MM` or `HH:MM:SS`, optionally after a weekday (`Mon 07:30`)"))?;
+            if hour > 23 || minute > 59 || second > 59 {
+                return Err(out_of_range("00:00:00..23:59:59"));
+            }
+            Ok(TypedValue::Time {
+                weekday,
+                hour,
+                minute,
+                second,
+            })
+        }
+        11 => {
+            let (year, month, day) =
+                parse_iso_date(raw).ok_or_else(|| invalid("a date `YYYY-MM-DD`"))?;
+            // The year octet holds 0..99 with 90..99 as 1990..1999 (§3.12).
+            if !(1990..=2089).contains(&year) || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+                return Err(out_of_range("1990-01-01..2089-12-31"));
+            }
+            Ok(TypedValue::Date { day, month, year })
+        }
+        16 => {
+            let text = unquote(raw);
+            // 16.000 carries the 4.001 ASCII set (MSB 0, §3.4), 16.001 ISO
+            // 8859-1; both are 14 octets with 00h padding (§3.17).
+            let max = if dpt.sub == Some(0) { 0x7F } else { 0xFF };
+            if text.chars().any(|c| c == '\0' || u32::from(c) > max) {
+                return Err(invalid(if max == 0x7F {
+                    "ASCII text (16.000 carries no character above 7Fh)"
+                } else {
+                    "ISO 8859-1 (Latin-1) text"
+                }));
+            }
+            if text.chars().count() > 14 {
+                return Err(out_of_range("at most 14 characters"));
+            }
+            Ok(TypedValue::Text(text))
+        }
+        19 => {
+            let dt = parse_datetime(raw).ok_or_else(|| {
+                invalid(
+                    "`YYYY-MM-DD HH:MM[:SS]` (or `T` between), a date or a time alone, \
+                     optionally a weekday and the flags `summer`, `fault`, `working-day`, \
+                     `bank-day`, `sync`, `reliable`",
+                )
+            })?;
+            if encode_datetime(&dt).is_err() {
+                return Err(out_of_range(
+                    "years 1900..2155; hour 24 only as 24:00:00",
+                ));
+            }
+            Ok(TypedValue::DateTime(dt))
+        }
+        28 => {
+            let text = unquote(raw);
+            if text.contains('\0') {
+                return Err(invalid("text without NUL characters"));
+            }
+            if text.len() > UTF8_MAX_BYTES {
+                return Err(out_of_range(&format!("at most {UTF8_MAX_BYTES} bytes of UTF-8")));
+            }
+            Ok(TypedValue::Text(text))
+        }
         17 => {
             let v = parse_scene(raw)
                 .ok_or_else(|| invalid("a scene number 1-64, or `raw 0`-`raw 63`"))?
@@ -1838,6 +1939,173 @@ pub fn parse_value(dpt: &Dpt, input: &str) -> Result<TypedValue, ParseValueError
             dpt: dpt.to_string(),
         }),
     }
+}
+
+/// The longest 28.001 text bussard writes, in UTF-8 bytes, so the string and
+/// its terminating NUL fit an extended frame's APDU.
+const UTF8_MAX_BYTES: usize = 200;
+
+/// Strips one pair of surrounding double quotes, undoing the `\"` and `\\`
+/// escapes [`TypedValue::Text`] displays; unquoted text is returned as is.
+fn unquote(input: &str) -> String {
+    match input
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+    {
+        Some(inner) => inner.replace("\\\"", "\"").replace("\\\\", "\\"),
+        None => input.to_string(),
+    }
+}
+
+/// The weekday number (1 = Monday .. 7 = Sunday) of a weekday word.
+fn parse_weekday(word: &str) -> Option<u8> {
+    let w = word.to_lowercase();
+    let days = [
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+        "sunday",
+    ];
+    days.iter()
+        .position(|d| w.len() >= 3 && d.starts_with(w.as_str()))
+        .and_then(|i| u8::try_from(i + 1).ok())
+}
+
+/// Parses `HH:MM` or `HH:MM:SS` into `(hour, minute, second)`, ranges
+/// unchecked.
+fn parse_clock(input: &str) -> Option<(u8, u8, u8)> {
+    let mut parts = input.split(':');
+    let h = parts.next()?.trim().parse().ok()?;
+    let m = parts.next()?.trim().parse().ok()?;
+    let sec = match parts.next() {
+        Some(p) => p.trim().parse().ok()?,
+        None => 0,
+    };
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((h, m, sec))
+}
+
+/// Parses a 10.001 time of day: an optional weekday, then `HH:MM[:SS]`.
+fn parse_time_of_day(input: &str) -> Option<(u8, u8, u8, u8)> {
+    let words: Vec<&str> = input.split_whitespace().collect();
+    let (weekday, clock) = match words.as_slice() {
+        [clock] => (0, *clock),
+        [day, clock] => (parse_weekday(day)?, *clock),
+        _ => return None,
+    };
+    let (h, m, sec) = parse_clock(clock)?;
+    Some((weekday, h, m, sec))
+}
+
+/// Parses `YYYY-MM-DD` into `(year, month, day)`, ranges unchecked.
+fn parse_iso_date(input: &str) -> Option<(u16, u8, u8)> {
+    let mut parts = input.trim().split('-');
+    let y = parts.next()?;
+    if y.len() != 4 {
+        return None;
+    }
+    let year = y.parse().ok()?;
+    let month = parts.next()?.parse().ok()?;
+    let day = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((year, month, day))
+}
+
+/// The ISO weekday (1 = Monday .. 7 = Sunday) of a Gregorian date.
+fn weekday_of(year: u16, month: u8, day: u8) -> u8 {
+    // Sakamoto's method; 0 = Sunday.
+    const T: [u16; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+    let y = if month < 3 { year - 1 } else { year };
+    let idx = usize::from(month.clamp(1, 12) - 1);
+    let dow = (y + y / 4 - y / 100 + y / 400 + T[idx] + u16::from(day)) % 7;
+    if dow == 0 { 7 } else { dow as u8 }
+}
+
+/// Parses a 19.001 date and time.
+///
+/// Tokens, separated by spaces: a date `YYYY-MM-DD`, a time `HH:MM[:SS]`
+/// (or both joined by `T`), a weekday, and the flags `summer`/`dst` (SUTI),
+/// `fault`, `working-day`, `bank-day`, `sync` (CLQ) and `reliable` (SRC). A
+/// missing date sets ND and NY, a missing time NT; without a weekday the date's
+/// own weekday is sent, and without either NDoW is set. Without
+/// `working-day`/`bank-day` NWD is set.
+fn parse_datetime(input: &str) -> Option<DateTime> {
+    let mut dt = DateTime {
+        year: 1900,
+        month: 0,
+        day: 0,
+        weekday: 0,
+        hour: 0,
+        minute: 0,
+        second: 0,
+        fault: false,
+        working_day: false,
+        no_working_day: true,
+        no_year: true,
+        no_date: true,
+        no_weekday: true,
+        no_time: true,
+        summer_time: false,
+        quality: false,
+        sync_source: false,
+    };
+    let mut weekday = None;
+    // An ISO `2026-10-29T12:30:00` is a date token and a time token.
+    let tokens = input.split_whitespace().flat_map(|t| {
+        match t.split_once(['T', 't']) {
+            Some((d, c)) if d.contains('-') && c.contains(':') => vec![d, c],
+            _ => vec![t],
+        }
+    });
+    for token in tokens {
+        let lower = token.to_lowercase();
+        let lower = lower.trim_matches(|c| c == '(' || c == ')' || c == ',');
+        if let Some((y, m, d)) = parse_iso_date(lower) {
+            (dt.year, dt.month, dt.day) = (y, m, d);
+            dt.no_date = false;
+            dt.no_year = false;
+        } else if lower.contains(':') {
+            (dt.hour, dt.minute, dt.second) = parse_clock(lower)?;
+            dt.no_time = false;
+        } else if let Some(day) = parse_weekday(lower) {
+            weekday = Some(day);
+        } else {
+            match lower.replace('_', "-").as_str() {
+                "summer" | "dst" | "summer-time" => dt.summer_time = true,
+                "fault" => dt.fault = true,
+                "working-day" | "workday" => {
+                    dt.working_day = true;
+                    dt.no_working_day = false;
+                }
+                "bank-day" | "holiday" | "no-working-day" => dt.no_working_day = false,
+                "sync" | "synced" | "synchronised" | "synchronized" => dt.quality = true,
+                "reliable" => dt.sync_source = true,
+                _ => return None,
+            }
+        }
+    }
+    if dt.no_date && dt.no_time {
+        return None;
+    }
+    match weekday {
+        Some(day) => {
+            dt.weekday = day;
+            dt.no_weekday = false;
+        }
+        None if !dt.no_date && (1..=12).contains(&dt.month) && dt.year >= 1900 => {
+            dt.weekday = weekday_of(dt.year, dt.month, dt.day);
+            dt.no_weekday = false;
+        }
+        None => {}
+    }
+    Some(dt)
 }
 
 /// Parses a 21.xxx / 22.xxx bit set from its names: `none`, or names joined
@@ -2059,6 +2327,10 @@ pub fn encode(dpt: &Dpt, value: &TypedValue) -> Result<Vec<u8>, EncodeError> {
         dpt: dpt.to_string(),
         value: value.to_string(),
     };
+    let out_of_range = || EncodeError::OutOfRange {
+        dpt: dpt.to_string(),
+        value: value.to_string(),
+    };
     if let Some(sc) = scaling(dpt)
         && let Some((lo, hi)) = writable_range(dpt.main, sc)
     {
@@ -2259,6 +2531,65 @@ pub fn encode(dpt: &Dpt, value: &TypedValue) -> Result<Vec<u8>, EncodeError> {
             TypedValue::Flags { bits, .. } => Ok(bits.to_be_bytes().to_vec()),
             _ => Err(mismatch()),
         },
+        10 => match value {
+            TypedValue::Time {
+                weekday,
+                hour,
+                minute,
+                second,
+            } => {
+                if *weekday > 7 || *hour > 23 || *minute > 59 || *second > 59 {
+                    return Err(out_of_range());
+                }
+                Ok(vec![(weekday << 5) | hour, *minute, *second])
+            }
+            _ => Err(mismatch()),
+        },
+        11 => match value {
+            TypedValue::Date { day, month, year } => {
+                if !(1990..=2089).contains(year)
+                    || !(1..=12).contains(month)
+                    || !(1..=31).contains(day)
+                {
+                    return Err(out_of_range());
+                }
+                Ok(vec![*day, *month, (year % 100) as u8])
+            }
+            _ => Err(mismatch()),
+        },
+        16 => match value {
+            TypedValue::Text(text) => {
+                let max = if dpt.sub == Some(0) { 0x7F } else { 0xFF };
+                let mut out = Vec::with_capacity(14);
+                for c in text.chars() {
+                    let code = u32::from(c);
+                    if code == 0 || code > max {
+                        return Err(mismatch());
+                    }
+                    out.push(code as u8);
+                }
+                if out.len() > 14 {
+                    return Err(out_of_range());
+                }
+                out.resize(14, 0);
+                Ok(out)
+            }
+            _ => Err(mismatch()),
+        },
+        28 => match value {
+            TypedValue::Text(text) => {
+                if text.contains('\0') {
+                    return Err(mismatch());
+                }
+                if text.len() > UTF8_MAX_BYTES {
+                    return Err(out_of_range());
+                }
+                let mut out = text.as_bytes().to_vec();
+                out.push(0);
+                Ok(out)
+            }
+            _ => Err(mismatch()),
+        },
         19 => match value {
             TypedValue::DateTime(dt) => encode_datetime(dt).map_err(|()| EncodeError::OutOfRange {
                 dpt: dpt.to_string(),
@@ -2300,6 +2631,8 @@ fn encode_datetime(dt: &DateTime) -> Result<Vec<u8>, ()> {
         || dt.hour > 24
         || dt.minute > 59
         || dt.second > 59
+        // 03_07_02 §3.20 Note 11: hour 24 only as 24:00:00.
+        || (dt.hour == 24 && (dt.minute != 0 || dt.second != 0))
     {
         return Err(());
     }
@@ -2631,6 +2964,93 @@ mod tests {
         assert!(note("18.001", &[0x85]).is_none());
         assert!(note("10.001", &[0x2C, 0x1E, 0x3B]).is_none());
         assert!(note("10.001", &[0x2C]).is_none());
+    }
+
+    #[test]
+    fn test_parse_value_text_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
+        let d = dpt("16.000");
+        let bytes = encode(&d, &parse_value(&d, "Hello")?)?;
+        assert_eq!(bytes, b"Hello\0\0\0\0\0\0\0\0\0".to_vec());
+        assert_eq!(decode(&d, &bytes), TypedValue::Text("Hello".to_string()));
+        // The display form (quoted) parses back, spaces kept.
+        let spec = decode(&d, b"KNX is OK\0\0\0\0\0");
+        assert_eq!(spec.to_string(), "\"KNX is OK\"");
+        assert_eq!(encode(&d, &parse_value(&d, &spec.to_string())?)?, b"KNX is OK\0\0\0\0\0".to_vec());
+        // 16.000 refuses a byte above 7Fh, 16.001 takes Latin-1.
+        assert!(parse_value(&d, "Grüße").is_err());
+        let latin = dpt("16.001");
+        let bytes = encode(&latin, &parse_value(&latin, "Grüße")?)?;
+        assert_eq!(&bytes[..5], &[0x47, 0x72, 0xFC, 0xDF, 0x65]);
+        assert_eq!(decode(&latin, &bytes), TypedValue::Text("Grüße".to_string()));
+        assert!(parse_value(&latin, "€").is_err());
+        assert!(parse_value(&d, "fifteen chars!!").is_err());
+        // Decode trims the padding only; a high byte on 16.000 gets a note.
+        assert_eq!(decode(&d, b"A\0B"), TypedValue::Text("A\0B".to_string()));
+        assert!(validity_note(&d, b"A\0B").is_some());
+        assert!(validity_note(&d, &[0x41, 0xE4, 0]).is_some_and(|n| n.contains("0xe4")));
+        assert!(validity_note(&latin, &[0x41, 0xE4, 0]).is_none());
+        // 28.001: UTF-8, NUL-terminated, variable length.
+        let utf = dpt("28.001");
+        assert_eq!(decode(&utf, &[0x48, 0x69, 0x00]), TypedValue::Text("Hi".to_string()));
+        let bytes = encode(&utf, &parse_value(&utf, "Grüße €")?)?;
+        assert_eq!(bytes.last(), Some(&0));
+        assert_eq!(decode(&utf, &bytes), TypedValue::Text("Grüße €".to_string()));
+        assert!(validity_note(&utf, &[0x48]).is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_value_time_and_date() -> Result<(), Box<dyn std::error::Error>> {
+        let t = dpt("10.001");
+        assert_eq!(encode(&t, &parse_value(&t, "12:30:00")?)?, vec![0x0C, 0x1E, 0x00]);
+        assert_eq!(encode(&t, &parse_value(&t, "12:30")?)?, vec![0x0C, 0x1E, 0x00]);
+        assert_eq!(encode(&t, &parse_value(&t, "Mon 07:05:09")?)?, vec![0x27, 0x05, 0x09]);
+        assert_eq!(encode(&t, &parse_value(&t, "sunday 23:59:59")?)?, vec![0xF7, 0x3B, 0x3B]);
+        assert!(parse_value(&t, "24:00").is_err());
+        assert!(parse_value(&t, "12:60").is_err());
+        for payload in [[0x0C, 0x1E, 0x00], [0x27, 0x05, 0x09]] {
+            let shown = decode(&t, &payload).to_string();
+            assert_eq!(encode(&t, &parse_value(&t, &shown)?)?, payload.to_vec(), "{shown}");
+        }
+        let d = dpt("11.001");
+        assert_eq!(encode(&d, &parse_value(&d, "2026-10-29")?)?, vec![29, 10, 26]);
+        assert_eq!(encode(&d, &parse_value(&d, "1999-12-31")?)?, vec![31, 12, 99]);
+        assert!(parse_value(&d, "2090-01-01").is_err());
+        assert!(parse_value(&d, "1989-12-31").is_err());
+        assert!(parse_value(&d, "2026-13-01").is_err());
+        assert_eq!(decode(&d, &[29, 10, 26]).to_string(), "2026-10-29");
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_value_datetime() -> Result<(), Box<dyn std::error::Error>> {
+        let d = dpt("19.001");
+        // 2026-10-29 is a Thursday; NWD set, nothing else.
+        let bytes = encode(&d, &parse_value(&d, "2026-10-29 12:30:15")?)?;
+        assert_eq!(bytes, vec![126, 10, 29, (4 << 5) | 12, 30, 15, 0x20, 0x00]);
+        assert_eq!(
+            encode(&d, &parse_value(&d, "2026-10-29T12:30:15")?)?,
+            bytes
+        );
+        // The display form parses back.
+        let shown = decode(&d, &bytes).to_string();
+        assert_eq!(shown, "2026-10-29 Thu 12:30:15");
+        assert_eq!(encode(&d, &parse_value(&d, &shown)?)?, bytes);
+        // Flags.
+        let flagged = encode(&d, &parse_value(&d, "2026-07-01 08:00 summer working-day sync")?)?;
+        assert_eq!(flagged[6], 0x41);
+        assert_eq!(flagged[7], 0x80);
+        // A time alone: ND, NY, NDoW set.
+        let time_only = encode(&d, &parse_value(&d, "08:15")?)?;
+        assert_eq!(time_only[6], 0x20 | 0x10 | 0x08 | 0x04);
+        // A date alone: NT set.
+        let date_only = encode(&d, &parse_value(&d, "2026-10-29")?)?;
+        assert_eq!(date_only[6] & 0x02, 0x02);
+        // Hour 24 only as 24:00:00 (§3.20 Note 11).
+        assert!(parse_value(&d, "2026-10-29 24:00:00").is_ok());
+        assert!(parse_value(&d, "2026-10-29 24:30:00").is_err());
+        assert!(parse_value(&d, "tomorrow").is_err());
+        Ok(())
     }
 
     #[test]

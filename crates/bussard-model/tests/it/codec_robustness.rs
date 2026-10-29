@@ -140,11 +140,12 @@ fn float32_nan_inf_decode_lenient_but_encode_rejects_non_finite() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn text_embedded_nul_truncates_and_high_bytes_are_latin1() {
-    // Embedded NUL truncates.
+fn text_embedded_nul_kept_and_high_bytes_are_latin1() {
+    // Only the trailing 00h padding is trimmed (03_07_02 §3.17, #503); an
+    // embedded NUL stays visible.
     assert_eq!(
         decode(&dpt("16.000"), b"AB\0CD"),
-        TypedValue::Text("AB".to_string())
+        TypedValue::Text("AB\0CD".to_string())
     );
     // Only first 14 bytes consumed.
     let long = vec![b'x'; 30];

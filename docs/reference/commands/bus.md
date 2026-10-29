@@ -118,6 +118,12 @@ A scene number (`17.001`, `18.001`, and scenes A/B of `1.022`) counts from 1, as
 Assistant show it (KNX 03_07_02 Datapoint Types §3.19 NOTE 9, §3.1 footnote 2): `scene 3` sends
 the field 2, so ETS scene 3 is `scene 3` here. `raw 2` sends the field itself. `read` and
 `monitor` show both: `activate scene 3 (raw 2)`.
+Text, time and date have their own forms: `"Hello"` on a `16.000` address (ASCII, up to 14
+characters, padded with `00`; `16.001` takes Latin-1) and any UTF-8 text on `28.001`;
+`12:30` or `Mon 07:30:00` on `10.001`; `2026-10-29` on `11.001` (1990-2089, KNX 03_07_02
+§3.12); `2026-10-29 12:30:00` on `19.001`, with an optional weekday and the flags `summer`,
+`fault`, `working-day`, `bank-day`, `sync` and `reliable`. A `19.001` value without a weekday
+sends the date's own one.
 An enumeration (`20.xxx`, KNX 03_07_02 §3.21, §4.3, §6.3) takes its label or code: `cool` or `3`
 on `20.105`; `read` and `monitor` print the label, and `Unknown(18)` for a reserved code. A bit
 set (`21.xxx`, `22.xxx`) reads as the names of its set bits, `0A` on `21.001` is
