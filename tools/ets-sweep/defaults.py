@@ -379,8 +379,11 @@ def main() -> int:
                     vm.driver(c, "POST", "/ets/catalog_import", {"path": remote, "timeout": 3600, "project": "ets-sweep"}, timeout=3700)
                     queue.insert(0, {**job, "retried": True})
                     continue
-                except Exception as exc:  # noqa: BLE001
-                    print(f"reset   failed: {exc}", flush=True)
+                except Exception as exc:  # noqa: BLE001 - a lost ssh link (EOFError after the ETS restart)
+                    print(f"reset   failed: {type(exc).__name__}: {exc}", flush=True)
+                    c = vm.connect()
+                    queue.insert(0, {**job, "retried": True})
+                    continue
             sibling = catalog_sibling(job, r, everything)
             if sibling and r["outcome"] != "skipped-catalog-version":
                 # Recorded as what it was: ETS ran the sibling's application.
