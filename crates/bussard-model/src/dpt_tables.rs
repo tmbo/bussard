@@ -24,8 +24,16 @@ pub(crate) fn enum_table(sub: u16) -> Option<&'static [EnumEntry]> {
         ],
         3 => &[(0, "occupied"), (1, "standby"), (2, "not occupied")],
         4 => &[(0, "High"), (1, "Medium"), (2, "Low"), (3, "void")],
-        5 => &[(0, "normal"), (1, "presence simulation"), (2, "night round")],
-        7 => &[(1, "simple alarm"), (2, "basic alarm"), (3, "extended alarm")],
+        5 => &[
+            (0, "normal"),
+            (1, "presence simulation"),
+            (2, "night round"),
+        ],
+        7 => &[
+            (1, "simple alarm"),
+            (2, "basic alarm"),
+            (3, "extended alarm"),
+        ],
         8 => &[(0, "disabled"), (1, "enabled"), (2, "auto")],
         11 => &[
             (0, "no fault"),
@@ -204,7 +212,11 @@ pub(crate) fn enum_table(sub: u16) -> Option<&'static [EnumEntry]> {
             (1, "alternative setpoint"),
             (2, "building protection setpoint"),
         ],
-        115 => &[(0, "inactive"), (1, "humidification"), (2, "dehumidification")],
+        115 => &[
+            (0, "inactive"),
+            (1, "humidification"),
+            (2, "dehumidification"),
+        ],
         120 => &[(1, "Air Damper"), (2, "VAV")],
         121 => &[(0, "Backup Value"), (1, "Keep Last State")],
         122 => &[
@@ -251,10 +263,7 @@ pub(crate) fn enum_table(sub: u16) -> Option<&'static [EnumEntry]> {
             (1, "WithoutAcknowledge"),
             (2, "BlinkingWithAcknowledge"),
         ],
-        604 => &[
-            (0, "automatic light control"),
-            (1, "manual light control"),
-        ],
+        604 => &[(0, "automatic light control"), (1, "manual light control")],
         605 => &[(1, "one PB mode"), (2, "two PBs mode")],
         606 => &[
             (0, "inactive"),

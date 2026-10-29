@@ -321,10 +321,13 @@ fn decode_value(
     };
 
     // A length mismatch and a malformed field (03_07_01 §2.4) can both apply.
-    let notes: Vec<String> = [size_mismatch_note(&dpt, payload), validity_note(&dpt, payload)]
-        .into_iter()
-        .flatten()
-        .collect();
+    let notes: Vec<String> = [
+        size_mismatch_note(&dpt, payload),
+        validity_note(&dpt, payload),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     let note = (!notes.is_empty()).then(|| notes.join("; "));
     let value = decode(&dpt, payload);
     (Some(value), note)

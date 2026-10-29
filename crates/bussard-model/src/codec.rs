@@ -484,7 +484,11 @@ impl fmt::Display for TypedValue {
                     write!(f, "x --, y --")?;
                 }
                 if *brightness_valid {
-                    write!(f, ", brightness {:.1} %", f64::from(*brightness) * 100.0 / 255.0)
+                    write!(
+                        f,
+                        ", brightness {:.1} %",
+                        f64::from(*brightness) * 100.0 / 255.0
+                    )
                 } else {
                     write!(f, ", brightness --")
                 }
@@ -1031,7 +1035,11 @@ fn relative_step(b: u8, valid: bool) -> String {
     if !valid {
         return "--".to_string();
     }
-    let direction = if b & 0x08 != 0 { "Increase" } else { "Decrease" };
+    let direction = if b & 0x08 != 0 {
+        "Increase"
+    } else {
+        "Decrease"
+    };
     match step_percent(b & 0x07) {
         Some(pct) => format!("{direction} {pct} %"),
         None => "break".to_string(),
@@ -1040,8 +1048,8 @@ fn relative_step(b: u8, valid: bool) -> String {
 
 /// Generic bit names for a 21.xxx / 22.xxx sub-type bussard has no table for.
 const BIT_NAMES: [&str; 16] = [
-    "b0", "b1", "b2", "b3", "b4", "b5", "b6", "b7", "b8", "b9", "b10", "b11", "b12", "b13",
-    "b14", "b15",
+    "b0", "b1", "b2", "b3", "b4", "b5", "b6", "b7", "b8", "b9", "b10", "b11", "b12", "b13", "b14",
+    "b15",
 ];
 
 /// The names of the set bits of a 21.xxx (B8) or 22.xxx (B16) value, in bit
@@ -1211,12 +1219,20 @@ fn validity_problems(dpt: &Dpt, payload: &[u8]) -> Vec<String> {
         }
         // §6.19 252.600: r4 in each step octet, mask b7..b4 reserved.
         (252, _) if payload.len() >= 5 => {
-            reserved("a step octet", payload[..4].iter().fold(0, |a, b| a | b), 0xF0);
+            reserved(
+                "a step octet",
+                payload[..4].iter().fold(0, |a, b| a | b),
+                0xF0,
+            );
             reserved("the mask", payload[4], 0xF0);
         }
         // §6.21 254.600: r4 in each step octet.
         (254, _) if payload.len() >= 3 => {
-            reserved("a step octet", payload[..3].iter().fold(0, |a, b| a | b), 0xF0);
+            reserved(
+                "a step octet",
+                payload[..3].iter().fold(0, |a, b| a | b),
+                0xF0,
+            );
         }
         // 17.001 (§3.18): r r SceneNumber.
         (17, _) => {
@@ -1487,7 +1503,10 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
         }
         28 => {
             // 28.001 DPT_UTF-8 (03_07_02 §3.27.1): UTF-8, terminated by 00h.
-            let end = payload.iter().position(|b| *b == 0).unwrap_or(payload.len());
+            let end = payload
+                .iter()
+                .position(|b| *b == 0)
+                .unwrap_or(payload.len());
             let text = std::str::from_utf8(&payload[..end]).ok()?;
             Some(TypedValue::Text(text.to_string()))
         }
@@ -1636,11 +1655,26 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
             let kelvin = u16::from_be_bytes([*payload.get(2)?, *payload.get(3)?]);
             let brightness = *payload.get(4)?;
             let mask = *payload.get(5)?;
-            let field = |bit: u8, text: String| if mask & bit != 0 { text } else { "--".to_string() };
+            let field = |bit: u8, text: String| {
+                if mask & bit != 0 {
+                    text
+                } else {
+                    "--".to_string()
+                }
+            };
             Some(TypedValue::Fields(vec![
-                ("time", field(0x04, format!("{} s", format_fixed(i64::from(time), 1)))),
+                (
+                    "time",
+                    field(0x04, format!("{} s", format_fixed(i64::from(time), 1))),
+                ),
                 ("colour temperature", field(0x02, format!("{kelvin} K"))),
-                ("brightness", field(0x01, format!("{:.1} %", f64::from(brightness) * 100.0 / 255.0))),
+                (
+                    "brightness",
+                    field(
+                        0x01,
+                        format!("{:.1} %", f64::from(brightness) * 100.0 / 255.0),
+                    ),
+                ),
             ]))
         }
         // 250.600 DPT_Brightness_Colour_Temperature_Control (§6.17): two
@@ -1883,9 +1917,8 @@ pub fn parse_value(dpt: &Dpt, input: &str) -> Result<TypedValue, ParseValueError
         }
         8 => {
             let unit = int_unit(8, dpt.sub);
-            let v = parse_int_with_unit(raw, unit).ok_or_else(|| {
-                invalid("a signed integer -32768..32767 (optionally with unit)")
-            })?;
+            let v = parse_int_with_unit(raw, unit)
+                .ok_or_else(|| invalid("a signed integer -32768..32767 (optionally with unit)"))?;
             if !(-32768..=32767).contains(&v) {
                 return Err(out_of_range("-32768..32767"));
             }
@@ -1935,8 +1968,9 @@ pub fn parse_value(dpt: &Dpt, input: &str) -> Result<TypedValue, ParseValueError
             Ok(TypedValue::Float { value: v, unit })
         }
         10 => {
-            let (weekday, hour, minute, second) = parse_time_of_day(raw)
-                .ok_or_else(|| invalid("a time `HH:MM` or `HH:MM:SS`, optionally after a weekday (`Mon 07:30`)"))?;
+            let (weekday, hour, minute, second) = parse_time_of_day(raw).ok_or_else(|| {
+                invalid("a time `HH:MM` or `HH:MM:SS`, optionally after a weekday (`Mon 07:30`)")
+            })?;
             if hour > 23 || minute > 59 || second > 59 {
                 return Err(out_of_range("00:00:00..23:59:59"));
             }
@@ -1951,7 +1985,10 @@ pub fn parse_value(dpt: &Dpt, input: &str) -> Result<TypedValue, ParseValueError
             let (year, month, day) =
                 parse_iso_date(raw).ok_or_else(|| invalid("a date `YYYY-MM-DD`"))?;
             // The year octet holds 0..99 with 90..99 as 1990..1999 (§3.12).
-            if !(1990..=2089).contains(&year) || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+            if !(1990..=2089).contains(&year)
+                || !(1..=12).contains(&month)
+                || !(1..=31).contains(&day)
+            {
                 return Err(out_of_range("1990-01-01..2089-12-31"));
             }
             Ok(TypedValue::Date { day, month, year })
@@ -1982,9 +2019,7 @@ pub fn parse_value(dpt: &Dpt, input: &str) -> Result<TypedValue, ParseValueError
                 )
             })?;
             if encode_datetime(&dt).is_err() {
-                return Err(out_of_range(
-                    "years 1900..2155; hour 24 only as 24:00:00",
-                ));
+                return Err(out_of_range("years 1900..2155; hour 24 only as 24:00:00"));
             }
             Ok(TypedValue::DateTime(dt))
         }
@@ -1994,7 +2029,9 @@ pub fn parse_value(dpt: &Dpt, input: &str) -> Result<TypedValue, ParseValueError
                 return Err(invalid("text without NUL characters"));
             }
             if text.len() > UTF8_MAX_BYTES {
-                return Err(out_of_range(&format!("at most {UTF8_MAX_BYTES} bytes of UTF-8")));
+                return Err(out_of_range(&format!(
+                    "at most {UTF8_MAX_BYTES} bytes of UTF-8"
+                )));
             }
             Ok(TypedValue::Text(text))
         }
@@ -2268,12 +2305,12 @@ fn parse_datetime(input: &str) -> Option<DateTime> {
     };
     let mut weekday = None;
     // An ISO `2026-10-29T12:30:00` is a date token and a time token.
-    let tokens = input.split_whitespace().flat_map(|t| {
-        match t.split_once(['T', 't']) {
+    let tokens = input
+        .split_whitespace()
+        .flat_map(|t| match t.split_once(['T', 't']) {
             Some((d, c)) if d.contains('-') && c.contains(':') => vec![d, c],
             _ => vec![t],
-        }
-    });
+        });
     for token in tokens {
         let lower = token.to_lowercase();
         let lower = lower.trim_matches(|c| c == '(' || c == ')' || c == ',');
@@ -2897,7 +2934,11 @@ mod tests {
             ("1.019", "Closed", "Open"),
             ("1.021", "OR", "AND"),
             ("1.022", "scene 1 (raw 0)", "scene 2 (raw 1)"),
-            ("1.023", "Up/Down only (shutter)", "Up/Down + Step/Stop (blind)"),
+            (
+                "1.023",
+                "Up/Down only (shutter)",
+                "Up/Down + Step/Stop (blind)",
+            ),
             ("1.024", "Day", "Night"),
             ("1.100", "Cooling", "Heating"),
         ];
@@ -3014,7 +3055,9 @@ mod tests {
         }
         // Every 9.xxx and 14.xxx sub-type of §3.10 / §3.15 has a unit except
         // 14.005 amplitude and 14.057 power factor.
-        for sub in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30] {
+        for sub in [
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+        ] {
             assert!(float16_unit(Some(sub)).is_some(), "9.{sub:03}");
         }
         for sub in (0..=80).filter(|s| *s != 5 && *s != 57) {
@@ -3034,7 +3077,11 @@ mod tests {
             ("5.004", "50%", vec![0x32]),
         ] {
             let d = dpt(sub);
-            assert_eq!(encode(&d, &parse_value(&d, input)?)?, payload, "{sub} {input}");
+            assert_eq!(
+                encode(&d, &parse_value(&d, input)?)?,
+                payload,
+                "{sub} {input}"
+            );
         }
         // A wrong unit is refused rather than ignored.
         assert!(parse_value(&dpt("7.600"), "6500 s").is_err());
@@ -3108,17 +3155,32 @@ mod tests {
 
     #[test]
     fn test_decode_flag_sets() -> Result<(), Box<dyn std::error::Error>> {
-        assert_eq!(decode(&dpt("21.001"), &[0x0A]).to_string(), "Fault, InAlarm");
+        assert_eq!(
+            decode(&dpt("21.001"), &[0x0A]).to_string(),
+            "Fault, InAlarm"
+        );
         assert_eq!(decode(&dpt("21.001"), &[0x00]).to_string(), "none");
         assert_eq!(
             decode(&dpt("21.601"), &[0x24]).to_string(),
             "Overcurrent, LampFailure"
         );
-        assert_eq!(decode(&dpt("21.106"), &[0x06]).to_string(), "FanActive, Heat");
+        assert_eq!(
+            decode(&dpt("21.106"), &[0x06]).to_string(),
+            "FanActive, Heat"
+        );
         // 22.101 bit 8 is HeatCoolMode: named either way.
-        assert_eq!(decode(&dpt("22.101"), &[0x01, 0x01]).to_string(), "Fault, Heating");
-        assert_eq!(decode(&dpt("22.101"), &[0x20, 0x00]).to_string(), "Cooling, FrostAlarm");
-        assert_eq!(decode(&dpt("22.100"), &[0x00, 0x02]).to_string(), "DHWLoadActive");
+        assert_eq!(
+            decode(&dpt("22.101"), &[0x01, 0x01]).to_string(),
+            "Fault, Heating"
+        );
+        assert_eq!(
+            decode(&dpt("22.101"), &[0x20, 0x00]).to_string(),
+            "Cooling, FrostAlarm"
+        );
+        assert_eq!(
+            decode(&dpt("22.100"), &[0x00, 0x02]).to_string(),
+            "DHWLoadActive"
+        );
         // A sub-type without a table names the bits.
         assert_eq!(decode(&dpt("21.999"), &[0x81]).to_string(), "b0, b7");
         // Names parse back to the same octets.
@@ -3126,7 +3188,10 @@ mod tests {
         assert_eq!(encode(&d, &parse_value(&d, "Fault, InAlarm")?)?, vec![0x0A]);
         assert_eq!(encode(&d, &parse_value(&d, "none")?)?, vec![0x00]);
         let d = dpt("22.101");
-        assert_eq!(encode(&d, &parse_value(&d, "Fault, Heating")?)?, vec![0x01, 0x01]);
+        assert_eq!(
+            encode(&d, &parse_value(&d, "Fault, Heating")?)?,
+            vec![0x01, 0x01]
+        );
         assert!(parse_value(&dpt("21.001"), "Bogus").is_err());
         Ok(())
     }
@@ -3185,13 +3250,19 @@ mod tests {
         // The display form (quoted) parses back, spaces kept.
         let spec = decode(&d, b"KNX is OK\0\0\0\0\0");
         assert_eq!(spec.to_string(), "\"KNX is OK\"");
-        assert_eq!(encode(&d, &parse_value(&d, &spec.to_string())?)?, b"KNX is OK\0\0\0\0\0".to_vec());
+        assert_eq!(
+            encode(&d, &parse_value(&d, &spec.to_string())?)?,
+            b"KNX is OK\0\0\0\0\0".to_vec()
+        );
         // 16.000 refuses a byte above 7Fh, 16.001 takes Latin-1.
         assert!(parse_value(&d, "Grüße").is_err());
         let latin = dpt("16.001");
         let bytes = encode(&latin, &parse_value(&latin, "Grüße")?)?;
         assert_eq!(&bytes[..5], &[0x47, 0x72, 0xFC, 0xDF, 0x65]);
-        assert_eq!(decode(&latin, &bytes), TypedValue::Text("Grüße".to_string()));
+        assert_eq!(
+            decode(&latin, &bytes),
+            TypedValue::Text("Grüße".to_string())
+        );
         assert!(parse_value(&latin, "€").is_err());
         assert!(parse_value(&d, "fifteen chars!!").is_err());
         // Decode trims the padding only; a high byte on 16.000 gets a note.
@@ -3201,10 +3272,16 @@ mod tests {
         assert!(validity_note(&latin, &[0x41, 0xE4, 0]).is_none());
         // 28.001: UTF-8, NUL-terminated, variable length.
         let utf = dpt("28.001");
-        assert_eq!(decode(&utf, &[0x48, 0x69, 0x00]), TypedValue::Text("Hi".to_string()));
+        assert_eq!(
+            decode(&utf, &[0x48, 0x69, 0x00]),
+            TypedValue::Text("Hi".to_string())
+        );
         let bytes = encode(&utf, &parse_value(&utf, "Grüße €")?)?;
         assert_eq!(bytes.last(), Some(&0));
-        assert_eq!(decode(&utf, &bytes), TypedValue::Text("Grüße €".to_string()));
+        assert_eq!(
+            decode(&utf, &bytes),
+            TypedValue::Text("Grüße €".to_string())
+        );
         assert!(validity_note(&utf, &[0x48]).is_some());
         Ok(())
     }
@@ -3212,19 +3289,41 @@ mod tests {
     #[test]
     fn test_parse_value_time_and_date() -> Result<(), Box<dyn std::error::Error>> {
         let t = dpt("10.001");
-        assert_eq!(encode(&t, &parse_value(&t, "12:30:00")?)?, vec![0x0C, 0x1E, 0x00]);
-        assert_eq!(encode(&t, &parse_value(&t, "12:30")?)?, vec![0x0C, 0x1E, 0x00]);
-        assert_eq!(encode(&t, &parse_value(&t, "Mon 07:05:09")?)?, vec![0x27, 0x05, 0x09]);
-        assert_eq!(encode(&t, &parse_value(&t, "sunday 23:59:59")?)?, vec![0xF7, 0x3B, 0x3B]);
+        assert_eq!(
+            encode(&t, &parse_value(&t, "12:30:00")?)?,
+            vec![0x0C, 0x1E, 0x00]
+        );
+        assert_eq!(
+            encode(&t, &parse_value(&t, "12:30")?)?,
+            vec![0x0C, 0x1E, 0x00]
+        );
+        assert_eq!(
+            encode(&t, &parse_value(&t, "Mon 07:05:09")?)?,
+            vec![0x27, 0x05, 0x09]
+        );
+        assert_eq!(
+            encode(&t, &parse_value(&t, "sunday 23:59:59")?)?,
+            vec![0xF7, 0x3B, 0x3B]
+        );
         assert!(parse_value(&t, "24:00").is_err());
         assert!(parse_value(&t, "12:60").is_err());
         for payload in [[0x0C, 0x1E, 0x00], [0x27, 0x05, 0x09]] {
             let shown = decode(&t, &payload).to_string();
-            assert_eq!(encode(&t, &parse_value(&t, &shown)?)?, payload.to_vec(), "{shown}");
+            assert_eq!(
+                encode(&t, &parse_value(&t, &shown)?)?,
+                payload.to_vec(),
+                "{shown}"
+            );
         }
         let d = dpt("11.001");
-        assert_eq!(encode(&d, &parse_value(&d, "2026-10-29")?)?, vec![29, 10, 26]);
-        assert_eq!(encode(&d, &parse_value(&d, "1999-12-31")?)?, vec![31, 12, 99]);
+        assert_eq!(
+            encode(&d, &parse_value(&d, "2026-10-29")?)?,
+            vec![29, 10, 26]
+        );
+        assert_eq!(
+            encode(&d, &parse_value(&d, "1999-12-31")?)?,
+            vec![31, 12, 99]
+        );
         assert!(parse_value(&d, "2090-01-01").is_err());
         assert!(parse_value(&d, "1989-12-31").is_err());
         assert!(parse_value(&d, "2026-13-01").is_err());
@@ -3238,16 +3337,16 @@ mod tests {
         // 2026-10-29 is a Thursday; NWD set, nothing else.
         let bytes = encode(&d, &parse_value(&d, "2026-10-29 12:30:15")?)?;
         assert_eq!(bytes, vec![126, 10, 29, (4 << 5) | 12, 30, 15, 0x20, 0x00]);
-        assert_eq!(
-            encode(&d, &parse_value(&d, "2026-10-29T12:30:15")?)?,
-            bytes
-        );
+        assert_eq!(encode(&d, &parse_value(&d, "2026-10-29T12:30:15")?)?, bytes);
         // The display form parses back.
         let shown = decode(&d, &bytes).to_string();
         assert_eq!(shown, "2026-10-29 Thu 12:30:15");
         assert_eq!(encode(&d, &parse_value(&d, &shown)?)?, bytes);
         // Flags.
-        let flagged = encode(&d, &parse_value(&d, "2026-07-01 08:00 summer working-day sync")?)?;
+        let flagged = encode(
+            &d,
+            &parse_value(&d, "2026-07-01 08:00 summer working-day sync")?,
+        )?;
         assert_eq!(flagged[6], 0x41);
         assert_eq!(flagged[7], 0x80);
         // A time alone: ND, NY, NDoW set.
@@ -3266,8 +3365,14 @@ mod tests {
     #[test]
     fn test_parse_value_colours() -> Result<(), Box<dyn std::error::Error>> {
         let rgb = dpt("232.600");
-        assert_eq!(encode(&rgb, &parse_value(&rgb, "#FF8000")?)?, vec![0xFF, 0x80, 0x00]);
-        assert_eq!(encode(&rgb, &parse_value(&rgb, "rgb(255, 128, 0)")?)?, vec![0xFF, 0x80, 0x00]);
+        assert_eq!(
+            encode(&rgb, &parse_value(&rgb, "#FF8000")?)?,
+            vec![0xFF, 0x80, 0x00]
+        );
+        assert_eq!(
+            encode(&rgb, &parse_value(&rgb, "rgb(255, 128, 0)")?)?,
+            vec![0xFF, 0x80, 0x00]
+        );
         // The display form parses back.
         assert_eq!(decode(&rgb, &[0xFF, 0x80, 0x00]).to_string(), "#FF8000");
         assert!(parse_value(&rgb, "#FF800000").is_err());

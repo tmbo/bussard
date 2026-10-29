@@ -1395,7 +1395,8 @@ mod tests {
     }
 
     #[test]
-    fn test_sensor_type_for_unknown_sub_uses_generic_type() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_sensor_type_for_unknown_sub_uses_generic_type() -> Result<(), Box<dyn std::error::Error>>
+    {
         for (dpt, generic) in [
             ("7.999", "2byte_unsigned"),
             ("9.999", "2byte_float"),
@@ -1403,13 +1404,20 @@ mod tests {
             ("13.999", "4byte_signed"),
             ("14.999", "4byte_float"),
         ] {
-            assert_eq!(sensor_type_for(dpt.parse()?).as_deref(), Some(generic), "{dpt}");
+            assert_eq!(
+                sensor_type_for(dpt.parse()?).as_deref(),
+                Some(generic),
+                "{dpt}"
+            );
         }
         // Every type bussard emits is a documented HA name.
         let documented: Vec<&str> = HA_VALUE_TYPES.iter().map(|(_, t)| *t).collect();
         for main in [7u16, 9, 12, 13, 14] {
             for sub in 0..=1300u16 {
-                if let Some(t) = sensor_type_for(Dpt { main, sub: Some(sub) }) {
+                if let Some(t) = sensor_type_for(Dpt {
+                    main,
+                    sub: Some(sub),
+                }) {
                     assert!(documented.contains(&t.as_str()), "{main}.{sub:03}: {t}");
                 }
             }
