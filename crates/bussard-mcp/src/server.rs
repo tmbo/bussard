@@ -743,7 +743,7 @@ impl BussardMcp {
                     };
                 // An unknown verdict reads the responders' PID 54 first (#316).
                 Some(
-                    self.resolve_admission(&service, |live| {
+                    self.resolve_admission(service, |live| {
                         bussard_service::admission::check_sender_admission_with(
                             Some(&model),
                             ga,
@@ -1085,7 +1085,7 @@ impl BussardMcp {
             // off. An unknown verdict reads the receivers' PID 54 first, and
             // a "not listed" there refuses too (issue #316).
             Some(
-                self.resolve_admission(&service, |live| {
+                self.resolve_admission(service, |live| {
                     bussard_service::admission::check_tunnel_write_with(
                         Some(&model),
                         ga,
