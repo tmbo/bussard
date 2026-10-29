@@ -352,11 +352,40 @@ pub fn receiver_verdict(
     sender: IndividualAddress,
     evidence: &AdmissionEvidence,
 ) -> ReceiverVerdict {
+    receiver_verdict_with(model, device, ga, sender, evidence, &LiveTables::new())
+}
+
+/// The PID 54 tables read from devices in this session (issue #316), by
+/// device: the individual addresses each lists. A read table is evidence
+/// even when it is empty (then nobody is admitted), unlike the lock's
+/// `secure_senders`, where an empty list means "not recorded".
+pub type LiveTables = BTreeMap<IndividualAddress, Vec<IndividualAddress>>;
+
+/// [`receiver_verdict`] with the tables read in this session. The lock's
+/// recorded table comes first (a later apply or adopt records what the
+/// device now holds), then a table read in this session, then the keyring.
+pub fn receiver_verdict_with(
+    model: Option<&Model>,
+    device: IndividualAddress,
+    ga: GroupAddress,
+    sender: IndividualAddress,
+    evidence: &AdmissionEvidence,
+    live: &LiveTables,
+) -> ReceiverVerdict {
     let recorded = model
         .and_then(|m| m.devices.get(&device))
         .and_then(|d| d.device.security.as_ref())
         .map(|s| s.secure_senders.as_slice())
         .unwrap_or(&[]);
+    if recorded.is_empty()
+        && let Some(table) = live.get(&device)
+    {
+        return if table.contains(&sender) {
+            ReceiverVerdict::Admitted
+        } else {
+            ReceiverVerdict::NotListed
+        };
+    }
     if !recorded.is_empty() {
         return if recorded.iter().any(|s| s.address == sender) {
             ReceiverVerdict::Admitted
@@ -386,12 +415,24 @@ pub fn check_sender_admission(
     sender: IndividualAddress,
     evidence: &AdmissionEvidence,
 ) -> Admission {
+    check_sender_admission_with(model, ga, sender, evidence, &LiveTables::new())
+}
+
+/// [`check_sender_admission`] with the PID 54 tables read in this session
+/// (issue #316).
+pub fn check_sender_admission_with(
+    model: Option<&Model>,
+    ga: GroupAddress,
+    sender: IndividualAddress,
+    evidence: &AdmissionEvidence,
+    live: &LiveTables,
+) -> Admission {
     let devices = linked_devices(model, ga, sender);
     let mut admitted = Vec::new();
     let mut not_listed = Vec::new();
     let mut unknown = Vec::new();
     for device in &devices {
-        match receiver_verdict(model, *device, ga, sender, evidence) {
+        match receiver_verdict_with(model, *device, ga, sender, evidence, live) {
             ReceiverVerdict::Admitted => admitted.push(*device),
             ReceiverVerdict::NotListed => not_listed.push(*device),
             ReceiverVerdict::Unknown => unknown.push(*device),
@@ -436,7 +477,19 @@ pub fn check_tunnel_write(
     sender: IndividualAddress,
     evidence: &AdmissionEvidence,
 ) -> Admission {
-    let admission = check_sender_admission(model, ga, sender, evidence);
+    check_tunnel_write_with(model, ga, sender, evidence, &LiveTables::new())
+}
+
+/// [`check_tunnel_write`] with the PID 54 tables read in this session
+/// (issue #316).
+pub fn check_tunnel_write_with(
+    model: Option<&Model>,
+    ga: GroupAddress,
+    sender: IndividualAddress,
+    evidence: &AdmissionEvidence,
+    live: &LiveTables,
+) -> Admission {
+    let admission = check_sender_admission_with(model, ga, sender, evidence, live);
     let Some(m) = model else {
         return admission;
     };
@@ -453,6 +506,111 @@ pub fn check_tunnel_write(
             receivers: gap.devices,
         },
         None => admission,
+    }
+}
+
+/// What [`resolve_unknown`] did: the verdict after the reads, and one line per
+/// receiver whose table could not be read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resolved {
+    /// The verdict with the tables read.
+    pub admission: Admission,
+    /// The receivers whose PID 54 was read and recorded in the lock.
+    pub read: Vec<IndividualAddress>,
+    /// Why a receiver's table was not read, one line each.
+    pub unread: Vec<String>,
+}
+
+impl Resolved {
+    /// The note of a telegram sent without evidence ([`Admission::note`])
+    /// with the reasons the reads failed.
+    pub fn note(&self) -> Option<String> {
+        let note = self.admission.note()?;
+        if self.unread.is_empty() {
+            return Some(note);
+        }
+        Some(format!(
+            "{note}. The security individual address table (PID 54) was not read: {}",
+            self.unread.join("; ")
+        ))
+    }
+}
+
+/// Resolves an [`Admission::Unknown`] verdict for a secured group write or
+/// read by reading the receivers' security individual address tables (PID
+/// 54) over management sessions with their tool keys (issue #316): the read
+/// `knx_plan_device` makes for the admission change.
+///
+/// `verdict(live)` is the check to run ([`check_tunnel_write_with`] for a
+/// write, [`check_sender_admission_with`] for a read). A receiver already in
+/// `live` is not read again, so a caller that keeps `live` across calls (the
+/// MCP server, per lifetime) reads each device once. Every table read is
+/// recorded in the lock as `secure_senders` when `dir` is given, exactly as
+/// `adopt` and a verified apply do, so the next verdict needs no read. A
+/// receiver without a tool key, or one that does not answer, keeps its
+/// verdict unknown and is named in [`Resolved::unread`]. Read-only on the bus.
+pub async fn resolve_unknown(
+    service: &crate::bus::BusService,
+    dir: Option<&std::path::Path>,
+    keys: &crate::secure::ToolKeys,
+    live: &mut LiveTables,
+    verdict: impl Fn(&LiveTables) -> Admission,
+) -> Resolved {
+    let first = verdict(live);
+    let Admission::Unknown {
+        sender, receivers, ..
+    } = &first
+    else {
+        return Resolved {
+            admission: first,
+            read: Vec::new(),
+            unread: Vec::new(),
+        };
+    };
+    let sender = *sender;
+    let mut read = Vec::new();
+    let mut unread = Vec::new();
+    let pending: Vec<IndividualAddress> = receivers
+        .iter()
+        .copied()
+        .filter(|d| !live.contains_key(d))
+        .collect();
+    for device in &pending {
+        let Some(tool_key) = keys.tool_key(*device) else {
+            unread.push(format!("{device}: no tool key in the keyring or key store"));
+            continue;
+        };
+        let options = crate::bus::L4Options {
+            source: crate::bus::SourcePolicy::Known(sender),
+            tool_key: Some(tool_key),
+            factory_key: keys.fdsk(*device),
+            ..crate::bus::L4Options::default()
+        };
+        let table = service
+            .with_l4(*device, &options, async |l4| {
+                Ok::<_, crate::ServiceError>(
+                    bussard_download::read_security_sender_table(l4).await?,
+                )
+            })
+            .await;
+        match table {
+            Ok(Some(entries)) => {
+                live.insert(*device, entries.iter().map(|e| e.address).collect());
+                read.push(*device);
+                if let Some(dir) = dir
+                    && let Err(err) = record_secure_senders(dir, *device, &entries)
+                {
+                    tracing::warn!("recording {device}'s PID 54 in the lock: {err}");
+                }
+            }
+            Ok(None) => unread.push(format!("{device} refused the read")),
+            Err(err) => unread.push(format!("{device}: {err}")),
+        }
+    }
+    Resolved {
+        admission: verdict(live),
+        read,
+        unread,
     }
 }
 
@@ -1298,6 +1456,161 @@ mod tests {
             interfaces: vec![entry("1.1.29", None)?],
         };
         assert!(knxnet_tunnel_diagnostics(&model, &unhosted).is_empty());
+        Ok(())
+    }
+
+    /// Issue #316: a gateway with the Secure 1.1.5 serving `pid54` (`None`:
+    /// the device refuses the read) and a service on it.
+    async fn pid54_bench(
+        pid54: Option<&[&str]>,
+    ) -> Result<(bussard_testkit::MockGateway, crate::BusService), Box<dyn std::error::Error>> {
+        use bussard_mgmt::property_ext::{OT_SECURITY, PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE};
+        let mut device =
+            bussard_testkit::MockDevice::system_b(ia("1.1.5")?).with_data_secure([0x5A; 16]);
+        if let Some(senders) = pid54 {
+            let mut table = Vec::new();
+            for sender in senders {
+                table.extend_from_slice(
+                    &SecureSenderEntry {
+                        address: ia(sender)?,
+                        sequence: 0,
+                    }
+                    .encode(),
+                );
+            }
+            device = device.with_property_ext(
+                OT_SECURITY,
+                PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE,
+                SecureSenderEntry::LEN,
+                &table,
+            );
+        }
+        let gw = bussard_testkit::MockGateway::builder()
+            .device(device)
+            .start()
+            .await?;
+        let service = crate::BusService::open(
+            bussard_transport::ConnectionConfig::tunnel(gw.addr()),
+            crate::WritePolicy::transmit(false),
+        )?;
+        service
+            .wait_connected(std::time::Duration::from_secs(5))
+            .await;
+        Ok((gw, service))
+    }
+
+    /// The raw synthetic tool key of the bench devices.
+    fn bench_keys() -> Result<crate::secure::ToolKeys, Box<dyn std::error::Error>> {
+        Ok(crate::secure::ToolKeys::load(
+            crate::secure::ToolKeySource {
+                keyring: None,
+                tool_key: Some("5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"),
+            },
+        )?)
+    }
+
+    #[tokio::test]
+    async fn test_resolve_unknown_refuses_when_pid54_lacks_the_sender() -> TestResult {
+        let model = model(&[])?;
+        let dir = std::env::temp_dir().join(format!("bussard-316-refuse-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        model.save(&dir)?;
+        let (_gw, service) = pid54_bench(Some(&["1.1.16"])).await?;
+        let (light, tunnel) = (ga("1/0/4")?, ia("1.1.25")?);
+        let mut live = LiveTables::new();
+        let resolved = resolve_unknown(&service, Some(&dir), &bench_keys()?, &mut live, |live| {
+            check_sender_admission_with(
+                Some(&model),
+                light,
+                tunnel,
+                &AdmissionEvidence::default(),
+                live,
+            )
+        })
+        .await;
+        service.close().await;
+        let recorded = Model::load(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(resolved.admission.label(), "refused", "{resolved:?}");
+        assert!(
+            resolved
+                .admission
+                .admit_hint()
+                .is_some_and(|h| h.contains("admit_tunnel_senders = true")),
+            "{resolved:?}"
+        );
+        assert_eq!(resolved.read, vec![ia("1.1.5")?]);
+        // The table is in the lock now: the next verdict needs no read.
+        let recorded = recorded?;
+        let senders: Vec<IndividualAddress> = recorded
+            .devices
+            .get(&ia("1.1.5")?)
+            .and_then(|d| d.device.security.as_ref())
+            .map(|s| s.secure_senders.iter().map(|e| e.address).collect())
+            .unwrap_or_default();
+        assert_eq!(senders, vec![ia("1.1.16")?]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_resolve_unknown_admits_a_listed_sender_and_reads_once() -> TestResult {
+        let model = model(&[])?;
+        let (gw, service) = pid54_bench(Some(&["1.1.16", "1.1.25"])).await?;
+        let (light, tunnel) = (ga("1/0/4")?, ia("1.1.25")?);
+        let mut live = LiveTables::new();
+        let check = |live: &LiveTables| {
+            check_sender_admission_with(
+                Some(&model),
+                light,
+                tunnel,
+                &AdmissionEvidence::default(),
+                live,
+            )
+        };
+        let first = resolve_unknown(&service, None, &bench_keys()?, &mut live, check).await;
+        let second = resolve_unknown(&service, None, &bench_keys()?, &mut live, check).await;
+        service.close().await;
+        assert_eq!(first.admission.label(), "admitted", "{first:?}");
+        assert_eq!(second.admission.label(), "admitted", "{second:?}");
+        assert!(second.read.is_empty(), "read once per lifetime: {second:?}");
+        // PID 54 was read once: one element-count read (start 0).
+        let count_reads = gw
+            .devices()?
+            .first()
+            .map(|d| {
+                d.ext_reads
+                    .iter()
+                    .filter(|(_, _, start)| *start == 0)
+                    .count()
+            })
+            .unwrap_or_default();
+        assert_eq!(count_reads, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_resolve_unknown_keeps_sending_when_the_read_is_refused() -> TestResult {
+        let model = model(&[])?;
+        let (_gw, service) = pid54_bench(None).await?;
+        let (light, tunnel) = (ga("1/0/4")?, ia("1.1.25")?);
+        let mut live = LiveTables::new();
+        let resolved = resolve_unknown(&service, None, &bench_keys()?, &mut live, |live| {
+            check_sender_admission_with(
+                Some(&model),
+                light,
+                tunnel,
+                &AdmissionEvidence::default(),
+                live,
+            )
+        })
+        .await;
+        service.close().await;
+        assert_eq!(resolved.admission.label(), "unknown", "{resolved:?}");
+        let note = resolved.note().unwrap_or_default();
+        assert!(
+            note.contains("was not read: 1.1.5 refused the read"),
+            "{note}"
+        );
         Ok(())
     }
 }

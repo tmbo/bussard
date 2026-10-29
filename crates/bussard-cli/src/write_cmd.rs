@@ -112,24 +112,53 @@ pub fn run(
             .with_context(|| format!("loading the interfaces of {}", path.display()))?,
         _ => AdmissionEvidence::default(),
     };
+    // Issue #316: the receivers' tool keys, to read an unknown admission
+    // from their PID 54 before sending.
+    let keys = match (secured, keyring) {
+        (true, Some(path)) => {
+            bussard_service::secure::ToolKeys::load(crate::secure_key::ToolKeySource {
+                keyring: Some(path),
+                tool_key: None,
+            })?
+        }
+        _ => bussard_service::secure::ToolKeys::default(),
+    };
     let runtime = tokio::runtime::Runtime::new()?;
     let model_ref = model.as_ref();
-    let (outcome, admission) = runtime.block_on(async move {
+    let lock_dir = model_ref.map(|_| dir);
+    let (outcome, resolved) = runtime.block_on(async move {
         let service = open_service(config, WritePolicy::transmit(allow_remote_gateway)).await?;
         // The tunnel's address is known once the tunnel is up: check that the
-        // devices on a secured GA admit it before anything is sent.
+        // devices on a secured GA admit it before anything is sent; an
+        // unknown verdict reads the receivers' PID 54 first (issue #316).
         let source = bussard_bus::ops::group_source(service.handle());
-        let admission =
-            secured.then(|| admission::check_tunnel_write(model_ref, ga, source, &evidence));
-        let result = if admission.as_ref().is_some_and(Admission::is_refused) {
+        let resolved = if secured {
+            let mut live = admission::LiveTables::new();
+            Some(
+                admission::resolve_unknown(&service, lock_dir, &keys, &mut live, |live| {
+                    admission::check_tunnel_write_with(model_ref, ga, source, &evidence, live)
+                })
+                .await,
+            )
+        } else {
+            None
+        };
+        let result = if resolved.as_ref().is_some_and(|r| r.admission.is_refused()) {
             None
         } else {
             Some(service.send_prepared(write).await)
         };
         // Close the bus cleanly (release the gateway tunnel slot) — issue #31.
         service.close().await;
-        anyhow::Ok((result, admission))
+        anyhow::Ok((result, resolved))
     })?;
+    for device in resolved.iter().flat_map(|r| &r.read) {
+        eprintln!(
+            "read {device}'s security individual address table (PID 54) and recorded it in \
+             bussard.lock"
+        );
+    }
+    let admission = resolved.as_ref().map(|r| r.admission.clone());
     let Some(outcome) = outcome else {
         // Refused before sending: the devices would discard the telegram.
         let admission = admission.as_ref();
@@ -154,7 +183,7 @@ pub fn run(
         eprintln!("error: {refusal}\n{hint}");
         return Ok(ExitCode::FAILURE);
     };
-    let note = admission.as_ref().and_then(Admission::note);
+    let note = resolved.as_ref().and_then(admission::Resolved::note);
 
     match outcome {
         Ok(sent) => {

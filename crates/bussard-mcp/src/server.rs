@@ -20,7 +20,7 @@ use crate::args::Parameters;
 use bussard_bus::ops;
 use bussard_model::{GroupAddress, IndividualAddress};
 use bussard_monitor::{CaptureStore, Filter, QueryFilter};
-use bussard_service::admission::{Admission, check_sender_admission};
+use bussard_service::admission::Admission;
 use bussard_service::describe::walk_objects;
 use bussard_service::secure::ToolKeySource;
 use bussard_service::{
@@ -55,6 +55,10 @@ pub struct BussardMcp {
     warm: crate::warm::WarmConnection,
     /// This session's model edits no device has received yet (issue #279).
     session_edits: crate::session_edits::SessionEdits,
+    /// The security individual address tables (PID 54) read for a secured
+    /// write or read without admission evidence, kept for the server's
+    /// lifetime so each device is read once (issue #316).
+    admission_tables: Arc<tokio::sync::Mutex<bussard_service::admission::LiveTables>>,
 }
 
 impl BussardMcp {
@@ -117,7 +121,37 @@ impl BussardMcp {
             tool_router,
             warm: crate::warm::WarmConnection::new(),
             session_edits: crate::session_edits::SessionEdits::new(),
+            admission_tables: Arc::default(),
         }
+    }
+
+    /// Resolves an unknown sender admission by reading the receivers' PID 54
+    /// once per server lifetime (issue #316, see
+    /// [`bussard_service::admission::resolve_unknown`]). The tables read are
+    /// recorded in the lock.
+    async fn resolve_admission(
+        &self,
+        service: &bussard_service::BusService,
+        verdict: impl Fn(&bussard_service::admission::LiveTables) -> Admission,
+    ) -> bussard_service::admission::Resolved {
+        let keys = bussard_service::secure::ToolKeys::load(ToolKeySource {
+            keyring: self.state.keyring.as_deref(),
+            tool_key: None,
+        })
+        .unwrap_or_default();
+        // Recorded as adopt and a verified apply record it: evidence about the
+        // device, not a model edit.
+        let dir = Some(self.state.dir.as_path());
+        // Management calls are sequential (issue #215): the read opens its
+        // own lease, so the warm connection is released first.
+        let mut warm = self.warm.lock().await;
+        warm.release().await;
+        let mut live = self.admission_tables.lock().await;
+        let resolved =
+            bussard_service::admission::resolve_unknown(service, dir, &keys, &mut live, verdict)
+                .await;
+        drop(warm);
+        resolved
     }
 
     /// The shared state (for tests and the runner).
@@ -707,10 +741,24 @@ impl BussardMcp {
                             );
                         }
                     };
-                Some(check_sender_admission(Some(&model), ga, sender, &evidence))
+                // An unknown verdict reads the responders' PID 54 first (#316).
+                Some(
+                    self.resolve_admission(&service, |live| {
+                        bussard_service::admission::check_sender_admission_with(
+                            Some(&model),
+                            ga,
+                            sender,
+                            &evidence,
+                            live,
+                        )
+                    })
+                    .await,
+                )
             }
             None => None,
         };
+        let note = resolved_note(admission.as_ref());
+        let admission = admission.map(|r| r.admission);
         if let Some(refused) = admission.as_ref().filter(|a| a.is_refused()) {
             return ok(admission_refusal_json(ga, refused));
         }
@@ -753,7 +801,7 @@ impl BussardMcp {
                     "no response within timeout".to_string()
                 },
                 "admission": admission.as_ref().map(Admission::label),
-                "note": admission.as_ref().and_then(Admission::note),
+                "note": note,
             })),
             Err(err) => ok(json!({
                 "ga": ga.to_string(),
@@ -945,8 +993,9 @@ impl BussardMcp {
         device confirmed or executed it. On a secured (KNX Data Secure) GA the devices accept \
         the telegram only if their security individual address table admits the tunnel \
         address: a write the evidence says they would discard is refused (`refused: true`, \
-        with a `hint` on admitting the tunnel addresses), and one sent without evidence carries \
-        `admission: unknown` and a `note` to pass on."
+        with a `hint` on admitting the tunnel addresses). Without evidence the server first \
+        reads the devices' table (PID 54) once and records it; a write still sent without \
+        evidence carries `admission: unknown` and a `note` to pass on."
     )]
     async fn knx_write_group(
         &self,
@@ -1033,16 +1082,25 @@ impl BussardMcp {
             let sender = bussard_bus::ops::group_source(service.handle());
             // E038 (issue #348): a tunnel-only secured GA whose devices admit
             // no tunnelling address is refused while admit_tunnel_senders is
-            // off.
-            Some(bussard_service::admission::check_tunnel_write(
-                Some(&model),
-                ga,
-                sender,
-                &evidence,
-            ))
+            // off. An unknown verdict reads the receivers' PID 54 first, and
+            // a "not listed" there refuses too (issue #316).
+            Some(
+                self.resolve_admission(&service, |live| {
+                    bussard_service::admission::check_tunnel_write_with(
+                        Some(&model),
+                        ga,
+                        sender,
+                        &evidence,
+                        live,
+                    )
+                })
+                .await,
+            )
         } else {
             None
         };
+        let note = resolved_note(admission.as_ref());
+        let admission = admission.map(|r| r.admission);
         if let Some(refused) = admission.as_ref().filter(|a| a.is_refused()) {
             return ok(admission_refusal_json(ga, refused));
         }
@@ -1066,7 +1124,7 @@ impl BussardMcp {
                 },
                 "secured": sent.write.is_secured(),
                 "admission": admission.as_ref().map(Admission::label),
-                "note": admission.as_ref().and_then(Admission::note),
+                "note": note,
                 "written": {
                     "address": ga.to_string(),
                     "name": sent.write.name,
@@ -1077,6 +1135,12 @@ impl BussardMcp {
             Err(refusal) => ok(write_refusal_json(ga, &refusal)),
         }
     }
+}
+
+/// The note of a secured write or read sent without admission evidence, with
+/// the reasons a PID 54 read failed (issues #297, #316).
+fn resolved_note(resolved: Option<&bussard_service::admission::Resolved>) -> Option<String> {
+    resolved.and_then(bussard_service::admission::Resolved::note)
 }
 
 /// The result of a secured write or read refused for sender admission (issue

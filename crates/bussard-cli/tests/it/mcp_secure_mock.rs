@@ -1493,3 +1493,98 @@ fn test_mcp_apply_readback_names_a_security_object_left_unloaded() -> TestResult
     );
     Ok(())
 }
+
+/// Issue #316: a secured write whose admission the lock and the key store
+/// cannot tell reads the receiver's PID 54 first. Listing only an ETS
+/// sender, it refuses with the remedy and records the table in the lock;
+/// after the apply that admits the tunnel addresses the write is admitted.
+#[test]
+fn test_mcp_write_reads_pid54_on_an_unknown_admission_then_refuses() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
+    let log = Arc::new(Mutex::new(SecurityLog::default()));
+    let gw = rt.block_on(
+        MockGateway::builder()
+            .channel(0x58)
+            .tunnel_address(0x11C8)
+            .keep_serving()
+            .idle_timeout(Duration::from_secs(120))
+            .device(secure_device_with(
+                Arc::clone(&log),
+                &["1/2/0", "1/2/3"],
+                &[(1, 20), (2, 22)],
+                &[12, 0],
+                &[22],
+            )?)
+            .start(),
+    )?;
+    // PID 54 as ETS left it: one device sender, 1.1.16, not the tunnel.
+    log.lock().map_err(|_| "log poisoned")?.pid54 = vec![0x11, 0x10, 0, 0, 0, 0, 0, 0];
+    let dir = model_dir("pid54-on-unknown")?;
+    std::fs::write(
+        dir.join("bussard.toml"),
+        "[connection]\ntransport = \"tunnel\"\ngateway = \"192.0.2.1:3671\"\n\
+         admit_tunnel_senders = true\n",
+    )?;
+    // A key store without the ETS group assignment of the tunnelling user, so
+    // nothing but the device can tell.
+    let mut store = bussard_project::KeyStore::new("Synthetic");
+    store.merge_keyring(&keyring()?);
+    for interface in &mut store.interfaces {
+        interface.gas.clear();
+    }
+    let stripped = dir.join("stripped.keys");
+    std::fs::write(&stripped, store.to_xml(PASSWORD)?)?;
+    let mut server = Server::start_with(
+        &dir,
+        gw.port(),
+        &["--allow-programming", "--allow-writes"],
+        &stripped,
+    )?;
+    let plan = plan_when_connected(&mut server, "1.1.10")?;
+    assert_eq!(plan["ok"], true, "plan: {plan}");
+    let reads_before = log.lock().map_err(|_| "log poisoned")?.pid54_reads;
+
+    let refused = server.call("knx_write_group", json!({"ga": "1/2/3", "value": "50%"}))?;
+    assert_eq!(refused["ok"], false, "write: {refused}");
+    assert_eq!(refused["refused"], true, "write: {refused}");
+    assert_eq!(refused["admission"], "refused", "write: {refused}");
+    let reason = refused["reason"].as_str().unwrap_or_default();
+    assert!(
+        reason.contains("1.1.10 does not list the tunnel address 1.1.200"),
+        "{refused}"
+    );
+    let hint = refused["hint"].as_str().unwrap_or_default();
+    assert!(hint.contains("admit_tunnel_senders = true"), "{refused}");
+    assert!(
+        log.lock().map_err(|_| "log poisoned")?.pid54_reads > reads_before,
+        "PID 54 is read before the refusal"
+    );
+    let lock = std::fs::read_to_string(dir.join("bussard.lock"))?;
+    assert!(
+        lock.contains("secure_senders = [\n  { address = \"1.1.16\", sequence = 0 },\n]"),
+        "{lock}"
+    );
+
+    // Apply the admission change, then the write is admitted.
+    let plan = server.call("knx_plan_device", json!({"address": "1.1.10"}))?;
+    let digest = plan["plan_digest"].as_str().ok_or("no plan_digest")?;
+    let applied = server.call(
+        "knx_apply_device",
+        json!({"address": "1.1.10", "plan_digest": digest}),
+    )?;
+    assert_eq!(applied["verified"], true, "apply: {applied}");
+    let mut write = Value::Null;
+    for _ in 0..50 {
+        write = server.call("knx_write_group", json!({"ga": "1/2/3", "value": "50%"}))?;
+        if write["admission"] == "admitted" {
+            break;
+        }
+        // The server's model handle picks the lock change up on its next poll.
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(write["ok"], true, "write: {write}");
+    assert_eq!(write["admission"], "admitted", "write: {write}");
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}

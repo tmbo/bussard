@@ -70,9 +70,11 @@ A KNX Data Secure device accepts a secured telegram only from an address in its 
 |---|---|
 | The device's recorded table (`secure_senders` in `bussard.lock`, from `bussard adopt` or a verified secured `apply`, `apply --line`, `flash` or `knx_apply_device`) | Admits exactly the addresses it lists. |
 | No recorded table, but an ETS assignment of the GA to that tunnelling address in the keyring or key store | Admitted. |
-| Neither | Unknown. |
+| Neither | Unknown: bussard reads the device's table (PID 54) with its tool key from `--keyring` before sending, records it in `bussard.lock` and judges with it. |
 
-When every linked device has a recorded table that lacks the tunnel address, the command is refused before sending:
+The read in the last row happens once per device: after it, the lock holds the table. A device without a tool key, or one that does not answer the read, stays unknown, and the note says why.
+
+When every linked device has a table that lacks the tunnel address, the command is refused before sending:
 
 ```console
 1.1.5 does not list the tunnel address 1.1.25 as a secure sender of 1/0/4; the actuator would discard the telegram. Admit the tunnel addresses (see below) or send plain only if the GA is not secured on the device.
@@ -81,8 +83,10 @@ When every linked device has a recorded table that lacks the tunnel address, the
 The refusal is followed by how to admit them. With no evidence either way, the telegram is sent and stderr says:
 
 ```console
-note: sent secured from 1.1.25; delivery to 1.1.5 is not confirmed by KNX; if nothing happens, 1.1.5 probably does not admit 1.1.25
+note: sent secured from 1.1.25; delivery to 1.1.5 is not confirmed by KNX; if nothing happens, 1.1.5 probably does not admit 1.1.25; if nothing happens, `bussard secure diag 1.1.5` ...
 ```
+
+`bussard secure diag` reads the device's security failures log, which tells the causes of a dropped telegram apart (see [KNX Secure](../../how-to/knx-secure.md#when-a-secured-write-does-nothing)).
 
 To admit the tunnel addresses, set `admit_tunnel_senders = true` under `[connection]` and `apply` the device. The other ways are on [KNX Secure](../../how-to/knx-secure.md).
 

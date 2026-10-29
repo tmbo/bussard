@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use bussard_model::{GroupAddress, IndividualAddress};
-use bussard_service::admission::{self, Admission, AdmissionEvidence, check_sender_admission};
+use bussard_service::admission::{self, Admission, AdmissionEvidence};
 use bussard_service::{SecureGroupError, WritePolicy, group_key_for};
 
 use crate::conn_cmd::{ConnOverrides, load_model_optional, open_service, resolve_config};
@@ -91,14 +91,37 @@ pub fn run(
             .with_context(|| format!("loading the interfaces of {}", path.display()))?,
         _ => AdmissionEvidence::default(),
     };
+    // Issue #316: the responders' tool keys, to read an unknown admission
+    // from their PID 54 before asking.
+    let keys = match (secured, keyring) {
+        (true, Some(path)) => {
+            bussard_service::secure::ToolKeys::load(crate::secure_key::ToolKeySource {
+                keyring: Some(path),
+                tool_key: None,
+            })?
+        }
+        _ => bussard_service::secure::ToolKeys::default(),
+    };
 
     let runtime = tokio::runtime::Runtime::new()?;
     let model_ref = model.as_ref();
-    let (outcome, admission, source) = runtime.block_on(async move {
+    let lock_dir = model_ref.map(|_| dir);
+    let (outcome, resolved, source) = runtime.block_on(async move {
         // A read never writes, so the service is read-only and ungated.
         let service = open_service(config, WritePolicy::ReadOnly).await?;
         let source = bussard_bus::ops::group_source(service.handle());
-        let admission = secured.then(|| check_sender_admission(model_ref, ga, source, &evidence));
+        let resolved = if secured {
+            let mut live = admission::LiveTables::new();
+            Some(
+                admission::resolve_unknown(&service, lock_dir, &keys, &mut live, |live| {
+                    admission::check_sender_admission_with(model_ref, ga, source, &evidence, live)
+                })
+                .await,
+            )
+        } else {
+            None
+        };
+        let admission = resolved.as_ref().map(|r| r.admission.clone());
         let result = if admission.as_ref().is_some_and(Admission::is_refused) {
             None
         } else {
@@ -110,8 +133,9 @@ pub fn run(
         };
         // Close the bus cleanly (release the gateway tunnel slot) — issue #31.
         service.close().await;
-        anyhow::Ok((result, admission, source))
+        anyhow::Ok((result, resolved, source))
     })?;
+    let admission = resolved.as_ref().map(|r| r.admission.clone());
     let Some(outcome) = outcome else {
         let admission = admission.as_ref();
         let refusal = admission.and_then(Admission::refusal).unwrap_or_default();
@@ -136,7 +160,7 @@ pub fn run(
         eprintln!("error: {refusal}\n{hint}");
         return Ok(ExitCode::FAILURE);
     };
-    let note = admission.as_ref().and_then(Admission::note);
+    let note = resolved.as_ref().and_then(admission::Resolved::note);
 
     if json {
         return print_json(ga, ga_name.as_deref(), secured, source, &outcome);
