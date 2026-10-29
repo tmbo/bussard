@@ -1004,7 +1004,8 @@ fn dynamic_declares_com_objects(app: &ApplicationProgram) -> bool {
             match node {
                 DynamicNode::ComObjectRefRef(_) => return true,
                 DynamicNode::Channel { children, .. }
-                | DynamicNode::ParameterBlock { children, .. } => stack.push(children),
+                | DynamicNode::ParameterBlock { children, .. }
+                | DynamicNode::Repeat { children, .. } => stack.push(children),
                 DynamicNode::Choose { whens, .. } => {
                     stack.extend(whens.iter().map(|w| w.children.as_slice()));
                 }
