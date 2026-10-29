@@ -29,7 +29,9 @@ pub enum MgmtError {
     /// so no device is at the address (issue #45). Like
     /// [`MgmtError::NoResponse`] this means **absent**, only established from
     /// the interface's confirmation in tens of milliseconds instead of by
-    /// waiting out the ACK timeout. Raised only under a budget that opts in
+    /// waiting out the ACK timeout. A rejected `T_Connect` raises it on every
+    /// budget (03_03_04 §5.4.3 E20, issue #507); a rejected numbered telegram
+    /// only under a budget that opts in
     /// ([`Timeouts::absent_on_negative_confirmation`](crate::Timeouts::absent_on_negative_confirmation)).
     #[error("no device at {address} (the interface reported a negative L_Data.con)")]
     NotConfirmed {

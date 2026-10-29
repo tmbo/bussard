@@ -1529,7 +1529,10 @@ pub fn is_connection_death(err: &WriteError) -> bool {
     match err {
         WriteError::Mgmt(MgmtError::MidSessionSilence { .. })
         | WriteError::Mgmt(MgmtError::Disconnected { .. })
-        | WriteError::Mgmt(MgmtError::NoResponse { .. }) => true,
+        | WriteError::Mgmt(MgmtError::NoResponse { .. })
+        // A T_Connect the medium did not confirm (03_03_04 §5.4.3 E20): the
+        // device is not up yet, as with a silent one (issue #507).
+        | WriteError::Mgmt(MgmtError::NotConfirmed { .. }) => true,
         WriteError::Mgmt(MgmtError::Transport(e)) => e.is_link_loss(),
         _ => false,
     }
