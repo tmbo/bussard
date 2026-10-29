@@ -116,3 +116,69 @@ async fn test_read_property_ext_table_empty_and_refused() -> TestResult {
     );
     Ok(())
 }
+
+/// Reads the security object's load state (issue #534) from `device` over a
+/// secured session.
+async fn load_state(device: MockDevice) -> Result<bussard_mgmt::LoadState, BoxError> {
+    let target = device.address;
+    let gw = MockGateway::builder()
+        .channel(CHANNEL)
+        .idle_timeout(Duration::from_secs(30))
+        .device(device.with_data_secure(TOOL_KEY))
+        .start()
+        .await?;
+    let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
+    let source: IndividualAddress = "0.0.255".parse()?;
+    let mut l4 = Layer4Connection::connect_with_secure(
+        &mut bus,
+        target,
+        source,
+        Timeouts::discovery(),
+        SecureLayer::activated(DataSecureSession::new(Key16::new(TOOL_KEY))),
+    )
+    .await?;
+    let state = property_ext::security_load_state(&mut l4).await;
+    let _ = l4.disconnect().await;
+    Ok(state?)
+}
+
+#[tokio::test]
+async fn test_security_load_state_reads_the_function_state() -> TestResult {
+    let dev = device()?.with_hook(|_, apci, data| {
+        (apci == property_ext::A_FUNCTION_PROPERTY_EXT_STATE_READ).then(|| {
+            let mut out = data.get(..5).unwrap_or_default().to_vec();
+            out.extend_from_slice(&[0x00, 0x03]);
+            bussard_testkit::Reaction::Answer(
+                property_ext::A_FUNCTION_PROPERTY_EXT_STATE_RESPONSE,
+                out,
+            )
+        })
+    });
+    assert_eq!(load_state(dev).await?, bussard_mgmt::LoadState::Error);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_security_load_state_falls_back_to_the_value_read() -> TestResult {
+    // A device that refuses the state read (return code F2) and serves PID
+    // 5 as a one-octet value.
+    let dev = device()?
+        .with_property_ext(
+            OT_SECURITY,
+            property_ext::PID_SECURITY_LOAD_STATE_CONTROL,
+            1,
+            &[0x01],
+        )
+        .with_hook(|_, apci, data| {
+            (apci == property_ext::A_FUNCTION_PROPERTY_EXT_STATE_READ).then(|| {
+                let mut out = data.get(..5).unwrap_or_default().to_vec();
+                out.push(0xF2);
+                bussard_testkit::Reaction::Answer(
+                    property_ext::A_FUNCTION_PROPERTY_EXT_STATE_RESPONSE,
+                    out,
+                )
+            })
+        });
+    assert_eq!(load_state(dev).await?, bussard_mgmt::LoadState::Loaded);
+    Ok(())
+}

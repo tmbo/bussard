@@ -1245,7 +1245,7 @@ telegram and confirms every secured group transmission negatively, while the
 tool key and the security mode stay valid `[KNX 3/5/1 §6.3.4 NOTE 97, §6.3.7.4,
 §6.3.8.4, §6.3.10.4; KNX 3/3/7 §5.5.2 items 2 and 3]`; so between bussard's
 `Unload` and `LoadCompleted`, and after an apply that failed in between, the
-device is deaf and mute on its secured group addresses (the read-back does not yet check that state, #534). Master reset
+device is deaf and mute on its secured group addresses. The read-back after every apply and flash therefore reads the state (`A_FunctionPropertyExt_State_Read` PID 5, falling back to `A_PropertyExtValue_Read` element 1, `[KNX 3/5/1 §4.23.2.3.1]`) and is not verified unless it answers Loaded; a write that fails after the `Unload` names that consequence (#534). Master reset
 `[AN194 §2.3.2.13]`: erase codes 02h, 07h and the local reset clear PID 52, 53,
 54, 60, 61 and the load state and reset PID 55, 57, 58; 02h and the local
 reset also drop the tool key (FDSK active again), switch the security mode

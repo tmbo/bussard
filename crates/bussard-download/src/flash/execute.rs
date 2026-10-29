@@ -237,7 +237,19 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
     options: FlashOptions,
     progress: F,
 ) -> Result<FlashOutcome, WriteError> {
-    let mut outcome = flash_steps(session, plan, options, progress).await?;
+    // Set between the security object's `Unload` and its `LoadCompleted`: a
+    // failure there leaves the device dropping every secured group telegram,
+    // and the error says so (issue #534).
+    let mut security_open = false;
+    let mut outcome = flash_steps(session, plan, options, progress, &mut security_open)
+        .await
+        .map_err(|err| {
+            if security_open {
+                crate::security::left_not_loaded(session.l4().target(), err)
+            } else {
+                err
+            }
+        })?;
     outcome.reboot_readiness = session.reboot_readiness().to_vec();
     Ok(outcome)
 }
@@ -248,6 +260,7 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
     plan: &FlashPlan,
     options: FlashOptions,
     mut progress: F,
+    security_open: &mut bool,
 ) -> Result<FlashOutcome, WriteError> {
     // System 7 has its own memory-mapped, absolute-addressed executor: the LSM
     // control, absolute streaming and read-back verify all differ from System B.
@@ -446,7 +459,13 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
             let step_result: Result<(), WriteError> = async {
                 match step {
                     FlashStep::SecurityLoadControl { control } => {
+                        if *control == LoadControl::Unload {
+                            *security_open = true;
+                        }
                         crate::security::security_transition(session.l4(), *control).await?;
+                        if *control == LoadControl::LoadCompleted {
+                            *security_open = false;
+                        }
                     }
                     FlashStep::SecurityClearAddressTable => {
                         crate::security::clear_security_address_table(session.l4()).await?;

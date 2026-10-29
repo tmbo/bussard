@@ -287,6 +287,24 @@ pub enum WriteError {
         actual: LoadState,
     },
 
+    /// A write stopped after the security object's `Unload` and before its
+    /// `LoadCompleted` (issue #534). Outside `Loaded` the device treats its
+    /// group key and security individual address tables as empty (KNX 3/5/1
+    /// §6.3.4, §6.3.7.4, §6.3.8.4; KNX 3/3/7 §5.5.2), so the message names
+    /// that consequence and the remedy next to the step error.
+    #[error(
+        "{cause}. {address}'s Data Secure security object is not Loaded after this failure: until \
+         the next successful `bussard apply {address}` the device drops every secured group \
+         telegram it receives and cannot send on its secured group addresses. Run `bussard apply \
+         {address}` again"
+    )]
+    SecurityObjectNotLoaded {
+        /// The device.
+        address: IndividualAddress,
+        /// The step error that stopped the write.
+        cause: Box<WriteError>,
+    },
+
     /// The Data Secure security-object program could not be built for the
     /// device (a secured group address without a key, a group object outside
     /// the table). Nothing was written to the security object.

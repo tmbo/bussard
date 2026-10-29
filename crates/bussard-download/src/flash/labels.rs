@@ -21,8 +21,15 @@ pub(super) fn step_label(step: &FlashStep) -> String {
                 bussard_mgmt::LoadControl::LoadCompleted => "complete load",
                 _ => "load control",
             };
+            // The read-back after the flash reads the state again (issue #534).
+            let check = if *control == bussard_mgmt::LoadControl::LoadCompleted {
+                "; the read-back checks it is still Loaded"
+            } else {
+                ""
+            };
             format!(
-                "Data Secure: {what} security object (A_FunctionPropertyExt_Command type 17 PID 5)"
+                "Data Secure: {what} security object (A_FunctionPropertyExt_Command type 17 PID \
+                 5{check})"
             )
         }
         FlashStep::SecurityClearAddressTable => {

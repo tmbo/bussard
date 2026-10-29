@@ -815,6 +815,49 @@ pub async fn security_load_control<Ch: L4Channel>(
     Ok(crate::load::LoadState::from_octet(octet))
 }
 
+/// Reads the security object's current load state (PID 5) without changing
+/// it (issue #534).
+///
+/// While the security object is in any state but `Loaded` the device treats
+/// every group key table and security individual address table lookup as "not
+/// found": it throws away every secured group telegram and confirms every
+/// secured group transmission negatively (KNX 3/5/1 §6.3.4 NOTE 97, §6.3.7.4,
+/// §6.3.8.4; KNX 3/3/7 §5.5.2 items 2 and 3). A write is therefore verified
+/// only when this read answers `Loaded`.
+///
+/// The read is `A_FunctionPropertyExt_State_Read` PID 5 (the service ETS
+/// drives the machine with); a device that declines it (see
+/// [`declined_as_none`]) is asked with
+/// `A_PropertyExtValue_Read` of element 1, the read access every load-control
+/// property provides (KNX 3/5/1 §4.23.2.3.1).
+///
+/// # Errors
+///
+/// Both reads refused or malformed, or a transport failure.
+pub async fn security_load_state<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+) -> Result<crate::load::LoadState> {
+    let addr = PropertyExtAddress::security(PID_SECURITY_LOAD_STATE_CONTROL);
+    let first = declined_as_none(l4, async |l4| {
+        function_property_ext_state_read(l4, addr, &[]).await
+    })
+    .await?
+    .and_then(|state| state.data.first().copied());
+    let octet = match first {
+        Some(octet) => octet,
+        None => {
+            let value = read_property_ext(l4, addr, 1, 1).await?;
+            value.data.first().copied().ok_or_else(|| {
+                malformed(
+                    l4.target(),
+                    "the security object's load state came back empty".to_string(),
+                )
+            })?
+        }
+    };
+    Ok(crate::load::LoadState::from_octet(octet))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

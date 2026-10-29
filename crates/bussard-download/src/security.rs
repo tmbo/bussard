@@ -545,7 +545,8 @@ impl SecurityInputs {
         };
         format!(
             "Data Secure: the security object is reprogrammed too (unload, security individual \
-             address table: {}, group key table: {}, group-object flags: {}, complete)",
+             address table: {}, group key table: {}, group-object flags: {}, complete; the \
+             read-back checks it ends Loaded)",
             if senders.is_empty() {
                 "no secured senders".to_string()
             } else {
@@ -895,19 +896,57 @@ pub async fn program_security_object<Ch: L4Channel>(
         senders: inputs.senders.clone(),
         ..program
     };
-    security_transition(l4, LoadControl::Unload).await?;
-    security_transition(l4, LoadControl::StartLoading).await?;
-    clear_security_address_table(l4).await?;
-    write_security_address_table(l4, &program.senders).await?;
-    write_group_key_table(l4, &program.group_keys).await?;
-    write_go_security_flags(l4, &program.go_flags, |_| {}).await?;
-    security_transition(l4, LoadControl::LoadCompleted).await?;
+    // From the `Unload` on, a failure leaves the object out of `Loaded`, and
+    // the device deaf and mute on its secured group addresses (issue #534):
+    // the error says so.
+    let written: Result<(), WriteError> = async {
+        security_transition(l4, LoadControl::Unload).await?;
+        security_transition(l4, LoadControl::StartLoading).await?;
+        clear_security_address_table(l4).await?;
+        write_security_address_table(l4, &program.senders).await?;
+        write_group_key_table(l4, &program.group_keys).await?;
+        write_go_security_flags(l4, &program.go_flags, |_| {}).await?;
+        security_transition(l4, LoadControl::LoadCompleted).await
+    }
+    .await;
+    written.map_err(|err| left_not_loaded(l4.target(), err))?;
     Ok(program)
+}
+
+/// Wraps `err`, a failure between the security object's `Unload` and its
+/// `LoadCompleted`, into [`WriteError::SecurityObjectNotLoaded`] (issue
+/// #534); an error that already carries the consequence is kept as it is.
+pub fn left_not_loaded(address: IndividualAddress, err: WriteError) -> WriteError {
+    match err {
+        already @ WriteError::SecurityObjectNotLoaded { .. } => already,
+        other => WriteError::SecurityObjectNotLoaded {
+            address,
+            cause: Box::new(other),
+        },
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_left_not_loaded_names_the_consequence_once() -> Result<(), Box<dyn std::error::Error>> {
+        let address: IndividualAddress = "1.1.10".parse()?;
+        let step = WriteError::SecurityObjectState {
+            address,
+            control: LoadControl::LoadCompleted,
+            expected: LoadState::Loaded,
+            actual: LoadState::Error,
+        };
+        let wrapped = left_not_loaded(address, left_not_loaded(address, step));
+        let text = wrapped.to_string();
+        assert!(text.contains("did not reach Loaded after LoadCompleted (device reports Error)"));
+        assert!(text.contains("drops every secured group telegram"));
+        assert!(text.contains("Run `bussard apply 1.1.10` again"));
+        assert_eq!(text.matches("drops every").count(), 1, "{text}");
+        Ok(())
+    }
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 

@@ -26,8 +26,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bussard_mgmt::property_ext::{
-    A_FUNCTION_PROPERTY_EXT_COMMAND, A_FUNCTION_PROPERTY_EXT_STATE_RESPONSE,
-    A_PROPERTY_EXT_VALUE_READ, A_PROPERTY_EXT_VALUE_RESPONSE, A_PROPERTY_EXT_VALUE_WRITE_CON,
+    A_FUNCTION_PROPERTY_EXT_COMMAND, A_FUNCTION_PROPERTY_EXT_STATE_READ,
+    A_FUNCTION_PROPERTY_EXT_STATE_RESPONSE, A_PROPERTY_EXT_VALUE_READ,
+    A_PROPERTY_EXT_VALUE_RESPONSE, A_PROPERTY_EXT_VALUE_WRITE_CON,
     A_PROPERTY_EXT_VALUE_WRITE_CON_RESPONSE, OT_SECURITY, PID_GO_SECURITY_FLAGS, PID_GRP_KEY_TABLE,
     PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE, PID_SECURITY_LOAD_STATE_CONTROL,
 };
@@ -164,6 +165,16 @@ struct SecurityLog {
     pid53: u16,
     /// What the device acknowledges and then drops (issue #349).
     dropped: Option<Dropped>,
+    /// The security object's load state (PID 5) as the device reports it
+    /// to a state read (issue #534); `None` until the first transition
+    /// (the object then reads `Loaded`).
+    load_state: Option<u8>,
+    /// The state the device answers `LoadCompleted` with, and keeps, in
+    /// place of `Loaded` (issue #534).
+    completes_to: Option<u8>,
+    /// The state the device falls back to after it answered
+    /// `LoadCompleted` (a device that does not persist the object, #534).
+    reverts_to: Option<u8>,
 }
 
 /// A write the mock device acknowledges as written and does not store, so
@@ -281,14 +292,29 @@ fn secure_device_with(
             }
             let header = data.get(..5)?.to_vec();
             match apci {
+                A_FUNCTION_PROPERTY_EXT_STATE_READ if pid == PID_SECURITY_LOAD_STATE_CONTROL => {
+                    let state = log.lock().ok()?.load_state.unwrap_or(0x01);
+                    let mut out = header;
+                    out.extend_from_slice(&[0x00, state]);
+                    Some(Reaction::Answer(
+                        A_FUNCTION_PROPERTY_EXT_STATE_RESPONSE,
+                        out,
+                    ))
+                }
                 A_FUNCTION_PROPERTY_EXT_COMMAND if pid == PID_SECURITY_LOAD_STATE_CONTROL => {
                     let event = *data.get(5)?;
+                    let completes_to = log.lock().ok()?.completes_to;
                     let state = match event {
-                        0x04 => 0x00, // Unload -> Unloaded
-                        0x01 => 0x02, // StartLoading -> Loading
-                        _ => 0x01,    // LoadCompleted -> Loaded
+                        0x04 => 0x00,                      // Unload -> Unloaded
+                        0x01 => 0x02,                      // StartLoading -> Loading
+                        _ => completes_to.unwrap_or(0x01), // LoadCompleted -> Loaded
                     };
                     if let Ok(mut log) = log.lock() {
+                        log.load_state = Some(if event == 0x02 {
+                            log.reverts_to.unwrap_or(state)
+                        } else {
+                            state
+                        });
                         log.controls.push(event);
                         // Unload empties the group key table.
                         if event == 0x04 && log.dropped != Some(Dropped::Pid(PID_GRP_KEY_TABLE)) {
@@ -1143,10 +1169,26 @@ fn dropping_bench(
     dropped: Option<Dropped>,
     admit: bool,
 ) -> TestResult<(MockGateway, Arc<Mutex<SecurityLog>>, PathBuf)> {
-    let log = Arc::new(Mutex::new(SecurityLog {
-        dropped,
-        ..SecurityLog::default()
-    }));
+    faulty_bench(
+        rt,
+        tag,
+        SecurityLog {
+            dropped,
+            ..SecurityLog::default()
+        },
+        admit,
+    )
+}
+
+/// [`dropping_bench`] with the device's security object starting from
+/// `log` (its faults, issue #534).
+fn faulty_bench(
+    rt: &tokio::runtime::Runtime,
+    tag: &str,
+    log: SecurityLog,
+    admit: bool,
+) -> TestResult<(MockGateway, Arc<Mutex<SecurityLog>>, PathBuf)> {
+    let log = Arc::new(Mutex::new(log));
     let gw = rt.block_on(
         MockGateway::builder()
             .channel(0x59)
@@ -1194,6 +1236,14 @@ fn apply_over_cli(
 ) -> TestResult<(bool, String, String)> {
     let rt = tokio::runtime::Runtime::new()?;
     let (gw, _log, dir) = dropping_bench(&rt, tag, dropped, admit)?;
+    let run = run_cli_apply(&gw, &dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    run
+}
+
+/// `bussard apply 1.1.10 --yes --keyring` on `dir` against `gw`: whether it
+/// succeeded, its stdout and its stderr.
+fn run_cli_apply(gw: &MockGateway, dir: &Path) -> TestResult<(bool, String, String)> {
     let out = Command::new(env!("CARGO_BIN_EXE_bussard"))
         .env("BUSSARD_MGMT_TIMEOUT_MS", "300")
         .env("BUSSARD_ADDRESS_PROBE_MS", "200")
@@ -1211,7 +1261,6 @@ fn apply_over_cli(
         .arg(keyring_path())
         .stdin(Stdio::null())
         .output()?;
-    let _ = std::fs::remove_dir_all(&dir);
     Ok((
         out.status.success(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -1306,7 +1355,8 @@ fn test_cli_apply_readback_reports_the_counts_when_healthy() -> TestResult {
     );
     assert!(
         stdout.contains(
-            "1 group key(s) (PID 53), 1 secure sender(s) (PID 54), 1 secured object(s) (PID 61)"
+            "1 group key(s) (PID 53), 1 secure sender(s) (PID 54), 1 secured object(s) (PID 61), \
+             security object Loaded (PID 5)"
         ),
         "{stdout}"
     );
@@ -1357,5 +1407,89 @@ fn test_cli_apply_readback_names_a_dropped_link() -> TestResult {
 fn test_cli_apply_readback_names_a_dropped_parameter() -> TestResult {
     let run = apply_over_cli("cli-drop-param", Some(Dropped::Parameters), false)?;
     assert_cli_names(&run, "thr");
+    Ok(())
+}
+
+/// Issue #534: a security object that answers `LoadCompleted` with state
+/// Error stops the apply between `Unload` and `LoadCompleted`. The error
+/// names the consequence and the remedy, and the lock records no PID 54.
+#[test]
+fn test_cli_apply_load_completed_error_names_the_dead_secured_addresses() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
+    let (gw, _log, dir) = faulty_bench(
+        &rt,
+        "cli-complete-error",
+        SecurityLog {
+            completes_to: Some(0x03),
+            ..SecurityLog::default()
+        },
+        true,
+    )?;
+    let (success, stdout, stderr) = run_cli_apply(&gw, &dir)?;
+    let lock = std::fs::read_to_string(dir.join("bussard.lock"))?;
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(!success, "the apply must fail: {stdout}\n{stderr}");
+    assert!(
+        stderr.contains("did not reach Loaded after LoadCompleted (device reports Error)"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("drops every secured group telegram")
+            && stderr.contains("Run `bussard apply 1.1.10` again"),
+        "{stderr}"
+    );
+    assert!(!lock.contains("secure_senders"), "{lock}");
+    Ok(())
+}
+
+/// Issue #534: a device that confirms `LoadCompleted` but reads back
+/// another load state is not verified; the read-back names PID 5.
+#[test]
+fn test_cli_apply_readback_names_a_security_object_left_unloaded() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
+    let (gw, _log, dir) = faulty_bench(
+        &rt,
+        "cli-reverts",
+        SecurityLog {
+            reverts_to: Some(0x00),
+            ..SecurityLog::default()
+        },
+        false,
+    )?;
+    let run = run_cli_apply(&gw, &dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    let run = run?;
+    assert_cli_names(&run, "security object load state (PID 5)");
+    assert!(run.2.contains("the device holds Unloaded"), "{}", run.2);
+    Ok(())
+}
+
+/// Issue #534 over MCP: the same not-Loaded object is a read-back leftover.
+#[test]
+fn test_mcp_apply_readback_names_a_security_object_left_unloaded() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
+    let (gw, _log, dir) = faulty_bench(
+        &rt,
+        "mcp-reverts",
+        SecurityLog {
+            reverts_to: Some(0x03),
+            ..SecurityLog::default()
+        },
+        false,
+    )?;
+    let mut server = Server::start(&dir, gw.port(), &["--allow-programming"])?;
+    let plan = plan_when_connected(&mut server, "1.1.10")?;
+    let digest = plan["plan_digest"].as_str().ok_or("no plan_digest")?;
+    let applied = server.call(
+        "knx_apply_device",
+        json!({"address": "1.1.10", "plan_digest": digest}),
+    )?;
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_mcp_names(
+        &applied,
+        "security_load_state",
+        "security object load state (PID 5)",
+    );
     Ok(())
 }

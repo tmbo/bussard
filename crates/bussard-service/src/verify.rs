@@ -24,7 +24,10 @@
 //! - **Security object** (KNX Data Secure, issue #331): the element count of
 //!   the group key table (PID 53, whose keys are write-only), the security
 //!   individual address table (PID 54) and the group-object security flags
-//!   (PID 61), against the program the write sent.
+//!   (PID 61), against the program the write sent, and the object's load
+//!   state (PID 5, issue #534): anything but `Loaded` is a leftover, because
+//!   the device then ignores those tables and drops every secured group
+//!   telegram (KNX 3/5/1 §6.3.4, §6.3.7.4, §6.3.8.4; KNX 3/3/7 §5.5.2).
 //!
 //! What cannot be read (a device that refuses a property, an unsupported
 //! mask) is a note, not a difference: a plan treats it as "not compared" too.
@@ -39,8 +42,9 @@ use bussard_download::{
     DesiredTables, FlashPlan, FlashStep, LiveRead, SecurityInputs, build_table_images,
     parameter_overrides, plan,
 };
+use bussard_mgmt::load::LoadState;
 use bussard_mgmt::property_ext::{
-    PID_GRP_KEY_TABLE, PropertyExtAddress, read_property_ext_element_count,
+    PID_GRP_KEY_TABLE, PropertyExtAddress, read_property_ext_element_count, security_load_state,
 };
 use bussard_mgmt::tables::DeviceTables;
 use bussard_mgmt::{ConnectionSeed, L4Channel, Layer4Connection};
@@ -283,6 +287,8 @@ pub enum LeftoverKind {
     SecureSender,
     /// A group object's security flag (PID 61).
     SecurityFlag,
+    /// The security object's load state (PID 5, issue #534).
+    SecurityLoadState,
     /// A property a load procedure wrote (issue #390).
     Property,
     /// The read-back itself could not be made.
@@ -338,6 +344,9 @@ pub struct Compared {
     /// Group objects flagged secured (PID 61).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secured_objects: Option<usize>,
+    /// The security object's load state as read (PID 5, issue #534).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security_load_state: Option<String>,
     /// Properties a load procedure wrote (issue #390).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub properties: Option<usize>,
@@ -426,6 +435,9 @@ impl WriteReadback {
         }
         if let Some(n) = c.secured_objects {
             parts.push(format!("{n} secured object(s) (PID 61)"));
+        }
+        if let Some(state) = &c.security_load_state {
+            parts.push(format!("security object {state} (PID 5)"));
         }
         if let Some(n) = c.properties {
             parts.push(format!("{n} load-procedure property value(s)"));
@@ -757,6 +769,7 @@ async fn compare_security<Ch: L4Channel>(
     out: &mut WriteReadback,
     expected: &ExpectedSecurity,
 ) {
+    compare_security_load_state(l4, out).await;
     match read_property_ext_element_count(l4, PropertyExtAddress::security(PID_GRP_KEY_TABLE)).await
     {
         Ok(count) => {
@@ -822,6 +835,37 @@ async fn compare_security<Ch: L4Channel>(
             );
         }
         out.compared.secured_objects = Some(held.len());
+    }
+}
+
+/// The security object's load state (PID 5) against `Loaded` (issue #534).
+/// A state that cannot be read is a leftover too: nothing then shows the
+/// device uses the tables just written.
+async fn compare_security_load_state<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    out: &mut WriteReadback,
+) {
+    let item = "security object load state (PID 5)".to_string();
+    let loaded = "Loaded".to_string();
+    match security_load_state(l4).await {
+        Ok(LoadState::Loaded) => out.compared.security_load_state = Some(loaded),
+        Ok(state) => {
+            out.push(
+                LeftoverKind::SecurityLoadState,
+                item,
+                format!(
+                    "{state} (it drops every secured group telegram until a write ends Loaded)"
+                ),
+                loaded,
+            );
+            out.compared.security_load_state = Some(state.to_string());
+        }
+        Err(err) => out.push(
+            LeftoverKind::SecurityLoadState,
+            item,
+            format!("no answer ({})", chain(&err)),
+            loaded,
+        ),
     }
 }
 
