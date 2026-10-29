@@ -895,12 +895,19 @@ def flow_delete_device(req: dict) -> dict:
     r, g, b = Counter(light).most_common(1)[0][0] if light else (0, 0, 0)
     if not (b > r + 20 and b > 230):
         raise RuntimeError(f"delete: the row of {req['ia']} is not highlighted (rgb {r},{g},{b})")
+    # The menu's entries come from UI Automation, or, when UIA shows none
+    # (after an ETS restart the popup opened but listed nothing, 2026-10-29),
+    # from OCR of the menu that opens right of and below the pointer.
     items: list[str] = []
+    lines: list[dict] = []
     for _ in range(3):
-        # The menu stayed away once right after an ETS restart: try again.
         mouse.right_click(coords=(int(1000 * s_), int(y * s_)))
         time.sleep(1.2)
         items = menu_items()
+        if items:
+            break
+        lines = ocr((1000, y, 1800, y + 1300))
+        items = [re.sub(r"^\W*[XO]?\s+", "", l["text"]).strip() for l in lines]
         if items:
             break
         time.sleep(2)
@@ -908,7 +915,11 @@ def flow_delete_device(req: dict) -> dict:
     if "Gerät neu starten" not in items or "Löschen" not in items:
         keys("{ESC}")
         raise RuntimeError(f"delete: unexpected context menu for {req['ia']}: {items[:12]}")
-    menu_click("Löschen")
+    if lines:
+        hit = next(l for l in lines if l["text"].strip().endswith("Löschen") and l["x"] < 1300)
+        click(1100, hit["y"] + hit["h"] // 2)
+    else:
+        menu_click("Löschen")
     # The confirmation comes later for a larger product (over 2 s for an MDT
     # room actuator): wait for it, confirm, and check the device is gone.
     t0 = time.time()
@@ -1216,6 +1227,23 @@ def dismiss_ets_error() -> str | None:
         click(2600, 1226)
     time.sleep(1.5)
     return joined[:400]
+
+
+def finish_language_dialog() -> bool:
+    """Answer a 'Produktsprache(n) auswählen' dialog an import left open (it
+    blocked every click and every later product failed, 2026-10-29): import
+    all languages and wait for that import to end."""
+    if not find_text("Produktsprache", (1700, 950, 2600, 1060), min_ratio=0.7):
+        return False
+    click_text("Alle Sprachen importieren", (1900, 1490, 2400, 1560))
+    t0 = time.time()
+    while time.time() - t0 < 900:
+        time.sleep(5)
+        text = " ".join(l["text"] for l in ocr((1500, 850, 2700, 1600)))
+        if not re.search(r"Konvertiere|Importiere|Signiere|Analysiere", text):
+            break
+    dismiss_ets_error()
+    return True
 
 
 @flow("ets_error")
@@ -1626,7 +1654,8 @@ class Handler(BaseHTTPRequestHandler):
                 compat = decline_compat_mode()
                 if compat:
                     raise CompatModeRequired(f"ETS asked for compatibility mode before {name}: {compat[:200]}")
-                watchdog = {"password_dialog": dismiss_password_dialog(), "ets_error": dismiss_ets_error(),
+                watchdog = {"language_dialog": finish_language_dialog(),
+                            "password_dialog": dismiss_password_dialog(), "ets_error": dismiss_ets_error(),
                             "ets_started": started}
                 out = fn(req)
                 out.setdefault("ok", True)
