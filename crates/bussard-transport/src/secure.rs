@@ -1,11 +1,11 @@
-//! The KNXnet/IP Secure tunnelling link (issue #71 Phase B, #197, spec §7-§9).
+//! The KNXnet/IP Secure tunnelling link (issue #71 Phase B, #513, spec §7-§9).
 //!
 //! A [`SecureLink`] is one authenticated secure session with the interface's
-//! control endpoint, over TCP or UDP. The tunnel task talks plain KNXnet/IP
-//! frames to it; the link wraps every outbound frame in a SECURE_WRAPPER and
-//! unwraps every inbound one.
+//! control endpoint over TCP. The tunnel task talks plain KNXnet/IP frames to
+//! it; the link wraps every outbound frame in a SECURE_WRAPPER and unwraps
+//! every inbound one.
 //!
-//! # TCP (CONFIRMED)
+//! # TCP only (CONFIRMED)
 //!
 //! ETS talks to the Jung IP interface over TCP only, for the description, the
 //! extended search, the session and all tunnelling (issue #90 S4 capture), and
@@ -14,26 +14,18 @@
 //! plain TCP tunnel carries 177 TUNNELING_REQUESTs and no ACK), every HPAI is
 //! the TCP route-back HPAI, and a closed TCP connection ends the session.
 //!
-//! # UDP (INFERRED, verified against knx-sim only; issue #197)
-//!
-//! The KNX specification also allows a unicast secure session over UDP, for an
-//! interface without a TCP endpoint. The session and the tunnel share one
-//! connected UDP socket: SESSION_REQUEST carries that socket's real endpoint
-//! as its HPAI, the CONNECT_REQUEST names it as control and data endpoint (as
-//! the plain UDP tunnel does), and TUNNELING_ACK is back in the loop, wrapped
-//! like every other frame. Every frame goes to the session's endpoint; the
-//! data endpoint of the CONNECT_RESPONSE is not used. The plain UDP tunnel
-//! does use it (issue #512, see the `tunnel` module docs).
-//! No real UDP-only interface has been captured or tested, so UDP is an
-//! explicit opt-in (`--secure-transport udp`): the default `auto` stays on TCP
-//! and reports an interface that refuses TCP but advertises Secure with
-//! [`TransportError::SecureTcpRefused`] instead of switching.
+//! The standard leaves no other choice: a unicast secure session must use TCP
+//! and must not use UDP (KNX IP Secure 3/8/9 §2.2.3.3), and an interface
+//! discards a SESSION_REQUEST that arrives over UDP or with any HPAI other
+//! than the TCP route-back one (§2.2.3.6.4; TSSK test 2.2.25). An earlier
+//! opt-in UDP carrier rested on a misreading and was removed (issue #513).
+//! An interface that advertises KNXnet/IP Secure but refuses the TCP connect
+//! is reported as [`TransportError::SecureTcpRefused`].
 //!
 //! # Handshake (as implemented)
 //!
-//! 1. TCP connect to the gateway's control endpoint, or bind a UDP socket
-//!    connected to it.
-//! 2. SESSION_REQUEST: the carrier's HPAI + fresh X25519 public key.
+//! 1. TCP connect to the gateway's control endpoint.
+//! 2. SESSION_REQUEST: the TCP route-back HPAI + fresh X25519 public key.
 //! 3. SESSION_RESPONSE: session id + server public key + MAC. With the
 //!    device authentication code (keyring) the MAC is verified, so the client
 //!    authenticates the interface before it reveals anything derived from the
@@ -49,7 +41,7 @@
 //! [`SecureTunnelConfig::keepalive`](crate::SecureTunnelConfig::keepalive)
 //! and a wrapped `STATUS_CLOSE` before it closes. TIMER_NOTIFY belongs to
 //! secure routing (the multicast timer); on a unicast session it is ignored
-//! (CONFIRMED absent over TCP; over UDP ignored the same way).
+//! (CONFIRMED absent over TCP).
 
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::time::Duration;
@@ -58,10 +50,10 @@ use bussard_secure::ipsecure::{
     self, EphemeralKeyPair, IpSecureSession, SessionStatus, verify_session_response,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpSocket, TcpStream, UdpSocket};
+use tokio::net::{TcpSocket, TcpStream};
 use tokio::time::{self, Instant};
 
-use crate::config::{SecureTransport, SecureUser};
+use crate::config::SecureUser;
 use crate::error::{Result, TransportError};
 use crate::knxnet::{self, HEADER_LEN, Hpai, ServiceType};
 
@@ -191,77 +183,43 @@ impl UserKeys {
     }
 }
 
-/// The socket a secure session runs over.
-enum Carrier {
-    /// A TCP connection, split into whole frames by `reader`.
-    Tcp {
-        /// The stream.
-        stream: TcpStream,
-        /// Buffered bytes of a partly received frame.
-        reader: FrameReader,
-    },
-    /// A UDP socket connected to the gateway; one datagram is one frame.
-    Udp {
-        /// The socket.
-        socket: UdpSocket,
-        /// The socket's real local endpoint, advertised in every HPAI.
-        hpai: Hpai,
-    },
+/// The TCP connection a secure session runs over.
+struct Carrier {
+    /// The stream.
+    stream: TcpStream,
+    /// Buffered bytes of a partly received frame.
+    reader: FrameReader,
 }
 
 impl Carrier {
-    /// Opens the carrier `transport` names (`Auto` is resolved by the caller
-    /// and treated as TCP here).
-    async fn open(
-        transport: SecureTransport,
-        gateway: SocketAddrV4,
-        local: Ipv4Addr,
-        timeout: Duration,
-    ) -> Result<Carrier> {
-        match transport {
-            SecureTransport::Udp => {
-                let (socket, hpai) = crate::tunnel::udp_socket(gateway, local).await?;
-                Ok(Carrier::Udp { socket, hpai })
-            }
-            SecureTransport::Tcp | SecureTransport::Auto => Ok(Carrier::Tcp {
-                stream: tcp_connect(gateway, local, timeout).await?,
-                reader: FrameReader::new(),
-            }),
-        }
+    /// Connects to the gateway's control endpoint.
+    async fn open(gateway: SocketAddrV4, local: Ipv4Addr, timeout: Duration) -> Result<Carrier> {
+        Ok(Carrier {
+            stream: tcp_connect(gateway, local, timeout).await?,
+            reader: FrameReader::new(),
+        })
     }
 
-    /// The HPAI this carrier advertises: TCP route-back, or the UDP socket's
-    /// real endpoint.
+    /// The HPAI this carrier advertises: always TCP route-back (3/8/9
+    /// §2.2.3.6.4).
     fn hpai(&self) -> Hpai {
-        match self {
-            Carrier::Tcp { .. } => Hpai::tcp_route_back(),
-            Carrier::Udp { hpai, .. } => *hpai,
-        }
+        Hpai::tcp_route_back()
     }
 
     /// Sends raw bytes (one frame).
     async fn send(&mut self, bytes: &[u8], gateway: SocketAddrV4) -> Result<()> {
-        let result = match self {
-            Carrier::Tcp { stream, .. } => stream.write_all(bytes).await,
-            Carrier::Udp { socket, .. } => socket.send(bytes).await.map(|_| ()),
-        };
-        result.map_err(|source| TransportError::Io {
-            peer: Some(SocketAddr::from(gateway)),
-            source,
-        })
+        self.stream
+            .write_all(bytes)
+            .await
+            .map_err(|source| TransportError::Io {
+                peer: Some(SocketAddr::from(gateway)),
+                source,
+            })
     }
 
     /// Receives the next raw frame. Cancel-safe.
     async fn recv(&mut self) -> Result<Vec<u8>> {
-        match self {
-            Carrier::Tcp { stream, reader } => reader.read_frame(stream).await,
-            Carrier::Udp { socket, .. } => {
-                let mut buf = vec![0u8; 2048];
-                let n = socket.recv(&mut buf).await?;
-                buf.truncate(n);
-                Ok(buf)
-            }
-        }
+        self.reader.read_frame(&mut self.stream).await
     }
 
     /// Reads the next frame before `deadline`, naming `what` on timeout and
@@ -274,11 +232,9 @@ impl Carrier {
         }
     }
 
-    /// Best effort: shuts a TCP stream (a UDP socket has nothing to shut).
+    /// Best effort: shuts the TCP stream.
     async fn shutdown(&mut self) {
-        if let Carrier::Tcp { stream, .. } = self {
-            let _ = stream.shutdown().await;
-        }
+        let _ = self.stream.shutdown().await;
     }
 }
 
@@ -296,7 +252,7 @@ pub(crate) fn at_stage(err: TransportError, what: &str) -> TransportError {
     }
 }
 
-/// One authenticated KNXnet/IP Secure session over TCP or UDP.
+/// One authenticated KNXnet/IP Secure session over TCP.
 pub(crate) struct SecureLink {
     carrier: Carrier,
     session: IpSecureSession,
@@ -304,18 +260,16 @@ pub(crate) struct SecureLink {
 }
 
 impl SecureLink {
-    /// Opens the carrier and runs the session handshake for `user` (module
-    /// docs), bounded by `timeout` overall. `transport` must be `Tcp` or
-    /// `Udp`; `Auto` means TCP here (the refusal check lives in the tunnel).
+    /// Connects over TCP and runs the session handshake for `user` (module
+    /// docs), bounded by `timeout` overall.
     pub(crate) async fn open(
         gateway: SocketAddrV4,
         local: Ipv4Addr,
         user: &UserKeys,
-        transport: SecureTransport,
         timeout: Duration,
     ) -> Result<SecureLink> {
         let deadline = Instant::now() + timeout;
-        let mut carrier = Carrier::open(transport, gateway, local, timeout).await?;
+        let mut carrier = Carrier::open(gateway, local, timeout).await?;
 
         let keys = EphemeralKeyPair::generate()?;
         let request = ipsecure::session_request(&carrier.hpai().to_bytes(), keys.public());
@@ -404,7 +358,6 @@ impl SecureLink {
         tracing::debug!(
             session = response.session_id,
             user = user.user_id,
-            udp = matches!(carrier, Carrier::Udp { .. }),
             "KNXnet/IP Secure session authenticated with {gateway}"
         );
         Ok(SecureLink {
@@ -412,21 +365,6 @@ impl SecureLink {
             session,
             gateway,
         })
-    }
-
-    /// Whether the session runs over UDP (so the tunnelling layer uses
-    /// TUNNELING_ACK and a deferred ICMP refusal is transient).
-    pub(crate) fn is_udp(&self) -> bool {
-        matches!(self.carrier, Carrier::Udp { .. })
-    }
-
-    /// The carrier this session runs over (`Tcp` or `Udp`).
-    pub(crate) fn transport(&self) -> SecureTransport {
-        if self.is_udp() {
-            SecureTransport::Udp
-        } else {
-            SecureTransport::Tcp
-        }
     }
 
     /// The HPAI the tunnel advertises in CONNECT, CONNECTIONSTATE and

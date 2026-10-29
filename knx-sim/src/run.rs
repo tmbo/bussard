@@ -71,7 +71,6 @@ pub fn serve_config(config_path: &Path) -> Result<()> {
             users = secure.users.len(),
             secure_only = secure.secure_only,
             tcp = secure.tcp,
-            udp = secure.udp,
             "KNXnet/IP Secure tunnelling"
         );
     }

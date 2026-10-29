@@ -1,9 +1,8 @@
-# knx-sim installation for the KNXnet/IP Secure over UDP loop (bussard issue
-# #197): a secure-only interface WITHOUT a TCP endpoint. bussard's default
-# `--secure-transport auto` refuses it with a hint; `--secure-transport udp`
-# opens a UDP session. The UDP mode is
-# INFERRED from the KNX specification; no real UDP-only interface has been
-# captured yet. run.sh drives it after the TCP cases.
+# knx-sim installation for the refused-TCP case (bussard issues #197, #513):
+# a secure-only interface WITHOUT a TCP endpoint. A unicast KNXnet/IP Secure
+# session runs over TCP only (KNX IP Secure 3/8/9 §2.2.3.3), so bussard
+# reports the refusal with its likely causes and opens nothing. run.sh drives
+# it after the TCP cases.
 #
 # The credentials match the tunnelling interface in `synthetic.knxkeys`
 # (interface host 1.1.0, tunnel 1.1.200, user 2). ALL of it is SYNTHETIC
@@ -17,10 +16,6 @@ gateway:
     secure_only: true
     # No TCP endpoint: a TCP connect is refused.
     tcp: false
-    udp: true
-    # An idle session ends after 4 s with a wrapped STATUS_TIMEOUT, so
-    # `bussard test --secure-idle` has something to measure.
-    session_timeout_ms: 4000
     users:
       - id: 2
         password: "tunnel-user-pw"

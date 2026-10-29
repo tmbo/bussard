@@ -148,16 +148,16 @@ pub enum TransportError {
     },
 
     /// The interface refused the TCP connect but its extended search
-    /// advertises KNXnet/IP Secure: it may serve secure sessions over UDP only.
-    /// bussard does not switch to UDP on its own, because the UDP carrier is
-    /// verified against knx-sim and the testkit mock only, never against a
-    /// real interface (issue #197). Fatal: the operator opts in with
-    /// `--secure-transport udp`.
+    /// advertises KNXnet/IP Secure. A unicast secure session runs over TCP
+    /// only (KNX IP Secure 3/8/9 §2.2.3.3, §2.2.3.6.4; issue #513), so no
+    /// other carrier is tried. Fatal: the interface is misconfigured, busy
+    /// with its one TCP connection, or not the device the search described.
     #[error(
-        "KNXnet/IP Secure: interface {gateway} refused the TCP connection but advertises \
-         KNXnet/IP Secure, so it may serve secure sessions over UDP only. bussard opens secure \
-         sessions over TCP unless told otherwise: the UDP carrier has been verified against \
-         knx-sim only, not against a real interface. Pass --secure-transport udp to try it"
+        "KNXnet/IP Secure: interface {gateway} advertises KNXnet/IP Secure but refused the TCP \
+         connection. A KNXnet/IP Secure session runs over TCP only. Likely causes: secure \
+         tunnelling is disabled or misconfigured on the interface, the interface already serves \
+         as many TCP connections as it supports (often one, e.g. ETS or another client), or the \
+         address belongs to a different device than the one that answered the search"
     )]
     SecureTcpRefused {
         /// The gateway.

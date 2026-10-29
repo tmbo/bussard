@@ -62,8 +62,7 @@ pub struct GatewayConfig {
     pub pcap: Option<String>,
 }
 
-/// A KNXnet/IP Secure tunnelling interface: TCP (and optionally UDP) on the
-/// gateway port, the session handshake, SECURE_WRAPPER traffic. SYNTHETIC
+/// A KNXnet/IP Secure tunnelling interface: TCP on the gateway port, the session handshake, SECURE_WRAPPER traffic. SYNTHETIC
 /// credentials only.
 #[derive(Debug, Clone, Deserialize)]
 pub struct IpSecureConfig {
@@ -82,11 +81,6 @@ pub struct IpSecureConfig {
     /// refused).
     #[serde(default = "default_true")]
     pub tcp: bool,
-    /// Also serve secure sessions over UDP on the gateway port (bussard issue
-    /// #197; INFERRED from the KNX specification, no real UDP-only interface
-    /// captured yet). Default `false`.
-    #[serde(default)]
-    pub udp: bool,
     /// End a secure session after this many milliseconds without a frame from
     /// the client, with a wrapped SESSION_STATUS `STATUS_TIMEOUT` (the KNX
     /// specification names 60 s). Absent: sessions never time out.

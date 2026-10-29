@@ -205,8 +205,8 @@ after 2 seconds.
 - **Secure session keepalive.** Some interfaces drop a session idle for 60
   seconds, so bussard sends a keepalive every 30 seconds
   (`BUSSARD_SECURE_KEEPALIVE_SECS` changes it; `bussard test --secure-idle
-  <secs>` measures an interface read-only). An interface without a TCP
-  endpoint gets a UDP session only with `--secure-transport udp`.
+  <secs>` measures an interface read-only). The session runs over TCP only,
+  as the KNX standard requires.
 - **Not implemented:** secure routing (multicast), activating or deactivating
   Data Secure on a device, and activation from the FDSK certificate. Use ETS.
 

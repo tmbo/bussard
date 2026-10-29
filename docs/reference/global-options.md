@@ -45,7 +45,7 @@ Precedence, for an option with more than one source: the flag, then the environm
 | `--no-progress` | | | off | Never draw the live [progress display](#progress-display); print the plain progress lines, as a piped run does. |
 | `--secure-user <ID>` | | | | Open a [KNXnet/IP Secure](#knxnetip-secure-tunnelling) tunnel as tunnelling user `ID`. Needs `--secure-password-env`. |
 | `--secure-password-env <VAR>` | | | | The environment variable that holds the tunnelling user's password. Never on the command line. Needs `--secure-user`. |
-| `--secure-transport auto\|tcp\|udp` | | | `auto` (TCP) | The carrier of the KNXnet/IP Secure session. `udp` is an explicit opt-in. Needs tunnelling credentials. |
+| `--secure-transport auto\|tcp` | | | `auto` | How a refused TCP connect of the KNXnet/IP Secure session is reported. Both open TCP; `auto` names the likely causes. Needs tunnelling credentials. |
 
 `--yes`, `--yes-download`, `--force`, `--dry-run` and `--plan` are not global. They stay on the command whose action they consent to, and never come from the environment or `bussard.toml`.
 
@@ -130,7 +130,7 @@ An interface with KNXnet/IP Secure on and no plain tunnel refuses an ordinary co
 - A device whose model file says `security.activated: true` but that the keyring does not list is refused with `the keyring ... has no tool key for <IA>`. This holds for `describe`, `reconstruct`, `plan`, `flash`, `apply`, `commission`, `replace`, `backup`, `restore`, the `--line` walks and the MCP device tools.
 - `scan`, `assign` and `audit --live` never refuse. A Data Secure-activated device without a tool key is labelled "Data Secure activated (mask hidden), no tool key in the keyring".
 
-**TCP, or UDP on request.** bussard opens the session over TCP, as ETS does. When the TCP connect is refused and the interface advertises KNXnet/IP Secure, it may serve secure sessions over UDP only. bussard does not switch on its own; it fails with a message that names `--secure-transport udp`. The UDP path follows the KNX specification but is untested against a real interface.
+**TCP only.** A KNXnet/IP Secure tunnelling session runs over TCP, as ETS uses it. The KNX standard allows no other carrier: a unicast secure session must use TCP, and an interface discards a session request that arrives over UDP (KNX IP Secure 3/8/9 §2.2.3.3, §2.2.3.6.4). When the TCP connect is refused by an interface that advertises KNXnet/IP Secure, bussard fails with a message that names the likely causes: secure tunnelling disabled or misconfigured, the interface's TCP connections all taken (often there is just one), or a different device at that address.
 
 **Tunnel addresses and sessions.** The interface assigns each authenticated user its own tunnel address, and management traffic uses it as its source.
 

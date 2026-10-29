@@ -895,7 +895,7 @@ pcap and keyring from the environment) re-checks every CONFIRMED row.
 | ETS sends DISCONNECT and closes TCP without a SESSION_STATUS close | CONFIRMED (bussard also sends `STATUS_CLOSE`, as XKNX does) | last frames of session 3 |
 | SESSION_AUTHENTICATE MAC (§7.5) and SecureWrapper `additional_data` (§8.2) | INFERRED (XKNX, which works against real interfaces; three independent implementations agree on vectors: bussard, knx-sim, a Python script) | not checkable without the session key |
 | Session idle timeout 60 s; keepalive every 30 s (wrapped `STATUS_KEEPALIVE`) is adequate | CONFIRMED (live, read-only, 2026-09-25, #197): `bussard test --secure-idle` against 1.1.200 found the TCP session alive after 45 s idle and dropped with a wrapped `STATUS_TIMEOUT` at 59.97 s, 3 of 3 runs (`SECURE_SESSION_TIMEOUT`). Configurable (`SecureTunnelConfig::keepalive`, `BUSSARD_SECURE_KEEPALIVE_SECS`, `0` = none); an interval of 60 s or more is warned about at connect | the capture's sessions last seconds; the timeout was measured with the idle probe (§8.3) |
-| Secure session over **UDP** (#197): SESSION_REQUEST with the client's UDP HPAI, the tunnel's control/data HPAIs as on a plain UDP tunnel, TUNNELING_ACK inside SECURE_WRAPPERs in both directions, TIMER_NOTIFY ignored on unicast | **NOT ALLOWED by the standard** (3/8/9 KNX IP Secure §2.2.3.3: unicast sessions use TCP, not UDP; §2.2.3.6.4: a SESSION_REQUEST received over UDP, or with any HPAI but the TCP route-back one, is discarded; TSSK test 2.2.25). Only knx-sim and the testkit mock answer it; a conforming interface never will (#513) | no UDP-only interface exists by specification; the Jung interface serves TCP. The opt-in `--secure-transport udp` and the `SecureTcpRefused` hint are to be retired (#513) |
+| Secure session over **UDP** (#197): SESSION_REQUEST with the client's UDP HPAI, the tunnel's control/data HPAIs as on a plain UDP tunnel, TUNNELING_ACK inside SECURE_WRAPPERs in both directions, TIMER_NOTIFY ignored on unicast | **NOT ALLOWED by the standard** (3/8/9 KNX IP Secure §2.2.3.3: unicast sessions use TCP, not UDP; §2.2.3.6.4: a SESSION_REQUEST received over UDP, or with any HPAI but the TCP route-back one, is discarded; TSSK test 2.2.25). A conforming interface never answers it (#513) | no UDP-only interface exists by specification; the Jung interface serves TCP. Retired in #513: the opt-in `--secure-transport udp`, the `SecureTcpRefused` hint naming it, and the UDP sessions of knx-sim and the testkit mock (which now discard a SESSION_REQUEST over UDP, as TSSK 2.2.25 expects) |
 
 What ETS did in session 3 was a **device management** connection to the
 interface (CRI `02 03`: 24-octet CONNECT_REQUEST, 18-octet response; 3/8/3
@@ -913,7 +913,7 @@ The client (`crates/bussard-transport/src/secure.rs`, `tunnel.rs`):
    selects the secure tunnel; the user whose tunnel address is a free slot is
    preferred. With `--secure-user`/`--secure-password-env`, go secure directly.
 2. TCP connect (the only carrier the standard allows, 3/8/9 §2.2.3.3; the
-   UDP socket of #197 is a sim-only artefact, #513); SESSION_REQUEST with a
+   UDP carrier of #197 was removed in #513); SESSION_REQUEST with a
    fresh X25519 key. Each of SESSION_RESPONSE and the authentication
    SESSION_STATUS is waited for at most 10 s (3/8/9 §2.2.3.6.1, §2.2.3.8.1);
    a failed authentication needs a new session with a new key pair, never a
@@ -1064,26 +1064,18 @@ the wrapped SESSION_AUTHENTICATE, so the session never authenticates.
   SESSION_RESPONSE. `message_tag` = 0 for tunnelling `[CONFIRMED]`. Replay
   protection = never accept a sequence below the next expected one. bussard
   runs unicast over TCP first, as ETS does with this interface.
-- **Unicast (UDP)** `[NOT ALLOWED: 3/8/9 §2.2.3.3 and §2.2.3.6.4; sim-only, #513]`:
+- **Unicast (UDP)** `[NOT ALLOWED: 3/8/9 §2.2.3.3 and §2.2.3.6.4; removed, #513]`:
   the standard reserves unicast secure sessions to TCP, because the
   strictly-increasing sequence rule loses reordered datagrams; a conforming
-  server discards a SESSION_REQUEST that arrives over UDP. What follows
-  describes the knx-sim/mock behaviour bussard's opt-in was written against,
-  kept for the record until #513 removes it: the same session on
-  one UDP socket connected to the control endpoint. SESSION_REQUEST carries the
-  socket's real HPAI (`08 01 <ip> <port>`), CONNECT names it as control and
-  data endpoint, and the tunnelling layer keeps its TUNNELING_ACKs (wrapped).
-  A reordered datagram fails the strictly-increasing replay check and is
-  dropped; the ACK/retransmit layer recovers it. Every frame goes to the
-  control endpoint; the CONNECT_RESPONSE data endpoint is not used (as on the
-  plain UDP tunnel). Frames that precede the CONNECT_RESPONSE inside the
-  session (a TUNNELLING_FEATURE_INFO, say) are skipped, as over TCP.
-  Selection: `--secure-transport auto` (default) is TCP only; when the TCP
-  connect is refused and the extended search advertises the security family,
-  it fails with `SecureTcpRefused`, which names `--secure-transport udp`, and
-  never switches to UDP on its own. `--secure-transport udp` is the explicit
-  opt-in. No real interface can be tested over UDP: the specification
-  excludes the carrier, so there is nothing left to capture.
+  server discards a SESSION_REQUEST that arrives over UDP (TSSK 2.2.25).
+  bussard's opt-in UDP carrier (#197) and the UDP sessions of knx-sim and
+  the testkit mock were removed in #513; both now discard a SESSION_REQUEST
+  over UDP. `--secure-transport` keeps `auto` (default) and `tcp`, both TCP:
+  with `auto` a TCP connect refused by an interface whose extended search
+  advertises the security family fails with `SecureTcpRefused`, which says
+  the session is TCP-only and names the likely causes (secure tunnelling
+  disabled, the interface's TCP connections taken, Core §8.4.3.1, or a
+  different device at that address).
 - The wrapper sits at the `frame()`/`do_send` seam in
   `crates/bussard-transport/src/tunnel.rs:279` - the plain tunnelling frame is
   built as today, then wrapped in a SecureWrapper before the socket write, and
@@ -1541,7 +1533,7 @@ greppable.
 5. ~~**KNXnet/IP Secure over UDP** (§8.3, #197)~~ **Settled by the standard**
    (spec review 2026-10-28, #513): 3/8/9 §2.2.3.3 and §2.2.3.6.4 exclude UDP
    for unicast secure sessions, so no capture can exist; the opt-in carrier
-   and its sim/mock servers are to be retired.
+   and its sim/mock servers were retired in #513.
 6. ~~**The interface's session idle timeout** (§8.3, #197)~~ **Settled**
    2026-09-25: 60 s on the Jung interface (idle probe, alive at 45 s,
    `STATUS_TIMEOUT` at 59.97 s, 3 of 3); the 30 s keepalive is CONFIRMED

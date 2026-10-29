@@ -211,7 +211,7 @@ Behaviour:
 | `DROPPED after <t> s (<reason>)` | The interface ended the session or closed the connection. |
 | `SILENT` | No answer. |
 
-- The credentials come from `connection.keyring`, or from `--secure-user`/`--secure-password-env`. `--secure-transport` picks the carrier.
+- The credentials come from `connection.keyring`, or from `--secure-user`/`--secure-password-env`. The session runs over TCP only (KNX IP Secure 3/8/9 §2.2.3.3).
 - `--json` prints the same as an object: `outcome`, `after_ms`, `reason`, `answered_ms`, `transport`, `user_id`.
 - It uses no tunnel slot and nothing reaches the bus, so it needs neither `--yes` nor `--allow-remote-gateway`.
 - Run it with growing `SECS` (say 45, 65, 90, 125) to bracket the interface's timeout.

@@ -46,7 +46,7 @@ pub enum SecureIdleOutcome {
         reason: String,
     },
     /// The probe after the idle period got no answer: the interface forgot
-    /// the session silently (typical over UDP).
+    /// the session silently.
     Silent,
 }
 
@@ -57,7 +57,7 @@ pub struct SecureIdleReport {
     pub gateway: SocketAddrV4,
     /// The tunnelling user the session authenticated as.
     pub user_id: u8,
-    /// The carrier the session ran over.
+    /// The carrier the session ran over (always TCP, issue #513).
     pub transport: SecureTransport,
     /// The idle period requested.
     pub idle: Duration,
@@ -121,7 +121,8 @@ pub async fn probe_secure_idle(
         CONNECT_TIMEOUT,
     )
     .await?;
-    let transport = link.transport();
+    // A unicast secure session is TCP-only (3/8/9 §2.2.3.3, issue #513).
+    let transport = SecureTransport::Tcp;
     let started = Instant::now();
     tracing::info!(
         user = keys.user_id,

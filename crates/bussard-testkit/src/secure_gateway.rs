@@ -16,20 +16,17 @@
 //!   client L_Data.req is confirmed with an L_Data.con, then answered by the
 //!   [`MockDevice`]s on the line behind the interface, if any.
 //!
-//! - Optionally ([`SecureGatewayBuilder::udp_sessions`], issue #197) the same
-//!   secure session over UDP, keyed by the client's endpoint, with
-//!   TUNNELING_ACKs inside the wrappers in both directions; and
-//!   ([`SecureGatewayBuilder::without_tcp`]) no TCP endpoint at all, so a TCP
-//!   connect is refused as on a UDP-only interface.
+//! - Optionally ([`SecureGatewayBuilder::without_tcp`]) no TCP endpoint at
+//!   all, so a TCP connect is refused. A SESSION_REQUEST over UDP is never
+//!   answered: a unicast secure session is TCP-only (KNX IP Secure 3/8/9
+//!   §2.2.3.3, §2.2.3.6.4; issue #513).
 //! - Optionally ([`SecureGatewayBuilder::session_timeout`]) an idle session
-//!   timeout: a TCP session gets a wrapped `STATUS_TIMEOUT` and is closed, a
-//!   UDP session is forgotten silently.
+//!   timeout: the session gets a wrapped `STATUS_TIMEOUT` and is closed.
 //!
 //! The crypto comes from `bussard_secure::ipsecure`, so this mock checks the
 //! client's state machine, not the byte layout; the independent peer for the
 //! bytes is knx-sim's secure server.
 
-use std::collections::HashMap;
 use std::net::{SocketAddr, SocketAddrV4};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -91,8 +88,6 @@ pub struct SecureGatewayStats {
     /// Frames read and ignored on a stalled connection (see
     /// [`SecureGatewayBuilder::stall_after_requests`]).
     pub stalled_frames: usize,
-    /// Secure sessions that authenticated over UDP (a subset of `sessions`).
-    pub udp_sessions: usize,
     /// Sessions ended by the idle timeout (see
     /// [`SecureGatewayBuilder::session_timeout`]).
     pub timeouts: usize,
@@ -113,7 +108,6 @@ pub struct SecureGatewayBuilder {
     drop_after_requests: Option<usize>,
     stall_after_requests: Option<usize>,
     push_after_connect: Vec<CemiFrame>,
-    udp_sessions: bool,
     tcp: bool,
     session_timeout: Option<Duration>,
     feature_info_first: bool,
@@ -133,30 +127,22 @@ impl SecureGatewayBuilder {
 
     /// Sends a wrapped TUNNELLING_FEATURE_INFO before each CONNECT_RESPONSE,
     /// so the client's handshake must skip an unrelated authenticated frame
-    /// (issue #197: over TCP and UDP alike).
+    /// (issue #197).
     pub fn feature_info_before_connect_response(mut self) -> Self {
         self.feature_info_first = true;
         self
     }
 
-    /// Also accepts KNXnet/IP Secure sessions over UDP on the port
-    /// (issue #197): SESSION_REQUEST with the client's UDP HPAI, then the
-    /// wrapped tunnel with TUNNELING_ACKs.
-    pub fn udp_sessions(mut self) -> Self {
-        self.udp_sessions = true;
-        self
-    }
-
     /// Serves no TCP: a TCP connect to the port is refused, as on an
-    /// interface without a TCP endpoint. Implies nothing about UDP; combine
-    /// with [`udp_sessions`](Self::udp_sessions).
+    /// interface without a TCP endpoint (or one whose single TCP connection
+    /// is taken). The UDP side still answers the searches.
     pub fn without_tcp(mut self) -> Self {
         self.tcp = false;
         self
     }
 
     /// Ends a secure session after `timeout` without a frame from the client:
-    /// a wrapped `STATUS_TIMEOUT` and a close over TCP, silence over UDP.
+    /// a wrapped `STATUS_TIMEOUT` and a close.
     pub fn session_timeout(mut self, timeout: Duration) -> Self {
         self.session_timeout = Some(timeout);
         self
@@ -268,7 +254,6 @@ struct Config {
     drop_after_requests: Option<usize>,
     stall_after_requests: Option<usize>,
     push_after_connect: Vec<CemiFrame>,
-    udp_sessions: bool,
     session_timeout: Option<Duration>,
     feature_info_first: bool,
     one_session_per_user: bool,
@@ -330,7 +315,6 @@ impl MockSecureGateway {
             drop_after_requests: None,
             stall_after_requests: None,
             push_after_connect: Vec::new(),
-            udp_sessions: false,
             tcp: true,
             session_timeout: None,
             feature_info_first: false,
@@ -431,7 +415,6 @@ impl MockSecureGateway {
             drop_after_requests: builder.drop_after_requests,
             stall_after_requests: builder.stall_after_requests,
             push_after_connect: builder.push_after_connect,
-            udp_sessions: builder.udp_sessions,
             session_timeout: builder.session_timeout,
             feature_info_first: builder.feature_info_first,
             one_session_per_user: builder.one_session_per_user,
@@ -525,134 +508,22 @@ pub fn extended_description_dibs_for(ia: u16) -> Vec<u8> {
     dibs
 }
 
-/// A secure session over UDP, keyed by the client's endpoint.
-enum UdpSession {
-    /// SESSION_RESPONSE sent, waiting for the wrapped SESSION_AUTHENTICATE.
-    Pending(Pending, tokio::time::Instant),
-    /// Authenticated.
-    Established {
-        session: IpSecureSession,
-        side: TunnelSide,
-        last_rx: tokio::time::Instant,
-    },
-}
-
-/// The UDP side: refuse a plain CONNECT with 0x22, answer the searches, and
-/// (with [`SecureGatewayBuilder::udp_sessions`]) serve secure sessions.
+/// The UDP side: refuse a plain CONNECT with 0x22 and answer the searches.
+/// A SESSION_REQUEST over UDP is discarded unanswered (KNX IP Secure 3/8/9
+/// §2.2.3.6.4; TSSK test 2.2.25; issue #513).
 async fn serve_udp(socket: UdpSocket, stats: Arc<Mutex<SecureGatewayStats>>, config: Arc<Config>) {
     let ia = config.individual_address;
     let mut buf = [0u8; 1024];
-    let mut sessions: HashMap<SocketAddr, UdpSession> = HashMap::new();
-    let mut next_channel = 0x60u8;
     loop {
-        let received =
-            tokio::time::timeout(Duration::from_millis(50), socket.recv_from(&mut buf)).await;
-        if let Some(timeout) = config.session_timeout {
-            // Forget idle sessions silently, as a UDP server has no
-            // connection to close.
-            let before = sessions.len();
-            sessions.retain(|_, s| match s {
-                UdpSession::Pending(_, at) => at.elapsed() < timeout,
-                UdpSession::Established { last_rx, .. } => last_rx.elapsed() < timeout,
-            });
-            let expired = before - sessions.len();
-            if expired > 0 {
-                bump(&stats, |s| s.timeouts += expired);
-            }
-        }
-        let (n, peer) = match received {
-            Err(_) => continue,
-            Ok(Ok(r)) => r,
+        let (n, peer) = match socket.recv_from(&mut buf).await {
+            Ok(r) => r,
             // A client that went away (ICMP refusal): keep serving.
-            Ok(Err(_)) => continue,
+            Err(_) => continue,
         };
         let frame = buf[..n].to_vec();
         let Ok(parsed) = knxnet::parse(&frame) else {
             continue;
         };
-        if config.udp_sessions {
-            match parsed.service {
-                ServiceType::SessionRequest => {
-                    if let Ok((response, pending)) = accept_session_request(&config, &frame) {
-                        let _ = socket.send_to(&response, peer).await;
-                        sessions.insert(
-                            peer,
-                            UdpSession::Pending(pending, tokio::time::Instant::now()),
-                        );
-                    }
-                    continue;
-                }
-                ServiceType::SecureWrapper => {
-                    let replies = match sessions.remove(&peer) {
-                        Some(UdpSession::Pending(pending, _)) => {
-                            match finish_authentication(&config, pending, &frame, &stats) {
-                                Ok((session, reply, Some(user))) => {
-                                    bump(&stats, |s| s.udp_sessions += 1);
-                                    next_channel = next_channel.wrapping_add(1);
-                                    sessions.insert(
-                                        peer,
-                                        UdpSession::Established {
-                                            session,
-                                            side: TunnelSide::new(next_channel, user.tunnel_ia),
-                                            last_rx: tokio::time::Instant::now(),
-                                        },
-                                    );
-                                    vec![reply]
-                                }
-                                Ok((_, reply, None)) => vec![reply],
-                                Err(_) => Vec::new(),
-                            }
-                        }
-                        Some(UdpSession::Established {
-                            mut session,
-                            mut side,
-                            ..
-                        }) => {
-                            let inner = match session.open(&frame) {
-                                Ok(inner) => inner,
-                                Err(_) => {
-                                    bump(&stats, |s| s.bad_wrappers += 1);
-                                    sessions.insert(
-                                        peer,
-                                        UdpSession::Established {
-                                            session,
-                                            side,
-                                            last_rx: tokio::time::Instant::now(),
-                                        },
-                                    );
-                                    continue;
-                                }
-                            };
-                            let step = tunnel_step(&inner, &mut side, &config, &stats, true);
-                            let mut sealed = Vec::new();
-                            for reply in step.replies {
-                                if let Ok(w) = session.seal(&reply) {
-                                    sealed.push(w);
-                                }
-                            }
-                            if !step.close {
-                                sessions.insert(
-                                    peer,
-                                    UdpSession::Established {
-                                        session,
-                                        side,
-                                        last_rx: tokio::time::Instant::now(),
-                                    },
-                                );
-                            }
-                            sealed
-                        }
-                        // A wrapper for no (or a forgotten) session: silence.
-                        None => Vec::new(),
-                    };
-                    for reply in replies {
-                        let _ = socket.send_to(&reply, peer).await;
-                    }
-                    continue;
-                }
-                _ => {}
-            }
-        }
         let reply = match parsed.service {
             ServiceType::ConnectRequest => {
                 bump(&stats, |s| s.plain_refusals += 1);
@@ -813,14 +684,13 @@ struct Step {
     close: bool,
 }
 
-/// Serves one plain inner frame of an authenticated session. `acks`: the
-/// session runs over UDP, so client TUNNELLING_REQUESTs are acknowledged.
+/// Serves one plain inner frame of an authenticated session. Over TCP no
+/// TUNNELLING_ACK is sent.
 fn tunnel_step(
     inner: &[u8],
     side: &mut TunnelSide,
     config: &Config,
     stats: &Mutex<SecureGatewayStats>,
-    acks: bool,
 ) -> Step {
     let mut replies: Vec<Vec<u8>> = Vec::new();
     let Ok(parsed) = knxnet::parse(inner) else {
@@ -881,9 +751,6 @@ fn tunnel_step(
         ServiceType::TunnelingRequest => {
             if let Ok(req) = knxnet::parse_tunneling_request(parsed.body) {
                 side.requests += 1;
-                if acks {
-                    replies.push(knxnet::tunneling_ack(channel, req.header.seq, 0));
-                }
                 let mut con = req.cemi.clone();
                 con.message_code = MessageCode::LDataCon;
                 let answers = match config.line.lock() {
@@ -1004,7 +871,7 @@ async fn serve_tcp(
             bump(&stats, |s| s.bad_wrappers += 1);
             continue;
         };
-        let step = tunnel_step(&inner, &mut side, &config, &stats, false);
+        let step = tunnel_step(&inner, &mut side, &config, &stats);
         for reply in step.replies {
             let wrapped = session.seal(&reply).map_err(secure_err)?;
             stream.write_all(&wrapped).await?;

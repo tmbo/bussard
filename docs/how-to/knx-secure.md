@@ -51,7 +51,7 @@ The two flags go together, and the password is never a command-line argument. Wi
 
 - With no credentials at all, the command fails at once: `interface <gateway> requires KNXnet/IP Secure (secure tunnelling only) and no tunnelling credentials were given ...`.
 - A refused password (`refused tunnelling user N`) is fatal.
-- When the interface refuses the TCP connection, the message names `--secure-transport udp`. bussard does not switch on its own.
+- The session runs over TCP only, as the KNX standard requires. When the interface refuses the TCP connection, the message names the likely causes: secure tunnelling disabled, the interface's TCP connections all taken (often there is just one), or a different device at that address.
 
 A device the keyring lists is managed over KNX Data Secure with its tool key; a plain device behind the secure interface stays reachable in the clear. A device the model marks Secure-activated but the keyring does not list is refused.
 

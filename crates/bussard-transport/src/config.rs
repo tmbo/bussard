@@ -249,27 +249,23 @@ pub enum SecureSource {
     Explicit,
 }
 
-/// Which carrier a KNXnet/IP Secure session runs over (issue #197).
+/// How the tunnel reaches the interface for a KNXnet/IP Secure session.
+///
+/// A unicast secure session runs over TCP only (KNX IP Secure 3/8/9
+/// §2.2.3.3, §2.2.3.6.4; issue #513), so both values open TCP; they differ
+/// only in how a refused TCP connect is reported.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SecureTransport {
-    /// TCP, the carrier ETS uses with the tested interface and the only one
-    /// verified against a real interface. When the TCP connect is refused and
-    /// the interface's extended search advertises KNXnet/IP Secure, the
-    /// connect fails with [`TransportError::SecureTcpRefused`] naming
-    /// `--secure-transport udp`; it never switches to UDP on its own
-    /// (issue #197).
+    /// TCP, the default. When the TCP connect is refused and the interface's
+    /// extended search advertises KNXnet/IP Secure, the connect fails with
+    /// [`TransportError::SecureTcpRefused`], which names the likely causes.
     ///
     /// [`TransportError::SecureTcpRefused`]: crate::TransportError::SecureTcpRefused
     #[default]
     Auto,
-    /// TCP only: no TUNNELING_ACK, route-back HPAIs (CONFIRMED against the
-    /// Jung interface).
+    /// TCP, with a refused connect reported as it is: no TUNNELING_ACK,
+    /// route-back HPAIs (CONFIRMED against the Jung interface).
     Tcp,
-    /// UDP only, an explicit opt-in: the session and the tunnel on one UDP
-    /// socket, TUNNELING_ACK inside SECURE_WRAPPERs, the real local endpoint
-    /// in every HPAI. INFERRED from the KNX specification, verified against
-    /// knx-sim and the testkit mock only; no real interface has been tested.
-    Udp,
 }
 
 impl std::fmt::Display for SecureTransport {
@@ -277,7 +273,6 @@ impl std::fmt::Display for SecureTransport {
         f.write_str(match self {
             SecureTransport::Auto => "auto",
             SecureTransport::Tcp => "tcp",
-            SecureTransport::Udp => "udp",
         })
     }
 }
@@ -291,7 +286,8 @@ pub struct SecureTunnelConfig {
     pub users: Vec<SecureUser>,
     /// Where the users came from.
     pub source: SecureSource,
-    /// TCP (the default, `Auto`), or UDP when explicitly asked for.
+    /// How a refused TCP connect is reported (`Auto` by default); the
+    /// session always runs over TCP.
     pub transport: SecureTransport,
     /// How often the tunnel sends a wrapped `STATUS_KEEPALIVE`
     /// ([`SECURE_KEEPALIVE_INTERVAL`] by default). [`Duration::ZERO`] sends
@@ -470,10 +466,10 @@ mod tests {
         assert_eq!(config.transport, SecureTransport::Auto);
         assert_eq!(config.keepalive, SECURE_KEEPALIVE_INTERVAL);
         let config = config
-            .with_transport(SecureTransport::Udp)
+            .with_transport(SecureTransport::Tcp)
             .with_keepalive(Duration::from_secs(10));
-        assert_eq!(config.transport, SecureTransport::Udp);
+        assert_eq!(config.transport, SecureTransport::Tcp);
         assert_eq!(config.keepalive, Duration::from_secs(10));
-        assert_eq!(SecureTransport::Udp.to_string(), "udp");
+        assert_eq!(SecureTransport::Tcp.to_string(), "tcp");
     }
 }
