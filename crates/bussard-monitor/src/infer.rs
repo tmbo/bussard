@@ -239,7 +239,20 @@ fn one_byte(value: u8) -> Vec<DptCandidate> {
             "a byte-wide DPT such as 5.001 can carry this value too; only the sending com \
              object's declared width settles it",
         ));
+        out.push(step_candidate(value, Confidence::Low));
         return out.into_iter().flatten().collect();
+    }
+
+    // A 4-bit relative dimming telegram (3.007, 03_07_02 §3.3) is packed into
+    // the APCI's low bits like a 1-bit value; with the direction bit set
+    // (0x08..=0x0F, "increase") it is the typical dimming push.
+    if value <= 0x0F {
+        let confidence = if value >= 0x08 {
+            Confidence::Medium
+        } else {
+            Confidence::Low
+        };
+        out.push(step_candidate(value, confidence));
     }
 
     if value <= 100 {
@@ -283,6 +296,17 @@ fn one_byte(value: u8) -> Vec<DptCandidate> {
         ));
     }
     out.into_iter().flatten().collect()
+}
+
+/// The 3.007 relative-dimming candidate for a 4-bit value `0..=0x0F`.
+fn step_candidate(value: u8, confidence: Confidence) -> Option<DptCandidate> {
+    let dpt = Dpt::new(3, Some(7));
+    let reads = decode(&dpt, &[value]);
+    DptCandidate::new(
+        "3.007",
+        confidence,
+        format!("a 4-bit payload fits relative dimming (3.007, also 3.008 for blinds): {reads}"),
+    )
 }
 
 /// Plausible ranges for the common 2-byte float quantities.
@@ -720,6 +744,25 @@ mod tests {
         assert_eq!(out[0].dpt, "5.001".parse()?);
         assert_eq!(out[0].confidence, Confidence::Medium);
         assert_eq!(out[1].dpt, "5.010".parse()?);
+        Ok(())
+    }
+
+    #[test]
+    fn test_infer_dpt_one_byte_lists_relative_dimming() -> R {
+        // 0x09: increase, code 1 (one 100 % step).
+        let c = infer_dpt(&[0x09], None);
+        let dimming = c
+            .iter()
+            .find(|c| c.dpt.to_string() == "3.007")
+            .ok_or("3.007 missing")?;
+        assert_eq!(dimming.confidence, Confidence::Medium);
+        assert!(
+            dimming.reason.contains("Increase 100 %"),
+            "{}",
+            dimming.reason
+        );
+        // Above 0x0F a 4-bit value is impossible.
+        assert!(!dpts(&infer_dpt(&[0x10], None)).contains(&"3.007".to_string()));
         Ok(())
     }
 

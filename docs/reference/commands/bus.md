@@ -98,6 +98,11 @@ $ bussard write 3/0/4 on
 ```
 
 The value is human-typed: `on`/`off`, `up`/`down`, a number, or a percentage like `75%`.
+A relative dimming or blind step (`3.007`, `3.008`) is a direction and a step size:
+`increase 25%`, `down 50%`, `up`, `break`. The step code divides the full range into
+2^(code-1) intervals (KNX 03_07_02 §3.3), so the step sizes are 100, 50, 25, 12.5, 6.25,
+3.125 and 1.5625 %; `increase 3` names the code directly, and a direction alone is 100 %.
+`read` and `monitor` print the step size: `0B` on a `3.007` address is `Increase 25 %`.
 A scene number is the raw field, 0 to 63. ETS and Home Assistant show scenes counted from
 1 (KNX 03_07_02 Datapoint Types §3.19 NOTE 9), so ETS scene 4 is `scene 3` here (#495).
 A scaled sub-type takes the scaled value, never the raw count: `50 %` on an `8.010` address

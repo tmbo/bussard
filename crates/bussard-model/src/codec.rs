@@ -119,7 +119,9 @@ pub enum TypedValue {
     Step {
         /// Direction bit label (e.g. `"Increase"`/`"Decrease"`, `"Up"`/`"Down"`).
         direction: &'static str,
-        /// The 3-bit step code (0 = break, 1..7 = number of intervals).
+        /// The 3-bit step code: 0 = break, 1..=7 divide the 0..100 % range
+        /// into `2^(code-1)` intervals (03_07_02 §3.3), so code 1 is one
+        /// 100 % step and code 7 is 64 steps of 1.5625 %.
         step: u8,
     },
     /// A time of day with weekday (DPT 10.001).
@@ -362,13 +364,10 @@ impl fmt::Display for TypedValue {
                 decimals,
                 unit,
             } => write!(f, "{} {unit}", format_fixed(*count, *decimals)),
-            TypedValue::Step { direction, step } => {
-                if *step == 0 {
-                    write!(f, "{direction} break")
-                } else {
-                    write!(f, "{direction} step {step}")
-                }
-            }
+            TypedValue::Step { direction, step } => match step_percent(*step) {
+                Some(pct) => write!(f, "{direction} {pct} %"),
+                None => write!(f, "{direction} break"),
+            },
             TypedValue::Time {
                 weekday,
                 hour,
@@ -423,6 +422,71 @@ impl TypedValue {
             _ => None,
         }
     }
+}
+
+/// The size of one step of a 3.007/3.008 step code, in percent of the full
+/// range: `100 / 2^(code-1)` (03_07_02 §3.3). `None` for code 0 (break) and
+/// for codes above 7, which the 3-bit field cannot carry.
+fn step_percent(code: u8) -> Option<f64> {
+    (1..=7)
+        .contains(&code)
+        .then(|| 100.0 / f64::from(1u32 << (code - 1)))
+}
+
+/// The `(bit 0, bit 1)` direction labels of a DPT 3.x sub-type: 3.008 is
+/// `Up`/`Down`, every other 3.x reads as 3.007 `Decrease`/`Increase`.
+fn step_labels(sub: Option<u16>) -> (&'static str, &'static str) {
+    match sub {
+        Some(8) => ("Up", "Down"),
+        _ => ("Decrease", "Increase"),
+    }
+}
+
+/// Parses a 3.007/3.008 step: a direction word, then an optional amount.
+///
+/// Directions: `increase`/`decrease`, `up`/`down` (3.007 reads `up` as
+/// increase, `dim up`/`dim down` too; 3.008 has `up` = bit 0, `down` = bit 1).
+/// Amounts: a step size in percent that is one of 100, 50, 25, 12.5, 6.25,
+/// 3.125 and 1.5625 (`25%`), a bare step code `0`-`7` (`3`, `step 3`), or
+/// `break`/`stop`. No amount means code 1, one step over the whole range.
+/// A bare `break`/`stop` is code 0 with the bit-0 direction.
+fn parse_step(input: &str, sub: Option<u16>) -> Option<(bool, u8)> {
+    let lower = input.trim().to_lowercase();
+    let words: Vec<&str> = lower.split_whitespace().collect();
+    let (dir_words, rest): (usize, Option<bool>) = match words.as_slice() {
+        ["dim", "up" | "brighter", ..] => (2, Some(true)),
+        ["dim", "down" | "darker", ..] => (2, Some(false)),
+        ["increase" | "brighter", ..] => (1, Some(true)),
+        ["decrease" | "darker", ..] => (1, Some(false)),
+        // 3.008: Up is bit 0, Down bit 1; on 3.007 `up` means brighter.
+        ["up", ..] => (1, Some(sub != Some(8))),
+        ["down", ..] => (1, Some(sub == Some(8))),
+        ["break" | "stop"] => return Some((false, 0)),
+        _ => (0, None),
+    };
+    let up = rest?;
+    let amount: Vec<&str> = words[dir_words..]
+        .iter()
+        .copied()
+        .filter(|w| *w != "step")
+        .collect();
+    let code = match amount.as_slice() {
+        [] => 1,
+        ["break" | "stop"] => 0,
+        [one] => parse_step_amount(one)?,
+        [n, "%"] => parse_step_amount(&format!("{n}%"))?,
+        _ => return None,
+    };
+    Some((up, code))
+}
+
+/// A step amount: `25%` (a step size) or a bare code `0`-`7`.
+fn parse_step_amount(word: &str) -> Option<u8> {
+    if let Some(p) = word.strip_suffix('%') {
+        let p: f64 = p.trim().parse().ok()?;
+        return (1..=7u8).find(|c| step_percent(*c).is_some_and(|s| (s - p).abs() < 1e-6));
+    }
+    word.parse::<u8>().ok().filter(|c| *c <= 7)
 }
 
 /// Renders `count * 10^-decimals` exactly, e.g. `(5000, 2)` as `50.00`.
@@ -724,27 +788,15 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
             })
         }
         3 => {
-            // 4-bit control: bit 3 direction, bits 0..2 step.
+            // 4-bit control (03_07_02 §3.3): bit 3 direction, bits 0..2 the
+            // step code.
             let b = payload.first()? & 0x0f;
-            let direction_bit = (b & 0x08) != 0;
-            let step = b & 0x07;
-            let direction = match dpt.sub {
-                Some(8) => {
-                    if direction_bit {
-                        "Down"
-                    } else {
-                        "Up"
-                    }
-                }
-                _ => {
-                    if direction_bit {
-                        "Increase"
-                    } else {
-                        "Decrease"
-                    }
-                }
-            };
-            Some(TypedValue::Step { direction, step })
+            let (zero, one) = step_labels(dpt.sub);
+            let direction = if (b & 0x08) != 0 { one } else { zero };
+            Some(TypedValue::Step {
+                direction,
+                step: b & 0x07,
+            })
         }
         5 => {
             let b = *payload.first()?;
@@ -1010,6 +1062,10 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
 /// - **1.x** — `on`/`off`, `true`/`false`, `1`/`0`, and subtype words:
 ///   `up`/`down` (1.008), `open`/`closed` (1.009), `start`/`stop` (1.010),
 ///   `enable`/`disable` (1.003), `alarm`/`no-alarm` (1.005).
+/// - **3.007 / 3.008** — a direction and an optional step: `increase 25%`,
+///   `up`, `dim up`, `down 50%`, `decrease 3` (the step code), `break`,
+///   `stop`. The step is the size of one step in percent (100, 50, 25,
+///   12.5, 6.25, 3.125, 1.5625) or the code 1-7; no step means 100 %.
 /// - **5.001** — a percentage: `75%` or a bare `0`–`100`.
 /// - **5.003** — an angle `0`–`360` (bare number).
 /// - **5.x** (other) — an integer `0`–`255`.
@@ -1086,6 +1142,22 @@ pub fn parse_value(dpt: &Dpt, input: &str) -> Result<TypedValue, ParseValueError
             Ok(TypedValue::Bool {
                 value,
                 label: if value { true_label } else { false_label },
+            })
+        }
+        3 => {
+            let (zero, one) = step_labels(dpt.sub);
+            let (bit, step) = parse_step(raw, dpt.sub).ok_or_else(|| {
+                invalid(&format!(
+                    "a direction ({} or {}) and an optional step size \
+                     (100%, 50%, 25%, 12.5%, 6.25%, 3.125%, 1.5625%) or code 1-7, \
+                     or `break`/`stop`",
+                    one.to_lowercase(),
+                    zero.to_lowercase()
+                ))
+            })?;
+            Ok(TypedValue::Step {
+                direction: if bit { one } else { zero },
+                step,
             })
         }
         5 => match dpt.sub {
@@ -1410,6 +1482,26 @@ pub fn encode(dpt: &Dpt, value: &TypedValue) -> Result<Vec<u8>, EncodeError> {
             TypedValue::Bool { value, .. } => Ok(vec![*value as u8]),
             _ => Err(mismatch()),
         },
+        3 => match value {
+            TypedValue::Step { direction, step } => {
+                let (zero, one) = step_labels(dpt.sub);
+                let bit = if *direction == one {
+                    0x08
+                } else if *direction == zero {
+                    0x00
+                } else {
+                    return Err(mismatch());
+                };
+                if *step > 7 {
+                    return Err(EncodeError::OutOfRange {
+                        dpt: dpt.to_string(),
+                        value: value.to_string(),
+                    });
+                }
+                Ok(vec![bit | step])
+            }
+            _ => Err(mismatch()),
+        },
         5 => match (dpt.sub, value) {
             (Some(1), TypedValue::Percent(p)) => {
                 if !(0.0..=100.0).contains(p) {
@@ -1649,6 +1741,61 @@ mod tests {
                 step: 1
             }
         );
+    }
+
+    #[test]
+    fn test_parse_value_dpt3_step_forms() -> Result<(), Box<dyn std::error::Error>> {
+        let step = |direction, step| TypedValue::Step { direction, step };
+        let d7 = dpt("3.007");
+        assert_eq!(parse_value(&d7, "increase 25%")?, step("Increase", 3));
+        assert_eq!(parse_value(&d7, "increase 100%")?, step("Increase", 1));
+        assert_eq!(parse_value(&d7, "up 1")?, step("Increase", 1));
+        assert_eq!(parse_value(&d7, "up")?, step("Increase", 1));
+        assert_eq!(parse_value(&d7, "dim up")?, step("Increase", 1));
+        assert_eq!(parse_value(&d7, "Decrease 1.5625 %")?, step("Decrease", 7));
+        assert_eq!(parse_value(&d7, "decrease step 2")?, step("Decrease", 2));
+        assert_eq!(parse_value(&d7, "break")?, step("Decrease", 0));
+        assert_eq!(parse_value(&d7, "stop")?, step("Decrease", 0));
+        assert_eq!(parse_value(&d7, "increase stop")?, step("Increase", 0));
+        let d8 = dpt("3.008");
+        assert_eq!(parse_value(&d8, "down 50%")?, step("Down", 2));
+        assert_eq!(parse_value(&d8, "up")?, step("Up", 1));
+        // A step size the 3-bit code cannot express is refused.
+        assert!(parse_value(&d7, "increase 30%").is_err());
+        assert!(parse_value(&d7, "increase 8").is_err());
+        assert!(parse_value(&d7, "sideways").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_encode_dpt3_step() -> Result<(), Box<dyn std::error::Error>> {
+        let d7 = dpt("3.007");
+        let v = TypedValue::Step {
+            direction: "Increase",
+            step: 3,
+        };
+        assert_eq!(encode(&d7, &v)?, vec![0x0B]);
+        assert_eq!(encode(&d7, &parse_value(&d7, "break")?)?, vec![0x00]);
+        let d8 = dpt("3.008");
+        assert_eq!(encode(&d8, &parse_value(&d8, "down 50%")?)?, vec![0x0A]);
+        // A 3.007 label under 3.008 is a mismatch, not a guess.
+        assert!(matches!(encode(&d8, &v), Err(EncodeError::Mismatch { .. })));
+        // Round trip over every code.
+        for b in 0u8..=0x0F {
+            assert_eq!(encode(&d7, &decode(&d7, &[b]))?, vec![b]);
+            assert_eq!(encode(&d8, &decode(&d8, &[b]))?, vec![b]);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_display_dpt3_step_percent() {
+        let d7 = dpt("3.007");
+        assert_eq!(decode(&d7, &[0x0B]).to_string(), "Increase 25 %");
+        assert_eq!(decode(&d7, &[0x09]).to_string(), "Increase 100 %");
+        assert_eq!(decode(&d7, &[0x07]).to_string(), "Decrease 1.5625 %");
+        assert_eq!(decode(&d7, &[0x00]).to_string(), "Decrease break");
+        assert_eq!(decode(&dpt("3.008"), &[0x0A]).to_string(), "Down 50 %");
     }
 
     #[test]
