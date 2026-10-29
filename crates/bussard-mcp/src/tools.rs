@@ -706,6 +706,16 @@ pub(crate) fn typed_value_json(v: &TypedValue) -> Value {
             "unit": unit,
             "display": v.to_string(),
         }),
+        TypedValue::Enum { code, label } => json!({
+            "enum": code,
+            "label": label,
+            "display": v.to_string(),
+        }),
+        TypedValue::Flags { bits, names } => json!({
+            "bits": bits,
+            "flags": names,
+            "display": v.to_string(),
+        }),
         other => json!({ "display": other.to_string() }),
     }
 }

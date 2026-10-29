@@ -117,6 +117,11 @@ A scene number (`17.001`, `18.001`, and scenes A/B of `1.022`) counts from 1, as
 Assistant show it (KNX 03_07_02 Datapoint Types §3.19 NOTE 9, §3.1 footnote 2): `scene 3` sends
 the field 2, so ETS scene 3 is `scene 3` here. `raw 2` sends the field itself. `read` and
 `monitor` show both: `activate scene 3 (raw 2)`.
+An enumeration (`20.xxx`, KNX 03_07_02 §3.21, §4.3, §6.3) takes its label or code: `cool` or `3`
+on `20.105`; `read` and `monitor` print the label, and `Unknown(18)` for a reserved code. A bit
+set (`21.xxx`, `22.xxx`) reads as the names of its set bits, `0A` on `21.001` is
+`Fault, InAlarm`, and takes the same list or `none`. A `6.020` status shows its five status
+fields (0 = set, §3.7) and the active mode.
 A scaled sub-type takes the scaled value, never the raw count: `50 %` on an `8.010` address
 sends `13 88`, `1.5 s` (or `1500 ms`) on `7.004` sends `00 0F`, `1.5 m3/h` on `13.002` sends
 `00 00 3A 98` (KNX 03_07_02 §3.8.2, §3.9.1, §3.9.2, §3.14.1). A value outside the range or finer

@@ -7,6 +7,9 @@
 use std::fmt;
 
 use crate::dpt::Dpt;
+use crate::dpt_tables::{
+    enum_code, enum_label, enum_table, flag_table, fold_word,
+};
 
 /// Error encoding a typed value into a payload.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -172,6 +175,23 @@ pub enum TypedValue {
     },
     /// An HVAC operating mode (DPT 20.102).
     HvacMode(HvacMode),
+    /// A value of a 20.xxx enumeration other than 20.102 (03_07_02 §3.21,
+    /// §4.3, §6.3): the code and its label, `None` for a reserved code.
+    Enum {
+        /// The enumeration code on the wire.
+        code: u8,
+        /// The label of the code, `None` when the code is reserved.
+        label: Option<&'static str>,
+    },
+    /// A bit set (DPT 21.xxx, 22.xxx) or a status-with-mode octet (6.020),
+    /// shown as the names that apply.
+    Flags {
+        /// The raw bits (the low octet for an 8-bit set).
+        bits: u16,
+        /// The names of the set bits, in bit order; for 6.020 one entry per
+        /// field.
+        names: Vec<&'static str>,
+    },
     /// An RGB colour (DPT 232.600).
     Rgb {
         /// Red channel.
@@ -417,6 +437,17 @@ impl fmt::Display for TypedValue {
                 write!(f, "{verb} scene {} (raw {scene})", u16::from(*scene) + 1)
             }
             TypedValue::HvacMode(m) => write!(f, "{m}"),
+            TypedValue::Enum { code, label } => match label {
+                Some(l) => write!(f, "{l}"),
+                None => write!(f, "Unknown({code})"),
+            },
+            TypedValue::Flags { names, .. } => {
+                if names.is_empty() {
+                    write!(f, "none")
+                } else {
+                    write!(f, "{}", names.join(", "))
+                }
+            }
             TypedValue::Rgb { r, g, b } => write!(f, "#{r:02X}{g:02X}{b:02X}"),
             TypedValue::Rgbw(c) => write!(f, "{c}"),
             TypedValue::Raw(bytes) => {
@@ -945,6 +976,64 @@ pub fn encode_float16(value: f32) -> Result<[u8; 2], Float16RangeError> {
     Ok(raw.to_be_bytes())
 }
 
+/// Generic bit names for a 21.xxx / 22.xxx sub-type bussard has no table for.
+const BIT_NAMES: [&str; 16] = [
+    "b0", "b1", "b2", "b3", "b4", "b5", "b6", "b7", "b8", "b9", "b10", "b11", "b12", "b13",
+    "b14", "b15",
+];
+
+/// The names of the set bits of a 21.xxx (B8) or 22.xxx (B16) value, in bit
+/// order. Reserved bits are left out here and reported by [`validity_note`].
+/// 22.101 bit 8 is HeatCoolMode (03_07_02 §4.5.2): it is named either way.
+fn flag_names(main: u16, sub: Option<u16>, bits: u16) -> Vec<&'static str> {
+    let width: u16 = if main == 22 { 16 } else { 8 };
+    let table = sub.and_then(|s| flag_table(main, s));
+    let mut names = Vec::new();
+    for bit in 0..width {
+        let set = bits & (1 << bit) != 0;
+        if main == 22 && sub == Some(101) && bit == 8 {
+            names.push(if set { "Heating" } else { "Cooling" });
+            continue;
+        }
+        if !set {
+            continue;
+        }
+        match table {
+            Some(t) => {
+                if let Some(name) = t.get(usize::from(bit)).filter(|n| !n.is_empty()) {
+                    names.push(*name);
+                }
+            }
+            None => names.push(BIT_NAMES[usize::from(bit)]),
+        }
+    }
+    names
+}
+
+/// The fields of a 6.020 `DPT_Status_Mode3` octet (03_07_02 §3.7): status
+/// bits a..e in bits 7..3, where 0 means set and 1 clear, then the one-hot
+/// mode in bits 2..0 (001b mode 0, 010b mode 1, 100b mode 2).
+fn status_mode3_names(b: u8) -> Vec<&'static str> {
+    const SET: [&str; 5] = ["A set", "B set", "C set", "D set", "E set"];
+    const CLEAR: [&str; 5] = ["A clear", "B clear", "C clear", "D clear", "E clear"];
+    let mut names: Vec<&'static str> = (0..5)
+        .map(|i| {
+            if b & (0x80 >> i) == 0 {
+                SET[i]
+            } else {
+                CLEAR[i]
+            }
+        })
+        .collect();
+    names.push(match b & 0x07 {
+        0b001 => "mode 0",
+        0b010 => "mode 1",
+        0b100 => "mode 2",
+        _ => "mode invalid",
+    });
+    names
+}
+
 /// Decodes a group-value payload into a [`TypedValue`] under the given DPT.
 ///
 /// This never fails: unknown DPTs and size mismatches degrade to
@@ -1004,6 +1093,15 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
                     unit: int_unit(5, dpt.sub),
                 }),
             }
+        }
+        // 6.020 DPT_Status_Mode3 (03_07_02 §3.7): five status bits a..e
+        // (bit 7..3, 0 = set, 1 = clear) and a one-hot mode in bits 2..0.
+        6 if dpt.sub == Some(20) => {
+            let b = *payload.first()?;
+            Some(TypedValue::Flags {
+                bits: u16::from(b),
+                names: status_mode3_names(b),
+            })
         }
         6 => {
             let b = *payload.first()? as i8;
@@ -1167,9 +1265,31 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
         }
         20 => {
             let b = *payload.first()?;
+            if let Some(sub) = dpt.sub
+                && enum_table(sub).is_some()
+            {
+                return Some(TypedValue::Enum {
+                    code: b,
+                    label: enum_label(sub, b),
+                });
+            }
             Some(TypedValue::Unsigned {
                 value: u32::from(b),
                 unit: None,
+            })
+        }
+        21 => {
+            let b = *payload.first()?;
+            Some(TypedValue::Flags {
+                bits: u16::from(b),
+                names: flag_names(21, dpt.sub, u16::from(b)),
+            })
+        }
+        22 => {
+            let bits = u16::from_be_bytes([*payload.first()?, *payload.get(1)?]);
+            Some(TypedValue::Flags {
+                bits,
+                names: flag_names(22, dpt.sub, bits),
             })
         }
         19 => {
@@ -1286,6 +1406,10 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
 ///   `raw 0`/`raw 1`).
 /// - **20.102** — a mode name: `auto`, `comfort`, `standby`, `economy`,
 ///   `building-protection` (aliases `frost`, `protection`).
+/// - **20.xxx** (the enumerations of 03_07_02 §3.21, §4.3, §6.3) — the label
+///   (`cool` on 20.105, `fan only`) or its code; a reserved code is refused.
+/// - **21.xxx / 22.xxx** — `none`, or the names of the set bits joined by
+///   `,` (`Fault, InAlarm` on 21.001).
 ///
 /// Errors name the DPT and the accepted forms so a caller (human or LLM) can
 /// correct the input.
@@ -1512,6 +1636,27 @@ pub fn parse_value(dpt: &Dpt, input: &str) -> Result<TypedValue, ParseValueError
             })?;
             Ok(TypedValue::HvacMode(mode))
         }
+        20 if dpt.sub.and_then(enum_table).is_some() => {
+            let sub = dpt.sub.unwrap_or_default();
+            let table = enum_table(sub).unwrap_or_default();
+            let words: Vec<&str> = table.iter().map(|(_, l)| *l).collect();
+            let code = enum_code(sub, raw)
+                .or_else(|| {
+                    raw.parse::<u8>()
+                        .ok()
+                        .filter(|c| enum_label(sub, *c).is_some())
+                })
+                .ok_or_else(|| {
+                    invalid(&format!(
+                        "one of {} (or its code)",
+                        words.join(", ").to_lowercase()
+                    ))
+                })?;
+            Ok(TypedValue::Enum {
+                code,
+                label: enum_label(sub, code),
+            })
+        }
         // Any other 20.x enumeration: bussard models no label set for it, so
         // only the raw enumeration code is accepted (see the decode arm).
         20 => {
@@ -1527,10 +1672,51 @@ pub fn parse_value(dpt: &Dpt, input: &str) -> Result<TypedValue, ParseValueError
                 unit: None,
             })
         }
+        21 | 22 if dpt.sub.and_then(|s| flag_table(dpt.main, s)).is_some() => {
+            let bits = parse_flags(raw, dpt.main, dpt.sub).ok_or_else(|| {
+                invalid(&format!(
+                    "`none` or a comma-separated list of {}",
+                    flag_table(dpt.main, dpt.sub.unwrap_or_default())
+                        .unwrap_or_default()
+                        .iter()
+                        .filter(|n| !n.is_empty())
+                        .copied()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+            })?;
+            Ok(TypedValue::Flags {
+                bits,
+                names: flag_names(dpt.main, dpt.sub, bits),
+            })
+        }
         _ => Err(ParseValueError::Unsupported {
             dpt: dpt.to_string(),
         }),
     }
+}
+
+/// Parses a 21.xxx / 22.xxx bit set from its names: `none`, or names joined
+/// by `,` or `+` (`Fault, InAlarm`). On 22.101 `Cooling` is bit 8 clear and
+/// `Heating` bit 8 set.
+fn parse_flags(input: &str, main: u16, sub: Option<u16>) -> Option<u16> {
+    let table = flag_table(main, sub?)?;
+    let folded = fold_word(input);
+    if folded == "none" || folded.is_empty() {
+        return Some(0);
+    }
+    let mut bits = 0u16;
+    for word in input.split([',', '+']) {
+        let word = fold_word(word);
+        if word.is_empty() || (main == 22 && sub == Some(101) && word == "cooling") {
+            continue;
+        }
+        let bit = table
+            .iter()
+            .position(|n| !n.is_empty() && fold_word(n) == word)?;
+        bits |= 1 << bit;
+    }
+    Some(bits)
 }
 
 /// Parses a boolean from human text, honoring the DPT 1.x subtype's word pair.
@@ -1902,6 +2088,7 @@ pub fn encode(dpt: &Dpt, value: &TypedValue) -> Result<Vec<u8>, EncodeError> {
                 };
                 Ok(vec![code])
             }
+            TypedValue::Enum { code, .. } if dpt.sub != Some(102) => Ok(vec![*code]),
             // A raw enumeration code, for the 20.x subtypes with no label set.
             TypedValue::Unsigned { value: v, .. } if dpt.sub != Some(102) => {
                 if *v > 255 {
@@ -1912,6 +2099,20 @@ pub fn encode(dpt: &Dpt, value: &TypedValue) -> Result<Vec<u8>, EncodeError> {
                 }
                 Ok(vec![*v as u8])
             }
+            _ => Err(mismatch()),
+        },
+        21 => match value {
+            TypedValue::Flags { bits, .. } => {
+                let b = u8::try_from(*bits).map_err(|_| EncodeError::OutOfRange {
+                    dpt: dpt.to_string(),
+                    value: value.to_string(),
+                })?;
+                Ok(vec![b])
+            }
+            _ => Err(mismatch()),
+        },
+        22 => match value {
+            TypedValue::Flags { bits, .. } => Ok(bits.to_be_bytes().to_vec()),
             _ => Err(mismatch()),
         },
         19 => match value {
@@ -2165,6 +2366,99 @@ mod tests {
             assert_eq!(encode(&d, &parse_value(&d, &shown)?)?, vec![raw], "{shown}");
         }
         Ok(())
+    }
+
+    #[test]
+    fn test_decode_enum_subtypes() -> Result<(), Box<dyn std::error::Error>> {
+        // (DPT, code, label): the sub-types the corpus declares.
+        let rows: &[(&str, u8, &str)] = &[
+            ("20.001", 2, "master"),
+            ("20.003", 1, "standby"),
+            ("20.103", 1, "LegioProtect"),
+            ("20.105", 3, "Cool"),
+            ("20.105", 20, "NoDem"),
+            ("20.107", 2, "HeatingOnly"),
+            ("20.108", 5, "Heat/Cool changeover"),
+            ("20.111", 2, "running in intervals"),
+            ("20.112", 1, "master"),
+            ("20.602", 1, "0.7 s"),
+            ("20.609", 7, "LED, leading"),
+            ("20.610", 3, "detection not possible or error"),
+            ("20.611", 1, "Start Function Test"),
+        ];
+        for (sub, code, label) in rows {
+            let d = dpt(sub);
+            let v = decode(&d, &[*code]);
+            assert_eq!(v.to_string(), *label, "{sub} {code}");
+            assert_eq!(encode(&d, &parse_value(&d, label)?)?, vec![*code], "{sub}");
+        }
+        // Reserved codes stay visible as Unknown(n).
+        assert_eq!(decode(&dpt("20.105"), &[18]).to_string(), "Unknown(18)");
+        assert_eq!(decode(&dpt("20.611"), &[0]).to_string(), "Unknown(0)");
+        // A sub-type without a table still decodes the bare code.
+        assert_eq!(decode(&dpt("20.999"), &[7]).to_string(), "7");
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_value_enum_words() -> Result<(), Box<dyn std::error::Error>> {
+        let d = dpt("20.105");
+        assert_eq!(
+            parse_value(&d, "cool")?,
+            TypedValue::Enum {
+                code: 3,
+                label: Some("Cool")
+            }
+        );
+        assert_eq!(encode(&d, &parse_value(&d, "cool")?)?, vec![3]);
+        assert_eq!(encode(&d, &parse_value(&d, "fan_only")?)?, vec![9]);
+        assert_eq!(encode(&d, &parse_value(&d, "6")?)?, vec![6]);
+        // A reserved code or an unknown word is refused.
+        assert!(parse_value(&d, "18").is_err());
+        assert!(parse_value(&d, "comfort").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_decode_flag_sets() -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(decode(&dpt("21.001"), &[0x0A]).to_string(), "Fault, InAlarm");
+        assert_eq!(decode(&dpt("21.001"), &[0x00]).to_string(), "none");
+        assert_eq!(
+            decode(&dpt("21.601"), &[0x24]).to_string(),
+            "Overcurrent, LampFailure"
+        );
+        assert_eq!(decode(&dpt("21.106"), &[0x06]).to_string(), "FanActive, Heat");
+        // 22.101 bit 8 is HeatCoolMode: named either way.
+        assert_eq!(decode(&dpt("22.101"), &[0x01, 0x01]).to_string(), "Fault, Heating");
+        assert_eq!(decode(&dpt("22.101"), &[0x20, 0x00]).to_string(), "Cooling, FrostAlarm");
+        assert_eq!(decode(&dpt("22.100"), &[0x00, 0x02]).to_string(), "DHWLoadActive");
+        // A sub-type without a table names the bits.
+        assert_eq!(decode(&dpt("21.999"), &[0x81]).to_string(), "b0, b7");
+        // Names parse back to the same octets.
+        let d = dpt("21.001");
+        assert_eq!(encode(&d, &parse_value(&d, "Fault, InAlarm")?)?, vec![0x0A]);
+        assert_eq!(encode(&d, &parse_value(&d, "none")?)?, vec![0x00]);
+        let d = dpt("22.101");
+        assert_eq!(encode(&d, &parse_value(&d, "Fault, Heating")?)?, vec![0x01, 0x01]);
+        assert!(parse_value(&dpt("21.001"), "Bogus").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_decode_status_mode3() {
+        // 0x81: a = 1 (clear), b..e = 0 (set), mode bits 001b = mode 0.
+        assert_eq!(
+            decode(&dpt("6.020"), &[0x81]).to_string(),
+            "A clear, B set, C set, D set, E set, mode 0"
+        );
+        assert_eq!(
+            decode(&dpt("6.020"), &[0xFC]).to_string(),
+            "A clear, B clear, C clear, D clear, E clear, mode 2"
+        );
+        assert_eq!(
+            decode(&dpt("6.020"), &[0x03]).to_string(),
+            "A set, B set, C set, D set, E set, mode invalid"
+        );
     }
 
     #[test]
@@ -2909,12 +3203,12 @@ mod tests {
             TypedValue::HvacMode(HvacMode::Comfort)
         );
         // 20.105 value 1 is "Heat" in its own enumeration, definitely not
-        // "Comfort"; bussard models no labels for it, so it stays a raw code.
+        // "Comfort" (#500).
         assert_eq!(
             decode(&dpt("20.105"), &[1]),
-            TypedValue::Unsigned {
-                value: 1,
-                unit: None
+            TypedValue::Enum {
+                code: 1,
+                label: Some("Heat")
             }
         );
         // A bare `20` with no subtype is equally unidentified.
@@ -2931,6 +3225,14 @@ mod tests {
     fn test_parse_value_dpt20_non_102_takes_raw_code() -> Result<(), ParseValueError> {
         assert_eq!(
             parse_value(&dpt("20.105"), "1")?,
+            TypedValue::Enum {
+                code: 1,
+                label: Some("Heat")
+            }
+        );
+        // A sub-type without a table takes the bare code.
+        assert_eq!(
+            parse_value(&dpt("20.999"), "1")?,
             TypedValue::Unsigned {
                 value: 1,
                 unit: None
