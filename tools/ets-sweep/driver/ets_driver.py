@@ -757,9 +757,18 @@ def flow_catalog_add(req: dict) -> dict:
     want_version = _digits(req.get("version", ""))
 
     def pick(hits: list[dict], name: str = "") -> dict | None:
-        # Imported products only: an online-catalog row would make ETS fetch
-        # product data from the internet instead of our corpus file.
-        hits = [r for r in hits if not r.get("online")]
+        # Imported products first: an online-catalog row would make ETS fetch
+        # product data from the internet instead of our corpus file. ETS shows
+        # an imported product that also sits in its online catalog at the same
+        # version as one online row (MDT SCN-BWM55 4.4, 2026-10-29): take that
+        # row when no local one exists and order number and version match.
+        local = [r for r in hits if not r.get("online")]
+        if not local:
+            same = [r for r in hits if _canon(r["order"]) == order and want_version
+                    and _digits(r["version"]) == want_version]
+            if len(same) == 1:
+                return same[0]
+        hits = local
         # The order number exactly (ZPR1612 is not ZPR1612V2), else a prefix.
         exact = [r for r in hits if _canon(r["order"]) == order] or [r for r in hits if _canon(r["order"]).startswith(order)]
         if not exact and name:
