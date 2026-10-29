@@ -304,8 +304,12 @@ MV-0701, not a device limitation, and ETS read-compare-writes it instead
   reboot, reconnect and re-authorize. It goes in front of the procedure's
   first state-changing step, after the vendor's read-only preconditions
   (`CompareProp`, `CompareMem`), so a device that fails them is refused before
-  its application is unloaded. bussard cannot tell the ETS full-download case
-  from the "same application" case (1.1.52), so every full flash unloads; a
+  its application is unloaded. A device the pre-flight probe finds without
+  a loaded application (`Freshness::Fresh`) gets no pass at all, as ETS gives
+  none to the factory-fresh knx-sim device in all 31 System 7 sweep downloads
+  (issue #488). Any other full flash unloads: the rule ETS follows on a
+  programmed device is still open (1.1.32 got a restart without unloads,
+  1.1.31, 1.1.46 and 1.1.52 the full pass; #488 names the capture series). A
   parameter-only flash restarts without unloading, like the Meteodata
   parameter capture. An LSM the device lacks (count 0) or that answers Error
   is skipped with a warning; the procedure's own unloads stay strict.

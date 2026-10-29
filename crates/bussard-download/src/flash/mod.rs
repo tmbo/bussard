@@ -556,7 +556,8 @@ pub enum FlashStep {
     /// `binaereingang-6fach`, `meteodata-1-1-202-new`). The device then boots
     /// with no application running and the download starts on a fresh stack. A
     /// parameter-only download keeps the restart and unloads nothing
-    /// (`unload` empty). An LSM the device does not have is skipped with a
+    /// (`unload` empty). A device without a loaded application gets no pass
+    /// ([`FlashPlan::skip_sys7_prelude`], issue #488). An LSM the device does not have is skipped with a
     /// warning. A session that cannot reconnect (a mock built from one open
     /// connection) runs the unloads and skips the restart.
     Sys7PreDownloadRestart {
@@ -1043,6 +1044,19 @@ impl FlashPlan {
             FlashStep::KnxnetIpParameters { program } => Some(program),
             _ => None,
         })
+    }
+
+    /// Removes ETS's System 7 pre-download pass ([`FlashStep::Sys7PreDownloadRestart`]:
+    /// unload LSMs 1 to 4, basic restart, reconnect) for a device that holds
+    /// no loaded application (issue #488). ETS skips the pass on such a
+    /// device: in all 31 System 7 downloads of the ETS sweep (22 on 0705, 9
+    /// on 0701, a factory-fresh knx-sim device each) the procedure's own
+    /// unloads follow the connect, with no unload of LSM 4 and no restart
+    /// (`captures/ets-sweep/<app>/plain-defaults/ops.txt`, ops 9 to 11).
+    /// The procedure's own unloads stay. A no-op on a System B plan.
+    pub fn skip_sys7_prelude(&mut self) {
+        self.steps
+            .retain(|s| !matches!(s, FlashStep::Sys7PreDownloadRestart { .. }));
     }
 
     /// Removes the [`FlashStep::FactoryReset`] step (`flash --no-factory-reset`).

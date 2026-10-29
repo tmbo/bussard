@@ -3971,3 +3971,64 @@ async fn test_write_sys7_task_segments_carry_the_product_identity()
     drop(handle);
     Ok(())
 }
+
+/// Issue #488: a device that holds no loaded application gets no
+/// pre-download pass, as ETS gives none to a factory-fresh device (all 31
+/// System 7 sweep downloads): the first load event is the procedure's own
+/// unload of LSM 1, LSM 4 is never touched, and the device still reaches
+/// Loaded. With the pass (a device with an application) LSM 4 is unloaded
+/// first.
+#[tokio::test]
+async fn test_flash_sys7_skip_prelude_unloads_only_the_procedure_lsms()
+-> Result<(), Box<dyn std::error::Error>> {
+    set_sys7_lsm_env(LsmMode::Property);
+    let app = mdt_canonical_app()?;
+    let planned = plan_flash(
+        &app,
+        "1.1.99",
+        MASK_0705,
+        &no_overrides(),
+        &std::collections::BTreeMap::new(),
+        None,
+        &std::collections::BTreeMap::new(),
+    )?;
+    let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
+    for skip in [true, false] {
+        let mut plan = planned.clone();
+        if skip {
+            plan.skip_sys7_prelude();
+        }
+        assert_eq!(
+            plan.steps
+                .iter()
+                .any(|s| matches!(s, FlashStep::Sys7PreDownloadRestart { .. })),
+            !skip
+        );
+        let (mut bus, state, handle) = setup(LsmMode::Property, Fault::None).await?;
+        let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+        let mut session = authed_session(l4).await?;
+        let outcome = flash(
+            &mut session,
+            &plan,
+            bussard_download::FlashOptions::default(),
+            |_p| {},
+        )
+        .await?;
+        assert!(outcome.ok(), "{outcome:?}");
+        {
+            let s = lock(&state);
+            let lsm4 = s.lsm_events.iter().any(|(lsm, _)| *lsm == 4);
+            assert_eq!(lsm4, !skip, "{:?}", s.lsm_events);
+            if skip {
+                assert_eq!(s.lsm_events.first(), Some(&(1, 4)), "{:?}", s.lsm_events);
+            }
+            for lsm in [1u8, 2, 3] {
+                assert_eq!(s.lsm_state(lsm), LS_LOADED, "LSM {lsm}");
+            }
+        }
+        drop(handle);
+        let _ = session.into_disconnect().await;
+    }
+    Ok(())
+}

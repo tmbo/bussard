@@ -313,6 +313,11 @@ pub fn com_object_words(app: &ApplicationProgram, number: u16) -> (Option<String
 /// before the download, on top of the reset the planner adds for a sparse,
 /// filled-segment download. `freshness` is `None` offline (a dry run), where
 /// only the planner's own reset shows. `no_factory_reset` waives it.
+///
+/// A System 7 device that holds no loaded application ([`Freshness::Fresh`])
+/// gets no pre-download unload-and-restart pass, as ETS gives none to a
+/// factory-fresh device (issue #488, [`FlashPlan::skip_sys7_prelude`]). A
+/// device with a loaded application keeps it; offline the plan keeps it too.
 pub fn apply_freshness(
     plan: &mut FlashPlan,
     freshness: Option<&Freshness>,
@@ -323,6 +328,9 @@ pub fn apply_freshness(
         Some(Freshness::Resident { .. } | Freshness::Unknown { .. })
     ) {
         plan.require_factory_reset();
+    }
+    if matches!(freshness, Some(Freshness::Fresh)) {
+        plan.skip_sys7_prelude();
     }
     if no_factory_reset {
         plan.skip_factory_reset();
@@ -656,6 +664,70 @@ mod tests {
                 occurrence: 0
             }));
         let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    /// Issue #488: a System 7 device with no loaded application gets no
+    /// pre-download pass (ETS gives none to a factory-fresh device); one with
+    /// an application, an unreadable one and the offline plan keep it.
+    #[test]
+    fn test_apply_freshness_drops_the_sys7_prelude_on_a_fresh_device() -> TestResult {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram PeiType="0" Id="M-0083_A-E" ApplicationNumber="14" ApplicationVersion="35"
+            MaskVersion="MV-0705" Name="MDT S7" LoadProcedureStyle="ProductProcedure">
+          <Static>
+           <Code>
+            <AbsoluteSegment Id="M-0083_A-E_AS-4" Size="2" Address="17408"><Data>BAU=</Data></AbsoluteSegment>
+           </Code>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlUnload LsmIdx="3" />
+             <LdCtrlLoad LsmIdx="3" />
+             <LdCtrlAbsSegment LsmIdx="3" Address="17408" Size="2" />
+             <LdCtrlTaskSegment LsmIdx="3" Address="17408" />
+             <LdCtrlLoadCompleted LsmIdx="3" />
+             <LdCtrlRestart />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = bussard_prod::parse_application_program("M-0083_A-E", xml.as_bytes())?;
+        let planned = bussard_download::plan_flash(
+            &app,
+            "1.1.99",
+            0x0705,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )?;
+        let prelude = |plan: &FlashPlan| {
+            plan.steps.iter().any(|s| {
+                matches!(
+                    s,
+                    bussard_download::FlashStep::Sys7PreDownloadRestart { .. }
+                )
+            })
+        };
+        assert!(prelude(&planned));
+        let resident = Freshness::Resident {
+            resident: None,
+            objects: vec!["LSM 3".to_string()],
+            reason: None,
+        };
+        let unknown = Freshness::Unknown {
+            reason: "unreadable".to_string(),
+        };
+        for (freshness, kept) in [
+            (Some(&Freshness::Fresh), false),
+            (Some(&resident), true),
+            (Some(&unknown), true),
+            (None, true),
+        ] {
+            let mut plan = planned.clone();
+            apply_freshness(&mut plan, freshness, true);
+            assert_eq!(prelude(&plan), kept, "{freshness:?}");
+        }
         Ok(())
     }
 }
