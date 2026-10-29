@@ -1290,6 +1290,9 @@ fn encode_value(
         Some(ParameterType::Other { kind, .. }) if kind == "TypeRawData" => {
             encode_raw_data(app, pname, value)
         }
+        Some(ParameterType::Other { kind, .. }) if kind == "TypeIPAddress" => {
+            encode_ip_address(app, pname, value)
+        }
         Some(ParameterType::Other {
             kind,
             size_bits: Some(24),
@@ -1301,8 +1304,9 @@ fn encode_value(
             size_bits, kind, ..
         }) => {
             // Unknown shape: if it declares a byte-multiple width and the value
-            // is a plain integer, place it big-endian; else refuse rather than
-            // guess.
+            // is a plain integer, place it big-endian; a value with no width
+            // refuses rather than leave the template in place unannounced (the
+            // `TypeIPAddress` DNS servers of issue #457 did).
             match (size_bits, value) {
                 (Some(bits), Some(v)) if bits % 8 == 0 => {
                     let n: i64 = v.trim().parse().map_err(|_| {
@@ -1310,6 +1314,14 @@ fn encode_value(
                     })?;
                     encode_int_bits(app, pname, *bits, false, n)
                 }
+                (None, Some(v)) if !v.trim().is_empty() => Err(param_err(
+                    app,
+                    pname,
+                    &format!(
+                        "{kind} declares no SizeInBit, so value `{}` has no width to be written with",
+                        v.trim()
+                    ),
+                )),
                 _ => Ok(Placement::Empty),
             }
         }
@@ -1965,6 +1977,10 @@ fn decode_value(
                 image.get(offset.checked_add(4)?..offset.checked_add(4)?.checked_add(len)?)?;
             Some(base64::engine::general_purpose::STANDARD.encode(data))
         }
+        ParameterType::Other { kind, .. } if kind == "TypeIPAddress" => {
+            let b = bytes(4)?;
+            Some(std::net::Ipv4Addr::new(b[0], b[1], b[2], b[3]).to_string())
+        }
         ParameterType::Other {
             kind,
             size_bits: Some(24),
@@ -2164,12 +2180,13 @@ pub fn compute_property_values(
                 ValueSource::VendorDefault,
             ),
         };
-        let placement = match parameter_type_of(app, param) {
-            Some(ParameterType::Other { kind, .. }) if kind == "TypeIPAddress" => {
-                encode_ip_address(app, pname, value.as_deref())?
-            }
-            ptype => encode_value(app, pname, ptype, value.as_deref(), source)?,
-        };
+        let placement = encode_value(
+            app,
+            pname,
+            parameter_type_of(app, param),
+            value.as_deref(),
+            source,
+        )?;
         let image = out.entry((object, loc.property_id)).or_default();
         place_checked(
             app,
@@ -2186,9 +2203,10 @@ pub fn compute_property_values(
 
 /// Encodes a `<TypeIPAddress>` property value: an IPv4 address as its four
 /// octets, most significant first. ETS writes the dotted quad
-/// (`192.168.255.255`, the IPS 300 SREG) or the address as one number (`0`).
-/// Only the property path encodes it: a memory parameter of this type keeps
-/// the template octets as before issue #390.
+/// (`192.168.255.255`, the IPS 300 SREG) or the address as one number (`0`),
+/// into a property (issue #390) and into memory alike: the Zennio ALLinBOX DNS
+/// servers `192.168.1.1` / `192.168.1.2` as `c0 a8 01 01 c0 a8 01 02`
+/// (issue #457).
 fn encode_ip_address(
     app: &ApplicationProgram,
     pname: &str,
@@ -2267,6 +2285,51 @@ mod tests {
     ) -> std::result::Result<Vec<u8>, Box<dyn std::error::Error>> {
         let m = compute_parameter_image(app, &no_overrides(), &no_bases())?;
         Ok(m.get("M-1_A-1_RS-1").cloned().unwrap_or_default())
+    }
+
+    /// Issue #457 (Zennio ALLinBOX `dns.ipServer[0]`/`[1]`): a memory
+    /// parameter of `<TypeIPAddress>` is written as the dotted quad's four
+    /// octets, big-endian, and reads back as the dotted quad.
+    #[test]
+    fn test_compute_parameter_image_ip_address_in_memory()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let ty = r#"<TypeIPAddress AddressType="HostAddress" />"#;
+        let app = app_with(&[
+            ("dns1", ty, Some("192.168.1.1"), 8, 0),
+            ("dns2", ty, Some("192.168.1.2"), 12, 0),
+        ])?;
+        let image = image_of(&app)?;
+        assert_eq!(
+            image.get(8..16),
+            Some(&[0xc0, 0xa8, 0x01, 0x01, 0xc0, 0xa8, 0x01, 0x02][..])
+        );
+        let param = app.parameters.get("M-1_A-1_P-1").ok_or("no dns2")?;
+        assert_eq!(
+            decode_parameter_value(&app, param, &image, 12, 0).as_deref(),
+            Some("192.168.1.2")
+        );
+        assert_eq!(
+            canonical_parameter_value(&app, param, Some("3232235778")).as_deref(),
+            Some("192.168.1.2")
+        );
+        Ok(())
+    }
+
+    /// An unknown parameter type with a value but no `SizeInBit` refuses
+    /// instead of leaving the template in place (issue #457).
+    #[test]
+    fn test_compute_parameter_image_widthless_value_refuses()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = app_with(&[("odd", r#"<TypeMystery />"#, Some("5"), 0, 0)])?;
+        let err = compute_parameter_image(&app, &no_overrides(), &no_bases());
+        assert!(
+            matches!(&err, Err(ProdError::ParameterImage { reason, .. }) if reason.contains("no SizeInBit")),
+            "{err:?}"
+        );
+        // No value: nothing to write, as before.
+        let empty = app_with(&[("odd", r#"<TypeMystery />"#, None, 0, 0)])?;
+        assert!(compute_parameter_image(&empty, &no_overrides(), &no_bases()).is_ok());
+        Ok(())
     }
 
     #[test]
