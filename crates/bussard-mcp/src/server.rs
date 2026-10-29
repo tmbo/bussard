@@ -816,7 +816,9 @@ impl BussardMcp {
             Some(self.state.model.current().as_ref()),
             target,
         );
-        let tool_key = match bussard_service::secure::resolve(
+        // The device's FDSK rides along: a device reset to default is named,
+        // not read under the factory key (issue #532).
+        let (tool_key, factory_key) = match bussard_service::secure::resolve_session_keys(
             target,
             ToolKeySource {
                 keyring: self.state.keyring.as_deref(),
@@ -844,6 +846,7 @@ impl BussardMcp {
         let options = L4Options {
             source: SourcePolicy::Known(ops::group_source(service.handle())),
             tool_key,
+            factory_key,
             ..L4Options::default()
         };
         // The warm connection (issue #215): a call to the device the previous

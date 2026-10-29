@@ -69,6 +69,22 @@ pub fn resolve(
     })
 }
 
+/// [`bussard_service::secure::resolve_session_keys`] (the tool key and the
+/// FDSK, issue #532), timed as the `--timing` phase `tool keys`.
+///
+/// # Errors
+///
+/// As [`bussard_service::secure::resolve`].
+pub fn resolve_session_keys(
+    target: IndividualAddress,
+    source: ToolKeySource<'_>,
+    activated: bool,
+) -> Result<(Option<bussard_secure::Key16>, Option<bussard_secure::Key16>), SecureKeyError> {
+    crate::timing::time("tool keys", || {
+        bussard_service::secure::resolve_session_keys(target, source, activated)
+    })
+}
+
 /// [`bussard_service::secure::resolve_material`], timed as the `--timing`
 /// phase `tool keys` (issue #214).
 ///
@@ -95,6 +111,19 @@ pub(crate) fn no_key_guidance() -> String {
     )
 }
 
+/// A device without a tool key that refused plain access and answered under
+/// its factory key (issue #532); the message says what that means.
+#[derive(Debug)]
+pub(crate) struct FactoryKeyAnswered(pub String);
+
+impl std::fmt::Display for FactoryKeyAnswered {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for FactoryKeyAnswered {}
+
 /// Adds KNX Data Secure guidance to a failed management session (issue #71,
 /// spec §6.4).
 ///
@@ -106,6 +135,24 @@ pub(crate) fn secure_hint(
     presented_tool_key: bool,
     err: anyhow::Error,
 ) -> anyhow::Error {
+    // A device found on its factory key (issue #532) is named as such; the
+    // "wrong key" guess does not apply.
+    let factory = err.chain().any(|cause| {
+        cause.is::<FactoryKeyAnswered>()
+            || matches!(
+                cause.downcast_ref::<bussard_mgmt::MgmtError>(),
+                Some(bussard_mgmt::MgmtError::FactoryKeyActive { .. })
+            )
+            || matches!(
+                cause.downcast_ref::<bussard_service::ServiceError>(),
+                Some(bussard_service::ServiceError::Mgmt(
+                    bussard_mgmt::MgmtError::FactoryKeyActive { .. }
+                ))
+            )
+    });
+    if factory {
+        return err;
+    }
     if presented_tool_key {
         err.context(format!(
             "{target} did not answer the SECURED management access: either the tool key is not \

@@ -159,6 +159,9 @@ enum SecuredManagement {
     NotAttempted,
     /// A tool key was presented but the secured walk returned no object.
     Unanswered,
+    /// No tool key was available, and the device answered a secured read
+    /// under its factory key (FDSK) from the key store (issue #532).
+    FactoryKey,
 }
 
 /// Runs `bussard describe`.
@@ -182,7 +185,8 @@ pub fn run(
     // device is read in the clear unless the model says it is activated
     // (issue #189).
     let activated = crate::secure_key::model_activated(model.as_ref(), target);
-    let tool_key = crate::secure_key::resolve(target, tool_key_source, activated)?;
+    let (tool_key, factory_key) =
+        crate::secure_key::resolve_session_keys(target, tool_key_source, activated)?;
     let secure_seq = bussard_secure::SequenceHighWater::new();
     let presented_tool_key = tool_key.is_some();
     let config = resolve_config(model.as_ref(), &overrides)?;
@@ -195,8 +199,9 @@ pub fn run(
     let authorize = crate::device_facts::read_only_authorize(&mut facts, target);
     let full = facts_options.full;
 
+    let fdsk = factory_key.clone();
     let runtime = tokio::runtime::Runtime::new()?;
-    let result = runtime
+    let (result, on_factory_key) = runtime
         .block_on(async move {
             // Read-only on the bus: descriptor, property and description reads.
             let service = open_service(config, WritePolicy::ReadOnly).await?;
@@ -205,6 +210,7 @@ pub fn run(
                     skip: overrides.skip_address_check,
                 },
                 tool_key,
+                factory_key,
                 high_water: secure_seq,
                 authorize,
                 ..L4Options::default()
@@ -214,8 +220,28 @@ pub fn run(
                     introspect(l4, &facts, full).await
                 })
                 .await;
+            // Plain access refused and no tool key: the FDSK from the key
+            // store is tried before the "export a keyring" advice (#532).
+            // A failed plain session (an activated device drops the plain
+            // reads) counts as refused too.
+            let refused = outcome.as_ref().map_or(true, walk_refused);
+            let on_factory_key = match (refused, options.tool_key.is_none(), fdsk) {
+                (true, true, Some(fdsk)) => {
+                    bussard_service::identity::answers_under_factory_key(
+                        &service, target, &options, fdsk,
+                    )
+                    .await
+                }
+                _ => false,
+            };
             service.close().await;
-            outcome
+            match outcome {
+                Ok(o) => Ok((o, on_factory_key)),
+                Err(_) if on_factory_key => Err(anyhow::Error::new(
+                    crate::secure_key::FactoryKeyAnswered(factory_key_message(target)),
+                )),
+                Err(err) => Err(err),
+            }
         })
         .map_err(|err| crate::secure_key::secure_hint(target, presented_tool_key, err))?;
 
@@ -223,9 +249,11 @@ pub fn run(
     // empty device (issue #155): an activated device answers the plain
     // descriptor read and PID 56 but not the interface-object walk. System 1
     // (BCU1) devices have no interface objects at all, so they are exempt.
-    let refused = result.report.objects.as_ref().is_some_and(Vec::is_empty)
-        && !matches!(result.mask_family, MaskFamily::System1);
+    let refused = walk_refused(&result);
     let (plain, secured) = match (presented_tool_key, refused) {
+        (false, true) if on_factory_key => {
+            (PlainManagement::Refused, SecuredManagement::FactoryKey)
+        }
         (false, false) => (PlainManagement::Answered, SecuredManagement::NotAttempted),
         (false, true) => (PlainManagement::Refused, SecuredManagement::NotAttempted),
         (true, false) => (PlainManagement::NotAttempted, SecuredManagement::Used),
@@ -268,7 +296,11 @@ pub fn run(
         });
     }
     if refused {
-        let message = refused_walk_message(target, presented_tool_key);
+        let message = if on_factory_key {
+            factory_key_message(target)
+        } else {
+            refused_walk_message(target, presented_tool_key)
+        };
         report.objects = None;
         if presented_tool_key {
             report.secured_management = Some("unanswered");
@@ -291,6 +323,25 @@ pub fn run(
         print_text(&report);
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Whether the walk found no interface object after a successful descriptor
+/// read (issue #155); System 1 devices have none at all and are exempt.
+fn walk_refused(result: &Introspection) -> bool {
+    result.report.objects.as_ref().is_some_and(Vec::is_empty)
+        && !matches!(result.mask_family, MaskFamily::System1)
+}
+
+/// The error for a device that refuses plain access and answers under its
+/// factory key (issue #532).
+fn factory_key_message(target: IndividualAddress) -> String {
+    format!(
+        "{target} refuses plain management and answers a secured read under its factory key \
+         (FDSK) from the key store: its Data Secure security mode is on and no tool key is set, \
+         or it was reset to default after a commissioning. bussard does not write under the \
+         factory key. Commission it with ETS (download with security) and import the new keyring \
+         export (`bussard keys import`)"
+    )
 }
 
 /// The error for a walk that found no interface object after the device
@@ -467,6 +518,7 @@ fn print_text(report: &Report) {
             SecuredManagement::Used => "used",
             SecuredManagement::NotAttempted => "not attempted",
             SecuredManagement::Unanswered => "unanswered",
+            SecuredManagement::FactoryKey => "answered under the factory key (FDSK)",
         };
         println!("  KNX Secure (this run): plain management {plain}; secured management {secured}");
     }

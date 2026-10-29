@@ -145,6 +145,26 @@ pub enum MgmtError {
         source: bussard_secure::AsduError,
     },
 
+    /// The device did not answer the S-A_Sync under the tool key, and did
+    /// under its factory default setup key (FDSK): it was reset to default
+    /// (factory security), which drops the tool key and the security
+    /// configuration and makes the FDSK active again (issue #532; KNX 3/5/2
+    /// §4.1 NOTE 18, KNX 3/5/1 §6.1.4 and §6.3.10.4, AN194 §2.3.2.12). The
+    /// session is not used further: nothing is read or written under the
+    /// factory key outside an explicit activation.
+    #[error(
+        "{address} is back on its factory key (FDSK): it did not answer the Data Secure sync \
+         under the tool key in the key store and did under its FDSK, so it was reset to default \
+         (factory security: the tool key, the group keys and the secured links it held are \
+         gone). bussard does not read or write it under the factory key. Next step: commission \
+         it again with ETS (download with security), then import the new keyring export \
+         (`bussard keys import`) so the key store holds the new tool key"
+    )]
+    FactoryKeyActive {
+        /// The device.
+        address: IndividualAddress,
+    },
+
     /// The device answered a confirmed service with a refusal: a non-zero
     /// return code, or (for a value read) a zero element count. Raised by the
     /// extended property services (issue #156). The message names the service

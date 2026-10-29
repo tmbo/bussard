@@ -1016,9 +1016,12 @@ impl MockDevice {
             Err(poisoned) => poisoned.into_inner(),
         };
         if data.first() == Some(&SCF_SYNC_REQ) {
+            // A Sync_Req under another key does not verify: the transport
+            // layer acknowledges it, the security layer drops it (the shape
+            // `AsduError::SyncUnanswered` describes, issue #532).
             return match session.answer_sync_request(&req_addr, data, &resp_addr) {
                 Ok((rapci, rdata)) => Reaction::Answer(rapci, rdata),
-                Err(_) => Reaction::Silent,
+                Err(_) => Reaction::Ack,
             };
         }
         let Ok(UnwrapOutcome::Secured {

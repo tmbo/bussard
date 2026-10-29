@@ -182,3 +182,62 @@ async fn test_security_load_state_falls_back_to_the_value_read() -> TestResult {
     assert_eq!(load_state(dev).await?, bussard_mgmt::LoadState::Loaded);
     Ok(())
 }
+
+/// Issue #532: a device reset to default (now on its FDSK) does not verify
+/// the tool key's Sync; the one Sync under the FDSK does, and the session
+/// ends with `FactoryKeyActive` instead of reading anything.
+#[tokio::test]
+async fn test_sync_under_the_fdsk_reports_a_device_reset_to_default() -> TestResult {
+    const FDSK: [u8; 16] = [0x24; 16];
+    let target: IndividualAddress = "1.1.12".parse()?;
+    let gw = MockGateway::builder()
+        .channel(CHANNEL)
+        .idle_timeout(Duration::from_secs(30))
+        .device(
+            device()?
+                .with_property_ext(OT_SECURITY, PID_GO_SECURITY_FLAGS, 1, &[0x03])
+                .with_data_secure(FDSK),
+        )
+        .start()
+        .await?;
+    let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
+    let source: IndividualAddress = "0.0.255".parse()?;
+    let timeouts = Timeouts {
+        response_timeout: Duration::from_millis(200),
+        ..Timeouts::discovery()
+    };
+    let mut l4 = Layer4Connection::connect_with_secure(
+        &mut bus,
+        target,
+        source,
+        timeouts,
+        SecureLayer::activated(DataSecureSession::new(Key16::new(TOOL_KEY)))
+            .with_factory_key_fallback(Key16::new(FDSK)),
+    )
+    .await?;
+    l4.set_sync_retry(bussard_mgmt::SyncRetry {
+        attempts: 1,
+        ..bussard_mgmt::SyncRetry::default()
+    });
+    let first = property_ext::read_property_ext_element_count(
+        &mut l4,
+        PropertyExtAddress::security(PID_GO_SECURITY_FLAGS),
+    )
+    .await;
+    // The session stays refused: nothing is read under the factory key.
+    let second = property_ext::read_property_ext_element_count(
+        &mut l4,
+        PropertyExtAddress::security(PID_GO_SECURITY_FLAGS),
+    )
+    .await;
+    let _ = l4.disconnect().await;
+    assert!(
+        matches!(first, Err(MgmtError::FactoryKeyActive { address }) if address == target),
+        "{first:?}"
+    );
+    assert!(
+        matches!(second, Err(MgmtError::FactoryKeyActive { .. })),
+        "{second:?}"
+    );
+    Ok(())
+}

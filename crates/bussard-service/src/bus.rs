@@ -62,6 +62,10 @@ pub struct L4Options {
     pub source: SourcePolicy,
     /// The KNX Data Secure tool key, or `None` for plain management.
     pub tool_key: Option<Key16>,
+    /// The device's factory default setup key (FDSK), tried for one more
+    /// S-A_Sync when the tool key's go unanswered, to recognise a device that
+    /// was reset to default (issue #532). Ignored without a `tool_key`.
+    pub factory_key: Option<Key16>,
     /// The send-sequence high-water mark shared by every secured session of one
     /// command, so a reconnect never reuses a sequence number.
     pub high_water: SequenceHighWater,
@@ -78,6 +82,7 @@ impl Default for L4Options {
         L4Options {
             source: SourcePolicy::Check { skip: false },
             tool_key: None,
+            factory_key: None,
             high_water: SequenceHighWater::new(),
             timeouts: Timeouts::default(),
             authorize: Authorize::BestEffort(bussard_mgmt::apci::FREE_ACCESS_KEY),
@@ -260,7 +265,11 @@ impl BusService {
             .await;
         let lease = self.handle.lease().await.map_err(ServiceError::Lease)?;
         let channel = LeaseChannel::new(lease);
-        let secure = crate::secure::layer(&options.tool_key, &options.high_water);
+        let secure = crate::secure::layer_with_factory_key(
+            &options.tool_key,
+            &options.factory_key,
+            &options.high_water,
+        );
         let mut l4 = Layer4Connection::connect_with_secure(
             channel,
             target,
@@ -274,8 +283,15 @@ impl BusService {
             Authorize::BestEffort(key) => {
                 // Authorize as ETS does before configuration access; a device
                 // without authorize, or one that denies, still serves reads.
-                if let Err(err) = l4.authorize_or_fail(key).await {
-                    tracing::debug!("{target} authorize did not grant: {err}");
+                match l4.authorize_or_fail(key).await {
+                    Ok(_) => {}
+                    // The device is on its factory key (issue #532): never
+                    // carried on as a denied authorize.
+                    Err(err @ MgmtError::FactoryKeyActive { .. }) => {
+                        let _ = l4.disconnect().await;
+                        return Err(err.into());
+                    }
+                    Err(err) => tracing::debug!("{target} authorize did not grant: {err}"),
                 }
             }
             Authorize::Required(key) => {

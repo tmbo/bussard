@@ -366,6 +366,8 @@ pub fn run(
         let probe_options = L4Options {
             source: SourcePolicy::Known(source),
             tool_key: tool_key.clone(),
+            // A device reset to default is named, not flashed (issue #532).
+            factory_key: secure_material.fdsk.clone(),
             high_water: secure_seq.clone(),
             authorize: Authorize::Skip,
             ..L4Options::default()

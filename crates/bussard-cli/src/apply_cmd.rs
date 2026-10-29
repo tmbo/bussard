@@ -336,6 +336,9 @@ pub(crate) fn apply_desired(
     let read_options = L4Options {
         source: SourcePolicy::Known(source),
         tool_key: tool_key.clone(),
+        // A device reset to default answers only under its FDSK: the read
+        // phase says so and the apply stops (issue #532).
+        factory_key: material.fdsk.clone(),
         high_water: secure_seq.clone(),
         // Authorize (free access) before reading, as ETS does (issue #52
         // finding #1) and as System 7 requires before any memory access.

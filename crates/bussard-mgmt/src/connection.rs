@@ -677,6 +677,13 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
     /// [`AsduError::SyncUnanswered`](bussard_secure::AsduError::SyncUnanswered);
     /// a device that does not even acknowledge it is reported absent as usual.
     async fn ensure_secure_sync(&mut self) -> Result<()> {
+        // A session that found the device on its factory key stays refused
+        // (issue #532): it is never used under the FDSK.
+        if self.secure.on_factory_key() {
+            return Err(MgmtError::FactoryKeyActive {
+                address: self.target,
+            });
+        }
         if !self.secure.needs_sync() {
             return Ok(());
         }
@@ -705,7 +712,7 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
                         apci = format_args!("{apci:#05x}"),
                         "device answered the Data Secure sync request with something else"
                     );
-                    return Err(unanswered(self.target));
+                    break;
                 }
                 // T_ACKed but no Sync_Res: the device may still be bringing its
                 // security layer up after a reboot (issue #166).
@@ -717,9 +724,7 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
                 // A late Sync_Res that answers an earlier attempt's challenge
                 // does not verify against this one; the next attempt can.
                 Err(MgmtError::Secure { .. }) if attempt > 1 => {}
-                Err(MgmtError::MidSessionSilence { .. }) => {
-                    return Err(unanswered(self.target));
-                }
+                Err(MgmtError::MidSessionSilence { .. }) => break,
                 Err(other) => return Err(other),
             }
             if attempt == attempts {
@@ -737,6 +742,35 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
             );
             tokio::time::sleep(backoff).await;
             backoff = backoff.saturating_mul(2).min(self.sync_retry.max_backoff);
+        }
+        // Issue #532: the tool would "typically retry" under the other key
+        // (KNX 3/5/2 §4.1 NOTE 18). One fresh Sync under the FDSK finds a
+        // device that was reset to default; it is reported, never used.
+        if self.secure.switch_to_factory_key() {
+            self.closed = false;
+            let tpci_octet = tpci::ndt(self.send_seq);
+            let (wire_apci, wire_data) =
+                self.secure
+                    .sync_request(self.target, self.source, tpci_octet)?;
+            self.last_send_apci = wire_apci;
+            self.send_numbered(tpci_octet, wire_apci, &wire_data)
+                .await?;
+            match self.recv_response().await {
+                Ok(_) if self.secure.is_synced() => {
+                    tracing::warn!(
+                        target = %self.target,
+                        "the device answered the Data Secure sync under its FDSK, not the tool key"
+                    );
+                    return Err(MgmtError::FactoryKeyActive {
+                        address: self.target,
+                    });
+                }
+                Ok(_)
+                | Err(MgmtError::MidSessionSilence { .. })
+                | Err(MgmtError::NoResponse { .. })
+                | Err(MgmtError::Secure { .. }) => {}
+                Err(other) => return Err(other),
+            }
         }
         self.closed = true;
         Err(unanswered(self.target))

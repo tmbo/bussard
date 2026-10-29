@@ -76,6 +76,9 @@ impl bussard_download::Connector for ServiceConnector<'_> {
         let options = L4Options {
             source: SourcePolicy::Known(self.source),
             tool_key: self.secure_tool_key.clone(),
+            // The write path: the pre-flight already found the device under
+            // its tool key, so no factory-key try here (issue #532).
+            factory_key: None,
             high_water: self.secure_seq.clone(),
             timeouts: flash_l4_timeouts().unwrap_or_default(),
             authorize: Authorize::Skip,

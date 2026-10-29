@@ -120,6 +120,32 @@ pub async fn identify_secured(
     session(service, address, &options, false).await.ok()
 }
 
+/// Whether `address` answers a secured session under its factory default
+/// setup key `fdsk` (issue #532): the descriptor read of [`identify_secured`]
+/// with the FDSK as the session key.
+///
+/// The converse of the tool key's FDSK fallback: a device the model does not
+/// mark activated that refuses plain access may have its security mode on
+/// with no tool key set yet, or may have been reset to default after a
+/// commissioning the key store no longer reflects. A Secure-capable device
+/// answers S-A_Data under its FDSK while no tool key is set (KNX 3/5/1
+/// §6.1.4). Read-only: nothing is written under the factory key.
+pub async fn answers_under_factory_key(
+    service: &BusService,
+    address: IndividualAddress,
+    options: &L4Options,
+    fdsk: Key16,
+) -> bool {
+    let options = L4Options {
+        factory_key: None,
+        authorize: crate::Authorize::Skip,
+        ..options.clone()
+    };
+    identify_secured(service, address, &options, fdsk)
+        .await
+        .is_some()
+}
+
 /// Why [`probe_classified`] found no identity at an address (issue #45).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeMiss {

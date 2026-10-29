@@ -799,7 +799,16 @@ fails under one key ETS retries it under the other (tool key ↔ FDSK, `[KNX
 3/5/2 §4.1 NOTE 18]`): that is how a device somebody reset to default is
 found again. bussard's retry policy (three attempts, 1 s then 2 s backoff,
 issue #166) is a deliberate deviation for devices that T_ACK before their
-security layer is up; it never falls back to the FDSK (#532).
+security layer is up. After those attempts, when the key store holds the
+device's FDSK, bussard sends one more Sync_Req (a fresh challenge, same
+connection) under the FDSK (#532). A Sync_Res that verifies there means the
+device was reset to default (erase code 02h or the local reset drop the tool
+key and make the FDSK active again, `[KNX 3/5/1 §6.1.4, §6.3.10.4 NOTE 108;
+AN194 §2.3.2.12]`): the session ends with `MgmtError::FactoryKeyActive`,
+which names the state and the next step, and nothing is read or written
+under the FDSK outside an explicit activation. The converse, a device the
+model does not mark activated that refuses plain access, is tried under the
+FDSK too (`describe`), before the "export a keyring" advice.
 
 bussard: `DataSecureSession::sync_request` builds the request with a fresh
 challenge; `unwrap` applies a verified Sync_Res (send sequence =

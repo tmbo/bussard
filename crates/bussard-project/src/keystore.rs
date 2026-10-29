@@ -1003,6 +1003,11 @@ impl KeyStore {
                 .iter()
                 .map(|(ga, k)| (*ga, k.clone()))
                 .collect(),
+            factory_keys: self
+                .devices
+                .iter()
+                .filter_map(|(ia, d)| d.fdsk.clone().map(|k| (*ia, k)))
+                .collect(),
         }
     }
 

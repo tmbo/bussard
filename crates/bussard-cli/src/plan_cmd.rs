@@ -240,13 +240,15 @@ pub(crate) fn read_device(
     properties: Option<&bussard_download::FlashPlan>,
 ) -> anyhow::Result<DeviceRead> {
     let activated = crate::secure_key::model_activated(model, target);
-    let tool_key = crate::secure_key::resolve(target, tool_key_source, activated)?;
+    let (tool_key, factory_key) =
+        crate::secure_key::resolve_session_keys(target, tool_key_source, activated)?;
     let presented_tool_key = tool_key.is_some();
     let options = L4Options {
         source: SourcePolicy::Check {
             skip: overrides.skip_address_check,
         },
         tool_key,
+        factory_key,
         high_water: bussard_secure::SequenceHighWater::new(),
         // Authorize (free access) before reading, as ETS does (issue #52
         // finding #1) and as System 7 requires before any memory access.

@@ -76,7 +76,8 @@ pub fn run(
         .with_context(|| format!("parsing device address {address:?}"))?;
     let model = load_model_required(dir)?;
     let activated = crate::secure_key::model_activated(model.as_ref(), target);
-    let tool_key = crate::secure_key::resolve(target, tool_key_source, activated)?;
+    let (tool_key, factory_key) =
+        crate::secure_key::resolve_session_keys(target, tool_key_source, activated)?;
     let presented_tool_key = tool_key.is_some();
     let config = resolve_config(model.as_ref(), &overrides)?;
     let mut facts = crate::device_facts::cache(dir, model.is_some(), refresh_facts);
@@ -91,6 +92,7 @@ pub fn run(
                     skip: overrides.skip_address_check,
                 },
                 tool_key,
+                factory_key,
                 high_water: bussard_secure::SequenceHighWater::new(),
                 authorize,
                 ..L4Options::default()

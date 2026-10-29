@@ -81,9 +81,20 @@ pub struct Keyring {
     pub devices: Vec<Device>,
     /// The per-group-address runtime keys, keyed by group address.
     pub group_keys: HashMap<GroupAddress, Key16>,
+    /// The factory default setup keys (FDSK) by device, including a key
+    /// store device known only by its FDSK (no tool key, so not in
+    /// [`devices`](Self::devices)). The key a device answers under after a
+    /// reset to default (issue #532).
+    pub factory_keys: HashMap<IndividualAddress, Key16>,
 }
 
 impl Keyring {
+    /// Looks up a device's factory default setup key (FDSK) by individual
+    /// address (issue #532).
+    pub fn fdsk(&self, ia: IndividualAddress) -> Option<&Key16> {
+        self.factory_keys.get(&ia)
+    }
+
     /// Looks up a device's tool key by individual address (spec §2.1 key
     /// selection: the tool key is the per-device management key).
     pub fn tool_key(&self, ia: IndividualAddress) -> Option<&Key16> {
@@ -110,6 +121,10 @@ impl std::fmt::Debug for Keyring {
             .field(
                 "group_keys",
                 &format_args!("<{} redacted>", self.group_keys.len()),
+            )
+            .field(
+                "factory_keys",
+                &format_args!("<{} redacted>", self.factory_keys.len()),
             )
             .finish()
     }
@@ -608,6 +623,10 @@ fn parse_body(xml: &str, keyring_key: &Key16, iv: &[u8; KEY_LEN]) -> Result<Keyr
         interfaces.push(iface);
     }
 
+    let factory_keys = devices
+        .iter()
+        .filter_map(|d| d.fdsk.clone().map(|k| (d.ia, k)))
+        .collect();
     Ok(Keyring {
         project,
         created,
@@ -615,6 +634,7 @@ fn parse_body(xml: &str, keyring_key: &Key16, iv: &[u8; KEY_LEN]) -> Result<Keyr
         interfaces,
         devices,
         group_keys,
+        factory_keys,
     })
 }
 

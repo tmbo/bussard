@@ -688,6 +688,7 @@ impl BussardMcp {
             &service,
             target,
             &tool_key,
+            &material.fdsk,
             &SequenceHighWater::new(),
             &dir,
             &model,
@@ -1136,6 +1137,7 @@ impl BussardMcp {
             &service,
             target,
             &tool_key,
+            &material.fdsk,
             &high_water,
             &dir,
             &model,
@@ -2142,6 +2144,7 @@ async fn read_device(
     service: &BusService,
     target: IndividualAddress,
     tool_key: &Option<Key16>,
+    factory_key: &Option<Key16>,
     high_water: &SequenceHighWater,
     dir: &std::path::Path,
     model: &Model,
@@ -2154,7 +2157,8 @@ async fn read_device(
         .lease()
         .await
         .map_err(|e| format!("could not lease the bus: {e}"))?;
-    let secure = bussard_service::secure::layer(tool_key, high_water);
+    // A device reset to default is named, not read under its FDSK (#532).
+    let secure = bussard_service::secure::layer_with_factory_key(tool_key, factory_key, high_water);
     let mut l4 = Layer4Connection::connect_with_secure(
         LeaseChannel::new(lease),
         target,

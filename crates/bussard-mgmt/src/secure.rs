@@ -27,13 +27,22 @@ use crate::error::{MgmtError, Result};
 #[derive(Debug, Default)]
 pub struct SecureLayer {
     session: Option<DataSecureSession>,
+    /// The device's factory default setup key (FDSK), tried once when the
+    /// S-A_Sync under the tool key goes unanswered (issue #532).
+    fallback: Option<bussard_secure::Key16>,
+    /// Whether the Sync verified only under [`fallback`](Self::fallback).
+    on_factory_key: bool,
 }
 
 impl SecureLayer {
     /// A plain (non-secure) layer: management APDUs pass through unchanged. This
     /// is the state of every device that is not security-activated (spec §6.4).
     pub fn plain() -> Self {
-        SecureLayer { session: None }
+        SecureLayer {
+            session: None,
+            fallback: None,
+            on_factory_key: false,
+        }
     }
 
     /// A security-activated layer wrapping every APDU with `session`'s tool key
@@ -41,7 +50,41 @@ impl SecureLayer {
     pub fn activated(session: DataSecureSession) -> Self {
         SecureLayer {
             session: Some(session),
+            fallback: None,
+            on_factory_key: false,
         }
+    }
+
+    /// Adds the device's factory default setup key (FDSK) as the key one more
+    /// S-A_Sync is tried under when the tool key's Sync attempts go
+    /// unanswered (issue #532). The S-Mode tool "will typically retry" under
+    /// the other key (KNX 3/5/2 §4.1 NOTE 18, §4.2 NOTE 19): that finds a
+    /// device somebody reset to default. No effect on a plain layer.
+    pub fn with_factory_key_fallback(mut self, fdsk: bussard_secure::Key16) -> Self {
+        if self.session.is_some() {
+            self.fallback = Some(fdsk);
+        }
+        self
+    }
+
+    /// Switches an activated layer to its factory-key fallback, once: the
+    /// next Sync request goes out under the FDSK. `false` when there is no
+    /// fallback (left), or the layer is plain.
+    pub fn switch_to_factory_key(&mut self) -> bool {
+        match (&mut self.session, self.fallback.take()) {
+            (Some(session), Some(fdsk)) => {
+                session.set_tool_key(fdsk);
+                self.on_factory_key = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether the layer runs under the factory-key fallback (see
+    /// [`switch_to_factory_key`](Self::switch_to_factory_key)).
+    pub fn on_factory_key(&self) -> bool {
+        self.on_factory_key
     }
 
     /// Replaces the tool key of an activated layer (see

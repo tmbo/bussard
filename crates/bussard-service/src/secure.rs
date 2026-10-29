@@ -265,6 +265,25 @@ pub fn resolve(
     Ok(resolve_material(target, source, activated)?.tool_key)
 }
 
+/// The keys of one management session to `target`: the tool key (`None` for
+/// the plain path, the rule of [`resolve_material`]) and the device's FDSK
+/// (issue #532), which a session tries once when the tool key's Sync goes
+/// unanswered and which [`factory_key_answers`] tries on a device that
+/// refuses plain access. The keyring is decrypted once.
+///
+/// # Errors
+///
+/// As [`resolve`].
+pub fn resolve_session_keys(
+    target: IndividualAddress,
+    source: ToolKeySource<'_>,
+    activated: bool,
+) -> Result<(Option<Key16>, Option<Key16>), SecureKeyError> {
+    let keys = ToolKeys::load(source)?;
+    let material = keys.material(target, activated)?;
+    Ok((material.tool_key, keys.fdsk(target)))
+}
+
 /// The Data Secure key material a secured download needs: the target's tool
 /// key and, when it came from a keyring, the keyring's group keys (issue #156:
 /// the group key table of the security object is built from them). `Debug` is
@@ -280,6 +299,10 @@ pub struct SecureMaterial {
     /// secured sender's security individual address table entry starts from);
     /// empty with a raw tool key or on the plain path.
     pub device_sequences: HashMap<IndividualAddress, u64>,
+    /// The target's factory default setup key (FDSK) from the keyring or key
+    /// store, for the one Sync that recognises a device reset to default
+    /// (issue #532); `None` with a raw tool key or when the store has none.
+    pub fdsk: Option<Key16>,
 }
 
 /// Like [`resolve`], but also returns the keyring's group keys. The keyring is
@@ -420,6 +443,7 @@ impl ToolKeys {
                 tool_key: Some(raw.clone()),
                 group_keys: None,
                 device_sequences: HashMap::new(),
+                fdsk: None,
             });
         }
         let Some((path, keyring)) = &self.keyring else {
@@ -437,7 +461,17 @@ impl ToolKeys {
             tool_key: Some(tool_key),
             group_keys: Some(keyring.group_keys.clone()),
             device_sequences: keyring.devices.iter().map(|d| (d.ia, d.seq)).collect(),
+            fdsk: keyring.fdsk(target).cloned(),
         })
+    }
+
+    /// The factory default setup key (FDSK) the keyring or key store holds
+    /// for `target` (issue #532), also for a device it knows only by that
+    /// key; `None` without a keyring.
+    pub fn fdsk(&self, target: IndividualAddress) -> Option<Key16> {
+        self.keyring
+            .as_ref()
+            .and_then(|(_, k)| k.fdsk(target).cloned())
     }
 }
 
@@ -693,6 +727,22 @@ pub fn layer(
                 .with_algorithm(algorithm())
                 .with_high_water(high_water.clone()),
         ),
+    }
+}
+
+/// [`layer`] with the device's factory default setup key (FDSK) as the key
+/// one more S-A_Sync is tried under when the tool key's go unanswered (issue
+/// #532); a session that verifies only under it ends with
+/// [`MgmtError::FactoryKeyActive`](bussard_mgmt::MgmtError::FactoryKeyActive).
+pub fn layer_with_factory_key(
+    tool_key: &Option<Key16>,
+    factory_key: &Option<Key16>,
+    high_water: &SequenceHighWater,
+) -> bussard_mgmt::SecureLayer {
+    let layer = layer(tool_key, high_water);
+    match factory_key {
+        Some(fdsk) => layer.with_factory_key_fallback(fdsk.clone()),
+        None => layer,
     }
 }
 

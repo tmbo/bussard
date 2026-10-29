@@ -99,7 +99,7 @@ Behaviour:
 | `secured_management` | refused walk, with a key | `"unanswered"`: the secured walk returned no interface object. |
 | `error` | refused walk | The error message, with the KNX Secure hint. |
 | `secure.model` | the model has a security block | What the import recorded: `secure_capable`, `activated`, `has_fdsk_certificate`. An export made before ETS activated the device says `activated: false`. |
-| `secure.device` | model security, a tool key, or a refused walk | What the device did in this run: `plain_management` (`answered`, `refused`, or `not_attempted` with a key) and `secured_management` (`used`, `not_attempted` without a key, or `unanswered`). |
+| `secure.device` | model security, a tool key, or a refused walk | What the device did in this run: `plain_management` (`answered`, `refused`, or `not_attempted` with a key) and `secured_management` (`used`, `not_attempted` without a key, `unanswered`, or `factory_key` when the device refused plain access and answered under its FDSK from the key store, issue #532). |
 
 ??? note "Details"
     `describe` sends `A_DeviceDescriptor_Read`, `A_PropertyValue_Read` (object discovery) and `A_PropertyDescription_Read`, never a write. Reusing the facts takes the descriptor read plus one property read: on a KNX Data Secure device about 4 requests instead of about 110. An activated device still answers the plain descriptor read and the PID 56 read, then refuses the interface-object walk.
