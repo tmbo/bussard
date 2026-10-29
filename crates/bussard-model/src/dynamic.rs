@@ -59,16 +59,17 @@
 //! the active set. A parameter the Dynamic section never shows anywhere (a
 //! pure steering parameter, which only ever has its value) stays active
 //! without a reached ref, with one exception (issue #474): when it also has
-//! no location (no memory, property or union) and a type other than
-//! `TypeNone`, a `<choose>` on it whose only branch is `<when
-//! default="true">` takes no branch. The Zennio Flat push buttons hold their
-//! dummy objects behind such a choose on `Flat_AlwaysFALSE` (a checkbox,
-//! `Access="Read"`, `Value="0"`) and ETS leaves them out; the ABB Modbus
-//! gateway's `signal_N_device_active` (`Value="1"`, a `when test="0"` beside
-//! the default) and the Flat `numOfButtons` take their default branches in
-//! ETS, and so do the ABB and Busch-Jaeger channel switches on never-shown
-//! `TypeNone` parameters (`Eingang_A`). The target ref of a reached
-//! `<Assign>` counts as active too: ETS writes it.
+//! no location (no memory, property or union), a type other than `TypeNone`
+//! and an effective `Access` other than `None`, a `<choose>` on it whose
+//! only branch is `<when default="true">` takes no branch. The Zennio Flat
+//! push buttons hold their dummy objects behind such a choose on
+//! `Flat_AlwaysFALSE` (a checkbox, `Access="Read"`, `Value="0"`) and ETS
+//! leaves them out; the ABB Modbus gateway's `signal_N_device_active`
+//! (`Value="1"`, a `when test="0"` beside the default) and the Flat
+//! `numOfButtons` take their default branches in ETS, and so do the ABB and
+//! Busch-Jaeger channel switches on never-shown `TypeNone` parameters
+//! (`Eingang_A`). The target ref of a reached `<Assign>` counts as active
+//! too: ETS writes it.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
@@ -137,6 +138,13 @@ pub trait DynamicSource {
     fn initial_value(&self, _param_id: &str) -> Option<&str> {
         None
     }
+    /// Whether the app-relative ref `param_ref_id` has the effective
+    /// `Access="None"` (its own, else its parameter's): ETS never shows it,
+    /// and its activity does not depend on being shown (issue #474).
+    /// `false` when unknown.
+    fn ref_access_none(&self, _param_ref_id: &str) -> bool {
+        false
+    }
 }
 
 impl<T: DynamicSource + ?Sized> DynamicSource for &T {
@@ -184,6 +192,9 @@ impl<T: DynamicSource + ?Sized> DynamicSource for &T {
     }
     fn initial_value(&self, param_id: &str) -> Option<&str> {
         (**self).initial_value(param_id)
+    }
+    fn ref_access_none(&self, param_ref_id: &str) -> bool {
+        (**self).ref_access_none(param_ref_id)
     }
 }
 
@@ -2076,14 +2087,16 @@ impl Walk {
                         })
                         .and_then(|v| v.trim().parse::<f64>().ok());
                     // A `<choose>` whose only branch is `default`, on a
-                    // never-shown parameter that only steers and has a type,
-                    // takes no branch (issue #474: the Zennio Flat
-                    // `AlwaysFALSE` checkbox). With another `<when>` beside
-                    // it the default is taken (the ABB Modbus gateway's
-                    // `signal_N_device_active`, the Flat `numOfButtons`), and
-                    // so it is on a `TypeNone` one (the ABB `Eingang_A`
-                    // channel switches).
+                    // never-shown parameter that only steers, has a type and
+                    // is not `Access="None"`, takes no branch (issue #474:
+                    // the Zennio Flat `AlwaysFALSE` checkbox). With another
+                    // `<when>` beside it the default is taken (the ABB Modbus
+                    // gateway's `signal_N_device_active`, the Flat
+                    // `numOfButtons`), and so it is on an `Access="None"` one
+                    // (the ABB `R_Allgemein`, the Zennio IRSC `GENERAL`) and
+                    // on a `TypeNone` one (the ABB `Eingang_A` switches).
                     let no_default = whens.iter().all(|w| w.test == WhenTest::Default)
+                        && !app.ref_access_none(param_ref_id)
                         && parameter_id(app, param_ref_id).is_some_and(|id| {
                             !self.placed.contains(id)
                                 && app.steers_only(id)

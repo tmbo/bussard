@@ -646,6 +646,12 @@ impl crate::dynamic::DynamicSource for ProductModel {
     fn initial_value(&self, param_id: &str) -> Option<&str> {
         self.parameters.get(param_id)?.initial_value.as_deref()
     }
+
+    fn ref_access_none(&self, param_ref_id: &str) -> bool {
+        self.parameter_refs
+            .get(param_ref_id)
+            .is_some_and(|r| r.internal)
+    }
 }
 
 impl RawType {

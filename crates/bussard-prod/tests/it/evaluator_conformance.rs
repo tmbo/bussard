@@ -686,11 +686,12 @@ fn test_evaluate_dynamic_never_shown_steering_parameter_takes_no_default_branch(
     let (objects, refs) = reached(&app, &[]);
     // "AlwaysFalse" (a checkbox without memory, never shown): its only,
     // default branch is not taken. "Input A" (TypeNone) takes its default
-    // branch, "Variant" its matching one, and "Device active" its default
-    // one beside a "0" branch.
+    // branch, "Variant" its matching one, "Device active" its default one
+    // beside a "0" branch, and "General" (`Access="None"`) its only, default
+    // one.
     assert!(!objects.contains("O-4_R-4"), "{objects:?}");
     assert!(!refs.contains("P-8_R-8"), "{refs:?}");
-    for present in ["O-5_R-5", "O-6_R-6", "O-7_R-7"] {
+    for present in ["O-5_R-5", "O-6_R-6", "O-7_R-7", "O-8_R-8"] {
         assert!(objects.contains(present), "{present} missing: {objects:?}");
     }
     // The image leaves "Dummy" at the erased fill.

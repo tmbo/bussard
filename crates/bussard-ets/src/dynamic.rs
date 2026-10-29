@@ -114,6 +114,17 @@ impl DynamicSource for ApplicationProgram {
     fn initial_value(&self, param_id: &str) -> Option<&str> {
         self.parameters.get(param_id)?.initial_value.as_deref()
     }
+
+    fn ref_access_none(&self, param_ref_id: &str) -> bool {
+        let Some(pref) = ApplicationProgram::parameter_ref(self, param_ref_id) else {
+            return false;
+        };
+        let param = self.parameters.get(&pref.ref_id);
+        pref.access
+            .as_deref()
+            .or(param.and_then(|p| p.access.as_deref()))
+            == Some("None")
+    }
 }
 
 #[cfg(test)]
