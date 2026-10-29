@@ -367,6 +367,11 @@ pub struct Parameter {
     /// writes the value these parameters compose (issue #390).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub property: Option<PropertyLocation>,
+    /// Whether the parameter declares `LegacyPatchAlways="true"`: ETS writes
+    /// it at its default even while the configuration hides it, whatever
+    /// the application's `DownloadInvisibleParameters` says (issue #450).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub legacy_patch_always: bool,
 }
 
 /// Where a property-located parameter sits: the interface object (by index or
@@ -1998,6 +2003,7 @@ fn insert_parameter_start(app: &mut ApplicationProgram, m: &Attrs) -> Option<Str
             memory: None,
             base_value: get(m, b"BaseValue").map(str::to_string),
             property: None,
+            legacy_patch_always: get(m, b"LegacyPatchAlways").is_some_and(parse_xml_bool),
         },
     );
     Some(id)

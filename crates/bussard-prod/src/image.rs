@@ -823,7 +823,11 @@ fn dynamic_parameter_slots_with<'a>(
     check_object_bases(app, config)?;
     let mut slots = Vec::new();
     if app.downloads_invisible_parameters() {
-        invisible_parameter_slots(app, config, union_of, &mut slots)?;
+        invisible_parameter_slots(app, config, union_of, &mut slots, |_| true)?;
+    } else {
+        // ETS writes a hidden `LegacyPatchAlways` parameter at its default
+        // regardless (issue #450).
+        invisible_parameter_slots(app, config, union_of, &mut slots, |p| p.legacy_patch_always)?;
     }
     for active in &config.parameters {
         let full_ref = format!("{}_{}", app.id, active.param_ref_id);
@@ -976,7 +980,10 @@ fn parameter_type_of<'a>(
 
 /// The slots of the parameters the configuration does not show, for an
 /// application whose download carries them
-/// ([`ApplicationProgram::downloads_invisible_parameters`]).
+/// ([`ApplicationProgram::downloads_invisible_parameters`]), or of those of
+/// them `include` picks (the `LegacyPatchAlways` ones ETS writes in any
+/// case, issue #450: the Zennio DALI-BOX v2's 128 hidden group limits, the
+/// ABB Data Logging's hidden thresholds).
 ///
 /// Every application-level parameter with a location that the walk did not
 /// reach gets its default, the parameter's own `Value`: ETS does not write a
@@ -992,6 +999,7 @@ fn invisible_parameter_slots<'a>(
     config: &bussard_ets::dynamic::DynamicConfig,
     union_of: &UnionIndex<'_>,
     slots: &mut Vec<ParameterSlot<'a>>,
+    include: impl Fn(&bussard_ets::application::Parameter) -> bool,
 ) -> Result<()> {
     let prefix = format!("{}_", app.id);
     // The application-level parameters the walk reached, and the unions they
@@ -1012,6 +1020,7 @@ fn invisible_parameter_slots<'a>(
     let mut params: Vec<_> = app
         .parameters
         .values()
+        .filter(|p| include(p))
         .filter(|p| !reached.contains(p.id.as_str()))
         .filter(|p| {
             !p.id
@@ -3806,6 +3815,52 @@ mod tests {
             assert!(!app.downloads_invisible_parameters(), "{replacement}");
             let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
             assert_eq!(images["A_RS-1"], [0, 0, 0, 1], "{replacement}");
+        }
+        Ok(())
+    }
+
+    /// Issue #450: a hidden `LegacyPatchAlways` parameter is written at its
+    /// default even when the application keeps hidden parameters at the
+    /// template (`Background`, `None`, or System 7); a hidden parameter
+    /// without the flag keeps the template. The read-back decoder walks the
+    /// same slots.
+    #[test]
+    fn test_compute_parameter_image_dynamic_writes_hidden_legacy_patch_always() -> Result<()> {
+        let options = r#"<Options TextParameterEncoding="utf-8" Comparable="false" Reconstructable="false" />"#;
+        let cycle = r#"Name="cycle" ParameterType="A_PT-2" Value="600""#;
+        for (mask, replacement) in [
+            (
+                "MV-07B0",
+                r#"<Options DownloadInvisibleParameters="Background" />"#,
+            ),
+            (
+                "MV-07B0",
+                r#"<Options DownloadInvisibleParameters="None" />"#,
+            ),
+            ("MV-0705", options),
+        ] {
+            let xml = HIDDEN_XML
+                .replace(options, replacement)
+                .replace("MV-07B0", mask)
+                .replace(cycle, &format!("{cycle} LegacyPatchAlways=\"true\""));
+            let app = parse_application_program("A", xml.as_bytes())?;
+            assert!(
+                !app.downloads_invisible_parameters(),
+                "{mask} {replacement}"
+            );
+            let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
+            // The hidden cycle carries its default 600; the hidden union
+            // keeps the template.
+            assert_eq!(images["A_RS-1"], [0x02, 0x58, 0, 1], "{mask} {replacement}");
+            let config = bussard_ets::dynamic::evaluate_dynamic(&app, &no_overrides());
+            let slots = dynamic_parameter_slots(&app, &config)?;
+            assert!(
+                slots
+                    .iter()
+                    .any(|s| s.param_ref_id.is_none()
+                        && s.parameter.name.as_deref() == Some("cycle")),
+                "{mask} {replacement}"
+            );
         }
         Ok(())
     }
