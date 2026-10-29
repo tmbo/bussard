@@ -169,8 +169,10 @@ System 7 differs from System B in four ways the device model reproduces strictly
   `Sys7LoadStateMachine`) instead of one. LSM 1/2/3 are torn down and reloaded in
   order; a `TaskSegment` finalize is a precondition for each `LoadCompleted`.
 - **Two `LsmAccess` realisations, both implemented device-side**, selectable per
-  device (`lsm_access: memory | property`, default `property`), matching the
-  vendor/mask-family split (Jung 0705 → property, Theben 0701 → memory-mapped):
+  device (`lsm_access: memory | property`). When omitted the mask picks the
+  realisation the profile makes mandatory (KNX 6 Profiles §4.2 row 7): memory
+  mapped on 0700 and 0701 (both mandatory on 0701, where ETS drives memory),
+  property on 0705:
   - **memory-mapped** — an 11-octet load-event record written by `A_Memory_Write`
     to the LSM control address (default 0x0104), with the LSM index folded into
     the high nibble of octet 0 and the state polled back at the status address

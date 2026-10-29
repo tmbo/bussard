@@ -1,7 +1,7 @@
 //! Per-device mask profile: System B vs System 7 behaviour.
 //!
 //! A simulated device models a specific KNX device generation (mask). System B
-//! (mask `0x07B0`) and System 7 (masks `0x0705` / `0x0701`) differ in how the
+//! (mask `0x07B0`) and System 7 (masks `0x0700` / `0x0701` / `0x0705`) differ in how the
 //! download works: System B is a single relative-segment load-state machine
 //! driven over `PID_LOAD_STATE_CONTROL`; System 7 is three parallel,
 //! absolute-addressed, memory-mapped load-state machines. This module carries
@@ -187,7 +187,7 @@ pub fn parse_mask(mask_version: &str) -> Option<u16> {
 pub enum MaskFamily {
     /// System B (mask 0x07B0).
     SystemB,
-    /// System 7 (mask 0x0705 / 0x0701).
+    /// System 7 (mask 0x0700 / 0x0701 / 0x0705).
     System7,
     /// An unmodelled family.
     Other,
@@ -197,8 +197,25 @@ pub enum MaskFamily {
 pub fn mask_family(mask: u16) -> MaskFamily {
     match mask {
         0x07B0 => MaskFamily::SystemB,
-        0x0705 | 0x0701 => MaskFamily::System7,
+        0x0700 | 0x0701 | 0x0705 => MaskFamily::System7,
         _ => MaskFamily::Other,
+    }
+}
+
+/// The LSM realisation a System 7 device of `mask` presents when its config
+/// does not choose one: the realisation the profile makes mandatory for the
+/// mask (KNX 6 Profiles §4.2, "Device Management", row 7).
+///
+/// - `0700`: memory mapped is mandatory, property optional.
+/// - `0701`: both are mandatory; ETS drives memory mapped (Theben Meteodata
+///   capture), so the sim presents that one.
+/// - `0705`: property is mandatory, memory mapped optional (Jung M2 capture).
+///
+/// bussard's `Sys7Profile::corpus_default_for_mask` picks the same per mask.
+pub fn default_lsm_access_for_mask(mask: u16) -> LsmAccess {
+    match mask {
+        0x0700 | 0x0701 => LsmAccess::MemoryMapped,
+        _ => LsmAccess::Property,
     }
 }
 
@@ -238,6 +255,7 @@ mod tests {
         assert_eq!(mask_family(0x07B0), MaskFamily::SystemB);
         assert_eq!(mask_family(0x0705), MaskFamily::System7);
         assert_eq!(mask_family(0x0701), MaskFamily::System7);
+        assert_eq!(mask_family(0x0700), MaskFamily::System7);
         assert_eq!(mask_family(0x0012), MaskFamily::Other);
     }
 
@@ -247,6 +265,24 @@ mod tests {
         // control over PID 5; property-based is the default. Memory-mapped stays
         // selectable for silicon whose product data uses it.
         assert_eq!(LsmAccess::default(), LsmAccess::Property);
+    }
+
+    #[test]
+    fn test_default_lsm_access_for_mask_0700_is_memory_mapped() {
+        // Profiles §4.2 row 7: Type 2 (memory mapped) mandatory on 0700.
+        assert_eq!(default_lsm_access_for_mask(0x0700), LsmAccess::MemoryMapped);
+    }
+
+    #[test]
+    fn test_default_lsm_access_for_mask_0701_is_memory_mapped() {
+        // Profiles §4.2 row 7: both mandatory on 0701; ETS drives memory.
+        assert_eq!(default_lsm_access_for_mask(0x0701), LsmAccess::MemoryMapped);
+    }
+
+    #[test]
+    fn test_default_lsm_access_for_mask_0705_is_property() {
+        // Profiles §4.2 row 7: Type 1 (property) mandatory on 0705.
+        assert_eq!(default_lsm_access_for_mask(0x0705), LsmAccess::Property);
     }
 
     #[test]

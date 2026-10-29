@@ -66,8 +66,8 @@ differs per mask**; they are NOT identical at the wire level. The profile
 0104h / B6EAh) on 0700 and 0701; memory-mapped is optional on 0705, property
 optional on 0700. Both are standard; ETS picks memory on 0701 and property on
 0705, which two real-ETS download captures show (superseding the earlier
-"0701==0705" claim). bussard drives 0700 property-based today, the optional
-realisation there (#526).
+"0701==0705" claim). bussard drives 0700 memory-mapped, the mandatory
+realisation there (#526; no 0700 capture exists).
 
 - **Jung `0705`** (M2 issue #70, plus the binaereingang / automitschalter /
   schaltaktor 0705 analysis captures) drives load control **property-based** over
@@ -77,7 +77,7 @@ realisation there (#526).
   status read at `0xB6EA + (lsm - 1)`, with ZERO PID-5 traffic; see §5.
 
 So the download-path realisation branches on the mask (0705 → property,
-0701 → memory-mapped) via `Sys7Profile::corpus_default_for_mask`. The status
+0700 and 0701 → memory-mapped) via `Sys7Profile::corpus_default_for_mask`. The status
 octets of the memory-mapped form are the load states of object types 1 to 4:
 B6EAh address table, B6EBh association table, B6ECh application program, B6EDh
 PEI program `[MP §3.31.2, p. 134]`, so the "0xB6EC read" in the ETS captures is
@@ -600,7 +600,7 @@ derives run-state from the loaded tables, ETS only checks `[corpus §5]`.
 
 ---
 
-## 5. LSM realisation, resolved: vendor / mask-family dependent
+## 5. LSM realisation, resolved: fixed per mask by the profile
 
 **This was the single most important open question. The profile answers it
 `[Prof §4.2 row 7, p. 37]`: Realisation Type 1 (property) is mandatory on 0701
@@ -627,8 +627,8 @@ real-ETS download captures show which one ETS picks where both are available.**
   [`LsmAccess::MemoryMapped`] is the `0701` default.
 
 The download path selects the realisation by mask family
-(`Sys7Profile::corpus_default_for_mask`: `0701` → memory-mapped, everything else
-→ property), overridable by `HawkConfigurationData` when a product carries a
+(`Sys7Profile::corpus_default_for_mask`: `0700` and `0701` → memory-mapped,
+`0705` → property), overridable by `HawkConfigurationData` when a product carries a
 usable block. This corrects the earlier claim that property was the default for
 ALL System 7; that regressed the memory-mapped Theben 0701.
 
@@ -681,9 +681,10 @@ e.g. `13 00 00 40 00 00 1d f2 03 80 00` (LSM1 alloc 0x4000 len 0x1D EEPROM),
 `bussard_mgmt::wrap_memory_lsm_record`, decoded by the sim's
 `decode_memory_lsm_record`.
 
-**Default:** mask-family dependent (`Sys7Profile::corpus_default_for_mask`):
-`0701` → `MemoryMapped { control 0x0104, status 0xB6EA }`; every other System 7
-mask → `Property`. A `HawkConfigurationData` block may still select `MemoryMapped`
+**Default:** the realisation the profile makes mandatory for the mask
+(`Sys7Profile::corpus_default_for_mask`): `0700` and `0701` →
+`MemoryMapped { control 0x0104, status 0xB6EA }`; `0705` → `Property`. knx-sim
+picks the same per mask when a device's config omits `lsm_access`. A `HawkConfigurationData` block may still select `MemoryMapped`
 for a product that carries a `StandardMemory` LoadControl (the 0701 Hawk block
 does; the 0705 Jung block also resolves there but is a pre-M2 false positive, so
 the normal Jung flash plans with the property default and does not feed a Hawk

@@ -254,10 +254,12 @@ pub fn simple_event(control: LoadControl) -> [u8; LOAD_EVENT_SIZE] {
 
 /// The load-state-machine access seam for System 7 (`[system7-spec §5]`).
 ///
-/// System 7 devices realise their LSMs one of two ways, selected by mask family:
-/// the Jung `0705` family is **property-based** ([`LsmAccess::Property`], M2
-/// capture issue #70) and the Theben `0701` family is **memory-mapped**
-/// ([`LsmAccess::MemoryMapped`], Meteodata capture). Both realisations are
+/// System 7 devices realise their LSMs one of two ways, and the profile fixes
+/// which one each mask must offer (KNX 6 Profiles §4.2 row 7): memory mapped
+/// ([`LsmAccess::MemoryMapped`]) is mandatory on `0700` and `0701`, property
+/// ([`LsmAccess::Property`]) on `0701` and `0705`. ETS drives `0701` memory
+/// mapped (Meteodata capture) and `0705` property based (M2 capture, issue
+/// #70). Both realisations are
 /// implemented behind this seam and selected per mask
 /// ([`crate::Sys7Profile::corpus_default_for_mask`]) or from
 /// `HawkConfigurationData`. Each variant is independently testable against a mock
@@ -267,7 +269,8 @@ pub enum LsmAccess {
     /// ([`wrap_memory_lsm_record`]) to `control_addr` via `A_Memory_Write` and poll
     /// status at `status_addr + (lsm - 1)` via `A_Memory_Read`. Confirmed by the
     /// Theben 0701 Meteodata capture (11-octet writes to `0x0104`, status at
-    /// `0xB6EA+`). The Jung `0705` family uses `Property` instead.
+    /// `0xB6EA+`); the default for `0700` and `0701`. The `0705` default is
+    /// `Property`.
     MemoryMapped {
         /// The LSM-control write address (default `0x0104`).
         control_addr: u16,
