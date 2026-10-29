@@ -115,7 +115,7 @@ impl DynamicSource for ApplicationProgram {
         self.parameters.get(param_id)?.initial_value.as_deref()
     }
 
-    fn ref_access_none(&self, param_ref_id: &str) -> bool {
+    fn ref_read_only(&self, param_ref_id: &str) -> bool {
         let Some(pref) = ApplicationProgram::parameter_ref(self, param_ref_id) else {
             return false;
         };
@@ -123,7 +123,7 @@ impl DynamicSource for ApplicationProgram {
         pref.access
             .as_deref()
             .or(param.and_then(|p| p.access.as_deref()))
-            == Some("None")
+            == Some("Read")
     }
 }
 

@@ -534,6 +534,9 @@ struct RefModel {
     /// title of a page the ref names (`ParamRefId`).
     #[serde(skip_serializing_if = "Option::is_none")]
     text: Option<String>,
+    /// The effective `Access` is `Read` (issue #474).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    read_only: bool,
 }
 
 /// A parameter's type, tagged by shape.
@@ -862,6 +865,7 @@ fn ref_model(
             .flatten(),
         internal: pref.access.as_deref().or(param.access.as_deref()) == Some("None"),
         text: pref.text.clone().filter(|_| pref.text != param.text),
+        read_only: pref.access.as_deref().or(param.access.as_deref()) == Some("Read"),
     }
 }
 

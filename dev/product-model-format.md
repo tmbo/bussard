@@ -158,7 +158,8 @@ submodule's `module_dynamics` entry is keyed by its own id (`MD-1_SM-1`). The pa
 application program carries the same, in cache format `bussard-parsed-product-v7`.
 A parameter whose value lives in an interface-object property has `property: true`
 (with `memory` and union membership it tells a stored parameter from one that only
-steers the Dynamic section, #474). A text parameter's `initial_value` is its
+steers the Dynamic section, #474), and a ref whose effective `Access` is `Read` has
+`read_only: true` (#474). A text parameter's `initial_value` is its
 `InitialValue` in the import language (#473): the value a new device starts with,
 which wins over the `Value`s as the default.
 

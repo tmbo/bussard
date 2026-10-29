@@ -687,7 +687,7 @@ fn test_evaluate_dynamic_never_shown_steering_parameter_takes_no_default_branch(
     // "AlwaysFalse" (a checkbox without memory, never shown): its only,
     // default branch is not taken. "Input A" (TypeNone) takes its default
     // branch, "Variant" its matching one, "Device active" its default one
-    // beside a "0" branch, and "General" (`Access="None"`) its only, default
+    // beside a "0" branch, and the read-write "General" its only, default
     // one.
     assert!(!objects.contains("O-4_R-4"), "{objects:?}");
     assert!(!refs.contains("P-8_R-8"), "{refs:?}");
