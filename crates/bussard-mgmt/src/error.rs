@@ -110,6 +110,25 @@ pub enum MgmtError {
         name: &'static str,
     },
 
+    /// An `A_MemoryExtended_Write` came back with `E_SUCCESS_WITH_CRC` (01h,
+    /// 03_03_07 §3.4.9.2.1) and a CRC16-CCITT that does not match the one over
+    /// the request bussard sent (count, address and data): the device stored
+    /// something else than was written.
+    #[error(
+        "{address} confirmed the A_MemoryExtended_Write at {addr:#08X} with CRC {got:#06X}, \
+         but the CRC over the written request is {expected:#06X} (the chunk did not arrive intact)"
+    )]
+    MemoryWriteCrc {
+        /// The device.
+        address: IndividualAddress,
+        /// The 24-bit memory address of the write.
+        addr: u32,
+        /// The CRC over the request octets bussard sent.
+        expected: u16,
+        /// The CRC the device returned.
+        got: u16,
+    },
+
     /// The device answered an `A_DeviceDescriptor_Read` with descriptor type
     /// 3Fh, "unsupported type" (03_03_07 §3.4.2.1).
     #[error("{address} does not support device descriptor type {requested}")]

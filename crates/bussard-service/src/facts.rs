@@ -292,6 +292,7 @@ impl FactsCache {
             objects,
             knxnet: None,
             no_knxnet: false,
+            go_security_flags: None,
         };
         seed(l4, &record, mask);
         self.save(&record);

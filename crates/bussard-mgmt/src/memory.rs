@@ -613,26 +613,8 @@ async fn write_one_chunk<Ch: L4Channel>(
     if service == MemoryService::Extended {
         let (req_apci, payload) = apci::encode_memory_extended_write(chunk_addr, piece);
         let (resp_apci, data) = l4.request(req_apci, &payload).await?;
-        let resp = apci::decode_memory_extended_response(resp_apci, &data).ok_or_else(|| {
-            WriteError::Mgmt(MgmtError::MalformedResponse {
-                address: l4.target(),
-                reason: format!(
-                    "expected A_MemoryExtended_Write_Response ({})",
-                    raw_response_detail(resp_apci, &data)
-                ),
-            })
-        })?;
-        if resp.return_code != 0 {
-            // The return code names the failure (03_03_07 §3.4.9.2.1): an
-            // access or sizing problem is not a verify mismatch.
-            return Err(WriteError::Mgmt(MgmtError::MemoryReturnCode {
-                address: l4.target(),
-                service: "A_MemoryExtended_Write",
-                addr: chunk_addr,
-                code: resp.return_code,
-                name: crate::error::return_code_name(resp.return_code),
-            }));
-        }
+        check_extended_write_response(l4.target(), chunk_addr, &payload, resp_apci, &data)
+            .map_err(WriteError::Mgmt)?;
         return Ok(());
     }
     let addr16 = chunk_addr as u16;
@@ -651,6 +633,96 @@ async fn write_one_chunk<Ch: L4Channel>(
     // recv_response with the wrong APDU (a "malformed response").
     l4.discard_pending_response();
     Ok(())
+}
+
+/// Checks the device's answer to an `A_MemoryExtended_Write` whose request
+/// payload (`[count][address:3][data…]`) was `request` (03_03_07
+/// §3.4.9.2.1): `E_SUCCESS` (00h) is a success, `E_SUCCESS_WITH_CRC` (01h) is
+/// a success whose CRC16-CCITT over the received count, address and data must
+/// match the one over `request`, and every other code fails with its name.
+///
+/// The footnote gives the parameters (polynomial 1021h, initial value FFFFh,
+/// nothing reflected or XORed) and calls it the System B CRC. Those
+/// parameters read as CRC-16/CCITT-FALSE, while the System B MCB CRC the
+/// devices compute is the augmented form ([`crate::load::crc16_ccitt`],
+/// checked against every flashed device). No capture of a device answering
+/// 01h exists yet, so either form is accepted; a CRC matching neither fails.
+///
+/// # Errors
+///
+/// [`MgmtError::MalformedResponse`] for an answer that is not a write
+/// response or lacks the CRC, [`MgmtError::MemoryWriteCrc`] for a CRC that
+/// differs, [`MgmtError::MemoryReturnCode`] for any other return code.
+pub(crate) fn check_extended_write_response(
+    target: bussard_model::IndividualAddress,
+    addr: u32,
+    request: &[u8],
+    resp_apci: u16,
+    data: &[u8],
+) -> std::result::Result<(), MgmtError> {
+    let resp = apci::decode_memory_extended_response(resp_apci, data).ok_or_else(|| {
+        MgmtError::MalformedResponse {
+            address: target,
+            reason: format!(
+                "expected A_MemoryExtended_Write_Response ({})",
+                raw_response_detail(resp_apci, data)
+            ),
+        }
+    })?;
+    match resp.return_code {
+        0x00 => Ok(()),
+        0x01 => {
+            let [hi, lo, ..] = resp.data[..] else {
+                return Err(MgmtError::MalformedResponse {
+                    address: target,
+                    reason: format!(
+                        "A_MemoryExtended_Write_Response with E_SUCCESS_WITH_CRC carries no CRC \
+                         ({})",
+                        raw_response_detail(resp_apci, data)
+                    ),
+                });
+            };
+            let got = u16::from_be_bytes([hi, lo]);
+            let expected = crate::load::crc16_ccitt(request);
+            if got == expected || got == crc16_ccitt_false(request) {
+                Ok(())
+            } else {
+                Err(MgmtError::MemoryWriteCrc {
+                    address: target,
+                    addr,
+                    expected,
+                    got,
+                })
+            }
+        }
+        // The return code names the failure (03_03_07 §3.4.9.2.1): an
+        // access or sizing problem is not a verify mismatch.
+        code => Err(MgmtError::MemoryReturnCode {
+            address: target,
+            service: "A_MemoryExtended_Write",
+            addr,
+            code,
+            name: crate::error::return_code_name(code),
+        }),
+    }
+}
+
+/// CRC-16/CCITT-FALSE (polynomial 1021h, initial value FFFFh, no
+/// augmentation, nothing reflected or XORed): the literal reading of the
+/// 03_03_07 §3.4.9.2.1 footnote. Check value for `"123456789"`: `0x29B1`.
+fn crc16_ccitt_false(data: &[u8]) -> u16 {
+    let mut crc: u16 = 0xFFFF;
+    for &octet in data {
+        crc ^= u16::from(octet) << 8;
+        for _ in 0..8 {
+            crc = if crc & 0x8000 != 0 {
+                (crc << 1) ^ 0x1021
+            } else {
+                crc << 1
+            };
+        }
+    }
+    crc
 }
 
 /// Computes `base + offset` as a device address, failing if it runs past the
@@ -693,5 +765,55 @@ mod tests {
         // A zero-length access is treated as one octet at `addr`.
         assert!(!select_extended_memory(0xFFFF, 0));
         assert!(select_extended_memory(0x1_0000, 0));
+    }
+
+    #[test]
+    fn test_crc16_ccitt_false_check_value() {
+        assert_eq!(crc16_ccitt_false(b"123456789"), 0x29B1);
+    }
+
+    #[test]
+    fn test_check_extended_write_response_accepts_success_with_crc()
+    -> std::result::Result<(), MgmtError> {
+        let target = bussard_model::IndividualAddress::from_raw(0x1105);
+        let (_, request) = apci::encode_memory_extended_write(0x01_60A6, &[0x11, 0x22]);
+        for crc in [
+            crate::load::crc16_ccitt(&request),
+            crc16_ccitt_false(&request),
+        ] {
+            let (resp_apci, mut data) =
+                apci::encode_memory_extended_write_response(0x01, 0x01_60A6);
+            data.extend_from_slice(&crc.to_be_bytes());
+            check_extended_write_response(target, 0x01_60A6, &request, resp_apci, &data)?;
+        }
+        let (resp_apci, data) = apci::encode_memory_extended_write_response(0x00, 0x01_60A6);
+        check_extended_write_response(target, 0x01_60A6, &request, resp_apci, &data)
+    }
+
+    #[test]
+    fn test_check_extended_write_response_refuses_a_wrong_crc() {
+        let target = bussard_model::IndividualAddress::from_raw(0x1105);
+        let (_, request) = apci::encode_memory_extended_write(0x01_60A6, &[0x11, 0x22]);
+        let (resp_apci, mut data) = apci::encode_memory_extended_write_response(0x01, 0x01_60A6);
+        let bad = crate::load::crc16_ccitt(&request) ^ 0x0101;
+        data.extend_from_slice(&bad.to_be_bytes());
+        let err = check_extended_write_response(target, 0x01_60A6, &request, resp_apci, &data);
+        assert!(
+            matches!(err, Err(MgmtError::MemoryWriteCrc { got, .. }) if got == bad),
+            "{err:?}"
+        );
+        // 01h without the CRC is malformed, any other code names itself.
+        let (resp_apci, data) = apci::encode_memory_extended_write_response(0x01, 0x01_60A6);
+        let err = check_extended_write_response(target, 0x01_60A6, &request, resp_apci, &data);
+        assert!(
+            matches!(err, Err(MgmtError::MalformedResponse { .. })),
+            "{err:?}"
+        );
+        let (resp_apci, data) = apci::encode_memory_extended_write_response(0xFC, 0x01_60A6);
+        let err = check_extended_write_response(target, 0x01_60A6, &request, resp_apci, &data);
+        assert!(
+            matches!(err, Err(MgmtError::MemoryReturnCode { code: 0xFC, .. })),
+            "{err:?}"
+        );
     }
 }

@@ -203,7 +203,6 @@ pub fn run(
     let authorize = crate::device_facts::read_only_authorize(&mut facts, target);
     let full = facts_options.full;
 
-    let fdsk = factory_key.clone();
     let runtime = tokio::runtime::Runtime::new()?;
     let (result, on_factory_key) = runtime
         .block_on(async move {
@@ -229,15 +228,10 @@ pub fn run(
             // A failed plain session (an activated device drops the plain
             // reads) counts as refused too.
             let refused = outcome.as_ref().map_or(true, walk_refused);
-            let on_factory_key = match (refused, options.tool_key.is_none(), fdsk) {
-                (true, true, Some(fdsk)) => {
-                    bussard_service::identity::answers_under_factory_key(
-                        &service, target, &options, fdsk,
-                    )
-                    .await
-                }
-                _ => false,
-            };
+            let on_factory_key = bussard_service::identity::refused_walk_answers_under_factory_key(
+                &service, target, &options, refused,
+            )
+            .await;
             service.close().await;
             match outcome {
                 Ok(o) => Ok((o, on_factory_key)),
@@ -348,13 +342,7 @@ fn walk_refused(result: &Introspection) -> bool {
 /// The error for a device that refuses plain access and answers under its
 /// factory key (issue #532).
 fn factory_key_message(target: IndividualAddress) -> String {
-    format!(
-        "{target} refuses plain management and answers a secured read under its factory key \
-         (FDSK) from the key store: its Data Secure security mode is on and no tool key is set, \
-         or it was reset to default after a commissioning. bussard does not write under the \
-         factory key. Commission it with ETS (download with security) and import the new keyring \
-         export (`bussard keys import`)"
-    )
+    bussard_service::identity::factory_key_message(target)
 }
 
 /// The error for a walk that found no interface object after the device

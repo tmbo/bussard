@@ -133,6 +133,8 @@ $ bussard secure diag 1.1.5 --clear
 | `--tool-key <HEX>` | none | A raw tool key for a test device; prefer `--keyring`. |
 | `--json` | off | Emit `address`, `cleared` and `diagnostics` (`counters`, `latest`, `report_failure`, `report_broadcast`, `notes`). |
 
+Over MCP the read is part of `knx_describe_device` and the clear is `knx_clear_security_log`, behind the same question (see [MCP tools](../mcp-tools.md)).
+
 What it reads:
 
 - the failure counters (PID 55): sequence number errors, cryptographic errors (a MAC that does not verify, a wrong or outdated key) and access errors (a group object's security flags that do not match the telegram);

@@ -68,7 +68,9 @@ On a KNX Data Secure System B device read with a tool key, `plan` and `apply` al
 - security object: Data Secure off for 1/0/4 (Licht Küche): its group key leaves the group key table (PID 53) and object 12 loses its security flag (PID 61 0x03 to 0x00)
 ```
 
-or `+ … Data Secure on for …`, with `writes.security_object` `true`. Applying it rewrites the tables and the whole security object, as a full ETS download does, and records the flags in the lock. A device that refuses or does not answer the PID 61 read shows no such change; the write still programs the whole object. `bussard flash` prints the same line from its pre-flight. See [`groups secure`](secure.md).
+or `+ … Data Secure on for …`, with `writes.security_object` `true`. Applying it rewrites the tables and the whole security object, as a full ETS download does, and records the flags in the lock. A device that refuses or does not answer the PID 61 read shows no such change; the write still programs the whole object. `bussard flash` prints the same line from its pre-flight, and `flash --json` carries it as `security_object` (`line`, `mark`, `subject`, `sentence`). See [`groups secure`](secure.md).
+
+A plan keeps the flags it read in the device facts (`.bussard/`). The next plan uses them instead of reading PID 61 when the model and the key store ask for exactly those flags, so a plan with no security change pending costs no PID 61 read. A pending change, `--refresh-facts`, every `apply` and every `flash` read the device; an `apply` or `flash` drops the kept flags.
 
 ### KNX IP interfaces
 

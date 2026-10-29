@@ -117,12 +117,14 @@ mod flash;
 mod interface;
 mod ip_secure;
 mod restore;
+mod secure_diag;
 
 /// The tools of the programming tier, in registration order.
-pub const PROGRAMMING_TOOLS: [&str; 6] = [
+pub const PROGRAMMING_TOOLS: [&str; 7] = [
     "knx_plan_device",
     "knx_apply_device",
     "knx_interface_secure",
+    "knx_clear_security_log",
     "knx_apply_status",
     "knx_last_apply",
     "knx_restore_parameters",
@@ -265,6 +267,17 @@ pub struct InterfaceSecureArgs {
     pub state: String,
     /// Omit it to get the plan and its digest; pass that digest (after the
     /// human's explicit yes) to switch.
+    #[serde(default)]
+    pub plan_digest: Option<String>,
+}
+
+/// Arguments for `knx_clear_security_log`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ClearSecurityLogArgs {
+    /// The individual address of the KNX Data Secure device, e.g. `"1.1.12"`.
+    pub address: String,
+    /// Omit it to read the log and get the question and its digest; pass
+    /// that digest (after the human's explicit yes) to clear.
     #[serde(default)]
     pub plan_digest: Option<String>,
 }
@@ -441,6 +454,35 @@ impl BussardMcp {
                 &args.state,
                 args.plan_digest.as_deref().map(str::trim),
             )
+            .await
+        {
+            Ok(value) => ok(value),
+            Err(reason) => refusal(&args.address, reason),
+        }
+    }
+
+    /// `knx_clear_security_log` (registered only with `--allow-programming`).
+    #[tool(
+        description = "Clear the KNX Data Secure security failures log (PID 55) and reset the \
+        security report of ONE device on the PHYSICAL bus (issues #533, #571), in two calls, as \
+        `bussard secure diag <ia> --clear` does after its confirmation. Without plan_digest: \
+        reads the log over A_SecureData with the device's tool key from the server's keyring \
+        (read-only) and returns `diagnostics` (the sequence, cryptographic and access error \
+        counts, the latest failure, the report), `lines`, the `question` and a plan_digest. \
+        Show the lines to the human and ask the question. With the plan_digest (ONLY after the \
+        human's explicit yes in this conversation): reads the log again, refuses if it moved, \
+        clears it, and reads it back; `cleared: true` means every counter read zero and the \
+        report clear afterwards. Clearing erases the evidence of a failed secured write: read \
+        it with knx_describe_device first if the human is still diagnosing. Refused without a \
+        tool key for the device in the server's keyring. Only available with \
+        --allow-programming."
+    )]
+    async fn knx_clear_security_log(
+        &self,
+        Parameters(args): Parameters<ClearSecurityLogArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        match self
+            .clear_security_log(&args.address, args.plan_digest.as_deref().map(str::trim))
             .await
         {
             Ok(value) => ok(value),
@@ -682,6 +724,21 @@ impl BussardMcp {
         }
         // Management calls are sequential (issue #215): this read opens its own
         // lease, so the warm connection is released first.
+        // The read budget of PID 61 (issue #336): a cached read is used when
+        // the model asks for exactly those flags (no security change pending).
+        let known_flags = tool_key
+            .is_some()
+            .then(|| {
+                let empty = HashMap::new();
+                let keys = material.group_keys.as_ref().unwrap_or(&empty);
+                let inputs =
+                    bussard_download::security_inputs_for(Some(&model), target, &desired, keys);
+                bussard_service::security_change::unchanged_cached_flags(
+                    &dir, target, &desired, &inputs, false,
+                )
+            })
+            .flatten();
+        let flags_cached = known_flags.is_some();
         let mut warm = self.warm().lock().await;
         warm.release().await;
         let (_, read) = read_device(
@@ -694,9 +751,13 @@ impl BussardMcp {
             &model,
             product.source.as_ref(),
             &tunnel,
+            known_flags,
         )
         .await?;
         drop(warm);
+        if let (false, Some(flags)) = (flags_cached, read.go_flags.as_deref()) {
+            bussard_service::security_change::remember_flags(&dir, target, flags);
+        }
         refuse_drift(target, &read)?;
         let live = &read.live;
         let tables = live.tables();
@@ -1143,8 +1204,12 @@ impl BussardMcp {
             &model,
             product.source.as_ref(),
             &tunnel,
+            None,
         )
         .await?;
+        // The apply may change the flags: the next plan reads PID 61 again
+        // instead of a cache (issue #336).
+        bussard_service::security_change::forget_flags(&dir, target);
         let live = &read.live;
         let security = security_inputs(&model, target, &desired, &material, live, &tunnel, &dir)?;
         let tables = live.tables();
@@ -2154,6 +2219,7 @@ async fn read_device(
     model: &Model,
     product: Option<&ProductSource>,
     tunnel: &[IndividualAddress],
+    known_flags: Option<Vec<u8>>,
 ) -> Result<(IndividualAddress, DeviceRead), String> {
     let source = service.checked_source(false).await.map_err(|e| chain(&e))?;
     let lease = service
@@ -2188,6 +2254,7 @@ async fn read_device(
         product,
         tunnel,
         tool_key.is_some(),
+        known_flags,
     )
     .await;
     let _ = l4.disconnect().await;
@@ -2250,6 +2317,7 @@ async fn read_property_rows(
 /// The reads of [`read_device`] on its open session; `secured` says the
 /// session rides `A_SecureData`, so the security object can be read.
 #[allow(clippy::type_complexity)] // the five reads of one session, named at the caller
+#[allow(clippy::too_many_arguments)] // one session's context, as `read_device`
 async fn read_on<Ch: bussard_mgmt::L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     target: IndividualAddress,
@@ -2258,6 +2326,7 @@ async fn read_on<Ch: bussard_mgmt::L4Channel>(
     product: Option<&ProductSource>,
     tunnel: &[IndividualAddress],
     secured: bool,
+    known_flags: Option<Vec<u8>>,
 ) -> Result<
     (
         LiveRead,
@@ -2305,6 +2374,10 @@ async fn read_on<Ch: bussard_mgmt::L4Channel>(
     // PID 61 on a Secure System B device (issue #331): a group object that
     // leaves or joins Data Secure is a plan change of its own.
     let go_flags = match &read {
+        // A plan's cached read with no security change pending (#336).
+        LiveRead::Tables(live) if secured && live.sys7().is_none() && known_flags.is_some() => {
+            known_flags
+        }
         LiveRead::Tables(live) if secured && live.sys7().is_none() => {
             // The session's last read: a device that refuses or does not
             // answer leaves the flags unknown, and the plan shows no

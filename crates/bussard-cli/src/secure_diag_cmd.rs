@@ -61,8 +61,8 @@ pub fn run(
         if !crate::confirm::confirm(
             yes,
             &format!(
-                "Clear the security failures log and reset the security report of {target}? \
-                 [y/N] "
+                "{} [y/N] ",
+                bussard_service::security_diag::clear_question(target)
             ),
             &format!("clear the security failures log of {target}"),
         )? {

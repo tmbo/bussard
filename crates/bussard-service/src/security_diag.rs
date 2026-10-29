@@ -51,6 +51,12 @@ pub async fn clear(
         .await
 }
 
+/// The confirmation question before a clear, the same words for the CLI's
+/// prompt and the MCP tool's `question` (issue #571).
+pub fn clear_question(target: IndividualAddress) -> String {
+    format!("Clear the security failures log and reset the security report of {target}?")
+}
+
 /// The sentence a secured group write without admission evidence adds
 /// (issue #533): where to look when the device ignores the telegram.
 pub fn dropped_write_hint(receivers: &[IndividualAddress]) -> String {

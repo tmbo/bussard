@@ -386,12 +386,16 @@ pub(crate) fn apply_desired(
                 let senders = plan_cmd::read_admission_table(l4, &read, &tunnel).await?;
                 // PID 61 on a secured session (issue #331): a group object
                 // that leaves or joins Data Secure is a change of its own.
-                let flags = plan_cmd::read_security_flags(l4, &read, tool_key.is_some()).await?;
+                let flags =
+                    plan_cmd::read_security_flags(l4, &read, tool_key.is_some(), None).await?;
                 anyhow::Ok((read, identified, params, senders, flags))
             })
             .await
     });
     let (read, identified, params, live_senders, live_flags) = read?;
+    // The apply may change the flags: the next plan reads PID 61 again
+    // instead of a cache (issue #336).
+    bussard_service::security_change::forget_flags(dir, target);
     let established = identified.established;
     let write_seed = crate::device_facts::seed_of(established.as_ref());
 

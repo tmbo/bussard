@@ -15,7 +15,7 @@ use crate::connection::{
     describe_object_properties, property_description_request, property_request,
     property_write_request,
 };
-use crate::error::{MgmtError, Result, raw_response_detail};
+use crate::error::{MgmtError, Result};
 
 /// A management client bound to a single device over a connection-oriented
 /// session.
@@ -330,26 +330,13 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
             if !user && crate::memory::select_extended_memory(chunk_addr, take) {
                 let (req_apci, payload) = apci::encode_memory_extended_write(chunk_addr, piece);
                 let (resp_apci, resp) = self.inner.request(req_apci, &payload).await?;
-                let parsed =
-                    apci::decode_memory_extended_response(resp_apci, &resp).ok_or_else(|| {
-                        MgmtError::MalformedResponse {
-                            address: self.inner.target(),
-                            reason: format!(
-                                "expected A_MemoryExtended_Write_Response ({})",
-                                raw_response_detail(resp_apci, &resp)
-                            ),
-                        }
-                    })?;
-                if parsed.return_code != 0 {
-                    // 03_03_07 §3.4.9.2.1: the code names the failure.
-                    return Err(MgmtError::MemoryReturnCode {
-                        address: self.inner.target(),
-                        service: "A_MemoryExtended_Write",
-                        addr: chunk_addr,
-                        code: parsed.return_code,
-                        name: crate::error::return_code_name(parsed.return_code),
-                    });
-                }
+                crate::memory::check_extended_write_response(
+                    self.inner.target(),
+                    chunk_addr,
+                    &payload,
+                    resp_apci,
+                    &resp,
+                )?;
                 offset += take;
                 continue;
             }

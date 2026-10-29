@@ -172,6 +172,7 @@ pub fn run(
         facts,
         &[],
         None,
+        None,
     )?;
     let live = match read_result {
         crate::plan_cmd::LiveRead::Tables(live) => live,

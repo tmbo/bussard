@@ -20,6 +20,16 @@
 //! the flags in the lock's com-objects, as `admission::record_secure_senders`
 //! records PID 54.
 //!
+//! The read budget (issue #336): PID 61 is the session's last read and a
+//! device that does not answer it costs a full response timeout, so a plan
+//! does not read it on every call. A plan's live read is cached in the
+//! device facts ([`remember_flags`]); the next plan uses the cache only when
+//! the model asks for exactly the flags it holds ([`unchanged_cached_flags`]),
+//! that is when no security change is pending. A pending change, a missing
+//! cache, `--refresh-facts`, every apply and every flash read the device;
+//! an apply and a flash drop the cache ([`forget_flags`]) because they may
+//! change the flags.
+//!
 //! Nothing here reads or prints key material: addresses and object numbers
 //! only.
 
@@ -320,6 +330,75 @@ fn objects_phrase(objects: &[u16]) -> String {
     }
 }
 
+/// The PID 61 flags of `target` a previous plan read (issue #336), when they
+/// show no change against what the model and the key store ask for
+/// (`desired`, `inputs`): a plan then takes them as read and skips the PID
+/// 61 read. `None`, so the device is read, when nothing is cached, the cache
+/// is unreadable, `refresh` (`--refresh-facts`) is set, or the cached flags
+/// differ from the model's (a security change is pending).
+pub fn unchanged_cached_flags(
+    dir: &std::path::Path,
+    target: IndividualAddress,
+    desired: &DesiredTables,
+    inputs: &SecurityInputs,
+    refresh: bool,
+) -> Option<Vec<u8>> {
+    if refresh {
+        return None;
+    }
+    let record = bussard_model::facts::load_facts(dir, target).ok()??;
+    let flags = from_hex(record.go_security_flags.as_deref()?)?;
+    (!SecurityObjectChange::compare(target, desired, inputs, &flags).changes()).then_some(flags)
+}
+
+/// Caches the PID 61 flags a plan read live from `target` in its device
+/// facts (issue #336). Nothing happens without a facts record (no session
+/// established facts for the device); a write failure is logged, the cache
+/// being optional.
+pub fn remember_flags(dir: &std::path::Path, target: IndividualAddress, flags: &[u8]) {
+    update_cached_flags(dir, target, Some(to_hex(flags)));
+}
+
+/// Drops the cached PID 61 flags of `target` (issue #336): an apply or a
+/// flash may change them, so the next plan reads the device again.
+pub fn forget_flags(dir: &std::path::Path, target: IndividualAddress) {
+    update_cached_flags(dir, target, None);
+}
+
+/// Sets the cached flags of `target`'s facts to `value`, writing only on a
+/// change.
+fn update_cached_flags(dir: &std::path::Path, target: IndividualAddress, value: Option<String>) {
+    let Ok(Some(mut record)) = bussard_model::facts::load_facts(dir, target) else {
+        return;
+    };
+    if record.go_security_flags == value {
+        return;
+    }
+    record.go_security_flags = value;
+    if let Err(err) = bussard_model::facts::save_facts(dir, &record) {
+        tracing::warn!("could not cache the PID 61 flags of {target}: {err}");
+    }
+}
+
+/// The flags as hex, two digits per object.
+fn to_hex(flags: &[u8]) -> String {
+    flags.iter().map(|f| format!("{f:02X}")).collect()
+}
+
+/// The flags from [`to_hex`], or `None` for a malformed value.
+fn from_hex(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|i| {
+            text.get(i..i + 2)
+                .and_then(|d| u8::from_str_radix(d, 16).ok())
+        })
+        .collect()
+}
+
 /// Why [`record_security_flags`] could not update the lock.
 #[derive(Debug, thiserror::Error)]
 pub enum RecordFlagsError {
@@ -517,6 +596,28 @@ mod tests {
             plan.state_hash
         );
         assert_eq!(plan.changes.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_cached_flags_hex_roundtrips() {
+        let flags = vec![0x00, 0x03, 0x00, 0xFF];
+        assert_eq!(to_hex(&flags), "000300FF");
+        assert_eq!(from_hex(&to_hex(&flags)), Some(flags));
+        assert_eq!(from_hex("0"), None);
+        assert_eq!(from_hex("0G"), None);
+    }
+
+    #[test]
+    fn test_unchanged_cached_flags_without_a_cache_reads_the_device() -> TestResult {
+        // No facts record: nothing cached, the plan reads PID 61.
+        let dir = std::env::temp_dir().join(format!("bussard-pid61-{}", std::process::id()));
+        let desired = desired()?;
+        let inputs = SecurityInputs::default();
+        assert_eq!(
+            unchanged_cached_flags(&dir, ia("1.1.5")?, &desired, &inputs, false),
+            None
+        );
         Ok(())
     }
 }

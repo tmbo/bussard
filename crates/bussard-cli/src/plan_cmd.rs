@@ -118,12 +118,18 @@ pub(crate) async fn read_admission_table<Ch: L4Channel>(
 /// last read. `None` when it is not read, or the device refuses or does not
 /// answer the read: the flags are then unknown and the plan shows no
 /// security-object change (the write still programs the whole object).
+///
+/// `known` is a plan's cached read that shows no pending security change
+/// ([`bussard_service::security_change::unchanged_cached_flags`], issue
+/// #336): it is returned instead of reading the device.
 pub(crate) async fn read_security_flags<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     read: &LiveRead,
     secured: bool,
+    known: Option<Vec<u8>>,
 ) -> anyhow::Result<Option<Vec<u8>>> {
     match read {
+        LiveRead::Tables(live) if secured && live.sys7().is_none() && known.is_some() => Ok(known),
         LiveRead::Tables(live) if secured && live.sys7().is_none() => {
             match bussard_download::read_security_flags(l4).await {
                 Ok(flags) => Ok(flags),
@@ -238,6 +244,7 @@ pub(crate) fn read_device(
     mut facts: bussard_service::FactsCache,
     tunnel: &[IndividualAddress],
     properties: Option<&bussard_download::FlashPlan>,
+    known_flags: Option<Vec<u8>>,
 ) -> anyhow::Result<DeviceRead> {
     let activated = crate::secure_key::model_activated(model, target);
     let (tool_key, factory_key) =
@@ -298,7 +305,8 @@ pub(crate) fn read_device(
                     // PID 54, for `admit_tunnel_senders` only (issue #297).
                     let senders = read_admission_table(l4, &read, tunnel).await?;
                     // PID 61 on a secured session (issue #331).
-                    let flags = read_security_flags(l4, &read, presented_tool_key).await?;
+                    let flags =
+                        read_security_flags(l4, &read, presented_tool_key, known_flags).await?;
                     // A property-only procedure (issue #390): no table reader
                     // speaks the mask, the properties it writes are the plan.
                     let rows = match (&read, properties) {
@@ -419,6 +427,27 @@ pub fn run(
     )?;
     let secured = material.tool_key.is_some();
     let tunnel = crate::secure_key::admitted_tunnel(Some(model_ref), tool_key_source, secured)?;
+    // The read budget of PID 61 (issue #336): a cached read is used when the
+    // model asks for exactly those flags, so no security change is pending.
+    let empty_keys = std::collections::HashMap::new();
+    let security_inputs = bussard_download::security_inputs_for(
+        Some(model_ref),
+        target,
+        &desired,
+        material.group_keys.as_ref().unwrap_or(&empty_keys),
+    );
+    let known_flags = secured
+        .then(|| {
+            bussard_service::security_change::unchanged_cached_flags(
+                dir,
+                target,
+                &desired,
+                &security_inputs,
+                overrides.refresh_facts,
+            )
+        })
+        .flatten();
+    let flags_cached = known_flags.is_some();
     let (read, params, identity, live_senders, live_flags, property_rows) = read_device(
         config,
         target,
@@ -429,7 +458,11 @@ pub fn run(
         crate::device_facts::cache(dir, true, overrides.refresh_facts),
         &tunnel,
         properties.as_ref(),
+        known_flags,
     )?;
+    if let (false, Some(flags)) = (flags_cached, live_flags.as_deref()) {
+        bussard_service::security_change::remember_flags(dir, target, flags);
+    }
     let live_tables = match read {
         LiveRead::Tables(live) => live,
         LiveRead::UnsupportedMask { address, mask } => {

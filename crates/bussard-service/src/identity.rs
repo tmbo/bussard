@@ -146,6 +146,43 @@ pub async fn answers_under_factory_key(
         .is_some()
 }
 
+/// The FDSK fallback of a describe whose plain walk was refused (issue
+/// #532), the one decision `bussard describe` and the MCP
+/// `knx_describe_device` share (issue #571): with `refused` set, no tool key
+/// in `options` and the device's FDSK in `options.factory_key`, whether the
+/// device answers a secured descriptor read under that factory key
+/// ([`answers_under_factory_key`]). `false` without a probe otherwise.
+/// Read-only.
+pub async fn refused_walk_answers_under_factory_key(
+    service: &BusService,
+    address: IndividualAddress,
+    options: &L4Options,
+    refused: bool,
+) -> bool {
+    match (
+        refused,
+        options.tool_key.is_none(),
+        options.factory_key.clone(),
+    ) {
+        (true, true, Some(fdsk)) => {
+            answers_under_factory_key(service, address, options, fdsk).await
+        }
+        _ => false,
+    }
+}
+
+/// The error for a device that refuses plain access and answers under its
+/// factory key (issue #532), worded once for the CLI and the MCP tier.
+pub fn factory_key_message(target: IndividualAddress) -> String {
+    format!(
+        "{target} refuses plain management and answers a secured read under its factory key \
+         (FDSK) from the key store: its Data Secure security mode is on and no tool key is set, \
+         or it was reset to default after a commissioning. bussard does not write under the \
+         factory key. Commission it with ETS (download with security) and import the new keyring \
+         export (`bussard keys import`)"
+    )
+}
+
 /// Why [`probe_classified`] found no identity at an address (issue #45).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeMiss {

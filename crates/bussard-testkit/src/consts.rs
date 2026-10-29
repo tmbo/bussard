@@ -128,3 +128,22 @@ pub const SUB_REL_SEGMENT: u8 = 0x0B;
 
 /// The tunnel individual address every mock CONNECT_RESPONSE hands out (1.1.255).
 pub const TUNNEL_IA_RAW: u16 = 0x11FF;
+
+/// The System B CRC-16 (polynomial 1021h, register FFFFh, sixteen zero bits
+/// appended), the form a System B device computes over a segment for its MCB
+/// and that the mock returns with `E_SUCCESS_WITH_CRC` (03_03_07 §3.4.9.2.1).
+/// Kept here so the mocks do not depend on the crate under test.
+pub fn crc16_system_b(data: &[u8]) -> u16 {
+    let mut register: u32 = 0xFFFF;
+    let bits = 8 * (data.len() + 2);
+    for i in 0..bits {
+        register <<= 1;
+        if let Some(octet) = data.get(i / 8) {
+            register |= u32::from((octet >> (7 - (i % 8))) & 1);
+        }
+        if register & 0x1_0000 != 0 {
+            register ^= 0x1021;
+        }
+    }
+    (register & 0xFFFF) as u16
+}

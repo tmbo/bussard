@@ -95,6 +95,13 @@ pub struct DeviceFactsRecord {
     /// a command reusing these facts does not probe again.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub no_knxnet: bool,
+    /// The group-object security flags (PID 61 of the security object, one
+    /// octet per object, element 1 first) as a plan last read them, as hex
+    /// (issue #336). A plan whose model asks for exactly these flags uses
+    /// them instead of reading PID 61 again; any other plan, every apply and
+    /// every flash read the device. An apply or flash drops the value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub go_security_flags: Option<String>,
 }
 
 /// How a device answered `A_Authorize_Request`.
@@ -319,6 +326,7 @@ mod tests {
             application_id: Some(format_application_id(&[0x00, 0x04, 0xD1, 0x42, 0x21])),
             max_apdu: Some(233),
             authorize: Some(AuthorizeVerdict::Granted),
+            go_security_flags: None,
             object_table_source: ObjectTableSource::IoList,
             objects: vec![
                 ObjectFacts {

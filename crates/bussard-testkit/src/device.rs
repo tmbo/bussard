@@ -257,6 +257,38 @@ pub struct MockDevice {
     hook: Option<Hook>,
     control_hook: Option<ControlHook>,
     data_secure: Option<Arc<Mutex<DataSecureSession>>>,
+    /// How `A_MemoryExtended_Write` is confirmed (issue #575).
+    pub ext_write_confirmation: ExtWriteConfirmation,
+    /// The transport-layer connection timeout this device runs (03_03_04 §5,
+    /// E16), `None` for none (the default, every older test). See
+    /// [`MockDevice::with_connection_timeout`].
+    pub connection_timeout: Option<Duration>,
+    /// When the device last saw a frame of its connection, for
+    /// [`Self::connection_timeout`].
+    pub last_traffic: Option<std::time::Instant>,
+    /// How many further `S-A_Sync_Req`s the device acknowledges and drops,
+    /// as a device whose security layer is not up yet after a restart does
+    /// (issue #166). Counts down with every dropped request.
+    pub drop_sync_requests: usize,
+    /// How many numbered data telegrams arrived after the connection timed
+    /// out and were answered with `T_Disconnect` (03_03_04 §5.4.3, CLOSED,
+    /// A10).
+    pub timed_out_requests: usize,
+}
+
+/// How a [`MockDevice`] confirms an `A_MemoryExtended_Write` (03_03_07
+/// §3.4.9.2.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExtWriteConfirmation {
+    /// `E_SUCCESS` (00h), the address and nothing else.
+    #[default]
+    Success,
+    /// `E_SUCCESS_WITH_CRC` (01h) with the CRC16-CCITT over the received
+    /// count, address and data, in the System B form.
+    SuccessWithCrc,
+    /// `E_SUCCESS_WITH_CRC` (01h) with a CRC that does not match: a chunk
+    /// that arrived damaged.
+    SuccessWithWrongCrc,
 }
 
 impl fmt::Debug for MockDevice {
@@ -586,6 +618,11 @@ impl MockDevice {
             hook: None,
             control_hook: None,
             data_secure: None,
+            ext_write_confirmation: ExtWriteConfirmation::Success,
+            connection_timeout: None,
+            last_traffic: None,
+            drop_sync_requests: 0,
+            timed_out_requests: 0,
         }
     }
 
@@ -815,6 +852,41 @@ impl MockDevice {
         self.data_secure = Some(Arc::new(Mutex::new(DataSecureSession::new(Key16::new(
             tool_key,
         )))));
+        self
+    }
+
+    /// Confirms `A_MemoryExtended_Write` as `confirmation` says (issue #575).
+    pub fn with_ext_write_confirmation(mut self, confirmation: ExtWriteConfirmation) -> Self {
+        self.ext_write_confirmation = confirmation;
+        self
+    }
+
+    /// Runs a transport-layer connection timeout of `timeout` (03_03_04 §5,
+    /// 6 s on a real device): a connection that saw no frame for that long is
+    /// closed, and the next numbered data telegram that arrives without a new
+    /// `T_Connect` is answered with `T_Disconnect` and not processed (CLOSED,
+    /// A10), as the Style 3 server of knx-sim does.
+    pub fn with_connection_timeout(mut self, timeout: Duration) -> Self {
+        self.connection_timeout = Some(timeout);
+        self
+    }
+
+    /// Whether the connection timed out before the frame now arriving, and
+    /// restarts the timer. A device without a connection timeout never does.
+    pub fn connection_timed_out(&mut self) -> bool {
+        let now = std::time::Instant::now();
+        let last = self.last_traffic.replace(now);
+        match (self.connection_timeout, last) {
+            (Some(timeout), Some(last)) => now.duration_since(last) >= timeout,
+            _ => false,
+        }
+    }
+
+    /// Acknowledges and drops the first `count` `S-A_Sync_Req`s, as a Data
+    /// Secure device does while its security layer comes up after a restart
+    /// (issue #166).
+    pub fn with_dropped_sync_requests(mut self, count: usize) -> Self {
+        self.drop_sync_requests = count;
         self
     }
 
@@ -1049,6 +1121,10 @@ impl MockDevice {
             Err(poisoned) => poisoned.into_inner(),
         };
         if data.first() == Some(&SCF_SYNC_REQ) {
+            if self.drop_sync_requests > 0 {
+                self.drop_sync_requests -= 1;
+                return Reaction::Ack;
+            }
             // A Sync_Req under another key does not verify: the transport
             // layer acknowledges it, the security layer drops it (the shape
             // `AsduError::SyncUnanswered` describes, issue #532).
@@ -1241,10 +1317,19 @@ impl MockDevice {
         if data.len() < 4 + count || !self.write_mem(addr, &data[4..4 + count]) {
             return Reaction::Nak;
         }
-        Reaction::Answer(
-            A_MEMORY_EXTENDED_WRITE_RESPONSE,
-            vec![0x00, data[1], data[2], data[3]],
-        )
+        let request = &data[..4 + count];
+        let answer = match self.ext_write_confirmation {
+            ExtWriteConfirmation::Success => vec![0x00, data[1], data[2], data[3]],
+            ExtWriteConfirmation::SuccessWithCrc | ExtWriteConfirmation::SuccessWithWrongCrc => {
+                let mut crc = crate::consts::crc16_system_b(request);
+                if self.ext_write_confirmation == ExtWriteConfirmation::SuccessWithWrongCrc {
+                    crc ^= 0x0101;
+                }
+                let [hi, lo] = crc.to_be_bytes();
+                vec![0x01, data[1], data[2], data[3], hi, lo]
+            }
+        };
+        Reaction::Answer(A_MEMORY_EXTENDED_WRITE_RESPONSE, answer)
     }
 
     /// The extended property `object_type`/`pid` of instance 1: the shared

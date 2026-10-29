@@ -416,6 +416,11 @@ jobs:
           BUSSARD_KNX_SIM_BIN="$PWD/knx-sim/target/debug/serve" \
             cargo nextest run -p bussard-cli --profile ci \
             -E 'binary(it) & test(/^sim_interface_(loop|secure)::/)'
+          # The transport connection timeout against the Style 3 sim
+          # (issue #575): an idle management connection reconnects.
+          BUSSARD_KNX_SIM_BIN="$PWD/knx-sim/target/debug/serve" \
+            cargo nextest run -p bussard-mgmt --profile ci \
+            -E 'binary(it) & test(/^sim_tl_idle::/)'
 
       # The bussard side: the mock-gateway flash suites that the example scripts
       # exercise for real against the simulator. Named explicitly (rather than

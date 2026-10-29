@@ -41,7 +41,14 @@
 //!
 //! Both sides run a 6 s connection timeout ([`CONNECTION_TIMEOUT`], 03_03_04
 //! §5 local variables, E16): a device closes a connection that saw no traffic
-//! for 6 s. No idle heartbeat is sent; a caller that pauses longer reconnects.
+//! for 6 s. No idle heartbeat is sent. A request after a longer pause first
+//! reconnects (issue #575): the device's `T_Disconnect` from the timeout is
+//! drained, a `T_Disconnect` (for a device whose timer has not fired yet) and
+//! a fresh `T_Connect` go out, both sequence numbers restart at 0, and an
+//! `A_Authorize_Request` presented on the connection is presented again, so
+//! the access level the caller established carries over. A Data Secure
+//! session keeps its sync: the sequence numbers it protects are per address,
+//! not per transport connection.
 //!
 //! The control frames go out at system priority (§5.3 A2-A4, A6); the numbered
 //! data telegrams at [`Layer4Connection::data_priority`].
@@ -233,6 +240,16 @@ pub const MAX_REPETITIONS: u32 = 3;
 /// caller that its peer has most likely done so.
 pub const CONNECTION_TIMEOUT: Duration = Duration::from_secs(6);
 
+/// How many queued frames [`Layer4Connection`] drains before an idle reconnect
+/// (issue #575): the device's timeout `T_Disconnect` and whatever else the
+/// line carried meanwhile. Bounded so a busy line cannot stall the reconnect.
+const IDLE_DRAIN_FRAMES: usize = 64;
+
+/// How long the drain before an idle reconnect waits for each further frame.
+/// Every frame of interest was sent at least a connection timeout ago, so
+/// this only has to outlast the gateway's delivery of one queued datagram.
+const IDLE_DRAIN_WAIT: Duration = Duration::from_millis(20);
+
 /// How long to wait for a device's response telegram (an incoming NDT) after
 /// our request has been acknowledged, before concluding the device will not
 /// answer.
@@ -372,25 +389,42 @@ impl Default for SyncRetry {
         SyncRetry {
             attempts: 3,
             initial_backoff: Duration::from_secs(1),
-            max_backoff: Duration::from_secs(4),
+            max_backoff: MAX_SYNC_BACKOFF,
         }
         .with_env_cap()
     }
 }
 
+/// The longest pause between two S-A_Sync_Req attempts (issue #575). An
+/// unanswered attempt idles the connection for the response timeout (3 s)
+/// and then the backoff; with at most 2 s the pause stays a second inside the
+/// device's 6 s connection timeout ([`CONNECTION_TIMEOUT`], 03_03_04 §5,
+/// E16), so the retry reaches the device on the connection it synced on.
+/// The sync loop also bounds every backoff by the connection's own timeouts.
+pub const MAX_SYNC_BACKOFF: Duration = Duration::from_secs(2);
+
+/// The headroom the sync loop keeps below the connection timeout: the
+/// response timeout plus the backoff never come closer to it than this.
+const SYNC_IDLE_MARGIN: Duration = Duration::from_secs(1);
+
 impl SyncRetry {
     /// The longer policy for the first connection after a restart bussard
-    /// itself triggered: five attempts, backing off 1, 2, 4 and 8 s. With the
-    /// standard 3 s response timeout the whole sync gives the device about 30 s
-    /// to bring its security layer up.
+    /// itself triggered: seven attempts, backing off 1 s, then 2 s
+    /// ([`MAX_SYNC_BACKOFF`]) five times. With the standard 3 s response
+    /// timeout the whole sync gives the device about 32 s to bring its
+    /// security layer up, the window the earlier 1-2-4-8 s schedule of five
+    /// attempts gave (30 s, live 1.1.12, 2026-09-24), without a pause the
+    /// device's 6 s connection timeout ends (issue #575): an unanswered
+    /// attempt leaves the connection idle for the response timeout plus the
+    /// backoff, at most 5 s.
     ///
     /// [`MGMT_TIMEOUT_MS_ENV`] caps both backoff bounds when set; the attempt
-    /// count stays five.
+    /// count stays seven.
     pub fn after_restart() -> Self {
         SyncRetry {
-            attempts: 5,
+            attempts: 7,
             initial_backoff: Duration::from_secs(1),
-            max_backoff: Duration::from_secs(8),
+            max_backoff: MAX_SYNC_BACKOFF,
         }
         .with_env_cap()
     }
@@ -481,6 +515,15 @@ pub struct Layer4Connection<Ch: L4Channel> {
     /// When a frame last went to or came from the peer, for the 6 s
     /// [`CONNECTION_TIMEOUT`].
     last_traffic: Instant,
+    /// The connection timeout the peer is assumed to run:
+    /// [`CONNECTION_TIMEOUT`] unless a test shortens it.
+    connection_timeout: Duration,
+    /// How often this connection reconnected after idling past
+    /// [`Self::connection_timeout`] (issue #575).
+    idle_reconnects: u32,
+    /// The key the last [`authorize`](Self::authorize) presented, presented
+    /// again after an idle reconnect.
+    authorize_key: Option<u32>,
     /// The KNX Data Secure wrapping layer (issue #71, spec §6.1). Plain by
     /// default (`SecureLayer::plain()`), so the send/receive paths are
     /// byte-identical to the pre-Secure behaviour; when the device is
@@ -616,6 +659,9 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
             sync_retry: SyncRetry::default(),
             seed: None,
             last_authorize: None,
+            connection_timeout: CONNECTION_TIMEOUT,
+            idle_reconnects: 0,
+            authorize_key: None,
             data_priority: Priority::System,
             user_memory_above_64k: false,
         })
@@ -688,6 +734,9 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
                 address: self.target,
             });
         }
+        if self.idle_beyond_connection_timeout() {
+            self.reconnect_after_idle().await?;
+        }
         self.ensure_secure_sync().await?;
         self.last_send_apci = apci;
         let seq = self.send_seq;
@@ -714,14 +763,6 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
             CemiFrame::t_data_connected(self.target, self.source, tpci_octet, wire_apci, wire_data)
                 .with_priority(self.data_priority);
 
-        if self.idle_beyond_connection_timeout() {
-            tracing::debug!(
-                target = %self.target,
-                idle_ms = u64::try_from(self.last_traffic.elapsed().as_millis()).unwrap_or(u64::MAX),
-                "no traffic for longer than the 6 s transport connection timeout; \
-                 the device has most likely closed the connection (03_03_04 §5, E16)"
-            );
-        }
         let mut attempt = 0;
         loop {
             self.conn.send(frame.clone()).await?;
@@ -869,8 +910,13 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
                 backoff_ms = u64::try_from(backoff.as_millis()).unwrap_or(u64::MAX),
                 "Data Secure sync request unanswered; retrying"
             );
-            tokio::time::sleep(backoff).await;
+            tokio::time::sleep(backoff.min(self.sync_backoff_bound())).await;
             backoff = backoff.saturating_mul(2).min(self.sync_retry.max_backoff);
+            // A pause the bound could not keep inside the connection timeout
+            // (a response timeout near it) reconnects before the next attempt.
+            if self.idle_beyond_connection_timeout() {
+                self.reconnect_after_idle().await?;
+            }
         }
         // Issue #532: the tool would "typically retry" under the other key
         // (KNX 3/5/2 §4.1 NOTE 18). One fresh Sync under the FDSK finds a
@@ -1241,6 +1287,7 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
     /// device declining to answer) still surfaces as an `Err`, since that is not
     /// an authorize outcome but a dead session.
     pub async fn authorize(&mut self, key: u32) -> Result<AuthorizeOutcome> {
+        self.authorize_key = Some(key);
         let outcome = self.authorize_exchange(key).await?;
         self.last_authorize = Some(outcome.clone());
         Ok(outcome)
@@ -1694,7 +1741,97 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
     /// closed it on its side (03_03_04 §5.4.3 E16, A6) and answers the next
     /// numbered telegram with nothing or a `T_Disconnect`.
     pub fn idle_beyond_connection_timeout(&self) -> bool {
-        self.peer_open && self.last_traffic.elapsed() >= CONNECTION_TIMEOUT
+        self.peer_open && self.last_traffic.elapsed() >= self.connection_timeout
+    }
+
+    /// The longest backoff between two S-A_Sync_Req attempts that keeps the
+    /// connection inside its timeout: the connection timeout less the response
+    /// timeout the unanswered attempt already waited and a margin (issue #575).
+    fn sync_backoff_bound(&self) -> Duration {
+        self.connection_timeout
+            .saturating_sub(self.timeouts.response_timeout)
+            .saturating_sub(SYNC_IDLE_MARGIN)
+    }
+
+    /// Sets the connection timeout the peer is assumed to run
+    /// ([`CONNECTION_TIMEOUT`] by default), so a mock-device test with a
+    /// shortened device timeout does not idle for whole seconds.
+    pub fn set_connection_timeout(&mut self, timeout: Duration) {
+        self.connection_timeout = timeout;
+    }
+
+    /// How often this connection reconnected after idling past the connection
+    /// timeout (issue #575).
+    pub fn idle_reconnects(&self) -> u32 {
+        self.idle_reconnects
+    }
+
+    /// Re-opens a connection that idled past the connection timeout (03_03_04
+    /// §5, E16; issue #575). The device has closed it (A6) and would answer
+    /// the next numbered telegram with `T_Disconnect` (CLOSED, A10), so the
+    /// request that follows runs on a fresh connection instead:
+    ///
+    /// 1. the frames that arrived while idle are drained, the device's
+    ///    timeout `T_Disconnect` among them, so it does not end the new
+    ///    connection;
+    /// 2. one `T_Disconnect` closes the connection on a device whose timer
+    ///    has not fired yet (a repeated `T_Connect` would be ignored there,
+    ///    E00 in OPEN_IDLE, and the sequence numbers would disagree), then a
+    ///    `T_Connect` opens the new one; both sequence numbers restart at 0;
+    /// 3. a key presented with [`authorize`](Self::authorize) is presented
+    ///    again: the access level belongs to the connection. A denial fails
+    ///    with [`MgmtError::AccessDenied`].
+    ///
+    /// The Data Secure layer keeps its sync and sequence numbers, which the
+    /// device tracks per address (KNX 3/5/1 §6.3), not per connection.
+    async fn reconnect_after_idle(&mut self) -> Result<()> {
+        let idle = self.last_traffic.elapsed();
+        tracing::info!(
+            target = %self.target,
+            idle_ms = u64::try_from(idle.as_millis()).unwrap_or(u64::MAX),
+            "no traffic for longer than the transport connection timeout; the device has closed \
+             the connection (03_03_04 §5, E16): reconnecting"
+        );
+        // A frame the device sent while we idled is already queued; waiting a
+        // short while per frame also catches one still in flight.
+        for _ in 0..IDLE_DRAIN_FRAMES {
+            match timeout(IDLE_DRAIN_WAIT, self.conn.recv()).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(_)) | Err(_) => break,
+            }
+        }
+        self.conn
+            .send(CemiFrame::t_control(
+                self.target,
+                self.source,
+                tpci::T_DISCONNECT,
+            ))
+            .await?;
+        self.conn
+            .send(CemiFrame::t_control(
+                self.target,
+                self.source,
+                tpci::T_CONNECT,
+            ))
+            .await?;
+        self.send_seq = 0;
+        self.recv_seq = 0;
+        self.pending_response = None;
+        self.peer_open = false;
+        self.closed = false;
+        self.last_traffic = Instant::now();
+        self.idle_reconnects = self.idle_reconnects.saturating_add(1);
+        if let Some(key) = self.authorize_key {
+            // Boxed: `authorize` sends through `send_data`, which called us.
+            let outcome = Box::pin(self.authorize(key)).await?;
+            if let AuthorizeOutcome::Denied { level } = outcome {
+                return Err(MgmtError::AccessDenied {
+                    address: self.target,
+                    level,
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Answers a numbered data telegram whose sequence is not the expected

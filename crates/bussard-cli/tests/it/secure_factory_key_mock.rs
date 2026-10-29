@@ -148,3 +148,46 @@ fn test_describe_tries_the_factory_key_before_asking_for_a_keyring() -> TestResu
     assert!(!stderr.contains("--keyring <file.knxkeys>"), "{stderr}");
     Ok(())
 }
+
+/// Issue #571: `knx_describe_device` takes the same FDSK fallback as
+/// `bussard describe` (the shared service function): a device without a tool
+/// key that refuses the plain walk and answers under its FDSK is named, with
+/// `factory_key: true`, instead of an empty object list.
+#[test]
+fn test_mcp_describe_tries_the_factory_key_like_the_cli() -> TestResult {
+    let dir = model_dir("mcp-converse", false, None)?;
+    let rt = tokio::runtime::Runtime::new()?;
+    let gw = rt.block_on(
+        MockGateway::builder()
+            .channel(0x5C)
+            .idle_timeout(Duration::from_secs(60))
+            .keep_serving()
+            .device(MockDevice::system_b(ia("1.1.10")?).with_data_secure(FDSK))
+            .start(),
+    )?;
+    let described = (|| {
+        let mut server = crate::mcp_stdio_client::McpServer::start(
+            &dir,
+            gw.port(),
+            &KeyStore::path(&dir),
+            PASSWORD,
+            &["--no-model-edits"],
+        )?;
+        server.call_when_connected(
+            "knx_describe_device",
+            serde_json::json!({"address": "1.1.10"}),
+            50,
+        )
+    })();
+    drop(gw);
+    let _ = std::fs::remove_dir_all(&dir);
+    let described = described?;
+    assert_eq!(described["ok"], false, "{described}");
+    assert_eq!(described["factory_key"], true, "{described}");
+    let reason = described["reason"].as_str().unwrap_or_default();
+    assert!(
+        reason.contains("answers a secured read under its factory key (FDSK)"),
+        "{described}"
+    );
+    Ok(())
+}

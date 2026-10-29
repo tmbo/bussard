@@ -593,6 +593,9 @@ pub fn run(
 
     let (connected, device_mask, resident, facts, current, preread, (sys7, live_flags), kept) =
         probe;
+    // A flash rewrites the security object: the next plan reads PID 61 again
+    // instead of a cache (issue #336).
+    bussard_service::security_change::forget_flags(dir, target);
     if let Some(l4) = kept {
         handover.keep(l4);
     }
@@ -697,7 +700,8 @@ pub fn run(
     };
     // A group address that leaves or joins Data Secure (issue #331): the
     // security program against the PID 61 the pre-flight read.
-    if let Some(line) = live_flags.as_deref().and_then(|flags| {
+    // `--json` carries the same line as `security_object` (issue #336).
+    let security_change = live_flags.as_deref().and_then(|flags| {
         let links = model
             .as_ref()
             .and_then(|m| m.links.links.get(&target))
@@ -705,8 +709,8 @@ pub fn run(
             .unwrap_or(&[]);
         bussard_service::security_change::from_flash_plan(target, &plan, links, flags)
             .and_then(|change| change.change(model.as_ref()))
-    }) && !output.json
-    {
+    });
+    if let (Some(line), false) = (&security_change, output.json) {
         println!("{}", line.line());
     }
 
@@ -740,7 +744,13 @@ pub fn run(
     let preflight_elapsed = preflight_started.elapsed();
 
     if output.json {
-        print_plan_json(target, device_mask, &plan, &params)?;
+        print_plan_json(
+            target,
+            device_mask,
+            &plan,
+            &params,
+            security_change.as_ref(),
+        )?;
     } else {
         print_plan(
             target,
@@ -1055,7 +1065,7 @@ fn dry_run(
         param_plan(app, overrides_map, base_offsets, &CurrentMemory::new())
     };
     if output.json {
-        print_plan_json(target, device_mask, &plan, &params)?;
+        print_plan_json(target, device_mask, &plan, &params, None)?;
     } else {
         print_plan(
             target,
@@ -1406,13 +1416,31 @@ fn print_param_plan(params: &ParamPlan) {
     }
 }
 
-/// Emits the pre-flight as JSON, including the `parameters` array (issue #109).
+/// Emits the pre-flight as JSON, including the `parameters` array (issue #109)
+/// and, when the pre-flight read PID 61 and a group address leaves or joins
+/// Data Secure, the `security_object` change the text output prints (issue
+/// #336): `line` as printed (`- security object: Data Secure off for …`),
+/// with its `mark`, `subject` and `sentence`.
 fn print_plan_json(
     target: IndividualAddress,
     device_mask: u16,
     plan: &FlashPlan,
     params: &ParamPlan,
+    security_change: Option<&bussard_download::PlanChange>,
 ) -> anyhow::Result<()> {
+    let value = plan_json(target, device_mask, plan, params, security_change);
+    crate::output::print(crate::output::schema::FLASH, &value)?;
+    Ok(())
+}
+
+/// The document [`print_plan_json`] prints.
+fn plan_json(
+    target: IndividualAddress,
+    device_mask: u16,
+    plan: &FlashPlan,
+    params: &ParamPlan,
+    security_change: Option<&bussard_download::PlanChange>,
+) -> serde_json::Value {
     let parameters: Vec<serde_json::Value> = params
         .changes
         .iter()
@@ -1432,7 +1460,7 @@ fn print_plan_json(
             })
         })
         .collect();
-    let value = serde_json::json!({
+    serde_json::json!({
         "device": target.to_string(),
         "device_mask": format!("{device_mask:04X}"),
         "application": {
@@ -1444,6 +1472,11 @@ fn print_plan_json(
         },
         "parameters": parameters,
         "parameter_note": params.note,
+        "security_object": security_change.map(|change| {
+            let mut value = serde_json::json!(change);
+            value["line"] = serde_json::Value::String(change.line());
+            value
+        }),
         "memory": {
             "write_bytes": plan.total_write_bytes(),
             "steps": plan.steps.len(),
@@ -1451,9 +1484,7 @@ fn print_plan_json(
             "estimated_seconds": plan.estimated_duration().as_secs_f64(),
         },
         "procedure": trace(plan),
-    });
-    crate::output::print(crate::output::schema::FLASH, &value)?;
-    Ok(())
+    })
 }
 
 fn print_plan(
@@ -2313,5 +2344,45 @@ mod tests {
             decision.message
         );
         assert!(decision.prompt_note.is_some());
+    }
+
+    #[test]
+    fn test_plan_json_carries_the_security_object_line() -> Result<(), Box<dyn std::error::Error>> {
+        // Issue #336: `flash --json` carries the "Data Secure off for <GA>"
+        // line the text output prints from the pre-flight PID 61 read.
+        let plan = bussard_download::plan_flash(
+            &app("M-0083_A-0001-01-0001"),
+            "1.1.10",
+            0x07B0,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )?;
+        let change = bussard_download::PlanChange {
+            mark: bussard_download::ChangeMark::Removed,
+            subject: bussard_download::ChangeSubject::Security,
+            channel: None,
+            key: "security object".to_string(),
+            object: None,
+            sentence: "security object: Data Secure off for 1/2/3 (Level): its group key leaves \
+                       the group key table (PID 53) and object 22 loses its security flag (PID \
+                       61 0x03 to 0x00)"
+                .to_string(),
+        };
+        let target: IndividualAddress = "1.1.10".parse()?;
+        let params = ParamPlan::default();
+        let with = plan_json(target, 0x07B0, &plan, &params, Some(&change));
+        assert_eq!(with["security_object"]["line"], change.line());
+        assert!(
+            with["security_object"]["line"]
+                .as_str()
+                .is_some_and(|l| l.starts_with("- security object: Data Secure off for 1/2/3")),
+            "{with}"
+        );
+        assert_eq!(with["security_object"]["subject"], "security");
+        let without = plan_json(target, 0x07B0, &plan, &params, None);
+        assert!(without["security_object"].is_null(), "{without}");
+        Ok(())
     }
 }

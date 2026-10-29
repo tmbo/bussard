@@ -41,6 +41,7 @@ mod mcp_ha_stdio;
 mod mcp_parameters_mock;
 mod mcp_secure_mock;
 mod mcp_stdio;
+mod mcp_stdio_client;
 mod offline_oracle;
 mod plan_mock;
 mod plan_property_mock;

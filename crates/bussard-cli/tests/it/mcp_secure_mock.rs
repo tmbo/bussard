@@ -166,6 +166,9 @@ struct SecurityLog {
     /// The group-object security flags (PID 61) the device holds, one octet
     /// per group object, as the writes leave it (issue #331).
     pid61: Vec<u8>,
+    /// How many times PID 61 was read (its element count, the first read of
+    /// every table read; issue #336).
+    pid61_reads: usize,
     /// The group key table's (PID 53) element count, as the writes leave it
     /// (the keys themselves are write-only, issue #349).
     pid53: u16,
@@ -361,9 +364,10 @@ fn secure_device_with(
                     // holds (issue #331).
                     let count = *data.get(5)?;
                     let start = u16::from_be_bytes([*data.get(6)?, *data.get(7)?]);
-                    let log = log.lock().ok()?;
+                    let mut log = log.lock().ok()?;
                     let mut out = header;
                     if start == 0 {
+                        log.pid61_reads += 1;
                         out.extend_from_slice(&[1, 0, 0]);
                         out.extend_from_slice(&GO_COUNT.to_be_bytes());
                     } else {
@@ -1044,10 +1048,24 @@ fn test_mcp_unsecure_a_group_address_end_to_end() -> TestResult {
         &store_path,
     )?;
 
+    let pid61_reads =
+        || -> TestResult<usize> { Ok(log.lock().map_err(|_| "log poisoned")?.pid61_reads) };
+
     // The device already runs the model: both GAs secured.
     let plan = plan_when_connected(&mut server, "1.1.10")?;
     assert_eq!(plan["ok"], true, "plan: {plan}");
     assert_eq!(plan["noop"], true, "plan: {plan}");
+    assert_eq!(pid61_reads()?, 1, "the first plan reads PID 61");
+    // The read budget (issue #336): no security change pending, so a second
+    // plan takes the cached read and does not read PID 61 again.
+    let again = server.call("knx_plan_device", json!({"address": "1.1.10"}))?;
+    assert_eq!(again["noop"], true, "plan: {again}");
+    assert_eq!(again["state_hash"], plan["state_hash"], "plan: {again}");
+    assert_eq!(
+        pid61_reads()?,
+        1,
+        "a plan without a pending change reads no PID 61"
+    );
 
     // Security off for 1/2/3: one model change, the key out of the store.
     let set = server.call("knx_set_group", json!({"ga": "1/2/3", "secure": false}))?;
@@ -1101,8 +1119,10 @@ fn test_mcp_unsecure_a_group_address_end_to_end() -> TestResult {
     assert!(!exported.group_keys.contains_key(&ga("1/2/3")?));
     assert!(exported.group_keys.contains_key(&ga("1/2/4")?));
 
-    // The plan: exactly one change, the security object.
+    // The plan: exactly one change, the security object. The change is
+    // pending, so the device is read again.
     let plan = server.call("knx_plan_device", json!({"address": "1.1.10"}))?;
+    assert_eq!(pid61_reads()?, 2, "a pending security change reads PID 61");
     assert_eq!(plan["ok"], true, "plan: {plan}");
     assert_eq!(plan["noop"], false, "plan: {plan}");
     let changes = plan["changes"].as_array().ok_or("no changes")?;
@@ -1155,9 +1175,19 @@ fn test_mcp_unsecure_a_group_address_end_to_end() -> TestResult {
         assert_eq!(secured, vec![23], "{log:?}");
     }
 
-    // Nothing left to do.
+    // Nothing left to do. The apply dropped the cache, so this plan reads
+    // the device once; the next one does not.
+    let reads = pid61_reads()?;
     let replan = server.call("knx_plan_device", json!({"address": "1.1.10"}))?;
     assert_eq!(replan["noop"], true, "replan: {replan}");
+    assert_eq!(
+        pid61_reads()?,
+        reads + 1,
+        "the plan after an apply reads PID 61"
+    );
+    let replan = server.call("knx_plan_device", json!({"address": "1.1.10"}))?;
+    assert_eq!(replan["noop"], true, "replan: {replan}");
+    assert_eq!(pid61_reads()?, reads + 1, "and caches it");
 
     // A group write on 1/2/3 now goes out plain.
     let write = server.call("knx_write_group", json!({"ga": "1/2/3", "value": "50%"}))?;

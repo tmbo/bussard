@@ -1055,6 +1055,23 @@ pub(crate) fn line_output(line: &mut [MockDevice], cemi: &CemiFrame) -> Vec<Out>
             };
             dev.tool = tool;
             let kind = tpci::classify(cemi.tpci_octet());
+            // The connection timeout (03_03_04 §5, E16, A6): the device closed
+            // the idle connection, so a numbered data telegram without a new
+            // T_Connect meets CLOSED and draws a T_Disconnect (A10).
+            if dev.connection_timed_out() && dev.send_seq.is_some() {
+                dev.send_seq = None;
+                if let TpciKind::NumberedData(_) = kind {
+                    dev.timed_out_requests += 1;
+                    emit(
+                        dev,
+                        tool,
+                        None,
+                        vec![Step::Control(tpci::T_DISCONNECT)],
+                        &mut out,
+                    );
+                    return out;
+                }
+            }
             match kind {
                 TpciKind::Connect => {
                     dev.send_seq = Some(0);

@@ -910,7 +910,9 @@ impl BussardMcp {
         part of the files goes back to the snapshot before its first such edit. Use it to \
         revert one device while edits on other devices stay; knx_undo instead rolls the whole \
         model back to a snapshot. A group created this session that a link still uses cannot \
-        be discarded (the refusal lists the links; knx_remove_link first). This edits FILES \
+        be discarded (the refusal lists the links; knx_remove_link first). A group whose Data \
+        Secure state the discard flips gets its group key back in the key store, or loses it, \
+        as knx_undo does (`key_store`). This edits FILES \
         ONLY and snapshots first, so knx_undo brings the edits back. Returns the dropped edits \
         as sentences: quote them to the human."
     )]
@@ -961,11 +963,11 @@ impl BussardMcp {
                 ));
             }
         };
-        let base = match history
+        let (base_id, base) = match history
             .resolve(&baseline)
-            .and_then(|snapshot| history.load(&snapshot.id))
+            .and_then(|snapshot| history.load(&snapshot.id).map(|model| (snapshot.id, model)))
         {
-            Ok(model) => model,
+            Ok(found) => found,
             Err(err) => return refusal(format!("snapshot {baseline} does not load: {err}")),
         };
         let mut edited = before.clone();
@@ -1066,6 +1068,34 @@ impl BussardMcp {
         if let Err(err) = edited.save(&dir) {
             return refusal(format!("the model could not be saved: {err}"));
         }
+        // A group address whose Data Secure state the discard flips gets its
+        // key back from the baseline snapshot's key store copy, or loses it,
+        // exactly as knx_undo does (#331, #336). The discard's own snapshot
+        // keeps the current store, so an undo of the discard restores it.
+        let key_store = (!bussard_service::group_security::security_changes(&before, &edited)
+            .is_empty())
+        .then(|| {
+            let password =
+                bussard_model::dotenv::var(bussard_service::secure::KEYRING_PASSWORD_ENV).ok();
+            match bussard_service::group_security::restore_group_keys(
+                &dir,
+                &history.snapshot_dir(&base_id),
+                Some(&history.snapshot_dir(&snapshot)),
+                &before,
+                &edited,
+                password.as_deref(),
+            ) {
+                Ok(notes) => json!({"ok": true, "sentences": notes}),
+                Err(err) => json!({
+                    "ok": false,
+                    "reason": format!(
+                        "the model files are restored, but the key store did not follow: \
+                         {err}. Fix that and run `bussard groups secure` for the group \
+                         addresses whose security the discard changed."
+                    ),
+                }),
+            }
+        });
         self.state().model.reload();
         self.session_edits()
             .discard(subject, Some(snapshot.as_str()));
@@ -1094,6 +1124,9 @@ impl BussardMcp {
         put_changes(&mut result, &changes);
         if let (false, Some(map)) = (notes.is_empty(), result.as_object_mut()) {
             map.insert("note".to_string(), Value::String(notes.join(" ")));
+        }
+        if let (Some(key_store), Some(map)) = (key_store, result.as_object_mut()) {
+            map.insert("key_store".to_string(), key_store);
         }
         ok(result)
     }

@@ -821,7 +821,10 @@ impl BussardMcp {
         property set. On a KNX Data Secure device addressed with its tool key it also returns \
         `security_diagnostics`: the security failures log (sequence, cryptographic and access \
         error counts, the latest failure), the security report and whether the device \
-        broadcasts it; read it after a secured write that did nothing. Rate-limited and only \
+        broadcasts it; read it after a secured write that did nothing. A device without a \
+        tool key that refuses the plain walk and answers a secured read under its factory key \
+        (FDSK) from the key store is reported `ok: false, factory_key: true` with the reason, as \
+        `bussard describe` does: tell the human it needs commissioning in ETS. Rate-limited and only \
         available when the server is NOT in passive mode, since it actively transmits \
         management traffic on the bus."
     )]
@@ -951,10 +954,33 @@ impl BussardMcp {
                 let _ = l4.disconnect().await;
             }
         }
-        if let Some(l4) = kept {
-            warm.keep(l4, target, secure, service.handle().link_losses());
+        // A walk that found no interface object, or failed, on a plain
+        // session: the device may refuse plain access (issue #155). The FDSK
+        // probe of `bussard describe` runs next (issues #532, #571), on a
+        // connection of its own, so the plain one is not kept.
+        let refused = result
+            .as_ref()
+            .map_or(true, |(objects, _)| objects.is_empty());
+        match kept {
+            Some(l4) if refused && options.factory_key.is_some() && !secure => {
+                let _ = l4.disconnect().await;
+            }
+            Some(l4) => warm.keep(l4, target, secure, service.handle().link_losses()),
+            None => {}
         }
+        let on_factory_key = bussard_service::identity::refused_walk_answers_under_factory_key(
+            service, target, &options, refused,
+        )
+        .await;
         drop(warm);
+        if on_factory_key {
+            return ok(json!({
+                "address": target.to_string(),
+                "ok": false,
+                "factory_key": true,
+                "reason": bussard_service::identity::factory_key_message(target),
+            }));
+        }
 
         match result {
             Ok((objects, security)) => {

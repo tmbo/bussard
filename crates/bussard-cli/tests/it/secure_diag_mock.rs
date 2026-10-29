@@ -235,3 +235,71 @@ fn test_secure_diag_clear_resets_and_reads_back() -> TestResult {
     assert_eq!((log.counters, log.report), ([0; 3], 0));
     Ok(())
 }
+
+/// Issue #571: `knx_clear_security_log` clears the log over MCP behind the
+/// CLI's confirmation: the first call reads (nothing cleared) and asks the
+/// `secure diag --clear` question with a digest, a wrong digest is refused,
+/// and the digest clears, resets the report and reads back.
+#[test]
+fn test_mcp_clear_security_log_asks_then_clears() -> TestResult {
+    let dir = model_dir("mcp-clear")?;
+    let log = Arc::new(Mutex::new(Log {
+        counters: [2, 3, 0],
+        latest: Some(0x1118),
+        report: 0x01,
+    }));
+    let rt = tokio::runtime::Runtime::new()?;
+    let gw = rt.block_on(
+        MockGateway::builder()
+            .channel(0x5D)
+            .idle_timeout(Duration::from_secs(60))
+            .keep_serving()
+            .device(device(Arc::clone(&log))?)
+            .start(),
+    )?;
+    let calls = (|| {
+        let mut server = crate::mcp_stdio_client::McpServer::start(
+            &dir,
+            gw.port(),
+            &KeyStore::path(&dir),
+            PASSWORD,
+            &["--no-model-edits", "--allow-programming"],
+        )?;
+        let args = serde_json::json!({"address": "1.1.10"});
+        let plan = server.call_when_connected("knx_clear_security_log", args, 50)?;
+        let counters_after_plan = log.lock().map_err(|_| "poisoned")?.counters;
+        let wrong = server.call(
+            "knx_clear_security_log",
+            serde_json::json!({"address": "1.1.10", "plan_digest": "0000000000000000"}),
+        )?;
+        let digest = plan["plan_digest"].as_str().unwrap_or_default().to_string();
+        let cleared = server.call(
+            "knx_clear_security_log",
+            serde_json::json!({"address": "1.1.10", "plan_digest": digest}),
+        )?;
+        TestResult::Ok((plan, counters_after_plan, wrong, cleared))
+    })();
+    drop(gw);
+    let _ = std::fs::remove_dir_all(&dir);
+    let (plan, counters_after_plan, wrong, cleared) = calls?;
+    assert_eq!(plan["ok"], true, "{plan}");
+    assert_eq!(
+        plan["question"],
+        "Clear the security failures log and reset the security report of 1.1.10?",
+        "{plan}"
+    );
+    assert_eq!(
+        plan["diagnostics"]["counters"]["cryptographic"], 3,
+        "{plan}"
+    );
+    assert_eq!(counters_after_plan, [2, 3, 0], "the first call only reads");
+    assert_ne!(wrong["ok"], true, "{wrong}");
+    assert_eq!(cleared["cleared"], true, "{cleared}");
+    assert_eq!(
+        cleared["diagnostics"]["counters"]["cryptographic"], 0,
+        "{cleared}"
+    );
+    let log = log.lock().map_err(|_| "poisoned")?;
+    assert_eq!((log.counters, log.report), ([0; 3], 0));
+    Ok(())
+}

@@ -10,6 +10,7 @@ mod guidance;
 mod mcp_audit;
 mod mcp_bus;
 mod mcp_discard_edits;
+mod mcp_discard_keys;
 mod mcp_flash;
 mod mcp_flash_sys7;
 mod mcp_groups;

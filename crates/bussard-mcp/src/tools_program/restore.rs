@@ -188,6 +188,7 @@ impl BussardMcp {
             &model,
             Some(source),
             &[],
+            None,
         )
         .await?;
         refuse_drift(target, &read)?;
