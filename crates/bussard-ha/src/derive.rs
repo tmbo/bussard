@@ -901,39 +901,191 @@ fn binary_sensor_invert(dpt: Dpt, device_class: Option<&str>) -> bool {
 }
 
 /// The HA sensor `type` for a numeric DPT, or `None` if bussard does not map it.
+///
+/// Every name is a row of the "Value types" table of the Home Assistant KNX
+/// integration documentation (each `type` there names one DPT sub-type, with
+/// its unit and device class). A sub-type HA does not name falls back to the
+/// generic type of its family (`2byte_unsigned`, `2byte_float`,
+/// `4byte_unsigned`, `4byte_signed`, `4byte_float`), which decodes the right
+/// width without a unit.
 fn sensor_type_for(dpt: Dpt) -> Option<String> {
     let t = match (dpt.main, dpt.sub) {
-        (9, Some(1)) => "temperature",
-        // 9.002 is a temperature *difference* in Kelvin, not an absolute
-        // temperature: HA has its own 2-byte type for it, and mapping it to
-        // `temperature` labels a +2 K offset as 2 °C.
-        (9, Some(2)) => "temperature_difference_2byte",
-        (9, Some(4)) => "illuminance",
-        (9, Some(5)) => "wind_speed_ms",
-        (9, Some(6)) => "pressure_2byte",
-        (9, Some(7)) => "humidity",
-        (9, Some(8)) => "ppm",
-        // HA's `power` is the 4-byte DPT 14.056. 9.024 is the 2-byte float, so
-        // it needs `power_2byte`; `power` would decode four bytes from two.
-        (9, Some(24)) => "power_2byte",
-        // Generic 2-byte float when the sub is unknown but the family is a value.
-        (9, _) => "2byte_float",
         (5, Some(1)) => "percent",
         (5, Some(4)) => "percentU8",
-        // Scaled sub-types (KNX 03_07_02 §3.8.2, §3.14.1): a raw-count type
-        // would show 10 for 1.0 s. Per-sub types for the rest are #505.
-        (7, Some(3)) => "time_period_10msec",
-        (7, Some(4)) => "time_period_100msec",
-        (7, Some(_)) | (7, None) => "pulse_2byte",
-        (12, _) => "pulse_4byte",
-        (13, Some(10)) => "active_energy",
-        (13, Some(13)) => "active_energy_kwh",
-        (13, Some(2)) => "flow_rate_m3h",
-        (13, _) => "4byte_signed",
-        (14, _) => "4byte_float",
+        (7, sub) => two_byte_unsigned_type(sub),
+        (9, sub) => two_byte_float_type(sub),
+        (12, sub) => match sub {
+            Some(1) => "pulse_4_ucount",
+            Some(100) => "long_time_period_sec",
+            Some(101) => "long_time_period_min",
+            Some(102) => "long_time_period_hrs",
+            Some(1200) => "volume_liquid_litre",
+            Some(1201) => "volume_m3",
+            _ => "4byte_unsigned",
+        },
+        (13, sub) => match sub {
+            Some(1) => "pulse_4byte",
+            Some(2) => "flow_rate_m3h",
+            Some(10) => "active_energy",
+            Some(11) => "apparant_energy",
+            Some(12) => "reactive_energy",
+            Some(13) => "active_energy_kwh",
+            Some(14) => "apparant_energy_kvah",
+            Some(15) => "reactive_energy_kvarh",
+            Some(16) => "active_energy_mwh",
+            Some(100) => "long_delta_timesec",
+            Some(1200) => "delta_volume_liquid_litre",
+            Some(1201) => "delta_volume_m3",
+            _ => "4byte_signed",
+        },
+        (14, sub) => sub.and_then(four_byte_float_type).unwrap_or("4byte_float"),
         _ => return None,
     };
     Some(t.to_string())
+}
+
+/// The HA `type` of a DPT 7.xxx sub-type (KNX 03_07_02 §3.8; 7.600 colour
+/// temperature in K). 7.003 / 7.004 count 10 ms / 100 ms, so a raw-count type
+/// would show 10 for 1.0 s.
+fn two_byte_unsigned_type(sub: Option<u16>) -> &'static str {
+    match sub {
+        Some(1) => "pulse_2byte",
+        Some(2) => "time_period_msec",
+        Some(3) => "time_period_10msec",
+        Some(4) => "time_period_100msec",
+        Some(5) => "time_period_sec",
+        Some(6) => "time_period_min",
+        Some(7) => "time_period_hrs",
+        Some(11) => "length_mm",
+        Some(12) => "current",
+        Some(13) => "brightness",
+        Some(600) => "color_temperature",
+        _ => "2byte_unsigned",
+    }
+}
+
+/// The HA `type` of a DPT 9.xxx sub-type (KNX 03_07_02 §3.10). HA's plain
+/// `power` and `temperature_difference` are the 4-byte DPT 14 forms, so 9.024
+/// and 9.002 need the `_2byte` types.
+fn two_byte_float_type(sub: Option<u16>) -> &'static str {
+    match sub {
+        Some(1) => "temperature",
+        Some(2) => "temperature_difference_2byte",
+        Some(3) => "temperature_a",
+        Some(4) => "illuminance",
+        Some(5) => "wind_speed_ms",
+        Some(6) => "pressure_2byte",
+        Some(7) => "humidity",
+        Some(8) => "ppm",
+        Some(9) => "air_flow",
+        Some(10) => "time_1",
+        Some(11) => "time_2",
+        Some(20) => "voltage",
+        Some(21) => "curr",
+        Some(22) => "power_density",
+        Some(23) => "kelvin_per_percent",
+        Some(24) => "power_2byte",
+        Some(25) => "volume_flow",
+        Some(26) => "rain_amount",
+        Some(27) => "temperature_f",
+        Some(28) => "wind_speed_kmh",
+        Some(29) => "absolute_humidity",
+        Some(30) => "concentration_ugm3",
+        _ => "2byte_float",
+    }
+}
+
+/// The HA `type` of a DPT 14.xxx sub-type (KNX 03_07_02 §3.15), `None` when
+/// HA names none.
+fn four_byte_float_type(sub: u16) -> Option<&'static str> {
+    const NAMES: [&str; 81] = [
+        "acceleration",
+        "acceleration_angular",
+        "activation_energy",
+        "activity",
+        "mol",
+        "amplitude",
+        "angle_rad",
+        "angle_deg",
+        "angular_momentum",
+        "angular_velocity",
+        "area",
+        "capacitance",
+        "charge_density_surface",
+        "charge_density_volume",
+        "compressibility",
+        "conductance",
+        "electrical_conductivity",
+        "density",
+        "electric_charge",
+        "electric_current",
+        "electric_current_density",
+        "electric_dipole_moment",
+        "electric_displacement",
+        "electric_field_strength",
+        "electric_flux",
+        "electric_flux_density",
+        "electric_polarization",
+        "electric_potential",
+        "electric_potential_difference",
+        "electromagnetic_moment",
+        "electromotive_force",
+        "energy",
+        "force",
+        "frequency",
+        "angular_frequency",
+        "heatcapacity",
+        "heatflowrate",
+        "heat_quantity",
+        "impedance",
+        "length",
+        "light_quantity",
+        "luminance",
+        "luminous_flux",
+        "luminous_intensity",
+        "magnetic_field_strength",
+        "magnetic_flux",
+        "magnetic_flux_density",
+        "magnetic_moment",
+        "magnetic_polarization",
+        "magnetization",
+        "magnetomotive_force",
+        "mass",
+        "mass_flux",
+        "momentum",
+        "phaseanglerad",
+        "phaseangledeg",
+        "power",
+        "powerfactor",
+        "pressure",
+        "reactance",
+        "resistance",
+        "resistivity",
+        "self_inductance",
+        "solid_angle",
+        "sound_intensity",
+        "speed",
+        "stress",
+        "surface_tension",
+        "common_temperature",
+        "absolute_temperature",
+        "temperature_difference",
+        "thermal_capacity",
+        "thermal_conductivity",
+        "thermoelectric_power",
+        "time_seconds",
+        "torque",
+        "volume",
+        "volume_flux",
+        "weight",
+        "work",
+        "apparent_power",
+    ];
+    match sub {
+        1200 => Some("volume_flux_meter"),
+        1201 => Some("volume_flux_ls"),
+        _ => NAMES.get(usize::from(sub)).copied(),
+    }
 }
 
 /// The HA cover `device_class` inferred from the entity name.
@@ -1067,4 +1219,201 @@ fn apply_name_override(overrides: &Overrides, primary: GroupAddress, name: Strin
         .entity(primary)
         .and_then(|o| o.name.clone())
         .unwrap_or(name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The numeric rows of the "Value types" table of the Home Assistant KNX
+    /// integration documentation (home-assistant.io, integrations/knx, as of
+    /// 2026-10): `(KNX DPT, type)`.
+    const HA_VALUE_TYPES: &[(&str, &str)] = &[
+        ("5", "1byte_unsigned"),
+        ("5.001", "percent"),
+        ("5.003", "angle"),
+        ("5.004", "percentU8"),
+        ("5.005", "decimal_factor"),
+        ("5.006", "tariff"),
+        ("5.010", "pulse"),
+        ("7", "2byte_unsigned"),
+        ("7.001", "pulse_2byte"),
+        ("7.002", "time_period_msec"),
+        ("7.003", "time_period_10msec"),
+        ("7.004", "time_period_100msec"),
+        ("7.005", "time_period_sec"),
+        ("7.006", "time_period_min"),
+        ("7.007", "time_period_hrs"),
+        ("7.011", "length_mm"),
+        ("7.012", "current"),
+        ("7.013", "brightness"),
+        ("7.600", "color_temperature"),
+        ("9", "2byte_float"),
+        ("9.001", "temperature"),
+        ("9.002", "temperature_difference_2byte"),
+        ("9.003", "temperature_a"),
+        ("9.004", "illuminance"),
+        ("9.005", "wind_speed_ms"),
+        ("9.006", "pressure_2byte"),
+        ("9.007", "humidity"),
+        ("9.008", "ppm"),
+        ("9.009", "air_flow"),
+        ("9.010", "time_1"),
+        ("9.011", "time_2"),
+        ("9.020", "voltage"),
+        ("9.021", "curr"),
+        ("9.022", "power_density"),
+        ("9.023", "kelvin_per_percent"),
+        ("9.024", "power_2byte"),
+        ("9.025", "volume_flow"),
+        ("9.026", "rain_amount"),
+        ("9.027", "temperature_f"),
+        ("9.028", "wind_speed_kmh"),
+        ("9.029", "absolute_humidity"),
+        ("9.030", "concentration_ugm3"),
+        ("12", "4byte_unsigned"),
+        ("12.001", "pulse_4_ucount"),
+        ("12.100", "long_time_period_sec"),
+        ("12.101", "long_time_period_min"),
+        ("12.102", "long_time_period_hrs"),
+        ("12.1200", "volume_liquid_litre"),
+        ("12.1201", "volume_m3"),
+        ("13", "4byte_signed"),
+        ("13.001", "pulse_4byte"),
+        ("13.002", "flow_rate_m3h"),
+        ("13.010", "active_energy"),
+        ("13.011", "apparant_energy"),
+        ("13.012", "reactive_energy"),
+        ("13.013", "active_energy_kwh"),
+        ("13.014", "apparant_energy_kvah"),
+        ("13.015", "reactive_energy_kvarh"),
+        ("13.016", "active_energy_mwh"),
+        ("13.100", "long_delta_timesec"),
+        ("13.1200", "delta_volume_liquid_litre"),
+        ("13.1201", "delta_volume_m3"),
+        ("14", "4byte_float"),
+        ("14.000", "acceleration"),
+        ("14.001", "acceleration_angular"),
+        ("14.002", "activation_energy"),
+        ("14.003", "activity"),
+        ("14.004", "mol"),
+        ("14.005", "amplitude"),
+        ("14.006", "angle_rad"),
+        ("14.007", "angle_deg"),
+        ("14.008", "angular_momentum"),
+        ("14.009", "angular_velocity"),
+        ("14.010", "area"),
+        ("14.011", "capacitance"),
+        ("14.012", "charge_density_surface"),
+        ("14.013", "charge_density_volume"),
+        ("14.014", "compressibility"),
+        ("14.015", "conductance"),
+        ("14.016", "electrical_conductivity"),
+        ("14.017", "density"),
+        ("14.018", "electric_charge"),
+        ("14.019", "electric_current"),
+        ("14.020", "electric_current_density"),
+        ("14.021", "electric_dipole_moment"),
+        ("14.022", "electric_displacement"),
+        ("14.023", "electric_field_strength"),
+        ("14.024", "electric_flux"),
+        ("14.025", "electric_flux_density"),
+        ("14.026", "electric_polarization"),
+        ("14.027", "electric_potential"),
+        ("14.028", "electric_potential_difference"),
+        ("14.029", "electromagnetic_moment"),
+        ("14.030", "electromotive_force"),
+        ("14.031", "energy"),
+        ("14.032", "force"),
+        ("14.033", "frequency"),
+        ("14.034", "angular_frequency"),
+        ("14.035", "heatcapacity"),
+        ("14.036", "heatflowrate"),
+        ("14.037", "heat_quantity"),
+        ("14.038", "impedance"),
+        ("14.039", "length"),
+        ("14.040", "light_quantity"),
+        ("14.041", "luminance"),
+        ("14.042", "luminous_flux"),
+        ("14.043", "luminous_intensity"),
+        ("14.044", "magnetic_field_strength"),
+        ("14.045", "magnetic_flux"),
+        ("14.046", "magnetic_flux_density"),
+        ("14.047", "magnetic_moment"),
+        ("14.048", "magnetic_polarization"),
+        ("14.049", "magnetization"),
+        ("14.050", "magnetomotive_force"),
+        ("14.051", "mass"),
+        ("14.052", "mass_flux"),
+        ("14.053", "momentum"),
+        ("14.054", "phaseanglerad"),
+        ("14.055", "phaseangledeg"),
+        ("14.056", "power"),
+        ("14.057", "powerfactor"),
+        ("14.058", "pressure"),
+        ("14.059", "reactance"),
+        ("14.060", "resistance"),
+        ("14.061", "resistivity"),
+        ("14.062", "self_inductance"),
+        ("14.063", "solid_angle"),
+        ("14.064", "sound_intensity"),
+        ("14.065", "speed"),
+        ("14.066", "stress"),
+        ("14.067", "surface_tension"),
+        ("14.068", "common_temperature"),
+        ("14.069", "absolute_temperature"),
+        ("14.070", "temperature_difference"),
+        ("14.071", "thermal_capacity"),
+        ("14.072", "thermal_conductivity"),
+        ("14.073", "thermoelectric_power"),
+        ("14.074", "time_seconds"),
+        ("14.075", "torque"),
+        ("14.076", "volume"),
+        ("14.077", "volume_flux"),
+        ("14.078", "weight"),
+        ("14.079", "work"),
+        ("14.080", "apparent_power"),
+        ("14.1200", "volume_flux_meter"),
+        ("14.1201", "volume_flux_ls"),
+    ];
+
+    #[test]
+    fn test_sensor_type_for_matches_ha_value_types() -> Result<(), Box<dyn std::error::Error>> {
+        for (dpt, ha_type) in HA_VALUE_TYPES {
+            let parsed: Dpt = dpt.parse()?;
+            // bussard maps only 5.001 and 5.004 of the 1-byte family.
+            if parsed.main == 5 && !matches!(parsed.sub, Some(1) | Some(4)) {
+                continue;
+            }
+            assert_eq!(
+                sensor_type_for(parsed).as_deref(),
+                Some(*ha_type),
+                "DPT {dpt}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_sensor_type_for_unknown_sub_uses_generic_type() -> Result<(), Box<dyn std::error::Error>> {
+        for (dpt, generic) in [
+            ("7.999", "2byte_unsigned"),
+            ("9.999", "2byte_float"),
+            ("12.999", "4byte_unsigned"),
+            ("13.999", "4byte_signed"),
+            ("14.999", "4byte_float"),
+        ] {
+            assert_eq!(sensor_type_for(dpt.parse()?).as_deref(), Some(generic), "{dpt}");
+        }
+        // Every type bussard emits is a documented HA name.
+        let documented: Vec<&str> = HA_VALUE_TYPES.iter().map(|(_, t)| *t).collect();
+        for main in [7u16, 9, 12, 13, 14] {
+            for sub in 0..=1300u16 {
+                if let Some(t) = sensor_type_for(Dpt { main, sub: Some(sub) }) {
+                    assert!(documented.contains(&t.as_str()), "{main}.{sub:03}: {t}");
+                }
+            }
+        }
+        Ok(())
+    }
 }

@@ -83,19 +83,34 @@ Sensor `type` per DPT sub:
 
 | DPT | `type` |
 |---|---|
-| `9.001` | `temperature` |
-| `9.002` | `temperature_difference_2byte` |
-| `9.004` | `illuminance` |
-| `9.005` | `wind_speed_ms` |
-| `9.007` | `humidity` |
-| `9.008` | `ppm` |
-| `9.024` | `power_2byte` |
+| `5.001`, `5.004` | `percent`, `percentU8` |
+| `7.001` | `pulse_2byte` |
+| `7.002`, `7.003`, `7.004` | `time_period_msec`, `time_period_10msec`, `time_period_100msec` |
+| `7.005`, `7.006`, `7.007` | `time_period_sec`, `time_period_min`, `time_period_hrs` |
+| `7.011`, `7.012`, `7.013` | `length_mm`, `current`, `brightness` |
+| `7.600` | `color_temperature` (K) |
+| other `7.x` | `2byte_unsigned` |
+| `9.001`, `9.002`, `9.003` | `temperature`, `temperature_difference_2byte`, `temperature_a` |
+| `9.004`, `9.005`, `9.006`, `9.007`, `9.008` | `illuminance`, `wind_speed_ms`, `pressure_2byte`, `humidity`, `ppm` |
+| `9.009`, `9.010`, `9.011` | `air_flow`, `time_1`, `time_2` |
+| `9.020`, `9.021`, `9.022`, `9.023`, `9.024` | `voltage`, `curr`, `power_density`, `kelvin_per_percent`, `power_2byte` |
+| `9.025`, `9.026`, `9.027`, `9.028` | `volume_flow`, `rain_amount`, `temperature_f`, `wind_speed_kmh` |
+| `9.029`, `9.030` | `absolute_humidity`, `concentration_ugm3` |
 | other `9.x` | `2byte_float` |
-| `7.003`, `7.004` | `time_period_10msec`, `time_period_100msec` |
-| other `7.x` | `pulse_2byte` (also for `7.600` colour temperature in K and `7.005` seconds, KNX 03_07_02 §3.8; per-sub types are #505) |
-| any `12.x` | `pulse_4byte` |
-| `13.002`, `13.010`, `13.013`, other `13.x` | `flow_rate_m3h`, `active_energy`, `active_energy_kwh`, `4byte_signed` |
-| any `14.x` | `4byte_float` |
+| `12.001` | `pulse_4_ucount` |
+| `12.100`, `12.101`, `12.102` | `long_time_period_sec`, `long_time_period_min`, `long_time_period_hrs` |
+| `12.1200`, `12.1201` | `volume_liquid_litre`, `volume_m3` |
+| other `12.x` | `4byte_unsigned` |
+| `13.001`, `13.002` | `pulse_4byte`, `flow_rate_m3h` |
+| `13.010`, `13.011`, `13.012` | `active_energy`, `apparant_energy`, `reactive_energy` |
+| `13.013`, `13.014`, `13.015`, `13.016` | `active_energy_kwh`, `apparant_energy_kvah`, `reactive_energy_kvarh`, `active_energy_mwh` |
+| `13.100` | `long_delta_timesec` (s) |
+| `13.1200`, `13.1201` | `delta_volume_liquid_litre`, `delta_volume_m3` |
+| other `13.x` | `4byte_signed` |
+| `14.000`-`14.080`, `14.1200`, `14.1201` | the integration's name for the sub-type, e.g. `14.019` `electric_current`, `14.033` `frequency`, `14.056` `power`, `14.057` `powerfactor`, `14.068` `common_temperature`, `14.080` `apparent_power` |
+| other `14.x` | `4byte_float` |
+
+Every name is a row of the "Value types" table of the Home Assistant KNX integration, which sets the unit and device class from it (`apparant_energy` is HA's spelling). A sub-type HA does not name gets the generic type of its family, which reads the right width without a unit.
 
 The `_2byte` types matter: Home Assistant's plain `power` and `temperature` types decode four bytes, so a 2-byte KNX value mapped to them reads wrong.
 

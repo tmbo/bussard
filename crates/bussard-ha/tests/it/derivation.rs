@@ -273,6 +273,31 @@ fn test_sensor_type_for_scaled_subtypes() -> Result<(), Box<dyn std::error::Erro
 }
 
 #[test]
+fn test_sensor_type_for_time_and_colour_temperature() -> Result<(), Box<dyn std::error::Error>> {
+    // 7.600 colour temperature in K, 7.005 seconds, 13.100 seconds (KNX
+    // 03_07_02 §3.8, §3.14.3): HA has a type per sub-type for each.
+    let model = ModelBuilder::new("1.1.206", "DALI Gateway", None)
+        .group("4/6/0", "Farbtemperatur Status", "7.600")
+        .group("4/6/1", "Nachlaufzeit", "7.005")
+        .group("4/6/2", "Betriebsstunden", "13.100")
+        .group("4/6/3", "Zaehler", "12.001")
+        .object(0, "7.600", "CRT", None, Some("4/6/0"), &[])
+        .object(1, "7.005", "CRT", None, Some("4/6/1"), &[])
+        .object(2, "13.100", "CRT", None, Some("4/6/2"), &[])
+        .object(3, "12.001", "CRT", None, Some("4/6/3"), &[])
+        .build();
+
+    let yaml = generate(&model, &Overrides::default())?;
+    assert!(yaml.contains("type: color_temperature"), "{yaml}");
+    assert!(yaml.contains("type: time_period_sec"), "{yaml}");
+    assert!(yaml.contains("type: long_delta_timesec"), "{yaml}");
+    assert!(yaml.contains("type: pulse_4_ucount"), "{yaml}");
+    assert!(!yaml.contains("type: pulse_2byte"), "{yaml}");
+    assert!(!yaml.contains("type: 4byte_signed"), "{yaml}");
+    Ok(())
+}
+
+#[test]
 fn test_try_sensor_skips_write_only_command_objects() -> Result<(), Box<dyn std::error::Error>> {
     // A write-only input (CW) receives a setpoint; it never publishes one. A
     // `sensor` on it would sit permanently unknown in Home Assistant.
