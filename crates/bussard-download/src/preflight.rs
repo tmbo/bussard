@@ -124,6 +124,11 @@ pub struct ResidentState {
     /// reported a non-zero one. The all-zero placeholder is treated as absent:
     /// it is what an object carries when no download ever stamped it.
     pub app_id: Option<Vec<u8>>,
+    /// The property data type of the association table's `PID_TABLE` (System
+    /// B), when the device describes it: `PDT_GENERIC_04` for the four-octet
+    /// format 1 bussard writes, `PDT_GENERIC_02` for format 0, which the flash
+    /// refuses (Resources §4.17.5.2.5, issue #545).
+    pub association_pdt: Option<u8>,
     /// Why nothing could be read, when the probe came back empty-handed.
     pub unreadable: Option<String>,
     /// Whether a connection death (a Layer-4 drop or a lost gateway link) cut
@@ -183,6 +188,14 @@ pub enum Freshness {
         /// [`sys7_identity`](crate::sys7_identity). `None` from
         /// [`assess_freshness`], which judges by the id alone.
         reason: Option<String>,
+    },
+    /// The device is not one this plan can be written to, whatever it holds:
+    /// its association table uses a format bussard does not write. Refused
+    /// without `--force` before anything is unloaded; a forced flash still ends
+    /// in a read-back that refuses the format, so it cannot pass as verified.
+    Mismatch {
+        /// What does not match, for the refusal message.
+        reason: String,
     },
     /// The device's load state could not be read at all, so freshness is
     /// undetermined. Refused without `--force`: unreadable is not evidence of an
@@ -353,6 +366,17 @@ async fn probe_system_b<Ch: L4Channel>(
         state.objects.sort_by_key(|o| o.index);
     }
 
+    // The association table's entry format (Resources §4.17.5.2.5): one
+    // description read after the load states, tolerant of a device that does
+    // not describe it.
+    if !state.interrupted
+        && let Some(&(index, _)) = objects
+            .iter()
+            .find(|&&(_, object_type)| object_type == bussard_mgmt::tables::OT_ASSOCIATION_TABLE)
+    {
+        state.association_pdt = bussard_mgmt::tables::read_association_pdt(l4, index).await;
+    }
+
     if state.objects.is_empty() {
         state.unreadable = Some(format!(
             "no object reported a load state ({})",
@@ -456,6 +480,13 @@ async fn probe_sys7<Ch: L4Channel>(
 /// verdict whose [`allows_flash`](Freshness::allows_flash) is false unless
 /// `--force` was passed.
 pub fn assess_freshness(state: &ResidentState, identity: &AppIdentity) -> Freshness {
+    if state.association_pdt == Some(bussard_mgmt::tables::PDT_GENERIC_02) {
+        return Freshness::Mismatch {
+            reason: "its association table uses format 0 (PDT_GENERIC_02, one-octet TSAP and \
+                     ASAP); the download writes format 1 (PDT_GENERIC_04) only"
+                .to_string(),
+        };
+    }
     if let Some(reason) = &state.unreadable {
         return Freshness::Unknown {
             reason: reason.clone(),
@@ -508,6 +539,26 @@ mod tests {
             object_type: Some(object_type),
             state,
         }
+    }
+
+    #[test]
+    fn test_assess_freshness_format_0_association_table_is_a_mismatch() {
+        // Resources §4.17.5.2.5: a format-0 association table (PDT_GENERIC_02)
+        // does not take the four-octet entries the download writes (#545).
+        let state = ResidentState {
+            objects: vec![object(3, 3, LoadState::Unloaded)],
+            association_pdt: Some(bussard_mgmt::tables::PDT_GENERIC_02),
+            ..ResidentState::default()
+        };
+        let verdict = assess_freshness(&state, &da_tp());
+        assert!(matches!(verdict, Freshness::Mismatch { .. }), "{verdict:?}");
+        assert!(!verdict.allows_flash());
+        // Format 1 is what the download writes.
+        let state = ResidentState {
+            association_pdt: Some(bussard_mgmt::tables::PDT_GENERIC_04),
+            ..state
+        };
+        assert_eq!(assess_freshness(&state, &da_tp()), Freshness::Fresh);
     }
 
     #[test]

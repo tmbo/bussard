@@ -367,6 +367,10 @@ pub struct DeviceFacts {
     /// conservative chunks without reading it again (issue #215). An
     /// unanswered read does not set this: the write phase asks once more.
     pub max_apdu_absent: bool,
+    /// The property data type of the association table's `PID_TABLE` the
+    /// pre-flight read (`PDT_GENERIC_04` for format 1, `PDT_GENERIC_02` for
+    /// format 0, Resources §4.17.5.2.5), when the device described it.
+    pub association_pdt: Option<u8>,
 }
 
 impl DeviceFacts {

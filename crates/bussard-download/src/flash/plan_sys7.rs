@@ -890,11 +890,10 @@ pub(super) fn sys7_object_defaults(
 }
 
 /// The System 7 TYPE octet for an `ObjectSize` (the KNX size code: `1 Bit` is
-/// 0, `1 Byte` 7, `2 Bytes` 8), `None` for a size the table does not know.
+/// 0, `1 Byte` 7, `2 Bytes` 8), `None` for a size the table does not know; the
+/// descriptor then keeps the product's template octet.
 pub(super) fn sys7_type_code(object_size: &str) -> Option<u8> {
-    let code = crate::compute::size_code_from_object_size(Some(object_size));
-    let one_bit = object_size.trim().eq_ignore_ascii_case("1 bit");
-    (code != 0 || one_bit).then_some(code)
+    crate::compute::object_size_code(object_size)
 }
 
 /// The ASAPs a System 7 association-table image (`[CNT][TSAP ASAP]…`) links.

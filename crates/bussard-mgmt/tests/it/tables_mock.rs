@@ -55,6 +55,10 @@ struct TableDevice {
     refuse_multi_element: bool,
     /// Every `PID_TABLE` read the device served, as `(object, count, start)`.
     table_reads: Arc<Mutex<Vec<(u8, u8, u16)>>>,
+    /// The property data type the association table (object 2) reports for
+    /// `PID_TABLE` in an `A_PropertyDescription_Response`; `None` answers
+    /// "no such property" (zero elements).
+    assoc_pdt: Option<u8>,
 }
 
 impl TableDevice {
@@ -160,6 +164,26 @@ fn device_response(dev: &TableDevice, req_apci: u16, data: &[u8]) -> Option<(u16
         return Some((apci::A_MEMORY_EXTENDED_READ_RESPONSE, resp));
     }
     match req_apci {
+        apci::A_PROPERTY_DESCRIPTION_READ => {
+            let req = apci::decode_property_description_read(data)?;
+            let (pdt, max) = match dev.assoc_pdt {
+                Some(pdt) if req.object_index == 2 && req.property_id == PID_TABLE => (pdt, 255),
+                _ => (0, 0),
+            };
+            Some((
+                apci::A_PROPERTY_DESCRIPTION_RESPONSE,
+                apci::encode_property_description_response(&apci::PropertyDescription {
+                    object_index: req.object_index,
+                    property_id: req.property_id,
+                    property_index: 0,
+                    writable: true,
+                    pdt,
+                    max_elements: max,
+                    read_level: 3,
+                    write_level: 0,
+                }),
+            ))
+        }
         apci::A_PROPERTY_VALUE_READ => {
             let pv = apci::decode_property_value_read(data)?;
             let empty = || property_response(pv.object_index, pv.property_id, 0, pv.start, &[]);
@@ -407,6 +431,40 @@ async fn test_read_tables_multi_element_refusal_falls_back_to_one_element() -> T
     assert_eq!(reads.first(), Some(&(15, 1)), "the multi-element attempt");
     assert_eq!(reads.len(), 41, "one refused read, then 40 single ones");
     assert!(reads[1..].iter().all(|(count, _)| *count == 1));
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_read_tables_format_1_association_table_reads() -> TestResult {
+    // Resources §4.17.5.2.5: PDT_GENERIC_04 is format 1, the four-octet entry
+    // bussard reads.
+    let target: IndividualAddress = "1.1.4".parse()?;
+    let mut dev = property_device()?;
+    dev.assoc_pdt = Some(tables::PDT_GENERIC_04);
+    let gw = start_mock(target, dev).await?;
+    let read = read_tables_from(gw.addr(), target).await??;
+    assert_eq!(read.associations, vec![(1, 21), (2, 22), (3, 21), (3, 22)]);
+    drop(gw);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_read_tables_format_0_association_table_is_refused() -> TestResult {
+    // PDT_GENERIC_02 (one-octet TSAP and ASAP) would read back as half the
+    // entries with garbage pairs: refused, not misread (issue #545).
+    let target: IndividualAddress = "1.1.4".parse()?;
+    let mut dev = property_device()?;
+    dev.assoc_pdt = Some(tables::PDT_GENERIC_02);
+    let gw = start_mock(target, dev).await?;
+    let err = read_tables_from(gw.addr(), target)
+        .await?
+        .err()
+        .ok_or("expected the read to be refused, it succeeded")?;
+    assert!(
+        matches!(err, TablesError::UnsupportedAssociationFormat { .. }),
+        "{err:?}"
+    );
+    drop(gw);
     Ok(())
 }
 

@@ -96,6 +96,8 @@ use crate::object_table::ObjectTableOutcome;
 
 /// One octet-width per table element.
 const ADDRESS_ELEM_SIZE: usize = 2;
+/// Format 1 (`PDT_GENERIC_04`, Resources §4.17.5.2.5); the write path checks
+/// the device's format before it writes.
 const ASSOCIATION_ELEM_SIZE: usize = 4;
 
 /// The interface-object indexes located on the device for the two tables.
@@ -297,6 +299,17 @@ async fn write_link_tables<Ch: L4Channel>(
         None => None,
     };
 
+    // 0: the association entries are written in format 1 (four octets); a
+    // device whose PID_TABLE is format 0 is refused before anything is
+    // unloaded or allocated (Resources §4.17.5.2.5, issue #545).
+    let pdt = bussard_mgmt::tables::read_association_pdt(l4, objects.association).await;
+    bussard_mgmt::tables::check_association_pdt(l4.target(), pdt).map_err(|e| {
+        WriteError::Mgmt(bussard_mgmt::MgmtError::MalformedResponse {
+            address: l4.target(),
+            reason: e.to_string(),
+        })
+    })?;
+
     // 1 + 2: open both tables for writing, each followed by its `RelSegment`
     // allocation (ETS allocates right after each StartLoading — both captures).
     write_load_control(l4, objects.association, LoadControl::StartLoading).await?;
@@ -425,7 +438,8 @@ fn address_of(e: &bussard_mgmt::tables::TablesError) -> bussard_model::Individua
     use bussard_mgmt::tables::TablesError;
     match e {
         TablesError::UnsupportedMask { address, .. }
-        | TablesError::TableUnreadable { address, .. } => *address,
+        | TablesError::TableUnreadable { address, .. }
+        | TablesError::UnsupportedAssociationFormat { address } => *address,
         TablesError::Mgmt(_) => "0.0.0".parse().expect("valid zero address"),
     }
 }

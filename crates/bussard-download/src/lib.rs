@@ -61,7 +61,8 @@ pub use compute::{
     app_program_version, compute_group_object_table, compute_group_object_table_with_count,
     compute_tables, descriptors_for_linked_objects, dynamic_group_object_descriptors,
     dynamic_group_object_table, dynamic_group_object_table_with, expand_group_object_descriptors,
-    group_object_table_count, size_code_from_object_size, table_image_with_count,
+    group_object_table_count, object_size_code, size_code_from_object_size, table_image_with_count,
+    unknown_object_sizes,
 };
 pub use compute_sys7::{
     SYS7_ADDRESS_REGION_LEN, SYS7_ADDRESS_TABLE_ADDR, SYS7_ASSOCIATION_REGION_LEN,

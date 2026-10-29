@@ -125,6 +125,51 @@ pub const OT_APPLICATION_PROGRAM: u16 = 3;
 /// Object type of the group object table.
 pub const OT_GROUP_OBJECT_TABLE: u16 = 9;
 
+/// `PDT_GENERIC_02`: the association table's `PID_TABLE` in format 0, one
+/// octet TSAP and one octet ASAP per entry (KNX 3/5/1 Resources §4.17.5.2.5).
+pub const PDT_GENERIC_02: u8 = 0x12;
+/// `PDT_GENERIC_04`: the association table's `PID_TABLE` in format 1, two
+/// octets TSAP and two octets ASAP per entry, the only format bussard reads and
+/// writes (Resources §4.17.5.2.5).
+pub const PDT_GENERIC_04: u8 = 0x14;
+
+/// Reads the property data type of the association table's `PID_TABLE`
+/// (`A_PropertyDescription_Read` of PID 23 on `object_index`), which tells the
+/// entry format (Resources §4.17.5.2.5: format 0 is [`PDT_GENERIC_02`],
+/// format 1 [`PDT_GENERIC_04`]).
+///
+/// `None` when the device does not describe the property (no answer after
+/// its `T_ACK`, an unexpected service, or zero elements): bussard then keeps
+/// the format 1 every device seen so far uses. A silent device keeps its
+/// connection; one that dropped it surfaces on the next request.
+pub async fn read_association_pdt<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    object_index: u8,
+) -> Option<u8> {
+    let payload = crate::apci::encode_property_description_read(object_index, PID_TABLE, 0);
+    let (apci, data) = l4
+        .request_optional(crate::apci::A_PROPERTY_DESCRIPTION_READ, &payload)
+        .await
+        .ok()
+        .flatten()?;
+    if apci != crate::apci::A_PROPERTY_DESCRIPTION_RESPONSE {
+        return None;
+    }
+    let desc = crate::apci::decode_property_description_response(&data)?;
+    (desc.max_elements > 0 && desc.property_id == PID_TABLE).then_some(desc.pdt)
+}
+
+/// Refuses an association table in format 0 ([`PDT_GENERIC_02`]): bussard
+/// reads and writes the four-octet format 1 only, so a format-0 table would
+/// read back as half the entries with garbage pairs and a written one would be
+/// twice as long as the device expects.
+pub fn check_association_pdt(address: IndividualAddress, pdt: Option<u8>) -> Result<()> {
+    if pdt == Some(PDT_GENERIC_02) {
+        return Err(TablesError::UnsupportedAssociationFormat { address });
+    }
+    Ok(())
+}
+
 /// Which read path produced a table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TableSource {
@@ -197,6 +242,17 @@ pub enum TablesError {
         reason: String,
     },
 
+    /// The association table uses format 0 (one-octet TSAP and ASAP,
+    /// `PDT_GENERIC_02`), which bussard does not read or write.
+    #[error(
+        "{address}: the association table uses format 0 (PDT_GENERIC_02, one-octet TSAP and \
+         ASAP); bussard supports format 1 (PDT_GENERIC_04) only and refuses to read or write it"
+    )]
+    UnsupportedAssociationFormat {
+        /// The device.
+        address: IndividualAddress,
+    },
+
     /// An underlying management error (absent, NAK, disconnect, malformed).
     #[error(transparent)]
     Mgmt(#[from] MgmtError),
@@ -264,7 +320,10 @@ pub async fn read_tables<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Result
         .map(|c| GroupAddress::from_raw(u16::from_be_bytes(*c)))
         .collect();
 
-    // Association table: 4-octet elements, big-endian (TSAP, ASAP).
+    // Association table: 4-octet elements, big-endian (TSAP, ASAP), format 1.
+    // The property description says which format the device uses
+    // (Resources §4.17.5.2.5); format 0 is refused rather than misread.
+    check_association_pdt(address, read_association_pdt(l4, assoc_index).await)?;
     let (assoc_bytes, assoc_source) = read_table(l4, assoc_index, 4, "association table").await?;
     sources.push(("associations", assoc_source));
     let associations: Vec<(u16, u16)> = assoc_bytes

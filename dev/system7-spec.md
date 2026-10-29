@@ -845,7 +845,9 @@ descriptors like `07 5C DF 03`.
   bits 5, 1 and 0 from the product's template octet (#528).
 - **TYPE** = object size code `[Res §4.18.3.1.2.1, p. 264-265]`: 0..6 = 1..7
   bits, 7 = 1 octet, 8 = 2, 9 = 3, 10 = 4, 11 = 6, 12 = 8, 13 = 10, 14 = 14
-  octets; bits 7-6 reserved 0. `compute::size_code_from_object_size` matches.
+  octets; bits 7-6 reserved 0. `compute::object_size_code` matches and goes on
+  with Table 88 (`[Res §4.18.6.2.4.1.4]`, codes 15 to 255) for System B; a size
+  with no code refuses the plan (#545).
 - **RAM-flags table** `[Res §4.18.3.1.1.1, p. 262]`: four bits per object, two
   objects per octet (object 0 in the low nibble): bits 1-0 transmission status
   (00 idle/OK, 01 idle/error, 10 transmitting, 11 transmit request), bit 2

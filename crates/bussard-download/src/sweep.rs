@@ -532,6 +532,7 @@ pub fn normalize_plan_error(e: &PlanError) -> String {
         // NotSystemB is bucketed as NotSupportedFamily before reaching here.
         PlanError::NotSystemB { .. } => "NotSupportedFamily".to_string(),
         PlanError::SecurityActivated { .. } => "SecurityActivated".to_string(),
+        PlanError::UnknownObjectSize { .. } => "UnknownObjectSize".to_string(),
     }
 }
 

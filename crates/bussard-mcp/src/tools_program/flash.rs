@@ -492,6 +492,9 @@ fn gate_refusal(target: IndividualAddress, plan: &FlashPlan, gate: &Freshness) -
              it cannot be confirmed to be {expected}; replacing it is `bussard flash --force \
              {target}` at the CLI"
         )),
+        Freshness::Mismatch { reason } => Some(format!(
+            "{target} does not match this download: {reason}; nothing was written"
+        )),
         Freshness::Unknown { reason } => Some(format!(
             "{target}'s resident application could not be confirmed ({reason}), so a flash \
              cannot tell what it replaces; check the device and plan again"
@@ -510,6 +513,7 @@ fn resident_line(gate: &Freshness) -> String {
             "runs another application ({})",
             resident.as_deref().unwrap_or("unidentified")
         ),
+        Freshness::Mismatch { reason } => format!("does not match ({reason})"),
         Freshness::Unknown { reason } => format!("unknown ({reason})"),
     }
 }

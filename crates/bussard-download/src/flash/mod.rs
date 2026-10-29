@@ -667,6 +667,18 @@ pub enum PlanError {
         op: String,
     },
 
+    /// A com-object declares an `ObjectSize` without a value field type code
+    /// (KNX 3/5/1 Resources Table 88), so its group-object descriptor cannot
+    /// be written; the plan is refused rather than describe it as 1 bit.
+    #[error(
+        "application program declares com-object size(s) with no KNX value field type code \
+         (Resources Table 88): {sizes}"
+    )]
+    UnknownObjectSize {
+        /// The offending com-objects, `id: size`, comma-joined.
+        sizes: String,
+    },
+
     /// A `WriteRelMem`/`WriteMem` op names an image bussard cannot resolve.
     #[error(
         "load procedure step {step} references a segment or image that cannot be resolved: {reason}"

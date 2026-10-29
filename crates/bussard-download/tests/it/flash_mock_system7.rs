@@ -1339,6 +1339,7 @@ async fn sys7_preflight_then_flash(
         authorize: Some(authorize),
         max_apdu,
         max_apdu_absent: l4.max_apdu_absence() == Some(bussard_mgmt::MaxApduAbsence::Answered),
+        association_pdt: resident.association_pdt,
     };
     let mut session = if adopt {
         Session::adopt_with_facts(connector, l4, None, facts).await?

@@ -45,13 +45,17 @@ fn be16(v: u16) -> Vec<u8> {
 }
 
 /// Where this line's devices differ from the testkit defaults. They leave
-/// `A_Restart` and `A_PropertyDescription_Read` unanswered, serve
+/// `A_Restart` and `A_PropertyDescription_Read` unanswered (the latter after
+/// its `T_ACK`), serve
 /// `PID_LOAD_STATE_CONTROL` and `PID_TABLE_REFERENCE` on every object index
 /// (not only on table objects), and refuse a `PID_PROGMODE` write with a
 /// zero-count response like any other non-load-control property write.
 fn line_hook(dev: &mut MockDevice, req_apci: u16, data: &[u8]) -> Option<Reaction> {
     match req_apci {
-        apci::A_RESTART | apci::A_PROPERTY_DESCRIPTION_READ => Some(Reaction::Silent),
+        apci::A_RESTART => Some(Reaction::Silent),
+        // The transport layer acknowledges every numbered request; the
+        // application layer of these devices just never answers the service.
+        apci::A_PROPERTY_DESCRIPTION_READ => Some(Reaction::Ack),
         apci::A_PROPERTY_VALUE_READ => {
             let (oi, pid, _count, start) = decode_prop_header(data)?;
             let is_table_object = dev

@@ -34,6 +34,22 @@ pub(super) const PID_PROGRAM_VERSION: u32 = 13;
 /// (and this engine) overwrite it with the real application id.
 pub(super) const APP_ID_PLACEHOLDER: [u8; 5] = [0, 0, 0, 0, 0];
 
+/// Refuses an application that declares an `ObjectSize` with no value field
+/// type code (issue #545): its descriptor would otherwise go out as 1 bit.
+pub(super) fn check_object_sizes(app: &ApplicationProgram) -> Result<(), PlanError> {
+    let unknown = crate::compute::unknown_object_sizes(app);
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    Err(PlanError::UnknownObjectSize {
+        sizes: unknown
+            .iter()
+            .map(|(id, size)| format!("{id}: {size:?}"))
+            .collect::<Vec<_>>()
+            .join(", "),
+    })
+}
+
 /// Extracts the 2-octet KNX manufacturer id from an application-program id.
 ///
 /// Application ids begin with the manufacturer prefix `M-XXXX` (four hex
@@ -316,6 +332,12 @@ pub fn plan_flash_with_memo(
             memo,
         );
     }
+
+    // A System B plan writes every descriptor's size code from the product's
+    // `ObjectSize`, so a size without a code refuses here. A System 7 plan
+    // keeps the product's own TYPE octet for such an object (the Berker
+    // 0701 `LegacyVarData` object, issue #545), so it is not refused there.
+    check_object_sizes(app)?;
 
     // 3. Assemble the op sequence to execute. A `MergedProcedure` app splits one
     //    logical download across several `<LoadProcedure MergeId=…>` blocks

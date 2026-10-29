@@ -70,6 +70,8 @@ const A_MEMORY_EXTENDED_WRITE: u16 = 0x1FB;
 const A_MEMORY_EXTENDED_WRITE_RESPONSE: u16 = 0x1FC;
 const A_MEMORY_EXTENDED_READ: u16 = 0x1FD;
 const A_MEMORY_EXTENDED_READ_RESPONSE: u16 = 0x1FE;
+const A_PROPERTY_DESCRIPTION_READ: u16 = 0x3D8;
+const A_PROPERTY_DESCRIPTION_RESPONSE: u16 = 0x3D9;
 const A_DEVICE_DESCRIPTOR_READ_SEL: u16 = 0x300;
 const A_DEVICE_DESCRIPTOR_RESPONSE: u16 = 0x340;
 const APCI_SELECTOR: u16 = 0x3C0;
@@ -156,6 +158,9 @@ struct DeviceCfg {
     max_segment_size: u32,
     /// `PID_MAX_APDU_LENGTH` on the device object; `None` refuses the read.
     max_apdu: Option<u16>,
+    /// The PDT the association table's `PID_TABLE` description reports:
+    /// `0x14` (PDT_GENERIC_04, format 1) by default, `0x12` for format 0.
+    association_pdt: u8,
 }
 
 impl Default for DeviceCfg {
@@ -166,6 +171,7 @@ impl Default for DeviceCfg {
             table_property_reads: true,
             max_segment_size: 0x400,
             max_apdu: None,
+            association_pdt: 0x14,
         }
     }
 }
@@ -560,6 +566,21 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
             return Reaction::Answer(A_PROPERTY_VALUE_RESPONSE, prop_refused(oi, pid, start));
         }
         return Reaction::Nak;
+    }
+
+    // A_PropertyDescription_Read of PID_TABLE (`[obj][pid][index]`, answered
+    // `[obj][pid][index][type][max:2][access]`): the association table
+    // reports its entry format (KNX 3/5/1 §4.17.5.2.5); anything else is
+    // "no such property" (zero elements).
+    if req_apci == A_PROPERTY_DESCRIPTION_READ && data.len() == 3 {
+        let (oi, pid) = (data[0], data[1]);
+        let assoc = s.object_types.get(usize::from(oi)) == Some(&OT_ASSOCIATION_TABLE);
+        let answer = if assoc && pid == PID_TABLE {
+            vec![oi, pid, 0, 0x80 | s.cfg.association_pdt, 0x00, 0xFF, 0x30]
+        } else {
+            vec![oi, pid, 0, 0, 0, 0, 0]
+        };
+        return Reaction::Answer(A_PROPERTY_DESCRIPTION_RESPONSE, answer);
     }
 
     Reaction::Nak
@@ -971,6 +992,31 @@ async fn plan_only_read_touches_no_load_state() -> TestResult {
         "a plan-only read must not write any load-state control"
     );
     assert!(s.ops.is_empty(), "a plan-only read performs no write op");
+    drop(handle);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_apply_tables_refuses_a_format_0_association_table() -> TestResult {
+    // Resources §4.17.5.2.5: PDT_GENERIC_02 (one-octet TSAP and ASAP) does
+    // not take the four-octet entries bussard writes. The write is refused
+    // before any load control or memory write (issue #545).
+    let cfg = DeviceCfg {
+        association_pdt: 0x12,
+        ..DeviceCfg::default()
+    };
+    let (outcome, state, handle) = run_apply(cfg).await?;
+    let err = outcome.err().ok_or("apply must refuse a format-0 table")?;
+    assert!(err.to_string().contains("format 0"), "{err}");
+    {
+        let s = lock(&state)?;
+        assert_eq!(
+            s.control_writes, 0,
+            "nothing unloaded or opened: {:?}",
+            s.ops
+        );
+        assert!(s.ops.is_empty(), "no write at all: {:?}", s.ops);
+    }
     drop(handle);
     Ok(())
 }

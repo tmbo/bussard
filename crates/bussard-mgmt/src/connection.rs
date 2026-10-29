@@ -1172,6 +1172,32 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
         self.recv_response().await
     }
 
+    /// [`request`](Self::request) for an optional service a device may
+    /// acknowledge but never answer: `Ok(None)` when the device stayed silent
+    /// after its `T_ACK`. The response timeout marks the connection closed;
+    /// since the device acknowledged the request the peer is alive and the
+    /// sequence numbers agree, so the connection is reopened, as
+    /// [`authorize`](Self::authorize) does for a device without authorize.
+    pub(crate) async fn request_optional(
+        &mut self,
+        apci: u16,
+        data: &[u8],
+    ) -> Result<Option<(u16, Vec<u8>)>> {
+        let exchanges_before = self.numbered_exchanges;
+        match self.request(apci, data).await {
+            Ok(pair) => Ok(Some(pair)),
+            Err(MgmtError::NoResponse { .. })
+            | Err(MgmtError::MidSessionSilence {
+                kind: SilenceKind::NoResponse,
+                ..
+            }) if self.numbered_exchanges > exchanges_before => {
+                self.closed = false;
+                Ok(None)
+            }
+            Err(other) => Err(other),
+        }
+    }
+
     /// Presents an access `key` with `A_Authorize_Request` and returns the
     /// authorization outcome (issue #52 finding #1).
     ///

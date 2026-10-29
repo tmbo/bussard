@@ -55,6 +55,8 @@ const CHANNEL: u8 = 0x33;
 const A_PROPERTY_VALUE_READ: u16 = 0x3D5;
 const A_PROPERTY_VALUE_RESPONSE: u16 = 0x3D6;
 const A_PROPERTY_VALUE_WRITE: u16 = 0x3D7;
+const A_PROPERTY_DESCRIPTION_READ: u16 = 0x3D8;
+const A_PROPERTY_DESCRIPTION_RESPONSE: u16 = 0x3D9;
 const A_MEMORY_READ_SEL: u16 = 0x200;
 const A_MEMORY_RESPONSE: u16 = 0x240;
 const A_MEMORY_WRITE_SEL: u16 = 0x280;
@@ -1181,6 +1183,16 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
         return Reaction::Answer(
             A_PROPERTY_VALUE_RESPONSE,
             prop_response(oi, pid, _count, start, value),
+        );
+    }
+
+    // A_PropertyDescription_Read: this device describes no property ("no
+    // such property", zero elements), so the pre-flight keeps the default
+    // association table format.
+    if req_apci == A_PROPERTY_DESCRIPTION_READ && data.len() == 3 {
+        return Reaction::Answer(
+            A_PROPERTY_DESCRIPTION_RESPONSE,
+            vec![data[0], data[1], data[2], 0, 0, 0, 0],
         );
     }
 
@@ -3853,6 +3865,7 @@ async fn test_open_with_facts_reuses_the_preflight_table_and_authorize_verdict()
         }),
         max_apdu: None,
         max_apdu_absent: false,
+        association_pdt: None,
     };
     let app = fabricated_app()?;
     let plan = plan_flash(
@@ -5018,6 +5031,7 @@ async fn da_tp_preflight_then_flash(
         authorize: Some(authorize),
         max_apdu,
         max_apdu_absent: l4.max_apdu_absence() == Some(bussard_mgmt::MaxApduAbsence::Answered),
+        association_pdt: resident.association_pdt,
     };
     if phase == WritePhase::AdoptClosed {
         // The device goes silent on this connection; the next request times

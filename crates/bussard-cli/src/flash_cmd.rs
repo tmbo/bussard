@@ -454,6 +454,7 @@ pub fn run(
                         };
                         if let Some(state) = &resident {
                             facts.object_table = state.object_table.clone();
+                            facts.association_pdt = state.association_pdt;
                         }
                         // The plan needs only the mask, so it is built here, and the
                         // parameter read-back (issue #109) rides this same
@@ -1561,6 +1562,9 @@ struct FreshnessDecision {
 ///   `SameApplication` through [`bussard_download::flash_gate`]). Refused unless `force`, because the flash would destroy it with no
 ///   backup; the message names the resident application and the two ways
 ///   forward.
+/// - [`Freshness::Mismatch`] — the device is not one this download fits (an
+///   association table in a format bussard does not write). Refused unless
+///   `force`, before anything is unloaded.
 /// - [`Freshness::Unknown`] — the state could not be read. Refused unless
 ///   `force`: "unreadable" is not evidence of an empty device, and a flash with
 ///   no backup must not be what finds out.
@@ -1647,6 +1651,28 @@ fn decide_freshness(
                     \n\
                      Re-flashing the SAME application needs no --force; this device does not \
                      report it."
+                ),
+                proceed: false,
+                prompt_note: None,
+            }
+        }
+        Freshness::Mismatch { reason } => {
+            if force {
+                return FreshnessDecision {
+                    message: format!(
+                        "\nWARNING: --force — {target} via {gateway} does not match this \
+                         download: {reason}. Flashing anyway."
+                    ),
+                    proceed: true,
+                    prompt_note: Some(format!("{target} does not match this download ({reason}).")),
+                };
+            }
+            FreshnessDecision {
+                message: format!(
+                    "\nREFUSING to flash {target}: {reason}.\n\
+                     Nothing was unloaded or written. Check that the address names the \
+                     device the model means,\n\
+                     or re-run with --force to flash anyway."
                 ),
                 proceed: false,
                 prompt_note: None,

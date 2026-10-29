@@ -508,6 +508,7 @@ pub fn identity_gate(plan: &FlashPlan, resident: Option<&ResidentState>) -> Resu
         Freshness::Unknown { reason } => Err(format!(
             "the device's load state could not be read ({reason})"
         )),
+        Freshness::Mismatch { reason } => Err(format!("the device does not match: {reason}")),
         Freshness::Resident {
             resident: Some(id), ..
         } => Err(format!(

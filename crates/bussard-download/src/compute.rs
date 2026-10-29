@@ -309,33 +309,74 @@ pub fn compute_group_object_table(descriptors: &[GroupObjectDescriptor]) -> Opti
     Some(table_image_with_count(count, &body))
 }
 
-/// Maps an ETS `ObjectSize` string (e.g. `"1 Bit"`, `"1 Byte"`, `"4 Bit"`) to
-/// the KNX group-object descriptor size code (0 = 1 bit, 1 = 2 bits … per the
-/// standard's size-code table), defaulting to `0` (1 bit) when unrecognised.
+/// The value field type code of an ETS `ObjectSize` string (`"1 Bit"`,
+/// `"4 Bit"`, `"2 Bytes"`, `"5 Bytes"`), per KNX 3/5/1 Resources
+/// §4.18.6.2.4.1.4, Table 88, or `None` for a size the table has no code for.
 ///
-/// This is the inverse of the read side's size decoding; like the table itself
-/// it is unverified against a real device and exists so the descriptor carries a
-/// plausible size until the format is confirmed on the wire.
+/// Codes 0 to 6 are 1 to 7 bits, 7 to 14 are 1, 2, 3, 4, 6, 8, 10 and 14
+/// octets (the System 7 Type Octet table, §4.18.3.1.2.1, ends there), 15 to 20
+/// are 5, 7, 9, 11, 12 and 13 octets, 21 to 254 are 15 to 248 octets
+/// (code - 6), and 255 is 252 octets, the extended-frame maximum. A size with
+/// no code (`LegacyVarData`, 249 to 251 octets, a typo) is `None`.
+pub fn object_size_code(object_size: &str) -> Option<u8> {
+    let norm = object_size.trim().to_ascii_lowercase();
+    let (number, unit) = norm.split_once(' ')?;
+    let n: u16 = number.parse().ok()?;
+    match unit.trim() {
+        "bit" | "bits" => (1..=7).contains(&n).then(|| (n - 1) as u8),
+        "byte" | "bytes" | "octet" | "octets" => match n {
+            1 => Some(7),
+            2 => Some(8),
+            3 => Some(9),
+            4 => Some(10),
+            6 => Some(11),
+            8 => Some(12),
+            10 => Some(13),
+            14 => Some(14),
+            5 => Some(15),
+            7 => Some(16),
+            9 => Some(17),
+            11 => Some(18),
+            12 => Some(19),
+            13 => Some(20),
+            15..=248 => u8::try_from(n + 6).ok(),
+            252 => Some(255),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The value field type code for a com-object's `ObjectSize` (see
+/// [`object_size_code`]), `0` (1 bit) when the product declares none.
+///
+/// A declared size without a code also maps to `0` here, so the descriptor
+/// builders stay infallible; a System B flash plan first refuses an
+/// application that declares such a size ([`unknown_object_sizes`]), so no plan
+/// writes the fallback. (System 7 keeps the product's TYPE octet instead.)
 pub fn size_code_from_object_size(object_size: Option<&str>) -> u8 {
-    // The KNX size-code table (3/5/1) enumerates: 1 bit, 2 bits, 3 bits, 4 bits,
-    // 5 bits, 6 bits, 7 bits, 1 byte, 2 bytes, 3 bytes, 4 bytes, 6 bytes, 8
-    // bytes, 10 bytes, 14 bytes — codes 0..=14 in that order.
-    const TABLE: [&str; 15] = [
-        "1 bit", "2 bit", "3 bit", "4 bit", "5 bit", "6 bit", "7 bit", "1 byte", "2 byte",
-        "3 byte", "4 byte", "6 byte", "8 byte", "10 byte", "14 byte",
-    ];
-    let Some(raw) = object_size else { return 0 };
-    // Normalise: lower-case, singularise "bytes"/"bits" to "byte"/"bit".
-    let norm = raw
-        .to_ascii_lowercase()
-        .replace("bytes", "byte")
-        .replace("bits", "bit");
-    let norm = norm.trim();
-    TABLE
-        .iter()
-        .position(|entry| *entry == norm)
-        .map(|i| i as u8)
-        .unwrap_or(0)
+    object_size.and_then(object_size_code).unwrap_or(0)
+}
+
+/// The com-objects (and refs) of `app` whose declared `ObjectSize` has no
+/// value field type code (see [`object_size_code`]), as `(id, size)` pairs
+/// sorted by id. A System B flash plan refuses the application when this is
+/// not empty.
+pub fn unknown_object_sizes(app: &bussard_prod::ApplicationProgram) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = app
+        .com_objects
+        .values()
+        .filter_map(|o| Some((o.id.as_str(), o.object_size.as_deref()?)))
+        .chain(
+            app.com_object_refs
+                .values()
+                .filter_map(|r| Some((r.id.as_str(), r.object_size.as_deref()?))),
+        )
+        .filter(|(_, size)| object_size_code(size).is_none())
+        .map(|(id, size)| (id.to_string(), size.to_string()))
+        .collect();
+    out.sort();
+    out
 }
 
 /// Builds group-object descriptors from a device's resolved com-objects,
@@ -802,9 +843,57 @@ mod tests {
         assert_eq!(size_code_from_object_size(Some("4 Bit")), 3);
         assert_eq!(size_code_from_object_size(Some("1 Byte")), 7);
         assert_eq!(size_code_from_object_size(Some("2 Bytes")), 8);
-        // Unknown / absent default to 1-bit (code 0).
-        assert_eq!(size_code_from_object_size(Some("weird")), 0);
         assert_eq!(size_code_from_object_size(None), 0);
+    }
+
+    #[test]
+    fn test_object_size_code_covers_table_88() {
+        // Resources §4.18.6.2.4.1.4, Table 88, every listed row.
+        let rows: [(&str, u8); 24] = [
+            ("1 Bit", 0),
+            ("2 Bit", 1),
+            ("3 Bit", 2),
+            ("4 Bit", 3),
+            ("5 Bit", 4),
+            ("6 Bit", 5),
+            ("7 Bit", 6),
+            ("1 Byte", 7),
+            ("2 Bytes", 8),
+            ("3 Bytes", 9),
+            ("4 Bytes", 10),
+            ("6 Bytes", 11),
+            ("8 Bytes", 12),
+            ("10 Bytes", 13),
+            ("14 Bytes", 14),
+            ("5 Bytes", 15),
+            ("7 Bytes", 16),
+            ("9 Bytes", 17),
+            ("11 Bytes", 18),
+            ("12 Bytes", 19),
+            ("13 Bytes", 20),
+            ("15 Bytes", 21),
+            ("16 Bytes", 22),
+            ("17 Bytes", 23),
+        ];
+        for (size, code) in rows {
+            assert_eq!(object_size_code(size), Some(code), "{size}");
+        }
+        assert_eq!(object_size_code("248 Bytes"), Some(254));
+        assert_eq!(object_size_code("252 Bytes"), Some(255));
+    }
+
+    #[test]
+    fn test_object_size_code_refuses_sizes_without_a_code() {
+        for size in [
+            "LegacyVarData",
+            "249 Bytes",
+            "251 Bytes",
+            "8 Bit",
+            "0 Bytes",
+            "weird",
+        ] {
+            assert_eq!(object_size_code(size), None, "{size}");
+        }
     }
 
     #[test]
