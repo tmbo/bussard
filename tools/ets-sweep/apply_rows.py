@@ -78,9 +78,11 @@ def steps(series: Path) -> list[Path]:
 
 
 def rows(series: Path, product: Path, app: str, work: Path, ia: str = "1.1.1",
-         shared: Path | None = None) -> list[str]:
+         shared: Path | None = None, line_steps: str = "") -> list[str]:
     """One `run=apply` row per partial step (see the module doc); builds the
-    models. `shared` is the product import (made under `work` when None)."""
+    models. `shared` is the product import (made under `work` when None). A
+    step whose name starts with a letter of `line_steps` gets a second row
+    through line mode (`run=apply-line`, #478)."""
     runs = steps(series)
     if len(runs) < 2:
         raise SystemExit(f"{series}: needs a full download and at least one partial step")
@@ -98,8 +100,9 @@ def rows(series: Path, product: Path, app: str, work: Path, ia: str = "1.1.1",
         model = oracle_model.build(work / run.name / "model", product, app, ia=ia, shared=shared,
                                    links=links_from_objects(objects))
         base = ",".join(str(r / "ets.pcapng") for r in runs[:k])
-        out.append(f"{ia}|{run / 'ets.pcapng'}|{product}|{app}|{run.name}||"
-                   f"run=apply base={base} dir={model} lsm={lsm_access(run)}")
+        for how in ["apply"] + (["apply-line"] if run.name[:1] in line_steps else []):
+            out.append(f"{ia}|{run / 'ets.pcapng'}|{product}|{app}|{run.name} ({how})||"
+                       f"run={how} base={base} dir={model} lsm={lsm_access(run)}")
     return out
 
 
@@ -111,11 +114,13 @@ def main() -> int:
     ap.add_argument("--ia", default="1.1.1")
     ap.add_argument("--work", type=Path, help="models and rows here (default: <series>/apply-oracle)")
     ap.add_argument("--rows", type=Path, help="the rows file (default: <work>/rows.txt)")
+    ap.add_argument("--line-step", default="", help="step letters (e.g. b) that also get a line-mode row")
     ap.add_argument("--run", action="store_true", help="run the offline oracle on the rows")
     args = ap.parse_args()
     work = (args.work or args.series / "apply-oracle").resolve()
     work.mkdir(parents=True, exist_ok=True)
-    lines = rows(args.series.resolve(), args.product.resolve(), args.app, work, args.ia)
+    lines = rows(args.series.resolve(), args.product.resolve(), args.app, work, args.ia,
+                 line_steps=args.line_step)
     rows_file = args.rows or work / "rows.txt"
     rows_file.write_text("\n".join(lines) + "\n")
     print(f"{sum(1 for l in lines if not l.startswith('#'))} row(s) in {rows_file}")

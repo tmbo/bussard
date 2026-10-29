@@ -251,3 +251,37 @@ A is identical under `flash`): `apply` writes the address table's first entry
 where ETS allocates the whole segment (`0x00ED`, `0x00EB`) with `ff`. In step
 D ETS also restarts LSM 3 and rewrites the unchanged group-object table, which
 `apply` skips.
+`apply_rows.py --line-step b` adds a `run=apply-line` row for step B (`apply
+--line 1.1`, the line mode's own path to the tables); on the EK-E72 it gives
+the same verdict as the device row.
+
+## Part 7: links variant and partial-download series (#478)
+
+**Links variant, every product.** `defaults.py --variant links` runs the
+applications the defaults sweep captured once more, with a few links made
+before the download (`series.links_hook`: three objects linked to 1/0/1..,
+transmitting objects first, and a second address on one of them), into
+`captures/ets-sweep/<app>/links/` with the object table ETS showed after
+linking (`objects.json`); outcomes in `results/links.json`.
+`oracle.py --variant links` builds each row's model with those links
+(`apply_rows.links_from_objects`) and writes `results/oracle-links.json`;
+`summary.py` adds the links variant's parity per mask family.
+
+**Partial-download series, representative products.**
+
+    uv run tools/ets-sweep/series.py partial [--only M-00B6] [--steps abcd] [--oracle]
+
+runs steps A to D (`a-full-links`, `b-partial-add-<n>`, `c-partial-remove-<n>`,
+`d-partial-second-ga`) in one sim process per product, each step's slice of
+the sim's pcap kept in its own run directory with `objects.json` and
+`objects.png`. The objects come from what ETS shows at defaults
+(`series.plan_links`; `series.py plan <objects.json>` prints the plan
+offline). `results/series.json` records per product why it was chosen and each
+step's outcome, and `summary.py` lists it. `--oracle` writes and runs the
+`run=apply` rows plus the `line apply` row of step B on the Mac
+(`--no-ets --oracle` for series already recorded). The representatives
+(`series.REPRESENTATIVES`): Jung 3361-1M (0705, load control through
+properties), MDT AKK (0705, through memory), Ekinex EK-E72 (0705,
+group-object table in its own segment), Zennio ACTinBOX MAX6 (0701; the
+Theben 4940275 the issue names failed the defaults sweep), KNX Virtual DA.tp
+(07B0).

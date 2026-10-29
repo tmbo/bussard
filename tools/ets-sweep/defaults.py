@@ -40,6 +40,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import catalog  # noqa: E402
+import series  # noqa: E402
 import sweep  # noqa: E402
 import vm  # noqa: E402
 
@@ -56,6 +57,16 @@ CORPUS = Path(os.environ.get("BUSSARD_PRODUCT_CORPUS", REPO / "tests-support" / 
 APPS = HERE / "catalog-apps.json"
 CATALOG = HERE / "catalog.json"
 RESULTS = HERE / "results" / "defaults.json"
+# The sweep variants: the run directory name and the results file.
+VARIANTS = {"plain-defaults": "defaults.json", "links": "links.json"}
+
+
+def results_path(variant: str) -> Path:
+    """The outcome manifest of a sweep variant (`links` is #478's links
+    variant: the defaults download plus a few links)."""
+    return HERE / "results" / VARIANTS[variant]
+
+
 SIM_MASKS = {"07B0", "0705", "0701", "0021"}
 
 
@@ -281,13 +292,21 @@ def main() -> int:
     ap.add_argument("--redo-failed", action="store_true", help="run again what is not `captured` or skipped")
     ap.add_argument("--relabel", action="store_true",
                     help="only mark captured results whose catalog row shows another version (no VM)")
+    ap.add_argument("--variant", default="plain-defaults", choices=sorted(VARIANTS),
+                    help="links: link a few objects before the download (#478), "
+                         "for the applications the defaults sweep captured; results/links.json")
     args = ap.parse_args()
 
-    results = json.loads(RESULTS.read_text()) if RESULTS.exists() else {}
+    results_file = results_path(args.variant)
+    results = json.loads(results_file.read_text()) if results_file.exists() else {}
+    # The links variant runs what the defaults sweep captured, from the
+    # identity that run learned.
+    captured = json.loads(RESULTS.read_text()) if args.variant != "plain-defaults" and RESULTS.exists() else {}
+    hook = series.links_hook() if args.variant == "links" else None
     if args.relabel:
         changed = relabel_wrong_rows(results)
         if changed:
-            RESULTS.write_text(json.dumps(dict(sorted(results.items())), indent=1, ensure_ascii=False) + "\n")
+            results_file.write_text(json.dumps(dict(sorted(results.items())), indent=1, ensure_ascii=False) + "\n")
         print(f"relabelled {len(changed)}: {', '.join(changed)}")
         return 0
     todo = jobs()
@@ -301,7 +320,7 @@ def main() -> int:
         todo = todo[k::n]
 
     def save() -> None:
-        RESULTS.write_text(json.dumps(dict(sorted(results.items())), indent=1, ensure_ascii=False) + "\n")
+        results_file.write_text(json.dumps(dict(sorted(results.items())), indent=1, ensure_ascii=False) + "\n")
 
     c = vm.connect()
     done = 0
@@ -309,6 +328,8 @@ def main() -> int:
 
     def runnable(job: dict) -> bool:
         """Record the skips; True when the job needs ETS."""
+        if args.variant != "plain-defaults" and (captured.get(job["id"]) or {}).get("outcome") != "captured":
+            return False
         prev = results.get(job["id"])
         if prev and not args.redo and not (args.redo_failed and not prev["outcome"].startswith(("captured", "skipped"))):
             return False
@@ -397,8 +418,9 @@ def main() -> int:
                 fallback = re.sub(r"\s+v?\d+(\.\d+)*$", "", job["name"] or "").strip()
                 # Start from the identity a previous run learned from ETS.
                 r = sweep.run_learning(c, path, job["id"], str(job["order_numbers"][0]),
-                                       mask=job["mask"], fallback_search=fallback,
-                                       properties=seed_properties(path, job["id"], prev))
+                                       mask=job["mask"], fallback_search=fallback, variant=args.variant,
+                                       before_download=hook,
+                                       properties=seed_properties(path, job["id"], prev or captured.get(job["id"])))
             except Exception as exc:  # noqa: BLE001 - a lost ssh link: reconnect and go on
                 r = {"outcome": "driver-error", "error": f"{type(exc).__name__}: {exc}"[:600]}
                 c = vm.connect()
@@ -416,6 +438,7 @@ def main() -> int:
                 "attempts": r.get("attempt"),
                 "end": r.get("end"),
                 "learned_properties": r.get("learned_properties"),
+                "links": (r.get("before") or {}).get("links"),
             }
             save()
             print(f"{r['outcome']:13} {job['mask']} {r.get('seconds', 0):4}s ops={r.get('ops')} {job['id']} {job['name']!s:.40}"

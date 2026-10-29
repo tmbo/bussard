@@ -167,6 +167,20 @@ def render(manifest: dict, delta: list[dict]) -> str:
         for d in delta:
             flag = "**regression**" if d["regression"] else ""
             out.append(f"| {d['app']} | {d.get('mask') or ''} | {d['before']} | {d['after']} | {flag} |")
+    links = manifest.get("links")
+    if links:
+        per_mask = {}
+        for r in links.values():
+            row = per_mask.setdefault(r["mask"] or "?", {})
+            row[r["verdict"]] = row.get(r["verdict"], 0) + 1
+        out += ["", "## Links variant parity per mask family (#478)", ""] + table(per_mask, "mask")
+    series = manifest.get("series")
+    if series:
+        out += ["", "## Partial-download series (#478)", "",
+                "| application | why it was chosen | steps |", "| --- | --- | --- |"]
+        for app, s in sorted(series.items()):
+            steps = s.get("error") or ", ".join(f"{k}: {v.get('ets')}" for k, v in (s.get("steps") or {}).items())
+            out.append(f"| {app} | {s.get('why', '')} | {str(steps).replace('|', '/')} |")
     return "\n".join(out) + "\n"
 
 
@@ -188,6 +202,14 @@ def main() -> int:
     now = datetime.now(timezone.utc)
     manifest = build_manifest(defaults, load(res / "oracle.json", {}), load(res / "benign.json", {}),
                               load(res / "run.json", {}), now.isoformat(timespec="seconds"))
+    links = load(res / "links.json", None)
+    if links:
+        # The links variant (#478): its own outcomes and oracle verdicts.
+        manifest["links"] = build_manifest(links, load(res / "oracle-links.json", {}), load(res / "benign.json", {}),
+                                           {}, manifest["generated"])["apps"]
+    series = load(res / "series.json", None)
+    if series:
+        manifest["series"] = {app: {k: s.get(k) for k in ("why", "steps", "error", "when")} for app, s in series.items()}
     history = res / "history"
     delta = changes(previous_manifest(history), manifest)
     (res / "manifest.json").write_text(json.dumps(manifest, indent=1, ensure_ascii=False) + "\n")

@@ -18,7 +18,39 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import apply_rows  # noqa: E402
 import defaults  # noqa: E402
 import oracle_model  # noqa: E402
+import series  # noqa: E402
 import summary  # noqa: E402
+
+
+class TestSeries(unittest.TestCase):
+    # The EK-E72's object table at defaults, as the driver reads it.
+    E72 = [{"number": 1, "gas": [], "flags": "KLÜ"}, {"number": 20, "gas": [], "flags": "KLÜ"},
+           {"number": 22, "gas": [], "flags": "KS"}, {"number": 24, "gas": [], "flags": "KLÜ"},
+           {"number": 27, "gas": [], "flags": "KLÜ"}, {"number": 29, "gas": [], "flags": "KLSÜA"},
+           {"number": 31, "gas": [], "flags": "KLSÜA"}]
+
+    def test_plan_links_senders_first_then_free_and_second(self):
+        plan = series.plan_links(self.E72)
+        self.assertEqual(plan["initial"], [(1, "1/0/1"), (20, "1/0/2"), (24, "1/0/3"), (27, "1/0/4")])
+        self.assertEqual(plan["add"], (22, "1/0/9"))
+        # No initial object can be written: the second address goes on the first.
+        self.assertEqual(plan["second"], (1, "1/0/2"))
+
+    def test_plan_links_second_prefers_writable(self):
+        plan = series.plan_links(self.E72[4:] + self.E72[:1], n=2)
+        self.assertEqual(plan["initial"], [(27, "1/0/1"), (29, "1/0/2")])
+        self.assertEqual(plan["second"], (29, "1/0/1"))
+        self.assertEqual(plan["add"], (31, "1/0/9"))
+
+    def test_plan_links_empty_table(self):
+        self.assertEqual(series.plan_links([]), {"initial": [], "add": None, "second": None})
+
+    def test_pcap_slice_from_offset_drops_cut_record(self):
+        head = b"\xd4\xc3\xb2\xa1" + bytes(20)
+        rec = lambda body: bytes(8) + len(body).to_bytes(4, "little") * 2 + body  # noqa: E731
+        data = head + rec(b"aa") + rec(b"bbb") + rec(b"cccc")[:-1]
+        out, n = series.pcap_slice(data, 24 + len(rec(b"aa")))
+        self.assertEqual((out, n), (head + rec(b"bbb"), 1))
 
 
 class TestApplyRows(unittest.TestCase):
@@ -212,6 +244,14 @@ class TestSummary(unittest.TestCase):
                          [("M-0002_A-0001-10-0000", "identical", "differs", True),
                           ("M-0083_A-0003-10-0000", "differs", "identical", False)])
         self.assertEqual(summary.changes(None, before), [])
+
+    def test_render_links_and_series_sections(self):
+        m = self.manifest()
+        m["links"] = {"M-0002_A-0001-10-0000": {"mask": "07B0", "verdict": "differs"}}
+        m["series"] = {"M-00B6_A-4537-03-DE59": {"why": "own GO segment", "steps": {"a-full-links": {"ets": "ok"}}}}
+        text = summary.render(m, [])
+        self.assertIn("## Links variant parity per mask family (#478)", text)
+        self.assertIn("| M-00B6_A-4537-03-DE59 | own GO segment | a-full-links: ok |", text)
 
     def test_render_tables(self):
         text = summary.render(self.manifest(), [])

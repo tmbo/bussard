@@ -361,9 +361,16 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
             variant: str = "plain-defaults", mode: str = "application", project: str = "ets-sweep",
             connection: str = "knx-sim", sim_port: int = 3672, timeout: int = 900, quiet: int = 45,
             first_traffic: int = 120, mask: str = "", properties: list[dict] | None = None,
-            fallback_search: str = "") -> dict:
+            fallback_search: str = "", before_download=None, after_download=None,
+            secure: dict | None = None) -> dict:
     """One ETS download of `app` into a sim inside the VM; returns the result
-    and leaves capture, sim log, driver.json and ops.txt in the run directory."""
+    and leaves capture, sim log, driver.json and ops.txt in the run directory.
+
+    `before_download(flow, out)` runs after the device is added and the
+    connection selected (the links variant links objects there, #478);
+    `after_download(flow, out)` once the download ended (the secure variant
+    exports the keyring, #423). Each returns a dict kept in the result under
+    `before` / `after`. `secure` is the sim device's `security:` config."""
     out = CAPTURES / app / variant
     out.mkdir(parents=True, exist_ok=True)
     version = app_version(app) if version is None else version
@@ -372,7 +379,7 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
     t0 = time.time()
     since = vm_now(c)
     try:
-        sim = RemoteSim(c, knxprod.resolve(), app, ia, sim_port, None, out / "sim.log", mask=mask, properties=properties)
+        sim = RemoteSim(c, knxprod.resolve(), app, ia, sim_port, secure, out / "sim.log", mask=mask, properties=properties)
     except RuntimeError as exc:
         result.update({"outcome": "sim-refused", "error": str(exc)[-600:], "seconds": round(time.time() - t0)})
         (out / "driver.json").write_text(json.dumps(result, indent=1, ensure_ascii=False))
@@ -398,6 +405,8 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
             raise RuntimeError(f"catalog add added nothing: {add.get('row')}")
         result["catalog_row"] = add.get("row")
         flow("select_connection", name=connection)
+        if before_download is not None:
+            result["before"] = before_download(flow, out)
         flow("download", ia=ia, mode=mode)
         # Wait for the end of the download, whichever signal comes first:
         # - success: the device restarted (not a master reset) after its load
@@ -437,6 +446,8 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
             if result["ets"] != "unknown" or time.time() - settle > 120:
                 break
             time.sleep(5)
+        if after_download is not None:
+            result["after"] = after_download(flow, out)
     except Exception as exc:  # noqa: BLE001 - recorded per application, the batch goes on
         result["error"] = str(exc)[:600]
     finally:

@@ -38,6 +38,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import defaults  # noqa: E402
+import apply_rows  # noqa: E402
 import oracle_model  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
@@ -77,6 +78,15 @@ def catalog_row_name(run_dir: Path) -> str | None:
         return None
     row = (driver.get("driver") or {}).get("catalog_add", {}).get("row") or {}
     return row.get("name")
+
+
+def variant_links(run_dir: Path) -> dict:
+    """The links of a links-variant row: what ETS's object table showed after
+    the driver linked the objects (objects.json in the run directory)."""
+    try:
+        return apply_rows.links_from_objects(json.loads((run_dir / "objects.json").read_text()))
+    except (OSError, ValueError):
+        return {}
 
 
 def shared_root(captures: Path, work: Path | None) -> Path:
@@ -126,11 +136,15 @@ def main() -> int:
     ap.add_argument("--redo", action="store_true")
     ap.add_argument("--captures", type=Path, default=CAPTURES, help="the sweep captures (default %(default)s)")
     ap.add_argument("--work", type=Path, help="write the models and oracle output here, not next to the captures")
-    ap.add_argument("--out", type=Path, default=OUT, help="the results file (default %(default)s)")
+    ap.add_argument("--out", type=Path, help=f"the results file (default {OUT}, results/oracle-<variant>.json for a variant)")
     ap.add_argument("--seed-models", action="store_true",
                     help="take the model the sweep imported next to a capture as the product import instead of importing (once per product file)")
-    ap.add_argument("--defaults", type=Path, default=defaults.RESULTS, help="the sweep results (default %(default)s)")
+    ap.add_argument("--defaults", type=Path, help="the sweep results (default: the variant's, results/defaults.json)")
+    ap.add_argument("--variant", default="plain-defaults", choices=sorted(defaults.VARIANTS),
+                    help="links: the links variant (#478); each row's model gets the links ETS showed (objects.json)")
     args = ap.parse_args()
+    args.defaults = args.defaults or defaults.results_path(args.variant)
+    args.out = args.out or (OUT if args.variant == "plain-defaults" else OUT.with_name(f"oracle-{args.variant}.json"))
     res = json.loads(args.defaults.read_text())
     out = json.loads(args.out.read_text()) if args.out.exists() else {}
     wanted = [w.lower() for w in args.filter.split(",") if w]
@@ -142,7 +156,8 @@ def main() -> int:
         if app in out and not args.redo and out[app].get("capture_when") == entry["when"]:
             continue
         try:
-            v = run_row(app, entry, args.captures, args.work, args.seed_models)
+            v = run_row(app, entry, args.captures, args.work, args.seed_models, variant=args.variant,
+                        links=variant_links(args.captures / app / args.variant) if args.variant != "plain-defaults" else None)
         except Exception as exc:  # noqa: BLE001 - recorded, the next row runs
             v = {"verdict": "oracle-error", "error": str(exc)[:400]}
         v.update({"name": entry.get("name"), "mask": entry.get("mask"), "capture_when": entry["when"],

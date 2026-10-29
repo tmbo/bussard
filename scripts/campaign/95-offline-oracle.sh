@@ -67,7 +67,9 @@
 #                                state after it, and the load-control records,
 #                                with the capture's (ETS's partial download).
 #                                Not frame by frame: ETS rewrites a table in
-#                                12-octet chunks where bussard writes an octet
+#                                12-octet chunks where bussard writes an octet.
+#                                run=apply-line: the same through line mode
+#                                (`apply --line <area.line>`)
 #                                base=A,B      the captures that led to the step,
 #                                              in order (comma-separated)
 #                                dir=MODEL     the model of the step (its links)
@@ -349,7 +351,7 @@ EOF
 # the state after ETS's partial download (the row's capture). The sim records
 # bussard's session as $dir/sim/bussard.pcap.
 apply_row() {
-  local dir="$1" device="$2" capture="$3" product="$4" application="$5" base="$6" model="$7" lsm="$8"
+  local dir="$1" device="$2" capture="$3" product="$4" application="$5" base="$6" model="$7" lsm="$8" how="${9:-apply}"
   local sim_bin="${KNX_SIM_BIN:-$REPO/knx-sim/target/debug/knx-sim}"
   if [ ! -x "$sim_bin" ]; then
     not_comparable "$dir" "$device" "no knx-sim at $sim_bin (cargo build in knx-sim/, or export KNX_SIM_BIN)"
@@ -396,10 +398,14 @@ PY
     fi
     sleep 0.2; waited=$((waited + 1))
   done
-  note "knx-sim on 127.0.0.1:$port, $(grep -c '"replayed"\|replayed' "$sim/sim.log") capture(s) replayed"
+  note "knx-sim on 127.0.0.1:$port, $(grep -c 'replayed' "$sim/sim.log") capture(s) replayed"
+  # run=apply-line goes through line mode (`apply --line`), which has its own
+  # path to the tables (#478); the model holds the one device.
+  local target=("$device")
+  [ "$how" = apply-line ] && target=(--line "${device%.*}")
   local rc=0
   env -u BUSSARD_KEYRING BUSSARD_NO_DOTENV=1 "$BUSSARD_BIN" --gateway "127.0.0.1:$port" \
-    apply "$device" --dir "$model" --yes >"$dir/apply.log" 2>"$dir/apply.err" || rc=$?
+    apply "${target[@]}" --dir "$model" --yes >"$dir/apply.log" 2>"$dir/apply.err" || rc=$?
   kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
   # A refused apply writes nothing; the state comparison then says so.
   [ "$rc" = 0 ] || note "bussard apply exited $rc: $(grep -v '^\s*$' "$dir/apply.err" | tail -1 | cut -c1-160)"
@@ -439,8 +445,8 @@ run_row() {
   [ -n "$scope" ] && scope_args=(--scope "$scope")
   [ -n "$phase" ] && scope_args+=(--phase "$phase")
   case "$run" in
-    ""|secure-on|secure-off|apply) ;;
-    *) die "$device: unknown run=$run (secure-on, secure-off or apply)" ;;
+    ""|secure-on|secure-off|apply|apply-line) ;;
+    *) die "$device: unknown run=$run (secure-on, secure-off, apply or apply-line)" ;;
   esac
   [ -n "$device" ] || return 0
   local dir="$OUT/$key"
@@ -469,8 +475,8 @@ PY
     mark_skipped "$dir" "capture not found"
     return 0
   fi
-  if [ "$run" = apply ]; then
-    apply_row "$dir" "$device" "$capture" "$product" "$application" "$base" "$rowdir" "$lsm"
+  if [ "$run" = apply ] || [ "$run" = apply-line ]; then
+    apply_row "$dir" "$device" "$capture" "$product" "$application" "$base" "$rowdir" "$lsm" "$run"
     return 0
   fi
 
