@@ -178,16 +178,36 @@ pub async fn write_tool_key<Ch: L4Channel>(
     Ok(())
 }
 
+/// The `PID_SEQUENCE_NUMBER_SENDING` value to write: the clock, or the
+/// device's own next sequence when that is higher (issue #535).
+///
+/// The standard never lowers a device's counter: the tool syncs first and then
+/// sets (KNX 3/3/7 §5.3.1), and every receiver that keeps the device's last
+/// valid sequence would drop its frames until a lower counter caught up.
+pub fn sequence_number_to_write(clock: u64, device_next: Option<u64>) -> u64 {
+    device_next.map_or(clock, |next| next.max(clock))
+}
+
 /// Writes the device's Data Secure send sequence (`PID_SEQUENCE_NUMBER_SENDING`,
-/// 6 octets), as ETS does right after the tool key.
+/// 6 octets), as ETS does right after the tool key, and returns the value
+/// written.
+///
+/// The value is [`sequence_number_to_write`] of `clock` and the sequence the
+/// device's Sync (and any frame since) reported. The device protects the
+/// confirmation of the write already with the new value (KNX 3/5/1
+/// §6.3.13.3 NOTE 110), so the connection's freshness floor for the device
+/// moves to it before the request goes out.
 ///
 /// # Errors
 ///
-/// As [`write_property_ext_con`].
+/// As [`write_property_ext_con`], and the Sync's errors.
 pub async fn write_sequence_number<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
-    sequence: u64,
-) -> Result<()> {
+    clock: u64,
+) -> Result<u64> {
+    l4.ensure_synced().await?;
+    let sequence = sequence_number_to_write(clock, l4.device_next_sequence());
+    l4.expect_device_sequence(sequence);
     let octets = sequence.to_be_bytes();
     write_property_ext_con(
         l4,
@@ -196,7 +216,8 @@ pub async fn write_sequence_number<Ch: L4Channel>(
         1,
         &octets[2..],
     )
-    .await
+    .await?;
+    Ok(sequence)
 }
 
 /// Switches one KNXnet/IP service family secured or plain

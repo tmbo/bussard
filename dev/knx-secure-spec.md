@@ -492,8 +492,10 @@ tunnel management path, secure-1-1-12 capture, 2026-09-23]`. The inner APDU
 starts with `000000b` in the six bits above the APCI; after a positive MAC
 check the receiver also verifies those six bits are zero and drops the frame
 otherwise, without a failure count and with the sequence still accepted
-(§5.2.1.4, `[TSS J §3.1.12]`). bussard's decoder masks the bits instead of
-checking them (`asdu.rs` `parse_inner_apdu`); harmless for a tool, a sim gap (#535).
+(§5.2.1.4, `[TSS J §3.1.12]`). bussard's decoder and knx-sim's check them
+(`AsduError::ReservedBits`, `SecureError::ReservedBits`, #535): the frame is
+refused, its sequence still moves the freshness table, the sim logs the drop
+without a failure count.
 The Sync services reuse this frame with a different body, see §6.3.
 
 ### 5.4 CCM nonce (block_0) for TP frames `[XKNX data_secure_asdu.py, CONFIRMED]`
@@ -649,7 +651,14 @@ device stores it as PID 59 `[KNX 3/5/1 §6.3.13]`, the tool-access counter it
 accepts from ETS/bussard separately and outside any property (§6.2, readable
 only through the Sync). The millisecond clock is what ETS writes into PID 59
 at activation and into PID 54 entries, and what bussard uses for its own
-counter (§5.9); any strictly increasing value would do.
+counter (§5.9); any strictly increasing value would do. bussard never lowers
+the counter: it writes `max(clock, the device's next sequence)`, the latter
+from the Sync_Res and every frame the device sent since (#535; the tool syncs
+first and then sets, `[KNX 3/3/7 §5.3.1]`). The device protects the
+confirmation of that write already with the value written `[KNX 3/5/1
+§6.3.13.3 NOTE 110]`, so bussard moves its freshness floor for the device to
+it before the request goes out (`bussard_mgmt::ip_secure::write_sequence_number`,
+the one PID 59 write path; the end-device activation of #201 reuses it).
 
 ### 5.9 Sequence seeding (no persistence)
 

@@ -384,12 +384,30 @@ pub fn encode(
     inner_apci: u16,
     inner_data: &[u8],
 ) -> Result<SecureAsdu, AsduError> {
-    let apdu = inner_apdu_bytes(inner_apci, inner_data);
+    encode_apdu(
+        key,
+        scf,
+        seq,
+        addr,
+        &inner_apdu_bytes(inner_apci, inner_data),
+    )
+}
+
+/// [`encode`] over an inner APDU byte string taken verbatim, reserved bits
+/// included (the tests use it to build a frame a conforming sender never
+/// sends).
+pub(crate) fn encode_apdu(
+    key: &Key16,
+    scf: Scf,
+    seq: Sequence,
+    addr: &TpAddressing,
+    apdu: &[u8],
+) -> Result<SecureAsdu, AsduError> {
     if u8::try_from(apdu.len()).is_err() {
         return Err(AsduError::PayloadTooLong(apdu.len()));
     }
     let scf_byte = scf.to_byte();
-    let (secured_apdu, mac4) = seal(key, seq, addr, &[scf_byte], &apdu, scf.algorithm.encrypts())?;
+    let (secured_apdu, mac4) = seal(key, seq, addr, &[scf_byte], apdu, scf.algorithm.encrypts())?;
 
     let mut out = Vec::with_capacity(1 + SEQ_LEN + secured_apdu.len() + TP_MAC_LEN);
     out.push(scf_byte);
@@ -437,7 +455,15 @@ pub fn decode(key: &Key16, asdu: &[u8], addr: &TpAddressing) -> Result<DecodedIn
         received_mac,
         scf.algorithm.encrypts(),
     )?;
-    let (apci, data) = parse_inner_apdu(&apdu)?;
+    // After a positive security check only (KNX 3/3/7 §5.2.1.4): the frame
+    // is authentic, so the error carries its sequence for the freshness table.
+    let (apci, data) = parse_inner_apdu(&apdu).map_err(|e| match e {
+        AsduError::ReservedBits { octet, .. } => AsduError::ReservedBits {
+            octet,
+            sequence: seq.value(),
+        },
+        other => other,
+    })?;
     Ok(DecodedInner {
         scf,
         sequence: seq,
@@ -689,10 +715,23 @@ pub fn inner_apdu_bytes(apci: u16, data: &[u8]) -> Vec<u8> {
     out
 }
 
+/// The six reserved bits of the inner APDU's first octet, above the two APCI
+/// bits: zero on the wire (KNX 3/3/7 §5.2.1.4; TSS J §3.1.12).
+const INNER_RESERVED_MASK: u8 = 0xFC;
+
 /// Parses an inner APDU byte string back into `(apci, data)`.
+///
+/// A non-zero reserved bit above the APCI is [`AsduError::ReservedBits`]
+/// with `sequence` 0; [`decode`] fills in the frame's sequence.
 fn parse_inner_apdu(apdu: &[u8]) -> Result<(u16, Vec<u8>), AsduError> {
     if apdu.len() < 2 {
         return Err(AsduError::InnerTooShort(apdu.len()));
+    }
+    if apdu[0] & INNER_RESERVED_MASK != 0 {
+        return Err(AsduError::ReservedBits {
+            octet: apdu[0],
+            sequence: 0,
+        });
     }
     let apci = ((u16::from(apdu[0]) & 0x03) << 8) | u16::from(apdu[1]);
     Ok((apci, apdu[2..].to_vec()))
@@ -746,6 +785,17 @@ pub enum AsduError {
     /// APCI octets.
     #[error("plain group APDU too short: {0} bytes")]
     GroupApduTooShort(usize),
+    /// An authentic S-A_Data whose inner APDU has one of the six reserved
+    /// bits above the APCI set (KNX 3/3/7 §5.2.1.4; TSS J §3.1.12). The
+    /// receiver drops the frame without a failure count; the sequence still
+    /// counts as received.
+    #[error("secured APDU with reserved bits set in its first octet {octet:#04x}")]
+    ReservedBits {
+        /// The inner APDU's first octet.
+        octet: u8,
+        /// The frame's (authentic) sequence number.
+        sequence: u64,
+    },
     /// A crypto primitive rejected its input.
     #[error(transparent)]
     Crypto(#[from] CryptoError),
@@ -834,6 +884,34 @@ mod tests {
         let (apci, data) = parse_inner_apdu(&bytes)?;
         assert_eq!(apci, 0x3D1);
         assert_eq!(data, vec![0x00, 0xFF, 0xFF, 0xFF, 0xFF]);
+        Ok(())
+    }
+
+    /// An authentic frame with a reserved bit above the inner APCI is refused
+    /// with its sequence (KNX 3/3/7 §5.2.1.4; TSS J §3.1.12), in both modes.
+    #[test]
+    fn test_decode_reserved_bits_refused() -> Result<(), Box<dyn std::error::Error>> {
+        let key = Key16::new([0x22; 16]);
+        let seq = Sequence::new(0x0000_0000_1234);
+        for algorithm in [
+            SecurityAlgorithm::AuthenticationEncryption,
+            SecurityAlgorithm::AuthenticationOnly,
+        ] {
+            let scf = Scf::tool_data(algorithm);
+            for first in [0x04u8, 0x80, 0xFF] {
+                let asdu = encode_apdu(&key, scf, seq, &addr(), &[first, 0xD1, 0x00])?;
+                assert_eq!(
+                    decode(&key, &asdu, &addr()),
+                    Err(AsduError::ReservedBits {
+                        octet: first,
+                        sequence: seq.value(),
+                    })
+                );
+            }
+            // Zero reserved bits decode as before.
+            let asdu = encode_apdu(&key, scf, seq, &addr(), &[0x03, 0xD1, 0x00])?;
+            assert_eq!(decode(&key, &asdu, &addr())?.apci, 0x3D1);
+        }
         Ok(())
     }
 

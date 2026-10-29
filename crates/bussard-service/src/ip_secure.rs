@@ -855,6 +855,7 @@ pub async fn run_steps<Ch: L4Channel>(
                 wire::write_tool_key(l4, key).await?;
             }
             Step::SequenceNumber => {
+                // max(clock, the device's own counter), issue #535.
                 wire::write_sequence_number(l4, Sequence::seed().value()).await?;
             }
             Step::SecuredFamily { family, on } => {

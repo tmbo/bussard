@@ -189,6 +189,16 @@ pub enum SecureError {
     /// models only the connection-oriented form, whose serial field is zero.
     #[error("Sync_Req addressed to another serial number")]
     SyncSerialMismatch,
+    /// An authentic S-A_Data whose inner APDU has one of the six reserved bits
+    /// above the APCI set (KNX 3/3/7 §5.2.1.4; TSS J §3.1.12). Dropped without
+    /// a failure count; the sequence still counts as received.
+    #[error("reserved bits set in the secured APDU's first octet 0x{octet:02x}")]
+    ReservedBits {
+        /// The inner APDU's first octet.
+        octet: u8,
+        /// The frame's sequence field.
+        seq: [u8; 6],
+    },
     /// An `A_SecureData` frame reached a device that is NOT security-activated,
     /// so it holds no tool key and cannot authenticate anything.
     ///
@@ -591,6 +601,13 @@ impl DataSecureSession {
         if !ok {
             return Err(SecureError::BadMac);
         }
+        // After a positive security check (KNX 3/3/7 §5.2.1.4): the six bits
+        // above the inner APCI are reserved and must be zero.
+        if let Some(&octet) = inner_tpdu.first()
+            && octet & 0xFC != 0
+        {
+            return Err(SecureError::ReservedBits { octet, seq });
+        }
         Ok(Unwrapped {
             inner_tpdu,
             scf,
@@ -619,7 +636,15 @@ impl DataSecureSession {
     ) -> Result<Unwrapped, SecureError> {
         let ctx = FrameContext::from_cemi(carrier, tpci_int);
         let source = carrier.source.raw();
-        let unwrapped = self.unwrap_with_context(asdu, &ctx, source)?;
+        let unwrapped = match self.unwrap_with_context(asdu, &ctx, source) {
+            Ok(u) => u,
+            Err(SecureError::ReservedBits { octet, seq }) => {
+                // Dropped, but authentic: the sequence counts as received.
+                self.commit_rx(source, &seq);
+                return Err(SecureError::ReservedBits { octet, seq });
+            }
+            Err(e) => return Err(e),
+        };
         self.commit_rx(source, &unwrapped.seq);
         Ok(unwrapped)
     }
@@ -672,13 +697,19 @@ impl DataSecureSession {
             .copied()
             .unwrap_or(self.rx_floor);
         let ctx = FrameContext::group_from_cemi(carrier);
-        let unwrapped = Self::open_fresh(group_key, asdu, &ctx, Some(last))?;
-        let got = Self::seq_from_bytes(&unwrapped.seq);
+        let opened = Self::open_fresh(group_key, asdu, &ctx, Some(last));
+        let seq = match &opened {
+            Ok(u) => u.seq,
+            // Authentic but dropped (KNX 3/3/7 §5.2.1.4): the sequence counts.
+            Err(SecureError::ReservedBits { seq, .. }) => *seq,
+            Err(_) => return opened,
+        };
+        let got = Self::seq_from_bytes(&seq);
         let entry = self.group_rx_last.entry(source).or_insert(self.rx_floor);
         if got > *entry {
             *entry = got;
         }
-        Ok(unwrapped)
+        opened
     }
 
     /// Seal an outgoing GROUP APDU (`inner_apdu`, TPCI bits zero) with
@@ -925,7 +956,7 @@ mod tests {
 
         let c = carrier(0x0000, 0x1102); // tool -> device
         // Inner APDU: A_Authorize_Request 0x3D1 with free key.
-        let inner = vec![0x43, 0xd1, 0x00, 0xff, 0xff, 0xff, 0xff];
+        let inner = vec![0x03, 0xd1, 0x00, 0xff, 0xff, 0xff, 0xff];
         let (asdu, _seq) = tool.wrap_outgoing(&c, 0, SecAlgorithm::AuthEnc, &inner);
         // Device unwraps with the same key.
         let un = dev.unwrap_incoming(&c, 0, &asdu)?;
@@ -939,7 +970,7 @@ mod tests {
         let mut dev = DataSecureSession::new(Key16::new([7u8; 16]), 1, 0);
         let mut tool = DataSecureSession::new(Key16::new([7u8; 16]), 9000, 0);
         let c = carrier(0x0000, 0x1102);
-        let inner = vec![0x43, 0x80]; // A_Restart bare
+        let inner = vec![0x03, 0x80]; // A_Restart bare
         let (asdu, _) = tool.wrap_outgoing(&c, 0, SecAlgorithm::AuthOnly, &inner);
         // Auth-only: the inner APDU rides in the clear inside the ASDU body.
         assert_eq!(&asdu[7..7 + inner.len()], inner.as_slice());
@@ -953,7 +984,7 @@ mod tests {
         let mut dev = DataSecureSession::new(Key16::new([1u8; 16]), 1, 0);
         let mut tool = DataSecureSession::new(Key16::new([2u8; 16]), 9000, 0); // WRONG key
         let c = carrier(0x0000, 0x1102);
-        let inner = vec![0x43, 0xd1, 0x00, 0xff, 0xff, 0xff, 0xff];
+        let inner = vec![0x03, 0xd1, 0x00, 0xff, 0xff, 0xff, 0xff];
         let (asdu, _) = tool.wrap_outgoing(&c, 0, SecAlgorithm::AuthEnc, &inner);
         let err = dev.unwrap_incoming(&c, 0, &asdu).unwrap_err();
         assert_eq!(err, SecureError::BadMac);
@@ -964,7 +995,7 @@ mod tests {
         let mut dev = DataSecureSession::new(Key16::new([3u8; 16]), 1, 0);
         let mut tool = DataSecureSession::new(Key16::new([3u8; 16]), 9000, 0);
         let c = carrier(0x0000, 0x1102);
-        let inner = vec![0x43, 0x80];
+        let inner = vec![0x03, 0x80];
         let (asdu, _) = tool.wrap_outgoing(&c, 0, SecAlgorithm::AuthEnc, &inner);
         // First delivery accepted, commits the sequence.
         dev.unwrap_incoming(&c, 0, &asdu)?;
@@ -981,12 +1012,51 @@ mod tests {
         let mut tool_hi = DataSecureSession::new(Key16::new([4u8; 16]), 9000, 0);
         let mut tool_lo = DataSecureSession::new(Key16::new([4u8; 16]), 10, 0);
         let c = carrier(0x0000, 0x1102);
-        let (hi, _) = tool_hi.wrap_outgoing(&c, 0, SecAlgorithm::AuthEnc, &[0x43, 0x80]);
+        let (hi, _) = tool_hi.wrap_outgoing(&c, 0, SecAlgorithm::AuthEnc, &[0x03, 0x80]);
         dev.unwrap_incoming(&c, 0, &hi)?;
-        let (lo, _) = tool_lo.wrap_outgoing(&c, 0, SecAlgorithm::AuthEnc, &[0x43, 0x80]);
+        let (lo, _) = tool_lo.wrap_outgoing(&c, 0, SecAlgorithm::AuthEnc, &[0x03, 0x80]);
         let err = dev.unwrap_incoming(&c, 0, &lo).unwrap_err();
         assert!(matches!(err, SecureError::StaleSequence { .. }));
         Ok(())
+    }
+
+    /// TSS J §3.1.12: an authentic frame with a reserved bit above the inner
+    /// APCI is dropped (KNX 3/3/7 §5.2.1.4) and its sequence still counts.
+    #[test]
+    fn test_unwrap_incoming_reserved_bits_dropped_sequence_kept() -> Result<(), SecureError> {
+        let mut dev = DataSecureSession::new(Key16::new([5u8; 16]), 1, 0);
+        let mut tool = DataSecureSession::new(Key16::new([5u8; 16]), 9000, 0);
+        let c = carrier(0x0000, 0x1102);
+        let (bad, seq) = tool.wrap_outgoing(&c, 0, SecAlgorithm::AuthEnc, &[0x43, 0x80]);
+        assert_eq!(
+            dev.unwrap_incoming(&c, 0, &bad),
+            Err(SecureError::ReservedBits { octet: 0x43, seq })
+        );
+        assert_eq!(dev.rx_last(0x0000), Some(9000));
+        // A conforming frame after it is accepted.
+        let (good, _) = tool.wrap_outgoing(&c, 0, SecAlgorithm::AuthOnly, &[0x03, 0x80]);
+        dev.unwrap_incoming(&c, 0, &good)?;
+        Ok(())
+    }
+
+    /// The group path drops a reserved-bit frame the same way.
+    #[test]
+    fn test_unwrap_group_incoming_reserved_bits_dropped() {
+        let mut dev = DataSecureSession::new(Key16::new([0x42; 16]), 300, 0);
+        let c = group_carrier(0x1101, 0x0A03);
+        let asdu = seal_group(
+            &kat_key(),
+            SecAlgorithm::AuthEnc,
+            77,
+            0x1101,
+            0x0A03,
+            &[0x80, 0x80],
+        );
+        assert!(matches!(
+            dev.unwrap_group_incoming(&kat_key(), &c, &asdu),
+            Err(SecureError::ReservedBits { octet: 0x80, .. })
+        ));
+        assert_eq!(dev.group_rx_last(0x1101), Some(77));
     }
 
     #[test]

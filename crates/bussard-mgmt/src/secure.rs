@@ -100,6 +100,25 @@ impl SecureLayer {
         }
     }
 
+    /// The sequence the device `device` is expected to send next (see
+    /// [`DataSecureSession::peer_next_sequence`]); `None` on a plain layer or
+    /// before the Sync.
+    pub fn device_next_sequence(&self, device: IndividualAddress) -> Option<u64> {
+        self.session
+            .as_ref()?
+            .peer_next_sequence(device.raw())
+            .map(|s| s.value())
+    }
+
+    /// Makes `next` the lowest sequence accepted from `device` (see
+    /// [`DataSecureSession::expect_peer_sequence`]); no effect on a plain
+    /// layer.
+    pub fn expect_device_sequence(&mut self, device: IndividualAddress, next: u64) {
+        if let Some(session) = &mut self.session {
+            session.expect_peer_sequence(device.raw(), bussard_secure::Sequence::new(next));
+        }
+    }
+
     /// Whether this layer wraps management APDUs (the device is activated).
     pub fn is_active(&self) -> bool {
         self.session.is_some()

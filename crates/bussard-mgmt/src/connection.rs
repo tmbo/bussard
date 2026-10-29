@@ -1375,6 +1375,36 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
         self.secure.is_active()
     }
 
+    /// Runs the Data Secure S-A_Sync handshake now, if it has not run on this
+    /// connection yet (spec §6.3); a no-op on a plain or synced connection.
+    ///
+    /// # Errors
+    ///
+    /// As the Sync before the first wrapped request.
+    pub async fn ensure_synced(&mut self) -> Result<()> {
+        if self.closed {
+            return Err(MgmtError::Disconnected {
+                address: self.target,
+            });
+        }
+        self.ensure_secure_sync().await
+    }
+
+    /// The Data Secure sequence the device is expected to send next: one above
+    /// the last it sent on this connection, or the one its Sync_Res reported.
+    /// `None` on a plain connection or before the Sync.
+    pub fn device_next_sequence(&self) -> Option<u64> {
+        self.secure.device_next_sequence(self.target)
+    }
+
+    /// Makes `next` the lowest Data Secure sequence accepted from the device
+    /// from now on: the step before a write of its
+    /// `PID_SEQUENCE_NUMBER_SENDING`, whose confirmation already carries the
+    /// value written (KNX 3/5/1 §6.3.13.3 NOTE 110, issue #535).
+    pub fn expect_device_sequence(&mut self, next: u64) {
+        self.secure.expect_device_sequence(self.target, next);
+    }
+
     /// Replaces this connection's timeout/retry budget.
     ///
     /// The budget is normally fixed at connect time, but a caller that uses an
@@ -2867,6 +2897,69 @@ mod tests {
         assert_eq!(inner.apci, 0x3D1);
         assert_eq!(inner.data, vec![0x00, 0xFF, 0xFF, 0xFF, 0xFF]);
         Ok(())
+    }
+
+    /// The PID 59 write of a device whose counter is ahead of `clock` writes
+    /// the device's counter, and the confirmation the device protects with
+    /// the value written verifies (issue #535, KNX 3/5/1 §6.3.13.3 NOTE 110).
+    async fn pid59_round_trip(device_sequence: u64, clock: u64) -> Result<u64> {
+        let key = [0x24u8; 16];
+        let expected = crate::ip_secure::sequence_number_to_write(clock, Some(device_sequence));
+        // The device answers the write already under the new value.
+        let mut device =
+            DataSecureSession::new(Key16::new(key)).with_send_sequence(Sequence::new(expected));
+        let (resp_apci, resp_asdu) = device
+            .wrap(
+                &dev_to_tool_addr(tpci::ndt(1)),
+                0x1CF,
+                &[0x00, 0x11, 0x00, 0x10, 0x3B, 0x01, 0x00, 0x01, 0x00],
+            )
+            .map_err(|source| MgmtError::Secure {
+                address: dev(),
+                source,
+            })?;
+        let inbox = vec![
+            control_from_dev(tpci::t_ack(1)),
+            ndt_from_dev(1, resp_apci, &resp_asdu),
+        ];
+        let mut bus = SyncingBus::new(key, inbox);
+        bus.device_sequence = device_sequence;
+        let tool_session =
+            DataSecureSession::new(Key16::new(key)).with_send_sequence(Sequence::new(1000));
+        let mut l4 = Layer4Connection::connect_with_secure(
+            &mut bus,
+            dev(),
+            tool(),
+            fast(),
+            crate::secure::SecureLayer::activated(tool_session),
+        )
+        .await?;
+        let written = crate::ip_secure::write_sequence_number(&mut l4, clock).await?;
+        assert_eq!(written, expected);
+        // A frame below the new value is now stale.
+        assert_eq!(l4.device_next_sequence(), Some(expected + 1));
+        Ok(written)
+    }
+
+    #[tokio::test]
+    async fn test_write_sequence_number_device_ahead_of_clock() -> Result<()> {
+        let device = 0x0000_F000_0000_0000 >> 16;
+        assert_eq!(pid59_round_trip(device, 1_000).await?, device);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_write_sequence_number_clock_ahead_of_device() -> Result<()> {
+        assert_eq!(pid59_round_trip(5, 1_000_000).await?, 1_000_000);
+        Ok(())
+    }
+
+    #[test]
+    fn test_sequence_number_to_write_never_lowers() {
+        use crate::ip_secure::sequence_number_to_write;
+        assert_eq!(sequence_number_to_write(100, None), 100);
+        assert_eq!(sequence_number_to_write(100, Some(7)), 100);
+        assert_eq!(sequence_number_to_write(100, Some(900)), 900);
     }
 
     /// ACTIVATED PATH REJECTS A WRONG MAC: a secured response whose MAC does not
