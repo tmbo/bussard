@@ -252,6 +252,20 @@ pub(crate) fn at_stage(err: TransportError, what: &str) -> TransportError {
     }
 }
 
+/// Logs a plain (unwrapped) SESSION_STATUS from `gateway` that is being
+/// dropped. KNX IP Secure 3/8/9 §2.2.3.9.2 sends SESSION_STATUS only inside a
+/// SECURE_WRAPPER, so a plain one is a non-conforming server or an injected
+/// frame, and neither may decide or end a session (issue #522).
+fn plain_status_dropped(frame: &[u8], gateway: SocketAddrV4, during: &str) {
+    let status = ipsecure::parse_session_status(frame)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|_| "unreadable".to_string());
+    tracing::warn!(
+        "KNXnet/IP Secure: ignoring a plain (unwrapped) SESSION_STATUS ({status}) from \
+         {gateway} during {during}; only a wrapped one counts"
+    );
+}
+
 /// One authenticated KNXnet/IP Secure session over TCP.
 pub(crate) struct SecureLink {
     carrier: Carrier,
@@ -282,16 +296,19 @@ impl SecureLink {
         let response = loop {
             let frame = carrier.recv_until(deadline, "SESSION_RESPONSE").await?;
             match knxnet::parse(&frame) {
+                // Exactly 56 octets, or discarded (3/8/9 §2.2.3.7.5).
                 Ok(p) if p.service == ServiceType::SessionResponse => {
-                    break ipsecure::parse_session_response(&frame)?;
+                    match ipsecure::parse_session_response(&frame) {
+                        Ok(response) => break response,
+                        Err(err) => {
+                            tracing::warn!(%err, "discarding a malformed SESSION_RESPONSE");
+                            continue;
+                        }
+                    }
                 }
                 Ok(p) if p.service == ServiceType::SessionStatus => {
-                    let status = ipsecure::parse_session_status(&frame)?;
-                    return Err(TransportError::SecureAuthFailed {
-                        gateway,
-                        user_id: user.user_id,
-                        status,
-                    });
+                    plain_status_dropped(&frame, gateway, "the handshake");
+                    continue;
                 }
                 _ => continue,
             }
@@ -337,9 +354,12 @@ impl SecureLink {
                         continue;
                     }
                 },
-                // A plain SESSION_STATUS: some servers answer an unknown user
-                // this way before any wrapper exists.
-                Ok(p) if p.service == ServiceType::SessionStatus => frame.clone(),
+                // A plain SESSION_STATUS is never an authentication verdict:
+                // it is indistinguishable from an injected frame (issue #522).
+                Ok(p) if p.service == ServiceType::SessionStatus => {
+                    plain_status_dropped(&frame, gateway, "the handshake");
+                    continue;
+                }
                 _ => continue,
             };
             match ipsecure::parse_session_status(&inner) {
@@ -382,9 +402,11 @@ impl SecureLink {
     /// Receives the next plain inbound frame into `out`, returning its length.
     ///
     /// Unwraps SECURE_WRAPPERs; drops frames that fail verification or replay
-    /// checks (logged); swallows keepalives and TIMER_NOTIFY; turns a session
-    /// close/timeout from the gateway into
-    /// [`TransportError::SecureSessionEnded`]. Cancel-safe.
+    /// checks (logged); swallows keepalives and TIMER_NOTIFY; turns a wrapped
+    /// session close/timeout from the gateway into
+    /// [`TransportError::SecureSessionEnded`]. A plain SESSION_STATUS is
+    /// logged and dropped: only a wrapped one may end the session (3/8/9
+    /// §2.2.3.9.2; issue #522). Cancel-safe.
     pub(crate) async fn recv(&mut self, out: &mut [u8]) -> Result<usize> {
         loop {
             let frame = self.carrier.recv().await?;
@@ -400,9 +422,12 @@ impl SecureLink {
                         continue;
                     }
                 },
-                // Plain SESSION_STATUS from the server (e.g. a timeout notice
-                // after our session was already dropped) ends the session too.
-                ServiceType::SessionStatus => frame,
+                // SESSION_STATUS is only ever sent wrapped (3/8/9
+                // §2.2.3.9.2); a plain one could come from anyone on the path.
+                ServiceType::SessionStatus => {
+                    plain_status_dropped(&frame, self.gateway, "the session");
+                    continue;
+                }
                 // Secure routing's timer sync; meaningless on a unicast session.
                 ServiceType::TimerNotify => {
                     tracing::debug!("ignoring a TIMER_NOTIFY on a unicast secure session");

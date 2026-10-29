@@ -55,8 +55,17 @@ pub const PUBLIC_KEY_LEN: usize = 32;
 pub const MAC_LEN: usize = 16;
 /// Session id + sequence information + serial number + message tag.
 pub const SECURITY_INFO_LEN: usize = 16;
-/// The smallest SECURE_WRAPPER: header + security information + MAC.
-pub const MIN_WRAPPER_LEN: usize = HEADER_LEN + SECURITY_INFO_LEN + MAC_LEN;
+/// What a SECURE_WRAPPER adds around its payload: header + security
+/// information + MAC.
+pub const WRAPPER_OVERHEAD: usize = HEADER_LEN + SECURITY_INFO_LEN + MAC_LEN;
+/// The smallest SECURE_WRAPPER: the overhead plus at least an inner KNXnet/IP
+/// header, 44 octets. A shorter one is discarded unverified (KNX IP Secure
+/// 3/8/9 §2.2.1.3.3; issue #522).
+pub const MIN_WRAPPER_LEN: usize = WRAPPER_OVERHEAD + HEADER_LEN;
+/// The exact length of a SESSION_RESPONSE frame (3/8/9 §2.2.3.7.5).
+pub const SESSION_RESPONSE_LEN: usize = HEADER_LEN + 2 + PUBLIC_KEY_LEN + MAC_LEN;
+/// The exact length of a SESSION_AUTHENTICATE frame (3/8/9 §2.2.3.8.5).
+pub const SESSION_AUTHENTICATE_LEN: usize = HEADER_LEN + 2 + MAC_LEN;
 
 /// The largest 48-bit sequence information value.
 const MAX_SEQUENCE: u64 = 0xFFFF_FFFF_FFFF;
@@ -169,6 +178,25 @@ pub enum IpSecureError {
         expected: u64,
         /// The sequence in the frame.
         found: u64,
+    },
+    /// A fixed-size frame was longer than its layout (KNX IP Secure 3/8/9
+    /// §2.2.3.7.5, §2.2.3.8.5: such a frame is discarded).
+    #[error("KNXnet/IP Secure {what} must be exactly {expected} octets, had {had}")]
+    WrongLength {
+        /// What was being decoded.
+        what: &'static str,
+        /// The exact frame length the layout has.
+        expected: usize,
+        /// The frame length found.
+        had: usize,
+    },
+    /// A reserved octet was not zero (3/8/9 §2.2.3.8.2).
+    #[error("KNXnet/IP Secure {what}: reserved octet is {value:#04x}, must be 0")]
+    Reserved {
+        /// What was being decoded.
+        what: &'static str,
+        /// The value found.
+        value: u8,
     },
     /// The send sequence ran out of 48-bit values (never in practice).
     #[error("KNXnet/IP Secure send sequence exhausted")]
@@ -360,7 +388,8 @@ pub struct SessionResponse {
 ///
 /// # Errors
 ///
-/// A short frame or another service.
+/// Another service, or a frame that is not exactly
+/// [`SESSION_RESPONSE_LEN`] octets.
 pub fn parse_session_response(frame: &[u8]) -> Result<SessionResponse, IpSecureError> {
     let (service, body) = split_frame(frame, "SESSION_RESPONSE")?;
     if service != SESSION_RESPONSE {
@@ -375,6 +404,14 @@ pub fn parse_session_response(frame: &[u8]) -> Result<SessionResponse, IpSecureE
             what: "SESSION_RESPONSE",
             needed,
             had: body.len(),
+        });
+    }
+    // Exactly 56 octets, or the frame is discarded (3/8/9 §2.2.3.7.5).
+    if body.len() != needed || frame.len() != SESSION_RESPONSE_LEN {
+        return Err(IpSecureError::WrongLength {
+            what: "SESSION_RESPONSE",
+            expected: SESSION_RESPONSE_LEN,
+            had: frame.len(),
         });
     }
     let session_id = u16::from_be_bytes([body[0], body[1]]);
@@ -531,7 +568,9 @@ pub struct SessionAuthenticate {
 ///
 /// # Errors
 ///
-/// A short frame or another service.
+/// Another service, a frame that is not exactly
+/// [`SESSION_AUTHENTICATE_LEN`] octets (3/8/9 §2.2.3.8.5), or a non-zero
+/// reserved octet (§2.2.3.8.2).
 pub fn parse_session_authenticate(frame: &[u8]) -> Result<SessionAuthenticate, IpSecureError> {
     let (service, body) = split_frame(frame, "SESSION_AUTHENTICATE")?;
     if service != SESSION_AUTHENTICATE {
@@ -545,6 +584,19 @@ pub fn parse_session_authenticate(frame: &[u8]) -> Result<SessionAuthenticate, I
             what: "SESSION_AUTHENTICATE",
             needed: 2 + MAC_LEN,
             had: body.len(),
+        });
+    }
+    if body.len() != 2 + MAC_LEN || frame.len() != SESSION_AUTHENTICATE_LEN {
+        return Err(IpSecureError::WrongLength {
+            what: "SESSION_AUTHENTICATE",
+            expected: SESSION_AUTHENTICATE_LEN,
+            had: frame.len(),
+        });
+    }
+    if body[0] != 0 {
+        return Err(IpSecureError::Reserved {
+            what: "SESSION_AUTHENTICATE",
+            value: body[0],
         });
     }
     let mut mac = [0u8; MAC_LEN];
@@ -612,11 +664,13 @@ pub fn peek_wrapper(frame: &[u8]) -> Result<WrapperHeader, IpSecureError> {
             found: service,
         });
     }
-    if body.len() < SECURITY_INFO_LEN + MAC_LEN {
+    // Shorter than 44 octets (no room for an inner header): discarded
+    // before any MAC check (3/8/9 §2.2.1.3.3; issue #522).
+    if body.len() < MIN_WRAPPER_LEN - HEADER_LEN {
         return Err(IpSecureError::Truncated {
             what: "SECURE_WRAPPER",
-            needed: SECURITY_INFO_LEN + MAC_LEN,
-            had: body.len(),
+            needed: MIN_WRAPPER_LEN,
+            had: body.len() + HEADER_LEN,
         });
     }
     let session_id = u16::from_be_bytes([body[0], body[1]]);
@@ -659,10 +713,10 @@ pub fn wrap(
     payload: &[u8],
 ) -> Result<Vec<u8>, IpSecureError> {
     let total =
-        u16::try_from(MIN_WRAPPER_LEN + payload.len()).map_err(|_| IpSecureError::Truncated {
+        u16::try_from(WRAPPER_OVERHEAD + payload.len()).map_err(|_| IpSecureError::Truncated {
             what: "SECURE_WRAPPER payload (too long)",
             needed: usize::from(u16::MAX),
-            had: MIN_WRAPPER_LEN + payload.len(),
+            had: WRAPPER_OVERHEAD + payload.len(),
         })?;
     let payload_len = u16::try_from(payload.len()).unwrap_or(u16::MAX);
     let mut header = Vec::with_capacity(HEADER_LEN + 2);
@@ -873,7 +927,7 @@ mod tests {
         let key = Key16::new([0x03; 16]);
         let inner = session_status(SessionStatus::Success);
         let wrapped = wrap(&key, 0x0001, 0, &[0x00, 0xFA, 1, 2, 3, 4], 0, &inner)?;
-        assert_eq!(wrapped.len(), MIN_WRAPPER_LEN + 8);
+        assert_eq!(wrapped.len(), WRAPPER_OVERHEAD + 8);
         assert_eq!(hex_string(&wrapped), WRAPPER_VECTOR);
         Ok(())
     }
@@ -992,6 +1046,73 @@ mod tests {
     fn test_client_serial_has_ets_prefix() -> TestResult {
         let serial = client_serial()?;
         assert_eq!(&serial[..2], &CLIENT_SERIAL_PREFIX);
+        Ok(())
+    }
+
+    /// `frame` with `extra` octets appended and the header length fixed up.
+    fn grown(frame: &[u8], extra: &[u8]) -> Vec<u8> {
+        let mut out = frame.to_vec();
+        out.extend_from_slice(extra);
+        let total = u16::try_from(out.len()).unwrap_or(u16::MAX);
+        out[4..6].copy_from_slice(&total.to_be_bytes());
+        out
+    }
+
+    #[test]
+    fn test_peek_wrapper_discards_a_wrapper_below_44_octets() {
+        // A 43-octet wrapper has no room for an inner header (issue #522).
+        for (len, ok) in [(38usize, false), (43, false), (44, true)] {
+            let mut frame = vec![0u8; len];
+            frame[..4].copy_from_slice(&[0x06, 0x10, 0x09, 0x50]);
+            frame[4..6].copy_from_slice(&u16::try_from(len).unwrap_or(0).to_be_bytes());
+            let result = peek_wrapper(&frame);
+            assert_eq!(result.is_ok(), ok, "{len} octets: {result:?}");
+            if !ok {
+                assert!(
+                    matches!(result, Err(IpSecureError::Truncated { needed: 44, .. })),
+                    "{result:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_session_response_requires_exactly_56_octets() -> TestResult {
+        let key = Key16::new([0x07; 16]);
+        let frame = session_response(&key, 0x0042, &[1; 32], &[2; 32])?;
+        assert_eq!(frame.len(), SESSION_RESPONSE_LEN);
+        assert_eq!(parse_session_response(&frame)?.session_id, 0x0042);
+        let long = grown(&frame, &[0]);
+        assert!(matches!(
+            parse_session_response(&long),
+            Err(IpSecureError::WrongLength { had: 57, .. })
+        ));
+        let mut short = frame[..55].to_vec();
+        short[4..6].copy_from_slice(&55u16.to_be_bytes());
+        assert!(matches!(
+            parse_session_response(&short),
+            Err(IpSecureError::Truncated { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_session_authenticate_checks_length_and_reserved_octet() -> TestResult {
+        let key = Key16::new([0x09; 16]);
+        let frame = session_authenticate(&key, 2, &[1; 32], &[2; 32])?;
+        assert_eq!(frame.len(), SESSION_AUTHENTICATE_LEN);
+        assert_eq!(parse_session_authenticate(&frame)?.user_id, 2);
+        let long = grown(&frame, &[0]);
+        assert!(matches!(
+            parse_session_authenticate(&long),
+            Err(IpSecureError::WrongLength { had: 25, .. })
+        ));
+        let mut reserved = frame.clone();
+        reserved[6] = 0x01;
+        assert!(matches!(
+            parse_session_authenticate(&reserved),
+            Err(IpSecureError::Reserved { value: 1, .. })
+        ));
         Ok(())
     }
 

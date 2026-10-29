@@ -477,6 +477,30 @@ async fn test_secure_tunnel_skips_a_frame_before_the_connect_response() -> TestR
 }
 
 #[tokio::test]
+async fn test_secure_link_ignores_plain_session_status() -> TestResult {
+    // Only a wrapped SESSION_STATUS may decide or end a session (3/8/9
+    // §2.2.3.9.2, issue #522): a forged plain AUTHENTICATION_FAILED before the
+    // verdict and a plain CLOSE after the CONNECT_RESPONSE change nothing.
+    let gw = MockSecureGateway::builder()
+        .device_auth(device_key())
+        .user(3, user_key(USER3_KEY), TUNNEL_23)
+        .plain_session_status()
+        .start()
+        .await?;
+    let mut conn = Transport::connect(&explicit(&gw, SecureTransport::Tcp)).await?;
+    assert_eq!(conn.assigned_individual_address(), Some(TUNNEL_23));
+    let frame = CemiFrame::group_write_packed(ga("1/2/3")?, ia("1.1.23")?, &[1]);
+    conn.send(frame.clone()).await?;
+    let con = expect_con(&mut conn).await?;
+    assert_eq!(con.destination, frame.destination);
+    conn.close().await?;
+    let stats = gw.stats()?;
+    assert_eq!(stats.sessions, 1, "one session, never re-established");
+    assert_eq!(stats.connects, 1);
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_secure_tunnel_keepalive_interval_is_configurable() -> TestResult {
     let gw = gateway().await?;
     let fast = explicit(&gw, SecureTransport::Tcp);

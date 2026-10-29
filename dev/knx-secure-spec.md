@@ -959,7 +959,11 @@ The status table in 3/8/1 Overview §5.5 lists CLOSE as 04h and KEEPALIVE as
 interface (which keeps a session alive on 04h for well over 60 s) agree on
 the values above, so the Overview table is taken to be the misprint.
 SESSION_STATUS is only ever sent wrapped (§2.2.3.9.2); a plain one is not a
-valid session event (#522).
+valid session event. bussard logs and drops a plain SESSION_STATUS in the
+handshake and in an established session; neither an authentication verdict
+nor a session end is taken from one (#522). SESSION_RESPONSE must be exactly
+56 octets and SESSION_AUTHENTICATE exactly 24 (§2.2.3.7.5, §2.2.3.8.5); a
+malformed SESSION_RESPONSE is discarded, not fatal.
 
 ### 7.2 ECDH session-key derivation `[XKNX ip_secure.py, CONFIRMED]`
 
@@ -1037,7 +1041,8 @@ message_authentication_code 16 bytes
 `MESSAGE_AUTHENTICATION_CODE_LENGTH = 16`; fixed overhead beyond the wrapped
 payload = 32 octets, so the smallest valid wrapper is 44 octets (6 header +
 16 security information + a 6-octet inner header + 16 MAC); anything shorter
-is discarded (3/8/9 §2.2.1.3.3). bussard's `MIN_WRAPPER_LEN` is 38 (#522).
+is discarded (3/8/9 §2.2.1.3.3). bussard's `MIN_WRAPPER_LEN` is 44
+and a shorter wrapper is discarded before the MAC check (#522).
 
 ### 8.2 Crypto blocks
 

@@ -112,9 +112,19 @@ pub struct SecureGatewayBuilder {
     session_timeout: Option<Duration>,
     feature_info_first: bool,
     one_session_per_user: bool,
+    plain_status: bool,
 }
 
 impl SecureGatewayBuilder {
+    /// Sends forged plain (unwrapped) SESSION_STATUS frames, as an on-path
+    /// attacker could (issue #522): `STATUS_AUTHENTICATION_FAILED` ahead of
+    /// the wrapped authentication verdict, and `STATUS_CLOSE` right after
+    /// each CONNECT_RESPONSE. A conforming client ignores both.
+    pub fn plain_session_status(mut self) -> Self {
+        self.plain_status = true;
+        self
+    }
+
     /// Holds one session per tunnelling user (issue #287): a
     /// SESSION_AUTHENTICATE for a user whose earlier session is still open is
     /// answered by closing the TCP connection, without a SESSION_STATUS. This
@@ -257,6 +267,7 @@ struct Config {
     session_timeout: Option<Duration>,
     feature_info_first: bool,
     one_session_per_user: bool,
+    plain_status: bool,
     /// The users with an open session (for `one_session_per_user`).
     held_users: Mutex<Vec<u8>>,
     /// Whether the next accepted connection is the first (the faults apply
@@ -319,6 +330,7 @@ impl MockSecureGateway {
             session_timeout: None,
             feature_info_first: false,
             one_session_per_user: false,
+            plain_status: false,
         }
     }
 
@@ -418,6 +430,7 @@ impl MockSecureGateway {
             session_timeout: builder.session_timeout,
             feature_info_first: builder.feature_info_first,
             one_session_per_user: builder.one_session_per_user,
+            plain_status: builder.plain_status,
             held_users: Mutex::new(Vec::new()),
             first_connection: std::sync::atomic::AtomicBool::new(true),
             next_channel: std::sync::atomic::AtomicU8::new(0x40),
@@ -841,6 +854,10 @@ async fn serve_tcp(
                         return Ok(());
                     }
                 }
+                if config.plain_status {
+                    let forged = ipsecure::session_status(SessionStatus::AuthenticationFailed);
+                    stream.write_all(&forged).await?;
+                }
                 stream.write_all(&reply).await?;
                 match user {
                     Some(user) => break (session, user),
@@ -875,6 +892,12 @@ async fn serve_tcp(
         for reply in step.replies {
             let wrapped = session.seal(&reply).map_err(secure_err)?;
             stream.write_all(&wrapped).await?;
+        }
+        if config.plain_status
+            && knxnet::parse(&inner).is_ok_and(|p| p.service == ServiceType::ConnectRequest)
+        {
+            let forged = ipsecure::session_status(SessionStatus::Close);
+            stream.write_all(&forged).await?;
         }
         if step.close {
             return Ok(());
