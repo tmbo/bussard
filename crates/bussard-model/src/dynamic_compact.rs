@@ -17,7 +17,9 @@
 //!       nodes: [...]
 //! - block: {id, name, text, text_ref, param_ref, nodes}
 //! - channel: {id, name, text, number, text_ref, nodes}
-//! - module: {id, def, args: {MD-1_A-1: 4}}
+//! - module: {id, def, args: {MD-1_A-1: 4},
+//!            computed: [{arg, allocator, value, base}]}
+//! - repeat: {id, ref, count, nodes}  # <Repeat>
 //! - assign: {target, source, value}
 //! ```
 //!
@@ -34,7 +36,9 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize, Serializer};
 
-use crate::dynamic::{CompareOp, DynamicNode, DynamicWhen, Union, UnionMember, WhenTest};
+use crate::dynamic::{
+    CompareOp, ComputedArg, DynamicNode, DynamicWhen, Union, UnionMember, WhenTest,
+};
 
 /// A borrowed node list, serialized in the compact form.
 struct NodesOut<'a>(&'a [DynamicNode]);
@@ -68,7 +72,20 @@ struct NodeOut<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     module: Option<ModuleOut<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    repeat: Option<RepeatOut<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     assign: Option<AssignOut<'a>>,
+}
+
+#[derive(Serialize)]
+struct RepeatOut<'a> {
+    id: &'a str,
+    #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
+    reference: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    count: Option<u32>,
+    #[serde(skip_serializing_if = "no_nodes")]
+    nodes: NodesOut<'a>,
 }
 
 #[derive(Serialize)]
@@ -124,6 +141,8 @@ struct ModuleOut<'a> {
     def: &'a str,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     args: BTreeMap<&'a str, i64>,
+    #[serde(skip_serializing_if = "<[ComputedArg]>::is_empty")]
+    computed: &'a [ComputedArg],
 }
 
 #[derive(Serialize)]
@@ -219,11 +238,26 @@ fn node_out(node: &DynamicNode) -> NodeOut<'_> {
             id,
             module_def,
             args,
+            computed_args,
         } => {
             out.module = Some(ModuleOut {
                 id,
                 def: module_def,
                 args: args.iter().map(|(k, v)| (k.as_str(), *v)).collect(),
+                computed: computed_args,
+            })
+        }
+        DynamicNode::Repeat {
+            id,
+            param_ref_id,
+            count,
+            children,
+        } => {
+            out.repeat = Some(RepeatOut {
+                id,
+                reference: param_ref_id.as_deref(),
+                count: *count,
+                nodes: NodesOut(children),
             })
         }
         DynamicNode::Assign {
@@ -258,7 +292,20 @@ struct NodeIn {
     #[serde(default)]
     module: Option<ModuleIn>,
     #[serde(default)]
+    repeat: Option<RepeatIn>,
+    #[serde(default)]
     assign: Option<AssignIn>,
+}
+
+#[derive(Deserialize)]
+struct RepeatIn {
+    id: String,
+    #[serde(default, rename = "ref")]
+    reference: Option<String>,
+    #[serde(default)]
+    count: Option<u32>,
+    #[serde(default)]
+    nodes: Vec<NodeIn>,
 }
 
 #[derive(Deserialize)]
@@ -315,6 +362,8 @@ struct ModuleIn {
     def: String,
     #[serde(default)]
     args: HashMap<String, i64>,
+    #[serde(default)]
+    computed: Vec<ComputedArg>,
 }
 
 #[derive(Deserialize)]
@@ -338,6 +387,7 @@ fn into_node<E: serde::de::Error>(node: NodeIn) -> Result<DynamicNode, E> {
         block,
         channel,
         module,
+        repeat,
         assign,
     } = node;
     let set = [
@@ -347,11 +397,12 @@ fn into_node<E: serde::de::Error>(node: NodeIn) -> Result<DynamicNode, E> {
         block.is_some(),
         channel.is_some(),
         module.is_some(),
+        repeat.is_some(),
         assign.is_some(),
     ];
     if set.iter().filter(|s| **s).count() != 1 {
         return Err(E::custom(
-            "a Dynamic node has exactly one of p, o, choose, block, channel, module, assign",
+            "a Dynamic node has exactly one of p, o, choose, block, channel, module, repeat, assign",
         ));
     }
     if let Some(r) = p {
@@ -401,6 +452,15 @@ fn into_node<E: serde::de::Error>(node: NodeIn) -> Result<DynamicNode, E> {
             id: m.id,
             module_def: m.def,
             args: m.args,
+            computed_args: m.computed,
+        });
+    }
+    if let Some(r) = repeat {
+        return Ok(DynamicNode::Repeat {
+            id: r.id,
+            param_ref_id: r.reference,
+            count: r.count,
+            children: into_nodes(r.nodes)?,
         });
     }
     match assign {
@@ -622,6 +682,31 @@ mod tests {
                     id: "MD-1_M-1".into(),
                     module_def: "MD-1".into(),
                     args: HashMap::from([("MD-1_A-1".to_string(), 4)]),
+                    computed_args: Vec::new(),
+                },
+                DynamicNode::Repeat {
+                    id: "X-1".into(),
+                    param_ref_id: Some("P-1_R-1".into()),
+                    count: None,
+                    children: vec![DynamicNode::Module {
+                        id: "MD-2_M-1".into(),
+                        module_def: "MD-2".into(),
+                        args: HashMap::new(),
+                        computed_args: vec![
+                            ComputedArg {
+                                arg: "MD-2_A-1".into(),
+                                allocator: Some("L-1".into()),
+                                value: None,
+                                base: None,
+                            },
+                            ComputedArg {
+                                arg: "MD-2_A-2".into(),
+                                allocator: None,
+                                value: Some(0),
+                                base: Some("MD-2_A-1".into()),
+                            },
+                        ],
+                    }],
                 },
                 DynamicNode::Assign {
                     target: "P-2_R-2".into(),

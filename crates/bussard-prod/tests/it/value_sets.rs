@@ -30,6 +30,10 @@ pub const FIXTURES: &[(&str, &[u8])] = &[
         "M-00FA_A-00D1-10-0001",
         include_bytes!("../../../bussard-ets/tests/fixtures/dynamic_tree.app.xml"),
     ),
+    (
+        "M-00FA_A-0449-10-0000",
+        include_bytes!("../fixtures/allocators.app.xml"),
+    ),
 ];
 
 /// A small seeded generator (SplitMix64) for the random value sets.
@@ -108,6 +112,16 @@ pub fn tree_facts(app: &ApplicationProgram) -> TreeFacts {
                 }
                 DynamicNode::Channel { children, .. }
                 | DynamicNode::ParameterBlock { children, .. } => visit(children, tested, modules),
+                DynamicNode::Repeat {
+                    param_ref_id,
+                    children,
+                    ..
+                } => {
+                    if let Some(r) = param_ref_id {
+                        tested.entry(r.clone()).or_default().extend([0, 1, 2]);
+                    }
+                    visit(children, tested, modules);
+                }
                 DynamicNode::Module { id, module_def, .. } => {
                     modules.push((id.clone(), module_def.clone()))
                 }

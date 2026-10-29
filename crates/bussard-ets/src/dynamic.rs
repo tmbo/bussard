@@ -81,6 +81,14 @@ impl DynamicSource for ApplicationProgram {
     fn unions(&self) -> &[Union] {
         &self.unions
     }
+
+    fn allocator(&self, allocator_id: &str) -> Option<Allocator> {
+        self.allocators.get(allocator_id).copied()
+    }
+
+    fn argument_allocates(&self, arg_id: &str) -> Option<i64> {
+        self.argument_allocates.get(arg_id).copied()
+    }
 }
 
 #[cfg(test)]

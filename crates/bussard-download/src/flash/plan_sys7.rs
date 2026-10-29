@@ -968,12 +968,15 @@ pub(super) fn sys7_object_defaults(
         let Some((base, cref)) = app.resolve(&active.com_object_ref_id) else {
             continue;
         };
-        let offset = base
-            .base_number_ref
-            .as_deref()
-            .map(|arg| arg.strip_prefix(&format!("{}_", app.id)).unwrap_or(arg))
-            .and_then(|arg| config.module_args(active.module)?.get(arg).copied())
-            .unwrap_or(0);
+        // A `BaseNumber` its instance has no value for (issue #449) gets no
+        // entry here; the parameter image refuses the configuration.
+        let offset = match base.base_number_ref.as_deref() {
+            Some(arg) => match bussard_prod::module_argument(app, config, active.module, arg) {
+                Some(v) => v,
+                None => continue,
+            },
+            None => 0,
+        };
         let Ok(asap) = u16::try_from(i64::from(base.number) + offset) else {
             continue;
         };

@@ -522,7 +522,7 @@ fn everything_shown(app: &ApplicationProgram) -> DynamicConfig {
 fn merged_args(config: &DynamicConfig, project: &ModuleArgs) -> ModuleArgs {
     let mut out = project.clone();
     for m in &config.modules {
-        let entry = out.entry(format!("{}_MI-1", m.id)).or_default();
+        let entry = out.entry(m.selector()).or_default();
         for (arg, value) in &m.args {
             entry
                 .entry(arg.clone())
@@ -1198,7 +1198,7 @@ fn module_bases(app: &ApplicationProgram, config: &DynamicConfig) -> BTreeMap<St
             continue;
         };
         // A nested module reached twice keeps its first reach.
-        out.entry(format!("{}_MI-1", m.id)).or_insert(base);
+        out.entry(m.selector()).or_insert(base);
     }
     out
 }

@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Fabricated System B application (bussard's own work, MIT; no vendor data)
+     for issue #449: module allocators and <Repeat>. "Channels" (P-1, never
+     shown) repeats the channel module; each instance draws its parameter
+     base from allocator L-1 (Start 16, Allocates 16) and its object base
+     from L-2 (Start 2, Allocates 2). Inside a channel, "Scenes" repeats a
+     submodule whose parameter base comes from the channel's own allocator
+     MD-1_L-1 (Start 4) plus the channel's base (BaseValue). At the defaults
+     (two channels, two scenes each) the channel parameters land at +0x10 and
+     +0x20, the scenes at +0x14, +0x15, +0x24 and +0x25, the channel objects
+     at 2, 3 and 4, 5. A third channel (outside the type's range, so only
+     a forced value gets there) runs past L-1's maxInclusive (47) and must
+     refuse rather than land at base 0. -->
+<KNX xmlns="http://knx.org/xml/project/20">
+  <ManufacturerData>
+    <Manufacturer RefId="M-00FA">
+      <ApplicationPrograms>
+        <ApplicationProgram Id="M-00FA_A-0449-10-0000" ApplicationNumber="1097" ApplicationVersion="16"
+            MaskVersion="MV-07B0" Name="bussard allocator test app" LoadProcedureStyle="MergedProcedure" DefaultLanguage="en-US">
+          <Static>
+            <Code>
+              <RelativeSegment Id="M-00FA_A-0449-10-0000_RS-04-00000" Name="Parameters" Offset="0" Size="64" LoadStateMachine="4" />
+            </Code>
+            <ParameterTypes>
+              <ParameterType Id="M-00FA_A-0449-10-0000_PT-Channels" Name="channels"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="2" /></ParameterType>
+              <ParameterType Id="M-00FA_A-0449-10-0000_PT-Count" Name="count"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="3" /></ParameterType>
+              <ParameterType Id="M-00FA_A-0449-10-0000_PT-Byte" Name="byte"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+            </ParameterTypes>
+            <Parameters>
+              <Parameter Id="M-00FA_A-0449-10-0000_P-1" Name="numChannels" ParameterType="M-00FA_A-0449-10-0000_PT-Channels" Text="Channels" Access="None" Value="2" />
+              <Parameter Id="M-00FA_A-0449-10-0000_P-2" Name="startupTimeout" ParameterType="M-00FA_A-0449-10-0000_PT-Byte" Text="Startup timeout" Value="7">
+                <Memory CodeSegment="M-00FA_A-0449-10-0000_RS-04-00000" Offset="1" BitOffset="0" />
+              </Parameter>
+            </Parameters>
+            <ParameterRefs>
+              <ParameterRef Id="M-00FA_A-0449-10-0000_P-1_R-1" RefId="M-00FA_A-0449-10-0000_P-1" />
+              <ParameterRef Id="M-00FA_A-0449-10-0000_P-2_R-2" RefId="M-00FA_A-0449-10-0000_P-2" />
+            </ParameterRefs>
+            <ComObjects>
+              <ComObject Id="M-00FA_A-0449-10-0000_O-1" Name="status" Text="Status" Number="1" FunctionText="Status" ObjectSize="1 Bit" ReadFlag="Enabled" WriteFlag="Disabled" CommunicationFlag="Enabled" TransmitFlag="Enabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" DatapointType="DPST-1-1" />
+            </ComObjects>
+            <ComObjectRefs>
+              <ComObjectRef Id="M-00FA_A-0449-10-0000_O-1_R-1" RefId="M-00FA_A-0449-10-0000_O-1" />
+            </ComObjectRefs>
+            <Allocators>
+              <Allocator Id="M-00FA_A-0449-10-0000_L-1" Name="Channel_params" Start="16" maxInclusive="47" />
+              <Allocator Id="M-00FA_A-0449-10-0000_L-2" Name="Channel_objs" Start="2" maxInclusive="9" />
+            </Allocators>
+            <Options DownloadInvisibleParameters="None" />
+          </Static>
+          <ModuleDefs>
+            <ModuleDef Id="M-00FA_A-0449-10-0000_MD-1" Name="Channel">
+              <Arguments>
+                <Argument Id="M-00FA_A-0449-10-0000_MD-1_A-1" Name="ChannelParamOffs" Allocates="16" />
+                <Argument Id="M-00FA_A-0449-10-0000_MD-1_A-2" Name="ChannelObjOffs" Allocates="2" />
+              </Arguments>
+              <Static>
+                <Parameters>
+                  <Parameter Id="M-00FA_A-0449-10-0000_MD-1_P-1" Name="level" ParameterType="M-00FA_A-0449-10-0000_PT-Byte" Text="Level" Value="5">
+                    <Memory CodeSegment="M-00FA_A-0449-10-0000_RS-04-00000" Offset="0" BitOffset="0" BaseOffset="M-00FA_A-0449-10-0000_MD-1_A-1" />
+                  </Parameter>
+                  <Parameter Id="M-00FA_A-0449-10-0000_MD-1_P-2" Name="numScenes" ParameterType="M-00FA_A-0449-10-0000_PT-Count" Text="Scenes" Value="2">
+                    <Memory CodeSegment="M-00FA_A-0449-10-0000_RS-04-00000" Offset="1" BitOffset="0" BaseOffset="M-00FA_A-0449-10-0000_MD-1_A-1" />
+                  </Parameter>
+                </Parameters>
+                <ParameterRefs>
+                  <ParameterRef Id="M-00FA_A-0449-10-0000_MD-1_P-1_R-1" RefId="M-00FA_A-0449-10-0000_MD-1_P-1" />
+                  <ParameterRef Id="M-00FA_A-0449-10-0000_MD-1_P-2_R-2" RefId="M-00FA_A-0449-10-0000_MD-1_P-2" />
+                </ParameterRefs>
+                <ComObjects>
+                  <ComObject Id="M-00FA_A-0449-10-0000_MD-1_O-1" Name="switch" Text="Switch" Number="0" BaseNumber="M-00FA_A-0449-10-0000_MD-1_A-2" FunctionText="Switch" ObjectSize="1 Bit" ReadFlag="Disabled" WriteFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Disabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" DatapointType="DPST-1-1" />
+                  <ComObject Id="M-00FA_A-0449-10-0000_MD-1_O-2" Name="value" Text="Value" Number="1" BaseNumber="M-00FA_A-0449-10-0000_MD-1_A-2" FunctionText="Value" ObjectSize="1 Byte" ReadFlag="Enabled" WriteFlag="Disabled" CommunicationFlag="Enabled" TransmitFlag="Enabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" DatapointType="DPST-5-1" />
+                </ComObjects>
+                <ComObjectRefs>
+                  <ComObjectRef Id="M-00FA_A-0449-10-0000_MD-1_O-1_R-1" RefId="M-00FA_A-0449-10-0000_MD-1_O-1" />
+                  <ComObjectRef Id="M-00FA_A-0449-10-0000_MD-1_O-2_R-2" RefId="M-00FA_A-0449-10-0000_MD-1_O-2" />
+                </ComObjectRefs>
+                <Allocators>
+                  <Allocator Id="M-00FA_A-0449-10-0000_MD-1_L-1" Name="Scene_params" Start="4" maxInclusive="15" />
+                </Allocators>
+              </Static>
+              <SubModuleDefs>
+                <ModuleDef Id="M-00FA_A-0449-10-0000_MD-1_SM-1" Name="Scene">
+                  <Arguments>
+                    <Argument Id="M-00FA_A-0449-10-0000_MD-1_SM-1_A-1" Name="SceneParamOffs" Allocates="1" />
+                  </Arguments>
+                  <Static>
+                    <Parameters>
+                      <Parameter Id="M-00FA_A-0449-10-0000_MD-1_SM-1_P-1" Name="sceneValue" ParameterType="M-00FA_A-0449-10-0000_PT-Byte" Text="Scene value" Value="9">
+                        <Memory CodeSegment="M-00FA_A-0449-10-0000_RS-04-00000" Offset="0" BitOffset="0" BaseOffset="M-00FA_A-0449-10-0000_MD-1_SM-1_A-1" />
+                      </Parameter>
+                    </Parameters>
+                    <ParameterRefs>
+                      <ParameterRef Id="M-00FA_A-0449-10-0000_MD-1_SM-1_P-1_R-1" RefId="M-00FA_A-0449-10-0000_MD-1_SM-1_P-1" />
+                    </ParameterRefs>
+                  </Static>
+                  <Dynamic>
+                    <ParameterBlock Id="M-00FA_A-0449-10-0000_MD-1_SM-1_PB-1" Name="Scene" Text="Scene">
+                      <ParameterRefRef RefId="M-00FA_A-0449-10-0000_MD-1_SM-1_P-1_R-1" />
+                    </ParameterBlock>
+                  </Dynamic>
+                </ModuleDef>
+              </SubModuleDefs>
+              <Dynamic>
+                <Channel Id="M-00FA_A-0449-10-0000_MD-1_CH-1" Name="Channel" Text="Channel" Number="1">
+                  <ParameterBlock Id="M-00FA_A-0449-10-0000_MD-1_PB-1" Name="Main" Text="Main">
+                    <ParameterRefRef RefId="M-00FA_A-0449-10-0000_MD-1_P-1_R-1" />
+                    <ParameterRefRef RefId="M-00FA_A-0449-10-0000_MD-1_P-2_R-2" />
+                    <ComObjectRefRef RefId="M-00FA_A-0449-10-0000_MD-1_O-1_R-1" />
+                    <ComObjectRefRef RefId="M-00FA_A-0449-10-0000_MD-1_O-2_R-2" />
+                    <Repeat Id="M-00FA_A-0449-10-0000_MD-1_X-1" Name="" ParameterRefId="M-00FA_A-0449-10-0000_MD-1_P-2_R-2">
+                      <Module Id="M-00FA_A-0449-10-0000_MD-1_SM-1_M-1" RefId="M-00FA_A-0449-10-0000_MD-1_SM-1">
+                        <NumericArg RefId="M-00FA_A-0449-10-0000_MD-1_SM-1_A-1" AllocatorRefId="M-00FA_A-0449-10-0000_MD-1_L-1" BaseValue="M-00FA_A-0449-10-0000_MD-1_A-1" />
+                      </Module>
+                    </Repeat>
+                  </ParameterBlock>
+                </Channel>
+              </Dynamic>
+            </ModuleDef>
+          </ModuleDefs>
+          <Dynamic>
+            <ChannelIndependentBlock>
+              <ParameterBlock Id="M-00FA_A-0449-10-0000_PB-1" Name="General" Text="General">
+                <ParameterRefRef RefId="M-00FA_A-0449-10-0000_P-2_R-2" />
+                <ComObjectRefRef RefId="M-00FA_A-0449-10-0000_O-1_R-1" />
+              </ParameterBlock>
+            </ChannelIndependentBlock>
+            <Repeat Id="M-00FA_A-0449-10-0000_X-1" Name="" ParameterRefId="M-00FA_A-0449-10-0000_P-1_R-1">
+              <Module Id="M-00FA_A-0449-10-0000_MD-1_M-1" RefId="M-00FA_A-0449-10-0000_MD-1">
+                <NumericArg RefId="M-00FA_A-0449-10-0000_MD-1_A-1" AllocatorRefId="M-00FA_A-0449-10-0000_L-1" />
+                <NumericArg RefId="M-00FA_A-0449-10-0000_MD-1_A-2" AllocatorRefId="M-00FA_A-0449-10-0000_L-2" />
+              </Module>
+            </Repeat>
+          </Dynamic>
+        </ApplicationProgram>
+      </ApplicationPrograms>
+    </Manufacturer>
+  </ManufacturerData>
+</KNX>

@@ -19,6 +19,19 @@
 //! defaults). [`RefIndex`] is the value-free counterpart: every place a ref or
 //! object occurs, with the gates in front of it.
 //!
+//! A `<Repeat>` instantiates its body as many times as its parameter's value
+//! (or its `Count`) says, and an argument of a `<Module>` reached this way
+//! may come from an `<Allocator>` (issue #449): each instance, in walk
+//! order, takes the allocator's current value and advances it by the
+//! argument's `Allocates`, plus the enclosing instance's `BaseValue`
+//! argument. An application allocator counts across the whole walk, a
+//! module definition's per instance of that definition (the DALI BOX v3's
+//! channel 1 takes `Channel_params` `Start` 528, its scenes count from the
+//! channel's own `Scene_params`). An argument whose allocator is exhausted or
+//! unknown gets no value, so a location that needs it refuses instead of
+//! falling back to 0. A repeated or nested instance gets its own key (see
+//! [`ActiveModule::id`]), so its values are its own.
+//!
 //! `<Channel>` and `<ParameterBlock>` containers are transparent to the walk,
 //! but it records where each reached item sits: its channel, its block path
 //! and the module instance (with its ordinal) whose body contains it, in
@@ -80,6 +93,18 @@ pub trait DynamicSource {
     fn enum_members(&self, param_id: &str) -> Option<&[EnumValue]>;
     /// The application's `<Union>`s, in document order.
     fn unions(&self) -> &[Union];
+    /// The `<Allocator>` with the app-relative id `allocator_id` (`L-2`, or
+    /// `MD-1_L-1` for one a `<ModuleDef>` declares), `None` when the source
+    /// declares none by that id (issue #449).
+    fn allocator(&self, _allocator_id: &str) -> Option<Allocator> {
+        None
+    }
+    /// The `Allocates` of the module `<Argument>` with the app-relative id
+    /// `arg_id`: how far an allocator-fed value of the argument advances its
+    /// allocator. `None` when the argument declares none.
+    fn argument_allocates(&self, _arg_id: &str) -> Option<i64> {
+        None
+    }
 }
 
 impl<T: DynamicSource + ?Sized> DynamicSource for &T {
@@ -113,6 +138,46 @@ impl<T: DynamicSource + ?Sized> DynamicSource for &T {
     fn unions(&self) -> &[Union] {
         (**self).unions()
     }
+    fn allocator(&self, allocator_id: &str) -> Option<Allocator> {
+        (**self).allocator(allocator_id)
+    }
+    fn argument_allocates(&self, arg_id: &str) -> Option<i64> {
+        (**self).argument_allocates(arg_id)
+    }
+}
+
+/// An `<Allocator>`: a counter module instances draw argument values from
+/// (issue #449). Each `<NumericArg AllocatorRefId>` of a reached instance
+/// takes the allocator's current value, which then advances by the
+/// argument's `Allocates`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Allocator {
+    /// `Start`: the first value handed out.
+    pub start: i64,
+    /// `maxInclusive`: the last value the allocator may hand out, if declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_inclusive: Option<i64>,
+}
+
+/// A `<NumericArg>` whose value is computed when its module is instantiated
+/// (issue #449): drawn from an `<Allocator>` (`AllocatorRefId`), or a literal
+/// `Value`, either one plus the enclosing instance's value of the argument
+/// `BaseValue` names. A plain `Value` without `BaseValue` is kept in
+/// [`DynamicNode::Module`]'s `args` instead.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ComputedArg {
+    /// The argument id, app-relative (`MD-1_A-1`).
+    pub arg: String,
+    /// The `AllocatorRefId`, app-relative (`L-2`, `MD-1_L-1`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allocator: Option<String>,
+    /// The literal `Value`, when the argument has no allocator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<i64>,
+    /// The `BaseValue`: the app-relative id of an argument of the enclosing
+    /// module instance whose value is added.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
 }
 
 /// A `<Channel>` as a location in the Dynamic section: the channel an active
@@ -340,8 +405,26 @@ pub enum DynamicNode {
         id: String,
         /// The module definition it instantiates (e.g. `MD-13`).
         module_def: String,
-        /// The `<NumericArg>` values, keyed by app-relative argument id.
+        /// The `<NumericArg>` literal values, keyed by app-relative argument
+        /// id.
         args: HashMap<String, i64>,
+        /// The `<NumericArg>`s computed at instantiation (an allocator, or a
+        /// `BaseValue`), in document order (issue #449).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        computed_args: Vec<ComputedArg>,
+    },
+    /// `<Repeat ParameterRefId|Count>`: the children are instantiated as many
+    /// times as the parameter's value (or the literal `Count`) says, each
+    /// `<Module>` inside once per repetition (issue #449).
+    Repeat {
+        /// The repeat id, app-relative (e.g. `X-1`, `MD-1_X-2`).
+        id: String,
+        /// The `ParameterRefId` whose value is the count, app-relative.
+        param_ref_id: Option<String>,
+        /// The literal `Count`, when there is no parameter.
+        count: Option<u32>,
+        /// The repeated nodes, in document order.
+        children: Vec<DynamicNode>,
     },
     /// `<Assign TargetParamRefRef SourceParamRefRef|Value>`: while reached, the
     /// target parameter takes the source parameter's value (or the literal).
@@ -412,6 +495,17 @@ pub fn flatten_containers(nodes: &[DynamicNode]) -> Vec<DynamicNode> {
             | DynamicNode::ParameterBlock { children, .. } => {
                 out.extend(flatten_containers(children));
             }
+            DynamicNode::Repeat {
+                id,
+                param_ref_id,
+                count,
+                children,
+            } => out.push(DynamicNode::Repeat {
+                id: id.clone(),
+                param_ref_id: param_ref_id.clone(),
+                count: *count,
+                children: flatten_containers(children),
+            }),
             DynamicNode::Choose {
                 param_ref_id,
                 whens,
@@ -587,17 +681,49 @@ const MAX_ASSIGN_PASSES: usize = 16;
 /// One module instance the walk reached.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ActiveModule {
-    /// The module instance id, app-relative (e.g. `MD-13_M-44`).
+    /// The instance key, app-relative: the `<Module>` id (e.g. `MD-13_M-44`)
+    /// for a module instantiated once; with the repetition appended
+    /// (`MD-1_M-1_MI-2`) for the second and later instance of a `<Repeat>`;
+    /// and for a submodule its parent's [`Self::selector`] followed by the
+    /// submodule's `<Module>` id without the shared `MD-<d>_` and its own
+    /// repetition (`MD-1_M-1_MI-1_SM-1_M-1_MI-3`). Values are keyed by it, and
+    /// [`selector_key`] / [`split_selector`] convert to and from the device
+    /// key form.
     pub id: String,
+    /// The `<Module>` element's own id (`MD-13_M-44`, `MD-1_SM-1_M-1`).
+    pub element_id: String,
     /// The module definition it instantiates (e.g. `MD-13`).
     pub module_def: String,
-    /// The instance's argument values, keyed by app-relative argument id.
+    /// The instance's argument values, keyed by app-relative argument id:
+    /// the literal `<NumericArg>`s and the computed ones that resolved (an
+    /// allocator-fed argument past its allocator's `maxInclusive`, or one
+    /// whose `BaseValue` names an argument the parent lacks, is absent, so a
+    /// location that needs it refuses; issue #449).
     pub args: HashMap<String, i64>,
+    /// Index into [`DynamicConfig::modules`] of the instance whose body
+    /// holds this one's `<Module>` element, `None` at the application level.
+    pub parent: Option<usize>,
+    /// The 1-based repetition of the enclosing `<Repeat>` this instance was
+    /// made in (the project's `_MI-<n>`), 1 outside any `<Repeat>`.
+    pub repetition: u32,
     /// The instance's 1-based ordinal among all instances of the same module
     /// definition, in `M-<m>` order (by the numeric `m`). Counted over every
     /// `<Module>` element of the application, reached or not, so it is stable
-    /// under parameter changes.
+    /// under parameter changes; a repetition `n` of a `<Repeat>` adds `n - 1`.
     pub ordinal: u32,
+}
+
+impl ActiveModule {
+    /// The instance's module-instance selector in the device key form: the
+    /// key itself when it carries its `_MI-<n>`, else the key with `_MI-1`
+    /// (`MD-1_M-3` gives `MD-1_M-3_MI-1`).
+    pub fn selector(&self) -> String {
+        if self.id.contains("_MI-") {
+            self.id.clone()
+        } else {
+            format!("{}_MI-1", self.id)
+        }
+    }
 }
 
 /// Where an active parameter or com-object sits in the Dynamic section.
@@ -921,7 +1047,9 @@ pub fn evaluate_dynamic<S: DynamicSource + ?Sized>(
     // and source of every reached Assign, without duplicates.
     let ordinals = module_ordinals(app);
     for m in &mut walk.modules {
-        m.ordinal = ordinals.get(&m.id).copied().unwrap_or(0);
+        m.ordinal = ordinals
+            .get(&m.element_id)
+            .map_or(0, |o| o.saturating_add(m.repetition.saturating_sub(1)));
     }
     let modules = walk.modules;
     let placement = |place: &Place, shown: bool| {
@@ -1069,28 +1197,75 @@ impl<'a, S: DynamicSource + ?Sized> DynamicMemo<'a, S> {
     }
 }
 
-/// Splits a device-file parameter key into its module instance id and the
-/// app-relative `ParameterRef` id: `MD-15_M-26_MI-1_UP-22_R-27` becomes
-/// (`Some("MD-15_M-26")`, `MD-15_UP-22_R-27`); a key without a selector is
-/// returned unchanged with `None`.
+/// Splits a device-file parameter key into its module instance key (see
+/// [`ActiveModule::id`]) and the app-relative `ParameterRef` id:
+/// `MD-15_M-26_MI-1_UP-22_R-27` becomes (`Some("MD-15_M-26")`,
+/// `MD-15_UP-22_R-27`), `MD-1_M-1_MI-2_P-3_R-5` (`Some("MD-1_M-1_MI-2")`,
+/// `MD-1_P-3_R-5`) and a submodule's `MD-1_M-1_MI-1_SM-1_M-1_MI-3_P-1_R-1`
+/// (`Some("MD-1_M-1_MI-1_SM-1_M-1_MI-3")`, `MD-1_SM-1_P-1_R-1`). A key
+/// without a selector is returned unchanged with `None`.
 pub fn split_selector(key: &str) -> (Option<String>, String) {
-    let parsed = (|| {
-        let (md, after) = key.split_once("_M-")?;
-        let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
-        if !md.strip_prefix("MD-").is_some_and(digits) {
-            return None;
-        }
-        let (m, after) = after.split_once("_MI-")?;
-        let (n, param) = after.split_once('_')?;
-        if !digits(m) || !digits(n) {
-            return None;
-        }
-        Some((format!("{md}_M-{m}"), format!("{md}_{param}")))
-    })();
-    match parsed {
-        Some((instance, param_ref)) => (Some(instance), param_ref),
+    match parse_selector(key) {
+        Some((instance, def, rest)) => (Some(instance), format!("{def}_{rest}")),
         None => (None, key.to_string()),
     }
+}
+
+/// Parses the module-instance selector at the start of `key`: the instance
+/// key, the (innermost) module definition and what follows the selector.
+fn parse_selector(key: &str) -> Option<(String, String, &str)> {
+    /// The run of ASCII digits at the start of `s` and the rest.
+    fn digits(s: &str) -> Option<(&str, &str)> {
+        let end = s
+            .bytes()
+            .position(|b| !b.is_ascii_digit())
+            .unwrap_or(s.len());
+        (end > 0).then(|| s.split_at(end))
+    }
+    let (md, mut rest) = digits(key.strip_prefix("MD-")?)?;
+    let mut def = format!("MD-{md}");
+    let mut levels = 0usize;
+    let mut last_mi: &str;
+    loop {
+        let (_, after) = digits(rest.strip_prefix("_M-")?)?;
+        let (mi, after) = digits(after.strip_prefix("_MI-")?)?;
+        levels += 1;
+        last_mi = mi;
+        rest = after;
+        // A submodule instance follows: `_SM-<s>_M-<m>_MI-<n>`.
+        if let Some(sm) = rest.strip_prefix("_SM-")
+            && let Some((s, tail)) = digits(sm)
+            && tail.starts_with("_M-")
+        {
+            def = format!("{def}_SM-{s}");
+            rest = tail;
+            continue;
+        }
+        break;
+    }
+    let param = rest.strip_prefix('_').filter(|p| !p.is_empty())?;
+    let selector = &key[..key.len() - rest.len()];
+    let instance = if levels == 1 && last_mi == "1" {
+        selector
+            .strip_suffix("_MI-1")
+            .unwrap_or(selector)
+            .to_string()
+    } else {
+        selector.to_string()
+    };
+    Some((instance, def, param))
+}
+
+/// The innermost module definition of an instance key (`MD-1_M-3` gives
+/// `MD-1`, `MD-1_M-1_MI-1_SM-2_M-4_MI-1` gives `MD-1_SM-2`).
+fn instance_module_def(instance: &str) -> String {
+    let mut parts = instance.split('_');
+    let mut def = parts.next().unwrap_or_default().to_string();
+    for part in parts.filter(|p| p.starts_with("SM-")) {
+        def.push('_');
+        def.push_str(part);
+    }
+    def
 }
 
 /// The `Parameter` ids (full) the Dynamic section shows somewhere: every
@@ -1112,7 +1287,8 @@ fn placed_parameters<S: DynamicSource + ?Sized>(app: &S) -> HashSet<String> {
                     }
                 }
                 DynamicNode::Channel { children, .. }
-                | DynamicNode::ParameterBlock { children, .. } => visit(app, children, out),
+                | DynamicNode::ParameterBlock { children, .. }
+                | DynamicNode::Repeat { children, .. } => visit(app, children, out),
                 DynamicNode::ComObjectRefRef(_)
                 | DynamicNode::Module { .. }
                 | DynamicNode::Assign { .. } => {}
@@ -1127,13 +1303,22 @@ fn placed_parameters<S: DynamicSource + ?Sized>(app: &S) -> HashSet<String> {
     out
 }
 
-/// The scope a ref reached inside `module` belongs to (see [`Walk::scope`]).
+/// The scope a ref reached inside `module` belongs to (see [`Walk::scope`]):
+/// the innermost instance, `module` or one of its parents, whose module
+/// definition the ref belongs to.
 fn scope_of(modules: &[ActiveModule], module: Option<usize>, ref_id: &str) -> Option<usize> {
-    let m = modules.get(module?)?;
-    let own = ref_id
-        .strip_prefix(m.module_def.as_str())
-        .is_some_and(|rest| rest.starts_with('_'));
-    if own || ref_id.starts_with("MD-") {
+    let mut at = module;
+    while let Some(i) = at {
+        let m = modules.get(i)?;
+        let own = ref_id
+            .strip_prefix(m.module_def.as_str())
+            .is_some_and(|rest| rest.starts_with('_'));
+        if own {
+            return Some(i);
+        }
+        at = m.parent;
+    }
+    if ref_id.starts_with("MD-") {
         module
     } else {
         None
@@ -1151,6 +1336,15 @@ pub fn selector_key(instance: Option<&str>, app_relative_id: &str) -> String {
     let Some(instance) = instance else {
         return app_relative_id.to_string();
     };
+    if instance.contains("_MI-") {
+        // A key that carries its selector (a repetition or a submodule).
+        let module_def = instance_module_def(instance);
+        let rest = app_relative_id
+            .strip_prefix(module_def.as_str())
+            .and_then(|r| r.strip_prefix('_'))
+            .unwrap_or(app_relative_id);
+        return format!("{instance}_{rest}");
+    }
     let module_def = instance.split_once("_M-").map_or(instance, |(md, _)| md);
     let rest = app_relative_id
         .strip_prefix(module_def)
@@ -1268,7 +1462,8 @@ fn module_ordinals<S: DynamicSource + ?Sized>(app: &S) -> HashMap<String, u32> {
                     }
                 }
                 DynamicNode::Channel { children, .. }
-                | DynamicNode::ParameterBlock { children, .. } => visit(children, out),
+                | DynamicNode::ParameterBlock { children, .. }
+                | DynamicNode::Repeat { children, .. } => visit(children, out),
                 DynamicNode::ParameterRefRef(_)
                 | DynamicNode::ComObjectRefRef(_)
                 | DynamicNode::Assign { .. } => {}
@@ -1454,7 +1649,19 @@ struct Walk {
     active_before: HashSet<(String, String)>,
     /// The parameters this pass has reached so far, same keys.
     active_now: HashSet<(String, String)>,
+    /// The current value of every allocator this pass drew from, keyed by
+    /// the instance owning it (`None` for an application allocator, the
+    /// instance of the declaring `<ModuleDef>` for a module one) and the
+    /// app-relative allocator id (issue #449).
+    allocators: HashMap<(Option<usize>, String), i64>,
+    /// The repetition of the innermost `<Repeat>` around the current point
+    /// of the walk (within the current module body), 1 outside any.
+    repetition: u32,
 }
+
+/// The most repetitions one `<Repeat>` is expanded to: a guard against a
+/// malformed count, far above what products declare (64 DALI channels).
+const MAX_REPEAT: i64 = 4096;
 
 /// The shared memory of every union a pass reached a member of, and the values
 /// the members it did not reach read from it.
@@ -1640,6 +1847,84 @@ impl Walk {
         module.and_then(|i| self.modules.get(i)).map(|m| &m.args)
     }
 
+    /// The key of a new instance of the `<Module>` element `element` of
+    /// `module_def`, reached inside `parent` in repetition `repetition` (see
+    /// [`ActiveModule::id`]).
+    fn instance_key(
+        &self,
+        parent: Option<usize>,
+        element: &str,
+        module_def: &str,
+        repetition: u32,
+    ) -> String {
+        let parent = parent.and_then(|i| self.modules.get(i));
+        match parent {
+            Some(p) if module_def.contains("_SM-") => {
+                let outer = p.selector();
+                let md = outer.split('_').next().unwrap_or_default();
+                let own = element
+                    .strip_prefix(md)
+                    .and_then(|r| r.strip_prefix('_'))
+                    .unwrap_or(element);
+                format!("{outer}_{own}_MI-{repetition}")
+            }
+            _ if repetition > 1 => format!("{element}_MI-{repetition}"),
+            _ => element.to_string(),
+        }
+    }
+
+    /// The value of a computed `<NumericArg>` for a new instance reached
+    /// inside `parent`: the allocator's current value (which then advances
+    /// by the argument's `Allocates`) or the literal, plus the parent's value
+    /// of the `BaseValue` argument. `None` when an input is missing: an
+    /// unknown allocator, an allocator past its `maxInclusive`, or a
+    /// `BaseValue` the parent has no value for.
+    fn computed_arg<S: DynamicSource + ?Sized>(
+        &mut self,
+        app: &S,
+        parent: Option<usize>,
+        arg: &ComputedArg,
+    ) -> Option<i64> {
+        let base = match &arg.base {
+            Some(b) => *self.module_args(parent)?.get(b)?,
+            None => 0,
+        };
+        let own = match &arg.allocator {
+            None => arg.value.unwrap_or(0),
+            Some(alloc) => {
+                // A module definition's allocator counts per instance of it.
+                let owner = match alloc.rsplit_once("_L-") {
+                    Some((def, _)) if def.starts_with("MD-") => {
+                        let mut at = parent;
+                        loop {
+                            let m = self.modules.get(at?)?;
+                            if m.module_def == def {
+                                break at;
+                            }
+                            at = m.parent;
+                        }
+                    }
+                    _ => None,
+                };
+                let decl = app.allocator(alloc)?;
+                let allocates = app.argument_allocates(&arg.arg).unwrap_or(0);
+                let current = self
+                    .allocators
+                    .entry((owner, alloc.clone()))
+                    .or_insert(decl.start);
+                let value = *current;
+                if let Some(max) = decl.max_inclusive
+                    && value.saturating_add(allocates.max(1)).saturating_sub(1) > max
+                {
+                    return None;
+                }
+                *current = value.saturating_add(allocates);
+                value
+            }
+        };
+        Some(own.saturating_add(base))
+    }
+
     fn instance_id(&self, module: Option<usize>) -> &str {
         module
             .and_then(|i| self.modules.get(i))
@@ -1758,6 +2043,7 @@ impl Walk {
                     id,
                     module_def,
                     args,
+                    computed_args,
                 } => {
                     if depth >= MAX_MODULE_DEPTH {
                         continue;
@@ -1765,14 +2051,55 @@ impl Walk {
                     let Some(body) = app.module_dynamic(module_def) else {
                         continue;
                     };
+                    let mut resolved = args.clone();
+                    for arg in computed_args {
+                        if let Some(v) = self.computed_arg(app, module, arg) {
+                            resolved.insert(arg.arg.clone(), v);
+                        }
+                    }
                     let idx = self.modules.len();
+                    // `Walk::default()` starts at 0: outside any `<Repeat>`.
+                    let repetition = self.repetition.max(1);
                     self.modules.push(ActiveModule {
-                        id: id.clone(),
+                        id: self.instance_key(module, id, module_def, repetition),
+                        element_id: id.clone(),
                         module_def: module_def.clone(),
-                        args: args.clone(),
+                        args: resolved,
+                        parent: module,
+                        repetition,
                         ordinal: 0,
                     });
+                    let outer = std::mem::replace(&mut self.repetition, 1);
                     self.run(app, values, body, Some(idx), depth + 1);
+                    self.repetition = outer;
+                }
+                DynamicNode::Repeat {
+                    param_ref_id,
+                    count,
+                    children,
+                    ..
+                } => {
+                    let n = match param_ref_id {
+                        Some(r) => {
+                            let scope = self.scope(module, r);
+                            value_of(
+                                app,
+                                values,
+                                self.instance_id(scope),
+                                self.module_args(scope),
+                                r,
+                            )
+                            .and_then(|v| v.trim().parse::<i64>().ok())
+                            .unwrap_or(0)
+                        }
+                        None => count.map_or(0, i64::from),
+                    };
+                    let outer = self.repetition;
+                    for k in 1..=n.clamp(0, MAX_REPEAT) {
+                        self.repetition = u32::try_from(k).unwrap_or(u32::MAX);
+                        self.run(app, values, children, module, depth);
+                    }
+                    self.repetition = outer;
                 }
                 DynamicNode::Assign {
                     target,
@@ -2000,6 +2327,7 @@ impl IndexWalk<'_> {
                         self.gates.pop();
                     }
                 }
+                DynamicNode::Repeat { children, .. } => self.visit(children),
                 DynamicNode::Module { .. } | DynamicNode::Assign { .. } => {}
             }
         }
@@ -2134,6 +2462,7 @@ mod tests {
                 id: m.to_string(),
                 module_def: "MD-1".to_string(),
                 args: HashMap::new(),
+                computed_args: Vec::new(),
             });
         }
         src.module_dynamics.insert(
@@ -2332,6 +2661,34 @@ mod tests {
         let default = gate(WhenTest::Default, vec![WhenTest::Values(vec![1])]);
         assert!(default.holds(Some(0.0)));
         assert!(!default.holds(Some(1.0)));
+    }
+
+    #[test]
+    fn test_split_selector_inverts_selector_key_for_repetitions_and_submodules() {
+        for (instance, reference, key) in [
+            (
+                "MD-15_M-26",
+                "MD-15_UP-22_R-27",
+                "MD-15_M-26_MI-1_UP-22_R-27",
+            ),
+            ("MD-1_M-1_MI-2", "MD-1_P-3_R-5", "MD-1_M-1_MI-2_P-3_R-5"),
+            (
+                "MD-1_M-1_MI-1_SM-1_M-1_MI-3",
+                "MD-1_SM-1_P-1_R-1",
+                "MD-1_M-1_MI-1_SM-1_M-1_MI-3_P-1_R-1",
+            ),
+        ] {
+            assert_eq!(selector_key(Some(instance), reference), key);
+            assert_eq!(
+                split_selector(key),
+                (Some(instance.to_string()), reference.to_string())
+            );
+        }
+        assert_eq!(split_selector("P-1_R-1"), (None, "P-1_R-1".to_string()));
+        assert_eq!(
+            split_selector("MD-1_P-1_R-1"),
+            (None, "MD-1_P-1_R-1".to_string())
+        );
     }
 
     #[test]

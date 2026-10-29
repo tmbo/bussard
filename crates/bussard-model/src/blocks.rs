@@ -215,6 +215,11 @@ impl PageWalk<'_> {
                         gates.pop();
                     }
                 }
+                // A repeated body's pages are the body's own (its modules
+                // are expanded by the evaluator, not here).
+                DynamicNode::Repeat { children, .. } => {
+                    self.nodes(children, current, channel, gates);
+                }
                 DynamicNode::Module { .. } | DynamicNode::Assign { .. } => {}
             }
         }

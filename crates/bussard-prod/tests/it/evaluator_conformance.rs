@@ -520,3 +520,111 @@ fn test_product_model_round_trips_the_dynamic_tree_on_the_corpus() -> TestResult
     assert!(programs > 0, "no program compared");
     Ok(())
 }
+
+/// The issue #449 fixture: allocator-fed module arguments and `<Repeat>`.
+const ALLOCATORS: &[u8] = include_bytes!("../fixtures/allocators.app.xml");
+/// Its program id.
+const ALLOCATORS_ID: &str = "M-00FA_A-0449-10-0000";
+
+/// The octets at `offsets` of the fixture's one parameter segment.
+fn segment_octets(
+    image: &BTreeMap<String, Vec<u8>>,
+    offsets: &[usize],
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let seg = image
+        .get(&format!("{ALLOCATORS_ID}_RS-04-00000"))
+        .ok_or("no parameter segment")?;
+    offsets
+        .iter()
+        .map(|&o| seg.get(o).copied().ok_or_else(|| "offset outside".into()))
+        .collect()
+}
+
+#[test]
+fn test_evaluate_dynamic_repeat_instantiates_allocator_fed_modules() -> TestResult {
+    let app = parse_application_program(ALLOCATORS_ID, ALLOCATORS)?;
+    let config = bussard_prod::dynamic::evaluate_dynamic(&app, &BTreeMap::new());
+    let modules: Vec<(&str, Option<i64>, Option<i64>)> = config
+        .modules
+        .iter()
+        .map(|m| {
+            let arg = |a: &str| m.args.get(a).copied();
+            (
+                m.id.as_str(),
+                arg("MD-1_A-1").or(arg("MD-1_SM-1_A-1")),
+                arg("MD-1_A-2"),
+            )
+        })
+        .collect();
+    // Two channels from L-1 (16, then 16 + 16) and L-2 (2, then 4); two
+    // scenes in each, from the channel's own MD-1_L-1 (4, 5) plus the
+    // channel's base (BaseValue).
+    assert_eq!(
+        modules,
+        vec![
+            ("MD-1_M-1", Some(16), Some(2)),
+            ("MD-1_M-1_MI-1_SM-1_M-1_MI-1", Some(20), None),
+            ("MD-1_M-1_MI-1_SM-1_M-1_MI-2", Some(21), None),
+            ("MD-1_M-1_MI-2", Some(32), Some(4)),
+            ("MD-1_M-1_MI-2_SM-1_M-1_MI-1", Some(36), None),
+            ("MD-1_M-1_MI-2_SM-1_M-1_MI-2", Some(37), None),
+        ]
+    );
+    let image = bussard_prod::compute_dynamic_parameter_image(&app, &BTreeMap::new())?;
+    assert_eq!(
+        segment_octets(&image, &[0, 1, 16, 17, 20, 21, 32, 33, 36, 37])?,
+        vec![0xFF, 7, 5, 2, 9, 9, 5, 2, 9, 9]
+    );
+    // The objects: the application's 1, each channel's 0 and 1 on its base.
+    let mut numbers = Vec::new();
+    for active in &config.com_objects {
+        let (base, _) = app
+            .resolve(&active.com_object_ref_id)
+            .ok_or("unresolved object")?;
+        let offset = match base.base_number_ref.as_deref() {
+            Some(arg) => bussard_prod::module_argument(&app, &config, active.module, arg)
+                .ok_or("no object base")?,
+            None => 0,
+        };
+        numbers.push(i64::from(base.number) + offset);
+    }
+    numbers.sort_unstable();
+    assert_eq!(numbers, vec![1, 2, 3, 4, 5]);
+    Ok(())
+}
+
+#[test]
+fn test_evaluate_dynamic_repeat_values_are_keyed_per_instance() -> TestResult {
+    let app = parse_application_program(ALLOCATORS_ID, ALLOCATORS)?;
+    // The second channel's level and its first scene; the first channel
+    // keeps its defaults.
+    let values: BTreeMap<String, String> = [
+        ("MD-1_M-1_MI-2_P-1_R-1", "33"),
+        ("MD-1_M-1_MI-2_SM-1_M-1_MI-1_P-1_R-1", "44"),
+        ("MD-1_M-1_MI-1_P-2_R-2", "1"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
+    let image = bussard_prod::compute_dynamic_parameter_image(&app, &values)?;
+    // Channel 1 now has one scene (at 20; 21 keeps the erased fill).
+    assert_eq!(
+        segment_octets(&image, &[16, 17, 20, 21, 32, 36, 37])?,
+        vec![5, 1, 9, 0xFF, 33, 44, 9]
+    );
+    Ok(())
+}
+
+#[test]
+fn test_compute_dynamic_parameter_image_refuses_an_exhausted_allocator() -> TestResult {
+    let app = parse_application_program(ALLOCATORS_ID, ALLOCATORS)?;
+    // A third channel would start at 48, past L-1's maxInclusive 47: its
+    // base has no value, and the image refuses instead of writing the
+    // channel at base 0 over the application's parameters.
+    let values = BTreeMap::from([("P-1_R-1".to_string(), "3".to_string())]);
+    let err = bussard_prod::compute_dynamic_parameter_image(&app, &values)
+        .err()
+        .ok_or("expected a refusal")?;
+    assert!(err.to_string().contains("BaseOffset"), "{err}");
+    Ok(())
+}

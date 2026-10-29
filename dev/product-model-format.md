@@ -148,6 +148,15 @@ figure). `describe` shows them; the download checks the group key table (PID 53)
 and the security individual address table (PID 54) against the parsed
 application program, whose cache format moved to `bussard-parsed-product-v6`.
 
+Format 10 adds ETS module allocation (#449). `dynamic` and `module_dynamics` gain
+`repeat` (a `<Repeat>` with its `id`, the `ref` whose value is the count or a literal
+`count`, and `nodes`) and a module's `computed` arguments (`arg` with an `allocator`,
+or a literal `value`, plus an optional `base`, the `BaseValue` argument of the
+enclosing instance). `allocators` lists each `<Allocator>`'s `start` and
+`max_inclusive`, `argument_allocates` each module argument's `Allocates`. A
+submodule's `module_dynamics` entry is keyed by its own id (`MD-1_SM-1`). The parsed
+application program carries the same, in cache format `bussard-parsed-product-v7`.
+
 Format 6 drops `blocks`, `parameter_when` and `ref_values`, and a
 parameter's `default` is its own `Value` (format 5 and older gave a parameter with one
 ref that ref's `Value`; the ref's `value` carries it now). The ETS pages `bussard

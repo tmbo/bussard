@@ -322,7 +322,19 @@ pub fn compute_parameter_image_placed_with(
                     .unwrap_or(base_arg);
                 let mut offsets = Vec::new();
                 for instance in &app.module_instances {
-                    let base = instance.arg_values.get(rel_arg).copied().unwrap_or(0);
+                    // An argument without a value (an allocator's) refuses
+                    // rather than placing the parameter at base 0 (issue #449).
+                    let Some(base) = instance.arg_values.get(rel_arg).copied() else {
+                        return Err(param_err(
+                            app,
+                            pname,
+                            &format!(
+                                "module instance {} has no value for the BaseOffset \
+                                 argument {rel_arg}",
+                                instance.id
+                            ),
+                        ));
+                    };
                     let effective = i64::from(offset).checked_add(base).and_then(|v| {
                         if v >= 0 {
                             usize::try_from(v).ok()
@@ -808,6 +820,7 @@ fn dynamic_parameter_slots_with<'a>(
     config: &bussard_ets::dynamic::DynamicConfig,
     union_of: &UnionIndex<'_>,
 ) -> Result<Vec<ParameterSlot<'a>>> {
+    check_object_bases(app, config)?;
     let mut slots = Vec::new();
     if app.downloads_invisible_parameters() {
         invisible_parameter_slots(app, config, union_of, &mut slots)?;
@@ -836,8 +849,52 @@ fn dynamic_parameter_slots_with<'a>(
     Ok(slots)
 }
 
+/// The value of the module argument `arg` (a full or app-relative id) in the
+/// module instance `module` of `config`, `None` when the instance has none
+/// (or there is no instance).
+pub fn module_argument(
+    app: &ApplicationProgram,
+    config: &bussard_ets::dynamic::DynamicConfig,
+    module: Option<usize>,
+    arg: &str,
+) -> Option<i64> {
+    let rel = arg.strip_prefix(&format!("{}_", app.id)).unwrap_or(arg);
+    config.module_args(module)?.get(rel).copied()
+}
+
+/// Refuses a configuration that reaches a module com-object whose
+/// `BaseNumber` argument has no value in its instance (issue #449): an
+/// allocator-fed argument past its allocator, or one ETS computes in a way
+/// bussard does not model. Placing the object at base 0 would give it
+/// another object's number.
+fn check_object_bases(
+    app: &ApplicationProgram,
+    config: &bussard_ets::dynamic::DynamicConfig,
+) -> Result<()> {
+    for active in &config.com_objects {
+        let Some((base, _)) = app.resolve(&active.com_object_ref_id) else {
+            continue;
+        };
+        if let Some(arg) = base.base_number_ref.as_deref()
+            && module_argument(app, config, active.module, arg).is_none()
+        {
+            return Err(ProdError::ParameterImage {
+                parameter: format!("com-object {}", active.com_object_ref_id),
+                reason: format!(
+                    "its module instance has no value for the BaseNumber argument {}; \
+                     refusing rather than numbering the object from 0",
+                    arg.strip_prefix(&format!("{}_", app.id)).unwrap_or(arg)
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Resolves `at` to a slot, the byte offset shifted by the module instance's
-/// `BaseOffset` argument.
+/// `BaseOffset` argument. A `BaseOffset` the instance has no value for
+/// refuses (issue #449): resolving it to 0 laid an MDT logic module over the
+/// application's own parameters.
 fn slot_at<'a>(
     app: &'a ApplicationProgram,
     config: &bussard_ets::dynamic::DynamicConfig,
@@ -847,11 +904,20 @@ fn slot_at<'a>(
     param_ref_id: Option<String>,
 ) -> Result<ParameterSlot<'a>> {
     let pname = param.name.as_deref().unwrap_or(&param.id);
-    let base = at
-        .base
-        .map(|b| b.strip_prefix(&format!("{}_", app.id)).unwrap_or(b))
-        .and_then(|rel| config.module_args(module)?.get(rel).copied())
-        .unwrap_or(0);
+    let base = match at.base {
+        Some(arg) => module_argument(app, config, module, arg).ok_or_else(|| {
+            param_err(
+                app,
+                pname,
+                &format!(
+                    "its module instance has no value for the BaseOffset argument {}; \
+                     refusing rather than placing the parameter at base 0",
+                    arg.strip_prefix(&format!("{}_", app.id)).unwrap_or(arg)
+                ),
+            )
+        })?,
+        None => 0,
+    };
     let offset = usize::try_from(at.offset + base).map_err(|_| {
         param_err(
             app,

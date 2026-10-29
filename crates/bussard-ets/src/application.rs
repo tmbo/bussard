@@ -28,8 +28,8 @@ use crate::flags::FlagSet;
 use crate::translation::TranslationCollector;
 use bussard_model::Dpt;
 pub use bussard_model::dynamic::{
-    BlockRef, ChannelRef, CompareOp, DynamicNode, DynamicWhen, EnumValue, LabelMatch, Memory,
-    Union, UnionMember, WhenTest, enum_member_by_label, flatten_containers,
+    Allocator, BlockRef, ChannelRef, CompareOp, ComputedArg, DynamicNode, DynamicWhen, EnumValue,
+    LabelMatch, Memory, Union, UnionMember, WhenTest, enum_member_by_label, flatten_containers,
 };
 
 /// A base `<ComObject>` from the application program.
@@ -943,6 +943,15 @@ pub struct ApplicationProgram {
     /// `ArgBeschriftung` → `MD-1_A-3`), used to resolve `{{Arg…}}` placeholders
     /// in channel and com-object texts against a module instance's values.
     pub argument_ids: HashMap<String, String>,
+    /// The `Allocates` of every module `<Argument>` that declares one, keyed
+    /// by app-relative argument id (issue #449): how far an allocator-fed
+    /// value of the argument advances its allocator.
+    #[serde(default)]
+    pub argument_allocates: HashMap<String, i64>,
+    /// The `<Allocator>`s of the application's and the module definitions'
+    /// `<Static>`, keyed by app-relative id (`L-2`, `MD-1_L-1`) (issue #449).
+    #[serde(default)]
+    pub allocators: HashMap<String, Allocator>,
     /// Dynamic-section `<Module>` instantiations, in document order. Each is one
     /// channel's set of argument values; empty for a non-module application.
     pub module_instances: Vec<ModuleInstance>,
@@ -1421,6 +1430,7 @@ fn handle_start(
         b"ComObjectRef" => insert_com_object_ref(app, m),
         b"Channel" => insert_channel(app, m),
         b"Argument" => insert_argument(app, m),
+        b"Allocator" => insert_allocator(app, m),
         b"ParameterType" => {
             state.pt_id = get(m, b"Id").map(str::to_string);
             state.pt_name = get(m, b"Name").map(str::to_string);
@@ -1581,6 +1591,7 @@ fn handle_empty(
         b"ComObjectRef" => insert_com_object_ref(app, m),
         b"Channel" => insert_channel(app, m),
         b"Argument" => insert_argument(app, m),
+        b"Allocator" => insert_allocator(app, m),
         b"Options" => insert_options(app, m),
         b"Extension" => insert_extension(app, m),
         b"ComObjectTable" => insert_com_object_table(app, m),
@@ -1808,6 +1819,9 @@ fn apply_translations(app: &mut ApplicationProgram, translations: &TranslationCo
                         translate_tree(&mut w.children, full, translations);
                     }
                 }
+                DynamicNode::Repeat { children, .. } => {
+                    translate_tree(children, full, translations);
+                }
                 DynamicNode::ParameterRefRef(_)
                 | DynamicNode::ComObjectRefRef(_)
                 | DynamicNode::Module { .. }
@@ -1917,16 +1931,38 @@ fn insert_channel(app: &mut ApplicationProgram, m: &Attrs) {
     );
 }
 
-/// Records a module `<Argument>`'s name → app-relative id (first wins).
+/// Records a module `<Argument>`'s name → app-relative id (first wins) and
+/// its `Allocates`.
 fn insert_argument(app: &mut ApplicationProgram, m: &Attrs) {
-    let (Some(id), Some(name)) = (get(m, b"Id"), get(m, b"Name")) else {
+    let Some(rel) = get(m, b"Id").and_then(|id| app_relative_id(id, &app.id)) else {
         return;
     };
-    if let Some(rel) = app_relative_id(id, &app.id) {
+    if let Some(allocates) = get(m, b"Allocates").and_then(|v| v.trim().parse::<i64>().ok()) {
+        app.argument_allocates.insert(rel.to_string(), allocates);
+    }
+    if let Some(name) = get(m, b"Name") {
         app.argument_ids
             .entry(name.to_string())
             .or_insert_with(|| rel.to_string());
     }
+}
+
+/// Records an `<Allocator Id Start maxInclusive>` (issue #449).
+fn insert_allocator(app: &mut ApplicationProgram, m: &Attrs) {
+    let (Some(rel), Some(start)) = (
+        get(m, b"Id").and_then(|id| app_relative_id(id, &app.id)),
+        get(m, b"Start").and_then(|v| v.trim().parse::<i64>().ok()),
+    ) else {
+        return;
+    };
+    let max_inclusive = get(m, b"maxInclusive").and_then(|v| v.trim().parse::<i64>().ok());
+    app.allocators.insert(
+        rel.to_string(),
+        Allocator {
+            start,
+            max_inclusive,
+        },
+    );
 }
 
 /// Inserts a parameter, returning its id so the caller can attach a later
@@ -2082,8 +2118,10 @@ struct ParseState {
 /// each `<ModuleDef>`'s Dynamic section from streaming events.
 #[derive(Debug, Default)]
 struct DynTreeBuilder {
-    /// The app-relative id of the `<ModuleDef>` currently open, if any.
-    module_def: Option<String>,
+    /// The app-relative ids of the open `<ModuleDef>`s, outermost first: a
+    /// `<SubModuleDefs>` nests one module definition in another (issue
+    /// #449), and the outer definition's `<Dynamic>` follows the inner ones.
+    module_defs: Vec<String>,
     /// The open frames, outermost first; non-empty exactly while inside a
     /// `<Dynamic>` element.
     frames: Vec<DynFrame>,
@@ -2106,6 +2144,14 @@ enum DynFrame {
         id: String,
         module_def: String,
         args: HashMap<String, i64>,
+        computed_args: Vec<ComputedArg>,
+    },
+    /// An open `<Repeat>` and its children so far.
+    Repeat {
+        id: String,
+        param_ref_id: Option<String>,
+        count: Option<u32>,
+        children: Vec<DynamicNode>,
     },
     /// An open `<Channel>` and its children so far.
     Channel(ChannelRef, Vec<DynamicNode>),
@@ -2120,7 +2166,8 @@ impl DynTreeBuilder {
             Some(DynFrame::Root(children))
             | Some(DynFrame::When(DynamicWhen { children, .. }))
             | Some(DynFrame::Channel(_, children))
-            | Some(DynFrame::Block(_, children)) => {
+            | Some(DynFrame::Block(_, children))
+            | Some(DynFrame::Repeat { children, .. }) => {
                 children.push(node);
             }
             // A node directly under `<choose>` or `<Module>` is not valid
@@ -2160,7 +2207,7 @@ impl DynTreeBuilder {
         };
         if self.frames.is_empty() {
             match name {
-                b"ModuleDef" => self.module_def = Some(rel(b"Id")),
+                b"ModuleDef" => self.module_defs.push(rel(b"Id")),
                 b"Dynamic" => self.frames.push(DynFrame::Root(Vec::new())),
                 _ => {}
             }
@@ -2179,6 +2226,13 @@ impl DynTreeBuilder {
                 id: rel(b"Id"),
                 module_def: rel(b"RefId"),
                 args: HashMap::new(),
+                computed_args: Vec::new(),
+            }),
+            b"Repeat" => self.frames.push(DynFrame::Repeat {
+                id: rel(b"Id"),
+                param_ref_id: relative_attr(m, b"ParameterRefId", app_id),
+                count: get(m, b"Count").and_then(|v| v.trim().parse().ok()),
+                children: Vec::new(),
             }),
             b"Channel" => self.frames.push(DynFrame::Channel(
                 ChannelRef {
@@ -2213,16 +2267,37 @@ impl DynTreeBuilder {
         }
         match name {
             b"NumericArg" => {
-                if let Some(DynFrame::Module { args, .. }) = self.frames.last_mut()
-                    && let (Some(arg), Some(value)) = (
-                        get(m, b"RefId").map(|id| app_relative_id(id, app_id).unwrap_or(id)),
-                        get(m, b"Value").and_then(|v| v.trim().parse::<i64>().ok()),
-                    )
+                let rel = |key: &[u8]| {
+                    get(m, key).map(|id| app_relative_id(id, app_id).unwrap_or(id).to_string())
+                };
+                if let Some(DynFrame::Module {
+                    args,
+                    computed_args,
+                    ..
+                }) = self.frames.last_mut()
+                    && let Some(arg) = rel(b"RefId")
                 {
-                    args.insert(arg.to_string(), value);
+                    let value = get(m, b"Value").and_then(|v| v.trim().parse::<i64>().ok());
+                    let allocator = rel(b"AllocatorRefId");
+                    let base = rel(b"BaseValue");
+                    match (value, &allocator, &base) {
+                        (Some(value), None, None) => {
+                            args.insert(arg, value);
+                        }
+                        // An allocator or a base makes the value the
+                        // instance's to compute (issue #449); a bare
+                        // argument without a value stays absent.
+                        (_, Some(_), _) | (_, _, Some(_)) => computed_args.push(ComputedArg {
+                            arg,
+                            allocator,
+                            value,
+                            base,
+                        }),
+                        (None, None, None) => {}
+                    }
                 }
             }
-            b"when" | b"choose" | b"Module" | b"Channel" | b"ParameterBlock" => {
+            b"when" | b"choose" | b"Module" | b"Channel" | b"ParameterBlock" | b"Repeat" => {
                 // An empty branch, choose, argument-less module or empty
                 // container: open and close it at once.
                 self.start(name, m, app_id);
@@ -2237,7 +2312,9 @@ impl DynTreeBuilder {
     /// An end event. `app` receives a finished `<Dynamic>` tree.
     fn end(&mut self, name: &[u8], app: Option<&mut ApplicationProgram>) {
         match name {
-            b"ModuleDef" if self.frames.is_empty() => self.module_def = None,
+            b"ModuleDef" if self.frames.is_empty() => {
+                self.module_defs.pop();
+            }
             b"when" => {
                 if let Some(DynFrame::When(_)) = self.frames.last()
                     && let Some(DynFrame::When(branch)) = self.frames.pop()
@@ -2265,12 +2342,32 @@ impl DynTreeBuilder {
                         id,
                         module_def,
                         args,
+                        computed_args,
                     }) = self.frames.pop()
                 {
                     self.push_node(DynamicNode::Module {
                         id,
                         module_def,
                         args,
+                        computed_args,
+                    });
+                }
+            }
+            b"Repeat" => {
+                if let Some(DynFrame::Repeat { .. }) = self.frames.last()
+                    && let Some(DynFrame::Repeat {
+                        id,
+                        param_ref_id,
+                        count,
+                        children,
+                    }) = self.frames.pop()
+                    && !children.is_empty()
+                {
+                    self.push_node(DynamicNode::Repeat {
+                        id,
+                        param_ref_id,
+                        count,
+                        children,
                     });
                 }
             }
@@ -2310,7 +2407,7 @@ impl DynTreeBuilder {
                     self.frames.pop();
                 }
                 if let (Some(DynFrame::Root(children)), Some(app)) = (self.frames.pop(), app) {
-                    match &self.module_def {
+                    match self.module_defs.last() {
                         Some(md) => {
                             app.module_dynamics.insert(md.clone(), children);
                         }
@@ -3365,6 +3462,7 @@ mod tests {
             id,
             module_def,
             args,
+            ..
         } = &inner[0].children[0]
         else {
             panic!("expected a module");
