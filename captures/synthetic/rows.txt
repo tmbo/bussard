@@ -26,5 +26,6 @@
 1.1.1|captures/synthetic/syn-s7-pei80/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-pei80/xml|M-00FA_A-2810-10-0000|syn-s7-pei80 defaults|100.0|loadctl=identical state=fresh
 1.1.1|captures/synthetic/syn-s7-taskptr/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-taskptr/xml|M-00FA_A-2811-10-0000|syn-s7-taskptr defaults|100.0|loadctl=identical state=fresh
 1.1.1|captures/synthetic/syn-text-undeclared/defaults/ets.pcapng|tests-support/synthetic-products/syn-text-undeclared/xml|M-00FA_A-2706-10-0000|syn-text-undeclared defaults|100.0|loadctl=identical
+1.1.1|captures/synthetic/syn-union-bitfields/defaults/ets.pcapng|tests-support/synthetic-products/syn-union-bitfields/xml|M-00FA_A-271D-10-0000|syn-union-bitfields defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-union-default-range/defaults/ets.pcapng|tests-support/synthetic-products/syn-union-default-range/xml|M-00FA_A-2705-10-0000|syn-union-default-range defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-writerelmem-size/defaults/ets.pcapng|tests-support/synthetic-products/syn-writerelmem-size/xml|M-00FA_A-2717-10-0000|syn-writerelmem-size defaults|100.0|loadctl=identical
