@@ -1560,6 +1560,7 @@ pub(super) fn sys7_op_label(op: &LoadOp) -> String {
         }
         LoadOp::WriteProp { .. } => "LdCtrlWriteProp (not in the System 7 corpus)".to_string(),
         LoadOp::MasterReset { .. } => "LdCtrlMasterReset (not in the System 7 corpus)".to_string(),
+        LoadOp::MapError { .. } => "LdCtrlMapError (not in the System 7 corpus)".to_string(),
         other => format!("{other:?}"),
     }
 }
@@ -2729,6 +2730,7 @@ mod tests {
                     prop_id: 78,
                     expected: Some(vec![0]),
                     mask: None,
+                    start_element: 1,
                 },
                 FlashStep::Sys7Unload { lsm: 1 },
                 FlashStep::Sys7StartLoading { lsm: 1 },

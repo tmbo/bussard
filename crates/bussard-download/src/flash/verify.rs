@@ -28,7 +28,7 @@ pub(super) fn mcb_skip_target(
     plan: &FlashPlan,
 ) -> Option<u8> {
     let target = match step {
-        FlashStep::Unload { target }
+        FlashStep::Unload { target, .. }
         | FlashStep::StartLoading { target }
         | FlashStep::AllocateSegment { target, .. }
         | FlashStep::LoadCompleted { target } => *target,
@@ -172,7 +172,9 @@ impl FlashPlan {
     /// `Loaded`, the steps [`mcb_skip_target`] names and the executor skips.
     /// Every object the plan names counts as present; `app_obj` is the
     /// application object an op without an index resolves to. Returns the
-    /// objects dropped.
+    /// objects dropped. The caller gates it the way the executor's skip is
+    /// gated (`skip_unchanged` in `bussard-service`): not on a plan that
+    /// erases resident objects ([`FlashPlan::erases_resident_objects`]).
     pub fn skip_resident_matches(
         &mut self,
         mcbs: &std::collections::BTreeMap<u8, (u32, u16)>,
@@ -183,7 +185,7 @@ impl FlashPlan {
             .steps
             .iter()
             .filter_map(|s| match s {
-                FlashStep::Unload { target }
+                FlashStep::Unload { target, .. }
                 | FlashStep::StartLoading { target }
                 | FlashStep::AllocateSegment { target, .. }
                 | FlashStep::LoadCompleted { target }
@@ -530,8 +532,10 @@ mod tests {
         assert_eq!(skipped, BTreeSet::from([4u8]));
         assert!(!plan.steps.iter().any(|s| matches!(
             s,
-            FlashStep::Unload { target: Some(4) }
-                | FlashStep::StartLoading { target: Some(4) }
+            FlashStep::Unload {
+                target: Some(4),
+                ..
+            } | FlashStep::StartLoading { target: Some(4) }
                 | FlashStep::AllocateSegment {
                     target: Some(4),
                     ..
@@ -540,9 +544,13 @@ mod tests {
                 | FlashStep::LoadCompleted { target: Some(4) }
         )));
         assert!(
-            plan.steps
-                .iter()
-                .any(|s| matches!(s, FlashStep::Unload { target: Some(5) })),
+            plan.steps.iter().any(|s| matches!(
+                s,
+                FlashStep::Unload {
+                    target: Some(5),
+                    ..
+                }
+            )),
             "another object's steps stay"
         );
         Ok(())

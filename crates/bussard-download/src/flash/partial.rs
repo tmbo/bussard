@@ -299,7 +299,7 @@ impl FlashPlan {
         let mut steps = Vec::new();
         for (i, step) in self.steps.iter().enumerate() {
             match step {
-                FlashStep::Unload { target }
+                FlashStep::Unload { target, .. }
                 | FlashStep::StartLoading { target }
                 | FlashStep::LoadCompleted { target }
                     if lsms.contains(target) =>
@@ -520,7 +520,7 @@ mod tests {
             .steps
             .iter()
             .map(|s| match s {
-                FlashStep::Unload { target } => format!("unload {target:?}"),
+                FlashStep::Unload { target, .. } => format!("unload {target:?}"),
                 FlashStep::StartLoading { target } => format!("load {target:?}"),
                 FlashStep::AllocateSegment { size, target, fill } => {
                     format!(

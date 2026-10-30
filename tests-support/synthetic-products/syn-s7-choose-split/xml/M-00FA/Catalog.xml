@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<KNX xmlns="http://knx.org/xml/project/23">
+  <ManufacturerData>
+    <Manufacturer RefId="M-00FA">
+      <Catalog>
+        <CatalogSection Id="M-00FA_CS-27" Name="The buzzard's nest" Number="27" DefaultLanguage="en-US" NonRegRelevantDataVersion="0">
+          <CatalogItem Id="M-00FA_H-00FA00280009-1_HP-2809-10-0000_CI-NEST.2DSPLIT-1" Name="Split-branch perch" Number="1" VisibleDescription="Split-branch perch" ProductRefId="M-00FA_H-00FA00280009-1_P-NEST.2DSPLIT" Hardware2ProgramRefId="M-00FA_H-00FA00280009-1_HP-2809-10-0000" DefaultLanguage="en-US" NonRegRelevantDataVersion="0" />
+        </CatalogSection>
+      </Catalog>
+    </Manufacturer>
+  </ManufacturerData>
+</KNX>
