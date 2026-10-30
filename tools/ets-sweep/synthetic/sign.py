@@ -5,6 +5,7 @@
 """Hash and sign a fabricated .knxprod with ETS's own signing library, in the VM (epic #596).
 
     uv run tools/ets-sweep/synthetic/sign.py <in.knxprod> [<out.knxprod>] [--recompile]
+    uv run tools/ets-sweep/synthetic/sign.py --dir-only <in.knxprod> [<out>]  # directory signature only
     uv run tools/ets-sweep/synthetic/sign.py --verify <file.knxprod>   # the library's verdict, no change
 
 Uploads `signer.cs` and the product to `C:\\Users\\macremote\\ets-sweep\\signer\\`,
@@ -58,7 +59,7 @@ def compile_signer(c, force: bool) -> None:
     print("compiled signer.exe", digest)
 
 
-def sign(src: Path, dst: Path, force_compile: bool = False) -> str:
+def sign(src: Path, dst: Path, force_compile: bool = False, dir_only: bool = False) -> str:
     """Sign `src` into `dst` in the VM and return the signer's report."""
     c = vm.connect()
     compile_signer(c, force_compile)
@@ -66,7 +67,8 @@ def sign(src: Path, dst: Path, force_compile: bool = False) -> str:
     remote_in = REMOTE + r"\in.knxprod"
     remote_out = REMOTE + r"\out.knxprod"
     sftp.put(str(src), sftp_path(remote_in))
-    code, out = vm.run(c, f'cd /d "{REMOTE}" && signer.exe in.knxprod out.knxprod work', timeout=300)
+    flag = "--dir-only " if dir_only else ""
+    code, out = vm.run(c, f'cd /d "{REMOTE}" && signer.exe {flag}in.knxprod out.knxprod work', timeout=300)
     if code != 0:
         raise SystemExit(f"signer failed ({code}):\n{out}")
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -96,7 +98,7 @@ def main(argv: list[str]) -> int:
         return 0
     src = Path(args[0])
     dst = Path(args[1]) if len(args) > 1 else src.with_name(src.stem + "-signed.knxprod")
-    print(sign(src, dst, force))
+    print(sign(src, dst, force, "--dir-only" in argv))
     print("wrote", dst)
     return 0
 

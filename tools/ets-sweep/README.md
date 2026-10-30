@@ -409,6 +409,7 @@ in the driver) are first guesses to correct from a screenshot.
 
     uv run tools/ets-sweep/synthetic/clone_datp.py              # DA.tp clone -> synthetic/out/ (gitignored)
     uv run tools/ets-sweep/synthetic/sign.py synthetic/out/KNX_Synthetic_DA_M-00FA.knxprod
+    uv run tools/ets-sweep/synthetic/sign.py --dir-only <in.knxprod> [<out>]   # step 4 only, no hashes
     uv run tools/ets-sweep/synthetic/sign.py --verify <file.knxprod>   # the library's verdict per hash
 
 A fabricated product under `M-00FA` carries the same integrity data as one
@@ -437,18 +438,43 @@ folder it runs:
    patched to the new application id.
 3. `Signer.CatalogIdPatcher(Catalog.xml, oldToNewHardware2ProgramIds, null).Patch()`:
    `CatalogItem` ids and `Hardware2ProgramRefId`s follow.
-4. `XmlSigning.SignDirectory(folder, true, null)`: writes `M-00FA.signature`
-   next to the folder (ETS's own export has none).
+4. `XmlSigning.SignDirectory(folder, false, null)`: writes `M-00FA.signature`
+   next to the folder. The folder path must be **absolute**: with a relative
+   path the library signs something else (the first signer ran on `work\M-00FA`
+   and ETS refused its output), and its own check calls that signature
+   invalid; with the absolute path the check says valid.
 
 `knx_master.xml` is left as it is. Check of the library: the KNX Virtual file
 signed unchanged comes out byte-identical in every entry (plus the
-`.signature`), and `--verify` reports every hash and registration signature
-of the original and of the signed clone valid, of the unsigned clone invalid.
+`.signature`), and `--verify` reports every hash, registration signature and
+the directory signature of the signed clone valid, the hashes of the unsigned
+clone invalid. (`--verify`'s master data check calls every `knx_master.xml`
+invalid, vendor files included; it is not what ETS checks.)
 
-ETS's verdict on the unsigned and the signed clone (`/ets/catalog_import`,
-then `/ets/catalog_search SYN.da`) is still open: on 2026-10-30 the VM was
-busy with a `defaults.py --redo-failed` run. If ETS refuses the signed file,
-`%LOCALAPPDATA%\KNX\ETS6\Log\ETS6.log` names the reason; candidates to try
-are the file without `M-00FA.signature` (ETS's own export has none, and the
-library's own check calls the directory signature it wrote invalid) and
-`RegistrationInfo` set to `NotRegistered`.
+**What ETS 6.4.1 needs (2026-10-30)**: a valid `<manufacturer>.signature`.
+Every refusal read "Import fehlgeschlagen! ... Projektdatei hat keine gültige
+Signatur"; ETS6.log records nothing for it.
+
+| file imported through `/ets/catalog_import` | ETS |
+| --- | --- |
+| unsigned clone (stale hashes, no `.signature`) | refused, "Projektdatei hat keine gültige Signatur" |
+| signed, directory signed from a relative path | refused, same message |
+| the same without `M-00FA.signature` | refused, same message |
+| the same with the master data of an imported MDT ETS6 product | refused, same message |
+| `knx-sim/tests/fixtures/KNX_Virtual_M-00FA.knxprod` itself, and a plain re-zip of it | refused, same message (the fixture has no `.signature`; it is not an importable product file) |
+| signed with the absolute path (`sign.py` now) | **imported**, "Import erfolgreich ... Produkt: Synthetic Dimming Actuator"; `/ets/catalog_search SYN.da` finds "KNX Association, Synthetic Dimming Actuator, SYN.da, Dimmen, 1.0" |
+| `--dir-only` (stale hashes, ids `A-2700-10-0001`, order number `SYN.db`) | **imported**, so ETS's import checks the directory signature and not the hashes |
+| `--dir-only` of the `SYN.da` clone after the signed one | refused, "The product has a different hash than the existing product." |
+
+`RegistrationInfo` stays `Registered` with the signatures the library writes;
+`NotRegistered` was not needed. The catalogue shows the manufacturer as "KNX
+Association" (M-00FA). Use the full signer for synthetic products: a download
+or a project may look at the hashes the import does not.
+
+**First download of the clone** (`sweep.py --knxprod <signed> --app
+M-00FA_A-2600-10-731A --search SYN.da`): ETS added the device and downloaded,
+51 operations, the same as the original DA.tp run of the same day except the
+`PID_PROGRAM_VERSION` value (application number 0x2600). Both failed the same
+way ("Programmieren(Appl.): fehlgeschlagen, Ein interner Gerätefehler ist
+aufgetreten"): the sim's master reset with erase code 4 drops the segment ETS
+allocated before it (#600), which the 2026-10-27 run did not.

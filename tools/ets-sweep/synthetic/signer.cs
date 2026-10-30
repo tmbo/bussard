@@ -1,6 +1,8 @@
 // Hash and sign a fabricated .knxprod with ETS's own signing library (test data only).
 // Usage: signer.exe <in.knxprod> <out.knxprod> <workdir>     hash, sign, zip
+//        signer.exe --dir-only <in> <out> <workdir>         only the directory signature, no hashes
 //        signer.exe --verify <in.knxprod> <workdir>         report what the library thinks of a file
+//        signer.exe --verify-dir <workdir>                  the same on an unpacked folder
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -12,6 +14,7 @@ class Signer {
   const string EtsDir = @"C:\Program Files (x86)\ETS6";
   const BindingFlags Any = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static;
   static Assembly Lib;
+  static bool DirOnly;
 
   static Type T(string name) {
     var t = Lib.GetType("Knx.Ets.XmlSigning." + name);
@@ -38,12 +41,22 @@ class Signer {
       return File.Exists(p) ? Assembly.LoadFrom(p) : null;
     };
     Lib = Assembly.LoadFrom(Path.Combine(EtsDir, "Knx.Ets.XmlSigning.dll"));
-    if (a[0] == "--verify") {
-      Unpack(a[1], a[2]);
-      try { Verify(a[2]); } catch (TargetInvocationException e) { Console.Error.WriteLine("FAILED: " + e.InnerException); return 1; }
+    if (a[0] == "--verify-dir") {
+      Verify(Path.GetFullPath(a[1]));
       return 0;
     }
-    string input = a[0], output = a[1], work = a[2];
+    if (a[0] == "--verify") {
+      Unpack(a[1], Path.GetFullPath(a[2]));
+      try { Verify(Path.GetFullPath(a[2])); } catch (TargetInvocationException e) { Console.Error.WriteLine("FAILED: " + e.InnerException); return 1; }
+      return 0;
+    }
+    if (a[0] == "--dir-only") {
+      DirOnly = true;
+      a = a.Skip(1).ToArray();
+    }
+    // Absolute: from a relative work path the library writes a directory
+    // signature that neither its own check nor ETS 6.4 accepts (2026-10-30).
+    string input = a[0], output = a[1], work = Path.GetFullPath(a[2]);
     Unpack(input, work);
     try { Sign(work); } catch (TargetInvocationException e) { Console.Error.WriteLine("FAILED: " + e.InnerException); return 1; }
     if (File.Exists(output)) File.Delete(output);
@@ -63,6 +76,14 @@ class Signer {
   }
 
   static void Verify(string work) {
+    var master = Path.Combine(work, "knx_master.xml");
+    if (File.Exists(master)) {
+      var md = new System.Xml.XmlDocument();
+      md.PreserveWhitespace = true;
+      md.Load(master);
+      var xs = T("XmlSigning").GetConstructor(Any, null, new[] { typeof(bool) }, null).Invoke(new object[] { false });
+      Console.WriteLine("verify knx_master.xml " + Call(xs, "CheckMasterDataSignature", md));
+    }
     foreach (var manu in Directory.GetDirectories(work, "M-*")) {
       var appHashes = new Dictionary<string, string>();
       var same = new Dictionary<string, string>();
@@ -83,7 +104,19 @@ class Signer {
     }
   }
 
+  // 4. Directory signature over the manufacturer folder, written next to it as
+  // <folder>.signature. The path must be absolute: with a relative one the
+  // library signs something else, and ETS 6.4 refuses the file ("Projektdatei
+  // hat keine gültige Signatur").
+  static void SignFolder(string manu) {
+    Call(T("XmlSigning"), "SignDirectory", manu, false, null);
+  }
+
   static void Sign(string work) {
+    if (DirOnly) {
+      foreach (var manu in Directory.GetDirectories(work, "M-*")) SignFolder(manu);
+      return;
+    }
     foreach (var manu in Directory.GetDirectories(work, "M-*")) {
       var appMap = new Dictionary<string, string>();
       var appHashes = new Dictionary<string, string>();
@@ -112,8 +145,7 @@ class Signer {
       // 3. Catalog: CatalogItem / Hardware2Program references follow the new ids.
       var cat = New("Signer.CatalogIdPatcher", new FileInfo(Path.Combine(manu, "Catalog.xml")), hwMap, null);
       Call(cat, "Patch");
-      // 4. Directory signature over the manufacturer folder.
-      Call(T("XmlSigning"), "SignDirectory", manu, true, null);
+      SignFolder(manu);
     }
   }
 }
