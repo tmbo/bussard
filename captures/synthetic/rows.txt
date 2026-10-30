@@ -26,4 +26,6 @@
 1.1.1|captures/synthetic/syn-s7-taskptr/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-taskptr/xml|M-00FA_A-2811-10-0000|syn-s7-taskptr defaults|100.0|loadctl=identical state=fresh
 1.1.1|captures/synthetic/syn-text-undeclared/defaults/ets.pcapng|tests-support/synthetic-products/syn-text-undeclared/xml|M-00FA_A-2706-10-0000|syn-text-undeclared defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-union-default-range/defaults/ets.pcapng|tests-support/synthetic-products/syn-union-default-range/xml|M-00FA_A-2705-10-0000|syn-union-default-range defaults|100.0|loadctl=identical
+1.1.1|captures/synthetic/syn-user-memory/defaults/ets.pcapng|tests-support/synthetic-products/syn-user-memory/xml|M-00FA_A-2716-10-0000|syn-user-memory defaults|100.0|loadctl=identical
+1.1.1|captures/synthetic/syn-user-memory-extmem/defaults/ets.pcapng|tests-support/synthetic-products/syn-user-memory-extmem/xml|M-00FA_A-2796-10-0000|syn-user-memory-extmem defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-writerelmem-size/defaults/ets.pcapng|tests-support/synthetic-products/syn-writerelmem-size/xml|M-00FA_A-2717-10-0000|syn-writerelmem-size defaults|100.0|loadctl=identical
