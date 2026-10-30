@@ -478,6 +478,46 @@ class BitFields(unittest.TestCase):
             generate.Product("test", s)
 
 
+class InitialValue(unittest.TestCase):
+    """syn-text-initialvalue (#473): a text parameter's InitialValue and its translation."""
+
+    def iv_spec(self) -> dict:
+        s = spec()
+        s["parameter_type"] = s["parameter_type"] + [{"name": "Name", "kind": "text", "size_octets": 20}]
+        s["parameter"] = s["parameter"] + [
+            {"name": "n", "type": "Name", "text": "N", "default": "Buzzard nest", "initial_value": "Buzzard nest",
+             "translations": {"de-DE": {"initial_value": "Bussardhorst Süd"}},
+             "memory": {"segment": "main", "offset": 3, "bit_offset": 0}}]
+        return s
+
+    def test_render_initial_value_and_translation(self) -> None:
+        xml = app_xml(self.iv_spec())
+        self.assertIn('Text="N" Value="Buzzard nest" InitialValue="Buzzard nest">', xml)
+        self.assertIn('<Translation AttributeName="Name" Text="Nestlichtschalter" />\n'
+                      '            </TranslationElement>\n'
+                      '            <TranslationElement RefId="M-00FA_A-2700-10-0000_P-3">\n'
+                      '              <Translation AttributeName="InitialValue" Text="Bussardhorst Süd" />', xml)
+
+    def test_parameter_translation_without_application_translation(self) -> None:
+        s = self.iv_spec()
+        del s["application"]["translations"]
+        xml = app_xml(s)
+        self.assertIn('<Language Identifier="de-DE">', xml)
+        self.assertNotIn('AttributeName="Name"', xml)
+
+    def test_initial_value_refused_on_non_text_parameter(self) -> None:
+        s = spec()
+        s["parameter"][1]["initial_value"] = "5"
+        with self.assertRaisesRegex(generate.SpecError, "belong to a text parameter"):
+            generate.Product("test", s)
+
+    def test_translated_text_attribute_not_yet(self) -> None:
+        s = self.iv_spec()
+        s["parameter"][-1]["translations"]["de-DE"]["text"] = "Nestname"
+        with self.assertRaisesRegex(generate.SpecError, "no product uses it yet"):
+            generate.Product("test", s)
+
+
 class IpAddress(unittest.TestCase):
     """syn-ip-address-param (#457): the `ip_address` type kind, 32 bits in memory."""
 
@@ -541,6 +581,91 @@ class ParameterRefPerChoose(unittest.TestCase):
         s = self.per_ref_spec()
         s["parameter_ref"][0]["name"] = "delay"
         with self.assertRaisesRegex(generate.SpecError, "already a parameter or a ref"):
+            generate.Product("test", s)
+
+
+
+class ChannelAndBlockChoose(unittest.TestCase):
+    """syn-dynamic-tests (#345): a `<Channel>` with a block whose chooses use
+    the `<when>` test forms, each branch showing refs directly."""
+
+    def channel_spec(self) -> dict:
+        s = spec()
+        s["dynamic"] = dict(s["dynamic"], channel=[{
+            "name": "c", "text": "C", "number": "1", "block": [{
+                "name": "cb", "text": "CB", "parameters": ["mode"], "com_objects": [],
+                "choose": [{"parameter": "mode", "when": [
+                    {"test": "1", "parameters": ["delay"], "com_objects": []},
+                    {"test": "0 2", "parameters": [], "com_objects": [1]},
+                    {"test": ">=2", "parameters": [], "com_objects": []},
+                    {"default": True, "parameters": [], "com_objects": [0]}]}]}]}])
+        return s
+
+    def test_render_channel_after_channel_independent_block(self) -> None:
+        xml = app_xml(self.channel_spec())
+        self.assertIn('            </ChannelIndependentBlock>\n'
+                      '            <Channel Id="M-00FA_A-2700-10-0000_CH-1" Name="c" Text="C" Number="1">\n'
+                      '              <ParameterBlock Id="M-00FA_A-2700-10-0000_PB-2" Name="cb" Text="CB">\n'
+                      '                <ParameterRefRef RefId="M-00FA_A-2700-10-0000_P-1_R-1" />\n'
+                      '                <choose ParamRefId="M-00FA_A-2700-10-0000_P-1_R-1">\n'
+                      '                  <when test="1">\n'
+                      '                    <ParameterRefRef RefId="M-00FA_A-2700-10-0000_P-2_R-2" />\n'
+                      '                  </when>\n'
+                      '                  <when test="0 2">\n'
+                      '                    <ComObjectRefRef RefId="M-00FA_A-2700-10-0000_O-1_R-2" />\n'
+                      '                  </when>\n'
+                      '                  <when test="&gt;=2">\n'
+                      '                  </when>\n'
+                      '                  <when default="true">\n', xml)
+        self.assertIn('              </ParameterBlock>\n            </Channel>\n          </Dynamic>', xml)
+
+    def test_block_choose_when_needs_test_or_default(self) -> None:
+        s = self.channel_spec()
+        del s["dynamic"]["channel"][0]["block"][0]["choose"][0]["when"][0]["test"]
+        with self.assertRaisesRegex(generate.SpecError, "either `test` or `default = true`"):
+            generate.Product("test", s)
+
+    def test_block_choose_unknown_com_object_refused(self) -> None:
+        s = self.channel_spec()
+        s["dynamic"]["channel"][0]["block"][0]["choose"][0]["when"][1]["com_objects"] = [9]
+        with self.assertRaisesRegex(generate.SpecError, "unknown com object 9"):
+            generate.Product("test", s)
+
+    def test_channel_missing_number_refused(self) -> None:
+        s = self.channel_spec()
+        del s["dynamic"]["channel"][0]["number"]
+        with self.assertRaisesRegex(generate.SpecError, "missing key `number`"):
+            generate.Product("test", s)
+
+
+
+class Assign(unittest.TestCase):
+    """syn-assign (#604 row 31): an `<Assign>` in a `<when>` of a block choose."""
+
+    def assign_spec(self) -> dict:
+        s = spec()
+        s["dynamic"]["block"][0]["choose"] = [{"parameter": "mode", "when": [
+            {"test": "1", "parameters": [], "com_objects": [],
+             "assign": [{"target": "delay", "source": "mode"}]}]}]
+        return s
+
+    def test_render_assign_after_refs_in_when(self) -> None:
+        xml = app_xml(self.assign_spec())
+        self.assertIn('<when test="1">\n'
+                      '                    <Assign TargetParamRefRef="M-00FA_A-2700-10-0000_P-2_R-2" '
+                      'SourceParamRefRef="M-00FA_A-2700-10-0000_P-1_R-1" />\n'
+                      '                  </when>', xml)
+
+    def test_assign_unknown_target_refused(self) -> None:
+        s = self.assign_spec()
+        s["dynamic"]["block"][0]["choose"][0]["when"][0]["assign"][0]["target"] = "nope"
+        with self.assertRaisesRegex(generate.SpecError, "unknown target parameter `nope`"):
+            generate.Product("test", s)
+
+    def test_assign_literal_value_not_yet(self) -> None:
+        s = self.assign_spec()
+        s["dynamic"]["block"][0]["choose"][0]["when"][0]["assign"][0]["value"] = "3"
+        with self.assertRaisesRegex(generate.SpecError, "no product uses it yet"):
             generate.Product("test", s)
 
 
