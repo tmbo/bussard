@@ -21,6 +21,7 @@ next to it, and zips it on demand.
 <!-- catalogue:begin (generate.py --catalogue) -->
 | product | order number | mask | construct | issues |
 | --- | --- | --- | --- | --- |
+| [`syn-choose-never-shown`](syn-choose-never-shown/product.toml) | `NEST-GHOST` | 07B0 | choose on a never-shown memoryless parameter, default branch only | #474, #563 |
 | [`syn-choose-partial-segment`](syn-choose-partial-segment/product.toml) | `NEST-HALF` | 07B0 | load-procedure choose writing half the segment | #411 |
 | [`syn-hidden-default`](syn-hidden-default/product.toml) | `NEST-EGGHEAT` | 07B0 | hidden parameter, default differs from template | #448 |
 | [`syn-le-order`](syn-le-order/product.toml) | `NEST-ALTI` | 07B0 | ParameterByteOrder LittleEndian with integers and floats | #403 |
@@ -76,10 +77,11 @@ One `product.toml` per directory. Tables and keys:
 | `[application.options]` | any `Options` attribute of the KNX schema, e.g. `SupportsExtendedMemoryServices = true`, `ParameterByteOrder = "LittleEndian"` | `Options` |
 | `[[segment]]` | `name`, `kind` (`relative`), `lsm`, `size`; optional `fill` (the initial octet, 0) | `RelativeSegment` with its `Data` |
 | `[[parameter_type]]` | `name`, `kind`; `enum`: `size_bits`, `values = [{ value, text }]`; `number`: `size_bits`, `signed`, `min`, `max`; `float`: `encoding` (`DPT 9`, `IEEE-754 Single`, `IEEE-754 Double`; 16, 32, 64 bits), `min`, `max`; `text`: `size_octets` | `TypeRestriction`, `TypeNumber`, `TypeFloat`, `TypeText` |
-| `[[parameter]]` | `name`, `type`, `text`, `default`, and either `memory = { segment, offset, bit_offset }` or `union = { name, offset, bit_offset }` (a member at its offset in the union); optional `access` (`None`, `Read`, `ReadWrite`) | `Parameter` (`_P-<n>`, a union member `_UP-<n>`), one `ParameterRef` each |
+| `[[parameter]]` | `name`, `type`, `text`, `default`, and either `memory = { segment, offset, bit_offset }`, `union = { name, offset, bit_offset }` (a member at its offset in the union) or `virtual = true` (no memory, it only steers the Dynamic tree; #474); optional `access` (`None`, `Read`, `ReadWrite`) | `Parameter` (`_P-<n>`, a union member `_UP-<n>`), one `ParameterRef` each |
 | `[[union]]` | `name`, `size_bits`, `memory = { segment, offset, bit_offset }`; optional `default` (the member that is `DefaultUnionParameter`) | `Union` with its `Memory`, after the plain parameters |
 | `[[com_object]]` | `number`, `name`, `text`, `function_text`, `size` (`"1 Bit"`), `dpt` (`"DPST-1-1"`), `flags` (of `C R W T U I`), `priority` (`Low`, `High`, `Alert`) | `ComObject`, one `ComObjectRef` each |
 | `[[dynamic.block]]` | `name`, `text`, `parameters` (names), `com_objects` (numbers) | a `ParameterBlock` in the `ChannelIndependentBlock`; a parameter no block names is never shown (#448) |
+| `[[dynamic.choose]]` | `parameter`, `[[dynamic.choose.when]]` with `default = true` and `[[dynamic.choose.when.block]]` (keys as `[[dynamic.block]]`) | a `<choose ParamRefId>` in the `ChannelIndependentBlock` after the blocks, its `<when default="true">` holding the blocks, numbered after them (#474) |
 | `[[load_procedure]]` | `merge_id`, `ops = [{ op = "...", ... }]` | `LoadProcedure` |
 
 Load ops: `LdCtrlRelSegment` (`lsm`, `size`, `mode`, `fill`),
@@ -93,7 +95,7 @@ the catalogue products that need them (step 4 of #596), and a spec that uses
 one stops with "part of the schema but no product uses it yet": masks other
 than 07B0 (System 7 twins), `ProductProcedure`, absolute segments, parameter
 type kinds `time`, `ip_address`, `raw`, explicit com
-object refs, channels and `<choose>` in the Dynamic tree (#411), and the load
+object refs, channels, a `test` branch of a `<choose>` in the Dynamic tree, and the load
 ops `LdCtrlLoadImageProp`, `LdCtrlWriteProp`,
 `LdCtrlCompareProp`, `LdCtrlAbsSegment` and the connection and state ops of a
 product procedure. An unknown key or op stops with an error naming it.
