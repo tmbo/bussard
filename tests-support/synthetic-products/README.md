@@ -25,6 +25,7 @@ next to it, and zips it on demand.
 | [`syn-choose-partial-segment`](syn-choose-partial-segment/product.toml) | `NEST-HALF` | 07B0 | load-procedure choose writing half the segment | #411 |
 | [`syn-hidden-default`](syn-hidden-default/product.toml) | `NEST-EGGHEAT` | 07B0 | hidden parameter, default differs from template | #448 |
 | [`syn-le-order`](syn-le-order/product.toml) | `NEST-ALTI` | 07B0 | ParameterByteOrder LittleEndian with integers and floats | #403 |
+| [`syn-legacy-patch-always`](syn-legacy-patch-always/product.toml) | `NEST-PATCH` | 07B0 | hidden LegacyPatchAlways parameter, default differs from template | #450 |
 | [`syn-master-reset`](syn-master-reset/product.toml) | `NEST-RESET` | 07B0 | Master Reset erase code 1 in the load procedure | #546, #611 |
 | [`syn-master-reset-code4`](syn-master-reset-code4/product.toml) | `NEST-RESET4` | 07B0 | Master Reset erase code 4 after the segment allocation | #546, #600, #611 |
 | [`syn-minimal`](syn-minimal/product.toml) | `NEST-LIGHT` | 07B0 | baseline | #596 |
