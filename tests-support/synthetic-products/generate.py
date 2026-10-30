@@ -222,7 +222,14 @@ class Product:
             elif kind == "text":
                 check_keys(tw, t, {"name", "kind", "size_octets"})
                 t = dict(t, size_bits=8 * t["size_octets"])
-            elif kind in ("time", "ip_address", "raw"):
+            elif kind == "ip_address":
+                # syn-ip-address-param (#604 row 21, #457): an IPv4 address,
+                # four octets in memory, its default a dotted quad.
+                check_keys(tw, t, {"name", "kind", "address_type"})
+                if t["address_type"] not in IP_ADDRESS_TYPES:
+                    raise SpecError(f"{tw}: address_type is one of {', '.join(IP_ADDRESS_TYPES)}")
+                t = dict(t, size_bits=32)
+            elif kind in ("time", "raw"):
                 raise not_yet(tw, f"parameter type kind `{kind}`")
             else:
                 raise SpecError(f"{tw}: kind is one of enum, number, text, float, time, ip_address, raw")
@@ -468,6 +475,8 @@ OPTIONS = ("PreferPartialDownloadIfApplicationLoaded", "EasyCtrlModeModeStyleEmp
 # `<TypeFloat Encoding>` values and their width in bits (the KNX 2-octet float
 # of DPT 9 and the IEEE-754 formats).
 FLOAT_BITS = {"DPT 9": 16, "IEEE-754 Single": 32, "IEEE-754 Double": 64}
+# `<TypeIPAddress AddressType>` values of the KNX schema (#457).
+IP_ADDRESS_TYPES = ("HostAddress", "SubnetMask", "DefaultGateway")
 # Implemented load ops: spec key -> XML attribute, in XML order.
 LOAD_OPS = {
     "LdCtrlRelSegment": {"lsm": "LsmIdx", "size": "Size", "mode": "Mode", "fill": "Fill"},
@@ -641,6 +650,8 @@ def render_type(x: Xml, t: dict) -> None:
         x.close("TypeRestriction")
     elif t["kind"] == "text":
         x.empty("TypeText", [("SizeInBit", t["size_bits"])])
+    elif t["kind"] == "ip_address":  # #457
+        x.empty("TypeIPAddress", [("AddressType", t["address_type"])])
     elif t["kind"] == "float":
         x.empty("TypeFloat", [("Encoding", t["encoding"]), ("minInclusive", t["min"]),
                               ("maxInclusive", t["max"])])
