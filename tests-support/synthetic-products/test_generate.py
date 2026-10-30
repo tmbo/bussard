@@ -470,5 +470,59 @@ class ParameterRefPerChoose(unittest.TestCase):
             generate.Product("test", s)
 
 
+
+class ChannelAndBlockChoose(unittest.TestCase):
+    """syn-dynamic-tests (#345): a `<Channel>` with a block whose chooses use
+    the `<when>` test forms, each branch showing refs directly."""
+
+    def channel_spec(self) -> dict:
+        s = spec()
+        s["dynamic"] = dict(s["dynamic"], channel=[{
+            "name": "c", "text": "C", "number": "1", "block": [{
+                "name": "cb", "text": "CB", "parameters": ["mode"], "com_objects": [],
+                "choose": [{"parameter": "mode", "when": [
+                    {"test": "1", "parameters": ["delay"], "com_objects": []},
+                    {"test": "0 2", "parameters": [], "com_objects": [1]},
+                    {"test": ">=2", "parameters": [], "com_objects": []},
+                    {"default": True, "parameters": [], "com_objects": [0]}]}]}]}])
+        return s
+
+    def test_render_channel_after_channel_independent_block(self) -> None:
+        xml = app_xml(self.channel_spec())
+        self.assertIn('            </ChannelIndependentBlock>\n'
+                      '            <Channel Id="M-00FA_A-2700-10-0000_CH-1" Name="c" Text="C" Number="1">\n'
+                      '              <ParameterBlock Id="M-00FA_A-2700-10-0000_PB-2" Name="cb" Text="CB">\n'
+                      '                <ParameterRefRef RefId="M-00FA_A-2700-10-0000_P-1_R-1" />\n'
+                      '                <choose ParamRefId="M-00FA_A-2700-10-0000_P-1_R-1">\n'
+                      '                  <when test="1">\n'
+                      '                    <ParameterRefRef RefId="M-00FA_A-2700-10-0000_P-2_R-2" />\n'
+                      '                  </when>\n'
+                      '                  <when test="0 2">\n'
+                      '                    <ComObjectRefRef RefId="M-00FA_A-2700-10-0000_O-1_R-2" />\n'
+                      '                  </when>\n'
+                      '                  <when test="&gt;=2">\n'
+                      '                  </when>\n'
+                      '                  <when default="true">\n', xml)
+        self.assertIn('              </ParameterBlock>\n            </Channel>\n          </Dynamic>', xml)
+
+    def test_block_choose_when_needs_test_or_default(self) -> None:
+        s = self.channel_spec()
+        del s["dynamic"]["channel"][0]["block"][0]["choose"][0]["when"][0]["test"]
+        with self.assertRaisesRegex(generate.SpecError, "either `test` or `default = true`"):
+            generate.Product("test", s)
+
+    def test_block_choose_unknown_com_object_refused(self) -> None:
+        s = self.channel_spec()
+        s["dynamic"]["channel"][0]["block"][0]["choose"][0]["when"][1]["com_objects"] = [9]
+        with self.assertRaisesRegex(generate.SpecError, "unknown com object 9"):
+            generate.Product("test", s)
+
+    def test_channel_missing_number_refused(self) -> None:
+        s = self.channel_spec()
+        del s["dynamic"]["channel"][0]["number"]
+        with self.assertRaisesRegex(generate.SpecError, "missing key `number`"):
+            generate.Product("test", s)
+
+
 if __name__ == "__main__":
     unittest.main()

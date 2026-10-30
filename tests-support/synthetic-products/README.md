@@ -24,6 +24,7 @@ next to it, and zips it on demand.
 | [`syn-choose-never-shown`](syn-choose-never-shown/product.toml) | `NEST-GHOST` | 07B0 | choose on a never-shown memoryless parameter, default branch only | #474, #563 |
 | [`syn-choose-partial-segment`](syn-choose-partial-segment/product.toml) | `NEST-HALF` | 07B0 | load-procedure choose writing half the segment | #411 |
 | [`syn-choose-per-ref`](syn-choose-per-ref/product.toml) | `NEST-TWIN` | 07B0 | choose on the unreached second ParameterRef of a reached parameter | #563 |
+| [`syn-dynamic-tests`](syn-dynamic-tests/product.toml) | `NEST-WORM` | 07B0 | Channel and ParameterBlock with choose on single, list, comparison and default tests | #345 |
 | [`syn-hidden-default`](syn-hidden-default/product.toml) | `NEST-EGGHEAT` | 07B0 | hidden parameter, default differs from template | #448 |
 | [`syn-le-order`](syn-le-order/product.toml) | `NEST-ALTI` | 07B0 | ParameterByteOrder LittleEndian with integers and floats | #403 |
 | [`syn-legacy-patch-always`](syn-legacy-patch-always/product.toml) | `NEST-PATCH` | 07B0 | hidden LegacyPatchAlways parameter, default differs from template | #450 |
@@ -92,6 +93,8 @@ One `product.toml` per directory. Tables and keys:
 | `[[parameter_calculation]]` | `name`, `language` (`JavaScript`), `inputs` and `outputs` (`[{ parameter, alias }]`), `lr_script`, `rl_script` | a `ParameterCalculation` (`_PC-<n>`) in the inline form: `RLTransformation`, `LRTransformation`, `LParameters`, `RParameters` with `AliasName`s (#427) |
 | `[[com_object]]` | `number`, `name`, `text`, `function_text`, `size` (`"1 Bit"`), `dpt` (`"DPST-1-1"`), `flags` (of `C R W T U I`), `priority` (`Low`, `High`, `Alert`) | `ComObject`, one `ComObjectRef` each |
 | `[[dynamic.block]]` | `name`, `text`, `parameters` (names), `com_objects` (numbers) | a `ParameterBlock` in the `ChannelIndependentBlock`; a parameter no block names is never shown (#448) |
+| `choose` of a block | `[{ parameter, when = [{ test or default = true, parameters, com_objects }] }]` | a `<choose ParamRefId>` inside the `ParameterBlock` after its refs, each `<when>` holding refs and com objects directly (#345) |
+| `[[dynamic.channel]]` | `name`, `text`, `number` (a string), `[[dynamic.channel.block]]` (keys as `[[dynamic.block]]`) | a `<Channel>` (`_CH-<n>`) after the `ChannelIndependentBlock`, its blocks numbered after every other (#345) |
 | `[[dynamic.choose]]` | `parameter` (or a `[[parameter_ref]]`), `[[dynamic.choose.when]]` with `test` (as ETS writes it: `"1"`, `"0 2"`, `">=2"`) or `default = true`, and `[[dynamic.choose.when.block]]` (keys as `[[dynamic.block]]`) | a `<choose ParamRefId>` in the `ChannelIndependentBlock` after the blocks, each `<when>` holding its blocks, numbered after them (#474, #563) |
 | `[[load_procedure]]` | `merge_id`, `ops = [{ op = "...", ... }]` | `LoadProcedure` |
 
@@ -109,7 +112,7 @@ one stops with "part of the schema but no product uses it yet": masks other
 than 07B0 (System 7 twins), `ProductProcedure`, absolute segments, parameter
 type kinds `time`, `ip_address`, `raw`, VBScript calculations and the
 `LRTransformationFunc` form with a `<Script>`, explicit com
-object refs, channels, and the load
+object refs, and the load
 ops `LdCtrlLoadImageProp`, `LdCtrlWriteProp`,
 `LdCtrlCompareProp`, `LdCtrlAbsSegment` and the connection and state ops of a
 product procedure. An unknown key or op stops with an error naming it.
