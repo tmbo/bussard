@@ -240,9 +240,11 @@ class Product:
         for i, prm in enumerate(spec["parameter"]):
             pw = f"{w} [[parameter]] #{i + 1}"
             check_keys(pw, prm, {"name", "type", "text", "default"},
-                       {"memory", "union", "access", "virtual", "legacy_patch_always"}, {"translations"})
+                       {"memory", "union", "access", "virtual", "legacy_patch_always", "initial_value",
+                        "translations"})
             if prm["type"] not in self.types:
                 raise SpecError(f"{pw}: unknown parameter type `{prm['type']}`")
+            self.check_initial_value(pw, prm)
             if prm.get("access", "ReadWrite") not in ("None", "Read", "ReadWrite"):
                 raise SpecError(f"{pw}: access is None, Read or ReadWrite")
             bits = self.types[prm["type"]]["size_bits"]
@@ -373,6 +375,20 @@ class Product:
                 if ref["parameter"] not in self.params:
                     raise SpecError(f"{cw} {side} #{k + 1}: unknown parameter `{ref['parameter']}`")
         return dict(c, id=f"{self.app_id}_PC-{n}")
+
+    def check_initial_value(self, pw: str, prm: dict) -> None:
+        """syn-text-initialvalue (#604 row 24, #473): a text parameter's
+        `initial_value` (the `InitialValue` attribute) and its per-language
+        `translations = { "de-DE" = { initial_value = "..." } }`. Other
+        translated attributes of a parameter are part of the schema but unused."""
+        if "initial_value" not in prm and "translations" not in prm:
+            return
+        if self.types[prm["type"]]["kind"] != "text":
+            raise SpecError(f"{pw}: `initial_value` and `translations` belong to a text parameter")
+        if "translations" in prm and "initial_value" not in prm:
+            raise SpecError(f"{pw}: a translated InitialValue needs the untranslated `initial_value`")
+        for lang, t in prm.get("translations", {}).items():
+            check_keys(f"{pw} translations.{lang}", t, {"initial_value"}, set(), {"text"})
 
     def check_memory(self, where: str, m: dict, bits: int) -> None:
         """A `memory = { segment, offset, bit_offset }` that fits its segment."""
@@ -715,6 +731,7 @@ def render_application(p: Product) -> bytes:
             continue
         x.open("Parameter", [("Id", prm["id"]), ("Name", prm["name"]), ("ParameterType", p.types[prm["type"]]["id"]),
                              ("Text", prm["text"]), ("Access", prm.get("access")), ("Value", prm["default"]),
+                             ("InitialValue", prm.get("initial_value")),
                              ("LegacyPatchAlways", True if prm.get("legacy_patch_always") else None)])
         m = prm["memory"]
         x.empty("Memory", [("CodeSegment", p.segments[m["segment"]]["id"]), ("Offset", m["offset"]),
@@ -767,14 +784,25 @@ def render_application(p: Product) -> bytes:
     x.close("ApplicationProgram")
     x.close("ApplicationPrograms")
     translations = a.get("translations", {})
-    if translations:
+    # syn-text-initialvalue (#473): a parameter's translated InitialValue,
+    # one TranslationElement per parameter after the application's.
+    param_langs = {lang for prm in p.params.values() for lang in prm.get("translations", {})}
+    if translations or param_langs:
         x.open("Languages")
-        for lang, text in sorted(translations.items()):
+        for lang in sorted(set(translations) | param_langs):
             x.open("Language", [("Identifier", lang)])
             x.open("TranslationUnit", [("RefId", p.app_id), ("Version", 0)])
-            x.open("TranslationElement", [("RefId", p.app_id)])
-            x.empty("Translation", [("AttributeName", "Name"), ("Text", text)])
-            x.close("TranslationElement")
+            if lang in translations:
+                x.open("TranslationElement", [("RefId", p.app_id)])
+                x.empty("Translation", [("AttributeName", "Name"), ("Text", translations[lang])])
+                x.close("TranslationElement")
+            for prm in p.params.values():
+                t = prm.get("translations", {}).get(lang)
+                if t is None:
+                    continue
+                x.open("TranslationElement", [("RefId", prm["id"])])
+                x.empty("Translation", [("AttributeName", "InitialValue"), ("Text", t["initial_value"])])
+                x.close("TranslationElement")
             x.close("TranslationUnit")
             x.close("Language")
         x.close("Languages")

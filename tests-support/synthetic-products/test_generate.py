@@ -432,5 +432,45 @@ class TaskPtrAndTaskCtrl2(unittest.TestCase):
             generate.Product("t", s)
 
 
+class InitialValue(unittest.TestCase):
+    """syn-text-initialvalue (#473): a text parameter's InitialValue and its translation."""
+
+    def iv_spec(self) -> dict:
+        s = spec()
+        s["parameter_type"] = s["parameter_type"] + [{"name": "Name", "kind": "text", "size_octets": 20}]
+        s["parameter"] = s["parameter"] + [
+            {"name": "n", "type": "Name", "text": "N", "default": "Buzzard nest", "initial_value": "Buzzard nest",
+             "translations": {"de-DE": {"initial_value": "Bussardhorst Süd"}},
+             "memory": {"segment": "main", "offset": 3, "bit_offset": 0}}]
+        return s
+
+    def test_render_initial_value_and_translation(self) -> None:
+        xml = app_xml(self.iv_spec())
+        self.assertIn('Text="N" Value="Buzzard nest" InitialValue="Buzzard nest">', xml)
+        self.assertIn('<Translation AttributeName="Name" Text="Nestlichtschalter" />\n'
+                      '            </TranslationElement>\n'
+                      '            <TranslationElement RefId="M-00FA_A-2700-10-0000_P-3">\n'
+                      '              <Translation AttributeName="InitialValue" Text="Bussardhorst Süd" />', xml)
+
+    def test_parameter_translation_without_application_translation(self) -> None:
+        s = self.iv_spec()
+        del s["application"]["translations"]
+        xml = app_xml(s)
+        self.assertIn('<Language Identifier="de-DE">', xml)
+        self.assertNotIn('AttributeName="Name"', xml)
+
+    def test_initial_value_refused_on_non_text_parameter(self) -> None:
+        s = spec()
+        s["parameter"][1]["initial_value"] = "5"
+        with self.assertRaisesRegex(generate.SpecError, "belong to a text parameter"):
+            generate.Product("test", s)
+
+    def test_translated_text_attribute_not_yet(self) -> None:
+        s = self.iv_spec()
+        s["parameter"][-1]["translations"]["de-DE"]["text"] = "Nestname"
+        with self.assertRaisesRegex(generate.SpecError, "no product uses it yet"):
+            generate.Product("test", s)
+
+
 if __name__ == "__main__":
     unittest.main()
