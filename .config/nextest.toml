@@ -78,14 +78,21 @@ slow-timeout = { period = "300s", terminate-after = 12 }
 filter = 'test(/view_shows_what_the_download_writes_on_the_corpus/)'
 slow-timeout = { period = "300s", terminate-after = 12 }
 
-# The synthetic product catalogue through the knx-sim flash-then-plan loop
-# (epic #596): about 12 s per product locally, one product after another, and
-# the catalogue grows to 40 (#604). 60 s killed it at five products. The
-# synthetic oracle rows' `--check` (about 10 s per row) grows the same way.
+# The synthetic product catalogue (epic #596) grows to about 40 products
+# (#604), so its two catalogue-wide tests are budgeted for that size, not for
+# today's handful:
+# - the knx-sim flash-then-plan loop, about 10 s per product, runs as four
+#   shards (`..._synthetic_catalogue_shard_<k>`), ten products each at 40;
+# - the oracle rows' `--check`, about 1 to 3 s per row on a quiet host and up
+#   to 25 s on a loaded one, runs the rows on four workers inside the test.
+# Either way a shard or the rows test needs up to about 2 to 4 minutes at 40;
+# the budget below gives 10 before nextest kills it. Grow it with the
+# catalogue, not with a slower test: a row or product that alone takes
+# minutes is a bug.
 [[profile.default.overrides]]
-filter = 'test(/^sim_catalog_loop::test_sim_catalog_loop_synthetic_catalogue$/) | test(/^offline_oracle::test_offline_oracle_synthetic_rows_pass_the_check$/)'
-slow-timeout = { period = "120s", terminate-after = 10 }
+filter = 'test(/^sim_catalog_loop::test_sim_catalog_loop_synthetic_catalogue_shard_[0-9]+$/) | test(/^offline_oracle::test_offline_oracle_synthetic_rows_pass_the_check$/)'
+slow-timeout = { period = "60s", terminate-after = 10 }
 
 [[profile.ci.overrides]]
-filter = 'test(/^sim_catalog_loop::test_sim_catalog_loop_synthetic_catalogue$/) | test(/^offline_oracle::test_offline_oracle_synthetic_rows_pass_the_check$/)'
-slow-timeout = { period = "120s", terminate-after = 10 }
+filter = 'test(/^sim_catalog_loop::test_sim_catalog_loop_synthetic_catalogue_shard_[0-9]+$/) | test(/^offline_oracle::test_offline_oracle_synthetic_rows_pass_the_check$/)'
+slow-timeout = { period = "60s", terminate-after = 10 }

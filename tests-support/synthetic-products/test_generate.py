@@ -228,5 +228,50 @@ class System7(unittest.TestCase):
             generate.Product("t", self.s)
 
 
+class MasterReset(unittest.TestCase):
+    """syn-master-reset (#546, #611): LdCtrlMasterReset in the application's procedure."""
+
+    def test_render_master_reset_after_rel_segment(self) -> None:
+        s = spec()
+        s["load_procedure"][0]["ops"].append({"op": "LdCtrlMasterReset", "erase_code": 4, "channel": 0})
+        self.assertIn('<LdCtrlRelSegment LsmIdx="4" Size="256" Mode="0" Fill="0" />\n'
+                      '                <LdCtrlMasterReset EraseCode="4" ChannelNumber="0" />', app_xml(s))
+
+    def test_master_reset_missing_channel_refused(self) -> None:
+        s = spec()
+        s["load_procedure"][0]["ops"].append({"op": "LdCtrlMasterReset", "erase_code": 1})
+        with self.assertRaisesRegex(generate.SpecError, "missing key `channel`"):
+            generate.Product("test", s)
+
+
+class LoadProcedureChoose(unittest.TestCase):
+    """syn-choose-partial-segment (#411): `<choose>` inside a LoadProcedure."""
+
+    HALF = {"op": "LdCtrlWriteRelMem", "object": 4, "offset": 0, "size": 128, "verify": False}
+
+    def choose(self, parameter: str, when: list) -> dict:
+        s = spec()
+        s["load_procedure"][1]["ops"] = [{"op": "choose", "parameter": parameter, "when": when}]
+        return s
+
+    def test_render_choose_with_test_and_default(self) -> None:
+        s = self.choose("mode", [{"test": "1", "ops": [self.HALF]},
+                                 {"default": True, "ops": [dict(self.HALF, size=256)]}])
+        xml = app_xml(s)
+        self.assertIn('<choose ParamRefId="M-00FA_A-2700-10-0000_P-1_R-1">', xml)
+        self.assertIn('<when test="1">\n'
+                      '                    <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="128" Verify="false" />\n'
+                      '                  </when>\n'
+                      '                  <when default="true">', xml)
+
+    def test_choose_branch_needs_test_or_default(self) -> None:
+        with self.assertRaisesRegex(generate.SpecError, "either `test` or `default = true`"):
+            generate.Product("test", self.choose("mode", [{"ops": []}]))
+
+    def test_choose_unknown_parameter_refused(self) -> None:
+        with self.assertRaisesRegex(generate.SpecError, "unknown parameter `nope`"):
+            generate.Product("test", self.choose("nope", [{"test": "1", "ops": []}]))
+
+
 if __name__ == "__main__":
     unittest.main()
