@@ -377,11 +377,22 @@ class Product:
             raise SpecError(f"{cw}: a choose needs at least one `when`")
         for k, branch in enumerate(c["when"]):
             bw = f"{cw} when #{k + 1}"
-            check_keys(bw, branch, {"parameters", "com_objects"}, {"test", "default"})
+            check_keys(bw, branch, {"parameters", "com_objects"}, {"test", "default", "assign"})
             if ("test" in branch) == (branch.get("default") is True) or branch.get("default") is False:
                 raise SpecError(f"{bw}: give either `test` or `default = true`")
             self.check_refs(bw, branch)
+            for k, a in enumerate(branch.get("assign", [])):
+                self.check_assign(f"{bw} assign #{k + 1}", a)
         return c
+
+    def check_assign(self, aw: str, a: dict) -> None:
+        """syn-assign (#604 row 31): `<Assign TargetParamRefRef
+        SourceParamRefRef>` in a `<when>`, where the corpus has nearly all of
+        them; a literal `Value` is part of the schema but unused yet."""
+        check_keys(aw, a, {"target", "source"}, set(), {"value"})
+        for side in ("target", "source"):
+            if a[side] not in self.params and a[side] not in self.extra_refs:
+                raise SpecError(f"{aw}: unknown {side} parameter `{a[side]}`")
 
     def check_dynamic_choose(self, cw: str, c: dict) -> dict:
         """syn-choose-never-shown (#604 row 14, #474): a `<choose ParamRefId>`
@@ -735,6 +746,9 @@ def render_block(x: Xml, p: Product, b: dict) -> None:
                 x.empty("ParameterRefRef", [("RefId", p.ref_id(pn))])
             for on in branch["com_objects"]:
                 x.empty("ComObjectRefRef", [("RefId", p.objects[on]["ref"])])
+            for a in branch.get("assign", []):  # syn-assign
+                x.empty("Assign", [("TargetParamRefRef", p.ref_id(a["target"])),
+                                   ("SourceParamRefRef", p.ref_id(a["source"]))])
             x.close("when")
         x.close("choose")
     x.close("ParameterBlock")

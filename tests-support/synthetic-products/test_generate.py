@@ -592,5 +592,36 @@ class ChannelAndBlockChoose(unittest.TestCase):
             generate.Product("test", s)
 
 
+
+class Assign(unittest.TestCase):
+    """syn-assign (#604 row 31): an `<Assign>` in a `<when>` of a block choose."""
+
+    def assign_spec(self) -> dict:
+        s = spec()
+        s["dynamic"]["block"][0]["choose"] = [{"parameter": "mode", "when": [
+            {"test": "1", "parameters": [], "com_objects": [],
+             "assign": [{"target": "delay", "source": "mode"}]}]}]
+        return s
+
+    def test_render_assign_after_refs_in_when(self) -> None:
+        xml = app_xml(self.assign_spec())
+        self.assertIn('<when test="1">\n'
+                      '                    <Assign TargetParamRefRef="M-00FA_A-2700-10-0000_P-2_R-2" '
+                      'SourceParamRefRef="M-00FA_A-2700-10-0000_P-1_R-1" />\n'
+                      '                  </when>', xml)
+
+    def test_assign_unknown_target_refused(self) -> None:
+        s = self.assign_spec()
+        s["dynamic"]["block"][0]["choose"][0]["when"][0]["assign"][0]["target"] = "nope"
+        with self.assertRaisesRegex(generate.SpecError, "unknown target parameter `nope`"):
+            generate.Product("test", s)
+
+    def test_assign_literal_value_not_yet(self) -> None:
+        s = self.assign_spec()
+        s["dynamic"]["block"][0]["choose"][0]["when"][0]["assign"][0]["value"] = "3"
+        with self.assertRaisesRegex(generate.SpecError, "no product uses it yet"):
+            generate.Product("test", s)
+
+
 if __name__ == "__main__":
     unittest.main()
