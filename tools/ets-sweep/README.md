@@ -397,3 +397,51 @@ exactly what ETS downloaded; verdicts in `results/oracle-params.json`.
 The parameter editor was written without ETS at hand (2026-10-30): the
 regions of the page list and the parameter area (`PARAM_PAGES`, `PARAM_AREA`
 in the driver) are first guesses to correct from a screenshot.
+
+## Synthetic products: signing (#596)
+
+    uv run tools/ets-sweep/synthetic/clone_datp.py              # DA.tp clone -> synthetic/out/ (gitignored)
+    uv run tools/ets-sweep/synthetic/sign.py synthetic/out/KNX_Synthetic_DA_M-00FA.knxprod
+    uv run tools/ets-sweep/synthetic/sign.py --verify <file.knxprod>   # the library's verdict per hash
+
+A fabricated product under `M-00FA` carries the same integrity data as one
+ETS exports: a `Hash` on the `ApplicationProgram`, on each `Product` and
+`Hardware2Program`, `RegistrationSignature`s on their `RegistrationInfo`, and
+an application id whose last four hex digits are a fingerprint of the
+program's hash. bussard and knx-sim ignore all of it; ETS checks it.
+
+`sign.py` uploads `synthetic/signer.cs` to `C:\Users\macremote\ets-sweep\signer\`,
+compiles it with the .NET Framework `csc.exe` once per source change
+(`signer.sha` holds the source digest), runs it on the product and downloads
+the result (`<in>-signed.knxprod`). The signer is our own C#; it loads ETS's
+`Knx.Ets.XmlSigning.dll` from the ETS 6 folder and calls its internal classes
+by reflection (the DLL is obfuscated, the classes below keep readable names).
+No ETS library is compiled against, copied or committed. Per manufacturer
+folder it runs:
+
+1. `Signer.ApplicationProgramHasher(file, {}, patchIds: true, null).HashFile()`
+   per `*_A-*.xml`: computes the program's `Hash`, derives the fingerprint and
+   rewrites the program under its new id (`A-2600-10-0001` becomes
+   `A-2600-10-731A`), file renamed to match. The hasher deletes its input, so
+   the signer hands it a renamed copy.
+2. `Signer.HardwareSigner(Hardware.xml, oldToNewAppIds, appHashes, patchIds: true).SignFile()`:
+   new `Hash` on `Product` and `Hardware2Program`, new
+   `RegistrationSignature`s, `Hardware2Program` ids and `ApplicationProgramRef`s
+   patched to the new application id.
+3. `Signer.CatalogIdPatcher(Catalog.xml, oldToNewHardware2ProgramIds, null).Patch()`:
+   `CatalogItem` ids and `Hardware2ProgramRefId`s follow.
+4. `XmlSigning.SignDirectory(folder, true, null)`: writes `M-00FA.signature`
+   next to the folder (ETS's own export has none).
+
+`knx_master.xml` is left as it is. Check of the library: the KNX Virtual file
+signed unchanged comes out byte-identical in every entry (plus the
+`.signature`), and `--verify` reports every hash and registration signature
+of the original and of the signed clone valid, of the unsigned clone invalid.
+
+ETS's verdict on the unsigned and the signed clone (`/ets/catalog_import`,
+then `/ets/catalog_search SYN.da`) is still open: on 2026-10-30 the VM was
+busy with a `defaults.py --redo-failed` run. If ETS refuses the signed file,
+`%LOCALAPPDATA%\KNX\ETS6\Log\ETS6.log` names the reason; candidates to try
+are the file without `M-00FA.signature` (ETS's own export has none, and the
+library's own check calls the directory signature it wrote invalid) and
+`RegistrationInfo` set to `NotRegistered`.

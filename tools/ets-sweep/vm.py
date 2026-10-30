@@ -43,9 +43,18 @@ def password() -> str:
     env = os.environ.get("WINDOWS_SSH_PW")
     if env:
         return env
-    for line in (REPO / ".env").read_text().splitlines():
-        if line.startswith("WINDOWS_SSH_PW="):
-            return line.split("=", 1)[1].strip().strip('"').strip("'")
+    # A worktree has no .env of its own; its .git file names the main checkout.
+    candidates = [REPO / ".env"]
+    git = REPO / ".git"
+    if git.is_file():
+        gitdir = Path(git.read_text().split(":", 1)[1].strip())
+        candidates.append(gitdir.parents[1].parent / ".env")
+    for env_file in candidates:
+        if not env_file.exists():
+            continue
+        for line in env_file.read_text().splitlines():
+            if line.startswith("WINDOWS_SSH_PW="):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
     raise SystemExit("WINDOWS_SSH_PW not set and not in .env")
 
 

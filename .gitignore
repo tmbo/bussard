@@ -54,3 +54,5 @@ tools/ets-sweep/.unpacked/
 
 # external specification
 dev/knx-standard-3.0.0/
+# Synthetic products built and signed by tools/ets-sweep/synthetic (#596)
+tools/ets-sweep/synthetic/out/
