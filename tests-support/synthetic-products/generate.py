@@ -42,7 +42,7 @@ MANUFACTURER = "M-00FA"
 # DA.tp clone 0x2600.
 APP_NUMBERS = range(0x2700, 0x2800)
 # Catalogue section shared by every synthetic product (the clone used CS-26).
-CATALOG_SECTION = (f"{MANUFACTURER}_CS-27", "bussard synthetic", "27")
+CATALOG_SECTION = (f"{MANUFACTURER}_CS-27", "The buzzard's nest", "27")
 STUB_MASTER = b"<KNX/>"
 README_BEGIN = "<!-- catalogue:begin (generate.py --catalogue) -->"
 README_END = "<!-- catalogue:end -->"

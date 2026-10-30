@@ -3,9 +3,9 @@
   <ManufacturerData>
     <Manufacturer RefId="M-00FA">
       <Hardware>
-        <Hardware Id="M-00FA_H-00FA00270000-1" Name="SYN-MIN" SerialNumber="00FA00270000" VersionNumber="1" BusCurrent="10" HasIndividualAddress="true" HasApplicationProgram="true" NonRegRelevantDataVersion="0">
+        <Hardware Id="M-00FA_H-00FA00270000-1" Name="NEST-LIGHT" SerialNumber="00FA00270000" VersionNumber="1" BusCurrent="10" HasIndividualAddress="true" HasApplicationProgram="true" NonRegRelevantDataVersion="0">
           <Products>
-            <Product Id="M-00FA_H-00FA00270000-1_P-SYN.2Emin" Text="Synthetic minimal" OrderNumber="SYN.min" IsRailMounted="false" DefaultLanguage="en-US" NonRegRelevantDataVersion="0">
+            <Product Id="M-00FA_H-00FA00270000-1_P-NEST-LIGHT" Text="Nest-side light switch" OrderNumber="NEST-LIGHT" IsRailMounted="false" DefaultLanguage="en-US" NonRegRelevantDataVersion="0">
               <RegistrationInfo RegistrationStatus="Registered" />
             </Product>
           </Products>

@@ -13,21 +13,21 @@ construct = "baseline"
 issues = [596]
 
 [product]
-text = "Synthetic minimal"
-order_number = "SYN.min"
-hardware_name = "SYN-MIN"
+text = "Nest-side light switch"
+order_number = "NEST-LIGHT"
+hardware_name = "NEST-LIGHT"
 hardware_serial = "00FA00270000"
 bus_current = 10
 
 [application]
 number = 0x2700
 version = 0x10
-name = "Synthetic minimal"
+name = "Nest-side light switch"
 mask = "07B0"
 load_procedure_style = "MergedProcedure"
 address_table_max_entries = 32
 association_table_max_entries = 32
-translations = { "de-DE" = "Synthetisch minimal" }
+translations = { "de-DE" = "Nestlichtschalter" }
 
 [application.options]
 Comparable = true

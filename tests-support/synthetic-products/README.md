@@ -21,8 +21,22 @@ next to it, and zips it on demand.
 <!-- catalogue:begin (generate.py --catalogue) -->
 | product | order number | mask | construct | issues |
 | --- | --- | --- | --- | --- |
-| [`syn-minimal`](syn-minimal/product.toml) | `SYN.min` | 07B0 | baseline | #596 |
+| [`syn-minimal`](syn-minimal/product.toml) | `NEST-LIGHT` | 07B0 | baseline | #596 |
 <!-- catalogue:end -->
+
+## Theme
+
+`bussard` is German for buzzard, so the synthetic products are the appliances
+of a buzzard's nest. Each product is a real appliance in that home: an egg
+heater, a worm-movement detector, a twig-door actuator.
+
+- The appliance hints at the construct where it can: a two-byte little-endian
+  product could be a tree-altitude meter (Höhenmesser).
+- Order numbers are ASCII, no spaces, at most 12 characters, prefixed `NEST-`.
+- The catalogue section stays `M-00FA_CS-27`, titled "The buzzard's nest".
+- German `translations` of the names are welcome and short.
+- The theme lives in `[product] text`, `order_number`, `hardware_name` and
+  `[application] name`; directory names and `construct` never change for it.
 
 ## Commands
 
@@ -75,7 +89,7 @@ parts prefixed with it (`_RS-04-00000`, `_PT-<name>`, `_P-<n>`, `_P-<n>_R-<n>`,
 `_O-<number>`, `_O-<number>_R-<n>`, `_PB-<n>`); hardware
 `M-00FA_H-<serial>-<version>`, product `..._P-<order number>` and catalogue
 item with ETS's escaping (`SYN.min` becomes `SYN.2Emin`). Every product shares
-the catalogue section `M-00FA_CS-27` "bussard synthetic". Application numbers
+the catalogue section `M-00FA_CS-27` "The buzzard's nest". Application numbers
 start at 0x2700: KNX Virtual uses 0x25xx and the DA.tp clone 0x2600.
 
 ## The id rule

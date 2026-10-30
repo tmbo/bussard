@@ -3,7 +3,7 @@
   <ManufacturerData>
     <Manufacturer RefId="M-00FA">
       <ApplicationPrograms>
-        <ApplicationProgram Id="M-00FA_A-2700-10-0000" ApplicationNumber="9984" ApplicationVersion="16" ProgramType="ApplicationProgram" MaskVersion="MV-07B0" Name="Synthetic minimal" LoadProcedureStyle="MergedProcedure" PeiType="0" DefaultLanguage="en-US" DynamicTableManagement="false" Linkable="false" MinEtsVersion="6.0" NonRegRelevantDataVersion="0">
+        <ApplicationProgram Id="M-00FA_A-2700-10-0000" ApplicationNumber="9984" ApplicationVersion="16" ProgramType="ApplicationProgram" MaskVersion="MV-07B0" Name="Nest-side light switch" LoadProcedureStyle="MergedProcedure" PeiType="0" DefaultLanguage="en-US" DynamicTableManagement="false" Linkable="false" MinEtsVersion="6.0" NonRegRelevantDataVersion="0">
           <Static>
             <Code>
               <RelativeSegment Id="M-00FA_A-2700-10-0000_RS-04-00000" Name="main" Size="256" LoadStateMachine="4" Offset="0">
@@ -70,7 +70,7 @@
         <Language Identifier="de-DE">
           <TranslationUnit RefId="M-00FA_A-2700-10-0000" Version="0">
             <TranslationElement RefId="M-00FA_A-2700-10-0000">
-              <Translation AttributeName="Name" Text="Synthetisch minimal" />
+              <Translation AttributeName="Name" Text="Nestlichtschalter" />
             </TranslationElement>
           </TranslationUnit>
         </Language>
