@@ -5,9 +5,11 @@
 # zipped with the stub master by the script; the application is the rendered
 # id (the signed fingerprint never reaches the wire).
 #@ --dir captures/synthetic/model
+1.1.1|captures/synthetic/syn-assign/defaults/ets.pcapng|tests-support/synthetic-products/syn-assign/xml|M-00FA_A-271F-10-0000|syn-assign defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-choose-never-shown/defaults/ets.pcapng|tests-support/synthetic-products/syn-choose-never-shown/xml|M-00FA_A-270E-10-0000|syn-choose-never-shown defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-choose-partial-segment/defaults/ets.pcapng|tests-support/synthetic-products/syn-choose-partial-segment/xml|M-00FA_A-2708-10-0000|syn-choose-partial-segment defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-choose-per-ref/defaults/ets.pcapng|tests-support/synthetic-products/syn-choose-per-ref/xml|M-00FA_A-2719-10-0000|syn-choose-per-ref defaults|100.0|loadctl=identical
+1.1.1|captures/synthetic/syn-dynamic-tests/defaults/ets.pcapng|tests-support/synthetic-products/syn-dynamic-tests/xml|M-00FA_A-271C-10-0000|syn-dynamic-tests defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-hidden-default/defaults/ets.pcapng|tests-support/synthetic-products/syn-hidden-default/xml|M-00FA_A-270C-10-0000|syn-hidden-default defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-ip-address-param/defaults/ets.pcapng|tests-support/synthetic-products/syn-ip-address-param/xml|M-00FA_A-2715-10-0000|syn-ip-address-param defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-le-order/defaults/ets.pcapng|tests-support/synthetic-products/syn-le-order/xml|M-00FA_A-2704-10-0000|syn-le-order defaults|100.0|loadctl=identical
@@ -26,6 +28,9 @@
 1.1.1|captures/synthetic/syn-s7-lsm5/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-lsm5/xml|M-00FA_A-280F-11-0000|syn-s7-lsm5 defaults|100.0|loadctl=identical state=fresh
 1.1.1|captures/synthetic/syn-s7-pei80/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-pei80/xml|M-00FA_A-2810-10-0000|syn-s7-pei80 defaults|100.0|loadctl=identical state=fresh
 1.1.1|captures/synthetic/syn-s7-taskptr/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-taskptr/xml|M-00FA_A-2811-10-0000|syn-s7-taskptr defaults|100.0|loadctl=identical state=fresh
+1.1.1|captures/synthetic/syn-text-initialvalue/defaults/ets.pcapng|tests-support/synthetic-products/syn-text-initialvalue/xml|M-00FA_A-2718-10-0000|syn-text-initialvalue defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-text-undeclared/defaults/ets.pcapng|tests-support/synthetic-products/syn-text-undeclared/xml|M-00FA_A-2706-10-0000|syn-text-undeclared defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-union-default-range/defaults/ets.pcapng|tests-support/synthetic-products/syn-union-default-range/xml|M-00FA_A-2705-10-0000|syn-union-default-range defaults|100.0|loadctl=identical
+1.1.1|captures/synthetic/syn-user-memory/defaults/ets.pcapng|tests-support/synthetic-products/syn-user-memory/xml|M-00FA_A-2716-10-0000|syn-user-memory defaults|100.0|loadctl=identical
+1.1.1|captures/synthetic/syn-user-memory-extmem/defaults/ets.pcapng|tests-support/synthetic-products/syn-user-memory-extmem/xml|M-00FA_A-2796-10-0000|syn-user-memory-extmem defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-writerelmem-size/defaults/ets.pcapng|tests-support/synthetic-products/syn-writerelmem-size/xml|M-00FA_A-2717-10-0000|syn-writerelmem-size defaults|100.0|loadctl=identical
