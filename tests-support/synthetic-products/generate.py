@@ -257,9 +257,11 @@ class Product:
         for i, prm in enumerate(spec["parameter"]):
             pw = f"{w} [[parameter]] #{i + 1}"
             check_keys(pw, prm, {"name", "type", "text", "default"},
-                       {"memory", "union", "access", "virtual", "legacy_patch_always"}, {"translations"})
+                       {"memory", "union", "access", "virtual", "legacy_patch_always", "initial_value",
+                        "translations"})
             if prm["type"] not in self.types:
                 raise SpecError(f"{pw}: unknown parameter type `{prm['type']}`")
+            self.check_initial_value(pw, prm)
             if prm.get("access", "ReadWrite") not in ("None", "Read", "ReadWrite"):
                 raise SpecError(f"{pw}: access is None, Read or ReadWrite")
             bits = self.types[prm["type"]]["size_bits"]
@@ -323,20 +325,23 @@ class Product:
             self.objects[o["number"]] = dict(o, id=oid, ref=f"{oid}_R-{i + 1}")
 
         dyn = spec["dynamic"]
-        check_keys(f"{w} [dynamic]", dyn, {"block"}, {"choose"}, {"channel"})
-        self.blocks = []
-        for i, b in enumerate(dyn["block"]):
-            bw = f"{w} [[dynamic.block]] #{i + 1}"
-            check_keys(bw, b, {"name", "text", "parameters", "com_objects"}, set(), {"choose", "inline"})
-            for pn in b["parameters"]:
-                if pn not in self.params and pn not in self.extra_refs:
-                    raise SpecError(f"{bw}: unknown parameter `{pn}`")
-            for on in b["com_objects"]:
-                if on not in self.objects:
-                    raise SpecError(f"{bw}: unknown com object {on}")
-            self.blocks.append(dict(b, id=f"{self.app_id}_PB-{i + 1}"))
+        check_keys(f"{w} [dynamic]", dyn, {"block"}, {"choose", "channel"})
+        self.blocks = [self.check_block(f"{w} [[dynamic.block]] #{i + 1}", b, i + 1)
+                       for i, b in enumerate(dyn["block"])]
         self.dynamic_chooses = [self.check_dynamic_choose(f"{w} [[dynamic.choose]] #{i + 1}", c)
                                 for i, c in enumerate(dyn.get("choose", []))]
+        # syn-dynamic-tests (#604 row 28, #345): `<Channel>`s after the
+        # ChannelIndependentBlock, their blocks numbered after every other.
+        self.channels = []
+        numbered = len(self.blocks) + getattr(self, "choose_blocks", 0)
+        for i, ch in enumerate(dyn.get("channel", [])):
+            cw = f"{w} [[dynamic.channel]] #{i + 1}"
+            check_keys(cw, ch, {"name", "text", "number", "block"})
+            blocks = []
+            for j, b in enumerate(ch["block"]):
+                numbered += 1
+                blocks.append(self.check_block(f"{cw} block #{j + 1}", b, numbered))
+            self.channels.append(dict(ch, id=f"{self.app_id}_CH-{i + 1}", block=blocks))
 
         self.load_procedures = []
         for i, lp in enumerate(spec["load_procedure"]):
@@ -353,15 +358,50 @@ class Product:
             check_system7_tables(w, self)
 
     def check_block(self, bw: str, b: dict, number: int) -> dict:
-        """A parameter block of the Dynamic tree, given its `_PB-<number>`."""
-        check_keys(bw, b, {"name", "text", "parameters", "com_objects"}, set(), {"choose", "inline"})
+        """A parameter block of the Dynamic tree, given its `_PB-<number>`;
+        its `choose`s (#345) follow its refs."""
+        check_keys(bw, b, {"name", "text", "parameters", "com_objects"}, {"choose"}, {"inline"})
+        self.check_refs(bw, b)
+        chooses = [self.check_block_choose(f"{bw} choose #{k + 1}", c) for k, c in enumerate(b.get("choose", []))]
+        return dict(b, id=f"{self.app_id}_PB-{number}", choose=chooses)
+
+    def check_refs(self, where: str, b: dict) -> None:
+        """The `parameters` (or `[[parameter_ref]]`s) and `com_objects` a block
+        or a `when` shows."""
         for pn in b["parameters"]:
             if pn not in self.params and pn not in self.extra_refs:
-                raise SpecError(f"{bw}: unknown parameter `{pn}`")
+                raise SpecError(f"{where}: unknown parameter `{pn}`")
         for on in b["com_objects"]:
             if on not in self.objects:
-                raise SpecError(f"{bw}: unknown com object {on}")
-        return dict(b, id=f"{self.app_id}_PB-{number}")
+                raise SpecError(f"{where}: unknown com object {on}")
+
+    def check_block_choose(self, cw: str, c: dict) -> dict:
+        """syn-dynamic-tests (#604 row 28, #345): a `<choose ParamRefId>`
+        inside a parameter block, each `<when>` (`test` as ETS writes it, or
+        `default = true`) showing refs and com objects directly."""
+        check_keys(cw, c, {"parameter", "when"})
+        if c["parameter"] not in self.params and c["parameter"] not in self.extra_refs:
+            raise SpecError(f"{cw}: unknown parameter `{c['parameter']}`")
+        if not c["when"]:
+            raise SpecError(f"{cw}: a choose needs at least one `when`")
+        for k, branch in enumerate(c["when"]):
+            bw = f"{cw} when #{k + 1}"
+            check_keys(bw, branch, {"parameters", "com_objects"}, {"test", "default", "assign"})
+            if ("test" in branch) == (branch.get("default") is True) or branch.get("default") is False:
+                raise SpecError(f"{bw}: give either `test` or `default = true`")
+            self.check_refs(bw, branch)
+            for k, a in enumerate(branch.get("assign", [])):
+                self.check_assign(f"{bw} assign #{k + 1}", a)
+        return c
+
+    def check_assign(self, aw: str, a: dict) -> None:
+        """syn-assign (#604 row 31): `<Assign TargetParamRefRef
+        SourceParamRefRef>` in a `<when>`, where the corpus has nearly all of
+        them; a literal `Value` is part of the schema but unused yet."""
+        check_keys(aw, a, {"target", "source"}, set(), {"value"})
+        for side in ("target", "source"):
+            if a[side] not in self.params and a[side] not in self.extra_refs:
+                raise SpecError(f"{aw}: unknown {side} parameter `{a[side]}`")
 
     def check_dynamic_choose(self, cw: str, c: dict) -> dict:
         """syn-choose-never-shown (#604 row 14, #474): a `<choose ParamRefId>`
@@ -406,6 +446,20 @@ class Product:
                 if ref["parameter"] not in self.params:
                     raise SpecError(f"{cw} {side} #{k + 1}: unknown parameter `{ref['parameter']}`")
         return dict(c, id=f"{self.app_id}_PC-{n}")
+
+    def check_initial_value(self, pw: str, prm: dict) -> None:
+        """syn-text-initialvalue (#604 row 24, #473): a text parameter's
+        `initial_value` (the `InitialValue` attribute) and its per-language
+        `translations = { "de-DE" = { initial_value = "..." } }`. Other
+        translated attributes of a parameter are part of the schema but unused."""
+        if "initial_value" not in prm and "translations" not in prm:
+            return
+        if self.types[prm["type"]]["kind"] != "text":
+            raise SpecError(f"{pw}: `initial_value` and `translations` belong to a text parameter")
+        if "translations" in prm and "initial_value" not in prm:
+            raise SpecError(f"{pw}: a translated InitialValue needs the untranslated `initial_value`")
+        for lang, t in prm.get("translations", {}).items():
+            check_keys(f"{pw} translations.{lang}", t, {"initial_value"}, set(), {"text"})
 
     def check_memory(self, where: str, m: dict, bits: int) -> None:
         """A `memory = { segment, offset, bit_offset }` that fits its segment."""
@@ -690,6 +744,30 @@ def render_load_ops(x: Xml, p: Product, ops: list[dict]) -> None:
             x.empty(op["op"], [(attr, op[key]) for key, attr in (LOAD_OPS | SYS7_LOAD_OPS)[op["op"]].items()])
 
 
+def render_block(x: Xml, p: Product, b: dict) -> None:
+    """`<ParameterBlock>`: its refs, its com objects, then its chooses (#345),
+    each `<when>` holding refs and com objects directly."""
+    x.open("ParameterBlock", [("Id", b["id"]), ("Name", b["name"]), ("Text", b["text"])])
+    for pn in b["parameters"]:
+        x.empty("ParameterRefRef", [("RefId", p.ref_id(pn))])
+    for on in b["com_objects"]:
+        x.empty("ComObjectRefRef", [("RefId", p.objects[on]["ref"])])
+    for c in b.get("choose", []):
+        x.open("choose", [("ParamRefId", p.ref_id(c["parameter"]))])
+        for branch in c["when"]:
+            x.open("when", [("test", branch["test"])] if "test" in branch else [("default", True)])
+            for pn in branch["parameters"]:
+                x.empty("ParameterRefRef", [("RefId", p.ref_id(pn))])
+            for on in branch["com_objects"]:
+                x.empty("ComObjectRefRef", [("RefId", p.objects[on]["ref"])])
+            for a in branch.get("assign", []):  # syn-assign
+                x.empty("Assign", [("TargetParamRefRef", p.ref_id(a["target"])),
+                                   ("SourceParamRefRef", p.ref_id(a["source"]))])
+            x.close("when")
+        x.close("choose")
+    x.close("ParameterBlock")
+
+
 def render_dynamic_choose(x: Xml, p: Product, c: dict) -> None:
     """`<choose ParamRefId>` in the Dynamic tree, its `<when default="true">`
     holding parameter blocks (#474)."""
@@ -697,12 +775,7 @@ def render_dynamic_choose(x: Xml, p: Product, c: dict) -> None:
     for branch in c["when"]:
         x.open("when", [("test", branch["test"])] if "test" in branch else [("default", True)])
         for b in branch["block"]:
-            x.open("ParameterBlock", [("Id", b["id"]), ("Name", b["name"]), ("Text", b["text"])])
-            for pn in b["parameters"]:
-                x.empty("ParameterRefRef", [("RefId", p.ref_id(pn))])
-            for on in b["com_objects"]:
-                x.empty("ComObjectRefRef", [("RefId", p.objects[on]["ref"])])
-            x.close("ParameterBlock")
+            render_block(x, p, b)
         x.close("when")
     x.close("choose")
 
@@ -762,6 +835,7 @@ def render_application(p: Product) -> bytes:
             continue
         x.open("Parameter", [("Id", prm["id"]), ("Name", prm["name"]), ("ParameterType", p.types[prm["type"]]["id"]),
                              ("Text", prm["text"]), ("Access", prm.get("access")), ("Value", prm["default"]),
+                             ("InitialValue", prm.get("initial_value")),
                              ("LegacyPatchAlways", True if prm.get("legacy_patch_always") else None)])
         m = prm["memory"]
         x.empty("Memory", [("CodeSegment", p.segments[m["segment"]]["id"]), ("Offset", m["offset"]),
@@ -803,27 +877,38 @@ def render_application(p: Product) -> bytes:
     x.open("Dynamic")
     x.open("ChannelIndependentBlock")
     for b in p.blocks:
-        x.open("ParameterBlock", [("Id", b["id"]), ("Name", b["name"]), ("Text", b["text"])])
-        for pn in b["parameters"]:
-            x.empty("ParameterRefRef", [("RefId", p.ref_id(pn))])
-        for on in b["com_objects"]:
-            x.empty("ComObjectRefRef", [("RefId", p.objects[on]["ref"])])
-        x.close("ParameterBlock")
+        render_block(x, p, b)
     for c in p.dynamic_chooses:
         render_dynamic_choose(x, p, c)
     x.close("ChannelIndependentBlock")
+    for ch in p.channels:  # #345
+        x.open("Channel", [("Id", ch["id"]), ("Name", ch["name"]), ("Text", ch["text"]), ("Number", ch["number"])])
+        for b in ch["block"]:
+            render_block(x, p, b)
+        x.close("Channel")
     x.close("Dynamic")
     x.close("ApplicationProgram")
     x.close("ApplicationPrograms")
     translations = a.get("translations", {})
-    if translations:
+    # syn-text-initialvalue (#473): a parameter's translated InitialValue,
+    # one TranslationElement per parameter after the application's.
+    param_langs = {lang for prm in p.params.values() for lang in prm.get("translations", {})}
+    if translations or param_langs:
         x.open("Languages")
-        for lang, text in sorted(translations.items()):
+        for lang in sorted(set(translations) | param_langs):
             x.open("Language", [("Identifier", lang)])
             x.open("TranslationUnit", [("RefId", p.app_id), ("Version", 0)])
-            x.open("TranslationElement", [("RefId", p.app_id)])
-            x.empty("Translation", [("AttributeName", "Name"), ("Text", text)])
-            x.close("TranslationElement")
+            if lang in translations:
+                x.open("TranslationElement", [("RefId", p.app_id)])
+                x.empty("Translation", [("AttributeName", "Name"), ("Text", translations[lang])])
+                x.close("TranslationElement")
+            for prm in p.params.values():
+                t = prm.get("translations", {}).get(lang)
+                if t is None:
+                    continue
+                x.open("TranslationElement", [("RefId", prm["id"])])
+                x.empty("Translation", [("AttributeName", "InitialValue"), ("Text", t["initial_value"])])
+                x.close("TranslationElement")
             x.close("TranslationUnit")
             x.close("Language")
         x.close("Languages")

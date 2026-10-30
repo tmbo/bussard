@@ -1,0 +1,421 @@
+# A synthetic product of the catalogue (#604 row 28), syn-minimal plus one
+# construct. Rendered by ../generate.py into xml/; see ../README.md for the schema.
+
+[doc]
+purpose = """
+syn-minimal with a Channel holding a ParameterBlock, and three <choose>s in
+that block whose <when> branches use the four test forms ETS writes: a single
+value (test="3"), a value list (test="1 3 5"), a comparison (test=">=4",
+">299", "<1") and <when default="true">. Each branch shows one 8-bit
+parameter and one com object. At the defaults (sensitivity 3, delay 300,
+mode 1) the first choose takes its single and its list branch (two hits, so
+not its default), the second its comparison branch, the third only its
+default branch. Issue #345 (the one Dynamic evaluator): the group-object
+table shows which branches ETS takes, one object per branch (objects 2 to
+13); the parameters are written at their defaults whether shown or not
+(System B, project/23, as syn-hidden-default showed). bussard's evaluator
+takes the same branches, so the row is expected identical; a regression row
+for the test forms."""
+construct = "Channel and ParameterBlock with choose on single, list, comparison and default tests"
+issues = [345]
+
+[product]
+text = "Worm-movement detector"
+order_number = "NEST-WORM"
+hardware_name = "NEST-WORM"
+hardware_serial = "00FA0027001C"
+bus_current = 10
+
+[application]
+number = 0x271C
+version = 0x10
+name = "Worm-movement detector"
+mask = "07B0"
+load_procedure_style = "MergedProcedure"
+address_table_max_entries = 32
+association_table_max_entries = 32
+translations = { "de-DE" = "Wurmbewegungsmelder" }
+
+[application.options]
+Comparable = true
+Reconstructable = true
+
+[[segment]]
+name = "main"
+kind = "relative"
+lsm = 4
+size = 256
+fill = 0xFF
+
+[[parameter_type]]
+name = "Mode"
+kind = "enum"
+size_bits = 8
+values = [
+    { value = 0, text = "off" },
+    { value = 1, text = "on" },
+    { value = 2, text = "automatic" },
+]
+
+[[parameter_type]]
+name = "Delay"
+kind = "number"
+size_bits = 16
+signed = false
+min = 0
+max = 65535
+
+[[parameter_type]]
+name = "Level"
+kind = "number"
+size_bits = 8
+signed = false
+min = 0
+max = 255
+
+[[parameter]]
+name = "mode"
+type = "Mode"
+text = "Operating mode"
+default = 1
+memory = { segment = "main", offset = 0, bit_offset = 0 }
+
+[[parameter]]
+name = "delay"
+type = "Delay"
+text = "Delay (s)"
+default = 300
+memory = { segment = "main", offset = 1, bit_offset = 0 }
+
+# The construct, part 1: the steering parameter of the first choose, shown in
+# the channel, and one placed parameter per branch (defaults unlike FF).
+[[parameter]]
+name = "sensitivity"
+type = "Level"
+text = "Sensitivity"
+default = 3
+memory = { segment = "main", offset = 3, bit_offset = 0 }
+
+[[parameter]]
+name = "single_hit"
+type = "Level"
+text = "Single hit"
+default = 16
+memory = { segment = "main", offset = 4, bit_offset = 0 }
+
+[[parameter]]
+name = "list_hit"
+type = "Level"
+text = "List hit"
+default = 17
+memory = { segment = "main", offset = 5, bit_offset = 0 }
+
+[[parameter]]
+name = "ge_miss"
+type = "Level"
+text = "Ge miss"
+default = 18
+memory = { segment = "main", offset = 6, bit_offset = 0 }
+
+[[parameter]]
+name = "default_skipped"
+type = "Level"
+text = "Default skipped"
+default = 19
+memory = { segment = "main", offset = 7, bit_offset = 0 }
+
+[[parameter]]
+name = "single_miss"
+type = "Level"
+text = "Single miss"
+default = 20
+memory = { segment = "main", offset = 8, bit_offset = 0 }
+
+[[parameter]]
+name = "list_miss"
+type = "Level"
+text = "List miss"
+default = 21
+memory = { segment = "main", offset = 9, bit_offset = 0 }
+
+[[parameter]]
+name = "gt_hit"
+type = "Level"
+text = "Gt hit"
+default = 22
+memory = { segment = "main", offset = 10, bit_offset = 0 }
+
+[[parameter]]
+name = "default_skipped2"
+type = "Level"
+text = "Default skipped2"
+default = 23
+memory = { segment = "main", offset = 11, bit_offset = 0 }
+
+[[parameter]]
+name = "single_miss2"
+type = "Level"
+text = "Single miss2"
+default = 24
+memory = { segment = "main", offset = 12, bit_offset = 0 }
+
+[[parameter]]
+name = "list_miss2"
+type = "Level"
+text = "List miss2"
+default = 25
+memory = { segment = "main", offset = 13, bit_offset = 0 }
+
+[[parameter]]
+name = "lt_miss"
+type = "Level"
+text = "Lt miss"
+default = 26
+memory = { segment = "main", offset = 14, bit_offset = 0 }
+
+[[parameter]]
+name = "default_taken"
+type = "Level"
+text = "Default taken"
+default = 27
+memory = { segment = "main", offset = 15, bit_offset = 0 }
+
+[[com_object]]
+number = 0
+name = "switch"
+text = "Switch"
+function_text = "On/Off"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "W"]
+priority = "Low"
+
+[[com_object]]
+number = 1
+name = "status"
+text = "Status"
+function_text = "On/Off status"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+[[com_object]]
+number = 2
+name = "single_hit"
+text = "Single hit"
+function_text = "Worm movement"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+[[com_object]]
+number = 3
+name = "list_hit"
+text = "List hit"
+function_text = "Worm movement"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+[[com_object]]
+number = 4
+name = "ge_miss"
+text = "Ge miss"
+function_text = "Worm movement"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+[[com_object]]
+number = 5
+name = "default_skipped"
+text = "Default skipped"
+function_text = "Worm movement"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+[[com_object]]
+number = 6
+name = "single_miss"
+text = "Single miss"
+function_text = "Worm movement"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+[[com_object]]
+number = 7
+name = "list_miss"
+text = "List miss"
+function_text = "Worm movement"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+[[com_object]]
+number = 8
+name = "gt_hit"
+text = "Gt hit"
+function_text = "Worm movement"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+[[com_object]]
+number = 9
+name = "default_skipped2"
+text = "Default skipped2"
+function_text = "Worm movement"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+[[com_object]]
+number = 10
+name = "single_miss2"
+text = "Single miss2"
+function_text = "Worm movement"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+[[com_object]]
+number = 11
+name = "list_miss2"
+text = "List miss2"
+function_text = "Worm movement"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+[[com_object]]
+number = 12
+name = "lt_miss"
+text = "Lt miss"
+function_text = "Worm movement"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+[[com_object]]
+number = 13
+name = "default_taken"
+text = "Default taken"
+function_text = "Worm movement"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+[[dynamic.block]]
+name = "general"
+text = "General"
+parameters = ["mode", "delay"]
+com_objects = [0, 1]
+
+# The construct, part 2: a channel with one block; three chooses in it, each
+# with a single-value, a list, a comparison and a default branch. At the
+# defaults: choose 1 takes "3" and "1 3 5", choose 2 takes ">299", choose 3
+# takes only its default branch.
+[[dynamic.channel]]
+name = "worm"
+text = "Worm sensor"
+number = "1"
+
+[[dynamic.channel.block]]
+name = "worm"
+text = "Worm sensor"
+parameters = ["sensitivity"]
+com_objects = []
+
+[[dynamic.channel.block.choose]]
+parameter = "sensitivity"
+
+[[dynamic.channel.block.choose.when]]
+test = "3"
+parameters = ["single_hit"]
+com_objects = [2]
+
+[[dynamic.channel.block.choose.when]]
+test = "1 3 5"
+parameters = ["list_hit"]
+com_objects = [3]
+
+[[dynamic.channel.block.choose.when]]
+test = ">=4"
+parameters = ["ge_miss"]
+com_objects = [4]
+
+[[dynamic.channel.block.choose.when]]
+default = true
+parameters = ["default_skipped"]
+com_objects = [5]
+
+[[dynamic.channel.block.choose]]
+parameter = "delay"
+
+[[dynamic.channel.block.choose.when]]
+test = "0"
+parameters = ["single_miss"]
+com_objects = [6]
+
+[[dynamic.channel.block.choose.when]]
+test = "100 200"
+parameters = ["list_miss"]
+com_objects = [7]
+
+[[dynamic.channel.block.choose.when]]
+test = ">299"
+parameters = ["gt_hit"]
+com_objects = [8]
+
+[[dynamic.channel.block.choose.when]]
+default = true
+parameters = ["default_skipped2"]
+com_objects = [9]
+
+[[dynamic.channel.block.choose]]
+parameter = "mode"
+
+[[dynamic.channel.block.choose.when]]
+test = "0"
+parameters = ["single_miss2"]
+com_objects = [10]
+
+[[dynamic.channel.block.choose.when]]
+test = "0 2"
+parameters = ["list_miss2"]
+com_objects = [11]
+
+[[dynamic.channel.block.choose.when]]
+test = "<1"
+parameters = ["lt_miss"]
+com_objects = [12]
+
+[[dynamic.channel.block.choose.when]]
+default = true
+parameters = ["default_taken"]
+com_objects = [13]
+
+# The application's part of the 07B0 mask procedure: MergeId 2 allocates the
+# parameter segment, MergeId 4 writes it.
+[[load_procedure]]
+merge_id = 2
+ops = [{ op = "LdCtrlRelSegment", lsm = 4, size = 256, mode = 0, fill = 0 }]
+
+[[load_procedure]]
+merge_id = 4
+ops = [{ op = "LdCtrlWriteRelMem", object = 4, offset = 0, size = 256, verify = false }]
