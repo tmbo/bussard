@@ -188,8 +188,35 @@ impl std::fmt::Display for PropObject {
 }
 
 /// The KNX manufacturer id of the KNX Association, which KNX Virtual devices
-/// report (`M-00FA_…` application ids).
+/// report (`M-00FA_…` application ids). Not KNX Virtual on its own: OpenKNX
+/// products and bussard's synthetic catalogue (#596) use it too; see
+/// [`is_knx_virtual_application`].
 pub const KNX_VIRTUAL_MANUFACTURER: u16 = 0x00FA;
+
+/// The high octet of every KNX Virtual application number: the `A-25xx`
+/// programs of [`KNX_VIRTUAL_MANUFACTURER`] (DA.tp `A-2500`, KliX `A-2504`),
+/// the KNX Virtual catalogue section `M-00FA_CS-25` ("KNX Virtual", number 25).
+pub const KNX_VIRTUAL_APPLICATION_SECTION: u8 = 0x25;
+
+/// Whether the application id `id` is a KNX Virtual application: manufacturer
+/// [`KNX_VIRTUAL_MANUFACTURER`] and an application number whose high octet is
+/// [`KNX_VIRTUAL_APPLICATION_SECTION`] (`M-00FA_A-25xx-…`).
+///
+/// Evidence (issue #605): the KNX Virtual product file
+/// (`knx-sim/tests/fixtures/KNX_Virtual_M-00FA.knxprod`) holds one catalogue
+/// section, `M-00FA_CS-25` "KNX Virtual" number 25, whose hardware serial
+/// numbers are `00FA0025xxxx` and whose applications are `M-00FA_A-2500-10-51CB`
+/// (DA.tp) and `M-00FA_A-2504-10-C071` (KliX). Other `M-00FA` applications
+/// (OpenKNX, the synthetic `A-26xx` clone and `A-27xx` products of #596/#604)
+/// are not KNX Virtual and take the normal write path.
+pub fn is_knx_virtual_application(id: &str) -> bool {
+    let Some(rest) = id.strip_prefix("M-00FA_A-") else {
+        return false;
+    };
+    rest.get(..4)
+        .and_then(|hex| u16::from_str_radix(hex, 16).ok())
+        .is_some_and(|number| (number >> 8) as u8 == KNX_VIRTUAL_APPLICATION_SECTION)
+}
 
 /// A step of a validated flash, ready to render for the pre-flight display and
 /// to execute in order. Each corresponds to one supported [`LoadOp`](bussard_prod::application::LoadOp).
@@ -1355,15 +1382,18 @@ impl FlashPlan {
         self.baseline_address.get(segment_id).copied()
     }
 
-    /// Whether this plan programs a KNX Virtual device: its application comes
-    /// from the KNX Association's manufacturer id `0x00FA` (the KNX Virtual
-    /// DA.tp application `M-00FA_A-2500-10-51CB`).
+    /// Whether this plan programs a KNX Virtual device: its application is one
+    /// of the KNX Virtual `M-00FA_A-25xx` programs
+    /// ([`is_knx_virtual_application`]; DA.tp `M-00FA_A-2500-10-51CB`, whose
+    /// ETS capture shows the bare restart). Manufacturer `0x00FA` alone is not
+    /// enough: OpenKNX and the synthetic catalogue (#596) use it too (#605).
     ///
     /// KNX Virtual is the device class that drops a long-held L4 connection after
     /// a bounded number of exchanges (issue #80), so only its flashes cycle the
-    /// connection proactively by default (issue #116).
+    /// connection proactively by default (issue #116), and only it gets the bare
+    /// `A_Restart` for `LdCtrlMasterReset`.
     pub fn targets_knx_virtual(&self) -> bool {
-        manufacturer_from_app_id(&self.identity.id) == Some(KNX_VIRTUAL_MANUFACTURER)
+        is_knx_virtual_application(&self.identity.id)
     }
 
     /// Whether this is a parameter-only download (issue #119): it rewrites only
@@ -1825,5 +1855,21 @@ mod tests {
                 .any(|l| l.contains("PID 54, 1 secured sender(s): 1.1.16 seq 0"))
         );
         Ok(())
+    }
+
+    #[test]
+    fn test_is_knx_virtual_application_keys_on_the_a25xx_ids() {
+        // The KNX Virtual applications (catalogue section 25 of its product file).
+        assert!(super::is_knx_virtual_application("M-00FA_A-2500-10-51CB"));
+        assert!(super::is_knx_virtual_application("M-00FA_A-2504-10-C071"));
+        // Other M-00FA applications: the synthetic DA.tp clone and catalogue
+        // (#596), OpenKNX-style ids.
+        assert!(!super::is_knx_virtual_application("M-00FA_A-2600-10-731A"));
+        assert!(!super::is_knx_virtual_application("M-00FA_A-2700-01-0000"));
+        assert!(!super::is_knx_virtual_application("M-00FA_A-0001-11-ABCD"));
+        // Another manufacturer with the same application number.
+        assert!(!super::is_knx_virtual_application("M-0083_A-2500-10-51CB"));
+        assert!(!super::is_knx_virtual_application("M-00FA_A-25"));
+        assert!(!super::is_knx_virtual_application(""));
     }
 }

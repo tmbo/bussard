@@ -111,7 +111,9 @@ fn test_flash_parameters_only_reads_on_the_preflight_and_write_sessions() -> Tes
     assert_eq!(dev.memory_writes, vec![(PARAM_BASE, 1)], "{stderr}");
     // The pre-flight, the write session, and the write session's
     // reconnect after the restart (whose first probe finds the device up).
-    assert_eq!(connects, 4, "{stderr}");
+    // `M-00FA_A-0002` is not a KNX Virtual application (issue #605), so the
+    // write session holds one connection instead of cycling it.
+    assert_eq!(connects, 3, "{stderr}");
     Ok(())
 }
 
@@ -150,9 +152,8 @@ fn flash_yes_run(
     };
     let mut args = vec!["flash", "1.1.4", "--product", bench.product()?, "--yes"];
     args.extend_from_slice(extra);
-    // The synthetic application is a KNX Virtual one (M-00FA), whose flashes
-    // cycle the connection every 10 exchanges (issue #116); 0 holds one
-    // connection, as for every other device.
+    // Holds one connection whatever the application (issue #116); the test app
+    // `M-00FA_A-0002` is not KNX Virtual (issue #605) and would hold one anyway.
     let mut env = vec![("BUSSARD_FLASH_RECONNECT_EXCHANGES", "0")];
     if !handover {
         env.push(("BUSSARD_FLASH_NO_HANDOVER", "1"));

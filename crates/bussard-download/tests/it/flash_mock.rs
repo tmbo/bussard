@@ -2039,16 +2039,17 @@ fn app_with_write_prop() -> TestResult<ApplicationProgram> {
 
 /// A single-application System B app whose procedure carries an
 /// `LdCtrlMasterReset` (EraseCode 4, ChannelNumber 0) mid-procedure, in the
-/// KNX-Virtual shape (manufacturer 00FA, so the bare `A_Restart`): allocate the segment, master-reset the device, then write
+/// KNX-Virtual shape (a KNX Virtual `M-00FA_A-25xx` id, so the bare
+/// `A_Restart`, issue #605): allocate the segment, master-reset the device, then write
 /// the segment and complete the load. The master reset reboots the device and
 /// drops the L4 connection, so the download engine must reconnect and resume.
 fn app_with_master_reset() -> TestResult<ApplicationProgram> {
     let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
-     <ApplicationProgram Id="M-00FA_A-0005" ApplicationNumber="1" ApplicationVersion="1"
+     <ApplicationProgram Id="M-00FA_A-2505" ApplicationNumber="1" ApplicationVersion="1"
         MaskVersion="MV-07B0" Name="MasterReset" LoadProcedureStyle="ProductDefault">
       <Static>
        <Code>
-        <RelativeSegment Id="M-00FA_A-0005_RS-1" Size="6" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment>
+        <RelativeSegment Id="M-00FA_A-2505_RS-1" Size="6" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment>
        </Code>
        <LoadProcedures>
         <LoadProcedure>
@@ -2065,7 +2066,7 @@ fn app_with_master_reset() -> TestResult<ApplicationProgram> {
        </LoadProcedures>
       </Static>
      </ApplicationProgram></KNX>"#;
-    Ok(parse_application_program("M-00FA_A-0005", xml.as_bytes())?)
+    Ok(parse_application_program("M-00FA_A-2505", xml.as_bytes())?)
 }
 
 async fn setup(fault: Fault) -> TestResult<(Transport, Shared, MockGateway)> {
@@ -3584,6 +3585,21 @@ async fn flash_master_reset_reconnects_and_reaches_loaded() -> TestResult {
 /// resumes (issue #546).
 #[tokio::test]
 async fn test_flash_master_reset_uses_the_confirmed_form() -> TestResult {
+    flash_master_reset_expecting_confirmed_form("M-0083_A-0005").await
+}
+
+/// Issue #605: an `M-00FA` application outside the KNX Virtual `A-25xx` range
+/// (the synthetic DA.tp clone of #596) is not KNX Virtual, so its master reset
+/// takes the confirmed form too.
+#[tokio::test]
+async fn test_flash_master_reset_uses_the_confirmed_form_for_a_non_virtual_00fa_app() -> TestResult
+{
+    flash_master_reset_expecting_confirmed_form("M-00FA_A-2600-10-731A").await
+}
+
+/// Flashes [`app_with_master_reset`] under the application id `id` and asserts
+/// the master reset went out in the confirmed form.
+async fn flash_master_reset_expecting_confirmed_form(id: &str) -> TestResult {
     // SAFETY of env: nextest runs this test in its own process; the var only
     // shortens the post-reboot poll.
     unsafe {
@@ -3595,7 +3611,7 @@ async fn test_flash_master_reset_uses_the_confirmed_form() -> TestResult {
     let source = bussard_bus::ops::group_source(&handle);
 
     let mut app = app_with_master_reset()?;
-    app.id = "M-0083_A-0005".to_string();
+    app.id = id.to_string();
     let plan = plan_flash(
         &app,
         "1.1.4",
@@ -4805,11 +4821,11 @@ fn app_da_tp_with(extra: &str) -> TestResult<ApplicationProgram> {
     let data = base64_ff_256();
     let xml = format!(
         r#"<KNX xmlns="http://knx.org/xml/project/23">
-     <ApplicationProgram Id="M-00FA_A-DA" ApplicationNumber="9472" ApplicationVersion="16"
+     <ApplicationProgram Id="M-00FA_A-2500-10-51CB" ApplicationNumber="9472" ApplicationVersion="16"
         MaskVersion="MV-07B0" Name="Dimming" LoadProcedureStyle="MergedProcedure">
       <Static>
        <Code>
-        <RelativeSegment Id="M-00FA_A-DA_RS-04" Size="256" LoadStateMachine="4" Offset="0"><Data>{data}</Data></RelativeSegment>
+        <RelativeSegment Id="M-00FA_A-2500-10-51CB_RS-04" Size="256" LoadStateMachine="4" Offset="0"><Data>{data}</Data></RelativeSegment>
        </Code>
        <LoadProcedures>
         <LoadProcedure MergeId="2">
@@ -4824,7 +4840,10 @@ fn app_da_tp_with(extra: &str) -> TestResult<ApplicationProgram> {
       </Static>
      </ApplicationProgram></KNX>"#
     );
-    Ok(parse_application_program("M-00FA_A-DA", xml.as_bytes())?)
+    Ok(parse_application_program(
+        "M-00FA_A-2500-10-51CB",
+        xml.as_bytes(),
+    )?)
 }
 
 /// A full 4-object flash of the KNX-Virtual DA.tp shape: the master `Load/all`
