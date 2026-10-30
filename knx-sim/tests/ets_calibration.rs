@@ -280,3 +280,151 @@ fn test_sim_ignores_load_completed_without_start() {
         Some(LoadState::Unloaded)
     );
 }
+
+/// One replay of a request stream into a fresh device built from a product:
+/// `<knxprod>|<application id>|<requests.txt>` (the `distil.py` format).
+struct Replayed {
+    /// What the replay was built from, for messages.
+    label: String,
+    /// The device's REJECTED telegram summaries.
+    rejections: Vec<String>,
+    /// Every loadable object of the product after the replay.
+    objects: Vec<ReplayedObject>,
+}
+
+/// One loadable object after a replay.
+#[derive(Debug, PartialEq, Eq)]
+struct ReplayedObject {
+    /// The object (LSM) index.
+    index: u8,
+    /// Its load state.
+    state: Option<LoadState>,
+    /// Its segment's base and length.
+    segment: Option<(u32, u32)>,
+    /// The image written into the segment.
+    image: Vec<u8>,
+}
+
+/// Replay the request stream `spec` names into a device that starts
+/// `Unloaded` (the sweep's sim device) at the stream's first individual
+/// destination.
+fn replay_spec(spec: &str) -> Result<Replayed, String> {
+    let parts: Vec<&str> = spec.split('|').map(str::trim).collect();
+    let [knxprod, app, requests] = parts[..] else {
+        return Err(format!(
+            "expected <knxprod>|<app>|<requests.txt>, got {spec:?}"
+        ));
+    };
+    let bytes = std::fs::read(knxprod).map_err(|e| format!("{knxprod}: {e}"))?;
+    let pd = read_knxprod_bytes(&bytes, Some(app)).map_err(|e| format!("{knxprod}: {e}"))?;
+    let text = std::fs::read_to_string(requests).map_err(|e| format!("{requests}: {e}"))?;
+    let mut stream = Vec::new();
+    for line in text.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let f: Vec<&str> = line.split_whitespace().collect();
+        let [src, dst, tpdu] = f[..] else {
+            return Err(format!("{requests}: bad line {line:?}"));
+        };
+        let src = u16::from_str_radix(src, 16).map_err(|e| format!("{line}: {e}"))?;
+        let dst = u16::from_str_radix(dst, 16).map_err(|e| format!("{line}: {e}"))?;
+        stream.push((src, dst, hex(tpdu)));
+    }
+    let ia = stream
+        .iter()
+        .map(|(_, dst, _)| *dst)
+        .find(|dst| *dst != 0)
+        .ok_or_else(|| format!("{requests}: no individually addressed request"))?;
+    let sink = Arc::new(RecordingSink::new());
+    let mut bus = Bus::new(sink.clone());
+    bus.add_device(Device::from_product(
+        IndividualAddress(ia),
+        &pd,
+        LoadState::Unloaded,
+        sink.clone(),
+    ));
+    for (src, dst, tpdu) in stream {
+        let _ = bus.deliver_from_tool(&cemi(src, dst, tpdu));
+    }
+    let rejections = sink
+        .events()
+        .into_iter()
+        .filter_map(|e| match e {
+            Event::Telegram { summary, .. } if summary.contains("REJECTED") => Some(summary),
+            _ => None,
+        })
+        .collect();
+    let dev = bus
+        .device(IndividualAddress(ia))
+        .ok_or_else(|| format!("device {ia:04x} missing"))?;
+    let objects = pd
+        .objects
+        .iter()
+        .map(|o| ReplayedObject {
+            index: o.lsm_index,
+            state: dev.load_state(o.lsm_index),
+            segment: dev
+                .memory()
+                .segment_of(o.lsm_index)
+                .map(|s| (s.base, s.len)),
+            image: dev.memory().written_span(o.lsm_index).unwrap_or_default(),
+        })
+        .collect();
+    Ok(Replayed {
+        label: format!("{app} ({requests})"),
+        rejections,
+        objects,
+    })
+}
+
+/// The synthetic catalogue calibration (epic #596): a request stream ETS sent
+/// to a synthetic product replays to `Loaded` without a rejection, and, given
+/// the stream ETS sent to the product it was derived from, leaves the same
+/// memory image. Both streams come from sweep captures through
+/// `tools/ets-sweep/synthetic/distil.py` and are not committed while the
+/// products are KNX Virtual data renamed, so the test runs only with
+/// `KNX_SIM_CALIBRATE=<knxprod>|<app>|<requests.txt>` and, for the
+/// comparison, `KNX_SIM_CALIBRATE_REFERENCE` in the same form.
+#[test]
+fn test_replay_spec_synthetic_matches_reference() -> Result<(), String> {
+    let Ok(spec) = std::env::var("KNX_SIM_CALIBRATE") else {
+        eprintln!("SKIP: KNX_SIM_CALIBRATE not set");
+        return Ok(());
+    };
+    let mut runs = vec![replay_spec(&spec)?];
+    if let Ok(reference) = std::env::var("KNX_SIM_CALIBRATE_REFERENCE") {
+        runs.push(replay_spec(&reference)?);
+    }
+    for run in &runs {
+        if !run.rejections.is_empty() {
+            return Err(format!("{}: rejected {:#?}", run.label, run.rejections));
+        }
+        for o in &run.objects {
+            eprintln!(
+                "{}: object {} {:?} segment {:x?} image {} octets crc {:04x}",
+                run.label,
+                o.index,
+                o.state,
+                o.segment,
+                o.image.len(),
+                knx_sim::device::crc16_aug_ccitt(&o.image)
+            );
+            if o.state != Some(LoadState::Loaded) {
+                return Err(format!(
+                    "{}: object {} is {:?}",
+                    run.label, o.index, o.state
+                ));
+            }
+        }
+    }
+    if let [candidate, reference] = &runs[..]
+        && candidate.objects != reference.objects
+    {
+        return Err(format!(
+            "{} and {} leave different memory images",
+            candidate.label, reference.label
+        ));
+    }
+    Ok(())
+}

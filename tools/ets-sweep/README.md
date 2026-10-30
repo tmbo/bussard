@@ -476,5 +476,36 @@ M-00FA_A-2600-10-731A --search SYN.da`): ETS added the device and downloaded,
 51 operations, the same as the original DA.tp run of the same day except the
 `PID_PROGRAM_VERSION` value (application number 0x2600). Both failed the same
 way ("Programmieren(Appl.): fehlgeschlagen, Ein interner Gerätefehler ist
-aufgetreten"): the sim's master reset with erase code 4 drops the segment ETS
-allocated before it (#600), which the 2026-10-27 run did not.
+aufgetreten"): the sim's master reset with erase code 4 dropped the segment ETS
+allocated before it (#600, fixed by #602).
+
+## Synthetic products: calibration (#596 step 2)
+
+    uv run tools/ets-sweep/synthetic/calibrate.py \
+        --knxprod tools/ets-sweep/synthetic/out/KNX_Synthetic_DA_M-00FA-signed.knxprod \
+        --app M-00FA_A-2600-10-731A --search SYN.da \
+        --reference-knxprod knx-sim/tests/fixtures/KNX_Virtual_M-00FA.knxprod \
+        --reference-app M-00FA_A-2500-10-51CB --reference-search DA.tp [--no-ets]
+
+A synthetic product is only useful if ETS treats it like the product it
+stands for. `calibrate.py` runs each product through the sweep
+(`captures/ets-sweep/<app>/plain-defaults/`), writes `requests.txt` next to
+the capture (`synthetic/distil.py`: the tool's `L_Data.req`s, retransmissions
+once, the format of `knx-sim/tests/fixtures/*_requests.txt`), runs the defaults
+oracle row of each (`oracle.run_row`), and compares: the `ops.txt` sequences
+apart from `PID_PROGRAM_VERSION`, the request streams apart from the
+application number, the oracle verdict, coverage and load-control verdict, and
+knx-sim's replay of both fixtures (`ets_calibration.rs`,
+`test_replay_spec_synthetic_matches_reference`, gated on
+`KNX_SIM_CALIBRATE` and `KNX_SIM_CALIBRATE_REFERENCE`): each must reach Loaded
+with no rejection and both must leave the same memory image. Without a
+reference it runs the download, the fixture and the oracle row of one product.
+Nothing it writes is committed: the clone is KNX Association data renamed.
+
+Result for the signed DA.tp clone (2026-10-30, VM sim with #602): ETS
+"Abgeschlossen" for both, 50 operations each, identical apart from the
+`PID_PROGRAM_VERSION` value; 95 requests each, identical apart from the
+application number octet in that property write (`00fa25..` vs `00fa26..`);
+oracle `identical`, coverage 100.0%, load control `identical` for both; the
+replay reaches Loaded on objects 1 to 4 with the same segments and images
+(0xA000 2, 0xC000 2, 0x8000 148, 0x6000 256 octets) for both.

@@ -25,6 +25,10 @@ import secure  # noqa: E402
 import series  # noqa: E402
 import summary  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / "synthetic"))
+import calibrate  # noqa: E402
+import distil  # noqa: E402
+
 
 class TestParams(unittest.TestCase):
     MODEL = {"parameters": {
@@ -431,6 +435,44 @@ class TestSummary(unittest.TestCase):
         self.assertIn("| 07B0 | 1 | 1 |", text.replace("|  |", "|"))
         self.assertIn("| M-0083 | mdt.knxprod |", text)
         self.assertIn("None.", text)
+
+
+def _pcap(datagrams: list[bytes]) -> bytes:
+    """A classic pcap with raw-IPv4 linktype (101) holding each datagram as UDP."""
+    import struct
+
+    out = struct.pack("<IHHiIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 101)
+    for i, payload in enumerate(datagrams):
+        udp = struct.pack("!HHHH", 3671, 3672, 8 + len(payload), 0) + payload
+        ip = struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + len(udp), 0, 0, 64, 17, 0,
+                         bytes([127, 0, 0, 1]), bytes([127, 0, 0, 1])) + udp
+        out += struct.pack("<IIII", i, 0, len(ip), len(ip)) + ip
+    return out
+
+
+def _tunnel(seq: int, cemi: bytes, channel: int = 1) -> bytes:
+    body = bytes([4, channel, seq, 0]) + cemi
+    return bytes([0x06, 0x10, 0x04, 0x20]) + (6 + len(body)).to_bytes(2, "big") + body
+
+
+class TestDistil(unittest.TestCase):
+    def test_requests_keeps_requests_once(self) -> None:
+        req = bytes([0x11, 0, 0xB0, 0x60, 0, 0, 0x11, 0x01, 0]) + bytes([0x80])
+        con = bytes([0x2E]) + req[1:]
+        conn = bytes([0x06, 0x10, 0x02, 0x05, 0, 6])
+        datagrams = [_tunnel(0, req), _tunnel(0, req), _tunnel(1, con), conn, _tunnel(0, req)]
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "c.pcap"
+            path.write_bytes(_pcap(datagrams))
+            reqs = distil.requests(path)
+        # The retransmission is dropped, the confirmation is not a request, and
+        # a CONNECT_REQUEST lets the same sequence number count again.
+        self.assertEqual(reqs, [(0, 0x1101, b"\x80"), (0, 0x1101, b"\x80")])
+        self.assertIn("0000 1101 80", distil.render(reqs, "c.pcap"))
+
+    def test_app_number_from_id(self) -> None:
+        self.assertEqual(calibrate.app_number("M-00FA_A-2600-10-731A"), bytes([0x26, 0x00]))
+        self.assertEqual(calibrate.app_number("nonsense"), b"")
 
 
 if __name__ == "__main__":
