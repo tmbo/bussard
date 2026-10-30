@@ -31,7 +31,9 @@
 //! `01 F4`, 2000 as `07 D0`, 10 as `00 0A`), unless the program declares
 //! `<Options ParameterByteOrder="LittleEndian">`: then a byte-aligned integer
 //! field of two or more octets is stored least significant octet first (the
-//! ABB 6119/20's debounce 5633 as `01 16`, issue #386).
+//! ABB 6119/20's debounce 5633 as `01 16`, issue #386), and so is a float
+//! (DPT 9 21.5 as `33 0C`, IEEE-754 Single 21.5 as `00 00 AC 41` in the ETS
+//! download of the synthetic `syn-le-order`, issue #403).
 //!
 //! # Base image
 //!
@@ -137,7 +139,8 @@ fn apply_erased_fill(
 ///    non-unique (module repetition and multi-ref parameters).
 ///
 /// The resolved value is encoded MSB-first big-endian (little-endian for a
-/// multi-octet integer of a `ParameterByteOrder="LittleEndian"` program) into
+/// multi-octet integer or a float of a `ParameterByteOrder="LittleEndian"`
+/// program) into
 /// the byte image keyed by the memory's `CodeSegment`. Returns a map from segment id to its image.
 ///
 /// # Module-instance offsets
@@ -1239,8 +1242,13 @@ enum ValueSource {
 /// An encoded parameter value ready to place.
 enum Placement {
     /// One or more whole bytes, laid down starting at the byte offset. Used for
-    /// byte-aligned payloads (text, float, byte-multiple ints at bit offset 0).
+    /// byte-aligned payloads (text, raw data, byte-multiple ints at bit offset 0).
     Bytes(Vec<u8>),
+    /// The big-endian octets of a float (DPT 9, IEEE-754 Single or Double),
+    /// laid down like [`Placement::Bytes`] but reversed when the program
+    /// declares `ParameterByteOrder="LittleEndian"` (see
+    /// [`little_endian_field`], issue #403).
+    Float(Vec<u8>),
     /// A bit field up to 64 bits wide, holding the unsigned `value`, placed
     /// MSB-first from `bit_offset` and allowed to span byte boundaries.
     Field { bits: u32, value: u64 },
@@ -1480,6 +1488,10 @@ fn encode_raw_data(
 ///   big-endian `f32`;
 /// * `"IEEE-754 Double"` — an 8-byte big-endian `f64`.
 ///
+/// The octets are returned big-endian as a [`Placement::Float`];
+/// [`little_endian_field`] reverses them for a `ParameterByteOrder="LittleEndian"`
+/// program (issue #403).
+///
 /// Before this existed every float was written as 2 bytes of DPT 9, so an
 /// IEEE-754 parameter went into the device image at the wrong width *and* with
 /// the wrong bytes. An `Encoding` this function does not know is refused rather
@@ -1506,7 +1518,7 @@ fn encode_float(
                     &format!("float value `{raw}` is not finite"),
                 ));
             }
-            Ok(Placement::Bytes(f.to_be_bytes().to_vec()))
+            Ok(Placement::Float(f.to_be_bytes().to_vec()))
         }
         Some("ieee-754 double") | Some("ieee 754 double") => {
             let f: f64 = raw.trim().parse().map_err(|_| {
@@ -1519,7 +1531,7 @@ fn encode_float(
                     &format!("float value `{raw}` is not finite"),
                 ));
             }
-            Ok(Placement::Bytes(f.to_be_bytes().to_vec()))
+            Ok(Placement::Float(f.to_be_bytes().to_vec()))
         }
         other => {
             if let Some(unknown) = other {
@@ -1550,7 +1562,7 @@ fn encode_float(
                     &format!("float value `{f}` is out of DPT-9 range"),
                 )
             })?;
-            Ok(Placement::Bytes(enc.to_vec()))
+            Ok(Placement::Float(enc.to_vec()))
         }
     }
 }
@@ -1756,7 +1768,9 @@ fn place_checked(
     // The exclusive byte end this placement writes up to (bit fields round up).
     let end: u64 = match placement {
         Placement::Empty => offset as u64,
-        Placement::Bytes(bytes) => (offset as u64).saturating_add(bytes.len() as u64),
+        Placement::Bytes(bytes) | Placement::Float(bytes) => {
+            (offset as u64).saturating_add(bytes.len() as u64)
+        }
         Placement::Field { bits, .. } => {
             let start_bit = (offset as u64)
                 .saturating_mul(8)
@@ -1793,17 +1807,22 @@ fn place_checked(
     Ok(first..usize::try_from(end).unwrap_or(first).max(first))
 }
 
-/// A byte-aligned integer field of a program that declares
+/// A byte-aligned integer field or a float of a program that declares
 /// `ParameterByteOrder="LittleEndian"`, as the octets it stores: least
 /// significant first. `None` when the placement keeps the default MSB-first
-/// order: a big-endian program, a field of one octet or less, one that is not
-/// a whole number of octets or does not start on an octet boundary, and any
-/// [`Placement::Bytes`] payload (text, raw data, floats, `BinaryValue`
-/// members, packed times and integers wider than 64 bits).
+/// order: a big-endian program, an integer field of one octet or less, one
+/// that is not a whole number of octets or does not start on an octet
+/// boundary, and any [`Placement::Bytes`] payload (text, raw data,
+/// `BinaryValue` members, packed times and integers wider than 64 bits).
 ///
 /// Issue #386: the ABB 6119/20 (`M-0007_A-A002-13`, little-endian) holds its
 /// 16-bit debounce enumeration value 5633 (`0x1601`) as `01 16` at `0x6D01`
 /// in the ETS download of 1.1.44.
+///
+/// Issue #403: ETS reverses floats too. The ETS 6.4.1 download of the
+/// synthetic `syn-le-order` (`captures/synthetic/syn-le-order/defaults/`)
+/// holds DPT 9 21.5 (`0x0C33`) as `33 0C` and IEEE-754 Single 21.5
+/// (`0x41AC0000`) as `00 00 AC 41`.
 fn little_endian_field(
     app: &ApplicationProgram,
     bit_offset: u8,
@@ -1818,6 +1837,9 @@ fn little_endian_field(
         {
             let len = (*bits / 8) as usize;
             Some(Placement::Bytes(value.to_le_bytes()[..len].to_vec()))
+        }
+        Placement::Float(bytes) if app.parameters_little_endian => {
+            Some(Placement::Bytes(bytes.iter().rev().copied().collect()))
         }
         _ => None,
     }
@@ -1849,7 +1871,7 @@ fn read_int_field(
 fn place(image: &mut Vec<u8>, offset: usize, bit_offset: u8, placement: &Placement) {
     match placement {
         Placement::Empty => {}
-        Placement::Bytes(bytes) => {
+        Placement::Bytes(bytes) | Placement::Float(bytes) => {
             let end = offset + bytes.len();
             if image.len() < end {
                 image.resize(end, 0);
@@ -2036,17 +2058,37 @@ fn decode_value(
                 | Some("ieee 754 single")
                 | Some("dpt 14")
                 | Some("dpt14") => {
-                    let b = bytes(4)?;
-                    Some(f32::from_be_bytes([b[0], b[1], b[2], b[3]]).to_string())
+                    let mut arr = [0u8; 4];
+                    arr.copy_from_slice(bytes(4)?);
+                    Some(
+                        if little_endian {
+                            f32::from_le_bytes(arr)
+                        } else {
+                            f32::from_be_bytes(arr)
+                        }
+                        .to_string(),
+                    )
                 }
                 Some("ieee-754 double") | Some("ieee 754 double") => {
                     let mut arr = [0u8; 8];
                     arr.copy_from_slice(bytes(8)?);
-                    Some(f64::from_be_bytes(arr).to_string())
+                    Some(
+                        if little_endian {
+                            f64::from_le_bytes(arr)
+                        } else {
+                            f64::from_be_bytes(arr)
+                        }
+                        .to_string(),
+                    )
                 }
                 _ => {
                     let b = bytes(2)?;
-                    Some(decode_dpt9_parameter([b[0], b[1]]).to_string())
+                    let be = if little_endian {
+                        [b[1], b[0]]
+                    } else {
+                        [b[0], b[1]]
+                    };
+                    Some(decode_dpt9_parameter(be).to_string())
                 }
             }
         }
@@ -2130,7 +2172,7 @@ fn read_field(image: &[u8], offset: usize, bit_offset: u8, bits: u32) -> Option<
 fn field_matches(image: &[u8], offset: usize, bit_offset: u8, placement: &Placement) -> bool {
     match placement {
         Placement::Empty => true,
-        Placement::Bytes(bytes) => offset
+        Placement::Bytes(bytes) | Placement::Float(bytes) => offset
             .checked_add(bytes.len())
             .and_then(|end| image.get(offset..end))
             .is_some_and(|held| held == bytes.as_slice()),
@@ -3723,6 +3765,99 @@ mod tests {
                 [0x00, 0x16, 0x01, 0x01, 0x02, b'a', b'b', 0],
                 "{order}"
             );
+        }
+        Ok(())
+    }
+
+    /// The `syn-le-order` floats (issue #403): `ParameterByteOrder` set by
+    /// `{order}`, a DPT 9 at offset 0, an IEEE-754 Single at 2 and an
+    /// IEEE-754 Double at 6, each with default 21.5.
+    fn float_order_xml(order: &str) -> String {
+        format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/20">
+     <ApplicationProgram Id="A" MaskVersion="MV-07B0" Name="le">
+      <Static>
+       <Code><AbsoluteSegment Id="A_AS-4000" Size="14" Address="16384"><Data>AAAAAAAAAAAAAAAAAAA=</Data></AbsoluteSegment></Code>
+       <ParameterTypes>
+        <ParameterType Id="A_PT-1" Name="d9"><TypeFloat Encoding="DPT 9" minInclusive="-273" maxInclusive="670760" /></ParameterType>
+        <ParameterType Id="A_PT-2" Name="f32"><TypeFloat Encoding="IEEE-754 Single" minInclusive="-100" maxInclusive="100" /></ParameterType>
+        <ParameterType Id="A_PT-3" Name="f64"><TypeFloat Encoding="IEEE-754 Double" minInclusive="-100" maxInclusive="100" /></ParameterType>
+       </ParameterTypes>
+       <Parameters>
+        <Parameter Id="A_P-1" Name="nest" ParameterType="A_PT-1" Value="21.5"><Memory CodeSegment="A_AS-4000" Offset="0" BitOffset="0" /></Parameter>
+        <Parameter Id="A_P-2" Name="egg" ParameterType="A_PT-2" Value="21.5"><Memory CodeSegment="A_AS-4000" Offset="2" BitOffset="0" /></Parameter>
+        <Parameter Id="A_P-3" Name="air" ParameterType="A_PT-3" Value="21.5"><Memory CodeSegment="A_AS-4000" Offset="6" BitOffset="0" /></Parameter>
+       </Parameters>
+       <ParameterRefs>
+        <ParameterRef Id="A_P-1_R-1" RefId="A_P-1" />
+        <ParameterRef Id="A_P-2_R-2" RefId="A_P-2" />
+        <ParameterRef Id="A_P-3_R-3" RefId="A_P-3" />
+       </ParameterRefs>
+       <Options {order} />
+      </Static>
+      <Dynamic><ChannelIndependentBlock><ParameterBlock Id="A_PB-1">
+       <ParameterRefRef RefId="A_P-1_R-1" />
+       <ParameterRefRef RefId="A_P-2_R-2" />
+       <ParameterRefRef RefId="A_P-3_R-3" />
+      </ParameterBlock></ChannelIndependentBlock></Dynamic>
+     </ApplicationProgram></KNX>"#
+        )
+    }
+
+    /// Issue #403: a little-endian program stores its floats least
+    /// significant octet first, as ETS 6.4.1 wrote `syn-le-order`
+    /// (`captures/synthetic/syn-le-order/defaults/`: DPT 9 21.5 as `33 0C`,
+    /// IEEE-754 Single 21.5 as `00 00 AC 41`); the Double follows the same
+    /// rule (no capture yet). The decoder reads each back in the program's
+    /// order, and a big-endian or undeclared order stays MSB-first.
+    #[test]
+    fn test_compute_parameter_image_little_endian_floats()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let le_double = 21.5f64.to_le_bytes();
+        let be_double = 21.5f64.to_be_bytes();
+        let cases: [(&str, [u8; 6], [u8; 8]); 3] = [
+            (
+                r#"ParameterByteOrder="LittleEndian""#,
+                [0x33, 0x0C, 0x00, 0x00, 0xAC, 0x41],
+                le_double,
+            ),
+            (
+                r#"ParameterByteOrder="BigEndian""#,
+                [0x0C, 0x33, 0x41, 0xAC, 0x00, 0x00],
+                be_double,
+            ),
+            ("", [0x0C, 0x33, 0x41, 0xAC, 0x00, 0x00], be_double),
+        ];
+        for (order, head, double) in cases {
+            let app = parse_application_program("A", float_order_xml(order).as_bytes())?;
+            let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
+            let image = &images["A_AS-4000"];
+            assert_eq!(image[..6], head, "{order}");
+            assert_eq!(image[6..14], double, "{order}");
+
+            // An override takes the same order, and every float decodes back.
+            let mut overrides = BTreeMap::new();
+            overrides.insert("P-1_R-1".to_string(), "-3".to_string());
+            overrides.insert("P-2_R-2".to_string(), "-3.25".to_string());
+            overrides.insert("P-3_R-3".to_string(), "0.1".to_string());
+            let image = &compute_parameter_image(&app, &overrides, &BTreeMap::new())?["A_AS-4000"];
+            let decode = |id: &str, offset: usize| {
+                app.parameters
+                    .get(id)
+                    .and_then(|p| decode_parameter_value(&app, p, image, offset, 0))
+            };
+            assert_eq!(decode("A_P-1", 0).as_deref(), Some("-3"), "{order}");
+            assert_eq!(decode("A_P-2", 2).as_deref(), Some("-3.25"), "{order}");
+            assert_eq!(decode("A_P-3", 6).as_deref(), Some("0.1"), "{order}");
+            // The canonical form does not depend on the order.
+            for (id, value) in [("A_P-1", "-3"), ("A_P-2", "-3.25"), ("A_P-3", "0.1")] {
+                let param = app.parameters.get(id).ok_or("missing parameter")?;
+                assert_eq!(
+                    canonical_parameter_value(&app, param, Some(value)).as_deref(),
+                    Some(value),
+                    "{order} {id}"
+                );
+            }
         }
         Ok(())
     }
