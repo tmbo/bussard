@@ -21,7 +21,9 @@
 //! - `table-obj<N>.bin` (System B) or `table-lsm<N>.bin` (System 7);
 //! - `kept` in `plan.json`: the allocated octets a load-procedure `<choose>`
 //!   branch does not write (issue #411), named `object 4 octets 128..256
-//!   kept`; the image records stream only the written parts.
+//!   kept` (System B) or `LSM 3 segment 0x4440 octets 1..3 kept` (System 7,
+//!   a segment allocated in parts); the image records stream only the
+//!   written parts.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -598,6 +600,7 @@ pub fn write_dump(
             "object": k.object,
             "segment_id": k.segment,
             "allocated": k.allocated,
+            "address": k.address,
             "ranges": k.ranges.iter().map(|(s, e)| [s, e]).collect::<Vec<_>>(),
             "label": k.label(),
         })).collect::<Vec<_>>(),

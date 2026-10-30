@@ -1507,6 +1507,7 @@ fn kept_memory_json(plan: &FlashPlan) -> Vec<serde_json::Value> {
                 "object": k.object,
                 "segment": k.segment,
                 "allocated": k.allocated,
+                "address": k.address,
                 "ranges": k.ranges.iter().map(|(s, e)| [s, e]).collect::<Vec<_>>(),
                 "label": k.label(),
             })
@@ -1519,13 +1520,21 @@ fn kept_memory_json(plan: &FlashPlan) -> Vec<serde_json::Value> {
 fn kept_memory_lines(plan: &FlashPlan) -> Vec<String> {
     plan.kept()
         .iter()
-        .map(|k| {
-            format!(
+        .map(|k| match k.address {
+            // System 7: the taken branch allocates the segment in parts and
+            // the gap in no allocation (issue #411).
+            Some(_) => format!(
+                "{} (segment {} of {} octets: not allocated, not written, not compared)",
+                k.label(),
+                k.segment,
+                k.allocated
+            ),
+            None => format!(
                 "{} (segment {} of {} octets: not written, not read back, no MCB CRC compared)",
                 k.label(),
                 k.segment,
                 k.allocated
-            )
+            ),
         })
         .collect()
 }

@@ -1486,29 +1486,52 @@ fn kept_from(
                 segment,
                 allocated,
                 ranges,
+                address: None,
             })
         })
         .collect()
 }
 
-/// The octets a System B download of `app` under `overrides` leaves as the
-/// device holds them (issue #411, [`KeptOctets`]): what the planner keeps,
-/// for the read-back and the plan, which decode a device's parameters
-/// without a [`FlashPlan`] at hand. Empty for a System 7 or property-only
-/// application, and when the load procedure cannot be decided (the planner
-/// refuses such a plan on its own).
+/// The octets a download of `app` under `overrides` leaves as the device
+/// holds them (issue #411, [`KeptOctets`]): what the planner keeps, for the
+/// read-back and the plan, which decode a device's parameters without a
+/// [`FlashPlan`] at hand. System B: the octets of a segment the taken
+/// `<choose>` branch writes in part; System 7: the octets of a segment the
+/// taken branch allocates in parts and leaves between or after them
+/// ([`super::plan_sys7::sys7_kept_octets`]). Empty for a property-only
+/// application, for a procedure without a `<choose>`, and when the load
+/// procedure cannot be decided (the planner refuses such a plan on its own).
 pub fn kept_octets(
     app: &ApplicationProgram,
     overrides: &BTreeMap<String, String>,
     memo: &bussard_prod::dynamic::DynamicMemo<'_, ApplicationProgram>,
 ) -> Vec<KeptOctets> {
-    let system_b = app
+    let Some(profile) = app
         .mask_version
         .as_deref()
         .and_then(|m| u16::from_str_radix(m.trim(), 16).ok())
         .map(bussard_mgmt::MaskProfile::from_mask)
-        .is_some_and(|p| p.capabilities().flash && !p.is_system_7());
-    if !system_b || app.load_procedures.iter().all(|p| p.chooses.is_empty()) {
+    else {
+        return Vec::new();
+    };
+    if app.load_procedures.iter().all(|p| p.chooses.is_empty()) {
+        return Vec::new();
+    }
+    if profile.is_system_7() {
+        let config = memo.evaluate_for(app, overrides);
+        return match super::plan_props::guarded_ops(app, &config) {
+            Ok(mut ops) => {
+                ops.truncate(super::plan_sys7::sys7_procedure_end(&ops));
+                super::plan_sys7::sys7_kept_octets(app, &ops, |seg| {
+                    let data = seg.data.as_ref().map_or(0, Vec::len);
+                    let size = seg.size.and_then(|s| usize::try_from(s).ok()).unwrap_or(0);
+                    data.max(size)
+                })
+            }
+            Err(_) => Vec::new(),
+        };
+    }
+    if !profile.capabilities().flash {
         return Vec::new();
     }
     let config = memo.evaluate_for(app, overrides);
