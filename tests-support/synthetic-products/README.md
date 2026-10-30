@@ -22,6 +22,7 @@ next to it, and zips it on demand.
 | product | order number | mask | construct | issues |
 | --- | --- | --- | --- | --- |
 | [`syn-le-order`](syn-le-order/product.toml) | `NEST-ALTI` | 07B0 | ParameterByteOrder LittleEndian with integers and floats | #403 |
+| [`syn-master-reset`](syn-master-reset/product.toml) | `NEST-RESET` | 07B0 | Master Reset erase code 1 in the load procedure | #546, #611 |
 | [`syn-minimal`](syn-minimal/product.toml) | `NEST-LIGHT` | 07B0 | baseline | #596 |
 | [`syn-relseg-fill`](syn-relseg-fill/product.toml) | `NEST-FILL` | 07B0 | RelSegment Mode 0 with Fill 255 | #480 |
 <!-- catalogue:end -->
@@ -73,8 +74,9 @@ One `product.toml` per directory. Tables and keys:
 | `[[dynamic.block]]` | `name`, `text`, `parameters` (names), `com_objects` (numbers) | a `ParameterBlock` in the `ChannelIndependentBlock` |
 | `[[load_procedure]]` | `merge_id`, `ops = [{ op = "...", ... }]` | `LoadProcedure` |
 
-Load ops: `LdCtrlRelSegment` (`lsm`, `size`, `mode`, `fill`) and
-`LdCtrlWriteRelMem` (`object`, `offset`, `size`, `verify`).
+Load ops: `LdCtrlRelSegment` (`lsm`, `size`, `mode`, `fill`),
+`LdCtrlWriteRelMem` (`object`, `offset`, `size`, `verify`) and
+`LdCtrlMasterReset` (`erase_code`, `channel`).
 
 The schema reaches further than the generator does. These are reserved for
 the catalogue products that need them (step 4 of #596), and a spec that uses
@@ -82,7 +84,7 @@ one stops with "part of the schema but no product uses it yet": masks other
 than 07B0 (System 7 twins), `ProductProcedure`, absolute segments, parameter
 type kinds `text`, `time`, `ip_address`, `raw`, parameter `access` and `union` (#405), explicit com
 object refs, channels and `<choose>` in the Dynamic tree (#411), and the load
-ops `LdCtrlMasterReset` (#546), `LdCtrlLoadImageProp`, `LdCtrlWriteProp`,
+ops `LdCtrlLoadImageProp`, `LdCtrlWriteProp`,
 `LdCtrlCompareProp`, `LdCtrlAbsSegment` and the connection and state ops of a
 product procedure. An unknown key or op stops with an error naming it.
 

@@ -289,8 +289,11 @@ FLOAT_BITS = {"DPT 9": 16, "IEEE-754 Single": 32, "IEEE-754 Double": 64}
 LOAD_OPS = {
     "LdCtrlRelSegment": {"lsm": "LsmIdx", "size": "Size", "mode": "Mode", "fill": "Fill"},
     "LdCtrlWriteRelMem": {"object": "ObjIdx", "offset": "Offset", "size": "Size", "verify": "Verify"},
+    # syn-master-reset (#604 row 10, #546, #611): a Master Reset in the
+    # application's procedure, as KNX Virtual's DA.tp has it.
+    "LdCtrlMasterReset": {"erase_code": "EraseCode", "channel": "ChannelNumber"},
 }
-LOAD_OPS_LATER = {"LdCtrlMasterReset", "LdCtrlLoadImageProp", "LdCtrlWriteProp", "LdCtrlCompareProp",
+LOAD_OPS_LATER = {"LdCtrlLoadImageProp", "LdCtrlWriteProp", "LdCtrlCompareProp",
                   "LdCtrlAbsSegment", "LdCtrlConnect", "LdCtrlDisconnect", "LdCtrlRestart",
                   "LdCtrlUnload", "LdCtrlLoad", "LdCtrlLoadCompleted", "LdCtrlTaskSegment"}
 

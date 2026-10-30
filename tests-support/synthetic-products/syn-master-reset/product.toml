@@ -1,0 +1,115 @@
+# Synthetic product #604 row 10 (epic #596): syn-minimal with a Master Reset
+# (erase code 1) in the application's load procedure. Rendered by ../generate.py into xml/;
+# see ../README.md for the schema.
+
+[doc]
+purpose = """
+syn-minimal with one change: the application's MergeId 2 block follows the
+segment allocation with `LdCtrlMasterReset EraseCode="1" ChannelNumber="0"`,
+the only erase code a vendor product in the corpus uses (one 0912 product).
+The ETS capture shows which restart form ETS sends to knx-sim for it (the
+confirmed Master Reset or a bare A_Restart, #611) and that the download goes
+on after the restart; bussard plans the Master Reset in the same place
+(#546). Its twin `syn-master-reset-code4` uses erase code 4."""
+construct = "Master Reset erase code 1 in the load procedure"
+issues = [546, 611]
+
+[product]
+text = "Spring-cleaning switch"
+order_number = "NEST-RESET"
+hardware_name = "NEST-RESET"
+hardware_serial = "00FA0027000A"
+bus_current = 10
+
+[application]
+number = 0x270A
+version = 0x10
+name = "Spring-cleaning switch"
+mask = "07B0"
+load_procedure_style = "MergedProcedure"
+address_table_max_entries = 32
+association_table_max_entries = 32
+translations = { "de-DE" = "Frühjahrsputzschalter" }
+
+[application.options]
+Comparable = true
+Reconstructable = true
+
+[[segment]]
+name = "main"
+kind = "relative"
+lsm = 4
+size = 256
+fill = 0xFF
+
+[[parameter_type]]
+name = "Mode"
+kind = "enum"
+size_bits = 8
+values = [
+    { value = 0, text = "off" },
+    { value = 1, text = "on" },
+    { value = 2, text = "automatic" },
+]
+
+[[parameter_type]]
+name = "Delay"
+kind = "number"
+size_bits = 16
+signed = false
+min = 0
+max = 65535
+
+[[parameter]]
+name = "mode"
+type = "Mode"
+text = "Operating mode"
+default = 1
+memory = { segment = "main", offset = 0, bit_offset = 0 }
+
+[[parameter]]
+name = "delay"
+type = "Delay"
+text = "Delay (s)"
+default = 300
+memory = { segment = "main", offset = 1, bit_offset = 0 }
+
+[[com_object]]
+number = 0
+name = "switch"
+text = "Switch"
+function_text = "On/Off"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "W"]
+priority = "Low"
+
+[[com_object]]
+number = 1
+name = "status"
+text = "Status"
+function_text = "On/Off status"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+[[dynamic.block]]
+name = "general"
+text = "General"
+parameters = ["mode", "delay"]
+com_objects = [0, 1]
+
+# The application's part of the 07B0 mask procedure: MergeId 2 allocates the
+# parameter segment and then resets the device (the delta: Master Reset with
+# erase code 1, as KNX Virtual's DA.tp places it), MergeId 4 writes it.
+[[load_procedure]]
+merge_id = 2
+ops = [
+    { op = "LdCtrlRelSegment", lsm = 4, size = 256, mode = 0, fill = 0 },
+    { op = "LdCtrlMasterReset", erase_code = 1, channel = 0 },
+]
+
+[[load_procedure]]
+merge_id = 4
+ops = [{ op = "LdCtrlWriteRelMem", object = 4, offset = 0, size = 256, verify = false }]
