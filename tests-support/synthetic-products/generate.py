@@ -569,6 +569,9 @@ SYS7_LOAD_OPS = {
     "LdCtrlTaskPtr": {"lsm": "LsmIdx", "init_ptr": "InitPtr", "save_ptr": "SavePtr", "serial_ptr": "SerialPtr"},
     "LdCtrlTaskCtrl2": {"lsm": "LsmIdx", "callback": "Callback", "address": "Address", "seg0": "Seg0",
                         "seg1": "Seg1"},
+    # syn-s7-delay (#604 row 39, #615): a pause in the procedure, as 16 0701
+    # applications have it before LdCtrlRestart.
+    "LdCtrlDelay": {"milliseconds": "MilliSeconds"},
 }
 MEMORY_TYPES = ("EEPROM", "RAM")
 

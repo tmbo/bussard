@@ -697,5 +697,29 @@ class SystemBProductProcedure(unittest.TestCase):
             generate.Product("test", s)
 
 
+class Delay(unittest.TestCase):
+    """syn-s7-delay (#615): LdCtrlDelay in a System 7 product procedure."""
+
+    def test_render_delay_before_restart(self) -> None:
+        s = product_spec("syn-s7-0701")
+        s["load_procedure"][0]["ops"][-2:-2] = [{"op": "LdCtrlDelay", "milliseconds": 200}]
+        x = app_xml(s)
+        self.assertIn('<LdCtrlLoadCompleted LsmIdx="3" />\n'
+                      '                <LdCtrlDelay MilliSeconds="200" />\n'
+                      '                <LdCtrlRestart />', x)
+
+    def test_delay_refused_on_system_b(self) -> None:
+        b = product_spec("syn-minimal")
+        b["load_procedure"][0]["ops"].append({"op": "LdCtrlDelay", "milliseconds": 200})
+        with self.assertRaisesRegex(generate.SpecError, "no product uses it yet"):
+            generate.Product("t", b)
+
+    def test_delay_missing_milliseconds_refused(self) -> None:
+        s = product_spec("syn-s7-0701")
+        s["load_procedure"][0]["ops"][-2:-2] = [{"op": "LdCtrlDelay"}]
+        with self.assertRaisesRegex(generate.SpecError, "missing key `milliseconds`"):
+            generate.Product("t", s)
+
+
 if __name__ == "__main__":
     unittest.main()
