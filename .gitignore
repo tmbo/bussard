@@ -20,7 +20,14 @@ tests-support/product-corpus-extra/cache*/
 # Anchored to the root so it does not swallow committed example models such as
 # knx-sim/examples/small-installation/knx/.
 /knx/
-captures/
+# Captures are the owner's installation, except the synthetic products' ETS
+# captures (epic #596): ours, committed, replayed in CI. No .knxprod and no
+# knx_master.xml goes in there (*.knxprod above; the rows name the xml/).
+**/captures/
+!/captures/
+/captures/*
+!/captures/synthetic/
+/captures/synthetic/**/.bussard/
 *.db
 
 # Rust

@@ -536,3 +536,34 @@ minimal, SYN.min, Synthetisch minimal, 1.0"); the download ended
 operations, 83 tool requests; the oracle row is `identical`, coverage
 100.0%, load control `identical` (17 records), `par=ok(256) gobj=ok(4)
 assoc=ok(2) addr=ok(2) props=ok(1)`.
+
+## Synthetic products: committed captures (#596 step 5)
+
+    uv run tools/ets-sweep/synthetic/capture.py syn-minimal
+
+`capture.py` runs render, zip, sign, `--signed-id`, the catalogue import and
+search, the `defaults` download (`calibrate.py`) and the oracle row of the
+committed files, and writes `captures/synthetic/<product>/defaults/`,
+`captures/synthetic/rows.txt` and `captures/synthetic/manifest.json` (the
+flow and layout: `tests-support/synthetic-products/README.md`, "Captures").
+`winbuild-knx-sim.sh` writes the commit it built from next to `knx-sim.exe`
+(`knx-sim.exe.git`) for the manifest.
+
+Result for `syn-minimal` ("Nest-side light switch", `NEST-LIGHT`,
+2026-10-30, ETS 6.4.1 build 6.4.8718, VM sim built from 06a27ec0): the first
+import of the renamed product broke ETS's catalogue ("Der angegebene
+Schlüssel war nicht im Wörterbuch angegeben", a KeyNotFoundException in the
+catalogue refresh, on every later catalogue action and after a restart):
+`generate.py` left the `-` of `NEST-LIGHT` unescaped in the product and
+catalogue item ids, where ETS escapes it (`.2D`, as in Enertex
+`M-00A6_H-00000030-0_P-1176.2D08`). With the id fixed, the `M-00FA` product
+store moved aside (`C:\ProgramData\KNX\ETS6\ProductStore-aside-M-00FA-20261030-145024`)
+and `SYN.da` and `SYN.db` imported again, the product imported and
+`catalog_search NEST-LIGHT` finds it. The download ended "Programmieren(Appl.):
+Abgeschlossen", objects 1 to 4 Loaded, 43 operations, 83 tool requests; the
+signed id is unchanged (`M-00FA_A-2700-10-D80E`: the application's hash does
+not cover the product texts). `PID_PROGRAM_VERSION` on the wire is
+`00fa 2700 10` (manufacturer, application number, version), so the rows name
+the rendered id. The row of the committed files (the `xml/` zipped with the
+stub master): `identical`, coverage 100.0%, load control `identical` (17
+records), `par=ok(256) gobj=ok(4) assoc=ok(2) addr=ok(2) props=ok(1)`.

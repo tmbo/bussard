@@ -73,8 +73,13 @@ def check_keys(where: str, table: dict, required: set[str], optional: set[str] =
 
 
 def ets_escape(text: str) -> str:
-    """The id encoding of ETS: letters, digits and `-` stay, every other octet is `.XX`."""
-    return "".join(c if c.isascii() and (c.isalnum() or c == "-") else
+    """The id encoding of ETS: letters and digits stay, every other octet is `.XX`.
+
+    `-` separates the parts of an id, so ETS escapes it too: Enertex order
+    number `1176-08` is product `M-00A6_H-00000030-0_P-1176.2D08`. Left
+    unescaped, `NEST-LIGHT` made ETS 6.4.1's catalogue refresh fail with a
+    KeyNotFoundException after the import (2026-10-30)."""
+    return "".join(c if c.isascii() and c.isalnum() else
                    "".join(f".{b:02X}" for b in c.encode()) for c in text)
 
 

@@ -88,8 +88,10 @@ Ids follow ETS: `M-00FA_A-<number>-<version>-0000` for the application, its
 parts prefixed with it (`_RS-04-00000`, `_PT-<name>`, `_P-<n>`, `_P-<n>_R-<n>`,
 `_O-<number>`, `_O-<number>_R-<n>`, `_PB-<n>`); hardware
 `M-00FA_H-<serial>-<version>`, product `..._P-<order number>` and catalogue
-item with ETS's escaping (`SYN.min` becomes `SYN.2Emin`). Every product shares
-the catalogue section `M-00FA_CS-27` "The buzzard's nest". Application numbers
+item with ETS's escaping: every octet but a letter or a digit becomes `.XX`,
+the `-` too, since it separates the parts of an id (`NEST-LIGHT` becomes
+`NEST.2DLIGHT`; unescaped, ETS's catalogue failed after the import). Every
+product shares the catalogue section `M-00FA_CS-27` "The buzzard's nest". Application numbers
 start at 0x2700: KNX Virtual uses 0x25xx and the DA.tp clone 0x2600.
 
 ## The id rule
@@ -122,18 +124,53 @@ data. `bussard flash` of a product zipped with the stub programs every object
 and `bussard plan` after it is a no-op; the oracle row of a signed product,
 whose file carries the real master data, compares the same sequence.
 
-## Render, sign, capture
+## Captures
+
+Each product is downloaded by ETS into knx-sim once; the capture is ours and
+is committed under `captures/synthetic/`, where CI replays it (epic #596,
+steps 5 and 6). The flow, in the Windows VM of `tools/ets-sweep/README.md`
+with no other sweep running:
 
 1. Edit `<name>/product.toml`, run `generate.py` and `generate.py --catalogue`,
    commit the spec, `xml/` and this README.
-2. `generate.py --zip <name>`, then sign it in the VM:
-   `uv run tools/ets-sweep/synthetic/sign.py tests-support/synthetic-products/<name>/build/<name>.knxprod`
-   (writes `<name>-signed.knxprod` next to it).
-3. `generate.py <name> --signed-id tests-support/synthetic-products/<name>/build/<name>-signed.knxprod`.
-4. Import into ETS and capture a download into knx-sim:
-   `uv run tools/ets-sweep/synthetic/calibrate.py --knxprod <signed> --app <signed id> --search <order number>`
-   (the sweep, the request fixture and the oracle row; see
-   `tools/ets-sweep/README.md`).
+2. Build the VM's simulator from the commit you capture with
+   (`tools/ets-sweep/winbuild-knx-sim.sh`, `uv run tools/ets-sweep/vm.py install`);
+   the build writes the commit next to `knx-sim.exe` for the manifest.
+3. `uv run tools/ets-sweep/synthetic/capture.py <name>`. It renders and zips
+   the product, signs it in the VM (`sign.py`, ETS's master data swapped in),
+   records the signed id (`generate.py --signed-id`), imports the signed file
+   into ETS's catalogue and finds its order number there, has ETS download it
+   at its defaults into knx-sim (`calibrate.py`), copies the capture here,
+   runs the oracle row of the committed files and writes the row and the
+   manifest entry.
+4. Commit `captures/synthetic/` with the product.
+
+```
+captures/synthetic/manifest.json                one entry per product and variant
+captures/synthetic/rows.txt                     the oracle rows (95-offline-oracle.sh --check)
+captures/synthetic/model/bussard.toml           the empty model the rows plan against
+captures/synthetic/<name>/defaults/ets.pcapng   the sim's capture of the ETS download
+captures/synthetic/<name>/defaults/ops.txt      knxtrace ops of it
+captures/synthetic/<name>/defaults/requests.txt the tool's requests (distil.py), for knx-sim's replay
+captures/synthetic/<name>/defaults/driver.json  the ETS driver's steps and ETS's history pane
+captures/synthetic/<name>/defaults/sim.yaml     a loopback knx-sim of the device (needs --zip)
+```
+
+The manifest entry holds the ETS version, the commit the simulator was built
+from, the digest of the `xml/` the capture was taken with (the `xml_sha256`
+of `signed.toml`), the signed id, the date, and the oracle verdict and
+coverage. No `.knxprod` and no `knx_master.xml` is committed: the rows name
+the product's `xml/` directory, which `95-offline-oracle.sh` zips with the
+stub master, and the application is the rendered id, since the signer's
+fingerprint never reaches the wire (`PID_PROGRAM_VERSION` carries the
+manufacturer, the application number and the version).
+
+**A product change requires a re-capture.** A capture of other XML says
+nothing about the committed product, so
+`crates/bussard-cli/tests/it/synthetic_captures.rs` fails, ungated, when a
+product's `xml/` digest differs from its manifest entry, and names the
+`capture.py` command. A spec change that does not reach the XML (the `[doc]`
+table) needs none.
 
 The tests `crates/bussard-prod/tests/it/synthetic_products.rs` and
 `knx-sim/tests/synthetic_products.rs` zip every product's `xml/` with the stub

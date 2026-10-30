@@ -59,6 +59,7 @@ mod sim_catalog_loop;
 mod sim_interface_loop;
 mod sim_interface_secure;
 mod status_device_mock;
+mod synthetic_captures;
 mod test_runner_mock;
 mod validate_invariants_cli;
 mod validate_keyring_cli;

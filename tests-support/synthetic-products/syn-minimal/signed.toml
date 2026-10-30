@@ -2,4 +2,4 @@
 # Stale when xml_sha256 differs from the committed xml/ (generate.py --check says so).
 application_id = "M-00FA_A-2700-10-D80E"
 hardware2program_id = "M-00FA_H-00FA00270000-1_HP-2700-10-D80E"
-xml_sha256 = "15b00c649a30e012b4a1e71edda41f7c85fefbc9c24b0bb28e85e214d4ddf315"
+xml_sha256 = "cdce35f9ddd937892a22ec7c783e8242cf570e0456086d2ca633d5108a02b2a6"

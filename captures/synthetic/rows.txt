@@ -1,0 +1,8 @@
+# Offline oracle rows of the synthetic captures (epic #596), for
+#   scripts/campaign/95-offline-oracle.sh --rows captures/synthetic/rows.txt --check
+# run from the repository root. Written by tools/ets-sweep/synthetic/capture.py
+# from manifest.json. The product field is the committed xml/ directory,
+# zipped with the stub master by the script; the application is the rendered
+# id (the signed fingerprint never reaches the wire).
+#@ --dir captures/synthetic/model
+1.1.1|captures/synthetic/syn-minimal/defaults/ets.pcapng|tests-support/synthetic-products/syn-minimal/xml|M-00FA_A-2700-10-0000|syn-minimal defaults|100.0|loadctl=identical

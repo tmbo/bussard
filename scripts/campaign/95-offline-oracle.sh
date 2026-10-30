@@ -31,7 +31,16 @@
 #   product      the vendor .knxprod, or a .knxproj project export (it carries
 #                the product data of every device in the project, so name the
 #                application); `wrapper.zip!inner/path.knxprod` picks an inner
-#                file out of a ZIP wrapper; `-` means there is no product data
+#                file out of a ZIP wrapper; a directory is the product XML of a
+#                synthetic product (`tests-support/synthetic-products/<name>/xml`,
+#                epic #596), zipped with the stub `knx_master.xml` (`<KNX/>`)
+#                into $OUT/.products/<name>.knxprod before the dry run. Its
+#                application is the rendered id (`..._A-2700-10-0000`), not the
+#                signed one ETS imported (`..._A-2700-10-D80E`): the signer's
+#                fingerprint never reaches the wire, PID_PROGRAM_VERSION
+#                carries the manufacturer, the application number and the
+#                version only (checked against the syn-minimal capture,
+#                2026-10-30); `-` means there is no product data
 #                (the row is reported as not comparable, with the note). Paths
 #                may contain spaces (ETS names exports `Name  Project_date`);
 #                only the `|` separators and the ends of a field are trimmed.
@@ -329,9 +338,39 @@ with open(path, "w", encoding="utf-8") as fh:
 PY
 }
 
-# Resolves `wrapper.zip!inner` to an extracted file under $OUT/.products.
+# Resolves `wrapper.zip!inner` to an extracted file under $OUT/.products, and
+# a product XML directory (a synthetic product's committed `xml/`) to a
+# .knxprod zipped from it with the stub master, also under $OUT/.products.
 resolve_product() {
   local spec="$1"
+  if [ -d "$spec" ]; then
+    local name dest
+    name="$(basename "$(dirname "$(cd "$spec" && pwd)")")"
+    dest="$OUT/.products/$name.knxprod"
+    "$PYTHON" - "$spec" "$dest" <<'EOF' || return 1
+import os, sys, zipfile
+src, dest = sys.argv[1:3]
+entries = sorted(
+    os.path.relpath(os.path.join(root, f), src).replace(os.sep, "/")
+    for root, _, files in os.walk(src) for f in files
+)
+if not any(e.endswith(".xml") and "/" in e for e in entries):
+    sys.exit(f"{src}: no <manufacturer>/*.xml product files")
+os.makedirs(os.path.dirname(dest), exist_ok=True)
+# The stub master data (tests-support/synthetic-products/README.md): bussard
+# reads no master data and plans the mask procedure from its built-in
+# template (#607).
+stamp = (1980, 1, 1, 0, 0, 0)
+with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zf:
+    zf.writestr(zipfile.ZipInfo("knx_master.xml", stamp), "<KNX/>")
+    for e in entries:
+        if e != "knx_master.xml":
+            with open(os.path.join(src, e), "rb") as fh:
+                zf.writestr(zipfile.ZipInfo(e, stamp), fh.read())
+print(dest)
+EOF
+    return
+  fi
   case "$spec" in
     *'!'*)
       local zip="${spec%%!*}" inner="${spec#*!}"

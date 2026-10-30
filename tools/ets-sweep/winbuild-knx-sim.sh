@@ -23,4 +23,10 @@ docker run --rm \
     rustup target add x86_64-pc-windows-gnu >/dev/null
     cargo build --release --locked --target x86_64-pc-windows-gnu 2>&1 | tail -5
   '
-ls -la "$REPO/knx-sim/target-win/x86_64-pc-windows-gnu/release/knx-sim.exe"
+EXE="$REPO/knx-sim/target-win/x86_64-pc-windows-gnu/release/knx-sim.exe"
+# The commit the exe was built from, for the synthetic capture manifest
+# (tools/ets-sweep/synthetic/capture.py); `-dirty` when knx-sim/ had changes.
+sha="$(git -C "$REPO" rev-parse HEAD)"
+git -C "$REPO" diff --quiet HEAD -- knx-sim || sha="$sha-dirty"
+printf '%s\n' "$sha" >"$EXE.git"
+ls -la "$EXE"
