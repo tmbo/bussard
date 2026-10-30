@@ -5,6 +5,7 @@
 # zipped with the stub master by the script; the application is the rendered
 # id (the signed fingerprint never reaches the wire).
 #@ --dir captures/synthetic/model
+1.1.1|captures/synthetic/syn-choose-partial-segment/defaults/ets.pcapng|tests-support/synthetic-products/syn-choose-partial-segment/xml|M-00FA_A-2708-10-0000|syn-choose-partial-segment defaults: bussard refuses the product, #411||expect=not-comparable
 1.1.1|captures/synthetic/syn-le-order/defaults/ets.pcapng|tests-support/synthetic-products/syn-le-order/xml|M-00FA_A-2704-10-0000|syn-le-order defaults|100.0|expect=differs loadctl=identical
 1.1.1|captures/synthetic/syn-master-reset/defaults/ets.pcapng|tests-support/synthetic-products/syn-master-reset/xml|M-00FA_A-270A-10-0000|syn-master-reset defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-master-reset-code4/defaults/ets.pcapng|tests-support/synthetic-products/syn-master-reset-code4/xml|M-00FA_A-278A-10-0000|syn-master-reset-code4 defaults|100.0|loadctl=identical

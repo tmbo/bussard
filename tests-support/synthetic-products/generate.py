@@ -286,14 +286,7 @@ class Product:
         for i, lp in enumerate(spec["load_procedure"]):
             lw = f"{w} [[load_procedure]] #{i + 1}"
             check_keys(lw, lp, {"merge_id", "ops"})
-            for j, op in enumerate(lp["ops"]):
-                ow = f"{lw} op #{j + 1}"
-                name = op.get("op")
-                if name not in LOAD_OPS:
-                    if name in LOAD_OPS_LATER:
-                        raise not_yet(ow, f"`{name}`")
-                    raise SpecError(f"{ow}: unknown op `{name}`")
-                check_keys(ow, op, {"op"} | set(LOAD_OPS[name]))
+            self.check_load_ops(lw, lp["ops"])
             self.load_procedures.append(lp)
 
     def check_memory(self, where: str, m: dict, bits: int) -> None:
@@ -304,6 +297,37 @@ class Product:
             raise SpecError(f"{where}: unknown segment `{m['segment']}`")
         if m["offset"] * 8 + m["bit_offset"] + bits > seg["size"] * 8:
             raise SpecError(f"{where}: does not fit segment `{m['segment']}`")
+
+    def check_load_ops(self, lw: str, ops: list[dict]) -> None:
+        """The ops of a load procedure, and of the `when` branches of a
+        `choose` among them (recursively)."""
+        for j, op in enumerate(ops):
+            ow = f"{lw} op #{j + 1}"
+            name = op.get("op")
+            if name == "choose":
+                self.check_load_choose(ow, op)
+                continue
+            if name not in LOAD_OPS:
+                if name in LOAD_OPS_LATER:
+                    raise not_yet(ow, f"`{name}`")
+                raise SpecError(f"{ow}: unknown op `{name}`")
+            check_keys(ow, op, {"op"} | set(LOAD_OPS[name]))
+
+    def check_load_choose(self, ow: str, op: dict) -> None:
+        """syn-choose-partial-segment (#604 row 8, #411): `<choose ParamRefId>`
+        inside a `LoadProcedure`, its branches `{ test, ops }` or
+        `{ default = true, ops }`."""
+        check_keys(ow, op, {"op", "parameter", "when"})
+        if op["parameter"] not in self.params:
+            raise SpecError(f"{ow}: unknown parameter `{op['parameter']}`")
+        if not op["when"]:
+            raise SpecError(f"{ow}: a choose needs at least one `when`")
+        for k, branch in enumerate(op["when"]):
+            bw = f"{ow} when #{k + 1}"
+            check_keys(bw, branch, {"ops"}, {"test", "default"})
+            if ("test" in branch) == bool(branch.get("default")):
+                raise SpecError(f"{bw}: give either `test` or `default = true`")
+            self.check_load_ops(bw, branch["ops"])
 
     @property
     def app_file(self) -> str:
@@ -415,6 +439,21 @@ def render_union(x: Xml, p: Product, un: dict) -> None:
     x.close("Union")
 
 
+def render_load_ops(x: Xml, p: Product, ops: list[dict]) -> None:
+    """Load ops in spec order; a `choose` becomes `<choose ParamRefId>` with
+    its `<when test>` / `<when default="true">` branches (#411)."""
+    for op in ops:
+        if op["op"] == "choose":
+            x.open("choose", [("ParamRefId", p.params[op["parameter"]]["ref"])])
+            for branch in op["when"]:
+                x.open("when", [("test", branch["test"])] if "test" in branch else [("default", True)])
+                render_load_ops(x, p, branch["ops"])
+                x.close("when")
+            x.close("choose")
+        else:
+            x.empty(op["op"], [(attr, op[key]) for key, attr in LOAD_OPS[op["op"]].items()])
+
+
 def render_application(p: Product) -> bytes:
     a = p.app
     x = Xml()
@@ -471,8 +510,7 @@ def render_application(p: Product) -> bytes:
     x.open("LoadProcedures")
     for lp in p.load_procedures:
         x.open("LoadProcedure", [("MergeId", lp["merge_id"])])
-        for op in lp["ops"]:
-            x.empty(op["op"], [(attr, op[key]) for key, attr in LOAD_OPS[op["op"]].items()])
+        render_load_ops(x, p, lp["ops"])
         x.close("LoadProcedure")
     x.close("LoadProcedures")
     x.empty("Options", [(k, v) for k, v in a.get("options", {}).items()])

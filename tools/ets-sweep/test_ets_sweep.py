@@ -513,6 +513,33 @@ class TestSyntheticGenerator(unittest.TestCase):
             self.app_xml(self.spec)
 
 
+class TestSyntheticGeneratorChoose(unittest.TestCase):
+    setUp = TestSyntheticGenerator.setUp
+    app_xml = TestSyntheticGenerator.app_xml
+
+    def write_choose(self, when: list) -> None:
+        self.spec["load_procedure"][1]["ops"] = [{"op": "choose", "parameter": "mode", "when": when}]
+
+    def test_render_application_load_procedure_choose(self):
+        half = {"op": "LdCtrlWriteRelMem", "object": 4, "offset": 0, "size": 128, "verify": False}
+        full = dict(half, size=256)
+        self.write_choose([{"test": "1", "ops": [half]}, {"default": True, "ops": [full]}])
+        xml = self.app_xml(self.spec)
+        self.assertIn('<choose ParamRefId="t_P-1_R-1">'.replace("t_", "M-00FA_A-2700-10-0000_"), xml)
+        self.assertIn('<when test="1">\n'
+                      '                    <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="128" Verify="false" />\n'
+                      '                  </when>\n'
+                      '                  <when default="true">', xml)
+
+    def test_render_application_load_procedure_choose_errors(self):
+        self.write_choose([{"ops": []}])
+        with self.assertRaisesRegex(self.gen.SpecError, "either `test` or `default = true`"):
+            self.app_xml(self.spec)
+        self.spec["load_procedure"][1]["ops"] = [{"op": "choose", "parameter": "nope", "when": []}]
+        with self.assertRaisesRegex(self.gen.SpecError, "unknown parameter `nope`"):
+            self.app_xml(self.spec)
+
+
 class TestCaptureRows(unittest.TestCase):
     def test_row_options_identical_writes_only_loadctl(self):
         self.assertEqual(capture.row_options({"verdict": "identical", "loadctl": "identical"}), "loadctl=identical")
