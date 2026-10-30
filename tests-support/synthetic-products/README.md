@@ -32,6 +32,7 @@ next to it, and zips it on demand.
 | [`syn-relseg-fill`](syn-relseg-fill/product.toml) | `NEST-FILL` | 07B0 | RelSegment Mode 0 with Fill 255 | #480 |
 | [`syn-s7-0701`](syn-s7-0701/product.toml) | `NEST-BKDOOR` | 0701 | System 7 baseline (0701, memory-mapped LSM) | #596, #488, #481 |
 | [`syn-s7-0705`](syn-s7-0705/product.toml) | `NEST-DOOR` | 0705 | System 7 baseline (0705, property LSM) | #596, #488, #479, #588, #487 |
+| [`syn-s7-choose-split`](syn-s7-choose-split/product.toml) | `NEST-SPLIT` | 0705 | load-procedure choose splitting the parameter AbsSegment | #411, #413 |
 | [`syn-s7-hidden-default`](syn-s7-hidden-default/product.toml) | `NEST-EGGBAK` | 0705 | hidden parameter on System 7, default differs from template | #448 |
 | [`syn-s7-lsm5`](syn-s7-lsm5/product.toml) | `NEST-TWIG5` | 0701 | TaskSegment on LsmIdx 5 (0701) | #489 |
 | [`syn-s7-pei80`](syn-s7-pei80/product.toml) | `NEST-CLAW` | 0701 | PeiType 128 on 0701 | #483 |

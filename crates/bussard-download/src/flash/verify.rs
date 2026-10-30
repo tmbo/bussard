@@ -167,7 +167,9 @@ impl FlashPlan {
     /// `Loaded`, the steps [`mcb_skip_target`] names and the executor skips.
     /// Every object the plan names counts as present; `app_obj` is the
     /// application object an op without an index resolves to. Returns the
-    /// objects dropped.
+    /// objects dropped. The caller gates it the way the executor's skip is
+    /// gated (`skip_unchanged` in `bussard-service`): not on a plan that
+    /// erases resident objects ([`FlashPlan::erases_resident_objects`]).
     pub fn skip_resident_matches(
         &mut self,
         mcbs: &std::collections::BTreeMap<u8, (u32, u16)>,

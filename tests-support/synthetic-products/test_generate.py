@@ -366,6 +366,20 @@ class ParameterCalculation(unittest.TestCase):
             generate.Product("test", self.calc_spec(outputs=[{"parameter": "nope", "alias": "o"}]))
 
 
+class System7Choose(unittest.TestCase):
+    """syn-s7-choose-split (#411, #413): a `choose` of AbsSegments in a product procedure."""
+
+    def test_render_choose_with_abs_segments_on_system_7(self) -> None:
+        x = app_xml(product_spec("syn-s7-choose-split"))
+        self.assertIn('<choose ParamRefId="M-00FA_A-2809-10-0000_P-1_R-1">\n'
+                      '                  <when test="1">\n'
+                      '                    <LdCtrlAbsSegment LsmIdx="3" SegType="0" Address="17472" Size="1" '
+                      'Access="51" MemType="3" SegFlags="128" />\n'
+                      '                    <LdCtrlAbsSegment LsmIdx="3" SegType="0" Address="17475" Size="61" ', x)
+        self.assertIn('<when default="true">\n'
+                      '                    <LdCtrlAbsSegment LsmIdx="3" SegType="0" Address="17472" Size="64" ', x)
+
+
 class TaskPtrAndTaskCtrl2(unittest.TestCase):
     """syn-s7-taskptr (#527): LdCtrlTaskPtr and LdCtrlTaskCtrl2 on System 7."""
 

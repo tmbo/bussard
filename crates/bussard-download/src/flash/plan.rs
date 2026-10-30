@@ -1833,6 +1833,53 @@ mod tests {
         Ok(())
     }
 
+    /// Issue #623: the plan of a re-download onto a device that already holds
+    /// the application (the `par` procedure of a same-application device),
+    /// for a product whose procedure has a Master Reset with erase code 4,
+    /// erases resident objects, so the executor takes no resident-MCB skip.
+    /// The confirmed restart (1) and the address reset (3) erase no object.
+    #[test]
+    fn test_erases_resident_objects_master_reset_erase_code_4_over_same_application()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (code, erases) in [(4u8, true), (2, true), (6, true), (1, false), (3, false)] {
+            let xml = format!(
+                r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-MR" MaskVersion="MV-07B0" Name="MR"
+            LoadProcedureStyle="ProductDefault">
+          <Static>
+           <Code><RelativeSegment Id="M-1_A-MR_RS-1" Size="6" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment></Code>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlUnload LsmIdx="4" />
+             <LdCtrlLoad LsmIdx="4" />
+             <LdCtrlRelSegment LsmIdx="4" Size="6" Mode="0" Fill="0" />
+             <LdCtrlMasterReset EraseCode="{code}" ChannelNumber="0" />
+             <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="6" />
+             <LdCtrlLoadCompleted LsmIdx="4" />
+             <LdCtrlRestart />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#
+            );
+            let app = parse_application_program("M-1_A-MR", xml.as_bytes())?;
+            let mut plan = plan_flash(
+                &app,
+                "1.1.4",
+                0x07B0,
+                &no_overrides(),
+                &BTreeMap::new(),
+                None,
+                &BTreeMap::new(),
+            )?;
+            // The device already runs this application: the `par` procedure.
+            plan.use_par_procedure(None);
+            assert!(!plan.has_factory_reset(), "erase code {code}");
+            assert_eq!(plan.erases_resident_objects(), erases, "erase code {code}");
+        }
+        Ok(())
+    }
+
     #[test]
     fn plan_defaults_master_reset_erase_code() -> Result<(), Box<dyn std::error::Error>> {
         // An LdCtrlMasterReset with no attributes defaults EraseCode to 1

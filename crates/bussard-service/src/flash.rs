@@ -353,10 +353,12 @@ pub fn apply_freshness(
 /// Whether the download skips an object whose resident image already
 /// matches (the ETS group-B differential download): only when the device
 /// carries no application or the same one, never with `full`, and never
-/// after a factory reset (which leaves nothing resident to match).
+/// when the plan erases resident objects (a factory reset, or a product
+/// Master Reset with an erasing code, issue #623; see
+/// [`FlashPlan::erases_resident_objects`]).
 pub fn skip_unchanged(full: bool, plan: &FlashPlan, freshness: &Freshness) -> bool {
     !full
-        && !plan.has_factory_reset()
+        && !plan.erases_resident_objects()
         && matches!(
             freshness,
             Freshness::Fresh | Freshness::SameApplication { .. }

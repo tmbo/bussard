@@ -395,14 +395,19 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
     //
     // A plan that factory-resets the device first erases every object, so no
     // resident image can survive to be matched: the pre-pass is skipped and every
-    // object streams in full.
+    // object streams in full. The same holds for a product `LdCtrlMasterReset`
+    // whose erase code resets loaded objects (issue #623, the rule and its
+    // evidence are on `FlashPlan::erases_resident_objects`): skipping an object
+    // the reset then erases leaves the device without it.
     // A parameter-only download diffs against the resident memory instead.
-    let skip_objects: BTreeSet<u8> =
-        if options.skip_matching_mcb && !plan.has_factory_reset() && !plan.is_parameters_only() {
-            resident_match_objects(session, plan, app_obj, &object_table).await?
-        } else {
-            BTreeSet::new()
-        };
+    let skip_objects: BTreeSet<u8> = if options.skip_matching_mcb
+        && !plan.erases_resident_objects()
+        && !plan.is_parameters_only()
+    {
+        resident_match_objects(session, plan, app_obj, &object_table).await?
+    } else {
+        BTreeSet::new()
+    };
 
     // Data Secure (issue #537): the group key table and the security
     // individual address table must fit the device. A capacity the product
