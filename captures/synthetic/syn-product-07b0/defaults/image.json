@@ -1,0 +1,15 @@
+{
+"about": "The memory ETS allocated and wrote in captures/synthetic/syn-product-07b0/defaults/ets.pcapng (knxtrace image), written by tools/ets-sweep/synthetic/capture.py for knx-sim/tests/synthetic_calibration.rs.",
+"segments": [
+  {"object": 1, "base": 40960, "size": 2},
+  {"object": 2, "base": 49152, "size": 2},
+  {"object": 3, "base": 32768, "size": 4},
+  {"object": 4, "base": 24576, "size": 256}
+],
+"regions": [
+  {"start": 24576, "hex": "01012cffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},
+  {"start": 32768, "hex": "00014b00"},
+  {"start": 40960, "hex": "0000"},
+  {"start": 49152, "hex": "0000"}
+]
+}
