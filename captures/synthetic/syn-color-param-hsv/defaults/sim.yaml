@@ -1,0 +1,15 @@
+# knx-sim device of the ETS capture next to this file (epic #596), on loopback.
+# The product is the committed xml/ zipped with the stub master:
+#   uv run tests-support/synthetic-products/generate.py --zip syn-color-param-hsv
+# The application is the rendered id; the signed one ETS imported differs
+# only in its fingerprint, which never reaches the wire.
+gateway:
+  host: 127.0.0.1
+  port: 3672
+  tunnel_address: 1.1.254
+devices:
+- address: 1.1.1
+  knxprod: ../../../../tests-support/synthetic-products/syn-color-param-hsv/build/syn-color-param-hsv.knxprod
+  application: M-00FA_A-27A8-10-0000
+  initial_state: unloaded
+  lsm_access: property

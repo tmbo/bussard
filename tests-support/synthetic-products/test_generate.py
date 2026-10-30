@@ -478,6 +478,32 @@ class BitFields(unittest.TestCase):
             generate.Product("test", s)
 
 
+class Colour(unittest.TestCase):
+    """syn-color-param (#616): the `color` type kind, 24 bits in memory."""
+
+    def colour_spec(self, space: str = "RGB", offset: int = 3) -> dict:
+        s = spec()
+        s["parameter_type"] = s["parameter_type"] + [{"name": "C", "kind": "color", "space": space}]
+        s["parameter"] = s["parameter"] + [
+            {"name": "c", "type": "C", "text": "C", "default": "#FF0000",
+             "memory": {"segment": "main", "offset": offset, "bit_offset": 0}}]
+        return s
+
+    def test_render_colour_types(self) -> None:
+        self.assertIn('<TypeColor Space="RGB" />', app_xml(self.colour_spec()))
+        xml = app_xml(self.colour_spec("HSV"))
+        self.assertIn('<TypeColor Space="HSV" />', xml)
+        self.assertIn('Text="C" Value="#FF0000">', xml)
+
+    def test_colour_width_checked_against_segment(self) -> None:
+        with self.assertRaisesRegex(generate.SpecError, "does not fit"):
+            generate.Product("test", self.colour_spec(offset=254))
+
+    def test_colour_space_rgbw_not_yet(self) -> None:
+        with self.assertRaisesRegex(generate.SpecError, "no product uses it yet"):
+            generate.Product("test", self.colour_spec("RGBW"))
+
+
 class InitialValue(unittest.TestCase):
     """syn-text-initialvalue (#473): a text parameter's InitialValue and its translation."""
 
