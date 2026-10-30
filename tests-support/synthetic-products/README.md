@@ -85,7 +85,7 @@ One `product.toml` per directory. Tables and keys:
 | `[application.options]` | any `Options` attribute of the KNX schema, e.g. `SupportsExtendedMemoryServices = true`, `ParameterByteOrder = "LittleEndian"` | `Options` |
 | `[[segment]]` | `name`, `kind` (`relative`), `lsm`, `size`; optional `fill` (the initial octet, 0) | `RelativeSegment` with its `Data` |
 | `[[parameter_type]]` | `name`, `kind`; `enum`: `size_bits`, `values = [{ value, text }]`; `number`: `size_bits`, `signed`, `min`, `max`; `float`: `encoding` (`DPT 9`, `IEEE-754 Single`, `IEEE-754 Double`; 16, 32, 64 bits), `min`, `max`; `text`: `size_octets` | `TypeRestriction`, `TypeNumber`, `TypeFloat`, `TypeText` |
-| `[[parameter]]` | `name`, `type`, `text`, `default`, and either `memory = { segment, offset, bit_offset }`, `union = { name, offset, bit_offset }` (a member at its offset in the union) or `virtual = true` (no memory, it only steers the Dynamic tree; #474); optional `access` (`None`, `Read`, `ReadWrite`) and `legacy_patch_always` (#450) | `Parameter` (`_P-<n>`, a union member `_UP-<n>`), one `ParameterRef` each |
+| `[[parameter]]` | `name`, `type`, `text`, `default`, and either `memory = { segment, offset, bit_offset }`, `union = { name, offset, bit_offset }` (a member at its offset in the union), `property = { object_index, property_id, offset, bit_offset }` (placed in an interface-object property, #604 row 30) or `virtual = true` (no memory, it only steers the Dynamic tree; #474); optional `access` (`None`, `Read`, `ReadWrite`) and `legacy_patch_always` (#450) | `Parameter` (`_P-<n>`, a union member `_UP-<n>`), one `ParameterRef` each |
 | `[[union]]` | `name`, `size_bits`, `memory = { segment, offset, bit_offset }`; optional `default` (the member that is `DefaultUnionParameter`) | `Union` with its `Memory`, after the plain parameters |
 | `[[parameter_calculation]]` | `name`, `language` (`JavaScript`), `inputs` and `outputs` (`[{ parameter, alias }]`), `lr_script`, `rl_script` | a `ParameterCalculation` (`_PC-<n>`) in the inline form: `RLTransformation`, `LRTransformation`, `LParameters`, `RParameters` with `AliasName`s (#427) |
 | `[[com_object]]` | `number`, `name`, `text`, `function_text`, `size` (`"1 Bit"`), `dpt` (`"DPST-1-1"`), `flags` (of `C R W T U I`), `priority` (`Low`, `High`, `Alert`) | `ComObject`, one `ComObjectRef` each |
@@ -95,7 +95,10 @@ One `product.toml` per directory. Tables and keys:
 
 Load ops: `LdCtrlRelSegment` (`lsm`, `size`, `mode`, `fill`),
 `LdCtrlWriteRelMem` (`object`, `offset`, `size`, `verify`) and
-`LdCtrlMasterReset` (`erase_code`, `channel`). A System 7 product procedure
+`LdCtrlMasterReset` (`erase_code`, `channel`) and
+`LdCtrlWriteProp` (`object`, `property_id`, `start_element`, `count`, `verify`;
+no `InlineData`: the value is what the parameters placed in that property
+compose, so a parameter must be placed there). A System 7 product procedure
 also takes `LdCtrlTaskPtr` (`lsm`, `init_ptr`, `save_ptr`, `serial_ptr`) and
 `LdCtrlTaskCtrl2` (`lsm`, `callback`, `address`, `seg0`, `seg1`). `{ op = "choose", parameter,
 when = [{ test, ops }, { default = true, ops }] }` renders a `<choose
@@ -108,7 +111,7 @@ than 07B0 (System 7 twins), `ProductProcedure`, absolute segments, parameter
 type kinds `time`, `ip_address`, `raw`, VBScript calculations and the
 `LRTransformationFunc` form with a `<Script>`, explicit com
 object refs, channels, a `test` branch of a `<choose>` in the Dynamic tree, and the load
-ops `LdCtrlLoadImageProp`, `LdCtrlWriteProp`,
+ops `LdCtrlLoadImageProp`,
 `LdCtrlCompareProp`, `LdCtrlAbsSegment` and the connection and state ops of a
 product procedure. An unknown key or op stops with an error naming it.
 
