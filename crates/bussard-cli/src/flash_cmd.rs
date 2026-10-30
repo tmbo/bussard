@@ -1453,6 +1453,7 @@ fn print_param_plan(params: &ParamPlan) {
     if let Some(note) = &params.note {
         println!("  note        : {note}");
     }
+    print_kept_params(params);
     if params.changes.is_empty() {
         println!("  parameters  : no parameter change");
         return;
@@ -1469,6 +1470,56 @@ fn print_param_plan(params: &ParamPlan) {
     for change in &params.changes {
         println!("      {}", change.line());
     }
+}
+
+/// The parameters the download leaves as the device holds them (issue #411):
+/// neither written nor ignored, and not verifiable after a fresh allocation.
+fn print_kept_params(params: &ParamPlan) {
+    if params.kept.is_empty() {
+        return;
+    }
+    println!(
+        "  kept        : {} parameter(s) kept on the device: the load procedure's branch does \
+         not write their octets (as ETS's download), so the device keeps what it holds; after a \
+         fresh allocation that is whatever the allocation left, so the model's value is not \
+         verified:",
+        params.kept.len()
+    );
+    for kept in &params.kept {
+        println!("      {}", kept.kept_line());
+    }
+}
+
+/// The `kept_memory` array of the JSON plan (issue #411).
+fn kept_memory_json(plan: &FlashPlan) -> Vec<serde_json::Value> {
+    plan.kept()
+        .iter()
+        .map(|k| {
+            serde_json::json!({
+                "object": k.object,
+                "segment": k.segment,
+                "allocated": k.allocated,
+                "ranges": k.ranges.iter().map(|(s, e)| [s, e]).collect::<Vec<_>>(),
+                "label": k.label(),
+            })
+        })
+        .collect()
+}
+
+/// The octet runs the download leaves as the device holds them (issue
+/// #411), one line each: `object 4 octets 128..256 kept`.
+fn kept_memory_lines(plan: &FlashPlan) -> Vec<String> {
+    plan.kept()
+        .iter()
+        .map(|k| {
+            format!(
+                "{} (segment {} of {} octets: not written, not read back, no MCB CRC compared)",
+                k.label(),
+                k.segment,
+                k.allocated
+            )
+        })
+        .collect()
 }
 
 /// Emits the pre-flight as JSON, including the `parameters` array (issue #109)
@@ -1527,6 +1578,21 @@ fn plan_json(
         },
         "parameters": parameters,
         "parameter_note": params.note,
+        // Issue #411: the parameters and octets the download keeps on the
+        // device (not written, not verified).
+        "kept_parameters": params.kept.iter().map(|c| serde_json::json!({
+            "key": c.key,
+            "name": c.name,
+            "device": match &c.old {
+                ParamValue::Known(v) => serde_json::Value::String(v.clone()),
+                ParamValue::Unknown => serde_json::Value::Null,
+            },
+            "model": c.new.to_string(),
+            "unit": c.unit,
+            "written": false,
+            "verified": false,
+        })).collect::<Vec<_>>(),
+        "kept_memory": kept_memory_json(plan),
         "security_object": security_change.map(|change| {
             let mut value = serde_json::json!(change);
             value["line"] = serde_json::Value::String(change.line());
@@ -1608,6 +1674,9 @@ fn print_plan(
             "  data secure : security object reprogrammed: {senders} secured sender(s), {keys} \
              group key(s), {secured} secured group object(s)"
         );
+    }
+    for line in kept_memory_lines(plan) {
+        println!("  kept memory : {line}");
     }
     if verbose > 0 {
         println!("  procedure   :");

@@ -78,13 +78,13 @@ pub use device_plan::{
 pub use flash::{
     AppIdentity, Connector, DeviceFacts, ETS_PROJECT_INSTALLATION_ID, ETS_ROUTING_MULTICAST,
     ETS_ROUTING_TTL, FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageKind, ImageRef,
-    KnxnetIpProgram, KnxnetIpWrite, LoadControlForm, LoadControlRecord, PartialPlanError,
-    PlanError, Progress, PropObject, RebootReadiness, RestartForm, RestartKind, Session,
-    SingleConnector, Sys7Context, Sys7TableBases, VerifyEchoes, compare_property_value,
-    discover_application_object, flash, knxnet_ip_program, plan_flash, plan_flash_sys7_with_hawk,
-    plan_flash_with_memo, plan_flash_with_object_flags, read_property_value, restart_form,
-    same_program, select_application, sys7_profile_from_hawk, sys7_table_bases, trace,
-    write_knxnet_ip, write_property_value,
+    KeptOctets, KnxnetIpProgram, KnxnetIpWrite, LoadControlForm, LoadControlRecord,
+    PartialPlanError, PlanError, Progress, PropObject, RebootReadiness, RestartForm, RestartKind,
+    Session, SingleConnector, Sys7Context, Sys7TableBases, VerifyEchoes, compare_property_value,
+    discover_application_object, flash, kept_octets, knxnet_ip_program, plan_flash,
+    plan_flash_sys7_with_hawk, plan_flash_with_memo, plan_flash_with_object_flags,
+    read_property_value, restart_form, same_program, select_application, sys7_profile_from_hawk,
+    sys7_table_bases, trace, write_knxnet_ip, write_property_value,
 };
 pub use model_params::{
     OrderNumberError, Sys7Identity, build_module_obj3_descriptors, build_table_images,

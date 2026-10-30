@@ -632,15 +632,23 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                                 address: session.l4().target(),
                                 detail: format!("segment base {base:#X} + offset {offset:#X}"),
                             })?;
-                        let bytes = plan
+                        // The step streams its own part of the image: the whole
+                        // image, or the `[offset, offset + len)` a `<choose>`
+                        // branch writes of a segment it writes in part (issue
+                        // #411); the baseline is cut the same way.
+                        let whole = plan
                             .images
                             .get(&image.segment_id)
-                            .cloned()
+                            .map(Vec::as_slice)
                             .unwrap_or_default();
-                        let partial = plan
-                            .baseline
-                            .get(&image.segment_id)
-                            .map(|current| (current, plan.baseline_address(&image.segment_id)));
+                        let bytes = image_part(whole, image).to_vec();
+                        let partial = plan.baseline.get(&image.segment_id).map(|current| {
+                            (
+                                image_part(current, image),
+                                plan.baseline_address(&image.segment_id)
+                                    .map(|a| a + image.offset as u32),
+                            )
+                        });
                         match (partial, fill) {
                             // A parameter-only download (issue #543): the
                             // allocation in Mode 0 kept the memory contents at
@@ -1389,6 +1397,16 @@ pub(super) fn fill_regions<'a>(
         .into_iter()
         .map(|(start, end)| (start, &image[start..end]))
         .collect()
+}
+
+/// The part of `bytes` (a segment's image, or the device's octets of it) a
+/// System B write step streams: `[image.offset, image.offset + image.len)`,
+/// cut to what `bytes` holds. The whole image for every step but the part
+/// writes of a segment a `<choose>` branch writes in part (issue #411).
+pub(super) fn image_part<'a>(bytes: &'a [u8], image: &super::ImageRef) -> &'a [u8] {
+    let start = image.offset.min(bytes.len());
+    let end = image.offset.saturating_add(image.len).min(bytes.len());
+    &bytes[start..end.max(start)]
 }
 
 /// The octet ranges `[start, end)` of `image` that differ from `current`, the

@@ -724,6 +724,7 @@ pub(super) fn plan_flash_sys7(
         user_memory_above_64k: false,
         par_allocations: BTreeMap::new(),
         par_procedure: false,
+        kept: Vec::new(),
     })
 }
 

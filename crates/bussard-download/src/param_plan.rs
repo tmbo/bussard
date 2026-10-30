@@ -94,6 +94,23 @@ impl ParamChange {
             (old, new) => format!("{}: {old}{unit} to {new}{unit}", self.name),
         }
     }
+
+    /// The line of a parameter the download keeps on the device (issue
+    /// #411): `keep log: the device holds 1, the model says 0, kept`.
+    pub fn kept_line(&self) -> String {
+        let unit = match &self.unit {
+            Some(u) if !u.is_empty() => format!(" {u}"),
+            _ => String::new(),
+        };
+        let held = match &self.old {
+            ParamValue::Unknown => "the device's value is not read".to_string(),
+            old => format!("the device holds {old}{unit}"),
+        };
+        format!(
+            "{}: {held}, the model says {}{unit}; kept on the device, not written",
+            self.name, self.new
+        )
+    }
 }
 
 /// The parameter-level plan: what the flash changes, in the vendor's own words.
@@ -105,6 +122,10 @@ pub struct ParamPlan {
     pub unknown: usize,
     /// A note explaining a degraded plan (System 7, or no readback at all).
     pub note: Option<String>,
+    /// The parameters placed in octets the download leaves as the device
+    /// holds them (issue #411, [`crate::KeptOctets`]): not written, so not
+    /// among the changes. `old` is the device's value, `new` the model's.
+    pub kept: Vec<ParamChange>,
 }
 
 impl ParamPlan {
@@ -142,11 +163,16 @@ pub fn param_plan(
             changes: decoded.differences,
             unknown: decoded.unknown,
             note: None,
+            kept: decoded.kept,
         };
     }
     // Nothing was read: every override that lands in memory is a change to an
-    // unknown current value.
+    // unknown current value, unless the download keeps its octets (issue
+    // #411).
+    let memo = bussard_prod::dynamic::DynamicMemo::new(app);
+    let kept_octets = crate::flash::kept_octets(app, overrides, &memo);
     let mut changes = Vec::new();
+    let mut kept = Vec::new();
     for (key, desired) in overrides {
         let Some((param, _)) = resolve_key(app, key) else {
             continue;
@@ -159,13 +185,25 @@ pub fn param_plan(
             continue;
         }
         let ptype = parameter_type(app, param);
-        changes.push(ParamChange {
+        let change = ParamChange {
             key: key.clone(),
             name: display_name(param),
             old: ParamValue::Unknown,
             new: ParamValue::Known(render(desired.trim(), ptype)),
             unit: param.suffix_text.clone(),
+        };
+        let in_kept = param.memory.as_ref().is_some_and(|m| {
+            let offset = m.offset.and_then(|o| usize::try_from(o).ok());
+            kept_octets.iter().any(|k| {
+                m.code_segment.as_deref() == Some(k.segment.as_str())
+                    && offset.is_some_and(|o| k.contains(o))
+            })
         });
+        if in_kept {
+            kept.push(change);
+        } else {
+            changes.push(change);
+        }
     }
     let note = (!changes.is_empty()).then(|| {
         "the device's current parameter memory could not be read, so every value \
@@ -176,6 +214,7 @@ pub fn param_plan(
         unknown: changes.len(),
         changes,
         note,
+        kept,
     }
 }
 
@@ -463,13 +502,31 @@ pub fn planned_parameter_regions(plan: &FlashPlan) -> ParamRegions {
                     None => !last_allocation.contains_key(&obj),
                 };
                 if readable {
-                    add(&image.segment_id, *offset, image.len);
+                    let (start, len) = whole_region(plan, *offset, image);
+                    add(&image.segment_id, start, len);
                 }
             }
             _ => {}
         }
     }
     out
+}
+
+/// The offset and length of the region a System B parameter write's segment
+/// is read back as: the write's own `(offset, len)`, or for a segment the
+/// download writes in part (issue #411) the whole image from the segment
+/// base, kept octets included, so every write of it and the parameters it
+/// keeps decode from one region.
+fn whole_region(plan: &FlashPlan, offset: u32, image: &crate::flash::ImageRef) -> (u32, usize) {
+    if plan.kept().iter().any(|k| k.segment == image.segment_id) {
+        let start = offset.saturating_sub(u32::try_from(image.offset).unwrap_or(u32::MAX));
+        let len = plan
+            .image_bytes(&image.segment_id)
+            .map_or(image.len, <[u8]>::len);
+        (start, len)
+    } else {
+        (offset, image.len)
+    }
 }
 
 /// Reads back every parameter-bearing region a [`FlashPlan`] writes, with the
@@ -646,10 +703,11 @@ pub async fn read_parameter_regions_with_objects<Ch: L4Channel>(
             }
         };
         let Some(base) = base else { continue };
-        let Some(addr) = base.checked_add(*offset) else {
+        let (start, len) = whole_region(plan, *offset, image);
+        let Some(addr) = base.checked_add(start) else {
             continue;
         };
-        match read_memory_range(l4, addr, image.len).await {
+        match read_memory_range(l4, addr, len).await {
             Ok(bytes) => {
                 out.insert(
                     image.segment_id.clone(),

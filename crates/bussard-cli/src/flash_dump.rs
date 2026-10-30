@@ -18,7 +18,10 @@
 //!   (`0x<addr>.bin` for an absolute write, `obj<N>_<segment>.bin` for a
 //!   relative one), and a `.mask.bin` beside it when a System 7 segment masks
 //!   device-owned octets;
-//! - `table-obj<N>.bin` (System B) or `table-lsm<N>.bin` (System 7).
+//! - `table-obj<N>.bin` (System B) or `table-lsm<N>.bin` (System 7);
+//! - `kept` in `plan.json`: the allocated octets a load-procedure `<choose>`
+//!   branch does not write (issue #411), named `object 4 octets 128..256
+//!   kept`; the image records stream only the written parts.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -320,6 +323,11 @@ pub fn write_dump(
             } => {
                 let obj = target.map_or_else(|| "app".to_string(), |t| t.to_string());
                 let stem = format!("obj{obj}_{}", file_safe(&image.segment_id));
+                // A write of part of a segment (issue #411) streams only its
+                // part; the rest of the allocation is `kept` (below).
+                let whole = plan.image_bytes(&image.segment_id).map_or(0, <[u8]>::len);
+                let part =
+                    (image.offset != 0 || image.len != whole).then_some((image.offset, image.len));
                 let rec = image_record(
                     dir,
                     &mut used,
@@ -330,7 +338,7 @@ pub fn write_dump(
                     None,
                     *target,
                     Some(*offset),
-                    None,
+                    part,
                 )?;
                 if image.kind == bussard_download::ImageKind::Table
                     && let Some(t) = target
@@ -583,6 +591,15 @@ pub fn write_dump(
         "steps": steps,
         "allocations": allocations,
         "tables": tables,
+        // The allocated octets no step writes (issue #411): the device keeps
+        // what it holds there, so they are neither streamed nor placed.
+        "kept": plan.kept().iter().map(|k| json!({
+            "object": k.object,
+            "segment_id": k.segment,
+            "allocated": k.allocated,
+            "ranges": k.ranges.iter().map(|(s, e)| [s, e]).collect::<Vec<_>>(),
+            "label": k.label(),
+        })).collect::<Vec<_>>(),
     });
     let path = dir.join("plan.json");
     std::fs::write(&path, serde_json::to_string_pretty(&doc)? + "\n")

@@ -81,6 +81,11 @@ pub(super) fn sole_object_image<'a>(
         }
     }
     let segment_id = found?;
+    // A segment the device keeps octets of (issue #411): its CRC says nothing
+    // about what bussard writes, so the match is uncertain.
+    if plan.kept.iter().any(|k| k.segment == segment_id) {
+        return None;
+    }
     plan.images.get(segment_id).map(|v| v.as_slice())
 }
 

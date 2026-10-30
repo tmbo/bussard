@@ -468,3 +468,92 @@ fn test_flash_dry_run_unknown_enum_label_lists_lock_language_labels() -> Result<
     }
     Ok(())
 }
+
+/// Zips a synthetic product's committed `xml/` with the stub master
+/// (`tests-support/synthetic-products/<name>/`, epic #596).
+fn synthetic_knxprod(name: &str, out_dir: &Path) -> Result<PathBuf, String> {
+    use std::io::Write as _;
+    let xml = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests-support/synthetic-products")
+        .join(name)
+        .join("xml/M-00FA");
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(&xml).map_err(|e| e.to_string())? {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        let file = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .ok_or("a file name")?;
+        files.push((
+            format!("M-00FA/{file}"),
+            std::fs::read(&path).map_err(|e| e.to_string())?,
+        ));
+    }
+    files.sort();
+    let archive = out_dir.join(format!("{name}.knxprod"));
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive).map_err(|e| e.to_string())?);
+    let opts = zip::write::SimpleFileOptions::default();
+    zip.start_file("knx_master.xml", opts)
+        .map_err(|e| e.to_string())?;
+    zip.write_all(b"<KNX/>").map_err(|e| e.to_string())?;
+    for (path, data) in files {
+        zip.start_file(path, opts).map_err(|e| e.to_string())?;
+        zip.write_all(&data).map_err(|e| e.to_string())?;
+    }
+    zip.finish().map_err(|e| e.to_string())?;
+    Ok(archive)
+}
+
+/// Issue #411: a `<choose>` whose taken branch writes half the segment
+/// (`syn-choose-partial-segment`, keep-data at its default) streams 128
+/// octets, and the plan and the dump name the 128 it keeps on the device.
+#[test]
+fn test_flash_dry_run_dump_images_names_the_kept_gap() -> Result<(), String> {
+    let tmp = TmpDir::new("kept-gap").map_err(|e| e.to_string())?;
+    let knxprod = synthetic_knxprod("syn-choose-partial-segment", tmp.path())?;
+    let model = tmp.path().join("knx");
+    std::fs::create_dir_all(&model).map_err(|e| e.to_string())?;
+    let dump = tmp.path().join("dump");
+    let (ok, stdout, stderr) = bussard(&[
+        "flash",
+        "1.1.1",
+        "--product",
+        knxprod.to_str().ok_or("non-UTF-8 temp path")?,
+        "--dir",
+        model.to_str().ok_or("non-UTF-8 temp path")?,
+        "--dry-run",
+        "--dump-images",
+        dump.to_str().ok_or("non-UTF-8 temp path")?,
+    ]);
+    if !ok {
+        return Err(format!(
+            "dry run failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        ));
+    }
+    if !stdout.contains("object 4 octets 128..256 kept") {
+        return Err(format!("the plan does not name the kept gap: {stdout}"));
+    }
+    let raw = std::fs::read_to_string(dump.join("plan.json")).map_err(|e| e.to_string())?;
+    let plan: serde_json::Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    assert_images_match(&dump, &plan)?;
+    let kept = plan["kept"].as_array().ok_or("no kept array")?;
+    if kept.len() != 1
+        || kept[0]["label"] != "object 4 octets 128..256 kept"
+        || kept[0]["allocated"] != 256
+    {
+        return Err(format!("unexpected kept record: {raw}"));
+    }
+    let app: Vec<&serde_json::Value> = plan["steps"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|s| s.get("image"))
+        .filter(|i| i["object"] == 4)
+        .collect();
+    if app.len() != 1 || app[0]["length"] != 128 || app[0]["placed"]["octets"] != 4 {
+        return Err(format!(
+            "expected one 128-octet write with 4 placed octets: {raw}"
+        ));
+    }
+    Ok(())
+}
