@@ -1109,6 +1109,18 @@ fn load_op_summary(op: &LoadOp) -> String {
             opt(prop_id),
             opt(count)
         ),
+        LoadOp::MapError {
+            original_error,
+            mapped_error,
+        } => {
+            let code =
+                |c: &Option<u32>| c.map_or_else(|| "-".to_string(), |c| format!("{c:#010X}"));
+            format!(
+                "map_error original={} mapped={}",
+                code(original_error),
+                code(mapped_error)
+            )
+        }
         LoadOp::Raw { name, attrs } => {
             let joined: Vec<String> = attrs.iter().map(|(k, v)| format!("{k}={v}")).collect();
             format!("raw {name} [{}]", joined.join(" "))

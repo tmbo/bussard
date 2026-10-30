@@ -818,7 +818,8 @@ pub async fn master_reset<Ch: L4Channel>(
 /// `expected`, honouring an optional `mask` — the execution of a vendor
 /// `LdCtrlCompareProp` op (the verify twin of [`write_property`]).
 ///
-/// Reads element 1 of `property_id` on `object_index` via `A_PropertyValue_Read`
+/// Reads element `start` (1-based; the procedure's `StartElement`) of
+/// `property_id` on `object_index` via `A_PropertyValue_Read`
 /// (the same primitive [`read_load_state`] and [`read_mcb_table`] use), then
 /// compares the first `expected.len()` returned octets against `expected`. When
 /// `mask` is `Some`, each position is compared only where the mask byte is
@@ -835,11 +836,12 @@ pub async fn compare_property<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     object_index: u8,
     property_id: u8,
+    start: u16,
     expected: &[u8],
     mask: Option<&[u8]>,
 ) -> Result<()> {
     let address = l4.target();
-    let resp = property_request(l4, object_index, property_id, 1, 1).await?;
+    let resp = property_request(l4, object_index, property_id, start, 1).await?;
 
     let actual: Vec<u8> = resp.data.iter().take(expected.len()).copied().collect();
     let mask_note = match mask {
@@ -1081,7 +1083,6 @@ pub async fn write_load_control<Ch: L4Channel>(
     object_index: u8,
     control: LoadControl,
 ) -> Result<LoadState> {
-    let address = l4.target();
     let control_value = control.encode_full();
     let resp = property_write_request(
         l4,
@@ -1092,7 +1093,53 @@ pub async fn write_load_control<Ch: L4Channel>(
         &control_value,
     )
     .await?;
-    let state = match echoed_load_state(control, &resp) {
+    confirm_load_control(l4, object_index, control, &resp).await
+}
+
+/// [`write_load_control`] for a step whose procedure maps the device's
+/// refusal to success (`LdCtrlMapError`, issue #614): an answer with element
+/// count 0, the negative answer of a device that has no object
+/// `object_index` (issue #178), returns `Ok(None)` without a read. Every other
+/// answer is confirmed as [`write_load_control`] confirms it, so a device that
+/// has the object and lands in the wrong state still fails.
+///
+/// # Errors
+///
+/// As [`write_load_control`], except for the count-0 answer.
+pub async fn write_load_control_unless_absent<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    object_index: u8,
+    control: LoadControl,
+) -> Result<Option<LoadState>> {
+    let control_value = control.encode_full();
+    let resp = property_write_request(
+        l4,
+        object_index,
+        PID_LOAD_STATE_CONTROL,
+        1,
+        1,
+        &control_value,
+    )
+    .await?;
+    if resp.count == 0 {
+        return Ok(None);
+    }
+    confirm_load_control(l4, object_index, control, &resp)
+        .await
+        .map(Some)
+}
+
+/// Confirms the state a load-control write left `object_index` in: the state
+/// its answer `resp` carries, else a read, then the check of
+/// [`write_load_control`].
+async fn confirm_load_control<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    object_index: u8,
+    control: LoadControl,
+    resp: &crate::apci::PropertyValueResponse,
+) -> Result<LoadState> {
+    let address = l4.target();
+    let state = match echoed_load_state(control, resp) {
         Some(state) => state,
         None => read_load_state(l4, object_index).await?,
     };

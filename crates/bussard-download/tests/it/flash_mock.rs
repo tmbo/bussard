@@ -556,10 +556,15 @@ struct DeviceState {
     /// The connection-level events an activated device saw, in order: a
     /// readable log of the wire sequence around a restart.
     secure_log: Vec<String>,
-    /// Objects whose `PID_LOAD_STATE_CONTROL` read answers zero elements (the
-    /// property is absent), so the resident-state probe gets no state from
-    /// them (issue #213 fallback test).
+    /// Objects whose `PID_LOAD_STATE_CONTROL` read and write answer zero
+    /// elements (the property or the object is absent), so the resident-state
+    /// probe gets no state from them (issue #213 fallback test) and a
+    /// load control to them is refused (issue #614).
     load_state_absent: Vec<u8>,
+    /// Objects that answer an `Unload`, and every load-state read, with the
+    /// load `Error` state (issue #614: a mapped unload still fails on any
+    /// answer but count 0).
+    unload_error: Vec<u8>,
 }
 
 type Shared = Arc<Mutex<DeviceState>>;
@@ -947,6 +952,12 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
                 prop_response(oi, pid, 0, start, &[]),
             );
         }
+        if pid == PID_LOAD_STATE_CONTROL && s.unload_error.contains(&oi) {
+            return Reaction::Answer(
+                A_PROPERTY_VALUE_RESPONSE,
+                prop_response(oi, pid, 1, start, &[LS_ERROR]),
+            );
+        }
         if pid == PID_LOAD_STATE_CONTROL {
             let st = if s.multi_object {
                 // Multi-object flash: every loadable object tracks its own state.
@@ -1087,6 +1098,18 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
             s.load_control_targets.push(oi);
             let event = value.first().copied().unwrap_or(0);
             s.load_events.push((oi, event));
+            if s.load_state_absent.contains(&oi) {
+                return Reaction::Answer(
+                    A_PROPERTY_VALUE_RESPONSE,
+                    prop_response(oi, pid, 0, start, &[]),
+                );
+            }
+            if event == LE_UNLOAD && s.unload_error.contains(&oi) {
+                return Reaction::Answer(
+                    A_PROPERTY_VALUE_RESPONSE,
+                    prop_response(oi, pid, 1, start, &[LS_ERROR]),
+                );
+            }
             let is_app = loadable_object_index(&s) == Some(oi);
             let fault = s.fault;
 
@@ -1894,6 +1917,7 @@ fn fresh_device(fault: Fault) -> Shared {
         plain_descriptor_reads: 0,
         secure_log: Vec::new(),
         load_state_absent: Vec::new(),
+        unload_error: Vec::new(),
     }))
 }
 
@@ -2773,7 +2797,13 @@ async fn plan_only_touches_no_load_state() -> TestResult {
     assert!(!plan.steps.is_empty());
     // The first supported device step is the unload of the application object
     // (LsmIdx=4 in the fabricated app).
-    assert_eq!(plan.steps[0], FlashStep::Unload { target: Some(4) });
+    assert_eq!(
+        plan.steps[0],
+        FlashStep::Unload {
+            target: Some(4),
+            absent_ok: false
+        }
+    );
 
     let s = lock(&state)?;
     assert_eq!(
@@ -3595,6 +3625,93 @@ async fn test_flash_master_reset_uses_the_confirmed_form() -> TestResult {
 async fn test_flash_master_reset_uses_the_confirmed_form_for_a_non_virtual_00fa_app() -> TestResult
 {
     flash_master_reset_expecting_confirmed_form("M-00FA_A-2600-10-731A").await
+}
+
+/// Issue #623: a re-flash onto a device that already holds the application,
+/// with the differential download on, of a product whose procedure sends a
+/// Master Reset with erase code 4 (reset the application program). The
+/// resident MCB matches the image, but the reset erases the object, so the
+/// object is re-downloaded in full instead of skipped, and the flash verifies.
+#[tokio::test]
+async fn test_flash_master_reset_erase_code_4_over_loaded_device_redownloads() -> TestResult {
+    // SAFETY of env: nextest runs this test in its own process; the var only
+    // shortens the post-reboot poll.
+    unsafe {
+        std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
+    }
+    let image = [0u8, 1, 2, 3, 4, 5];
+    let (handle, state, gw) = setup_bus_with(preloaded_device(&image)?).await?;
+    lock(&state)?.wipe_app_on_master_reset = true;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source = bussard_bus::ops::group_source(&handle);
+
+    // `app_with_master_reset` with the write naming object 4, the object the
+    // mock keeps the resident MCB on, and a vendor id (the confirmed form).
+    let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+     <ApplicationProgram Id="M-0083_A-0005" ApplicationNumber="5" ApplicationVersion="1"
+        MaskVersion="MV-07B0" Name="MasterReset" LoadProcedureStyle="ProductDefault">
+      <Static>
+       <Code>
+        <RelativeSegment Id="M-0083_A-0005_RS-1" Size="6" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment>
+       </Code>
+       <LoadProcedures>
+        <LoadProcedure>
+         <LdCtrlConnect />
+         <LdCtrlUnload LsmIdx="4" />
+         <LdCtrlLoad LsmIdx="4" />
+         <LdCtrlRelSegment LsmIdx="4" Size="6" />
+         <LdCtrlMasterReset EraseCode="4" ChannelNumber="0" />
+         <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="6" />
+         <LdCtrlLoadCompleted LsmIdx="4" />
+         <LdCtrlRestart />
+         <LdCtrlDisconnect />
+        </LoadProcedure>
+       </LoadProcedures>
+      </Static>
+     </ApplicationProgram></KNX>"#;
+    let app = parse_application_program("M-0083_A-0005", xml.as_bytes())?;
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    assert!(plan.erases_resident_objects());
+    let connector = LeaseConnector::plain(handle.clone(), target, source, None);
+    let mut session = Session::open_with_key(connector, None).await?;
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions {
+            skip_matching_mcb: true,
+            ..Default::default()
+        },
+        |_| {},
+    )
+    .await?;
+    let _ = session.into_disconnect().await;
+    assert!(
+        outcome.ok(),
+        "the object the reset erases must be re-downloaded: {outcome:?}"
+    );
+    assert_eq!(outcome.load_state, LoadState::Loaded);
+    {
+        let s = lock(&state)?;
+        assert_eq!(s.master_resets_seen, 1, "the product's reset is still sent");
+        assert!(
+            s.memory_writes_seen > 0,
+            "the erased object must be streamed again, not skipped on its MCB"
+        );
+    }
+    let _ = handle.close().await;
+    drop(gw);
+    unsafe {
+        std::env::remove_var("BUSSARD_FLASH_REBOOT_WAIT_MS");
+    }
+    Ok(())
 }
 
 /// Flashes [`app_with_master_reset`] under the application id `id` and asserts
@@ -6593,9 +6710,13 @@ fn test_plan_flash_skips_program_version_of_an_unloaded_object() -> TestResult {
         .collect();
     assert_eq!(pid13_objects, vec![4], "PID 13 only on the loaded object 4");
     assert!(
-        plan.steps
-            .iter()
-            .any(|s| matches!(s, FlashStep::Unload { target: Some(5) })),
+        plan.steps.iter().any(|s| matches!(
+            s,
+            FlashStep::Unload {
+                target: Some(5),
+                ..
+            }
+        )),
         "object 5 is still unloaded, as ETS does"
     );
     assert!(!plan.steps.iter().any(|s| matches!(
@@ -7803,5 +7924,93 @@ fn test_plan_flash_plain_app_with_filled_segment_unloads_and_restarts_basic() ->
         ),
         "the fixture allocates a filled segment"
     );
+    Ok(())
+}
+
+/// The fabricated plan with an unload of object 5 in front whose absent object
+/// is no error (`LdCtrlMapError`, issue #614).
+fn plan_with_mapped_unload() -> TestResult<bussard_download::FlashPlan> {
+    let app = fabricated_app()?;
+    let mut plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    plan.steps.insert(
+        0,
+        FlashStep::Unload {
+            target: Some(5),
+            absent_ok: true,
+        },
+    );
+    Ok(plan)
+}
+
+/// A device without object 5 answers its unload with count 0; the mapped
+/// unload completes with a warning, goes to object 5 itself (not to the
+/// application object in its place), and the download verifies.
+#[tokio::test]
+async fn test_flash_mapped_unload_of_an_absent_object_succeeds() -> TestResult {
+    let (mut bus, state, handle) = setup(Fault::None).await?;
+    lock(&state)?.load_state_absent = vec![5];
+    let plan = plan_with_mapped_unload()?;
+    let l4 = Layer4Connection::connect(&mut bus, "1.1.4".parse()?, "0.0.255".parse()?).await?;
+    let mut session = authed_session(l4).await?;
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await?;
+    let _ = session.into_disconnect().await;
+    assert!(outcome.ok(), "flash must verify: {outcome:?}");
+    assert!(
+        outcome
+            .warnings
+            .iter()
+            .any(|w| w.contains("object 5 absent")),
+        "{:?}",
+        outcome.warnings
+    );
+    let s = lock(&state)?;
+    assert_eq!(s.load_control_targets.first(), Some(&5));
+    assert_eq!(
+        s.load_control_targets.iter().filter(|&&o| o == 5).count(),
+        1
+    );
+    drop(s);
+    drop(handle);
+    Ok(())
+}
+
+/// The mapping covers the absent object only: an object that answers the
+/// unload with the load `Error` state still fails the step.
+#[tokio::test]
+async fn test_flash_mapped_unload_still_fails_on_another_error() -> TestResult {
+    let (mut bus, state, handle) = setup(Fault::None).await?;
+    lock(&state)?.unload_error = vec![5];
+    let plan = plan_with_mapped_unload()?;
+    let l4 = Layer4Connection::connect(&mut bus, "1.1.4".parse()?, "0.0.255".parse()?).await?;
+    let mut session = authed_session(l4).await?;
+    let result = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await;
+    let _ = session.into_disconnect().await;
+    match result {
+        Err(WriteError::LoadError {
+            object_index: 5, ..
+        }) => {}
+        other => return Err(format!("expected LoadError on object 5, got {other:?}").into()),
+    }
+    drop(handle);
     Ok(())
 }

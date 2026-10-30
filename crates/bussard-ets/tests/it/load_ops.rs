@@ -50,3 +50,72 @@ fn test_parse_application_program_compare_rel_mem() -> Result<(), Box<dyn std::e
     );
     Ok(())
 }
+
+/// `<LdCtrlMapError>` (issue #614) parses into the typed [`LoadOp::MapError`]
+/// with its decimal codes, every op keeps its `AppliesTo`, the `par` and `grp`
+/// ops count as partial-only, and `LdCtrlCompareProp` keeps its
+/// `StartElement`.
+#[test]
+fn test_parse_application_program_map_error() -> Result<(), Box<dyn std::error::Error>> {
+    let xml = include_bytes!("../fixtures/ldctrl_map_error.app.xml");
+    let app = parse_application_program("M-00FA_A-0614-01-ABCD", xml)?;
+    let lp = app.load_procedures.first().ok_or("one load procedure")?;
+
+    let maps: Vec<&LoadOp> = lp
+        .ops
+        .iter()
+        .filter(|op| matches!(op, LoadOp::MapError { .. }))
+        .collect();
+    assert_eq!(
+        maps,
+        [
+            &LoadOp::MapError {
+                original_error: Some(0xC004_2B08),
+                mapped_error: Some(0),
+            },
+            &LoadOp::MapError {
+                original_error: Some(0xC004_2B08),
+                mapped_error: Some(0xC004_2B08),
+            },
+        ]
+    );
+    assert!(!lp.ops.iter().any(|op| matches!(op, LoadOp::Raw { .. })));
+
+    // Every op carries its scope, parallel to the ops.
+    assert_eq!(lp.applies_to.len(), lp.ops.len());
+    assert_eq!(lp.applies_to_of(0), Some("all"));
+    let partial = (0..lp.ops.len()).filter(|i| lp.is_partial_only(*i)).count();
+    assert_eq!(partial, 11, "the par and grp ops");
+    assert!(!lp.is_partial_only(0), "AppliesTo=all");
+    assert!(!lp.is_partial_only(3), "AppliesTo=full");
+    assert!(
+        lp.lists_partial_downloads(),
+        "the procedure lists a grp download"
+    );
+
+    let elements: Vec<Option<u32>> = lp
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            LoadOp::CompareProp { start_element, .. } => Some(*start_element),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(elements, [None, Some(3)]);
+    Ok(())
+}
+
+/// `AppliesTo` scopes: only `par` and `grp` are partial-only; `full`, `all`,
+/// `auto`, a mixed list and an empty value are not.
+#[test]
+fn test_applies_to_partial_only_scopes() {
+    use bussard_ets::application::applies_to_partial_only;
+    assert!(applies_to_partial_only("par"));
+    assert!(applies_to_partial_only("grp"));
+    assert!(applies_to_partial_only("par, grp"));
+    assert!(!applies_to_partial_only("full"));
+    assert!(!applies_to_partial_only("full,par"));
+    assert!(!applies_to_partial_only("all"));
+    assert!(!applies_to_partial_only("auto"));
+    assert!(!applies_to_partial_only(""));
+}
