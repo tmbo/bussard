@@ -58,8 +58,30 @@
 //! `<Module>` element is reached. So the reached set of this walk is exactly
 //! the active set. A parameter the Dynamic section never shows anywhere (a
 //! pure steering parameter, which only ever has its value) stays active
-//! without a reached ref. The target ref of a reached `<Assign>` counts as
-//! active too: ETS writes it.
+//! without a reached ref, with one exception (issue #474): on a System B
+//! program (`MaskVersion` `xxB0`), a `<choose>` whose only branches are
+//! `<when default="true">` on a never-shown *virtual* parameter (no
+//! `<Memory>`, no `<Property>`, no `<Union>` member) selects no branch. The
+//! evidence:
+//!
+//! - ETS takes no branch: the synthetic `syn-choose-never-shown`
+//!   (`M-00FA_A-270E-10-0000`, ETS 6.4.1, 2026-10-30,
+//!   `captures/synthetic/syn-choose-never-shown/defaults/`), a `ReadWrite`
+//!   enumeration with value 0, leaves object 2 of the default branch at
+//!   `00 00` in the group-object table; the 15 Zennio Flat push buttons
+//!   (`M-0071_A-5711-14-9233` and siblings, defaults sweep #422) leave the
+//!   objects behind the `Access="Read"` checkbox `Flat_AlwaysFALSE` out. So
+//!   neither `Access` nor the type decides.
+//! - ETS takes the branch: on System 7, the same default-only shape on typed
+//!   and `TypeNone` steering parameters steers whole channels (ABB `A-A00F`
+//!   `Allgemein`, Busch-Jaeger `A-A072` `RT_Ausgang Funktion`, ABB `A-A04C`
+//!   `Eingang_A`); on System B, a choose with a `test` branch beside the
+//!   default one (ABB Modbus `A-3002` `signal_N_device_active`, value 1,
+//!   branches `0` and default).
+//!
+//! Whether the system or something else that sets the System 7 programs apart
+//! decides is open until a System 7 twin of the synthetic product is captured.
+//! The target ref of a reached `<Assign>` counts as active too: ETS writes it.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
@@ -117,6 +139,18 @@ pub trait DynamicSource {
     fn initial_value(&self, _param_id: &str) -> Option<&str> {
         None
     }
+    /// Whether the parameter is virtual: it has no `<Memory>`, no
+    /// `<Property>` and is no `<Union>` member, so it only ever has its
+    /// value (issue #474). `false` when the source does not know, which
+    /// keeps a never-shown parameter active.
+    fn is_virtual(&self, _param_id: &str) -> bool {
+        false
+    }
+    /// Whether the application is a System B one (`MaskVersion` `xxB0`).
+    /// `false` when the source does not know (issue #474).
+    fn is_system_b(&self) -> bool {
+        false
+    }
 }
 
 impl<T: DynamicSource + ?Sized> DynamicSource for &T {
@@ -158,6 +192,12 @@ impl<T: DynamicSource + ?Sized> DynamicSource for &T {
     }
     fn initial_value(&self, param_id: &str) -> Option<&str> {
         (**self).initial_value(param_id)
+    }
+    fn is_virtual(&self, param_id: &str) -> bool {
+        (**self).is_virtual(param_id)
+    }
+    fn is_system_b(&self) -> bool {
+        (**self).is_system_b()
     }
 }
 
@@ -1842,20 +1882,22 @@ impl Walk {
     }
 
     /// Whether the ref `param_ref_id` in `instance` is active, so a
-    /// `<choose>` on it may select a branch (issues #159 and #563, see the
-    /// module docs): the ref itself is reached, or its parameter is never
-    /// shown anywhere.
+    /// `<choose>` on it may select a branch (issues #159, #563 and #474, see
+    /// the module docs): the ref itself is reached, or its parameter is never
+    /// shown anywhere, unless the choose is `default_only` on a virtual
+    /// parameter of a System B program.
     fn is_active<S: DynamicSource + ?Sized>(
         &self,
         app: &S,
         instance: &str,
         param_ref_id: &str,
+        default_only: bool,
     ) -> bool {
         let Some(id) = parameter_id(app, param_ref_id) else {
             return true;
         };
         if !self.placed.contains(id) {
-            return true;
+            return !(default_only && app.is_system_b() && app.is_virtual(id));
         }
         let key = (instance.to_string(), param_ref_id.to_string());
         self.active_now.contains(&key) || self.active_before.contains(&key)
@@ -2040,8 +2082,11 @@ impl Walk {
                         .flatten();
                     // An inactive controlling ref selects no branch, not even
                     // the default one; a union member reading live shared
-                    // memory too (issue #563).
-                    if !self.is_active(app, instance, param_ref_id) {
+                    // memory too (issue #563), and a default-only choose on a
+                    // never-shown virtual parameter on System B (issue #474).
+                    let default_only =
+                        !whens.is_empty() && whens.iter().all(|w| w.test == WhenTest::Default);
+                    if !self.is_active(app, instance, param_ref_id, default_only) {
                         continue;
                     }
                     let value = shared

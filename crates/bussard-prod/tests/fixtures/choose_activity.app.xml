@@ -10,17 +10,19 @@
      selects no branch either, although R-5 reads the live shared memory:
      object 3 and "Offset" (P-6) stay out.
 
-     #474: a <choose> on a never-shown parameter without memory takes its
-     default branch, as ETS does. "AlwaysFalse" (P-7, a checkbox with
-     Access="Read" and Value 0, the Zennio Flat construct) reaches object 4 and
-     "Dummy" (P-8); object 4 has every flag disabled, so the group-object table
-     leaves it out, as ETS does with the Flat "dummy" objects. "Input A" (P-9,
-     TypeNone, Access="None", empty Value, the ABB construct) steers a whole
-     channel: object 5. "Variant" (P-10, Access="None", Value 1) steers by a
-     matching test: object 6. "Device active" (P-11, Access="Read", Value 1,
-     the ABB Modbus gateway construct) has a "0" branch beside its default
-     one, and the default is taken: object 7. "General" (P-12, Value 0, the
-     ABB 0701 R_Allgemein construct) takes its only, default branch: object 8.
+     #474: on System B (this fixture's 07B0) a <choose> whose only branch is
+     <when default="true">, on a never-shown parameter without memory,
+     selects no branch, as ETS does: "AlwaysFalse" (P-7, a checkbox with
+     Access="Read" and Value 0, the Zennio Flat construct) leaves object 4 and
+     "Dummy" (P-8) out; "Input A" (P-9, TypeNone, Access="None", empty Value,
+     the ABB construct) leaves object 5 out; "General" (P-12, Value 0, the
+     ABB 0701 R_Allgemein construct) leaves object 8 out. A choose with a
+     test branch still steers: "Variant" (P-10, Access="None", Value 1) by
+     a matching test, object 6; "Device active" (P-11, Access="Read",
+     Value 1, the ABB Modbus gateway construct) has a "0" branch beside its
+     default one, and the default is taken: object 7. With the mask set to
+     a System 7 one (the test rewrites it), every default-only branch is
+     taken, as ETS does on the ABB and Busch-Jaeger System 7 programs.
      -->
 <KNX xmlns="http://knx.org/xml/project/20">
   <ManufacturerData>

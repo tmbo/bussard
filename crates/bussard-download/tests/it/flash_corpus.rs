@@ -289,6 +289,63 @@ fn corpus_never_emits_duplicate_consecutive_allocations() {
     eprintln!("duplicate-allocation guard checked {checked_plans} executable plan(s).");
 }
 
+/// Every System 7 (0701) application whose procedure carries `LdCtrlDelay`
+/// lowers to an executable plan that keeps the pause as a step (issue #615:
+/// 16 corpus programs, e.g. `M-0076_A-0022-15-D6FE`, were refused while the op
+/// was kept as `Raw`).
+#[test]
+fn test_plan_flash_corpus_0701_delay_apps_plan() {
+    let Some(dir) = std::env::var_os("BUSSARD_PRODUCT_CORPUS") else {
+        eprintln!("BUSSARD_PRODUCT_CORPUS unset; skipping the LdCtrlDelay guard.");
+        return;
+    };
+    let files = knxprod_files(&vendor_dir(PathBuf::from(dir)));
+    let mut planned = Vec::new();
+    for file in &files {
+        let Ok(product) = bussard_prod::read_knxprod(file) else {
+            continue;
+        };
+        for app in &product.applications {
+            let on_0701 = app
+                .mask_version
+                .as_deref()
+                .is_some_and(|m| m.trim() == "0701");
+            let has_delay = app.load_procedures.iter().any(|lp| {
+                lp.ops
+                    .iter()
+                    .any(|op| matches!(op, bussard_prod::application::LoadOp::Delay { .. }))
+            });
+            if !on_0701 || !has_delay {
+                continue;
+            }
+            let plan = plan_flash(
+                app,
+                "1.1.1",
+                0x0701,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                None,
+                &BTreeMap::new(),
+            );
+            match plan {
+                Ok(plan) => assert!(
+                    plan.steps
+                        .iter()
+                        .any(|s| matches!(s, FlashStep::Delay { .. })),
+                    "app {} plans without its delay step",
+                    app.id
+                ),
+                Err(e) => panic!("app {} with LdCtrlDelay is refused: {e}", app.id),
+            }
+            planned.push(app.id.clone());
+        }
+    }
+    eprintln!(
+        "LdCtrlDelay guard: {} 0701 application(s) plan with their delay: {planned:?}",
+        planned.len()
+    );
+}
+
 /// Names every `LdCtrlRelSegment` op in the application's own load procedures
 /// that could have produced an allocation of `size` octets on `target`, as
 /// `MergeId=<id> op#<n> (LsmIdx=…, Size=…, AppliesTo=…)`.

@@ -232,6 +232,20 @@ The LSM index is the object type of the loadable part `[MP §3.31.2, p. 134]`:
   `meteodata-1-1-202-new.pcapng`, `schaltaktor-8fach-1-1-49.pcapng`), and the
   2308.16REGHM has no object 5 (its `PID_LOAD_STATE_CONTROL` read answers count
   0). bussard cuts the procedure after the terminal restart (issue #178).
+  Some procedures name LSM 5 before the restart too: 98 corpus 0701
+  applications (Busch-Jaeger, such as `M-0002_A-A002-13`, and the house binary
+  input 1.1.44) carry an `LdCtrlTaskSegment LsmIdx="5"` inside LSM 3's load,
+  with no `Load` of LSM 5.
+  ETS sends no record for it: its download of the synthetic `syn-s7-lsm5`
+  (`captures/synthetic/syn-s7-lsm5/defaults/`, ETS 6.4.1) writes 18 records to
+  `0x0104`, none with high nibble 5, and 1.1.44's capture has none either. A
+  product variant that also loaded and completed LSM 5 failed inside ETS
+  ("System.ArgumentException: lsm"). **Rule (issue #489):** under the
+  memory-mapped realisation the planner sends no `TaskSegment` record for an
+  LSM outside 1 to 4 (`SYS7_MEMORY_MAPPED_LSMS` in `plan_sys7.rs`); knx-sim
+  leaves an unopened machine Unloaded on such a record (#529), which failed
+  bussard's flash. The property realisation (0705) keeps the record until
+  `syn-s7-lsm5-0705` (#604 row 32) shows what ETS does there.
 
 **Two ETS differences bussard keeps (issue #178, 2308.16REGHM `A-2088-11`).**
 The application declares `DynamicTableManagement="1"`, and ETS places the
@@ -644,6 +658,37 @@ flash matches. `S7-CAL: PID78 value semantics and how the sim seeds it`.
 
 There is **no `WriteProp`** of the app id anywhere in System 7; the device
 derives run-state from the loaded tables, ETS only checks `[corpus §5]`.
+
+### 4.7 Parameters the configuration does not show (#448)
+
+A parameter the Dynamic walk does not reach is written at its default, or its
+octets keep the segment template, by
+`ApplicationProgram::downloads_invisible_parameters` (`bussard-ets`), the one
+predicate the image builder and the read-back decoder use on both systems.
+With `DownloadInvisibleParameters` (`None`, `Background`) or
+`PreferPartialDownloadIfApplicationLoaded="true"` the template stays. Without
+either, the schema version of the application file
+(`http://knx.org/xml/project/<N>`) decides on System 7:
+
+| capture | system | schema | `MinEtsVersion` | ETS at the hidden parameter |
+|---|---|---|---|---|
+| `syn-s7-hidden-default-p11` | 0705 | 11 | 4.0 | template |
+| sweep rows of #448 (Steinel, ekinex, B.E.G., Zennio, MDT, Elsner) | 0705/0701 | 11 | 4.0, 3.0d, none | template |
+| Busch-Jaeger `A-FF11-15` (sweep) | 0705 | 20 | 3.0d | template (14 octets differ when written) |
+| `syn-s7-hidden-default` | 0705 | 23 | 6.0 | default |
+| `syn-hidden-default` | 07B0 | 23 | 6.0 | default |
+| Busch-Wächter PRO 280 `A-6179-82` (sweep, #89) | 07B0 | 20 | 5.0 | default |
+
+The two synthetic System 7 products differ only in the namespace and
+`MinEtsVersion`. So System 7 writes the defaults from project/21 on and keeps
+the template through project/20; System B writes them at every schema. The
+schema alone does not decide (project/20 writes on the PRO 280 and keeps on
+`A-FF11-15`). Open: the System 7 boundary within 21 to 23 (no System 7 program
+in the corpus has project/21 or /22, so it changes no vendor product), System B
+below project/20 (no capture separates it), and whether ETS keys on
+`MinEtsVersion` instead (every capture that writes has 5.0 or later, every one
+that keeps has 4.0 or earlier, or none). `syn-s7-hidden-default` rendered in project/23
+with `MinEtsVersion="4.0"` would tell the two apart.
 
 ---
 

@@ -23,6 +23,7 @@ mod partial_segment;
 mod property_procedure;
 mod sweep_fixtures;
 mod sys7_jung_m2_plan;
+mod sys7_lsm5_plan;
 mod sys7_split_segment;
 mod sys7_theben_0701_plan;
 // The fixture applications and the random value sets of bussard-prod's

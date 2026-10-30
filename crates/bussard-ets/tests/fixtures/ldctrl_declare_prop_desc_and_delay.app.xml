@@ -3,8 +3,8 @@
        <LdCtrlDeclarePropDesc ...>  declare a property descriptor before writing
        <LdCtrlDelay MilliSeconds="...">  an inter-step delay
      DeclarePropDesc appeared on coupler-style mask 2920; Delay appeared on
-     several System-7 apps. Fake values. Both parse as LoadOp::Raw. A Delay is a
-     natural first candidate to type (sleep N ms). -->
+     several System-7 apps. Fake values. DeclarePropDesc parses as LoadOp::Raw;
+     Delay parses as the typed LoadOp::Delay (issue #615). -->
 <KNX xmlns="http://knx.org/xml/project/20">
  <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
   <ApplicationProgram Id="M-00FA_A-0004-11-ABCD-O000A" ApplicationNumber="4" ApplicationVersion="11" MaskVersion="MV-2920" Name="DeclarePropDesc+Delay Fixture" LoadProcedureStyle="MergedProcedure">

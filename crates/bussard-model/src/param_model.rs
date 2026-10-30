@@ -73,6 +73,10 @@ pub struct ProductModel {
     /// by app-relative argument id (`argument_allocates:`, format 10).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub argument_allocates: BTreeMap<String, i64>,
+    /// Whether the application is a System B one: its
+    /// `identity.mask_version` is `xxB0` (issue #474).
+    #[serde(default)]
+    pub system_b: bool,
     /// The ETS parameter pages and channels, derived from [`Self::dynamic`]
     /// on first use ([`Self::blocks`]).
     #[serde(skip)]
@@ -162,8 +166,9 @@ pub struct ObjectDef {
 /// module's computed arguments, `allocators:` and `argument_allocates:`,
 /// issue #449, and a text
 /// parameter's `initial_value:`, issue #473; format 11 a colour type,
-/// `color: { space: RGB }`, issue #616).
-pub const MODEL_FORMAT: u32 = 11;
+/// `color: { space: RGB }`, issue #616; format 12 a virtual parameter's
+/// `virtual: true`, issue #474).
+pub const MODEL_FORMAT: u32 = 12;
 
 /// Whether the model file at `path` is of the current [`MODEL_FORMAT`]. Reads
 /// only the head of the file, where the emitter puts the key.
@@ -217,6 +222,11 @@ pub struct ParamDef {
     /// starts with, which wins over the `Value`s as the default.
     #[serde(default)]
     pub initial_value: Option<String>,
+    /// Whether the parameter is virtual: no memory, no property and no
+    /// union place, so it only ever has its value (`virtual: true`, format
+    /// 12, issue #474).
+    #[serde(default)]
+    pub is_virtual: bool,
 }
 
 /// A parameter's type, mirroring the `type:` tag in the model YAML.
@@ -285,6 +295,14 @@ struct RawModel {
     allocators: BTreeMap<String, crate::dynamic::Allocator>,
     #[serde(default)]
     argument_allocates: BTreeMap<String, i64>,
+    #[serde(default)]
+    identity: Option<RawIdentity>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawIdentity {
+    #[serde(default)]
+    mask_version: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -322,6 +340,8 @@ struct RawParam {
     signed: bool,
     #[serde(default)]
     initial_value: Option<String>,
+    #[serde(default, rename = "virtual")]
+    is_virtual: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -459,6 +479,7 @@ impl ProductModel {
                     integer_width: p.bits.map(|bits| (bits, p.signed)),
                     enum_values,
                     initial_value: p.initial_value,
+                    is_virtual: p.is_virtual,
                 },
             );
         }
@@ -492,6 +513,10 @@ impl ProductModel {
             parameter_refs,
             allocators: raw.allocators,
             argument_allocates: raw.argument_allocates,
+            system_b: raw
+                .identity
+                .and_then(|i| i.mask_version)
+                .is_some_and(|m| is_system_b_mask(&m)),
             pages: std::sync::OnceLock::new(),
             pages_with_modules: std::sync::OnceLock::new(),
             ref_index: std::sync::OnceLock::new(),
@@ -661,6 +686,21 @@ impl crate::dynamic::DynamicSource for ProductModel {
     fn initial_value(&self, param_id: &str) -> Option<&str> {
         self.parameters.get(param_id)?.initial_value.as_deref()
     }
+
+    fn is_virtual(&self, param_id: &str) -> bool {
+        self.parameters.get(param_id).is_some_and(|p| p.is_virtual)
+    }
+
+    fn is_system_b(&self) -> bool {
+        self.system_b
+    }
+}
+
+/// Whether a `MaskVersion` (`07B0`, `MV-07B0`) is a System B one (`xxB0`).
+pub fn is_system_b_mask(mask: &str) -> bool {
+    let mask = mask.trim();
+    let digits = mask.strip_prefix("MV-").unwrap_or(mask);
+    u16::from_str_radix(digits, 16).is_ok_and(|m| m & 0x0FFF == 0x07B0)
 }
 
 impl RawType {

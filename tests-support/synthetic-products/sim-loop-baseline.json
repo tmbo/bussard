@@ -1,9 +1,4 @@
 {
   "_comment": "Known failures of the synthetic products in the knx-sim flash-then-plan loop (test_sim_catalog_loop_synthetic_catalogue): application id to the step that fails first, with the open issue. A product here is the evidence of a bussard bug; the fix removes its entry. A listed product that fails at another step fails the test.",
-  "known_failures": {
-    "M-00FA_A-280F-11-0000": {
-      "step": "flash[0] (defaults)",
-      "reason": "syn-s7-lsm5: bussard sends the product's LdCtrlTaskSegment on LSM 5 (53 02 00 44 40 ...) to a 0701 device whose LSM 5 is Unloaded; ETS sends no LSM 5 record at all, and knx-sim leaves the machine Unloaded (#529), so the flash fails (#489)"
-    }
-  }
+  "known_failures": {}
 }

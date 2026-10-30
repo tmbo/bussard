@@ -122,6 +122,35 @@ pub(super) fn sys7_procedure_end(ops: &[LoadOp]) -> usize {
         .map_or(ops.len(), |i| i + 1)
 }
 
+/// The load-state machines the memory-mapped form of a System 7 device has:
+/// one per object type, the address table (1), the association table (2), the
+/// application program (3) and the PEI program (4), with their states at
+/// `B6EAh` to `B6EDh` (KNX 3/5/2 §3.31.2, which supports "only one state
+/// machine of each type").
+///
+/// A record on another index names no machine. ETS sends none (issue #489):
+/// its full download of the synthetic `syn-s7-lsm5` (0701, an
+/// `LdCtrlTaskSegment LsmIdx="5"` inside LSM 3's load, the shape of the
+/// Busch-Jaeger 0701 applications such as `M-0002_A-A002-13`) executes no LSM 5
+/// op and writes no record with high nibble 5 to `0x0104`
+/// (`captures/synthetic/syn-s7-lsm5/defaults/requests.txt`: its 18 records
+/// name LSMs 1 to 3 only), and on the house binary input 1.1.44
+/// (`binaereingang-1-1-44.pcapng`) none of ETS's 23 records names LSM 5. knx-sim leaves an
+/// unopened machine Unloaded on such a record (#529), so sending it fails the
+/// flash. The property realisation (0705) is not settled by a capture yet
+/// (`syn-s7-lsm5-0705`, #604 row 32) and keeps the record.
+pub(super) const SYS7_MEMORY_MAPPED_LSMS: std::ops::RangeInclusive<u32> = 1..=4;
+
+/// Whether a System 7 Additional Load Controls record on `lsm` is sent: always
+/// under the property realisation, and under the memory-mapped one only for
+/// an LSM in [`SYS7_MEMORY_MAPPED_LSMS`] (issue #489).
+pub(super) fn sys7_lsm_record_sent(profile: &bussard_mgmt::Sys7Profile, lsm: u32) -> bool {
+    match profile.lsm {
+        bussard_mgmt::LsmRealisation::MemoryMapped { .. } => SYS7_MEMORY_MAPPED_LSMS.contains(&lsm),
+        bussard_mgmt::LsmRealisation::Property => true,
+    }
+}
+
 /// The load-state machines ETS unloads before a full System 7 download: LSMs 1
 /// to 4, on both mask families (`schaltaktor-8fach-1-1-49`, `jung-1131`,
 /// `binaereingang-6fach`, `automitschalter-standard-110` on 0705;
@@ -200,6 +229,7 @@ fn add_ets_prelude(steps: &mut Vec<FlashStep>, profile: &bussard_mgmt::Sys7Profi
 /// | `CompareMem{a,d,sz}` (Raw)| [`FlashStep::Sys7CompareMem`]                 |
 /// | `LoadImageProp{oi,pid}` | [`FlashStep::LoadImageProp`] (Jung A-A011 MCB)  |
 /// | `Restart`               | [`FlashStep::Restart`]                          |
+/// | `Delay{ms}`             | [`FlashStep::Delay`] (a pause, nothing sent)    |
 ///
 /// [`add_ets_prelude`] then adds ETS's pre-download restart pass and, on a
 /// `VerifyMode` mask, the verify-mode switch.
@@ -351,6 +381,7 @@ pub(super) fn plan_flash_sys7(
         match op {
             LoadOp::Connect | LoadOp::Disconnect => {}
             LoadOp::Restart => steps.push(FlashStep::Restart),
+            LoadOp::Delay { milliseconds } => steps.push(super::plan::lower_delay(*milliseconds)?),
             LoadOp::Unload { lsm_idx } => steps.push(FlashStep::Sys7Unload {
                 lsm: check_sys7_lsm(step_no, lsm_idx.unwrap_or(0))?,
             }),
@@ -507,6 +538,13 @@ pub(super) fn plan_flash_sys7(
             }
             LoadOp::TaskSegment { lsm_idx, address } => {
                 let lsm = check_sys7_lsm(step_no, lsm_idx.unwrap_or(0))?;
+                // A TaskSegment on an LSM the memory-mapped form has no machine
+                // for (LsmIdx 5 on the Busch-Jaeger 0701 applications) is not
+                // sent: ETS sends no record for it
+                // (captures/synthetic/syn-s7-lsm5, issue #489).
+                if !sys7_lsm_record_sent(&s7_profile, lsm) {
+                    continue;
+                }
                 let addr = address.ok_or_else(|| PlanError::UnresolvableImage {
                     step: step_no,
                     reason: "LdCtrlTaskSegment has no Address".to_string(),
@@ -3267,6 +3305,56 @@ mod tests {
             sys7_u16_field(1, "task pointer init", 284),
             Ok(284)
         ));
+    }
+
+    /// `LdCtrlDelay MilliSeconds="200"` before the restart (16 corpus 0701
+    /// programs, e.g. `M-0076_A-0022-15-D6FE`) lowers to a 200 ms pause right
+    /// before the terminal restart instead of refusing the plan (issue #615).
+    #[test]
+    fn test_plan_flash_sys7_lowers_delay_before_restart() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram PeiType="0" Id="M-00FA_A-0615" ApplicationNumber="1" ApplicationVersion="1"
+            MaskVersion="MV-0701" Name="Delay" LoadProcedureStyle="ProductProcedure">
+          <Static>
+           <Code>
+            <AbsoluteSegment Id="M-00FA_A-0615_AS-1" Size="2" Address="16384"><Data>AAE=</Data></AbsoluteSegment>
+           </Code>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlConnect />
+             <LdCtrlUnload LsmIdx="1" />
+             <LdCtrlLoad LsmIdx="1" />
+             <LdCtrlAbsSegment LsmIdx="1" Address="16384" Size="2" />
+             <LdCtrlLoadCompleted LsmIdx="1" />
+             <LdCtrlDelay MilliSeconds="200" />
+             <LdCtrlRestart />
+             <LdCtrlDisconnect />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-00FA_A-0615", xml.as_bytes())?;
+        let plan = plan_flash(
+            &app,
+            "1.1.99",
+            0x0701,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )?;
+        let n = plan.steps.len();
+        assert!(n >= 2);
+        assert_eq!(
+            plan.steps[n - 2..],
+            [FlashStep::Delay { milliseconds: 200 }, FlashStep::Restart]
+        );
+        assert_eq!(
+            plan.step_label(&plan.steps[n - 2]),
+            "wait 200 ms (LdCtrlDelay), nothing sent"
+        );
+        Ok(())
     }
 
     #[test]

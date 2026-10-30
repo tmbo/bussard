@@ -402,6 +402,13 @@ pub enum FlashStep {
     /// confirmed master reset with erase code 1 that ETS ends a System B download
     /// with (issue #117 captures).
     Restart,
+    /// Pause for `milliseconds` before the next step (`LdCtrlDelay`, issue
+    /// #615). Nothing goes on the wire; the executor logs the pause at info
+    /// level, so it shows in the `-v` trace between the frames around it.
+    Delay {
+        /// The pause in milliseconds, the op's `MilliSeconds`.
+        milliseconds: u32,
+    },
     /// Factory-reset the device before the download (issue #117, #89).
     ///
     /// A confirmed master-reset `A_Restart` (APCI `0x381`, `[erase_code, 0]`)

@@ -200,6 +200,9 @@ pub(super) fn step_label(step: &FlashStep) -> String {
             format!("complete load{}", target_suffix(*target))
         }
         FlashStep::Restart => "restart device".to_string(),
+        FlashStep::Delay { milliseconds } => {
+            format!("wait {milliseconds} ms (LdCtrlDelay), nothing sent")
+        }
         FlashStep::FactoryReset { erase_code } => format!(
             "factory reset (A_Restart master reset, erase code {erase_code}): erase application, \
              parameters and links, keep the individual address; wait for the reboot and reconnect \

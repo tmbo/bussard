@@ -413,6 +413,9 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                     FlashStep::KnxnetIpParameters { program } => {
                         super::knxnet_ip::write_knxnet_ip(session.l4(), program).await?;
                     }
+                    FlashStep::Delay { milliseconds } => {
+                        super::execute::delay_step(*milliseconds).await;
+                    }
                     // System B steps never appear in a System 7 plan.
                     other => {
                         return Err(WriteError::Mgmt(

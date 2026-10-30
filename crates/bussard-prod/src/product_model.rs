@@ -511,6 +511,10 @@ struct ParameterModel {
     /// Whether that integer is signed.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     signed: bool,
+    /// Whether the parameter is virtual: no memory, no property and no
+    /// union place (format 12, issue #474).
+    #[serde(rename = "virtual", skip_serializing_if = "std::ops::Not::not")]
+    is_virtual: bool,
     /// The refs that point at this parameter, app-relative.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     refs: BTreeMap<String, RefModel>,
@@ -835,6 +839,7 @@ fn parameters_for(app: &ApplicationProgram) -> Vec<ParameterModel> {
                     .map(|b| b.strip_prefix(&prefix).unwrap_or(b).to_string()),
                 bits: width.map(|(bits, _)| bits),
                 signed: width.is_some_and(|(_, signed)| signed),
+                is_virtual: DynamicSource::is_virtual(app, &param.id),
                 refs,
             }
         })
@@ -927,6 +932,7 @@ fn load_op_summary(op: &LoadOp) -> String {
         LoadOp::Connect => "connect".to_string(),
         LoadOp::Disconnect => "disconnect".to_string(),
         LoadOp::Restart => "restart".to_string(),
+        LoadOp::Delay { milliseconds } => format!("delay ms={}", opt(milliseconds)),
         LoadOp::Merge { merge_id } => {
             format!("merge id={}", merge_id.as_deref().unwrap_or("?"))
         }

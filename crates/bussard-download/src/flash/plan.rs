@@ -15,6 +15,17 @@ use bussard_prod::application::{
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+/// Lowers an `LdCtrlDelay` to a [`FlashStep::Delay`] of its `MilliSeconds`
+/// (issue #615), in the System B and the System 7 planner. An op without a
+/// readable `MilliSeconds` is refused: the length of the pause is not guessed.
+pub(super) fn lower_delay(milliseconds: Option<u32>) -> Result<FlashStep, PlanError> {
+    milliseconds
+        .map(|milliseconds| FlashStep::Delay { milliseconds })
+        .ok_or_else(|| PlanError::UnsupportedOp {
+            op: "LdCtrlDelay without a MilliSeconds value".to_string(),
+        })
+}
+
 /// The standard System B table object indices a master template programs, and
 /// their human names. Used to refuse a spliced template that writes one of these
 /// objects without a supplied table image.
@@ -511,6 +522,7 @@ pub fn plan_flash_with_memo(
             }
             LoadOp::LoadCompleted { .. } => {}
             LoadOp::Restart => steps.push(FlashStep::Restart),
+            LoadOp::Delay { milliseconds } => steps.push(lower_delay(*milliseconds)?),
             LoadOp::MasterReset {
                 erase_code,
                 channel_number,
@@ -2002,6 +2014,61 @@ mod tests {
         );
         // The trace names the reconnect-and-resume master-reset step.
         assert!(trace(&plan).iter().any(|l| l.contains("master reset")));
+        Ok(())
+    }
+
+    /// A System B procedure with `LdCtrlDelay` (issue #615): the given
+    /// milliseconds lower to a pause step in procedure order, and the trace
+    /// names it. An op without `MilliSeconds` refuses the plan.
+    #[test]
+    fn test_plan_flash_lowers_delay() -> Result<(), Box<dyn std::error::Error>> {
+        let app_xml = |delay: &str| {
+            format!(
+                r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-DL" MaskVersion="MV-07B0" Name="DL"
+            LoadProcedureStyle="ProductDefault">
+          <Static>
+           <Code><RelativeSegment Id="M-1_A-DL_RS-1" Size="6" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment></Code>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlUnload LsmIdx="4" />
+             <LdCtrlLoad LsmIdx="4" />
+             <LdCtrlRelSegment LsmIdx="4" Size="6" AppliesTo="full" />
+             <LdCtrlWriteRelMem ObjIdx="0" Offset="0" Size="6" AppliesTo="full" />
+             <LdCtrlLoadCompleted LsmIdx="4" />
+             {delay}
+             <LdCtrlRestart />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#
+            )
+        };
+        let plan_for =
+            |delay: &str| -> Result<Result<FlashPlan, PlanError>, Box<dyn std::error::Error>> {
+                let app = parse_application_program("M-1_A-DL", app_xml(delay).as_bytes())?;
+                Ok(plan_flash(
+                    &app,
+                    "1.1.4",
+                    0x07B0,
+                    &no_overrides(),
+                    &BTreeMap::new(),
+                    None,
+                    &BTreeMap::new(),
+                ))
+            };
+        let plan = plan_for(r#"<LdCtrlDelay MilliSeconds="200" />"#)??;
+        let n = plan.steps.len();
+        assert!(n >= 2);
+        assert_eq!(
+            plan.steps[n - 2..],
+            [FlashStep::Delay { milliseconds: 200 }, FlashStep::Restart]
+        );
+        assert!(trace(&plan).iter().any(|l| l.contains("wait 200 ms")));
+        assert!(matches!(
+            plan_for("<LdCtrlDelay />")?,
+            Err(PlanError::UnsupportedOp { op }) if op.contains("LdCtrlDelay")
+        ));
         Ok(())
     }
 

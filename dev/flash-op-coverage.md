@@ -56,11 +56,12 @@ Table 1) lists the same four as mandatory and the absolute and task records
 | `LdCtrlCompareProp` | DM_InterfaceObjectRead §3.27 plus compare | `FlashStep::CompareProp` (mask honoured, `StartElement` read as the element, `Range` kept as a no-op) | supported |
 | `LdCtrlCompareRelMem` | memory read at base + offset plus compare | `FlashStep::CompareRelMem` (mask, invert) | supported (2 MDT apps) |
 | `LdCtrlRestart` | Basic Restart §3.7.1.1 (unconfirmed `A_Restart`); the confirmed restart is the Master Reset with erase code 01h (§3.7.1.2 Table 4) | `FlashStep::Restart`; confirmed form for secure-capable applications, bare otherwise | supported |
+| `LdCtrlDelay` | none: a tool-side pause between two steps, nothing on the wire | `FlashStep::Delay` of the op's `MilliSeconds` on System B and System 7, logged at info level (`-v`) and named in the plan; refused without a value. 35 corpus applications put a 200 ms delay before `LdCtrlRestart`, 16 of them on 0701 (#615) | supported; where ETS pauses is to be confirmed against the `syn-s7-delay` capture (#604) |
 | `LdCtrlMasterReset` | Master Reset §3.7.1.2: restart type 1, erase code, channel, confirmed by `A_Restart_Response` | `FlashStep::MasterReset`: the confirmed form with the op's erase code and channel; a bare `A_Restart` on KNX Virtual only (its ETS capture); error code 2 falls back to a basic restart | no vendor capture; capture plan in `testing-campaign.md` (#546) |
 | `LdCtrlMerge` | none: the mask template's splice marker | spliced | supported |
 | `LdCtrlMapError` | none: an ETS tool-side rule (`OriginalError`, `MappedError`); the standard has no such load control | from the op on, the error it names counts as `MappedError`; a later op mapping the code to itself ends the rule (`lower_map_error`). Only `0xC0042B08` mapped to 0 over an `LdCtrlUnload` lowers: `FlashStep::Unload { absent_ok: true }` goes to the object it names, and a count-0 answer (no such object, #178) completes it with a warning; any other answer or failure still fails. Any other code, a mapping to another error, or a rule in force over another op refuses | supported (27 Siemens 07B0 apps, #614); ETS bytes to be confirmed by the synthetic `syn-map-error` and `syn-product-07b0` captures (#604) |
-| `LdCtrlAbsSegment`, `LdCtrlTaskSegment`, `LdCtrlTaskCtrl1`, `LdCtrlTaskPtr`, `LdCtrlTaskCtrl2` | Additional Load Controls subtypes 00h to 05h, §3.31.3.4; optional in the 27B0 profile | System 7 lowering only; refused on System B; a `<choose>` branch that allocates a segment in parts streams each part into its allocation and keeps the gap on the device, as ETS does (#413, #411, capture `syn-s7-choose-split`) | by design | All five lowered (TaskPtr and TaskCtrl2 since #527) with the KNX 3/5/2 §3.31.2 layout, mandatory on 0701/0705 per Profiles Annex A.2.4.1; in the local corpus TaskPtr/TaskCtrl2 occur only on masks 0020/0021/0025, so no flashable application uses them yet and no capture exists.
-| `LdCtrlDeclarePropDesc`, `LdCtrlDelay`, other `Raw` | | refused before any write | 2920 only in the corpus |
+| `LdCtrlAbsSegment`, `LdCtrlTaskSegment`, `LdCtrlTaskCtrl1`, `LdCtrlTaskPtr`, `LdCtrlTaskCtrl2` | Additional Load Controls subtypes 00h to 05h, §3.31.3.4; optional in the 27B0 profile | System 7 lowering only; refused on System B; a `<choose>` branch that allocates a segment in parts streams each part into its allocation and keeps the gap on the device, as ETS does (#413, #411, capture `syn-s7-choose-split`) | by design | All five lowered (TaskPtr and TaskCtrl2 since #527) with the KNX 3/5/2 §3.31.2 layout, mandatory on 0701/0705 per Profiles Annex A.2.4.1; in the local corpus TaskPtr/TaskCtrl2 occur only on masks 0020/0021/0025, so no flashable application uses them yet and no capture exists. A `LdCtrlTaskSegment` on an LSM the memory-mapped form has no machine for (LsmIdx 5 on the Busch-Jaeger 0701 applications; 3/5/2 §3.31.2 names LSMs 1 to 4) is not sent, as ETS sends none (`captures/synthetic/syn-s7-lsm5`, #489); the property realisation (0705) keeps it until `syn-s7-lsm5-0705` (#604) is captured.
+| `LdCtrlDeclarePropDesc`, other `Raw` | | refused before any write | 2920 only in the corpus |
 
 The factory reset that opens a download of a secure-capable application
 (erase code 07h, Master Reset §3.7.1.2 Table 4, AN194 for what it resets) is
@@ -140,6 +141,19 @@ The images the table ops stream are built in `crates/bussard-download/src/comput
   14 fall back to 0 (#545). An unlinked object gets communication cleared,
   which is why `apply` has to rewrite this table when a link set changes
   (#540).
+
+## Parameters the configuration does not show
+
+The parameter image writes a parameter the Dynamic walk does not reach at its
+default only when `ApplicationProgram::downloads_invisible_parameters` says so:
+never with `DownloadInvisibleParameters` or a preferred partial download; on
+System B at every schema; on System 7 from schema project/21 on (#448). The
+evidence is the synthetic twins `syn-s7-hidden-default` (project/23, default
+written) and `syn-s7-hidden-default-p11` (project/11, template kept), the
+System B `syn-hidden-default` and PRO 280 (default written), and the sweep's
+`A-FF11-15` (System 7, project/20, template kept); the table and the open
+points are in `dev/system7-spec.md` section 4.7. A hidden `LegacyPatchAlways`
+parameter is written at its default regardless (#450).
 
 ## Master reset
 
