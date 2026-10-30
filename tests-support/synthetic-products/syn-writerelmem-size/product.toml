@@ -1,0 +1,113 @@
+# A synthetic product of the catalogue (#604 row 23), syn-minimal plus one
+# construct. Rendered by ../generate.py into xml/; see ../README.md for the schema.
+
+[doc]
+purpose = """
+syn-minimal (07B0, MergedProcedure) with the parameter segment's allocation
+and write shorter than the segment: the RelativeSegment on LSM 4 stays 256
+octets, the MergeId 2 LdCtrlRelSegment allocates 128 and the MergeId 4
+LdCtrlWriteRelMem writes 128 (Size), the shape of the 8 corpus applications
+of #564 (ABB Caldion: segment 135168, allocation and write 128444). Both
+parameters lie in the first 128 octets. Before #564 bussard streamed the whole
+segment image past the allocation and took the MCB CRC over it; the capture
+shows what ETS writes (128 octets) and over which length it checks the
+segment, and the row keeps bussard's fix honest."""
+construct = "LdCtrlWriteRelMem Size smaller than the RelativeSegment"
+issues = [564]
+
+[product]
+text = "Short quill writer"
+order_number = "NEST-QUILL"
+hardware_name = "NEST-QUILL"
+hardware_serial = "00FA00270017"
+bus_current = 10
+
+[application]
+number = 0x2717
+version = 0x10
+name = "Short quill writer"
+mask = "07B0"
+load_procedure_style = "MergedProcedure"
+address_table_max_entries = 32
+association_table_max_entries = 32
+translations = { "de-DE" = "Kurzkielschreiber" }
+
+[application.options]
+Comparable = true
+Reconstructable = true
+
+[[segment]]
+name = "main"
+kind = "relative"
+lsm = 4
+size = 256
+fill = 0xFF
+
+[[parameter_type]]
+name = "Mode"
+kind = "enum"
+size_bits = 8
+values = [
+    { value = 0, text = "off" },
+    { value = 1, text = "on" },
+    { value = 2, text = "automatic" },
+]
+
+[[parameter_type]]
+name = "Delay"
+kind = "number"
+size_bits = 16
+signed = false
+min = 0
+max = 65535
+
+[[parameter]]
+name = "mode"
+type = "Mode"
+text = "Operating mode"
+default = 1
+memory = { segment = "main", offset = 0, bit_offset = 0 }
+
+[[parameter]]
+name = "delay"
+type = "Delay"
+text = "Delay (s)"
+default = 300
+memory = { segment = "main", offset = 1, bit_offset = 0 }
+
+[[com_object]]
+number = 0
+name = "switch"
+text = "Switch"
+function_text = "On/Off"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "W"]
+priority = "Low"
+
+[[com_object]]
+number = 1
+name = "status"
+text = "Status"
+function_text = "On/Off status"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+[[dynamic.block]]
+name = "general"
+text = "General"
+parameters = ["mode", "delay"]
+com_objects = [0, 1]
+
+# The application's part of the 07B0 mask procedure: MergeId 2 allocates the
+# parameter segment, MergeId 4 writes it. The construct (#564): both name 128
+# octets of the 256-octet RelativeSegment.
+[[load_procedure]]
+merge_id = 2
+ops = [{ op = "LdCtrlRelSegment", lsm = 4, size = 128, mode = 0, fill = 0 }]
+
+[[load_procedure]]
+merge_id = 4
+ops = [{ op = "LdCtrlWriteRelMem", object = 4, offset = 0, size = 128, verify = false }]
