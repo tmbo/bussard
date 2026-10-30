@@ -24,6 +24,7 @@ next to it, and zips it on demand.
 | [`syn-le-order`](syn-le-order/product.toml) | `NEST-ALTI` | 07B0 | ParameterByteOrder LittleEndian with integers and floats | #403 |
 | [`syn-minimal`](syn-minimal/product.toml) | `NEST-LIGHT` | 07B0 | baseline | #596 |
 | [`syn-relseg-fill`](syn-relseg-fill/product.toml) | `NEST-FILL` | 07B0 | RelSegment Mode 0 with Fill 255 | #480 |
+| [`syn-text-undeclared`](syn-text-undeclared/product.toml) | `NEST-SQUAWK` | 07B0 | TypeText non-ASCII default, no TextParameterEncoding | #416 |
 <!-- catalogue:end -->
 
 ## Theme
@@ -67,7 +68,7 @@ One `product.toml` per directory. Tables and keys:
 | `[application]` | `number` (0x2700 to 0x27FF), `version` (one octet), `name`, `mask`, `load_procedure_style`, `address_table_max_entries`, `association_table_max_entries`; optional `translations` (`{ "de-DE" = "..." }` for the name) | `ApplicationProgram`, `AddressTable`, `AssociationTable`, `Languages` |
 | `[application.options]` | any `Options` attribute of the KNX schema, e.g. `SupportsExtendedMemoryServices = true`, `ParameterByteOrder = "LittleEndian"` | `Options` |
 | `[[segment]]` | `name`, `kind` (`relative`), `lsm`, `size`; optional `fill` (the initial octet, 0) | `RelativeSegment` with its `Data` |
-| `[[parameter_type]]` | `name`, `kind`; `enum`: `size_bits`, `values = [{ value, text }]`; `number`: `size_bits`, `signed`, `min`, `max`; `float`: `encoding` (`DPT 9`, `IEEE-754 Single`, `IEEE-754 Double`; 16, 32, 64 bits), `min`, `max` | `TypeRestriction`, `TypeNumber`, `TypeFloat` |
+| `[[parameter_type]]` | `name`, `kind`; `enum`: `size_bits`, `values = [{ value, text }]`; `number`: `size_bits`, `signed`, `min`, `max`; `float`: `encoding` (`DPT 9`, `IEEE-754 Single`, `IEEE-754 Double`; 16, 32, 64 bits), `min`, `max`; `text`: `size_octets` | `TypeRestriction`, `TypeNumber`, `TypeFloat`, `TypeText` |
 | `[[parameter]]` | `name`, `type`, `text`, `default`, `memory = { segment, offset, bit_offset }` | `Parameter`, one `ParameterRef` each |
 | `[[com_object]]` | `number`, `name`, `text`, `function_text`, `size` (`"1 Bit"`), `dpt` (`"DPST-1-1"`), `flags` (of `C R W T U I`), `priority` (`Low`, `High`, `Alert`) | `ComObject`, one `ComObjectRef` each |
 | `[[dynamic.block]]` | `name`, `text`, `parameters` (names), `com_objects` (numbers) | a `ParameterBlock` in the `ChannelIndependentBlock` |
@@ -80,7 +81,7 @@ The schema reaches further than the generator does. These are reserved for
 the catalogue products that need them (step 4 of #596), and a spec that uses
 one stops with "part of the schema but no product uses it yet": masks other
 than 07B0 (System 7 twins), `ProductProcedure`, absolute segments, parameter
-type kinds `text`, `time`, `ip_address`, `raw`, parameter `access` and `union` (#405), explicit com
+type kinds `time`, `ip_address`, `raw`, parameter `access` and `union` (#405), explicit com
 object refs, channels and `<choose>` in the Dynamic tree (#411), and the load
 ops `LdCtrlMasterReset` (#546), `LdCtrlLoadImageProp`, `LdCtrlWriteProp`,
 `LdCtrlCompareProp`, `LdCtrlAbsSegment` and the connection and state ops of a
@@ -180,6 +181,11 @@ nothing about the committed product, so
 product's `xml/` digest differs from its manifest entry, and names the
 `capture.py` command. A spec change that does not reach the XML (the `[doc]`
 table) needs none.
+
+A product bussard refuses to flash, where the refusal is the finding it
+exists for, is listed in `sim-loop-refusals.json` with the open issue and a
+phrase of the refusal; the synthetic sim loop accepts that refusal and fails
+once the product flashes.
 
 The tests `crates/bussard-prod/tests/it/synthetic_products.rs` and
 `knx-sim/tests/synthetic_products.rs` zip every product's `xml/` with the stub

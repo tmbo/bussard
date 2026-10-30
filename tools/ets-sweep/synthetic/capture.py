@@ -208,10 +208,11 @@ def write_image(dst: Path, rel: str) -> None:
     (dst / "image.json").write_text("\n".join(lines) + "\n")
 
 
-def oracle_row(product: str, app: str, coverage: str = "", options: str = "") -> str:
+def oracle_row(product: str, app: str, coverage: str = "", options: str = "", why: str = "") -> str:
     rel = (OUT / product / VARIANT).relative_to(REPO).as_posix()
     xml = (CATALOGUE / product / "xml").relative_to(REPO).as_posix()
-    return f"1.1.1|{rel}/ets.pcapng|{xml}|{app}|{product} {VARIANT}|{coverage}|{options}".rstrip("|")
+    note = f"{product} {VARIANT}{': ' + why if why else ''}"
+    return f"1.1.1|{rel}/ets.pcapng|{xml}|{app}|{note}|{coverage}|{options}".rstrip("|")
 
 
 def run_oracle(args: list[str]) -> tuple[int, str]:
@@ -286,8 +287,14 @@ def write_rows(entries: list[dict]) -> None:
     )
     rows = []
     for e in sorted(entries, key=lambda e: (e["product"], e["variant"])):
-        rows.append(oracle_row(e["product"], e["application"], e["oracle"]["coverage"].rstrip("%"),
-                               row_options(e["oracle"])))
+        coverage = e["oracle"]["coverage"].rstrip("%")
+        # A not-comparable row (bussard refused the product) has no coverage.
+        coverage = coverage if re.fullmatch(r"[0-9.]+", coverage) else ""
+        why = ""
+        if e["oracle"]["verdict"] == "not-comparable":
+            issues = tomllib.loads((CATALOGUE / e["product"] / "product.toml").read_text())["doc"]["issues"]
+            why = "bussard refuses the product, " + ", ".join(f"#{n}" for n in issues)
+        rows.append(oracle_row(e["product"], e["application"], coverage, row_options(e["oracle"]), why))
     ROWS.write_text(head + "\n".join(rows) + "\n")
 
 

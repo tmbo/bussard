@@ -8,3 +8,4 @@
 1.1.1|captures/synthetic/syn-le-order/defaults/ets.pcapng|tests-support/synthetic-products/syn-le-order/xml|M-00FA_A-2704-10-0000|syn-le-order defaults|100.0|expect=differs loadctl=identical
 1.1.1|captures/synthetic/syn-minimal/defaults/ets.pcapng|tests-support/synthetic-products/syn-minimal/xml|M-00FA_A-2700-10-0000|syn-minimal defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-relseg-fill/defaults/ets.pcapng|tests-support/synthetic-products/syn-relseg-fill/xml|M-00FA_A-2707-10-0000|syn-relseg-fill defaults|100.0|loadctl=differs
+1.1.1|captures/synthetic/syn-text-undeclared/defaults/ets.pcapng|tests-support/synthetic-products/syn-text-undeclared/xml|M-00FA_A-2706-10-0000|syn-text-undeclared defaults: bussard refuses the product, #416||expect=not-comparable

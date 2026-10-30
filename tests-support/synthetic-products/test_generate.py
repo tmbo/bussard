@@ -74,5 +74,29 @@ class ByteOrderAndFloat(unittest.TestCase):
             generate.Product("test", s)
 
 
+class Text(unittest.TestCase):
+    """syn-text-undeclared (#416): the text type kind, sized in octets."""
+
+    def test_render_text_type_non_ascii_default(self) -> None:
+        s = spec()
+        s["parameter_type"] = s["parameter_type"] + [{"name": "T", "kind": "text", "size_octets": 14}]
+        s["parameter"] = s["parameter"] + [
+            {"name": "t", "type": "T", "text": "T", "default": "Störung",
+             "memory": {"segment": "main", "offset": 3, "bit_offset": 0}}]
+        xml = app_xml(s)
+        self.assertIn('<TypeText SizeInBit="112" />', xml)
+        self.assertIn('Value="Störung"', xml)
+        self.assertNotIn("TextParameterEncoding", xml)
+
+    def test_text_width_checked_against_segment(self) -> None:
+        s = spec()
+        s["parameter_type"] = s["parameter_type"] + [{"name": "T", "kind": "text", "size_octets": 20}]
+        s["parameter"] = s["parameter"] + [
+            {"name": "t", "type": "T", "text": "T", "default": "x",
+             "memory": {"segment": "main", "offset": 240, "bit_offset": 0}}]
+        with self.assertRaisesRegex(generate.SpecError, "does not fit"):
+            generate.Product("test", s)
+
+
 if __name__ == "__main__":
     unittest.main()

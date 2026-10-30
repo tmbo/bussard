@@ -205,7 +205,10 @@ class Product:
                 if t["encoding"] not in FLOAT_BITS:
                     raise SpecError(f"{tw}: encoding is one of {', '.join(FLOAT_BITS)}")
                 t = dict(t, size_bits=FLOAT_BITS[t["encoding"]])
-            elif kind in ("text", "time", "ip_address", "raw"):
+            elif kind == "text":
+                check_keys(tw, t, {"name", "kind", "size_octets"})
+                t = dict(t, size_bits=8 * t["size_octets"])
+            elif kind in ("time", "ip_address", "raw"):
                 raise not_yet(tw, f"parameter type kind `{kind}`")
             else:
                 raise SpecError(f"{tw}: kind is one of enum, number, text, float, time, ip_address, raw")
@@ -350,6 +353,8 @@ def render_type(x: Xml, t: dict) -> None:
             x.empty("Enumeration", [("Text", v["text"]), ("Value", v["value"]),
                                     ("Id", f"{t['id']}_EN-{v['value']}")])
         x.close("TypeRestriction")
+    elif t["kind"] == "text":
+        x.empty("TypeText", [("SizeInBit", t["size_bits"])])
     elif t["kind"] == "float":
         x.empty("TypeFloat", [("Encoding", t["encoding"]), ("minInclusive", t["min"]),
                               ("maxInclusive", t["max"])])

@@ -100,7 +100,9 @@ shard_tests!(
 /// with the stub `knx_master.xml`, through the same flash, plan, seeded
 /// configuration and apply steps as the corpus shards. Gated only on
 /// `BUSSARD_KNX_SIM_BIN` (the `sim-conformance` CI job sets it), not on the
-/// corpus; every product must run and pass, there is no baseline.
+/// corpus; every product must run and pass, except a refusal listed in
+/// `tests-support/synthetic-products/sim-loop-refusals.json` (the finding a
+/// product exists for, #604).
 #[test]
 fn test_sim_catalog_loop_synthetic_catalogue() -> TestResult {
     let Some(sim) = std::env::var_os("BUSSARD_KNX_SIM_BIN").map(PathBuf::from) else {
@@ -133,9 +135,17 @@ fn test_sim_catalog_loop_synthetic_catalogue() -> TestResult {
     let reports = run_files(&settings, 1, 0, &BTreeMap::new());
     let _ = std::fs::remove_dir_all(&dir);
     let reports = reports?;
+    let refusals = read_synthetic_refusals()?;
     let not_run: Vec<String> = reports
         .iter()
         .filter(|r| r.outcome == "skip")
+        .filter(|r| {
+            // A product whose refusal is the finding it exists for (#604).
+            let detail = r.detail.as_deref().unwrap_or("");
+            !refusals
+                .get(&r.application)
+                .is_some_and(|needle| detail.contains(needle.as_str()))
+        })
         .map(|r| format!("{}: {}", r.application, r.detail.as_deref().unwrap_or("")))
         .collect();
     assert!(
@@ -143,8 +153,41 @@ fn test_sim_catalog_loop_synthetic_catalogue() -> TestResult {
         "synthetic products the loop skipped:\n{}",
         not_run.join("\n")
     );
+    let now_run: Vec<&String> = refusals
+        .keys()
+        .filter(|app| {
+            reports
+                .iter()
+                .any(|r| &r.application == *app && r.outcome != "skip")
+        })
+        .collect();
+    assert!(
+        now_run.is_empty(),
+        "synthetic products bussard flashes now; drop them from sim-loop-refusals.json: {now_run:?}"
+    );
     assert!(!reports.is_empty(), "no synthetic application ran");
     judge(&reports)
+}
+
+/// The synthetic products bussard is known to refuse, from
+/// `tests-support/synthetic-products/sim-loop-refusals.json`: application id
+/// to a phrase the refusal must contain. Each one is the finding its product
+/// exists for, and names the open issue.
+fn read_synthetic_refusals() -> Result<BTreeMap<String, String>, BoxError> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests-support/synthetic-products/sim-loop-refusals.json");
+    let value: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+    let mut out = BTreeMap::new();
+    if let Some(map) = value.get("refusals").and_then(|v| v.as_object()) {
+        for (app, entry) in map {
+            let needle = entry
+                .get("contains")
+                .and_then(|s| s.as_str())
+                .ok_or_else(|| format!("sim-loop-refusals.json: {app} has no `contains`"))?;
+            out.insert(app.clone(), needle.to_string());
+        }
+    }
+    Ok(out)
 }
 
 /// Zips every synthetic product's `xml/` with the stub master into `dir` as
