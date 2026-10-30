@@ -10,7 +10,7 @@ use super::SegmentFill;
 use bussard_mgmt::connection::{L4Channel, Layer4Connection};
 use bussard_mgmt::load::{
     LoadControl, LoadState, WriteError, allocate_segment, is_connection_death, read_load_state,
-    write_load_control,
+    write_load_control, write_load_control_unless_absent,
 };
 use bussard_mgmt::tables::OT_APPLICATION_PROGRAM;
 use bussard_mgmt::{MgmtError, load};
@@ -1539,6 +1539,18 @@ pub(super) async fn write_load_control_resumable<C: Connector>(
     resume!(
         session,
         write_load_control(session.l4(), obj, control).await
+    )
+}
+
+/// Session-aware, resume-on-drop [`write_load_control_unless_absent`].
+pub(super) async fn write_load_control_unless_absent_resumable<C: Connector>(
+    session: &mut Session<C>,
+    obj: u8,
+    control: LoadControl,
+) -> Result<Option<LoadState>, WriteError> {
+    resume!(
+        session,
+        write_load_control_unless_absent(session.l4(), obj, control).await
     )
 }
 

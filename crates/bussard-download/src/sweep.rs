@@ -38,7 +38,7 @@ use std::path::{Path, PathBuf};
 use bussard_prod::ApplicationProgram;
 use serde::{Deserialize, Serialize};
 
-use crate::flash::{PlanError, plan_flash};
+use crate::flash::PlanError;
 
 /// Outcome of reading a single `.knxprod` container.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -328,14 +328,28 @@ pub fn classify_application(app: &ApplicationProgram) -> AppSweep {
         },
         Some(device_mask) => {
             match catch_unwind(AssertUnwindSafe(|| {
-                plan_flash(
+                // The table images `flash` passes for a device without links
+                // (issue #614: a product procedure that writes the tables
+                // itself needs them to plan).
+                // One Dynamic evaluation serves both (issue #367).
+                let memo = bussard_prod::dynamic::DynamicMemo::new(app);
+                let tables = crate::build_table_images_with(
+                    None,
+                    bussard_model::IndividualAddress::from_raw(0x1101),
+                    app,
+                    &BTreeMap::new(),
+                    &memo,
+                );
+                crate::flash::plan_flash_with_memo(
                     app,
                     "1.1.1",
                     device_mask,
                     &BTreeMap::new(),
                     &BTreeMap::new(),
                     None,
+                    &tables,
                     &BTreeMap::new(),
+                    &memo,
                 )
             })) {
                 Ok(Ok(plan)) => PlanClass::Executable {

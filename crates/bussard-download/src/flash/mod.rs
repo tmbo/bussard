@@ -194,6 +194,10 @@ impl std::fmt::Display for PropObject {
 /// [`is_knx_virtual_application`].
 pub const KNX_VIRTUAL_MANUFACTURER: u16 = 0x00FA;
 
+/// The Master Reset erase code "ResetIA" (KNX 3/5/2 §3.7.1.2.3 Table 4): it
+/// resets the individual address and no loaded object.
+const ERASE_CODE_RESET_IA: u8 = 0x03;
+
 /// The high octet of every KNX Virtual application number: the `A-25xx`
 /// programs of [`KNX_VIRTUAL_MANUFACTURER`] (DA.tp `A-2500`, KliX `A-2504`),
 /// the KNX Virtual catalogue section `M-00FA_CS-25` ("KNX Virtual", number 25).
@@ -231,6 +235,13 @@ pub enum FlashStep {
         /// application-program object — preserving the single-object behaviour a
         /// conformant ProductDefault procedure (thelsing) relies on.
         target: Option<u32>,
+        /// The procedure maps the refusal of this unload to success
+        /// (`LdCtrlMapError`, issue #614): the unload goes to `target` as
+        /// named, never to the application object in its place, and a device
+        /// that answers it with element count 0 (it has no such object, the
+        /// negative answer, issue #178) completes the step. Any other failure
+        /// still fails it.
+        absent_ok: bool,
     },
     /// Open a loadable object for writing (`LdCtrlLoad`).
     StartLoading {
@@ -316,6 +327,8 @@ pub enum FlashStep {
         expected: Option<Vec<u8>>,
         /// The comparison mask (decoded `Mask`); `None` compares every byte.
         mask: Option<Vec<u8>>,
+        /// The 1-based array element read (`StartElement`, 1 when absent).
+        start_element: u16,
     },
     /// Verify relative (segment-relative) memory against expected data
     /// (`LdCtrlCompareRelMem`) — the read-only precondition check that is the
@@ -1046,6 +1059,46 @@ impl FlashPlan {
             .any(|s| matches!(s, FlashStep::FactoryReset { .. }))
     }
 
+    /// Whether a step of the plan erases loaded objects on the device: a
+    /// [`FlashStep::FactoryReset`], or a product [`FlashStep::MasterReset`]
+    /// whose erase code resets a loadable resource (issue #623).
+    ///
+    /// The executor's resident-MCB skip ([`FlashOptions::skip_matching_mcb`])
+    /// is not taken on such a plan: an object it skipped because its stored
+    /// image matched would be erased by the reset and never loaded again,
+    /// and the read-back would find the device short of the model. So the
+    /// rule is that an object a reset in the plan erases is re-downloaded,
+    /// as a fresh download does. ETS does the same on a re-download of a
+    /// same-application device: a procedure without `AppliesTo` is also its
+    /// `par` procedure, so the reset is sent again, and ETS re-writes the
+    /// application object (object 4) on every same-application download
+    /// (the house captures of `par_procedure`). Not sending the reset
+    /// instead would change the product's procedure, which no capture
+    /// supports.
+    ///
+    /// The erase codes are those of KNX 3/5/2 §3.7.1.2.3 Table 4. Only the
+    /// confirmed restart (01h, "No Resource value shall be reset") and the
+    /// individual-address reset (03h) leave every object as it is. Codes
+    /// 04h to 06h reset the application program, its parameters or the
+    /// links, 02h and 07h are factory resets, and which objects 08h and the
+    /// reserved codes touch is implementation dependent, so all of those
+    /// count as erasing. Which objects a partial reset hits on a real device
+    /// is not captured (no vendor product uses `LdCtrlMasterReset`), so the
+    /// skip is dropped for the whole plan rather than per object; the cost
+    /// is a full download, the result of a fresh one. Evidence: the
+    /// synthetic product `syn-master-reset-code4` re-flashed onto knx-sim,
+    /// whose erase code 4 unloads the loaded application object (#600).
+    pub fn erases_resident_objects(&self) -> bool {
+        self.steps.iter().any(|s| match s {
+            FlashStep::FactoryReset { .. } => true,
+            FlashStep::MasterReset { erase_code, .. } => !matches!(
+                *erase_code,
+                bussard_mgmt::apci::ERASE_CODE_CONFIRMED_RESTART | ERASE_CODE_RESET_IA
+            ),
+            _ => false,
+        })
+    }
+
     /// Adds a [`FlashStep::FactoryReset`] (erase code 7) before the first
     /// `Unload`, unless the plan already has one. The CLI calls this when the
     /// device is not factory-fresh. A no-op on a System 7 plan, whose download
@@ -1280,7 +1333,7 @@ impl FlashPlan {
             FlashStep::Sys7StartLoading { lsm } if self.is_parameters_only() => {
                 format!("[S7] check LSM {lsm} is Loaded, then open it for loading (no allocation)")
             }
-            FlashStep::Unload { target } if self.is_parameters_only() => format!(
+            FlashStep::Unload { target, .. } if self.is_parameters_only() => format!(
                 "check obj{} is Loaded, then unload it (partial download, kept memory)",
                 target.unwrap_or(0)
             ),

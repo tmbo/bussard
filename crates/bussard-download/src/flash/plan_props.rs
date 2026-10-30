@@ -106,6 +106,14 @@ fn branch_taken(
 /// The ops of `lp` whose `<choose>` branches `config` takes, in order. A
 /// procedure without `<choose>` returns all of its ops.
 ///
+/// Every planner builds a complete download. A procedure that lists its
+/// partial downloads after the complete one
+/// ([`LoadProcedure::lists_partial_downloads`], the Siemens 07B0 product
+/// procedures of issue #614) runs none of their ops
+/// ([`LoadProcedure::is_partial_only`]). Any other procedure keeps its
+/// `AppliesTo="par"` ops, as before: there they restate the complete
+/// download's allocation (issue #490) or write the parameter segment.
+///
 /// The evaluation is recursive, as the Dynamic walk's: an op inside nested
 /// `<choose>` blocks carries its branches outermost first
 /// ([`LoadProcedure::guards_of`]), and runs only when every one of them is
@@ -123,7 +131,11 @@ pub(super) fn taken_ops(
     config: &DynamicConfig,
 ) -> Result<Vec<LoadOp>, PlanError> {
     let mut out = Vec::with_capacity(lp.ops.len());
+    let complete_only = lp.lists_partial_downloads();
     for (i, op) in lp.ops.iter().enumerate() {
+        if complete_only && lp.is_partial_only(i) {
+            continue;
+        }
         let mut taken = true;
         for guard in lp.guards_of(i) {
             if !branch_taken(app, lp, guard, config, i + 1)? {
@@ -400,6 +412,27 @@ pub(super) fn lower_write_prop(
     })
 }
 
+/// The element an `LdCtrlCompareProp` reads: its `StartElement`, 1 when
+/// absent or 0.
+///
+/// # Errors
+///
+/// [`PlanError::UnsupportedWriteProp`] for an element past the 12-bit start
+/// index of `A_PropertyValue_Read`.
+pub(super) fn compare_start_element(
+    step: usize,
+    start_element: Option<u32>,
+) -> Result<u16, PlanError> {
+    let start = start_element.unwrap_or(1).max(1);
+    u16::try_from(start)
+        .ok()
+        .filter(|s| *s <= 0x0FFF)
+        .ok_or_else(|| PlanError::UnsupportedWriteProp {
+            step,
+            reason: format!("compare start element {start} exceeds the 12-bit start index"),
+        })
+}
+
 /// Lowers an `LdCtrlCompareProp`.
 ///
 /// # Errors
@@ -414,6 +447,7 @@ pub(super) fn lower_compare_prop(step: usize, op: &LoadOp) -> Result<FlashStep, 
         inline_data,
         mask,
         occurrence,
+        start_element,
         ..
     } = op
     else {
@@ -427,6 +461,7 @@ pub(super) fn lower_compare_prop(step: usize, op: &LoadOp) -> Result<FlashStep, 
         prop_id: prop_id.unwrap_or(0),
         expected: inline_data.clone(),
         mask: mask.clone(),
+        start_element: compare_start_element(step, *start_element)?,
     })
 }
 
