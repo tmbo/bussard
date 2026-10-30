@@ -76,6 +76,25 @@
 #                                a fresh device, and drops the pre-download
 #                                pass (issue #488). A resident.json knxtrace
 #                                wrote wins. For System 7 rows
+#                state=loaded    the capture programs a device that already
+#                                holds an application (the `reload` and
+#                                `other-app` run variants of a synthetic
+#                                System 7 product, epic #596): the dry run
+#                                plans against a record with LSMs 1 to 3
+#                                Loaded and LSM 4 Unloaded, as the pre-flight
+#                                probe reads a programmed device, so the
+#                                pre-download pass stays (issue #488). A
+#                                resident.json knxtrace wrote wins
+#                dir=MODEL       without run=: the model the dry run plans
+#                                with instead of --dir (a run variant whose
+#                                device carries links or a parameter value,
+#                                epic #596). A directory with no bussard.lock
+#                                is a model template (bussard.toml, devices/,
+#                                groups.toml): it is copied under the row's
+#                                output, the row's product imported into the
+#                                copy and the device pinned to the row's
+#                                application. The same holds for run=apply's
+#                                dir=
 #                run=secure-on|secure-off  compare `bussard interface secure
 #                                on|off --dry-run` (issue #398) instead of a
 #                                flash: the KNXnet/IP Secure property writes
@@ -95,6 +114,13 @@
 #                                12-octet chunks where bussard writes an octet.
 #                                run=apply-line: the same through line mode
 #                                (`apply --line <area.line>`)
+#                                run=params: the same with `bussard flash
+#                                --parameters-only` (the download `apply`
+#                                runs for a parameter change, issue #543), for
+#                                ETS's partial download after a parameter
+#                                change into a device with no links, which
+#                                `apply` refuses (the `partial` run variant of
+#                                a synthetic product, epic #596)
 #                                base=A,B      the captures that led to the step,
 #                                              in order (comma-separated)
 #                                dir=MODEL     the model of the step (its links)
@@ -400,6 +426,40 @@ EOF
   esac
 }
 
+# The model a row with dir= plans with (epic #596). A directory that holds a
+# bussard.lock is a model and is used as it is. Any other is a template
+# (bussard.toml, devices/, groups.toml, as a run variant of a synthetic product
+# commits it): copied to <row>/model, the product imported into the copy
+# (`bussard import-product`) and the device pinned to the application in its
+# lock, as tools/ets-sweep/oracle_model.py builds a sweep row's model. Prints
+# the model directory; the import's output goes to <row>/model.log.
+row_model() {
+  local src="$1" prod="$2" application="$3" device="$4" dir="$5"
+  if [ -f "$src/bussard.lock" ]; then
+    printf '%s\n' "$src"
+    return 0
+  fi
+  [ -d "$src" ] || { echo "no model template at $src" >"$dir/model.log"; return 1; }
+  local dest="$dir/model"
+  rm -rf "$dest"
+  cp -R "$src" "$dest"
+  env -u BUSSARD_KEYRING BUSSARD_NO_DOTENV=1 "$BUSSARD_BIN" import-product --dir "$dest" "$prod" \
+    >"$dir/model.log" 2>&1 || return 1
+  "$PYTHON" - "$dest/bussard.lock" "$prod" "$application" "$device" <<'PY' >>"$dir/model.log" 2>&1 || return 1
+import hashlib, sys
+lock, prod, app, device = sys.argv[1:5]
+if not app:
+    sys.exit("a model template needs the row's application")
+with open(prod, "rb") as fh:
+    sha = hashlib.sha256(fh.read()).hexdigest()
+with open(lock, encoding="utf-8") as fh:
+    text = fh.read()
+with open(lock, "w", encoding="utf-8") as fh:
+    fh.write(text.rstrip("\n") + f'\n\n[[device]]\naddress = "{device}"\napplication = "{app}"\nproduct_sha256 = "{sha}"\n')
+PY
+  printf '%s\n' "$dest"
+}
+
 # A run=apply row (issue #469): knx-sim starts from ETS's state before the
 # step (the base captures replayed into the device), `bussard apply` runs
 # against it on loopback, and knxtrace compares the device state after it with
@@ -419,6 +479,10 @@ apply_row() {
   local prod
   if ! prod="$(resolve_product "$product")" || [ ! -f "$prod" ]; then
     not_comparable "$dir" "$device" "product file not found"
+    return 0
+  fi
+  if ! model="$(row_model "$model" "$prod" "$application" "$device" "$dir")"; then
+    not_comparable "$dir" "$device" "model dir=$7: $(tail -1 "$dir/model.log" 2>/dev/null | cut -c1-160)"
     return 0
   fi
   local b base_args=()
@@ -456,14 +520,16 @@ PY
   note "knx-sim on 127.0.0.1:$port, $(grep -c 'replayed' "$sim/sim.log") capture(s) replayed"
   # run=apply-line goes through line mode (`apply --line`), which has its own
   # path to the tables (#478); the model holds the one device.
-  local target=("$device")
-  [ "$how" = apply-line ] && target=(--line "${device%.*}")
+  local target=(apply "$device")
+  [ "$how" = apply-line ] && target=(apply --line "${device%.*}")
+  # run=params: the parameters-only download (issue #543).
+  [ "$how" = params ] && target=(flash "$device" --parameters-only)
   local rc=0
   env -u BUSSARD_KEYRING BUSSARD_NO_DOTENV=1 "$BUSSARD_BIN" --gateway "127.0.0.1:$port" \
-    apply "${target[@]}" --dir "$model" --yes >"$dir/apply.log" 2>"$dir/apply.err" || rc=$?
+    "${target[@]}" --dir "$model" --yes >"$dir/apply.log" 2>"$dir/apply.err" || rc=$?
   kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
   # A refused apply writes nothing; the state comparison then says so.
-  [ "$rc" = 0 ] || note "bussard apply exited $rc: $(grep -v '^\s*$' "$dir/apply.err" | tail -1 | cut -c1-160)"
+  [ "$rc" = 0 ] || note "bussard ${target[0]} exited $rc: $(grep -v '^\s*$' "$dir/apply.err" | tail -1 | cut -c1-160)"
   "$PYTHON" "$KNXTRACE" statediff ${base_args+"${base_args[@]}"} --ets "$capture" \
     --bussard "$sim/bussard.pcap" --device "$device" --json >"$dir/diff.json" || true
   "$PYTHON" "$KNXTRACE" statediff ${base_args+"${base_args[@]}"} --ets "$capture" \
@@ -501,12 +567,12 @@ run_row() {
   [ -n "$scope" ] && scope_args=(--scope "$scope")
   [ -n "$phase" ] && scope_args+=(--phase "$phase")
   case "$devstate" in
-    ""|fresh) ;;
-    *) die "$device: unknown state=$devstate (fresh)" ;;
+    ""|fresh|loaded) ;;
+    *) die "$device: unknown state=$devstate (fresh or loaded)" ;;
   esac
   case "$run" in
-    ""|secure-on|secure-off|apply|apply-line) ;;
-    *) die "$device: unknown run=$run (secure-on, secure-off, apply or apply-line)" ;;
+    ""|secure-on|secure-off|apply|apply-line|params) ;;
+    *) die "$device: unknown run=$run (secure-on, secure-off, apply, apply-line or params)" ;;
   esac
   [ -n "$device" ] || return 0
   local dir="$OUT/$key"
@@ -535,7 +601,7 @@ PY
     mark_skipped "$dir" "capture not found"
     return 0
   fi
-  if [ "$run" = apply ] || [ "$run" = apply-line ]; then
+  if [ "$run" = apply ] || [ "$run" = apply-line ] || [ "$run" = params ]; then
     apply_row "$dir" "$device" "$capture" "$product" "$application" "$base" "$rowdir" "$lsm" "$run"
     return 0
   fi
@@ -576,11 +642,25 @@ PY
       printf '%s\n' '{"objects": [{"index": 1, "state": 0}, {"index": 2, "state": 0}, {"index": 3, "state": 0}, {"index": 4, "state": 0}]}' \
         >"$dir/fresh.json"
       app_args+=(--resident "$dir/fresh.json")
+    elif [ "$devstate" = loaded ]; then
+      # state=loaded (issue #488): a System 7 device a download already
+      # programmed, LSMs 1 to 3 Loaded (the procedure's own), LSM 4 Unloaded.
+      printf '%s\n' '{"objects": [{"index": 1, "state": 1}, {"index": 2, "state": 1}, {"index": 3, "state": 1}, {"index": 4, "state": 0}]}' \
+        >"$dir/loaded.json"
+      app_args+=(--resident "$dir/loaded.json")
+    fi
+    # dir= (a run variant's model template, epic #596): the row's own model.
+    local plan_dir="$PLAN_DIR"
+    if [ -n "$rowdir" ]; then
+      if ! plan_dir="$(row_model "$rowdir" "$prod" "$application" "$device" "$dir")"; then
+        not_comparable "$dir" "$device" "model dir=$rowdir: $(tail -1 "$dir/model.log" 2>/dev/null | cut -c1-160)"
+        return 0
+      fi
     fi
     # No --keyring and no $BUSSARD_KEYRING: the model's key store decides.
     if ! env -u BUSSARD_KEYRING "$BUSSARD_BIN" flash "$device" --product "$prod" \
          ${app_args+"${app_args[@]}"} \
-         --dir "$PLAN_DIR" --dry-run --dump-images "$dir/bussard" --json \
+         --dir "$plan_dir" --dry-run --dump-images "$dir/bussard" --json \
          >"$dir/plan.log" 2>"$dir/plan.err"; then
       not_comparable "$dir" "$device" "bussard refused to plan: $(grep -v '^\s*$' "$dir/plan.err" | tail -1 | cut -c1-160)"
       return 0

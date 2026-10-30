@@ -220,6 +220,52 @@ run `--check` against `bussard flash --dry-run`, knx-sim replays
 (`knx-sim/tests/synthetic_calibration.rs`), and the sim loop flashes every
 product with seeded configurations.
 
+### Run variants
+
+A run variant is another download of an existing product, not a product of
+its own (#604, "Run variants"): `capture.py <name> --variant <variant>` runs
+it in one knx-sim process, so ETS meets the device the previous download left,
+and writes `captures/synthetic/<name>/<variant>/` with its own row and
+manifest entry. The variants and their products are `VARIANTS` in
+`tools/ets-sweep/synthetic/capture.py`:
+
+| variant | products | the downloads | the row |
+| --- | --- | --- | --- |
+| `no-ga` | `syn-minimal` | the application, no group address linked (#542) | a flash row, as `defaults` |
+| `links` | `syn-minimal` | the switch object linked to 1/0/1 and 1/0/2, the status object to 1/0/3, then the application (#478, #540) | `dir=` the model template with those links |
+| `reload` | `syn-s7-0705`, `syn-s7-0701` | the application, then the same application again (#488) | `state=loaded` |
+| `other-app` | `syn-s7-0705`, `syn-s7-0701` | a sibling of the same mask (`syn-s7-hidden-default`, `syn-s7-lsm5`), then this application (#488) | `state=loaded` |
+| `partial` | `syn-minimal` | the application, then `Delay (s)` set to 500 in ETS's parameter editor and ETS's partial download (#543, #490) | `run=params base=` the first download, `dir=` the model template |
+| `calc-input` | `syn-param-calculation` | `Delay (s)`, the calculation's input, set to 500, then the application (#427) | `dir=` the model template |
+
+A variant directory holds the files of a `defaults` capture for its last
+download (the one the row compares), and when there were earlier downloads,
+`base.pcapng` and `base-requests.txt` with them; `sim.yaml` then replays
+`base.pcapng` first. `objects.json` is the object table ETS showed before
+the download, `params.json` what the parameter editor set. `model/` is the
+model template of a row that plans with links or a parameter value
+(`bussard.toml`, `devices/1.1.1.toml`, `groups.toml`): the oracle script
+imports the product into a copy of it and pins the device (`dir=` in
+`95-offline-oracle.sh`).
+
+```
+captures/synthetic/<name>/<variant>/base.pcapng        the earlier downloads of the same sim session
+captures/synthetic/<name>/<variant>/base-requests.txt  their tool requests, replayed first by knx-sim
+captures/synthetic/<name>/<variant>/model/             the model template of the row (links, parameters)
+```
+
+In CI, `synthetic_calibration.rs` replays `base-requests.txt` and then
+`requests.txt` into one device, so a variant is checked against the device
+ETS met. A `run=params` row (or `run=apply`) needs knx-sim: it runs in the
+`sim-conformance` job (`test_offline_oracle_synthetic_sim_rows_pass_the_check`,
+`KNX_SIM_BIN`), the other rows in the test job. The sim loop flashes products
+and knows nothing of variants.
+
+`partial` compares ETS's partial download with `bussard flash
+--parameters-only`, the download `apply` runs for a parameter change: `apply`
+itself refuses a device with no links ("refusing to plan an empty table
+set", #542), which is what a defaults download leaves.
+
 **A product change requires a re-capture.** A capture of other XML says
 nothing about the committed product, so
 `crates/bussard-cli/tests/it/synthetic_captures.rs` fails, ungated, when a

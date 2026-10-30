@@ -23,7 +23,11 @@
 //! whose capture does not exist, so a broken script fails every CI run; the
 //! other runs `--check` over the synthetic products' committed rows
 //! (`captures/synthetic/rows.txt`, epic #596), a real bussard-versus-ETS
-//! comparison on every CI run.
+//! comparison on every CI run. The synthetic rows that replay a capture into
+//! knx-sim before bussard writes (`run=apply`, `run=apply-line`, `run=params`:
+//! the `partial` run variant) need the simulator binary; a third test runs
+//! them when `KNX_SIM_BIN` names it or `knx-sim/target/debug/knx-sim` exists
+//! (the `sim-conformance` CI job), and skips with a note otherwise.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -296,8 +300,49 @@ fn check_synthetic_row(
 /// each on [`SYNTHETIC_WORKERS`] threads, and a failure names every failing
 /// row with its time. The nextest budget for this test is an override in
 /// `.config/nextest.toml`.
+/// Whether a rows line replays captures into knx-sim before bussard writes
+/// (`run=apply`, `run=apply-line`, `run=params`), so it needs the simulator.
+fn needs_sim(line: &str) -> bool {
+    line.split('|').nth(6).is_some_and(|options| {
+        options
+            .split_whitespace()
+            .any(|w| matches!(w, "run=apply" | "run=apply-line" | "run=params"))
+    })
+}
+
+/// The knx-sim binary the script would start (`$KNX_SIM_BIN`, else
+/// `knx-sim/target/debug/knx-sim`), when it exists.
+fn knx_sim_bin() -> Option<PathBuf> {
+    let path = std::env::var_os("KNX_SIM_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| workspace_root().join("knx-sim/target/debug/knx-sim"));
+    path.is_file().then_some(path)
+}
+
 #[test]
 fn test_offline_oracle_synthetic_rows_pass_the_check() -> TestResult {
+    check_synthetic_rows(|line| !needs_sim(line), true)
+}
+
+/// The synthetic rows that replay a capture into knx-sim (`needs_sim`): the
+/// `partial` run variant, ETS's partial download against `bussard flash
+/// --parameters-only` into a sim that replayed the defaults download first.
+#[test]
+fn test_offline_oracle_synthetic_sim_rows_pass_the_check() -> TestResult {
+    if knx_sim_bin().is_none() {
+        eprintln!(
+            "SKIP: no knx-sim binary (export KNX_SIM_BIN, or cargo build --manifest-path \
+             knx-sim/Cargo.toml); the sim-conformance CI job runs these rows"
+        );
+        return Ok(());
+    }
+    check_synthetic_rows(needs_sim, false)
+}
+
+/// Runs `--check` over the rows of `captures/synthetic/rows.txt` that `keep`
+/// selects, on [`SYNTHETIC_WORKERS`] threads. With `required` an empty
+/// selection fails.
+fn check_synthetic_rows(keep: fn(&str) -> bool, required: bool) -> TestResult {
     if !tools_available() {
         eprintln!("SKIP: python3 or bash is not available");
         return Ok(());
@@ -323,9 +368,16 @@ fn test_offline_oracle_synthetic_rows_pass_the_check() -> TestResult {
     let rows: Vec<&str> = rows_file
         .lines()
         .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter(|l| !l.is_empty() && !l.starts_with('#') && keep(l))
         .collect();
-    assert!(!rows.is_empty(), "captures/synthetic/rows.txt has no row");
+    assert!(
+        !(required && rows.is_empty()),
+        "captures/synthetic/rows.txt has no row"
+    );
+    if rows.is_empty() {
+        eprintln!("no row of captures/synthetic/rows.txt needs knx-sim");
+        return Ok(());
+    }
 
     let started = std::time::Instant::now();
     let next = std::sync::atomic::AtomicUsize::new(0);
