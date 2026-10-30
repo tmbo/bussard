@@ -273,5 +273,98 @@ class LoadProcedureChoose(unittest.TestCase):
             generate.Product("test", self.choose("nope", [{"test": "1", "ops": []}]))
 
 
+class DynamicChoose(unittest.TestCase):
+    """syn-choose-never-shown (#474): a virtual parameter and a `<choose>` in
+    the Dynamic tree whose default branch shows a block."""
+
+    def choose_spec(self) -> dict:
+        s = spec()
+        s["parameter"] = s["parameter"] + [
+            {"name": "steer", "type": "Mode", "text": "Steer", "default": 0, "virtual": True}]
+        s["dynamic"] = dict(s["dynamic"], choose=[{"parameter": "steer", "when": [
+            {"default": True, "block": [{"name": "b", "text": "B", "parameters": ["delay"],
+                                         "com_objects": [1]}]}]}])
+        return s
+
+    def test_render_virtual_parameter_and_dynamic_choose(self) -> None:
+        xml = app_xml(self.choose_spec())
+        self.assertIn('<Parameter Id="M-00FA_A-2700-10-0000_P-3" Name="steer" '
+                      'ParameterType="M-00FA_A-2700-10-0000_PT-Mode" Text="Steer" Value="0" />', xml)
+        self.assertIn('              </ParameterBlock>\n'
+                      '              <choose ParamRefId="M-00FA_A-2700-10-0000_P-3_R-3">\n'
+                      '                <when default="true">\n'
+                      '                  <ParameterBlock Id="M-00FA_A-2700-10-0000_PB-2" Name="b" Text="B">\n'
+                      '                    <ParameterRefRef RefId="M-00FA_A-2700-10-0000_P-2_R-2" />\n'
+                      '                    <ComObjectRefRef RefId="M-00FA_A-2700-10-0000_O-1_R-2" />\n'
+                      '                  </ParameterBlock>\n'
+                      '                </when>\n'
+                      '              </choose>\n'
+                      '            </ChannelIndependentBlock>', xml)
+
+    def test_virtual_parameter_with_memory_refused(self) -> None:
+        s = self.choose_spec()
+        s["parameter"][-1]["memory"] = {"segment": "main", "offset": 4, "bit_offset": 0}
+        with self.assertRaisesRegex(generate.SpecError, "virtual parameter has no `memory`"):
+            generate.Product("test", s)
+
+    def test_dynamic_choose_test_branch_not_yet(self) -> None:
+        s = self.choose_spec()
+        s["dynamic"]["choose"][0]["when"][0]["test"] = "1"
+        with self.assertRaisesRegex(generate.SpecError, "no product uses it yet"):
+            generate.Product("test", s)
+
+    def test_dynamic_choose_unknown_parameter_refused(self) -> None:
+        s = self.choose_spec()
+        s["dynamic"]["choose"][0]["parameter"] = "nope"
+        with self.assertRaisesRegex(generate.SpecError, "unknown parameter `nope`"):
+            generate.Product("test", s)
+
+
+class ParameterCalculation(unittest.TestCase):
+    """syn-param-calculation (#427, #450): an inline JavaScript calculation and
+    a LegacyPatchAlways parameter."""
+
+    def calc_spec(self, **calc) -> dict:
+        s = spec()
+        s["parameter"] = s["parameter"] + [
+            {"name": "out", "type": "Delay", "text": "Out", "default": 0, "legacy_patch_always": True,
+             "memory": {"segment": "main", "offset": 3, "bit_offset": 0}}]
+        c = {"name": "c", "language": "JavaScript", "inputs": [{"parameter": "delay", "alias": "d"}],
+             "outputs": [{"parameter": "out", "alias": "o"}], "lr_script": "o = d < 2 && d > 0;",
+             "rl_script": "1"}
+        c.update(calc)
+        s["parameter_calculation"] = [c]
+        return s
+
+    def test_render_calculation_after_parameter_refs(self) -> None:
+        xml = app_xml(self.calc_spec())
+        self.assertIn('Value="0" LegacyPatchAlways="true">', xml)
+        self.assertIn('            </ParameterRefs>\n'
+                      '            <ParameterCalculations>\n'
+                      '              <ParameterCalculation Id="M-00FA_A-2700-10-0000_PC-1" Name="c" Language="JavaScript">\n'
+                      '                <RLTransformation>1</RLTransformation>\n'
+                      '                <LRTransformation>o = d &lt; 2 &amp;&amp; d &gt; 0;</LRTransformation>\n'
+                      '                <LParameters>\n'
+                      '                  <ParameterRefRef RefId="M-00FA_A-2700-10-0000_P-2_R-2" AliasName="d" />\n'
+                      '                </LParameters>\n'
+                      '                <RParameters>\n'
+                      '                  <ParameterRefRef RefId="M-00FA_A-2700-10-0000_P-3_R-3" AliasName="o" />\n'
+                      '                </RParameters>\n'
+                      '              </ParameterCalculation>\n'
+                      '            </ParameterCalculations>\n'
+                      '            <ComObjectTable>', xml)
+
+    def test_no_calculation_renders_nothing(self) -> None:
+        self.assertNotIn("ParameterCalculations", app_xml(spec()))
+
+    def test_calculation_vbscript_not_yet(self) -> None:
+        with self.assertRaisesRegex(generate.SpecError, "no product uses it yet"):
+            generate.Product("test", self.calc_spec(language="VBScript"))
+
+    def test_calculation_unknown_parameter_refused(self) -> None:
+        with self.assertRaisesRegex(generate.SpecError, "unknown parameter `nope`"):
+            generate.Product("test", self.calc_spec(outputs=[{"parameter": "nope", "alias": "o"}]))
+
+
 if __name__ == "__main__":
     unittest.main()

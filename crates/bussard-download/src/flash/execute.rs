@@ -16,7 +16,7 @@ use super::verify::{
     WrittenSample, advisory_mcb_warning, mcb_read_object, mcb_skip_target, resident_match_objects,
     take_sample, verify_after_reboot, verify_outcome,
 };
-use super::{FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageKind, Progress};
+use super::{FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageKind, Progress, SegmentFill};
 use bussard_mgmt::MgmtError;
 use bussard_mgmt::connection::{L4Channel, Layer4Connection};
 use bussard_mgmt::load::{
@@ -348,14 +348,14 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
     // address — before the resumed `WriteRelMem` targets it. `None` until the
     // first `AllocateSegment`.
     let mut last_alloc_size: Option<u32> = None;
-    // The pre-fill (`Mode`/`Fill`) the most-recent `AllocateSegment`
-    // requested, so a `MasterReset` re-allocation reproduces the same fill flag
-    // as the original op rather than silently dropping it. `None` = no-fill (the
-    // DA.tp default).
-    let mut last_alloc_fill: Option<u8> = None;
-    // The pre-fill each object's segment was allocated with, so its
-    // `WriteRelMem` streams only what differs from the fill (issue #123).
-    let mut segment_fills: BTreeMap<u8, Option<u8>> = BTreeMap::new();
+    // The `Mode`/`Fill` the most-recent `AllocateSegment` sent, so a
+    // `MasterReset` re-allocation reproduces the same record as the original
+    // op rather than silently dropping it. `NONE` = no-fill (the DA.tp
+    // default).
+    let mut last_alloc_fill = SegmentFill::NONE;
+    // The `Mode`/`Fill` each object's segment was allocated with, so its
+    // `WriteRelMem` streams only what differs from the pre-fill (issue #123).
+    let mut segment_fills: BTreeMap<u8, SegmentFill> = BTreeMap::new();
     // The object index the most-recent `AllocateSegment` targeted, so a
     // `MasterReset` re-opens and re-allocates *that* object (the one whose segment
     // the reset dropped) rather than the type-discovered application object. On
@@ -620,10 +620,10 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                             .unwrap_or(0);
                         // The fill the target segment was allocated with (the
                         // most-recent allocation's for the single-object shape).
-                        let fill = match obj.and_then(|obj| segment_fills.get(&obj).copied()) {
-                            Some(fill) => fill,
-                            None => last_alloc_fill,
-                        };
+                        let fill = obj
+                            .and_then(|obj| segment_fills.get(&obj).copied())
+                            .unwrap_or(last_alloc_fill)
+                            .prefill();
                         // The device-supplied segment base plus the vendor offset must fit
                         // the 24-bit extended-memory space. `write_image` picks the plain
                         // A_Memory_Write (≤0xFFFF, byte-identical to before) or the

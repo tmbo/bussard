@@ -335,7 +335,7 @@ pub async fn write_object_table<Ch: L4Channel>(
     image: &[u8],
 ) -> Result<ObjectTableOutcome, WriteError> {
     write_load_control(l4, object_index, LoadControl::StartLoading).await?;
-    let segment = allocate_segment(l4, object_index, image.len() as u32, None).await?;
+    let segment = allocate_segment(l4, object_index, image.len() as u32, 0x00, 0x00).await?;
     write_memory_chunked(l4, segment.address, image, |_| {}).await?;
     let state = write_load_control(l4, object_index, LoadControl::LoadCompleted).await?;
     let entries = image_count(image);

@@ -39,7 +39,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bussard_download::{FlashStep, Session, flash, plan_flash};
+use bussard_download::{FlashStep, SegmentFill, Session, flash, plan_flash};
 use bussard_mgmt::connection::Layer4Connection;
 use bussard_mgmt::load::{LoadState, WriteError};
 use bussard_prod::application::{ApplicationProgram, parse_application_program};
@@ -6760,7 +6760,7 @@ fn test_plan_flash_streams_a_companion_pei_program() -> TestResult {
         FlashStep::AllocateSegment {
             size: 4,
             target: Some(5),
-            fill: Some(0)
+            fill: SegmentFill { mode: 1, fill: 0 }
         }
     )));
     let write5 = plan
@@ -7885,9 +7885,9 @@ fn test_plan_flash_plain_app_with_filled_segment_unloads_and_restarts_basic() ->
     assert!(!steps[0].contains("confirmed"), "{steps:?}");
     assert!(!plan.uses_confirmed_restart());
     assert!(
-        plan.steps
-            .iter()
-            .any(|s| matches!(s, FlashStep::AllocateSegment { fill: Some(_), .. })),
+        plan.steps.iter().any(
+            |s| matches!(s, FlashStep::AllocateSegment { fill, .. } if fill.prefill().is_some())
+        ),
         "the fixture allocates a filled segment"
     );
     Ok(())

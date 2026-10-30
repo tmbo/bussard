@@ -473,6 +473,48 @@ pub enum SegmentKind {
     Absolute,
 }
 
+/// The `Mode` and `Fill` octets of a relative allocation (`LdCtrlRelSegment`),
+/// octets 6 and 7 of the Data Relative Allocation record (KNX 3/5/3 §3.5.1.2).
+///
+/// ETS copies the product's `@Mode` and `@Fill` into the record verbatim, also
+/// when `Mode` is `0` and the fill octet has no effect on the device: the
+/// synthetic product `syn-relseg-fill` (`Mode="0" Fill="255"`) is allocated
+/// with `00 ff` (issue #480).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SegmentFill {
+    /// The `Mode` octet; bit 0 asks the device to fill the segment.
+    pub mode: u8,
+    /// The `Fill` octet: the fill byte when bit 0 of `mode` is set, sent
+    /// as given otherwise.
+    pub fill: u8,
+}
+
+impl SegmentFill {
+    /// `Mode` 0 and `Fill` 0: no pre-fill (the DA.tp shape and every table
+    /// object allocation ETS sends).
+    pub const NONE: SegmentFill = SegmentFill { mode: 0, fill: 0 };
+
+    /// `Mode` 1 with fill byte `byte`: the device pre-fills the segment.
+    #[must_use]
+    pub const fn filled(byte: u8) -> SegmentFill {
+        SegmentFill {
+            mode: 1,
+            fill: byte,
+        }
+    }
+
+    /// The byte the device pre-fills the segment with: `Some(fill)` when bit 0
+    /// of `mode` is set, `None` when the segment keeps its contents.
+    #[must_use]
+    pub const fn prefill(self) -> Option<u8> {
+        if self.mode & 0x01 != 0 {
+            Some(self.fill)
+        } else {
+            None
+        }
+    }
+}
+
 /// One step of a load procedure, a faithful (uninterpreted) representation of an
 /// `LdCtrl*` element. Known control ops get a typed variant carrying the
 /// attributes phase-3 (`bussard-download`) will need; unrecognized ops are kept
@@ -581,16 +623,14 @@ pub enum LoadOp {
         size: Option<u32>,
         /// `AppliesTo` filter (e.g. `"full"`, `"par"`, `"full,par"`).
         applies_to: Option<String>,
-        /// The device-side pre-fill the allocation requests, decoded from the
-        /// op's `Mode` (fill flag) / `Fill` (fill byte) attributes, or the older
-        /// `Fill` / `FillByte` spelling. `Some(b)` means the ETS procedure asks
-        /// for the fill (`Mode="1"`) — the device pre-fills the freshly
-        /// allocated segment with `b` before the writes land (the app-code
-        /// segment on some products, e.g. Jung LED A-3030 obj4 alloc
-        /// `030b000028c1 01 00 0000`). `None` means no fill was asked for
-        /// (`Mode="0"`, or no fill attribute at all): the DA.tp behaviour
-        /// bussard has always emitted.
-        fill: Option<u8>,
+        /// The op's `Mode` and `Fill` octets (or the older `Fill` / `FillByte`
+        /// spelling), as the allocation record carries them. With the mode's
+        /// fill bit set the device pre-fills the freshly allocated segment
+        /// (the app-code segment on some products, e.g. Jung LED A-3030 obj4
+        /// alloc `030b000028c1 01 00 0000`); with it clear the `Fill` octet is
+        /// still sent as given (ETS does, issue #480). No attribute at all is
+        /// [`SegmentFill::NONE`], the DA.tp shape.
+        fill: SegmentFill,
     },
     /// `<LdCtrlAbsSegment …>`: an absolute-segment control op.
     AbsSegment {
@@ -2598,22 +2638,20 @@ fn decode_hex_bytes(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Decodes a `LdCtrlRelSegment`'s fill attributes into the pre-fill value to
-/// request.
+/// Decodes a `LdCtrlRelSegment`'s fill attributes into the record's `Mode` and
+/// `Fill` octets.
 ///
-/// The KNX schema spells the allocation's fill as `Mode` (the fill flag: `1`
-/// pre-fills the freshly allocated segment, `0` does not) plus `Fill` (the fill
-/// byte). A real Jung F50 procedure reads
-/// `<LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="6152" Mode="1" Fill="0"/>`
-/// and ETS sends `03 0b 00 00 18 08 01 00 00 00` for it: flag set, byte `00`
-/// (issue #123). So when `Mode` is present it decides: non-zero → `Some(Fill)`
-/// (`Fill` defaulting to `0`), zero → `None`.
+/// The KNX schema spells the allocation's fill as `Mode` (bit 0 pre-fills the
+/// freshly allocated segment) plus `Fill` (the fill byte). Both are copied as
+/// given: a Jung F50 procedure reads `Mode="1" Fill="0"` and ETS sends
+/// `03 0b 00 00 18 08 01 00 00 00` (issue #123); `syn-relseg-fill` reads
+/// `Mode="0" Fill="255"` and ETS sends `03 0b 00 00 01 00 00 ff 00 00`
+/// (issue #480). A value that does not parse as an octet is `0`.
 ///
 /// Without a `Mode` attribute the older reading applies: `Fill="1"`/`"true"` is
-/// the flag and `FillByte` the byte (decimal or `0x` hex, default `0`). Any
-/// other value, or no attribute at all, means no pre-fill (the DA.tp shape,
-/// byte-identical to the historical no-fill allocation).
-fn parse_fill(m: &Attrs) -> Option<u8> {
+/// the flag and `FillByte` the byte (decimal or `0x` hex, default `0`). No
+/// attribute at all is [`SegmentFill::NONE`] (the DA.tp shape).
+fn parse_fill(m: &Attrs) -> SegmentFill {
     let byte = |raw: Option<&str>| {
         raw.and_then(|s| {
             let s = s.trim();
@@ -2626,15 +2664,19 @@ fn parse_fill(m: &Attrs) -> Option<u8> {
         .unwrap_or(0)
     };
     if let Some(mode) = get(m, b"Mode") {
-        let on = mode.trim().parse::<u8>().map(|v| v != 0).unwrap_or(false);
-        return on.then(|| byte(get(m, b"Fill")));
+        return SegmentFill {
+            mode: byte(Some(mode)),
+            fill: byte(get(m, b"Fill")),
+        };
     }
-    let raw = get(m, b"Fill")?;
+    let Some(raw) = get(m, b"Fill") else {
+        return SegmentFill::NONE;
+    };
     let on = matches!(raw.trim(), "1" | "true" | "True" | "TRUE");
-    if !on {
-        return None;
+    SegmentFill {
+        mode: u8::from(on),
+        fill: byte(get(m, b"FillByte")),
     }
-    Some(byte(get(m, b"FillByte")))
 }
 
 /// Records the branches the op just appended to the open procedure sits in,
@@ -3421,7 +3463,7 @@ mod tests {
         // The Jung LED A-3030 shape: the code segment (obj4) sets Fill="1" so the
         // device pre-fills the allocation (obj4 alloc `030b000028c1 01 00 0000`),
         // while the table objects keep Fill="0". A procedure with no `Fill`
-        // attribute (the DA.tp shape) parses to `None` so the historical no-fill
+        // attribute (the DA.tp shape) parses to `SegmentFill::NONE` so the no-fill
         // allocation is byte-identical.
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
          <ApplicationProgram Id="M-1_A-1" Name="x">
@@ -3438,20 +3480,35 @@ mod tests {
         assert!(matches!(
             ops[0],
             LoadOp::RelSegment {
-                fill: Some(0),
+                fill: SegmentFill { mode: 1, fill: 0 },
                 lsm_idx: Some(4),
                 ..
             }
         ));
-        // Fill="0" → None (no pre-fill).
-        assert!(matches!(ops[1], LoadOp::RelSegment { fill: None, .. }));
-        // Fill absent → None (the DA.tp default).
-        assert!(matches!(ops[2], LoadOp::RelSegment { fill: None, .. }));
+        // Fill="0" → mode 0 (no pre-fill).
+        assert!(matches!(
+            ops[1],
+            LoadOp::RelSegment {
+                fill: SegmentFill::NONE,
+                ..
+            }
+        ));
+        // Fill absent → NONE (the DA.tp default).
+        assert!(matches!(
+            ops[2],
+            LoadOp::RelSegment {
+                fill: SegmentFill::NONE,
+                ..
+            }
+        ));
         // Fill="1" with an explicit hex FillByte.
         assert!(matches!(
             ops[3],
             LoadOp::RelSegment {
-                fill: Some(0xAB),
+                fill: SegmentFill {
+                    mode: 1,
+                    fill: 0xAB
+                },
                 ..
             }
         ));
@@ -3470,19 +3527,35 @@ mod tests {
            <LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="6152" Mode="1" Fill="0" />
            <LdCtrlRelSegment AppliesTo="par" LsmIdx="4" Size="6152" Mode="0" Fill="0" />
            <LdCtrlRelSegment LsmIdx="4" Size="2" Mode="1" Fill="255" />
+           <LdCtrlRelSegment LsmIdx="4" Size="256" Mode="0" Fill="255" />
           </LoadProcedure></LoadProcedures>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program_str("M-1_A-1", xml)?;
         let ops = &app.load_procedures[0].ops;
-        assert!(matches!(ops[0], LoadOp::RelSegment { fill: Some(0), .. }));
-        assert!(matches!(ops[1], LoadOp::RelSegment { fill: None, .. }));
-        assert!(matches!(
-            ops[2],
-            LoadOp::RelSegment {
-                fill: Some(0xFF),
-                ..
-            }
-        ));
+        let fills: Vec<SegmentFill> = ops
+            .iter()
+            .filter_map(|op| match op {
+                LoadOp::RelSegment { fill, .. } => Some(*fill),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            fills,
+            vec![
+                SegmentFill::filled(0),
+                SegmentFill::NONE,
+                SegmentFill::filled(0xFF),
+                SegmentFill {
+                    mode: 0,
+                    fill: 0xFF
+                },
+            ]
+        );
+        assert_eq!(fills[0].prefill(), Some(0));
+        assert_eq!(fills[1].prefill(), None);
+        // Mode 0 with a Fill octet: no pre-fill, but the octet is kept for
+        // the record (ETS sends `00 ff` for `syn-relseg-fill`, issue #480).
+        assert_eq!(fills[3].prefill(), None);
         Ok(())
     }
 
