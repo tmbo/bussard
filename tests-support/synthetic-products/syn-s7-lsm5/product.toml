@@ -1,17 +1,21 @@
-# syn-s7-0701 with a load state machine 5 (#604 row 15, #489). Rendered by
+# syn-s7-0701 with a TaskSegment on LsmIdx 5 (#604 row 15, #489). Rendered by
 # ../generate.py into xml/; see ../README.md for the schema.
 
 [doc]
 purpose = """
-syn-s7-0701 with LdCtrlLoad, LdCtrlTaskSegment and LdCtrlLoadCompleted on
-LsmIdx 5 after LSM 3 is complete and before the restart, the shape of the
-Busch-Jaeger 0701 binary input of #489 (98 0701 applications carry a
-TaskSegment on LsmIdx 5, e.g. M-0007_A-A002-13-73C8-O0002). In the
+syn-s7-0701 with a LdCtrlTaskSegment on LsmIdx 5 between LSM 3's
+TaskSegment and its LoadCompleted, pointing at the parameter segment: the
+shape of the Busch-Jaeger 0701 binary input of #489 (e.g.
+M-0002_A-A002-13-2CF3; 98 0701 applications name LsmIdx 5). In the
 memory-mapped form the high nibble of the record names the object type, and
 5 names none (KNX 3/5/1 section 3.31.2). On 1.1.44 ETS sent no record for
-LSM 5 while bussard sent the TaskSegment. The capture shows whether ETS sends
-any of the three LSM 5 records to a 0701 knx-sim, and what it polls."""
-construct = "TaskSegment and Load on LsmIdx 5 (0701)"
+LSM 5 while bussard sent the TaskSegment; the capture shows what ETS sends
+to a 0701 knx-sim. Application version 0x11: version 0x10 of this product,
+with an LdCtrlLoad and LdCtrlLoadCompleted on LSM 5 as well, failed in ETS
+6.4.1 ("System.ArgumentException: lsm" at the LoadCompleted on LSM 5,
+ETS6.log, 2026-10-30) and stays in the VM's catalogue under the same order
+number."""
+construct = "TaskSegment on LsmIdx 5 (0701)"
 issues = [489]
 
 [product]
@@ -23,7 +27,7 @@ bus_current = 10
 
 [application]
 number = 0x280F
-version = 0x10
+version = 0x11
 name = "Fifth-twig sensor"
 mask = "0701"
 load_procedure_style = "ProductProcedure"
@@ -169,13 +173,11 @@ ops = [
     { op = "LdCtrlAbsSegment", lsm = 3, seg_type = 0, address = 0x4400, size = 64, access = 0x33, mem_type = 3, seg_flags = 0x80 },
     { op = "LdCtrlAbsSegment", lsm = 3, seg_type = 0, address = 0x4440, size = 64, access = 0x33, mem_type = 3, seg_flags = 0x80 },
     { op = "LdCtrlTaskSegment", lsm = 3, address = 0x4400 },
+    # The delta (#489): a TaskSegment on LSM 5, which no object type backs,
+    # inside LSM 3's load, as the Busch-Jaeger 0701 procedures have it.
+    { op = "LdCtrlTaskSegment", lsm = 5, address = 0x4440 },
     { op = "LdCtrlTaskCtrl1", lsm = 3, address = 0x4430, count = 1 },
     { op = "LdCtrlLoadCompleted", lsm = 3 },
-    # The delta (#489): LSM 5, which no object type backs, loaded and closed
-    # by a TaskSegment at the application's base before the restart.
-    { op = "LdCtrlLoad", lsm = 5 },
-    { op = "LdCtrlTaskSegment", lsm = 5, address = 0x4400 },
-    { op = "LdCtrlLoadCompleted", lsm = 5 },
     { op = "LdCtrlRestart" },
     { op = "LdCtrlDisconnect" },
 ]
