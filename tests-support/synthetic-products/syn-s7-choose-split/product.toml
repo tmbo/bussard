@@ -1,0 +1,192 @@
+# syn-s7-0705 with a load-procedure choose that splits the parameter segment
+# (#604 row 9, #411, #413). Rendered by ../generate.py into xml/; see
+# ../README.md for the schema.
+
+[doc]
+purpose = """
+syn-s7-0705 with a <choose> in the load procedure on the parameter `mode`
+(default 1): its taken branch allocates the parameter AbsSegment 0x4440 in
+two parts, 0x4440 (1 octet, `mode`) and 0x4443 (61 octets), and leaves
+0x4441..0x4442 unallocated, where the placed parameter `delay` lives; the
+default branch allocates the whole 64 octets. This is the shape of MDT
+A-0054-14 with P-203 = 1 (6 applications carry a choose in the load
+procedure, 0705 6 of them). bussard over-streamed this before #413 and
+refuses it at plan time since #417; #411's System 7 half is open. The
+capture shows what ETS allocates and which octets it writes: the two parts
+only, the whole segment image, or the gap as well, and whether it reads the
+gap back."""
+construct = "load-procedure choose splitting the parameter AbsSegment"
+issues = [411, 413]
+
+[product]
+text = "Split-branch perch"
+order_number = "NEST-SPLIT"
+hardware_name = "NEST-SPLIT"
+hardware_serial = "00FA00280009"
+bus_current = 10
+
+[application]
+number = 0x2809
+version = 0x10
+name = "Split-branch perch"
+mask = "0705"
+load_procedure_style = "ProductProcedure"
+pei_type = 0
+address_table_max_entries = 255
+association_table_max_entries = 255
+address_table_segment = "address-table"
+association_table_segment = "association-table"
+com_object_table_segment = "application"
+translations = { "de-DE" = "Gabelast-Sitzstange" }
+
+[application.options]
+Comparable = true
+Reconstructable = true
+
+# LSM 1: the address table region (dev/system7-spec.md section 2.3).
+[[segment]]
+name = "address-table"
+kind = "absolute"
+address = 0x4000
+size = 513
+memory_type = "EEPROM"
+allocate_only = true
+
+# LSM 2: the association table region.
+[[segment]]
+name = "association-table"
+kind = "absolute"
+address = 0x4201
+size = 511
+memory_type = "EEPROM"
+allocate_only = true
+
+# LSM 3: the RAM of the com objects: the RAM-flags table at 0x0700, the
+# values of objects 0 and 1 at 0x0702 and 0x0703.
+[[segment]]
+name = "ram"
+kind = "absolute"
+address = 0x0700
+size = 16
+memory_type = "RAM"
+allocate_only = true
+
+# LSM 3: the application, here only the group-object table (section 7.3):
+# count 2, RAM flags at 0x0700, then per object [data ptr][CONFIG][TYPE]:
+# switch 0x0702 C W low (0x17), status 0x0703 C R T low (0x4F), both 1 bit.
+[[segment]]
+name = "application"
+kind = "absolute"
+address = 0x4400
+size = 64
+memory_type = "EEPROM"
+data = "0207000702170007034f00"
+fill = 0xFF
+
+# LSM 3: the parameter image.
+[[segment]]
+name = "parameters"
+kind = "absolute"
+address = 0x4440
+size = 64
+memory_type = "EEPROM"
+fill = 0xFF
+
+[[parameter_type]]
+name = "Mode"
+kind = "enum"
+size_bits = 8
+values = [
+    { value = 0, text = "off" },
+    { value = 1, text = "on" },
+    { value = 2, text = "automatic" },
+]
+
+[[parameter_type]]
+name = "Delay"
+kind = "number"
+size_bits = 16
+signed = false
+min = 0
+max = 65535
+
+[[parameter]]
+name = "mode"
+type = "Mode"
+text = "Operating mode"
+default = 1
+memory = { segment = "parameters", offset = 0, bit_offset = 0 }
+
+[[parameter]]
+name = "delay"
+type = "Delay"
+text = "Delay (s)"
+default = 300
+memory = { segment = "parameters", offset = 1, bit_offset = 0 }
+
+[[com_object]]
+number = 0
+name = "switch"
+text = "Switch"
+function_text = "On/Off"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "W"]
+priority = "Low"
+
+[[com_object]]
+number = 1
+name = "status"
+text = "Status"
+function_text = "On/Off status"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+[[dynamic.block]]
+name = "general"
+text = "General"
+parameters = ["mode", "delay"]
+com_objects = [0, 1]
+
+# The whole download of syn-s7-0705 (dev/system7-spec.md section 3):
+# the three LSMs torn down, then each loaded with its segments and closed by
+# its TaskSegment. Access 0x33, EEPROM (3) with checksum control (0x80); the
+# RAM segments Access 0, RAM (2). The stack is SegType 1 behind the RAM.
+[[load_procedure]]
+ops = [
+    { op = "LdCtrlConnect" },
+    { op = "LdCtrlUnload", lsm = 1 },
+    { op = "LdCtrlUnload", lsm = 2 },
+    { op = "LdCtrlUnload", lsm = 3 },
+    { op = "LdCtrlLoad", lsm = 1 },
+    { op = "LdCtrlAbsSegment", lsm = 1, seg_type = 0, address = 0x4000, size = 513, access = 0x33, mem_type = 3, seg_flags = 0x80 },
+    { op = "LdCtrlTaskSegment", lsm = 1, address = 0x4000 },
+    { op = "LdCtrlLoadCompleted", lsm = 1 },
+    { op = "LdCtrlLoad", lsm = 2 },
+    { op = "LdCtrlAbsSegment", lsm = 2, seg_type = 0, address = 0x4201, size = 511, access = 0x33, mem_type = 3, seg_flags = 0x80 },
+    { op = "LdCtrlTaskSegment", lsm = 2, address = 0x4201 },
+    { op = "LdCtrlLoadCompleted", lsm = 2 },
+    { op = "LdCtrlLoad", lsm = 3 },
+    { op = "LdCtrlAbsSegment", lsm = 3, seg_type = 0, address = 0x0700, size = 16, access = 0, mem_type = 2, seg_flags = 0 },
+    { op = "LdCtrlAbsSegment", lsm = 3, seg_type = 1, address = 0x0710, size = 48, access = 0, mem_type = 2, seg_flags = 0 },
+    { op = "LdCtrlAbsSegment", lsm = 3, seg_type = 0, address = 0x4400, size = 64, access = 0x33, mem_type = 3, seg_flags = 0x80 },
+    # The delta (#411, #413): `mode` = 1 (the default) allocates the parameter
+    # segment in two parts around `delay` at 0x4441..0x4442; any other value
+    # allocates all of it.
+    { op = "choose", parameter = "mode", when = [
+        { test = "1", ops = [
+            { op = "LdCtrlAbsSegment", lsm = 3, seg_type = 0, address = 0x4440, size = 1, access = 0x33, mem_type = 3, seg_flags = 0x80 },
+            { op = "LdCtrlAbsSegment", lsm = 3, seg_type = 0, address = 0x4443, size = 61, access = 0x33, mem_type = 3, seg_flags = 0x80 },
+        ] },
+        { default = true, ops = [
+            { op = "LdCtrlAbsSegment", lsm = 3, seg_type = 0, address = 0x4440, size = 64, access = 0x33, mem_type = 3, seg_flags = 0x80 },
+        ] },
+    ] },
+    { op = "LdCtrlTaskSegment", lsm = 3, address = 0x4400 },
+    { op = "LdCtrlTaskCtrl1", lsm = 3, address = 0x4430, count = 1 },
+    { op = "LdCtrlLoadCompleted", lsm = 3 },
+    { op = "LdCtrlRestart" },
+    { op = "LdCtrlDisconnect" },
+]
