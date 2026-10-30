@@ -42,6 +42,19 @@ REPO = HERE.parents[1]
 OUT = HERE / "catalog-apps.json"
 
 
+def _head(text: str) -> str:
+    """The identity and order numbers of a model: the top-level keys up to the
+    first other one. A model runs to tens of MB; loading all of it with the
+    pure-Python YAML loader costs minutes per product."""
+    out = []
+    for line in text.splitlines(keepends=True):
+        key = line.split(":", 1)[0]
+        if line[:1].isalpha() and key not in ("model_format", "identity", "order_numbers"):
+            break
+        out.append(line)
+    return "".join(out)
+
+
 def apps_of(bussard: Path, product: Path) -> list[dict]:
     with tempfile.TemporaryDirectory(prefix="ets-apps-") as tmp:
         r = subprocess.run([str(bussard), "import-product", "--dir", tmp, str(product)], capture_output=True, text=True, timeout=600)
@@ -49,7 +62,7 @@ def apps_of(bussard: Path, product: Path) -> list[dict]:
             raise RuntimeError((r.stderr or r.stdout).strip()[-400:])
         out = []
         for model in sorted(Path(tmp, ".bussard", "models").glob("*.yaml")):
-            doc = yaml.load(model.read_text(), Loader=_Loader)  # noqa: S506 - our own models
+            doc = yaml.load(_head(model.read_text()), Loader=_Loader)  # noqa: S506 - our own models
             ident = doc.get("identity", {})
             out.append({
                 "id": ident.get("id", model.stem),

@@ -39,6 +39,13 @@ pub struct IndexEntry {
     pub size: u64,
     /// The filename to cache the download under (also the original vendor name).
     pub filename: String,
+    /// Optional: for a ZIP-served download, the entry name of the `.knxprod`
+    /// inside it that this entry vouches for (the download's SHA-256 covers it).
+    /// `import-product` stores and reads that inner file, under its own file
+    /// name, instead of the wrapper; a wrapper holding several `.knxprod`s needs
+    /// it to be readable at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inner: Option<String>,
     /// Optional: the application-program ref an order number resolves to, for
     /// documentation. Not required for fetching.
     #[serde(default, skip_serializing_if = "Option::is_none")]

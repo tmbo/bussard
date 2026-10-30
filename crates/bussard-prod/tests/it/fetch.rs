@@ -41,6 +41,7 @@ fn entry(url: String, sha256: String, size: u64) -> IndexEntry {
         sha256,
         size,
         filename: "file.knxprod".into(),
+        inner: None,
         application_ref: None,
         redistributable: false,
         notes: None,

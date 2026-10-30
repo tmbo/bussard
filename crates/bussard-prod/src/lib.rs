@@ -48,7 +48,7 @@ pub use bussard_ets::dynamic;
 pub use bussard_ets::master::{
     HawkConfig, HawkResource, MaskLoadProcedure, MasterTemplate, parse_master_template,
 };
-pub use container::{AppEntry, MAX_INNER_KNXPROD_SIZE};
+pub use container::{AppEntry, MAX_INNER_KNXPROD_SIZE, inner_knxprod_bytes};
 pub use error::{ProdError, Result};
 pub use extract::{Extracted, extract_from_project};
 pub use fetch::{DownloadConsent, MAX_DOWNLOAD_BYTES, fetch_entry};

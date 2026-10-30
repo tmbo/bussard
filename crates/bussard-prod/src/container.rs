@@ -390,6 +390,24 @@ fn read_capped<R: Read>(reader: R, entry: &str, cap: u64, path: &Path) -> Result
     })
 }
 
+/// Extracts the inner `.knxprod` entry `entry` (its full entry name) from the
+/// ZIP-served wrapper `wrapper`, bounded by [`MAX_INNER_KNXPROD_SIZE`]. The
+/// pointer index names the entry for a download that holds several (see
+/// [`crate::IndexEntry::inner`]); `path` only labels errors.
+pub fn inner_knxprod_bytes(wrapper: &[u8], entry: &str, path: &Path) -> Result<Vec<u8>> {
+    let mut archive = ZipArchive::new(Cursor::new(wrapper)).map_err(|source| ProdError::Zip {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let file = archive
+        .by_name(entry)
+        .map_err(|_| ProdError::MissingEntry {
+            path: path.to_path_buf(),
+            entry: entry.to_string(),
+        })?;
+    read_capped(file, entry, MAX_INNER_KNXPROD_SIZE, path)
+}
+
 /// Is `name` a `.knxprod` entry (case-insensitive extension, and a real file —
 /// not a directory placeholder)? Used to spot the payload inside a ZIP-served
 /// wrapper, which may sit at the root or one folder deep.

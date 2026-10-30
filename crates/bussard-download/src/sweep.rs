@@ -559,10 +559,12 @@ fn first_clause(s: &str) -> String {
 
 /// Collects the `.knxprod` files at or under `dir` (one level of nesting is
 /// enough: `bussard import-product` caches downloads under `<dir>/vendor/`).
+/// The extension matches in any case: some vendors ship `.KNXPROD`.
 /// Sorted and de-duplicated for stable output.
 pub fn knxprod_files(dir: &Path) -> Vec<PathBuf> {
     fn is_knxprod(p: &Path) -> bool {
-        p.extension().and_then(|e| e.to_str()) == Some("knxprod")
+        p.extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("knxprod"))
     }
     let mut out: Vec<PathBuf> = Vec::new();
     if let Ok(rd) = std::fs::read_dir(dir) {
@@ -590,6 +592,21 @@ pub fn knxprod_files(dir: &Path) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_knxprod_files_matches_extension_in_any_case() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        for name in ["a.knxprod", "B.KNXPROD", "c.zip", "d.knxprod.zip"] {
+            std::fs::write(dir.path().join(name), b"")?;
+        }
+        let got: Vec<String> = knxprod_files(dir.path())
+            .iter()
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .collect();
+        assert_eq!(got, ["B.KNXPROD", "a.knxprod"]);
+        Ok(())
+    }
 
     #[test]
     fn test_family_label_classifies_masks() {

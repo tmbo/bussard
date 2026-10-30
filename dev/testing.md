@@ -94,7 +94,7 @@ $ cargo nextest run --profile corpus \
 ```
 
 The `corpus` nextest profile (`.config/nextest.toml`) allows a test 20 minutes:
-the three `flash_corpus` sweeps plan every application of ~500 archives and
+the three `flash_corpus` sweeps plan every application of ~900 archives and
 take several minutes each in a debug build. Run one file while iterating, for
 example `cargo nextest run --profile corpus -p bussard-download --test it
 sys7_jung_m2_plan::`.

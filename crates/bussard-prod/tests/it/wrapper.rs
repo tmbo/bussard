@@ -262,3 +262,37 @@ fn test_read_knxprod_oversized_inner_rejected() -> Result<(), Box<dyn std::error
     );
     Ok(())
 }
+
+/// The pointer index names the inner `.knxprod` of a multi-inner wrapper
+/// (`IndexEntry::inner`); extracting it returns that entry's exact bytes.
+#[test]
+fn test_inner_knxprod_bytes_extracts_named_entry() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let inner = knxprod_bytes()?;
+    let wrapper = dir.path().join("bundle.zip");
+    write_wrapper(
+        &wrapper,
+        &[
+            ("db/A.knxprod", inner.as_slice()),
+            ("db/B.knxprod", b"other".as_slice()),
+        ],
+    )?;
+    let bytes = std::fs::read(&wrapper)?;
+    let got = bussard_prod::inner_knxprod_bytes(&bytes, "db/A.knxprod", &wrapper)?;
+    assert_eq!(got, inner);
+    Ok(())
+}
+
+/// An entry name the wrapper does not hold is an error naming the entry.
+#[test]
+fn test_inner_knxprod_bytes_missing_entry_errors() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let wrapper = dir.path().join("bundle.zip");
+    write_wrapper(&wrapper, &[("db/A.knxprod", knxprod_bytes()?.as_slice())])?;
+    let bytes = std::fs::read(&wrapper)?;
+    let err = bussard_prod::inner_knxprod_bytes(&bytes, "A.knxprod", &wrapper)
+        .err()
+        .ok_or("a bare file name is not the entry name")?;
+    assert!(err.to_string().contains("A.knxprod"), "{err}");
+    Ok(())
+}

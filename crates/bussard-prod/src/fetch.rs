@@ -143,6 +143,7 @@ mod tests {
             sha256: sha256_hex(bytes),
             size: bytes.len() as u64,
             filename: "x.knxprod".into(),
+            inner: None,
             application_ref: None,
             redistributable: false,
             notes: None,

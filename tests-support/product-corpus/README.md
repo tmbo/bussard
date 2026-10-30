@@ -3,7 +3,7 @@
 A repeatable, network-backed check of one question across a shelf of real vendor
 devices: **can bussard flash this today?**
 
-It downloads ~20 real `.knxprod` product databases from a range of manufacturers
+It downloads about 900 real `.knxprod` product databases from a range of manufacturers
 and device types, then dry-runs each application program through the flash
 engine's planner (`plan_flash`, no device, no bus) and reports which ones lower
 to an executable plan, which are refused, and — for the refused System B ones —
@@ -19,7 +19,7 @@ running the fetch script, which re-downloads and re-verifies every file.
 | path              | what it is |
 | ----------------- | ---------- |
 | `corpus.txt`      | One order number per index entry, with a type/mask comment. The fetch driver. |
-| `fetch.sh`        | Downloads each order number via `bussard import-product`, caching under `cache/vendor/`. |
+| `fetch.sh`        | Downloads each order number via `bussard import-product` into a scratch model directory, then copies the stored `.knxprod` into `cache/vendor/`. For an entry with `inner`, that is the `.knxprod` taken out of the ZIP download. `BUSSARD_PRODUCT_CORPUS` points it at another corpus root, for example the main checkout's from a worktree. |
 | `cache/`          | Local-only download cache (git-ignored). Created by `fetch.sh`. |
 | `fixture-conformance.json` / `.md` | Checked-in conformance baseline for the **committed fabricated fixtures** (`crates/bussard-download/tests/fixtures/corpus/`). Regenerated + diffed by `tests/it/sweep_fixtures.rs` in normal CI — no vendor data. |
 | `conformance-manifest.json` / `.md` | Checked-in conformance baseline for the **full real corpus**, regenerated on a machine that holds the cache (see below). The env-gated sweep fails on a regression against it. Absent on a clean checkout. |
@@ -45,7 +45,7 @@ Two tiers, so CI without the big cache still passes:
   `fixture-conformance.json`. `golden_images.rs` locks byte-exact images for the
   union / enum-leniency / extension-lie shapes.
 * **Full-corpus tier (env-gated).** With `BUSSARD_PRODUCT_CORPUS` set to a
-  populated cache, `flash_corpus.rs::corpus_flashability_sweep` sweeps all ~500
+  populated cache, `flash_corpus.rs::corpus_flashability_sweep` sweeps all ~900
   products and fails on a regression vs `conformance-manifest.json`.
 
 Regenerate either baseline by re-running its test with
@@ -118,3 +118,34 @@ file is no longer the one the index vouches for). To refresh: re-download the
 file, recompute its `sha256` (`shasum -a 256 <file>`) and `size`
 (`wc -c <file>`), update the entry in `data/product-index.json`, and rebuild the
 binary (the index is baked in via `include_str!`).
+The checksum covers the download: for a ZIP-served entry that is the ZIP, and
+`inner` names the `.knxprod` inside it.
+
+## The crawled vendor files (2026-10-30)
+
+A second collection of 509 `.knxprod` files, crawled from vendor sites on
+2026-10-27 (Siemens, Siemens HVAC, Elsner, Ekinex, Weinzierl, Dinuy, ABB,
+Busch-Jaeger, Enertex, Arcus-EDS, Intesis, Jung, Theben), lived in
+`tests-support/product-corpus-extra/` until it was folded into the index on
+2026-10-30. 413 files became new index entries and four more were already
+in it as ZIP downloads, which now name their inner file. The rest stayed out:
+
+- 76 are older or parallel versions whose order numbers all resolve to
+  another entry (56 Ekinex, 12 Elsner, 3 Siemens, 2 Dinuy, 2 Weinzierl,
+  1 Enertex). The index maps an order number to one file, and the entry with
+  the newest application version keeps it.
+- 12 hold no application program, which `import-product` refuses: Dinuy
+  `FA_KNT_001_ETS`, Ekinex `APEKAH1TP01` and `APEKAM1TP01`, ABB
+  `USBS_12_VD-TP_XX_V1-0_9AKK108472A2748_Rev_A`, Siemens HVAC `PXC001_PX_KNX`,
+  and Siemens `N120`, `n125_02`, `RCB_Boxes`, `RCB_PSU125`, `up117`,
+  `PSU_125_C33__ETS5`, `PSU_V01_1_53331142_Registered_Localized_ETS5`.
+- 4 Busch-Jaeger universal dimmer databases return HTTP 404 from
+  `search.abb.com` (documents 2CKA000092E2248, 9AKK107991A8872,
+  2CKA000292E2022, 9AKK107991A8918).
+
+The crawl deduplicated against the index of the time: three Ekinex files
+(`APEKEH2TP01`, `APEKHE1TP01`, `APEKEI2TP411`) were already in it by SHA-256,
+one Elsner file (`70625-26_46-47_KNX_AQS-TH-UP`) by file name, and the KNX
+Association dummy device (`eibdummy`, M-00FA) was left out. Gira publishes no
+`.knxprod` downloads and Basalte keeps its product data behind a partner
+login, so neither is in the corpus.

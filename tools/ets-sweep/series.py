@@ -59,14 +59,13 @@ TRANSMIT, WRITE = "Ü", "S"
 GO_TABLE = (680, 260, 3400, 1240)
 
 # One representative per table layout (#478). `file` is relative to the main
-# corpus unless `path` names the product (extra corpus, knx-sim fixture).
+# corpus unless `path` names the product (a knx-sim fixture).
 REPRESENTATIVES = [
     {"app": "M-0004_A-A011-13-60BC-O000A", "search": "3361-1MWW", "mask": "0705",
      "why": "0705 with load control through properties (Jung 3361-1M)"},
     {"app": "M-0083_A-000E-23-2274", "search": "AKK-01UP.03", "mask": "0705",
      "why": "0705 with load control through memory (MDT AKK)"},
     {"app": "M-00B6_A-4537-03-DE59", "search": "EK-E72", "mask": "0705",
-     "path": "tests-support/product-corpus-extra/cache/vendor/APEKE72TP03.knxprod",
      "why": "0705 with the group-object table in a segment of its own (Ekinex EK-E72)"},
     {"app": "M-0071_A-4131-32-17BF", "search": "ZN4131", "mask": "0701",
      "why": "0701, memory-mapped load-state machines (Zennio ACTinBOX MAX6; Theben 4940275 failed the defaults sweep)"},

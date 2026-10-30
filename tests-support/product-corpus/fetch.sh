@@ -5,12 +5,16 @@
 #
 # For every order number in corpus.txt this runs
 #
-#     bussard import-product --order-number <ORDER> --yes-download --dir <cache>
+#     bussard import-product --order-number <ORDER> --yes-download --dir <scratch>
 #
 # which looks the number up in data/product-index.json, downloads the vendor
-# .knxprod over the network, verifies its byte size and SHA-256 against the
-# index, and caches it under <cache>/vendor/. That is the exact consent +
+# .knxprod (or the .zip it is served in) over the network, verifies its byte
+# size and SHA-256 against the index, and reads it. That is the exact consent +
 # checksum path a user hits, so this script exercises it end to end.
+#
+# import-product stores into <dir>/products/ and moves a legacy <dir>/vendor/
+# there, so it runs against a scratch directory per order number; the verified
+# download is then copied into <cache>/vendor/, the layout the sweeps read.
 #
 # Idempotent: a .knxprod already cached (byte-identical) is left in place, so a
 # re-run only fetches what is missing. Copyrighted vendor data never enters git —
@@ -19,6 +23,9 @@
 # Usage:
 #     tests-support/product-corpus/fetch.sh            # build bussard if needed, fetch all
 #     BUSSARD=/path/to/bussard tests-support/product-corpus/fetch.sh
+#     BUSSARD_PRODUCT_CORPUS=/abs/corpus tests-support/product-corpus/fetch.sh
+#         (fill <corpus>/cache/vendor/ instead, e.g. the main checkout's from a
+#          worktree)
 #
 # Then run the flashability sweep:
 #     BUSSARD_PRODUCT_CORPUS=tests-support/product-corpus/cache \
@@ -32,10 +39,18 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # CORPUS_LIST overrides the list (scripts/sim-catalog-loop.sh --subset fetches
 # only its curated archives).
 CORPUS_LIST="${CORPUS_LIST:-$SCRIPT_DIR/corpus.txt}"
-CACHE_DIR="$SCRIPT_DIR/cache"
+# BUSSARD_PRODUCT_CORPUS may name the corpus root, its cache/ or cache/vendor/,
+# as for the corpus-gated tests (dev/testing.md).
+CORPUS_ROOT="${BUSSARD_PRODUCT_CORPUS:-$SCRIPT_DIR}"
+case "$(basename "$CORPUS_ROOT")" in
+    vendor) CACHE_DIR="$(dirname "$CORPUS_ROOT")" ;;
+    cache) CACHE_DIR="$CORPUS_ROOT" ;;
+    *) CACHE_DIR="$CORPUS_ROOT/cache" ;;
+esac
 INDEX_JSON="$REPO_ROOT/data/product-index.json"
 
-# Maps an order number to the cache filename its index entry downloads to, so a
+# Maps an order number to the cache filename its index entry downloads to (the
+# inner .knxprod's file name when the entry names one, else `filename`), so a
 # re-run can skip an order whose file is already cached. Uses python3 (available
 # on any machine that can build the toolchain); falls back to "always fetch" if
 # python3 is missing, which is still correct (import-product re-verifies).
@@ -51,7 +66,8 @@ except Exception:
     sys.exit(0)
 for e in data.get("entries", []):
     if any(o.strip().upper() == order for o in e.get("order_numbers", [])):
-        print(e.get("filename", ""))
+        inner = e.get("inner")
+        print(inner.rsplit("/", 1)[-1] if inner else e.get("filename", ""))
         break
 PY
 }
@@ -76,7 +92,9 @@ if [[ ! -f "$CORPUS_LIST" ]]; then
     exit 1
 fi
 
-mkdir -p "$CACHE_DIR"
+mkdir -p "$CACHE_DIR/vendor"
+SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/bussard-corpus-fetch.XXXXXX")"
+trap 'rm -rf "$SCRATCH"' EXIT
 
 echo "Fetching product corpus into $CACHE_DIR/vendor/ using $BUSSARD_BIN"
 echo
@@ -101,22 +119,28 @@ while IFS= read -r raw || [[ -n "$raw" ]]; do
         continue
     fi
 
+    work="$SCRATCH/$fetched-$skipped-$failed"
+    mkdir -p "$work"
     if "$BUSSARD_BIN" import-product \
         --order-number "$order" \
         --yes-download \
-        --dir "$CACHE_DIR"; then
+        --dir "$work" >"$work.log" 2>&1 \
+        && cp -n "$work/products/"* "$CACHE_DIR/vendor/"; then
+        echo "  cached: vendor/$(ls "$work/products/" | head -1)"
         fetched=$((fetched + 1))
     else
+        sed 's/^/  /' "$work.log" | tail -5 >&2
         echo "  WARNING: fetch failed for $order (continuing)" >&2
         failed=$((failed + 1))
     fi
+    rm -rf "$work" "$work.log"
     echo
 done < "$CORPUS_LIST"
 
 echo "======================================================================"
 echo "Fetched $fetched, skipped (already cached) $skipped, failed $failed."
-echo "Cached .knxprod files:"
-ls -1 "$CACHE_DIR/vendor/"*.knxprod 2>/dev/null | sed 's/^/  /' || echo "  (none)"
+echo "Cache:"
+echo "  $(ls -1 "$CACHE_DIR/vendor/" 2>/dev/null | wc -l | tr -d ' ') files in $CACHE_DIR/vendor/"
 echo
 echo "Run the flashability sweep with:"
 echo "  BUSSARD_PRODUCT_CORPUS=$CACHE_DIR \\"

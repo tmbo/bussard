@@ -12,9 +12,8 @@ bussard-initial.md
 # cache dir so nothing downloaded or generated under it is ever committed.
 tests-support/product-corpus/cache*/
 
-# Second, separate corpus of vendor product files found by crawling (see
-# tests-support/product-corpus-extra/README.md). Same rule: the whole cache
-# dir is git-ignored, only the pointer index is committed.
+# The former crawled corpus, folded into the main one (data/product-index.json)
+# on 2026-10-30. A local copy of its cache may remain; never commit it.
 tests-support/product-corpus-extra/cache*/
 
 # Local KNX installation data (the user's personal model at the repo root).

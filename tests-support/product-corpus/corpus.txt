@@ -604,3 +604,449 @@ ZVIZ70                 # Z70 1.3 (07B0)
 # must be supplied manually and is verified against the index sha256+size. It does NOT
 # contain the Busch-Waechter PRO 280 (M-0007, app A-6179-82).
 2CDG 110 283 R0011   # HOUSE IA 1.1.39: BE/S 16.230.3.2 binary input 16f 230V; app A-A0ED-10-9B4E (07B0) EXACT [user-provided, not auto-fetchable]
+
+# --- Crawled vendor corpus (formerly tests-support/product-corpus-extra), added 2026-10-30 ---
+# One order number per index entry; the comment names the masks and the cached file.
+
+# --- Dinuy (M-009A) ---
+CO KNT IPI           # 07B0; CO_KNT_IPI.knxprod
+DMK5X 001-230        # 27B0; DMK5X001.knxprod
+EMK5X002             # 27B0; EMK5X002.knxprod
+EMK5X004             # 27B0; EMK5X004.knxprod
+EM KNT 001           # 0705; EMKNT001.knxprod
+EM KNT 002           # 0705; EMKNT002.knxprod
+EM KNT 003           # 07B0; EMKNT003.knxprod
+IR KNT 044           # 07B0; IRKNT044.knxprod
+IT KNT 001           # 0705; ITKNT001.knxprod
+IT KNT 004/008/016   # 07B0; ITKNT016.knxprod
+DM KNT 001           # 0705; KNXProduct1.knxprod
+PU KNT 1XX           # 07B0; MT_PUKNT1XX.knxprod
+PEK5X001             # 27B0; PEK5X001.knxprod
+PE KNT 001           # 0705; PEKNT001.knxprod
+PE KNT 002           # 07B0; PEKNT002.knxprod
+PE K5X 002           # 27B0; PE_K5X_002.knxprod
+RE K5X RGB           # 27B0; REK5XRGB.knxprod
+RE KNT 000           # 0705; REKNT000.knxprod
+REKNT004             # 0705; REKNT004.knxprod
+RE KNT 008           # 07B0; REKNT008.knxprod
+REKNT DALI 1-10V     # 0705; REKNT_DALI_1-10V-74ecf1ad.knxprod
+RE KNX XXX           # 27B0; RE_K5X_MI_K5X.knxprod
+REKNTRGB             # 0705; RE_KNT_RGB.knxprod
+SE K5X 005           # 27B0; SEK5X005.knxprod
+SE K5X 0XX           # 27B0; SEK5X0XX.knxprod
+TM KNT 001_002       # 07B0; TM_KNT_001_002.knxprod
+
+# --- Ekinex (M-00B6) ---
+EK-AB1-TP                       # 0705; APEKAB1TP01.knxprod
+EK-BF1-TP-D1                    # 07B0; APEKBF1TPD111.knxprod
+EK-BF1-TP-D2                    # 07B0; APEKBF1TPD211.knxprod
+EK-BG1-TP                       # 07B0; APEKBG1TP02.knxprod
+EK-CA1-TP                       # 07B0; APEKCA1TP02.knxprod
+EK-CC2-TP                       # 07B0; APEKCC2TP01.knxprod
+EK-CD2-TP                       # 07B0; APEKCD2TP01.knxprod
+EK-CE2-TP                       # 07B0; APEKCE2TP01.knxprod
+EK-CF2-TP                       # 0705; APEKCF2TP02.knxprod
+EK-CG2-TP                       # 07B0; APEKCG2TP01.knxprod
+EK-E12-TP                       # 0705; APEKE12TP04.knxprod
+EK-E13-TP-BG                    # 0705; APEKE13TP04.knxprod
+EK-E13-TP                       # 07B0; APEKE13TP06.knxprod
+EK-E20-TP                       # 07B0; APEKE20TP01.knxprod
+EK-E20-TP-4LD                   # 07B0; APEKE20TP03.knxprod
+EK-E20-TP-4TD-PN                # 07B0; APEKE20TP05.knxprod
+EK-E20-TP-10L                   # 07B0; APEKE20TP503.knxprod
+EK-E20-TP-10T-PN                # 07B0; APEKE20TP504.knxprod
+EK-E22-TP                       # 0705; APEKE22TP01.knxprod
+EK-E23-TP                       # 0705; APEKE23TP01.knxprod
+EK-E2E-TP-4L                    # 07B0; APEKE2ETP03.knxprod
+EK-E2E-TP-10                    # 07B0; APEKE2ETP503.knxprod
+EK-E32-TP                       # 0705; APEKE32TP01.knxprod
+EK-E72-TP                       # 0705; APEKE72TP03.knxprod
+EK-E73-TP                       # 0705; APEKE73TP03.knxprod
+EK-E73-EASY                     # 0705; APEKE73TPEASY07.knxprod
+EK-ED2-TP                       # 07B0; APEKED2TP06.knxprod
+EK-EF2-TP                       # 07B0; APEKEF2TP04.knxprod
+EK-EI2-TP-5                     # 07B0; APEKEI2TP511.knxprod
+EK-EM2-TP-E                     # 0705; APEKEM2TP11.knxprod
+EK-EP2-TP                       # 0705; APEKEP2TP04.knxprod
+EK-EQ2-TP                       # 0705; APEKEQ2TP04.knxprod
+EK-ER2-TP                       # 0705; APEKER2TP01.knxprod
+EK-ERA-TP                       # 07B0; APEKERATP02.knxprod
+EK-ES2-TP                       # 0705; APEKES2TP01.knxprod
+EK-ES3-TP                       # 0705; APEKES3TP01.knxprod
+EK-ET2-TP                       # 0705; APEKET2TP03.knxprod
+EK-ET3-TP                       # 0705; APEKET3TP03.knxprod
+EK-EV2-TP                       # 07B0; APEKEV2TP09.knxprod
+EK-EZ2-TP-1                     # 07B0; APEKEZ2TPX02.knxprod
+EK-FA1-TP                       # 0705; APEKFA1TP01.knxprod
+EK-FB1-TP                       # 0705; APEKFB1TP01.knxprod
+EK-FE1-TP                       # 07B0; APEKFE1TP05.knxprod
+EK-FF1-TP                       # 07B0; APEKFF1TP05.knxprod
+EK-FG1-TP                       # 07B0; APEKFG1TP03.knxprod
+EK-FG1-TP-I                     # 07B0; APEKFG1TPI03.knxprod
+EK-FH1-TP                       # 07B0; APEKFH1TP03.knxprod
+EK-FH1-TP-I                     # 07B0; APEKFH1TPI03.knxprod
+EK-FI1-TP                       # 07B0; APEKFI1TP03.knxprod
+EK-FI1-TP-I                     # 07B0; APEKFI1TPI03.knxprod
+EK-GA1-TP                       # 0705; APEKGA1TP01.knxprod
+EK-GC1-TP                       # 0705; APEKGC1TP02.knxprod
+EK-GD1-TP-4-HV                  # 07B0; APEKGDXTPXHV04.knxprod
+EK-GD1-TP-4-LV-M                # 07B0; APEKGDXTPXLVM01.knxprod
+EK-GD1-TP-4-LV-T                # 07B0; APEKGDXTPXLVTW01.knxprod
+EK-HA1-TP                       # 0705; APEKHA1TP03.knxprod
+EK-HB1-TP                       # 0705; APEKHB1TP05.knxprod
+EK-HC1-TP                       # 0705; APEKHC1TP04.knxprod
+EK-HH1-TP                       # 0705; APEKHH1TP02.knxprod
+EK-HO1-TP                       # 07B0; APEKHO1TP01.knxprod
+EK-HU1-TP                       # 07B0; APEKHU1TP01.knxprod
+EK-ID1-SEC-TP secure            # 0912; APEKID1SECTP-510.knxprod
+EK-IE1-TP secure                # 07B0; APEKIE1SECTP01.knxprod
+EK-IF1-TP secure                # 091A; APEKIF1SECTP01.knxprod
+EK-IG1-TP KNX USB-C interface   # 0001; APEKIG1TP10.knxprod
+EK-LM2-TP                       # 07B0; APEKLM2TP01.knxprod
+EK-MS1-TP-20D                   # 07B0; APEKMSXTPX02.knxprod
+EK-SG2-TP-M                     # 07B0; APEKSG2TPM12.knxprod
+EK-SG2-TP-P                     # 07B0; APEKSG2TPP12.knxprod
+EK-SG2-TP-M-B                   # 07B0; APEKSG2TPXB12.knxprod
+EK-TM1-TP                       # 07B0; APEKTM1TP01.knxprod
+EK-TX2                          # 07B0; APEKTX2TP02.knxprod
+
+# --- Ekinex (M-00B0) ---
+AIDOO-AZAI6KNX2   # 07B0; APEKAI6TP20.knxprod
+
+# --- Ekinex (M-00D1) ---
+EZD-FW-14   # 0021; EZD_EMU_en_de_fr_it_14noFWnewETA.knxprod
+
+# --- Enertex (M-00A6) ---
+00001157      # 0705; 1157-ETS-MeTa-1.030.knxprod
+1164          # 091A; 1164-ETS-KNXIPSecureRouter-1.004.knxprod
+1164 - 1168   # 07B0; 1164-ZeitserverMapper.knxprod
+1168          # 0021; 1168-ETS-KNXIPSecureInterface-1.001.knxprod
+1171          # 0912; 1171-ETS-KNXTPSecureCoupler-1.007.knxprod
+1176-04       # 07B0; 1174-ETS5-DimmerV2.knxprod
+1181          # 07B0; 1181-ETS-ViTa.knxprod
+1182-800      # 07B0; 1182-ETS5-SmartmeterV2.knxprod
+
+# --- Weinzierl (M-00C5) ---
+KNX IP Interface 740.1 wireless              # 07B0; Weinziel-740-1-KNX-IP-Interface-wireless-5419-ETS5.knxprod
+KNX IP Interface 740.2 wireless secure       # 07B0; Weinziel-740-2-KNX-IP-Interface-wireless-secure-5537-ETS5.knxprod
+KNX USB Interface 312.1                      # 0001; Weinzierl-312-1-KNX-USB-Interface-5501-ETS5.knxprod
+KNX USB Interface 312                        # 0001; Weinzierl-312-KNX-USB-Interface-5229-ETS4.knxprod
+KNX USB Interface 332                        # 0001; Weinzierl-332-KNX-USB-Interface-Stick-5254-ETS4.knxprod
+KNX Power Supply 365                         # 0001; Weinzierl-365-KNX-PowerSupply-5335-ETS4.knxprod
+KNX Power Supply 366                         # 07B0; Weinzierl-366-KNX-PowerSupply-DGS-5207-ETS4.knxprod
+KNX Power Supply 367                         # 07B0; Weinzierl-367-KNX-PowerSupply-USB-5219-ETS4.knxprod
+KNX IO 410.1 secure                          # 07B0; Weinzierl-410-1-KNX-IO-secure-5513-ETS5.knxprod
+KNX IO 410                                   # 07B0; Weinzierl-410-KNX-IO-5230-ETS4.knxprod
+KNX IO 411.1 secure                          # 07B0; Weinzierl-411-1-KNX-IO-secure-5514-ETS5.knxprod
+KNX IO 411                                   # 07B0; Weinzierl-411-KNX-IO-5231-ETS4.knxprod
+KNX TP Push Button 420.1 secure              # 07B0; Weinzierl-420-1-KNX-TP-Push-Button-secure-5492-ETS5.knxprod
+KNX TP Push Button Insert 420 secure         # 07B0; Weinzierl-420-KNX-TP-Push-Button-secure-5529-5385-ETS5.knxprod
+KNX IO 430 secure                            # 07B0; Weinzierl-430-KNX-IO-secure-5580-ETS5.knxprod
+KNX RF / ENO Push Button Insert 440 secure   # 27B0; Weinzierl-440-KNX-RF-ENO-Push-Button-secure-5530-ETS5.knxprod
+KNX RF / ENO Window Sensor 490 secure        # 27B0; Weinzierl-490-KNX-RF-ENO-Window-Sensor-secure-5545-ETS5.knxprod
+KNX IO 510.1 secure                          # 07B0; Weinzierl-510-1-KNX-IO-secure-5444-ETS5.knxprod
+KNX IO 510                                   # 07B0; Weinzierl-510-KNX-IO-5224-ETS4.knxprod
+KNX IO 511.1 secure                          # 07B0; Weinzierl-511-1-KNX-IO-secure-5327-ETS5.knxprod
+KNX IO 511                                   # 07B0; Weinzierl-511-KNX-IO-5232-ETS4.knxprod
+KNX IO 512 secure                            # 07B0; Weinzierl-512-KNX-IO-secure-5491-ETS5.knxprod
+KNX IO 520.1 secure                          # 07B0; Weinzierl-520-1-KNX-IO-secure-5515-ETS5.knxprod
+KNX IO 522 secure                            # 07B0; Weinzierl-522-KNX-IO-secure-5496-ETS5.knxprod
+KNX IO 530.1 secure                          # 07B0; Weinzierl-530-1-KNX-IO-secure-5516-ETS5.knxprod
+KNX IO 532.1 secure                          # 07B0; Weinzierl-532-1-KNX-IO-secure-5503-ETS5.knxprod
+KNX IO 536 CC                                # 07B0; Weinzierl-536-KNX-IO-5354-ETS5.knxprod
+KNX IO 546.1 secure                          # 07B0; Weinzierl-546-1-KNX-IO-secure-5337-ETS5.knxprod
+KNX TP Blue IO 550 CV secure                 # 07B0; Weinzierl-550-KNX-TP-Blue-IO-CV-secure-5377-ETS5.knxprod
+KNX TP Blue IO 551 CC secure                 # 07B0; Weinzierl-551-KNX-TP-Blue-IO-CC-secure-5378-ETS5.knxprod
+KNX RF Blue IO 552 CV secure                 # 27B0; Weinzierl-552-KNX-RF-Blue-IO-CV-secure-5379-ETS5.knxprod
+KNX RF Blue IO 553 CC secure                 # 27B0; Weinzierl-553-KNX-RF-Blue-IO-CC-secure-5380-ETS5.knxprod
+KNX TP Multi IO 570.1 secure                 # 07B0; Weinzierl-570-1-KNX-TP-Multi-IO-secure-5543-ETS5.knxprod
+KNX LineCoupler 650.1 secure                 # 0912; Weinzierl-650-1-KNX-LineCoupler-secure-5451-ETS5.knxprod
+KNX RF/TP Coupler 673.1 secure               # 2920; Weinzierl-673-1-KNX-RF-TP-Coupler-secure-5474-ETS5.knxprod
+KNX Modbus TCP Gateway 716                   # 07B0; Weinzierl-716-KNX-Modbus-TCP-Gateway-secure-5425-ETS5.knxprod
+KNX IP LineMaster 762.1 secure               # 091A; Weinzierl-762-1-KNX-IP-LineMaster-secure-5465-ETS5.knxprod
+KNX IP BAOS 774.1 secure                     # 07B0; Weinzierl-774-1-KNX-IP-BAOS-secure-5475-ETS5.knxprod
+KNX Modbus RTU Gateway 886.1 secure          # 07B0; Weinzierl-886-1-KNX-Modbus-RTU-Gateway-secure-5498-ETS5.knxprod
+KNX USB 311                                  # 0012; Weinzierl_311_KNX_USB_Interface_ETS4.knxprod
+KNX USB 330                                  # 0012; Weinzierl_330_KNX_USB_Stick_ETS4.knxprod
+
+# --- ABB (M-0002) ---
+2CKA006197A0061      # 07B0; ap_UD_S6_315_2_ETS_6_ABB_9AKK107991A7574_RefD_V_1_3a_v02.knxprod
+2CKA006197A0049      # 07B0; ap_UD_S6_210_2_ETS_6_ABB_2CKA000292E2021_RefE_V_1_3a.knxprod
+2CKA006197A0057      # 07B0; ap_UD_S4_315_2_ETS_6_ABB_2CKA000092E2056_RefD_V_1_3a_v02.knxprod
+2CKA006197A0047      # 07B0; ap_UD_S4_210_2_ETS_6_ABB_2CKA000092E2249_RefE_V_1_3a_v02.knxprod
+2CKA006197A0053      # 07B0; ap_UD_S2_315_2_ETS_6_ABB_2CKA000092E2055_RefD_V_1_3a_v02.knxprod
+PMB/U-BMP/U          # 07B0; 9AKK108473A4024_deen_A_ETS_Application_.KNXPROD_XX_PMB_Ux.1.1x_BMB_U1.1.1x.knxprod
+2CDG 120 09x R0011   # 07B0; TP_U7_1_1_VD_XX_V7_1_9AKK108473A1944.knxprod
+SBC/U6.0.1           # 07B0; SBCU6_1_VD_XX_V40_2CKA000292E1619.knxprod
+SBC/U10.0.1          # 07B0; SBCU10_1_VD_V40_2CKA000292E1629.knxprod
+SBR/U6.0.1           # 07B0; SBRU6_1_VD_XX_V40_2CKA000292E1607.knxprod
+SBR/U10.0.1          # 07B0; SBRU10_1_VD_XX_V40_2CKA000292E1609.knxprod
+SBS/U6.0.1           # 07B0; SBSU6_1_VD_XX_V40_2CKA000292E1611.knxprod
+SBS/U10.0.1          # 07B0; SBSU10_1_VD_XX_V40_2CKA000292E1613.knxprod
+2CDG 110 165 R0011   # 0701; RMS_31_VD-TP_XX_V26-01-28_R1-2.knxprod
+2CDG 110 207 R0011   # 07B0; SUGU_11_VD-TP_XX_V1-3_9AKK107045A3271_Rev-B.knxprod
+2CDG 110 311 R0011   # 07B0; MPGS_8.1.1_VD-TP_XX_V1-0_9AKK108472A0044-Rev_A.knxprod
+2CDG 110 330 R0011   # 07B0; VCS_x.2.2.2_VD-TP_XX_V1-0_9AKK108472A0649-Rev_A.knxprod
+2TYZ510505R0601      # 07B0; 9AKK108472A0317_deenzh_A_ETS_Application_.knxprod_XX_BMH_U2.55.1.knxprod
+2TYZ510205R0601      # 07B0; 9AKK108471A5209_deenzh_B_ETS_Application_.knxprod_XX_BMH_U2.1.1.knxprod
+
+# --- Busch-Jaeger (M-0007) ---
+2CKA006197A0052      # 07B0; ap_UD_S2_315_2_ETS_6_BJE_9AKK107991A8920_RefD_V_1_3a_v02.knxprod
+PMB/U-BMB/U          # 07B0; 9AKK108473A4025_deen_A_ETS_Application_.KNXPROD_XX_PMB_Ux.1.11_BMB_U1.1.11.knxprod
+2CDG 120 09x R0021   # 07B0; TP_U7_1_11_VD_XX_V7_1_9AKK108473A1945.knxprod
+SBC/U6.0.11          # 07B0; SBCU6_11_VD_XX_V40_2CKA000192E2184.knxprod
+SBC/U10.0.11         # 07B0; SBCU10_11_VD_XX_V40_2CKA000292E2185.knxprod
+SBR/U6.0.11          # 07B0; SBRU6_11_VD_XX_V40_2CKA000292E1569.knxprod
+SBR/U10.0.11         # 07B0; SBRU10_11_VD_xx_V40_2CKA000292E2183.knxprod
+SBS/U6.0.11          # 07B0; SBSU6_11_VD_XX_V40_2CKA000292E1568.knxprod
+SBS/U10.0.11         # 07B0; SBSU10_11_VD_XX_V40_2CKA000292E2182.knxprod
+2TYZ510205G0611      # 07B0; 9AKK108472A0320_deen_A_ETS_Application_.knxprod_XX_BMH_U2.1.11.knxprod
+2TYZ510505G0611      # 07B0; 9AKK108472A0318_deen_A_ETS_Application_.knxprod_XX_BMH_U2.55.11.knxprod
+
+# --- Siemens (M-0001) ---
+5WG1 254-3EY01       # 0012, 0021; ap254_02.knxprod
+5WG1 257-3AB22       # 0701; ap257_22.knxprod
+5WG1 257-3AB51       # 0701; AP257_51__140B11.knxprod
+5WG1 562-7AB02       # 0012; ap562_02.knxprod
+5WG1 2xx-2AB__       # 0025; BTM-Taster_UP22x_UP24x_UP28x.knxprod
+5WG1 527-4CB23       # 07B0; JB_526_527_SDA.knxprod
+6BK1700-0BA20-0AA0   # 0025; Logo_Module_CMK2000b.knxprod
+5WG1 140-1AB03       # 0912; N140_x3__000132.knxprod
+5WG1 148-1AB12       # 0300; N148_12_700201.knxprod
+5WG1 262-1EB11       # 0025; N26x_11_980D03.knxprod
+5WG1 305-1AB01       # 07B0; N305__750006.knxprod
+5WG1 501-1AB01       # 0025; n501.knxprod
+5WG1 502-1AB02       # 0025; n502_02.knxprod
+5WG1 512-1AB11       # 07B0; n512_n513_n562__982003.knxprod
+5WG1 512-1AB01       # 0020, 0021; N512.knxprod
+5WG1 523-1AB03       # 0025; n523_03.knxprod
+5WG1 528-1CB01       # 07B0; N528CB01__983901.knxprod
+5WG1 528-1DB01       # 07B0; N528DB01__983901.knxprod
+5WG1 535-1DB51       # 07B0; N535_D51__9A0903.knxprod
+5WG1 535-1DB31       # 07B0; N535DB31__9A0803.knxprod
+5WG1 535-1DB61       # 07B0; N535DB61__9A0A03.knxprod
+5WG1 536-1DB51       # 07B0; N536_D51__9A0602.knxprod
+5WG1 530-1DB31       # 07B0; N53xDB31_4f__9A0103.knxprod
+5WG1 530-1DB51       # 07B0; N53xDB51_8f__9A0203.knxprod
+5WG1 530-1DB61       # 07B0; N53xDB61_12f__9A0303.knxprod
+5WG1 554-1DB31       # 07B0; N554D31__9A0401b.knxprod
+5WG1 567-1AB22       # 0025; N567_22_981C02.knxprod
+5WG1 260-4AB23       # 07B0; RCB_260_BiIn.knxprod
+5WG1 510-2AB23       # 07B0; RCB_510_982E02.knxprod
+5WG1 512-4AB23       # 07B0; RCB_512_982D02.knxprod
+5WG1 513-4CB23       # 07B0; RCB_513_982F02.knxprod
+5WG1 525-2AB23       # 07B0; RCB_Dimmer.knxprod
+5WG1 520-2AB23       # 07B0; RCB_Shutter.knxprod
+5WG1 526-4DB23       # 07B0; RL526DB23_SDA__9A0702b.knxprod
+5WG1 510-2KB23       # 07B0; RS510K23__983801.knxprod
+5WG1 510-2AB03       # 07B0; UP_510x3_982E02.knxprod
+5WG1 520-2AB03       # 07B0; UP_RCB_520__982A01.knxprod
+5WG1 20x-2__         # 0025; up201_202_203__910301.knxprod
+5WG1 220-2_B21       # 07B0; UP220_21__982303.knxprod
+5WG1 220-2DB31       # 07B0; UP220_31__982204.knxprod
+5WG1251-2AB11        # 07B0; UP251_1x__98D201.knxprod
+5WG1 255-2DB21       # 0025; UP255DB21_920702.knxprod
+5WG1 237-2KB_1       # 0705; UP25xKB_803002.knxprod
+5WG1 525-2AB03       # 07B0; UP525_x3.knxprod
+5WG1 588-2AB_2       # 0025; up588_2_3.knxprod
+5WG1 257-3AB61       # 0701; AP257_61__140C13_ETS5.knxprod
+5WG1 143-1AB01       # 07B0; N143_01__983603_ETS5.knxprod
+5WG1 146-1AB03       # 091A; N146_03__004003_IPRouterSecure_ETS5.knxprod
+5WG1 148-1AB23       # 07B0; N148_23__720503_IP_InterfaceSecure_ETS5.knxprod
+5WG1262-1DB31        # 07B0; N26x_31__9A1301_ETS5b.knxprod
+5WG1262-1DB51        # 07B0; N26x_51__9A1401_ETS5b.knxprod
+5WG1525-1DB11        # 07B0; N525_DB11__9A1701_ETS5.knxprod
+5WG1 536-1DB31       # 07B0; N536_D31__9A0502_ETS5.knxprod
+5WG1543-1DB31        # 07B0; N543_31__9A0B04_ETS5b.knxprod
+5WG1543-1DB51        # 07B0; N543_51__9A0C04_ETS5b.knxprod
+5WG1545-1DB31        # 07B0; N545__9A1A04_ETS5.knxprod
+5WG1568-1AB81        # 07B0; N568_81__98D101_ETS5.knxprod
+5WG1605-1DB41        # 07B0; N605_D41__9A1903_ETS5.knxprod
+5WG1524-4DB23        # 07B0; RL524__9A0D04_ETS5.knxprod
+5WG1605-4DB23        # 07B0; RL605_D23__9A1803_ETS5.knxprod
+5WG1 204-2SB_2       # 07B0; UP_204_2__9A2901_ETS5.knxprod
+5WG1205-2AB_2        # 07B0; UP_205_x2__989603_ETS5.knxprod
+5WG1 205-2SB_3       # 07B0; UP_205S_3__Touch_control_TC5_ETS5.knxprod
+5WG1511-2SB32        # 07B0; UP_511S32__20DF22_ETS5.knxprod
+5WG1525-2SB32        # 07B0; UP_525S32__303122_ETS5.knxprod
+5WG1562-2SB32        # 07B0; UP_562S32__20DE22_ETS5.knxprod
+5WG1211-2AB_3        # 07B0; UP211x3__9A2601_ETS5.knxprod
+5WG1212-2AB_3        # 07B0; UP212x3__9A2701_ETS5.knxprod
+5WG1214-2AB_3        # 07B0; UP214x3__9A2801_ETS5.knxprod
+5WG1 258-2DB31       # 07B0; UP258_D31__9A1005_ETS5.knxprod
+5WG1 258-2DB41       # 07B0; UP258_D41__9A1105_ETS5.knxprod
+5WG1 258-2DB51       # 07B0; UP258_D51__9A1205_ETS5.knxprod
+5WG1 258-2DB61       # 07B0; UP258_D61__9A0F05_ETS5.knxprod
+5WG1 258-2DB12       # 0025; UP258_DB12__920504d_ETS5.knxprod
+5WG1 258-2EB22       # 0025; UP258_EB22__920604c_ETS5.knxprod
+5WG1140-1SB11        # 0912; LK_V01_24_62924397_Registered_ETS6.knxprod
+
+# --- Siemens HVAC (M-00FD) ---
+AQR2570N        # 0300; AQR257xN_v1d2_upd.knxprod
+OCI702          # 0300; OCI702_v1d0.knxprod
+OZW772.01       # 0300; OZW772_v2d0.knxprod
+QAW740          # 0300-01000000000000000000; QAW740_v1d1.knxprod
+QAX903-xx       # 0300; QAX903v1d0.knxprod
+QAX913-xx       # 0300; QAX913v1d0.knxprod
+QMX3.P02        # 0300; QMX3dP02_v2d0.knxprod
+QMX3.P30        # 0300; QMX3dP30_v2d0.knxprod
+QMX3.P34        # 0300; QMX3dP34_v2d0.knxprod
+QMX3.P37        # 0300; QMX3dP37_v2d0.knxprod
+QMX3.P40        # 0300; QMX3dP40_v2d0.knxprod
+QMX3.P70        # 0300; QMX3dP70_v2d0.knxprod
+QMX3.P74        # 0300; QMX3dP74_v2d0.knxprod
+RDF600KN/S      # 0300-01000001000000000000; RDF600KN_S_v2d0.knxprod
+RDF600KN        # 0300-01000001000000000000; RDF600KN_v2d1.knxprod
+RDF800KN        # 0300; RDF800KN_v1d0.knxprod
+RDG405KN        # 0300-01000001000000000000; RDG405KN_v2d0_upd.knxprod
+RMB795B-x       # 0300; RMB795B_v2d1.knxprod
+RMH760B-_       # 0300-01000001000000000000; RMH760B_v3d0.knxprod
+RMK770-_        # 0300-01000001000000000000; RMK770_v3d0.knxprod
+RMS705B-x       # 0300-01000000000000000000; RMS705B_v2d0.knxprod
+RMU710B-_       # 0300-01000000000000000000; RMU710B_v3d0.knxprod
+RMU720B-_       # 0300-01000000000000000000; RMU720B_v3d0.knxprod
+RMU730B-_       # 0300-01000000000000000000; RMU730B_v3d0.knxprod
+RMZ792          # 0300-01000000000000000000; RMZ792_v1d0.knxprod
+RXB21.1/FC-10   # 0300-01000000000000000000; RXB21d1_FC10_v2d0.knxprod
+RXB21.1/FC-11   # 0300-01000000000000000000; RXB21d1_FC11_v2d0.knxprod
+RXB22.1/FC-12   # 0300-01000000000000000000; RXB22d1_FC12_v2d0.knxprod
+RXB24.1/CC-02   # 0300-01000000000000000000; RXB24d1_CC02_v1d0.knxprod
+RXB39.1/FC-13   # 0300; RXB39d1_FC13_v1d1.knxprod
+GDB111.1E/KN    # 0300-01000001000000000000; GxB111_1E_v2d0_ETS5.knxprod
+GDB111.9E/KN    # 0300-01000001000000000000; GxB111_9E_v2d2_ETS5.knxprod
+GDB181.1E/KN    # 0300-01000001000000000000; GxB181_v2d2_ETS5.knxprod
+QMX6.P37        # 07B0; QMX_V01_00_05_69230064_Registered_P37_Localized_ETS5.knxprod
+QMX3.P44        # 0300-01000001000000000000; QMX3dP44_v2d0_ETS5.knxprod
+RDG200KN        # 07B0; RDG200KN__110135_ets5.knxprod
+RDG204KN        # 07B0; RDG204KN__110335_ETS5.knxprod
+RDG260KN        # 07B0; RDG260KN__110233_ets5.knxprod
+SSA118.09HKN    # 0300-01000001000000000000; SSA118_09HKN_v1d1_ETS5.knxprod
+OCT110.BR       # 6800; OCT110_BR__C70110_ETS6.knxprod
+OCT200.KNR      # 6900; OCT200_KNR__C60110_ETS6.knxprod
+QAA2150KT       # 6800; QAA2150KT__500310_ETS6.knxprod
+QFA2250KT       # 6800; QFA2250KT__500210_ETS6.knxprod
+QPA2350KT       # 6800; QPA2350KT__500110_ETS6.knxprod
+
+# --- Jung (M-0004) ---
+Dummy   # 0001, 0010, 0011, 0012, 0021, 0701, 0705, 07B0, 0912, 091A, 27B0, 2920; Gesamt_JUNG_ETS5_EN.knxprod
+
+# --- Theben (M-0048) ---
+1039052   # 0001, 0011, 0012, 0021, 0701, 0705, 07B0, 0911, 0912, 091A, 27B0, 2920; KNX_DB_D_GB_E_F_I_NL_Theben_AG_ETS5_2506.knxprod
+4800403   # 0705, 07B0, 27B0, 2920; LUXORliving_ETS5_KNX_DB_V2_23_2510.knxprod
+
+# --- Elsner Elektronik (M-00C9) ---
+71240   # 07B0; 71240_BX8_KNX_1-0_de-en-fr-it.knxprod
+7180X   # 07B0; 7180X_Cala_101_T_KNX_sec_1-0_de-en-es-fr-it.knxprod
+7138X   # 0701; 71380_Cala_KNX_IL_1-1_de-en-es-fr-it.knxprod
+7139X   # 0701; 71390_Cala_KNX_IL_CO2_1-1_d-en-es-fr-it.knxprod
+7086X   # 0701; 7086x_CalaKNX_M1-T_1-0_d-en-it-fr-es.knxprod
+7087X   # 0701; 7087x_CalaKNX_M2-T_1-0_d-en-fr-it-es.knxprod
+7088X   # 0701; 7088x_CalaKNX_M4-T_1-0_d-en-fr-it-es.knxprod
+7089X   # 0701; 7089x_CalaKNX_MultiTouch_T_Light-Sunblind_1-0_d-en-es-fr-it.knxprod
+7095X   # 0701; 7095x_CalaKNX_MultiTouch_T_Light_1-0_d-en-es-fr-it.knxprod
+7096X   # 0701; 7096x_CalaKNX_MultiTouch_T_Light-Scenes_1-0_d-en-es-fr-it.knxprod
+7098X   # 0701; 70980_82_Cala_KNX_T_101_2-0_d-en-es-fr-it.knxprod
+7105X   # 0701; 7105x_CalaKNX_T202-Sunblind_1-0_d-en-fr-it-es.knxprod
+7099X   # 0701; 7099x_CalaKNX_T_201_Sunblind_1-0_d-en-fr-it-es.knxprod
+7082X   # 07B0; 7082x_CalaTouchKNX_AQSTH_3-2_d-en-es-fr-it-cn.knxprod
+7080X   # 07B0; 7080x_CalaTouchKNX_T_3-0_d-en-es-fr-it-cn.knxprod
+7081X   # 07B0; 7081x_CalaTouchKNX_TH_3-0_d-en-es-fr-it-cn.knxprod
+7120x   # 07B0; 71200_CasaConnectKNX_d-en-fr-it-es-cn.knxprod
+70260   # 07B0; 70475_70481_CorloTouchKNX_2-2_d-en-fr-it-es-nl.knxprod
+71270   # 07B0; 71270_Fabro_KNX_1-1_d-en-fr-it-es.knxprod
+7067X   # 0701; 7067x_Intra-SewiKNX_L-Pr_2-0_d-en-f-rit-es.knxprod
+70660   # 0701; 70660_Intra-SewiKNX_T_1-0_d-en-fr-it-es.KNXPROD
+7068X   # 0701; 7068x_Intra-SewiKNX_TH-L-Pr_2-0_d-en-f-rit-es.knxprod
+70661   # 0701; 70661-70666-70669_Intra-SewiKNX_TH_1-0_d-en-f-rit-es.KNXPROD
+70309   # 0701; 70309_Jardana_1-0_d-en-es-fr-it.knxprod
+70391   # 0701; 70391_KNX_A3-B2_1-0_d-en-fr-it-es.knxprod
+70624   # 0701; 70625-26_46-47_KNX_AQS-TH-UP_gl_1-1_d-en-fr-it-es.knxprod
+70618   # 0701; 70619-20_39_43_KNX_AQSTH-UP_Touch_1-1_d-en-es-fr-it.knxprod
+70249   # 0701; 70249_KNX_B8-TH_1-0_d-en-fr-it-es.knxprod
+7131X   # 0701; 7131x_KNX_eTR_101-BA2_1-0_d-en-fr-it-es.knxprod
+70650   # 0701; 70650_KNX_eTR_101_2-0_d-en-fr-it-es.knxprod
+7132X   # 0701; 7132x_KNX_eTR_102_FC_1-0_d-en-es-fr-it.knxprod
+7110X   # 0701; 7110x_KNX_eTR_202-Sunblind_1-0_d-en-fr-it-es.knxprod
+7109X   # 0701; 7109x_KNX_eTR_201_Sunblind_1-0_d-en-fr-it-es.knxprod
+7116X   # 0701; 71160_62_KNX_eTR_205_1-0_d-en-es-fr-it.knxprod
+7117X   # 0701; 71170_72_KNX_eTR_206_1-0_d-en-es-fr-it.knxprod
+7119X   # 0701; 7119x_KNX_eTR_208_Light-Sunblind_1-0_d-en-fr-it-es.knxprod
+7130X   # 0701; 7130x_KNX_eTR_gl_1-0_d-en-fr-it-es.knxprod
+7111X   # 0701; 7111x_KNX_eTR_M1_1-0_d-en-fr-it-es.knxprod
+7112X   # 0701; 7112x_KNX_eTR_M2_1-0_d-en-fr-it-es.knxprod
+7113X   # 0701; 7113x_KNX_eTR_M4_1-0_d-en-fr-it-es.knxprod
+70310   # 0701; 70310_KNX_I4-ERD_d-en-fr-it-es.knxprod
+70119   # 0701; 70119_KNX_L_1-1_d-en-fr-it-es.knxprod
+70128   # 0701; 70128-29_KNX_LW_1-2_d-en-fr-it-es.knxprod
+70164   # 07B0; 70164_KNX_LWsl_1-1_d-en-fr-it-es.knxprod
+70165   # 0701; 70165_KNX_Rsl_1-1_d-en-fr-it-es.KNXPROD
+70574   # 0701; 70574_KNX_R1-B4_compact16A_1-0_d-en-fr-it-es.KNXPROD
+70711   # 27B0; 70711_KNX_RF-MSG-ST_1-1_d-en-fr-it-es.knxprod
+70126   # 0701; 70126-27_KNX_RW_1-2_d-en-fr-it-es.knxprod
+70162   # 07B0; 70162_KNX_RWsl_1-1_d-en-fr-it-es.knxprod
+70550   # 0701; 70550_KNX_S1R-B4_compact_1-0_d-en-fr-it-es.knxprod
+70548   # 07B0; 70548_KNX_S2-B6_230V_4-1_d-en-es-fr-it.knxprod
+70546   # 07B0; 70546_KNX_S4-B10_230V_4-1_d-en-es-fr-it.knxprod
+70533   # 07B0; 70533_KNX_S4-B12_24V_4-0_d-en-fr-it-es.KNXPROD
+70535   # 07B0; 70535_KNX_S4-B12_DES_1-1_de-en-es-fr-it.knxprod
+70153   # 0701; 70153_KNX_SO250basic_d-en-fr-it-es.knxprod
+70151   # 0701; 70151_KNX_SO250_1-2_d-en-fr-it-es.knxprod
+7085X   # 0701; 70850-53_KNX_T-L-Pr-UP_Touch_1-1_d-en-es-fr-it.knxprod
+70179   # 0701; 70179_KNX_T-Objekt-UP_3-3_d-en-fr-it-es.knxprod
+70350   # 0701; 70350-53_KNX_T-UPbasic_3-3_d-en-fr-it-es.knxprod
+70632   # 0701; 70630-32_KNX_T-UP_gl_1-0_d-en-fr-it-es.knxprod
+70629   # 0701; 70627-29_KNX_T-UP_Touch_1-0_d-en-fr-it-es.knxprod
+70222   # 07B0; 70222_KNX_T6-UN-B4_1-0_d-en-fr-it-es.knxprod
+70621   # 0701; 70621-22_KNX_TH-UP_gl_1-0_d-en-fr-it-es.knxprod
+70615   # 0701; 70616-17_37-38_KNX_TH-UP_Touch_1-0_d-en-es-fr-it.knxprod
+70184   # 0701; 70184_KNX_TH65-AP_d-en-fr-it-es.knxprod
+70970   # 0701; 70970_72-74_KNX_VOCTH-UP_Touch_1-0_d-en-es-fr-it.knxprod
+70122   # 0701; 70122-23_KNX_W_1-2_d-en-fr-it-es.knxprod
+70158   # 07B0; 70158_KNX_Wsl_1-1_d-en-fr-it-es.knxprod
+70316   # 0701; 70316_Leak_KNX_2-0_1-0_d-en-fr-it-es.knxprod
+70315   # 0701; 70315_LeakKNXbasic_1-0_d-en-fr-it-es.knxprod
+70403   # 0701; 70403_Mini-SewiKNX_TH-L-Pr_2-0_d-en-fr-it-es.knxprod
+70428   # 0701; 70428_Mini-SewiKNX_L-Pr_2-0_d-en-fr-it-es.knxprod
+70400   # 0701; 70400_Mini-Sewi_KNX_T_1-0_de-en-es-fr-it.knxprod
+70401   # 0701; 70401_Mini-Sewi_KNX_TH_1-0_de-en-es-fr-it.knxprod
+7128X   # 0701; 71280_Nunio_KNX_M-T_1-0_d-en-fr-it-es.knxprod
+71230   # 07B0; 71230_P04-KNX-GPS_1-1_d-en-es-fr-it.knxprod
+70747   # 27B0; 70747_RemoKNX2_2-0_d-en-fr-it-es.knxprod
+70406   # 07B0; 70406_SalvaKNX_TH_1-0_d-en-fr-it-es.knxprod
+70405   # 07B0; 70405_SalvaKNXbasic_1-0_d-en-fr-it-es.knxprod
+70397   # 07B0; 70397_70697_Sewi_KNX_AQS-TH-D_1-2_d-en-fr-it-es.knxprod
+7142X   # 0701; 71420_22_Sewi_AQS-TH_L-Pr_light_1-1_d-en-es-fr-it.knxprod
+70398   # 07B0; 70398_SewiKNX_TH_L-Pr_11_d-en-fr-it-es.knxprod
+70399   # 07B0; 70399_70699_Sewi_KNX_AQS-TH-D_L-Pr_1-2_d-en-fr-it-es.knxprod
+3095    # 0701; 3095-96_SuntracerKNXbasic_1-2_d-en-fr-it-es.knxprod
+3090    # 0701; 3090_3094_SuntracerKNX_SuntracerKNX-GPSlight_1-5_d-en-fr-it-es.knxprod
+3093    # 0701; 3093_Suntracer_KNX-GPS_1-1_de-en-es-fr-it.knxprod
+70900   # 07B0; 70900_Suntracer_KNX_pro_1-4_d-en-es-fr-it.knxprod
+70156   # 07B0; 70156_SuntracerKNXslBasic10_d-en-fr-it-es.knxprod
+70155   # 07B0; 70155_SuntracerKNXslLight_11_d-en-fr-it-es.knxprod
+70154   # 07B0; 70154_SuntracerKNXsl11_d-en-fr-it-es.knxprod
+70390   # 07B0; 70390_VariKNX_3L-TH-D_GPS_1-0_d-en-fr-it-es.knxprod
+70384   # 07B0; 70384_VariKNX_3L-TH_1-0_d-en-fr-it-es.knxprod
+70383   # 07B0; 70383_VariKNX_3L-T_1-0_d-en-fr-it-es.knxprod
+70389   # 07B0; 70389_VariKNX_3L-TH-D_1-0_d-en-fr-it-es.knxprod
+71239   # 07B0; 71239_Windancer_2-0_GPS_KNX_sec_1-0_d-en-es-fr-it.knxprod
+71238   # 07B0; 71238_Windancer_2-0_KNX_sec_1-0_d-en-es-fr-it.knxprod
+7129X   # 07B0; 71290-91_Windancer_basic_W_KNX_sec_1-1_d-en-es-fr-it.knxprod
+71236   # 0701; 71236_Windancer_KNX-GPS_1-0_d-en-es-fr-it-pl.knxprod
+71235   # 0701; 71235_Windancer_KNX_1-0_d-en-fr-it-es-pl.knxprod
+
+# --- Arcus-EDS (M-0076) ---
+65001002     # 0701; Arcus_Lunos_Ex_v5.knxprod
+6500100x     # 0701; Arcus_Lunos_Ex_v4.knxprod
+2231xxxx     # 07B0; TouchIT_V2.knxprod
+60400013     # 0701; KNX_GW_P1_v0.7.knxprod
+60400012     # 0701; KNX_GW_HAN.knxprod
+60400001     # 0701; MBUS_v4.knxprod
+40300007     # 0701; KNX_GW_ModBus.knxprod
+1180440001   # 07B0; SK80_F.knxprod
+
+# --- Intesis (M-0077) ---
+INKNXUNI001I2⁎⁎   # 07B0; INKNXUNI001I2xx.knxprod
+PA-AC-KNX-1i      # 0025; Interfaz PA AC, 4 entradas binarias.knxprod
+INKNXFGL001I000   # 07B0; FJ_AC_KNX_1i_3G_v1.0(.2)c.knxprod
+INKNXMBMxxx02     # 07B0; INKNXMBMxxx02_v1.1_c.knxprod

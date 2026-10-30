@@ -347,6 +347,78 @@ fn test_import_pins_the_downloaded_product_data_in_the_lock() -> TestResult {
     Ok(())
 }
 
+/// An index entry that names an inner `.knxprod` of a ZIP-served download
+/// (`inner`) stores that file, not the wrapper, and pins it: the wrapper holds
+/// two archives, which no later command could choose between.
+#[test]
+fn test_import_stores_the_indexed_inner_knxprod_of_a_wrapper() -> TestResult {
+    use sha2::Digest as _;
+    use std::io::Write as _;
+    let tmp = tmp("pin-inner")?;
+    let dir = tmp.join("knx");
+    let knxprod = tmp.join("tst.knxprod");
+    tst_knxprod(&knxprod)?;
+    let inner = std::fs::read(&knxprod)?;
+    let bundle = tmp.join("bundle.zip");
+    {
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&bundle)?);
+        let opts = zip::write::SimpleFileOptions::default();
+        zip.start_file("db/tst.knxprod", opts)?;
+        zip.write_all(&inner)?;
+        zip.start_file("db/older.knxprod", opts)?;
+        zip.write_all(&inner)?;
+        zip.finish()?;
+    }
+    let bytes = std::fs::read(&bundle)?;
+    let hex = |b: &[u8]| -> String {
+        sha2::Sha256::digest(b)
+            .iter()
+            .map(|x| format!("{x:02x}"))
+            .collect()
+    };
+    let known = index(
+        &tmp,
+        serde_json::json!([{
+            "manufacturer": "Test Manufacturer",
+            "manufacturer_id": "M-9999",
+            "order_numbers": ["TST-1"],
+            "name": "Test Switch Actuator",
+            "url": format!("file://{}", bundle.display()),
+            "sha256": hex(&bytes),
+            "size": bytes.len(),
+            "filename": "bundle.zip",
+            "inner": "db/tst.knxprod",
+        }]),
+    )?;
+    let out = bussard(
+        &[
+            "import",
+            "--from-json",
+            fixture().to_str().ok_or("path")?,
+            "--dir",
+            dir.to_str().ok_or("path")?,
+            "--yes-download",
+        ],
+        &[("BUSSARD_PRODUCT_INDEX", known.to_str().ok_or("path")?)],
+    )?;
+    assert!(
+        out.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(std::fs::read(dir.join("products/tst.knxprod"))?, inner);
+    assert!(!dir.join("products/bundle.zip").exists());
+    let lock = std::fs::read_to_string(dir.join("bussard.lock"))?;
+    assert!(lock.contains("file = \"products/tst.knxprod\""), "{lock}");
+    assert!(
+        lock.contains(&format!("sha256 = \"{}\"", hex(&inner))),
+        "{lock}"
+    );
+    std::fs::remove_dir_all(&tmp)?;
+    Ok(())
+}
+
 /// Issue #205: a `.knxkeys` exported next to the project is recorded as
 /// `connection.keyring` (relative to the model directory), `init` prints the
 /// password reminder, and `validate` resolves the recorded path. The keyring
