@@ -18,6 +18,7 @@ pub mod capabilities;
 pub mod change;
 pub mod checklist;
 pub mod codec;
+pub mod color_codec;
 pub mod declare;
 pub mod device_view;
 pub mod discover;

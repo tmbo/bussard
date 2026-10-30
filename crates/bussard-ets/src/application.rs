@@ -27,6 +27,7 @@ use crate::error::{EtsError, Result};
 use crate::flags::FlagSet;
 use crate::translation::TranslationCollector;
 use bussard_model::Dpt;
+pub use bussard_model::color_codec::ColorSpace;
 pub use bussard_model::dynamic::{
     Allocator, BlockRef, ChannelRef, CompareOp, ComputedArg, DynamicNode, DynamicWhen, EnumValue,
     LabelMatch, Memory, Union, UnionMember, WhenTest, enum_member_by_label, flatten_containers,
@@ -308,6 +309,13 @@ pub enum ParameterType {
     },
     /// `<TypeNone>`: a marker type carrying no memory value.
     None,
+    /// `<TypeColor Space="…">`: a colour, written in the model as `#` and two
+    /// hex digits per component (`#FF0000`) and placed in memory as one
+    /// octet per component (issue #616).
+    Color {
+        /// The declared colour space: how many components and what they mean.
+        space: ColorSpace,
+    },
     /// Any other type element (e.g. `TypeColor`, `TypeTime`, `TypePicture`),
     /// preserved by name so nothing is silently dropped.
     Other {
@@ -1773,6 +1781,14 @@ fn handle_empty(
         b"RelativeSegment" => insert_segment(app, m, SegmentKind::Relative),
         b"AbsoluteSegment" => insert_segment(app, m, SegmentKind::Absolute),
         name if name.starts_with(b"Type") => {
+            // A colour of a space the schema names has its own shape (issue
+            // #616); any other space stays an `Other`.
+            if name == b"TypeColor"
+                && let Some(space) = get(m, b"Space").and_then(ColorSpace::from_attr)
+            {
+                state.pt_kind = Some(ParameterType::Color { space });
+                return Ok(());
+            }
             // Other type shapes (TypeColor, TypeTime, TypePicture, TypeIPAddress…).
             let kind = String::from_utf8_lossy(name).into_owned();
             state.pt_kind = Some(ParameterType::Other {
@@ -3187,10 +3203,12 @@ mod tests {
             }
         ));
         assert!(matches!(kind("M-00FA_A-1_PT-none")?, ParameterType::None));
-        match kind("M-00FA_A-1_PT-col")? {
-            ParameterType::Other { kind, .. } => assert_eq!(kind, "TypeColor"),
-            other => panic!("expected other, got {other:?}"),
-        }
+        assert!(matches!(
+            kind("M-00FA_A-1_PT-col")?,
+            ParameterType::Color {
+                space: ColorSpace::Rgb
+            }
+        ));
         Ok(())
     }
 

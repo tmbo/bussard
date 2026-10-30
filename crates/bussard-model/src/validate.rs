@@ -325,6 +325,7 @@ fn value_error(kind: &ParamKind, value: &str) -> Option<String> {
                 Some(format!("value {value:?} is not a number"))
             }
         }
+        ParamKind::Color { space } => space.encode(value).err(),
         // No declared constraints to check.
         ParamKind::None | ParamKind::Other => None,
     }
@@ -1465,5 +1466,22 @@ parameters:
         let undeclared = parameter_value_error(&kind(None), "Scènario");
         assert!(undeclared.is_some_and(|e| e.contains("#401")));
         assert_eq!(parameter_value_error(&kind(None), "Scene"), None);
+    }
+
+    /// Issue #616: a colour parameter takes `#` and two hex digits per
+    /// component of its space.
+    #[test]
+    fn test_parameter_value_error_color() {
+        use crate::color_codec::ColorSpace;
+        let rgb = ParamKind::Color {
+            space: ColorSpace::Rgb,
+        };
+        assert_eq!(parameter_value_error(&rgb, "#FF0000"), None);
+        assert!(parameter_value_error(&rgb, "0").is_some());
+        assert!(parameter_value_error(&rgb, "#FF000000").is_some());
+        let rgbw = ParamKind::Color {
+            space: ColorSpace::Rgbw,
+        };
+        assert_eq!(parameter_value_error(&rgbw, "#FF000080"), None);
     }
 }
