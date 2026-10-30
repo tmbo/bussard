@@ -199,9 +199,13 @@ class Product:
                 for v in t["values"]:
                     check_keys(f"{tw} values", v, {"value", "text"}, set(), {"translations"})
             elif kind == "number":
-                check_keys(tw, t, {"name", "kind", "size_bits", "signed", "min", "max"}, set(),
-                           {"byte_order", "ui_hint"})
-            elif kind in ("text", "float", "time", "ip_address", "raw"):
+                check_keys(tw, t, {"name", "kind", "size_bits", "signed", "min", "max"}, set(), {"ui_hint"})
+            elif kind == "float":
+                check_keys(tw, t, {"name", "kind", "encoding", "min", "max"})
+                if t["encoding"] not in FLOAT_BITS:
+                    raise SpecError(f"{tw}: encoding is one of {', '.join(FLOAT_BITS)}")
+                t = dict(t, size_bits=FLOAT_BITS[t["encoding"]])
+            elif kind in ("text", "time", "ip_address", "raw"):
                 raise not_yet(tw, f"parameter type kind `{kind}`")
             else:
                 raise SpecError(f"{tw}: kind is one of enum, number, text, float, time, ip_address, raw")
@@ -277,7 +281,10 @@ FLAGS = {"C": "CommunicationFlag", "R": "ReadFlag", "W": "WriteFlag", "T": "Tran
 OPTIONS = ("PreferPartialDownloadIfApplicationLoaded", "EasyCtrlModeModeStyleEmptyGroupComTables",
            "SetObjectTableLengthAlwaysToMax", "TextParameterEncoding", "SupportsExtendedMemoryServices",
            "SupportsExtendedPropertyServices", "SupportsIpSystemBroadcast", "MaxRoutingApduLength",
-           "Comparable", "Reconstructable", "DownloadInvisibleParameters")
+           "Comparable", "Reconstructable", "DownloadInvisibleParameters", "ParameterByteOrder")
+# `<TypeFloat Encoding>` values and their width in bits (the KNX 2-octet float
+# of DPT 9 and the IEEE-754 formats).
+FLOAT_BITS = {"DPT 9": 16, "IEEE-754 Single": 32, "IEEE-754 Double": 64}
 # Implemented load ops: spec key -> XML attribute, in XML order.
 LOAD_OPS = {
     "LdCtrlRelSegment": {"lsm": "LsmIdx", "size": "Size", "mode": "Mode", "fill": "Fill"},
@@ -343,6 +350,9 @@ def render_type(x: Xml, t: dict) -> None:
             x.empty("Enumeration", [("Text", v["text"]), ("Value", v["value"]),
                                     ("Id", f"{t['id']}_EN-{v['value']}")])
         x.close("TypeRestriction")
+    elif t["kind"] == "float":
+        x.empty("TypeFloat", [("Encoding", t["encoding"]), ("minInclusive", t["min"]),
+                              ("maxInclusive", t["max"])])
     else:  # number
         x.empty("TypeNumber", [("SizeInBit", t["size_bits"]),
                                ("Type", "signedInt" if t["signed"] else "unsignedInt"),
