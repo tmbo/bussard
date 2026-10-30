@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<KNX xmlns="http://knx.org/xml/project/23">
+  <ManufacturerData>
+    <Manufacturer RefId="M-00FA">
+      <Hardware>
+        <Hardware Id="M-00FA_H-00FA00280100-1" Name="NEST-BKDOOR" SerialNumber="00FA00280100" VersionNumber="1" BusCurrent="10" HasIndividualAddress="true" HasApplicationProgram="true" NonRegRelevantDataVersion="0">
+          <Products>
+            <Product Id="M-00FA_H-00FA00280100-1_P-NEST.2DBKDOOR" Text="Back-door actuator" OrderNumber="NEST-BKDOOR" IsRailMounted="false" DefaultLanguage="en-US" NonRegRelevantDataVersion="0">
+              <RegistrationInfo RegistrationStatus="Registered" />
+            </Product>
+          </Products>
+          <Hardware2Programs>
+            <Hardware2Program Id="M-00FA_H-00FA00280100-1_HP-2801-10-0000" MediumTypes="MT-0">
+              <ApplicationProgramRef RefId="M-00FA_A-2801-10-0000" />
+              <RegistrationInfo RegistrationStatus="Registered" />
+            </Hardware2Program>
+          </Hardware2Programs>
+        </Hardware>
+      </Hardware>
+    </Manufacturer>
+  </ManufacturerData>
+</KNX>
