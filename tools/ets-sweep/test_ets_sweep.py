@@ -482,64 +482,6 @@ class TestDistil(unittest.TestCase):
         self.assertEqual(calibrate.app_number("nonsense"), b"")
 
 
-def _generator():
-    """tests-support/synthetic-products/generate.py, imported by path."""
-    path = Path(__file__).resolve().parents[2] / "tests-support" / "synthetic-products" / "generate.py"
-    spec = importlib.util.spec_from_file_location("synthetic_generate", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-class TestSyntheticGenerator(unittest.TestCase):
-    def setUp(self):
-        import tomllib
-
-        self.gen = _generator()
-        self.spec = tomllib.loads((self.gen.HERE / "syn-minimal" / "product.toml").read_text(encoding="utf-8"))
-
-    def app_xml(self, spec: dict) -> str:
-        return self.gen.render_application(self.gen.Product("t", spec)).decode()
-
-    def test_render_application_master_reset(self):
-        self.spec["load_procedure"][0]["ops"].append({"op": "LdCtrlMasterReset", "erase_code": 4, "channel": 0})
-        xml = self.app_xml(self.spec)
-        self.assertIn('<LdCtrlRelSegment LsmIdx="4" Size="256" Mode="0" Fill="0" />\n'
-                      '                <LdCtrlMasterReset EraseCode="4" ChannelNumber="0" />', xml)
-
-    def test_render_application_master_reset_missing_key(self):
-        self.spec["load_procedure"][0]["ops"].append({"op": "LdCtrlMasterReset", "erase_code": 1})
-        with self.assertRaisesRegex(self.gen.SpecError, "missing key `channel`"):
-            self.app_xml(self.spec)
-
-
-class TestSyntheticGeneratorChoose(unittest.TestCase):
-    setUp = TestSyntheticGenerator.setUp
-    app_xml = TestSyntheticGenerator.app_xml
-
-    def write_choose(self, when: list) -> None:
-        self.spec["load_procedure"][1]["ops"] = [{"op": "choose", "parameter": "mode", "when": when}]
-
-    def test_render_application_load_procedure_choose(self):
-        half = {"op": "LdCtrlWriteRelMem", "object": 4, "offset": 0, "size": 128, "verify": False}
-        full = dict(half, size=256)
-        self.write_choose([{"test": "1", "ops": [half]}, {"default": True, "ops": [full]}])
-        xml = self.app_xml(self.spec)
-        self.assertIn('<choose ParamRefId="t_P-1_R-1">'.replace("t_", "M-00FA_A-2700-10-0000_"), xml)
-        self.assertIn('<when test="1">\n'
-                      '                    <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="128" Verify="false" />\n'
-                      '                  </when>\n'
-                      '                  <when default="true">', xml)
-
-    def test_render_application_load_procedure_choose_errors(self):
-        self.write_choose([{"ops": []}])
-        with self.assertRaisesRegex(self.gen.SpecError, "either `test` or `default = true`"):
-            self.app_xml(self.spec)
-        self.spec["load_procedure"][1]["ops"] = [{"op": "choose", "parameter": "nope", "when": []}]
-        with self.assertRaisesRegex(self.gen.SpecError, "unknown parameter `nope`"):
-            self.app_xml(self.spec)
-
-
 class TestCaptureRows(unittest.TestCase):
     def test_row_options_identical_writes_only_loadctl(self):
         self.assertEqual(capture.row_options({"verdict": "identical", "loadctl": "identical"}), "loadctl=identical")

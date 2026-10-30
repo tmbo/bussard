@@ -38,9 +38,10 @@ from xml.sax.saxutils import quoteattr
 HERE = Path(__file__).resolve().parent
 NS = "http://knx.org/xml/project/23"
 MANUFACTURER = "M-00FA"
-# Application numbers of the synthetic catalogue: KNX Virtual uses 0x25xx, the
+# Application numbers of the synthetic catalogue (#604): 0x27xx System B, 0x28xx
+# System 7, 0x29xx Secure, 0x2Axx RF and IP. KNX Virtual uses 0x25xx, the
 # DA.tp clone 0x2600.
-APP_NUMBERS = range(0x2700, 0x2800)
+APP_NUMBERS = range(0x2700, 0x2B00)
 # Catalogue section shared by every synthetic product (the clone used CS-26).
 CATALOG_SECTION = (f"{MANUFACTURER}_CS-27", "The buzzard's nest", "27")
 STUB_MASTER = b"<KNX/>"
@@ -158,18 +159,24 @@ class Product:
         check_keys(f"{w} [application]", a,
                    {"number", "version", "name", "mask", "load_procedure_style",
                     "address_table_max_entries", "association_table_max_entries"},
-                   {"options", "translations"})
+                   {"options", "translations"} | SYS7_APP_KEYS)
         if a["number"] not in APP_NUMBERS:
             raise SpecError(f"{w} [application]: number {a['number']:#06x} is outside the synthetic "
                             f"range {APP_NUMBERS.start:#06x}..{APP_NUMBERS.stop - 1:#06x}")
         if not 0 <= a["version"] <= 0xFF:
             raise SpecError(f"{w} [application]: version must be one octet")
-        if a["mask"] != "07B0":
-            raise not_yet(f"{w} [application]", f"mask {a['mask']} (System 7 and others)")
-        if a["load_procedure_style"] == "ProductProcedure":
-            raise not_yet(f"{w} [application]", "LoadProcedureStyle ProductProcedure")
-        if a["load_procedure_style"] != "MergedProcedure":
+        if a["load_procedure_style"] not in ("MergedProcedure", "ProductProcedure"):
             raise SpecError(f"{w} [application]: load_procedure_style is MergedProcedure or ProductProcedure")
+        self.system7 = a["mask"] in SYS7_MASKS
+        if self.system7:
+            check_system7_application(w, a)
+        else:
+            if a["mask"] != "07B0":
+                raise not_yet(f"{w} [application]", f"mask {a['mask']} (System 7 and others)")
+            if a["load_procedure_style"] == "ProductProcedure":
+                raise not_yet(f"{w} [application]", "LoadProcedureStyle ProductProcedure on 07B0")
+            for k in sorted(SYS7_APP_KEYS & a.keys()):
+                raise SpecError(f"{w} [application]: `{k}` belongs to a System 7 mask ({', '.join(SYS7_MASKS)})")
         for k in a.get("options", {}):
             if k not in OPTIONS:
                 raise SpecError(f"{w} [application.options]: unknown option `{k}`")
@@ -182,11 +189,16 @@ class Product:
         self.segments = {}
         for i, s in enumerate(spec["segment"]):
             sw = f"{w} [[segment]] #{i + 1}"
+            if s.get("kind") == "absolute":
+                if not self.system7:
+                    raise not_yet(sw, "an absolute segment on a System B mask")
+                self.segments[s["name"]] = check_absolute_segment(sw, s, self.app_id)
+                continue
             check_keys(sw, s, {"name", "kind", "lsm", "size"}, {"fill"}, {"address"})
-            if s["kind"] == "absolute":
-                raise not_yet(sw, "an absolute segment")
             if s["kind"] != "relative":
                 raise SpecError(f"{sw}: kind is relative or absolute")
+            if self.system7:
+                raise SpecError(f"{sw}: a System 7 mask has absolute segments only")
             s = dict(s, id=f"{self.app_id}_RS-{s['lsm']:02d}-{len(self.segments):05d}")
             self.segments[s["name"]] = s
 
@@ -285,9 +297,16 @@ class Product:
         self.load_procedures = []
         for i, lp in enumerate(spec["load_procedure"]):
             lw = f"{w} [[load_procedure]] #{i + 1}"
-            check_keys(lw, lp, {"merge_id", "ops"})
+            if a["load_procedure_style"] == "ProductProcedure":
+                check_keys(lw, lp, {"ops"})
+                if len(spec["load_procedure"]) != 1:
+                    raise SpecError(f"{w}: a ProductProcedure has exactly one [[load_procedure]]")
+            else:
+                check_keys(lw, lp, {"merge_id", "ops"})
             self.check_load_ops(lw, lp["ops"])
             self.load_procedures.append(lp)
+        if self.system7:
+            check_system7_tables(w, self)
 
     def check_memory(self, where: str, m: dict, bits: int) -> None:
         """A `memory = { segment, offset, bit_offset }` that fits its segment."""
@@ -307,11 +326,12 @@ class Product:
             if name == "choose":
                 self.check_load_choose(ow, op)
                 continue
-            if name not in LOAD_OPS:
-                if name in LOAD_OPS_LATER:
+            table = LOAD_OPS | SYS7_LOAD_OPS if self.system7 else LOAD_OPS
+            if name not in table:
+                if name in LOAD_OPS_LATER or name in SYS7_LOAD_OPS:
                     raise not_yet(ow, f"`{name}`")
                 raise SpecError(f"{ow}: unknown op `{name}`")
-            check_keys(ow, op, {"op"} | set(LOAD_OPS[name]))
+            check_keys(ow, op, {"op"} | set(table[name]))
 
     def check_load_choose(self, ow: str, op: dict) -> None:
         """syn-choose-partial-segment (#604 row 8, #411): `<choose ParamRefId>`
@@ -355,6 +375,83 @@ LOAD_OPS = {
 LOAD_OPS_LATER = {"LdCtrlLoadImageProp", "LdCtrlWriteProp", "LdCtrlCompareProp",
                   "LdCtrlAbsSegment", "LdCtrlConnect", "LdCtrlDisconnect", "LdCtrlRestart",
                   "LdCtrlUnload", "LdCtrlLoad", "LdCtrlLoadCompleted", "LdCtrlTaskSegment"}
+
+
+# ------------------------------------------------- System 7 (masks 0705, 0701)
+# A System 7 product (#604 rows 2 and 3) carries its whole download as one
+# ProductProcedure over absolute segments (dev/system7-spec.md sections 2.3
+# and 4); the tables live in named absolute segments.
+
+SYS7_MASKS = ("0705", "0701")
+# [application] keys of a System 7 product: the PEI type, and the absolute
+# segment each table lives in (offset 0).
+SYS7_APP_KEYS = {"pei_type", "address_table_segment", "association_table_segment",
+                 "com_object_table_segment"}
+# The ops of a System 7 product procedure: spec key -> XML attribute, in XML order.
+SYS7_LOAD_OPS = {
+    "LdCtrlConnect": {},
+    "LdCtrlDisconnect": {},
+    "LdCtrlRestart": {},
+    "LdCtrlUnload": {"lsm": "LsmIdx"},
+    "LdCtrlLoad": {"lsm": "LsmIdx"},
+    "LdCtrlLoadCompleted": {"lsm": "LsmIdx"},
+    "LdCtrlAbsSegment": {"lsm": "LsmIdx", "seg_type": "SegType", "address": "Address", "size": "Size",
+                         "access": "Access", "mem_type": "MemType", "seg_flags": "SegFlags"},
+    "LdCtrlTaskSegment": {"lsm": "LsmIdx", "address": "Address"},
+    "LdCtrlTaskCtrl1": {"lsm": "LsmIdx", "address": "Address", "count": "Count"},
+}
+MEMORY_TYPES = ("EEPROM", "RAM")
+
+
+def check_system7_application(w: str, a: dict) -> None:
+    if a["load_procedure_style"] != "ProductProcedure":
+        raise not_yet(f"{w} [application]", f"LoadProcedureStyle {a['load_procedure_style']} on mask {a['mask']}")
+    for k in ("address_table_segment", "association_table_segment", "com_object_table_segment"):
+        if k not in a:
+            raise SpecError(f"{w} [application]: a System 7 mask needs `{k}`")
+    if not 0 <= a.get("pei_type", 0) <= 0xFF:
+        raise SpecError(f"{w} [application]: pei_type must be one octet")
+
+
+def check_absolute_segment(sw: str, s: dict, app_id: str) -> dict:
+    """An absolute segment: `address`, `size`, `memory_type`; `data` (hex, from
+    offset 0, the rest `fill`) or `allocate_only` (no <Data>, e.g. RAM)."""
+    check_keys(sw, s, {"name", "kind", "address", "size", "memory_type"}, {"fill", "data", "allocate_only"})
+    if s["memory_type"] not in MEMORY_TYPES:
+        raise SpecError(f"{sw}: memory_type is one of {list(MEMORY_TYPES)}")
+    if not (0 <= s["address"] and s["size"] > 0 and s["address"] + s["size"] <= 0x10000):
+        raise SpecError(f"{sw}: address and size must lie in the 16-bit address space")
+    data = bytes.fromhex(s.get("data", ""))
+    if s.get("allocate_only") and (data or "fill" in s):
+        raise SpecError(f"{sw}: an allocate_only segment has no data and no fill")
+    if len(data) > s["size"]:
+        raise SpecError(f"{sw}: data is longer than the segment")
+    return dict(s, id=f"{app_id}_AS-{s['address']:04X}", data_bytes=data)
+
+
+def check_system7_tables(w: str, p: "Product") -> None:
+    for k in ("address_table_segment", "association_table_segment", "com_object_table_segment"):
+        if p.app[k] not in p.segments:
+            raise SpecError(f"{w} [application]: {k} names unknown segment `{p.app[k]}`")
+
+
+def render_absolute_segment(x: "Xml", s: dict) -> None:
+    pairs = [("Id", s["id"]), ("Name", s["name"]), ("MemoryType", s["memory_type"]),
+             ("Address", s["address"]), ("Size", s["size"])]
+    if s.get("allocate_only"):
+        x.empty("AbsoluteSegment", pairs)
+        return
+    data = s["data_bytes"] + bytes([s.get("fill", 0)]) * (s["size"] - len(s["data_bytes"]))
+    x.open("AbsoluteSegment", pairs)
+    x.text("Data", base64.b64encode(data).decode())
+    x.close("AbsoluteSegment")
+
+
+def table_location(p: "Product", key: str) -> list[tuple[str, object]]:
+    """`CodeSegment`/`Offset` of a System 7 table element; nothing on System B."""
+    if not p.system7:
+        return []
+    return [("CodeSegment", p.segments[p.app[key]]["id"]), ("Offset", 0)]
 
 
 # ------------------------------------------------------------------ rendering
@@ -451,7 +548,7 @@ def render_load_ops(x: Xml, p: Product, ops: list[dict]) -> None:
                 x.close("when")
             x.close("choose")
         else:
-            x.empty(op["op"], [(attr, op[key]) for key, attr in LOAD_OPS[op["op"]].items()])
+            x.empty(op["op"], [(attr, op[key]) for key, attr in (LOAD_OPS | SYS7_LOAD_OPS)[op["op"]].items()])
 
 
 def render_application(p: Product) -> bytes:
@@ -462,12 +559,15 @@ def render_application(p: Product) -> bytes:
     x.open("ApplicationProgram", [
         ("Id", p.app_id), ("ApplicationNumber", a["number"]), ("ApplicationVersion", a["version"]),
         ("ProgramType", "ApplicationProgram"), ("MaskVersion", f"MV-{a['mask']}"), ("Name", a["name"]),
-        ("LoadProcedureStyle", a["load_procedure_style"]), ("PeiType", 0), ("DefaultLanguage", "en-US"),
+        ("LoadProcedureStyle", a["load_procedure_style"]), ("PeiType", a.get("pei_type", 0)), ("DefaultLanguage", "en-US"),
         ("DynamicTableManagement", False), ("Linkable", False), ("MinEtsVersion", "6.0"),
         ("NonRegRelevantDataVersion", 0)])
     x.open("Static")
     x.open("Code")
     for s in p.segments.values():
+        if s["kind"] == "absolute":
+            render_absolute_segment(x, s)
+            continue
         x.open("RelativeSegment", [("Id", s["id"]), ("Name", s["name"]), ("Size", s["size"]),
                                    ("LoadStateMachine", s["lsm"]), ("Offset", 0)])
         x.text("Data", base64.b64encode(bytes([s.get("fill", 0)]) * s["size"]).decode())
@@ -494,7 +594,7 @@ def render_application(p: Product) -> bytes:
     for prm in p.params.values():
         x.empty("ParameterRef", [("Id", prm["ref"]), ("RefId", prm["id"])])
     x.close("ParameterRefs")
-    x.open("ComObjectTable")
+    x.open("ComObjectTable", table_location(p, "com_object_table_segment"))
     for o in p.objects.values():
         x.empty("ComObject", [("Id", o["id"]), ("Name", o["name"]), ("Text", o["text"]), ("Number", o["number"]),
                               ("FunctionText", o["function_text"]), ("ObjectSize", o["size"])]
@@ -505,11 +605,13 @@ def render_application(p: Product) -> bytes:
     for o in p.objects.values():
         x.empty("ComObjectRef", [("Id", o["ref"]), ("RefId", o["id"])])
     x.close("ComObjectRefs")
-    x.empty("AddressTable", [("MaxEntries", a["address_table_max_entries"])])
-    x.empty("AssociationTable", [("MaxEntries", a["association_table_max_entries"])])
+    x.empty("AddressTable", table_location(p, "address_table_segment")
+            + [("MaxEntries", a["address_table_max_entries"])])
+    x.empty("AssociationTable", table_location(p, "association_table_segment")
+            + [("MaxEntries", a["association_table_max_entries"])])
     x.open("LoadProcedures")
     for lp in p.load_procedures:
-        x.open("LoadProcedure", [("MergeId", lp["merge_id"])])
+        x.open("LoadProcedure", [("MergeId", lp["merge_id"])] if "merge_id" in lp else [])
         render_load_ops(x, p, lp["ops"])
         x.close("LoadProcedure")
     x.close("LoadProcedures")
