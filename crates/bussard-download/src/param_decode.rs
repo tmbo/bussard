@@ -1101,6 +1101,7 @@ fn bit_width(ptype: Option<&ParameterType>) -> Option<u32> {
             },
         ),
         ParameterType::None => None,
+        ParameterType::Color { space } => u32::try_from(space.octets() * 8).ok(),
         ParameterType::Other { kind, .. } if kind == "TypeRawData" => None,
         ParameterType::Other { size_bits, .. } => size_bits.filter(|b| *b > 0),
     }

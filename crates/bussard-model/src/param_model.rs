@@ -161,8 +161,9 @@ pub struct ObjectDef {
 /// capacities, `data_secure:`, issue #537; format 10 `<Repeat>` nodes, a
 /// module's computed arguments, `allocators:` and `argument_allocates:`,
 /// issue #449, and a text
-/// parameter's `initial_value:`, issue #473).
-pub const MODEL_FORMAT: u32 = 10;
+/// parameter's `initial_value:`, issue #473; format 11 a colour type,
+/// `color: { space: RGB }`, issue #616).
+pub const MODEL_FORMAT: u32 = 11;
 
 /// Whether the model file at `path` is of the current [`MODEL_FORMAT`]. Reads
 /// only the head of the file, where the emitter puts the key.
@@ -248,6 +249,12 @@ pub enum ParamKind {
     Float,
     /// A marker with no memory (`none`).
     None,
+    /// A colour (`color`) of the declared space, written `#RRGGBB` (issue
+    /// #616).
+    Color {
+        /// The `<TypeColor>` `Space`.
+        space: crate::color_codec::ColorSpace,
+    },
     /// Any other shape (`other`), not range-checked.
     Other,
 }
@@ -362,6 +369,9 @@ enum RawType {
         max: Option<f64>,
     },
     None,
+    Color {
+        space: crate::color_codec::ColorSpace,
+    },
     Other {
         #[serde(default)]
         kind: Option<String>,
@@ -668,6 +678,7 @@ impl RawType {
             },
             RawType::Float { .. } => ParamKind::Float,
             RawType::None => ParamKind::None,
+            RawType::Color { space } => ParamKind::Color { space },
             RawType::Other { .. } => ParamKind::Other,
         }
     }
@@ -1187,6 +1198,30 @@ parameters:
         assert_eq!(model.resolve_key(None, "zwei-refs"), None);
         assert_eq!(model.resolve_key(None, "ohnerefs"), None);
         assert_eq!(model.resolve_key(None, "unbekannt"), None);
+        Ok(())
+    }
+
+    /// Issue #616: format 11 writes a `<TypeColor>` as `!color {space}`.
+    #[test]
+    fn test_from_yaml_color_type() -> Result<(), Box<dyn std::error::Error>> {
+        let yaml = "\
+identity:
+  id: M-00FA_A-1
+parameters:
+  - id: M-00FA_A-1_P-1
+    type: !color
+      space: HSV
+    default: '#FF0000'
+";
+        let m = ProductModel::from_yaml(yaml, "M-00FA_A-1")?;
+        let p = m.parameters.get("P-1").ok_or("no P-1")?;
+        assert!(matches!(
+            p.kind,
+            ParamKind::Color {
+                space: crate::color_codec::ColorSpace::Hsv
+            }
+        ));
+        assert_eq!(p.default.as_deref(), Some("#FF0000"));
         Ok(())
     }
 

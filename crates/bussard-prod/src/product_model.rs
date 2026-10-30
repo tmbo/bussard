@@ -565,6 +565,10 @@ enum ParamTypeModel {
         max: Option<f64>,
     },
     None,
+    /// A `<TypeColor>` of a known space (format 11, issue #616).
+    Color {
+        space: bussard_ets::application::ColorSpace,
+    },
     Other {
         kind: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -896,6 +900,7 @@ fn param_type_model(app: &ApplicationProgram, type_id: Option<&str>) -> ParamTyp
             max: *max,
         },
         ParameterType::None => ParamTypeModel::None,
+        ParameterType::Color { space } => ParamTypeModel::Color { space: *space },
         ParameterType::Other {
             kind, size_bits, ..
         } => ParamTypeModel::Other {
