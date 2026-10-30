@@ -1846,6 +1846,7 @@ mod tests {
             mask: None,
             range: None,
             occurrence: None,
+            start_element: None,
         };
         let branches = vec![WhenTest::Values(vec![0]), WhenTest::Values(vec![1])];
         app.load_procedures.push(LoadProcedure {
@@ -1883,6 +1884,7 @@ mod tests {
                 }],
                 vec![],
             ],
+            applies_to: Vec::new(),
         });
         app
     }
@@ -1972,12 +1974,18 @@ mod tests {
     }
 
     /// A drawn text fits its field in the program's code page (#401): MDT's
-    /// eight-octet labels in ISO 8859-15, UTF-8, and ASCII when undeclared.
+    /// eight-octet labels in ISO 8859-15, UTF-8, ISO 8859-1 when undeclared
+    /// (#416), and ASCII for a declared name bussard does not know.
     #[test]
     fn test_draw_value_text_fits_the_field_and_the_code_page() -> TestResult {
         let mut rng = SplitMix64::new(401);
         let mut accented = 0;
-        for codec in [TextCodec::Latin9, TextCodec::Utf8, TextCodec::Undeclared] {
+        for codec in [
+            TextCodec::Latin9,
+            TextCodec::Utf8,
+            TextCodec::Undeclared,
+            TextCodec::Unknown,
+        ] {
             for bits in [8, 64, 160] {
                 let kind = ParameterType::Text {
                     size_bits: Some(bits),
@@ -1987,7 +1995,7 @@ mod tests {
                     let octets = codec.encode(&text, (bits / 8) as usize)?;
                     assert_eq!(codec.decode(&octets), text, "{codec:?}");
                     accented += usize::from(!text.is_ascii());
-                    if codec == TextCodec::Undeclared {
+                    if codec == TextCodec::Unknown {
                         assert!(text.is_ascii(), "{text}");
                     }
                 }

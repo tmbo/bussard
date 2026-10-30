@@ -1,6 +1,8 @@
 // Hash and sign a fabricated .knxprod with ETS's own signing library (test data only).
 // Usage: signer.exe [--master <knx_master.xml>] <in.knxprod> <out.knxprod> <workdir>     hash, sign, zip
 //        (--master replaces the archive's knx_master.xml, e.g. the stub <KNX/>, with that file)
+//        signer.exe [--master <m>] --schema <n> <in> <out> <workdir>  the same for a product in
+//        schema project/<n> (11 for #448); without it the library writes project/23
 //        signer.exe --dir-only <in> <out> <workdir>         only the directory signature, no hashes
 //        signer.exe --verify <in.knxprod> <workdir>         report what the library thinks of a file
 //        signer.exe --verify-dir <workdir>                  the same on an unpacked folder
@@ -17,6 +19,8 @@ class Signer {
   static Assembly Lib;
   static bool DirOnly;
   static string Master;
+  // The library's targetSchemaVersion (a boxed KnxXmlSchemaVersion), null for its default (23).
+  static object Schema;
 
   static Type T(string name) {
     var t = Lib.GetType("Knx.Ets.XmlSigning." + name);
@@ -54,6 +58,15 @@ class Signer {
     }
     if (a[0] == "--master") {
       Master = a[1];
+      a = a.Skip(2).ToArray();
+    }
+    if (a[0] == "--schema") {
+      // The hasher, the hardware signer and the catalog patcher rewrite each
+      // file in their target namespace; a project/11 file under the default
+      // target fails with "Das Präfix '' kann nicht von '.../project/23' in
+      // '.../project/11' ... neu definiert werden" (2026-10-30, #448).
+      var e = Type.GetType("Knx.Ets.Common.Schema.KnxXmlSchemaVersion, Knx.Ets.Common", true);
+      Schema = Enum.ToObject(e, int.Parse(a[1]));
       a = a.Skip(2).ToArray();
     }
     if (a[0] == "--dir-only") {
@@ -140,7 +153,7 @@ class Signer {
         // so it reads a renamed copy (else an unchanged id deletes the result).
         var app = original + ".unsigned";
         File.Move(original, app);
-        var h = New("Signer.ApplicationProgramHasher", new FileInfo(app), baggages, true, null);
+        var h = New("Signer.ApplicationProgramHasher", new FileInfo(app), baggages, true, Schema);
         Call(h, "HashFile");
         string oldId = (string)Get(h, "OldApplProgId"), newId = (string)Get(h, "NewApplProgId");
         var renamed = (FileInfo)Get(h, "NewNameWithNewFingerprint");
@@ -151,12 +164,14 @@ class Signer {
         if (renamed == null || !File.Exists(renamed.FullName)) throw new Exception("hasher wrote no program for " + oldId);
       }
       // 2. Hardware: Hash of Product and Hardware2Program, ids patched to the new application ids.
-      var hw = New("Signer.HardwareSigner", new FileInfo(Path.Combine(manu, "Hardware.xml")), appMap, appHashes, true);
+      var hwFile = new FileInfo(Path.Combine(manu, "Hardware.xml"));
+      var hw = Schema == null ? New("Signer.HardwareSigner", hwFile, appMap, appHashes, true)
+                              : New("Signer.HardwareSigner", hwFile, appMap, appHashes, true, null, Schema);
       Call(hw, "SignFile");
       var hwMap = (IDictionary<string, string>)Get(hw, "OldNewIdMappings");
       foreach (var kv in hwMap) Console.WriteLine("hw " + kv.Key + " -> " + kv.Value);
       // 3. Catalog: CatalogItem / Hardware2Program references follow the new ids.
-      var cat = New("Signer.CatalogIdPatcher", new FileInfo(Path.Combine(manu, "Catalog.xml")), hwMap, null);
+      var cat = New("Signer.CatalogIdPatcher", new FileInfo(Path.Combine(manu, "Catalog.xml")), hwMap, Schema);
       Call(cat, "Patch");
       SignFolder(manu);
     }

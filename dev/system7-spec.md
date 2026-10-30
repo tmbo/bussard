@@ -320,12 +320,24 @@ MV-0701, not a device limitation, and ETS read-compare-writes it instead
   reboot, reconnect and re-authorize. It goes in front of the procedure's
   first state-changing step, after the vendor's read-only preconditions
   (`CompareProp`, `CompareMem`), so a device that fails them is refused before
-  its application is unloaded. A device the pre-flight probe finds without
-  a loaded application (`Freshness::Fresh`) gets no pass at all, as ETS gives
-  none to the factory-fresh knx-sim device in all 31 System 7 sweep downloads
-  (issue #488). Any other full flash unloads: the rule ETS follows on a
-  programmed device is still open (1.1.32 got a restart without unloads,
-  1.1.31, 1.1.46 and 1.1.52 the full pass; #488 names the capture series). A
+  its application is unloaded. The pass follows the device's resident state
+  (issue #488, `FlashPlan::fit_sys7_prelude`): a device whose every LSM the
+  pre-flight probe reads answers Unloaded, with no application id, gets no
+  pass at all; an LSM in Loaded, Loading or Error, a resident
+  `PID_PROGRAM_VERSION`, or a probe that read nothing keeps it. Evidence for
+  the fresh device: ETS runs no pass in all 31 System 7 sweep downloads and in
+  the synthetic captures `syn-s7-0705` and `syn-s7-0701` (`defaults`, a
+  factory-fresh knx-sim; after the connect come the identity reads and the
+  procedure's own unloads of LSMs 1 to 3, no unload of LSM 4, no restart). On
+  a programmed device the captures disagree, so the pass stays as before:
+  1.1.31 and 1.1.46 (`jung-1131`, `automitschalter-standard-110`) run the
+  full pass, 1.1.32 (`bad-eg-pm-1-1-18-new`, same application as 1.1.31) only
+  the restart, and the EK-E72 partial downloads on the sim
+  (`captures/ets-sweep/M-00B6_A-4537-03-DE59/b-*` to `d-*`) none; ETS decides
+  before reading anything from the device, so the trigger is project state.
+  The offline dry run has no device and keeps the pass, unless `--resident`
+  records the LSM states; the oracle's `state=fresh` row option records a
+  fresh device for a capture that reads none (the synthetic System 7 rows). A
   parameter-only flash restarts without unloading, like the Meteodata
   parameter capture. An LSM the device lacks (count 0) or that answers Error
   is skipped with a warning; the procedure's own unloads stay strict.

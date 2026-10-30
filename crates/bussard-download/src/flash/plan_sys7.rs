@@ -1595,6 +1595,7 @@ pub(super) fn sys7_op_label(op: &LoadOp) -> String {
         }
         LoadOp::WriteProp { .. } => "LdCtrlWriteProp (not in the System 7 corpus)".to_string(),
         LoadOp::MasterReset { .. } => "LdCtrlMasterReset (not in the System 7 corpus)".to_string(),
+        LoadOp::MapError { .. } => "LdCtrlMapError (not in the System 7 corpus)".to_string(),
         other => format!("{other:?}"),
     }
 }
@@ -2764,6 +2765,7 @@ mod tests {
                     prop_id: 78,
                     expected: Some(vec![0]),
                     mask: None,
+                    start_element: 1,
                 },
                 FlashStep::Sys7Unload { lsm: 1 },
                 FlashStep::Sys7StartLoading { lsm: 1 },
@@ -2807,6 +2809,104 @@ mod tests {
             &bussard_mgmt::Sys7Profile::corpus_default_for_mask(0x0705),
         );
         assert_eq!(steps, vec![FlashStep::Restart]);
+    }
+
+    /// Issue #488: the pre-download pass follows the device's resident state.
+    /// Every LSM `Unloaded` (a factory-fresh device, the ETS sweep and
+    /// `captures/synthetic/syn-s7-0705/defaults`): no pass. An LSM `Loaded` or
+    /// `Loading`, a resident application id, or a probe that read nothing:
+    /// the pass stays, unloads and all.
+    #[test]
+    fn test_fit_sys7_prelude_follows_the_resident_state() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use crate::preflight::{ResidentObject, ResidentState};
+        use bussard_mgmt::load::LoadState;
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/11">
+         <ApplicationProgram PeiType="0" Id="M-0083_A-E" ApplicationNumber="14" ApplicationVersion="35"
+            MaskVersion="MV-0705" Name="FabS7" LoadProcedureStyle="ProductProcedure">
+          <Static>
+           <Code>
+            <AbsoluteSegment Id="M-0083_A-E_AS-3" Size="2" Address="17408"><Data>BAU=</Data></AbsoluteSegment>
+           </Code>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlUnload LsmIdx="3" />
+             <LdCtrlLoad LsmIdx="3" />
+             <LdCtrlAbsSegment LsmIdx="3" Address="17408" Size="2" />
+             <LdCtrlLoadCompleted LsmIdx="3" />
+             <LdCtrlRestart />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-0083_A-E", xml.as_bytes())?;
+        let planned = plan_flash(
+            &app,
+            "1.1.99",
+            0x0705,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )?;
+        let prelude = |plan: &FlashPlan| {
+            plan.steps.iter().find_map(|s| match s {
+                FlashStep::Sys7PreDownloadRestart { unload } => Some(unload.clone()),
+                _ => None,
+            })
+        };
+        assert_eq!(prelude(&planned), Some(vec![1, 2, 3, 4]));
+        let lsms = |states: [LoadState; 4]| ResidentState {
+            objects: (1u8..)
+                .zip(states)
+                .map(|(index, state)| ResidentObject {
+                    index,
+                    object_type: None,
+                    state,
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let fresh = lsms([LoadState::Unloaded; 4]);
+        let loaded = lsms([
+            LoadState::Loaded,
+            LoadState::Loaded,
+            LoadState::Loaded,
+            LoadState::Unloaded,
+        ]);
+        let loading = lsms([
+            LoadState::Unloaded,
+            LoadState::Unloaded,
+            LoadState::Loading,
+            LoadState::Unloaded,
+        ]);
+        let with_id = ResidentState {
+            app_id: Some(vec![0x00, 0x83, 0x00, 0x0E, 0x23]),
+            ..lsms([LoadState::Unloaded; 4])
+        };
+        let unreadable = ResidentState {
+            unreadable: Some("no load-state machine answered".to_string()),
+            ..Default::default()
+        };
+        for (name, resident, kept) in [
+            ("fresh", &fresh, false),
+            ("loaded", &loaded, true),
+            ("loading", &loading, true),
+            ("resident id", &with_id, true),
+            ("unreadable", &unreadable, true),
+            ("nothing read", &ResidentState::default(), true),
+        ] {
+            let mut plan = planned.clone();
+            plan.fit_sys7_prelude(resident);
+            let expected = kept.then(|| vec![1, 2, 3, 4]);
+            assert_eq!(prelude(&plan), expected, "{name}");
+            // The procedure's own unload of LSM 3 stays either way.
+            assert!(
+                plan.steps.contains(&FlashStep::Sys7Unload { lsm: 3 }),
+                "{name}"
+            );
+        }
+        Ok(())
     }
 
     /// The System 7 parameter segment streams its `<Data>` with the

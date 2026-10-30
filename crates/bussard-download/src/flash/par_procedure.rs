@@ -89,7 +89,9 @@ impl FlashPlan {
         };
         let before = self.steps.len();
         self.steps.retain(|s| match s {
-            FlashStep::Unload { target } => loaded.contains(target) || !unloaded_on_device(target),
+            FlashStep::Unload { target, .. } => {
+                loaded.contains(target) || !unloaded_on_device(target)
+            }
             _ => true,
         });
         changed |= self.steps.len() != before;
@@ -163,17 +165,22 @@ mod tests {
             .collect();
         assert_eq!(allocs, vec![(Some(4), SegmentFill::NONE)]);
         assert!(
-            !plan
-                .steps
-                .iter()
-                .any(|s| matches!(s, FlashStep::Unload { target: Some(5) })),
+            !plan.steps.iter().any(|s| matches!(
+                s,
+                FlashStep::Unload {
+                    target: Some(5),
+                    ..
+                }
+            )),
             "object 5 read Unloaded: no unload"
         );
-        assert!(
-            plan.steps
-                .iter()
-                .any(|s| matches!(s, FlashStep::Unload { target: Some(4) }))
-        );
+        assert!(plan.steps.iter().any(|s| matches!(
+            s,
+            FlashStep::Unload {
+                target: Some(4),
+                ..
+            }
+        )));
         Ok(())
     }
 
@@ -182,18 +189,22 @@ mod tests {
     fn test_use_par_procedure_keeps_an_unread_unload() -> Result<(), Box<dyn std::error::Error>> {
         let mut plan = super::super::test_support::par_pair_plan()?;
         plan.use_par_procedure(Some(&resident(&[(4, LoadState::Loaded)])));
-        assert!(
-            plan.steps
-                .iter()
-                .any(|s| matches!(s, FlashStep::Unload { target: Some(5) }))
-        );
+        assert!(plan.steps.iter().any(|s| matches!(
+            s,
+            FlashStep::Unload {
+                target: Some(5),
+                ..
+            }
+        )));
         let mut plan = super::super::test_support::par_pair_plan()?;
         plan.use_par_procedure(None);
-        assert!(
-            plan.steps
-                .iter()
-                .any(|s| matches!(s, FlashStep::Unload { target: Some(5) }))
-        );
+        assert!(plan.steps.iter().any(|s| matches!(
+            s,
+            FlashStep::Unload {
+                target: Some(5),
+                ..
+            }
+        )));
         Ok(())
     }
 

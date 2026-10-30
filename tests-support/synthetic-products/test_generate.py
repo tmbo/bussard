@@ -228,6 +228,30 @@ class System7(unittest.TestCase):
             generate.Product("t", self.s)
 
 
+class Schema(unittest.TestCase):
+    """syn-s7-hidden-default-p11 (#448): `[application] schema = 11`."""
+
+    def test_render_schema_11_namespace_and_min_ets_version(self) -> None:
+        s = spec()
+        s["application"]["schema"] = 11
+        p = generate.Product("test", s)
+        files = generate.render(p)
+        for f in files.values():
+            self.assertIn(b'<KNX xmlns="http://knx.org/xml/project/11">', f)
+        self.assertIn('MinEtsVersion="4.0"', files[f"M-00FA/{p.app_file}"].decode("utf-8"))
+
+    def test_render_schema_default_is_23(self) -> None:
+        xml = app_xml(spec())
+        self.assertIn('<KNX xmlns="http://knx.org/xml/project/23">', xml)
+        self.assertIn('MinEtsVersion="6.0"', xml)
+
+    def test_product_refuses_unknown_schema(self) -> None:
+        s = spec()
+        s["application"]["schema"] = 20
+        with self.assertRaisesRegex(generate.SpecError, "schema is one of"):
+            generate.Product("t", s)
+
+
 class MasterReset(unittest.TestCase):
     """syn-master-reset (#546, #611): LdCtrlMasterReset in the application's procedure."""
 
@@ -364,6 +388,48 @@ class ParameterCalculation(unittest.TestCase):
     def test_calculation_unknown_parameter_refused(self) -> None:
         with self.assertRaisesRegex(generate.SpecError, "unknown parameter `nope`"):
             generate.Product("test", self.calc_spec(outputs=[{"parameter": "nope", "alias": "o"}]))
+
+
+class System7Choose(unittest.TestCase):
+    """syn-s7-choose-split (#411, #413): a `choose` of AbsSegments in a product procedure."""
+
+    def test_render_choose_with_abs_segments_on_system_7(self) -> None:
+        x = app_xml(product_spec("syn-s7-choose-split"))
+        self.assertIn('<choose ParamRefId="M-00FA_A-2809-10-0000_P-1_R-1">\n'
+                      '                  <when test="1">\n'
+                      '                    <LdCtrlAbsSegment LsmIdx="3" SegType="0" Address="17472" Size="1" '
+                      'Access="51" MemType="3" SegFlags="128" />\n'
+                      '                    <LdCtrlAbsSegment LsmIdx="3" SegType="0" Address="17475" Size="61" ', x)
+        self.assertIn('<when default="true">\n'
+                      '                    <LdCtrlAbsSegment LsmIdx="3" SegType="0" Address="17472" Size="64" ', x)
+
+
+class TaskPtrAndTaskCtrl2(unittest.TestCase):
+    """syn-s7-taskptr (#527): LdCtrlTaskPtr and LdCtrlTaskCtrl2 on System 7."""
+
+    def test_render_task_ptr_and_task_ctrl2(self) -> None:
+        s = product_spec("syn-s7-0705")
+        s["load_procedure"][0]["ops"][-3:-3] = [
+            {"op": "LdCtrlTaskPtr", "lsm": 3, "init_ptr": 0x4410, "save_ptr": 0x4414, "serial_ptr": 0x4418},
+            {"op": "LdCtrlTaskCtrl2", "lsm": 3, "callback": 0x441C, "address": 0x4400, "seg0": 0x0700,
+             "seg1": 0x4440}]
+        x = app_xml(s)
+        self.assertIn('<LdCtrlTaskPtr LsmIdx="3" InitPtr="17424" SavePtr="17428" SerialPtr="17432" />', x)
+        self.assertIn('<LdCtrlTaskCtrl2 LsmIdx="3" Callback="17436" Address="17408" Seg0="1792" Seg1="17472" />', x)
+
+    def test_task_ptr_refused_on_system_b(self) -> None:
+        b = product_spec("syn-minimal")
+        b["load_procedure"][0]["ops"].append(
+            {"op": "LdCtrlTaskPtr", "lsm": 3, "init_ptr": 0, "save_ptr": 0, "serial_ptr": 0})
+        with self.assertRaisesRegex(generate.SpecError, "no product uses it yet"):
+            generate.Product("t", b)
+
+    def test_task_ctrl2_missing_key_refused(self) -> None:
+        s = product_spec("syn-s7-0705")
+        s["load_procedure"][0]["ops"].append({"op": "LdCtrlTaskCtrl2", "lsm": 3, "callback": 0, "address": 0,
+                                              "seg0": 0})
+        with self.assertRaisesRegex(generate.SpecError, "missing key `seg1`"):
+            generate.Product("t", s)
 
 
 if __name__ == "__main__":

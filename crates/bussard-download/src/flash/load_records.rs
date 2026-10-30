@@ -79,7 +79,7 @@ fn system_b_records(step: &FlashStep) -> Vec<LoadControlRecord> {
         bytes: control.encode_full().to_vec(),
     };
     match step {
-        FlashStep::Unload { target } => vec![simple_record(*target, LoadControl::Unload)],
+        FlashStep::Unload { target, .. } => vec![simple_record(*target, LoadControl::Unload)],
         FlashStep::StartLoading { target } => {
             vec![simple_record(*target, LoadControl::StartLoading)]
         }
@@ -267,7 +267,10 @@ mod tests {
 
     #[test]
     fn test_system_b_records_unload_unresolved_object() {
-        let records = system_b_records(&FlashStep::Unload { target: None });
+        let records = system_b_records(&FlashStep::Unload {
+            target: None,
+            absent_ok: false,
+        });
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].form, LoadControlForm::Property { object: None });
         assert_eq!(records[0].event, "unload");

@@ -32,8 +32,12 @@ next to it, and zips it on demand.
 | [`syn-relseg-fill`](syn-relseg-fill/product.toml) | `NEST-FILL` | 07B0 | RelSegment Mode 0 with Fill 255 | #480 |
 | [`syn-s7-0701`](syn-s7-0701/product.toml) | `NEST-BKDOOR` | 0701 | System 7 baseline (0701, memory-mapped LSM) | #596, #488, #481 |
 | [`syn-s7-0705`](syn-s7-0705/product.toml) | `NEST-DOOR` | 0705 | System 7 baseline (0705, property LSM) | #596, #488, #479, #588, #487 |
+| [`syn-s7-choose-split`](syn-s7-choose-split/product.toml) | `NEST-SPLIT` | 0705 | load-procedure choose splitting the parameter AbsSegment | #411, #413 |
 | [`syn-s7-hidden-default`](syn-s7-hidden-default/product.toml) | `NEST-EGGBAK` | 0705 | hidden parameter on System 7, default differs from template | #448 |
+| [`syn-s7-hidden-default-p11`](syn-s7-hidden-default-p11/product.toml) | `NEST-EGGOLD` | 0705 | hidden parameter on System 7 in schema project/11 | #448 |
 | [`syn-s7-lsm5`](syn-s7-lsm5/product.toml) | `NEST-TWIG5` | 0701 | TaskSegment on LsmIdx 5 (0701) | #489 |
+| [`syn-s7-pei80`](syn-s7-pei80/product.toml) | `NEST-CLAW` | 0701 | PeiType 128 on 0701 | #483 |
+| [`syn-s7-taskptr`](syn-s7-taskptr/product.toml) | `NEST-HUNT` | 0705 | TaskPtr and TaskCtrl2 records on LSM 3 | #527 |
 | [`syn-text-undeclared`](syn-text-undeclared/product.toml) | `NEST-SQUAWK` | 07B0 | TypeText non-ASCII default, no TextParameterEncoding | #416 |
 | [`syn-union-default-range`](syn-union-default-range/product.toml) | `NEST-STRAY` | 07B0 | hidden union member, default outside its type | #405 |
 <!-- catalogue:end -->
@@ -76,7 +80,7 @@ One `product.toml` per directory. Tables and keys:
 | --- | --- | --- |
 | `[doc]` | `purpose` (one paragraph), `construct` (a few words), `issues` (numbers) | the catalogue row; not in the XML |
 | `[product]` | `text`, `order_number`, `hardware_name`, `hardware_serial` (`00FA` + 8 hex digits), `bus_current` (mA); optional `hardware_version` (1), `rail_mounted` (false) | `Hardware`, `Product`, `Hardware2Program`, `CatalogItem` |
-| `[application]` | `number` (0x2700 to 0x2AFF: 0x27xx System B, 0x28xx System 7, 0x29xx Secure, 0x2Axx RF and IP), `version` (one octet), `name`, `mask` (`07B0`, or `0705`/`0701` for System 7), `load_procedure_style` (`MergedProcedure` on 07B0, `ProductProcedure` on System 7), `address_table_max_entries`, `association_table_max_entries`; optional `translations` (`{ "de-DE" = "..." }` for the name); System 7 only: `address_table_segment`, `association_table_segment`, `com_object_table_segment` (the absolute segment each table starts in, offset 0; required) and `pei_type` (0) | `ApplicationProgram`, `AddressTable`, `AssociationTable`, `Languages` |
+| `[application]` | `number` (0x2700 to 0x2AFF: 0x27xx System B, 0x28xx System 7, 0x29xx Secure, 0x2Axx RF and IP), `version` (one octet), `name`, `mask` (`07B0`, or `0705`/`0701` for System 7), `load_procedure_style` (`MergedProcedure` on 07B0, `ProductProcedure` on System 7), `address_table_max_entries`, `association_table_max_entries`; optional `translations` (`{ "de-DE" = "..." }` for the name); optional `schema` (`23`, or `11`: namespace `http://knx.org/xml/project/11` and `MinEtsVersion="4.0"` in all three files, the shape of the #448 vendor applications; `sign.py` then uses ETS's project-11 master data); System 7 only: `address_table_segment`, `association_table_segment`, `com_object_table_segment` (the absolute segment each table starts in, offset 0; required) and `pei_type` (0) | `ApplicationProgram`, `AddressTable`, `AssociationTable`, `Languages` |
 | `[application.options]` | any `Options` attribute of the KNX schema, e.g. `SupportsExtendedMemoryServices = true`, `ParameterByteOrder = "LittleEndian"` | `Options` |
 | `[[segment]]` | `name`, `kind` (`relative`), `lsm`, `size`; optional `fill` (the initial octet, 0) | `RelativeSegment` with its `Data` |
 | `[[parameter_type]]` | `name`, `kind`; `enum`: `size_bits`, `values = [{ value, text }]`; `number`: `size_bits`, `signed`, `min`, `max`; `float`: `encoding` (`DPT 9`, `IEEE-754 Single`, `IEEE-754 Double`; 16, 32, 64 bits), `min`, `max`; `text`: `size_octets` | `TypeRestriction`, `TypeNumber`, `TypeFloat`, `TypeText` |
@@ -90,7 +94,9 @@ One `product.toml` per directory. Tables and keys:
 
 Load ops: `LdCtrlRelSegment` (`lsm`, `size`, `mode`, `fill`),
 `LdCtrlWriteRelMem` (`object`, `offset`, `size`, `verify`) and
-`LdCtrlMasterReset` (`erase_code`, `channel`). `{ op = "choose", parameter,
+`LdCtrlMasterReset` (`erase_code`, `channel`). A System 7 product procedure
+also takes `LdCtrlTaskPtr` (`lsm`, `init_ptr`, `save_ptr`, `serial_ptr`) and
+`LdCtrlTaskCtrl2` (`lsm`, `callback`, `address`, `seg0`, `seg1`). `{ op = "choose", parameter,
 when = [{ test, ops }, { default = true, ops }] }` renders a `<choose
 ParamRefId>` with its `<when>` branches inside the procedure (#411).
 
