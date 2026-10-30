@@ -268,6 +268,10 @@ def write_rows(entries: list[dict]) -> None:
     rows = []
     for e in sorted(entries, key=lambda e: (e["product"], e["variant"])):
         opts = "loadctl=identical" if e["oracle"].get("loadctl") == "identical" else ""
+        # A product that exists to show a difference (#604) keeps its verdict
+        # as the row's expectation, so --check stays green while the issue is open.
+        if e["oracle"]["verdict"] != "identical":
+            opts = f"expect={e['oracle']['verdict']} {opts}".strip()
         rows.append(oracle_row(e["product"], e["application"], e["oracle"]["coverage"].rstrip("%"), opts))
     ROWS.write_text(head + "\n".join(rows) + "\n")
 

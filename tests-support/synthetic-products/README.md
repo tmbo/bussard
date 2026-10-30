@@ -21,6 +21,7 @@ next to it, and zips it on demand.
 <!-- catalogue:begin (generate.py --catalogue) -->
 | product | order number | mask | construct | issues |
 | --- | --- | --- | --- | --- |
+| [`syn-le-order`](syn-le-order/product.toml) | `NEST-ALTI` | 07B0 | ParameterByteOrder LittleEndian with integers and floats | #403 |
 | [`syn-minimal`](syn-minimal/product.toml) | `NEST-LIGHT` | 07B0 | baseline | #596 |
 <!-- catalogue:end -->
 
@@ -42,6 +43,7 @@ heater, a worm-movement detector, a twig-door actuator.
 
 ```sh
 uv run tests-support/synthetic-products/generate.py                # render every product's xml/
+uv run tests-support/synthetic-products/test_generate.py           # unit tests of the rendering paths
 uv run tests-support/synthetic-products/generate.py --check        # exit 1 if xml/ or signed.toml is stale
 uv run tests-support/synthetic-products/generate.py --zip syn-minimal
 uv run tests-support/synthetic-products/generate.py --catalogue    # rewrite the table above
@@ -62,9 +64,9 @@ One `product.toml` per directory. Tables and keys:
 | `[doc]` | `purpose` (one paragraph), `construct` (a few words), `issues` (numbers) | the catalogue row; not in the XML |
 | `[product]` | `text`, `order_number`, `hardware_name`, `hardware_serial` (`00FA` + 8 hex digits), `bus_current` (mA); optional `hardware_version` (1), `rail_mounted` (false) | `Hardware`, `Product`, `Hardware2Program`, `CatalogItem` |
 | `[application]` | `number` (0x2700 to 0x27FF), `version` (one octet), `name`, `mask`, `load_procedure_style`, `address_table_max_entries`, `association_table_max_entries`; optional `translations` (`{ "de-DE" = "..." }` for the name) | `ApplicationProgram`, `AddressTable`, `AssociationTable`, `Languages` |
-| `[application.options]` | any `Options` attribute of the KNX schema, e.g. `SupportsExtendedMemoryServices = true` | `Options` |
+| `[application.options]` | any `Options` attribute of the KNX schema, e.g. `SupportsExtendedMemoryServices = true`, `ParameterByteOrder = "LittleEndian"` | `Options` |
 | `[[segment]]` | `name`, `kind` (`relative`), `lsm`, `size`; optional `fill` (the initial octet, 0) | `RelativeSegment` with its `Data` |
-| `[[parameter_type]]` | `name`, `kind`; `enum`: `size_bits`, `values = [{ value, text }]`; `number`: `size_bits`, `signed`, `min`, `max` | `TypeRestriction`, `TypeNumber` |
+| `[[parameter_type]]` | `name`, `kind`; `enum`: `size_bits`, `values = [{ value, text }]`; `number`: `size_bits`, `signed`, `min`, `max`; `float`: `encoding` (`DPT 9`, `IEEE-754 Single`, `IEEE-754 Double`; 16, 32, 64 bits), `min`, `max` | `TypeRestriction`, `TypeNumber`, `TypeFloat` |
 | `[[parameter]]` | `name`, `type`, `text`, `default`, `memory = { segment, offset, bit_offset }` | `Parameter`, one `ParameterRef` each |
 | `[[com_object]]` | `number`, `name`, `text`, `function_text`, `size` (`"1 Bit"`), `dpt` (`"DPST-1-1"`), `flags` (of `C R W T U I`), `priority` (`Low`, `High`, `Alert`) | `ComObject`, one `ComObjectRef` each |
 | `[[dynamic.block]]` | `name`, `text`, `parameters` (names), `com_objects` (numbers) | a `ParameterBlock` in the `ChannelIndependentBlock` |
@@ -77,8 +79,7 @@ The schema reaches further than the generator does. These are reserved for
 the catalogue products that need them (step 4 of #596), and a spec that uses
 one stops with "part of the schema but no product uses it yet": masks other
 than 07B0 (System 7 twins), `ProductProcedure`, absolute segments, parameter
-type kinds `text`, `float`, `time`, `ip_address`, `raw`, a number's
-`byte_order` (#403), parameter `access` and `union` (#405), explicit com
+type kinds `text`, `time`, `ip_address`, `raw`, parameter `access` and `union` (#405), explicit com
 object refs, channels and `<choose>` in the Dynamic tree (#411), and the load
 ops `LdCtrlMasterReset` (#546), `LdCtrlLoadImageProp`, `LdCtrlWriteProp`,
 `LdCtrlCompareProp`, `LdCtrlAbsSegment` and the connection and state ops of a
