@@ -80,11 +80,12 @@ slow-timeout = { period = "300s", terminate-after = 12 }
 
 # The synthetic product catalogue through the knx-sim flash-then-plan loop
 # (epic #596): about 12 s per product locally, one product after another, and
-# the catalogue grows to 40 (#604). 60 s killed it at five products.
+# the catalogue grows to 40 (#604). 60 s killed it at five products. The
+# synthetic oracle rows' `--check` (about 10 s per row) grows the same way.
 [[profile.default.overrides]]
-filter = 'test(/^sim_catalog_loop::test_sim_catalog_loop_synthetic_catalogue$/)'
+filter = 'test(/^sim_catalog_loop::test_sim_catalog_loop_synthetic_catalogue$/) | test(/^offline_oracle::test_offline_oracle_synthetic_rows_pass_the_check$/)'
 slow-timeout = { period = "120s", terminate-after = 10 }
 
 [[profile.ci.overrides]]
-filter = 'test(/^sim_catalog_loop::test_sim_catalog_loop_synthetic_catalogue$/)'
+filter = 'test(/^sim_catalog_loop::test_sim_catalog_loop_synthetic_catalogue$/) | test(/^offline_oracle::test_offline_oracle_synthetic_rows_pass_the_check$/)'
 slow-timeout = { period = "120s", terminate-after = 10 }
