@@ -150,7 +150,14 @@ def sim_build(arg: str | None) -> str:
         raise SystemExit(f"no {side}: pass --sim-build, or rebuild with tools/ets-sweep/winbuild-knx-sim.sh") from None
 
 
-def sim_yaml(product: str, app: str) -> str:
+def lsm_access(mask: str) -> str:
+    """The sim's load-state machine for a mask: memory-mapped on 0700 and 0701,
+    where ETS drives the 11-octet record at 0x0104, property (PID 5) otherwise
+    (dev/system7-spec.md section 5)."""
+    return "memory" if mask in ("0700", "0701") else "property"
+
+
+def sim_yaml(product: str, app: str, mask: str = "07B0") -> str:
     """A loopback knx-sim for the capture's device, on the stub-zipped product."""
     prod = os.path.relpath(CATALOGUE / product / "build" / f"{product}.knxprod", OUT / product / VARIANT)
     return (
@@ -161,11 +168,11 @@ def sim_yaml(product: str, app: str) -> str:
         f"# only in its fingerprint, which never reaches the wire.\n"
         f"gateway:\n  host: 127.0.0.1\n  port: 3672\n  tunnel_address: 1.1.254\n"
         f"devices:\n- address: 1.1.1\n  knxprod: {prod}\n  application: {app}\n"
-        f"  initial_state: unloaded\n  lsm_access: property\n"
+        f"  initial_state: unloaded\n  lsm_access: {lsm_access(mask)}\n"
     )
 
 
-def copy_capture(product: str, sid: str, app: str) -> Path:
+def copy_capture(product: str, sid: str, app: str, mask: str = "07B0") -> Path:
     src = calibrate.run_dir(sid)
     dst = OUT / product / VARIANT
     dst.mkdir(parents=True, exist_ok=True)
@@ -176,7 +183,7 @@ def copy_capture(product: str, sid: str, app: str) -> Path:
     (dst / "ops.txt").write_text(ops)
     reqs = distil.requests(dst / "ets.pcapng")
     (dst / "requests.txt").write_text(distil.render(reqs, f"{rel}/ets.pcapng"))
-    (dst / "sim.yaml").write_text(sim_yaml(product, app))
+    (dst / "sim.yaml").write_text(sim_yaml(product, app, mask))
     write_image(dst, rel)
     return dst
 
@@ -309,6 +316,7 @@ def main() -> int:
     product = args.product
     spec = tomllib.loads((CATALOGUE / product / "product.toml").read_text())
     order = spec["product"]["order_number"]
+    mask = spec["application"]["mask"]
     app = rendered_app(product)
     entries = [e for e in load_manifest() if not (e["product"] == product and e["variant"] == VARIANT)]
     previous = next((e for e in load_manifest() if e["product"] == product and e["variant"] == VARIANT), {})
@@ -327,13 +335,13 @@ def main() -> int:
         imported = ets_import(c, signed, order)
         print(f"ETS import: {imported['import']}, catalogue row {imported['catalog_row']}")
         ets = ets_version(c)
-        result = calibrate.calibrate_one(signed, sid, order, True, Path(tempfile.mkdtemp()))
+        result = calibrate.calibrate_one(signed, sid, order, True, Path(tempfile.mkdtemp()), mask)
         print(f"ETS download: {result.get('outcome')} ets={result.get('ets')} ops={result.get('ops')} "
               f"loaded={result.get('loaded_objects')}; signed-product oracle: {result.get('oracle', {}).get('summary')}")
         when = datetime.date.today().isoformat()
         if result.get("outcome") != "captured":
             raise SystemExit(f"ETS did not complete the download: {result}")
-    dst = copy_capture(product, sid, app)
+    dst = copy_capture(product, sid, app, mask)
     verdict = oracle_verdict(product, app)
     requests = sum(1 for l in (dst / "requests.txt").read_text().splitlines() if l and not l.startswith("#"))
     entry = {

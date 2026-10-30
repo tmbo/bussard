@@ -149,5 +149,84 @@ class HiddenParameter(unittest.TestCase):
         self.assertIn("<Data>////", xml)
 
 
+def product_spec(name: str) -> dict:
+    """The committed spec of a catalogue product."""
+    return tomllib.loads((HERE / name / "product.toml").read_text(encoding="utf-8"))
+
+
+class System7(unittest.TestCase):
+    """The System 7 rendering path (#604 rows 2 and 3)."""
+
+    def setUp(self) -> None:
+        self.s = product_spec("syn-s7-0705")
+
+    def test_render_application_absolute_segments_and_table_locations(self) -> None:
+        x = app_xml(self.s)
+        app = "M-00FA_A-2800-10-0000"
+        self.assertIn('MaskVersion="MV-0705"', x)
+        self.assertIn('LoadProcedureStyle="ProductProcedure" PeiType="0"', x)
+        self.assertIn(f'<AbsoluteSegment Id="{app}_AS-0700" Name="ram" MemoryType="RAM" Address="1792" '
+                      'Size="16" />', x)
+        self.assertIn(f'<AddressTable CodeSegment="{app}_AS-4000" Offset="0" MaxEntries="255" />', x)
+        self.assertIn(f'<AssociationTable CodeSegment="{app}_AS-4201" Offset="0" MaxEntries="255" />', x)
+        self.assertIn(f'<ComObjectTable CodeSegment="{app}_AS-4400" Offset="0">', x)
+        self.assertIn(f'<Memory CodeSegment="{app}_AS-4440" Offset="1" BitOffset="0" />', x)
+        self.assertIn("<LoadProcedure>\n", x)
+        self.assertIn('<LdCtrlAbsSegment LsmIdx="3" SegType="1" Address="1808" Size="48" Access="0" '
+                      'MemType="2" SegFlags="0" />', x)
+        self.assertIn('<LdCtrlTaskCtrl1 LsmIdx="3" Address="17456" Count="1" />', x)
+
+    def test_render_absolute_segment_data_then_fill(self) -> None:
+        import base64
+        import re
+        x = app_xml(self.s)
+        m = re.search(r'Name="application"[^>]*>\s*<Data>([^<]*)</Data>', x)
+        self.assertIsNotNone(m)
+        data = base64.b64decode(m.group(1))
+        self.assertEqual(len(data), 64)
+        self.assertEqual(data[:11].hex(), "0207000702170007034f00")
+        self.assertEqual(set(data[11:]), {0xFF})
+
+    def test_render_is_deterministic(self) -> None:
+        self.assertEqual(app_xml(self.s), app_xml(copy.deepcopy(self.s)))
+
+    def test_product_refuses_merge_id_in_a_product_procedure(self) -> None:
+        self.s["load_procedure"][0]["merge_id"] = 1
+        with self.assertRaisesRegex(generate.SpecError, "unknown key `merge_id`"):
+            generate.Product("t", self.s)
+
+    def test_product_refuses_a_relative_segment_on_system_7(self) -> None:
+        self.s["segment"].append({"name": "r", "kind": "relative", "lsm": 4, "size": 8})
+        with self.assertRaisesRegex(generate.SpecError, "absolute segments only"):
+            generate.Product("t", self.s)
+
+    def test_product_refuses_an_unknown_table_segment(self) -> None:
+        self.s["application"]["address_table_segment"] = "nowhere"
+        with self.assertRaisesRegex(generate.SpecError, "unknown segment `nowhere`"):
+            generate.Product("t", self.s)
+
+    def test_product_refuses_data_on_an_allocate_only_segment(self) -> None:
+        self.s["segment"][0]["data"] = "00"
+        with self.assertRaisesRegex(generate.SpecError, "allocate_only"):
+            generate.Product("t", self.s)
+
+    def test_product_refuses_system_7_ops_on_system_b(self) -> None:
+        b = product_spec("syn-minimal")
+        b["load_procedure"][0]["ops"].append({"op": "LdCtrlTaskSegment", "lsm": 1, "address": 0})
+        with self.assertRaisesRegex(generate.SpecError, "no product uses it yet"):
+            generate.Product("t", b)
+
+    def test_product_refuses_system_7_keys_on_system_b(self) -> None:
+        b = product_spec("syn-minimal")
+        b["application"]["pei_type"] = 0
+        with self.assertRaisesRegex(generate.SpecError, "belongs to a System 7 mask"):
+            generate.Product("t", b)
+
+    def test_product_refuses_merged_procedure_on_system_7(self) -> None:
+        self.s["application"]["load_procedure_style"] = "MergedProcedure"
+        with self.assertRaisesRegex(generate.SpecError, "no product uses it yet"):
+            generate.Product("t", self.s)
+
+
 if __name__ == "__main__":
     unittest.main()
