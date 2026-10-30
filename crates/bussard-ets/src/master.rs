@@ -37,7 +37,7 @@ use crate::error::{EtsError, Result};
 use crate::{LoadOp, LoadProcedure};
 
 /// One `<Procedure ProcedureType="Load">` template from a mask block.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MaskLoadProcedure {
     /// The `ProcedureSubType`, e.g. `"all"`, `"ap1"`, `"grp"`, `"par"`. Absent
     /// on the rare untyped procedure.
@@ -141,6 +141,135 @@ impl MasterTemplate {
     pub fn hawk_config(&self, mask: &str) -> Option<&HawkConfig> {
         self.hawk.get(mask)
     }
+}
+
+/// The masks bussard carries a built-in full-download `Load` template for: the
+/// System B family on TP1 (`07B0`), RF (`27B0`) and KNX-IP (`57B0`), the masks
+/// the planner splices a merged application into. The System 7 masks (`0705`,
+/// `0701`, `0700`) declare no `Load` procedure in the master data and their
+/// lowering takes nothing from a template, so they have no entry.
+pub const BUILTIN_TEMPLATE_MASKS: [&str; 3] = ["07B0", "27B0", "57B0"];
+
+impl MasterTemplate {
+    /// The built-in full-download (`ProcedureSubType="all"`) `Load` template for
+    /// `mask` (the `MV-`-stripped id), or `None` for a mask outside
+    /// [`BUILTIN_TEMPLATE_MASKS`].
+    ///
+    /// It realises the generic System B procedure of KNX 3/5/3 §3.5.2 ("Load
+    /// procedure for complete download"; §3.5.3 covers the partial downloads,
+    /// which bussard plans without a template): unload every load state
+    /// machine, then per object start loading, allocate the segment (the
+    /// application's `MergeId` blocks for objects 4 and 5, a relative
+    /// allocation for the address, association and group-object tables),
+    /// write the images, write `PID_PROGRAM_VERSION`, complete every object and
+    /// restart. The `LdCtrlMerge` markers are where a `MergedProcedure`
+    /// application's own blocks are spliced in.
+    ///
+    /// The ops, their order and their attributes are those every master-data
+    /// version in the product corpus (schemas 10 to 23) declares for the three
+    /// masks, identical across masks and versions, so a product
+    /// without `knx_master.xml` plans the same download as one with it. The
+    /// corpus-gated test `test_builtin_for_mask_matches_corpus_master` (in
+    /// `bussard-prod`) checks this data against the `knx_master.xml` of every
+    /// corpus product.
+    pub fn builtin_for_mask(mask: &str) -> Option<MaskLoadProcedure> {
+        if !BUILTIN_TEMPLATE_MASKS.contains(&mask) {
+            return None;
+        }
+        Some(MaskLoadProcedure {
+            sub_type: Some("all".to_string()),
+            ops: builtin_system_b_full_load(),
+        })
+    }
+
+    /// Fills in the built-in template (see [`MasterTemplate::builtin_for_mask`])
+    /// for every built-in mask this template has no usable full-download `Load`
+    /// procedure for, and returns the masks it filled. A mask the archive's
+    /// master declares keeps its own template.
+    pub fn fill_builtin(&mut self) -> Vec<&'static str> {
+        let mut filled = Vec::new();
+        for mask in BUILTIN_TEMPLATE_MASKS {
+            if self.full_load_procedure(mask).is_some() {
+                continue;
+            }
+            if let Some(proc) = Self::builtin_for_mask(mask) {
+                self.masks.entry(mask.to_string()).or_default().push(proc);
+                filled.push(mask);
+            }
+        }
+        filled
+    }
+}
+
+/// The ops of the built-in System B complete-download template, in order.
+fn builtin_system_b_full_load() -> Vec<LoadOp> {
+    let merge = |id: &str| LoadOp::Merge {
+        merge_id: Some(id.to_string()),
+    };
+    let unload = |lsm: u32| LoadOp::Unload { lsm_idx: Some(lsm) };
+    let load = |lsm: u32| LoadOp::Load { lsm_idx: Some(lsm) };
+    let completed = |lsm: u32| LoadOp::LoadCompleted { lsm_idx: Some(lsm) };
+    // A relative allocation of a table object: `Size="2" Mode="0" Fill="0"`
+    // (no device-side fill), the size a placeholder the planner replaces.
+    let rel_segment = |lsm: u32| LoadOp::RelSegment {
+        lsm_idx: Some(lsm),
+        size: Some(2),
+        applies_to: None,
+        fill: None,
+    };
+    // `Offset="0" Size="1048576"`: the whole table image, the size a sentinel.
+    let write_rel_mem = |obj: u32| LoadOp::WriteRelMem {
+        obj_idx: Some(obj),
+        offset: Some(0),
+        size: Some(1_048_576),
+        applies_to: None,
+    };
+    // `PID_PROGRAM_VERSION` (13) with the all-zero placeholder the planner
+    // replaces by the application's id.
+    let program_version = |obj: u32| LoadOp::WriteProp {
+        obj_idx: Some(obj),
+        obj_type: None,
+        prop_id: Some(13),
+        inline_data: Some(vec![0; 5]),
+        start_element: None,
+        count: None,
+        verify: Some(true),
+        occurrence: None,
+    };
+    vec![
+        LoadOp::Connect,
+        merge("1"),
+        unload(5),
+        unload(4),
+        unload(3),
+        unload(2),
+        unload(1),
+        load(5),
+        merge("3"),
+        load(4),
+        merge("2"),
+        load(3),
+        rel_segment(3),
+        load(1),
+        rel_segment(1),
+        load(2),
+        rel_segment(2),
+        merge("5"),
+        merge("4"),
+        write_rel_mem(3),
+        write_rel_mem(2),
+        write_rel_mem(1),
+        program_version(5),
+        program_version(4),
+        completed(5),
+        completed(4),
+        completed(3),
+        completed(2),
+        completed(1),
+        merge("6"),
+        merge("7"),
+        LoadOp::Restart,
+    ]
 }
 
 /// Parses a `knx_master.xml` document into its per-mask `Load` procedure
@@ -387,6 +516,51 @@ mod tests {
             .ok_or("t.full_load_procedure(\"07B0\") missing")?;
         assert_eq!(full.sub_type.as_deref(), Some("ap1"));
         Ok(())
+    }
+
+    #[test]
+    fn test_builtin_for_mask_system_b_masks() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
+        for mask in BUILTIN_TEMPLATE_MASKS {
+            let proc = MasterTemplate::builtin_for_mask(mask).ok_or("a built-in template")?;
+            assert_eq!(proc.sub_type.as_deref(), Some("all"));
+            assert!(matches!(proc.ops.first(), Some(LoadOp::Connect)));
+            assert!(matches!(proc.ops.last(), Some(LoadOp::Restart)));
+        }
+        assert!(MasterTemplate::builtin_for_mask("0705").is_none());
+        assert!(MasterTemplate::builtin_for_mask("2920").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_fill_builtin_keeps_archive_template()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let mut t = parse_master_template(SAMPLE.as_bytes(), "test")?;
+        let archive = t
+            .full_load_procedure("07B0")
+            .ok_or("07B0 template")?
+            .clone();
+        let filled = t.fill_builtin();
+        // The sample declares 07B0; 27B0 and 57B0 come from the built-in data.
+        assert_eq!(filled, vec!["27B0", "57B0"]);
+        assert_eq!(t.full_load_procedure("07B0"), Some(&archive));
+        assert_eq!(
+            t.full_load_procedure("57B0").cloned(),
+            MasterTemplate::builtin_for_mask("57B0")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_fill_builtin_empty_master() {
+        let mut t = MasterTemplate::default();
+        assert_eq!(t.fill_builtin(), BUILTIN_TEMPLATE_MASKS.to_vec());
+        assert_eq!(
+            t.full_load_procedure("07B0").cloned(),
+            MasterTemplate::builtin_for_mask("07B0")
+        );
+        // A second call finds every mask filled.
+        assert!(t.fill_builtin().is_empty());
     }
 
     #[test]

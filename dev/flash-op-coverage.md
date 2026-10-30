@@ -21,7 +21,7 @@ them (scan of the `<LdCtrl*>` elements of each application XML, 2026-10-28;
 
 | mask | apps | load ops that appear | flash |
 |---|---:|---|---|
-| 07B0 | 850 | RelSegment, WriteRelMem, LoadImageProp (770), WriteProp (416), CompareProp (183), CompareRelMem (2); Connect/Unload/Load/LoadCompleted/Restart/Disconnect in the 26 that carry a full procedure, the rest come from the `knx_master` template | yes |
+| 07B0 | 850 | RelSegment, WriteRelMem, LoadImageProp (770), WriteProp (416), CompareProp (183), CompareRelMem (2); Connect/Unload/Load/LoadCompleted/Restart/Disconnect in the 26 that carry a full procedure, the rest come from the mask template (see below) | yes |
 | 27B0 (RF) | 6 | RelSegment, WriteRelMem, LoadImageProp | gated with 07B0 |
 | 57B0 (IP) | 1 | RelSegment, WriteRelMem, LoadImageProp, WriteProp | gated with 07B0 |
 | 2705 (RF) | 26 | AbsSegment, TaskSegment, Load, Unload, LoadCompleted, CompareProp, Restart | no: System 7 shaped, not gated |
@@ -57,13 +57,39 @@ Table 1) lists the same four as mandatory and the absolute and task records
 | `LdCtrlCompareRelMem` | memory read at base + offset plus compare | `FlashStep::CompareRelMem` (mask, invert) | supported (2 MDT apps) |
 | `LdCtrlRestart` | Basic Restart §3.7.1.1 (unconfirmed `A_Restart`); the confirmed restart is the Master Reset with erase code 01h (§3.7.1.2 Table 4) | `FlashStep::Restart`; confirmed form for secure-capable applications, bare otherwise | supported |
 | `LdCtrlMasterReset` | Master Reset §3.7.1.2: restart type 1, erase code, channel, confirmed by `A_Restart_Response` | `FlashStep::MasterReset`: the confirmed form with the op's erase code and channel; a bare `A_Restart` on KNX Virtual only (its ETS capture); error code 2 falls back to a basic restart | no vendor capture; capture plan in `testing-campaign.md` (#546) |
-| `LdCtrlMerge` | none: the `knx_master` splice marker | spliced | supported |
+| `LdCtrlMerge` | none: the mask template's splice marker | spliced | supported |
 | `LdCtrlAbsSegment`, `LdCtrlTaskSegment`, `LdCtrlTaskCtrl1`, `LdCtrlTaskPtr`, `LdCtrlTaskCtrl2` | Additional Load Controls subtypes 00h to 05h, §3.31.3.4; optional in the 27B0 profile | System 7 lowering only; refused on System B | by design | All five lowered (TaskPtr and TaskCtrl2 since #527) with the KNX 3/5/2 §3.31.2 layout, mandatory on 0701/0705 per Profiles Annex A.2.4.1; in the local corpus TaskPtr/TaskCtrl2 occur only on masks 0020/0021/0025, so no flashable application uses them yet and no capture exists.
 | `LdCtrlDeclarePropDesc`, `LdCtrlDelay`, other `Raw` | | refused before any write | 2920 only in the corpus |
 
 The factory reset that opens a download of a secure-capable application
 (erase code 07h, Master Reset §3.7.1.2 Table 4, AN194 for what it resets) is
 not an op: `plan_flash` inserts it from the restart form.
+
+## Where the frame ops come from
+
+A `MergedProcedure` application carries only its own `<LoadProcedure
+MergeId="N">` blocks. The frame around them (Connect, the Unload of every
+load state machine, Load, the table allocations and writes, the
+`PID_PROGRAM_VERSION` write, LoadCompleted, Restart) is the mask's
+complete-download `Load` procedure (`ProcedureSubType="all"`), the per-mask
+form of 3/5/3 §3.5.2, and `plan_flash` splices the application's blocks in
+at its `LdCtrlMerge` markers.
+
+- The product file's `knx_master.xml`, when it declares the mask: parsed by
+  `crates/bussard-ets/src/master.rs` (`parse_master_template`).
+- Otherwise bussard's built-in template (`MasterTemplate::builtin_for_mask`,
+  same file, #607) for 07B0, 27B0 and 57B0. `bussard-prod` fills it in where
+  it attaches the product's templates, so `flash`, `plan` and the MCP tools
+  see the same ops. A product without master data (the synthetic catalogue's
+  `<KNX/>` stub) therefore plans the same download as one with it.
+
+The built-in ops are those of every master-data version in the corpus
+(schemas 10 to 23; the three masks are identical).
+`test_builtin_for_mask_matches_corpus_master` (bussard-prod, gated on
+`BUSSARD_PRODUCT_CORPUS`) compares them with each corpus file's master. The
+System 7 masks declare no `Load` procedure in the master data and their
+lowering takes nothing from a template; the PL110 mask 17B0 has a template
+of its own that bussard does not carry (no corpus application uses it).
 
 ## Steps of the standard's procedure with no op
 

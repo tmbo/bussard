@@ -469,7 +469,7 @@ pub enum SegmentKind {
 /// `LdCtrl*` element. Known control ops get a typed variant carrying the
 /// attributes phase-3 (`bussard-download`) will need; unrecognized ops are kept
 /// verbatim as [`LoadOp::Raw`] so nothing is lost.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LoadOp {
     /// `<LdCtrlConnect>`.
     Connect,

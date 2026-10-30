@@ -49,7 +49,8 @@ pub use error::{EtsError, Result};
 pub use flags::{FlagSet, parse_flag_value};
 pub use hardware::{Hardware, ProductInfo, parse_hardware};
 pub use master::{
-    HawkConfig, HawkResource, MaskLoadProcedure, MasterTemplate, parse_master_template,
+    BUILTIN_TEMPLATE_MASKS, HawkConfig, HawkResource, MaskLoadProcedure, MasterTemplate,
+    parse_master_template,
 };
 pub use translation::TranslationCollector;
 pub use zip_util::{

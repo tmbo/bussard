@@ -5,6 +5,7 @@
 //! nextest still runs every test in its own process.
 
 mod blocks;
+mod builtin_templates;
 mod enum_default_leniency;
 mod evaluator_conformance;
 mod fetch;

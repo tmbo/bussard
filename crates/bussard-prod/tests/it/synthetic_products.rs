@@ -138,11 +138,14 @@ fn test_read_knxprod_synthetic_minimal_contents() -> TestResult {
     assert_eq!(app.mask_version.as_deref(), Some("07B0"));
     assert_eq!(app.resolved_com_objects().len(), 2);
     assert_eq!(app.parameters.len(), 2);
-    // The stub master carries no load-procedure template.
-    assert!(
+    // The stub master carries no load-procedure template; the built-in one
+    // takes its place (issue #607).
+    assert_eq!(
         data.master
             .as_ref()
-            .is_none_or(|m| m.full_load_procedure("07B0").is_none())
+            .and_then(|m| m.full_load_procedure("07B0"))
+            .cloned(),
+        bussard_prod::MasterTemplate::builtin_for_mask("07B0")
     );
     Ok(())
 }

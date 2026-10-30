@@ -96,7 +96,7 @@ directory itself. Every gated test resolves all three to the vendor directory.
 $ export BUSSARD_PRODUCT_CORPUS="$PWD/tests-support/product-corpus"
 $ cargo nextest run --profile corpus \
     -p bussard-download -p bussard-prod -p bussard-cli \
-    -E 'binary(it) & test(/^(flash_corpus|flash_dryrun_system7|ets_golden|sys7_jung_m2_plan|param_readback_roundtrip|parameter_image|sys7_visible_parameters|selected|evaluator_conformance|flash_dry_run|offline_oracle)::/)'
+    -E 'binary(it) & test(/^(builtin_templates|flash_corpus|flash_dryrun_system7|ets_golden|sys7_jung_m2_plan|param_readback_roundtrip|parameter_image|sys7_visible_parameters|selected|evaluator_conformance|flash_dry_run|offline_oracle)::/)'
 ```
 
 The `corpus` nextest profile (`.config/nextest.toml`) allows a test 20 minutes:

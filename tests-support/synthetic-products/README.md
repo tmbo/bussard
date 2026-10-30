@@ -93,19 +93,20 @@ signed from, and `--check` reports a `signed.toml` whose XML has changed since.
 
 The zip carries `knx_master.xml` as the stub `<KNX/>`; the real master data is
 KNX Association data and is never committed. knx-sim and `bussard
-import-product` read a product with the stub. Two consumers need the real one:
+import-product` read a product with the stub. Only ETS needs the real one:
+ETS 6.4 refuses the stub on import ("Die Eingabezeichenfolge hat das falsche
+Format", a FormatException reading the master data version, 2026-10-30).
+`sign.py` therefore replaces a stub with ETS's own
+`C:\ProgramData\KNX\XML\project-23\knx_master.xml` in the VM; the signed
+file is a build artefact and stays gitignored.
 
-- ETS 6.4 refuses the stub on import ("Die Eingabezeichenfolge hat das falsche
-  Format", a FormatException reading the master data version, 2026-10-30).
-  `sign.py` therefore replaces a stub with ETS's own
-  `C:\ProgramData\KNX\XML\project-23\knx_master.xml` in the VM; the signed
-  file is a build artefact and stays gitignored.
-- bussard's flash plan of a `MergedProcedure` product splices the
-  application's `LoadProcedure` blocks into the mask's load procedure from
-  `knx_master.xml`. With the stub there is no template, and `bussard flash`
-  of `syn-minimal` plans only the two application blocks (allocate and write
-  LSM 4), which a device refuses. The signed file carries the real master
-  data, so the oracle row of a signed product compares the full sequence.
+bussard needs no master data: the flash plan of a `MergedProcedure` product
+splices the application's `LoadProcedure` blocks into the mask's load
+procedure, and when `knx_master.xml` is the stub bussard uses its built-in
+template for the mask (07B0, 27B0, 57B0; #607), the same ops as ETS's master
+data. `bussard flash` of a product zipped with the stub programs every object
+and `bussard plan` after it is a no-op; the oracle row of a signed product,
+whose file carries the real master data, compares the same sequence.
 
 ## Render, sign, capture
 
