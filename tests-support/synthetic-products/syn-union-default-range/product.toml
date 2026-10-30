@@ -1,0 +1,140 @@
+# A synthetic product of the catalogue (#604 row 5), syn-minimal plus one
+# construct. Rendered by ../generate.py into xml/; see ../README.md for the schema.
+
+[doc]
+purpose = """
+syn-minimal with an 8-bit union at +3 of the parameter segment holding two
+members: a hidden (`Access="None"`) number whose default 1 lies outside its
+type 129..129, which is the union's default member and is reached in the
+parameter block, and a visible enum that no block reaches. Issue #405:
+bussard refuses the out-of-range default; the octet ETS writes decides
+between the declared default (`01`) and the type's only legal value (`81`)."""
+construct = "hidden union member, default outside its type"
+issues = [405]
+
+[product]
+text = "Stray-egg counter"
+order_number = "NEST-STRAY"
+hardware_name = "NEST-STRAY"
+hardware_serial = "00FA00270005"
+bus_current = 10
+
+[application]
+number = 0x2705
+version = 0x10
+name = "Stray-egg counter"
+mask = "07B0"
+load_procedure_style = "MergedProcedure"
+address_table_max_entries = 32
+association_table_max_entries = 32
+translations = { "de-DE" = "Streueizähler" }
+
+[application.options]
+Comparable = true
+Reconstructable = true
+
+[[segment]]
+name = "main"
+kind = "relative"
+lsm = 4
+size = 256
+fill = 0xFF
+
+[[parameter_type]]
+name = "Mode"
+kind = "enum"
+size_bits = 8
+values = [
+    { value = 0, text = "off" },
+    { value = 1, text = "on" },
+    { value = 2, text = "automatic" },
+]
+
+[[parameter_type]]
+name = "Delay"
+kind = "number"
+size_bits = 16
+signed = false
+min = 0
+max = 65535
+
+[[parameter_type]]
+name = "StrayMarker"
+kind = "number"
+size_bits = 8
+signed = false
+min = 129
+max = 129
+
+[[parameter]]
+name = "mode"
+type = "Mode"
+text = "Operating mode"
+default = 1
+memory = { segment = "main", offset = 0, bit_offset = 0 }
+
+[[parameter]]
+name = "delay"
+type = "Delay"
+text = "Delay (s)"
+default = 300
+memory = { segment = "main", offset = 1, bit_offset = 0 }
+
+# The construct: an 8-bit union shared by a hidden marker (default 1, type
+# 129..129, the union's default member, reached) and a visible mode (unreached).
+[[union]]
+name = "stray"
+size_bits = 8
+memory = { segment = "main", offset = 3, bit_offset = 0 }
+default = "stray_marker"
+
+[[parameter]]
+name = "stray_marker"
+type = "StrayMarker"
+text = "Stray marker"
+access = "None"
+default = 1
+union = { name = "stray", offset = 0, bit_offset = 0 }
+
+[[parameter]]
+name = "stray_mode"
+type = "Mode"
+text = "Stray mode"
+default = 0
+union = { name = "stray", offset = 0, bit_offset = 0 }
+
+[[com_object]]
+number = 0
+name = "switch"
+text = "Switch"
+function_text = "On/Off"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "W"]
+priority = "Low"
+
+[[com_object]]
+number = 1
+name = "status"
+text = "Status"
+function_text = "On/Off status"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+[[dynamic.block]]
+name = "general"
+text = "General"
+parameters = ["mode", "delay", "stray_marker"]
+com_objects = [0, 1]
+
+# The application's part of the 07B0 mask procedure: MergeId 2 allocates the
+# parameter segment, MergeId 4 writes it.
+[[load_procedure]]
+merge_id = 2
+ops = [{ op = "LdCtrlRelSegment", lsm = 4, size = 256, mode = 0, fill = 0 }]
+
+[[load_procedure]]
+merge_id = 4
+ops = [{ op = "LdCtrlWriteRelMem", object = 4, offset = 0, size = 256, verify = false }]

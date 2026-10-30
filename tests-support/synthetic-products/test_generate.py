@@ -98,5 +98,40 @@ class Text(unittest.TestCase):
             generate.Product("test", s)
 
 
+class Union(unittest.TestCase):
+    """syn-union-default-range (#405): `[[union]]`, union members and `access`."""
+
+    def union_spec(self) -> dict:
+        s = spec()
+        s["union"] = [{"name": "u", "size_bits": 8, "default": "a",
+                       "memory": {"segment": "main", "offset": 3, "bit_offset": 0}}]
+        s["parameter"] = s["parameter"] + [
+            {"name": "a", "type": "Mode", "text": "A", "access": "None", "default": 1,
+             "union": {"name": "u", "offset": 0, "bit_offset": 0}},
+            {"name": "b", "type": "Mode", "text": "B", "default": 0,
+             "union": {"name": "u", "offset": 0, "bit_offset": 0}}]
+        return s
+
+    def test_render_union_members_and_access(self) -> None:
+        xml = app_xml(self.union_spec())
+        self.assertIn('<Union SizeInBit="8">', xml)
+        self.assertIn('<Memory CodeSegment="M-00FA_A-2700-10-0000_RS-04-00000" Offset="3" BitOffset="0" />', xml)
+        self.assertIn('Id="M-00FA_A-2700-10-0000_UP-3" Name="a" ParameterType="M-00FA_A-2700-10-0000_PT-Mode" '
+                      'Offset="0" BitOffset="0" Text="A" Access="None" Value="1" DefaultUnionParameter="true" />', xml)
+        self.assertIn('<ParameterRef Id="M-00FA_A-2700-10-0000_UP-4_R-4" RefId="M-00FA_A-2700-10-0000_UP-4" />', xml)
+
+    def test_union_member_must_fit(self) -> None:
+        s = self.union_spec()
+        s["parameter"][-1]["union"]["offset"] = 1
+        with self.assertRaisesRegex(generate.SpecError, "does not fit union"):
+            generate.Product("test", s)
+
+    def test_parameter_needs_memory_or_union(self) -> None:
+        s = self.union_spec()
+        s["parameter"][-1]["memory"] = {"segment": "main", "offset": 4, "bit_offset": 0}
+        with self.assertRaisesRegex(generate.SpecError, "exactly one of"):
+            generate.Product("test", s)
+
+
 if __name__ == "__main__":
     unittest.main()

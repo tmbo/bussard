@@ -146,7 +146,7 @@ class Product:
         self.name = name
         w = name
         check_keys(w, spec, {"doc", "product", "application", "segment", "parameter_type",
-                             "parameter", "com_object", "dynamic", "load_procedure"})
+                             "parameter", "com_object", "dynamic", "load_procedure"}, {"union"})
         self.doc = spec["doc"]
         check_keys(f"{w} [doc]", self.doc, {"purpose", "construct", "issues"})
         self.product = p = spec["product"]
@@ -214,23 +214,46 @@ class Product:
                 raise SpecError(f"{tw}: kind is one of enum, number, text, float, time, ip_address, raw")
             self.types[t["name"]] = dict(t, id=f"{self.app_id}_PT-{ets_escape(t['name'])}")
 
+        # Unions (#405): one <Union> with its <Memory>; its members are
+        # parameters with `union = { name, offset, bit_offset }`.
+        self.unions = {}
+        for i, u in enumerate(spec.get("union", [])):
+            uw = f"{w} [[union]] #{i + 1}"
+            check_keys(uw, u, {"name", "size_bits", "memory"}, {"default"})
+            self.check_memory(uw, u["memory"], u["size_bits"])
+            self.unions[u["name"]] = dict(u, members=[])
+
         self.params = {}
         for i, prm in enumerate(spec["parameter"]):
             pw = f"{w} [[parameter]] #{i + 1}"
-            check_keys(pw, prm, {"name", "type", "text", "default", "memory"}, set(),
-                       {"access", "union", "translations"})
+            check_keys(pw, prm, {"name", "type", "text", "default"}, {"memory", "union", "access"},
+                       {"translations"})
             if prm["type"] not in self.types:
                 raise SpecError(f"{pw}: unknown parameter type `{prm['type']}`")
-            m = prm["memory"]
-            check_keys(f"{pw} memory", m, {"segment", "offset", "bit_offset"})
-            seg = self.segments.get(m["segment"])
-            if seg is None:
-                raise SpecError(f"{pw}: unknown segment `{m['segment']}`")
+            if prm.get("access", "ReadWrite") not in ("None", "Read", "ReadWrite"):
+                raise SpecError(f"{pw}: access is None, Read or ReadWrite")
             bits = self.types[prm["type"]]["size_bits"]
-            if m["offset"] * 8 + m["bit_offset"] + bits > seg["size"] * 8:
-                raise SpecError(f"{pw}: does not fit segment `{m['segment']}`")
             n = i + 1
-            self.params[prm["name"]] = dict(prm, id=f"{self.app_id}_P-{n}", ref=f"{self.app_id}_P-{n}_R-{n}")
+            if ("memory" in prm) == ("union" in prm):
+                raise SpecError(f"{pw}: needs exactly one of `memory` and `union`")
+            if "memory" in prm:
+                self.check_memory(pw, prm["memory"], bits)
+                self.params[prm["name"]] = dict(prm, id=f"{self.app_id}_P-{n}", ref=f"{self.app_id}_P-{n}_R-{n}")
+                continue
+            m = prm["union"]
+            check_keys(f"{pw} union", m, {"name", "offset", "bit_offset"})
+            un = self.unions.get(m["name"])
+            if un is None:
+                raise SpecError(f"{pw}: unknown union `{m['name']}`")
+            if m["offset"] * 8 + m["bit_offset"] + bits > un["size_bits"]:
+                raise SpecError(f"{pw}: does not fit union `{m['name']}`")
+            un["members"].append(prm["name"])
+            self.params[prm["name"]] = dict(prm, id=f"{self.app_id}_UP-{n}", ref=f"{self.app_id}_UP-{n}_R-{n}")
+        for un in self.unions.values():
+            if len(un["members"]) < 2:
+                raise SpecError(f"{w} [[union]] `{un['name']}`: a union needs at least two members")
+            if "default" in un and un["default"] not in un["members"]:
+                raise SpecError(f"{w} [[union]] `{un['name']}`: default `{un['default']}` is not a member")
 
         self.objects = {}
         for i, o in enumerate(spec["com_object"]):
@@ -272,6 +295,15 @@ class Product:
                     raise SpecError(f"{ow}: unknown op `{name}`")
                 check_keys(ow, op, {"op"} | set(LOAD_OPS[name]))
             self.load_procedures.append(lp)
+
+    def check_memory(self, where: str, m: dict, bits: int) -> None:
+        """A `memory = { segment, offset, bit_offset }` that fits its segment."""
+        check_keys(f"{where} memory", m, {"segment", "offset", "bit_offset"})
+        seg = self.segments.get(m["segment"])
+        if seg is None:
+            raise SpecError(f"{where}: unknown segment `{m['segment']}`")
+        if m["offset"] * 8 + m["bit_offset"] + bits > seg["size"] * 8:
+            raise SpecError(f"{where}: does not fit segment `{m['segment']}`")
 
     @property
     def app_file(self) -> str:
@@ -365,6 +397,21 @@ def render_type(x: Xml, t: dict) -> None:
     x.close("ParameterType")
 
 
+def render_union(x: Xml, p: Product, un: dict) -> None:
+    """`<Union>`: its `<Memory>`, then each member at its offset in the union."""
+    m = un["memory"]
+    x.open("Union", [("SizeInBit", un["size_bits"])])
+    x.empty("Memory", [("CodeSegment", p.segments[m["segment"]]["id"]), ("Offset", m["offset"]),
+                       ("BitOffset", m["bit_offset"])])
+    for name in un["members"]:
+        prm = p.params[name]
+        x.empty("Parameter", [("Id", prm["id"]), ("Name", prm["name"]), ("ParameterType", p.types[prm["type"]]["id"]),
+                              ("Offset", prm["union"]["offset"]), ("BitOffset", prm["union"]["bit_offset"]),
+                              ("Text", prm["text"]), ("Access", prm.get("access")), ("Value", prm["default"]),
+                              ("DefaultUnionParameter", True if un.get("default") == name else None)])
+    x.close("Union")
+
+
 def render_application(p: Product) -> bytes:
     a = p.app
     x = Xml()
@@ -390,12 +437,16 @@ def render_application(p: Product) -> bytes:
     x.close("ParameterTypes")
     x.open("Parameters")
     for prm in p.params.values():
+        if "union" in prm:
+            continue
         x.open("Parameter", [("Id", prm["id"]), ("Name", prm["name"]), ("ParameterType", p.types[prm["type"]]["id"]),
-                             ("Text", prm["text"]), ("Value", prm["default"])])
+                             ("Text", prm["text"]), ("Access", prm.get("access")), ("Value", prm["default"])])
         m = prm["memory"]
         x.empty("Memory", [("CodeSegment", p.segments[m["segment"]]["id"]), ("Offset", m["offset"]),
                            ("BitOffset", m["bit_offset"])])
         x.close("Parameter")
+    for un in p.unions.values():
+        render_union(x, p, un)
     x.close("Parameters")
     x.open("ParameterRefs")
     for prm in p.params.values():
