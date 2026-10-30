@@ -432,5 +432,33 @@ class TaskPtrAndTaskCtrl2(unittest.TestCase):
             generate.Product("t", s)
 
 
+class IpAddress(unittest.TestCase):
+    """syn-ip-address-param (#457): the `ip_address` type kind, 32 bits in memory."""
+
+    def ip_spec(self, offset: int = 3) -> dict:
+        s = spec()
+        s["parameter_type"] = s["parameter_type"] + [
+            {"name": "Ip", "kind": "ip_address", "address_type": "HostAddress"}]
+        s["parameter"] = s["parameter"] + [
+            {"name": "ip", "type": "Ip", "text": "IP", "default": "192.168.27.21",
+             "memory": {"segment": "main", "offset": offset, "bit_offset": 0}}]
+        return s
+
+    def test_render_ip_address_type(self) -> None:
+        xml = app_xml(self.ip_spec())
+        self.assertIn('<TypeIPAddress AddressType="HostAddress" />', xml)
+        self.assertIn('Text="IP" Value="192.168.27.21">', xml)
+
+    def test_ip_address_width_checked_against_segment(self) -> None:
+        with self.assertRaisesRegex(generate.SpecError, "does not fit"):
+            generate.Product("test", self.ip_spec(offset=253))
+
+    def test_ip_address_unknown_address_type_refused(self) -> None:
+        s = self.ip_spec()
+        s["parameter_type"][-1]["address_type"] = "Gateway"
+        with self.assertRaisesRegex(generate.SpecError, "address_type is one of"):
+            generate.Product("test", s)
+
+
 if __name__ == "__main__":
     unittest.main()
