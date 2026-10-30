@@ -945,7 +945,10 @@ fn decode_float16(hi: u8, lo: u8) -> f32 {
     } else {
         mantissa_raw
     };
-    (0.01_f32) * (mantissa as f32) * (1u32 << exponent) as f32
+    // `mantissa · 2^exponent` is an exact count of 0.01 steps; one division
+    // gives the f32 nearest the decimal, so 0x0C35 shows as 21.54, not the
+    // 21.539999 that multiplying by an inexact 0.01 first yields.
+    ((i64::from(mantissa) << exponent) as f64 / 100.0) as f32
 }
 
 /// The valid value range of DPT 9 (2-byte float `F16`), per the KNX standard
@@ -3642,6 +3645,23 @@ mod tests {
         } else {
             panic!("expected float");
         }
+    }
+
+    #[test]
+    fn test_decode_float16_shows_the_decimal_value() {
+        // Every code below 2^22 · 0.01 (7 significant digits) displays as its
+        // exact decimal: 0x0C35 is 1077 · 2 · 0.01 = 21.54 °C.
+        for exponent in 0..6_u16 {
+            for mantissa in 0..2048_u16 {
+                let raw = (exponent << 11) | mantissa;
+                let [hi, lo] = raw.to_be_bytes();
+                let shown = decode_float16(hi, lo).to_string();
+                let count = i64::from(mantissa) << exponent;
+                let want = format!("{}", count as f64 / 100.0);
+                assert_eq!(shown, want, "code {raw:#06x}");
+            }
+        }
+        assert_eq!(decode(&dpt("9.001"), &[0x0C, 0x35]).to_string(), "21.54 °C");
     }
 
     #[test]
