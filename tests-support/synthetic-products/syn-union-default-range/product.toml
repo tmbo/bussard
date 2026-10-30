@@ -7,8 +7,8 @@ syn-minimal with an 8-bit union at +3 of the parameter segment holding two
 members: a hidden (`Access="None"`) number whose default 1 lies outside its
 type 129..129, which is the union's default member and is reached in the
 parameter block, and a visible enum that no block reaches. Issue #405:
-bussard refuses the out-of-range default; the octet ETS writes decides
-between the declared default (`01`) and the type's only legal value (`81`)."""
+ETS 6.4.1 writes the declared default (`01`), not the type's only legal
+value (`81`); bussard does the same since the fix."""
 construct = "hidden union member, default outside its type"
 issues = [405]
 

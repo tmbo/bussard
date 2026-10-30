@@ -1215,8 +1215,9 @@ fn base_image(app: &ApplicationProgram, seg_id: &str) -> Vec<u8> {
         .unwrap_or_default()
 }
 
-/// Where a resolved parameter value came from, for the enum-membership leniency
-/// rule in [`encode_value`].
+/// Where a resolved parameter value came from, for the enum-membership and
+/// integer-range leniency rules in [`encode_value`] (the range rule is in
+/// `encode_int`, issue #405).
 ///
 /// An enum parameter whose value is not one of its declared members is a
 /// data-quality trap. The rule depends on who chose the value:
@@ -1233,9 +1234,10 @@ fn base_image(app: &ApplicationProgram, seg_id: &str) -> Vec<u8> {
 ///   genuine mistake worth refusing, so the strict membership check stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ValueSource {
-    /// The vendor's own default (chain steps 1-3): lenient on a non-member enum.
+    /// The vendor's own default (chain steps 1-3): lenient on a non-member enum
+    /// and on an integer outside its type's range.
     VendorDefault,
-    /// A caller-supplied override (chain step 4): strict on a non-member enum.
+    /// A caller-supplied override (chain step 4): strict on both.
     UserOverride,
 }
 
@@ -1299,7 +1301,7 @@ fn encode_value(
             signed,
             min,
             max,
-        }) => encode_int(app, pname, *size_bits, *signed, *min, *max, value),
+        }) => encode_int(app, pname, *size_bits, *signed, *min, *max, value, source),
         Some(ParameterType::Enum { size_bits, values }) => {
             // Enum default is the raw numeric value; validate it is a declared
             // member when it parses, but always encode the number. A device
@@ -1620,6 +1622,24 @@ fn admits_dpt9_top(max: Option<f64>) -> bool {
 }
 
 /// Encodes a `<TypeNumber>` value, honouring declared min/max and signedness.
+///
+/// The declared range is checked against a [`ValueSource::UserOverride`]: a
+/// value the user set in the model (`bussard set`, MCP `knx_set_parameter`,
+/// a device file) outside its type is a mistake and is refused. A
+/// [`ValueSource::VendorDefault`] outside the range is encoded as declared,
+/// with a warning naming the parameter, because that is what ETS writes
+/// (issue #405): the synthetic product `syn-union-default-range` has a hidden
+/// (`Access="None"`) union member with default `1` and type 129..129, and
+/// ETS 6.4.1 wrote `01` (capture
+/// `captures/synthetic/syn-union-default-range/defaults/`, 2026-10-30). The
+/// real case is the ABB/Busch-Jaeger `A-A074`/`A-A075` "Vent Dummy Prio Ende".
+///
+/// The image builder knows which is which at this point: the vendor-default
+/// pass and the Dynamic slots without an override pass `VendorDefault`, the
+/// override pass and a slot whose ref the caller set pass `UserOverride`
+/// ([`bussard_ets::dynamic::DynamicConfig::is_override`]). The field width is
+/// checked for both: a default that does not fit its field cannot be written.
+#[allow(clippy::too_many_arguments)] // the type's four facets, the value and its source
 fn encode_int(
     app: &ApplicationProgram,
     pname: &str,
@@ -1628,6 +1648,7 @@ fn encode_int(
     min: Option<i64>,
     max: Option<i64>,
     value: Option<&str>,
+    source: ValueSource,
 ) -> Result<Placement> {
     let raw = value.unwrap_or("0");
     let n: i64 = raw.trim().parse().map_err(|_| {
@@ -1637,23 +1658,21 @@ fn encode_int(
             &format!("integer value `{raw}` is not an integer"),
         )
     })?;
-    if let Some(lo) = min
-        && n < lo
-    {
-        return Err(param_err(
-            app,
-            pname,
-            &format!("value {n} is below the declared minimum {lo}"),
-        ));
-    }
-    if let Some(hi) = max
-        && n > hi
-    {
-        return Err(param_err(
-            app,
-            pname,
-            &format!("value {n} is above the declared maximum {hi}"),
-        ));
+    let out_of_range = match (min, max) {
+        (Some(lo), _) if n < lo => Some(format!("value {n} is below the declared minimum {lo}")),
+        (_, Some(hi)) if n > hi => Some(format!("value {n} is above the declared maximum {hi}")),
+        _ => None,
+    };
+    if let Some(why) = out_of_range {
+        match source {
+            ValueSource::UserOverride => return Err(param_err(app, pname, &why)),
+            ValueSource::VendorDefault => tracing::warn!(
+                parameter = pname,
+                value = n,
+                "vendor default lies outside its type's range ({why}); writing it as \
+                 declared, as ETS does (issue #405)"
+            ),
+        }
     }
     encode_int_bits(app, pname, size_bits.unwrap_or(8), signed, n)
 }
@@ -2981,8 +3000,11 @@ mod tests {
         Ok(())
     }
 
+    /// A vendor default outside its type's range is written as declared; the
+    /// same value as a user override is refused (issue #405).
     #[test]
-    fn min_max_enforced() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn test_encode_int_default_out_of_range_written_override_refused()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let app = app_with(&[(
             "t",
             r#"<TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="10" maxInclusive="20" />"#,
@@ -2990,10 +3012,79 @@ mod tests {
             0,
             0,
         )])?;
-        let err = compute_parameter_image(&app, &no_overrides(), &no_bases())
+        assert_eq!(image_of(&app)?.first(), Some(&0x05));
+        let mut overrides = BTreeMap::new();
+        overrides.insert("P-0_R-1".to_string(), "5".to_string());
+        let err = compute_parameter_image(&app, &overrides, &no_bases())
             .err()
-            .ok_or("expected an error")?;
+            .ok_or("an override below the minimum is refused")?;
         assert!(err.to_string().contains("minimum"), "{err}");
+        overrides.insert("P-0_R-1".to_string(), "21".to_string());
+        let err = compute_parameter_image(&app, &overrides, &no_bases())
+            .err()
+            .ok_or("an override above the maximum is refused")?;
+        assert!(err.to_string().contains("maximum"), "{err}");
+        overrides.insert("P-0_R-1".to_string(), "15".to_string());
+        let image = compute_parameter_image(&app, &overrides, &no_bases())?;
+        assert_eq!(image["M-1_A-1_RS-1"].first(), Some(&15));
+        Ok(())
+    }
+
+    /// The `syn-union-default-range` shape (issue #405, ABB/BJE `A-A074`/
+    /// `A-A075` "Vent Dummy Prio Ende"): a hidden union member, reached in the
+    /// parameter block, whose default 1 lies outside its type 129..129.
+    const UNION_RANGE_XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/20">
+     <ApplicationProgram Id="A" MaskVersion="MV-07B0" Name="stray">
+      <Static>
+       <Code><RelativeSegment Id="A_RS-1" Size="4" LoadStateMachine="4" Offset="0"><Data>/////w==</Data></RelativeSegment></Code>
+       <ParameterTypes>
+        <ParameterType Id="A_PT-1" Name="marker"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="129" maxInclusive="129" /></ParameterType>
+        <ParameterType Id="A_PT-2" Name="mode"><TypeRestriction Base="Value" SizeInBit="8"><Enumeration Text="off" Value="0" Id="A_PT-2_EN-0" /><Enumeration Text="on" Value="1" Id="A_PT-2_EN-1" /></TypeRestriction></ParameterType>
+       </ParameterTypes>
+       <Parameters>
+        <Union SizeInBit="8">
+         <Memory CodeSegment="A_RS-1" Offset="3" BitOffset="0" />
+         <Parameter Id="A_UP-1" Name="stray_marker" ParameterType="A_PT-1" Value="1" Access="None" Offset="0" BitOffset="0" DefaultUnionParameter="true" />
+         <Parameter Id="A_UP-2" Name="stray_mode" ParameterType="A_PT-2" Value="0" Offset="0" BitOffset="0" />
+        </Union>
+       </Parameters>
+       <ParameterRefs>
+        <ParameterRef Id="A_UP-1_R-1" RefId="A_UP-1" />
+        <ParameterRef Id="A_UP-2_R-2" RefId="A_UP-2" />
+       </ParameterRefs>
+      </Static>
+      <Dynamic>
+       <ChannelIndependentBlock><ParameterBlock Id="A_PB-1">
+        <ParameterRefRef RefId="A_UP-1_R-1" />
+       </ParameterBlock></ChannelIndependentBlock>
+      </Dynamic>
+     </ApplicationProgram></KNX>"#;
+
+    #[test]
+    fn test_compute_parameter_image_union_default_outside_range_written_as_declared() -> Result<()>
+    {
+        let app = parse_application_program("A", UNION_RANGE_XML.as_bytes())?;
+        assert!(uses_dynamic_image(&app));
+        // ETS writes the declared default `01` (capture of
+        // syn-union-default-range, 2026-10-30), not the type's only value `81`.
+        let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
+        assert_eq!(images["A_RS-1"].get(3), Some(&0x01));
+        // A user value 1 for the same member is refused; 129 is written.
+        let mut overrides = BTreeMap::new();
+        overrides.insert("UP-1_R-1".to_string(), "1".to_string());
+        let err = compute_parameter_image(&app, &overrides, &BTreeMap::new())
+            .err()
+            .ok_or(ProdError::ParameterImage {
+                parameter: "stray_marker".into(),
+                reason: "a user value 1 was accepted".into(),
+            })?;
+        assert!(
+            err.to_string().contains("below the declared minimum 129"),
+            "{err}"
+        );
+        overrides.insert("UP-1_R-1".to_string(), "129".to_string());
+        let images = compute_parameter_image(&app, &overrides, &BTreeMap::new())?;
+        assert_eq!(images["A_RS-1"].get(3), Some(&0x81));
         Ok(())
     }
 

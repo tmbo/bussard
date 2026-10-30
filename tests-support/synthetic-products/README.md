@@ -32,6 +32,7 @@ next to it, and zips it on demand.
 | [`syn-relseg-fill`](syn-relseg-fill/product.toml) | `NEST-FILL` | 07B0 | RelSegment Mode 0 with Fill 255 | #480 |
 | [`syn-s7-0701`](syn-s7-0701/product.toml) | `NEST-BKDOOR` | 0701 | System 7 baseline (0701, memory-mapped LSM) | #596, #488, #481 |
 | [`syn-s7-0705`](syn-s7-0705/product.toml) | `NEST-DOOR` | 0705 | System 7 baseline (0705, property LSM) | #596, #488, #479, #588, #487 |
+| [`syn-s7-hidden-default`](syn-s7-hidden-default/product.toml) | `NEST-EGGBAK` | 0705 | hidden parameter on System 7, default differs from template | #448 |
 | [`syn-text-undeclared`](syn-text-undeclared/product.toml) | `NEST-SQUAWK` | 07B0 | TypeText non-ASCII default, no TextParameterEncoding | #416 |
 | [`syn-union-default-range`](syn-union-default-range/product.toml) | `NEST-STRAY` | 07B0 | hidden union member, default outside its type | #405 |
 <!-- catalogue:end -->
