@@ -26,6 +26,7 @@ catalogue and needs ETS installed where it runs.
 from __future__ import annotations
 
 import hashlib
+import re
 import sys
 import zipfile
 from pathlib import Path
@@ -38,6 +39,10 @@ REMOTE = vm.REMOTE_DIR + r"\signer"
 CSC = r"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 # ETS's own master data for schema 23 (project/23), the namespace of the synthetic products.
 VM_MASTER = r"C:\ProgramData\KNX\XML\project-23\knx_master.xml"
+# ETS keeps one master data file per schema it reads (project-11 to -14 and -23
+# in the VM, 2026-10-30); a product in another schema (`[application] schema`,
+# #448) gets the master of its own namespace.
+VM_MASTER_OF_SCHEMA = r"C:\ProgramData\KNX\XML\project-{}\knx_master.xml"
 
 
 def sftp_path(win: str) -> str:
@@ -76,6 +81,23 @@ def has_master_data(src: Path) -> bool:
             return False
 
 
+def schema_of(src: Path) -> int:
+    """The schema version (project/<n>) of the archive's application program, 23 by default."""
+    with zipfile.ZipFile(src) as z:
+        for n in z.namelist():
+            if "_A-" in n and n.endswith(".xml"):
+                m = re.search(rb'xmlns="http://knx.org/xml/project/(\d+)"', z.read(n)[:4096])
+                if m:
+                    return int(m.group(1))
+    return 23
+
+
+def master_for(src: Path) -> str:
+    """ETS's master data for the schema of the archive's application program."""
+    schema = schema_of(src)
+    return VM_MASTER if schema == 23 else VM_MASTER_OF_SCHEMA.format(schema)
+
+
 def sign(src: Path, dst: Path, force_compile: bool = False, dir_only: bool = False,
          keep_master: bool = False) -> str:
     """Sign `src` into `dst` in the VM and return the signer's report."""
@@ -86,8 +108,10 @@ def sign(src: Path, dst: Path, force_compile: bool = False, dir_only: bool = Fal
     remote_out = REMOTE + r"\out.knxprod"
     sftp.put(str(src), sftp_path(remote_in))
     flag = "--dir-only " if dir_only else ""
+    if schema_of(src) != 23:
+        flag = f"--schema {schema_of(src)} " + flag
     if not keep_master and not has_master_data(src):
-        flag = f'--master "{VM_MASTER}" ' + flag
+        flag = f'--master "{master_for(src)}" ' + flag
     code, out = vm.run(c, f'cd /d "{REMOTE}" && signer.exe {flag}in.knxprod out.knxprod work', timeout=300)
     if code != 0:
         raise SystemExit(f"signer failed ({code}):\n{out}")

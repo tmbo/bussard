@@ -228,6 +228,30 @@ class System7(unittest.TestCase):
             generate.Product("t", self.s)
 
 
+class Schema(unittest.TestCase):
+    """syn-s7-hidden-default-p11 (#448): `[application] schema = 11`."""
+
+    def test_render_schema_11_namespace_and_min_ets_version(self) -> None:
+        s = spec()
+        s["application"]["schema"] = 11
+        p = generate.Product("test", s)
+        files = generate.render(p)
+        for f in files.values():
+            self.assertIn(b'<KNX xmlns="http://knx.org/xml/project/11">', f)
+        self.assertIn('MinEtsVersion="4.0"', files[f"M-00FA/{p.app_file}"].decode("utf-8"))
+
+    def test_render_schema_default_is_23(self) -> None:
+        xml = app_xml(spec())
+        self.assertIn('<KNX xmlns="http://knx.org/xml/project/23">', xml)
+        self.assertIn('MinEtsVersion="6.0"', xml)
+
+    def test_product_refuses_unknown_schema(self) -> None:
+        s = spec()
+        s["application"]["schema"] = 20
+        with self.assertRaisesRegex(generate.SpecError, "schema is one of"):
+            generate.Product("t", s)
+
+
 class MasterReset(unittest.TestCase):
     """syn-master-reset (#546, #611): LdCtrlMasterReset in the application's procedure."""
 
