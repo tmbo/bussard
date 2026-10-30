@@ -166,6 +166,12 @@ Format 11 gives a `<TypeColor>` parameter its own type, `color` with the declare
 memory as one octet per component in the written order. The parsed application
 program carries the type in cache format `bussard-parsed-product-v8`.
 
+Format 12 marks a virtual parameter, one with no `memory`, no interface-object
+property and no union place, with `virtual: true` (#474). With the
+`identity.mask_version`, it lets the evaluator apply the System B rule for a
+`<choose>` whose only branch is the default one on a parameter no page shows: ETS
+takes no branch of it (see the module docs of `bussard_model::dynamic`).
+
 Format 6 drops `blocks`, `parameter_when` and `ref_values`, and a
 parameter's `default` is its own `Value` (format 5 and older gave a parameter with one
 ref that ref's `Value`; the ref's `value` carries it now). The ETS pages `bussard

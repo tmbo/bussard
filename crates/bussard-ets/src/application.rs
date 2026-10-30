@@ -1074,8 +1074,7 @@ impl ApplicationProgram {
     pub fn is_system_b(&self) -> bool {
         self.mask_version
             .as_deref()
-            .and_then(|m| u16::from_str_radix(m.trim(), 16).ok())
-            .is_some_and(|m| m & 0x0FFF == 0x07B0)
+            .is_some_and(bussard_model::param_model::is_system_b_mask)
     }
 
     /// Whether this is a `PeiProgram` (a second loadable program, not an
