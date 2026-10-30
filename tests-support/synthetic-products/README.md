@@ -34,6 +34,7 @@ next to it, and zips it on demand.
 | [`syn-master-reset-code4`](syn-master-reset-code4/product.toml) | `NEST-RESET4` | 07B0 | Master Reset erase code 4 after the segment allocation | #546, #600, #611 |
 | [`syn-minimal`](syn-minimal/product.toml) | `NEST-LIGHT` | 07B0 | baseline | #596 |
 | [`syn-param-calculation`](syn-param-calculation/product.toml) | `NEST-CALC` | 07B0 | JavaScript ParameterCalculation, one output LegacyPatchAlways | #427, #450 |
+| [`syn-product-07b0`](syn-product-07b0/product.toml) | `NEST-PLAN` | 07B0 | ProductProcedure on 07B0 with the tables as RelSegments | #614 |
 | [`syn-relseg-fill`](syn-relseg-fill/product.toml) | `NEST-FILL` | 07B0 | RelSegment Mode 0 with Fill 255 | #480 |
 | [`syn-s7-0701`](syn-s7-0701/product.toml) | `NEST-BKDOOR` | 0701 | System 7 baseline (0701, memory-mapped LSM) | #596, #488, #481 |
 | [`syn-s7-0705`](syn-s7-0705/product.toml) | `NEST-DOOR` | 0705 | System 7 baseline (0705, property LSM) | #596, #488, #479, #588, #487 |
@@ -89,7 +90,7 @@ One `product.toml` per directory. Tables and keys:
 | --- | --- | --- |
 | `[doc]` | `purpose` (one paragraph), `construct` (a few words), `issues` (numbers) | the catalogue row; not in the XML |
 | `[product]` | `text`, `order_number`, `hardware_name`, `hardware_serial` (`00FA` + 8 hex digits), `bus_current` (mA); optional `hardware_version` (1), `rail_mounted` (false) | `Hardware`, `Product`, `Hardware2Program`, `CatalogItem` |
-| `[application]` | `number` (0x2700 to 0x2AFF: 0x27xx System B, 0x28xx System 7, 0x29xx Secure, 0x2Axx RF and IP), `version` (one octet), `name`, `mask` (`07B0`, or `0705`/`0701` for System 7), `load_procedure_style` (`MergedProcedure` on 07B0, `ProductProcedure` on System 7), `address_table_max_entries`, `association_table_max_entries`; optional `translations` (`{ "de-DE" = "..." }` for the name); optional `schema` (`23`, or `11`: namespace `http://knx.org/xml/project/11` and `MinEtsVersion="4.0"` in all three files, the shape of the #448 vendor applications; `sign.py` then uses ETS's project-11 master data); System 7 only: `address_table_segment`, `association_table_segment`, `com_object_table_segment` (the absolute segment each table starts in, offset 0; required) and `pei_type` (0) | `ApplicationProgram`, `AddressTable`, `AssociationTable`, `Languages` |
+| `[application]` | `number` (0x2700 to 0x2AFF: 0x27xx System B, 0x28xx System 7, 0x29xx Secure, 0x2Axx RF and IP), `version` (one octet), `name`, `mask` (`07B0`, or `0705`/`0701` for System 7), `load_procedure_style` (`MergedProcedure` or `ProductProcedure` on 07B0, `ProductProcedure` on System 7), `address_table_max_entries`, `association_table_max_entries`; optional `translations` (`{ "de-DE" = "..." }` for the name); optional `schema` (`23`, or `11`: namespace `http://knx.org/xml/project/11` and `MinEtsVersion="4.0"` in all three files, the shape of the #448 vendor applications; `sign.py` then uses ETS's project-11 master data); System 7 only: `address_table_segment`, `association_table_segment`, `com_object_table_segment` (the absolute segment each table starts in, offset 0; required) and `pei_type` (0) | `ApplicationProgram`, `AddressTable`, `AssociationTable`, `Languages` |
 | `[application.options]` | any `Options` attribute of the KNX schema, e.g. `SupportsExtendedMemoryServices = true`, `ParameterByteOrder = "LittleEndian"` | `Options` |
 | `[[segment]]` | `name`, `kind` (`relative`), `lsm`, `size`; optional `fill` (the initial octet, 0) | `RelativeSegment` with its `Data` |
 | `[[parameter_type]]` | `name`, `kind`; `enum`: `size_bits`, `values = [{ value, text }]`; `number`: `size_bits`, `signed`, `min`, `max`; `float`: `encoding` (`DPT 9`, `IEEE-754 Single`, `IEEE-754 Double`; 16, 32, 64 bits), `min`, `max`; `text`: `size_octets`; `ip_address`: `address_type` (`HostAddress`, `SubnetMask`, `DefaultGateway`; 32 bits, the default a dotted quad) | `TypeRestriction`, `TypeNumber`, `TypeFloat`, `TypeText`, `TypeIPAddress` |
@@ -111,17 +112,21 @@ also takes `LdCtrlTaskPtr` (`lsm`, `init_ptr`, `save_ptr`, `serial_ptr`) and
 `LdCtrlTaskCtrl2` (`lsm`, `callback`, `address`, `seg0`, `seg1`). `{ op = "choose", parameter,
 when = [{ test, ops }, { default = true, ops }] }` renders a `<choose
 ParamRefId>` with its `<when>` branches inside the procedure (#411).
+A 07B0 product procedure (#614) also takes `LdCtrlConnect`,
+`LdCtrlDisconnect`, `LdCtrlUnload`, `LdCtrlLoad` and `LdCtrlLoadCompleted`
+(`lsm`) and `LdCtrlWriteProp` (`object`, `prop_id`, `verify`, `inline_data`
+in hex); its tables are relative segments the procedure allocates and writes
+on LSM 1 to 3, with no code segment declared for them.
 
 The schema reaches further than the generator does. These are reserved for
 the catalogue products that need them (step 4 of #596), and a spec that uses
 one stops with "part of the schema but no product uses it yet": masks other
-than 07B0 (System 7 twins), `ProductProcedure`, absolute segments, parameter
+than 07B0 (System 7 twins), absolute segments on 07B0, parameter
 type kinds `time`, `raw`, VBScript calculations and the
 `LRTransformationFunc` form with a `<Script>`, explicit com
 object refs, and the load
-ops `LdCtrlLoadImageProp`, `LdCtrlWriteProp`,
-`LdCtrlCompareProp`, `LdCtrlAbsSegment` and the connection and state ops of a
-product procedure. An unknown key or op stops with an error naming it.
+ops `LdCtrlLoadImageProp`, `LdCtrlCompareProp` and `LdCtrlAbsSegment`, and
+`LdCtrlWriteProp` and the connection and state ops in a merged procedure. An unknown key or op stops with an error naming it.
 
 Ids follow ETS: `M-00FA_A-<number>-<version>-0000` for the application, its
 parts prefixed with it (`_RS-04-00000`, `_PT-<name>`, `_P-<n>`, `_P-<n>_R-<n>`,

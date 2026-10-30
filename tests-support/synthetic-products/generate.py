@@ -169,13 +169,13 @@ class Product:
         if a["load_procedure_style"] not in ("MergedProcedure", "ProductProcedure"):
             raise SpecError(f"{w} [application]: load_procedure_style is MergedProcedure or ProductProcedure")
         self.system7 = a["mask"] in SYS7_MASKS
+        # syn-product-07b0 (#604 row 37, #614): a ProductProcedure on 07B0.
+        self.b_product = not self.system7 and a["load_procedure_style"] == "ProductProcedure"
         if self.system7:
             check_system7_application(w, a)
         else:
             if a["mask"] != "07B0":
                 raise not_yet(f"{w} [application]", f"mask {a['mask']} (System 7 and others)")
-            if a["load_procedure_style"] == "ProductProcedure":
-                raise not_yet(f"{w} [application]", "LoadProcedureStyle ProductProcedure on 07B0")
             for k in sorted(SYS7_APP_KEYS & a.keys()):
                 raise SpecError(f"{w} [application]: `{k}` belongs to a System 7 mask ({', '.join(SYS7_MASKS)})")
         for k in a.get("options", {}):
@@ -471,8 +471,10 @@ class Product:
                 self.check_load_choose(ow, op)
                 continue
             table = LOAD_OPS | SYS7_LOAD_OPS if self.system7 else LOAD_OPS
+            if self.b_product:
+                table = LOAD_OPS | B_PRODUCT_LOAD_OPS
             if name not in table:
-                if name in LOAD_OPS_LATER or name in SYS7_LOAD_OPS:
+                if name in LOAD_OPS_LATER or name in SYS7_LOAD_OPS or name in B_PRODUCT_LOAD_OPS:
                     raise not_yet(ow, f"`{name}`")
                 raise SpecError(f"{ow}: unknown op `{name}`")
             check_keys(ow, op, {"op"} | set(table[name]))
@@ -557,6 +559,25 @@ SYS7_LOAD_OPS = {
                         "seg1": "Seg1"},
 }
 MEMORY_TYPES = ("EEPROM", "RAM")
+
+
+# -------------------------------- System B product procedure (#604 row 37)
+# syn-product-07b0 (#614): a 07B0 application with LoadProcedureStyle
+# ProductProcedure spells out the whole download as one procedure, the Siemens
+# shape: the unloads, a Load and an LdCtrlRelSegment per LSM (the tables as
+# relative segments on LSM 1 to 3, which the application declares no code
+# segment for), the WriteRelMems, the program version by LdCtrlWriteProp
+# (PID 13, InlineData in hex), the LoadCompleteds.
+B_PRODUCT_LOAD_OPS = {
+    "LdCtrlConnect": {},
+    "LdCtrlDisconnect": {},
+    "LdCtrlUnload": {"lsm": "LsmIdx"},
+    "LdCtrlLoad": {"lsm": "LsmIdx"},
+    "LdCtrlLoadCompleted": {"lsm": "LsmIdx"},
+    "LdCtrlWriteProp": {"object": "ObjIdx", "prop_id": "PropId", "verify": "Verify", "inline_data": "InlineData"},
+}
+# Every op table, for rendering (each spec is checked against its own table).
+ALL_LOAD_OPS = LOAD_OPS | SYS7_LOAD_OPS | B_PRODUCT_LOAD_OPS
 
 
 def check_system7_application(w: str, a: dict) -> None:
@@ -727,7 +748,7 @@ def render_load_ops(x: Xml, p: Product, ops: list[dict]) -> None:
                 x.close("when")
             x.close("choose")
         else:
-            x.empty(op["op"], [(attr, op[key]) for key, attr in (LOAD_OPS | SYS7_LOAD_OPS)[op["op"]].items()])
+            x.empty(op["op"], [(attr, op[key]) for key, attr in ALL_LOAD_OPS[op["op"]].items()])
 
 
 def render_block(x: Xml, p: Product, b: dict) -> None:

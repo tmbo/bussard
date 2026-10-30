@@ -538,7 +538,6 @@ class ParameterRefPerChoose(unittest.TestCase):
             generate.Product("test", s)
 
 
-
 class ChannelAndBlockChoose(unittest.TestCase):
     """syn-dynamic-tests (#345): a `<Channel>` with a block whose chooses use
     the `<when>` test forms, each branch showing refs directly."""
@@ -592,7 +591,6 @@ class ChannelAndBlockChoose(unittest.TestCase):
             generate.Product("test", s)
 
 
-
 class Assign(unittest.TestCase):
     """syn-assign (#604 row 31): an `<Assign>` in a `<when>` of a block choose."""
 
@@ -620,6 +618,56 @@ class Assign(unittest.TestCase):
         s = self.assign_spec()
         s["dynamic"]["block"][0]["choose"][0]["when"][0]["assign"][0]["value"] = "3"
         with self.assertRaisesRegex(generate.SpecError, "no product uses it yet"):
+            generate.Product("test", s)
+
+
+class SystemBProductProcedure(unittest.TestCase):
+    """syn-product-07b0 (#614): a ProductProcedure on 07B0, the Siemens shape."""
+
+    OPS = [{"op": "LdCtrlConnect"}, {"op": "LdCtrlUnload", "lsm": 1}, {"op": "LdCtrlLoad", "lsm": 1},
+           {"op": "LdCtrlRelSegment", "lsm": 1, "size": 130, "mode": 0, "fill": 0},
+           {"op": "LdCtrlWriteRelMem", "object": 1, "offset": 0, "size": 130, "verify": False},
+           {"op": "LdCtrlWriteProp", "object": 4, "prop_id": 13, "verify": True, "inline_data": "00FA272510"},
+           {"op": "LdCtrlLoadCompleted", "lsm": 1}, {"op": "LdCtrlDisconnect"}]
+
+    def product_spec(self) -> dict:
+        s = spec(load_procedure=[{"ops": copy.deepcopy(self.OPS)}])
+        s["application"]["load_procedure_style"] = "ProductProcedure"
+        return s
+
+    def test_render_product_procedure_on_07b0(self) -> None:
+        xml = app_xml(self.product_spec())
+        self.assertIn('LoadProcedureStyle="ProductProcedure"', xml)
+        self.assertIn('              <LoadProcedure>\n'
+                      '                <LdCtrlConnect />\n'
+                      '                <LdCtrlUnload LsmIdx="1" />\n'
+                      '                <LdCtrlLoad LsmIdx="1" />\n'
+                      '                <LdCtrlRelSegment LsmIdx="1" Size="130" Mode="0" Fill="0" />\n'
+                      '                <LdCtrlWriteRelMem ObjIdx="1" Offset="0" Size="130" Verify="false" />\n'
+                      '                <LdCtrlWriteProp ObjIdx="4" PropId="13" Verify="true" InlineData="00FA272510" />\n'
+                      '                <LdCtrlLoadCompleted LsmIdx="1" />\n'
+                      '                <LdCtrlDisconnect />\n'
+                      '              </LoadProcedure>\n', xml)
+        self.assertIn("<ComObjectTable>", xml)
+        self.assertIn('<AddressTable MaxEntries="32" />', xml)
+
+    def test_product_procedure_ops_not_yet_in_a_merged_procedure(self) -> None:
+        s = spec()
+        s["load_procedure"][1]["ops"].append({"op": "LdCtrlWriteProp", "object": 4, "prop_id": 13,
+                                              "verify": True, "inline_data": "00"})
+        with self.assertRaisesRegex(generate.SpecError, "`LdCtrlWriteProp` is part of the schema"):
+            generate.Product("test", s)
+
+    def test_product_procedure_on_07b0_refuses_system_7_ops(self) -> None:
+        s = self.product_spec()
+        s["load_procedure"][0]["ops"].append({"op": "LdCtrlTaskSegment", "lsm": 1, "address": 0x4000})
+        with self.assertRaisesRegex(generate.SpecError, "`LdCtrlTaskSegment` is part of the schema"):
+            generate.Product("test", s)
+
+    def test_write_prop_missing_key_refused(self) -> None:
+        s = self.product_spec()
+        del s["load_procedure"][0]["ops"][5]["inline_data"]
+        with self.assertRaisesRegex(generate.SpecError, "missing key `inline_data`"):
             generate.Product("test", s)
 
 
