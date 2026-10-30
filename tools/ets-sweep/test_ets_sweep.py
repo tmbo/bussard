@@ -28,6 +28,13 @@ import summary  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent / "synthetic"))
 import calibrate  # noqa: E402
 import distil  # noqa: E402
+import importlib.util  # noqa: E402
+
+# `capture` by path: another module of that name can sit earlier on sys.path.
+_spec = importlib.util.spec_from_file_location(
+    "synthetic_capture", Path(__file__).resolve().parent / "synthetic" / "capture.py")
+capture = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(capture)
 
 
 class TestParams(unittest.TestCase):
@@ -473,6 +480,17 @@ class TestDistil(unittest.TestCase):
     def test_app_number_from_id(self) -> None:
         self.assertEqual(calibrate.app_number("M-00FA_A-2600-10-731A"), bytes([0x26, 0x00]))
         self.assertEqual(calibrate.app_number("nonsense"), b"")
+
+
+class TestCaptureRows(unittest.TestCase):
+    def test_row_options_identical_writes_only_loadctl(self):
+        self.assertEqual(capture.row_options({"verdict": "identical", "loadctl": "identical"}), "loadctl=identical")
+
+    def test_row_options_differs_records_the_verdicts(self):
+        self.assertEqual(capture.row_options({"verdict": "identical", "loadctl": "differs"}), "loadctl=differs")
+        self.assertEqual(capture.row_options({"verdict": "differs", "loadctl": None}), "expect=differs")
+        self.assertEqual(capture.row_options({"verdict": "not-comparable", "loadctl": "not-comparable"}),
+                         "expect=not-comparable")
 
 
 if __name__ == "__main__":

@@ -22,6 +22,7 @@ next to it, and zips it on demand.
 | product | order number | mask | construct | issues |
 | --- | --- | --- | --- | --- |
 | [`syn-minimal`](syn-minimal/product.toml) | `NEST-LIGHT` | 07B0 | baseline | #596 |
+| [`syn-relseg-fill`](syn-relseg-fill/product.toml) | `NEST-FILL` | 07B0 | RelSegment Mode 0 with Fill 255 | #480 |
 <!-- catalogue:end -->
 
 ## Theme

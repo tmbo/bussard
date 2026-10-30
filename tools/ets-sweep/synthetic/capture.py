@@ -118,6 +118,12 @@ def ets_import(c, signed: Path, order: str) -> dict:
     found = vm.driver(c, "POST", "/ets/catalog_search", {"term": order}, timeout=180)
     rows = [row for row in found.get("rows", []) if order in json.dumps(row, ensure_ascii=False)]
     if not rows:
+        # The search flow OCRs the result pane magnified, which came back empty
+        # on 2026-10-30 although the row was on screen; `catalog_rows` reads the
+        # same pane (left filtered by the search) at native size.
+        listed = vm.driver(c, "POST", "/ets/catalog_rows", {}, timeout=180)
+        rows = [row for row in listed.get("rows", []) if row.get("order") == order]
+    if not rows:
         raise SystemExit(f"ETS does not list {order} after the import: {json.dumps(r, ensure_ascii=False)[:600]}")
     return {"import": r.get("outcome"), "message": r.get("message"), "catalog_row": rows[0]}
 
@@ -255,6 +261,19 @@ def write_manifest(entries: list[dict]) -> None:
     )
 
 
+def row_options(oracle: dict) -> str:
+    """The row's `expect=` and `loadctl=` from the recorded verdicts, so `--check`
+    holds a product to what its capture showed: a `differs` row is the evidence
+    of an open bug and stays green until the fix changes the verdict (#596
+    step 4). `identical` is the script's default and is not written."""
+    opts = []
+    if oracle.get("verdict") in ("differs", "not-comparable"):
+        opts.append(f"expect={oracle['verdict']}")
+    if oracle.get("loadctl") in ("identical", "differs"):
+        opts.append(f"loadctl={oracle['loadctl']}")
+    return " ".join(opts)
+
+
 def write_rows(entries: list[dict]) -> None:
     head = (
         "# Offline oracle rows of the synthetic captures (epic #596), for\n"
@@ -267,8 +286,8 @@ def write_rows(entries: list[dict]) -> None:
     )
     rows = []
     for e in sorted(entries, key=lambda e: (e["product"], e["variant"])):
-        opts = "loadctl=identical" if e["oracle"].get("loadctl") == "identical" else ""
-        rows.append(oracle_row(e["product"], e["application"], e["oracle"]["coverage"].rstrip("%"), opts))
+        rows.append(oracle_row(e["product"], e["application"], e["oracle"]["coverage"].rstrip("%"),
+                               row_options(e["oracle"])))
     ROWS.write_text(head + "\n".join(rows) + "\n")
 
 
