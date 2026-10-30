@@ -3597,6 +3597,93 @@ async fn test_flash_master_reset_uses_the_confirmed_form_for_a_non_virtual_00fa_
     flash_master_reset_expecting_confirmed_form("M-00FA_A-2600-10-731A").await
 }
 
+/// Issue #623: a re-flash onto a device that already holds the application,
+/// with the differential download on, of a product whose procedure sends a
+/// Master Reset with erase code 4 (reset the application program). The
+/// resident MCB matches the image, but the reset erases the object, so the
+/// object is re-downloaded in full instead of skipped, and the flash verifies.
+#[tokio::test]
+async fn test_flash_master_reset_erase_code_4_over_loaded_device_redownloads() -> TestResult {
+    // SAFETY of env: nextest runs this test in its own process; the var only
+    // shortens the post-reboot poll.
+    unsafe {
+        std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
+    }
+    let image = [0u8, 1, 2, 3, 4, 5];
+    let (handle, state, gw) = setup_bus_with(preloaded_device(&image)?).await?;
+    lock(&state)?.wipe_app_on_master_reset = true;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source = bussard_bus::ops::group_source(&handle);
+
+    // `app_with_master_reset` with the write naming object 4, the object the
+    // mock keeps the resident MCB on, and a vendor id (the confirmed form).
+    let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+     <ApplicationProgram Id="M-0083_A-0005" ApplicationNumber="5" ApplicationVersion="1"
+        MaskVersion="MV-07B0" Name="MasterReset" LoadProcedureStyle="ProductDefault">
+      <Static>
+       <Code>
+        <RelativeSegment Id="M-0083_A-0005_RS-1" Size="6" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment>
+       </Code>
+       <LoadProcedures>
+        <LoadProcedure>
+         <LdCtrlConnect />
+         <LdCtrlUnload LsmIdx="4" />
+         <LdCtrlLoad LsmIdx="4" />
+         <LdCtrlRelSegment LsmIdx="4" Size="6" />
+         <LdCtrlMasterReset EraseCode="4" ChannelNumber="0" />
+         <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="6" />
+         <LdCtrlLoadCompleted LsmIdx="4" />
+         <LdCtrlRestart />
+         <LdCtrlDisconnect />
+        </LoadProcedure>
+       </LoadProcedures>
+      </Static>
+     </ApplicationProgram></KNX>"#;
+    let app = parse_application_program("M-0083_A-0005", xml.as_bytes())?;
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    assert!(plan.erases_resident_objects());
+    let connector = LeaseConnector::plain(handle.clone(), target, source, None);
+    let mut session = Session::open_with_key(connector, None).await?;
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions {
+            skip_matching_mcb: true,
+            ..Default::default()
+        },
+        |_| {},
+    )
+    .await?;
+    let _ = session.into_disconnect().await;
+    assert!(
+        outcome.ok(),
+        "the object the reset erases must be re-downloaded: {outcome:?}"
+    );
+    assert_eq!(outcome.load_state, LoadState::Loaded);
+    {
+        let s = lock(&state)?;
+        assert_eq!(s.master_resets_seen, 1, "the product's reset is still sent");
+        assert!(
+            s.memory_writes_seen > 0,
+            "the erased object must be streamed again, not skipped on its MCB"
+        );
+    }
+    let _ = handle.close().await;
+    drop(gw);
+    unsafe {
+        std::env::remove_var("BUSSARD_FLASH_REBOOT_WAIT_MS");
+    }
+    Ok(())
+}
+
 /// Flashes [`app_with_master_reset`] under the application id `id` and asserts
 /// the master reset went out in the confirmed form.
 async fn flash_master_reset_expecting_confirmed_form(id: &str) -> TestResult {
