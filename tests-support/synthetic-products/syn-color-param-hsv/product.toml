@@ -7,7 +7,9 @@ syn-color-param with `Space="HSV"`: a `<TypeColor Space="HSV">` at +3 of
 the parameter segment, reached in the parameter block, with the default
 `#FF0000`. Issue #616: bussard places an HSV colour as `HH SS VV` in the
 written order (`FF 00 00`); the capture shows whether ETS writes the same
-octets for HSV as for RGB."""
+octets for HSV as for RGB. ETS 6.4.1 wrote `00 FF FF`: the value is RGB hex
+in both spaces, and ETS stores red as hue 0, saturation and value FF. The
+row is `expect=differs` until bussard converts (#616)."""
 construct = "TypeColor HSV parameter in memory"
 issues = [616]
 

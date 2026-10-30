@@ -7,7 +7,8 @@ syn-minimal with a third parameter, a `<TypeColor Space="RGB">` at +3 of
 the parameter segment, reached in the parameter block, with the default
 `#FF0000`. Issue #616: bussard places a colour as one octet per component in
 the written order (`FF 00 00`); the capture shows the octets ETS writes over
-the `FF` template. The twin syn-color-param-hsv declares `Space="HSV"`."""
+the `FF` template. ETS 6.4.1 wrote `FF 00 00`, as bussard does. The twin
+syn-color-param-hsv declares `Space="HSV"`."""
 construct = "TypeColor RGB parameter in memory"
 issues = [616]
 
