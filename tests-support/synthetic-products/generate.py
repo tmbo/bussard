@@ -465,6 +465,11 @@ SYS7_LOAD_OPS = {
                          "access": "Access", "mem_type": "MemType", "seg_flags": "SegFlags"},
     "LdCtrlTaskSegment": {"lsm": "LsmIdx", "address": "Address"},
     "LdCtrlTaskCtrl1": {"lsm": "LsmIdx", "address": "Address", "count": "Count"},
+    # syn-s7-taskptr (#604 row 17, #527): the Task Pointer Record and Task
+    # Control Record 2, with the attribute names of the corpus (0020/0021).
+    "LdCtrlTaskPtr": {"lsm": "LsmIdx", "init_ptr": "InitPtr", "save_ptr": "SavePtr", "serial_ptr": "SerialPtr"},
+    "LdCtrlTaskCtrl2": {"lsm": "LsmIdx", "callback": "Callback", "address": "Address", "seg0": "Seg0",
+                        "seg1": "Seg1"},
 }
 MEMORY_TYPES = ("EEPROM", "RAM")
 

@@ -24,6 +24,10 @@
 //! read (the state octet, KNX 3/5/1 §4.2.4: 0 Unloaded, 1 Loaded), `app_id`
 //! the hex `PID_PROGRAM_VERSION` of the application object, `mcb` the hex
 //! first `PID_MCB_TABLE` entry per object. Every field is optional.
+//!
+//! On a System 7 plan `objects` are the load-state machines instead (`index`
+//! the LSM, 1 to 4): a record with every LSM `Unloaded` is a factory-fresh
+//! device, which gets no pre-download pass (issue #488).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -131,6 +135,18 @@ impl Recorded {
         })
     }
 
+    /// The record read as System 7 load-state machines (issue #488): each
+    /// recorded `index` is an LSM, with no interface-object type, as the
+    /// System 7 pre-flight probe reports them. The MCB entries are System B
+    /// only and dropped.
+    pub(crate) fn into_sys7(mut self) -> Recorded {
+        for object in &mut self.state.objects {
+            object.object_type = None;
+        }
+        self.mcbs.clear();
+        self
+    }
+
     /// Whether the file recorded any object load state. Without one there
     /// is no freshness verdict, and the dry run plans as it does without a
     /// file.
@@ -184,6 +200,21 @@ mod tests {
         );
         assert_eq!(recorded.mcbs.get(&3), Some(&(0x05F6, 0x0B93)));
         assert!(recorded.has_states());
+        Ok(())
+    }
+
+    /// Issue #488: on a System 7 plan the recorded objects are LSMs, so an
+    /// all-Unloaded record reads as a probed fresh System 7 device.
+    #[test]
+    fn test_into_sys7_reads_the_objects_as_lsms() -> anyhow::Result<()> {
+        let recorded: RecordedState = serde_json::from_str(
+            r#"{"objects": [{"index": 1, "state": 0}, {"index": 2, "state": 0},
+                            {"index": 3, "state": 0}, {"index": 4, "state": 0}]}"#,
+        )?;
+        let recorded = Recorded::from_state(recorded)?.into_sys7();
+        assert!(recorded.state.is_sys7());
+        assert!(recorded.has_states());
+        assert!(!recorded.state.has_loaded_application());
         Ok(())
     }
 

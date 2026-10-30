@@ -1450,7 +1450,8 @@ parameters:
     }
 
     /// A text value is measured in the program's code page (issue #401):
-    /// MDT's `Scènario` fits eight octets in ISO 8859-15, not in UTF-8.
+    /// MDT's `Scènario` fits eight octets in ISO 8859-15 and in the ISO 8859-1
+    /// of an undeclared program (#416), not in UTF-8.
     #[test]
     fn test_parameter_value_error_text_in_the_declared_code_page() {
         let kind = |encoding: Option<&str>| ParamKind::Text {
@@ -1463,8 +1464,12 @@ parameters:
         );
         let utf8 = parameter_value_error(&kind(Some("utf-8")), "Scènario");
         assert!(utf8.is_some_and(|e| e.contains("9 octets")));
-        let undeclared = parameter_value_error(&kind(None), "Scènario");
-        assert!(undeclared.is_some_and(|e| e.contains("#401")));
+        // No declaration: ISO 8859-1, as ETS writes it (issue #416).
+        assert_eq!(parameter_value_error(&kind(None), "Scènario"), None);
+        let euro = parameter_value_error(&kind(None), "5€");
+        assert!(euro.is_some_and(|e| e.contains("#416")));
+        let unknown = parameter_value_error(&kind(Some("shift_jis")), "Scènario");
+        assert!(unknown.is_some_and(|e| e.contains("#401")));
         assert_eq!(parameter_value_error(&kind(None), "Scene"), None);
     }
 

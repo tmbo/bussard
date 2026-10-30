@@ -74,7 +74,7 @@ fn test_template_ops_for_stub_master_uses_builtin() -> TestResult {
         .steps
         .iter()
         .filter_map(|s| match s {
-            FlashStep::Unload { target } => Some(*target),
+            FlashStep::Unload { target, .. } => Some(*target),
             _ => None,
         })
         .collect();

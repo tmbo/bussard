@@ -499,3 +499,152 @@ fn vendor_dir(dir: PathBuf) -> PathBuf {
         .find(|d| d.is_dir())
         .unwrap_or(dir)
 }
+
+/// The corpus archives whose applications wrap an unload in `LdCtrlMapError`
+/// (the 27 Siemens 07B0 applications of issue #614, one per archive).
+const MAP_ERROR_ARCHIVES: &[&str] = &[
+    "N26x_31__9A1301_ETS5b.knxprod",
+    "N26x_51__9A1401_ETS5b.knxprod",
+    "N525_DB11__9A1701_ETS5.knxprod",
+    "N535DB31__9A0803.knxprod",
+    "N535DB61__9A0A03.knxprod",
+    "N535_D51__9A0903.knxprod",
+    "N536_D31__9A0502_ETS5.knxprod",
+    "N536_D51__9A0602.knxprod",
+    "N53xDB31_4f__9A0103.knxprod",
+    "N53xDB51_8f__9A0203.knxprod",
+    "N53xDB61_12f__9A0303.knxprod",
+    "N543_31__9A0B04_ETS5b.knxprod",
+    "N543_51__9A0C04_ETS5b.knxprod",
+    "N545__9A1A04_ETS5.knxprod",
+    "N554D31__9A0401b.knxprod",
+    "N605_D41__9A1903_ETS5.knxprod",
+    "QMX_V01_00_05_69230064_Registered_P37_Localized_ETS5.knxprod",
+    "RDG200KN__110135_ets5.knxprod",
+    "RDG204KN__110335_ETS5.knxprod",
+    "RDG260KN__110233_ets5.knxprod",
+    "RL524__9A0D04_ETS5.knxprod",
+    "RL526DB23_SDA__9A0702b.knxprod",
+    "RL605_D23__9A1803_ETS5.knxprod",
+    "UP258_D31__9A1005_ETS5.knxprod",
+    "UP258_D41__9A1105_ETS5.knxprod",
+    "UP258_D51__9A1205_ETS5.knxprod",
+    "UP258_D61__9A0F05_ETS5.knxprod",
+];
+
+/// The 27 Siemens 07B0 product procedures of the corpus (issue #614) plan
+/// with the table images `flash` passes: the `LdCtrlMapError` before the
+/// `LdCtrlUnload LsmIdx="5"` lowers to an unload whose absent object is no
+/// error (the next `LdCtrlMapError` ends the rule, so it is the only one), the
+/// `par` and `grp` downloads the same `<LoadProcedure>` lists after the
+/// complete one are left out (one allocation per object), and the compares of
+/// single PID 246 elements keep their `StartElement`.
+///
+/// Env-gated on `BUSSARD_PRODUCT_CORPUS`; an absent corpus or archive skips.
+#[test]
+fn test_plan_flash_corpus_map_error_product_procedures() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(dir) = std::env::var_os("BUSSARD_PRODUCT_CORPUS") else {
+        eprintln!("BUSSARD_PRODUCT_CORPUS unset; skipping the LdCtrlMapError plans.");
+        return Ok(());
+    };
+    let dir = vendor_dir(PathBuf::from(dir));
+    let (mut archives, mut planned) = (0usize, 0usize);
+    for file in knxprod_files(&dir) {
+        // Parse only the named archives: a debug parse of the whole corpus
+        // takes many minutes.
+        let named = file
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| MAP_ERROR_ARCHIVES.contains(&n));
+        if !named {
+            continue;
+        }
+        archives += 1;
+        let product = bussard_prod::read_knxprod(&file)?;
+        for app in &product.applications {
+            let maps = app
+                .load_procedures
+                .iter()
+                .flat_map(|p| p.ops.iter())
+                .any(|op| matches!(op, bussard_prod::LoadOp::MapError { .. }));
+            if !maps {
+                continue;
+            }
+            let mask = app
+                .mask_version
+                .as_deref()
+                .and_then(|m| u16::from_str_radix(m.trim(), 16).ok())
+                .ok_or_else(|| format!("{}: no hex mask", app.id))?;
+            let tables =
+                bussard_download::build_table_images(None, "1.1.1".parse()?, app, &BTreeMap::new());
+            let plan = plan_flash(
+                app,
+                "1.1.1",
+                mask,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                None,
+                &tables,
+            )
+            .map_err(|e| format!("{}: {e}", app.id))?;
+            let unloads: Vec<(Option<u32>, bool)> = plan
+                .steps
+                .iter()
+                .filter_map(|s| match s {
+                    FlashStep::Unload { target, absent_ok } => Some((*target, *absent_ok)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                unloads,
+                [
+                    (Some(5), true),
+                    (Some(4), false),
+                    (Some(3), false),
+                    (Some(2), false),
+                    (Some(1), false)
+                ],
+                "{}: the complete download's unloads, only object 5 mapped",
+                app.id
+            );
+            let mut allocations: BTreeMap<Option<u32>, usize> = BTreeMap::new();
+            for s in &plan.steps {
+                if let FlashStep::AllocateSegment { target, .. } = s {
+                    *allocations.entry(*target).or_default() += 1;
+                }
+            }
+            assert_eq!(
+                allocations,
+                BTreeMap::from([(Some(1), 1), (Some(2), 1), (Some(3), 1), (Some(4), 1)]),
+                "{}: one allocation per object",
+                app.id
+            );
+            let elements: Vec<u16> = plan
+                .steps
+                .iter()
+                .filter_map(|s| match s {
+                    FlashStep::CompareProp {
+                        prop_id: 246,
+                        start_element,
+                        ..
+                    } => Some(*start_element),
+                    _ => None,
+                })
+                .collect();
+            let mut distinct = elements.clone();
+            distinct.dedup();
+            assert!(
+                elements.len() > 1 && distinct == elements,
+                "{}: PID 246 compares read one element each, got {elements:?}",
+                app.id
+            );
+            planned += 1;
+        }
+    }
+    eprintln!(
+        "LdCtrlMapError plans: {planned} application(s) in {archives} of {} archive(s)",
+        MAP_ERROR_ARCHIVES.len()
+    );
+    assert_eq!(planned, archives, "one mapped application per archive");
+    Ok(())
+}

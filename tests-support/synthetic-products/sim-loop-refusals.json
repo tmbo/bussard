@@ -1,7 +1,7 @@
 {
 "about": "Synthetic products bussard refuses to flash, each the finding of an open issue (#604). The synthetic sim loop (crates/bussard-cli/tests/it/sim_catalog_loop.rs) accepts the refusal when its text contains `contains`, and fails once the product flashes, so the entry is dropped with the fix.",
 "refusals": {
-  "M-00FA_A-2706-10-0000": {"product": "syn-text-undeclared", "issue": 416, "contains": "declares no TextParameterEncoding"},
+  "M-00FA_A-2809-10-0000": {"product": "syn-s7-choose-split", "issue": 411, "contains": "leave octets 1..3 of segment M-00FA_A-2809-10-0000_AS-4440 unallocated"},
   "M-00FA_A-2708-10-0000": {"product": "syn-choose-partial-segment", "issue": 411, "contains": "leave octets 128..256 of object 4 unwritten"}
 }
 }

@@ -53,11 +53,12 @@ Table 1) lists the same four as mandatory and the absolute and task records
 | `LdCtrlWriteMem` | absolute `A_Memory_Write` | `FlashStep::WriteMem` | supported |
 | `LdCtrlWriteProp` | DM_InterfaceObjectWrite §3.25; PID 13 is `PID_PROGRAM_VERSION`, 5 octets manufacturer, device type, version (3/5/1 §4.2.13), written before `LoadCompleted` (§3.5.2 step 06); PID 27 one 8-octet element per write (§4.2.27) | `FlashStep::WriteProp`; the zero placeholder for PID 13 is replaced by the application id | supported |
 | `LdCtrlLoadImageProp` | read `PID_MCB_TABLE` and compare the CRC16-CCITT (init FFFFh, check value E5CCh) with the image (§4.2.27, §4.18.6.2.5); the "read and save CRC" step of §3.5.2 | `FlashStep::LoadImageProp`, `read_mcb_table` | supported |
-| `LdCtrlCompareProp` | DM_InterfaceObjectRead §3.27 plus compare | `FlashStep::CompareProp` (mask honoured, `Range` kept as a no-op) | supported |
+| `LdCtrlCompareProp` | DM_InterfaceObjectRead §3.27 plus compare | `FlashStep::CompareProp` (mask honoured, `StartElement` read as the element, `Range` kept as a no-op) | supported |
 | `LdCtrlCompareRelMem` | memory read at base + offset plus compare | `FlashStep::CompareRelMem` (mask, invert) | supported (2 MDT apps) |
 | `LdCtrlRestart` | Basic Restart §3.7.1.1 (unconfirmed `A_Restart`); the confirmed restart is the Master Reset with erase code 01h (§3.7.1.2 Table 4) | `FlashStep::Restart`; confirmed form for secure-capable applications, bare otherwise | supported |
 | `LdCtrlMasterReset` | Master Reset §3.7.1.2: restart type 1, erase code, channel, confirmed by `A_Restart_Response` | `FlashStep::MasterReset`: the confirmed form with the op's erase code and channel; a bare `A_Restart` on KNX Virtual only (its ETS capture); error code 2 falls back to a basic restart | no vendor capture; capture plan in `testing-campaign.md` (#546) |
 | `LdCtrlMerge` | none: the mask template's splice marker | spliced | supported |
+| `LdCtrlMapError` | none: an ETS tool-side rule (`OriginalError`, `MappedError`); the standard has no such load control | from the op on, the error it names counts as `MappedError`; a later op mapping the code to itself ends the rule (`lower_map_error`). Only `0xC0042B08` mapped to 0 over an `LdCtrlUnload` lowers: `FlashStep::Unload { absent_ok: true }` goes to the object it names, and a count-0 answer (no such object, #178) completes it with a warning; any other answer or failure still fails. Any other code, a mapping to another error, or a rule in force over another op refuses | supported (27 Siemens 07B0 apps, #614); ETS bytes to be confirmed by the synthetic `syn-map-error` and `syn-product-07b0` captures (#604) |
 | `LdCtrlAbsSegment`, `LdCtrlTaskSegment`, `LdCtrlTaskCtrl1`, `LdCtrlTaskPtr`, `LdCtrlTaskCtrl2` | Additional Load Controls subtypes 00h to 05h, §3.31.3.4; optional in the 27B0 profile | System 7 lowering only; refused on System B | by design | All five lowered (TaskPtr and TaskCtrl2 since #527) with the KNX 3/5/2 §3.31.2 layout, mandatory on 0701/0705 per Profiles Annex A.2.4.1; in the local corpus TaskPtr/TaskCtrl2 occur only on masks 0020/0021/0025, so no flashable application uses them yet and no capture exists.
 | `LdCtrlDeclarePropDesc`, `LdCtrlDelay`, other `Raw` | | refused before any write | 2920 only in the corpus |
 
@@ -91,6 +92,21 @@ System 7 masks declare no `Load` procedure in the master data and their
 lowering takes nothing from a template; the PL110 mask 17B0 has a template
 of its own that bussard does not carry (no corpus application uses it).
 
+## Product procedures that list the partial downloads
+
+The 27 Siemens 07B0 applications of #614 (`LoadProcedureStyle="ProductProcedure"`)
+carry one `<LoadProcedure>` that lists the complete download
+(`AppliesTo="full"`), then the parameter download (`par`) and the
+group-address download (`grp`). A procedure with a `grp`-only op is read as
+such a list: the planner runs its `full`/`all` ops and leaves the `par`/`grp`
+ones out (`LoadProcedure::lists_partial_downloads`). Every other procedure
+keeps its `par` ops as before. The address, association and group-object
+tables are relative segments on LSM 1 to 3 of the procedure itself; they take
+the table images, as the template's table ops do, so their allocation is the
+image length and not the op's `Size` (8002 for 2000 entries). The synthetic
+captures (#604) are to confirm the allocation size and the write length ETS
+uses.
+
 ## Steps of the standard's procedure with no op
 
 Configuration Procedures §3.5.2 (complete download) and §3.5.3 (partial
@@ -104,6 +120,7 @@ downloads) have steps a product procedure never spells out:
 | read and save the CRC after each `LoadCompleted` | the application's `LoadImageProp` ops, else the template's |
 | 11 modify access keys | not done (no product in the corpus sets keys) |
 | partial download: `Unload`, `Load`, Mode 0 allocation around a parameter write | parameters-only download skips the first two (#543) |
+| System 7 (not a standard step): ETS's pre-download unload of LSMs 1 to 4 and restart | only when the probed resident state is not fresh: an LSM Loaded, Loading or Error, or a resident application id; a factory-fresh device gets none, as in ETS's `syn-s7-0705`/`syn-s7-0701` captures and the 31 sweep rows (#488, [system7-spec.md §3.1](system7-spec.md)); ETS's rule on a programmed device is open |
 | LoadCompleting (5) and Unloading (4): poll `PID_LOAD_STATE_CONTROL` every 3 s for up to 30 s (3/5/1 §4.23.2.4.1) | not done (#479) |
 
 ## Table images
