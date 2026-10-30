@@ -42,6 +42,8 @@ next to it, and zips it on demand.
 | [`syn-s7-taskptr`](syn-s7-taskptr/product.toml) | `NEST-HUNT` | 0705 | TaskPtr and TaskCtrl2 records on LSM 3 | #527 |
 | [`syn-text-undeclared`](syn-text-undeclared/product.toml) | `NEST-SQUAWK` | 07B0 | TypeText non-ASCII default, no TextParameterEncoding | #416 |
 | [`syn-union-default-range`](syn-union-default-range/product.toml) | `NEST-STRAY` | 07B0 | hidden union member, default outside its type | #405 |
+| [`syn-user-memory`](syn-user-memory/product.toml) | `NEST-LARDER` | 07B0 | segment above 0xFFFF without SupportsExtendedMemoryServices | #472 |
+| [`syn-user-memory-extmem`](syn-user-memory-extmem/product.toml) | `NEST-LARDERX` | 07B0 | segment above 0xFFFF with SupportsExtendedMemoryServices | #472 |
 | [`syn-writerelmem-size`](syn-writerelmem-size/product.toml) | `NEST-QUILL` | 07B0 | LdCtrlWriteRelMem Size smaller than the RelativeSegment | #564 |
 <!-- catalogue:end -->
 
