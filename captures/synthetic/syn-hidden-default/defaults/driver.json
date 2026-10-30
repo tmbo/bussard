@@ -1,0 +1,106 @@
+{
+ "app": "M-00FA_A-270C-10-2949",
+ "variant": "plain-defaults",
+ "ia": "1.1.1",
+ "search": "NEST-EGGHEAT",
+ "version": "1.0",
+ "properties": [],
+ "driver": {
+  "project_tab": {
+   "project": "ets-sweep",
+   "ok": true
+  },
+  "devices": {
+   "devices": [
+    {
+     "ia": "1.1.1",
+     "y": 287
+    }
+   ],
+   "ok": true
+  },
+  "delete_device": {
+   "deleted": true,
+   "devices": [],
+   "busy_wait": 0,
+   "ok": true
+  },
+  "catalog_add": {
+   "devices": [
+    {
+     "ia": "1.1.1",
+     "y": 287
+    }
+   ],
+   "added": [
+    {
+     "ia": "1.1.1",
+     "y": 287
+    }
+   ],
+   "row": {
+    "y": 1510,
+    "name": "Egg heater",
+    "order": "NEST-EGGHEAT",
+    "application": "Eierwärmer",
+    "version": "1.0",
+    "online": false
+   },
+   "password_dialog": false,
+   "ok": true
+  },
+  "select_connection": {
+   "entries": [
+    "88",
+    "Automatisch",
+    "KNX IP (192.168.1.74:3671 - 1.1.200)",
+    "knx-sim (127.0.0.1:3672 Udp)",
+    "Konfigurierte Verbindungen verwalten...",
+    "Arbeitsbereiche"
+   ],
+   "ok": true
+  },
+  "download": {
+   "ia": "1.1.1",
+   "mode": "application",
+   "medium_dialog_kept": false,
+   "password_dialog": false,
+   "certificate_dialog": false,
+   "ok": true
+  }
+ },
+ "catalog_row": {
+  "y": 1510,
+  "name": "Egg heater",
+  "order": "NEST-EGGHEAT",
+  "application": "Eierwärmer",
+  "version": "1.0",
+  "online": false
+ },
+ "end": "device restarted",
+ "history": [
+  "Historie löschen",
+  "1.1.1 Egg heater",
+  "Programmieren(Appl.): Abgeschlossen",
+  "Keine Details verfügbar",
+  "Verbindung:",
+  "Start:",
+  "Ende:",
+  "1.1.1 Stray-egg counter",
+  "1.1.254 knx-sim (127.0.0.1)",
+  "Programmieren(Appl.): Abgeschlossen",
+  "1.1.1 Deep-cleaning switch",
+  "Programmieren(Appl.): Abgeschlossen",
+  "1.1.1 Back-door actuator"
+ ],
+ "ets": "ok",
+ "loaded_objects": [
+  "1",
+  "2",
+  "3",
+  "4"
+ ],
+ "seconds": 88,
+ "ops": 43,
+ "outcome": "captured"
+}

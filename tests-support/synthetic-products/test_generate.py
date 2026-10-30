@@ -133,5 +133,21 @@ class Union(unittest.TestCase):
             generate.Product("test", s)
 
 
+class HiddenParameter(unittest.TestCase):
+    """syn-hidden-default (#448): a parameter no block references, over a filled segment."""
+
+    def test_render_parameter_without_block(self) -> None:
+        s = spec()
+        s["parameter"] = s["parameter"] + [
+            {"name": "h", "type": "Delay", "text": "H", "default": 4660,
+             "memory": {"segment": "main", "offset": 3, "bit_offset": 0}}]
+        xml = app_xml(s)
+        self.assertIn('<ParameterRef Id="M-00FA_A-2700-10-0000_P-3_R-3" RefId="M-00FA_A-2700-10-0000_P-3" />', xml)
+        self.assertNotIn('<ParameterRefRef RefId="M-00FA_A-2700-10-0000_P-3_R-3" />', xml)
+        self.assertNotIn("DownloadInvisibleParameters", xml)
+        # syn-minimal's segment template is fill 0xFF, unlike the default's octets.
+        self.assertIn("<Data>////", xml)
+
+
 if __name__ == "__main__":
     unittest.main()

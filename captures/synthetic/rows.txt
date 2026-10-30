@@ -5,6 +5,7 @@
 # zipped with the stub master by the script; the application is the rendered
 # id (the signed fingerprint never reaches the wire).
 #@ --dir captures/synthetic/model
+1.1.1|captures/synthetic/syn-hidden-default/defaults/ets.pcapng|tests-support/synthetic-products/syn-hidden-default/xml|M-00FA_A-270C-10-0000|syn-hidden-default defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-le-order/defaults/ets.pcapng|tests-support/synthetic-products/syn-le-order/xml|M-00FA_A-2704-10-0000|syn-le-order defaults|100.0|expect=differs loadctl=identical
 1.1.1|captures/synthetic/syn-master-reset/defaults/ets.pcapng|tests-support/synthetic-products/syn-master-reset/xml|M-00FA_A-270A-10-0000|syn-master-reset defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-minimal/defaults/ets.pcapng|tests-support/synthetic-products/syn-minimal/xml|M-00FA_A-2700-10-0000|syn-minimal defaults|100.0|loadctl=identical
