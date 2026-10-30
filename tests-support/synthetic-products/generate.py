@@ -33,7 +33,7 @@ import sys
 import tomllib
 import zipfile
 from pathlib import Path
-from xml.sax.saxutils import quoteattr
+from xml.sax.saxutils import escape, quoteattr
 
 HERE = Path(__file__).resolve().parent
 NS = "http://knx.org/xml/project/23"
@@ -147,7 +147,7 @@ class Product:
         self.name = name
         w = name
         check_keys(w, spec, {"doc", "product", "application", "segment", "parameter_type",
-                             "parameter", "com_object", "dynamic", "load_procedure"}, {"union"})
+                             "parameter", "com_object", "dynamic", "load_procedure"}, {"union", "parameter_calculation"})
         self.doc = spec["doc"]
         check_keys(f"{w} [doc]", self.doc, {"purpose", "construct", "issues"})
         self.product = p = spec["product"]
@@ -238,14 +238,21 @@ class Product:
         self.params = {}
         for i, prm in enumerate(spec["parameter"]):
             pw = f"{w} [[parameter]] #{i + 1}"
-            check_keys(pw, prm, {"name", "type", "text", "default"}, {"memory", "union", "access"},
-                       {"translations"})
+            check_keys(pw, prm, {"name", "type", "text", "default"},
+                       {"memory", "union", "access", "virtual", "legacy_patch_always"}, {"translations"})
             if prm["type"] not in self.types:
                 raise SpecError(f"{pw}: unknown parameter type `{prm['type']}`")
             if prm.get("access", "ReadWrite") not in ("None", "Read", "ReadWrite"):
                 raise SpecError(f"{pw}: access is None, Read or ReadWrite")
             bits = self.types[prm["type"]]["size_bits"]
             n = i + 1
+            # syn-choose-never-shown (#604 row 14, #474): `virtual = true` is a
+            # parameter with no <Memory>, which only steers the Dynamic tree.
+            if prm.get("virtual"):
+                if "memory" in prm or "union" in prm:
+                    raise SpecError(f"{pw}: a virtual parameter has no `memory` and no `union`")
+                self.params[prm["name"]] = dict(prm, id=f"{self.app_id}_P-{n}", ref=f"{self.app_id}_P-{n}_R-{n}")
+                continue
             if ("memory" in prm) == ("union" in prm):
                 raise SpecError(f"{pw}: needs exactly one of `memory` and `union`")
             if "memory" in prm:
@@ -267,6 +274,10 @@ class Product:
             if "default" in un and un["default"] not in un["members"]:
                 raise SpecError(f"{w} [[union]] `{un['name']}`: default `{un['default']}` is not a member")
 
+        # syn-param-calculation (#604 row 11, #427): <ParameterCalculation>s.
+        self.calculations = [self.check_calculation(f"{w} [[parameter_calculation]] #{i + 1}", c, i + 1)
+                             for i, c in enumerate(spec.get("parameter_calculation", []))]
+
         self.objects = {}
         for i, o in enumerate(spec["com_object"]):
             ow = f"{w} [[com_object]] #{i + 1}"
@@ -281,7 +292,7 @@ class Product:
             self.objects[o["number"]] = dict(o, id=oid, ref=f"{oid}_R-{i + 1}")
 
         dyn = spec["dynamic"]
-        check_keys(f"{w} [dynamic]", dyn, {"block"}, set(), {"channel", "choose"})
+        check_keys(f"{w} [dynamic]", dyn, {"block"}, {"choose"}, {"channel"})
         self.blocks = []
         for i, b in enumerate(dyn["block"]):
             bw = f"{w} [[dynamic.block]] #{i + 1}"
@@ -293,6 +304,8 @@ class Product:
                 if on not in self.objects:
                     raise SpecError(f"{bw}: unknown com object {on}")
             self.blocks.append(dict(b, id=f"{self.app_id}_PB-{i + 1}"))
+        self.dynamic_chooses = [self.check_dynamic_choose(f"{w} [[dynamic.choose]] #{i + 1}", c)
+                                for i, c in enumerate(dyn.get("choose", []))]
 
         self.load_procedures = []
         for i, lp in enumerate(spec["load_procedure"]):
@@ -307,6 +320,58 @@ class Product:
             self.load_procedures.append(lp)
         if self.system7:
             check_system7_tables(w, self)
+
+    def check_block(self, bw: str, b: dict, number: int) -> dict:
+        """A parameter block of the Dynamic tree, given its `_PB-<number>`."""
+        check_keys(bw, b, {"name", "text", "parameters", "com_objects"}, set(), {"choose", "inline"})
+        for pn in b["parameters"]:
+            if pn not in self.params:
+                raise SpecError(f"{bw}: unknown parameter `{pn}`")
+        for on in b["com_objects"]:
+            if on not in self.objects:
+                raise SpecError(f"{bw}: unknown com object {on}")
+        return dict(b, id=f"{self.app_id}_PB-{number}")
+
+    def check_dynamic_choose(self, cw: str, c: dict) -> dict:
+        """syn-choose-never-shown (#604 row 14, #474): a `<choose ParamRefId>`
+        in the ChannelIndependentBlock, after the blocks, whose `<when
+        default="true">` holds parameter blocks (numbered after every block
+        before it). A `test` branch is part of the schema but unused yet."""
+        check_keys(cw, c, {"parameter", "when"})
+        if c["parameter"] not in self.params:
+            raise SpecError(f"{cw}: unknown parameter `{c['parameter']}`")
+        if not c["when"]:
+            raise SpecError(f"{cw}: a choose needs at least one `when`")
+        whens = []
+        for k, branch in enumerate(c["when"]):
+            bw = f"{cw} when #{k + 1}"
+            check_keys(bw, branch, {"default", "block"}, set(), {"test"})
+            if branch["default"] is not True:
+                raise SpecError(f"{bw}: give `default = true`")
+            blocks = []
+            for j, b in enumerate(branch["block"]):
+                self.choose_blocks = getattr(self, "choose_blocks", 0) + 1
+                blocks.append(self.check_block(f"{bw} block #{j + 1}", b, len(self.blocks) + self.choose_blocks))
+            whens.append({"default": True, "block": blocks})
+        return {"parameter": c["parameter"], "when": whens}
+
+    def check_calculation(self, cw: str, c: dict, n: int) -> dict:
+        """A `<ParameterCalculation>` in the inline form (`<RLTransformation>`,
+        `<LRTransformation>`, then `<LParameters>` and `<RParameters>`, each
+        ref with its `AliasName`), the corpus's most common one (#427).
+        VBScript and the `LRTransformationFunc` form with a `<Script>` are
+        part of the schema but unused yet."""
+        check_keys(cw, c, {"name", "language", "inputs", "outputs", "lr_script", "rl_script"})
+        if c["language"] != "JavaScript":
+            raise not_yet(cw, f"language `{c['language']}`")
+        for side in ("inputs", "outputs"):
+            if not c[side]:
+                raise SpecError(f"{cw}: `{side}` needs at least one parameter")
+            for k, ref in enumerate(c[side]):
+                check_keys(f"{cw} {side} #{k + 1}", ref, {"parameter", "alias"})
+                if ref["parameter"] not in self.params:
+                    raise SpecError(f"{cw} {side} #{k + 1}: unknown parameter `{ref['parameter']}`")
+        return dict(c, id=f"{self.app_id}_PC-{n}")
 
     def check_memory(self, where: str, m: dict, bits: int) -> None:
         """A `memory = { segment, offset, bit_offset }` that fits its segment."""
@@ -551,6 +616,41 @@ def render_load_ops(x: Xml, p: Product, ops: list[dict]) -> None:
             x.empty(op["op"], [(attr, op[key]) for key, attr in (LOAD_OPS | SYS7_LOAD_OPS)[op["op"]].items()])
 
 
+def render_dynamic_choose(x: Xml, p: Product, c: dict) -> None:
+    """`<choose ParamRefId>` in the Dynamic tree, its `<when default="true">`
+    holding parameter blocks (#474)."""
+    x.open("choose", [("ParamRefId", p.params[c["parameter"]]["ref"])])
+    for branch in c["when"]:
+        x.open("when", [("default", True)])
+        for b in branch["block"]:
+            x.open("ParameterBlock", [("Id", b["id"]), ("Name", b["name"]), ("Text", b["text"])])
+            for pn in b["parameters"]:
+                x.empty("ParameterRefRef", [("RefId", p.params[pn]["ref"])])
+            for on in b["com_objects"]:
+                x.empty("ComObjectRefRef", [("RefId", p.objects[on]["ref"])])
+            x.close("ParameterBlock")
+        x.close("when")
+    x.close("choose")
+
+
+def render_calculations(x: Xml, p: Product) -> None:
+    """`<ParameterCalculations>` after the `ParameterRefs` (#427)."""
+    if not p.calculations:
+        return
+    x.open("ParameterCalculations")
+    for c in p.calculations:
+        x.open("ParameterCalculation", [("Id", c["id"]), ("Name", c["name"]), ("Language", c["language"])])
+        x.text("RLTransformation", escape(c["rl_script"]))
+        x.text("LRTransformation", escape(c["lr_script"]))
+        for tag, side in (("LParameters", "inputs"), ("RParameters", "outputs")):
+            x.open(tag)
+            for ref in c[side]:
+                x.empty("ParameterRefRef", [("RefId", p.params[ref["parameter"]]["ref"]), ("AliasName", ref["alias"])])
+            x.close(tag)
+        x.close("ParameterCalculation")
+    x.close("ParameterCalculations")
+
+
 def render_application(p: Product) -> bytes:
     a = p.app
     x = Xml()
@@ -581,8 +681,14 @@ def render_application(p: Product) -> bytes:
     for prm in p.params.values():
         if "union" in prm:
             continue
+        if prm.get("virtual"):  # no <Memory> (#474)
+            x.empty("Parameter", [("Id", prm["id"]), ("Name", prm["name"]),
+                                  ("ParameterType", p.types[prm["type"]]["id"]), ("Text", prm["text"]),
+                                  ("Access", prm.get("access")), ("Value", prm["default"])])
+            continue
         x.open("Parameter", [("Id", prm["id"]), ("Name", prm["name"]), ("ParameterType", p.types[prm["type"]]["id"]),
-                             ("Text", prm["text"]), ("Access", prm.get("access")), ("Value", prm["default"])])
+                             ("Text", prm["text"]), ("Access", prm.get("access")), ("Value", prm["default"]),
+                             ("LegacyPatchAlways", True if prm.get("legacy_patch_always") else None)])
         m = prm["memory"]
         x.empty("Memory", [("CodeSegment", p.segments[m["segment"]]["id"]), ("Offset", m["offset"]),
                            ("BitOffset", m["bit_offset"])])
@@ -594,6 +700,7 @@ def render_application(p: Product) -> bytes:
     for prm in p.params.values():
         x.empty("ParameterRef", [("Id", prm["ref"]), ("RefId", prm["id"])])
     x.close("ParameterRefs")
+    render_calculations(x, p)
     x.open("ComObjectTable", table_location(p, "com_object_table_segment"))
     for o in p.objects.values():
         x.empty("ComObject", [("Id", o["id"]), ("Name", o["name"]), ("Text", o["text"]), ("Number", o["number"]),
@@ -626,6 +733,8 @@ def render_application(p: Product) -> bytes:
         for on in b["com_objects"]:
             x.empty("ComObjectRefRef", [("RefId", p.objects[on]["ref"])])
         x.close("ParameterBlock")
+    for c in p.dynamic_chooses:
+        render_dynamic_choose(x, p, c)
     x.close("ChannelIndependentBlock")
     x.close("Dynamic")
     x.close("ApplicationProgram")

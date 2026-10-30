@@ -93,10 +93,9 @@ impl FlashPlan {
             _ => true,
         });
         changed |= self.steps.len() != before;
-        let filled = self
-            .steps
-            .iter()
-            .any(|s| matches!(s, FlashStep::AllocateSegment { fill: Some(_), .. }));
+        let filled = self.steps.iter().any(
+            |s| matches!(s, FlashStep::AllocateSegment { fill, .. } if fill.prefill().is_some()),
+        );
         if !filled && self.has_factory_reset() {
             self.skip_factory_reset();
             changed = true;
@@ -115,6 +114,7 @@ impl FlashPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::flash::SegmentFill;
     use crate::preflight::ResidentObject;
 
     #[test]
@@ -161,7 +161,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(allocs, vec![(Some(4), None)]);
+        assert_eq!(allocs, vec![(Some(4), SegmentFill::NONE)]);
         assert!(
             !plan
                 .steps

@@ -1137,43 +1137,41 @@ pub async fn write_load_control<Ch: L4Channel>(
 /// Procedures", `AdditionalLoadControls` sub-command `0x0B`): the tool asks the
 /// device to allocate a backing segment of a given size and the device chooses
 /// the address, which is read back afterwards via [`PID_TABLE_REFERENCE`]. The
-/// structure carries a big-endian `u32` size at `data[2..6]`, a fill flag at
-/// `data[6]` and a fill byte at `data[7]` (see [`encode_rel_segment`]).
+/// structure carries a big-endian `u32` size at `data[2..6]`, the `Mode` octet
+/// at `data[6]` and the `Fill` octet at `data[7]` (see [`encode_rel_segment`]).
 pub const LD_CTRL_REL_SEGMENT: u8 = 0x0B;
-
-/// The fill flag `data[6]` of a relative allocation: `0x01` fills the freshly
-/// allocated segment with the fill byte, `0x00` leaves it untouched (KNX 3/5/2
-/// `LdCtrlRelSegment`).
-const LD_CTRL_FILL: u8 = 0x01;
 
 /// Encodes the 10-octet `AdditionalLoadControls` property value for a
 /// **relative** segment allocation (`LdCtrlRelSegment`), written to
 /// `PID_LOAD_STATE_CONTROL` while the object is in [`LoadState::Loading`].
 ///
-/// Layout (KNX 3/5/2 `LdCtrlRelSegment`):
+/// Layout (KNX 3/5/2 `LdCtrlRelSegment`; Mode and Fill: 3/5/3 §3.5.1.2):
 ///
 /// | octet | field                | value                                    |
 /// |-------|----------------------|------------------------------------------|
 /// | 0     | load event           | [`LoadControl::AdditionalLoadControls`] (3) |
 /// | 1     | sub-command          | [`LD_CTRL_REL_SEGMENT`] (`0x0B`)         |
 /// | 2..6  | size (u32, BE)       | `((data[2]<<24)|…|data[5])`              |
-/// | 6     | fill flag            | `0x01` = fill, else no fill              |
-/// | 7     | fill byte            | the byte written when the fill flag set  |
+/// | 6     | `Mode`               | bit 0 set: fill the segment              |
+/// | 7     | `Fill`               | the fill byte, sent as given in any mode |
 /// | 8..10 | reserved (`0x00`)    | pads the structure to the standard 10    |
 ///
 /// The property value is exactly 10 octets. Octets 8–9 are reserved zero in the
 /// relative form (only `data[0..8]` is significant); they keep the structure at
 /// the standard `AdditionalLoadControls` width so a stricter device that expects
 /// the full 10-octet write still accepts it.
-pub fn encode_rel_segment(size: u32, fill_byte: Option<u8>) -> [u8; 10] {
+///
+/// `mode` and `fill` are the product's `LdCtrlRelSegment` `@Mode` and `@Fill`,
+/// copied verbatim as ETS does: also a `Mode` 0 record carries the product's
+/// `Fill` octet (ETS sends `00 ff` for `Mode="0" Fill="255"`, issue #480).
+#[must_use]
+pub fn encode_rel_segment(size: u32, mode: u8, fill: u8) -> [u8; 10] {
     let mut v = [0u8; 10];
     v[0] = LoadControl::AdditionalLoadControls.octet();
     v[1] = LD_CTRL_REL_SEGMENT;
     v[2..6].copy_from_slice(&size.to_be_bytes());
-    if let Some(byte) = fill_byte {
-        v[6] = LD_CTRL_FILL;
-        v[7] = byte;
-    }
+    v[6] = mode;
+    v[7] = fill;
     v
 }
 
@@ -1215,8 +1213,9 @@ pub struct SegmentAllocation {
 ///    writes the table content with
 ///    [`crate::device::DeviceConnection::write_memory`].
 ///
-/// `fill_byte` mirrors the relative structure's fill flag/byte: `Some(b)` asks
-/// the device to pre-fill the segment with `b`, `None` leaves it uninitialised.
+/// `mode` and `fill` are the structure's `Mode` and `Fill` octets (see
+/// [`encode_rel_segment`]): bit 0 of `mode` asks the device to pre-fill the
+/// segment with `fill`; with it clear the segment keeps its contents.
 ///
 /// Load-state handling: the object must stay *open* after the allocation write
 /// — `Loading` on a conformant device, or `Loaded` on a lenient stack (KNX
@@ -1230,12 +1229,13 @@ pub async fn allocate_segment<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     object_index: u8,
     size: u32,
-    fill_byte: Option<u8>,
+    mode: u8,
+    fill: u8,
 ) -> Result<SegmentAllocation> {
     let address = l4.target();
 
     // 1-2. Write the 10-octet relative-allocation structure.
-    let structure = encode_rel_segment(size, fill_byte);
+    let structure = encode_rel_segment(size, mode, fill);
     let resp =
         property_write_request(l4, object_index, PID_LOAD_STATE_CONTROL, 1, 1, &structure).await?;
 
@@ -1726,7 +1726,7 @@ mod tests {
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         // event=3, sub=0x0B, size u32 BE, fill flag + byte, reserved tail
         // (KNX 3/5/2 LdCtrlRelSegment).
-        let v = encode_rel_segment(0x0000_0140, Some(0xEE));
+        let v = encode_rel_segment(0x0000_0140, 0x01, 0xEE);
         assert_eq!(v.len(), 10);
         assert_eq!(v[0], LoadControl::AdditionalLoadControls.octet());
         assert_eq!(v[1], LD_CTRL_REL_SEGMENT);
@@ -1736,7 +1736,7 @@ mod tests {
         assert_eq!(&v[8..10], &[0x00, 0x00]); // reserved
 
         // No fill: flag and byte are zero.
-        let v = encode_rel_segment(0x10, None);
+        let v = encode_rel_segment(0x10, 0x00, 0x00);
         assert_eq!(&v[2..6], &[0x00, 0x00, 0x00, 0x10]);
         assert_eq!(v[6], 0x00);
         assert_eq!(v[7], 0x00);
@@ -1745,9 +1745,30 @@ mod tests {
         // `030b000028c1 01 00 0000`: size 0x28c1, fill flag 0x01, fill byte 0x00.
         // A `Fill="1"` (FillByte default 0) allocation must encode to exactly
         // those first 8 octets, byte-for-byte with the ETS capture.
-        let v = encode_rel_segment(0x0000_28C1, Some(0x00));
+        let v = encode_rel_segment(0x0000_28C1, 0x01, 0x00);
         assert_eq!(&v[0..8], &[0x03, 0x0B, 0x00, 0x00, 0x28, 0xC1, 0x01, 0x00]);
         Ok(())
+    }
+
+    #[test]
+    fn test_encode_rel_segment_mode_0_keeps_fill_octet() {
+        // `syn-relseg-fill` allocates its parameter segment with
+        // `LdCtrlRelSegment Size="256" Mode="0" Fill="255"`; ETS sends
+        // `03 0b 00 00 01 00 00 ff 00 00` (captures/synthetic/syn-relseg-fill/
+        // defaults/ops.txt op 17, issue #480): mode 00, fill octet ff.
+        assert_eq!(
+            encode_rel_segment(256, 0x00, 0xFF),
+            [0x03, 0x0B, 0x00, 0x00, 0x01, 0x00, 0x00, 0xFF, 0x00, 0x00]
+        );
+    }
+
+    #[test]
+    fn test_encode_rel_segment_mode_1() {
+        // Mode 1, Fill 255: the device fills the segment with ff.
+        assert_eq!(
+            encode_rel_segment(0x0400, 0x01, 0xFF),
+            [0x03, 0x0B, 0x00, 0x00, 0x04, 0x00, 0x01, 0xFF, 0x00, 0x00]
+        );
     }
 
     #[test]

@@ -1,0 +1,85 @@
+normalized operation sequence for 1.1.1 (captures/synthetic/syn-s7-lsm5/defaults/ets.pcapng)
+dropped: 0 L_Data.con echo(es), 0 repeat(s), 118 L4 ack(s)
+
+   1  connect T_Connect
+   2  descriptor type0 type=0
+   3  prop-read obj0/PID_MAX_APDU_LENGTH count=1 index=1
+   4  authorize Authorize_Request key=FFFFFFFF(free-access)
+   5  prop-read obj0/PID_SERIAL_NUMBER count=1 index=1
+   6  mem-write 0x0104 addr_int=260 len=11 sha=90a5c18c extended=False
+   7  mem-read 0xb6ea addr_int=46826 count=1
+   8  mem-write 0x0104 addr_int=260 len=11 sha=fee1420e extended=False
+   9  mem-read 0xb6eb addr_int=46827 count=1
+  10  mem-write 0x0104 addr_int=260 len=11 sha=c23a1256 extended=False
+  11  mem-read 0xb6ec addr_int=46828 count=1
+  12  mem-write 0x0104 addr_int=260 len=11 sha=65546f0d extended=False
+  13  mem-read 0xb6ea addr_int=46826 count=1
+  14  mem-write 0x0104 addr_int=260 len=11 sha=bf9b5e9f extended=False
+  15  mem-read 0xb6ea addr_int=46826 count=1
+  16  mem-read 0x4000 addr_int=16384 count=1
+  17  mem-write 0x4000 addr_int=16384 len=1 sha=4bf5122f extended=False
+  18  mem-read 0x4000 addr_int=16384 count=1
+  19  mem-write 0x0104 addr_int=260 len=11 sha=604e5895 extended=False
+  20  mem-read 0xb6ea addr_int=46826 count=1
+  21  mem-write 0x0104 addr_int=260 len=11 sha=56227be9 extended=False
+  22  mem-read 0xb6ea addr_int=46826 count=1
+  23  mem-write 0x0104 addr_int=260 len=11 sha=eca3b891 extended=False
+  24  mem-read 0xb6eb addr_int=46827 count=1
+  25  mem-write 0x0104 addr_int=260 len=11 sha=383f2bb3 extended=False
+  26  mem-read 0xb6eb addr_int=46827 count=1
+  27  mem-read 0x4201 addr_int=16897 count=1
+  28  mem-write 0x0104 addr_int=260 len=11 sha=e2983ed7 extended=False
+  29  mem-read 0xb6eb addr_int=46827 count=1
+  30  mem-write 0x0104 addr_int=260 len=11 sha=951cfacc extended=False
+  31  mem-read 0xb6eb addr_int=46827 count=1
+  32  mem-write 0x0104 addr_int=260 len=11 sha=41611d63 extended=False
+  33  mem-read 0xb6ec addr_int=46828 count=1
+  34  mem-write 0x0104 addr_int=260 len=11 sha=6f554f20 extended=False
+  35  mem-read 0xb6ec addr_int=46828 count=1
+  36  mem-write 0x0104 addr_int=260 len=11 sha=44f6bf6b extended=False
+  37  mem-read 0xb6ec addr_int=46828 count=1
+  38  mem-read 0x4400 addr_int=17408 count=12
+  39  mem-write 0x4400 addr_int=17408 len=12 sha=b1f311c7 extended=False
+  40  mem-read 0x4400 addr_int=17408 count=12
+  41  mem-read 0x440c addr_int=17420 count=12
+  42  mem-write 0x440c addr_int=17420 len=12 sha=8688d249 extended=False
+  43  mem-read 0x440c addr_int=17420 count=12
+  44  mem-read 0x4418 addr_int=17432 count=12
+  45  mem-write 0x4418 addr_int=17432 len=12 sha=8688d249 extended=False
+  46  mem-read 0x4418 addr_int=17432 count=12
+  47  mem-write 0x4424 addr_int=17444 len=12 sha=8688d249 extended=False
+  48  mem-read 0x4424 addr_int=17444 count=12
+  49  mem-write 0x4430 addr_int=17456 len=12 sha=8688d249 extended=False
+  50  mem-read 0x4430 addr_int=17456 count=12
+  51  mem-write 0x443c addr_int=17468 len=4 sha=ad95131b extended=False
+  52  mem-read 0x443c addr_int=17468 count=4
+  53  mem-write 0x0104 addr_int=260 len=11 sha=1fc9af39 extended=False
+  54  mem-read 0xb6ec addr_int=46828 count=1
+  55  mem-read 0x4440 addr_int=17472 count=12
+  56  mem-write 0x4440 addr_int=17472 len=12 sha=a5403f60 extended=False
+  57  mem-read 0x4440 addr_int=17472 count=12
+  58  mem-read 0x444c addr_int=17484 count=12
+  59  mem-write 0x444c addr_int=17484 len=12 sha=8688d249 extended=False
+  60  mem-read 0x444c addr_int=17484 count=12
+  61  mem-read 0x4458 addr_int=17496 count=12
+  62  mem-write 0x4458 addr_int=17496 len=12 sha=8688d249 extended=False
+  63  mem-read 0x4458 addr_int=17496 count=12
+  64  mem-write 0x4464 addr_int=17508 len=12 sha=8688d249 extended=False
+  65  mem-read 0x4464 addr_int=17508 count=12
+  66  mem-write 0x4470 addr_int=17520 len=12 sha=8688d249 extended=False
+  67  mem-read 0x4470 addr_int=17520 count=12
+  68  mem-write 0x447c addr_int=17532 len=4 sha=ad95131b extended=False
+  69  mem-read 0x447c addr_int=17532 count=4
+  70  mem-write 0x0104 addr_int=260 len=11 sha=cfa5b440 extended=False
+  71  mem-read 0xb6ec addr_int=46828 count=1
+  72  mem-write 0x0104 addr_int=260 len=11 sha=aa5398e6 extended=False
+  73  mem-read 0xb6ec addr_int=46828 count=1
+  74  mem-write 0x0104 addr_int=260 len=11 sha=809c4572 extended=False
+  75  mem-read 0xb6ec addr_int=46828 count=1
+  76  restart Restart type=basic
+  77  disconnect T_Disconnect
+
+memory image (3 region(s), chunking removed):
+    0x000104..0x00010f len=11 sha=809c4572
+    0x004000..0x004001 len=1 sha=4bf5122f
+    0x004400..0x004480 len=128 sha=dbe83856

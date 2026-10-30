@@ -510,7 +510,7 @@ async fn allocate_segment_round_trip_returns_device_address() -> TestResult {
     assert_eq!(state, LoadState::Loading);
 
     // Allocate a 320-octet segment, fill with 0x00.
-    let seg = load::allocate_segment(&mut l4, 1, 320, Some(0x00)).await?;
+    let seg = load::allocate_segment(&mut l4, 1, 320, 0x01, 0x00).await?;
     assert_eq!(seg.address, 0x4200, "the device-placed segment address");
     assert_eq!(seg.size, 320);
 
@@ -540,7 +540,7 @@ async fn allocate_segment_in_wrong_state_is_refused() -> TestResult {
 
     // Allocating while Unloaded is refused: the device ignores the record
     // and both its answer and the read-back report Unloaded.
-    let err = load::allocate_segment(&mut l4, 1, 128, None)
+    let err = load::allocate_segment(&mut l4, 1, 128, 0x00, 0x00)
         .await
         .err()
         .ok_or("expected the call to fail, it succeeded")?;
@@ -573,7 +573,7 @@ async fn allocate_segment_refusal_surfaces_load_error() -> TestResult {
 
     load::write_load_control(&mut l4, 1, LoadControl::StartLoading).await?;
 
-    let err = load::allocate_segment(&mut l4, 1, 0xFFFF_FFF0, None)
+    let err = load::allocate_segment(&mut l4, 1, 0xFFFF_FFF0, 0x00, 0x00)
         .await
         .err()
         .ok_or("expected the call to fail, it succeeded")?;

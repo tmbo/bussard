@@ -5,14 +5,18 @@
 # zipped with the stub master by the script; the application is the rendered
 # id (the signed fingerprint never reaches the wire).
 #@ --dir captures/synthetic/model
+1.1.1|captures/synthetic/syn-choose-never-shown/defaults/ets.pcapng|tests-support/synthetic-products/syn-choose-never-shown/xml|M-00FA_A-270E-10-0000|syn-choose-never-shown defaults|100.0|expect=differs loadctl=identical
 1.1.1|captures/synthetic/syn-choose-partial-segment/defaults/ets.pcapng|tests-support/synthetic-products/syn-choose-partial-segment/xml|M-00FA_A-2708-10-0000|syn-choose-partial-segment defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-hidden-default/defaults/ets.pcapng|tests-support/synthetic-products/syn-hidden-default/xml|M-00FA_A-270C-10-0000|syn-hidden-default defaults|100.0|loadctl=identical
-1.1.1|captures/synthetic/syn-le-order/defaults/ets.pcapng|tests-support/synthetic-products/syn-le-order/xml|M-00FA_A-2704-10-0000|syn-le-order defaults|100.0|expect=differs loadctl=identical
+1.1.1|captures/synthetic/syn-le-order/defaults/ets.pcapng|tests-support/synthetic-products/syn-le-order/xml|M-00FA_A-2704-10-0000|syn-le-order defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-master-reset/defaults/ets.pcapng|tests-support/synthetic-products/syn-master-reset/xml|M-00FA_A-270A-10-0000|syn-master-reset defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-master-reset-code4/defaults/ets.pcapng|tests-support/synthetic-products/syn-master-reset-code4/xml|M-00FA_A-278A-10-0000|syn-master-reset-code4 defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-minimal/defaults/ets.pcapng|tests-support/synthetic-products/syn-minimal/xml|M-00FA_A-2700-10-0000|syn-minimal defaults|100.0|loadctl=identical
-1.1.1|captures/synthetic/syn-relseg-fill/defaults/ets.pcapng|tests-support/synthetic-products/syn-relseg-fill/xml|M-00FA_A-2707-10-0000|syn-relseg-fill defaults|100.0|loadctl=differs
+1.1.1|captures/synthetic/syn-param-calculation/defaults/ets.pcapng|tests-support/synthetic-products/syn-param-calculation/xml|M-00FA_A-270B-10-0000|syn-param-calculation defaults|100.0|loadctl=identical
+1.1.1|captures/synthetic/syn-relseg-fill/defaults/ets.pcapng|tests-support/synthetic-products/syn-relseg-fill/xml|M-00FA_A-2707-10-0000|syn-relseg-fill defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-s7-0701/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-0701/xml|M-00FA_A-2801-10-0000|syn-s7-0701 defaults|100.0|loadctl=differs
 1.1.1|captures/synthetic/syn-s7-0705/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-0705/xml|M-00FA_A-2800-10-0000|syn-s7-0705 defaults|100.0|loadctl=differs
+1.1.1|captures/synthetic/syn-s7-hidden-default/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-hidden-default/xml|M-00FA_A-280D-10-0000|syn-s7-hidden-default defaults|100.0|expect=differs loadctl=differs
+1.1.1|captures/synthetic/syn-s7-lsm5/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-lsm5/xml|M-00FA_A-280F-11-0000|syn-s7-lsm5 defaults|100.0|loadctl=differs
 1.1.1|captures/synthetic/syn-text-undeclared/defaults/ets.pcapng|tests-support/synthetic-products/syn-text-undeclared/xml|M-00FA_A-2706-10-0000|syn-text-undeclared defaults: bussard refuses the product, #416||expect=not-comparable
-1.1.1|captures/synthetic/syn-union-default-range/defaults/ets.pcapng|tests-support/synthetic-products/syn-union-default-range/xml|M-00FA_A-2705-10-0000|syn-union-default-range defaults: bussard refuses the product, #405||expect=not-comparable
+1.1.1|captures/synthetic/syn-union-default-range/defaults/ets.pcapng|tests-support/synthetic-products/syn-union-default-range/xml|M-00FA_A-2705-10-0000|syn-union-default-range defaults|100.0|loadctl=identical

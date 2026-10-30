@@ -7,7 +7,9 @@
 //! could not finish. Only a fully-executable plan leaves this module.
 
 use super::plan_sys7::{Sys7PlanTables, plan_flash_sys7};
-use super::{AppIdentity, FlashPlan, FlashStep, ImageKind, ImageRef, KeptOctets, PlanError};
+use super::{
+    AppIdentity, FlashPlan, FlashStep, ImageKind, ImageRef, KeptOctets, PlanError, SegmentFill,
+};
 use bussard_prod::application::{
     ApplicationProgram, CodeSegment, LoadOp, LoadProcedure, SegmentKind,
 };
@@ -417,7 +419,7 @@ pub fn plan_flash_with_memo(
     // The allocations of the product's `AppliesTo="par"` procedure (issue
     // #490): the planner lowers the `full` one, and a download onto a device
     // that already holds this application swaps in these.
-    let mut par_allocations: BTreeMap<Option<u32>, (u32, Option<u8>)> = BTreeMap::new();
+    let mut par_allocations: BTreeMap<Option<u32>, (u32, SegmentFill)> = BTreeMap::new();
 
     // The objects worth loading are exactly the ones that receive a segment
     // (a `RelSegment` allocation). A master template also opens/completes
@@ -518,14 +520,15 @@ pub fn plan_flash_with_memo(
                         detail: format!("table object {idx} allocation size {size}"),
                     });
                 }
-                // Table objects always allocate no-fill (`Fill=0` in every
-                // observed procedure, including the products that set `Fill=1`
-                // on the code segment). Preserve that unconditionally so the
-                // fill flag never leaks onto a table allocation.
+                // Table objects always allocate with `Mode` 0 and `Fill` 0
+                // (`00 00` in every observed capture, e.g. the house's 1.1.7 and
+                // 1.1.8 obj1-3, including the products that set `Mode=1` on the
+                // code segment). Preserve that unconditionally so the code
+                // segment's fill never leaks onto a table allocation.
                 steps.push(FlashStep::AllocateSegment {
                     size,
                     target: Some(*idx),
-                    fill: None,
+                    fill: SegmentFill::NONE,
                 });
             }
 
@@ -1067,7 +1070,7 @@ pub fn plan_flash_with_memo(
     let form = super::restart_form(app);
     let sparse = steps
         .iter()
-        .any(|s| matches!(s, FlashStep::AllocateSegment { fill: Some(_), .. }));
+        .any(|s| matches!(s, FlashStep::AllocateSegment { fill, .. } if fill.prefill().is_some()));
     if sparse && form.is_confirmed() {
         insert_factory_reset(&mut steps);
     }
@@ -1700,7 +1703,7 @@ mod tests {
                 FlashStep::AllocateSegment {
                     size: 6,
                     target: Some(4),
-                    fill: None,
+                    fill: SegmentFill::NONE,
                 },
                 FlashStep::WriteRelMem {
                     offset: 0,
@@ -1715,7 +1718,7 @@ mod tests {
                 FlashStep::AllocateSegment {
                     size: 1,
                     target: Some(4),
-                    fill: None,
+                    fill: SegmentFill::NONE,
                 },
                 FlashStep::WriteRelMem {
                     offset: 0,
@@ -1915,7 +1918,7 @@ mod tests {
             .expect("the procedure lowers an AllocateSegment");
         assert_eq!(
             fill,
-            Some(0),
+            SegmentFill::filled(0),
             "a Fill=\"1\" code-segment allocation must carry the pre-fill flag"
         );
 
@@ -1956,7 +1959,8 @@ mod tests {
             })
             .expect("the procedure lowers an AllocateSegment");
         assert_eq!(
-            fill, None,
+            fill,
+            SegmentFill::NONE,
             "a DA.tp-shape allocation (no Fill) must stay no-fill (byte-identical)"
         );
         Ok(())

@@ -418,8 +418,9 @@ pub fn write_dump(
                     "kind": "rel-segment",
                     "object": target,
                     "size": size,
-                    "fill": fill.is_some(),
-                    "fill_byte": fill,
+                    "fill": fill.prefill().is_some(),
+                    "mode": fill.mode,
+                    "fill_byte": fill.fill,
                 }));
             }
             // ETS's verify-mode write (issue #116): on a device that holds 00,

@@ -41,7 +41,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{FlashPlan, FlashStep, ImageKind, ImageRef};
+use super::{FlashPlan, FlashStep, ImageKind, ImageRef, SegmentFill};
 use crate::param_plan::ParamRegions;
 
 /// Why a full plan cannot be cut down to a parameter-only download.
@@ -307,11 +307,20 @@ impl FlashPlan {
                     steps.push(step.clone());
                 }
                 FlashStep::AllocateSegment { size, target, .. } if kept_allocs.contains(&i) => {
-                    // Mode 0, no fill: the `par` form of the allocation.
+                    // Mode 0, no fill: the `par` form of the allocation. The
+                    // product's own `par` record is sent as ETS sends it when
+                    // it keeps the memory (a `Mode="0" Fill="255"` record
+                    // carries `00 ff`, issue #480).
+                    let fill = self
+                        .par_allocations
+                        .get(target)
+                        .map(|&(_, fill)| fill)
+                        .filter(|fill| fill.prefill().is_none())
+                        .unwrap_or(SegmentFill::NONE);
                     steps.push(FlashStep::AllocateSegment {
                         size: *size,
                         target: *target,
-                        fill: None,
+                        fill,
                     });
                 }
                 FlashStep::WriteRelMem { image, .. } if image.kind == ImageKind::Parameters => {
@@ -514,7 +523,10 @@ mod tests {
                 FlashStep::Unload { target } => format!("unload {target:?}"),
                 FlashStep::StartLoading { target } => format!("load {target:?}"),
                 FlashStep::AllocateSegment { size, target, fill } => {
-                    format!("alloc {target:?} {size} {fill:?}")
+                    format!(
+                        "alloc {target:?} {size} {:02x} {:02x}",
+                        fill.mode, fill.fill
+                    )
                 }
                 FlashStep::WriteRelMem { offset, image, .. } => {
                     format!("write {} +{offset}", image.segment_id)
@@ -529,7 +541,7 @@ mod tests {
                 "unload Some(4)".to_string(),
                 "load Some(4)".to_string(),
                 // The `par` allocation (Size 1), not the code segment's.
-                "alloc Some(4) 1 None".to_string(),
+                "alloc Some(4) 1 00 00".to_string(),
                 format!("write {segment} +0"),
                 "complete Some(4)".to_string(),
                 "Restart".to_string(),
@@ -538,6 +550,45 @@ mod tests {
         assert_eq!(partial.baseline_address(segment), Some(0x4006));
         assert_eq!(partial.changed_octets(), 1);
         assert_eq!(partial.baseline(segment), Some(&[7u8][..]));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parameters_only_keeps_the_par_record_fill_octet()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Issue #480: a product whose `par` allocation reads `Mode="0"
+        // Fill="255"` is allocated with `00 ff`, as ETS sends it; a `par`
+        // record that would fill (Mode 1) is not taken over.
+        let app = fabricated_app();
+        let mut full = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )?;
+        let segment = "M-1_A-1_RS-2";
+        let regions = ParamRegions::from([region(segment, 0x4006, &[7])]);
+        let alloc_fill = |plan: &FlashPlan| {
+            plan.steps.iter().find_map(|s| match s {
+                FlashStep::AllocateSegment { fill, .. } => Some(*fill),
+                _ => None,
+            })
+        };
+        let keep = SegmentFill {
+            mode: 0x00,
+            fill: 0xFF,
+        };
+        full.par_allocations.insert(Some(4), (1, keep));
+        assert_eq!(alloc_fill(&full.parameters_only(&regions)?), Some(keep));
+        full.par_allocations
+            .insert(Some(4), (1, SegmentFill::filled(0xFF)));
+        assert_eq!(
+            alloc_fill(&full.parameters_only(&regions)?),
+            Some(SegmentFill::NONE)
+        );
         Ok(())
     }
 

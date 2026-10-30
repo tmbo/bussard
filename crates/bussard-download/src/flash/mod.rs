@@ -95,6 +95,7 @@
 //! [`read_mcb_table`]: bussard_mgmt::load::read_mcb_table
 
 use bussard_mgmt::load::LoadState;
+pub use bussard_prod::SegmentFill;
 use std::collections::BTreeMap;
 
 mod execute;
@@ -246,14 +247,13 @@ pub enum FlashStep {
         /// allocation runs against — and reads `PID_TABLE_REFERENCE` (PID7,
         /// the per-object base) from — this object.
         target: Option<u32>,
-        /// The device-side pre-fill the allocation requests, from the source
-        /// `LdCtrlRelSegment`'s fill (`Mode`/`Fill`) (see
-        /// [`bussard_ets::LoadOp::RelSegment::fill`]). `Some(b)` sets the
-        /// relative-segment structure's fill flag with byte `b`; `None` (the
-        /// DA.tp default) leaves it clear, byte-identical to the historical
-        /// no-fill allocation. Threaded into
-        /// [`bussard_mgmt::encode_rel_segment`]'s `fill_byte` argument.
-        fill: Option<u8>,
+        /// The source `LdCtrlRelSegment`'s `Mode` and `Fill` octets (see
+        /// [`bussard_ets::LoadOp::RelSegment::fill`]), sent verbatim by
+        /// [`bussard_mgmt::encode_rel_segment`] as ETS does. Its
+        /// [`SegmentFill::prefill`] is the byte the device pre-fills the
+        /// segment with; [`SegmentFill::NONE`] (the DA.tp default and every
+        /// table object) sends `00 00`.
+        fill: SegmentFill,
     },
     /// Write a relative-memory image at `segment base + offset` (`LdCtrlWriteRelMem`).
     WriteRelMem {
@@ -1003,12 +1003,12 @@ pub struct FlashPlan {
     /// as ETS does (issue #472). `false` on System 7 and property plans.
     user_memory_above_64k: bool,
     /// The allocations the product's `AppliesTo="par"` load procedure makes
-    /// (object index to size and fill), recorded by the planner so a full
+    /// (object index to size and `Mode`/`Fill`), recorded by the planner so a full
     /// download onto a device that already holds this application can run
     /// that procedure instead of the `full` one (issue #490,
     /// [`FlashPlan::use_par_procedure`]). Empty when the product declares no
     /// `par` allocation.
-    par_allocations: BTreeMap<Option<u32>, (u32, Option<u8>)>,
+    par_allocations: BTreeMap<Option<u32>, (u32, SegmentFill)>,
     /// Whether [`FlashPlan::use_par_procedure`] shaped this plan.
     par_procedure: bool,
     /// The allocated octets the load procedure's taken `<choose>` branches

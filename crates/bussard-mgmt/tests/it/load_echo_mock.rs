@@ -114,7 +114,7 @@ async fn run_sequence(answer: Answer) -> Result<Run, BoxError> {
     let mut states = Vec::new();
     states.push(load::write_load_control(&mut l4, OBJ, LoadControl::Unload).await?);
     states.push(load::write_load_control(&mut l4, OBJ, LoadControl::StartLoading).await?);
-    let segment = load::allocate_segment(&mut l4, OBJ, 64, Some(0)).await?;
+    let segment = load::allocate_segment(&mut l4, OBJ, 64, 0x01, 0x00).await?;
     states.push(load::write_load_control(&mut l4, OBJ, LoadControl::LoadCompleted).await?);
     let _ = l4.disconnect().await;
     let requests = gw.with_device(target, |d| d.requests.clone())?;
@@ -208,7 +208,7 @@ async fn test_allocate_segment_error_answer_is_confirmed_by_a_read() -> TestResu
     let mut bus = open(&gw).await?;
     let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
     load::write_load_control(&mut l4, OBJ, LoadControl::StartLoading).await?;
-    let err = load::allocate_segment(&mut l4, OBJ, 0xFFFF_FFF0, None)
+    let err = load::allocate_segment(&mut l4, OBJ, 0xFFFF_FFF0, 0x00, 0x00)
         .await
         .err()
         .ok_or("the refused allocation must fail")?;
