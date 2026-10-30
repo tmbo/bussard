@@ -18,5 +18,6 @@
 1.1.1|captures/synthetic/syn-s7-0705/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-0705/xml|M-00FA_A-2800-10-0000|syn-s7-0705 defaults|100.0|loadctl=differs
 1.1.1|captures/synthetic/syn-s7-hidden-default/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-hidden-default/xml|M-00FA_A-280D-10-0000|syn-s7-hidden-default defaults|100.0|expect=differs loadctl=differs
 1.1.1|captures/synthetic/syn-s7-lsm5/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-lsm5/xml|M-00FA_A-280F-11-0000|syn-s7-lsm5 defaults|100.0|loadctl=differs
+1.1.1|captures/synthetic/syn-s7-pei80/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-pei80/xml|M-00FA_A-2810-10-0000|syn-s7-pei80 defaults|100.0|loadctl=differs
 1.1.1|captures/synthetic/syn-text-undeclared/defaults/ets.pcapng|tests-support/synthetic-products/syn-text-undeclared/xml|M-00FA_A-2706-10-0000|syn-text-undeclared defaults: bussard refuses the product, #416||expect=not-comparable
 1.1.1|captures/synthetic/syn-union-default-range/defaults/ets.pcapng|tests-support/synthetic-products/syn-union-default-range/xml|M-00FA_A-2705-10-0000|syn-union-default-range defaults|100.0|loadctl=identical
