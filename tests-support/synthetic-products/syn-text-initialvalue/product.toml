@@ -9,7 +9,9 @@ syn-minimal with `TextParameterEncoding="utf-8"` and a third parameter, a
 is "Bussardhorst Süd". Regression row for #473 (closed): ETS starts a new
 device's text parameter from the `InitialValue` translated into the project
 language, so the capture, taken in the sweep's German (de-DE) ETS project,
-shows which text ETS writes; the oracle model imports in de-DE too."""
+shows which text ETS writes; the oracle model imports in de-DE too. ETS
+6.4.1 wrote the de-DE text in UTF-8, NUL-padded (`... 53 C3 BC 64 00 00
+00`), and so does bussard."""
 construct = "TypeText with a de-DE InitialValue translation, utf-8"
 issues = [473]
 
