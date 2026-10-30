@@ -1152,12 +1152,15 @@ impl Configuration {
     }
 
     /// The partial change set: up to three shown parameters take another
-    /// value that keeps the object table, one link is added on an object
-    /// that had none and one removed.
+    /// value that keeps the object table and the load procedure's
+    /// allocations (issue #411: a System 7 `<choose>` that allocates a
+    /// segment in parts needs a full download), one link is added on an
+    /// object that had none and one removed.
     fn partial_change(&self, app: &ApplicationProgram, rng: &mut SplitMix64) -> Configuration {
         let mut out = self.clone();
         out.label = format!("{} + partial change", self.label);
         let shape = object_shape(app, &self.values);
+        let memo = bussard_prod::dynamic::DynamicMemo::new(app);
         let config = evaluate_dynamic(app, &self.values);
         let mut refs: Vec<(String, String)> = visible_parameter_refs(app, &config)
             .into_iter()
@@ -1181,7 +1184,9 @@ impl Configuration {
             }
             let mut trial = out.values.clone();
             trial.insert(key, value);
-            if object_shape(app, &trial) == shape {
+            if object_shape(app, &trial) == shape
+                && bussard_download::allocation_change(app, &out.values, &trial, &memo).is_none()
+            {
                 out.values = trial;
                 changed += 1;
             }

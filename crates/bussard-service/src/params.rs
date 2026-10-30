@@ -607,8 +607,12 @@ pub async fn read_state<Ch: L4Channel>(
         bussard_download::decode_parameters_with(app, &overrides, &bases, &current, &memo);
     let change =
         bussard_download::group_object_change_with(app, &decoded.values, &overrides, &memo);
-    let needs_flash =
-        (!change.is_empty()).then(|| bussard_download::describe_group_object_change(&change));
+    // Issue #411: a System 7 load-procedure `<choose>` that allocates the
+    // segments differently under the model's values needs the full download
+    // that sends the new allocation records.
+    let needs_flash = (!change.is_empty())
+        .then(|| bussard_download::describe_group_object_change(&change))
+        .or_else(|| bussard_download::allocation_change(app, &decoded.values, &overrides, &memo));
     let device_managed = decoded
         .device_managed
         .iter()
@@ -1280,6 +1284,19 @@ pub fn group_object_refusal(target: IndividualAddress, why: &str) -> String {
     )
 }
 
+/// The refusal of a parameter write whose values make a System 7 load
+/// procedure allocate the segments differently (`why`, from
+/// [`bussard_download::allocation_change`], issue #411): `apply` sends no
+/// allocation record, so only a full `bussard flash <ia>` allocates the new
+/// layout.
+pub fn allocation_refusal(target: IndividualAddress, why: &str) -> String {
+    format!(
+        "the model's parameter values change the memory the load procedure allocates ({why}); \
+         `apply` rewrites parameters in place and sends no allocation record. Run a full \
+         `bussard flash {target}`."
+    )
+}
+
 /// The plan lines of the values the file of `target` stores for parameter
 /// refs the configuration does not show under its current values (issue
 /// #321): the image holds one slot per shown ref, so neither a parameter
@@ -1526,7 +1543,11 @@ pub fn build_device_plan(
                     });
                 }
                 if let Some(why) = &detail.needs_flash {
-                    refusal = Some(group_object_refusal(target, why));
+                    refusal = Some(if why.starts_with("the load procedure allocates") {
+                        allocation_refusal(target, why)
+                    } else {
+                        group_object_refusal(target, why)
+                    });
                     needs_flash = Some(why.clone());
                 } else {
                     match detail.plan.parameters_only(&detail.regions) {

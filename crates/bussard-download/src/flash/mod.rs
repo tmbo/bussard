@@ -131,6 +131,7 @@ pub use plan::{
     kept_octets, plan_flash, plan_flash_with_memo, plan_flash_with_object_flags, same_program,
     select_application,
 };
+pub use plan_sys7::allocation_change;
 pub(crate) use plan_sys7::sys7_lsm_override;
 pub use plan_sys7::{
     Sys7PlanTables, Sys7TableBases, Sys7TableImage, linked_flags_from_system_b,
@@ -1037,11 +1038,21 @@ pub struct FlashPlan {
     kept: Vec<KeptOctets>,
 }
 
-/// A run of octets a System B download allocates and does not write, because
-/// the load procedure's taken `<choose>` branch writes only part of the
+/// A run of octets of a segment a download does not write, because the load
+/// procedure's taken `<choose>` branch writes or allocates only part of the
 /// segment (issue #411): the device keeps what it holds there.
 ///
-/// ETS does the same. Its download of the synthetic product
+/// - **System B**: the branch allocates the whole relative segment and its
+///   `LdCtrlWriteRelMem` writes only part of it.
+/// - **System 7**: the branch allocates the absolute segment in parts
+///   (`LdCtrlAbsSegment` records that leave a gap, issue #413), so the gap is
+///   neither allocated nor written. ETS's download of `syn-s7-choose-split`
+///   (`captures/synthetic/syn-s7-choose-split/defaults/ops.txt`, ops 33 to
+///   41, ETS 6.4.1, 2026-10-30) allocates `0x4440` (1 octet) and `0x4443`
+///   (61 octets), streams each part, and never writes or reads
+///   `0x4441..0x4442`, where the parameter `delay` is placed.
+///
+/// ETS does the same on System B. Its download of the synthetic product
 /// `syn-choose-partial-segment` (`captures/synthetic/syn-choose-partial-segment/defaults/`,
 /// ETS 6.4.1, 2026-10-30) allocates the 256-octet segment, writes octets
 /// 0..128 only, reads nothing in 128..256 and runs no check over it, and the
@@ -1051,15 +1062,21 @@ pub struct FlashPlan {
 /// `P-324`: the switching times stored in the device).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeptOctets {
-    /// The load-state machine (object index) the segment is allocated on.
+    /// The load-state machine (object index on System B, LSM index on
+    /// System 7) the segment is allocated on.
     pub object: u32,
     /// The code-segment id of the segment.
     pub segment: String,
-    /// The octets the allocation holds.
+    /// The octets the allocation holds (System B), or the octets of the
+    /// segment's image the parts are cut from (System 7).
     pub allocated: usize,
     /// The half-open `[start, end)` octet ranges left as the device holds
-    /// them, sorted and inside the allocation.
+    /// them, sorted and inside [`Self::allocated`], as offsets into the
+    /// segment.
     pub ranges: Vec<(usize, usize)>,
+    /// The segment's absolute base address on System 7, `None` on System B
+    /// (the device places a relative segment).
+    pub address: Option<u32>,
 }
 
 impl KeptOctets {
@@ -1073,9 +1090,17 @@ impl KeptOctets {
     }
 
     /// The gap as the plan and the image dump name it:
-    /// `object 4 octets 128..256 kept`.
+    /// `object 4 octets 128..256 kept` (System B),
+    /// `LSM 3 segment 0x4440 octets 1..3 kept` (System 7).
     pub fn label(&self) -> String {
-        format!("object {} octets {} kept", self.object, self.ranges_text())
+        match self.address {
+            Some(base) => format!(
+                "LSM {} segment {base:#06X} octets {} kept",
+                self.object,
+                self.ranges_text()
+            ),
+            None => format!("object {} octets {} kept", self.object, self.ranges_text()),
+        }
     }
 
     /// Whether `octet` of [`Self::segment`] is kept.

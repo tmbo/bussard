@@ -117,12 +117,23 @@ pub fn decode_parameters_with(
         placements_of(app, values, base_offsets, &keys, memo)
     };
 
+    // The octets the download leaves as the device holds them (issue #411).
+    let kept_octets = crate::flash::kept_octets(app, overrides, memo);
+    let is_kept = |p: &Placed<'_>| {
+        kept_octets
+            .iter()
+            .any(|k| k.segment == p.segment && k.contains(p.offset))
+    };
+
     // The device's configuration: iterate until the decoded values settle.
+    // A kept parameter is not fed in: no download writes it, so what the
+    // device holds there (after a fresh allocation, whatever the allocation
+    // left) says nothing about the configuration it was downloaded with.
     let mut values = overrides.clone();
     let mut device = placements(&values);
     for _ in 0..MAX_PASSES {
         let mut changed = false;
-        for p in device.iter().filter(|p| p.reported(app)) {
+        for p in device.iter().filter(|p| p.reported(app) && !is_kept(p)) {
             let Some(held) = p.decode(app, current) else {
                 continue;
             };
@@ -169,13 +180,6 @@ pub fn decode_parameters_with(
     device_managed.sort_by(|a, b| a.key.cmp(&b.key));
     device_managed.dedup_by(|a, b| a.key == b.key);
 
-    // The octets the download leaves as the device holds them (issue #411).
-    let kept_octets = crate::flash::kept_octets(app, overrides, memo);
-    let is_kept = |p: &Placed<'_>| {
-        kept_octets
-            .iter()
-            .any(|k| k.segment == p.segment && k.contains(p.offset))
-    };
     let mut differences = Vec::new();
     let mut kept = Vec::new();
     let mut unknown = 0usize;

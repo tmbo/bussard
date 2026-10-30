@@ -536,6 +536,27 @@ before. The planner folds this into the write mask once, so the blind writer,
 the read-compare writer, the parameter-only diff and its read-back verify all
 use the same set.
 
+**A segment allocated in parts (issues #413, #411).** A `<choose>` branch can
+allocate one absolute segment with several `LdCtrlAbsSegment` records that
+leave gaps: the MDT `A-0054-14` and `A-0255-21` with `P-203` (switching times
+in the device) = 1 allocate `0x47E4` and `0x4770` in three and two parts.
+`CONFIRMED` against the synthetic `syn-s7-choose-split` (`captures/synthetic/
+syn-s7-choose-split/defaults/ops.txt`, ETS 6.4.1, 2026-10-30): with `mode` = 1
+the branch allocates the 64-octet `AS-4440` as `0x4440` length 1 and `0x4443`
+length 61; ETS sends both records as declared, streams `0x4440` (1 octet)
+after the first and `0x4443..0x447F` after the second, and never writes or
+reads `0x4441..0x4442`, where the 16-bit parameter `delay` is placed. The
+download completes. The rule bussard follows (`plan_sys7.rs`,
+`sys7_kept_octets`): each record is sent as declared, each part of the image
+is streamed into the allocation that holds it, and the octets no allocation
+holds are kept on the device: masked off (so the read-compare, the
+parameter-only download and the diff never touch them), not placed, and named
+in the plan (`LSM 3 segment 0x4440 octets 1..3 kept`). A parameter placed in
+a gap is reported as kept on the device (the device's value and the model's,
+no verdict), never as a difference, by `flash`, `plan` and the read-back.
+System B has the same rule for a `<choose>` branch that writes part of a
+relative segment (`KeptOctets`, PR #647).
+
 **Amendment (issue #133): read-compare-write on masks without `VerifyMode`.**
 `CONFIRMED` against `meteodata-1-1-202-new.pcapng` (Theben Meteodata 140 S,
 1.1.202, mask 0701, full ETS download after a device reset). ETS does not stream

@@ -159,6 +159,18 @@ pub(crate) fn run(mut ctx: Context<'_>) -> anyhow::Result<ExitCode> {
         );
         return Ok(ExitCode::FAILURE);
     }
+    // Issue #411: a System 7 load procedure that allocates the segments
+    // differently under the new values needs the full download.
+    let memo = bussard_prod::dynamic::DynamicMemo::new(ctx.app);
+    if let Some(why) =
+        bussard_download::allocation_change(ctx.app, &decoded.values, ctx.overrides, &memo)
+    {
+        eprintln!(
+            "refusing the parameter-only download to {target}: {why}; a parameter-only \
+             download sends no allocation record. Run a full `bussard flash {target}` instead."
+        );
+        return Ok(ExitCode::FAILURE);
+    }
 
     let params = ParamPlan {
         changes: decoded.differences,
