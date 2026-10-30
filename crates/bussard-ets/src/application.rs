@@ -527,6 +527,15 @@ pub enum LoadOp {
     Disconnect,
     /// `<LdCtrlRestart>`.
     Restart,
+    /// `<LdCtrlDelay MilliSeconds=…>`: a pause of the given length between two
+    /// steps of the procedure, with nothing sent on the wire. 35 corpus
+    /// applications put `MilliSeconds="200"` right before `LdCtrlRestart`
+    /// (issue #615).
+    Delay {
+        /// The pause in milliseconds (`MilliSeconds`); `None` when the attribute
+        /// is absent or not a number.
+        milliseconds: Option<u32>,
+    },
     /// `<LdCtrlMerge MergeId=…>`: a splice marker in a **master-template**
     /// `Load` procedure (`knx_master.xml`). It is not an on-wire operation: when
     /// a merged application is assembled against the master template, each
@@ -734,6 +743,11 @@ pub enum LoadOp {
         /// `Occurrence`: which object of `ObjType` the op addresses when it
         /// names the object by type (absent = the first, 0).
         occurrence: Option<u32>,
+        /// `StartElement`: the 1-based array element the compare reads (absent
+        /// = 1). The Siemens 07B0 applications compare elements 1, 2, 3, 5 and 6
+        /// of object 4's PID 246 one by one (issue #614).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        start_element: Option<u32>,
     },
     /// `<LdCtrlCompareRelMem …>`: read relative (segment-relative) memory and
     /// compare it against expected data — the memory twin of
@@ -792,6 +806,20 @@ pub enum LoadOp {
         /// How many MCB array elements to read (`Count`), defaulting to 1.
         count: Option<u32>,
     },
+    /// `<LdCtrlMapError OriginalError=… MappedError=…>`: an ETS tool-side rule,
+    /// not a device operation (the KNX Standard has no such load control). From
+    /// this op on, the tool reports the error `OriginalError` of a following
+    /// step as `MappedError` (0 = success); a later `LdCtrlMapError` for the same
+    /// code replaces the rule, and one that maps the code to itself ends it.
+    /// The 27 Siemens 07B0 applications of the corpus (issue #614) map
+    /// `0xC0042B08` to 0 for the `LdCtrlUnload LsmIdx="5"` that follows, then
+    /// back to itself.
+    MapError {
+        /// The ETS error code the rule rewrites (`OriginalError`).
+        original_error: Option<u32>,
+        /// The code it is reported as (`MappedError`); 0 means success.
+        mapped_error: Option<u32>,
+    },
     /// Any other `LdCtrl*` element, preserved by name and attribute list.
     Raw {
         /// The element's local name (e.g. `"LdCtrlLoadImageProp"`).
@@ -820,6 +848,11 @@ pub struct LoadProcedure {
     /// through [`LoadProcedure::guards_of`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub guards: Vec<Vec<LoadGuard>>,
+    /// Per op, at the same index as [`Self::ops`], its `AppliesTo` attribute
+    /// verbatim (`"full"`, `"par"`, `"grp"`, `"full,par"`, ...), `None` when
+    /// the op carries none. Read it through [`LoadProcedure::applies_to_of`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub applies_to: Vec<Option<String>>,
 }
 
 impl LoadProcedure {
@@ -827,6 +860,48 @@ impl LoadProcedure {
     pub fn guards_of(&self, index: usize) -> &[LoadGuard] {
         self.guards.get(index).map(Vec::as_slice).unwrap_or(&[])
     }
+
+    /// The `AppliesTo` attribute of op `index`, `None` when it has none.
+    pub fn applies_to_of(&self, index: usize) -> Option<&str> {
+        self.applies_to.get(index).and_then(Option::as_deref)
+    }
+
+    /// Whether op `index` belongs only to a partial download: its `AppliesTo`
+    /// names the parameter (`par`) or group-address (`grp`) download and
+    /// neither the complete download (`full`) nor every download (`all`,
+    /// `auto`).
+    pub fn is_partial_only(&self, index: usize) -> bool {
+        self.applies_to_of(index)
+            .is_some_and(applies_to_partial_only)
+    }
+
+    /// Whether the procedure lists the group-address download (an op with
+    /// `AppliesTo="grp"` only) next to the complete one. The Siemens 07B0
+    /// product procedures (issue #614) list the complete, parameter and
+    /// group-address downloads one after the other in one `<LoadProcedure>`;
+    /// a complete download runs none of the [`Self::is_partial_only`] ops of
+    /// such a procedure.
+    pub fn lists_partial_downloads(&self) -> bool {
+        self.applies_to.iter().flatten().any(|scope| {
+            let mut tokens = scope.split(',').map(str::trim).filter(|t| !t.is_empty());
+            tokens.clone().next().is_some() && tokens.all(|t| t.eq_ignore_ascii_case("grp"))
+        })
+    }
+}
+
+/// Whether an `AppliesTo` value names only partial downloads (`par`, `grp`)
+/// and not the complete one (`full`, `all`, `auto`). An empty value applies to
+/// every download.
+pub fn applies_to_partial_only(applies_to: &str) -> bool {
+    let tokens: Vec<&str> = applies_to
+        .split(',')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .collect();
+    !tokens.is_empty()
+        && tokens
+            .iter()
+            .all(|t| t.eq_ignore_ascii_case("par") || t.eq_ignore_ascii_case("grp"))
 }
 
 /// A `<choose ParamRefId>` inside a `<LoadProcedure>`.
@@ -2715,6 +2790,9 @@ pub(crate) fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m
         b"LdCtrlConnect" => LoadOp::Connect,
         b"LdCtrlDisconnect" => LoadOp::Disconnect,
         b"LdCtrlRestart" => LoadOp::Restart,
+        b"LdCtrlDelay" => LoadOp::Delay {
+            milliseconds: u(b"MilliSeconds"),
+        },
         b"LdCtrlMerge" => LoadOp::Merge {
             merge_id: s(b"MergeId"),
         },
@@ -2796,6 +2874,7 @@ pub(crate) fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m
             mask: get(m, b"Mask").and_then(decode_hex_bytes),
             range: s(b"Range"),
             occurrence: u(b"Occurrence"),
+            start_element: u(b"StartElement"),
         },
         b"LdCtrlCompareRelMem" => LoadOp::CompareRelMem {
             obj_idx: u(b"ObjIdx"),
@@ -2817,12 +2896,29 @@ pub(crate) fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m
             prop_id: u(b"PropId"),
             count: u(b"Count"),
         },
+        b"LdCtrlMapError" => LoadOp::MapError {
+            original_error: get(m, b"OriginalError").and_then(parse_error_code),
+            mapped_error: get(m, b"MappedError").and_then(parse_error_code),
+        },
         other => LoadOp::Raw {
             name: String::from_utf8_lossy(other).into_owned(),
             attrs: ordered_attrs(m),
         },
     };
+    // Keep the scopes parallel to the ops, whatever pushed ops before.
+    lp.applies_to.resize(lp.ops.len(), None);
+    lp.applies_to.push(s(b"AppliesTo"));
     lp.ops.push(op);
+}
+
+/// An ETS error code attribute: decimal as the corpus writes it
+/// (`OriginalError="3221498632"`), or hexadecimal with a `0x` prefix.
+fn parse_error_code(v: &str) -> Option<u32> {
+    let v = v.trim();
+    match v.strip_prefix("0x").or_else(|| v.strip_prefix("0X")) {
+        Some(hex) => u32::from_str_radix(hex, 16).ok(),
+        None => v.parse::<u32>().ok(),
+    }
 }
 
 /// An XML schema boolean (`true`/`1` are true, everything else false).
@@ -3383,6 +3479,24 @@ mod tests {
                 ..
             }
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn test_push_load_op_delay_is_typed() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // `LdCtrlDelay MilliSeconds` parses as a typed pause, not a Raw op the
+        // planner refuses (issue #615); the DeclarePropDesc beside it stays Raw.
+        let xml = include_bytes!("../tests/fixtures/ldctrl_declare_prop_desc_and_delay.app.xml");
+        let app = parse_application_program("M-00FA_A-0004-11-ABCD-O000A", xml)?;
+        let ops = &app.load_procedures[0].ops;
+        assert!(ops.contains(&LoadOp::Delay {
+            milliseconds: Some(1000)
+        }));
+        assert!(
+            ops.iter().any(
+                |op| matches!(op, LoadOp::Raw { name, .. } if name == "LdCtrlDeclarePropDesc")
+            )
+        );
         Ok(())
     }
 

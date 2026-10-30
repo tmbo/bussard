@@ -106,6 +106,14 @@ fn branch_taken(
 /// The ops of `lp` whose `<choose>` branches `config` takes, in order. A
 /// procedure without `<choose>` returns all of its ops.
 ///
+/// Every planner builds a complete download. A procedure that lists its
+/// partial downloads after the complete one
+/// ([`LoadProcedure::lists_partial_downloads`], the Siemens 07B0 product
+/// procedures of issue #614) runs none of their ops
+/// ([`LoadProcedure::is_partial_only`]). Any other procedure keeps its
+/// `AppliesTo="par"` ops, as before: there they restate the complete
+/// download's allocation (issue #490) or write the parameter segment.
+///
 /// The evaluation is recursive, as the Dynamic walk's: an op inside nested
 /// `<choose>` blocks carries its branches outermost first
 /// ([`LoadProcedure::guards_of`]), and runs only when every one of them is
@@ -123,7 +131,11 @@ pub(super) fn taken_ops(
     config: &DynamicConfig,
 ) -> Result<Vec<LoadOp>, PlanError> {
     let mut out = Vec::with_capacity(lp.ops.len());
+    let complete_only = lp.lists_partial_downloads();
     for (i, op) in lp.ops.iter().enumerate() {
+        if complete_only && lp.is_partial_only(i) {
+            continue;
+        }
         let mut taken = true;
         for guard in lp.guards_of(i) {
             if !branch_taken(app, lp, guard, config, i + 1)? {
@@ -173,9 +185,10 @@ fn rel_mem_coverage<'a>(ops: impl Iterator<Item = &'a LoadOp>) -> BTreeMap<u32, 
     out
 }
 
-/// The first octet range `every` covers and `taken` does not (both merged
-/// and sorted).
-fn first_gap(every: &[(u32, u32)], taken: &[(u32, u32)]) -> Option<(u32, u32)> {
+/// The octet ranges `every` covers and `taken` does not (both merged and
+/// sorted), in order.
+fn gaps(every: &[(u32, u32)], taken: &[(u32, u32)]) -> Vec<(u32, u32)> {
+    let mut out = Vec::new();
     for &(start, end) in every {
         let mut at = start;
         for &(t_start, t_end) in taken {
@@ -183,49 +196,72 @@ fn first_gap(every: &[(u32, u32)], taken: &[(u32, u32)]) -> Option<(u32, u32)> {
                 continue;
             }
             if t_start > at {
-                return Some((at, t_start));
+                out.push((at, t_start));
             }
             at = at.max(t_end);
         }
         if at < end {
-            return Some((at, end));
+            out.push((at, end));
         }
     }
-    None
+    out
+}
+
+/// The octets of each object's memory that some branch of the procedure
+/// writes (`LdCtrlWriteRelMem`) and the taken branches do not, keyed by
+/// object index: the gap a `<choose>` whose taken branch writes part of a
+/// segment leaves (issue #411). Empty when the taken branches write every
+/// octet any branch writes.
+pub(super) fn partial_rel_mem_gaps<'a>(
+    every_branch: impl Iterator<Item = &'a LoadOp>,
+    taken: &[LoadOp],
+) -> BTreeMap<u32, Vec<(u32, u32)>> {
+    let taken_cov = rel_mem_coverage(taken.iter());
+    rel_mem_coverage(every_branch)
+        .into_iter()
+        .filter_map(|(obj, every)| {
+            let taken = taken_cov.get(&obj).map(Vec::as_slice).unwrap_or(&[]);
+            let found = gaps(&every, taken);
+            (!found.is_empty()).then_some((obj, found))
+        })
+        .collect()
+}
+
+/// The refusal of a partial segment write on the paths that do not keep the
+/// gap on the device: the System 7 and the property-only planners (issue
+/// #411 decided only System B, from a capture).
+pub(super) fn partial_rel_mem_refusal(gaps: &BTreeMap<u32, Vec<(u32, u32)>>) -> Option<PlanError> {
+    let (obj, ranges) = gaps.iter().next()?;
+    let &(start, end) = ranges.first()?;
+    Some(PlanError::UnsupportedOp {
+        op: format!(
+            "LdCtrlWriteRelMem in a <choose> whose taken branches leave octets \
+             {start}..{end} of object {obj} unwritten (ETS keeps the device's octets \
+             there; bussard cannot verify a segment it writes only in part)"
+        ),
+    })
 }
 
 /// Refuses a procedure whose `<choose>` leaves part of an object's memory
 /// unwritten: the octets some branch of the procedure writes and the taken
-/// branches do not.
+/// branches do not ([`partial_rel_mem_gaps`]).
 ///
-/// ETS keeps the device's own octets there (the MDT JTA-01 blind push button,
-/// `M-0083_A-00A2-10-6169`, skips octets 835..904 of object 4 when parameter
-/// `P-324` is 1). bussard verifies a written segment by the device's MCB CRC
-/// over the whole segment and by the read-back against the model, and neither
-/// holds while the device keeps octets bussard does not know, so the plan
-/// refuses rather than reporting a mismatch after the write (issue #402).
+/// The System B planner keeps such a gap on the device instead, as ETS does
+/// (issue #411, see `kept_octets`); the System 7 planner still refuses it
+/// through [`guarded_ops`]. The corpus survey uses this to find them.
 ///
 /// # Errors
 ///
-/// [`PlanError::UnsupportedOp`] naming the object and the octet range.
+/// [`PlanError::UnsupportedOp`] naming the object and the first octet range.
+#[cfg(test)]
 pub(super) fn refuse_partial_rel_mem<'a>(
     every_branch: impl Iterator<Item = &'a LoadOp>,
     taken: &[LoadOp],
 ) -> Result<(), PlanError> {
-    let taken_cov = rel_mem_coverage(taken.iter());
-    for (obj, every) in rel_mem_coverage(every_branch) {
-        let taken = taken_cov.get(&obj).map(Vec::as_slice).unwrap_or(&[]);
-        if let Some((start, end)) = first_gap(&every, taken) {
-            return Err(PlanError::UnsupportedOp {
-                op: format!(
-                    "LdCtrlWriteRelMem in a <choose> whose taken branches leave octets \
-                     {start}..{end} of object {obj} unwritten (ETS keeps the device's octets \
-                     there; bussard cannot verify a segment it writes only in part)"
-                ),
-            });
-        }
+    match partial_rel_mem_refusal(&partial_rel_mem_gaps(every_branch, taken)) {
+        Some(err) => Err(err),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 /// The self-contained op sequence of `app` (no master-template splice) with
@@ -235,12 +271,19 @@ pub(super) fn refuse_partial_rel_mem<'a>(
 ///
 /// # Errors
 ///
-/// [`PlanError::UndecidableCondition`] when a `<choose>` cannot be decided.
+/// [`PlanError::UndecidableCondition`] when a `<choose>` cannot be decided,
+/// and [`PlanError::UnsupportedOp`] when the taken branches write only part
+/// of what another branch writes (a gap only the System B planner keeps,
+/// issue #411).
 pub(super) fn guarded_ops(
     app: &ApplicationProgram,
     config: &DynamicConfig,
 ) -> Result<Vec<LoadOp>, PlanError> {
-    super::plan::assemble_ops(app, None, config).map(|(ops, _)| ops)
+    let (ops, _, gaps) = super::plan::assemble_ops(app, None, config)?;
+    match partial_rel_mem_refusal(&gaps) {
+        Some(err) => Err(err),
+        None => Ok(ops),
+    }
 }
 
 /// How an op names its object: by index when it carries `ObjIdx`, else by
@@ -400,6 +443,27 @@ pub(super) fn lower_write_prop(
     })
 }
 
+/// The element an `LdCtrlCompareProp` reads: its `StartElement`, 1 when
+/// absent or 0.
+///
+/// # Errors
+///
+/// [`PlanError::UnsupportedWriteProp`] for an element past the 12-bit start
+/// index of `A_PropertyValue_Read`.
+pub(super) fn compare_start_element(
+    step: usize,
+    start_element: Option<u32>,
+) -> Result<u16, PlanError> {
+    let start = start_element.unwrap_or(1).max(1);
+    u16::try_from(start)
+        .ok()
+        .filter(|s| *s <= 0x0FFF)
+        .ok_or_else(|| PlanError::UnsupportedWriteProp {
+            step,
+            reason: format!("compare start element {start} exceeds the 12-bit start index"),
+        })
+}
+
 /// Lowers an `LdCtrlCompareProp`.
 ///
 /// # Errors
@@ -414,6 +478,7 @@ pub(super) fn lower_compare_prop(step: usize, op: &LoadOp) -> Result<FlashStep, 
         inline_data,
         mask,
         occurrence,
+        start_element,
         ..
     } = op
     else {
@@ -427,6 +492,7 @@ pub(super) fn lower_compare_prop(step: usize, op: &LoadOp) -> Result<FlashStep, 
         prop_id: prop_id.unwrap_or(0),
         expected: inline_data.clone(),
         mask: mask.clone(),
+        start_element: compare_start_element(step, *start_element)?,
     })
 }
 
@@ -498,6 +564,7 @@ pub(super) fn plan_flash_properties(
         user_memory_above_64k: false,
         par_allocations: BTreeMap::new(),
         par_procedure: false,
+        kept: Vec::new(),
     })
 }
 

@@ -7,11 +7,24 @@
 //! could not finish. Only a fully-executable plan leaves this module.
 
 use super::plan_sys7::{Sys7PlanTables, plan_flash_sys7};
-use super::{AppIdentity, FlashPlan, FlashStep, ImageKind, ImageRef, PlanError, SegmentFill};
+use super::{
+    AppIdentity, FlashPlan, FlashStep, ImageKind, ImageRef, KeptOctets, PlanError, SegmentFill,
+};
 use bussard_prod::application::{
     ApplicationProgram, CodeSegment, LoadOp, LoadProcedure, SegmentKind,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+/// Lowers an `LdCtrlDelay` to a [`FlashStep::Delay`] of its `MilliSeconds`
+/// (issue #615), in the System B and the System 7 planner. An op without a
+/// readable `MilliSeconds` is refused: the length of the pause is not guessed.
+pub(super) fn lower_delay(milliseconds: Option<u32>) -> Result<FlashStep, PlanError> {
+    milliseconds
+        .map(|milliseconds| FlashStep::Delay { milliseconds })
+        .ok_or_else(|| PlanError::UnsupportedOp {
+            op: "LdCtrlDelay without a MilliSeconds value".to_string(),
+        })
+}
 
 /// The standard System B table object indices a master template programs, and
 /// their human names. Used to refuse a spliced template that writes one of these
@@ -347,10 +360,13 @@ pub fn plan_flash_with_memo(
     //    richest single block. A single-style app has one block, used as-is.
     //    Empty apps are refused.
     let config = memo.evaluate_for(app, overrides);
-    let (ops, spliced_from_template) = assemble_ops(app, template_ops, &config)?;
+    let (ops, spliced_from_template, branch_gaps) = assemble_ops(app, template_ops, &config)?;
     if ops.is_empty() {
         return Err(PlanError::NoProcedure(app.id.clone()));
     }
+    // The octets a `<choose>` branch leaves unwritten stay as the device holds
+    // them, as in ETS's download (issue #411, [`KeptOctets`]).
+    let kept = kept_from(app, &ops, &branch_gaps);
 
     // Resolve the parameter images once, up front (used by AppliesTo=par writes).
     // `overrides` is keyed by app-relative ParameterRef id (the #46 contract);
@@ -358,7 +374,7 @@ pub fn plan_flash_with_memo(
     // No per-instance base offsets are supplied here (they live in the project,
     // not in the product data): a module-instance override therefore refuses at
     // pre-flight rather than misplacing a byte — see `compute_parameter_image`.
-    let (param_images, placed) =
+    let (param_images, mut placed) =
         bussard_prod::compute_parameter_image_placed_with(app, overrides, base_offsets, memo)
             .map_err(|e| PlanError::UnresolvableImage {
                 step: 0,
@@ -447,14 +463,56 @@ pub fn plan_flash_with_memo(
         })
         .collect();
 
+    // The `LdCtrlMapError` rules in force, original code to mapped code (issue
+    // #614). Only `MAPPED_UNLOAD_ERROR` to success is lowered, and only over
+    // an `Unload`.
+    let mut error_maps: BTreeMap<u32, u32> = BTreeMap::new();
+
     for (i, op) in ops.iter().enumerate() {
         let step_no = i + 1;
+        if let Some(code) = error_maps.keys().next()
+            && !matches!(
+                op,
+                LoadOp::Unload { .. }
+                    | LoadOp::MapError { .. }
+                    | LoadOp::Connect
+                    | LoadOp::Disconnect
+            )
+        {
+            return Err(PlanError::UnsupportedOp {
+                op: format!(
+                    "LdCtrlMapError OriginalError={code:#010X} in force over {op:?} (step \
+                     {step_no}); bussard maps it over an LdCtrlUnload only"
+                ),
+            });
+        }
         match op {
             // Session boundaries: the engine holds one connection open across the
             // whole procedure, so these carry no per-op device action.
             LoadOp::Connect | LoadOp::Disconnect => {}
 
-            LoadOp::Unload { lsm_idx } => steps.push(FlashStep::Unload { target: *lsm_idx }),
+            LoadOp::MapError {
+                original_error,
+                mapped_error,
+            } => lower_map_error(&mut error_maps, *original_error, *mapped_error)?,
+
+            LoadOp::Unload { lsm_idx } => {
+                let absent_ok = error_maps.get(&MAPPED_UNLOAD_ERROR) == Some(&0);
+                // A mapped unload goes to the object it names, so it must name
+                // one (1..=255), not the application object by default.
+                if absent_ok && !lsm_idx.is_some_and(|i| (1..=u32::from(u8::MAX)).contains(&i)) {
+                    return Err(PlanError::UnsupportedOp {
+                        op: format!(
+                            "LdCtrlMapError over an LdCtrlUnload without an object index 1 to \
+                             255 (step {step_no})"
+                        ),
+                    });
+                }
+                steps.push(FlashStep::Unload {
+                    target: *lsm_idx,
+                    absent_ok,
+                });
+            }
             LoadOp::Load { lsm_idx } if is_loadable(lsm_idx) => {
                 steps.push(FlashStep::StartLoading { target: *lsm_idx })
             }
@@ -464,6 +522,7 @@ pub fn plan_flash_with_memo(
             }
             LoadOp::LoadCompleted { .. } => {}
             LoadOp::Restart => steps.push(FlashStep::Restart),
+            LoadOp::Delay { milliseconds } => steps.push(lower_delay(*milliseconds)?),
             LoadOp::MasterReset {
                 erase_code,
                 channel_number,
@@ -632,11 +691,13 @@ pub fn plan_flash_with_memo(
             // A spliced template writes a standard table object (obj1/2/3) but no
             // table image was supplied: refuse rather than stream the app segment
             // (or nothing) to a table object.
+            // A product procedure (issue #614: the Siemens 07B0 applications)
+            // writes a table object it declares no segment for: the same.
             LoadOp::WriteRelMem {
                 obj_idx: Some(idx), ..
-            } if spliced_from_template
-                && !table_images.contains_key(idx)
-                && table_object_name(*idx).is_some() =>
+            } if !table_images.contains_key(idx)
+                && table_object_name(*idx).is_some()
+                && (spliced_from_template || !declares_segment_on(&segments, *idx)) =>
             {
                 return Err(PlanError::MissingTableImage {
                     step: step_no,
@@ -709,12 +770,34 @@ pub fn plan_flash_with_memo(
                 })?;
                 // The op's `Size` bounds what is streamed: the write covers the
                 // allocation, not the whole `RelativeSegment` (issue #564).
-                let bytes = bound_write_rel_mem(&segment_id, bytes, *size, placed.get(&segment_id))
+                //
+                // A segment a `<choose>` branch writes only in part (issue #411)
+                // keeps its image bounded by the allocation, and the step streams
+                // the op's own `[Offset, Offset + Size)` of it; the rest of the
+                // allocation is kept on the device ([`KeptOctets`]).
+                let kept_here = kept.iter().find(|k| k.segment == segment_id);
+                let bound = match kept_here {
+                    Some(k) => u32::try_from(k.allocated).ok(),
+                    None => *size,
+                };
+                let bytes = bound_write_rel_mem(&segment_id, bytes, bound, placed.get(&segment_id))
                     .map_err(|reason| PlanError::UnresolvableImage {
                         step: step_no,
                         reason,
                     })?;
-                let len = bytes.len();
+                let (part_start, len) = match kept_here {
+                    Some(_) => {
+                        let start = usize::try_from(offset.unwrap_or(0))
+                            .unwrap_or(usize::MAX)
+                            .min(bytes.len());
+                        let end = size
+                            .and_then(|s| usize::try_from(s).ok())
+                            .map_or(bytes.len(), |s| start.saturating_add(s))
+                            .min(bytes.len());
+                        (start, end - start)
+                    }
+                    None => (0, bytes.len()),
+                };
                 let offset = offset.unwrap_or(0);
                 // The segment base is device-supplied at execute time (>= 0), so a
                 // relative write already exceeds the 16-bit A_Memory space if
@@ -739,7 +822,7 @@ pub fn plan_flash_with_memo(
                     segment_id,
                     kind,
                     len,
-                    offset: 0,
+                    offset: part_start,
                 };
                 last_written_image = Some(image.clone());
                 if let Some(oi) = obj_idx {
@@ -879,6 +962,7 @@ pub fn plan_flash_with_memo(
                 inline_data,
                 mask,
                 range,
+                start_element,
                 ..
             } => {
                 // A property-verify precondition. The expected bytes come from the
@@ -894,6 +978,12 @@ pub fn plan_flash_with_memo(
                     prop_id: prop_id.unwrap_or(0),
                     expected: inline_data.clone(),
                     mask: mask.clone(),
+                    // The Siemens 07B0 applications compare single elements
+                    // of an array property (issue #614).
+                    start_element: super::plan_props::compare_start_element(
+                        step_no,
+                        *start_element,
+                    )?,
                 });
             }
 
@@ -974,7 +1064,10 @@ pub fn plan_flash_with_memo(
                 let image = written_image_by_object
                     .get(&obj_idx)
                     .cloned()
-                    .or_else(|| last_written_image.clone());
+                    .or_else(|| last_written_image.clone())
+                    // The device's CRC covers octets it keeps (issue #411):
+                    // the MCB is read, as ETS reads it, but not compared.
+                    .filter(|img| !kept.iter().any(|k| k.segment == img.segment_id));
                 steps.push(FlashStep::LoadImageProp {
                     obj_idx,
                     prop_id,
@@ -1029,6 +1122,14 @@ pub fn plan_flash_with_memo(
     // not secure-capable gets neither (issue #452: 1.1.45 and 1.1.51 allocate
     // a filled segment too, and ETS unloads them with load controls and ends
     // with a bare A_Restart).
+    // A kept octet is written by no step, so it is not placed: the dump's
+    // coverage, the parameter-only download and the restore leave it alone.
+    for k in &kept {
+        if let Some(octets) = placed.get_mut(&k.segment) {
+            octets.retain(|&i| !k.contains(i));
+        }
+    }
+
     let form = super::restart_form(app);
     let sparse = steps
         .iter()
@@ -1061,7 +1162,55 @@ pub fn plan_flash_with_memo(
         user_memory_above_64k: crate::apply::uses_user_memory(Some(app)),
         par_allocations,
         par_procedure: false,
+        kept,
     })
+}
+
+/// The one ETS error code the product corpus maps (`LdCtrlMapError
+/// OriginalError="3221498632"`, 27 Siemens 07B0 applications, issue #614): to
+/// success, around the `LdCtrlUnload LsmIdx="5"` of a device that may have no
+/// object 5. bussard reads it as the device's refusal of that load control
+/// with element count 0, the answer of a device without the object (issue
+/// #178). The ETS captures of the synthetic products `syn-map-error` and
+/// `syn-product-07b0` are to confirm what ETS sends there.
+pub const MAPPED_UNLOAD_ERROR: u32 = 0xC004_2B08;
+
+/// Applies one `LdCtrlMapError` to the rules in force: a code mapped to 0 is
+/// reported as success from here on, a code mapped to itself ends its rule.
+///
+/// # Errors
+///
+/// [`PlanError::UnsupportedOp`] for a rule bussard cannot honour: a code other
+/// than [`MAPPED_UNLOAD_ERROR`] (bussard cannot tell which of its failures it
+/// names), a mapping to another error, or a missing attribute.
+fn lower_map_error(
+    error_maps: &mut BTreeMap<u32, u32>,
+    original: Option<u32>,
+    mapped: Option<u32>,
+) -> std::result::Result<(), PlanError> {
+    let refuse = |why: &str| PlanError::UnsupportedOp {
+        op: format!(
+            "LdCtrlMapError OriginalError={} MappedError={}: {why}",
+            original.map_or_else(|| "-".to_string(), |c| format!("{c:#010X}")),
+            mapped.map_or_else(|| "-".to_string(), |c| format!("{c:#010X}")),
+        ),
+    };
+    let (Some(original), Some(mapped)) = (original, mapped) else {
+        return Err(refuse("an attribute is missing"));
+    };
+    if original != MAPPED_UNLOAD_ERROR {
+        return Err(refuse(
+            "bussard knows no device failure this ETS error code stands for",
+        ));
+    }
+    if mapped == original {
+        error_maps.remove(&original);
+    } else if mapped == 0 {
+        error_maps.insert(original, 0);
+    } else {
+        return Err(refuse("only a mapping to success (0) is supported"));
+    }
+    Ok(())
 }
 
 /// Inserts a [`FlashStep::FactoryReset`] with erase code 7 right before the
@@ -1187,8 +1336,10 @@ pub(super) fn plan_segments(
 }
 
 /// The op sequence a download of `app` runs, with every `<choose>` of its
-/// load procedures decided under `config`, and whether it was spliced into
-/// the master template (`template_ops`).
+/// load procedures decided under `config`, whether it was spliced into
+/// the master template (`template_ops`), and the octets of each object some
+/// branch writes and the taken branches do not
+/// ([`super::plan_props::partial_rel_mem_gaps`], issue #411).
 ///
 /// Only the branches `config` takes contribute their ops
 /// ([`super::plan_props::taken_ops`]), on every path: the System B lowering
@@ -1206,7 +1357,7 @@ pub(super) fn assemble_ops(
     app: &ApplicationProgram,
     template_ops: Option<&[LoadOp]>,
     config: &bussard_prod::dynamic::DynamicConfig,
-) -> std::result::Result<(Vec<LoadOp>, bool), PlanError> {
+) -> std::result::Result<AssembledOps, PlanError> {
     use super::plan_props::taken_ops;
     let non_empty: Vec<&LoadProcedure> = app
         .load_procedures
@@ -1223,7 +1374,7 @@ pub(super) fn assemble_ops(
         .filter(|p| !p.ops.is_empty() && p.merge_id.is_some())
         .collect();
     if non_empty.is_empty() {
-        return Ok((Vec::new(), false));
+        return Ok((Vec::new(), false, BTreeMap::new()));
     }
     if let Some(p) = companion_blocks.iter().find(|p| !p.chooses.is_empty()) {
         return Err(PlanError::UndecidableCondition {
@@ -1253,7 +1404,7 @@ pub(super) fn assemble_ops(
                 blocks.entry(id).or_default().extend(ops);
             }
         }
-        super::plan_props::refuse_partial_rel_mem(every_branch.into_iter(), &taken)?;
+        let gaps = super::plan_props::partial_rel_mem_gaps(every_branch.into_iter(), &taken);
         for p in &companion_blocks {
             if let Some(id) = p.merge_id.as_deref().and_then(|m| m.parse::<u32>().ok()) {
                 blocks.entry(id).or_default().extend(p.ops.clone());
@@ -1275,7 +1426,7 @@ pub(super) fn assemble_ops(
                 other => out.push(other.clone()),
             }
         }
-        return Ok((out, true));
+        return Ok((out, true, gaps));
     }
 
     let blocks = self_contained_blocks(app);
@@ -1283,8 +1434,100 @@ pub(super) fn assemble_ops(
     for p in &blocks {
         out.extend(taken_ops(app, p, config)?);
     }
-    super::plan_props::refuse_partial_rel_mem(blocks.iter().flat_map(|p| p.ops.iter()), &out)?;
-    Ok((out, false))
+    let gaps =
+        super::plan_props::partial_rel_mem_gaps(blocks.iter().flat_map(|p| p.ops.iter()), &out);
+    Ok((out, false, gaps))
+}
+
+/// What [`assemble_ops`] returns: the ops, whether they were spliced into
+/// the master template, and the branch gaps by object index.
+pub(super) type AssembledOps = (Vec<LoadOp>, bool, BTreeMap<u32, Vec<(u32, u32)>>);
+
+/// The [`KeptOctets`] of a System B download of `app`: each branch gap of
+/// [`assemble_ops`] bound to the relative segment its object allocates
+/// (the segment on that load-state machine, [`resolve_rel_segment`]) and cut
+/// to the allocation the taken ops make there (the segment's declared size
+/// when they make none).
+///
+/// The rule (issue #411): a `<choose>` branch that writes only part of a
+/// segment is planned as ETS downloads it, with the taken branch's writes
+/// alone and the rest of the allocation left as the device holds it. ETS's
+/// download of `syn-choose-partial-segment`
+/// (`captures/synthetic/syn-choose-partial-segment/defaults/ops.txt`, ops
+/// 17 and 25 to 27) allocates 256 octets, writes 0..128 and neither reads
+/// nor checks 128..256. The MCB check of such a segment reads the device's
+/// CRC without comparing it (it covers the kept octets), and the parameter
+/// read-back leaves the parameters placed in the gap out of its verdict.
+fn kept_from(
+    app: &ApplicationProgram,
+    ops: &[LoadOp],
+    gaps: &BTreeMap<u32, Vec<(u32, u32)>>,
+) -> Vec<KeptOctets> {
+    if gaps.is_empty() {
+        return Vec::new();
+    }
+    let segments = plan_segments(app);
+    gaps.iter()
+        .filter_map(|(&object, ranges)| {
+            let (segment, declared) =
+                resolve_rel_segment(&segments, Some(object), None, &BTreeMap::new())?;
+            let allocated = ops
+                .iter()
+                .rev()
+                .find_map(|op| match op {
+                    LoadOp::RelSegment {
+                        lsm_idx: Some(idx),
+                        size,
+                        ..
+                    } if *idx == object => Some(*size),
+                    _ => None,
+                })
+                .flatten()
+                .or(declared)
+                .and_then(|a| usize::try_from(a).ok())?;
+            let ranges: Vec<(usize, usize)> = ranges
+                .iter()
+                .filter_map(|&(start, end)| {
+                    let start = usize::try_from(start).ok()?;
+                    let end = usize::try_from(end).ok()?.min(allocated);
+                    (start < end).then_some((start, end))
+                })
+                .collect();
+            (!ranges.is_empty()).then_some(KeptOctets {
+                object,
+                segment,
+                allocated,
+                ranges,
+            })
+        })
+        .collect()
+}
+
+/// The octets a System B download of `app` under `overrides` leaves as the
+/// device holds them (issue #411, [`KeptOctets`]): what the planner keeps,
+/// for the read-back and the plan, which decode a device's parameters
+/// without a [`FlashPlan`] at hand. Empty for a System 7 or property-only
+/// application, and when the load procedure cannot be decided (the planner
+/// refuses such a plan on its own).
+pub fn kept_octets(
+    app: &ApplicationProgram,
+    overrides: &BTreeMap<String, String>,
+    memo: &bussard_prod::dynamic::DynamicMemo<'_, ApplicationProgram>,
+) -> Vec<KeptOctets> {
+    let system_b = app
+        .mask_version
+        .as_deref()
+        .and_then(|m| u16::from_str_radix(m.trim(), 16).ok())
+        .map(bussard_mgmt::MaskProfile::from_mask)
+        .is_some_and(|p| p.capabilities().flash && !p.is_system_7());
+    if !system_b || app.load_procedures.iter().all(|p| p.chooses.is_empty()) {
+        return Vec::new();
+    }
+    let config = memo.evaluate_for(app, overrides);
+    match assemble_ops(app, None, &config) {
+        Ok((ops, _, gaps)) => kept_from(app, &ops, &gaps),
+        Err(_) => Vec::new(),
+    }
 }
 
 /// The blocks a self-contained download (no master-template splice) runs, in
@@ -1382,6 +1625,14 @@ pub(super) fn resolve_rel_segment(
             }
         })
         .map(|s| (s.id.clone(), s.size))
+}
+
+/// Whether the application declares a relative segment of its own on load
+/// state machine `lsm` (the ABB i-bus group-object table, issue #113).
+fn declares_segment_on(segments: &HashMap<String, CodeSegment>, lsm: u32) -> bool {
+    segments
+        .values()
+        .any(|s| s.kind == SegmentKind::Relative && s.load_state_machine == Some(lsm))
 }
 
 /// Cuts a `WriteRelMem` image to the op's `Size` (issue #564).
@@ -1565,7 +1816,10 @@ mod tests {
         assert_eq!(
             plan.steps,
             vec![
-                FlashStep::Unload { target: Some(4) },
+                FlashStep::Unload {
+                    target: Some(4),
+                    absent_ok: false
+                },
                 FlashStep::StartLoading { target: Some(4) },
                 FlashStep::AllocateSegment {
                     size: 6,
@@ -1740,6 +1994,61 @@ mod tests {
         Ok(())
     }
 
+    /// A System B procedure with `LdCtrlDelay` (issue #615): the given
+    /// milliseconds lower to a pause step in procedure order, and the trace
+    /// names it. An op without `MilliSeconds` refuses the plan.
+    #[test]
+    fn test_plan_flash_lowers_delay() -> Result<(), Box<dyn std::error::Error>> {
+        let app_xml = |delay: &str| {
+            format!(
+                r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-DL" MaskVersion="MV-07B0" Name="DL"
+            LoadProcedureStyle="ProductDefault">
+          <Static>
+           <Code><RelativeSegment Id="M-1_A-DL_RS-1" Size="6" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment></Code>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlUnload LsmIdx="4" />
+             <LdCtrlLoad LsmIdx="4" />
+             <LdCtrlRelSegment LsmIdx="4" Size="6" AppliesTo="full" />
+             <LdCtrlWriteRelMem ObjIdx="0" Offset="0" Size="6" AppliesTo="full" />
+             <LdCtrlLoadCompleted LsmIdx="4" />
+             {delay}
+             <LdCtrlRestart />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#
+            )
+        };
+        let plan_for =
+            |delay: &str| -> Result<Result<FlashPlan, PlanError>, Box<dyn std::error::Error>> {
+                let app = parse_application_program("M-1_A-DL", app_xml(delay).as_bytes())?;
+                Ok(plan_flash(
+                    &app,
+                    "1.1.4",
+                    0x07B0,
+                    &no_overrides(),
+                    &BTreeMap::new(),
+                    None,
+                    &BTreeMap::new(),
+                ))
+            };
+        let plan = plan_for(r#"<LdCtrlDelay MilliSeconds="200" />"#)??;
+        let n = plan.steps.len();
+        assert!(n >= 2);
+        assert_eq!(
+            plan.steps[n - 2..],
+            [FlashStep::Delay { milliseconds: 200 }, FlashStep::Restart]
+        );
+        assert!(trace(&plan).iter().any(|l| l.contains("wait 200 ms")));
+        assert!(matches!(
+            plan_for("<LdCtrlDelay />")?,
+            Err(PlanError::UnsupportedOp { op }) if op.contains("LdCtrlDelay")
+        ));
+        Ok(())
+    }
+
     #[test]
     fn plan_threads_rel_segment_fill_flag_data_driven() -> Result<(), Box<dyn std::error::Error>> {
         // Item 1 (issue #73): the `LdCtrlRelSegment` `Fill`/`FillByte` is
@@ -1830,6 +2139,53 @@ mod tests {
             SegmentFill::NONE,
             "a DA.tp-shape allocation (no Fill) must stay no-fill (byte-identical)"
         );
+        Ok(())
+    }
+
+    /// Issue #623: the plan of a re-download onto a device that already holds
+    /// the application (the `par` procedure of a same-application device),
+    /// for a product whose procedure has a Master Reset with erase code 4,
+    /// erases resident objects, so the executor takes no resident-MCB skip.
+    /// The confirmed restart (1) and the address reset (3) erase no object.
+    #[test]
+    fn test_erases_resident_objects_master_reset_erase_code_4_over_same_application()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (code, erases) in [(4u8, true), (2, true), (6, true), (1, false), (3, false)] {
+            let xml = format!(
+                r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-MR" MaskVersion="MV-07B0" Name="MR"
+            LoadProcedureStyle="ProductDefault">
+          <Static>
+           <Code><RelativeSegment Id="M-1_A-MR_RS-1" Size="6" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment></Code>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlUnload LsmIdx="4" />
+             <LdCtrlLoad LsmIdx="4" />
+             <LdCtrlRelSegment LsmIdx="4" Size="6" Mode="0" Fill="0" />
+             <LdCtrlMasterReset EraseCode="{code}" ChannelNumber="0" />
+             <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="6" />
+             <LdCtrlLoadCompleted LsmIdx="4" />
+             <LdCtrlRestart />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#
+            );
+            let app = parse_application_program("M-1_A-MR", xml.as_bytes())?;
+            let mut plan = plan_flash(
+                &app,
+                "1.1.4",
+                0x07B0,
+                &no_overrides(),
+                &BTreeMap::new(),
+                None,
+                &BTreeMap::new(),
+            )?;
+            // The device already runs this application: the `par` procedure.
+            plan.use_par_procedure(None);
+            assert!(!plan.has_factory_reset(), "erase code {code}");
+            assert_eq!(plan.erases_resident_objects(), erases, "erase code {code}");
+        }
         Ok(())
     }
 
@@ -2360,7 +2716,9 @@ mod tests {
                 prop_id,
                 expected,
                 mask,
+                start_element,
             } => {
+                assert_eq!(*start_element, 1);
                 assert_eq!(*object, crate::flash::PropObject::Index(0));
                 assert_eq!(*prop_id, 78);
                 assert_eq!(
@@ -2484,7 +2842,7 @@ mod tests {
         ];
         let memo = bussard_prod::dynamic::DynamicMemo::new(&app);
         let overrides = BTreeMap::from([("P-579_R-1032".to_string(), "1".to_string())]);
-        let (ops, spliced) =
+        let (ops, spliced, _) =
             assemble_ops(&app, Some(&template), &memo.evaluate_for(&app, &overrides))?;
         assert!(spliced);
         let compares: Vec<_> = ops
@@ -2499,10 +2857,10 @@ mod tests {
     }
 
     #[test]
-    fn test_plan_flash_refuses_a_choose_that_writes_a_segment_in_part() -> TestResult {
+    fn test_plan_flash_keeps_the_octets_a_choose_leaves_unwritten() -> TestResult {
         // The MDT JTA-01 shape (`M-0083_A-00A2-10-6169`): parameter P-324
         // picks a full write of the segment or one that skips octets 4..6,
-        // which ETS leaves as the device holds them.
+        // which ETS leaves as the device holds them (issue #411).
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
          <ApplicationProgram Id="M-1_A-6" ApplicationNumber="9" ApplicationVersion="1"
             MaskVersion="MV-07B0" Name="JTA" LoadProcedureStyle="MergedProcedure">
@@ -2554,10 +2912,27 @@ mod tests {
             .filter(|s| matches!(s, FlashStep::WriteRelMem { .. }))
             .count();
         assert_eq!(writes, 1, "one full write, not three");
-        match plan_for("1") {
-            Err(PlanError::UnsupportedOp { op }) => assert!(op.contains("octets 4..6 of object 4")),
-            other => return Err(format!("expected a refusal, got {other:?}").into()),
-        }
+        assert!(full.kept().is_empty());
+        // Issue #411: the keep branch writes its two parts and keeps 4..6.
+        let keep = plan_for("1")?;
+        let parts: Vec<(u32, usize, usize)> = keep
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                FlashStep::WriteRelMem { offset, image, .. } => {
+                    Some((*offset, image.offset, image.len))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(parts, vec![(0, 0, 4), (6, 6, 2)]);
+        assert_eq!(keep.kept().len(), 1);
+        assert_eq!(keep.kept()[0].label(), "object 4 octets 4..6 kept");
+        assert_eq!(
+            keep.image_bytes("M-1_A-6_RS-1"),
+            Some(&[0, 1, 2, 3, 4, 5, 6, 7][..])
+        );
+        assert_eq!(keep.total_write_bytes(), 6);
         Ok(())
     }
 
@@ -3022,5 +3397,182 @@ mod tests {
             maybe_substitute_app_id(13, Some(&[0, 0, 0, 0, 0]), None),
             Some(vec![0, 0, 0, 0, 0])
         );
+    }
+
+    /// The fabricated Siemens-shaped product procedure (issue #614).
+    fn map_error_app() -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
+        let xml = include_bytes!("../../../bussard-ets/tests/fixtures/ldctrl_map_error.app.xml");
+        Ok(parse_application_program("M-00FA_A-0614-01-ABCD", xml)?)
+    }
+
+    fn plan_map_error(app: &ApplicationProgram) -> std::result::Result<FlashPlan, PlanError> {
+        let tables = crate::build_table_images(
+            None,
+            bussard_model::IndividualAddress::from_raw(0x1101),
+            app,
+            &BTreeMap::new(),
+        );
+        plan_flash(
+            app,
+            "1.1.1",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &tables,
+        )
+    }
+
+    #[test]
+    fn test_plan_flash_map_error_maps_only_the_wrapped_unload()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let plan = plan_map_error(&map_error_app()?)?;
+        let unloads: Vec<(Option<u32>, bool)> = plan
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                FlashStep::Unload { target, absent_ok } => Some((*target, *absent_ok)),
+                _ => None,
+            })
+            .collect();
+        // The second LdCtrlMapError (mapped to itself) ends the rule, and the
+        // par/grp unloads after the complete download are left out.
+        assert_eq!(
+            unloads,
+            [
+                (Some(5), true),
+                (Some(4), false),
+                (Some(3), false),
+                (Some(2), false),
+                (Some(1), false)
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_product_procedure_runs_the_complete_download_only()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let plan = plan_map_error(&map_error_app()?)?;
+        let allocations: Vec<Option<u32>> = plan
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                FlashStep::AllocateSegment { target, .. } => Some(*target),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(allocations, [Some(4), Some(3), Some(1), Some(2)]);
+        let writes: Vec<(Option<u32>, ImageKind)> = plan
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                FlashStep::WriteRelMem { target, image, .. } => Some((*target, image.kind)),
+                _ => None,
+            })
+            .collect();
+        // The tables on LSM 1 to 3 stream the table images, as every System B
+        // download does.
+        assert_eq!(
+            writes,
+            [
+                (Some(4), ImageKind::Code),
+                (Some(3), ImageKind::Table),
+                (Some(2), ImageKind::Table),
+                (Some(1), ImageKind::Table)
+            ]
+        );
+        let completed = plan
+            .steps
+            .iter()
+            .filter(|s| matches!(s, FlashStep::LoadCompleted { .. }))
+            .count();
+        assert_eq!(completed, 4);
+        let elements: Vec<u16> = plan
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                FlashStep::CompareProp { start_element, .. } => Some(*start_element),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(elements, [1, 3]);
+        assert!(
+            trace(&plan)
+                .iter()
+                .any(|l| l.contains("absent object is no error"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_product_procedure_without_table_images_refuses()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let app = map_error_app()?;
+        match plan_flash(
+            &app,
+            "1.1.1",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        ) {
+            Err(PlanError::MissingTableImage { obj_idx: 3, .. }) => Ok(()),
+            other => Err(format!("expected MissingTableImage for object 3, got {other:?}").into()),
+        }
+    }
+
+    #[test]
+    fn test_lower_map_error_refuses_what_it_cannot_honour() {
+        let mut maps = BTreeMap::new();
+        assert!(lower_map_error(&mut maps, Some(MAPPED_UNLOAD_ERROR), Some(0)).is_ok());
+        assert_eq!(maps.get(&MAPPED_UNLOAD_ERROR), Some(&0));
+        assert!(
+            lower_map_error(
+                &mut maps,
+                Some(MAPPED_UNLOAD_ERROR),
+                Some(MAPPED_UNLOAD_ERROR)
+            )
+            .is_ok()
+        );
+        assert!(maps.is_empty());
+        for (original, mapped) in [
+            (Some(0xC004_0001), Some(0)),
+            (Some(MAPPED_UNLOAD_ERROR), Some(5)),
+            (None, Some(0)),
+            (Some(MAPPED_UNLOAD_ERROR), None),
+        ] {
+            assert!(
+                matches!(
+                    lower_map_error(&mut maps, original, mapped),
+                    Err(PlanError::UnsupportedOp { .. })
+                ),
+                "{original:?} -> {mapped:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_plan_flash_map_error_over_another_op_refuses() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut app = map_error_app()?;
+        // Drop the closing LdCtrlMapError: the rule stays in force over the
+        // unload of object 4 (fine) and then over a Load (refused).
+        let lp = app.load_procedures.first_mut().ok_or("procedure")?;
+        let closing = lp
+            .ops
+            .iter()
+            .rposition(|op| matches!(op, LoadOp::MapError { .. }))
+            .ok_or("closing map")?;
+        lp.ops.remove(closing);
+        lp.applies_to.remove(closing);
+        match plan_map_error(&app) {
+            Err(PlanError::UnsupportedOp { op }) => {
+                assert!(op.contains("LdCtrlMapError"), "{op}");
+                Ok(())
+            }
+            other => Err(format!("expected UnsupportedOp, got {other:?}").into()),
+        }
     }
 }

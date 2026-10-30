@@ -90,6 +90,24 @@ pub(crate) fn print_text(readback: &Readback, target: IndividualAddress) {
             }
         }
     }
+    if !readback.kept.is_empty() {
+        println!(
+            "  kept on the device (the load procedure's branch does not write their octets, as \
+             ETS's download does not; neither written nor verified):"
+        );
+        for k in &readback.kept {
+            let device = k
+                .device
+                .as_deref()
+                .map(|v| with_unit(v, &k.unit))
+                .unwrap_or_else(|| "unreadable".to_string());
+            println!(
+                "      {}: device {device}, model {}",
+                k.name,
+                with_unit(&k.model, &k.unit)
+            );
+        }
+    }
     if readback.non_default.is_empty() && readback.differences.is_empty() {
         if readback.note.is_none() {
             if readback.internal.is_empty() {

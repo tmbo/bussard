@@ -164,6 +164,7 @@ pub(crate) fn run(mut ctx: Context<'_>) -> anyhow::Result<ExitCode> {
         changes: decoded.differences,
         unknown: decoded.unknown,
         note: None,
+        kept: decoded.kept,
     };
     if ctx.json {
         print_json(target, &partial, &regions, &params)?;

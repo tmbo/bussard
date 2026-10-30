@@ -126,8 +126,8 @@ class Xml:
         return ("\n".join(self.lines) + "\n").encode("utf-8")
 
 
-def knx_root(x: Xml) -> None:
-    x.open("KNX", [("xmlns", NS)])
+def knx_root(x: Xml, ns: str = NS) -> None:
+    x.open("KNX", [("xmlns", ns)])
     x.open("ManufacturerData")
     x.open("Manufacturer", [("RefId", MANUFACTURER)])
 
@@ -159,7 +159,7 @@ class Product:
         check_keys(f"{w} [application]", a,
                    {"number", "version", "name", "mask", "load_procedure_style",
                     "address_table_max_entries", "association_table_max_entries"},
-                   {"options", "translations"} | SYS7_APP_KEYS)
+                   {"options", "translations", "schema"} | SYS7_APP_KEYS)
         if a["number"] not in APP_NUMBERS:
             raise SpecError(f"{w} [application]: number {a['number']:#06x} is outside the synthetic "
                             f"range {APP_NUMBERS.start:#06x}..{APP_NUMBERS.stop - 1:#06x}")
@@ -180,6 +180,7 @@ class Product:
         for k in a.get("options", {}):
             if k not in OPTIONS:
                 raise SpecError(f"{w} [application.options]: unknown option `{k}`")
+        self.schema = check_schema(w, a)
         self.app_id = f"{MANUFACTURER}_A-{a['number']:04X}-{a['version']:02X}-0000"
         self.hw_id = f"{MANUFACTURER}_H-{p['hardware_serial']}-{p.get('hardware_version', 1)}"
         self.product_id = f"{self.hw_id}_P-{ets_escape(p['order_number'])}"
@@ -464,6 +465,11 @@ SYS7_LOAD_OPS = {
                          "access": "Access", "mem_type": "MemType", "seg_flags": "SegFlags"},
     "LdCtrlTaskSegment": {"lsm": "LsmIdx", "address": "Address"},
     "LdCtrlTaskCtrl1": {"lsm": "LsmIdx", "address": "Address", "count": "Count"},
+    # syn-s7-taskptr (#604 row 17, #527): the Task Pointer Record and Task
+    # Control Record 2, with the attribute names of the corpus (0020/0021).
+    "LdCtrlTaskPtr": {"lsm": "LsmIdx", "init_ptr": "InitPtr", "save_ptr": "SavePtr", "serial_ptr": "SerialPtr"},
+    "LdCtrlTaskCtrl2": {"lsm": "LsmIdx", "callback": "Callback", "address": "Address", "seg0": "Seg0",
+                        "seg1": "Seg1"},
 }
 MEMORY_TYPES = ("EEPROM", "RAM")
 
@@ -519,11 +525,32 @@ def table_location(p: "Product", key: str) -> list[tuple[str, object]]:
     return [("CodeSegment", p.segments[p.app[key]]["id"]), ("Offset", 0)]
 
 
+# ------------------------------------------- the schema version (#448, #604)
+# `[application] schema` picks the namespace of all three files. 23 is the
+# default; 11 is the schema of the System 7 vendor applications of #448
+# (Steinel, ekinex, B.E.G., all project/11 with MinEtsVersion 4.0 or none).
+# Every element and attribute the generator writes also occurs in those
+# project/11 files, so the schema changes only the namespace and
+# MinEtsVersion ("6.0" names an ETS newer than the schema).
+
+SCHEMAS = {
+    23: {"ns": NS, "min_ets": "6.0"},
+    11: {"ns": "http://knx.org/xml/project/11", "min_ets": "4.0"},
+}
+
+
+def check_schema(w: str, a: dict) -> int:
+    schema = a.get("schema", 23)
+    if schema not in SCHEMAS:
+        raise SpecError(f"{w} [application]: schema is one of {sorted(SCHEMAS)}")
+    return schema
+
+
 # ------------------------------------------------------------------ rendering
 
 def render_catalog(p: Product) -> bytes:
     x = Xml()
-    knx_root(x)
+    knx_root(x, SCHEMAS[p.schema]["ns"])
     x.open("Catalog")
     cs_id, cs_name, cs_number = CATALOG_SECTION
     x.open("CatalogSection", [("Id", cs_id), ("Name", cs_name), ("Number", cs_number),
@@ -541,7 +568,7 @@ def render_catalog(p: Product) -> bytes:
 def render_hardware(p: Product) -> bytes:
     pr = p.product
     x = Xml()
-    knx_root(x)
+    knx_root(x, SCHEMAS[p.schema]["ns"])
     x.open("Hardware")
     x.open("Hardware", [("Id", p.hw_id), ("Name", pr["hardware_name"]), ("SerialNumber", pr["hardware_serial"]),
                         ("VersionNumber", pr.get("hardware_version", 1)), ("BusCurrent", pr["bus_current"]),
@@ -654,13 +681,13 @@ def render_calculations(x: Xml, p: Product) -> None:
 def render_application(p: Product) -> bytes:
     a = p.app
     x = Xml()
-    knx_root(x)
+    knx_root(x, SCHEMAS[p.schema]["ns"])
     x.open("ApplicationPrograms")
     x.open("ApplicationProgram", [
         ("Id", p.app_id), ("ApplicationNumber", a["number"]), ("ApplicationVersion", a["version"]),
         ("ProgramType", "ApplicationProgram"), ("MaskVersion", f"MV-{a['mask']}"), ("Name", a["name"]),
         ("LoadProcedureStyle", a["load_procedure_style"]), ("PeiType", a.get("pei_type", 0)), ("DefaultLanguage", "en-US"),
-        ("DynamicTableManagement", False), ("Linkable", False), ("MinEtsVersion", "6.0"),
+        ("DynamicTableManagement", False), ("Linkable", False), ("MinEtsVersion", SCHEMAS[p.schema]["min_ets"]),
         ("NonRegRelevantDataVersion", 0)])
     x.open("Static")
     x.open("Code")

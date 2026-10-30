@@ -254,6 +254,7 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                         prop_id,
                         expected,
                         mask,
+                        start_element,
                     } => {
                         // The obj0/PID78 preflight and any other property compare: identical
                         // to System B (an interface-object property read + compare).
@@ -262,6 +263,7 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                                 session.l4(),
                                 *object,
                                 *prop_id,
+                                *start_element,
                                 expected,
                                 mask.as_deref(),
                             )
@@ -410,6 +412,9 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                     // #455, the COMIP2 on 0701), as on System B.
                     FlashStep::KnxnetIpParameters { program } => {
                         super::knxnet_ip::write_knxnet_ip(session.l4(), program).await?;
+                    }
+                    FlashStep::Delay { milliseconds } => {
+                        super::execute::delay_step(*milliseconds).await;
                     }
                     // System B steps never appear in a System 7 plan.
                     other => {

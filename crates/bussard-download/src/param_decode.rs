@@ -71,6 +71,13 @@ pub struct DecodedParameters {
     /// plan lists it as a change. Sorted, keyed like `overrides`. Always
     /// empty for an application without a Dynamic-built image.
     pub unshown: Vec<String>,
+    /// The shown parameters placed in octets the load procedure leaves as
+    /// the device holds them (issue #411, [`crate::KeptOctets`]): a download
+    /// does not write them, so what the device holds there carries no
+    /// verdict against the model. `old` is the device's value (`Unknown`
+    /// when unreadable), `new` the model's. Never in `differences`, sorted
+    /// by key.
+    pub kept: Vec<ParamChange>,
 }
 
 /// Decodes `current` (the parameter segments read off a device, keyed by
@@ -162,13 +169,33 @@ pub fn decode_parameters_with(
     device_managed.sort_by(|a, b| a.key.cmp(&b.key));
     device_managed.dedup_by(|a, b| a.key == b.key);
 
+    // The octets the download leaves as the device holds them (issue #411).
+    let kept_octets = crate::flash::kept_octets(app, overrides, memo);
+    let is_kept = |p: &Placed<'_>| {
+        kept_octets
+            .iter()
+            .any(|k| k.segment == p.segment && k.contains(p.offset))
+    };
     let mut differences = Vec::new();
+    let mut kept = Vec::new();
     let mut unknown = 0usize;
     for p in placements(overrides).iter().filter(|p| p.reported(app)) {
         let ptype = parameter_type(app, p.param);
         let Some(desired) = p.desired.as_deref() else {
             continue;
         };
+        if is_kept(p) {
+            kept.push(ParamChange {
+                key: p.key.clone(),
+                name: display_name(p.param),
+                old: p.decode(app, current).map_or(ParamValue::Unknown, |held| {
+                    ParamValue::Known(render(&held, ptype))
+                }),
+                new: ParamValue::Known(render(desired, ptype)),
+                unit: p.param.suffix_text.clone(),
+            });
+            continue;
+        }
         let old = match p.decode(app, current) {
             Some(held) if held == desired => continue,
             Some(held) => ParamValue::Known(render(&held, ptype)),
@@ -189,6 +216,8 @@ pub fn decode_parameters_with(
     }
     differences.sort_by(|a, b| a.key.cmp(&b.key));
     differences.dedup_by(|a, b| a.key == b.key);
+    kept.sort_by(|a, b| a.key.cmp(&b.key));
+    kept.dedup_by(|a, b| a.key == b.key);
 
     DecodedParameters {
         values,
@@ -197,6 +226,7 @@ pub fn decode_parameters_with(
         device_managed,
         unknown,
         unshown: unshown_overrides(app, overrides, &keys, memo),
+        kept,
     }
 }
 

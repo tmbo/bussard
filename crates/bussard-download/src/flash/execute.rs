@@ -11,6 +11,7 @@ use super::session::{
     Connector, MAX_RESUME_RECONNECTS, RestartKind, Session, allocate_with_context_resumable,
     read_load_state_resumable, reconnect_exchange_threshold, resumable_death,
     start_loading_resumable, write_load_control_resumable,
+    write_load_control_unless_absent_resumable,
 };
 use super::verify::{
     WrittenSample, advisory_mcb_warning, mcb_read_object, mcb_skip_target, resident_match_objects,
@@ -159,6 +160,13 @@ pub(super) async fn confirm_app_object<C: Connector>(
             .await
             .map(|(index, _table)| index),
     }
+}
+
+/// Runs a [`FlashStep::Delay`]: logs the pause at info level, so `-v` shows
+/// it in the trace between the frames around it, and sleeps. Nothing is sent.
+pub(super) async fn delay_step(milliseconds: u32) {
+    tracing::info!(milliseconds, "LdCtrlDelay: pausing before the next step");
+    tokio::time::sleep(std::time::Duration::from_millis(u64::from(milliseconds))).await;
 }
 
 /// Resolves the op-carried `LsmIdx`/`ObjIdx` to the device interface-object index
@@ -395,14 +403,19 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
     //
     // A plan that factory-resets the device first erases every object, so no
     // resident image can survive to be matched: the pre-pass is skipped and every
-    // object streams in full.
+    // object streams in full. The same holds for a product `LdCtrlMasterReset`
+    // whose erase code resets loaded objects (issue #623, the rule and its
+    // evidence are on `FlashPlan::erases_resident_objects`): skipping an object
+    // the reset then erases leaves the device without it.
     // A parameter-only download diffs against the resident memory instead.
-    let skip_objects: BTreeSet<u8> =
-        if options.skip_matching_mcb && !plan.has_factory_reset() && !plan.is_parameters_only() {
-            resident_match_objects(session, plan, app_obj, &object_table).await?
-        } else {
-            BTreeSet::new()
-        };
+    let skip_objects: BTreeSet<u8> = if options.skip_matching_mcb
+        && !plan.erases_resident_objects()
+        && !plan.is_parameters_only()
+    {
+        resident_match_objects(session, plan, app_obj, &object_table).await?
+    } else {
+        BTreeSet::new()
+    };
 
     // Data Secure (issue #537): the group key table and the security
     // individual address table must fit the device. A capacity the product
@@ -525,7 +538,36 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                         crate::security::write_go_security_flags(session.l4(), flags, |_| {})
                             .await?;
                     }
-                    FlashStep::Unload { target } => {
+                    // The procedure maps this unload's refusal to success
+                    // (`LdCtrlMapError`, issue #614): it goes to the object it
+                    // names, present in the discovery or not, and a device
+                    // without that object answers count 0, which completes it.
+                    FlashStep::Unload {
+                        target,
+                        absent_ok: true,
+                    } => {
+                        // The planner only maps an unload naming an object
+                        // 1..=255; anything else keeps the application object.
+                        let obj = target
+                            .and_then(|idx| u8::try_from(idx).ok())
+                            .filter(|idx| *idx != 0)
+                            .unwrap_or(app_obj);
+                        if write_load_control_unless_absent_resumable(
+                            session,
+                            obj,
+                            LoadControl::Unload,
+                        )
+                        .await?
+                        .is_none()
+                        {
+                            warnings.push(format!(
+                                "step {}: object {obj} absent on the device, nothing to unload \
+                                 (the procedure's LdCtrlMapError makes that no error)",
+                                i + 1
+                            ));
+                        }
+                    }
+                    FlashStep::Unload { target, .. } => {
                         // Skip a load-control op that names an object index the device
                         // does not expose (a template LSM5 op on a device without obj5).
                         let Some(obj) = resolve_object_target_opt(
@@ -632,15 +674,23 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                                 address: session.l4().target(),
                                 detail: format!("segment base {base:#X} + offset {offset:#X}"),
                             })?;
-                        let bytes = plan
+                        // The step streams its own part of the image: the whole
+                        // image, or the `[offset, offset + len)` a `<choose>`
+                        // branch writes of a segment it writes in part (issue
+                        // #411); the baseline is cut the same way.
+                        let whole = plan
                             .images
                             .get(&image.segment_id)
-                            .cloned()
+                            .map(Vec::as_slice)
                             .unwrap_or_default();
-                        let partial = plan
-                            .baseline
-                            .get(&image.segment_id)
-                            .map(|current| (current, plan.baseline_address(&image.segment_id)));
+                        let bytes = image_part(whole, image).to_vec();
+                        let partial = plan.baseline.get(&image.segment_id).map(|current| {
+                            (
+                                image_part(current, image),
+                                plan.baseline_address(&image.segment_id)
+                                    .map(|a| a + image.offset as u32),
+                            )
+                        });
                         match (partial, fill) {
                             // A parameter-only download (issue #543): the
                             // allocation in Mode 0 kept the memory contents at
@@ -825,6 +875,7 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                         prop_id,
                         expected,
                         mask,
+                        start_element,
                     } => {
                         // Read the named interface object's property and compare it
                         // against the vendor's expected data. A `Range`-only op has no
@@ -836,6 +887,7 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                                 session.l4(),
                                 *object,
                                 *prop_id,
+                                *start_element,
                                 expected,
                                 mask.as_deref(),
                             )
@@ -964,6 +1016,7 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                             }
                         }
                     }
+                    FlashStep::Delay { milliseconds } => delay_step(*milliseconds).await,
                     FlashStep::LoadCompleted { target } => {
                         // Skip a completion for an object the device does not expose (a
                         // template LSM5 completion on a device without obj5).
@@ -1389,6 +1442,16 @@ pub(super) fn fill_regions<'a>(
         .into_iter()
         .map(|(start, end)| (start, &image[start..end]))
         .collect()
+}
+
+/// The part of `bytes` (a segment's image, or the device's octets of it) a
+/// System B write step streams: `[image.offset, image.offset + image.len)`,
+/// cut to what `bytes` holds. The whole image for every step but the part
+/// writes of a segment a `<choose>` branch writes in part (issue #411).
+pub(super) fn image_part<'a>(bytes: &'a [u8], image: &super::ImageRef) -> &'a [u8] {
+    let start = image.offset.min(bytes.len());
+    let end = image.offset.saturating_add(image.len).min(bytes.len());
+    &bytes[start..end.max(start)]
 }
 
 /// The octet ranges `[start, end)` of `image` that differ from `current`, the

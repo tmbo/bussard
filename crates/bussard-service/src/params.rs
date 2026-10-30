@@ -458,6 +458,13 @@ pub struct Readback {
     /// model's image, with both values (issue #285).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub internal: Vec<OctetAttribution>,
+    /// The parameters placed in octets a download leaves as the device holds
+    /// them (issue #411, a load-procedure `<choose>` branch that writes part
+    /// of a segment, as ETS does): what the device holds and what the model
+    /// says, with no verdict. Not written by `flash` or `apply`, so never a
+    /// difference.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub kept: Vec<DifferenceJson>,
     /// Why the read-back is partial or absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
@@ -636,6 +643,7 @@ pub async fn read_state<Ch: L4Channel>(
         .into_iter()
         .filter(|r| r.parameters.iter().any(|p| p.role == OctetRole::Internal))
         .collect();
+    let kept = kept_rows(&decoded.kept, device);
     ParamState {
         readback: Readback {
             application: app.id.clone(),
@@ -643,6 +651,7 @@ pub async fn read_state<Ch: L4Channel>(
             differences,
             device_managed,
             internal,
+            kept,
             note: None,
         },
         detail: Some(ParamDetail {
@@ -671,6 +680,12 @@ pub struct FlashedParameters {
     /// How many parameter values the read-back decoded and compared (issue
     /// #349); 0 when the memory was not compared.
     pub compared: usize,
+    /// The parameters placed in octets the flash left as the device holds
+    /// them (issue #411): not written, so not compared. After a fresh
+    /// allocation those octets hold whatever the allocation left, so the
+    /// model's value there is not verified.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub kept: Vec<DifferenceJson>,
     /// Why the memory was not compared; `None` when it was.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
@@ -736,6 +751,7 @@ pub async fn read_flashed_parameters<Ch: L4Channel>(
     let noted = |note: String| FlashedParameters {
         differences: Vec::new(),
         compared: 0,
+        kept: Vec::new(),
         note: Some(note),
     };
     // The plan and the decode share one evaluation of the model's values
@@ -764,10 +780,12 @@ pub async fn read_flashed_parameters<Ch: L4Channel>(
     let device = model
         .and_then(|m| m.devices.get(&target))
         .map(|d| &d.device);
-    let compared = decoded.values.len();
+    let kept = kept_rows(&decoded.kept, device);
+    let compared = decoded.values.len().saturating_sub(kept.len());
     let (_, differences) = report(decoded);
     FlashedParameters {
         compared,
+        kept,
         differences: differences
             .into_iter()
             .map(|d| DifferenceJson {
@@ -800,6 +818,26 @@ fn reading_json(r: bussard_download::ParamReading) -> ReadingJson {
         default: r.default,
         unit: r.unit,
     }
+}
+
+/// The kept parameters of a decoded memory (issue #411) as report rows:
+/// `device` what the device holds, `model` what the model says.
+pub(crate) fn kept_rows(
+    kept: &[bussard_download::ParamChange],
+    device: Option<&Device>,
+) -> Vec<DifferenceJson> {
+    kept.iter()
+        .map(|c| DifferenceJson {
+            key: file_key(device, &c.key),
+            name: c.name.clone(),
+            device: match &c.old {
+                ParamValue::Known(v) => Some(v.clone()),
+                ParamValue::Unknown => None,
+            },
+            model: c.new.to_string(),
+            unit: c.unit.clone(),
+        })
+        .collect()
 }
 
 /// The JSON report rows of a decoded parameter memory.

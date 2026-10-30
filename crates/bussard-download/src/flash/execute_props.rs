@@ -42,11 +42,13 @@ pub(super) async fn flash_properties<C: Connector, F: FnMut(Progress)>(
                     prop_id,
                     expected: Some(expected),
                     mask,
+                    start_element,
                 } => {
                     compare_property_value(
                         session.l4(),
                         *object,
                         *prop_id,
+                        *start_element,
                         expected,
                         mask.as_deref(),
                     )

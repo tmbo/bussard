@@ -317,10 +317,12 @@ pub fn com_object_words(app: &ApplicationProgram, number: u16) -> (Option<String
 /// filled-segment download. `freshness` is `None` offline (a dry run), where
 /// only the planner's own reset shows. `no_factory_reset` waives it.
 ///
-/// A System 7 device that holds no loaded application ([`Freshness::Fresh`])
-/// gets no pre-download unload-and-restart pass, as ETS gives none to a
-/// factory-fresh device (issue #488, [`FlashPlan::skip_sys7_prelude`]). A
-/// device with a loaded application keeps it; offline the plan keeps it too.
+/// A System 7 device whose every load-state machine the probe read answers
+/// `Unloaded` gets no pre-download unload-and-restart pass, as ETS gives none
+/// to a factory-fresh device (issue #488, [`FlashPlan::fit_sys7_prelude`]);
+/// without a probed state, a [`Freshness::Fresh`] verdict does the same. A
+/// device with an LSM Loaded or Loading, or a resident application id, keeps
+/// it; offline without a recorded state the plan keeps it too.
 ///
 /// A System B device that already holds this application
 /// ([`Freshness::SameApplication`]) gets the product's `AppliesTo="par"`
@@ -339,8 +341,13 @@ pub fn apply_freshness(
     ) {
         plan.require_factory_reset();
     }
-    if matches!(freshness, Some(Freshness::Fresh)) {
-        plan.skip_sys7_prelude();
+    // The System 7 pre-download pass follows the probed LSM states when there
+    // are any (issue #488): a Loading LSM is `Fresh` to the gate but keeps the
+    // pass. Without a probed state only the verdict can tell.
+    match resident {
+        Some(state) => plan.fit_sys7_prelude(state),
+        None if matches!(freshness, Some(Freshness::Fresh)) => plan.skip_sys7_prelude(),
+        None => {}
     }
     if matches!(freshness, Some(Freshness::SameApplication { .. })) {
         plan.use_par_procedure(resident);
@@ -353,10 +360,12 @@ pub fn apply_freshness(
 /// Whether the download skips an object whose resident image already
 /// matches (the ETS group-B differential download): only when the device
 /// carries no application or the same one, never with `full`, and never
-/// after a factory reset (which leaves nothing resident to match).
+/// when the plan erases resident objects (a factory reset, or a product
+/// Master Reset with an erasing code, issue #623; see
+/// [`FlashPlan::erases_resident_objects`]).
 pub fn skip_unchanged(full: bool, plan: &FlashPlan, freshness: &Freshness) -> bool {
     !full
-        && !plan.has_factory_reset()
+        && !plan.erases_resident_objects()
         && matches!(
             freshness,
             Freshness::Fresh | Freshness::SameApplication { .. }

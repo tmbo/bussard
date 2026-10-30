@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FABRICATED fixture (issue #614). Reproduces the structural shape of the
+     Siemens 07B0 product procedures the corpus sweep refused: one
+     <LoadProcedure> (LoadProcedureStyle="ProductProcedure") that lists the
+     complete download (AppliesTo="full"), then the parameter ("par") and
+     group-address ("grp") downloads; the tables are relative segments on LSM 1
+     to 3; an LdCtrlMapError maps an error code to 0 before the unload of LSM 5
+     and a second one maps it back to itself; the compares read single
+     elements of an array property (StartElement). All ids, sizes and data are
+     fake. No vendor content is copied. -->
+<KNX xmlns="http://knx.org/xml/project/20">
+ <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
+  <ApplicationProgram Id="M-00FA_A-0614-01-ABCD" ApplicationNumber="1556" ApplicationVersion="1" MaskVersion="MV-07B0" Name="MapError Fixture" LoadProcedureStyle="ProductProcedure" ProgramType="ApplicationProgram">
+   <Static>
+    <Code>
+     <RelativeSegment Id="M-00FA_A-0614-01-ABCD_RS-04-00000" Name="Parameters" Size="16" LoadStateMachine="4" Offset="0"><Data>AAAAAAAAAAAAAAAAAAAAAA==</Data></RelativeSegment>
+    </Code>
+    <AddressTable MaxEntries="16" />
+    <AssociationTable MaxEntries="16" />
+    <ComObjectTable>
+     <ComObject Id="M-00FA_A-0614-01-ABCD_O-0" Number="0" Text="Switch" ObjectSize="1 Bit" CommunicationFlag="Enabled" WriteFlag="Enabled" />
+    </ComObjectTable>
+    <ComObjectRefs>
+     <ComObjectRef Id="M-00FA_A-0614-01-ABCD_O-0_R-1" RefId="M-00FA_A-0614-01-ABCD_O-0" DatapointType="DPST-1-1" />
+    </ComObjectRefs>
+   </Static>
+   <LoadProcedures>
+    <LoadProcedure>
+     <LdCtrlConnect AppliesTo="all" />
+     <LdCtrlCompareProp AppliesTo="all" InlineData="05" ObjIdx="4" PropId="246" />
+     <LdCtrlCompareProp AppliesTo="all" InlineData="12" ObjIdx="4" PropId="246" StartElement="3" />
+     <LdCtrlMapError AppliesTo="full" OriginalError="3221498632" MappedError="0" />
+     <LdCtrlUnload AppliesTo="full" LsmIdx="5" />
+     <LdCtrlMapError AppliesTo="full" OriginalError="3221498632" MappedError="3221498632" />
+     <LdCtrlUnload AppliesTo="full" LsmIdx="4" />
+     <LdCtrlUnload AppliesTo="full" LsmIdx="3" />
+     <LdCtrlUnload AppliesTo="full" LsmIdx="2" />
+     <LdCtrlUnload AppliesTo="full" LsmIdx="1" />
+     <LdCtrlLoad AppliesTo="full" LsmIdx="4" />
+     <LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="16" Mode="0" Fill="0" />
+     <LdCtrlLoad AppliesTo="full" LsmIdx="3" />
+     <LdCtrlRelSegment AppliesTo="full" LsmIdx="3" Size="4" Mode="0" Fill="0" />
+     <LdCtrlLoad AppliesTo="full" LsmIdx="1" />
+     <LdCtrlRelSegment AppliesTo="full" LsmIdx="1" Size="66" Mode="0" Fill="0" />
+     <LdCtrlLoad AppliesTo="full" LsmIdx="2" />
+     <LdCtrlRelSegment AppliesTo="full" LsmIdx="2" Size="66" Mode="0" Fill="0" />
+     <LdCtrlWriteRelMem AppliesTo="full" ObjIdx="4" Offset="0" Size="16" Verify="true" />
+     <LdCtrlWriteRelMem AppliesTo="full" ObjIdx="3" Offset="0" Size="4" Verify="true" />
+     <LdCtrlWriteRelMem AppliesTo="full" ObjIdx="2" Offset="0" Size="66" Verify="true" />
+     <LdCtrlWriteRelMem AppliesTo="full" ObjIdx="1" Offset="0" Size="66" Verify="true" />
+     <LdCtrlWriteProp AppliesTo="full" ObjIdx="4" PropId="13" Verify="true" InlineData="00FA061401" />
+     <LdCtrlLoadCompleted AppliesTo="full" LsmIdx="3" />
+     <LdCtrlLoadCompleted AppliesTo="full" LsmIdx="2" />
+     <LdCtrlLoadCompleted AppliesTo="full" LsmIdx="1" />
+     <LdCtrlLoadCompleted AppliesTo="full" LsmIdx="4" />
+     <LdCtrlUnload AppliesTo="par" LsmIdx="4" />
+     <LdCtrlUnload AppliesTo="grp" LsmIdx="3" />
+     <LdCtrlLoad AppliesTo="grp" LsmIdx="3" />
+     <LdCtrlRelSegment AppliesTo="grp" LsmIdx="3" Size="4" Mode="0" Fill="0" />
+     <LdCtrlWriteRelMem AppliesTo="grp" ObjIdx="3" Offset="0" Size="4" Verify="true" />
+     <LdCtrlLoad AppliesTo="par" LsmIdx="4" />
+     <LdCtrlRelSegment AppliesTo="par" LsmIdx="4" Size="16" Mode="0" Fill="0" />
+     <LdCtrlWriteRelMem AppliesTo="par" ObjIdx="4" Offset="0" Size="16" Verify="true" />
+     <LdCtrlWriteProp AppliesTo="par" ObjIdx="4" PropId="13" Verify="true" InlineData="00FA061401" />
+     <LdCtrlLoadCompleted AppliesTo="grp" LsmIdx="3" />
+     <LdCtrlLoadCompleted AppliesTo="par" LsmIdx="4" />
+     <LdCtrlLoadImageProp AppliesTo="all" ObjIdx="1" PropId="27" />
+     <LdCtrlLoadImageProp AppliesTo="all" ObjIdx="2" PropId="27" />
+     <LdCtrlLoadImageProp AppliesTo="all" ObjIdx="3" PropId="27" />
+     <LdCtrlLoadImageProp AppliesTo="all" ObjIdx="4" PropId="27" />
+     <LdCtrlDisconnect AppliesTo="all" />
+    </LoadProcedure>
+   </LoadProcedures>
+  </ApplicationProgram>
+ </ApplicationPrograms></Manufacturer></ManufacturerData>
+</KNX>
