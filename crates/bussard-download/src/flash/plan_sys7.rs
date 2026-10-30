@@ -120,6 +120,35 @@ pub(super) fn sys7_procedure_end(ops: &[LoadOp]) -> usize {
         .map_or(ops.len(), |i| i + 1)
 }
 
+/// The load-state machines the memory-mapped form of a System 7 device has:
+/// one per object type, the address table (1), the association table (2), the
+/// application program (3) and the PEI program (4), with their states at
+/// `B6EAh` to `B6EDh` (KNX 3/5/2 §3.31.2, which supports "only one state
+/// machine of each type").
+///
+/// A record on another index names no machine. ETS sends none (issue #489):
+/// its full download of the synthetic `syn-s7-lsm5` (0701, an
+/// `LdCtrlTaskSegment LsmIdx="5"` inside LSM 3's load, the shape of the
+/// Busch-Jaeger 0701 applications such as `M-0002_A-A002-13`) executes no LSM 5
+/// op and writes no record with high nibble 5 to `0x0104`
+/// (`captures/synthetic/syn-s7-lsm5/defaults/requests.txt`: its 18 records
+/// name LSMs 1 to 3 only), and on the house binary input 1.1.44
+/// (`binaereingang-1-1-44.pcapng`) none of ETS's 23 records names LSM 5. knx-sim leaves an
+/// unopened machine Unloaded on such a record (#529), so sending it fails the
+/// flash. The property realisation (0705) is not settled by a capture yet
+/// (`syn-s7-lsm5-0705`, #604 row 32) and keeps the record.
+pub(super) const SYS7_MEMORY_MAPPED_LSMS: std::ops::RangeInclusive<u32> = 1..=4;
+
+/// Whether a System 7 Additional Load Controls record on `lsm` is sent: always
+/// under the property realisation, and under the memory-mapped one only for
+/// an LSM in [`SYS7_MEMORY_MAPPED_LSMS`] (issue #489).
+pub(super) fn sys7_lsm_record_sent(profile: &bussard_mgmt::Sys7Profile, lsm: u32) -> bool {
+    match profile.lsm {
+        bussard_mgmt::LsmRealisation::MemoryMapped { .. } => SYS7_MEMORY_MAPPED_LSMS.contains(&lsm),
+        bussard_mgmt::LsmRealisation::Property => true,
+    }
+}
+
 /// The load-state machines ETS unloads before a full System 7 download: LSMs 1
 /// to 4, on both mask families (`schaltaktor-8fach-1-1-49`, `jung-1131`,
 /// `binaereingang-6fach`, `automitschalter-standard-110` on 0705;
@@ -495,6 +524,13 @@ pub(super) fn plan_flash_sys7(
             }
             LoadOp::TaskSegment { lsm_idx, address } => {
                 let lsm = check_sys7_lsm(step_no, lsm_idx.unwrap_or(0))?;
+                // A TaskSegment on an LSM the memory-mapped form has no machine
+                // for (LsmIdx 5 on the Busch-Jaeger 0701 applications) is not
+                // sent: ETS sends no record for it
+                // (captures/synthetic/syn-s7-lsm5, issue #489).
+                if !sys7_lsm_record_sent(&s7_profile, lsm) {
+                    continue;
+                }
                 let addr = address.ok_or_else(|| PlanError::UnresolvableImage {
                     step: step_no,
                     reason: "LdCtrlTaskSegment has no Address".to_string(),

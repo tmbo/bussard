@@ -232,6 +232,20 @@ The LSM index is the object type of the loadable part `[MP §3.31.2, p. 134]`:
   `meteodata-1-1-202-new.pcapng`, `schaltaktor-8fach-1-1-49.pcapng`), and the
   2308.16REGHM has no object 5 (its `PID_LOAD_STATE_CONTROL` read answers count
   0). bussard cuts the procedure after the terminal restart (issue #178).
+  Some procedures name LSM 5 before the restart too: 98 corpus 0701
+  applications (Busch-Jaeger, such as `M-0002_A-A002-13`, and the house binary
+  input 1.1.44) carry an `LdCtrlTaskSegment LsmIdx="5"` inside LSM 3's load,
+  with no `Load` of LSM 5.
+  ETS sends no record for it: its download of the synthetic `syn-s7-lsm5`
+  (`captures/synthetic/syn-s7-lsm5/defaults/`, ETS 6.4.1) writes 18 records to
+  `0x0104`, none with high nibble 5, and 1.1.44's capture has none either. A
+  product variant that also loaded and completed LSM 5 failed inside ETS
+  ("System.ArgumentException: lsm"). **Rule (issue #489):** under the
+  memory-mapped realisation the planner sends no `TaskSegment` record for an
+  LSM outside 1 to 4 (`SYS7_MEMORY_MAPPED_LSMS` in `plan_sys7.rs`); knx-sim
+  leaves an unopened machine Unloaded on such a record (#529), which failed
+  bussard's flash. The property realisation (0705) keeps the record until
+  `syn-s7-lsm5-0705` (#604 row 32) shows what ETS does there.
 
 **Two ETS differences bussard keeps (issue #178, 2308.16REGHM `A-2088-11`).**
 The application declares `DynamicTableManagement="1"`, and ETS places the
