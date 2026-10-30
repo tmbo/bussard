@@ -244,9 +244,10 @@ fn test_sim_rejects_memory_write_to_wrong_object() {
 }
 
 #[test]
-fn test_sim_rejects_load_completed_without_start() {
-    // A strict device must reject LoadCompleted issued from Unloaded (no
-    // StartLoading first).
+fn test_sim_ignores_load_completed_without_start() {
+    // KNX 3/5/1 §4.23.2.3.3, Table 94: a LoadCompleted issued from Unloaded
+    // (no StartLoading first) is ignored; the object stays Unloaded and never
+    // reaches Loaded.
     let sink = Arc::new(RecordingSink::new());
     // Start Unloaded so the object is genuinely not in Loading.
     let Some(fixture) = knx_sim::testfixtures::da_tp_knxprod() else {
@@ -273,17 +274,9 @@ fn test_sim_rejects_load_completed_without_start() {
         hex("47d70405100102000000000000000000"),
     ));
 
-    let rejected = sink.events().into_iter().any(|e| match e {
-        Event::Telegram { summary, .. } => summary.contains("REJECTED"),
-        _ => false,
-    });
-    assert!(
-        rejected,
-        "simulator accepted LoadCompleted without StartLoading"
-    );
-    assert_ne!(
+    assert_eq!(
         bus.device(IndividualAddress::new(1, 1, 2))
             .and_then(|d| d.load_state(4)),
-        Some(LoadState::Loaded)
+        Some(LoadState::Unloaded)
     );
 }

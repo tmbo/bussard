@@ -19,12 +19,33 @@ impl Device {
     /// not touched. The group runtime is re-evaluated, so a device whose tables
     /// were reset goes silent.
     fn unload_objects(&mut self, select: impl Fn(u16) -> bool) {
+        let objects = self.loadables_of_type(select);
+        self.unload(objects);
+    }
+
+    /// [`Self::unload_objects`] over the objects `select` picks that are not
+    /// in a running load procedure (state `Loading`).
+    fn unload_idle_objects(&mut self, select: impl Fn(u16) -> bool) {
         let objects: Vec<u8> = self
-            .loadables
+            .loadables_of_type(select)
+            .into_iter()
+            .filter(|&object| self.load_state(object) != Some(LoadState::Loading))
+            .collect();
+        self.unload(objects);
+    }
+
+    /// The loadable objects whose interface-object type `select` picks.
+    fn loadables_of_type(&self, select: impl Fn(u16) -> bool) -> Vec<u8> {
+        self.loadables
             .keys()
             .copied()
             .filter(|&object| select(self.object_type(object)))
-            .collect();
+            .collect()
+    }
+
+    /// Unloads `objects` and erases their segments (see
+    /// [`Self::unload_objects`]).
+    fn unload(&mut self, objects: Vec<u8>) {
         for object in objects {
             self.memory.erase_owner(object);
             if let Some(state) = self.loadables.get_mut(&object) {
@@ -80,6 +101,22 @@ impl Device {
     /// application data (code 8 resets nothing) and keeps the parameters in
     /// the application program's segment, so a parameter reset (code 5)
     /// unloads the application program with them.
+    ///
+    /// The partial resets (codes 4, 5 and 6) leave an object that is in
+    /// `Loading` alone: its state, its allocated segment and its
+    /// `PID_TABLE_REFERENCE`. Table 4 has code 4 reset the application
+    /// program memory "to the default application", that is a loaded
+    /// resource back to its default. It does not name an abort of a load
+    /// procedure the management client is running on that resource, and in
+    /// the System B load procedure (KNX 3/5/3 §3.5.2) an object leaves
+    /// `Loading` through the client's own load controls (`LoadCompleted`,
+    /// `Unload`). ETS relies on that: its KNX Virtual
+    /// DA.tp download sends `StartLoading` and a 256-octet `LdCtrlRelSegment`
+    /// to the application object, then this master reset with erase code 4,
+    /// reconnects and writes the parameters into the segment it allocated
+    /// (the 2026-10-27 sweep capture of `M-00FA_A-2500-10-51CB`, bussard
+    /// issue #600). Outside a load procedure the reset unloads as before.
+    /// The factory resets (codes 2 and 7) still unload every object.
     fn execute_master_reset(&mut self, erase_code: u8) {
         match erase_code {
             // Factory reset: everything, the individual address included.
@@ -88,8 +125,10 @@ impl Device {
                 self.reset_individual_address();
             }
             0x03 => self.reset_individual_address(),
-            0x04 | 0x05 => self.unload_objects(|t| t == iot::APPLICATION_PROGRAM),
-            0x06 => self.unload_objects(|t| t == iot::ADDRESS_TABLE || t == iot::ASSOCIATION_TABLE),
+            0x04 | 0x05 => self.unload_idle_objects(|t| t == iot::APPLICATION_PROGRAM),
+            0x06 => {
+                self.unload_idle_objects(|t| t == iot::ADDRESS_TABLE || t == iot::ASSOCIATION_TABLE)
+            }
             ERASE_CODE_FACTORY_RESET_KEEP_IA => self.unload_objects(|_| true),
             // 1 (confirmed restart) and 8 (no persistent data here).
             _ => {}
@@ -318,6 +357,45 @@ mod tests {
             assert_eq!(dev.load_state(1), Some(LoadState::Loaded), "{erase}");
             assert_eq!(dev.load_state(2), Some(LoadState::Loaded), "{erase}");
         }
+        Ok(())
+    }
+
+    /// `PID_LOAD_STATE_CONTROL` write of `event` to object `object`.
+    fn pid5(dev: &Device, object: u8, event: &[u8]) -> crate::wire::cemi::CemiLData {
+        let mut payload = vec![object, PID_LOAD_STATE_CONTROL, 0x10, 0x01];
+        payload.extend_from_slice(event);
+        payload.resize(4 + 10, 0x00);
+        data(dev, 0x3D7, &payload)
+    }
+
+    #[test]
+    fn test_on_restart_reset_ap_keeps_the_segment_of_a_running_load()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // ETS's KNX Virtual DA.tp download (bussard issue #600): StartLoading
+        // and a 256-octet RelSegment on the application object, master reset
+        // erase code 4, reconnect, parameter writes into the segment,
+        // LoadCompleted. Object 3 is the application program here.
+        let mut dev = system_b_device()?;
+        connect(&mut dev)?;
+        dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
+        dev.handle_cemi(&pid5(&dev, 3, &[0x01]))?;
+        dev.handle_cemi(&pid5(&dev, 3, &[0x03, 0x0b, 0x00, 0x00, 0x01, 0x00]))?;
+        let base = dev.memory().segment_of(3).ok_or("segment allocated")?.base;
+
+        assert_eq!(master_reset(&mut dev, 0x04, 0)?[0], 0x00);
+        assert!(!dev.connected);
+        assert_eq!(dev.load_state(3), Some(LoadState::Loading));
+        assert_eq!(dev.memory().segment_of(3).map(|s| s.base), Some(base));
+
+        connect(&mut dev)?;
+        dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
+        let addr = u16::try_from(base)?;
+        dev.handle_cemi(&mem_write_frame(&dev, addr, &[0x05, 0x05, 0xff, 0xff]))?;
+        dev.handle_cemi(&mem_write_frame(&dev, addr + 0xfc, &[0xaa; 4]))?;
+        dev.handle_cemi(&pid5(&dev, 3, &[0x02]))?;
+        assert_eq!(dev.load_state(3), Some(LoadState::Loaded));
+        assert_eq!(dev.memory().read(base, 4), vec![0x05, 0x05, 0xff, 0xff]);
+        assert_eq!(dev.memory().read(base + 0xfc, 4), vec![0xaa; 4]);
         Ok(())
     }
 
