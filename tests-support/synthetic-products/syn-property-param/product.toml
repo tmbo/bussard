@@ -130,5 +130,5 @@ ops = [{ op = "LdCtrlRelSegment", lsm = 4, size = 256, mode = 0, fill = 0 }]
 merge_id = 4
 ops = [
     { op = "LdCtrlWriteRelMem", object = 4, offset = 0, size = 256, verify = false },
-    { op = "LdCtrlWriteProp", object = 4, property_id = 201, start_element = 1, count = 1, verify = false },
+    { op = "LdCtrlWriteProp", object = 4, prop_id = 201, start_element = 1, count = 1, verify = false },
 ]

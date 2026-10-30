@@ -25,6 +25,8 @@ next to it, and zips it on demand.
 | [`syn-choose-never-shown`](syn-choose-never-shown/product.toml) | `NEST-GHOST` | 07B0 | choose on a never-shown memoryless parameter, default branch only | #474, #563 |
 | [`syn-choose-partial-segment`](syn-choose-partial-segment/product.toml) | `NEST-HALF` | 07B0 | load-procedure choose writing half the segment | #411 |
 | [`syn-choose-per-ref`](syn-choose-per-ref/product.toml) | `NEST-TWIN` | 07B0 | choose on the unreached second ParameterRef of a reached parameter | #563 |
+| [`syn-color-param`](syn-color-param/product.toml) | `NEST-COLOUR` | 07B0 | TypeColor RGB parameter in memory | #616 |
+| [`syn-color-param-hsv`](syn-color-param-hsv/product.toml) | `NEST-COLHSV` | 07B0 | TypeColor HSV parameter in memory | #616 |
 | [`syn-dynamic-tests`](syn-dynamic-tests/product.toml) | `NEST-WORM` | 07B0 | Channel and ParameterBlock with choose on single, list, comparison and default tests | #345 |
 | [`syn-hidden-default`](syn-hidden-default/product.toml) | `NEST-EGGHEAT` | 07B0 | hidden parameter, default differs from template | #448 |
 | [`syn-ip-address-param`](syn-ip-address-param/product.toml) | `NEST-HOMING` | 07B0 | TypeIPAddress parameter in memory | #457 |
@@ -34,6 +36,7 @@ next to it, and zips it on demand.
 | [`syn-master-reset-code4`](syn-master-reset-code4/product.toml) | `NEST-RESET4` | 07B0 | Master Reset erase code 4 after the segment allocation | #546, #600, #611 |
 | [`syn-minimal`](syn-minimal/product.toml) | `NEST-LIGHT` | 07B0 | baseline | #596 |
 | [`syn-param-calculation`](syn-param-calculation/product.toml) | `NEST-CALC` | 07B0 | JavaScript ParameterCalculation, one output LegacyPatchAlways | #427, #450 |
+| [`syn-product-07b0`](syn-product-07b0/product.toml) | `NEST-PLAN` | 07B0 | ProductProcedure on 07B0 with the tables as RelSegments | #614 |
 | [`syn-property-param`](syn-property-param/product.toml) | `NEST-TERR` | 07B0 | parameter placed in a property, written by LdCtrlWriteProp | #669 |
 | [`syn-relseg-fill`](syn-relseg-fill/product.toml) | `NEST-FILL` | 07B0 | RelSegment Mode 0 with Fill 255 | #480 |
 | [`syn-s7-0701`](syn-s7-0701/product.toml) | `NEST-BKDOOR` | 0701 | System 7 baseline (0701, memory-mapped LSM) | #596, #488, #481 |
@@ -46,6 +49,7 @@ next to it, and zips it on demand.
 | [`syn-s7-taskptr`](syn-s7-taskptr/product.toml) | `NEST-HUNT` | 0705 | TaskPtr and TaskCtrl2 records on LSM 3 | #527 |
 | [`syn-text-initialvalue`](syn-text-initialvalue/product.toml) | `NEST-NAME` | 07B0 | TypeText with a de-DE InitialValue translation, utf-8 | #473 |
 | [`syn-text-undeclared`](syn-text-undeclared/product.toml) | `NEST-SQUAWK` | 07B0 | TypeText non-ASCII default, no TextParameterEncoding | #416 |
+| [`syn-union-bitfields`](syn-union-bitfields/product.toml) | `NEST-BITS` | 07B0 | 16-bit union of two types, sub-octet parameters packed by BitOffset | #604 |
 | [`syn-union-default-range`](syn-union-default-range/product.toml) | `NEST-STRAY` | 07B0 | hidden union member, default outside its type | #405 |
 | [`syn-user-memory`](syn-user-memory/product.toml) | `NEST-LARDER` | 07B0 | segment above 0xFFFF without SupportsExtendedMemoryServices | #472 |
 | [`syn-user-memory-extmem`](syn-user-memory-extmem/product.toml) | `NEST-LARDERX` | 07B0 | segment above 0xFFFF with SupportsExtendedMemoryServices | #472 |
@@ -90,11 +94,11 @@ One `product.toml` per directory. Tables and keys:
 | --- | --- | --- |
 | `[doc]` | `purpose` (one paragraph), `construct` (a few words), `issues` (numbers) | the catalogue row; not in the XML |
 | `[product]` | `text`, `order_number`, `hardware_name`, `hardware_serial` (`00FA` + 8 hex digits), `bus_current` (mA); optional `hardware_version` (1), `rail_mounted` (false) | `Hardware`, `Product`, `Hardware2Program`, `CatalogItem` |
-| `[application]` | `number` (0x2700 to 0x2AFF: 0x27xx System B, 0x28xx System 7, 0x29xx Secure, 0x2Axx RF and IP), `version` (one octet), `name`, `mask` (`07B0`, or `0705`/`0701` for System 7), `load_procedure_style` (`MergedProcedure` on 07B0, `ProductProcedure` on System 7), `address_table_max_entries`, `association_table_max_entries`; optional `translations` (`{ "de-DE" = "..." }` for the name); optional `schema` (`23`, or `11`: namespace `http://knx.org/xml/project/11` and `MinEtsVersion="4.0"` in all three files, the shape of the #448 vendor applications; `sign.py` then uses ETS's project-11 master data); System 7 only: `address_table_segment`, `association_table_segment`, `com_object_table_segment` (the absolute segment each table starts in, offset 0; required) and `pei_type` (0) | `ApplicationProgram`, `AddressTable`, `AssociationTable`, `Languages` |
+| `[application]` | `number` (0x2700 to 0x2AFF: 0x27xx System B, 0x28xx System 7, 0x29xx Secure, 0x2Axx RF and IP), `version` (one octet), `name`, `mask` (`07B0`, or `0705`/`0701` for System 7), `load_procedure_style` (`MergedProcedure` or `ProductProcedure` on 07B0, `ProductProcedure` on System 7), `address_table_max_entries`, `association_table_max_entries`; optional `translations` (`{ "de-DE" = "..." }` for the name); optional `schema` (`23`, or `11`: namespace `http://knx.org/xml/project/11` and `MinEtsVersion="4.0"` in all three files, the shape of the #448 vendor applications; `sign.py` then uses ETS's project-11 master data); System 7 only: `address_table_segment`, `association_table_segment`, `com_object_table_segment` (the absolute segment each table starts in, offset 0; required) and `pei_type` (0) | `ApplicationProgram`, `AddressTable`, `AssociationTable`, `Languages` |
 | `[application.options]` | any `Options` attribute of the KNX schema, e.g. `SupportsExtendedMemoryServices = true`, `ParameterByteOrder = "LittleEndian"` | `Options` |
 | `[[segment]]` | `name`, `kind` (`relative`), `lsm`, `size`; optional `fill` (the initial octet, 0) | `RelativeSegment` with its `Data` |
-| `[[parameter_type]]` | `name`, `kind`; `enum`: `size_bits`, `values = [{ value, text }]`; `number`: `size_bits`, `signed`, `min`, `max`; `float`: `encoding` (`DPT 9`, `IEEE-754 Single`, `IEEE-754 Double`; 16, 32, 64 bits), `min`, `max`; `text`: `size_octets`; `ip_address`: `address_type` (`HostAddress`, `SubnetMask`, `DefaultGateway`; 32 bits, the default a dotted quad) | `TypeRestriction`, `TypeNumber`, `TypeFloat`, `TypeText`, `TypeIPAddress` |
-| `[[parameter]]` | `name`, `type`, `text`, `default`, and either `memory = { segment, offset, bit_offset }`, `union = { name, offset, bit_offset }` (a member at its offset in the union), `property = { object_index, property_id, offset, bit_offset }` (placed in an interface-object property, #604 row 30) or `virtual = true` (no memory, it only steers the Dynamic tree; #474); optional `access` (`None`, `Read`, `ReadWrite`) and `legacy_patch_always` (#450); a text parameter also `initial_value` and `translations = { "de-DE" = { initial_value } }` (#473) | `Parameter` (`_P-<n>`, a union member `_UP-<n>`), one `ParameterRef` each; a translated `InitialValue` is a `TranslationElement` of the parameter in `Languages` |
+| `[[parameter_type]]` | `name`, `kind`; `enum`: `size_bits`, `values = [{ value, text }]`; `number`: `size_bits`, `signed`, `min`, `max`; `float`: `encoding` (`DPT 9`, `IEEE-754 Single`, `IEEE-754 Double`; 16, 32, 64 bits), `min`, `max`; `text`: `size_octets`; `ip_address`: `address_type` (`HostAddress`, `SubnetMask`, `DefaultGateway`; 32 bits, the default a dotted quad); `color`: `space` (`RGB`, `HSV`; 24 bits, the default `#` and six hex digits) | `TypeRestriction`, `TypeNumber`, `TypeFloat`, `TypeText`, `TypeIPAddress`, `TypeColor` |
+| `[[parameter]]` | `name`, `type`, `text`, `default`, and either `memory = { segment, offset, bit_offset }`, `union = { name, offset, bit_offset }` (a member at its offset in the union), `property = { object_index, property_id, offset, bit_offset }` (placed in an interface-object property, #604 row 30) or `virtual = true` (no memory, it only steers the Dynamic tree; #474); `bit_offset` counts from the octet's most significant bit, 0 to 7, so sub-octet parameters share an octet; optional `access` (`None`, `Read`, `ReadWrite`) and `legacy_patch_always` (#450); a text parameter also `initial_value` and `translations = { "de-DE" = { initial_value } }` (#473) | `Parameter` (`_P-<n>`, a union member `_UP-<n>`), one `ParameterRef` each; a translated `InitialValue` is a `TranslationElement` of the parameter in `Languages` |
 | `[[parameter_ref]]` | `name`, `parameter` | a further `ParameterRef` of the parameter (`_P-<n>_R-<k>`, numbered after every parameter's own ref); blocks and chooses name it like a parameter (#563) |
 | `[[union]]` | `name`, `size_bits`, `memory = { segment, offset, bit_offset }`; optional `default` (the member that is `DefaultUnionParameter`) | `Union` with its `Memory`, after the plain parameters |
 | `[[parameter_calculation]]` | `name`, `language` (`JavaScript`), `inputs` and `outputs` (`[{ parameter, alias }]`), `lr_script`, `rl_script` | a `ParameterCalculation` (`_PC-<n>`) in the inline form: `RLTransformation`, `LRTransformation`, `LParameters`, `RParameters` with `AliasName`s (#427) |
@@ -108,24 +112,28 @@ One `product.toml` per directory. Tables and keys:
 Load ops: `LdCtrlRelSegment` (`lsm`, `size`, `mode`, `fill`),
 `LdCtrlWriteRelMem` (`object`, `offset`, `size`, `verify`),
 `LdCtrlMasterReset` (`erase_code`, `channel`) and
-`LdCtrlWriteProp` (`object`, `property_id`, `start_element`, `count`, `verify`;
-no `InlineData`: the value is what the parameters placed in that property
-compose, so a parameter must be placed there). A System 7 product procedure
+`LdCtrlWriteProp` (`object`, `prop_id`, optional `start_element`, `count`, `verify`,
+`inline_data` in hex; without `inline_data` the value is what the parameters
+placed in that property compose, so a parameter must be placed there). A System 7 product procedure
 also takes `LdCtrlTaskPtr` (`lsm`, `init_ptr`, `save_ptr`, `serial_ptr`) and
 `LdCtrlTaskCtrl2` (`lsm`, `callback`, `address`, `seg0`, `seg1`). `{ op = "choose", parameter,
 when = [{ test, ops }, { default = true, ops }] }` renders a `<choose
 ParamRefId>` with its `<when>` branches inside the procedure (#411).
+A 07B0 product procedure (#614) also takes `LdCtrlConnect`,
+`LdCtrlDisconnect`, `LdCtrlUnload`, `LdCtrlLoad` and `LdCtrlLoadCompleted`
+(`lsm`), and writes the program version by `LdCtrlWriteProp` with
+`inline_data`; its tables are relative segments the procedure allocates and writes
+on LSM 1 to 3, with no code segment declared for them.
 
 The schema reaches further than the generator does. These are reserved for
 the catalogue products that need them (step 4 of #596), and a spec that uses
 one stops with "part of the schema but no product uses it yet": masks other
-than 07B0 (System 7 twins), `ProductProcedure`, absolute segments, parameter
+than 07B0 (System 7 twins), absolute segments on 07B0, parameter
 type kinds `time`, `raw`, VBScript calculations and the
 `LRTransformationFunc` form with a `<Script>`, explicit com
 object refs, and the load
-ops `LdCtrlLoadImageProp`,
-`LdCtrlCompareProp`, `LdCtrlAbsSegment` and the connection and state ops of a
-product procedure. An unknown key or op stops with an error naming it.
+ops `LdCtrlLoadImageProp`, `LdCtrlCompareProp` and `LdCtrlAbsSegment`, and
+the connection and state ops in a merged procedure. An unknown key or op stops with an error naming it.
 
 Ids follow ETS: `M-00FA_A-<number>-<version>-0000` for the application, its
 parts prefixed with it (`_RS-04-00000`, `_PT-<name>`, `_P-<n>`, `_P-<n>_R-<n>`,

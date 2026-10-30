@@ -442,7 +442,7 @@ class PropertyParameter(unittest.TestCase):
             {"name": "t", "type": "Mode", "text": "T", "default": 2,
              "property": {"object_index": 4, "property_id": 201, "offset": 0, "bit_offset": 0}}]
         s["load_procedure"][1]["ops"].append(
-            {"op": "LdCtrlWriteProp", "object": 4, "property_id": 201, "start_element": 1, "count": 1,
+            {"op": "LdCtrlWriteProp", "object": 4, "prop_id": 201, "start_element": 1, "count": 1,
              "verify": False})
         return s
 
@@ -455,7 +455,7 @@ class PropertyParameter(unittest.TestCase):
 
     def test_write_prop_without_placed_parameter_refused(self) -> None:
         s = self.prop_spec()
-        s["load_procedure"][1]["ops"][-1]["property_id"] = 202
+        s["load_procedure"][1]["ops"][-1]["prop_id"] = 202
         with self.assertRaisesRegex(generate.SpecError, "no parameter is placed in object 4 PID 202"):
             generate.Product("test", s)
 
@@ -464,6 +464,78 @@ class PropertyParameter(unittest.TestCase):
         s["parameter"][-1]["memory"] = {"segment": "main", "offset": 3, "bit_offset": 0}
         with self.assertRaisesRegex(generate.SpecError, "exactly one of `memory`, `union` and `property`"):
             generate.Product("test", s)
+
+
+class BitFields(unittest.TestCase):
+    """syn-union-bitfields (#604 row 29): a union of two member types and
+    sub-octet parameters packed into one octet by BitOffset."""
+
+    def bits_spec(self) -> dict:
+        s = spec()
+        s["parameter_type"] = s["parameter_type"] + [
+            {"name": "Three", "kind": "number", "size_bits": 3, "signed": False, "min": 0, "max": 7},
+            {"name": "Nibble", "kind": "number", "size_bits": 4, "signed": False, "min": 0, "max": 15}]
+        s["union"] = [{"name": "u", "size_bits": 16, "default": "wide",
+                       "memory": {"segment": "main", "offset": 3, "bit_offset": 0}}]
+        s["parameter"] = s["parameter"] + [
+            {"name": "wide", "type": "Delay", "text": "W", "default": 2571,
+             "union": {"name": "u", "offset": 0, "bit_offset": 0}},
+            {"name": "narrow", "type": "Nibble", "text": "N", "default": 6,
+             "union": {"name": "u", "offset": 1, "bit_offset": 4}},
+            {"name": "three", "type": "Three", "text": "T", "default": 5,
+             "memory": {"segment": "main", "offset": 5, "bit_offset": 1}},
+            {"name": "nibble", "type": "Nibble", "text": "Q", "default": 6,
+             "memory": {"segment": "main", "offset": 5, "bit_offset": 4}}]
+        return s
+
+    def test_render_union_of_two_types_and_bit_fields(self) -> None:
+        xml = app_xml(self.bits_spec())
+        self.assertIn('<Union SizeInBit="16">', xml)
+        self.assertIn('ParameterType="M-00FA_A-2700-10-0000_PT-Delay" Offset="0" BitOffset="0" Text="W" '
+                      'Value="2571" DefaultUnionParameter="true" />', xml)
+        self.assertIn('ParameterType="M-00FA_A-2700-10-0000_PT-Nibble" Offset="1" BitOffset="4" Text="N" '
+                      'Value="6" />', xml)
+        self.assertIn('<TypeNumber SizeInBit="3" Type="unsignedInt" minInclusive="0" maxInclusive="7" />', xml)
+        self.assertIn('<Memory CodeSegment="M-00FA_A-2700-10-0000_RS-04-00000" Offset="5" BitOffset="1" />', xml)
+        self.assertIn('<Memory CodeSegment="M-00FA_A-2700-10-0000_RS-04-00000" Offset="5" BitOffset="4" />', xml)
+
+    def test_bit_offset_beyond_the_octet_refused(self) -> None:
+        s = self.bits_spec()
+        s["parameter"][-1]["memory"] = {"segment": "main", "offset": 5, "bit_offset": 8}
+        with self.assertRaisesRegex(generate.SpecError, "bit_offset is 0 to 7"):
+            generate.Product("test", s)
+
+    def test_union_member_bit_offset_beyond_the_octet_refused(self) -> None:
+        s = self.bits_spec()
+        s["parameter"][3]["union"] = {"name": "u", "offset": 0, "bit_offset": 9}
+        with self.assertRaisesRegex(generate.SpecError, "bit_offset is 0 to 7"):
+            generate.Product("test", s)
+
+
+class Colour(unittest.TestCase):
+    """syn-color-param (#616): the `color` type kind, 24 bits in memory."""
+
+    def colour_spec(self, space: str = "RGB", offset: int = 3) -> dict:
+        s = spec()
+        s["parameter_type"] = s["parameter_type"] + [{"name": "C", "kind": "color", "space": space}]
+        s["parameter"] = s["parameter"] + [
+            {"name": "c", "type": "C", "text": "C", "default": "#FF0000",
+             "memory": {"segment": "main", "offset": offset, "bit_offset": 0}}]
+        return s
+
+    def test_render_colour_types(self) -> None:
+        self.assertIn('<TypeColor Space="RGB" />', app_xml(self.colour_spec()))
+        xml = app_xml(self.colour_spec("HSV"))
+        self.assertIn('<TypeColor Space="HSV" />', xml)
+        self.assertIn('Text="C" Value="#FF0000">', xml)
+
+    def test_colour_width_checked_against_segment(self) -> None:
+        with self.assertRaisesRegex(generate.SpecError, "does not fit"):
+            generate.Product("test", self.colour_spec(offset=254))
+
+    def test_colour_space_rgbw_not_yet(self) -> None:
+        with self.assertRaisesRegex(generate.SpecError, "no product uses it yet"):
+            generate.Product("test", self.colour_spec("RGBW"))
 
 
 class InitialValue(unittest.TestCase):
@@ -572,7 +644,6 @@ class ParameterRefPerChoose(unittest.TestCase):
             generate.Product("test", s)
 
 
-
 class ChannelAndBlockChoose(unittest.TestCase):
     """syn-dynamic-tests (#345): a `<Channel>` with a block whose chooses use
     the `<when>` test forms, each branch showing refs directly."""
@@ -626,7 +697,6 @@ class ChannelAndBlockChoose(unittest.TestCase):
             generate.Product("test", s)
 
 
-
 class Assign(unittest.TestCase):
     """syn-assign (#604 row 31): an `<Assign>` in a `<when>` of a block choose."""
 
@@ -654,6 +724,57 @@ class Assign(unittest.TestCase):
         s = self.assign_spec()
         s["dynamic"]["block"][0]["choose"][0]["when"][0]["assign"][0]["value"] = "3"
         with self.assertRaisesRegex(generate.SpecError, "no product uses it yet"):
+            generate.Product("test", s)
+
+
+class SystemBProductProcedure(unittest.TestCase):
+    """syn-product-07b0 (#614): a ProductProcedure on 07B0, the Siemens shape."""
+
+    OPS = [{"op": "LdCtrlConnect"}, {"op": "LdCtrlUnload", "lsm": 1}, {"op": "LdCtrlLoad", "lsm": 1},
+           {"op": "LdCtrlRelSegment", "lsm": 1, "size": 130, "mode": 0, "fill": 0},
+           {"op": "LdCtrlWriteRelMem", "object": 1, "offset": 0, "size": 130, "verify": False},
+           {"op": "LdCtrlWriteProp", "object": 4, "prop_id": 13, "verify": True, "inline_data": "00FA272510"},
+           {"op": "LdCtrlLoadCompleted", "lsm": 1}, {"op": "LdCtrlDisconnect"}]
+
+    def product_spec(self) -> dict:
+        s = spec(load_procedure=[{"ops": copy.deepcopy(self.OPS)}])
+        s["application"]["load_procedure_style"] = "ProductProcedure"
+        return s
+
+    def test_render_product_procedure_on_07b0(self) -> None:
+        xml = app_xml(self.product_spec())
+        self.assertIn('LoadProcedureStyle="ProductProcedure"', xml)
+        self.assertIn('              <LoadProcedure>\n'
+                      '                <LdCtrlConnect />\n'
+                      '                <LdCtrlUnload LsmIdx="1" />\n'
+                      '                <LdCtrlLoad LsmIdx="1" />\n'
+                      '                <LdCtrlRelSegment LsmIdx="1" Size="130" Mode="0" Fill="0" />\n'
+                      '                <LdCtrlWriteRelMem ObjIdx="1" Offset="0" Size="130" Verify="false" />\n'
+                      '                <LdCtrlWriteProp ObjIdx="4" PropId="13" Verify="true" InlineData="00FA272510" />\n'
+                      '                <LdCtrlLoadCompleted LsmIdx="1" />\n'
+                      '                <LdCtrlDisconnect />\n'
+                      '              </LoadProcedure>\n', xml)
+        self.assertIn("<ComObjectTable>", xml)
+        self.assertIn('<AddressTable MaxEntries="32" />', xml)
+
+    def test_product_procedure_ops_not_yet_in_a_merged_procedure(self) -> None:
+        s = spec()
+        # LdCtrlWriteProp is a merged-procedure op too since syn-property-param.
+        s["load_procedure"][1]["ops"].append({"op": "LdCtrlUnload", "lsm": 4})
+        with self.assertRaisesRegex(generate.SpecError, "`LdCtrlUnload` is part of the schema"):
+            generate.Product("test", s)
+
+    def test_product_procedure_on_07b0_refuses_system_7_ops(self) -> None:
+        s = self.product_spec()
+        s["load_procedure"][0]["ops"].append({"op": "LdCtrlTaskSegment", "lsm": 1, "address": 0x4000})
+        with self.assertRaisesRegex(generate.SpecError, "`LdCtrlTaskSegment` is part of the schema"):
+            generate.Product("test", s)
+
+    def test_write_prop_without_value_refused(self) -> None:
+        s = self.product_spec()
+        del s["load_procedure"][0]["ops"][5]["inline_data"]
+        with self.assertRaisesRegex(generate.SpecError, "no parameter is placed in object 4 PID 13 and the op has "
+                                                        "no inline_data"):
             generate.Product("test", s)
 
 

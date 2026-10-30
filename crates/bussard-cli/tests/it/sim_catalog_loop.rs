@@ -719,7 +719,12 @@ fn run_loop(
     }
     let mask_word =
         u16::from_str_radix(mask, 16).map_err(|e| Stop::Skip(format!("mask {mask}: {e}")))?;
-    // The corpus sweep's verdict: an application whose plan lowers.
+    // The corpus sweep's verdict: an application whose plan lowers. The
+    // tables are the empty ones of a device without links (count word 0), as
+    // `bussard flash` supplies them: a product procedure that writes the
+    // tables itself (07B0 `ProductProcedure`, issue #614) needs an image for
+    // objects 1 to 3 to lower at all.
+    let empty_tables: BTreeMap<u32, Vec<u8>> = (1..=3).map(|obj| (obj, vec![0, 0])).collect();
     if let Err(e) = plan_flash(
         app,
         DEVICE,
@@ -727,7 +732,7 @@ fn run_loop(
         &BTreeMap::new(),
         &BTreeMap::new(),
         None,
-        &BTreeMap::new(),
+        &empty_tables,
     ) {
         return Err(Stop::Skip(format!("bussard does not flash it: {e}")));
     }

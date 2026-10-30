@@ -169,13 +169,13 @@ class Product:
         if a["load_procedure_style"] not in ("MergedProcedure", "ProductProcedure"):
             raise SpecError(f"{w} [application]: load_procedure_style is MergedProcedure or ProductProcedure")
         self.system7 = a["mask"] in SYS7_MASKS
+        # syn-product-07b0 (#604 row 37, #614): a ProductProcedure on 07B0.
+        self.b_product = not self.system7 and a["load_procedure_style"] == "ProductProcedure"
         if self.system7:
             check_system7_application(w, a)
         else:
             if a["mask"] != "07B0":
                 raise not_yet(f"{w} [application]", f"mask {a['mask']} (System 7 and others)")
-            if a["load_procedure_style"] == "ProductProcedure":
-                raise not_yet(f"{w} [application]", "LoadProcedureStyle ProductProcedure on 07B0")
             for k in sorted(SYS7_APP_KEYS & a.keys()):
                 raise SpecError(f"{w} [application]: `{k}` belongs to a System 7 mask ({', '.join(SYS7_MASKS)})")
         for k in a.get("options", {}):
@@ -222,6 +222,15 @@ class Product:
             elif kind == "text":
                 check_keys(tw, t, {"name", "kind", "size_octets"})
                 t = dict(t, size_bits=8 * t["size_octets"])
+            elif kind == "color":
+                # syn-color-param (#604 row 40, #616): a colour, one octet per
+                # component of its space, the default `#` and hex digits.
+                check_keys(tw, t, {"name", "kind", "space"})
+                if t["space"] == "RGBW":
+                    raise not_yet(tw, "colour space RGBW")
+                if t["space"] not in COLOR_SPACES:
+                    raise SpecError(f"{tw}: space is one of {', '.join(COLOR_SPACES)}")
+                t = dict(t, size_bits=COLOR_SPACES[t["space"]])
             elif kind == "ip_address":
                 # syn-ip-address-param (#604 row 21, #457): an IPv4 address,
                 # four octets in memory, its default a dotted quad.
@@ -232,7 +241,7 @@ class Product:
             elif kind in ("time", "raw"):
                 raise not_yet(tw, f"parameter type kind `{kind}`")
             else:
-                raise SpecError(f"{tw}: kind is one of enum, number, text, float, time, ip_address, raw")
+                raise SpecError(f"{tw}: kind is one of enum, number, text, float, color, time, ip_address, raw")
             self.types[t["name"]] = dict(t, id=f"{self.app_id}_PT-{ets_escape(t['name'])}")
 
         # Unions (#405): one <Union> with its <Memory>; its members are
@@ -283,6 +292,8 @@ class Product:
                 continue
             m = prm["union"]
             check_keys(f"{pw} union", m, {"name", "offset", "bit_offset"})
+            if not 0 <= m["bit_offset"] <= 7:
+                raise SpecError(f"{pw} union: bit_offset is 0 to 7")
             un = self.unions.get(m["name"])
             if un is None:
                 raise SpecError(f"{pw}: unknown union `{m['name']}`")
@@ -466,6 +477,10 @@ class Product:
     def check_memory(self, where: str, m: dict, bits: int) -> None:
         """A `memory = { segment, offset, bit_offset }` that fits its segment."""
         check_keys(f"{where} memory", m, {"segment", "offset", "bit_offset"})
+        # syn-union-bitfields (#604 row 29): BitOffset counts the bits of the
+        # octet at Offset from its most significant one, 0 to 7.
+        if not 0 <= m["bit_offset"] <= 7:
+            raise SpecError(f"{where}: bit_offset is 0 to 7")
         seg = self.segments.get(m["segment"])
         if seg is None:
             raise SpecError(f"{where}: unknown segment `{m['segment']}`")
@@ -482,18 +497,30 @@ class Product:
                 self.check_load_choose(ow, op)
                 continue
             table = LOAD_OPS | SYS7_LOAD_OPS if self.system7 else LOAD_OPS
+            if self.b_product:
+                table = LOAD_OPS | B_PRODUCT_LOAD_OPS
             if name not in table:
-                if name in LOAD_OPS_LATER or name in SYS7_LOAD_OPS:
+                if name in LOAD_OPS_LATER or name in SYS7_LOAD_OPS or name in B_PRODUCT_LOAD_OPS:
                     raise not_yet(ow, f"`{name}`")
                 raise SpecError(f"{ow}: unknown op `{name}`")
-            check_keys(ow, op, {"op"} | set(table[name]))
             if name == "LdCtrlWriteProp":
-                placed = {(prm["property"]["object_index"], prm["property"]["property_id"])
-                          for prm in self.params.values() if "property" in prm}
-                if (op["object"], op["property_id"]) not in placed:
-                    raise SpecError(f"{ow}: no parameter is placed in object {op['object']} PID "
-                                    f"{op['property_id']}, so the write has no value (InlineData is not "
-                                    "implemented)")
+                self.check_write_prop(ow, op)
+                continue
+            check_keys(ow, op, {"op"} | set(table[name]))
+
+    def check_write_prop(self, ow: str, op: dict) -> None:
+        """`LdCtrlWriteProp`: `object` and `prop_id`, optional `start_element`,
+        `count`, `verify`; its value is `inline_data` (hex, syn-product-07b0's
+        program version) or, without it, what the parameters placed in that
+        property compose (syn-property-param, #604 row 30), so one must be."""
+        check_keys(ow, op, {"op", "object", "prop_id"}, {"start_element", "count", "verify", "inline_data"})
+        if "inline_data" in op:
+            return
+        placed = {(prm["property"]["object_index"], prm["property"]["property_id"])
+                  for prm in self.params.values() if "property" in prm}
+        if (op["object"], op["prop_id"]) not in placed:
+            raise SpecError(f"{ow}: no parameter is placed in object {op['object']} PID {op['prop_id']} "
+                            "and the op has no inline_data, so the write has no value")
 
     def check_load_choose(self, ow: str, op: dict) -> None:
         """syn-choose-partial-segment (#604 row 8, #411): `<choose ParamRefId>`
@@ -533,6 +560,9 @@ OPTIONS = ("PreferPartialDownloadIfApplicationLoaded", "EasyCtrlModeModeStyleEmp
 FLOAT_BITS = {"DPT 9": 16, "IEEE-754 Single": 32, "IEEE-754 Double": 64}
 # `<TypeIPAddress AddressType>` values of the KNX schema (#457).
 IP_ADDRESS_TYPES = ("HostAddress", "SubnetMask", "DefaultGateway")
+# `<TypeColor Space>` values the products use and their width (#616); RGBW is
+# part of the schema but unused yet.
+COLOR_SPACES = {"RGB": 24, "HSV": 24}
 # Implemented load ops: spec key -> XML attribute, in XML order.
 LOAD_OPS = {
     "LdCtrlRelSegment": {"lsm": "LsmIdx", "size": "Size", "mode": "Mode", "fill": "Fill"},
@@ -542,8 +572,8 @@ LOAD_OPS = {
     "LdCtrlMasterReset": {"erase_code": "EraseCode", "channel": "ChannelNumber"},
     # syn-property-param (#604 row 30): a property write without InlineData,
     # whose value the parameters placed in that property compose.
-    "LdCtrlWriteProp": {"object": "ObjIdx", "property_id": "PropId", "start_element": "StartElement",
-                        "count": "Count", "verify": "Verify"},
+    "LdCtrlWriteProp": {"object": "ObjIdx", "prop_id": "PropId", "start_element": "StartElement",
+                        "count": "Count", "verify": "Verify", "inline_data": "InlineData"},
 }
 LOAD_OPS_LATER = {"LdCtrlLoadImageProp", "LdCtrlCompareProp",
                   "LdCtrlAbsSegment", "LdCtrlConnect", "LdCtrlDisconnect", "LdCtrlRestart",
@@ -579,6 +609,25 @@ SYS7_LOAD_OPS = {
                         "seg1": "Seg1"},
 }
 MEMORY_TYPES = ("EEPROM", "RAM")
+
+
+# -------------------------------- System B product procedure (#604 row 37)
+# syn-product-07b0 (#614): a 07B0 application with LoadProcedureStyle
+# ProductProcedure spells out the whole download as one procedure, the Siemens
+# shape: the unloads, a Load and an LdCtrlRelSegment per LSM (the tables as
+# relative segments on LSM 1 to 3, which the application declares no code
+# segment for), the WriteRelMems, the program version by LdCtrlWriteProp
+# (PID 13, InlineData in hex), the LoadCompleteds.
+B_PRODUCT_LOAD_OPS = {
+    "LdCtrlConnect": {},
+    "LdCtrlDisconnect": {},
+    "LdCtrlUnload": {"lsm": "LsmIdx"},
+    "LdCtrlLoad": {"lsm": "LsmIdx"},
+    "LdCtrlLoadCompleted": {"lsm": "LsmIdx"},
+    "LdCtrlWriteProp": LOAD_OPS["LdCtrlWriteProp"],
+}
+# Every op table, for rendering (each spec is checked against its own table).
+ALL_LOAD_OPS = LOAD_OPS | SYS7_LOAD_OPS | B_PRODUCT_LOAD_OPS
 
 
 def check_system7_application(w: str, a: dict) -> None:
@@ -712,6 +761,8 @@ def render_type(x: Xml, t: dict) -> None:
         x.empty("TypeText", [("SizeInBit", t["size_bits"])])
     elif t["kind"] == "ip_address":  # #457
         x.empty("TypeIPAddress", [("AddressType", t["address_type"])])
+    elif t["kind"] == "color":  # #616
+        x.empty("TypeColor", [("Space", t["space"])])
     elif t["kind"] == "float":
         x.empty("TypeFloat", [("Encoding", t["encoding"]), ("minInclusive", t["min"]),
                               ("maxInclusive", t["max"])])
@@ -749,7 +800,7 @@ def render_load_ops(x: Xml, p: Product, ops: list[dict]) -> None:
                 x.close("when")
             x.close("choose")
         else:
-            x.empty(op["op"], [(attr, op[key]) for key, attr in (LOAD_OPS | SYS7_LOAD_OPS)[op["op"]].items()])
+            x.empty(op["op"], [(attr, op.get(key)) for key, attr in ALL_LOAD_OPS[op["op"]].items()])
 
 
 def render_block(x: Xml, p: Product, b: dict) -> None:
