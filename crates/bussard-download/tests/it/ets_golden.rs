@@ -21,7 +21,9 @@ use std::collections::BTreeMap;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 
-use bussard_download::{FlashStep, LinkedObject, dynamic_group_object_table, plan_flash};
+use bussard_download::{
+    FlashStep, LinkedObject, SegmentFill, dynamic_group_object_table, plan_flash,
+};
 use bussard_prod::{ApplicationProgram, compute_parameter_image, parse_application_program};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -236,7 +238,7 @@ fn test_f50_plan_allocates_the_parameter_segment_with_fill() -> TestResult {
         .collect();
     // `<LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="6152" Mode="1"
     // Fill="0"/>`: ETS sends `03 0b 00 00 18 08 01 00 00 00`.
-    assert_eq!(allocs, [(6152, Some(0))]);
+    assert_eq!(allocs, [(6152, SegmentFill::filled(0))]);
     Ok(())
 }
 
@@ -408,7 +410,7 @@ fn test_d141_22_inactive_channel_condition_leaves_the_fill() -> TestResult {
         .steps
         .iter()
         .find_map(|s| match s {
-            FlashStep::AllocateSegment { fill, .. } => *fill,
+            FlashStep::AllocateSegment { fill, .. } => fill.prefill(),
             _ => None,
         })
         .ok_or("the parameter segment is not allocated with a fill")?;
@@ -456,7 +458,7 @@ fn test_d142_21_inactive_extension_module_leaves_the_fill() -> TestResult {
         .steps
         .iter()
         .find_map(|s| match s {
-            FlashStep::AllocateSegment { fill, .. } => *fill,
+            FlashStep::AllocateSegment { fill, .. } => fill.prefill(),
             _ => None,
         })
         .ok_or("the parameter segment is not allocated with a fill")?;

@@ -990,8 +990,11 @@ fn load_op_summary(op: &LoadOp) -> String {
             opt(lsm_idx),
             opt(size),
             applies_to.as_deref().unwrap_or("-"),
-            fill.map(|b| format!("0x{b:02X}"))
-                .unwrap_or_else(|| "-".to_string())
+            match (fill.mode, fill.fill) {
+                (0, 0) => "-".to_string(),
+                (1, b) => format!("0x{b:02X}"),
+                (m, b) => format!("mode={m}:0x{b:02X}"),
+            }
         ),
         LoadOp::AbsSegment {
             lsm_idx,

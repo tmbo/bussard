@@ -405,7 +405,7 @@ async fn allocate_table_segment<Ch: L4Channel>(
     elements: &[u8],
 ) -> Result<load::SegmentAllocation, WriteError> {
     let size = (2 + elements.len()) as u32;
-    allocate_segment(l4, object_index, size, None).await
+    allocate_segment(l4, object_index, size, 0x00, 0x00).await
 }
 
 /// Writes a table image (count word + elements) into its allocated segment with

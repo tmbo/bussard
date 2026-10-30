@@ -89,7 +89,7 @@ fn system_b_records(step: &FlashStep) -> Vec<LoadControlRecord> {
         FlashStep::AllocateSegment { size, target, fill } => vec![LoadControlRecord {
             form: LoadControlForm::Property { object: *target },
             event: "rel-segment",
-            bytes: bussard_mgmt::encode_rel_segment(*size, *fill).to_vec(),
+            bytes: bussard_mgmt::encode_rel_segment(*size, fill.mode, fill.fill).to_vec(),
         }],
         _ => Vec::new(),
     }
@@ -211,13 +211,14 @@ fn sys7_records(access: &LsmAccess, step: &FlashStep) -> Vec<LoadControlRecord> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::flash::SegmentFill;
 
     #[test]
     fn test_system_b_records_rel_segment_with_fill() {
         let records = system_b_records(&FlashStep::AllocateSegment {
             size: 0x0100,
             target: Some(4),
-            fill: Some(0xFF),
+            fill: SegmentFill::filled(0xFF),
         });
         assert_eq!(records.len(), 1);
         assert_eq!(
@@ -227,6 +228,40 @@ mod tests {
         assert_eq!(
             records[0].bytes,
             vec![0x03, 0x0B, 0x00, 0x00, 0x01, 0x00, 0x01, 0xFF, 0x00, 0x00]
+        );
+    }
+
+    #[test]
+    fn test_system_b_records_rel_segment_mode_0_fill_255() {
+        // `syn-relseg-fill`: `LdCtrlRelSegment LsmIdx="4" Size="256" Mode="0"
+        // Fill="255"`. ETS sends `03 0b 00 00 01 00 00 ff 00 00`
+        // (captures/synthetic/syn-relseg-fill/defaults/ops.txt op 17, #480).
+        let records = system_b_records(&FlashStep::AllocateSegment {
+            size: 0x0100,
+            target: Some(4),
+            fill: SegmentFill {
+                mode: 0x00,
+                fill: 0xFF,
+            },
+        });
+        assert_eq!(
+            records[0].bytes,
+            vec![0x03, 0x0B, 0x00, 0x00, 0x01, 0x00, 0x00, 0xFF, 0x00, 0x00]
+        );
+    }
+
+    #[test]
+    fn test_system_b_records_rel_segment_table_object() {
+        // A table object allocation: `00 00`, as in the house's 07B0
+        // captures (1.1.7 and 1.1.8 obj1-3).
+        let records = system_b_records(&FlashStep::AllocateSegment {
+            size: 42,
+            target: Some(1),
+            fill: SegmentFill::NONE,
+        });
+        assert_eq!(
+            records[0].bytes,
+            vec![0x03, 0x0B, 0x00, 0x00, 0x00, 0x2A, 0x00, 0x00, 0x00, 0x00]
         );
     }
 

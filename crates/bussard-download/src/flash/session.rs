@@ -6,6 +6,7 @@
 //! primitives (load control, segment allocation, state and memory reads) across
 //! an unexpected connection death.
 
+use super::SegmentFill;
 use bussard_mgmt::connection::{L4Channel, Layer4Connection};
 use bussard_mgmt::load::{
     LoadControl, LoadState, WriteError, allocate_segment, is_connection_death, read_load_state,
@@ -1457,17 +1458,16 @@ pub(super) async fn start_loading<Ch: L4Channel>(
 /// application). This folds the targeted object's discovered interface-object type
 /// and the full discovered object table into any such failure so it is actionable.
 ///
-/// `fill` mirrors the source `LdCtrlRelSegment`'s fill (`Mode`/`Fill`): `None` (the
-/// DA.tp default) asks for a no-fill allocation, byte-identical to before;
-/// `Some(b)` requests the device pre-fill the segment with `b`.
+/// `fill` is the source `LdCtrlRelSegment`'s `Mode` and `Fill` octets, sent
+/// verbatim ([`SegmentFill::NONE`], the DA.tp default, sends `00 00`).
 pub(super) async fn allocate_with_context<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     app_obj: u8,
     size: u32,
-    fill: Option<u8>,
+    fill: SegmentFill,
     object_table: &[(u8, u16)],
 ) -> Result<bussard_mgmt::SegmentAllocation, WriteError> {
-    match allocate_segment(l4, app_obj, size, fill).await {
+    match allocate_segment(l4, app_obj, size, fill.mode, fill.fill).await {
         Err(WriteError::UnexpectedLoadState {
             address,
             object_index,
@@ -1559,7 +1559,7 @@ pub(super) async fn allocate_with_context_resumable<C: Connector>(
     session: &mut Session<C>,
     obj: u8,
     size: u32,
-    fill: Option<u8>,
+    fill: SegmentFill,
     object_table: &[(u8, u16)],
 ) -> Result<bussard_mgmt::SegmentAllocation, WriteError> {
     resume!(

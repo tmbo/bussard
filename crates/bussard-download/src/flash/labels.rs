@@ -80,7 +80,7 @@ pub(super) fn step_label(step: &FlashStep) -> String {
             format!("open for loading{}", target_suffix(*target))
         }
         FlashStep::AllocateSegment { size, target, fill } => {
-            let fill_note = match fill {
+            let fill_note = match fill.prefill() {
                 Some(b) => format!(", fill 0x{b:02X}"),
                 None => String::new(),
             };

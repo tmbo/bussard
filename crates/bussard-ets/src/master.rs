@@ -34,7 +34,7 @@ use quick_xml::events::Event;
 use crate::application::push_load_op;
 use crate::attrs::{Attrs, get};
 use crate::error::{EtsError, Result};
-use crate::{LoadOp, LoadProcedure};
+use crate::{LoadOp, LoadProcedure, SegmentFill};
 
 /// One `<Procedure ProcedureType="Load">` template from a mask block.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -215,7 +215,7 @@ fn builtin_system_b_full_load() -> Vec<LoadOp> {
         lsm_idx: Some(lsm),
         size: Some(2),
         applies_to: None,
-        fill: None,
+        fill: SegmentFill::NONE,
     };
     // `Offset="0" Size="1048576"`: the whole table image, the size a sentinel.
     let write_rel_mem = |obj: u32| LoadOp::WriteRelMem {
