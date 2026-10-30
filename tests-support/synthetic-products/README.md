@@ -24,6 +24,7 @@ next to it, and zips it on demand.
 | [`syn-choose-never-shown`](syn-choose-never-shown/product.toml) | `NEST-GHOST` | 07B0 | choose on a never-shown memoryless parameter, default branch only | #474, #563 |
 | [`syn-choose-partial-segment`](syn-choose-partial-segment/product.toml) | `NEST-HALF` | 07B0 | load-procedure choose writing half the segment | #411 |
 | [`syn-hidden-default`](syn-hidden-default/product.toml) | `NEST-EGGHEAT` | 07B0 | hidden parameter, default differs from template | #448 |
+| [`syn-ip-address-param`](syn-ip-address-param/product.toml) | `NEST-HOMING` | 07B0 | TypeIPAddress parameter in memory | #457 |
 | [`syn-le-order`](syn-le-order/product.toml) | `NEST-ALTI` | 07B0 | ParameterByteOrder LittleEndian with integers and floats | #403 |
 | [`syn-master-reset`](syn-master-reset/product.toml) | `NEST-RESET` | 07B0 | Master Reset erase code 1 in the load procedure | #546, #611 |
 | [`syn-master-reset-code4`](syn-master-reset-code4/product.toml) | `NEST-RESET4` | 07B0 | Master Reset erase code 4 after the segment allocation | #546, #600, #611 |
