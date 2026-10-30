@@ -152,6 +152,7 @@ captures/synthetic/model/bussard.toml           the empty model the rows plan ag
 captures/synthetic/<name>/defaults/ets.pcapng   the sim's capture of the ETS download
 captures/synthetic/<name>/defaults/ops.txt      knxtrace ops of it
 captures/synthetic/<name>/defaults/requests.txt the tool's requests (distil.py), for knx-sim's replay
+captures/synthetic/<name>/defaults/image.json   the segments and octets ETS wrote (knxtrace image)
 captures/synthetic/<name>/defaults/driver.json  the ETS driver's steps and ETS's history pane
 captures/synthetic/<name>/defaults/sim.yaml     a loopback knx-sim of the device (needs --zip)
 ```
@@ -164,6 +165,12 @@ the product's `xml/` directory, which `95-offline-oracle.sh` zips with the
 stub master, and the application is the rendered id, since the signer's
 fingerprint never reaches the wire (`PID_PROGRAM_VERSION` carries the
 manufacturer, the application number and the version).
+
+CI replays every capture on each push (`dev/testing.md`, "CI"): the rows
+run `--check` against `bussard flash --dry-run`, knx-sim replays
+`requests.txt` and compares its memory with `image.json`
+(`knx-sim/tests/synthetic_calibration.rs`), and the sim loop flashes every
+product with seeded configurations.
 
 **A product change requires a re-capture.** A capture of other XML says
 nothing about the committed product, so

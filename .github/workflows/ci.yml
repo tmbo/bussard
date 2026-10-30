@@ -133,6 +133,11 @@ jobs:
       # platform reports all its failures), retries flaky real-socket mock tests
       # a couple of times, and enforces a per-test slow-timeout so a hung test
       # cannot wedge the runner. It also emits junit.xml.
+      # Includes the ungated offline oracle over the synthetic captures
+      # (bussard-cli offline_oracle.rs, epic #596): it runs
+      # scripts/campaign/95-offline-oracle.sh, which needs bash and python3.
+      # tools/knxtrace is stdlib-only Python, so the runner's python3 is
+      # enough on ubuntu and macOS; Windows skips the test.
       - name: Test (nextest)
         run: cargo nextest run --workspace --profile ci
 
@@ -393,7 +398,9 @@ jobs:
       # (Jung M2 property LSM, Theben 0701 memory-mapped), the group runtime, and
       # the KNXnet/IP frontend. `ets_calibration` is listed too: it skips cleanly
       # without the git-ignored DA.tp fixture, but running it proves the skip
-      # path itself still compiles and passes.
+      # path itself still compiles and passes. `synthetic_calibration` replays
+      # the committed ETS captures of the synthetic products (epic #596,
+      # captures/synthetic/) ungated.
       - name: knx-sim conformance (calibration + replays)
         run: |
           cargo test --manifest-path knx-sim/Cargo.toml \
@@ -401,6 +408,7 @@ jobs:
             --test sys7_jung_m2_replay \
             --test sys7_theben_0701_replay \
             --test ets_calibration \
+            --test synthetic_calibration \
             --test group_runtime \
             --test knxnetip_server
 
@@ -416,6 +424,11 @@ jobs:
           BUSSARD_KNX_SIM_BIN="$PWD/knx-sim/target/debug/serve" \
             cargo nextest run -p bussard-cli --profile ci \
             -E 'binary(it) & test(/^sim_interface_(loop|secure)::/)'
+          # The flash-then-plan loop over the synthetic product catalogue
+          # (epic #596): committed product XML, no corpus needed.
+          BUSSARD_KNX_SIM_BIN="$PWD/knx-sim/target/debug/serve" \
+            cargo nextest run -p bussard-cli --profile ci \
+            -E 'binary(it) & test(/^sim_catalog_loop::test_sim_catalog_loop_synthetic_catalogue$/)'
           # The transport connection timeout against the Style 3 sim
           # (issue #575): an idle management connection reconnects.
           BUSSARD_KNX_SIM_BIN="$PWD/knx-sim/target/debug/serve" \

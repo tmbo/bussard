@@ -53,10 +53,11 @@ Most of the ETS side is gated on data that cannot be committed:
   without the KNX Virtual product file);
 - the ETS sweep needs the VM and an ETS licence.
 
-CI therefore runs the bussard-vs-sim leg and the committed request-stream
-fixtures, but no oracle row: the only ungated oracle test checks that a row
-without its capture is skipped. A corpus product also bundles hundreds of
-constructs, so a sweep failure is hard to reduce to one regression test.
+For the corpus and the house, CI therefore runs the bussard-vs-sim leg and
+the committed request-stream fixtures, but no oracle row. A corpus product
+also bundles hundreds of constructs, so a sweep failure is hard to reduce to
+one regression test. The synthetic product catalogue below closes all three
+legs in CI without vendor data.
 
 ### The synthetic product catalogue (#596)
 
@@ -66,11 +67,12 @@ files under the KNX test manufacturer `M-00FA`, one construct per product
 (a little-endian float, a `<choose>` that writes part of a segment, a
 master reset with an erase code, and so on, taken from the `needs-capture`
 backlog). ETS downloads each one into knx-sim in the VM once; the capture is
-ours and is committed with a manifest of the ETS version and the product
-XML hash. CI then replays the captures: the oracle rows run `--check`
+ours and is committed under `captures/synthetic/` with a manifest of the ETS
+version, the simulator build and the product XML hash. CI replays the
+captures on every push (see [CI](#ci)): the oracle rows run `--check`
 ungated, knx-sim replays each capture as a calibration test, and the sim
-loop runs the catalogue. The epic's checklist tracks the captures and the
-CI wiring that are still open.
+loop runs the catalogue. The epic's checklist tracks the products still to
+be captured.
 
 The products live in `tests-support/synthetic-products/`: one TOML spec per
 product, rendered by `generate.py` into committed product XML, which
@@ -149,8 +151,13 @@ $ BUSSARD_ORACLE_ROWS=captures/campaign/rows/rows-house-16.txt BUSSARD_ORACLE_RO
     cargo nextest run --profile corpus -p bussard-cli -E 'test(/^offline_oracle::/)'
 ```
 
-The ungated `test_offline_oracle_check_skips_a_row_without_its_capture` runs
-the script's `--check` path on every CI run (POSIX hosts with `python3`).
+Two oracle tests are ungated and run on every CI run (POSIX hosts with
+`python3`): `test_offline_oracle_check_skips_a_row_without_its_capture`
+checks the script's `--check` path, and
+`test_offline_oracle_synthetic_rows_pass_the_check` runs `--check` over the
+synthetic products' committed rows (`captures/synthetic/rows.txt`). A row's
+product field may name a product XML directory, which the script zips with
+the stub master.
 
 ## The flash-then-plan loop against knx-sim (`scripts/sim-catalog-loop.sh`)
 
@@ -253,6 +260,17 @@ plan for devices without a row are defined in
 write names its rows and their figures.
 
 ## CI
+
+The synthetic product catalogue (epic #596) is checked on every push and
+pull request, with no environment variable and no vendor data:
+
+| check | where |
+|---|---|
+| bussard vs ETS: `95-offline-oracle.sh --check --rows captures/synthetic/rows.txt` (`offline_oracle.rs`) | `test` job, ubuntu and macOS (Windows skips: bash) |
+| a product whose `xml/` changed since its capture fails, naming `capture.py` (`synthetic_captures.rs`) | `test` job, every OS |
+| ETS vs sim: knx-sim replays each committed capture's `requests.txt`, every object `Loaded`, segments and memory as ETS wrote them (`knx-sim/tests/synthetic_calibration.rs`) | `knx-sim` job and `sim-conformance` job |
+| bussard vs sim: the flash-then-plan loop with seeded configurations over every synthetic product (`sim_catalog_loop.rs`, `test_sim_catalog_loop_synthetic_catalogue`) | `sim-conformance` job (`BUSSARD_KNX_SIM_BIN`) |
+| every product's XML reads in `bussard-prod` and knx-sim (`synthetic_products.rs`) | `test` job, `knx-sim` job |
 
 The `sim-conformance` job also runs the KNX IP interface loop
 (`sim_interface_loop`, issue #391): it builds knx-sim's `serve`, starts a

@@ -19,8 +19,11 @@
 //! `--dir` as `#@` lines. Nothing touches the bus: the script runs `flash
 //! --dry-run` only.
 //!
-//! The ungated test runs the script's `--check` plumbing on a row whose
-//! capture does not exist, so a broken script fails every CI run.
+//! Two tests are ungated: one runs the script's `--check` plumbing on a row
+//! whose capture does not exist, so a broken script fails every CI run; the
+//! other runs `--check` over the synthetic products' committed rows
+//! (`captures/synthetic/rows.txt`, epic #596), a real bussard-versus-ETS
+//! comparison on every CI run.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -173,5 +176,68 @@ fn test_offline_oracle_rows_pass_the_check() -> TestResult {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+    Ok(())
+}
+
+/// Copies the files of `from` into `to` (one level; the synthetic model is a
+/// single `bussard.toml`, and the dry run writes its caches into the copy).
+fn copy_files(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let path = entry?.path();
+        if path.is_file()
+            && let Some(name) = path.file_name()
+        {
+            std::fs::copy(&path, to.join(name))?;
+        }
+    }
+    Ok(())
+}
+
+/// The synthetic products' rows (epic #596): committed ETS captures of
+/// fabricated `M-00FA` products, the product XML zipped with the stub master
+/// by the script. Ungated: everything they need is committed, so every CI run
+/// on a POSIX host compares bussard's dry run with what ETS wrote.
+#[test]
+fn test_offline_oracle_synthetic_rows_pass_the_check() -> TestResult {
+    if !tools_available() {
+        eprintln!("SKIP: python3 or bash is not available");
+        return Ok(());
+    }
+    let root = workspace_root();
+    let tmp = TmpDir::new("synthetic")?;
+    // A copy of the committed model: the dry run writes `.bussard/` into it.
+    let model = tmp.path().join("model");
+    copy_files(&root.join("captures/synthetic/model"), &model)?;
+    let out = tmp.path().join("out");
+    let model_arg = model.to_string_lossy().into_owned();
+    let out_arg = out.to_string_lossy().into_owned();
+    let (ok, text) = oracle(
+        &root,
+        &[
+            "--rows",
+            "captures/synthetic/rows.txt",
+            "--dir",
+            &model_arg,
+            "--out",
+            &out_arg,
+            "--check",
+        ],
+    )?;
+    assert!(ok, "synthetic rows failed the check:\n{}", tail(&text, 40));
+    // Every row ran: none was skipped for a missing capture or product.
+    let mut rows = 0;
+    for entry in std::fs::read_dir(&out)? {
+        let row = entry?.path().join("row.json");
+        if row.is_file() {
+            let row: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&row)?)?;
+            assert!(
+                row["skipped"].is_null(),
+                "a synthetic row was skipped: {row}"
+            );
+            rows += 1;
+        }
+    }
+    assert!(rows > 0, "no synthetic row ran:\n{}", tail(&text, 20));
     Ok(())
 }

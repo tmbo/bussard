@@ -16,8 +16,9 @@ For `tests-support/synthetic-products/<product>/` it runs the whole flow:
   3. the `defaults` download into knx-sim in the VM (`calibrate.calibrate_one`,
      the sweep's run directory `captures/ets-sweep/<signed id>/plain-defaults/`);
   4. copies the capture to `captures/synthetic/<product>/defaults/`:
-     `ets.pcapng`, `driver.json`, `ops.txt`, `requests.txt` (`distil.py`) and
-     a `sim.yaml` for a loopback knx-sim with the stub-zipped product;
+     `ets.pcapng`, `driver.json`, `ops.txt`, `requests.txt` (`distil.py`),
+     `image.json` (`knxtrace image`: the segments and octets ETS wrote) and a
+     `sim.yaml` for a loopback knx-sim with the stub-zipped product;
   5. the oracle row of the committed files (the product's `xml/`, zipped with
      the stub master by `95-offline-oracle.sh`), its verdict and coverage
      written into `captures/synthetic/rows.txt`, then `--check` over the file;
@@ -170,7 +171,35 @@ def copy_capture(product: str, sid: str, app: str) -> Path:
     reqs = distil.requests(dst / "ets.pcapng")
     (dst / "requests.txt").write_text(distil.render(reqs, f"{rel}/ets.pcapng"))
     (dst / "sim.yaml").write_text(sim_yaml(product, app))
+    write_image(dst, rel)
     return dst
+
+
+def write_image(dst: Path, rel: str) -> None:
+    """`image.json`: the segments ETS allocated and the octets it wrote, as
+    `knxtrace image` composes them from the capture. knx-sim's calibration
+    replay (`knx-sim/tests/synthetic_calibration.rs`) compares the device it
+    replayed `requests.txt` into against this, without running Python."""
+    knxtrace = REPO / "tools" / "knxtrace" / "knxtrace.py"
+    with tempfile.TemporaryDirectory() as tmp:
+        run([sys.executable, str(knxtrace), "image", str(dst / "ets.pcapng"), "--device", "1.1.1", "--out", tmp])
+        index = json.loads((Path(tmp) / "regions.json").read_text())
+        regions = [{"start": r["start"], "hex": (Path(tmp) / r["file"]).read_bytes().hex()} for r in index["regions"]]
+    segments = [{"object": a["object"], "base": a["base"], "size": a["size"]}
+                for a in index["allocations"] if a.get("kind") == "rel-segment" and isinstance(a.get("base"), int)]
+    lines = [
+        "{",
+        f'"about": "The memory ETS allocated and wrote in {rel}/ets.pcapng (knxtrace image), written by '
+        'tools/ets-sweep/synthetic/capture.py for knx-sim/tests/synthetic_calibration.rs.",',
+        '"segments": [',
+        ",\n".join("  " + json.dumps(s) for s in sorted(segments, key=lambda s: s["object"])),
+        "],",
+        '"regions": [',
+        ",\n".join("  " + json.dumps(r) for r in regions),
+        "]",
+        "}",
+    ]
+    (dst / "image.json").write_text("\n".join(lines) + "\n")
 
 
 def oracle_row(product: str, app: str, coverage: str = "", options: str = "") -> str:

@@ -16,7 +16,8 @@ use sha2::{Digest, Sha256};
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 /// The files every capture directory holds (`captures/synthetic/<product>/<variant>/`).
-const CAPTURE_FILES: [&str; 5] = [
+const CAPTURE_FILES: [&str; 6] = [
+    "image.json",
     "ets.pcapng",
     "sim.yaml",
     "driver.json",

@@ -29,7 +29,10 @@
 //! binary always gets an explicit `127.0.0.1` gateway.
 //!
 //! Gated on `BUSSARD_PRODUCT_CORPUS` and `BUSSARD_KNX_SIM_BIN`; without
-//! either the shards skip green. `scripts/sim-catalog-loop.sh` builds both
+//! either the shards skip green. The synthetic source
+//! (`test_sim_catalog_loop_synthetic_catalogue`, epic #596) runs the same loop
+//! over `tests-support/synthetic-products/` and needs only
+//! `BUSSARD_KNX_SIM_BIN`. `scripts/sim-catalog-loop.sh` builds both
 //! binaries and runs the shards. The applications are split over
 //! [`SHARDS`] test functions that nextest runs in parallel, and further over
 //! runners with `BUSSARD_SIM_LOOP_SHARD=<k>/<n>`. Known failures live in
@@ -91,6 +94,110 @@ shard_tests!(
     test_sim_catalog_loop_shard_6 = 6,
     test_sim_catalog_loop_shard_7 = 7,
 );
+
+/// The loop over the synthetic product catalogue (epic #596): every product
+/// under `tests-support/synthetic-products/`, its committed `xml/` zipped
+/// with the stub `knx_master.xml`, through the same flash, plan, seeded
+/// configuration and apply steps as the corpus shards. Gated only on
+/// `BUSSARD_KNX_SIM_BIN` (the `sim-conformance` CI job sets it), not on the
+/// corpus; every product must run and pass, there is no baseline.
+#[test]
+fn test_sim_catalog_loop_synthetic_catalogue() -> TestResult {
+    let Some(sim) = std::env::var_os("BUSSARD_KNX_SIM_BIN").map(PathBuf::from) else {
+        eprintln!("BUSSARD_KNX_SIM_BIN unset; skipping the synthetic sim loop.");
+        return Ok(());
+    };
+    if !sim.is_file() {
+        return Err(format!("BUSSARD_KNX_SIM_BIN={} is not a file", sim.display()).into());
+    }
+    let dir =
+        std::env::temp_dir().join(format!("bussard-sim-loop-synthetic-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    let products = synthetic_knxprods(&dir)?;
+    assert!(
+        products.iter().any(|p| p == "syn-minimal"),
+        "the baseline product is missing: {products:?}"
+    );
+    let settings = Settings {
+        corpus: dir.canonicalize()?,
+        sim,
+        configs: 2,
+        seed: 346,
+        filter: Vec::new(),
+        runner: (0, 1),
+        report: None,
+        cache: None,
+        work: None,
+    };
+    let reports = run_files(&settings, 1, 0, &BTreeMap::new());
+    let _ = std::fs::remove_dir_all(&dir);
+    let reports = reports?;
+    let not_run: Vec<String> = reports
+        .iter()
+        .filter(|r| r.outcome == "skip")
+        .map(|r| format!("{}: {}", r.application, r.detail.as_deref().unwrap_or("")))
+        .collect();
+    assert!(
+        not_run.is_empty(),
+        "synthetic products the loop skipped:\n{}",
+        not_run.join("\n")
+    );
+    assert!(!reports.is_empty(), "no synthetic application ran");
+    judge(&reports)
+}
+
+/// Zips every synthetic product's `xml/` with the stub master into `dir` as
+/// `<product>.knxprod`; returns the product names.
+fn synthetic_knxprods(dir: &Path) -> Result<Vec<String>, BoxError> {
+    use std::io::Write as _;
+    let catalogue =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-support/synthetic-products");
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(&catalogue)? {
+        let product = entry?.path();
+        let xml = product.join("xml");
+        let Some(name) = product
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+        else {
+            continue;
+        };
+        if !product.join("product.toml").is_file() || !xml.is_dir() {
+            continue;
+        }
+        let mut files = Vec::new();
+        for manufacturer in std::fs::read_dir(&xml)? {
+            let manufacturer = manufacturer?.path();
+            let Some(m) = manufacturer
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+            else {
+                continue;
+            };
+            for file in std::fs::read_dir(&manufacturer)? {
+                let file = file?.path();
+                if let Some(f) = file.file_name().map(|n| n.to_string_lossy().into_owned()) {
+                    files.push((format!("{m}/{f}"), std::fs::read(&file)?));
+                }
+            }
+        }
+        files.sort();
+        let mut zip =
+            zip::ZipWriter::new(std::fs::File::create(dir.join(format!("{name}.knxprod")))?);
+        let opts = zip::write::SimpleFileOptions::default();
+        zip.start_file("knx_master.xml", opts)?;
+        zip.write_all(b"<KNX/>")?;
+        for (path, data) in files {
+            zip.start_file(path, opts)?;
+            zip.write_all(&data)?;
+        }
+        zip.finish()?;
+        names.push(name);
+    }
+    names.sort();
+    Ok(names)
+}
 
 // ---------------------------------------------------------------------------
 // Settings
@@ -245,6 +352,18 @@ fn run_shard(index: usize) -> TestResult {
     let total = settings.runner.1 * SHARDS;
     let slot = settings.runner.0 * SHARDS + index;
     let baseline = read_baseline()?;
+    let reports = run_files(&settings, total, slot, &baseline)?;
+    judge(&reports)
+}
+
+/// Runs every application of the `.knxprod` files in `settings.corpus` whose
+/// id hashes to `slot` of `total`; returns one report per application.
+fn run_files(
+    settings: &Settings,
+    total: usize,
+    slot: usize,
+    baseline: &BTreeMap<String, String>,
+) -> Result<Vec<AppReport>, BoxError> {
     let files = knxprod_files(&settings.corpus);
     if files.is_empty() {
         return Err(format!("{} holds no .knxprod files", settings.corpus.display()).into());
@@ -323,7 +442,7 @@ fn run_shard(index: usize) -> TestResult {
                 continue;
             }
             seen.insert(app.id.clone(), archive.clone());
-            let report = run_application(&settings, file, &archive, app, &mut seed, &baseline);
+            let report = run_application(settings, file, &archive, app, &mut seed, baseline);
             eprintln!(
                 "sim-loop {:<44} {:<4} {:<5} {:>2} cfg {:>6.1}s {}{}",
                 report.application,
@@ -356,6 +475,11 @@ fn run_shard(index: usize) -> TestResult {
         count("skip"),
         started.elapsed().as_secs_f64()
     );
+    Ok(reports)
+}
+
+/// Fails on any failure the baseline does not list.
+fn judge(reports: &[AppReport]) -> TestResult {
     let new: Vec<String> = reports
         .iter()
         .filter(|r| r.outcome == "fail" && !r.known)
