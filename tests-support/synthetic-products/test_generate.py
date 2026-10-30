@@ -331,10 +331,10 @@ class DynamicChoose(unittest.TestCase):
         with self.assertRaisesRegex(generate.SpecError, "virtual parameter has no `memory`"):
             generate.Product("test", s)
 
-    def test_dynamic_choose_test_branch_not_yet(self) -> None:
+    def test_dynamic_choose_branch_needs_test_or_default(self) -> None:
         s = self.choose_spec()
         s["dynamic"]["choose"][0]["when"][0]["test"] = "1"
-        with self.assertRaisesRegex(generate.SpecError, "no product uses it yet"):
+        with self.assertRaisesRegex(generate.SpecError, "either `test` or `default = true`"):
             generate.Product("test", s)
 
     def test_dynamic_choose_unknown_parameter_refused(self) -> None:
@@ -430,6 +430,44 @@ class TaskPtrAndTaskCtrl2(unittest.TestCase):
                                               "seg0": 0})
         with self.assertRaisesRegex(generate.SpecError, "missing key `seg1`"):
             generate.Product("t", s)
+
+
+class ParameterRefPerChoose(unittest.TestCase):
+    """syn-choose-per-ref (#563): a second ParameterRef of a parameter, a
+    `<when test>` branch, and a choose on the second ref."""
+
+    def per_ref_spec(self) -> dict:
+        s = spec(parameter_ref=[{"name": "mode_twin", "parameter": "mode"}])
+        s["dynamic"] = dict(s["dynamic"], choose=[
+            {"parameter": "mode", "when": [
+                {"test": "0", "block": [{"name": "t", "text": "T", "parameters": ["mode_twin"], "com_objects": []}]}]},
+            {"parameter": "mode_twin", "when": [
+                {"default": True, "block": [{"name": "d", "text": "D", "parameters": [], "com_objects": [1]}]}]}])
+        return s
+
+    def test_render_second_ref_and_test_branch(self) -> None:
+        xml = app_xml(self.per_ref_spec())
+        self.assertIn('<ParameterRef Id="M-00FA_A-2700-10-0000_P-2_R-2" RefId="M-00FA_A-2700-10-0000_P-2" />\n'
+                      '              <ParameterRef Id="M-00FA_A-2700-10-0000_P-1_R-3" '
+                      'RefId="M-00FA_A-2700-10-0000_P-1" />\n            </ParameterRefs>', xml)
+        self.assertIn('<choose ParamRefId="M-00FA_A-2700-10-0000_P-1_R-1">\n'
+                      '                <when test="0">\n'
+                      '                  <ParameterBlock Id="M-00FA_A-2700-10-0000_PB-2" Name="t" Text="T">\n'
+                      '                    <ParameterRefRef RefId="M-00FA_A-2700-10-0000_P-1_R-3" />', xml)
+        self.assertIn('<choose ParamRefId="M-00FA_A-2700-10-0000_P-1_R-3">\n'
+                      '                <when default="true">', xml)
+
+    def test_parameter_ref_unknown_parameter_refused(self) -> None:
+        s = self.per_ref_spec()
+        s["parameter_ref"][0]["parameter"] = "nope"
+        with self.assertRaisesRegex(generate.SpecError, "unknown parameter `nope`"):
+            generate.Product("test", s)
+
+    def test_parameter_ref_name_clash_refused(self) -> None:
+        s = self.per_ref_spec()
+        s["parameter_ref"][0]["name"] = "delay"
+        with self.assertRaisesRegex(generate.SpecError, "already a parameter or a ref"):
+            generate.Product("test", s)
 
 
 if __name__ == "__main__":
