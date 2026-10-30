@@ -85,6 +85,15 @@ jobs:
       - name: Changelog fragments
         run: python3 scripts/changelog.py check
 
+      # The synthetic product generator (epic #596): its unit tests, and
+      # `--check`, which fails when a product's committed xml/ or signed.toml
+      # no longer matches its product.toml. Both scripts are stdlib-only
+      # (Python >= 3.11, the runner has 3.12), so no uv setup is needed.
+      - name: Synthetic product generator
+        run: |
+          python3 tests-support/synthetic-products/test_generate.py
+          python3 tests-support/synthetic-products/generate.py --check
+
       # --all-targets makes clippy compile tests/benches/examples too, which
       # warms the exact same build graph the test job needs. Kept as its own
       # step so a clippy failure is clearly attributed.
@@ -425,10 +434,11 @@ jobs:
             cargo nextest run -p bussard-cli --profile ci \
             -E 'binary(it) & test(/^sim_interface_(loop|secure)::/)'
           # The flash-then-plan loop over the synthetic product catalogue
-          # (epic #596): committed product XML, no corpus needed.
+          # (epic #596): committed product XML, no corpus needed. Four shards
+          # that nextest runs side by side (budget: .config/nextest.toml).
           BUSSARD_KNX_SIM_BIN="$PWD/knx-sim/target/debug/serve" \
             cargo nextest run -p bussard-cli --profile ci \
-            -E 'binary(it) & test(/^sim_catalog_loop::test_sim_catalog_loop_synthetic_catalogue$/)'
+            -E 'binary(it) & test(/^sim_catalog_loop::test_sim_catalog_loop_synthetic_catalogue_shard_/)'
           # The transport connection timeout against the Style 3 sim
           # (issue #575): an idle management connection reconnects.
           BUSSARD_KNX_SIM_BIN="$PWD/knx-sim/target/debug/serve" \

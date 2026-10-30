@@ -269,8 +269,15 @@ pull request, with no environment variable and no vendor data:
 | bussard vs ETS: `95-offline-oracle.sh --check --rows captures/synthetic/rows.txt` (`offline_oracle.rs`) | `test` job, ubuntu and macOS (Windows skips: bash) |
 | a product whose `xml/` changed since its capture fails, naming `capture.py` (`synthetic_captures.rs`) | `test` job, every OS |
 | ETS vs sim: knx-sim replays each committed capture's `requests.txt`, every object `Loaded`, segments and memory as ETS wrote them (`knx-sim/tests/synthetic_calibration.rs`) | `knx-sim` job and `sim-conformance` job |
-| bussard vs sim: the flash-then-plan loop with seeded configurations over every synthetic product (`sim_catalog_loop.rs`, `test_sim_catalog_loop_synthetic_catalogue`) | `sim-conformance` job (`BUSSARD_KNX_SIM_BIN`) |
+| bussard vs sim: the flash-then-plan loop with seeded configurations over every synthetic product (`sim_catalog_loop.rs`, `test_sim_catalog_loop_synthetic_catalogue_shard_<k>`) | `sim-conformance` job (`BUSSARD_KNX_SIM_BIN`) |
 | every product's XML reads in `bussard-prod` and knx-sim (`synthetic_products.rs`) | `test` job, `knx-sim` job |
+| the generator's unit tests (`test_generate.py`) and `generate.py --check`: a committed `xml/` or `signed.toml` that no longer matches its `product.toml` fails | `lint` job |
+
+The catalogue grows to about forty products, so a test that covers all of
+them must not run them one after another: the oracle rows run on four workers
+inside the test, the sim loop runs as four shards, and their shared nextest
+budget is an override in `.config/nextest.toml` sized for forty. A new
+catalogue-wide test follows the same rule.
 
 The `sim-conformance` job also runs the KNX IP interface loop
 (`sim_interface_loop`, issue #391): it builds knx-sim's `serve`, starts a
