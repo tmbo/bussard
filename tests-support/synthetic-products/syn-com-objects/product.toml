@@ -1,0 +1,423 @@
+# A synthetic product of the catalogue (#604 row 27), syn-minimal plus one
+# construct. Rendered by ../generate.py into xml/; see ../README.md for the schema.
+
+[doc]
+purpose = """
+syn-minimal with 32 more com objects (2 to 33), all shown: one per object
+size from 1 bit to 14 bytes (the 21 sizes of KNX type codes 0 to 20: 1 to 7
+bit, 1 to 14 octets), then 1-bit objects, together carrying every
+combination of the communication, read, write, transmit and update flags
+once; priorities cycle Low, High, Alert; object 23 also has the
+read-on-init flag. Regression row for the group-object table descriptors on
+System B: priority (#541), the size codes and their range (#545) and the
+flag octet (#540). The capture shows the descriptor ETS writes for each;
+bussard is expected identical."""
+construct = "one com object per size code, every flag combination, three priorities, ReadOnInit"
+issues = [541, 545, 540]
+
+[product]
+text = "Chirp switchboard"
+order_number = "NEST-CHIRP"
+hardware_name = "NEST-CHIRP"
+hardware_serial = "00FA0027001B"
+bus_current = 10
+
+[application]
+number = 0x271B
+version = 0x10
+name = "Chirp switchboard"
+mask = "07B0"
+load_procedure_style = "MergedProcedure"
+address_table_max_entries = 32
+association_table_max_entries = 32
+translations = { "de-DE" = "Zwitscher-Schaltzentrale" }
+
+[application.options]
+Comparable = true
+Reconstructable = true
+
+[[segment]]
+name = "main"
+kind = "relative"
+lsm = 4
+size = 256
+fill = 0xFF
+
+[[parameter_type]]
+name = "Mode"
+kind = "enum"
+size_bits = 8
+values = [
+    { value = 0, text = "off" },
+    { value = 1, text = "on" },
+    { value = 2, text = "automatic" },
+]
+
+[[parameter_type]]
+name = "Delay"
+kind = "number"
+size_bits = 16
+signed = false
+min = 0
+max = 65535
+
+[[parameter]]
+name = "mode"
+type = "Mode"
+text = "Operating mode"
+default = 1
+memory = { segment = "main", offset = 0, bit_offset = 0 }
+
+[[parameter]]
+name = "delay"
+type = "Delay"
+text = "Delay (s)"
+default = 300
+memory = { segment = "main", offset = 1, bit_offset = 0 }
+
+[[com_object]]
+number = 0
+name = "switch"
+text = "Switch"
+function_text = "On/Off"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "W"]
+priority = "Low"
+
+[[com_object]]
+number = 1
+name = "status"
+text = "Status"
+function_text = "On/Off status"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+# The construct: objects 2 to 22 take the 21 sizes in type-code order, 23 to
+# 33 are 1-bit; object 2 + k carries the flags of the bits of k (C R W T U).
+
+[[com_object]]
+number = 2
+name = "chirp2"
+text = "Chirp 2"
+function_text = "1 Bit"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = []
+priority = "Low"
+
+[[com_object]]
+number = 3
+name = "chirp3"
+text = "Chirp 3"
+function_text = "2 Bit"
+size = "2 Bit"
+dpt = "DPST-2-1"
+flags = ["C"]
+priority = "High"
+
+[[com_object]]
+number = 4
+name = "chirp4"
+text = "Chirp 4"
+function_text = "3 Bit"
+size = "3 Bit"
+flags = ["R"]
+priority = "Alert"
+
+[[com_object]]
+number = 5
+name = "chirp5"
+text = "Chirp 5"
+function_text = "4 Bit"
+size = "4 Bit"
+dpt = "DPST-3-7"
+flags = ["C", "R"]
+priority = "Low"
+
+[[com_object]]
+number = 6
+name = "chirp6"
+text = "Chirp 6"
+function_text = "5 Bit"
+size = "5 Bit"
+flags = ["W"]
+priority = "High"
+
+[[com_object]]
+number = 7
+name = "chirp7"
+text = "Chirp 7"
+function_text = "6 Bit"
+size = "6 Bit"
+flags = ["C", "W"]
+priority = "Alert"
+
+[[com_object]]
+number = 8
+name = "chirp8"
+text = "Chirp 8"
+function_text = "7 Bit"
+size = "7 Bit"
+flags = ["R", "W"]
+priority = "Low"
+
+[[com_object]]
+number = 9
+name = "chirp9"
+text = "Chirp 9"
+function_text = "1 Byte"
+size = "1 Byte"
+dpt = "DPST-5-1"
+flags = ["C", "R", "W"]
+priority = "High"
+
+[[com_object]]
+number = 10
+name = "chirp10"
+text = "Chirp 10"
+function_text = "2 Bytes"
+size = "2 Bytes"
+dpt = "DPST-9-1"
+flags = ["T"]
+priority = "Alert"
+
+[[com_object]]
+number = 11
+name = "chirp11"
+text = "Chirp 11"
+function_text = "3 Bytes"
+size = "3 Bytes"
+dpt = "DPST-10-1"
+flags = ["C", "T"]
+priority = "Low"
+
+[[com_object]]
+number = 12
+name = "chirp12"
+text = "Chirp 12"
+function_text = "4 Bytes"
+size = "4 Bytes"
+dpt = "DPST-13-1"
+flags = ["R", "T"]
+priority = "High"
+
+[[com_object]]
+number = 13
+name = "chirp13"
+text = "Chirp 13"
+function_text = "6 Bytes"
+size = "6 Bytes"
+flags = ["C", "R", "T"]
+priority = "Alert"
+
+[[com_object]]
+number = 14
+name = "chirp14"
+text = "Chirp 14"
+function_text = "8 Bytes"
+size = "8 Bytes"
+dpt = "DPST-29-10"
+flags = ["W", "T"]
+priority = "Low"
+
+[[com_object]]
+number = 15
+name = "chirp15"
+text = "Chirp 15"
+function_text = "10 Bytes"
+size = "10 Bytes"
+flags = ["C", "W", "T"]
+priority = "High"
+
+[[com_object]]
+number = 16
+name = "chirp16"
+text = "Chirp 16"
+function_text = "14 Bytes"
+size = "14 Bytes"
+dpt = "DPST-16-0"
+flags = ["R", "W", "T"]
+priority = "Alert"
+
+[[com_object]]
+number = 17
+name = "chirp17"
+text = "Chirp 17"
+function_text = "5 Bytes"
+size = "5 Bytes"
+flags = ["C", "R", "W", "T"]
+priority = "Low"
+
+[[com_object]]
+number = 18
+name = "chirp18"
+text = "Chirp 18"
+function_text = "7 Bytes"
+size = "7 Bytes"
+flags = ["U"]
+priority = "High"
+
+[[com_object]]
+number = 19
+name = "chirp19"
+text = "Chirp 19"
+function_text = "9 Bytes"
+size = "9 Bytes"
+flags = ["C", "U"]
+priority = "Alert"
+
+[[com_object]]
+number = 20
+name = "chirp20"
+text = "Chirp 20"
+function_text = "11 Bytes"
+size = "11 Bytes"
+flags = ["R", "U"]
+priority = "Low"
+
+[[com_object]]
+number = 21
+name = "chirp21"
+text = "Chirp 21"
+function_text = "12 Bytes"
+size = "12 Bytes"
+flags = ["C", "R", "U"]
+priority = "High"
+
+[[com_object]]
+number = 22
+name = "chirp22"
+text = "Chirp 22"
+function_text = "13 Bytes"
+size = "13 Bytes"
+flags = ["W", "U"]
+priority = "Alert"
+
+[[com_object]]
+number = 23
+name = "chirp23"
+text = "Chirp 23"
+function_text = "1 Bit"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "W", "U", "I"]
+priority = "Low"
+
+[[com_object]]
+number = 24
+name = "chirp24"
+text = "Chirp 24"
+function_text = "1 Bit"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["R", "W", "U"]
+priority = "High"
+
+[[com_object]]
+number = 25
+name = "chirp25"
+text = "Chirp 25"
+function_text = "1 Bit"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "W", "U"]
+priority = "Alert"
+
+[[com_object]]
+number = 26
+name = "chirp26"
+text = "Chirp 26"
+function_text = "1 Bit"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["T", "U"]
+priority = "Low"
+
+[[com_object]]
+number = 27
+name = "chirp27"
+text = "Chirp 27"
+function_text = "1 Bit"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "T", "U"]
+priority = "High"
+
+[[com_object]]
+number = 28
+name = "chirp28"
+text = "Chirp 28"
+function_text = "1 Bit"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["R", "T", "U"]
+priority = "Alert"
+
+[[com_object]]
+number = 29
+name = "chirp29"
+text = "Chirp 29"
+function_text = "1 Bit"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T", "U"]
+priority = "Low"
+
+[[com_object]]
+number = 30
+name = "chirp30"
+text = "Chirp 30"
+function_text = "1 Bit"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["W", "T", "U"]
+priority = "High"
+
+[[com_object]]
+number = 31
+name = "chirp31"
+text = "Chirp 31"
+function_text = "1 Bit"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "W", "T", "U"]
+priority = "Alert"
+
+[[com_object]]
+number = 32
+name = "chirp32"
+text = "Chirp 32"
+function_text = "1 Bit"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["R", "W", "T", "U"]
+priority = "Low"
+
+[[com_object]]
+number = 33
+name = "chirp33"
+text = "Chirp 33"
+function_text = "1 Bit"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "W", "T", "U"]
+priority = "High"
+
+[[dynamic.block]]
+name = "general"
+text = "General"
+parameters = ["mode", "delay"]
+com_objects = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33]
+
+# The application's part of the 07B0 mask procedure: MergeId 2 allocates the
+# parameter segment, MergeId 4 writes it.
+[[load_procedure]]
+merge_id = 2
+ops = [{ op = "LdCtrlRelSegment", lsm = 4, size = 256, mode = 0, fill = 0 }]
+
+[[load_procedure]]
+merge_id = 4
+ops = [{ op = "LdCtrlWriteRelMem", object = 4, offset = 0, size = 256, verify = false }]

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<KNX xmlns="http://knx.org/xml/project/23">
+  <ManufacturerData>
+    <Manufacturer RefId="M-00FA">
+      <Hardware>
+        <Hardware Id="M-00FA_H-00FA0027001B-1" Name="NEST-CHIRP" SerialNumber="00FA0027001B" VersionNumber="1" BusCurrent="10" HasIndividualAddress="true" HasApplicationProgram="true" NonRegRelevantDataVersion="0">
+          <Products>
+            <Product Id="M-00FA_H-00FA0027001B-1_P-NEST.2DCHIRP" Text="Chirp switchboard" OrderNumber="NEST-CHIRP" IsRailMounted="false" DefaultLanguage="en-US" NonRegRelevantDataVersion="0">
+              <RegistrationInfo RegistrationStatus="Registered" />
+            </Product>
+          </Products>
+          <Hardware2Programs>
+            <Hardware2Program Id="M-00FA_H-00FA0027001B-1_HP-271B-10-0000" MediumTypes="MT-0">
+              <ApplicationProgramRef RefId="M-00FA_A-271B-10-0000" />
+              <RegistrationInfo RegistrationStatus="Registered" />
+            </Hardware2Program>
+          </Hardware2Programs>
+        </Hardware>
+      </Hardware>
+    </Manufacturer>
+  </ManufacturerData>
+</KNX>

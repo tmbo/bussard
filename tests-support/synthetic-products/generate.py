@@ -316,8 +316,12 @@ class Product:
         self.objects = {}
         for i, o in enumerate(spec["com_object"]):
             ow = f"{w} [[com_object]] #{i + 1}"
-            check_keys(ow, o, {"number", "name", "text", "function_text", "size", "dpt", "flags", "priority"},
-                       set(), {"ref", "translations"})
+            # syn-com-objects (#604 row 27): `dpt` is optional (no DPT has
+            # 3, 5, 6 or 7 bits), `size` one of ETS's ObjectSize values.
+            check_keys(ow, o, {"number", "name", "text", "function_text", "size", "flags", "priority"},
+                       {"dpt"}, {"ref", "translations"})
+            if o["size"] not in OBJECT_SIZES:
+                raise SpecError(f"{ow}: size is one of {', '.join(OBJECT_SIZES)}")
             bad = set(o["flags"]) - set(FLAGS)
             if bad:
                 raise SpecError(f"{ow}: unknown flags {sorted(bad)}; use {list(FLAGS)}")
@@ -522,6 +526,10 @@ class Product:
 
 FLAGS = {"C": "CommunicationFlag", "R": "ReadFlag", "W": "WriteFlag", "T": "TransmitFlag",
          "U": "UpdateFlag", "I": "ReadOnInitFlag"}
+# `<ComObject ObjectSize>` values from 1 bit to 14 octets, in KNX type-code
+# order (codes 0 to 20).
+OBJECT_SIZES = tuple([f"{n} Bit" for n in range(1, 8)] + ["1 Byte"]
+                     + [f"{n} Bytes" for n in (2, 3, 4, 6, 8, 10, 14, 5, 7, 9, 11, 12, 13)])
 # <Options> attributes the KNX schema defines that a spec may set.
 OPTIONS = ("PreferPartialDownloadIfApplicationLoaded", "EasyCtrlModeModeStyleEmptyGroupComTables",
            "SetObjectTableLengthAlwaysToMax", "TextParameterEncoding", "SupportsExtendedMemoryServices",
@@ -883,7 +891,7 @@ def render_application(p: Product) -> bytes:
         x.empty("ComObject", [("Id", o["id"]), ("Name", o["name"]), ("Text", o["text"]), ("Number", o["number"]),
                               ("FunctionText", o["function_text"]), ("ObjectSize", o["size"])]
                 + [(FLAGS[f], flag(f in o["flags"])) for f in ("R", "W", "C", "T", "U", "I")]
-                + [("DatapointType", o["dpt"]), ("Priority", o["priority"])])
+                + [("DatapointType", o.get("dpt")), ("Priority", o["priority"])])
     x.close("ComObjectTable")
     x.open("ComObjectRefs")
     for o in p.objects.values():

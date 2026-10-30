@@ -743,5 +743,28 @@ class SystemBProductProcedure(unittest.TestCase):
             generate.Product("test", s)
 
 
+
+class ComObjectSizes(unittest.TestCase):
+    """syn-com-objects (#604 row 27): ObjectSize values and an optional DPT."""
+
+    def test_render_object_without_dpt(self) -> None:
+        s = spec()
+        del s["com_object"][1]["dpt"]
+        s["com_object"][1]["size"] = "3 Bit"
+        xml = app_xml(s)
+        self.assertIn('ObjectSize="3 Bit" ReadFlag="Enabled" WriteFlag="Disabled" CommunicationFlag="Enabled" '
+                      'TransmitFlag="Enabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" Priority="Low" />', xml)
+
+    def test_object_sizes_cover_type_codes_0_to_20(self) -> None:
+        self.assertEqual(len(generate.OBJECT_SIZES), 21)
+        self.assertEqual(generate.OBJECT_SIZES[14], "14 Bytes")
+
+    def test_unknown_object_size_refused(self) -> None:
+        s = spec()
+        s["com_object"][0]["size"] = "15 Bytes"
+        with self.assertRaisesRegex(generate.SpecError, "size is one of"):
+            generate.Product("test", s)
+
+
 if __name__ == "__main__":
     unittest.main()
