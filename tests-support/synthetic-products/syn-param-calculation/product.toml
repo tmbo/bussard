@@ -1,0 +1,146 @@
+# A synthetic product of the catalogue (#604 row 11), syn-minimal plus one
+# construct. Rendered by ../generate.py into xml/; see ../README.md for the schema.
+
+[doc]
+purpose = """
+syn-minimal with a JavaScript <ParameterCalculation> in the inline form
+(<LRTransformation> over AliasName variables, the corpus's most common shape)
+that reads the shown `delay` (default 300) and writes two placed 16-bit
+outputs whose default 0 differs from the template FF FF: `prey_double` =
+delay * 2 + 1 (shown, Access Read, at +3) and `prey_patch` = delay + 7 (in no
+block, LegacyPatchAlways, at +5). The application declares
+DownloadInvisibleParameters="Background", so a hidden parameter keeps the
+template unless LegacyPatchAlways writes it, as on the Zennio DALI-BOX of
+#450. bussard runs no calculation scripts (#427, PR #428 open), so it writes
+both outputs at their default 0; the capture shows whether ETS runs the
+script at defaults (02 59 and 01 33) or writes the defaults, and whether it
+writes the LegacyPatchAlways output with the computed value."""
+construct = "JavaScript ParameterCalculation, one output LegacyPatchAlways"
+issues = [427, 450]
+
+[product]
+text = "Prey calculator"
+order_number = "NEST-CALC"
+hardware_name = "NEST-CALC"
+hardware_serial = "00FA0027000B"
+bus_current = 10
+
+[application]
+number = 0x270B
+version = 0x10
+name = "Prey calculator"
+mask = "07B0"
+load_procedure_style = "MergedProcedure"
+address_table_max_entries = 32
+association_table_max_entries = 32
+translations = { "de-DE" = "Beuterechner" }
+
+[application.options]
+Comparable = true
+Reconstructable = true
+# Hidden parameters keep the template, so only LegacyPatchAlways writes one (#450).
+DownloadInvisibleParameters = "Background"
+
+[[segment]]
+name = "main"
+kind = "relative"
+lsm = 4
+size = 256
+fill = 0xFF
+
+[[parameter_type]]
+name = "Mode"
+kind = "enum"
+size_bits = 8
+values = [
+    { value = 0, text = "off" },
+    { value = 1, text = "on" },
+    { value = 2, text = "automatic" },
+]
+
+[[parameter_type]]
+name = "Delay"
+kind = "number"
+size_bits = 16
+signed = false
+min = 0
+max = 65535
+
+[[parameter]]
+name = "mode"
+type = "Mode"
+text = "Operating mode"
+default = 1
+memory = { segment = "main", offset = 0, bit_offset = 0 }
+
+[[parameter]]
+name = "delay"
+type = "Delay"
+text = "Delay (s)"
+default = 300
+memory = { segment = "main", offset = 1, bit_offset = 0 }
+
+# The construct: two outputs of the calculation below, both defaulting to 0
+# (template FF FF). The first is shown read-only, the second is hidden and
+# LegacyPatchAlways.
+[[parameter]]
+name = "prey_double"
+type = "Delay"
+text = "Twice the delay plus one"
+default = 0
+access = "Read"
+memory = { segment = "main", offset = 3, bit_offset = 0 }
+
+[[parameter]]
+name = "prey_patch"
+type = "Delay"
+text = "Delay plus seven"
+default = 0
+legacy_patch_always = true
+memory = { segment = "main", offset = 5, bit_offset = 0 }
+
+# At defaults the script gives prey_double = 601 (0x0259) and prey_patch =
+# 307 (0x0133) from delay = 300.
+[[parameter_calculation]]
+name = "prey"
+language = "JavaScript"
+inputs = [{ parameter = "delay", alias = "delay" }]
+outputs = [{ parameter = "prey_double", alias = "twice" }, { parameter = "prey_patch", alias = "patch" }]
+lr_script = "twice = delay * 2 + 1;\npatch = delay + 7;"
+rl_script = "1"
+
+[[com_object]]
+number = 0
+name = "switch"
+text = "Switch"
+function_text = "On/Off"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "W"]
+priority = "Low"
+
+[[com_object]]
+number = 1
+name = "status"
+text = "Status"
+function_text = "On/Off status"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+[[dynamic.block]]
+name = "general"
+text = "General"
+parameters = ["mode", "delay", "prey_double"]
+com_objects = [0, 1]
+
+# The application's part of the 07B0 mask procedure: MergeId 2 allocates the
+# parameter segment, MergeId 4 writes it.
+[[load_procedure]]
+merge_id = 2
+ops = [{ op = "LdCtrlRelSegment", lsm = 4, size = 256, mode = 0, fill = 0 }]
+
+[[load_procedure]]
+merge_id = 4
+ops = [{ op = "LdCtrlWriteRelMem", object = 4, offset = 0, size = 256, verify = false }]

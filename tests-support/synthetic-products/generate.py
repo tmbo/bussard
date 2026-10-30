@@ -33,7 +33,7 @@ import sys
 import tomllib
 import zipfile
 from pathlib import Path
-from xml.sax.saxutils import quoteattr
+from xml.sax.saxutils import escape, quoteattr
 
 HERE = Path(__file__).resolve().parent
 NS = "http://knx.org/xml/project/23"
@@ -147,7 +147,7 @@ class Product:
         self.name = name
         w = name
         check_keys(w, spec, {"doc", "product", "application", "segment", "parameter_type",
-                             "parameter", "com_object", "dynamic", "load_procedure"}, {"union"})
+                             "parameter", "com_object", "dynamic", "load_procedure"}, {"union", "parameter_calculation"})
         self.doc = spec["doc"]
         check_keys(f"{w} [doc]", self.doc, {"purpose", "construct", "issues"})
         self.product = p = spec["product"]
@@ -238,8 +238,8 @@ class Product:
         self.params = {}
         for i, prm in enumerate(spec["parameter"]):
             pw = f"{w} [[parameter]] #{i + 1}"
-            check_keys(pw, prm, {"name", "type", "text", "default"}, {"memory", "union", "access", "virtual"},
-                       {"translations"})
+            check_keys(pw, prm, {"name", "type", "text", "default"},
+                       {"memory", "union", "access", "virtual", "legacy_patch_always"}, {"translations"})
             if prm["type"] not in self.types:
                 raise SpecError(f"{pw}: unknown parameter type `{prm['type']}`")
             if prm.get("access", "ReadWrite") not in ("None", "Read", "ReadWrite"):
@@ -273,6 +273,10 @@ class Product:
                 raise SpecError(f"{w} [[union]] `{un['name']}`: a union needs at least two members")
             if "default" in un and un["default"] not in un["members"]:
                 raise SpecError(f"{w} [[union]] `{un['name']}`: default `{un['default']}` is not a member")
+
+        # syn-param-calculation (#604 row 11, #427): <ParameterCalculation>s.
+        self.calculations = [self.check_calculation(f"{w} [[parameter_calculation]] #{i + 1}", c, i + 1)
+                             for i, c in enumerate(spec.get("parameter_calculation", []))]
 
         self.objects = {}
         for i, o in enumerate(spec["com_object"]):
@@ -350,6 +354,24 @@ class Product:
                 blocks.append(self.check_block(f"{bw} block #{j + 1}", b, len(self.blocks) + self.choose_blocks))
             whens.append({"default": True, "block": blocks})
         return {"parameter": c["parameter"], "when": whens}
+
+    def check_calculation(self, cw: str, c: dict, n: int) -> dict:
+        """A `<ParameterCalculation>` in the inline form (`<RLTransformation>`,
+        `<LRTransformation>`, then `<LParameters>` and `<RParameters>`, each
+        ref with its `AliasName`), the corpus's most common one (#427).
+        VBScript and the `LRTransformationFunc` form with a `<Script>` are
+        part of the schema but unused yet."""
+        check_keys(cw, c, {"name", "language", "inputs", "outputs", "lr_script", "rl_script"})
+        if c["language"] != "JavaScript":
+            raise not_yet(cw, f"language `{c['language']}`")
+        for side in ("inputs", "outputs"):
+            if not c[side]:
+                raise SpecError(f"{cw}: `{side}` needs at least one parameter")
+            for k, ref in enumerate(c[side]):
+                check_keys(f"{cw} {side} #{k + 1}", ref, {"parameter", "alias"})
+                if ref["parameter"] not in self.params:
+                    raise SpecError(f"{cw} {side} #{k + 1}: unknown parameter `{ref['parameter']}`")
+        return dict(c, id=f"{self.app_id}_PC-{n}")
 
     def check_memory(self, where: str, m: dict, bits: int) -> None:
         """A `memory = { segment, offset, bit_offset }` that fits its segment."""
@@ -611,6 +633,24 @@ def render_dynamic_choose(x: Xml, p: Product, c: dict) -> None:
     x.close("choose")
 
 
+def render_calculations(x: Xml, p: Product) -> None:
+    """`<ParameterCalculations>` after the `ParameterRefs` (#427)."""
+    if not p.calculations:
+        return
+    x.open("ParameterCalculations")
+    for c in p.calculations:
+        x.open("ParameterCalculation", [("Id", c["id"]), ("Name", c["name"]), ("Language", c["language"])])
+        x.text("RLTransformation", escape(c["rl_script"]))
+        x.text("LRTransformation", escape(c["lr_script"]))
+        for tag, side in (("LParameters", "inputs"), ("RParameters", "outputs")):
+            x.open(tag)
+            for ref in c[side]:
+                x.empty("ParameterRefRef", [("RefId", p.params[ref["parameter"]]["ref"]), ("AliasName", ref["alias"])])
+            x.close(tag)
+        x.close("ParameterCalculation")
+    x.close("ParameterCalculations")
+
+
 def render_application(p: Product) -> bytes:
     a = p.app
     x = Xml()
@@ -647,7 +687,8 @@ def render_application(p: Product) -> bytes:
                                   ("Access", prm.get("access")), ("Value", prm["default"])])
             continue
         x.open("Parameter", [("Id", prm["id"]), ("Name", prm["name"]), ("ParameterType", p.types[prm["type"]]["id"]),
-                             ("Text", prm["text"]), ("Access", prm.get("access")), ("Value", prm["default"])])
+                             ("Text", prm["text"]), ("Access", prm.get("access")), ("Value", prm["default"]),
+                             ("LegacyPatchAlways", True if prm.get("legacy_patch_always") else None)])
         m = prm["memory"]
         x.empty("Memory", [("CodeSegment", p.segments[m["segment"]]["id"]), ("Offset", m["offset"]),
                            ("BitOffset", m["bit_offset"])])
@@ -659,6 +700,7 @@ def render_application(p: Product) -> bytes:
     for prm in p.params.values():
         x.empty("ParameterRef", [("Id", prm["ref"]), ("RefId", prm["id"])])
     x.close("ParameterRefs")
+    render_calculations(x, p)
     x.open("ComObjectTable", table_location(p, "com_object_table_segment"))
     for o in p.objects.values():
         x.empty("ComObject", [("Id", o["id"]), ("Name", o["name"]), ("Text", o["text"]), ("Number", o["number"]),

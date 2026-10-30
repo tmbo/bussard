@@ -320,5 +320,51 @@ class DynamicChoose(unittest.TestCase):
             generate.Product("test", s)
 
 
+class ParameterCalculation(unittest.TestCase):
+    """syn-param-calculation (#427, #450): an inline JavaScript calculation and
+    a LegacyPatchAlways parameter."""
+
+    def calc_spec(self, **calc) -> dict:
+        s = spec()
+        s["parameter"] = s["parameter"] + [
+            {"name": "out", "type": "Delay", "text": "Out", "default": 0, "legacy_patch_always": True,
+             "memory": {"segment": "main", "offset": 3, "bit_offset": 0}}]
+        c = {"name": "c", "language": "JavaScript", "inputs": [{"parameter": "delay", "alias": "d"}],
+             "outputs": [{"parameter": "out", "alias": "o"}], "lr_script": "o = d < 2 && d > 0;",
+             "rl_script": "1"}
+        c.update(calc)
+        s["parameter_calculation"] = [c]
+        return s
+
+    def test_render_calculation_after_parameter_refs(self) -> None:
+        xml = app_xml(self.calc_spec())
+        self.assertIn('Value="0" LegacyPatchAlways="true">', xml)
+        self.assertIn('            </ParameterRefs>\n'
+                      '            <ParameterCalculations>\n'
+                      '              <ParameterCalculation Id="M-00FA_A-2700-10-0000_PC-1" Name="c" Language="JavaScript">\n'
+                      '                <RLTransformation>1</RLTransformation>\n'
+                      '                <LRTransformation>o = d &lt; 2 &amp;&amp; d &gt; 0;</LRTransformation>\n'
+                      '                <LParameters>\n'
+                      '                  <ParameterRefRef RefId="M-00FA_A-2700-10-0000_P-2_R-2" AliasName="d" />\n'
+                      '                </LParameters>\n'
+                      '                <RParameters>\n'
+                      '                  <ParameterRefRef RefId="M-00FA_A-2700-10-0000_P-3_R-3" AliasName="o" />\n'
+                      '                </RParameters>\n'
+                      '              </ParameterCalculation>\n'
+                      '            </ParameterCalculations>\n'
+                      '            <ComObjectTable>', xml)
+
+    def test_no_calculation_renders_nothing(self) -> None:
+        self.assertNotIn("ParameterCalculations", app_xml(spec()))
+
+    def test_calculation_vbscript_not_yet(self) -> None:
+        with self.assertRaisesRegex(generate.SpecError, "no product uses it yet"):
+            generate.Product("test", self.calc_spec(language="VBScript"))
+
+    def test_calculation_unknown_parameter_refused(self) -> None:
+        with self.assertRaisesRegex(generate.SpecError, "unknown parameter `nope`"):
+            generate.Product("test", self.calc_spec(outputs=[{"parameter": "nope", "alias": "o"}]))
+
+
 if __name__ == "__main__":
     unittest.main()
