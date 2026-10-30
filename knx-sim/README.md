@@ -52,6 +52,12 @@ architecture.
   properties. The ETS partial-download oracle uses it to run `bussard apply`
   against ETS's state after a full download (bussard issues #469, #478).
 
+In bussard's testing, knx-sim is the third corner of a triangle with ETS and
+bussard: its calibration tests replay ETS captures, so it stays honest against
+ETS rather than against bussard, and bussard's flash-then-plan loop runs
+against it. See `dev/testing.md` in the bussard repository ("ETS, bussard and
+knx-sim: the triangle") and the synthetic product catalogue planned in #596.
+
 ## Run
 
 ```sh

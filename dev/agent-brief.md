@@ -31,6 +31,9 @@ cargo deny check                                         # only if you touched d
 ```
 
 Crate-scoped only. CI runs the workspace gate; do not duplicate it locally.
+Which tests check bussard against ETS and knx-sim, and which of them need
+uncommitted data, is in `dev/testing.md` ("ETS, bussard and knx-sim: the
+triangle"); the synthetic product catalogue that ungates them is #596.
 Filter output before it reaches your transcript (aim for under 50 lines per
 command). Keep `[profile.dev] debug = "line-tables-only"`.
 

@@ -23,6 +23,61 @@ without the data looks the same as a run with it. Run these tests before a
 release and after any change to the product parser, the image builder or the
 download planner.
 
+## ETS, bussard and knx-sim: the triangle
+
+Three implementations meet on the wire, and each pair checks the other:
+
+- **ETS** is the reference: what it writes to a device is what bussard must
+  write. It runs only in the owner's Windows VM and has no scripting
+  interface, so it is a capture tool, not a test runner.
+- **knx-sim** is an independent strict device, built from the KNX Standard,
+  the Wireshark dissector and ETS captures, never from bussard's code
+  (`knx-sim/README.md`).
+- **bussard** is the implementation under test.
+
+| pair | how it is checked |
+|---|---|
+| ETS vs sim | calibration replays: knx-sim must accept the request stream ETS sent in a capture, reach `Loaded` and hold the same image (`knx-sim/tests/ets_calibration.rs`, the `*_replay.rs` tests). The ETS sweep (`tools/ets-sweep`) produces such captures by having ETS download into knx-sim. |
+| bussard vs ETS | the offline oracle rows: a bussard dry run against the image an ETS capture holds, with a coverage figure ([rows](#the-offline-oracle-rows-bussard_oracle_rows), [coverage](#offline-oracle-coverage)). |
+| bussard vs sim | the [flash-then-plan loop](#the-flash-then-plan-loop-against-knx-sim-scriptssim-catalog-loopsh), the `sim-conformance` CI job, the `bussard-testkit` mock device and the `virtual-device` interop job. |
+
+The sim is calibrated against ETS, not against bussard, so a misreading of
+the standard that both bussard and the sim share still shows up as a
+difference to ETS.
+
+Most of the ETS side is gated on data that cannot be committed:
+
+- the house captures under `captures/` are the owner's installation;
+- the vendor `.knxprod` corpus is copyrighted (the oracle rows, `ets_golden`,
+  `flash_corpus` and the sim loop need it; even `ets_calibration.rs` skips
+  without the KNX Virtual product file);
+- the ETS sweep needs the VM and an ETS licence.
+
+CI therefore runs the bussard-vs-sim leg and the committed request-stream
+fixtures, but no oracle row: the only ungated oracle test checks that a row
+without its capture is skipped. A corpus product also bundles hundreds of
+constructs, so a sweep failure is hard to reduce to one regression test.
+
+### The synthetic product catalogue (planned, #596)
+
+[Epic #596](https://github.com/tmbo/bussard/issues/596) plans to close the
+triangle without vendor data: a catalogue of small fabricated `.knxprod`
+files under the KNX test manufacturer `M-00FA`, one construct per product
+(a little-endian float, a `<choose>` that writes part of a segment, a
+master reset with an erase code, and so on, taken from the `needs-capture`
+backlog). ETS downloads each one into knx-sim in the VM once; the capture is
+ours and is committed with a manifest of the ETS version and the product
+XML hash. CI then replays the captures: the oracle rows run `--check`
+ungated, knx-sim replays each capture as a calibration test, and the sim
+loop runs the catalogue. None of this exists yet; the epic's checklist
+tracks the signer spike, the generator, the captures and the CI wiring.
+
+The rule that holds now and after #596: ETS is a capture tool, CI runs on
+captures. A question about what ETS writes is answered by a capture (house,
+sweep or, once it exists, a synthetic product), never by reasoning about
+what ETS probably does. A capture is retaken when the product XML or the ETS
+version changes.
+
 ## The product corpus (`BUSSARD_PRODUCT_CORPUS`)
 
 The corpus is the vendor archives `tests-support/product-corpus/fetch.sh`

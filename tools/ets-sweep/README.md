@@ -7,6 +7,13 @@ on the Mac starts a simulated device per product, has ETS download into it, and
 keeps the capture. Nothing here links into the bussard crates: this directory
 is Python run with `uv`, and knx-sim is a separate process.
 
+In the triangle of ETS, bussard and knx-sim (`dev/testing.md`, "ETS, bussard
+and knx-sim: the triangle"), the sweep is how ETS gets into the tests: ETS is a
+capture tool, and the captures it takes here feed the offline oracle rows and
+knx-sim's calibration replays. The synthetic product catalogue planned in #596
+will run this sweep over fabricated `M-00FA` products whose captures can be
+committed and replayed in CI.
+
 ## Pieces
 
 - `driver/ets_driver.py` runs **inside the VM** in the interactive desktop

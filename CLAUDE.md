@@ -202,6 +202,10 @@ when it waits on the owner. The table of labels and when to use them is in
   parser crates are compiled optimized even in the test profile (see the
   `[profile.test.package.*]` blocks in the root `Cargo.toml`) to keep them fast.
 - Mock external dependencies using trait objects, not concrete types.
+- How ETS, bussard and knx-sim check each other is in `dev/testing.md`
+  ("ETS, bussard and knx-sim: the triangle"). A parity question about what ETS
+  writes is answered by a capture (house, sweep or synthetic product), never by
+  guessing. Prefer a synthetic product (#596) when the construct can be fabricated.
 
 ## Memory Safety and Unsafe
 

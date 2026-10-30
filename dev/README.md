@@ -11,7 +11,7 @@ is rendered there.
 | [docs-guide.md](docs-guide.md) | How the user documentation is written: the reader, page anatomy, style rules, the page map. |
 | [agent-brief.md](agent-brief.md) | Standing instructions for an implementation agent: worktree rules, commands, PR steps, report shape. |
 | [DESIGN.md](DESIGN.md) | The living design document: goals, feasibility, architecture, roadmap. |
-| [testing.md](testing.md) | How to run the test suites, the gated corpus tests, the simulator loop and the test knobs. |
+| [testing.md](testing.md) | How ETS, bussard and knx-sim check each other, how to run the test suites, the gated corpus tests, the simulator loop and the test knobs. |
 | [testing-campaign.md](testing-campaign.md) | Runbook for the physical-device campaign and the offline oracle. |
 | [flash-op-coverage.md](flash-op-coverage.md) | Which LoadProcedure ops the corpus uses, which `flash` executes, and the clause of the standard behind each (System B). |
 | [system7-spec.md](system7-spec.md) | Implementation spec for the System 7 download path (masks 0705 and 0701). |
