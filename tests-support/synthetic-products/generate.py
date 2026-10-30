@@ -147,7 +147,8 @@ class Product:
         self.name = name
         w = name
         check_keys(w, spec, {"doc", "product", "application", "segment", "parameter_type",
-                             "parameter", "com_object", "dynamic", "load_procedure"}, {"union", "parameter_calculation"})
+                             "parameter", "com_object", "dynamic", "load_procedure"},
+                   {"union", "parameter_calculation", "parameter_ref"})
         self.doc = spec["doc"]
         check_keys(f"{w} [doc]", self.doc, {"purpose", "construct", "issues"})
         self.product = p = spec["product"]
@@ -282,6 +283,19 @@ class Product:
             if "default" in un and un["default"] not in un["members"]:
                 raise SpecError(f"{w} [[union]] `{un['name']}`: default `{un['default']}` is not a member")
 
+        # syn-choose-per-ref (#604 row 25, #563): further `ParameterRef`s of a
+        # parameter, `_P-<n>_R-<k>` numbered after every parameter's own ref.
+        self.extra_refs = {}
+        for i, r in enumerate(spec.get("parameter_ref", [])):
+            rw = f"{w} [[parameter_ref]] #{i + 1}"
+            check_keys(rw, r, {"name", "parameter"})
+            if r["parameter"] not in self.params:
+                raise SpecError(f"{rw}: unknown parameter `{r['parameter']}`")
+            if r["name"] in self.params or r["name"] in self.extra_refs:
+                raise SpecError(f"{rw}: name `{r['name']}` is already a parameter or a ref")
+            prm = self.params[r["parameter"]]
+            self.extra_refs[r["name"]] = dict(r, ref=f"{prm['id']}_R-{len(self.params) + i + 1}")
+
         # syn-param-calculation (#604 row 11, #427): <ParameterCalculation>s.
         self.calculations = [self.check_calculation(f"{w} [[parameter_calculation]] #{i + 1}", c, i + 1)
                              for i, c in enumerate(spec.get("parameter_calculation", []))]
@@ -306,7 +320,7 @@ class Product:
             bw = f"{w} [[dynamic.block]] #{i + 1}"
             check_keys(bw, b, {"name", "text", "parameters", "com_objects"}, set(), {"choose", "inline"})
             for pn in b["parameters"]:
-                if pn not in self.params:
+                if pn not in self.params and pn not in self.extra_refs:
                     raise SpecError(f"{bw}: unknown parameter `{pn}`")
             for on in b["com_objects"]:
                 if on not in self.objects:
@@ -333,7 +347,7 @@ class Product:
         """A parameter block of the Dynamic tree, given its `_PB-<number>`."""
         check_keys(bw, b, {"name", "text", "parameters", "com_objects"}, set(), {"choose", "inline"})
         for pn in b["parameters"]:
-            if pn not in self.params:
+            if pn not in self.params and pn not in self.extra_refs:
                 raise SpecError(f"{bw}: unknown parameter `{pn}`")
         for on in b["com_objects"]:
             if on not in self.objects:
@@ -344,23 +358,26 @@ class Product:
         """syn-choose-never-shown (#604 row 14, #474): a `<choose ParamRefId>`
         in the ChannelIndependentBlock, after the blocks, whose `<when
         default="true">` holds parameter blocks (numbered after every block
-        before it). A `test` branch is part of the schema but unused yet."""
+        before it). syn-choose-per-ref (#604 row 25, #563): a `<when test>`
+        branch, and a choose on a further ref of a parameter (`parameter`
+        names a `[[parameter_ref]]`)."""
         check_keys(cw, c, {"parameter", "when"})
-        if c["parameter"] not in self.params:
+        if c["parameter"] not in self.params and c["parameter"] not in self.extra_refs:
             raise SpecError(f"{cw}: unknown parameter `{c['parameter']}`")
         if not c["when"]:
             raise SpecError(f"{cw}: a choose needs at least one `when`")
         whens = []
         for k, branch in enumerate(c["when"]):
             bw = f"{cw} when #{k + 1}"
-            check_keys(bw, branch, {"default", "block"}, set(), {"test"})
-            if branch["default"] is not True:
-                raise SpecError(f"{bw}: give `default = true`")
+            check_keys(bw, branch, {"block"}, {"default", "test"})
+            if ("test" in branch) == (branch.get("default") is True) or branch.get("default") is False:
+                raise SpecError(f"{bw}: give either `test` or `default = true`")
             blocks = []
             for j, b in enumerate(branch["block"]):
                 self.choose_blocks = getattr(self, "choose_blocks", 0) + 1
                 blocks.append(self.check_block(f"{bw} block #{j + 1}", b, len(self.blocks) + self.choose_blocks))
-            whens.append({"default": True, "block": blocks})
+            whens.append({"test": branch["test"], "block": blocks} if "test" in branch
+                         else {"default": True, "block": blocks})
         return {"parameter": c["parameter"], "when": whens}
 
     def check_calculation(self, cw: str, c: dict, n: int) -> dict:
@@ -421,6 +438,11 @@ class Product:
             if ("test" in branch) == bool(branch.get("default")):
                 raise SpecError(f"{bw}: give either `test` or `default = true`")
             self.check_load_ops(bw, branch["ops"])
+
+    def ref_id(self, name: str) -> str:
+        """The `ParameterRef` id a block or a choose names: a parameter's own
+        ref, or a `[[parameter_ref]]` (#563)."""
+        return self.params[name]["ref"] if name in self.params else self.extra_refs[name]["ref"]
 
     @property
     def app_file(self) -> str:
@@ -657,13 +679,13 @@ def render_load_ops(x: Xml, p: Product, ops: list[dict]) -> None:
 def render_dynamic_choose(x: Xml, p: Product, c: dict) -> None:
     """`<choose ParamRefId>` in the Dynamic tree, its `<when default="true">`
     holding parameter blocks (#474)."""
-    x.open("choose", [("ParamRefId", p.params[c["parameter"]]["ref"])])
+    x.open("choose", [("ParamRefId", p.ref_id(c["parameter"]))])
     for branch in c["when"]:
-        x.open("when", [("default", True)])
+        x.open("when", [("test", branch["test"])] if "test" in branch else [("default", True)])
         for b in branch["block"]:
             x.open("ParameterBlock", [("Id", b["id"]), ("Name", b["name"]), ("Text", b["text"])])
             for pn in b["parameters"]:
-                x.empty("ParameterRefRef", [("RefId", p.params[pn]["ref"])])
+                x.empty("ParameterRefRef", [("RefId", p.ref_id(pn))])
             for on in b["com_objects"]:
                 x.empty("ComObjectRefRef", [("RefId", p.objects[on]["ref"])])
             x.close("ParameterBlock")
@@ -737,6 +759,8 @@ def render_application(p: Product) -> bytes:
     x.open("ParameterRefs")
     for prm in p.params.values():
         x.empty("ParameterRef", [("Id", prm["ref"]), ("RefId", prm["id"])])
+    for r in p.extra_refs.values():  # #563
+        x.empty("ParameterRef", [("Id", r["ref"]), ("RefId", p.params[r["parameter"]]["id"])])
     x.close("ParameterRefs")
     render_calculations(x, p)
     x.open("ComObjectTable", table_location(p, "com_object_table_segment"))
@@ -767,7 +791,7 @@ def render_application(p: Product) -> bytes:
     for b in p.blocks:
         x.open("ParameterBlock", [("Id", b["id"]), ("Name", b["name"]), ("Text", b["text"])])
         for pn in b["parameters"]:
-            x.empty("ParameterRefRef", [("RefId", p.params[pn]["ref"])])
+            x.empty("ParameterRefRef", [("RefId", p.ref_id(pn))])
         for on in b["com_objects"]:
             x.empty("ComObjectRefRef", [("RefId", p.objects[on]["ref"])])
         x.close("ParameterBlock")
