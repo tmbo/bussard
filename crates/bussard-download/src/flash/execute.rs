@@ -11,6 +11,7 @@ use super::session::{
     Connector, MAX_RESUME_RECONNECTS, RestartKind, Session, allocate_with_context_resumable,
     read_load_state_resumable, reconnect_exchange_threshold, resumable_death,
     start_loading_resumable, write_load_control_resumable,
+    write_load_control_unless_absent_resumable,
 };
 use super::verify::{
     WrittenSample, advisory_mcb_warning, mcb_read_object, mcb_skip_target, resident_match_objects,
@@ -525,7 +526,36 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                         crate::security::write_go_security_flags(session.l4(), flags, |_| {})
                             .await?;
                     }
-                    FlashStep::Unload { target } => {
+                    // The procedure maps this unload's refusal to success
+                    // (`LdCtrlMapError`, issue #614): it goes to the object it
+                    // names, present in the discovery or not, and a device
+                    // without that object answers count 0, which completes it.
+                    FlashStep::Unload {
+                        target,
+                        absent_ok: true,
+                    } => {
+                        // The planner only maps an unload naming an object
+                        // 1..=255; anything else keeps the application object.
+                        let obj = target
+                            .and_then(|idx| u8::try_from(idx).ok())
+                            .filter(|idx| *idx != 0)
+                            .unwrap_or(app_obj);
+                        if write_load_control_unless_absent_resumable(
+                            session,
+                            obj,
+                            LoadControl::Unload,
+                        )
+                        .await?
+                        .is_none()
+                        {
+                            warnings.push(format!(
+                                "step {}: object {obj} absent on the device, nothing to unload \
+                                 (the procedure's LdCtrlMapError makes that no error)",
+                                i + 1
+                            ));
+                        }
+                    }
+                    FlashStep::Unload { target, .. } => {
                         // Skip a load-control op that names an object index the device
                         // does not expose (a template LSM5 op on a device without obj5).
                         let Some(obj) = resolve_object_target_opt(
@@ -825,6 +855,7 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                         prop_id,
                         expected,
                         mask,
+                        start_element,
                     } => {
                         // Read the named interface object's property and compare it
                         // against the vendor's expected data. A `Range`-only op has no
@@ -836,6 +867,7 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                                 session.l4(),
                                 *object,
                                 *prop_id,
+                                *start_element,
                                 expected,
                                 mask.as_deref(),
                             )

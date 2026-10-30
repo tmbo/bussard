@@ -1846,6 +1846,7 @@ mod tests {
             mask: None,
             range: None,
             occurrence: None,
+            start_element: None,
         };
         let branches = vec![WhenTest::Values(vec![0]), WhenTest::Values(vec![1])];
         app.load_procedures.push(LoadProcedure {
@@ -1883,6 +1884,7 @@ mod tests {
                 }],
                 vec![],
             ],
+            applies_to: Vec::new(),
         });
         app
     }

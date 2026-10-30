@@ -123,12 +123,14 @@ fn test_plan_flash_lowers_a_property_only_procedure_on_mask_0021() -> TestResult
                 prop_id: 12,
                 expected: Some(vec![0x00, 0x04]),
                 mask: None,
+                start_element: 1,
             },
             FlashStep::CompareProp {
                 object: PropObject::Index(0),
                 prop_id: 78,
                 expected: Some(vec![0, 0, 0, 0x16, 0, 0]),
                 mask: Some(vec![0xFF, 0xFF, 0xFF, 0xFF, 0, 0]),
+                start_element: 1,
             },
             FlashStep::WriteProp {
                 object: PropObject::Type {

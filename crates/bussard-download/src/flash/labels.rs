@@ -75,7 +75,17 @@ pub(super) fn step_label(step: &FlashStep) -> String {
                 flags.len()
             )
         }
-        FlashStep::Unload { target } => format!("unload{}", target_suffix(*target)),
+        FlashStep::Unload {
+            target,
+            absent_ok: false,
+        } => format!("unload{}", target_suffix(*target)),
+        FlashStep::Unload {
+            target,
+            absent_ok: true,
+        } => format!(
+            "unload{} (an absent object is no error: LdCtrlMapError)",
+            target_suffix(*target)
+        ),
         FlashStep::StartLoading { target } => {
             format!("open for loading{}", target_suffix(*target))
         }
@@ -137,8 +147,13 @@ pub(super) fn step_label(step: &FlashStep) -> String {
             object,
             prop_id,
             expected,
+            start_element,
             ..
         } => match expected {
+            Some(bytes) if *start_element > 1 => format!(
+                "verify property ({object}, PID {prop_id} element {start_element} == {} byte(s))",
+                bytes.len()
+            ),
             Some(bytes) => format!(
                 "verify property ({object}, PID {prop_id} == {} byte(s))",
                 bytes.len()

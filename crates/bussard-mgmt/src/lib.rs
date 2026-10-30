@@ -88,7 +88,7 @@ pub use load::{
     crc16_ccitt, encode_rel_segment, is_connection_death, master_reset, mcb_entry,
     process_time_wait, read_load_state, read_manufacturer_id, read_mcb_table, read_program_version,
     read_property_elements, read_table_reference, restart_process_wait, write_load_control,
-    write_property,
+    write_load_control_unless_absent, write_property,
 };
 // The memory primitives moved out of `load` into their own module (issue #80);
 // every historical `bussard_mgmt::…` and `bussard_mgmt::load::…` path still

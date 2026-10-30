@@ -28,7 +28,7 @@ pub(super) fn mcb_skip_target(
     plan: &FlashPlan,
 ) -> Option<u8> {
     let target = match step {
-        FlashStep::Unload { target }
+        FlashStep::Unload { target, .. }
         | FlashStep::StartLoading { target }
         | FlashStep::AllocateSegment { target, .. }
         | FlashStep::LoadCompleted { target } => *target,
@@ -178,7 +178,7 @@ impl FlashPlan {
             .steps
             .iter()
             .filter_map(|s| match s {
-                FlashStep::Unload { target }
+                FlashStep::Unload { target, .. }
                 | FlashStep::StartLoading { target }
                 | FlashStep::AllocateSegment { target, .. }
                 | FlashStep::LoadCompleted { target }
@@ -525,8 +525,10 @@ mod tests {
         assert_eq!(skipped, BTreeSet::from([4u8]));
         assert!(!plan.steps.iter().any(|s| matches!(
             s,
-            FlashStep::Unload { target: Some(4) }
-                | FlashStep::StartLoading { target: Some(4) }
+            FlashStep::Unload {
+                target: Some(4),
+                ..
+            } | FlashStep::StartLoading { target: Some(4) }
                 | FlashStep::AllocateSegment {
                     target: Some(4),
                     ..
@@ -535,9 +537,13 @@ mod tests {
                 | FlashStep::LoadCompleted { target: Some(4) }
         )));
         assert!(
-            plan.steps
-                .iter()
-                .any(|s| matches!(s, FlashStep::Unload { target: Some(5) })),
+            plan.steps.iter().any(|s| matches!(
+                s,
+                FlashStep::Unload {
+                    target: Some(5),
+                    ..
+                }
+            )),
             "another object's steps stay"
         );
         Ok(())

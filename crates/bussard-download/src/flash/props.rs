@@ -283,9 +283,10 @@ fn masked_equal(expected: &[u8], actual: &[u8], mask: Option<&[u8]>) -> bool {
         })
 }
 
-/// Executes an `LdCtrlCompareProp`: reads element 1 of `object`/`prop_id` and
-/// compares its first `expected.len()` octets under `mask`. An index-addressed
-/// object keeps the historical [`bussard_mgmt::compare_property`].
+/// Executes an `LdCtrlCompareProp`: reads element `start` (1-based) of
+/// `object`/`prop_id` and compares its first `expected.len()` octets under
+/// `mask`. An index-addressed object keeps the historical
+/// [`bussard_mgmt::compare_property`].
 ///
 /// # Errors
 ///
@@ -295,14 +296,15 @@ pub async fn compare_property_value<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     object: PropObject,
     prop_id: u32,
+    start: u16,
     expected: &[u8],
     mask: Option<&[u8]>,
 ) -> Result<(), WriteError> {
     if let PropObject::Index(index) = object {
         let (index, pid) = plain_target(index, prop_id);
-        return bussard_mgmt::compare_property(l4, index, pid, expected, mask).await;
+        return bussard_mgmt::compare_property(l4, index, pid, start, expected, mask).await;
     }
-    let held = read_property_value(l4, object, prop_id, 1, 1, expected.len().max(1)).await?;
+    let held = read_property_value(l4, object, prop_id, start, 1, expected.len().max(1)).await?;
     let actual: Vec<u8> = held.iter().take(expected.len()).copied().collect();
     if masked_equal(expected, &actual, mask) {
         Ok(())

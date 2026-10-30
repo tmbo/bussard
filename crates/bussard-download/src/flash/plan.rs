@@ -447,14 +447,56 @@ pub fn plan_flash_with_memo(
         })
         .collect();
 
+    // The `LdCtrlMapError` rules in force, original code to mapped code (issue
+    // #614). Only `MAPPED_UNLOAD_ERROR` to success is lowered, and only over
+    // an `Unload`.
+    let mut error_maps: BTreeMap<u32, u32> = BTreeMap::new();
+
     for (i, op) in ops.iter().enumerate() {
         let step_no = i + 1;
+        if let Some(code) = error_maps.keys().next()
+            && !matches!(
+                op,
+                LoadOp::Unload { .. }
+                    | LoadOp::MapError { .. }
+                    | LoadOp::Connect
+                    | LoadOp::Disconnect
+            )
+        {
+            return Err(PlanError::UnsupportedOp {
+                op: format!(
+                    "LdCtrlMapError OriginalError={code:#010X} in force over {op:?} (step \
+                     {step_no}); bussard maps it over an LdCtrlUnload only"
+                ),
+            });
+        }
         match op {
             // Session boundaries: the engine holds one connection open across the
             // whole procedure, so these carry no per-op device action.
             LoadOp::Connect | LoadOp::Disconnect => {}
 
-            LoadOp::Unload { lsm_idx } => steps.push(FlashStep::Unload { target: *lsm_idx }),
+            LoadOp::MapError {
+                original_error,
+                mapped_error,
+            } => lower_map_error(&mut error_maps, *original_error, *mapped_error)?,
+
+            LoadOp::Unload { lsm_idx } => {
+                let absent_ok = error_maps.get(&MAPPED_UNLOAD_ERROR) == Some(&0);
+                // A mapped unload goes to the object it names, so it must name
+                // one (1..=255), not the application object by default.
+                if absent_ok && !lsm_idx.is_some_and(|i| (1..=u32::from(u8::MAX)).contains(&i)) {
+                    return Err(PlanError::UnsupportedOp {
+                        op: format!(
+                            "LdCtrlMapError over an LdCtrlUnload without an object index 1 to \
+                             255 (step {step_no})"
+                        ),
+                    });
+                }
+                steps.push(FlashStep::Unload {
+                    target: *lsm_idx,
+                    absent_ok,
+                });
+            }
             LoadOp::Load { lsm_idx } if is_loadable(lsm_idx) => {
                 steps.push(FlashStep::StartLoading { target: *lsm_idx })
             }
@@ -632,11 +674,13 @@ pub fn plan_flash_with_memo(
             // A spliced template writes a standard table object (obj1/2/3) but no
             // table image was supplied: refuse rather than stream the app segment
             // (or nothing) to a table object.
+            // A product procedure (issue #614: the Siemens 07B0 applications)
+            // writes a table object it declares no segment for: the same.
             LoadOp::WriteRelMem {
                 obj_idx: Some(idx), ..
-            } if spliced_from_template
-                && !table_images.contains_key(idx)
-                && table_object_name(*idx).is_some() =>
+            } if !table_images.contains_key(idx)
+                && table_object_name(*idx).is_some()
+                && (spliced_from_template || !declares_segment_on(&segments, *idx)) =>
             {
                 return Err(PlanError::MissingTableImage {
                     step: step_no,
@@ -879,6 +923,7 @@ pub fn plan_flash_with_memo(
                 inline_data,
                 mask,
                 range,
+                start_element,
                 ..
             } => {
                 // A property-verify precondition. The expected bytes come from the
@@ -894,6 +939,12 @@ pub fn plan_flash_with_memo(
                     prop_id: prop_id.unwrap_or(0),
                     expected: inline_data.clone(),
                     mask: mask.clone(),
+                    // The Siemens 07B0 applications compare single elements
+                    // of an array property (issue #614).
+                    start_element: super::plan_props::compare_start_element(
+                        step_no,
+                        *start_element,
+                    )?,
                 });
             }
 
@@ -1062,6 +1113,53 @@ pub fn plan_flash_with_memo(
         par_allocations,
         par_procedure: false,
     })
+}
+
+/// The one ETS error code the product corpus maps (`LdCtrlMapError
+/// OriginalError="3221498632"`, 27 Siemens 07B0 applications, issue #614): to
+/// success, around the `LdCtrlUnload LsmIdx="5"` of a device that may have no
+/// object 5. bussard reads it as the device's refusal of that load control
+/// with element count 0, the answer of a device without the object (issue
+/// #178). The ETS captures of the synthetic products `syn-map-error` and
+/// `syn-product-07b0` are to confirm what ETS sends there.
+pub const MAPPED_UNLOAD_ERROR: u32 = 0xC004_2B08;
+
+/// Applies one `LdCtrlMapError` to the rules in force: a code mapped to 0 is
+/// reported as success from here on, a code mapped to itself ends its rule.
+///
+/// # Errors
+///
+/// [`PlanError::UnsupportedOp`] for a rule bussard cannot honour: a code other
+/// than [`MAPPED_UNLOAD_ERROR`] (bussard cannot tell which of its failures it
+/// names), a mapping to another error, or a missing attribute.
+fn lower_map_error(
+    error_maps: &mut BTreeMap<u32, u32>,
+    original: Option<u32>,
+    mapped: Option<u32>,
+) -> std::result::Result<(), PlanError> {
+    let refuse = |why: &str| PlanError::UnsupportedOp {
+        op: format!(
+            "LdCtrlMapError OriginalError={} MappedError={}: {why}",
+            original.map_or_else(|| "-".to_string(), |c| format!("{c:#010X}")),
+            mapped.map_or_else(|| "-".to_string(), |c| format!("{c:#010X}")),
+        ),
+    };
+    let (Some(original), Some(mapped)) = (original, mapped) else {
+        return Err(refuse("an attribute is missing"));
+    };
+    if original != MAPPED_UNLOAD_ERROR {
+        return Err(refuse(
+            "bussard knows no device failure this ETS error code stands for",
+        ));
+    }
+    if mapped == original {
+        error_maps.remove(&original);
+    } else if mapped == 0 {
+        error_maps.insert(original, 0);
+    } else {
+        return Err(refuse("only a mapping to success (0) is supported"));
+    }
+    Ok(())
 }
 
 /// Inserts a [`FlashStep::FactoryReset`] with erase code 7 right before the
@@ -1384,6 +1482,14 @@ pub(super) fn resolve_rel_segment(
         .map(|s| (s.id.clone(), s.size))
 }
 
+/// Whether the application declares a relative segment of its own on load
+/// state machine `lsm` (the ABB i-bus group-object table, issue #113).
+fn declares_segment_on(segments: &HashMap<String, CodeSegment>, lsm: u32) -> bool {
+    segments
+        .values()
+        .any(|s| s.kind == SegmentKind::Relative && s.load_state_machine == Some(lsm))
+}
+
 /// Cuts a `WriteRelMem` image to the op's `Size` (issue #564).
 ///
 /// ABB Caldion `M-0002_A-4980-17-A22E-O01EC` declares a 135168-octet
@@ -1565,7 +1671,10 @@ mod tests {
         assert_eq!(
             plan.steps,
             vec![
-                FlashStep::Unload { target: Some(4) },
+                FlashStep::Unload {
+                    target: Some(4),
+                    absent_ok: false
+                },
                 FlashStep::StartLoading { target: Some(4) },
                 FlashStep::AllocateSegment {
                     size: 6,
@@ -2360,7 +2469,9 @@ mod tests {
                 prop_id,
                 expected,
                 mask,
+                start_element,
             } => {
+                assert_eq!(*start_element, 1);
                 assert_eq!(*object, crate::flash::PropObject::Index(0));
                 assert_eq!(*prop_id, 78);
                 assert_eq!(
@@ -3022,5 +3133,182 @@ mod tests {
             maybe_substitute_app_id(13, Some(&[0, 0, 0, 0, 0]), None),
             Some(vec![0, 0, 0, 0, 0])
         );
+    }
+
+    /// The fabricated Siemens-shaped product procedure (issue #614).
+    fn map_error_app() -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
+        let xml = include_bytes!("../../../bussard-ets/tests/fixtures/ldctrl_map_error.app.xml");
+        Ok(parse_application_program("M-00FA_A-0614-01-ABCD", xml)?)
+    }
+
+    fn plan_map_error(app: &ApplicationProgram) -> std::result::Result<FlashPlan, PlanError> {
+        let tables = crate::build_table_images(
+            None,
+            bussard_model::IndividualAddress::from_raw(0x1101),
+            app,
+            &BTreeMap::new(),
+        );
+        plan_flash(
+            app,
+            "1.1.1",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &tables,
+        )
+    }
+
+    #[test]
+    fn test_plan_flash_map_error_maps_only_the_wrapped_unload()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let plan = plan_map_error(&map_error_app()?)?;
+        let unloads: Vec<(Option<u32>, bool)> = plan
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                FlashStep::Unload { target, absent_ok } => Some((*target, *absent_ok)),
+                _ => None,
+            })
+            .collect();
+        // The second LdCtrlMapError (mapped to itself) ends the rule, and the
+        // par/grp unloads after the complete download are left out.
+        assert_eq!(
+            unloads,
+            [
+                (Some(5), true),
+                (Some(4), false),
+                (Some(3), false),
+                (Some(2), false),
+                (Some(1), false)
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_product_procedure_runs_the_complete_download_only()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let plan = plan_map_error(&map_error_app()?)?;
+        let allocations: Vec<Option<u32>> = plan
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                FlashStep::AllocateSegment { target, .. } => Some(*target),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(allocations, [Some(4), Some(3), Some(1), Some(2)]);
+        let writes: Vec<(Option<u32>, ImageKind)> = plan
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                FlashStep::WriteRelMem { target, image, .. } => Some((*target, image.kind)),
+                _ => None,
+            })
+            .collect();
+        // The tables on LSM 1 to 3 stream the table images, as every System B
+        // download does.
+        assert_eq!(
+            writes,
+            [
+                (Some(4), ImageKind::Code),
+                (Some(3), ImageKind::Table),
+                (Some(2), ImageKind::Table),
+                (Some(1), ImageKind::Table)
+            ]
+        );
+        let completed = plan
+            .steps
+            .iter()
+            .filter(|s| matches!(s, FlashStep::LoadCompleted { .. }))
+            .count();
+        assert_eq!(completed, 4);
+        let elements: Vec<u16> = plan
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                FlashStep::CompareProp { start_element, .. } => Some(*start_element),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(elements, [1, 3]);
+        assert!(
+            trace(&plan)
+                .iter()
+                .any(|l| l.contains("absent object is no error"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_product_procedure_without_table_images_refuses()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let app = map_error_app()?;
+        match plan_flash(
+            &app,
+            "1.1.1",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        ) {
+            Err(PlanError::MissingTableImage { obj_idx: 3, .. }) => Ok(()),
+            other => Err(format!("expected MissingTableImage for object 3, got {other:?}").into()),
+        }
+    }
+
+    #[test]
+    fn test_lower_map_error_refuses_what_it_cannot_honour() {
+        let mut maps = BTreeMap::new();
+        assert!(lower_map_error(&mut maps, Some(MAPPED_UNLOAD_ERROR), Some(0)).is_ok());
+        assert_eq!(maps.get(&MAPPED_UNLOAD_ERROR), Some(&0));
+        assert!(
+            lower_map_error(
+                &mut maps,
+                Some(MAPPED_UNLOAD_ERROR),
+                Some(MAPPED_UNLOAD_ERROR)
+            )
+            .is_ok()
+        );
+        assert!(maps.is_empty());
+        for (original, mapped) in [
+            (Some(0xC004_0001), Some(0)),
+            (Some(MAPPED_UNLOAD_ERROR), Some(5)),
+            (None, Some(0)),
+            (Some(MAPPED_UNLOAD_ERROR), None),
+        ] {
+            assert!(
+                matches!(
+                    lower_map_error(&mut maps, original, mapped),
+                    Err(PlanError::UnsupportedOp { .. })
+                ),
+                "{original:?} -> {mapped:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_plan_flash_map_error_over_another_op_refuses() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut app = map_error_app()?;
+        // Drop the closing LdCtrlMapError: the rule stays in force over the
+        // unload of object 4 (fine) and then over a Load (refused).
+        let lp = app.load_procedures.first_mut().ok_or("procedure")?;
+        let closing = lp
+            .ops
+            .iter()
+            .rposition(|op| matches!(op, LoadOp::MapError { .. }))
+            .ok_or("closing map")?;
+        lp.ops.remove(closing);
+        lp.applies_to.remove(closing);
+        match plan_map_error(&app) {
+            Err(PlanError::UnsupportedOp { op }) => {
+                assert!(op.contains("LdCtrlMapError"), "{op}");
+                Ok(())
+            }
+            other => Err(format!("expected UnsupportedOp, got {other:?}").into()),
+        }
     }
 }
