@@ -102,7 +102,9 @@ shard_tests!(
 /// `BUSSARD_KNX_SIM_BIN` (the `sim-conformance` CI job sets it), not on the
 /// corpus; every product must run and pass, except a refusal listed in
 /// `tests-support/synthetic-products/sim-loop-refusals.json` (the finding a
-/// product exists for, #604).
+/// product exists for, #604) and a failure listed with the step it fails at
+/// in `tests-support/synthetic-products/sim-loop-baseline.json` (the evidence
+/// of an open bussard bug, like an `expect=differs` oracle row).
 #[test]
 fn test_sim_catalog_loop_synthetic_catalogue() -> TestResult {
     let Some(sim) = std::env::var_os("BUSSARD_KNX_SIM_BIN").map(PathBuf::from) else {
@@ -132,7 +134,12 @@ fn test_sim_catalog_loop_synthetic_catalogue() -> TestResult {
         cache: None,
         work: None,
     };
-    let reports = run_files(&settings, 1, 0, &BTreeMap::new());
+    let reports = run_files(
+        &settings,
+        1,
+        0,
+        &read_baseline_at("../../tests-support/synthetic-products/sim-loop-baseline.json")?,
+    );
     let _ = std::fs::remove_dir_all(&dir);
     let reports = reports?;
     let refusals = read_synthetic_refusals()?;
@@ -577,8 +584,13 @@ fn first_line(text: &str) -> &str {
 /// The checked-in known failures: application id to the step that fails.
 /// A known application that fails at another step is a regression.
 fn read_baseline() -> Result<BTreeMap<String, String>, BoxError> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests-support/product-corpus/sim-loop-baseline.json");
+    read_baseline_at("../../tests-support/product-corpus/sim-loop-baseline.json")
+}
+
+/// The known failures of a baseline file, relative to this crate's manifest
+/// directory; a missing file lists none.
+fn read_baseline_at(relative: &str) -> Result<BTreeMap<String, String>, BoxError> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
     let Ok(text) = std::fs::read_to_string(&path) else {
         return Ok(BTreeMap::new());
     };
@@ -589,7 +601,7 @@ fn read_baseline() -> Result<BTreeMap<String, String>, BoxError> {
             let step = entry
                 .get("step")
                 .and_then(|s| s.as_str())
-                .ok_or_else(|| format!("sim-loop-baseline.json: {app} has no step"))?;
+                .ok_or_else(|| format!("{relative}: {app} has no step"))?;
             out.insert(app.clone(), step.to_string());
         }
     }
