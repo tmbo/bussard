@@ -335,7 +335,7 @@ fn test_compute_parameter_image_placed_meteodata_c4_page_is_writable() {
         .find(|a| a.id.starts_with("M-0048_A-140C"))
         .expect("Meteodata app");
     // C1..C3 active show the C4 switch; C4 active shows its page. (A hidden
-    // page is not written on System 7, issue #448, so the channels must be
+    // page is not written on this project/20 System 7 program, issue #448, so the channels must be
     // switched on, not left to a hidden-defaults pass.)
     let overrides: BTreeMap<String, String> = BTreeMap::from([
         ("P-2235_R-2235".to_string(), "1".to_string()),
@@ -369,7 +369,7 @@ fn test_compute_parameter_image_placed_meteodata_c4_page_is_writable() {
     )
     .expect("Meteodata plan");
     // AS-4C00 has nothing placed now that hidden parameters keep the
-    // template on System 7 (issue #448); its id comes from the program.
+    // template on a project/20 System 7 program (issue #448); its id comes from the program.
     let segment = |suffix: &str| {
         app.code_segments
             .keys()

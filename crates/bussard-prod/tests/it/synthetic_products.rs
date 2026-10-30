@@ -152,3 +152,36 @@ fn test_read_knxprod_synthetic_minimal_contents() -> TestResult {
     );
     Ok(())
 }
+
+/// Issue #448: the hidden 16-bit parameter at +3 of the parameter segment
+/// (default `12 34` over the template `FF FF`) is written at its default
+/// where ETS wrote it (System B and System 7 in project/23) and keeps the
+/// template where ETS kept it (System 7 in project/11), as the captures of
+/// the three synthetic products show.
+#[test]
+fn test_downloads_invisible_parameters_synthetic_twins() -> TestResult {
+    let tmp = tempfile::tempdir()?;
+    for (name, segment, writes, at_3) in [
+        ("syn-hidden-default", "_RS-04-00000", true, [0x12, 0x34]),
+        ("syn-s7-hidden-default", "_AS-4440", true, [0x12, 0x34]),
+        ("syn-s7-hidden-default-p11", "_AS-4440", false, [0xFF, 0xFF]),
+    ] {
+        let path = tmp.path().join(format!("{name}.knxprod"));
+        zip_product(&catalogue_dir().join(name), &path)?;
+        let data = bussard_prod::read_knxprod(&path)?;
+        let app = data.applications.first().ok_or("no application")?;
+        assert_eq!(app.downloads_invisible_parameters(), writes, "{name}");
+        let images = bussard_prod::compute_parameter_image(
+            app,
+            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeMap::new(),
+        )?;
+        let image = images
+            .iter()
+            .find(|(id, _)| id.ends_with(segment))
+            .map(|(_, octets)| octets)
+            .ok_or(format!("{name}: no image of {segment}"))?;
+        assert_eq!(image.get(3..5), Some(&at_3[..]), "{name}");
+    }
+    Ok(())
+}

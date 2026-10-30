@@ -1109,30 +1109,71 @@ impl ApplicationProgram {
     /// Whether a download writes the parameters the configuration does not
     /// show, with their defaults.
     ///
-    /// ETS does for a System B program (mask `xxB0`) whose `<Options>`
-    /// declares neither `DownloadInvisibleParameters` nor
-    /// `PreferPartialDownloadIfApplicationLoaded="true"`; every other program
-    /// keeps the segment template for them (issues #89 and #448). Established
-    /// from full-download captures of the defaults sweep (#422), compared on
-    /// a build that has the sweep's other fixes:
+    /// Never when `<Options>` declares `DownloadInvisibleParameters` (`None`
+    /// or `Background`) or `PreferPartialDownloadIfApplicationLoaded="true"`:
+    /// the segment template stays for them on both systems. Without either
+    /// attribute ETS 6 writes them on a System B program (mask `xxB0`) at
+    /// every schema version, and on a System 7 one (mask `0700`, `0701`,
+    /// `0705`) from schema version [`Self::FIRST_SYSTEM7_SCHEMA_WITH_HIDDEN_DEFAULTS`]
+    /// on (issues #89 and #448). Established from full-download captures,
+    /// each one a hidden parameter whose default differs from its template:
     ///
     /// * System B, neither attribute, defaults written: Busch-Wächter PRO
-    ///   280 / 2800 (`M-0007_A-6179-82`), Steinel ControlPro
-    ///   (`M-008E_A-7188-31`), ABB Modbus RTU Gateway (`M-0002_A-3002-11`).
+    ///   280 / 2800 (`M-0007_A-6179-82`, project/20, `MinEtsVersion` 5.0)
+    ///   and the synthetic `syn-hidden-default` (project/23).
+    /// * System 7, neither attribute, defaults written: the synthetic
+    ///   `syn-s7-hidden-default` (0705, project/23).
+    /// * System 7, neither attribute, template kept: its twin
+    ///   `syn-s7-hidden-default-p11` (project/11, the same product otherwise),
+    ///   the sweep's Steinel HPD 2 and TruePresence, ekinex, B.E.G. DIM,
+    ///   Zennio Sensato, MDT rain sensor and Elsner rows (project/11), and
+    ///   Busch-Jaeger `A-FF11-15` (0705, project/20, `MinEtsVersion` 3.0d,
+    ///   14 octets differ when its hidden defaults are written).
     /// * System B, partial download preferred, template kept: Busch-Jaeger
     ///   DALI gateways `A-A0AC`, `A-A0AD`, Zennio DALI-BOX `A-3131`,
-    ///   `A-3311`, `A-3331` (each loses its ETS-identical image when the
-    ///   hidden defaults are written), Jung 230021SU, 390041SR, F50, ABB
-    ///   BE/S16.
-    /// * System 7, neither attribute, template kept: Steinel HPD 2 and
-    ///   TruePresence, ekinex, B.E.G. DIM, Zennio Sensato and the Elsner
-    ///   sensors (project/11), Busch-Jaeger `A-FF11-15` (project/20, empty
-    ///   `<Options/>`); the schema version plays no part.
+    ///   `A-3311`, `A-3331`, Jung 230021SU, 390041SR, F50, ABB BE/S16.
     /// * Declared `None` or `Background`, template kept on both systems.
+    ///
+    /// The schema version alone does not decide: in project/20 the System B
+    /// PRO 280 writes and the System 7 `A-FF11-15` keeps. Not settled: the
+    /// System 7 boundary between 21 and 23 (the corpus has no System 7
+    /// program in project/21 or /22, so the choice of 21 changes no vendor
+    /// product), System B below project/20 (no capture separates it; the
+    /// Steinel ControlPro, project/11, has its hidden defaults equal to the
+    /// template), and whether ETS keys on `MinEtsVersion` instead (every
+    /// capture above that writes has 5.0 or later, every one that keeps has
+    /// 4.0 or earlier or none). `syn-s7-hidden-default` rendered in
+    /// project/23 with `MinEtsVersion="4.0"` would tell the two apart.
     pub fn downloads_invisible_parameters(&self) -> bool {
         self.download_invisible_parameters.is_none()
             && !self.prefer_partial_download
-            && self.is_system_b()
+            && (self.is_system_b()
+                || (self.is_system_7()
+                    && self
+                        .schema_number()
+                        .is_some_and(|n| n >= Self::FIRST_SYSTEM7_SCHEMA_WITH_HIDDEN_DEFAULTS)))
+    }
+
+    /// The first `http://knx.org/xml/project/<N>` schema version from which
+    /// a System 7 program without `DownloadInvisibleParameters` gets the
+    /// parameters the configuration does not show written at their defaults
+    /// (issue #448; see [`Self::downloads_invisible_parameters`]).
+    pub const FIRST_SYSTEM7_SCHEMA_WITH_HIDDEN_DEFAULTS: u32 = 21;
+
+    /// The schema version of [`Self::schema_version`] as a number (`23` for
+    /// `http://knx.org/xml/project/23`), `None` when the file declared none
+    /// or a non-numeric one.
+    pub fn schema_number(&self) -> Option<u32> {
+        self.schema_version.as_deref()?.trim().parse().ok()
+    }
+
+    /// Whether the program is a System 7 one: its `MaskVersion` is `0700`,
+    /// `0701` or `0705`.
+    pub fn is_system_7(&self) -> bool {
+        self.mask_version
+            .as_deref()
+            .and_then(|m| u16::from_str_radix(m.trim(), 16).ok())
+            .is_some_and(|m| matches!(m, 0x0700 | 0x0701 | 0x0705))
     }
 
     /// Whether the program is a System B one: its `MaskVersion` is `xxB0`
@@ -3117,6 +3158,50 @@ mod tests {
             assert_eq!(app.prefer_partial_download, partial, "{options}");
             assert_eq!(app.downloads_invisible_parameters(), writes, "{options}");
         }
+        Ok(())
+    }
+
+    /// Issue #448: without the attributes, a System B program writes hidden
+    /// defaults at every schema, a System 7 one from project/21 on; another
+    /// mask never does.
+    #[test]
+    fn test_downloads_invisible_parameters_by_system_and_schema() -> Result<()> {
+        for (mask, schema, writes) in [
+            ("07B0", "11", true),
+            ("07B0", "20", true),
+            ("07B0", "23", true),
+            ("0705", "11", false),
+            ("0705", "20", false),
+            ("0705", "21", true),
+            ("0705", "23", true),
+            ("0701", "20", false),
+            ("0701", "23", true),
+            ("0700", "23", true),
+            ("0021", "23", false),
+            ("0912", "23", false),
+        ] {
+            let xml = format!(
+                r#"<KNX xmlns="http://knx.org/xml/project/{schema}"><ApplicationProgram Id="M-1_A-1" Name="t" MaskVersion="MV-{mask}"><Static><Options Comparable="true" /></Static></ApplicationProgram></KNX>"#
+            );
+            let app = parse_application_program_str("M-1_A-1", &xml)?;
+            assert_eq!(app.schema_number(), schema.parse().ok(), "{mask} {schema}");
+            assert_eq!(
+                app.downloads_invisible_parameters(),
+                writes,
+                "{mask} {schema}"
+            );
+            let background = xml.replace(
+                r#"Comparable="true""#,
+                r#"DownloadInvisibleParameters="Background""#,
+            );
+            let app = parse_application_program_str("M-1_A-1", &background)?;
+            assert!(!app.downloads_invisible_parameters(), "{mask} {schema}");
+        }
+        // No namespace: no schema version, so System 7 keeps the template.
+        let xml = r#"<KNX><ApplicationProgram Id="M-1_A-1" Name="t" MaskVersion="MV-0705"><Static /></ApplicationProgram></KNX>"#;
+        let app = parse_application_program_str("M-1_A-1", xml)?;
+        assert_eq!(app.schema_number(), None);
+        assert!(!app.downloads_invisible_parameters());
         Ok(())
     }
 

@@ -624,6 +624,37 @@ flash matches. `S7-CAL: PID78 value semantics and how the sim seeds it`.
 There is **no `WriteProp`** of the app id anywhere in System 7; the device
 derives run-state from the loaded tables, ETS only checks `[corpus §5]`.
 
+### 4.7 Parameters the configuration does not show (#448)
+
+A parameter the Dynamic walk does not reach is written at its default, or its
+octets keep the segment template, by
+`ApplicationProgram::downloads_invisible_parameters` (`bussard-ets`), the one
+predicate the image builder and the read-back decoder use on both systems.
+With `DownloadInvisibleParameters` (`None`, `Background`) or
+`PreferPartialDownloadIfApplicationLoaded="true"` the template stays. Without
+either, the schema version of the application file
+(`http://knx.org/xml/project/<N>`) decides on System 7:
+
+| capture | system | schema | `MinEtsVersion` | ETS at the hidden parameter |
+|---|---|---|---|---|
+| `syn-s7-hidden-default-p11` | 0705 | 11 | 4.0 | template |
+| sweep rows of #448 (Steinel, ekinex, B.E.G., Zennio, MDT, Elsner) | 0705/0701 | 11 | 4.0, 3.0d, none | template |
+| Busch-Jaeger `A-FF11-15` (sweep) | 0705 | 20 | 3.0d | template (14 octets differ when written) |
+| `syn-s7-hidden-default` | 0705 | 23 | 6.0 | default |
+| `syn-hidden-default` | 07B0 | 23 | 6.0 | default |
+| Busch-Wächter PRO 280 `A-6179-82` (sweep, #89) | 07B0 | 20 | 5.0 | default |
+
+The two synthetic System 7 products differ only in the namespace and
+`MinEtsVersion`. So System 7 writes the defaults from project/21 on and keeps
+the template through project/20; System B writes them at every schema. The
+schema alone does not decide (project/20 writes on the PRO 280 and keeps on
+`A-FF11-15`). Open: the System 7 boundary within 21 to 23 (no System 7 program
+in the corpus has project/21 or /22, so it changes no vendor product), System B
+below project/20 (no capture separates it), and whether ETS keys on
+`MinEtsVersion` instead (every capture that writes has 5.0 or later, every one
+that keeps has 4.0 or earlier, or none). `syn-s7-hidden-default` rendered in project/23
+with `MinEtsVersion="4.0"` would tell the two apart.
+
 ---
 
 ## 5. LSM realisation, resolved: fixed per mask by the profile

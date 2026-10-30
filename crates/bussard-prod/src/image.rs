@@ -4155,10 +4155,11 @@ mod tests {
     }
 
     /// Issue #448: a System 7 program without `DownloadInvisibleParameters`
-    /// keeps the template for hidden parameters (Steinel HPD 2, Busch-Jaeger
-    /// `A-FF11-15`), where the same System B program writes their defaults;
-    /// a System B one that prefers a partial download keeps the template too
-    /// (Zennio DALI-BOX `A-3311`).
+    /// keeps the template for hidden parameters up to project/20 (Steinel
+    /// HPD 2, Busch-Jaeger `A-FF11-15`), where the same System B program
+    /// writes their defaults; from project/21 on it writes them too
+    /// (`syn-s7-hidden-default`). A System B one that prefers a partial
+    /// download keeps the template (Zennio DALI-BOX `A-3311`).
     #[test]
     fn test_compute_parameter_image_dynamic_hidden_defaults_follow_the_system() -> Result<()> {
         let options = r#"<Options TextParameterEncoding="utf-8" Comparable="false" Reconstructable="false" />"#;
@@ -4176,7 +4177,21 @@ mod tests {
             assert!(!app.downloads_invisible_parameters(), "{mask}");
             let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
             assert_eq!(images["A_RS-1"], [0, 0, 0, 1], "{mask}");
+            for schema in ["21", "23"] {
+                let newer = system7.replace(
+                    "http://knx.org/xml/project/20",
+                    &format!("http://knx.org/xml/project/{schema}"),
+                );
+                let app = parse_application_program("A", newer.as_bytes())?;
+                assert!(app.downloads_invisible_parameters(), "{mask} {schema}");
+                let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
+                assert_eq!(images["A_RS-1"], [0x02, 0x58, 5, 1], "{mask} {schema}");
+            }
         }
+        // System B writes them in an older schema too.
+        let older = HIDDEN_XML.replace("project/20", "project/11");
+        let app = parse_application_program("A", older.as_bytes())?;
+        assert!(app.downloads_invisible_parameters());
         Ok(())
     }
 

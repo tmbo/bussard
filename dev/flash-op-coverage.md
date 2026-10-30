@@ -141,6 +141,19 @@ The images the table ops stream are built in `crates/bussard-download/src/comput
   which is why `apply` has to rewrite this table when a link set changes
   (#540).
 
+## Parameters the configuration does not show
+
+The parameter image writes a parameter the Dynamic walk does not reach at its
+default only when `ApplicationProgram::downloads_invisible_parameters` says so:
+never with `DownloadInvisibleParameters` or a preferred partial download; on
+System B at every schema; on System 7 from schema project/21 on (#448). The
+evidence is the synthetic twins `syn-s7-hidden-default` (project/23, default
+written) and `syn-s7-hidden-default-p11` (project/11, template kept), the
+System B `syn-hidden-default` and PRO 280 (default written), and the sweep's
+`A-FF11-15` (System 7, project/20, template kept); the table and the open
+points are in `dev/system7-spec.md` section 4.7. A hidden `LegacyPatchAlways`
+parameter is written at its default regardless (#450).
+
 ## Master reset
 
 No vendor device in the corpus uses `LdCtrlMasterReset`; its only user is KNX
