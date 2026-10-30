@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="utf-8"?>
+<KNX xmlns="http://knx.org/xml/project/23">
+  <ManufacturerData>
+    <Manufacturer RefId="M-00FA">
+      <ApplicationPrograms>
+        <ApplicationProgram Id="M-00FA_A-271D-10-0000" ApplicationNumber="10013" ApplicationVersion="16" ProgramType="ApplicationProgram" MaskVersion="MV-07B0" Name="Feather-bit packer" LoadProcedureStyle="MergedProcedure" PeiType="0" DefaultLanguage="en-US" DynamicTableManagement="false" Linkable="false" MinEtsVersion="6.0" NonRegRelevantDataVersion="0">
+          <Static>
+            <Code>
+              <RelativeSegment Id="M-00FA_A-271D-10-0000_RS-04-00000" Name="main" Size="256" LoadStateMachine="4" Offset="0">
+                <Data>/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////w==</Data>
+              </RelativeSegment>
+            </Code>
+            <ParameterTypes>
+              <ParameterType Id="M-00FA_A-271D-10-0000_PT-Mode" Name="Mode">
+                <TypeRestriction Base="Value" SizeInBit="8">
+                  <Enumeration Text="off" Value="0" Id="M-00FA_A-271D-10-0000_PT-Mode_EN-0" />
+                  <Enumeration Text="on" Value="1" Id="M-00FA_A-271D-10-0000_PT-Mode_EN-1" />
+                  <Enumeration Text="automatic" Value="2" Id="M-00FA_A-271D-10-0000_PT-Mode_EN-2" />
+                </TypeRestriction>
+              </ParameterType>
+              <ParameterType Id="M-00FA_A-271D-10-0000_PT-Delay" Name="Delay">
+                <TypeNumber SizeInBit="16" Type="unsignedInt" minInclusive="0" maxInclusive="65535" />
+              </ParameterType>
+              <ParameterType Id="M-00FA_A-271D-10-0000_PT-Flag" Name="Flag">
+                <TypeRestriction Base="Value" SizeInBit="1">
+                  <Enumeration Text="no" Value="0" Id="M-00FA_A-271D-10-0000_PT-Flag_EN-0" />
+                  <Enumeration Text="yes" Value="1" Id="M-00FA_A-271D-10-0000_PT-Flag_EN-1" />
+                </TypeRestriction>
+              </ParameterType>
+              <ParameterType Id="M-00FA_A-271D-10-0000_PT-Three" Name="Three">
+                <TypeNumber SizeInBit="3" Type="unsignedInt" minInclusive="0" maxInclusive="7" />
+              </ParameterType>
+              <ParameterType Id="M-00FA_A-271D-10-0000_PT-Nibble" Name="Nibble">
+                <TypeNumber SizeInBit="4" Type="unsignedInt" minInclusive="0" maxInclusive="15" />
+              </ParameterType>
+            </ParameterTypes>
+            <Parameters>
+              <Parameter Id="M-00FA_A-271D-10-0000_P-1" Name="mode" ParameterType="M-00FA_A-271D-10-0000_PT-Mode" Text="Operating mode" Value="1">
+                <Memory CodeSegment="M-00FA_A-271D-10-0000_RS-04-00000" Offset="0" BitOffset="0" />
+              </Parameter>
+              <Parameter Id="M-00FA_A-271D-10-0000_P-2" Name="delay" ParameterType="M-00FA_A-271D-10-0000_PT-Delay" Text="Delay (s)" Value="300">
+                <Memory CodeSegment="M-00FA_A-271D-10-0000_RS-04-00000" Offset="1" BitOffset="0" />
+              </Parameter>
+              <Parameter Id="M-00FA_A-271D-10-0000_P-5" Name="bit_flag" ParameterType="M-00FA_A-271D-10-0000_PT-Flag" Text="Fluffed" Value="0">
+                <Memory CodeSegment="M-00FA_A-271D-10-0000_RS-04-00000" Offset="5" BitOffset="0" />
+              </Parameter>
+              <Parameter Id="M-00FA_A-271D-10-0000_P-6" Name="bit_three" ParameterType="M-00FA_A-271D-10-0000_PT-Three" Text="Plume level" Value="5">
+                <Memory CodeSegment="M-00FA_A-271D-10-0000_RS-04-00000" Offset="5" BitOffset="1" />
+              </Parameter>
+              <Parameter Id="M-00FA_A-271D-10-0000_P-7" Name="bit_nibble" ParameterType="M-00FA_A-271D-10-0000_PT-Nibble" Text="Quill count" Value="6">
+                <Memory CodeSegment="M-00FA_A-271D-10-0000_RS-04-00000" Offset="5" BitOffset="4" />
+              </Parameter>
+              <Union SizeInBit="16">
+                <Memory CodeSegment="M-00FA_A-271D-10-0000_RS-04-00000" Offset="3" BitOffset="0" />
+                <Parameter Id="M-00FA_A-271D-10-0000_UP-3" Name="feather_count" ParameterType="M-00FA_A-271D-10-0000_PT-Delay" Offset="0" BitOffset="0" Text="Feather count" Value="2571" DefaultUnionParameter="true" />
+                <Parameter Id="M-00FA_A-271D-10-0000_UP-4" Name="feather_mode" ParameterType="M-00FA_A-271D-10-0000_PT-Mode" Offset="1" BitOffset="0" Text="Feather mode" Value="2" />
+              </Union>
+            </Parameters>
+            <ParameterRefs>
+              <ParameterRef Id="M-00FA_A-271D-10-0000_P-1_R-1" RefId="M-00FA_A-271D-10-0000_P-1" />
+              <ParameterRef Id="M-00FA_A-271D-10-0000_P-2_R-2" RefId="M-00FA_A-271D-10-0000_P-2" />
+              <ParameterRef Id="M-00FA_A-271D-10-0000_UP-3_R-3" RefId="M-00FA_A-271D-10-0000_UP-3" />
+              <ParameterRef Id="M-00FA_A-271D-10-0000_UP-4_R-4" RefId="M-00FA_A-271D-10-0000_UP-4" />
+              <ParameterRef Id="M-00FA_A-271D-10-0000_P-5_R-5" RefId="M-00FA_A-271D-10-0000_P-5" />
+              <ParameterRef Id="M-00FA_A-271D-10-0000_P-6_R-6" RefId="M-00FA_A-271D-10-0000_P-6" />
+              <ParameterRef Id="M-00FA_A-271D-10-0000_P-7_R-7" RefId="M-00FA_A-271D-10-0000_P-7" />
+            </ParameterRefs>
+            <ComObjectTable>
+              <ComObject Id="M-00FA_A-271D-10-0000_O-0" Name="switch" Text="Switch" Number="0" FunctionText="On/Off" ObjectSize="1 Bit" ReadFlag="Disabled" WriteFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Disabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" DatapointType="DPST-1-1" Priority="Low" />
+              <ComObject Id="M-00FA_A-271D-10-0000_O-1" Name="status" Text="Status" Number="1" FunctionText="On/Off status" ObjectSize="1 Bit" ReadFlag="Enabled" WriteFlag="Disabled" CommunicationFlag="Enabled" TransmitFlag="Enabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" DatapointType="DPST-1-1" Priority="Low" />
+            </ComObjectTable>
+            <ComObjectRefs>
+              <ComObjectRef Id="M-00FA_A-271D-10-0000_O-0_R-1" RefId="M-00FA_A-271D-10-0000_O-0" />
+              <ComObjectRef Id="M-00FA_A-271D-10-0000_O-1_R-2" RefId="M-00FA_A-271D-10-0000_O-1" />
+            </ComObjectRefs>
+            <AddressTable MaxEntries="32" />
+            <AssociationTable MaxEntries="32" />
+            <LoadProcedures>
+              <LoadProcedure MergeId="2">
+                <LdCtrlRelSegment LsmIdx="4" Size="256" Mode="0" Fill="0" />
+              </LoadProcedure>
+              <LoadProcedure MergeId="4">
+                <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="256" Verify="false" />
+              </LoadProcedure>
+            </LoadProcedures>
+            <Options Comparable="true" Reconstructable="true" />
+          </Static>
+          <Dynamic>
+            <ChannelIndependentBlock>
+              <ParameterBlock Id="M-00FA_A-271D-10-0000_PB-1" Name="general" Text="General">
+                <ParameterRefRef RefId="M-00FA_A-271D-10-0000_P-1_R-1" />
+                <ParameterRefRef RefId="M-00FA_A-271D-10-0000_P-2_R-2" />
+                <ParameterRefRef RefId="M-00FA_A-271D-10-0000_UP-3_R-3" />
+                <ParameterRefRef RefId="M-00FA_A-271D-10-0000_P-5_R-5" />
+                <ParameterRefRef RefId="M-00FA_A-271D-10-0000_P-6_R-6" />
+                <ParameterRefRef RefId="M-00FA_A-271D-10-0000_P-7_R-7" />
+                <ComObjectRefRef RefId="M-00FA_A-271D-10-0000_O-0_R-1" />
+                <ComObjectRefRef RefId="M-00FA_A-271D-10-0000_O-1_R-2" />
+              </ParameterBlock>
+            </ChannelIndependentBlock>
+          </Dynamic>
+        </ApplicationProgram>
+      </ApplicationPrograms>
+      <Languages>
+        <Language Identifier="de-DE">
+          <TranslationUnit RefId="M-00FA_A-271D-10-0000" Version="0">
+            <TranslationElement RefId="M-00FA_A-271D-10-0000">
+              <Translation AttributeName="Name" Text="Federbitpacker" />
+            </TranslationElement>
+          </TranslationUnit>
+        </Language>
+      </Languages>
+    </Manufacturer>
+  </ManufacturerData>
+</KNX>

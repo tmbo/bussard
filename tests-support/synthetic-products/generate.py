@@ -262,6 +262,8 @@ class Product:
                 continue
             m = prm["union"]
             check_keys(f"{pw} union", m, {"name", "offset", "bit_offset"})
+            if not 0 <= m["bit_offset"] <= 7:
+                raise SpecError(f"{pw} union: bit_offset is 0 to 7")
             un = self.unions.get(m["name"])
             if un is None:
                 raise SpecError(f"{pw}: unknown union `{m['name']}`")
@@ -377,6 +379,10 @@ class Product:
     def check_memory(self, where: str, m: dict, bits: int) -> None:
         """A `memory = { segment, offset, bit_offset }` that fits its segment."""
         check_keys(f"{where} memory", m, {"segment", "offset", "bit_offset"})
+        # syn-union-bitfields (#604 row 29): BitOffset counts the bits of the
+        # octet at Offset from its most significant one, 0 to 7.
+        if not 0 <= m["bit_offset"] <= 7:
+            raise SpecError(f"{where}: bit_offset is 0 to 7")
         seg = self.segments.get(m["segment"])
         if seg is None:
             raise SpecError(f"{where}: unknown segment `{m['segment']}`")

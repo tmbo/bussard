@@ -432,5 +432,51 @@ class TaskPtrAndTaskCtrl2(unittest.TestCase):
             generate.Product("t", s)
 
 
+class BitFields(unittest.TestCase):
+    """syn-union-bitfields (#604 row 29): a union of two member types and
+    sub-octet parameters packed into one octet by BitOffset."""
+
+    def bits_spec(self) -> dict:
+        s = spec()
+        s["parameter_type"] = s["parameter_type"] + [
+            {"name": "Three", "kind": "number", "size_bits": 3, "signed": False, "min": 0, "max": 7},
+            {"name": "Nibble", "kind": "number", "size_bits": 4, "signed": False, "min": 0, "max": 15}]
+        s["union"] = [{"name": "u", "size_bits": 16, "default": "wide",
+                       "memory": {"segment": "main", "offset": 3, "bit_offset": 0}}]
+        s["parameter"] = s["parameter"] + [
+            {"name": "wide", "type": "Delay", "text": "W", "default": 2571,
+             "union": {"name": "u", "offset": 0, "bit_offset": 0}},
+            {"name": "narrow", "type": "Nibble", "text": "N", "default": 6,
+             "union": {"name": "u", "offset": 1, "bit_offset": 4}},
+            {"name": "three", "type": "Three", "text": "T", "default": 5,
+             "memory": {"segment": "main", "offset": 5, "bit_offset": 1}},
+            {"name": "nibble", "type": "Nibble", "text": "Q", "default": 6,
+             "memory": {"segment": "main", "offset": 5, "bit_offset": 4}}]
+        return s
+
+    def test_render_union_of_two_types_and_bit_fields(self) -> None:
+        xml = app_xml(self.bits_spec())
+        self.assertIn('<Union SizeInBit="16">', xml)
+        self.assertIn('ParameterType="M-00FA_A-2700-10-0000_PT-Delay" Offset="0" BitOffset="0" Text="W" '
+                      'Value="2571" DefaultUnionParameter="true" />', xml)
+        self.assertIn('ParameterType="M-00FA_A-2700-10-0000_PT-Nibble" Offset="1" BitOffset="4" Text="N" '
+                      'Value="6" />', xml)
+        self.assertIn('<TypeNumber SizeInBit="3" Type="unsignedInt" minInclusive="0" maxInclusive="7" />', xml)
+        self.assertIn('<Memory CodeSegment="M-00FA_A-2700-10-0000_RS-04-00000" Offset="5" BitOffset="1" />', xml)
+        self.assertIn('<Memory CodeSegment="M-00FA_A-2700-10-0000_RS-04-00000" Offset="5" BitOffset="4" />', xml)
+
+    def test_bit_offset_beyond_the_octet_refused(self) -> None:
+        s = self.bits_spec()
+        s["parameter"][-1]["memory"] = {"segment": "main", "offset": 5, "bit_offset": 8}
+        with self.assertRaisesRegex(generate.SpecError, "bit_offset is 0 to 7"):
+            generate.Product("test", s)
+
+    def test_union_member_bit_offset_beyond_the_octet_refused(self) -> None:
+        s = self.bits_spec()
+        s["parameter"][3]["union"] = {"name": "u", "offset": 0, "bit_offset": 9}
+        with self.assertRaisesRegex(generate.SpecError, "bit_offset is 0 to 7"):
+            generate.Product("test", s)
+
+
 if __name__ == "__main__":
     unittest.main()
