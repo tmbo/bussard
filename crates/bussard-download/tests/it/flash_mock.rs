@@ -2182,6 +2182,65 @@ async fn flash_happy_path_loads_and_verifies() -> TestResult {
     Ok(())
 }
 
+/// `LdCtrlDelay` before the restart on System B (issue #615): the executor
+/// pauses the given milliseconds before the restart and the flash verifies.
+#[tokio::test]
+async fn test_flash_delay_pauses_before_restart() -> TestResult {
+    let (mut bus, _state, handle) = setup(Fault::None).await?;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
+
+    let mut app = fabricated_app()?;
+    let ops = &mut app.load_procedures[0].ops;
+    let restart = ops
+        .iter()
+        .position(|op| matches!(op, bussard_prod::application::LoadOp::Restart))
+        .ok_or("the procedure restarts")?;
+    ops.insert(
+        restart,
+        bussard_prod::application::LoadOp::Delay {
+            milliseconds: Some(200),
+        },
+    );
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await?;
+    let mut started: Vec<(std::time::Instant, String)> = Vec::new();
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |p| {
+            if let bussard_download::Progress::Step { label, .. } = p {
+                started.push((std::time::Instant::now(), label));
+            }
+        },
+    )
+    .await?;
+    let _ = session.into_disconnect().await;
+
+    assert!(outcome.ok(), "flash must verify: {outcome:?}");
+    let at = started
+        .iter()
+        .position(|(_, l)| l.contains("wait 200 ms"))
+        .ok_or("the progress names the pause")?;
+    let (wait_start, _) = &started[at];
+    let (next_start, label) = started.get(at + 1).ok_or("a step follows the pause")?;
+    assert!(label.contains("restart"), "{label}");
+    assert!(next_start.duration_since(*wait_start) >= Duration::from_millis(200));
+    drop(handle);
+    Ok(())
+}
+
 #[tokio::test]
 async fn flash_with_image_prop_loads_and_verifies_mcb() -> TestResult {
     // A full flash of the real MDT/Jung shape: write the segment, complete the

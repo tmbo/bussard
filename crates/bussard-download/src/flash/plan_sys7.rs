@@ -227,6 +227,7 @@ fn add_ets_prelude(steps: &mut Vec<FlashStep>, profile: &bussard_mgmt::Sys7Profi
 /// | `CompareMem{a,d,sz}` (Raw)| [`FlashStep::Sys7CompareMem`]                 |
 /// | `LoadImageProp{oi,pid}` | [`FlashStep::LoadImageProp`] (Jung A-A011 MCB)  |
 /// | `Restart`               | [`FlashStep::Restart`]                          |
+/// | `Delay{ms}`             | [`FlashStep::Delay`] (a pause, nothing sent)    |
 ///
 /// [`add_ets_prelude`] then adds ETS's pre-download restart pass and, on a
 /// `VerifyMode` mask, the verify-mode switch.
@@ -368,6 +369,7 @@ pub(super) fn plan_flash_sys7(
         match op {
             LoadOp::Connect | LoadOp::Disconnect => {}
             LoadOp::Restart => steps.push(FlashStep::Restart),
+            LoadOp::Delay { milliseconds } => steps.push(super::plan::lower_delay(*milliseconds)?),
             LoadOp::Unload { lsm_idx } => steps.push(FlashStep::Sys7Unload {
                 lsm: check_sys7_lsm(step_no, lsm_idx.unwrap_or(0))?,
             }),
@@ -3095,6 +3097,56 @@ mod tests {
             sys7_u16_field(1, "task pointer init", 284),
             Ok(284)
         ));
+    }
+
+    /// `LdCtrlDelay MilliSeconds="200"` before the restart (16 corpus 0701
+    /// programs, e.g. `M-0076_A-0022-15-D6FE`) lowers to a 200 ms pause right
+    /// before the terminal restart instead of refusing the plan (issue #615).
+    #[test]
+    fn test_plan_flash_sys7_lowers_delay_before_restart() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram PeiType="0" Id="M-00FA_A-0615" ApplicationNumber="1" ApplicationVersion="1"
+            MaskVersion="MV-0701" Name="Delay" LoadProcedureStyle="ProductProcedure">
+          <Static>
+           <Code>
+            <AbsoluteSegment Id="M-00FA_A-0615_AS-1" Size="2" Address="16384"><Data>AAE=</Data></AbsoluteSegment>
+           </Code>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlConnect />
+             <LdCtrlUnload LsmIdx="1" />
+             <LdCtrlLoad LsmIdx="1" />
+             <LdCtrlAbsSegment LsmIdx="1" Address="16384" Size="2" />
+             <LdCtrlLoadCompleted LsmIdx="1" />
+             <LdCtrlDelay MilliSeconds="200" />
+             <LdCtrlRestart />
+             <LdCtrlDisconnect />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-00FA_A-0615", xml.as_bytes())?;
+        let plan = plan_flash(
+            &app,
+            "1.1.99",
+            0x0701,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )?;
+        let n = plan.steps.len();
+        assert!(n >= 2);
+        assert_eq!(
+            plan.steps[n - 2..],
+            [FlashStep::Delay { milliseconds: 200 }, FlashStep::Restart]
+        );
+        assert_eq!(
+            plan.step_label(&plan.steps[n - 2]),
+            "wait 200 ms (LdCtrlDelay), nothing sent"
+        );
+        Ok(())
     }
 
     #[test]

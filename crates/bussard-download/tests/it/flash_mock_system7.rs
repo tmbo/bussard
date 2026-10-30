@@ -1052,6 +1052,76 @@ async fn flash_system7_memory_mapped_reaches_loaded() -> Result<(), Box<dyn std:
     run_full_flash(LsmMode::MemoryMapped).await
 }
 
+/// `LdCtrlDelay` before the restart (issue #615): the executor pauses the
+/// given milliseconds between the step before it and the restart, sends
+/// nothing for it, and the flash still reaches Loaded.
+#[tokio::test]
+async fn test_flash_system7_delay_pauses_before_restart() -> Result<(), Box<dyn std::error::Error>>
+{
+    set_sys7_lsm_env(LsmMode::MemoryMapped);
+    let (mut bus, state, handle) = setup(LsmMode::MemoryMapped, Fault::None).await?;
+    let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
+    let mut app = mdt_canonical_app()?;
+    let ops = &mut app.load_procedures[0].ops;
+    let restart = ops
+        .iter()
+        .position(|op| matches!(op, bussard_prod::application::LoadOp::Restart))
+        .ok_or("the procedure restarts")?;
+    ops.insert(
+        restart,
+        bussard_prod::application::LoadOp::Delay {
+            milliseconds: Some(200),
+        },
+    );
+    let plan = plan_flash(
+        &app,
+        "1.1.99",
+        MASK_0705,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    let delay = plan
+        .steps
+        .iter()
+        .position(|s| *s == FlashStep::Delay { milliseconds: 200 })
+        .ok_or("the delay lowers to a step")?;
+    assert_eq!(plan.steps.get(delay + 1), Some(&FlashStep::Restart));
+
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await?;
+    let mut started: Vec<(std::time::Instant, String)> = Vec::new();
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |p| {
+            if let bussard_download::Progress::Step { label, .. } = p {
+                started.push((std::time::Instant::now(), label));
+            }
+        },
+    )
+    .await?;
+    assert!(outcome.ok(), "flash should reach Loaded: {outcome:?}");
+    let at = started
+        .iter()
+        .position(|(_, l)| l.contains("wait 200 ms"))
+        .ok_or("the progress names the pause")?;
+    let (wait_start, _) = &started[at];
+    let (restart_start, label) = started.get(at + 1).ok_or("a step follows the pause")?;
+    assert!(label.contains("restart"), "{label}");
+    assert!(
+        restart_start.duration_since(*wait_start) >= Duration::from_millis(200),
+        "the restart must wait out the 200 ms"
+    );
+    assert_eq!(lock(&state).restarts_seen, 1, "one terminal restart");
+    drop(handle);
+    let _ = session.into_disconnect().await;
+    Ok(())
+}
+
 #[tokio::test]
 async fn flash_system7_verify_mismatch_fails() -> Result<(), Box<dyn std::error::Error>> {
     // A device that corrupts every stored write: the flash must not report

@@ -162,6 +162,13 @@ pub(super) async fn confirm_app_object<C: Connector>(
     }
 }
 
+/// Runs a [`FlashStep::Delay`]: logs the pause at info level, so `-v` shows
+/// it in the trace between the frames around it, and sleeps. Nothing is sent.
+pub(super) async fn delay_step(milliseconds: u32) {
+    tracing::info!(milliseconds, "LdCtrlDelay: pausing before the next step");
+    tokio::time::sleep(std::time::Duration::from_millis(u64::from(milliseconds))).await;
+}
+
 /// Resolves the op-carried `LsmIdx`/`ObjIdx` to the device interface-object index
 /// the step should act on, by **index**, not by object type — the divergence-#2 fix.
 ///
@@ -1009,6 +1016,7 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                             }
                         }
                     }
+                    FlashStep::Delay { milliseconds } => delay_step(*milliseconds).await,
                     FlashStep::LoadCompleted { target } => {
                         // Skip a completion for an object the device does not expose (a
                         // template LSM5 completion on a device without obj5).

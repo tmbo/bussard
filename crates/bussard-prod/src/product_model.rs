@@ -927,6 +927,7 @@ fn load_op_summary(op: &LoadOp) -> String {
         LoadOp::Connect => "connect".to_string(),
         LoadOp::Disconnect => "disconnect".to_string(),
         LoadOp::Restart => "restart".to_string(),
+        LoadOp::Delay { milliseconds } => format!("delay ms={}", opt(milliseconds)),
         LoadOp::Merge { merge_id } => {
             format!("merge id={}", merge_id.as_deref().unwrap_or("?"))
         }

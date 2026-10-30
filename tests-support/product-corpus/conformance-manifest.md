@@ -7,14 +7,13 @@ Corpus-driven conformance sweep. Buckets every application in every product thro
 - Product files: **913** (913 parsed, 0 parse-failed, 0 parse-panicked)
 - Application programs: **2164**
   - Image: 2150 ok, 14 refused, 0 panicked
-  - Plan: 1825 executable, 78 refused, 261 unsupported-family, 0 panicked
+  - Plan: 1841 executable, 62 refused, 261 unsupported-family, 0 panicked
 
 ## Plan-refusal reasons (ranked by app count)
 
 | count | reason |
 | ---: | --- |
 | 43 | MissingAppMask |
-| 16 | UnsupportedOp: LdCtrlDelay |
 | 14 | UnresolvableImage: computing the parameter image |
 | 1 | NoProcedure |
 | 1 | UnknownObjectSize |
@@ -45,7 +44,7 @@ _(none)_
 | (no mask) | 43 | 0 | 43 | 0 | 0 |
 | System 1 | 101 | 0 | 0 | 101 | 0 |
 | System 2 | 101 | 2 | 0 | 99 | 0 |
-| System 7 | 634 | 615 | 19 | 0 | 0 |
+| System 7 | 634 | 631 | 3 | 0 | 0 |
 | System ? | 61 | 0 | 0 | 61 | 0 |
 | System B | 1178 | 1162 | 16 | 0 | 0 |
 | System B (IP) | 1 | 1 | 0 | 0 | 0 |
