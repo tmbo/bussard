@@ -4,7 +4,7 @@
 # ///
 """Hash and sign a fabricated .knxprod with ETS's own signing library, in the VM (epic #596).
 
-    uv run tools/ets-sweep/synthetic/sign.py <in.knxprod> [<out.knxprod>] [--recompile]
+    uv run tools/ets-sweep/synthetic/sign.py <in.knxprod> [<out.knxprod>] [--recompile] [--keep-master]
     uv run tools/ets-sweep/synthetic/sign.py --dir-only <in.knxprod> [<out>]  # directory signature only
     uv run tools/ets-sweep/synthetic/sign.py --verify <file.knxprod>   # the library's verdict, no change
 
@@ -12,7 +12,12 @@ Uploads `signer.cs` and the product to `C:\\Users\\macremote\\ets-sweep\\signer\
 compiles the signer with the .NET Framework `csc.exe` when its source changed
 (no reference to ETS at compile time: the signer loads `Knx.Ets.XmlSigning.dll`
 from the ETS 6 folder and calls it by reflection), runs it, and downloads the
-signed file (default: `<in>-signed.knxprod`). See the README section
+signed file (default: `<in>-signed.knxprod`). An archive whose
+`knx_master.xml` carries no `<MasterData>` (the stub `<KNX/>` of the synthetic
+catalogue) gets ETS's own master data from the VM (`VM_MASTER`) in its place:
+ETS 6.4 refuses the stub ("Die Eingabezeichenfolge hat das falsche Format", a
+FormatException reading the master data version). `--keep-master` leaves the
+archive's master as it is. See the README section
 "Synthetic products: signing" for what the signer changes.
 
 The signer is our own source; it only produces test data for the synthetic
@@ -22,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import sys
+import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -30,6 +36,8 @@ import vm  # noqa: E402
 HERE = Path(__file__).resolve().parent
 REMOTE = vm.REMOTE_DIR + r"\signer"
 CSC = r"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+# ETS's own master data for schema 23 (project/23), the namespace of the synthetic products.
+VM_MASTER = r"C:\ProgramData\KNX\XML\project-23\knx_master.xml"
 
 
 def sftp_path(win: str) -> str:
@@ -59,7 +67,17 @@ def compile_signer(c, force: bool) -> None:
     print("compiled signer.exe", digest)
 
 
-def sign(src: Path, dst: Path, force_compile: bool = False, dir_only: bool = False) -> str:
+def has_master_data(src: Path) -> bool:
+    """Whether the archive's knx_master.xml is real master data, not the stub."""
+    with zipfile.ZipFile(src) as z:
+        try:
+            return b"<MasterData" in z.read("knx_master.xml")[:4096]
+        except KeyError:
+            return False
+
+
+def sign(src: Path, dst: Path, force_compile: bool = False, dir_only: bool = False,
+         keep_master: bool = False) -> str:
     """Sign `src` into `dst` in the VM and return the signer's report."""
     c = vm.connect()
     compile_signer(c, force_compile)
@@ -68,6 +86,8 @@ def sign(src: Path, dst: Path, force_compile: bool = False, dir_only: bool = Fal
     remote_out = REMOTE + r"\out.knxprod"
     sftp.put(str(src), sftp_path(remote_in))
     flag = "--dir-only " if dir_only else ""
+    if not keep_master and not has_master_data(src):
+        flag = f'--master "{VM_MASTER}" ' + flag
     code, out = vm.run(c, f'cd /d "{REMOTE}" && signer.exe {flag}in.knxprod out.knxprod work', timeout=300)
     if code != 0:
         raise SystemExit(f"signer failed ({code}):\n{out}")
@@ -98,7 +118,7 @@ def main(argv: list[str]) -> int:
         return 0
     src = Path(args[0])
     dst = Path(args[1]) if len(args) > 1 else src.with_name(src.stem + "-signed.knxprod")
-    print(sign(src, dst, force, "--dir-only" in argv))
+    print(sign(src, dst, force, "--dir-only" in argv, "--keep-master" in argv))
     print("wrote", dst)
     return 0
 

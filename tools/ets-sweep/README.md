@@ -444,7 +444,12 @@ folder it runs:
    and ETS refused its output), and its own check calls that signature
    invalid; with the absolute path the check says valid.
 
-`knx_master.xml` is left as it is. Check of the library: the KNX Virtual file
+`knx_master.xml` is left as it is, except that a stub (no `<MasterData>`, the
+`<KNX/>` of `tests-support/synthetic-products`) is replaced with ETS's own
+`C:\ProgramData\KNX\XML\project-23\knx_master.xml` (`signer.exe --master`,
+`sign.py --keep-master` to skip it): ETS 6.4 refuses the stub on import with
+"Die Eingabezeichenfolge hat das falsche Format" (ETS6.log: a FormatException
+in `MasterDataVersion.Update`, 2026-10-30). Check of the library: the KNX Virtual file
 signed unchanged comes out byte-identical in every entry (plus the
 `.signature`), and `--verify` reports every hash, registration signature and
 the directory signature of the signed clone valid, the hashes of the unsigned
@@ -509,3 +514,25 @@ application number octet in that property write (`00fa25..` vs `00fa26..`);
 oracle `identical`, coverage 100.0%, load control `identical` for both; the
 replay reaches Loaded on objects 1 to 4 with the same segments and images
 (0xA000 2, 0xC000 2, 0x8000 148, 0x6000 256 octets) for both.
+
+## Synthetic products: the generator (#596 step 3)
+
+    uv run tests-support/synthetic-products/generate.py --zip syn-minimal
+    uv run tools/ets-sweep/synthetic/sign.py tests-support/synthetic-products/syn-minimal/build/syn-minimal.knxprod
+    uv run tests-support/synthetic-products/generate.py syn-minimal \
+        --signed-id tests-support/synthetic-products/syn-minimal/build/syn-minimal-signed.knxprod
+    uv run tools/ets-sweep/synthetic/calibrate.py \
+        --knxprod tests-support/synthetic-products/syn-minimal/build/syn-minimal-signed.knxprod \
+        --app M-00FA_A-2700-10-D80E --search SYN.min
+
+The products are TOML specs under `tests-support/synthetic-products/` (its
+README has the schema, the id rule and the flow). Result for `syn-minimal`
+(2026-10-30, ETS 6.4.1, VM sim with #602): signed id `M-00FA_A-2700-10-D80E`;
+the import with the stub master was refused (see the signing section), with
+ETS's master put in by the signer it imported ("Import erfolgreich ...
+Produkt: Synthetic minimal", catalogue row "KNX Association, Synthetic
+minimal, SYN.min, Synthetisch minimal, 1.0"); the download ended
+"Programmieren(Appl.): Abgeschlossen" with objects 1 to 4 Loaded, 43
+operations, 83 tool requests; the oracle row is `identical`, coverage
+100.0%, load control `identical` (17 records), `par=ok(256) gobj=ok(4)
+assoc=ok(2) addr=ok(2) props=ok(1)`.

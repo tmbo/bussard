@@ -1,0 +1,601 @@
+# /// script
+# requires-python = ">=3.11"
+# ///
+"""Render the synthetic product specs into product XML (epic #596).
+
+    uv run tests-support/synthetic-products/generate.py [<name>...]          # render xml/ (all by default)
+    uv run tests-support/synthetic-products/generate.py --check [<name>...]  # fail if xml/ is stale
+    uv run tests-support/synthetic-products/generate.py --zip [<name>...]    # also build/<name>.knxprod
+    uv run tests-support/synthetic-products/generate.py --catalogue          # README catalogue table
+    uv run tests-support/synthetic-products/generate.py <name> --signed-id <id | signed.knxprod>
+
+Each `<name>/product.toml` renders, byte for byte the same on every run, into
+`<name>/xml/M-00FA/Catalog.xml`, `Hardware.xml` and
+`M-00FA_A-<nnnn>-<vv>-0000.xml`. `--zip` packs those with the stub
+`knx_master.xml` (`<KNX/>`) into `<name>/build/<name>.knxprod` (gitignored),
+the input of `tools/ets-sweep/synthetic/sign.py`. The signer replaces the
+`0000` at the end of the application id with the fingerprint of the program
+hash; `--signed-id` records that id, with the hash of the XML it was signed
+from, in `<name>/signed.toml` for the consumers written after signing (sim
+config, oracle row).
+
+The spec schema is in README.md. The generator implements what the products in
+this directory use; a known construct no product uses yet stops with an error
+that names it, an unknown key stops with an error that names the key.
+"""
+from __future__ import annotations
+
+import argparse
+import base64
+import hashlib
+import re
+import sys
+import tomllib
+import zipfile
+from pathlib import Path
+from xml.sax.saxutils import quoteattr
+
+HERE = Path(__file__).resolve().parent
+NS = "http://knx.org/xml/project/23"
+MANUFACTURER = "M-00FA"
+# Application numbers of the synthetic catalogue: KNX Virtual uses 0x25xx, the
+# DA.tp clone 0x2600.
+APP_NUMBERS = range(0x2700, 0x2800)
+# Catalogue section shared by every synthetic product (the clone used CS-26).
+CATALOG_SECTION = (f"{MANUFACTURER}_CS-27", "bussard synthetic", "27")
+STUB_MASTER = b"<KNX/>"
+README_BEGIN = "<!-- catalogue:begin (generate.py --catalogue) -->"
+README_END = "<!-- catalogue:end -->"
+
+
+class SpecError(Exception):
+    """A spec the generator cannot render; the message names the product and the key."""
+
+
+def not_yet(where: str, what: str) -> SpecError:
+    return SpecError(f"{where}: {what} is part of the schema but no product uses it yet; "
+                     "implement it in generate.py together with the product that needs it")
+
+
+# ---------------------------------------------------------------- spec checks
+
+def check_keys(where: str, table: dict, required: set[str], optional: set[str] = frozenset(),
+               later: set[str] = frozenset()) -> None:
+    """Every required key present, no key outside required | optional | later,
+    and none of `later` (schema keys not implemented yet) used."""
+    for k in sorted(required - table.keys()):
+        raise SpecError(f"{where}: missing key `{k}`")
+    for k in table:
+        if k in later:
+            raise not_yet(where, f"`{k}`")
+        if k not in required and k not in optional:
+            raise SpecError(f"{where}: unknown key `{k}`")
+
+
+def ets_escape(text: str) -> str:
+    """The id encoding of ETS: letters, digits and `-` stay, every other octet is `.XX`."""
+    return "".join(c if c.isascii() and (c.isalnum() or c == "-") else
+                   "".join(f".{b:02X}" for b in c.encode()) for c in text)
+
+
+def flag(on: bool) -> str:
+    return "Enabled" if on else "Disabled"
+
+
+def attrs(pairs: list[tuple[str, object]]) -> str:
+    out = []
+    for k, v in pairs:
+        if v is None:
+            continue
+        if isinstance(v, bool):
+            v = "true" if v else "false"
+        out.append(f"{k}={quoteattr(str(v))}")
+    return " ".join(out)
+
+
+class Xml:
+    """A line-based writer: two-space indent, attributes in the order given."""
+
+    def __init__(self) -> None:
+        self.lines = ['<?xml version="1.0" encoding="utf-8"?>']
+        self.depth = 0
+
+    def open(self, tag: str, pairs: list[tuple[str, object]] = ()) -> None:
+        a = attrs(list(pairs))
+        self.lines.append("  " * self.depth + f"<{tag}{' ' + a if a else ''}>")
+        self.depth += 1
+
+    def close(self, tag: str) -> None:
+        self.depth -= 1
+        self.lines.append("  " * self.depth + f"</{tag}>")
+
+    def empty(self, tag: str, pairs: list[tuple[str, object]] = ()) -> None:
+        a = attrs(list(pairs))
+        self.lines.append("  " * self.depth + f"<{tag}{' ' + a if a else ''} />")
+
+    def text(self, tag: str, body: str) -> None:
+        self.lines.append("  " * self.depth + f"<{tag}>{body}</{tag}>")
+
+    def render(self) -> bytes:
+        return ("\n".join(self.lines) + "\n").encode("utf-8")
+
+
+def knx_root(x: Xml) -> None:
+    x.open("KNX", [("xmlns", NS)])
+    x.open("ManufacturerData")
+    x.open("Manufacturer", [("RefId", MANUFACTURER)])
+
+
+def knx_close(x: Xml) -> None:
+    x.close("Manufacturer")
+    x.close("ManufacturerData")
+    x.close("KNX")
+
+
+# ------------------------------------------------------------------ the model
+
+class Product:
+    """A checked spec with the ids every file refers to."""
+
+    def __init__(self, name: str, spec: dict) -> None:
+        self.name = name
+        w = name
+        check_keys(w, spec, {"doc", "product", "application", "segment", "parameter_type",
+                             "parameter", "com_object", "dynamic", "load_procedure"})
+        self.doc = spec["doc"]
+        check_keys(f"{w} [doc]", self.doc, {"purpose", "construct", "issues"})
+        self.product = p = spec["product"]
+        check_keys(f"{w} [product]", p, {"text", "order_number", "hardware_name", "hardware_serial",
+                                         "bus_current"}, {"hardware_version", "rail_mounted"})
+        if not re.fullmatch(r"00FA[0-9A-F]{8}", p["hardware_serial"]):
+            raise SpecError(f"{w} [product]: hardware_serial must be 00FA followed by 8 hex digits")
+        self.app = a = spec["application"]
+        check_keys(f"{w} [application]", a,
+                   {"number", "version", "name", "mask", "load_procedure_style",
+                    "address_table_max_entries", "association_table_max_entries"},
+                   {"options", "translations"})
+        if a["number"] not in APP_NUMBERS:
+            raise SpecError(f"{w} [application]: number {a['number']:#06x} is outside the synthetic "
+                            f"range {APP_NUMBERS.start:#06x}..{APP_NUMBERS.stop - 1:#06x}")
+        if not 0 <= a["version"] <= 0xFF:
+            raise SpecError(f"{w} [application]: version must be one octet")
+        if a["mask"] != "07B0":
+            raise not_yet(f"{w} [application]", f"mask {a['mask']} (System 7 and others)")
+        if a["load_procedure_style"] == "ProductProcedure":
+            raise not_yet(f"{w} [application]", "LoadProcedureStyle ProductProcedure")
+        if a["load_procedure_style"] != "MergedProcedure":
+            raise SpecError(f"{w} [application]: load_procedure_style is MergedProcedure or ProductProcedure")
+        for k in a.get("options", {}):
+            if k not in OPTIONS:
+                raise SpecError(f"{w} [application.options]: unknown option `{k}`")
+        self.app_id = f"{MANUFACTURER}_A-{a['number']:04X}-{a['version']:02X}-0000"
+        self.hw_id = f"{MANUFACTURER}_H-{p['hardware_serial']}-{p.get('hardware_version', 1)}"
+        self.product_id = f"{self.hw_id}_P-{ets_escape(p['order_number'])}"
+        self.h2p_id = f"{self.hw_id}_HP-{a['number']:04X}-{a['version']:02X}-0000"
+        self.item_id = f"{self.h2p_id}_CI-{ets_escape(p['order_number'])}-1"
+
+        self.segments = {}
+        for i, s in enumerate(spec["segment"]):
+            sw = f"{w} [[segment]] #{i + 1}"
+            check_keys(sw, s, {"name", "kind", "lsm", "size"}, {"fill"}, {"address"})
+            if s["kind"] == "absolute":
+                raise not_yet(sw, "an absolute segment")
+            if s["kind"] != "relative":
+                raise SpecError(f"{sw}: kind is relative or absolute")
+            s = dict(s, id=f"{self.app_id}_RS-{s['lsm']:02d}-{len(self.segments):05d}")
+            self.segments[s["name"]] = s
+
+        self.types = {}
+        for i, t in enumerate(spec["parameter_type"]):
+            tw = f"{w} [[parameter_type]] #{i + 1}"
+            kind = t.get("kind")
+            if kind == "enum":
+                check_keys(tw, t, {"name", "kind", "size_bits", "values"})
+                for v in t["values"]:
+                    check_keys(f"{tw} values", v, {"value", "text"}, set(), {"translations"})
+            elif kind == "number":
+                check_keys(tw, t, {"name", "kind", "size_bits", "signed", "min", "max"}, set(),
+                           {"byte_order", "ui_hint"})
+            elif kind in ("text", "float", "time", "ip_address", "raw"):
+                raise not_yet(tw, f"parameter type kind `{kind}`")
+            else:
+                raise SpecError(f"{tw}: kind is one of enum, number, text, float, time, ip_address, raw")
+            self.types[t["name"]] = dict(t, id=f"{self.app_id}_PT-{ets_escape(t['name'])}")
+
+        self.params = {}
+        for i, prm in enumerate(spec["parameter"]):
+            pw = f"{w} [[parameter]] #{i + 1}"
+            check_keys(pw, prm, {"name", "type", "text", "default", "memory"}, set(),
+                       {"access", "union", "translations"})
+            if prm["type"] not in self.types:
+                raise SpecError(f"{pw}: unknown parameter type `{prm['type']}`")
+            m = prm["memory"]
+            check_keys(f"{pw} memory", m, {"segment", "offset", "bit_offset"})
+            seg = self.segments.get(m["segment"])
+            if seg is None:
+                raise SpecError(f"{pw}: unknown segment `{m['segment']}`")
+            bits = self.types[prm["type"]]["size_bits"]
+            if m["offset"] * 8 + m["bit_offset"] + bits > seg["size"] * 8:
+                raise SpecError(f"{pw}: does not fit segment `{m['segment']}`")
+            n = i + 1
+            self.params[prm["name"]] = dict(prm, id=f"{self.app_id}_P-{n}", ref=f"{self.app_id}_P-{n}_R-{n}")
+
+        self.objects = {}
+        for i, o in enumerate(spec["com_object"]):
+            ow = f"{w} [[com_object]] #{i + 1}"
+            check_keys(ow, o, {"number", "name", "text", "function_text", "size", "dpt", "flags", "priority"},
+                       set(), {"ref", "translations"})
+            bad = set(o["flags"]) - set(FLAGS)
+            if bad:
+                raise SpecError(f"{ow}: unknown flags {sorted(bad)}; use {list(FLAGS)}")
+            if o["priority"] not in ("Low", "High", "Alert"):
+                raise SpecError(f"{ow}: priority is Low, High or Alert")
+            oid = f"{self.app_id}_O-{o['number']}"
+            self.objects[o["number"]] = dict(o, id=oid, ref=f"{oid}_R-{i + 1}")
+
+        dyn = spec["dynamic"]
+        check_keys(f"{w} [dynamic]", dyn, {"block"}, set(), {"channel", "choose"})
+        self.blocks = []
+        for i, b in enumerate(dyn["block"]):
+            bw = f"{w} [[dynamic.block]] #{i + 1}"
+            check_keys(bw, b, {"name", "text", "parameters", "com_objects"}, set(), {"choose", "inline"})
+            for pn in b["parameters"]:
+                if pn not in self.params:
+                    raise SpecError(f"{bw}: unknown parameter `{pn}`")
+            for on in b["com_objects"]:
+                if on not in self.objects:
+                    raise SpecError(f"{bw}: unknown com object {on}")
+            self.blocks.append(dict(b, id=f"{self.app_id}_PB-{i + 1}"))
+
+        self.load_procedures = []
+        for i, lp in enumerate(spec["load_procedure"]):
+            lw = f"{w} [[load_procedure]] #{i + 1}"
+            check_keys(lw, lp, {"merge_id", "ops"})
+            for j, op in enumerate(lp["ops"]):
+                ow = f"{lw} op #{j + 1}"
+                name = op.get("op")
+                if name not in LOAD_OPS:
+                    if name in LOAD_OPS_LATER:
+                        raise not_yet(ow, f"`{name}`")
+                    raise SpecError(f"{ow}: unknown op `{name}`")
+                check_keys(ow, op, {"op"} | set(LOAD_OPS[name]))
+            self.load_procedures.append(lp)
+
+    @property
+    def app_file(self) -> str:
+        return f"{self.app_id}.xml"
+
+
+FLAGS = {"C": "CommunicationFlag", "R": "ReadFlag", "W": "WriteFlag", "T": "TransmitFlag",
+         "U": "UpdateFlag", "I": "ReadOnInitFlag"}
+# <Options> attributes the KNX schema defines that a spec may set.
+OPTIONS = ("PreferPartialDownloadIfApplicationLoaded", "EasyCtrlModeModeStyleEmptyGroupComTables",
+           "SetObjectTableLengthAlwaysToMax", "TextParameterEncoding", "SupportsExtendedMemoryServices",
+           "SupportsExtendedPropertyServices", "SupportsIpSystemBroadcast", "MaxRoutingApduLength",
+           "Comparable", "Reconstructable", "DownloadInvisibleParameters")
+# Implemented load ops: spec key -> XML attribute, in XML order.
+LOAD_OPS = {
+    "LdCtrlRelSegment": {"lsm": "LsmIdx", "size": "Size", "mode": "Mode", "fill": "Fill"},
+    "LdCtrlWriteRelMem": {"object": "ObjIdx", "offset": "Offset", "size": "Size", "verify": "Verify"},
+}
+LOAD_OPS_LATER = {"LdCtrlMasterReset", "LdCtrlLoadImageProp", "LdCtrlWriteProp", "LdCtrlCompareProp",
+                  "LdCtrlAbsSegment", "LdCtrlConnect", "LdCtrlDisconnect", "LdCtrlRestart",
+                  "LdCtrlUnload", "LdCtrlLoad", "LdCtrlLoadCompleted", "LdCtrlTaskSegment"}
+
+
+# ------------------------------------------------------------------ rendering
+
+def render_catalog(p: Product) -> bytes:
+    x = Xml()
+    knx_root(x)
+    x.open("Catalog")
+    cs_id, cs_name, cs_number = CATALOG_SECTION
+    x.open("CatalogSection", [("Id", cs_id), ("Name", cs_name), ("Number", cs_number),
+                              ("DefaultLanguage", "en-US"), ("NonRegRelevantDataVersion", 0)])
+    x.empty("CatalogItem", [("Id", p.item_id), ("Name", p.product["text"]), ("Number", 1),
+                            ("VisibleDescription", p.product["text"]), ("ProductRefId", p.product_id),
+                            ("Hardware2ProgramRefId", p.h2p_id), ("DefaultLanguage", "en-US"),
+                            ("NonRegRelevantDataVersion", 0)])
+    x.close("CatalogSection")
+    x.close("Catalog")
+    knx_close(x)
+    return x.render()
+
+
+def render_hardware(p: Product) -> bytes:
+    pr = p.product
+    x = Xml()
+    knx_root(x)
+    x.open("Hardware")
+    x.open("Hardware", [("Id", p.hw_id), ("Name", pr["hardware_name"]), ("SerialNumber", pr["hardware_serial"]),
+                        ("VersionNumber", pr.get("hardware_version", 1)), ("BusCurrent", pr["bus_current"]),
+                        ("HasIndividualAddress", True), ("HasApplicationProgram", True),
+                        ("NonRegRelevantDataVersion", 0)])
+    x.open("Products")
+    x.open("Product", [("Id", p.product_id), ("Text", pr["text"]), ("OrderNumber", pr["order_number"]),
+                       ("IsRailMounted", pr.get("rail_mounted", False)), ("DefaultLanguage", "en-US"),
+                       ("NonRegRelevantDataVersion", 0)])
+    x.empty("RegistrationInfo", [("RegistrationStatus", "Registered")])
+    x.close("Product")
+    x.close("Products")
+    x.open("Hardware2Programs")
+    x.open("Hardware2Program", [("Id", p.h2p_id), ("MediumTypes", "MT-0")])
+    x.empty("ApplicationProgramRef", [("RefId", p.app_id)])
+    x.empty("RegistrationInfo", [("RegistrationStatus", "Registered")])
+    x.close("Hardware2Program")
+    x.close("Hardware2Programs")
+    x.close("Hardware")
+    x.close("Hardware")
+    knx_close(x)
+    return x.render()
+
+
+def render_type(x: Xml, t: dict) -> None:
+    x.open("ParameterType", [("Id", t["id"]), ("Name", t["name"])])
+    if t["kind"] == "enum":
+        x.open("TypeRestriction", [("Base", "Value"), ("SizeInBit", t["size_bits"])])
+        for v in t["values"]:
+            x.empty("Enumeration", [("Text", v["text"]), ("Value", v["value"]),
+                                    ("Id", f"{t['id']}_EN-{v['value']}")])
+        x.close("TypeRestriction")
+    else:  # number
+        x.empty("TypeNumber", [("SizeInBit", t["size_bits"]),
+                               ("Type", "signedInt" if t["signed"] else "unsignedInt"),
+                               ("minInclusive", t["min"]), ("maxInclusive", t["max"])])
+    x.close("ParameterType")
+
+
+def render_application(p: Product) -> bytes:
+    a = p.app
+    x = Xml()
+    knx_root(x)
+    x.open("ApplicationPrograms")
+    x.open("ApplicationProgram", [
+        ("Id", p.app_id), ("ApplicationNumber", a["number"]), ("ApplicationVersion", a["version"]),
+        ("ProgramType", "ApplicationProgram"), ("MaskVersion", f"MV-{a['mask']}"), ("Name", a["name"]),
+        ("LoadProcedureStyle", a["load_procedure_style"]), ("PeiType", 0), ("DefaultLanguage", "en-US"),
+        ("DynamicTableManagement", False), ("Linkable", False), ("MinEtsVersion", "6.0"),
+        ("NonRegRelevantDataVersion", 0)])
+    x.open("Static")
+    x.open("Code")
+    for s in p.segments.values():
+        x.open("RelativeSegment", [("Id", s["id"]), ("Name", s["name"]), ("Size", s["size"]),
+                                   ("LoadStateMachine", s["lsm"]), ("Offset", 0)])
+        x.text("Data", base64.b64encode(bytes([s.get("fill", 0)]) * s["size"]).decode())
+        x.close("RelativeSegment")
+    x.close("Code")
+    x.open("ParameterTypes")
+    for t in p.types.values():
+        render_type(x, t)
+    x.close("ParameterTypes")
+    x.open("Parameters")
+    for prm in p.params.values():
+        x.open("Parameter", [("Id", prm["id"]), ("Name", prm["name"]), ("ParameterType", p.types[prm["type"]]["id"]),
+                             ("Text", prm["text"]), ("Value", prm["default"])])
+        m = prm["memory"]
+        x.empty("Memory", [("CodeSegment", p.segments[m["segment"]]["id"]), ("Offset", m["offset"]),
+                           ("BitOffset", m["bit_offset"])])
+        x.close("Parameter")
+    x.close("Parameters")
+    x.open("ParameterRefs")
+    for prm in p.params.values():
+        x.empty("ParameterRef", [("Id", prm["ref"]), ("RefId", prm["id"])])
+    x.close("ParameterRefs")
+    x.open("ComObjectTable")
+    for o in p.objects.values():
+        x.empty("ComObject", [("Id", o["id"]), ("Name", o["name"]), ("Text", o["text"]), ("Number", o["number"]),
+                              ("FunctionText", o["function_text"]), ("ObjectSize", o["size"])]
+                + [(FLAGS[f], flag(f in o["flags"])) for f in ("R", "W", "C", "T", "U", "I")]
+                + [("DatapointType", o["dpt"]), ("Priority", o["priority"])])
+    x.close("ComObjectTable")
+    x.open("ComObjectRefs")
+    for o in p.objects.values():
+        x.empty("ComObjectRef", [("Id", o["ref"]), ("RefId", o["id"])])
+    x.close("ComObjectRefs")
+    x.empty("AddressTable", [("MaxEntries", a["address_table_max_entries"])])
+    x.empty("AssociationTable", [("MaxEntries", a["association_table_max_entries"])])
+    x.open("LoadProcedures")
+    for lp in p.load_procedures:
+        x.open("LoadProcedure", [("MergeId", lp["merge_id"])])
+        for op in lp["ops"]:
+            x.empty(op["op"], [(attr, op[key]) for key, attr in LOAD_OPS[op["op"]].items()])
+        x.close("LoadProcedure")
+    x.close("LoadProcedures")
+    x.empty("Options", [(k, v) for k, v in a.get("options", {}).items()])
+    x.close("Static")
+    x.open("Dynamic")
+    x.open("ChannelIndependentBlock")
+    for b in p.blocks:
+        x.open("ParameterBlock", [("Id", b["id"]), ("Name", b["name"]), ("Text", b["text"])])
+        for pn in b["parameters"]:
+            x.empty("ParameterRefRef", [("RefId", p.params[pn]["ref"])])
+        for on in b["com_objects"]:
+            x.empty("ComObjectRefRef", [("RefId", p.objects[on]["ref"])])
+        x.close("ParameterBlock")
+    x.close("ChannelIndependentBlock")
+    x.close("Dynamic")
+    x.close("ApplicationProgram")
+    x.close("ApplicationPrograms")
+    translations = a.get("translations", {})
+    if translations:
+        x.open("Languages")
+        for lang, text in sorted(translations.items()):
+            x.open("Language", [("Identifier", lang)])
+            x.open("TranslationUnit", [("RefId", p.app_id), ("Version", 0)])
+            x.open("TranslationElement", [("RefId", p.app_id)])
+            x.empty("Translation", [("AttributeName", "Name"), ("Text", text)])
+            x.close("TranslationElement")
+            x.close("TranslationUnit")
+            x.close("Language")
+        x.close("Languages")
+    knx_close(x)
+    return x.render()
+
+
+def render(p: Product) -> dict[str, bytes]:
+    """The product XML, keyed by its path inside the .knxprod."""
+    return {
+        f"{MANUFACTURER}/Catalog.xml": render_catalog(p),
+        f"{MANUFACTURER}/Hardware.xml": render_hardware(p),
+        f"{MANUFACTURER}/{p.app_file}": render_application(p),
+    }
+
+
+# ------------------------------------------------------------------- commands
+
+def load(name: str) -> Product:
+    path = HERE / name / "product.toml"
+    try:
+        spec = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise SpecError(f"{name}: {exc}") from exc
+    return Product(name, spec)
+
+
+def all_names() -> list[str]:
+    return sorted(d.name for d in HERE.iterdir() if (d / "product.toml").is_file())
+
+
+def xml_digest(files: dict[str, bytes]) -> str:
+    """sha256 over the rendered files, in path order, path and content each."""
+    h = hashlib.sha256()
+    for path in sorted(files):
+        h.update(path.encode() + b"\0" + files[path] + b"\0")
+    return h.hexdigest()
+
+
+def committed(name: str) -> dict[str, bytes]:
+    root = HERE / name / "xml"
+    return {f.relative_to(root).as_posix(): f.read_bytes() for f in sorted(root.rglob("*.xml"))}
+
+
+def write_xml(p: Product, files: dict[str, bytes]) -> None:
+    root = HERE / p.name / "xml"
+    for old in root.rglob("*.xml") if root.exists() else []:
+        if old.relative_to(root).as_posix() not in files:
+            old.unlink()
+    for path, data in files.items():
+        out = root / path
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(data)
+
+
+def write_zip(p: Product, files: dict[str, bytes]) -> Path:
+    """Deterministic .knxprod: fixed timestamps, stub master first, then path order."""
+    out = HERE / p.name / "build" / f"{p.name}.knxprod"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        for path, data in [("knx_master.xml", STUB_MASTER)] + sorted(files.items()):
+            info = zipfile.ZipInfo(path, date_time=(1980, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            z.writestr(info, data)
+    return out
+
+
+def signed_id_from(arg: str) -> str:
+    if arg.endswith(".knxprod"):
+        with zipfile.ZipFile(arg) as z:
+            ids = sorted(Path(n).stem for n in z.namelist() if re.search(r"_A-[0-9A-F]{4}-", n))
+        if len(ids) != 1:
+            raise SpecError(f"{arg}: expected one application program, found {ids}")
+        return ids[0]
+    return arg
+
+
+def record_signed(p: Product, files: dict[str, bytes], arg: str) -> Path:
+    sid = signed_id_from(arg)
+    prefix = p.app_id[:-4]
+    if not (sid.startswith(prefix) and re.fullmatch(r"[0-9A-F]{4}", sid[len(prefix):])):
+        raise SpecError(f"{p.name}: signed id {sid} does not belong to {p.app_id}")
+    out = HERE / p.name / "signed.toml"
+    out.write_text(
+        "# Written by generate.py --signed-id after tools/ets-sweep/synthetic/sign.py.\n"
+        "# Stale when xml_sha256 differs from the committed xml/ (generate.py --check says so).\n"
+        f'application_id = "{sid}"\n'
+        f'hardware2program_id = "{p.h2p_id[:-4]}{sid[-4:]}"\n'
+        f'xml_sha256 = "{xml_digest(files)}"\n', encoding="utf-8")
+    return out
+
+
+def catalogue_table(products: list[Product]) -> str:
+    rows = ["| product | order number | mask | construct | issues |", "| --- | --- | --- | --- | --- |"]
+    for p in products:
+        issues = ", ".join(f"#{n}" for n in p.doc["issues"])
+        rows.append(f"| [`{p.name}`]({p.name}/product.toml) | `{p.product['order_number']}` | "
+                    f"{p.app['mask']} | {p.doc['construct']} | {issues} |")
+    return "\n".join(rows)
+
+
+def write_catalogue(products: list[Product]) -> None:
+    readme = HERE / "README.md"
+    text = readme.read_text(encoding="utf-8")
+    i, j = text.find(README_BEGIN), text.find(README_END)
+    if i < 0 or j < i:
+        raise SpecError(f"README.md: markers {README_BEGIN!r} and {README_END!r} not found")
+    body = f"{README_BEGIN}\n{catalogue_table(products)}\n"
+    readme.write_text(text[:i] + body + text[j:], encoding="utf-8")
+
+
+def check_unique(products: list[Product]) -> None:
+    for key in ("app_id", "hw_id"):
+        seen: dict[str, str] = {}
+        for p in products:
+            v = getattr(p, key)
+            if v in seen:
+                raise SpecError(f"{p.name}: {key} {v} already used by {seen[v]}")
+            seen[v] = p.name
+    orders: dict[str, str] = {}
+    for p in products:
+        o = p.product["order_number"]
+        if o in orders:
+            raise SpecError(f"{p.name}: order number {o} already used by {orders[o]}")
+        orders[o] = p.name
+
+
+def main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("names", nargs="*", help="products (directory names); all when omitted")
+    ap.add_argument("--check", action="store_true", help="compare with the committed xml/, write nothing")
+    ap.add_argument("--zip", action="store_true", help="also write <name>/build/<name>.knxprod")
+    ap.add_argument("--catalogue", action="store_true", help="rewrite the catalogue table in README.md")
+    ap.add_argument("--signed-id", metavar="ID|FILE", help="record the signed application id of one product")
+    args = ap.parse_args(argv)
+    try:
+        everything = [load(n) for n in all_names()]
+        check_unique(everything)
+        chosen = everything if not args.names else [load(n) for n in args.names]
+        if args.signed_id and len(chosen) != 1:
+            raise SpecError("--signed-id takes exactly one product name")
+        stale = []
+        for p in chosen:
+            files = render(p)
+            if args.check:
+                if committed(p.name) != files:
+                    stale.append(p.name)
+                    continue
+                signed = HERE / p.name / "signed.toml"
+                if signed.exists():
+                    rec = tomllib.loads(signed.read_text(encoding="utf-8"))
+                    if rec.get("xml_sha256") != xml_digest(files):
+                        stale.append(f"{p.name} (signed.toml)")
+                continue
+            write_xml(p, files)
+            print(f"{p.name}: {p.app_id} ({len(files)} files)")
+            if args.zip:
+                print(f"  {write_zip(p, files).relative_to(HERE)}")
+            if args.signed_id:
+                print(f"  {record_signed(p, files, args.signed_id).relative_to(HERE)}")
+        if args.catalogue:
+            write_catalogue(everything)
+            print("README.md catalogue:", len(everything), "products")
+        if stale:
+            print("stale, re-render or re-sign:", ", ".join(stale), file=sys.stderr)
+            return 1
+    except SpecError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

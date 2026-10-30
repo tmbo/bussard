@@ -1,5 +1,6 @@
 // Hash and sign a fabricated .knxprod with ETS's own signing library (test data only).
-// Usage: signer.exe <in.knxprod> <out.knxprod> <workdir>     hash, sign, zip
+// Usage: signer.exe [--master <knx_master.xml>] <in.knxprod> <out.knxprod> <workdir>     hash, sign, zip
+//        (--master replaces the archive's knx_master.xml, e.g. the stub <KNX/>, with that file)
 //        signer.exe --dir-only <in> <out> <workdir>         only the directory signature, no hashes
 //        signer.exe --verify <in.knxprod> <workdir>         report what the library thinks of a file
 //        signer.exe --verify-dir <workdir>                  the same on an unpacked folder
@@ -15,6 +16,7 @@ class Signer {
   const BindingFlags Any = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static;
   static Assembly Lib;
   static bool DirOnly;
+  static string Master;
 
   static Type T(string name) {
     var t = Lib.GetType("Knx.Ets.XmlSigning." + name);
@@ -50,6 +52,10 @@ class Signer {
       try { Verify(Path.GetFullPath(a[2])); } catch (TargetInvocationException e) { Console.Error.WriteLine("FAILED: " + e.InnerException); return 1; }
       return 0;
     }
+    if (a[0] == "--master") {
+      Master = a[1];
+      a = a.Skip(2).ToArray();
+    }
     if (a[0] == "--dir-only") {
       DirOnly = true;
       a = a.Skip(1).ToArray();
@@ -58,6 +64,13 @@ class Signer {
     // signature that neither its own check nor ETS 6.4 accepts (2026-10-30).
     string input = a[0], output = a[1], work = Path.GetFullPath(a[2]);
     Unpack(input, work);
+    // ETS 6.4 reads the master data version from the archive's knx_master.xml
+    // before anything else; the stub <KNX/> of a synthetic product fails that
+    // with a FormatException (2026-10-30), so the signer puts ETS's own copy in.
+    if (Master != null) {
+      File.Copy(Master, Path.Combine(work, "knx_master.xml"), true);
+      Console.WriteLine("master " + Master);
+    }
     try { Sign(work); } catch (TargetInvocationException e) { Console.Error.WriteLine("FAILED: " + e.InnerException); return 1; }
     if (File.Exists(output)) File.Delete(output);
     using (var zip = ZipFile.Open(output, ZipArchiveMode.Create)) {

@@ -58,7 +58,7 @@ fixtures, but no oracle row: the only ungated oracle test checks that a row
 without its capture is skipped. A corpus product also bundles hundreds of
 constructs, so a sweep failure is hard to reduce to one regression test.
 
-### The synthetic product catalogue (planned, #596)
+### The synthetic product catalogue (#596)
 
 [Epic #596](https://github.com/tmbo/bussard/issues/596) plans to close the
 triangle without vendor data: a catalogue of small fabricated `.knxprod`
@@ -69,8 +69,14 @@ backlog). ETS downloads each one into knx-sim in the VM once; the capture is
 ours and is committed with a manifest of the ETS version and the product
 XML hash. CI then replays the captures: the oracle rows run `--check`
 ungated, knx-sim replays each capture as a calibration test, and the sim
-loop runs the catalogue. None of this exists yet; the epic's checklist
-tracks the signer spike, the generator, the captures and the CI wiring.
+loop runs the catalogue. The epic's checklist tracks the captures and the
+CI wiring that are still open.
+
+The products live in `tests-support/synthetic-products/`: one TOML spec per
+product, rendered by `generate.py` into committed product XML, which
+`bussard-prod` and knx-sim read in an ungated test each. Its README holds the
+spec schema, the id and master-data rules, the render, sign and capture flow
+and the catalogue table.
 
 The rule that holds now and after #596: ETS is a capture tool, CI runs on
 captures. A question about what ETS writes is answered by a capture (house,

@@ -11,6 +11,7 @@ mod fetch;
 mod knxprod;
 mod parameter_image;
 mod selected;
+mod synthetic_products;
 mod sys7_visible_parameters;
 mod value_sets;
 mod wrapper;
