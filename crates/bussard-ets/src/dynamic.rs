@@ -93,6 +93,20 @@ impl DynamicSource for ApplicationProgram {
     fn initial_value(&self, param_id: &str) -> Option<&str> {
         self.parameters.get(param_id)?.initial_value.as_deref()
     }
+
+    fn is_virtual(&self, param_id: &str) -> bool {
+        self.parameters
+            .get(param_id)
+            .is_some_and(|p| p.memory.is_none() && p.property.is_none())
+            && !self
+                .unions
+                .iter()
+                .any(|u| u.members.iter().any(|m| m.parameter == param_id))
+    }
+
+    fn is_system_b(&self) -> bool {
+        ApplicationProgram::is_system_b(self)
+    }
 }
 
 #[cfg(test)]
@@ -476,6 +490,85 @@ mod tests {
         assert_eq!(
             reached_refs(&cfg),
             ["P-1_R-1", "P-2_R-2", "P-3_R-30", "P-3_R-33"]
+        );
+        Ok(())
+    }
+
+    /// Issue #474: default-only `<choose>`s on never-shown parameters. `virt`
+    /// has no memory (the `syn-choose-never-shown` and Zennio Flat shape),
+    /// `placed` has memory, `member` is a union member; `testing` is virtual
+    /// but its choose has a `test` branch beside the default one.
+    const NEVER_SHOWN_XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/20">
+     <ApplicationProgram Id="A" MaskVersion="MV-07B0" Name="t">
+      <Static>
+       <Code><RelativeSegment Id="A_RS-04-00000" Offset="0" Size="4" LoadStateMachine="4" /></Code>
+       <Parameters>
+        <Parameter Id="A_P-1" Name="virt" Value="0" />
+        <Parameter Id="A_P-2" Name="placed" Value="0">
+         <Memory CodeSegment="A_RS-04-00000" Offset="0" BitOffset="0" />
+        </Parameter>
+        <Union SizeInBit="8">
+         <Memory CodeSegment="A_RS-04-00000" Offset="1" BitOffset="0" />
+         <Parameter Id="A_UP-3" Name="member" Offset="0" BitOffset="0" Value="0" />
+        </Union>
+        <Parameter Id="A_P-4" Name="testing" Value="1" />
+       </Parameters>
+       <ParameterRefs>
+        <ParameterRef Id="A_P-1_R-1" RefId="A_P-1" />
+        <ParameterRef Id="A_P-2_R-2" RefId="A_P-2" />
+        <ParameterRef Id="A_UP-3_R-3" RefId="A_UP-3" />
+        <ParameterRef Id="A_P-4_R-4" RefId="A_P-4" />
+       </ParameterRefs>
+       <ComObjects>
+        <ComObject Id="A_O-1" Number="1" /><ComObject Id="A_O-2" Number="2" />
+        <ComObject Id="A_O-3" Number="3" /><ComObject Id="A_O-4" Number="4" />
+       </ComObjects>
+       <ComObjectRefs>
+        <ComObjectRef Id="A_O-1_R-1" RefId="A_O-1" /><ComObjectRef Id="A_O-2_R-2" RefId="A_O-2" />
+        <ComObjectRef Id="A_O-3_R-3" RefId="A_O-3" /><ComObjectRef Id="A_O-4_R-4" RefId="A_O-4" />
+       </ComObjectRefs>
+      </Static>
+      <Dynamic><ChannelIndependentBlock>
+       <choose ParamRefId="A_P-1_R-1">
+        <when default="true"><ComObjectRefRef RefId="A_O-1_R-1" /></when>
+       </choose>
+       <choose ParamRefId="A_P-2_R-2">
+        <when default="true"><ComObjectRefRef RefId="A_O-2_R-2" /></when>
+       </choose>
+       <choose ParamRefId="A_UP-3_R-3">
+        <when default="true"><ComObjectRefRef RefId="A_O-3_R-3" /></when>
+       </choose>
+       <choose ParamRefId="A_P-4_R-4">
+        <when test="0" />
+        <when default="true"><ComObjectRefRef RefId="A_O-4_R-4" /></when>
+       </choose>
+      </ChannelIndependentBlock></Dynamic>
+     </ApplicationProgram></KNX>"#;
+
+    fn reached_objects(cfg: &DynamicConfig) -> Vec<&str> {
+        cfg.com_objects
+            .iter()
+            .map(|c| c.com_object_ref_id.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn test_evaluate_dynamic_default_only_choose_on_virtual_never_shown_system_b()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let app = parse_application_program_str("A", NEVER_SHOWN_XML)?;
+        assert!(app.is_virtual("A_P-1") && app.is_virtual("A_P-4"));
+        assert!(!app.is_virtual("A_P-2") && !app.is_virtual("A_UP-3"));
+        // System B: the virtual parameter's default-only choose selects no
+        // branch; memory, a union place or a test branch keep it steering.
+        let cfg = evaluate_dynamic(&app, &BTreeMap::new());
+        assert_eq!(reached_objects(&cfg), ["O-2_R-2", "O-3_R-3", "O-4_R-4"]);
+        // System 7: every default-only branch is taken.
+        let s7 = NEVER_SHOWN_XML.replace("MV-07B0", "MV-0701");
+        let app = parse_application_program_str("A", &s7)?;
+        let cfg = evaluate_dynamic(&app, &BTreeMap::new());
+        assert_eq!(
+            reached_objects(&cfg),
+            ["O-1_R-1", "O-2_R-2", "O-3_R-3", "O-4_R-4"]
         );
         Ok(())
     }

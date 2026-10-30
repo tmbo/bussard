@@ -777,6 +777,20 @@ fn compare_parameters(out: &mut WriteReadback, flashed: &FlashedParameters) {
             with_unit(&d.model),
         );
     }
+    if !flashed.kept.is_empty() {
+        let names: Vec<String> = flashed
+            .kept
+            .iter()
+            .map(|k| format!("{} ({})", k.key, k.name))
+            .collect();
+        out.notes.push(format!(
+            "{} parameter(s) kept on the device, not compared: the load procedure's branch \
+             does not write their octets, as ETS's download does not (issue #411), and after a \
+             fresh allocation the device holds whatever the allocation left there: {}",
+            names.len(),
+            names.join(", ")
+        ));
+    }
     out.compared.parameters = Some(flashed.compared);
 }
 

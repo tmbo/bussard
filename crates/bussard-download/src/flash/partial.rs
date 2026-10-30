@@ -142,6 +142,7 @@ impl FlashPlan {
             user_memory_above_64k: self.user_memory_above_64k,
             par_allocations: BTreeMap::new(),
             par_procedure: false,
+            kept: self.kept.clone(),
         })
     }
 
@@ -343,7 +344,7 @@ impl FlashPlan {
                 FlashStep::CompareProp { .. } | FlashStep::CompareRelMem { .. } => {
                     steps.push(step.clone());
                 }
-                FlashStep::Restart => steps.push(step.clone()),
+                FlashStep::Restart | FlashStep::Delay { .. } => steps.push(step.clone()),
                 _ => {}
             }
         }
@@ -429,7 +430,7 @@ impl FlashPlan {
                 | FlashStep::LoadImageProp { .. } => {
                     steps.push(step.clone());
                 }
-                FlashStep::Restart | FlashStep::Sys7EnableVerifyMode => {
+                FlashStep::Restart | FlashStep::Delay { .. } | FlashStep::Sys7EnableVerifyMode => {
                     steps.push(step.clone());
                 }
                 // ETS restarts the device before a parameter download too, but

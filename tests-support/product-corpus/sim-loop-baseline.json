@@ -7,11 +7,6 @@
       "reason": "`Switching times in the device` = 1 allocates the 0x47E4 AbsSegment in three parts (899 + 2966 + 578 of 5406 octets); bussard now streams each part into its allocation, but generated 2 also shows switching-time parameters that land in the 961 octets no allocation holds (ETS: \"not transmitted\", the device keeps its own), so the plan refuses as for a System B <choose> that writes a segment in part (#402, #413). Intended.",
       "issue": 413
     },
-    "M-0083_A-00A2-10-6169": {
-      "step": "flash[2] (generated 2)",
-      "reason": "the generator sets keep-data P-324 to 1; the System B <choose> branch then writes only part of a segment, which bussard refuses since #410 (\"a <choose> branch writes only part of a segment\")",
-      "issue": 411
-    },
     "M-0083_A-0255-21-0ECA": {
       "step": "flash[2] (generated 2)",
       "reason": "`Switching times in the device` (P-203) = 1 allocates the 0x4770 AbsSegment in two parts (2941 + 86 of 3112 octets); before #413 the whole image went into the first allocation and the read-back found 71 parameters differing. bussard now streams each part, but generated 2 also shows switching-time parameters in octets 2941..3010 that no allocation holds (ETS: not transmitted), so the plan refuses as for a System B <choose> that writes a segment in part (#402, #413). Intended.",

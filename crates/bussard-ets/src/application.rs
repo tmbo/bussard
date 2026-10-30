@@ -527,6 +527,15 @@ pub enum LoadOp {
     Disconnect,
     /// `<LdCtrlRestart>`.
     Restart,
+    /// `<LdCtrlDelay MilliSeconds=…>`: a pause of the given length between two
+    /// steps of the procedure, with nothing sent on the wire. 35 corpus
+    /// applications put `MilliSeconds="200"` right before `LdCtrlRestart`
+    /// (issue #615).
+    Delay {
+        /// The pause in milliseconds (`MilliSeconds`); `None` when the attribute
+        /// is absent or not a number.
+        milliseconds: Option<u32>,
+    },
     /// `<LdCtrlMerge MergeId=…>`: a splice marker in a **master-template**
     /// `Load` procedure (`knx_master.xml`). It is not an on-wire operation: when
     /// a merged application is assembled against the master template, each
@@ -1181,8 +1190,7 @@ impl ApplicationProgram {
     pub fn is_system_b(&self) -> bool {
         self.mask_version
             .as_deref()
-            .and_then(|m| u16::from_str_radix(m.trim(), 16).ok())
-            .is_some_and(|m| m & 0x0FFF == 0x07B0)
+            .is_some_and(bussard_model::param_model::is_system_b_mask)
     }
 
     /// Whether this is a `PeiProgram` (a second loadable program, not an
@@ -2823,6 +2831,9 @@ pub(crate) fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m
         b"LdCtrlConnect" => LoadOp::Connect,
         b"LdCtrlDisconnect" => LoadOp::Disconnect,
         b"LdCtrlRestart" => LoadOp::Restart,
+        b"LdCtrlDelay" => LoadOp::Delay {
+            milliseconds: u(b"MilliSeconds"),
+        },
         b"LdCtrlMerge" => LoadOp::Merge {
             merge_id: s(b"MergeId"),
         },
@@ -3553,6 +3564,24 @@ mod tests {
                 ..
             }
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn test_push_load_op_delay_is_typed() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // `LdCtrlDelay MilliSeconds` parses as a typed pause, not a Raw op the
+        // planner refuses (issue #615); the DeclarePropDesc beside it stays Raw.
+        let xml = include_bytes!("../tests/fixtures/ldctrl_declare_prop_desc_and_delay.app.xml");
+        let app = parse_application_program("M-00FA_A-0004-11-ABCD-O000A", xml)?;
+        let ops = &app.load_procedures[0].ops;
+        assert!(ops.contains(&LoadOp::Delay {
+            milliseconds: Some(1000)
+        }));
+        assert!(
+            ops.iter().any(
+                |op| matches!(op, LoadOp::Raw { name, .. } if name == "LdCtrlDeclarePropDesc")
+            )
+        );
         Ok(())
     }
 

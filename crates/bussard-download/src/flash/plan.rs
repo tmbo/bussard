@@ -7,11 +7,24 @@
 //! could not finish. Only a fully-executable plan leaves this module.
 
 use super::plan_sys7::{Sys7PlanTables, plan_flash_sys7};
-use super::{AppIdentity, FlashPlan, FlashStep, ImageKind, ImageRef, PlanError, SegmentFill};
+use super::{
+    AppIdentity, FlashPlan, FlashStep, ImageKind, ImageRef, KeptOctets, PlanError, SegmentFill,
+};
 use bussard_prod::application::{
     ApplicationProgram, CodeSegment, LoadOp, LoadProcedure, SegmentKind,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+/// Lowers an `LdCtrlDelay` to a [`FlashStep::Delay`] of its `MilliSeconds`
+/// (issue #615), in the System B and the System 7 planner. An op without a
+/// readable `MilliSeconds` is refused: the length of the pause is not guessed.
+pub(super) fn lower_delay(milliseconds: Option<u32>) -> Result<FlashStep, PlanError> {
+    milliseconds
+        .map(|milliseconds| FlashStep::Delay { milliseconds })
+        .ok_or_else(|| PlanError::UnsupportedOp {
+            op: "LdCtrlDelay without a MilliSeconds value".to_string(),
+        })
+}
 
 /// The standard System B table object indices a master template programs, and
 /// their human names. Used to refuse a spliced template that writes one of these
@@ -347,10 +360,13 @@ pub fn plan_flash_with_memo(
     //    richest single block. A single-style app has one block, used as-is.
     //    Empty apps are refused.
     let config = memo.evaluate_for(app, overrides);
-    let (ops, spliced_from_template) = assemble_ops(app, template_ops, &config)?;
+    let (ops, spliced_from_template, branch_gaps) = assemble_ops(app, template_ops, &config)?;
     if ops.is_empty() {
         return Err(PlanError::NoProcedure(app.id.clone()));
     }
+    // The octets a `<choose>` branch leaves unwritten stay as the device holds
+    // them, as in ETS's download (issue #411, [`KeptOctets`]).
+    let kept = kept_from(app, &ops, &branch_gaps);
 
     // Resolve the parameter images once, up front (used by AppliesTo=par writes).
     // `overrides` is keyed by app-relative ParameterRef id (the #46 contract);
@@ -358,7 +374,7 @@ pub fn plan_flash_with_memo(
     // No per-instance base offsets are supplied here (they live in the project,
     // not in the product data): a module-instance override therefore refuses at
     // pre-flight rather than misplacing a byte — see `compute_parameter_image`.
-    let (param_images, placed) =
+    let (param_images, mut placed) =
         bussard_prod::compute_parameter_image_placed_with(app, overrides, base_offsets, memo)
             .map_err(|e| PlanError::UnresolvableImage {
                 step: 0,
@@ -506,6 +522,7 @@ pub fn plan_flash_with_memo(
             }
             LoadOp::LoadCompleted { .. } => {}
             LoadOp::Restart => steps.push(FlashStep::Restart),
+            LoadOp::Delay { milliseconds } => steps.push(lower_delay(*milliseconds)?),
             LoadOp::MasterReset {
                 erase_code,
                 channel_number,
@@ -753,12 +770,34 @@ pub fn plan_flash_with_memo(
                 })?;
                 // The op's `Size` bounds what is streamed: the write covers the
                 // allocation, not the whole `RelativeSegment` (issue #564).
-                let bytes = bound_write_rel_mem(&segment_id, bytes, *size, placed.get(&segment_id))
+                //
+                // A segment a `<choose>` branch writes only in part (issue #411)
+                // keeps its image bounded by the allocation, and the step streams
+                // the op's own `[Offset, Offset + Size)` of it; the rest of the
+                // allocation is kept on the device ([`KeptOctets`]).
+                let kept_here = kept.iter().find(|k| k.segment == segment_id);
+                let bound = match kept_here {
+                    Some(k) => u32::try_from(k.allocated).ok(),
+                    None => *size,
+                };
+                let bytes = bound_write_rel_mem(&segment_id, bytes, bound, placed.get(&segment_id))
                     .map_err(|reason| PlanError::UnresolvableImage {
                         step: step_no,
                         reason,
                     })?;
-                let len = bytes.len();
+                let (part_start, len) = match kept_here {
+                    Some(_) => {
+                        let start = usize::try_from(offset.unwrap_or(0))
+                            .unwrap_or(usize::MAX)
+                            .min(bytes.len());
+                        let end = size
+                            .and_then(|s| usize::try_from(s).ok())
+                            .map_or(bytes.len(), |s| start.saturating_add(s))
+                            .min(bytes.len());
+                        (start, end - start)
+                    }
+                    None => (0, bytes.len()),
+                };
                 let offset = offset.unwrap_or(0);
                 // The segment base is device-supplied at execute time (>= 0), so a
                 // relative write already exceeds the 16-bit A_Memory space if
@@ -783,7 +822,7 @@ pub fn plan_flash_with_memo(
                     segment_id,
                     kind,
                     len,
-                    offset: 0,
+                    offset: part_start,
                 };
                 last_written_image = Some(image.clone());
                 if let Some(oi) = obj_idx {
@@ -1025,7 +1064,10 @@ pub fn plan_flash_with_memo(
                 let image = written_image_by_object
                     .get(&obj_idx)
                     .cloned()
-                    .or_else(|| last_written_image.clone());
+                    .or_else(|| last_written_image.clone())
+                    // The device's CRC covers octets it keeps (issue #411):
+                    // the MCB is read, as ETS reads it, but not compared.
+                    .filter(|img| !kept.iter().any(|k| k.segment == img.segment_id));
                 steps.push(FlashStep::LoadImageProp {
                     obj_idx,
                     prop_id,
@@ -1080,6 +1122,14 @@ pub fn plan_flash_with_memo(
     // not secure-capable gets neither (issue #452: 1.1.45 and 1.1.51 allocate
     // a filled segment too, and ETS unloads them with load controls and ends
     // with a bare A_Restart).
+    // A kept octet is written by no step, so it is not placed: the dump's
+    // coverage, the parameter-only download and the restore leave it alone.
+    for k in &kept {
+        if let Some(octets) = placed.get_mut(&k.segment) {
+            octets.retain(|&i| !k.contains(i));
+        }
+    }
+
     let form = super::restart_form(app);
     let sparse = steps
         .iter()
@@ -1112,6 +1162,7 @@ pub fn plan_flash_with_memo(
         user_memory_above_64k: crate::apply::uses_user_memory(Some(app)),
         par_allocations,
         par_procedure: false,
+        kept,
     })
 }
 
@@ -1285,8 +1336,10 @@ pub(super) fn plan_segments(
 }
 
 /// The op sequence a download of `app` runs, with every `<choose>` of its
-/// load procedures decided under `config`, and whether it was spliced into
-/// the master template (`template_ops`).
+/// load procedures decided under `config`, whether it was spliced into
+/// the master template (`template_ops`), and the octets of each object some
+/// branch writes and the taken branches do not
+/// ([`super::plan_props::partial_rel_mem_gaps`], issue #411).
 ///
 /// Only the branches `config` takes contribute their ops
 /// ([`super::plan_props::taken_ops`]), on every path: the System B lowering
@@ -1304,7 +1357,7 @@ pub(super) fn assemble_ops(
     app: &ApplicationProgram,
     template_ops: Option<&[LoadOp]>,
     config: &bussard_prod::dynamic::DynamicConfig,
-) -> std::result::Result<(Vec<LoadOp>, bool), PlanError> {
+) -> std::result::Result<AssembledOps, PlanError> {
     use super::plan_props::taken_ops;
     let non_empty: Vec<&LoadProcedure> = app
         .load_procedures
@@ -1321,7 +1374,7 @@ pub(super) fn assemble_ops(
         .filter(|p| !p.ops.is_empty() && p.merge_id.is_some())
         .collect();
     if non_empty.is_empty() {
-        return Ok((Vec::new(), false));
+        return Ok((Vec::new(), false, BTreeMap::new()));
     }
     if let Some(p) = companion_blocks.iter().find(|p| !p.chooses.is_empty()) {
         return Err(PlanError::UndecidableCondition {
@@ -1351,7 +1404,7 @@ pub(super) fn assemble_ops(
                 blocks.entry(id).or_default().extend(ops);
             }
         }
-        super::plan_props::refuse_partial_rel_mem(every_branch.into_iter(), &taken)?;
+        let gaps = super::plan_props::partial_rel_mem_gaps(every_branch.into_iter(), &taken);
         for p in &companion_blocks {
             if let Some(id) = p.merge_id.as_deref().and_then(|m| m.parse::<u32>().ok()) {
                 blocks.entry(id).or_default().extend(p.ops.clone());
@@ -1373,7 +1426,7 @@ pub(super) fn assemble_ops(
                 other => out.push(other.clone()),
             }
         }
-        return Ok((out, true));
+        return Ok((out, true, gaps));
     }
 
     let blocks = self_contained_blocks(app);
@@ -1381,8 +1434,100 @@ pub(super) fn assemble_ops(
     for p in &blocks {
         out.extend(taken_ops(app, p, config)?);
     }
-    super::plan_props::refuse_partial_rel_mem(blocks.iter().flat_map(|p| p.ops.iter()), &out)?;
-    Ok((out, false))
+    let gaps =
+        super::plan_props::partial_rel_mem_gaps(blocks.iter().flat_map(|p| p.ops.iter()), &out);
+    Ok((out, false, gaps))
+}
+
+/// What [`assemble_ops`] returns: the ops, whether they were spliced into
+/// the master template, and the branch gaps by object index.
+pub(super) type AssembledOps = (Vec<LoadOp>, bool, BTreeMap<u32, Vec<(u32, u32)>>);
+
+/// The [`KeptOctets`] of a System B download of `app`: each branch gap of
+/// [`assemble_ops`] bound to the relative segment its object allocates
+/// (the segment on that load-state machine, [`resolve_rel_segment`]) and cut
+/// to the allocation the taken ops make there (the segment's declared size
+/// when they make none).
+///
+/// The rule (issue #411): a `<choose>` branch that writes only part of a
+/// segment is planned as ETS downloads it, with the taken branch's writes
+/// alone and the rest of the allocation left as the device holds it. ETS's
+/// download of `syn-choose-partial-segment`
+/// (`captures/synthetic/syn-choose-partial-segment/defaults/ops.txt`, ops
+/// 17 and 25 to 27) allocates 256 octets, writes 0..128 and neither reads
+/// nor checks 128..256. The MCB check of such a segment reads the device's
+/// CRC without comparing it (it covers the kept octets), and the parameter
+/// read-back leaves the parameters placed in the gap out of its verdict.
+fn kept_from(
+    app: &ApplicationProgram,
+    ops: &[LoadOp],
+    gaps: &BTreeMap<u32, Vec<(u32, u32)>>,
+) -> Vec<KeptOctets> {
+    if gaps.is_empty() {
+        return Vec::new();
+    }
+    let segments = plan_segments(app);
+    gaps.iter()
+        .filter_map(|(&object, ranges)| {
+            let (segment, declared) =
+                resolve_rel_segment(&segments, Some(object), None, &BTreeMap::new())?;
+            let allocated = ops
+                .iter()
+                .rev()
+                .find_map(|op| match op {
+                    LoadOp::RelSegment {
+                        lsm_idx: Some(idx),
+                        size,
+                        ..
+                    } if *idx == object => Some(*size),
+                    _ => None,
+                })
+                .flatten()
+                .or(declared)
+                .and_then(|a| usize::try_from(a).ok())?;
+            let ranges: Vec<(usize, usize)> = ranges
+                .iter()
+                .filter_map(|&(start, end)| {
+                    let start = usize::try_from(start).ok()?;
+                    let end = usize::try_from(end).ok()?.min(allocated);
+                    (start < end).then_some((start, end))
+                })
+                .collect();
+            (!ranges.is_empty()).then_some(KeptOctets {
+                object,
+                segment,
+                allocated,
+                ranges,
+            })
+        })
+        .collect()
+}
+
+/// The octets a System B download of `app` under `overrides` leaves as the
+/// device holds them (issue #411, [`KeptOctets`]): what the planner keeps,
+/// for the read-back and the plan, which decode a device's parameters
+/// without a [`FlashPlan`] at hand. Empty for a System 7 or property-only
+/// application, and when the load procedure cannot be decided (the planner
+/// refuses such a plan on its own).
+pub fn kept_octets(
+    app: &ApplicationProgram,
+    overrides: &BTreeMap<String, String>,
+    memo: &bussard_prod::dynamic::DynamicMemo<'_, ApplicationProgram>,
+) -> Vec<KeptOctets> {
+    let system_b = app
+        .mask_version
+        .as_deref()
+        .and_then(|m| u16::from_str_radix(m.trim(), 16).ok())
+        .map(bussard_mgmt::MaskProfile::from_mask)
+        .is_some_and(|p| p.capabilities().flash && !p.is_system_7());
+    if !system_b || app.load_procedures.iter().all(|p| p.chooses.is_empty()) {
+        return Vec::new();
+    }
+    let config = memo.evaluate_for(app, overrides);
+    match assemble_ops(app, None, &config) {
+        Ok((ops, _, gaps)) => kept_from(app, &ops, &gaps),
+        Err(_) => Vec::new(),
+    }
 }
 
 /// The blocks a self-contained download (no master-template splice) runs, in
@@ -1846,6 +1991,61 @@ mod tests {
         );
         // The trace names the reconnect-and-resume master-reset step.
         assert!(trace(&plan).iter().any(|l| l.contains("master reset")));
+        Ok(())
+    }
+
+    /// A System B procedure with `LdCtrlDelay` (issue #615): the given
+    /// milliseconds lower to a pause step in procedure order, and the trace
+    /// names it. An op without `MilliSeconds` refuses the plan.
+    #[test]
+    fn test_plan_flash_lowers_delay() -> Result<(), Box<dyn std::error::Error>> {
+        let app_xml = |delay: &str| {
+            format!(
+                r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-DL" MaskVersion="MV-07B0" Name="DL"
+            LoadProcedureStyle="ProductDefault">
+          <Static>
+           <Code><RelativeSegment Id="M-1_A-DL_RS-1" Size="6" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment></Code>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlUnload LsmIdx="4" />
+             <LdCtrlLoad LsmIdx="4" />
+             <LdCtrlRelSegment LsmIdx="4" Size="6" AppliesTo="full" />
+             <LdCtrlWriteRelMem ObjIdx="0" Offset="0" Size="6" AppliesTo="full" />
+             <LdCtrlLoadCompleted LsmIdx="4" />
+             {delay}
+             <LdCtrlRestart />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#
+            )
+        };
+        let plan_for =
+            |delay: &str| -> Result<Result<FlashPlan, PlanError>, Box<dyn std::error::Error>> {
+                let app = parse_application_program("M-1_A-DL", app_xml(delay).as_bytes())?;
+                Ok(plan_flash(
+                    &app,
+                    "1.1.4",
+                    0x07B0,
+                    &no_overrides(),
+                    &BTreeMap::new(),
+                    None,
+                    &BTreeMap::new(),
+                ))
+            };
+        let plan = plan_for(r#"<LdCtrlDelay MilliSeconds="200" />"#)??;
+        let n = plan.steps.len();
+        assert!(n >= 2);
+        assert_eq!(
+            plan.steps[n - 2..],
+            [FlashStep::Delay { milliseconds: 200 }, FlashStep::Restart]
+        );
+        assert!(trace(&plan).iter().any(|l| l.contains("wait 200 ms")));
+        assert!(matches!(
+            plan_for("<LdCtrlDelay />")?,
+            Err(PlanError::UnsupportedOp { op }) if op.contains("LdCtrlDelay")
+        ));
         Ok(())
     }
 
@@ -2642,7 +2842,7 @@ mod tests {
         ];
         let memo = bussard_prod::dynamic::DynamicMemo::new(&app);
         let overrides = BTreeMap::from([("P-579_R-1032".to_string(), "1".to_string())]);
-        let (ops, spliced) =
+        let (ops, spliced, _) =
             assemble_ops(&app, Some(&template), &memo.evaluate_for(&app, &overrides))?;
         assert!(spliced);
         let compares: Vec<_> = ops
@@ -2657,10 +2857,10 @@ mod tests {
     }
 
     #[test]
-    fn test_plan_flash_refuses_a_choose_that_writes_a_segment_in_part() -> TestResult {
+    fn test_plan_flash_keeps_the_octets_a_choose_leaves_unwritten() -> TestResult {
         // The MDT JTA-01 shape (`M-0083_A-00A2-10-6169`): parameter P-324
         // picks a full write of the segment or one that skips octets 4..6,
-        // which ETS leaves as the device holds them.
+        // which ETS leaves as the device holds them (issue #411).
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
          <ApplicationProgram Id="M-1_A-6" ApplicationNumber="9" ApplicationVersion="1"
             MaskVersion="MV-07B0" Name="JTA" LoadProcedureStyle="MergedProcedure">
@@ -2712,10 +2912,27 @@ mod tests {
             .filter(|s| matches!(s, FlashStep::WriteRelMem { .. }))
             .count();
         assert_eq!(writes, 1, "one full write, not three");
-        match plan_for("1") {
-            Err(PlanError::UnsupportedOp { op }) => assert!(op.contains("octets 4..6 of object 4")),
-            other => return Err(format!("expected a refusal, got {other:?}").into()),
-        }
+        assert!(full.kept().is_empty());
+        // Issue #411: the keep branch writes its two parts and keeps 4..6.
+        let keep = plan_for("1")?;
+        let parts: Vec<(u32, usize, usize)> = keep
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                FlashStep::WriteRelMem { offset, image, .. } => {
+                    Some((*offset, image.offset, image.len))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(parts, vec![(0, 0, 4), (6, 6, 2)]);
+        assert_eq!(keep.kept().len(), 1);
+        assert_eq!(keep.kept()[0].label(), "object 4 octets 4..6 kept");
+        assert_eq!(
+            keep.image_bytes("M-1_A-6_RS-1"),
+            Some(&[0, 1, 2, 3, 4, 5, 6, 7][..])
+        );
+        assert_eq!(keep.total_write_bytes(), 6);
         Ok(())
     }
 

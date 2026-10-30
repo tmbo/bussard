@@ -185,3 +185,30 @@ fn test_downloads_invisible_parameters_synthetic_twins() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn test_evaluate_dynamic_synthetic_choose_never_shown_takes_no_branch() -> TestResult {
+    // `syn-choose-never-shown` (#604 row 14): ETS 6.4.1 leaves object 2,
+    // behind a default-only `<choose>` on the never-shown virtual
+    // `ghost_seen`, out of the group-object table (issue #474).
+    let tmp = tempfile::tempdir()?;
+    let path = tmp.path().join("syn-choose-never-shown.knxprod");
+    zip_product(&catalogue_dir().join("syn-choose-never-shown"), &path)?;
+    let data = bussard_prod::read_knxprod(&path)?;
+    let app = data.applications.first().ok_or("no application")?;
+    let config = bussard_prod::dynamic::evaluate_dynamic(app, &Default::default());
+    let objects: Vec<&str> = config
+        .com_objects
+        .iter()
+        .map(|c| c.com_object_ref_id.as_str())
+        .collect();
+    assert_eq!(objects, ["O-0_R-1", "O-1_R-2"]);
+    assert!(
+        config
+            .parameters
+            .iter()
+            .all(|p| p.param_ref_id != "P-4_R-4"),
+        "ghost_sensitivity reached"
+    );
+    Ok(())
+}

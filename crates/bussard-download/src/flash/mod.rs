@@ -128,7 +128,7 @@ pub use load_records::{LoadControlForm, LoadControlRecord};
 pub use partial::PartialPlanError;
 use plan::{MAX_MEMORY_END, insert_factory_reset, manufacturer_from_app_id};
 pub use plan::{
-    plan_flash, plan_flash_with_memo, plan_flash_with_object_flags, same_program,
+    kept_octets, plan_flash, plan_flash_with_memo, plan_flash_with_object_flags, same_program,
     select_application,
 };
 pub(crate) use plan_sys7::sys7_lsm_override;
@@ -401,6 +401,13 @@ pub enum FlashStep {
     /// confirmed master reset with erase code 1 that ETS ends a System B download
     /// with (issue #117 captures).
     Restart,
+    /// Pause for `milliseconds` before the next step (`LdCtrlDelay`, issue
+    /// #615). Nothing goes on the wire; the executor logs the pause at info
+    /// level, so it shows in the `-v` trace between the frames around it.
+    Delay {
+        /// The pause in milliseconds, the op's `MilliSeconds`.
+        milliseconds: u32,
+    },
     /// Factory-reset the device before the download (issue #117, #89).
     ///
     /// A confirmed master-reset `A_Restart` (APCI `0x381`, `[erase_code, 0]`)
@@ -1024,6 +1031,59 @@ pub struct FlashPlan {
     par_allocations: BTreeMap<Option<u32>, (u32, SegmentFill)>,
     /// Whether [`FlashPlan::use_par_procedure`] shaped this plan.
     par_procedure: bool,
+    /// The allocated octets the load procedure's taken `<choose>` branches
+    /// leave as the device holds them (issue #411, [`KeptOctets`]). Empty
+    /// for every plan whose writes cover what they allocate.
+    kept: Vec<KeptOctets>,
+}
+
+/// A run of octets a System B download allocates and does not write, because
+/// the load procedure's taken `<choose>` branch writes only part of the
+/// segment (issue #411): the device keeps what it holds there.
+///
+/// ETS does the same. Its download of the synthetic product
+/// `syn-choose-partial-segment` (`captures/synthetic/syn-choose-partial-segment/defaults/`,
+/// ETS 6.4.1, 2026-10-30) allocates the 256-octet segment, writes octets
+/// 0..128 only, reads nothing in 128..256 and runs no check over it, and the
+/// download completes. After a fresh allocation the gap holds whatever the
+/// allocation left; after a re-download it holds what was there before, which
+/// is the point of a keep-data branch (MDT JTA-01 `M-0083_A-00A2`, parameter
+/// `P-324`: the switching times stored in the device).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeptOctets {
+    /// The load-state machine (object index) the segment is allocated on.
+    pub object: u32,
+    /// The code-segment id of the segment.
+    pub segment: String,
+    /// The octets the allocation holds.
+    pub allocated: usize,
+    /// The half-open `[start, end)` octet ranges left as the device holds
+    /// them, sorted and inside the allocation.
+    pub ranges: Vec<(usize, usize)>,
+}
+
+impl KeptOctets {
+    /// The ranges as `128..256` (comma-separated when there are several).
+    pub fn ranges_text(&self) -> String {
+        self.ranges
+            .iter()
+            .map(|(start, end)| format!("{start}..{end}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// The gap as the plan and the image dump name it:
+    /// `object 4 octets 128..256 kept`.
+    pub fn label(&self) -> String {
+        format!("object {} octets {} kept", self.object, self.ranges_text())
+    }
+
+    /// Whether `octet` of [`Self::segment`] is kept.
+    pub fn contains(&self, octet: usize) -> bool {
+        self.ranges
+            .iter()
+            .any(|&(start, end)| (start..end).contains(&octet))
+    }
 }
 
 /// The System 7 execution context attached to a [`FlashPlan`] for a mask
@@ -1428,6 +1488,13 @@ impl FlashPlan {
     /// ETS wrote to the same device.
     pub fn image_bytes(&self, segment_id: &str) -> Option<&[u8]> {
         self.images.get(segment_id).map(Vec::as_slice)
+    }
+
+    /// The allocated octets this download leaves as the device holds them
+    /// (issue #411, [`KeptOctets`]): written by no step, compared by no
+    /// read-back. Empty for every plan whose writes cover what they allocate.
+    pub fn kept(&self) -> &[KeptOctets] {
+        &self.kept
     }
 
     /// The System 7 per-octet write mask for `segment_id`, when the segment

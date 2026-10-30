@@ -681,24 +681,55 @@ fn test_evaluate_dynamic_choose_on_an_unreached_ref_selects_no_branch() -> TestR
 }
 
 #[test]
-fn test_evaluate_dynamic_never_shown_steering_parameter_takes_its_default_branch() -> TestResult {
+fn test_evaluate_dynamic_never_shown_steering_parameter_system_b_skips_default_only_branch()
+-> TestResult {
     let app = parse_application_program(CHOOSE_ACTIVITY_ID, CHOOSE_ACTIVITY)?;
     let (objects, refs) = reached(&app, &[]);
-    // ETS takes the default branch on a never-shown steering parameter,
-    // read-only or not, typed or `TypeNone` (issue #474: the sweep oracle
-    // over the Busch-Jaeger A-A072 and ABB A-A00F). The Flat "dummy" objects
-    // are left out by the table builder, not the walk.
+    // On System B, a `<choose>` whose only branch is the default one, on a
+    // never-shown virtual parameter, selects no branch, read-only or not,
+    // typed or `TypeNone` (issue #474: the Zennio Flat "dummy" objects and
+    // the synthetic `syn-choose-never-shown` capture).
+    for absent in ["O-4_R-4", "O-5_R-5", "O-8_R-8"] {
+        assert!(!objects.contains(absent), "{absent} reached: {objects:?}");
+    }
+    assert!(!refs.contains("P-8_R-8"), "{refs:?}");
+    // A choose with a `test` branch beside the default one still steers:
+    // the matching test (object 6) and the default (object 7, the ABB
+    // Modbus gateway's `signal_N_device_active`).
+    for present in ["O-6_R-6", "O-7_R-7"] {
+        assert!(objects.contains(present), "{present} missing: {objects:?}");
+    }
+    // "Dummy" is hidden, and the fixture declares
+    // `DownloadInvisibleParameters="None"`: its octet keeps the template.
+    assert_eq!(dummy_octet(&app)?, Some(0xFF));
+    Ok(())
+}
+
+#[test]
+fn test_evaluate_dynamic_never_shown_steering_parameter_system_7_takes_its_default_branch()
+-> TestResult {
+    // The same tree on a System 7 mask: ETS takes the default-only branches
+    // (issue #474: the sweep oracle over ABB `A-A00F` and `A-A04C` and
+    // Busch-Jaeger `A-A072`, whose channels hang off such chooses).
+    let xml = std::str::from_utf8(CHOOSE_ACTIVITY)?.replace("MV-07B0", "MV-0701");
+    let app = parse_application_program(CHOOSE_ACTIVITY_ID, xml.as_bytes())?;
+    let (objects, refs) = reached(&app, &[]);
     for present in ["O-4_R-4", "O-5_R-5", "O-6_R-6", "O-7_R-7", "O-8_R-8"] {
         assert!(objects.contains(present), "{present} missing: {objects:?}");
     }
     assert!(refs.contains("P-8_R-8"), "{refs:?}");
-    // "Dummy" is written at its default.
-    let image = bussard_prod::compute_dynamic_parameter_image(&app, &BTreeMap::new())?;
+    // "Dummy" is reached and written at its default.
+    assert_eq!(dummy_octet(&app)?, Some(51));
+    Ok(())
+}
+
+/// The octet of "Dummy" (P-8, +5) in the fixture's parameter image.
+fn dummy_octet(app: &ApplicationProgram) -> Result<Option<u8>, Box<dyn std::error::Error>> {
+    let image = bussard_prod::compute_dynamic_parameter_image(app, &BTreeMap::new())?;
     let seg = image
         .get(&format!("{CHOOSE_ACTIVITY_ID}_RS-04-00000"))
         .ok_or("no parameter segment")?;
-    assert_eq!(seg.get(5), Some(&51));
-    Ok(())
+    Ok(seg.get(5).copied())
 }
 
 /// The issue #473 fixture: a text parameter's translated `InitialValue`.
