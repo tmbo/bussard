@@ -120,6 +120,7 @@ downloads) have steps a product procedure never spells out:
 | read and save the CRC after each `LoadCompleted` | the application's `LoadImageProp` ops, else the template's |
 | 11 modify access keys | not done (no product in the corpus sets keys) |
 | partial download: `Unload`, `Load`, Mode 0 allocation around a parameter write | parameters-only download skips the first two (#543) |
+| System 7 (not a standard step): ETS's pre-download unload of LSMs 1 to 4 and restart | only when the probed resident state is not fresh: an LSM Loaded, Loading or Error, or a resident application id; a factory-fresh device gets none, as in ETS's `syn-s7-0705`/`syn-s7-0701` captures and the 31 sweep rows (#488, [system7-spec.md §3.1](system7-spec.md)); ETS's rule on a programmed device is open |
 | LoadCompleting (5) and Unloading (4): poll `PID_LOAD_STATE_CONTROL` every 3 s for up to 30 s (3/5/1 §4.23.2.4.1) | not done (#479) |
 
 ## Table images

@@ -1051,11 +1051,19 @@ fn dry_run(
     // operator waived it. A recorded device state (`--resident`, issue #490)
     // stands in for the pre-flight probe: the verdict shapes the plan as it
     // does live.
-    // The recorded objects are System B interface objects: a System 7 or
-    // property-only plan keeps the offline shape.
+    // The recorded objects are System B interface objects, or on a System 7
+    // plan the load-state machines (issue #488: an all-Unloaded record drops
+    // the pre-download pass, as on a factory-fresh device). A property-only
+    // plan keeps the offline shape.
     let recorded = match resident {
-        Some(path) if !parameters_only && !plan.is_sys7() && !plan.is_property_only() => {
-            Some(crate::flash_resident::Recorded::read(path)?).filter(|r| r.has_states())
+        Some(path) if !parameters_only && !plan.is_property_only() => {
+            let recorded = crate::flash_resident::Recorded::read(path)?;
+            let recorded = if plan.is_sys7() {
+                recorded.into_sys7()
+            } else {
+                recorded
+            };
+            Some(recorded).filter(|r| r.has_states())
         }
         _ => None,
     };
@@ -1098,7 +1106,7 @@ fn dry_run(
                 "full"
             }
         );
-        if bussard_service::flash::skip_unchanged(full, &plan, freshness) {
+        if !plan.is_sys7() && bussard_service::flash::skip_unchanged(full, &plan, freshness) {
             let skipped = recorded.skip_matching(&mut plan);
             if !skipped.is_empty() {
                 eprintln!(

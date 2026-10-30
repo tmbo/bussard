@@ -493,5 +493,12 @@ class TestCaptureRows(unittest.TestCase):
                          "expect=not-comparable")
 
 
+    def test_oracle_row_marks_a_system_7_product_fresh(self):
+        # The sim starts unloaded; ETS reads no System 7 load state (#488).
+        self.assertTrue(capture.oracle_row("syn-s7-0705", "A", "100.0", "loadctl=identical")
+                        .endswith("|100.0|loadctl=identical state=fresh"))
+        self.assertTrue(capture.oracle_row("syn-minimal", "A", "100.0", "loadctl=identical")
+                        .endswith("|100.0|loadctl=identical"))
+
 if __name__ == "__main__":
     unittest.main()

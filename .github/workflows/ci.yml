@@ -106,8 +106,13 @@ jobs:
     timeout-minutes: 45
     strategy:
       fail-fast: false # report all platforms' failures, not just the first
+      # Pull requests gate on ubuntu alone; a push to main (and a manual
+      # dispatch) adds macOS and Windows. Windows has caught real bugs (stack
+      # size, CRLF fixtures, absolute paths), so a break there shows up on main
+      # right after the merge instead of blocking the PR. The repo ruleset
+      # requires only `test (ubuntu-latest)` for that reason.
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
     steps:
       - uses: actions/checkout@v5
         with:

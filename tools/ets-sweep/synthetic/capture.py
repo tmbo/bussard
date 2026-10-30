@@ -215,10 +215,22 @@ def write_image(dst: Path, rel: str) -> None:
     (dst / "image.json").write_text("\n".join(lines) + "\n")
 
 
+def device_state(product: str) -> str:
+    """`state=fresh` for a System 7 product: the sim starts unloaded
+    (`sim_yaml`), and ETS reads no load state before a System 7 download, so
+    the oracle needs the row to say so to plan as on a fresh device (#488)."""
+    try:
+        mask = tomllib.loads((CATALOGUE / product / "product.toml").read_text())["application"]["mask"]
+    except (OSError, KeyError, ValueError):
+        return ""
+    return "state=fresh" if str(mask) in ("0700", "0701", "0705") else ""
+
+
 def oracle_row(product: str, app: str, coverage: str = "", options: str = "", why: str = "") -> str:
     rel = (OUT / product / VARIANT).relative_to(REPO).as_posix()
     xml = (CATALOGUE / product / "xml").relative_to(REPO).as_posix()
     note = f"{product} {VARIANT}{': ' + why if why else ''}"
+    options = " ".join(o for o in (options, device_state(product)) if o)
     return f"1.1.1|{rel}/ets.pcapng|{xml}|{app}|{note}|{coverage}|{options}".rstrip("|")
 
 

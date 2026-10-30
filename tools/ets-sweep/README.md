@@ -444,6 +444,16 @@ folder it runs:
    and ETS refused its output), and its own check calls that signature
    invalid; with the absolute path the check says valid.
 
+A product in another schema (`[application] schema = 11` of the generator,
+#448) is signed in that schema: `sign.py` reads the namespace of the
+application and passes `signer.exe --schema 11`, which hands the library's
+hasher, hardware signer and catalog patcher that `targetSchemaVersion` (by
+default they rewrite each file in project/23 and fail on a project/11 root:
+"Das Präfix '' kann nicht von '.../project/23' in '.../project/11' ... neu
+definiert werden", 2026-10-30), and the stub master becomes
+`C:\ProgramData\KNX\XML\project-11\knx_master.xml`. ETS 6.4.1 imported the
+signed project/11 product without complaint.
+
 `knx_master.xml` is left as it is, except that a stub (no `<MasterData>`, the
 `<KNX/>` of `tests-support/synthetic-products`) is replaced with ETS's own
 `C:\ProgramData\KNX\XML\project-23\knx_master.xml` (`signer.exe --master`,

@@ -1367,7 +1367,8 @@ fn encode_value(
             encode_int_bits(app, pname, size_bits.unwrap_or(8), false, n)
         }
         Some(ParameterType::Text { size_bits }) => {
-            // The program's `TextParameterEncoding`, NUL-padded, refused when
+            // The program's `TextParameterEncoding` (ISO 8859-1 when it
+            // declares none, as ETS writes it, #416), NUL-padded, refused when
             // it does not fit (issue #401).
             let len = (size_bits.unwrap_or(0) / 8) as usize;
             TextCodec::from_declaration(app.text_parameter_encoding.as_deref())
@@ -2845,7 +2846,8 @@ mod tests {
 
     /// A text parameter takes the program's `TextParameterEncoding` (issue
     /// #401): MDT's eight-octet `Scènario` in ISO 8859-15, refused in UTF-8
-    /// and when the program declares no encoding; it reads back the same.
+    /// and in a code page bussard does not know, ISO 8859-1 when the program
+    /// declares none (#416); it reads back the same.
     #[test]
     fn test_compute_parameter_image_text_uses_the_declared_encoding()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -2856,6 +2858,8 @@ mod tests {
             0,
             0,
         )])?;
+        assert_eq!(&image_of(&app)?[0..8], b"Sc\xE8nario");
+        app.text_parameter_encoding = Some("shift_jis".to_string());
         assert!(compute_parameter_image(&app, &no_overrides(), &no_bases()).is_err());
         app.text_parameter_encoding = Some("utf-8".to_string());
         let err = compute_parameter_image(&app, &no_overrides(), &no_bases())
