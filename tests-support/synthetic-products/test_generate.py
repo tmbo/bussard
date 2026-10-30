@@ -133,5 +133,145 @@ class Union(unittest.TestCase):
             generate.Product("test", s)
 
 
+class HiddenParameter(unittest.TestCase):
+    """syn-hidden-default (#448): a parameter no block references, over a filled segment."""
+
+    def test_render_parameter_without_block(self) -> None:
+        s = spec()
+        s["parameter"] = s["parameter"] + [
+            {"name": "h", "type": "Delay", "text": "H", "default": 4660,
+             "memory": {"segment": "main", "offset": 3, "bit_offset": 0}}]
+        xml = app_xml(s)
+        self.assertIn('<ParameterRef Id="M-00FA_A-2700-10-0000_P-3_R-3" RefId="M-00FA_A-2700-10-0000_P-3" />', xml)
+        self.assertNotIn('<ParameterRefRef RefId="M-00FA_A-2700-10-0000_P-3_R-3" />', xml)
+        self.assertNotIn("DownloadInvisibleParameters", xml)
+        # syn-minimal's segment template is fill 0xFF, unlike the default's octets.
+        self.assertIn("<Data>////", xml)
+
+
+def product_spec(name: str) -> dict:
+    """The committed spec of a catalogue product."""
+    return tomllib.loads((HERE / name / "product.toml").read_text(encoding="utf-8"))
+
+
+class System7(unittest.TestCase):
+    """The System 7 rendering path (#604 rows 2 and 3)."""
+
+    def setUp(self) -> None:
+        self.s = product_spec("syn-s7-0705")
+
+    def test_render_application_absolute_segments_and_table_locations(self) -> None:
+        x = app_xml(self.s)
+        app = "M-00FA_A-2800-10-0000"
+        self.assertIn('MaskVersion="MV-0705"', x)
+        self.assertIn('LoadProcedureStyle="ProductProcedure" PeiType="0"', x)
+        self.assertIn(f'<AbsoluteSegment Id="{app}_AS-0700" Name="ram" MemoryType="RAM" Address="1792" '
+                      'Size="16" />', x)
+        self.assertIn(f'<AddressTable CodeSegment="{app}_AS-4000" Offset="0" MaxEntries="255" />', x)
+        self.assertIn(f'<AssociationTable CodeSegment="{app}_AS-4201" Offset="0" MaxEntries="255" />', x)
+        self.assertIn(f'<ComObjectTable CodeSegment="{app}_AS-4400" Offset="0">', x)
+        self.assertIn(f'<Memory CodeSegment="{app}_AS-4440" Offset="1" BitOffset="0" />', x)
+        self.assertIn("<LoadProcedure>\n", x)
+        self.assertIn('<LdCtrlAbsSegment LsmIdx="3" SegType="1" Address="1808" Size="48" Access="0" '
+                      'MemType="2" SegFlags="0" />', x)
+        self.assertIn('<LdCtrlTaskCtrl1 LsmIdx="3" Address="17456" Count="1" />', x)
+
+    def test_render_absolute_segment_data_then_fill(self) -> None:
+        import base64
+        import re
+        x = app_xml(self.s)
+        m = re.search(r'Name="application"[^>]*>\s*<Data>([^<]*)</Data>', x)
+        self.assertIsNotNone(m)
+        data = base64.b64decode(m.group(1))
+        self.assertEqual(len(data), 64)
+        self.assertEqual(data[:11].hex(), "0207000702170007034f00")
+        self.assertEqual(set(data[11:]), {0xFF})
+
+    def test_render_is_deterministic(self) -> None:
+        self.assertEqual(app_xml(self.s), app_xml(copy.deepcopy(self.s)))
+
+    def test_product_refuses_merge_id_in_a_product_procedure(self) -> None:
+        self.s["load_procedure"][0]["merge_id"] = 1
+        with self.assertRaisesRegex(generate.SpecError, "unknown key `merge_id`"):
+            generate.Product("t", self.s)
+
+    def test_product_refuses_a_relative_segment_on_system_7(self) -> None:
+        self.s["segment"].append({"name": "r", "kind": "relative", "lsm": 4, "size": 8})
+        with self.assertRaisesRegex(generate.SpecError, "absolute segments only"):
+            generate.Product("t", self.s)
+
+    def test_product_refuses_an_unknown_table_segment(self) -> None:
+        self.s["application"]["address_table_segment"] = "nowhere"
+        with self.assertRaisesRegex(generate.SpecError, "unknown segment `nowhere`"):
+            generate.Product("t", self.s)
+
+    def test_product_refuses_data_on_an_allocate_only_segment(self) -> None:
+        self.s["segment"][0]["data"] = "00"
+        with self.assertRaisesRegex(generate.SpecError, "allocate_only"):
+            generate.Product("t", self.s)
+
+    def test_product_refuses_system_7_ops_on_system_b(self) -> None:
+        b = product_spec("syn-minimal")
+        b["load_procedure"][0]["ops"].append({"op": "LdCtrlTaskSegment", "lsm": 1, "address": 0})
+        with self.assertRaisesRegex(generate.SpecError, "no product uses it yet"):
+            generate.Product("t", b)
+
+    def test_product_refuses_system_7_keys_on_system_b(self) -> None:
+        b = product_spec("syn-minimal")
+        b["application"]["pei_type"] = 0
+        with self.assertRaisesRegex(generate.SpecError, "belongs to a System 7 mask"):
+            generate.Product("t", b)
+
+    def test_product_refuses_merged_procedure_on_system_7(self) -> None:
+        self.s["application"]["load_procedure_style"] = "MergedProcedure"
+        with self.assertRaisesRegex(generate.SpecError, "no product uses it yet"):
+            generate.Product("t", self.s)
+
+
+class MasterReset(unittest.TestCase):
+    """syn-master-reset (#546, #611): LdCtrlMasterReset in the application's procedure."""
+
+    def test_render_master_reset_after_rel_segment(self) -> None:
+        s = spec()
+        s["load_procedure"][0]["ops"].append({"op": "LdCtrlMasterReset", "erase_code": 4, "channel": 0})
+        self.assertIn('<LdCtrlRelSegment LsmIdx="4" Size="256" Mode="0" Fill="0" />\n'
+                      '                <LdCtrlMasterReset EraseCode="4" ChannelNumber="0" />', app_xml(s))
+
+    def test_master_reset_missing_channel_refused(self) -> None:
+        s = spec()
+        s["load_procedure"][0]["ops"].append({"op": "LdCtrlMasterReset", "erase_code": 1})
+        with self.assertRaisesRegex(generate.SpecError, "missing key `channel`"):
+            generate.Product("test", s)
+
+
+class LoadProcedureChoose(unittest.TestCase):
+    """syn-choose-partial-segment (#411): `<choose>` inside a LoadProcedure."""
+
+    HALF = {"op": "LdCtrlWriteRelMem", "object": 4, "offset": 0, "size": 128, "verify": False}
+
+    def choose(self, parameter: str, when: list) -> dict:
+        s = spec()
+        s["load_procedure"][1]["ops"] = [{"op": "choose", "parameter": parameter, "when": when}]
+        return s
+
+    def test_render_choose_with_test_and_default(self) -> None:
+        s = self.choose("mode", [{"test": "1", "ops": [self.HALF]},
+                                 {"default": True, "ops": [dict(self.HALF, size=256)]}])
+        xml = app_xml(s)
+        self.assertIn('<choose ParamRefId="M-00FA_A-2700-10-0000_P-1_R-1">', xml)
+        self.assertIn('<when test="1">\n'
+                      '                    <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="128" Verify="false" />\n'
+                      '                  </when>\n'
+                      '                  <when default="true">', xml)
+
+    def test_choose_branch_needs_test_or_default(self) -> None:
+        with self.assertRaisesRegex(generate.SpecError, "either `test` or `default = true`"):
+            generate.Product("test", self.choose("mode", [{"ops": []}]))
+
+    def test_choose_unknown_parameter_refused(self) -> None:
+        with self.assertRaisesRegex(generate.SpecError, "unknown parameter `nope`"):
+            generate.Product("test", self.choose("nope", [{"test": "1", "ops": []}]))
+
+
 if __name__ == "__main__":
     unittest.main()

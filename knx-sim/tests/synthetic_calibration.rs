@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use knx_sim::bus::Bus;
 use knx_sim::bus::event::{Event, RecordingSink};
-use knx_sim::device::{Device, LoadState};
+use knx_sim::device::{Device, LoadState, ProfileOverrides, profile};
 use knx_sim::prod::read_knxprod_bytes;
 use knx_sim::wire::{CemiLData, IndividualAddress, MessageCode};
 use serde::Deserialize;
@@ -165,12 +165,20 @@ fn replay(capture: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
         .ok_or_else(|| format!("{label}: no individually addressed request"))?;
     let sink = Arc::new(RecordingSink::new());
     let mut bus = Bus::new(sink.clone());
-    bus.add_device(Device::from_product(
+    // The load-state machine the profile makes mandatory for the mask, as a
+    // `sim.yaml` without `lsm_access` gets it: memory mapped on 0700 and
+    // 0701, property on 0705 (`Device::from_product` would keep property).
+    let mask = profile::parse_mask(&pd.mask_version).unwrap_or(0x07B0);
+    bus.add_device(Device::from_product_with_overrides(
         IndividualAddress(ia),
         &pd,
         LoadState::Unloaded,
+        ProfileOverrides {
+            lsm_access: profile::default_lsm_access_for_mask(mask),
+            ..Default::default()
+        },
         sink.clone(),
-    ));
+    )?);
     for (src, dst, tpdu) in stream {
         let _ = bus.deliver_from_tool(&CemiLData {
             message_code: MessageCode::LDataReq,
@@ -209,7 +217,14 @@ fn replay(capture: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
             ));
         }
     }
+    // On a memory-mapped load-state machine the 11-octet records ETS writes
+    // to the control address are load events, not memory the device keeps.
+    let lsm_access = profile::default_lsm_access_for_mask(mask);
+    let control = profile::MemoryMappedLsm::default().control_addr;
     for r in &image.regions {
+        if lsm_access == profile::LsmAccess::MemoryMapped && r.start == u32::from(control) {
+            continue;
+        }
         let want = hex(&r.hex)?;
         let got = dev.memory().read(r.start, want.len());
         if got != want {

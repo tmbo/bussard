@@ -98,7 +98,7 @@ Field notes:
 - `parameters`: each with its resolved `type`, `default`, and `memory` location. The
   `type` is a tagged union: `!int {min, max, size, signed}`,
   `!enum {values: [{value, text}]}`, `!text {size}`, `!float {encoding, min, max}`,
-  `!none`, or `!other {kind, size}`. `memory` (`segment` + `offset` + `bit_offset`) is
+  `!none`, `!color {space}` (format 11) or `!other {kind, size}`. `memory` (`segment` + `offset` + `bit_offset`) is
   what the parameter phase needs to place the value into the device's parameter memory.
 - `load_procedure`: the ordered op summary, a faithful view of the download script.
   `bussard flash` executes the supported subset; the op set and the standard clause behind
@@ -159,6 +159,12 @@ application program carries the same, in cache format `bussard-parsed-product-v7
 A text parameter's `initial_value` is its
 `InitialValue` in the import language (#473): the value a new device starts with,
 which wins over the `Value`s as the default.
+
+Format 11 gives a `<TypeColor>` parameter its own type, `color` with the declared
+`space` (`RGB`, `RGBW` or `HSV`), where format 10 wrote `other {kind: TypeColor}`
+(#616). Its value is `#` and two hex digits per component (`#FF0000`), placed in
+memory as one octet per component in the written order. The parsed application
+program carries the type in cache format `bussard-parsed-product-v8`.
 
 Format 6 drops `blocks`, `parameter_when` and `ref_values`, and a
 parameter's `default` is its own `Value` (format 5 and older gave a parameter with one

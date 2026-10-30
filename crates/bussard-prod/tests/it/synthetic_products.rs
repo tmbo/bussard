@@ -103,8 +103,11 @@ fn test_read_knxprod_synthetic_catalogue() -> TestResult {
         );
         let expected_id = &app_files[0];
         // The generator leaves the fingerprint to the signer: `..-0000`.
+        // Application numbers 0x27xx to 0x2Axx (System B, System 7, Secure,
+        // RF and IP; #604).
+        let family = ["M-00FA_A-27", "M-00FA_A-28", "M-00FA_A-29", "M-00FA_A-2A"];
         assert!(
-            expected_id.starts_with("M-00FA_A-27") && expected_id.ends_with("-0000"),
+            family.iter().any(|f| expected_id.starts_with(f)) && expected_id.ends_with("-0000"),
             "{name}: {expected_id} is outside the synthetic id rule"
         );
 

@@ -30,7 +30,7 @@
 //!
 //! Gated on `BUSSARD_PRODUCT_CORPUS` and `BUSSARD_KNX_SIM_BIN`; without
 //! either the shards skip green. The synthetic source
-//! (`test_sim_catalog_loop_synthetic_catalogue`, epic #596) runs the same loop
+//! (`test_sim_catalog_loop_synthetic_catalogue_shard_*`, epic #596) runs the same loop
 //! over `tests-support/synthetic-products/` and needs only
 //! `BUSSARD_KNX_SIM_BIN`. `scripts/sim-catalog-loop.sh` builds both
 //! binaries and runs the shards. The applications are split over
@@ -105,8 +105,12 @@ shard_tests!(
 /// product exists for, #604) and a failure listed with the step it fails at
 /// in `tests-support/synthetic-products/sim-loop-baseline.json` (the evidence
 /// of an open bussard bug, like an `expect=differs` oracle row).
-#[test]
-fn test_sim_catalog_loop_synthetic_catalogue() -> TestResult {
+///
+/// The catalogue grows to about forty products at roughly 10 s each, so the
+/// products are split over [`SYNTHETIC_SHARDS`] test functions by the hash of
+/// their application id, as the corpus shards are; nextest runs them side by
+/// side. A shard that draws no product passes.
+fn run_synthetic_shard(slot: usize) -> TestResult {
     let Some(sim) = std::env::var_os("BUSSARD_KNX_SIM_BIN").map(PathBuf::from) else {
         eprintln!("BUSSARD_KNX_SIM_BIN unset; skipping the synthetic sim loop.");
         return Ok(());
@@ -114,8 +118,10 @@ fn test_sim_catalog_loop_synthetic_catalogue() -> TestResult {
     if !sim.is_file() {
         return Err(format!("BUSSARD_KNX_SIM_BIN={} is not a file", sim.display()).into());
     }
-    let dir =
-        std::env::temp_dir().join(format!("bussard-sim-loop-synthetic-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "bussard-sim-loop-synthetic-{}-{slot}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
     let products = synthetic_knxprods(&dir)?;
@@ -136,8 +142,8 @@ fn test_sim_catalog_loop_synthetic_catalogue() -> TestResult {
     };
     let reports = run_files(
         &settings,
-        1,
-        0,
+        SYNTHETIC_SHARDS,
+        slot,
         &read_baseline_at("../../tests-support/synthetic-products/sim-loop-baseline.json")?,
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -172,9 +178,31 @@ fn test_sim_catalog_loop_synthetic_catalogue() -> TestResult {
         now_run.is_empty(),
         "synthetic products bussard flashes now; drop them from sim-loop-refusals.json: {now_run:?}"
     );
-    assert!(!reports.is_empty(), "no synthetic application ran");
     judge(&reports)
 }
+
+/// How many test functions split the synthetic catalogue.
+const SYNTHETIC_SHARDS: usize = 4;
+
+macro_rules! synthetic_shard_tests {
+    ($($name:ident = $index:expr),* $(,)?) => {
+        $(
+            /// One shard of the synthetic catalogue loop
+            /// ([`run_synthetic_shard`]).
+            #[test]
+            fn $name() -> TestResult {
+                run_synthetic_shard($index)
+            }
+        )*
+    };
+}
+
+synthetic_shard_tests!(
+    test_sim_catalog_loop_synthetic_catalogue_shard_0 = 0,
+    test_sim_catalog_loop_synthetic_catalogue_shard_1 = 1,
+    test_sim_catalog_loop_synthetic_catalogue_shard_2 = 2,
+    test_sim_catalog_loop_synthetic_catalogue_shard_3 = 3,
+);
 
 /// The synthetic products bussard is known to refuse, from
 /// `tests-support/synthetic-products/sim-loop-refusals.json`: application id

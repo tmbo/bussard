@@ -6,11 +6,11 @@
     "parse_failed": 0,
     "parse_panicked": 0,
     "apps": 2164,
-    "image_ok": 2146,
-    "image_refused": 18,
+    "image_ok": 2150,
+    "image_refused": 14,
     "image_panicked": 0,
-    "plan_executable": 1794,
-    "plan_refused": 109,
+    "plan_executable": 1798,
+    "plan_refused": 105,
     "plan_not_supported_family": 261,
     "plan_panicked": 0
   },
@@ -24,12 +24,12 @@
       "count": 27
     },
     {
-      "reason": "UnresolvableImage: computing the parameter image",
-      "count": 18
-    },
-    {
       "reason": "UnsupportedOp: LdCtrlDelay",
       "count": 16
+    },
+    {
+      "reason": "UnresolvableImage: computing the parameter image",
+      "count": 14
     },
     {
       "reason": "NoProcedure",
@@ -58,10 +58,6 @@
       "count": 4
     },
     {
-      "reason": "ParameterImage: parameter `LedRGB_OnColor_1`",
-      "count": 3
-    },
-    {
       "reason": "ParameterImage: parameter `WR_MW_TEXT_SUED_OST`",
       "count": 3
     },
@@ -75,10 +71,6 @@
     },
     {
       "reason": "ParameterImage: parameter `FASS_AUTO_DELAY_STRING`",
-      "count": 1
-    },
-    {
-      "reason": "ParameterImage: parameter `LedRGB1_OffColor`",
       "count": 1
     },
     {
@@ -129,8 +121,8 @@
     },
     "System B": {
       "apps": 1178,
-      "executable": 1131,
-      "refused": 47,
+      "executable": 1135,
+      "refused": 43,
       "not_supported_family": 0,
       "panicked": 0
     },
@@ -3614,12 +3606,12 @@
           "id": "M-00B6_A-4533-03-873A",
           "mask": "07B0",
           "image": {
-            "image": "refused",
-            "reason": "ParameterImage: parameter `LedRGB_OnColor_1`"
+            "image": "ok",
+            "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnresolvableImage: computing the parameter image"
+            "plan": "executable",
+            "steps": 7
           }
         }
       ]
@@ -3635,12 +3627,12 @@
           "id": "M-00B6_A-4534-03-B32B",
           "mask": "07B0",
           "image": {
-            "image": "refused",
-            "reason": "ParameterImage: parameter `LedRGB_OnColor_1`"
+            "image": "ok",
+            "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnresolvableImage: computing the parameter image"
+            "plan": "executable",
+            "steps": 7
           }
         }
       ]
@@ -4034,12 +4026,12 @@
           "id": "M-00B6_A-4556-09-9FCE",
           "mask": "07B0",
           "image": {
-            "image": "refused",
-            "reason": "ParameterImage: parameter `LedRGB1_OffColor`"
+            "image": "ok",
+            "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnresolvableImage: computing the parameter image"
+            "plan": "executable",
+            "steps": 6
           }
         }
       ]
@@ -4055,12 +4047,12 @@
           "id": "M-00B6_A-455A-02-5BE9",
           "mask": "07B0",
           "image": {
-            "image": "refused",
-            "reason": "ParameterImage: parameter `LedRGB_OnColor_1`"
+            "image": "ok",
+            "segments": 1
           },
           "plan": {
-            "plan": "refused",
-            "reason": "UnresolvableImage: computing the parameter image"
+            "plan": "executable",
+            "steps": 7
           }
         }
       ]

@@ -438,6 +438,58 @@ fn corpus_extended_memory_apps_lower_to_executable_plans() {
     }
 }
 
+/// Issue #616: the four Ekinex applications whose `<TypeColor>` parameter is
+/// reached at the defaults (`#FF0000`) were image-refused as a non-integer
+/// value; with the colour type they lower to an executable plan.
+///
+/// Env-gated like the sweep; a corpus without them skips (reported).
+#[test]
+fn test_plan_flash_type_color_apps() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(dir) = std::env::var_os("BUSSARD_PRODUCT_CORPUS") else {
+        eprintln!("BUSSARD_PRODUCT_CORPUS unset; skipping the TypeColor guard.");
+        return Ok(());
+    };
+    const COLOR_APPS: &[&str] = &[
+        "M-00B6_A-4533-03-873A",
+        "M-00B6_A-4534-03-B32B",
+        "M-00B6_A-4556-09-9FCE",
+        "M-00B6_A-455A-02-5BE9",
+    ];
+    let mut found = 0usize;
+    for file in &knxprod_files(&vendor_dir(PathBuf::from(dir))) {
+        let Ok(product) = bussard_prod::read_knxprod(file) else {
+            continue;
+        };
+        for app in &product.applications {
+            if !COLOR_APPS.contains(&app.id.as_str()) {
+                continue;
+            }
+            found += 1;
+            let mask = app
+                .mask_version
+                .as_deref()
+                .and_then(|m| u16::from_str_radix(m.trim(), 16).ok())
+                .ok_or_else(|| format!("{} declares no hex mask", app.id))?;
+            let plan = plan_flash(
+                app,
+                "1.1.1",
+                mask,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                None,
+                &BTreeMap::new(),
+            )
+            .map_err(|e| format!("{} must plan, was refused: {e}", app.id))?;
+            assert!(plan.total_write_bytes() > 0, "{} writes nothing", app.id);
+        }
+    }
+    eprintln!(
+        "TypeColor guard checked {found} of {} app(s).",
+        COLOR_APPS.len()
+    );
+    Ok(())
+}
+
 /// The corpus's vendor directory: `BUSSARD_PRODUCT_CORPUS` may name the
 /// product-corpus root (`tests-support/product-corpus`), its `cache/`, or the
 /// vendor directory itself (`dev/testing.md`).

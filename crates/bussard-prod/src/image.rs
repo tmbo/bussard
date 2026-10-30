@@ -1377,6 +1377,14 @@ fn encode_value(
             encode_float(app, pname, encoding.as_deref(), *max, value)
         }
         Some(ParameterType::None) | None => Ok(Placement::Empty),
+        Some(ParameterType::Color { space }) => {
+            // `#RRGGBB` (or `#HHSSVV`, `#RRGGBBWW`) as one octet per
+            // component in the written order (issue #616).
+            space
+                .encode(value.unwrap_or(""))
+                .map(Placement::Bytes)
+                .map_err(|reason| param_err(app, pname, &reason))
+        }
         Some(ParameterType::Other { kind, .. }) if kind == "TypeRawData" => {
             encode_raw_data(app, pname, value)
         }
@@ -2093,6 +2101,7 @@ fn decode_value(
             }
         }
         ParameterType::None => None,
+        ParameterType::Color { space } => space.decode(bytes(space.octets())?),
         ParameterType::Other { kind, .. } if kind == "TypeRawData" => {
             use base64::Engine as _;
             let len = bytes(4)?;
@@ -2453,6 +2462,49 @@ mod tests {
         // No value: nothing to write, as before.
         let empty = app_with(&[("odd", r#"<TypeMystery />"#, None, 0, 0)])?;
         assert!(compute_parameter_image(&empty, &no_overrides(), &no_bases()).is_ok());
+        Ok(())
+    }
+
+    /// Issue #616: a `<TypeColor>` value (`#FF0000`, also for `HSV`) is
+    /// placed as one octet per component in the written order, decodes back to
+    /// the same string, and a value that is not a hex colour refuses.
+    ///
+    /// The written order is bussard's reading; the ETS capture of the
+    /// synthetic `syn-color-param` (RGB) and `syn-color-param-hsv` products
+    /// must confirm it.
+    #[test]
+    fn test_compute_parameter_image_type_color()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = app_with(&[
+            ("on", r#"<TypeColor Space="RGB" />"#, Some("#FF8001"), 4, 0),
+            ("hsv", r#"<TypeColor Space="HSV" />"#, Some("#2A80C0"), 8, 0),
+            (
+                "w",
+                r#"<TypeColor Space="RGBW" />"#,
+                Some("#11223344"),
+                12,
+                0,
+            ),
+        ])?;
+        let image = image_of(&app)?;
+        assert_eq!(image.get(4..7), Some(&[0xFF, 0x80, 0x01][..]));
+        assert_eq!(image.get(8..11), Some(&[0x2A, 0x80, 0xC0][..]));
+        assert_eq!(image.get(12..16), Some(&[0x11, 0x22, 0x33, 0x44][..]));
+        let on = app.parameters.get("M-1_A-1_P-0").ok_or("no on")?;
+        assert_eq!(
+            decode_parameter_value(&app, on, &image, 4, 0).as_deref(),
+            Some("#FF8001")
+        );
+        assert_eq!(
+            canonical_parameter_value(&app, on, Some("#ff8001")).as_deref(),
+            Some("#FF8001")
+        );
+        let bad = app_with(&[("on", r#"<TypeColor Space="RGB" />"#, Some("red"), 0, 0)])?;
+        let err = compute_parameter_image(&bad, &no_overrides(), &no_bases());
+        assert!(
+            matches!(&err, Err(ProdError::ParameterImage { reason, .. }) if reason.contains("RGB colour")),
+            "{err:?}"
+        );
         Ok(())
     }
 

@@ -1,0 +1,52 @@
+normalized operation sequence for 1.1.1 (captures/synthetic/syn-s7-0705/defaults/ets.pcapng)
+dropped: 0 L_Data.con echo(es), 0 repeat(s), 83 L4 ack(s)
+
+   1  connect T_Connect
+   2  descriptor type0 type=0
+   3  prop-read obj0/PID_MAX_APDU_LENGTH count=1 index=1
+   4  authorize Authorize_Request key=FFFFFFFF(free-access)
+   5  prop-read obj0/PID_SERIAL_NUMBER count=1 index=1
+   6  prop-read obj0/PID_MANUFACTURER_ID count=1 index=1
+   7  prop-read obj0/PID_HARDWARE_TYPE count=1 index=1
+   8  load-event obj1/PID_LOAD_STATE_CONTROL event=Unload index=1
+   9  load-event obj2/PID_LOAD_STATE_CONTROL event=Unload index=1
+  10  load-event obj3/PID_LOAD_STATE_CONTROL event=Unload index=1
+  11  load-event obj1/PID_LOAD_STATE_CONTROL event=StartLoading index=1
+  12  alloc-record obj1/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlAbsSegment(data) seg_addr=0x4000 seg_size=513 access=0x33 mem_type=0x03 mem_attr=0x80
+  13  prop-read obj0/PID_DEVICE_CONTROL count=1 index=1
+  14  prop-write obj0/PID_DEVICE_CONTROL count=1 index=1 len=1 sha=e52d9c50
+  15  mem-write 0x4000 addr_int=16384 len=1 sha=4bf5122f extended=False
+  16  alloc-record obj1/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlTaskSegment seg_addr=0x4000 pei_type=0 app_id=00fa280010
+  17  load-event obj1/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1
+  18  load-event obj2/PID_LOAD_STATE_CONTROL event=StartLoading index=1
+  19  alloc-record obj2/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlAbsSegment(data) seg_addr=0x4201 seg_size=511 access=0x33 mem_type=0x03 mem_attr=0x80
+  20  mem-write 0x4201 addr_int=16897 len=1 sha=6e340b9c extended=False
+  21  alloc-record obj2/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlTaskSegment seg_addr=0x4201 pei_type=0 app_id=00fa280010
+  22  load-event obj2/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1
+  23  load-event obj3/PID_LOAD_STATE_CONTROL event=StartLoading index=1
+  24  alloc-record obj3/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlAbsSegment(data) seg_addr=0x0700 seg_size=16 access=0x00 mem_type=0x02 mem_attr=0x00
+  25  alloc-record obj3/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlAbsSegment(stack) seg_addr=0x0710 seg_size=48 access=0x00 mem_type=0x02 mem_attr=0x00
+  26  alloc-record obj3/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlAbsSegment(data) seg_addr=0x4400 seg_size=64 access=0x33 mem_type=0x03 mem_attr=0x80
+  27  mem-write 0x4400 addr_int=17408 len=12 sha=b1f311c7 extended=False
+  28  mem-write 0x440c addr_int=17420 len=12 sha=8688d249 extended=False
+  29  mem-write 0x4418 addr_int=17432 len=12 sha=8688d249 extended=False
+  30  mem-write 0x4424 addr_int=17444 len=12 sha=8688d249 extended=False
+  31  mem-write 0x4430 addr_int=17456 len=12 sha=8688d249 extended=False
+  32  mem-write 0x443c addr_int=17468 len=4 sha=ad95131b extended=False
+  33  alloc-record obj3/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlAbsSegment(data) seg_addr=0x4440 seg_size=64 access=0x33 mem_type=0x03 mem_attr=0x80
+  34  mem-write 0x4440 addr_int=17472 len=12 sha=a5403f60 extended=False
+  35  mem-write 0x444c addr_int=17484 len=12 sha=8688d249 extended=False
+  36  mem-write 0x4458 addr_int=17496 len=12 sha=8688d249 extended=False
+  37  mem-write 0x4464 addr_int=17508 len=12 sha=8688d249 extended=False
+  38  mem-write 0x4470 addr_int=17520 len=12 sha=8688d249 extended=False
+  39  mem-write 0x447c addr_int=17532 len=4 sha=ad95131b extended=False
+  40  alloc-record obj3/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlTaskSegment seg_addr=0x4400 pei_type=0 app_id=00fa280010
+  41  alloc-record obj3/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlTaskCtrl1 ld_ctrl_data=4430010000000000
+  42  load-event obj3/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1
+  43  restart Restart type=basic
+  44  disconnect T_Disconnect
+
+memory image (3 region(s), chunking removed):
+    0x004000..0x004001 len=1 sha=4bf5122f
+    0x004201..0x004202 len=1 sha=6e340b9c
+    0x004400..0x004480 len=128 sha=dbe83856

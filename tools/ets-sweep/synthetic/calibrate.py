@@ -66,12 +66,16 @@ def run_dir(app: str) -> Path:
     return CAPTURES / app / VARIANT
 
 
-def calibrate_one(knxprod: Path, app: str, search: str, ets: bool, work: Path | None) -> dict:
-    """ETS download (unless `ets` is off), request fixture and oracle row of one product."""
+def calibrate_one(knxprod: Path, app: str, search: str, ets: bool, work: Path | None,
+                  mask: str = "07B0") -> dict:
+    """ETS download (unless `ets` is off), request fixture and oracle row of one product.
+
+    `mask` picks the sim's load-state machine in the VM (memory-mapped on 0701,
+    as `sweep.RemoteSim` does) and the oracle model's mask."""
     out: dict = {"app": app, "knxprod": str(knxprod)}
     if ets:
         c = sweep.vm.connect()
-        r = sweep.run_learning(c, knxprod, app, search)
+        r = sweep.run_learning(c, knxprod, app, search, mask=mask)
         out.update({k: r.get(k) for k in ("outcome", "ets", "ops", "loaded_objects", "seconds", "error")})
     else:
         try:
@@ -86,7 +90,7 @@ def calibrate_one(knxprod: Path, app: str, search: str, ets: bool, work: Path | 
     requests = distil.requests(capture)
     (run_dir(app) / "requests.txt").write_text(distil.render(requests, f"{app}/{VARIANT}/ets.pcapng"))
     out["requests"] = len(requests)
-    out["oracle"] = oracle.run_row(app, {"file": str(knxprod.resolve()), "mask": "07B0"}, CAPTURES, work)
+    out["oracle"] = oracle.run_row(app, {"file": str(knxprod.resolve()), "mask": mask}, CAPTURES, work)
     return out
 
 
