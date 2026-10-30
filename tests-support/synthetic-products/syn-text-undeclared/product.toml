@@ -5,9 +5,9 @@
 purpose = """
 syn-minimal with a 14-octet TypeText parameter, reached at its default
 "Störung", and no `TextParameterEncoding` in the application's Options.
-Issue #416: without a declared code page bussard takes ASCII only and refuses
-the non-ASCII default at plan time; the octets ETS writes for "ö" decide
-between Latin-1 (`F6`), UTF-8 (`C3 B6`) and another code page."""
+Issue #416: the octets ETS writes for "ö" decide between Latin-1 (`F6`),
+UTF-8 (`C3 B6`) and another code page. ETS 6.4.1 wrote `F6`, NUL-padded:
+bussard encodes undeclared text as ISO 8859-1 since."""
 construct = "TypeText non-ASCII default, no TextParameterEncoding"
 issues = [416]
 

@@ -9,11 +9,19 @@
 //! characters, in an eight-octet field, which only a one-octet-per-character
 //! code page holds.
 //!
-//! A program that declares no encoding, or one this module does not know, has
-//! no stated code page: ASCII text is the same octets in every candidate and
-//! is written, anything else is refused rather than guessed. The KNX schema
-//! text naming a default was not available when this was written; no
-//! capture shows ETS's choice for such a program.
+//! A program that declares no encoding takes ISO 8859-1 (Latin-1), as ETS
+//! does (issue #416): ETS 6.4.1 downloaded the synthetic product
+//! `syn-text-undeclared` (no `TextParameterEncoding`, a 14-octet `TypeText`
+//! at its default "Störung") as `53 74 F6 72 75 6E 67 00 00 00 00 00 00 00`,
+//! captured in `captures/synthetic/syn-text-undeclared/defaults/`: one octet
+//! per character, `ö` as `F6`, NUL-padded. That octet is the same in
+//! Windows-1252 and ISO 8859-15; the capture does not show which of them ETS
+//! uses where they differ, so the characters whose octet depends on that
+//! choice are refused rather than guessed (see [`TextCodec::Undeclared`]).
+//!
+//! A program that declares a name this module does not know has no stated
+//! code page: ASCII text is the same octets in every candidate and is written,
+//! anything else is refused.
 
 /// The code page a program's text parameters are converted with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,9 +37,16 @@ pub enum TextCodec {
     Windows1252,
     /// `us-ascii`: 7-bit text only.
     Ascii,
-    /// No declaration, or a name this module does not know: ASCII text is
-    /// written (the same octets in every candidate), anything else refused.
+    /// No declaration: ISO 8859-1, as ETS writes it (issue #416), limited to
+    /// the characters whose octet is the same in ISO 8859-1, Windows-1252 and
+    /// ISO 8859-15: ASCII and U+00A0 to U+00FF without the eight Latin-9
+    /// replaces. A character outside that set (the euro sign, `Š`, a C1
+    /// control, anything beyond U+00FF) is refused: no capture shows what ETS
+    /// writes for it.
     Undeclared,
+    /// A declared name this module does not know: ASCII text is written (the
+    /// same octets in every candidate), anything else refused.
+    Unknown,
 }
 
 /// Latin-9's eight differences from Latin-1: (octet, character).
@@ -85,7 +100,7 @@ const CP1252_HIGH: [Option<char>; 32] = [
 impl TextCodec {
     /// The codec a `TextParameterEncoding` value names, by its IANA name or a
     /// common alias, ignoring case. `None` (no declaration) and a name this
-    /// module does not know are [`TextCodec::Undeclared`].
+    /// module does not know is [`TextCodec::Unknown`].
     pub fn from_declaration(name: Option<&str>) -> TextCodec {
         let Some(name) = name else {
             return TextCodec::Undeclared;
@@ -96,7 +111,7 @@ impl TextCodec {
             "iso-8859-15" | "iso8859-15" | "latin9" | "latin-9" | "l9" => TextCodec::Latin9,
             "windows-1252" | "cp1252" => TextCodec::Windows1252,
             "us-ascii" | "ascii" => TextCodec::Ascii,
-            _ => TextCodec::Undeclared,
+            _ => TextCodec::Unknown,
         }
     }
 
@@ -107,8 +122,9 @@ impl TextCodec {
             return u8::try_from(code).ok();
         }
         match self {
-            TextCodec::Utf8 | TextCodec::Ascii | TextCodec::Undeclared => None,
+            TextCodec::Utf8 | TextCodec::Ascii | TextCodec::Unknown => None,
             TextCodec::Latin1 => u8::try_from(code).ok(),
+            TextCodec::Undeclared => u8::try_from(code).ok().filter(|b| undeclared_octet(*b)),
             TextCodec::Latin9 => {
                 if let Some((b, _)) = LATIN9.iter().find(|(_, ch)| *ch == c) {
                     return Some(*b);
@@ -131,8 +147,9 @@ impl TextCodec {
             return Some(char::from(b));
         }
         match self {
-            TextCodec::Utf8 | TextCodec::Ascii | TextCodec::Undeclared => None,
+            TextCodec::Utf8 | TextCodec::Ascii | TextCodec::Unknown => None,
             TextCodec::Latin1 => Some(char::from(b)),
+            TextCodec::Undeclared => undeclared_octet(b).then(|| char::from(b)),
             TextCodec::Latin9 => Some(
                 LATIN9
                     .iter()
@@ -163,8 +180,13 @@ impl TextCodec {
                         return Err(match self {
                             TextCodec::Undeclared => format!(
                                 "text `{text}` holds `{c}`, and the program declares no \
-                                 TextParameterEncoding bussard knows, so only ASCII text is \
-                                 written (issue #401)"
+                                 TextParameterEncoding: ETS writes such text in ISO 8859-1, \
+                                 but for `{c}` its octet is not known (issue #416)"
+                            ),
+                            TextCodec::Unknown => format!(
+                                "text `{text}` holds `{c}`, and the program declares a \
+                                 TextParameterEncoding bussard does not know, so only ASCII \
+                                 text is written (issue #401)"
                             ),
                             _ => format!(
                                 "text `{text}` holds `{c}`, which {} cannot represent",
@@ -196,8 +218,8 @@ impl TextCodec {
         let used = field.get(..end).unwrap_or_default();
         match self {
             TextCodec::Utf8 => String::from_utf8_lossy(used).into_owned(),
-            // Undeclared: as before #401, read non-ASCII octets as UTF-8.
-            TextCodec::Undeclared => String::from_utf8_lossy(used).into_owned(),
+            // Unknown: as before #401, read non-ASCII octets as UTF-8.
+            TextCodec::Unknown => String::from_utf8_lossy(used).into_owned(),
             _ => used
                 .iter()
                 .map(|b| self.char_of(*b).unwrap_or('\u{FFFD}'))
@@ -212,9 +234,18 @@ impl TextCodec {
             TextCodec::Latin1 => "ISO 8859-1",
             TextCodec::Latin9 => "ISO 8859-15",
             TextCodec::Windows1252 => "Windows-1252",
-            TextCodec::Ascii | TextCodec::Undeclared => "ASCII",
+            TextCodec::Undeclared => "ISO 8859-1 (no TextParameterEncoding declared)",
+            TextCodec::Ascii | TextCodec::Unknown => "ASCII",
         }
     }
+}
+
+/// The octet `b` of an undeclared program's text stands for the same character
+/// in ISO 8859-1, Windows-1252 and ISO 8859-15 (issue #416): ASCII, or 0xA0
+/// to 0xFF other than Latin-9's eight replacements. 0x80 to 0x9F are C1
+/// controls in ISO 8859-1 but printable in Windows-1252.
+fn undeclared_octet(b: u8) -> bool {
+    b < 0x80 || (b >= 0xA0 && !LATIN9.iter().any(|(o, _)| *o == b))
 }
 
 #[cfg(test)]
@@ -245,7 +276,7 @@ mod tests {
         assert_eq!(TextCodec::from_declaration(None), TextCodec::Undeclared);
         assert_eq!(
             TextCodec::from_declaration(Some("shift_jis")),
-            TextCodec::Undeclared
+            TextCodec::Unknown
         );
     }
 
@@ -258,6 +289,7 @@ mod tests {
             TextCodec::Windows1252,
             TextCodec::Ascii,
             TextCodec::Undeclared,
+            TextCodec::Unknown,
         ] {
             assert_eq!(codec.encode("Szene", 8)?, b"Szene\0\0\0", "{codec:?}");
             assert_eq!(codec.decode(b"Szene\0\0\0"), "Szene");
@@ -300,7 +332,7 @@ mod tests {
             .err()
             .ok_or("encoded")?;
         assert!(err.contains("`✓`") && err.contains("ISO 8859-15"), "{err}");
-        let err = TextCodec::Undeclared
+        let err = TextCodec::Unknown
             .encode("Küche", 16)
             .err()
             .ok_or("encoded")?;
@@ -310,6 +342,39 @@ mod tests {
             .err()
             .ok_or("encoded")?;
         assert!(err.contains("ASCII cannot represent"), "{err}");
+        Ok(())
+    }
+
+    /// ETS 6.4.1's download of `syn-text-undeclared` (issue #416,
+    /// `captures/synthetic/syn-text-undeclared/defaults/`): "Störung" in the
+    /// 14-octet field of a program without `TextParameterEncoding`.
+    #[test]
+    fn test_encode_undeclared_is_latin1_nul_padded_as_ets_writes() -> TestResult {
+        let octets = TextCodec::Undeclared.encode("Störung", 14)?;
+        assert_eq!(
+            octets,
+            [
+                0x53, 0x74, 0xF6, 0x72, 0x75, 0x6E, 0x67, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+            ]
+        );
+        assert_eq!(TextCodec::Undeclared.decode(&octets), "Störung");
+        assert_eq!(TextCodec::Undeclared.encode("Alarm", 6)?, b"Alarm\0");
+        assert_eq!(TextCodec::Undeclared.decode(b"Alarm\0"), "Alarm");
+        Ok(())
+    }
+
+    /// A character whose octet ETS's choice of code page would decide, or
+    /// that no one-octet candidate holds, is refused for an undeclared program.
+    #[test]
+    fn test_encode_undeclared_refuses_outside_the_common_latin1_range() -> TestResult {
+        for text in ["5€", "Šum", "Grün ✓", "\u{0085}", "¤"] {
+            let err = TextCodec::Undeclared
+                .encode(text, 16)
+                .err()
+                .ok_or("encoded")?;
+            assert!(err.contains("issue #416"), "{err}");
+        }
+        assert_eq!(TextCodec::Undeclared.decode(b"5\x80"), "5\u{FFFD}");
         Ok(())
     }
 
