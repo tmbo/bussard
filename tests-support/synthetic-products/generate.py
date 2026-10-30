@@ -221,10 +221,19 @@ class Product:
             elif kind == "text":
                 check_keys(tw, t, {"name", "kind", "size_octets"})
                 t = dict(t, size_bits=8 * t["size_octets"])
+            elif kind == "color":
+                # syn-color-param (#604 row 40, #616): a colour, one octet per
+                # component of its space, the default `#` and hex digits.
+                check_keys(tw, t, {"name", "kind", "space"})
+                if t["space"] == "RGBW":
+                    raise not_yet(tw, "colour space RGBW")
+                if t["space"] not in COLOR_SPACES:
+                    raise SpecError(f"{tw}: space is one of {', '.join(COLOR_SPACES)}")
+                t = dict(t, size_bits=COLOR_SPACES[t["space"]])
             elif kind in ("time", "ip_address", "raw"):
                 raise not_yet(tw, f"parameter type kind `{kind}`")
             else:
-                raise SpecError(f"{tw}: kind is one of enum, number, text, float, time, ip_address, raw")
+                raise SpecError(f"{tw}: kind is one of enum, number, text, float, color, time, ip_address, raw")
             self.types[t["name"]] = dict(t, id=f"{self.app_id}_PT-{ets_escape(t['name'])}")
 
         # Unions (#405): one <Union> with its <Memory>; its members are
@@ -430,6 +439,9 @@ OPTIONS = ("PreferPartialDownloadIfApplicationLoaded", "EasyCtrlModeModeStyleEmp
 # `<TypeFloat Encoding>` values and their width in bits (the KNX 2-octet float
 # of DPT 9 and the IEEE-754 formats).
 FLOAT_BITS = {"DPT 9": 16, "IEEE-754 Single": 32, "IEEE-754 Double": 64}
+# `<TypeColor Space>` values the products use and their width (#616); RGBW is
+# part of the schema but unused yet.
+COLOR_SPACES = {"RGB": 24, "HSV": 24}
 # Implemented load ops: spec key -> XML attribute, in XML order.
 LOAD_OPS = {
     "LdCtrlRelSegment": {"lsm": "LsmIdx", "size": "Size", "mode": "Mode", "fill": "Fill"},
@@ -603,6 +615,8 @@ def render_type(x: Xml, t: dict) -> None:
         x.close("TypeRestriction")
     elif t["kind"] == "text":
         x.empty("TypeText", [("SizeInBit", t["size_bits"])])
+    elif t["kind"] == "color":  # #616
+        x.empty("TypeColor", [("Space", t["space"])])
     elif t["kind"] == "float":
         x.empty("TypeFloat", [("Encoding", t["encoding"]), ("minInclusive", t["min"]),
                               ("maxInclusive", t["max"])])
