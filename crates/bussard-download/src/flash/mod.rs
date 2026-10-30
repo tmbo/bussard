@@ -1107,6 +1107,33 @@ impl FlashPlan {
             .retain(|s| !matches!(s, FlashStep::Sys7PreDownloadRestart { .. }));
     }
 
+    /// Keeps ETS's System 7 pre-download pass only when the device's resident
+    /// state calls for it (issue #488): some load-state machine the pre-flight
+    /// probe read reports anything but `Unloaded` (Loaded, Loading, Error), or
+    /// the probe read a resident application id (`PID_PROGRAM_VERSION`), or the
+    /// probe could not read the state at all. A device whose every LSM answers
+    /// `Unloaded` gets no pass ([`FlashPlan::skip_sys7_prelude`]).
+    ///
+    /// Evidence: ETS gives a factory-fresh device no pass, in all 31 System 7
+    /// downloads of the ETS sweep and in the synthetic captures
+    /// `captures/synthetic/syn-s7-0705/defaults` (0705) and
+    /// `captures/synthetic/syn-s7-0701/defaults` (0701): the procedure's own
+    /// unloads of LSMs 1 to 3 follow the connect, with no unload of LSM 4 and
+    /// no restart. On a programmed device ETS's choice is not settled by the
+    /// captures: the house full downloads `jung-1131` (1.1.31) and
+    /// `automitschalter-standard-110` (1.1.46) run the full pass (unload LSMs
+    /// 1 to 4, restart), `bad-eg-pm-1-1-18-new` (1.1.32, same application as
+    /// 1.1.31) only the restart, and the EK-E72 partial downloads
+    /// (`captures/ets-sweep/M-00B6_A-4537-03-DE59/b-partial-add-32` and on)
+    /// none. A device that holds anything therefore keeps the pass as before.
+    /// A no-op on a System B plan.
+    pub fn fit_sys7_prelude(&mut self, resident: &crate::preflight::ResidentState) {
+        if !self.is_sys7() || sys7_prelude_wanted(resident) {
+            return;
+        }
+        self.skip_sys7_prelude();
+    }
+
     /// Removes the [`FlashStep::FactoryReset`] step (`flash --no-factory-reset`).
     /// Only safe when the device is known to hold no stale image.
     pub fn skip_factory_reset(&mut self) {
@@ -1617,6 +1644,25 @@ impl FlashOutcome {
             && self.load_state == LoadState::Loaded
             && self.spot_checks_match
     }
+}
+
+/// Whether a System 7 device needs ETS's pre-download pass
+/// ([`FlashPlan::fit_sys7_prelude`], issue #488): `false` only for a device
+/// whose every probed load-state machine answers `Unloaded` and that reported
+/// no application id. An unreadable or interrupted probe, or one that read no
+/// LSM, is no evidence of a fresh device and keeps the pass.
+fn sys7_prelude_wanted(resident: &crate::preflight::ResidentState) -> bool {
+    resident.unreadable.is_some()
+        || resident.interrupted
+        || resident.objects.is_empty()
+        || resident
+            .objects
+            .iter()
+            .any(|o| o.state != LoadState::Unloaded)
+        || resident
+            .app_id
+            .as_deref()
+            .is_some_and(|id| id.iter().any(|b| *b != 0))
 }
 
 #[cfg(test)]

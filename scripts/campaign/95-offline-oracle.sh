@@ -67,6 +67,15 @@
 #                                (identical, differs or not-comparable);
 #                                unchecked when absent. For a row whose
 #                                load-control records are known to differ
+#                state=fresh     the capture programs a factory-fresh device
+#                                (a synthetic or ETS-sweep knx-sim capture).
+#                                ETS reads no load state on System 7 before
+#                                its download, so knxtrace records none; the
+#                                dry run then plans against a record with LSMs
+#                                1 to 4 Unloaded, as the pre-flight probe reads
+#                                a fresh device, and drops the pre-download
+#                                pass (issue #488). A resident.json knxtrace
+#                                wrote wins. For System 7 rows
 #                run=secure-on|secure-off  compare `bussard interface secure
 #                                on|off --dry-run` (issue #398) instead of a
 #                                flash: the KNXnet/IP Secure property writes
@@ -471,7 +480,7 @@ run_row() {
   product="$(trim "${product:-}")"; application="$(trim "${application:-}")"
   note_text="$(trim "${note_text:-}")"; recorded="$(trim "${recorded:-}")"
   options="$(trim "${options:-}")"
-  local expect="" confirmed="" props="" loadctl="" scope="" run="" phase="" base="" rowdir="" lsm="" word
+  local expect="" confirmed="" props="" loadctl="" scope="" run="" phase="" base="" rowdir="" lsm="" devstate="" word
   for word in $options; do
     case "$word" in
       expect=*)    expect="${word#expect=}" ;;
@@ -484,12 +493,17 @@ run_row() {
       base=*)      base="${word#base=}" ;;
       dir=*)       rowdir="${word#dir=}" ;;
       lsm=*)       lsm="${word#lsm=}" ;;
-      *)           die "$device: unknown row option: $word (expect=..., confirmed=..., props=..., loadctl=..., run=..., phase=..., scope=..., base=..., dir=..., lsm=...)" ;;
+      state=*)     devstate="${word#state=}" ;;
+      *)           die "$device: unknown row option: $word (expect=..., confirmed=..., props=..., loadctl=..., run=..., phase=..., scope=..., base=..., dir=..., lsm=..., state=...)" ;;
     esac
   done
   local scope_args=()
   [ -n "$scope" ] && scope_args=(--scope "$scope")
   [ -n "$phase" ] && scope_args+=(--phase "$phase")
+  case "$devstate" in
+    ""|fresh) ;;
+    *) die "$device: unknown state=$devstate (fresh)" ;;
+  esac
   case "$run" in
     ""|secure-on|secure-off|apply|apply-line) ;;
     *) die "$device: unknown run=$run (secure-on, secure-off, apply or apply-line)" ;;
@@ -554,7 +568,15 @@ PY
     [ -n "$application" ] && app_args=(--application "$application")
     # The device state ETS read before its download (issue #490): bussard
     # plans against it as a live flash plans against its pre-flight probe.
-    [ -f "$dir/ets/resident.json" ] && app_args+=(--resident "$dir/ets/resident.json")
+    # state=fresh (issue #488): a factory-fresh System 7 device, whose LSMs the
+    # probe would read Unloaded; ETS read none, so knxtrace recorded none.
+    if [ -f "$dir/ets/resident.json" ]; then
+      app_args+=(--resident "$dir/ets/resident.json")
+    elif [ "$devstate" = fresh ]; then
+      printf '%s\n' '{"objects": [{"index": 1, "state": 0}, {"index": 2, "state": 0}, {"index": 3, "state": 0}, {"index": 4, "state": 0}]}' \
+        >"$dir/fresh.json"
+      app_args+=(--resident "$dir/fresh.json")
+    fi
     # No --keyring and no $BUSSARD_KEYRING: the model's key store decides.
     if ! env -u BUSSARD_KEYRING "$BUSSARD_BIN" flash "$device" --product "$prod" \
          ${app_args+"${app_args[@]}"} \
