@@ -447,6 +447,15 @@ def main() -> int:
                 print(f"stopping: the VM desktop is not usable: {r.get('error', '')[:160]}", flush=True)
                 stop = True
                 break
+            if r.get("outcome") == "skipped-compat-mode":
+                # The device that wants compatibility mode stays on line 1.1 and
+                # ETS raises the prompt again before the next product: delete it
+                # now (each flow's watchdog declines the prompt first).
+                try:
+                    for d in vm.driver(c, "POST", "/ets/devices", {"project": "ets-sweep"}, timeout=300).get("devices", []):
+                        vm.driver(c, "POST", "/ets/delete_device", {"project": "ets-sweep", "ia": d["ia"]}, timeout=300)
+                except Exception as exc:  # noqa: BLE001 - the stale-prompt recovery below still applies
+                    print(f"cleanup after compat skip failed: {exc}", flush=True)
             if "compatibility mode before project_tab" in (r.get("error") or "") and not job.get("retried"):
                 # A compatibility prompt that keeps coming back for a device the
                 # previous product left in the project: restart ETS (with a
