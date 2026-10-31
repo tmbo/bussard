@@ -223,12 +223,22 @@ after 2 seconds.
   (`BUSSARD_SECURE_KEEPALIVE_SECS` changes it; `bussard test --secure-idle
   <secs>` measures an interface read-only). The session runs over TCP only,
   as the KNX standard requires.
-- **Computed parameters.** Some application programs compute parameter values
-  with a script (`<ParameterCalculation>`), which ETS runs when an input
-  changes. bussard does not run these scripts: a computed parameter keeps its
-  vendor default or the value the device file sets. At a first download with
-  untouched inputs ETS writes the defaults too; once you change an input, the
-  computed values can differ from what ETS would write.
+- **Calculated parameters.** Some programs compute parameter values with a
+  small script instead of storing what you set, such as a thermostat's fan
+  settings or a dimmer's dimming curve. bussard runs these scripts (the
+  VBScript and JavaScript that product data uses). Like ETS, it runs a
+  script only once a value the script reads differs from the product's
+  default; at the defaults the computed values keep their defaults (shown
+  by the ETS captures `syn-param-calculation` `defaults` and `calc-input`).
+  A script it cannot run
+  makes `plan`, `apply` and `flash` refuse that device and name the
+  calculation, rather than write a value the script did not compute. So do
+  calculations that keep changing each other's results, and a value in the
+  device file for a parameter a calculation computes differently: remove it,
+  or change the parameters the calculation reads.
+  Verified byte for byte against ETS downloads of Ekinex EK-E72 thermostats
+  (VBScript), a Jung LED dimmer (JavaScript) and the synthetic product that
+  changes a calculation's input.
 - **Text parameters.** A text parameter is written in the code page its
   program declares. A program that declares none is written in ISO 8859-1, as
   ETS does; a character whose octet differs between ISO 8859-1,

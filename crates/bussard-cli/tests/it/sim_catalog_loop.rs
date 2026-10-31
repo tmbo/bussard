@@ -1005,6 +1005,120 @@ fn random_value(app: &ApplicationProgram, param_ref: &str, rng: &mut SplitMix64)
     draw_value(kind, codec, rng)
 }
 
+/// How many values [`draw_for`] draws for a calculation input before it keeps
+/// the default.
+const MAX_CALC_DRAWS: usize = 8;
+
+/// [`random_value`] for the device-file key `key` of `param_ref`, given the
+/// other values of the configuration so far.
+///
+/// A parameter a `<ParameterCalculation>` reads (application or module level)
+/// is drawn until every value the calculations then compute fits its own
+/// parameter type, at most [`MAX_CALC_DRAWS`] times, else it keeps its
+/// default (`None`). A computed value outside its type is refused by the
+/// image builder, because no capture shows what ETS writes for one (the
+/// out-of-range issue); a draw such as `delay` = 38104 for the
+/// syn-param-calculation script `delay * 2 + 1` would otherwise make the
+/// generated configuration unflashable by construction, not by a bussard
+/// bug.
+fn draw_for(
+    app: &ApplicationProgram,
+    values: &BTreeMap<String, String>,
+    key: &str,
+    param_ref: &str,
+    rng: &mut SplitMix64,
+) -> Option<String> {
+    let is_input = app
+        .calculations
+        .iter()
+        .any(|c| c.inputs.iter().any(|p| p.param_ref == param_ref));
+    if !is_input {
+        return random_value(app, param_ref, rng);
+    }
+    for _ in 0..MAX_CALC_DRAWS {
+        let value = random_value(app, param_ref, rng)?;
+        let mut trial = values.clone();
+        trial.insert(key.to_string(), value.clone());
+        if computed_values_fit(app, &trial) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// Whether every value a calculation computes for `values` (evaluated by the
+/// same Dynamic evaluator the image builder uses) fits its parameter's type:
+/// the declared range and the field width of an integer, the members of an
+/// enumeration, the range of a float.
+fn computed_values_fit(app: &ApplicationProgram, values: &BTreeMap<String, String>) -> bool {
+    let config = evaluate_dynamic(app, values);
+    // `None` for the application level, else each instance of the module.
+    let instances = |calc_id: &str| -> Vec<Option<usize>> {
+        match calc_id.rfind("_PC-").filter(|_| calc_id.starts_with("MD-")) {
+            None => vec![None],
+            Some(at) => config
+                .modules
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| m.module_def == calc_id[..at])
+                .map(|(i, _)| Some(i))
+                .collect(),
+        }
+    };
+    app.calculations.iter().all(|calc| {
+        instances(&calc.id).into_iter().all(|module| {
+            calc.outputs.iter().all(|o| {
+                config.computed_by(app, module, &o.param_ref).is_none()
+                    || config
+                        .value(app, module, &o.param_ref)
+                        .is_some_and(|v| value_fits(app, &o.param_ref, &v))
+            })
+        })
+    })
+}
+
+/// Whether `value` fits the type of the app-relative `param_ref` (`true` for
+/// a type without a numeric range).
+fn value_fits(app: &ApplicationProgram, param_ref: &str, value: &str) -> bool {
+    let kind = app
+        .parameter_refs
+        .get(&format!("{}_{param_ref}", app.id))
+        .and_then(|pref| app.parameters.get(&pref.ref_id))
+        .and_then(|param| param.parameter_type.as_deref())
+        .and_then(|t| app.parameter_types.get(t))
+        .map(|t| &t.kind);
+    match kind {
+        Some(ParameterType::Int {
+            size_bits,
+            min,
+            max,
+            signed,
+        }) => {
+            let Ok(n) = value.trim().parse::<i64>() else {
+                return false;
+            };
+            let bits = size_bits.unwrap_or(8).clamp(1, 64);
+            let (lo, hi) = if *signed {
+                (-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1)
+            } else {
+                (0, (1i128 << bits) - 1)
+            };
+            (lo..=hi).contains(&i128::from(n))
+                && min.is_none_or(|m| n >= m)
+                && max.is_none_or(|m| n <= m)
+        }
+        Some(ParameterType::Enum { values, .. }) => value
+            .trim()
+            .parse::<i64>()
+            .is_ok_and(|n| values.is_empty() || values.iter().any(|e| e.value == n)),
+        Some(ParameterType::Float { min, max, .. }) => value
+            .trim()
+            .parse::<f64>()
+            .is_ok_and(|x| min.is_none_or(|m| x >= m) && max.is_none_or(|m| x <= m)),
+        _ => true,
+    }
+}
+
 /// A random value inside a parameter type's declared range: an enumeration
 /// member, an integer between the type's `minInclusive` and `maxInclusive`
 /// (both bounds declared, the span computed wide so a full 64-bit signed
@@ -1112,7 +1226,7 @@ impl Configuration {
                     (1, 4)
                 };
                 if rng.below(odds.1) < odds.0
-                    && let Some(value) = random_value(app, &v.param_ref_id, rng)
+                    && let Some(value) = draw_for(app, &values, &v.ref_key, &v.param_ref_id, rng)
                 {
                     values.insert(v.ref_key, value);
                     changed = true;
@@ -1197,7 +1311,7 @@ impl Configuration {
         while changed < 3 && !refs.is_empty() {
             let i = rng.below(refs.len() as u64) as usize;
             let (key, param_ref) = refs.swap_remove(i);
-            let Some(value) = random_value(app, &param_ref, rng) else {
+            let Some(value) = draw_for(app, &out.values, &key, &param_ref, rng) else {
                 continue;
             };
             if out.values.get(&key) == Some(&value) {
@@ -1935,6 +2049,55 @@ mod tests {
             random_value(&app, "P-2_R-2", &mut rng).ok_or("P-2 draws a value")?;
             random_value(&app, "P-3_R-3", &mut rng).ok_or("P-3 draws a value")?;
         }
+        Ok(())
+    }
+
+    /// The syn-param-calculation application, with its script replaced by
+    /// `script` when given.
+    fn calc_app(script: Option<&str>) -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../tests-support/synthetic-products/syn-param-calculation/xml/M-00FA/M-00FA_A-270B-10-0000.xml",
+        );
+        let mut xml = std::fs::read_to_string(path)?;
+        if let Some(script) = script {
+            xml = xml.replace("twice = delay * 2 + 1;", script);
+        }
+        Ok(bussard_prod::application::parse_application_program(
+            "M-00FA_A-270B-10-0000",
+            xml.as_bytes(),
+        )?)
+    }
+
+    #[test]
+    fn test_draw_for_keeps_computed_values_inside_their_type() -> TestResult {
+        let app = calc_app(None)?;
+        let mut rng = SplitMix64::new(427);
+        let none = BTreeMap::new();
+        let mut drawn = 0;
+        for _ in 0..200 {
+            if let Some(v) = draw_for(&app, &none, "P-2_R-2", "P-2_R-2", &mut rng) {
+                // `delay * 2 + 1` fits the 16-bit output.
+                assert!(v.parse::<i64>()? * 2 < 65535, "{v}");
+                drawn += 1;
+            }
+        }
+        assert!(drawn > 100, "most draws fit within 8 tries: {drawn}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_draw_for_falls_back_to_the_default_when_every_draw_overflows() -> TestResult {
+        let app = calc_app(Some("twice = delay * 2 + 70000;"))?;
+        let mut rng = SplitMix64::new(427);
+        for _ in 0..20 {
+            assert_eq!(
+                draw_for(&app, &BTreeMap::new(), "P-2_R-2", "P-2_R-2", &mut rng),
+                None
+            );
+        }
+        // A parameter no calculation reads draws as before.
+        draw_for(&app, &BTreeMap::new(), "P-1_R-1", "P-1_R-1", &mut rng)
+            .ok_or("mode draws a value")?;
         Ok(())
     }
 
