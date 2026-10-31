@@ -1348,7 +1348,7 @@ enum ValueSource {
     UserOverride,
     /// A value a `<ParameterCalculation>` computed (issue #427): strict on
     /// both, as no capture shows what ETS writes for a computed value outside
-    /// its parameter's type (the out-of-range issue).
+    /// its parameter's type (issue #718).
     Computed,
 }
 
@@ -1778,7 +1778,7 @@ fn encode_int(
         match source {
             ValueSource::UserOverride => return Err(param_err(app, pname, &why)),
             // No capture shows what ETS writes for a computed value outside
-            // its type (the out-of-range issue): refused, not guessed.
+            // its type (issue #718): refused, not guessed.
             ValueSource::Computed => {
                 return Err(param_err(
                     app,
