@@ -1,0 +1,137 @@
+# A synthetic product of the catalogue (#604 row 40, second HSV twin),
+# syn-minimal plus one construct. Rendered by ../generate.py into xml/; see
+# ../README.md for the schema.
+
+[doc]
+purpose = """
+syn-color-param-hsv with non-primary defaults: two reached `<TypeColor
+Space="HSV">` parameters, `#FC35C7` at +3 and `#90F32C` at +6 of the
+parameter segment. Issue #616: the HSV twin showed that ETS converts the RGB
+hex default into hue, saturation and value octets (red gave `00 FF FF`), but
+a primary colour cannot show the scale. These two colours give a distinct
+octet pattern for every candidate scale (hue over 360 degrees mapped to
+255, 256, 240, 180 or 100 steps, saturation and value to 255, 256, 240 or
+100, each truncated or rounded), so the capture pins the conversion bussard
+must implement. ETS 6.4.1 wrote `DF C9 FC` and `3F D0 F3`, which only one
+candidate gives: hue in degrees times 255/360, saturation times 255, both
+truncated, and value the largest RGB component. bussard writes the hex
+digits as they stand; the row is `expect=differs` until #616 is fixed."""
+construct = "TypeColor HSV parameter, non-primary defaults"
+issues = [616]
+
+[product]
+text = "Plumage colour lamp HSV 2"
+order_number = "NEST-COLHSV2"
+hardware_name = "NEST-COLHSV2"
+hardware_serial = "00FA002700A9"
+bus_current = 10
+
+[application]
+number = 0x27A9
+version = 0x10
+name = "Plumage colour lamp HSV 2"
+mask = "07B0"
+load_procedure_style = "MergedProcedure"
+address_table_max_entries = 32
+association_table_max_entries = 32
+translations = { "de-DE" = "Gefiederfarblampe HSV 2" }
+
+[application.options]
+Comparable = true
+Reconstructable = true
+
+[[segment]]
+name = "main"
+kind = "relative"
+lsm = 4
+size = 256
+fill = 0xFF
+
+[[parameter_type]]
+name = "Mode"
+kind = "enum"
+size_bits = 8
+values = [
+    { value = 0, text = "off" },
+    { value = 1, text = "on" },
+    { value = 2, text = "automatic" },
+]
+
+[[parameter_type]]
+name = "Delay"
+kind = "number"
+size_bits = 16
+signed = false
+min = 0
+max = 65535
+
+[[parameter_type]]
+name = "Colour"
+kind = "color"
+space = "HSV"
+
+[[parameter]]
+name = "mode"
+type = "Mode"
+text = "Operating mode"
+default = 1
+memory = { segment = "main", offset = 0, bit_offset = 0 }
+
+[[parameter]]
+name = "delay"
+type = "Delay"
+text = "Delay (s)"
+default = 300
+memory = { segment = "main", offset = 1, bit_offset = 0 }
+
+# The construct: two HSV colours in memory, reached, non-primary defaults
+# chosen so that every candidate scale gives other octets (#616).
+[[parameter]]
+name = "plumage"
+type = "Colour"
+text = "Plumage colour"
+default = "#FC35C7"
+memory = { segment = "main", offset = 3, bit_offset = 0 }
+
+[[parameter]]
+name = "crest"
+type = "Colour"
+text = "Crest colour"
+default = "#90F32C"
+memory = { segment = "main", offset = 6, bit_offset = 0 }
+
+[[com_object]]
+number = 0
+name = "switch"
+text = "Switch"
+function_text = "On/Off"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "W"]
+priority = "Low"
+
+[[com_object]]
+number = 1
+name = "status"
+text = "Status"
+function_text = "On/Off status"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+[[dynamic.block]]
+name = "general"
+text = "General"
+parameters = ["mode", "delay", "plumage", "crest"]
+com_objects = [0, 1]
+
+# The application's part of the 07B0 mask procedure: MergeId 2 allocates the
+# parameter segment, MergeId 4 writes it.
+[[load_procedure]]
+merge_id = 2
+ops = [{ op = "LdCtrlRelSegment", lsm = 4, size = 256, mode = 0, fill = 0 }]
+
+[[load_procedure]]
+merge_id = 4
+ops = [{ op = "LdCtrlWriteRelMem", object = 4, offset = 0, size = 256, verify = false }]

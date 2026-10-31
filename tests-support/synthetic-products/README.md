@@ -27,6 +27,7 @@ next to it, and zips it on demand.
 | [`syn-choose-per-ref`](syn-choose-per-ref/product.toml) | `NEST-TWIN` | 07B0 | choose on the unreached second ParameterRef of a reached parameter | #563 |
 | [`syn-color-param`](syn-color-param/product.toml) | `NEST-COLOUR` | 07B0 | TypeColor RGB parameter in memory | #616 |
 | [`syn-color-param-hsv`](syn-color-param-hsv/product.toml) | `NEST-COLHSV` | 07B0 | TypeColor HSV parameter in memory | #616 |
+| [`syn-color-param-hsv2`](syn-color-param-hsv2/product.toml) | `NEST-COLHSV2` | 07B0 | TypeColor HSV parameter, non-primary defaults | #616 |
 | [`syn-com-objects`](syn-com-objects/product.toml) | `NEST-CHIRP` | 07B0 | one com object per size code, every flag combination, three priorities, ReadOnInit | #541, #545, #540, #686 |
 | [`syn-dynamic-tests`](syn-dynamic-tests/product.toml) | `NEST-WORM` | 07B0 | Channel and ParameterBlock with choose on single, list, comparison and default tests | #345 |
 | [`syn-hidden-default`](syn-hidden-default/product.toml) | `NEST-EGGHEAT` | 07B0 | hidden parameter, default differs from template | #448 |
