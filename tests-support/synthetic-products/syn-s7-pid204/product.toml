@@ -11,9 +11,11 @@ property's description before it writes it; knx-sim described PID 204 as one
 element of PDT_GENERIC_10, and ETS skipped the write on all 53 sweep rows, so
 those rows said nothing about ETS. The capture shows what ETS does with a
 manufacturer property of two 5-octet elements against the sim, and whether
-bussard writes the same. Captured 2026-10-31: the sim still described one
-PDT_GENERIC_10 element and ETS skipped the write again, so the row is
-props=differs (bussard-only) until knx-sim describes Count elements (#692)."""
+bussard writes the same. First captured 2026-10-31 (version 0x10) against
+the old sim: ETS skipped the write. Version 0x11 is the re-capture against
+the sim that describes Count elements of PDT_GENERIC_05 (#692, PR #699):
+ETS writes both elements in one A_PropertyValue_Write (count 2, start 1,
+10 octets), as bussard does."""
 construct = "LdCtrlWriteProp PID 204 with Count 2 on the application object (0701)"
 issues = [692]
 
@@ -26,7 +28,7 @@ bus_current = 10
 
 [application]
 number = 0x2821
-version = 0x10
+version = 0x11
 name = "Plumage programmer"
 mask = "0701"
 load_procedure_style = "ProductProcedure"
