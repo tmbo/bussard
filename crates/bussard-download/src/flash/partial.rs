@@ -433,11 +433,14 @@ impl FlashPlan {
                 FlashStep::Restart | FlashStep::Delay { .. } | FlashStep::Sys7EnableVerifyMode => {
                     steps.push(step.clone());
                 }
-                // ETS restarts the device before a parameter download too, but
-                // unloads nothing (`meteodata-1-1-202.pcapng`, issue #116).
-                FlashStep::Sys7PreDownloadRestart { .. } => {
-                    steps.push(FlashStep::Sys7PreDownloadRestart { unload: Vec::new() });
-                }
+                // No pre-download pass (issue #488): ETS's partial download
+                // into a loaded device sends no unload and no restart before
+                // the procedure (the EK-E72 series,
+                // `captures/ets-sweep/M-00B6_A-4537-03-DE59/b-*` to `d-*`).
+                // The restart ahead of the parameter downloads
+                // `meteodata-1-1-202` and `bad-eg-pm-1-1-18` belongs to the
+                // individual-address part of ETS's "address and application"
+                // download, which bussard's `flash` does not run.
                 _ => {}
             }
         }

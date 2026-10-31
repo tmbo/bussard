@@ -148,6 +148,9 @@ pub(super) fn flash_image(
             Some(&freshness),
             Some(&detail.resident),
             false,
+            // An application download, as the CLI's `flash` without `--full`:
+            // no System 7 pre-download pass (issue #488).
+            false,
             Some(model),
             target,
             material,
