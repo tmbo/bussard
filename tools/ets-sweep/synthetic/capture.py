@@ -184,8 +184,46 @@ def sim_yaml(product: str, app: str, mask: str = "07B0", variant: str = VARIANT,
         f"# only in its fingerprint, which never reaches the wire.\n"
         f"gateway:\n  host: 127.0.0.1\n  port: 3672\n  tunnel_address: 1.1.254\n"
         f"devices:\n- address: 1.1.1\n  knxprod: {prod}\n  application: {app}\n"
-        f"  initial_state: unloaded\n  lsm_access: {lsm_access(mask)}\n{replay}"
+        f"  initial_state: unloaded\n  lsm_access: {lsm_access(mask)}\n{knxnet_sim(product)}{replay}"
     )
+
+
+# -------------------------------- IP-enabled TP hardware (#604 row 34, #455)
+# A product whose hardware has a KNX IP interface built in (`[product]
+# ip_enabled`, the application's AdditionalAddressesCount) gets the KNXnet/IP
+# parameter object in its knx-sim device, as sweep.py gives one (ETS aborts
+# without it), and its row plans against a model whose device file holds the
+# `[knxnet]` table of the sweep project (oracle_model.knxnet_table: DHCP, the
+# product text as the friendly name, the highest addresses of line 1.1), since
+# bussard refuses to plan the download without one.
+
+def tunnel_count(product: str) -> int:
+    """The product's `additional_addresses_count`, 0 for a plain device."""
+    return int(generate_spec(product)["application"].get("additional_addresses_count", 0))
+
+
+def knxnet_sim(product: str) -> str:
+    """The `knxnet:` block of the loopback sim device, room for 16 tunnels as
+    in sweep.py; empty for a plain device."""
+    return "  knxnet:\n    tunnel_slots: 16\n" if tunnel_count(product) else ""
+
+
+def knxnet_model(product: str, dst: Path) -> str:
+    """Writes `model/` next to an IP-enabled product's capture and returns the
+    row option naming it (`dir=`); empty for a plain device."""
+    count = tunnel_count(product)
+    if not count:
+        return ""
+    import oracle_model
+
+    model = dst / "model"
+    (model / "devices").mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(MODEL / "bussard.toml", model / "bussard.toml")
+    name = generate_spec(product)["product"]["text"]
+    (model / "devices" / "1.1.1.toml").write_text(
+        f'# The device of {product}: the [knxnet] table of the sweep project (capture.py, #455).\n'
+        f'address = "1.1.1"\nname = "{product}"\n' + oracle_model.knxnet_table("1.1.1", count, name))
+    return f"dir={dst.relative_to(REPO).as_posix()}/model"
 
 
 def copy_capture(product: str, sid: str, app: str, mask: str = "07B0") -> Path:
@@ -732,7 +770,8 @@ def main() -> int:
         if result.get("outcome") != "captured":
             raise SystemExit(f"ETS did not complete the download: {result}")
     dst = copy_capture(product, sid, app, mask)
-    verdict = oracle_verdict(product, app)
+    extra = knxnet_model(product, dst)
+    verdict = oracle_verdict(product, app, extra=extra)
     requests = sum(1 for l in (dst / "requests.txt").read_text().splitlines() if l and not l.startswith("#"))
     entry = {
         "product": product, "variant": VARIANT, "order_number": order, "application": app, "signed_id": sid,
@@ -740,6 +779,8 @@ def main() -> int:
         "ops": result.get("ops"), "requests": requests,
         "oracle": {"verdict": verdict["verdict"], "coverage": verdict["coverage"], "loadctl": verdict["loadctl"]},
     }
+    if extra:
+        entry["row_options"] = extra
     entries.append(entry)
     write_manifest(entries)
     write_rows(entries)

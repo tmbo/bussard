@@ -917,5 +917,34 @@ class MinEtsVersion(unittest.TestCase):
             generate.Product("test", s)
 
 
+class IpEnabled(unittest.TestCase):
+    """syn-ip-enabled-tp (#604 row 34, #455): IsIPEnabled hardware and the
+    application's AdditionalAddressesCount."""
+
+    def ip_spec(self) -> dict:
+        s = spec()
+        s["product"]["ip_enabled"] = True
+        s["application"]["additional_addresses_count"] = 2
+        return s
+
+    def test_render_ip_enabled_hardware_and_tunnel_count(self) -> None:
+        p = generate.Product("test", self.ip_spec())
+        files = generate.render(p)
+        self.assertIn('HasApplicationProgram="true" IsIPEnabled="true"', files["M-00FA/Hardware.xml"].decode())
+        self.assertIn('MinEtsVersion="6.0" AdditionalAddressesCount="2"', files[f"M-00FA/{p.app_file}"].decode())
+
+    def test_plain_product_has_neither(self) -> None:
+        p = generate.Product("test", spec())
+        files = generate.render(p)
+        self.assertNotIn("IsIPEnabled", files["M-00FA/Hardware.xml"].decode())
+        self.assertNotIn("AdditionalAddressesCount", files[f"M-00FA/{p.app_file}"].decode())
+
+    def test_ip_enabled_without_tunnel_count_refused(self) -> None:
+        s = self.ip_spec()
+        del s["application"]["additional_addresses_count"]
+        with self.assertRaisesRegex(generate.SpecError, "come together"):
+            generate.Product("test", s)
+
+
 if __name__ == "__main__":
     unittest.main()

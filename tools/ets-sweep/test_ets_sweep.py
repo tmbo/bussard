@@ -512,6 +512,26 @@ class TestCaptureRows(unittest.TestCase):
                          "expect=not-comparable confirmed=identical loadctl=differs")
 
 
+class TestCaptureIpEnabled(unittest.TestCase):
+    """An IP-enabled TP product (syn-ip-enabled-tp, #455): the sim gets the
+    KNXnet/IP object, the row plans with the sweep project's [knxnet] table."""
+
+    def test_knxnet_sim_only_for_an_ip_enabled_product(self):
+        self.assertEqual(capture.knxnet_sim("syn-ip-enabled-tp"), "  knxnet:\n    tunnel_slots: 16\n")
+        self.assertEqual(capture.knxnet_sim("syn-minimal"), "")
+        self.assertIn("  knxnet:\n", capture.sim_yaml("syn-ip-enabled-tp", "A"))
+
+    def test_knxnet_model_writes_the_device_file(self):
+        with tempfile.TemporaryDirectory(dir=capture.OUT) as tmp:
+            dst = Path(tmp)
+            self.assertEqual(capture.knxnet_model("syn-minimal", dst), "")
+            opt = capture.knxnet_model("syn-ip-enabled-tp", dst)
+            self.assertTrue(opt.startswith("dir=captures/synthetic/") and opt.endswith("/model"))
+            text = (dst / "model" / "devices" / "1.1.1.toml").read_text()
+            self.assertIn('friendly_name = "Treetop uplink"', text)
+            self.assertIn('tunnels = ["1.1.254", "1.1.255"]', text)
+
+
 class TestCaptureVariants(unittest.TestCase):
     def test_variant_steps_name_the_base_and_the_capture(self):
         steps = capture.variant_steps("syn-s7-0705", "other-app")

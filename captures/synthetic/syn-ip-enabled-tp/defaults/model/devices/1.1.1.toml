@@ -1,0 +1,8 @@
+# The device of syn-ip-enabled-tp: the [knxnet] table of the sweep project (capture.py, #455).
+address = "1.1.1"
+name = "syn-ip-enabled-tp"
+
+[knxnet]
+assignment = "dhcp"
+friendly_name = "Treetop uplink"
+tunnels = ["1.1.254", "1.1.255"]
