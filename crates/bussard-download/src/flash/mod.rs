@@ -1550,14 +1550,15 @@ impl FlashPlan {
 
     /// Whether this plan programs a KNX Virtual device: its application is one
     /// of the KNX Virtual `M-00FA_A-25xx` programs
-    /// ([`is_knx_virtual_application`]; DA.tp `M-00FA_A-2500-10-51CB`, whose
-    /// ETS capture shows the bare restart). Manufacturer `0x00FA` alone is not
-    /// enough: OpenKNX and the synthetic catalogue (#596) use it too (#605).
+    /// ([`is_knx_virtual_application`]; DA.tp `M-00FA_A-2500-10-51CB`).
+    /// Manufacturer `0x00FA` alone is not enough: OpenKNX and the synthetic
+    /// catalogue (#596) use it too (#605).
     ///
     /// KNX Virtual is the device class that drops a long-held L4 connection after
     /// a bounded number of exchanges (issue #80), so only its flashes cycle the
-    /// connection proactively by default (issue #116), and only it gets the bare
-    /// `A_Restart` for `LdCtrlMasterReset`.
+    /// connection proactively by default (issue #116). The restart form does
+    /// not depend on it: ETS sends KNX Virtual the confirmed Master Reset like
+    /// every other device (issue #611, [`restart_form`]).
     pub fn targets_knx_virtual(&self) -> bool {
         is_knx_virtual_application(&self.identity.id)
     }

@@ -178,7 +178,10 @@ enum RestartKind {
     FactoryReset,
     /// The terminal confirmed restart (`A_Restart` master reset, erase code 1).
     ConfirmedRestart,
-    /// A bare `A_Restart` (the KNX Virtual master reset or a terminal restart).
+    /// A load procedure's Master Reset (`A_Restart` master reset, an erase
+    /// code other than 1 and 7).
+    MasterReset,
+    /// A bare `A_Restart` (a terminal restart).
     BasicRestart,
 }
 
@@ -485,6 +488,12 @@ struct DeviceState {
     /// Whether a basic restart (`A_Restart`, terminal step) has been seen — so the
     /// terminal-restart-silence test can assert the restart was actually sent.
     saw_basic_restart: bool,
+    /// Count of bare `A_Restart`s (0x380) seen.
+    basic_restarts_seen: usize,
+    /// The device does not support the Master Reset: it answers every
+    /// master-reset `A_Restart` other than erase codes 1 and 7 with error code
+    /// 2, "unsupported erase code", and runs nothing (issue #611).
+    master_reset_unsupported: bool,
     /// Set when a terminal basic restart is seen under
     /// [`Fault::UnloadedAfterBasicRestart`], so the next `T_Connect` (the
     /// post-reboot reconnect) reverts `app_load_state` to `Unloaded` — modelling a
@@ -709,7 +718,14 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
     if req_apci == A_RESTART_MASTER_RESET {
         s.master_resets_seen += 1;
         s.last_master_reset_payload = data.to_vec();
+        if s.master_reset_unsupported {
+            // A device without this Master Reset (KNX 3/5/2 §3.7.1.2.3, Table
+            // 5): error code 2 "unsupported erase code", process time 0, and
+            // nothing runs: no reboot, nothing erased.
+            return Reaction::Answer(A_RESTART_RESPONSE, vec![0x02, 0x00, 0x00]);
+        }
         s.l4_dead_after_master_reset = true;
+        arm_restart_outage(&mut s, RestartKind::MasterReset);
         // KNX Virtual's EraseCode=4 reset erases the app object's load state and
         // drops the segment allocated before it. Model that: the object falls back
         // to Unloaded, the next allocation is placed at a FRESH base (so the tool
@@ -724,39 +740,6 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
             // from the stale pre-reset one — the tool must re-read it.
             s.last_segment_base = 0;
             s.last_segment_size = 0;
-        }
-        // error_code = 0x00, process_time = 1 s (the tool waits at least that).
-        return Reaction::Answer(A_RESTART_RESPONSE, vec![0x00, 0x00, 0x01]);
-    }
-    // Basic restart (bare A_Restart, 0x380, no payload). This is BOTH the terminal
-    // restart AND — matching ETS→KNX-Virtual — the mid-procedure master reset
-    // (bussard now realises LdCtrlMasterReset as a bare 0x380, not the confirmed
-    // 0x381). The device T_ACKs it (fire-and-forget, no A_Restart_Response) and, if
-    // this is the master reset, reboots.
-    //
-    // Distinguishing the two: when `wipe_app_on_master_reset` is set (the KV
-    // EraseCode=4 model the master-reset test enables) the FIRST bare restart is
-    // the master reset — it reboots (drops L4), wipes the app object, and is
-    // counted; any later bare restart is the terminal one (fire-and-forget). When
-    // the flag is unset, every bare restart is a plain terminal restart.
-    if req_apci & APCI_SELECTOR == A_RESTART_SEL {
-        s.saw_basic_restart = true;
-        arm_restart_outage(&mut s, RestartKind::BasicRestart);
-        let is_master_reset = s.wipe_app_on_master_reset && s.master_resets_seen == 0;
-        if !is_master_reset {
-            s.after_terminal_restart = Some(Vec::new());
-        }
-        if is_master_reset {
-            s.master_resets_seen += 1;
-            s.last_master_reset_payload = data.to_vec();
-            // Reboot: the device goes silent on THIS connection; the tool reconnects.
-            s.l4_dead_after_master_reset = true;
-            // KV EraseCode=4: erase the app object and drop its segment (see
-            // `wipe_app_on_master_reset`).
-            s.app_load_state = LS_UNLOADED;
-            s.app_erased_by_master_reset = true;
-            s.last_segment_base = 0;
-            s.last_segment_size = 0;
             // Multi-object flash: the reset erases the app object (obj4) load
             // state and drops its segment; the other table objects are untouched.
             if s.multi_object
@@ -765,7 +748,20 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
                 s.object_load_states.insert(app, LS_UNLOADED);
                 s.object_segment_bases.remove(&app);
             }
-        } else if s.fault == Fault::SilentAfterBasicRestart {
+        }
+        // error_code = 0x00, process_time = 1 s (the tool waits at least that).
+        return Reaction::Answer(A_RESTART_RESPONSE, vec![0x00, 0x00, 0x01]);
+    }
+    // Basic restart (bare A_Restart, 0x380, no payload): the terminal restart.
+    // The device T_ACKs it (fire-and-forget, no A_Restart_Response). Every
+    // `LdCtrlMasterReset` goes out in the confirmed form (0x381, above), on KNX
+    // Virtual too (issue #611).
+    if req_apci & APCI_SELECTOR == A_RESTART_SEL {
+        s.saw_basic_restart = true;
+        arm_restart_outage(&mut s, RestartKind::BasicRestart);
+        s.after_terminal_restart = Some(Vec::new());
+        s.basic_restarts_seen += 1;
+        if s.fault == Fault::SilentAfterBasicRestart {
             s.l4_dead_after_master_reset = true;
         } else if s.fault == Fault::UnloadedAfterBasicRestart {
             // The device reboots (goes silent on this link) and, on the next
@@ -1899,6 +1895,8 @@ fn fresh_device(fault: Fault) -> Shared {
         reboot_proceeded: Vec::new(),
         reboot_moved_on: false,
         saw_basic_restart: false,
+        basic_restarts_seen: 0,
+        master_reset_unsupported: false,
         revert_app_on_next_connect: false,
         after_terminal_restart: None,
         wipe_app_on_master_reset: false,
@@ -2063,8 +2061,9 @@ fn app_with_write_prop() -> TestResult<ApplicationProgram> {
 
 /// A single-application System B app whose procedure carries an
 /// `LdCtrlMasterReset` (EraseCode 4, ChannelNumber 0) mid-procedure, in the
-/// KNX-Virtual shape (a KNX Virtual `M-00FA_A-25xx` id, so the bare
-/// `A_Restart`, issue #605): allocate the segment, master-reset the device, then write
+/// KNX-Virtual shape (a KNX Virtual `M-00FA_A-25xx` id; the master reset goes
+/// out in the confirmed form there too, issue #611): allocate the segment,
+/// master-reset the device, then write
 /// the segment and complete the load. The master reset reboots the device and
 /// drops the L4 connection, so the download engine must reconnect and resume.
 fn app_with_master_reset() -> TestResult<ApplicationProgram> {
@@ -3594,22 +3593,17 @@ async fn flash_master_reset_reconnects_and_reaches_loaded() -> TestResult {
 
     {
         let s = lock(&state)?;
-        // The tool issued exactly one master reset, and it was a BARE A_Restart
-        // (0x380) with NO payload — exactly as ETS→KNX-Virtual sends it, NOT the
-        // confirmed master-reset A_Restart (0x381 + [erase_code, channel_number]).
+        // The tool issued exactly one master reset, in the confirmed form ETS
+        // sends KNX Virtual (issue #611, `dumpfile.pcap`): A_Restart master
+        // reset (0x381) with [erase_code, channel_number], not a bare A_Restart.
         assert_eq!(
             s.master_resets_seen, 1,
             "exactly one master reset was issued"
         );
-        assert!(
-            s.last_master_reset_payload.is_empty(),
-            "the master reset must be a bare A_Restart with no payload, got {:?}",
-            s.last_master_reset_payload
-        );
-        // The device did see the bare basic-restart APCI on the wire.
-        assert!(
-            s.saw_basic_restart,
-            "the master reset must be realised as a bare 0x380 A_Restart"
+        assert_eq!(
+            s.last_master_reset_payload,
+            vec![4, 0],
+            "the master reset carries the erase code and the channel number"
         );
         // The device reconnected: at least two L4 T_Connects (the original plus the
         // post-reboot reconnect).
@@ -3826,6 +3820,55 @@ async fn flash_master_reset_expecting_confirmed_form(id: &str) -> TestResult {
     Ok(())
 }
 
+/// Issue #611: a device that refuses the confirmed Master Reset with error
+/// code 2 ("unsupported erase code", KNX 3/5/2 §3.7.1.2.3) fails the flash,
+/// as it fails ETS's download (the `bare-restart` run of `syn-master-reset`):
+/// no Basic Restart goes out instead, and nothing is written after it.
+#[tokio::test]
+async fn test_flash_master_reset_refused_fails_the_flash() -> TestResult {
+    let (handle, state, gw) = setup_bus(Fault::None).await?;
+    lock(&state)?.master_reset_unsupported = true;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source = bussard_bus::ops::group_source(&handle);
+    let plan = plan_flash(
+        &app_with_master_reset()?,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    let connector = LeaseConnector::plain(handle.clone(), target, source, None);
+    let mut session = Session::open_with_key(connector, None).await?;
+    let result = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await;
+    let _ = session.into_disconnect().await;
+    let err = match result {
+        Ok(outcome) => return Err(format!("the flash must fail: {outcome:?}").into()),
+        Err(err) => err,
+    };
+    assert!(
+        err.to_string().contains("refused the master reset"),
+        "the error names the refusal: {err}"
+    );
+    {
+        let s = lock(&state)?;
+        assert_eq!(s.master_resets_seen, 1, "the confirmed form went out once");
+        assert_eq!(s.last_master_reset_payload, vec![4, 0]);
+        assert_eq!(s.basic_restarts_seen, 0, "no Basic Restart instead");
+        assert!(s.memory.is_empty(), "nothing written after the refusal");
+    }
+    let _ = handle.close().await;
+    drop(gw);
+    Ok(())
+}
+
 /// The #168 readiness probe after a master reset, behind an interface that
 /// reports negative `L_Data.con`s (issue #45): while the device boots, every
 /// probe frame comes back negatively confirmed. The probe must read that as
@@ -3844,8 +3887,8 @@ async fn test_flash_reboot_probe_treats_negative_con_as_not_up_yet() -> TestResu
     {
         let mut s = lock(&state)?;
         s.boot_silence = Some(Duration::from_millis(700));
-        // The KNX Virtual master reset of `app_with_master_reset`: a bare
-        // A_Restart that reboots the device.
+        // The master reset of `app_with_master_reset`: the confirmed
+        // A_Restart, after which the device reboots.
         s.wipe_app_on_master_reset = true;
     }
     let gw = start_gateway_booting(&state).await?;
@@ -5267,11 +5310,45 @@ async fn flash_da_tp_four_objects(
             &obj1_written, obj1_img,
             "obj1 address table landed at obj1's base"
         );
+        // Issue #611: the master reset goes out exactly as ETS sent it to the
+        // KNX Virtual DA.tp (the confirmed form, erase code 4, channel 0).
+        assert_eq!(s.master_resets_seen, 1, "one master reset");
+        assert_eq!(
+            s.last_master_reset_payload,
+            ets_knx_virtual_master_reset_payloads()?,
+            "the master reset matches ETS's to KNX Virtual"
+        );
     }
 
     let _ = handle.close().await;
     drop(gw);
     Ok((outcome, state))
+}
+
+/// The `[erase_code, channel_number]` of the master-reset `A_Restart`s (APCI
+/// 0x381) ETS sent the KNX Virtual DA.tp, from the request stream of
+/// `shared-with-windows/dumpfile.pcap` that knx-sim ships as a fixture
+/// (issue #611). The capture has exactly one, so this is its payload.
+fn ets_knx_virtual_master_reset_payloads() -> TestResult<Vec<u8>> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../knx-sim/tests/fixtures/ets_da_tp_flash_requests.txt");
+    let text = std::fs::read_to_string(&path)?;
+    let mut found = Vec::new();
+    for line in text.lines().filter(|l| !l.starts_with('#')) {
+        let Some(hex) = line.split_whitespace().nth(2) else {
+            continue;
+        };
+        let tpdu = (0..hex.len() / 2)
+            .map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16))
+            .collect::<Result<Vec<u8>, _>>()?;
+        if tpdu.len() >= 2 && ((u16::from(tpdu[0] & 0x03) << 8) | u16::from(tpdu[1])) == 0x381 {
+            found.push(tpdu[2..].to_vec());
+        }
+    }
+    match found.as_slice() {
+        [one] => Ok(one.clone()),
+        other => Err(format!("expected one master reset in the capture, found {other:?}").into()),
+    }
 }
 
 /// How the write phase of [`da_tp_preflight_then_flash`] gets its connection.
@@ -7585,12 +7662,12 @@ async fn test_flash_secure_resumes_tunnel_loss_during_terminal_restart_verify() 
 
 #[tokio::test]
 async fn test_flash_resumes_tunnel_loss_during_master_reset_reconnect() -> TestResult {
-    // The mid-procedure `LdCtrlMasterReset` (KNX Virtual's bare A_Restart,
-    // erase code 4): the link drops in its reconnect phase; the object is
-    // re-opened and re-allocated on the fresh connection as usual.
+    // The mid-procedure `LdCtrlMasterReset` (the confirmed form, erase code
+    // 4): the link drops in its reconnect phase; the object is re-opened and
+    // re-allocated on the fresh connection as usual.
     let (outcome, state) = flash_across_restart_outage(
         &app_with_master_reset()?,
-        RestartKind::BasicRestart,
+        RestartKind::MasterReset,
         false,
         |s| s.wipe_app_on_master_reset = true,
     )

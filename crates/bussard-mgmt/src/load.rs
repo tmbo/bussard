@@ -831,38 +831,6 @@ pub async fn read_manufacturer_id<Ch: L4Channel>(
     Ok(Some(u16::from_be_bytes([resp.data[0], resp.data[1]])))
 }
 
-/// Realises an `LdCtrlMasterReset` op the way ETS→KNX-Virtual does on the wire
-/// (only there; every other device gets the confirmed [`master_reset`]):
-/// as a **bare `A_Restart`** (APCI [`A_RESTART`](crate::apci::A_RESTART) = `0x380`,
-/// no payload), not the confirmed master-reset `A_Restart` (`0x381` + erase/channel).
-///
-/// The ETS→KNX-Virtual DA.tp capture shows the mid-procedure master reset sent as
-/// `4f 80` — a numbered `A_Restart` with an empty APDU. The device T_ACKs it at
-/// the transport layer and then simply reboots; it sends **no** application-layer
-/// `A_Restart_Response`. So this sends the bare restart as a numbered telegram
-/// (requiring the transport ACK, since a request that never lands is a real
-/// failure) and treats the following silence / disconnect / mid-session drop as
-/// the expected accepted outcome — the device is rebooting. The `erase_code` and
-/// `channel_number` from the op are accepted for the trace/label but are **not**
-/// on the wire in this realisation (a bare `A_Restart` carries no operands); they
-/// are logged for diagnosis only.
-///
-/// Clean-room: encoding and semantics from the published KNX spec (A_Restart) and
-/// verified against the real ETS→KNX-Virtual capture (bare `0x380`).
-pub async fn master_reset_via_basic_restart<Ch: L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
-    _erase_code: u8,
-    _channel_number: u8,
-) -> Result<()> {
-    let (apci, payload) = crate::apci::encode_restart(0);
-    // Fire-and-forget: a device reboots on A_Restart and never T_ACKs it (it
-    // drops the L4 link immediately), so send without awaiting the ACK — waiting
-    // would retransmit and spuriously report the device absent. The caller waits
-    // out the reboot and reconnects.
-    l4.send_data_unacked(apci, &payload).await?;
-    Ok(())
-}
-
 /// The process time above which bussard warns before it waits it out.
 ///
 /// KNX 3/5/2 §3.7.1.2.2 makes the process time a minimum the client waits
@@ -911,8 +879,8 @@ pub fn restart_process_wait(response: &RestartResponse) -> std::time::Duration {
 /// [`MgmtError::MalformedResponse`]; silence surfaces the connection's own error.
 ///
 /// A load procedure's `LdCtrlMasterReset` uses this form with the op's erase
-/// code and channel number on every device but KNX Virtual, which gets
-/// [`master_reset_via_basic_restart`] as its capture shows.
+/// code and channel number on every device, KNX Virtual included, as ETS
+/// does (issue #611).
 pub async fn master_reset<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     erase_code: u8,

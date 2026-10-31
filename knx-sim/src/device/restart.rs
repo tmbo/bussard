@@ -8,7 +8,7 @@ use crate::wire::apdu::{Apci, Apdu};
 use super::interface_object::iot;
 use super::{
     Device, DeviceError, DeviceReaction, ERASE_CODE_FACTORY_RESET_KEEP_IA, LoadState,
-    LoadStateMachine, PID_OBJECT_TYPE, Sys7LoadStateMachine,
+    LoadStateMachine, MasterResetSupport, PID_OBJECT_TYPE, Sys7LoadStateMachine,
 };
 
 impl Device {
@@ -142,6 +142,16 @@ impl Device {
         self.restart_process_time_s = seconds;
     }
 
+    /// How the device answers a Master Reset (builder-style; the
+    /// `master_reset` device option). [`MasterResetSupport::Supported`] by
+    /// default; the other two model a device without the Master Reset, so a
+    /// tool's handling of the refusal can be exercised (bussard issue #611:
+    /// ETS fails the download on `Refuse`).
+    pub fn with_master_reset(mut self, support: MasterResetSupport) -> Self {
+        self.master_reset = support;
+        self
+    }
+
     pub(super) fn on_restart(
         &mut self,
         tool: IndividualAddress,
@@ -150,19 +160,35 @@ impl Device {
         // A_Restart classification (KNX App-Layer 03.03.07 §3.4.2.2; ref
         // knx-device-spec-references.md §5):
         //   * APCI 0x380 with NO payload  = Basic Restart: reboot, drop the L4
-        //     connection, unconfirmed. It does NOT erase loaded tables. Both the
-        //     pre-flash restart and the final post-flash restart ETS sends to the
-        //     KNX-Virtual device are this bare form (verified in dumpfile.pcap:
-        //     `4f 80` and `73 80`), so a basic restart must never wipe memory —
-        //     otherwise the just-loaded image would be lost.
+        //     connection, unconfirmed. It does NOT erase loaded tables. The
+        //     restart after the address assignment and the final post-flash
+        //     restart ETS sends to the KNX-Virtual device are this bare form
+        //     (verified in dumpfile.pcap: `4f 80` and `73 80`), so a basic
+        //     restart must never wipe memory — otherwise the just-loaded image
+        //     would be lost.
         //   * APCI 0x381 with `[erase_code][channel]` = Master Reset: confirmed
         //     with A_Restart_Response (0x3A1) carrying `[error_code][process_time]`.
         //     erase codes 0x02..=0x08 reset the resources of KNX 3/5/2 Table 4;
         //     0x01 (ConfirmedRestart) resets nothing. Range 0x01..=0x08 is
         //     valid; others are refused. The mid-procedure master reset ETS
-        //     sends KNX Virtual is the bare form above (`4f 80`).
-        let is_master_reset = matches!(apdu.apci, Apci::RestartResponse) // 0x381
+        //     sends KNX Virtual is this confirmed form too (dumpfile.pcap
+        //     `43 81 04 00`, answered error 0, process time 0; bussard #611).
+        //   * The `master_reset` option models a device without the Master
+        //     Reset: `refuse` answers error code 2 and does nothing (no
+        //     reboot), `basic` runs it as a Basic Restart without an answer.
+        let addressed_master_reset = matches!(apdu.apci, Apci::RestartResponse) // 0x381
             || apdu.apci_raw == 0x381;
+        if addressed_master_reset && self.master_reset == MasterResetSupport::Refuse {
+            // KNX 3/5/2 §3.7.1.2.3, Table 5: "unsupported erase code", process
+            // time 0; neither a Basic Restart nor a Master Reset runs.
+            let response = self.respond(tool, 0x3A1, &[0x02, 0x00, 0x00]);
+            return Ok(DeviceReaction {
+                responses: vec![response],
+                did_master_reset: false,
+            });
+        }
+        let is_master_reset =
+            addressed_master_reset && self.master_reset == MasterResetSupport::Supported;
 
         let mut responses = Vec::new();
 
@@ -419,6 +445,56 @@ mod tests {
         for object in 1u8..=3 {
             assert_eq!(dev.load_state(object), Some(LoadState::Loaded));
         }
+        Ok(())
+    }
+
+    #[test]
+    fn test_on_restart_master_reset_refuse_answers_error_2_and_keeps_the_device()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // bussard #611: a device without the Master Reset (`master_reset:
+        // refuse`) answers error code 2 to every erase code, keeps its
+        // connection and resets nothing.
+        let mut dev = system_b_device()?.with_master_reset(MasterResetSupport::Refuse);
+        let base = dev.loadables.get(&3).ok_or("object 3")?.base;
+        dev.memory.allocate(3, base, 2);
+        dev.memory.write(3, base, &[0x12, 0x34])?;
+        for erase in [0x01u8, 0x04, 0x07] {
+            connect(&mut dev)?;
+            let reaction = dev.handle_cemi(&data(&dev, 0x381, &[erase, 0x00]))?;
+            assert!(!reaction.did_master_reset);
+            let resp = reaction
+                .responses
+                .iter()
+                .find(|r| r.tpdu.len() == 5)
+                .ok_or("an A_Restart_Response")?;
+            assert_eq!(&resp.tpdu[2..], &[0x02, 0x00, 0x00], "erase code {erase}");
+            assert!(dev.connected, "no reboot after a refusal");
+        }
+        assert_eq!(dev.load_state(3), Some(LoadState::Loaded));
+        assert_eq!(dev.memory().read(base, 2), vec![0x12, 0x34]);
+        // The Basic Restart a client sends instead still reboots the device.
+        let reaction = dev.handle_cemi(&data(&dev, 0x380, &[]))?;
+        assert!(!reaction.responses.iter().any(|r| r.tpdu.len() == 5));
+        assert!(!dev.connected);
+        Ok(())
+    }
+
+    #[test]
+    fn test_on_restart_master_reset_basic_reboots_without_an_answer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // `master_reset: basic`: the request runs as a Basic Restart, no
+        // A_Restart_Response, nothing erased.
+        let mut dev = system_b_device()?.with_master_reset(MasterResetSupport::Basic);
+        let base = dev.loadables.get(&3).ok_or("object 3")?.base;
+        dev.memory.allocate(3, base, 2);
+        dev.memory.write(3, base, &[0x12, 0x34])?;
+        connect(&mut dev)?;
+        let reaction = dev.handle_cemi(&data(&dev, 0x381, &[0x04, 0x00]))?;
+        assert!(!reaction.did_master_reset);
+        assert!(!reaction.responses.iter().any(|r| r.tpdu.len() == 5));
+        assert!(!dev.connected);
+        assert_eq!(dev.load_state(3), Some(LoadState::Loaded));
+        assert_eq!(dev.memory().read(base, 2), vec![0x12, 0x34]);
         Ok(())
     }
 }

@@ -22,7 +22,7 @@ use serde::Deserialize;
 
 use crate::bus::event::EventSink;
 use crate::bus::{Bus, StimulusJob};
-use crate::device::{Device, LoadState};
+use crate::device::{Device, LoadState, MasterResetSupport};
 use crate::prod::read_knxprod;
 use crate::wire::IndividualAddress;
 
@@ -282,6 +282,15 @@ pub struct DeviceConfig {
     /// Omit for no limit (the default).
     #[serde(default)]
     pub max_allocation: Option<u32>,
+    /// How the device answers a Master Reset (`A_Restart` restart type 1):
+    /// `supported` (the default, the confirmed form every captured device
+    /// answers, KNX Virtual included), `refuse` (error code 2 "unsupported
+    /// erase code", nothing runs) or `basic` (no answer, a Basic Restart
+    /// runs). The last two model a device without the Master Reset; ETS
+    /// fails a download whose procedure resets such a device (bussard issue
+    /// #611).
+    #[serde(default)]
+    pub master_reset: MasterResetSupport,
     /// How many times a load-state machine reports the intermediate state
     /// before the settled one: `LoadCompleting` (5) before `Loaded` after a
     /// `LoadCompleted`, `Unloading` (4) before `Unloaded` after an `Unload`
@@ -662,6 +671,7 @@ impl SimConfig {
             .with_l4_exchange_budget(effective_l4_budget(dc.l4_exchange_budget))
             .with_strict_l4_drop(dc.l4_strict_drop)
             .with_max_allocation(dc.max_allocation)
+            .with_master_reset(dc.master_reset)
             .with_intermediate_load_states(dc.intermediate_load_states);
             let device = match &dc.security {
                 Some(sec) if sec.status == SecurityStatus::Factory => {

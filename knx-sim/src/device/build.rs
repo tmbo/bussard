@@ -8,10 +8,10 @@ use crate::prod::{LoadableObject, ProductData};
 use crate::wire::IndividualAddress;
 
 use super::{
-    DEFAULT_RESTART_PROCESS_TIME_S, Device, InterfaceObject, LoadState, LoadStateMachine, Memory,
-    ObjectState, PID_LOAD_STATE_CONTROL, PID_OBJECT_TYPE, PID_PROGMODE, PID_PROGRAM_VERSION,
-    PID_TABLE_REFERENCE, Profile, Property, SecurityObject, Sys7LoadStateMachine, Sys7Runtime, iot,
-    profile,
+    DEFAULT_RESTART_PROCESS_TIME_S, Device, InterfaceObject, LoadState, LoadStateMachine,
+    MasterResetSupport, Memory, ObjectState, PID_LOAD_STATE_CONTROL, PID_OBJECT_TYPE, PID_PROGMODE,
+    PID_PROGRAM_VERSION, PID_TABLE_REFERENCE, Profile, Property, SecurityObject,
+    Sys7LoadStateMachine, Sys7Runtime, iot, profile,
 };
 
 /// Parse the 16-bit manufacturer id from an application id of the form
@@ -358,6 +358,7 @@ impl Device {
             secure,
             restart_process_time_s: DEFAULT_RESTART_PROCESS_TIME_S,
             max_allocation: None,
+            master_reset: MasterResetSupport::Supported,
             intermediate_reports: 0,
             intermediate: std::collections::BTreeMap::new(),
             events,
@@ -546,6 +547,7 @@ impl Device {
             secure,
             restart_process_time_s: DEFAULT_RESTART_PROCESS_TIME_S,
             max_allocation: None,
+            master_reset: MasterResetSupport::Supported,
             intermediate_reports: 0,
             intermediate: std::collections::BTreeMap::new(),
             events,
@@ -623,6 +625,7 @@ impl Device {
             secure: None,
             restart_process_time_s: DEFAULT_RESTART_PROCESS_TIME_S,
             max_allocation: None,
+            master_reset: MasterResetSupport::Supported,
             intermediate_reports: 0,
             intermediate: std::collections::BTreeMap::new(),
             events,
