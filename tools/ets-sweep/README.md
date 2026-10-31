@@ -622,3 +622,14 @@ Results (ETS 6.4.1 build 6.4.8718, VM sim 06a27ec0):
   (none), read-confirmed octets `identical`, load control
   `differs(1, first obj4#1 unload)` (`expect=not-comparable
   confirmed=identical loadctl=differs state=loaded`).
+- `other-app` of `syn-s7-0705` (2026-10-31): `syn-s7-hidden-default` (0705)
+  downloaded first, then `syn-s7-0705` into the same sim; both "Abgeschlossen".
+  The second download is request for request the `defaults` download: no
+  pre-download pass for a device that holds another application either.
+  Row: memory `identical`, load control `differs(1, first obj4#1 unload)`.
+- `other-app` of `syn-s7-0701` (2026-10-31): `syn-s7-lsm5` first, then
+  `syn-s7-0701`; the second download equals the `reload` one (unloads of LSM 1
+  to 3, read-compare, no memory written, the TaskSegment records name
+  `syn-s7-0701`). Row as `reload`. ETS reads no application id before a
+  System 7 download, so it cannot tell a programmed device from a fresh one,
+  and it sends the same stream (#488).
