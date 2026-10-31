@@ -147,11 +147,15 @@ The images the table ops stream are built in `crates/bussard-download/src/comput
 The parameter image writes a parameter the Dynamic walk does not reach at its
 default only when `ApplicationProgram::downloads_invisible_parameters` says so:
 never with `DownloadInvisibleParameters` or a preferred partial download; on
-System B at every schema; on System 7 from schema project/21 on (#448). The
-evidence is the synthetic twins `syn-s7-hidden-default` (project/23, default
-written) and `syn-s7-hidden-default-p11` (project/11, template kept), the
-System B `syn-hidden-default` and PRO 280 (default written), and the sweep's
-`A-FF11-15` (System 7, project/20, template kept); the table and the open
+System B at every schema; on System 7 when the application's `MinEtsVersion`
+is 5 or later (#448). The evidence is the synthetic twins
+`syn-s7-hidden-default` (project/23, 6.0, default written),
+`syn-s7-hidden-default-ets4` (project/23, 4.0, template kept) and
+`syn-s7-hidden-default-p11` (project/11, 4.0, template kept), the System B
+`syn-hidden-default` and PRO 280 (default written), and the sweep's
+`A-FF11-15` (System 7, project/20, 3.0d, template kept) and MDT leakage
+sensor `M-0083_A-014F-10` (System 7, project/20, 5.0, default written). The
+table and the open
 points are in `dev/system7-spec.md` section 4.7. A hidden `LegacyPatchAlways`
 parameter is written at its default regardless (#450).
 

@@ -4155,10 +4155,11 @@ mod tests {
     }
 
     /// Issue #448: a System 7 program without `DownloadInvisibleParameters`
-    /// keeps the template for hidden parameters up to project/20 (Steinel
-    /// HPD 2, Busch-Jaeger `A-FF11-15`), where the same System B program
-    /// writes their defaults; from project/21 on it writes them too
-    /// (`syn-s7-hidden-default`). A System B one that prefers a partial
+    /// keeps the template for hidden parameters when its `MinEtsVersion` is
+    /// below 5 or absent (Steinel HPD 2, Busch-Jaeger `A-FF11-15`,
+    /// `syn-s7-hidden-default-ets4`), where the same System B program writes
+    /// their defaults; from `MinEtsVersion` 5 on it writes them too
+    /// (`syn-s7-hidden-default`, 6.0). A System B one that prefers a partial
     /// download keeps the template (Zennio DALI-BOX `A-3311`).
     #[test]
     fn test_compute_parameter_image_dynamic_hidden_defaults_follow_the_system() -> Result<()> {
@@ -4177,15 +4178,24 @@ mod tests {
             assert!(!app.downloads_invisible_parameters(), "{mask}");
             let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
             assert_eq!(images["A_RS-1"], [0, 0, 0, 1], "{mask}");
-            for schema in ["21", "23"] {
-                let newer = system7.replace(
-                    "http://knx.org/xml/project/20",
-                    &format!("http://knx.org/xml/project/{schema}"),
+            for (min_ets, writes) in [("4.0", false), ("5.0", true), ("6.0", true)] {
+                let declared = system7.replace(
+                    r#"Name="bm">"#,
+                    &format!(r#"Name="bm" MinEtsVersion="{min_ets}">"#),
                 );
-                let app = parse_application_program("A", newer.as_bytes())?;
-                assert!(app.downloads_invisible_parameters(), "{mask} {schema}");
+                let app = parse_application_program("A", declared.as_bytes())?;
+                assert_eq!(
+                    app.downloads_invisible_parameters(),
+                    writes,
+                    "{mask} {min_ets}"
+                );
                 let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
-                assert_eq!(images["A_RS-1"], [0x02, 0x58, 5, 1], "{mask} {schema}");
+                let expected = if writes {
+                    [0x02, 0x58, 5, 1]
+                } else {
+                    [0, 0, 0, 1]
+                };
+                assert_eq!(images["A_RS-1"], expected, "{mask} {min_ets}");
             }
         }
         // System B writes them in an older schema too.
