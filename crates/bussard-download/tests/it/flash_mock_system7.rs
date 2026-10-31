@@ -231,11 +231,35 @@ struct DeviceState {
     /// For each segment content write, whether verify mode was on when it
     /// arrived (issue #524).
     writes_in_verify_mode: Vec<bool>,
+    /// The LSM that passes through the intermediate states (issue #479):
+    /// `(lsm, reports)` reports `LoadCompleting` after a `LoadCompleted` and
+    /// `Unloading` after an `Unload` of a non-Unloaded machine `reports` times
+    /// (the write's answer, then each state read) before the settled state.
+    intermediate_lsm: Option<(u8, u32)>,
+    /// The intermediate state an LSM still reports and how many more times.
+    intermediate: HashMap<u8, (u8, u32)>,
+    /// How many intermediate states the device reported.
+    intermediate_reported: usize,
 }
 
 impl DeviceState {
     fn lsm_state(&self, lsm: u8) -> u8 {
         self.lsm_states.get(&lsm).copied().unwrap_or(LS_UNLOADED)
+    }
+
+    /// The state LSM `lsm` reports to the tool now: its pending intermediate
+    /// state while it has reports left (each call uses one), else its state.
+    fn report_state(&mut self, lsm: u8) -> u8 {
+        if let Some((state, left)) = self.intermediate.get_mut(&lsm) {
+            let state = *state;
+            *left = left.saturating_sub(1);
+            if *left == 0 {
+                self.intermediate.remove(&lsm);
+            }
+            self.intermediate_reported += 1;
+            return state;
+        }
+        self.lsm_state(lsm)
     }
 }
 
@@ -295,6 +319,9 @@ fn fresh_device(mode: LsmMode, fault: Fault) -> Shared {
         corrupt_echo: false,
         drop_after_echoes: None,
         writes_in_verify_mode: Vec::new(),
+        intermediate_lsm: None,
+        intermediate: HashMap::new(),
+        intermediate_reported: 0,
     }))
 }
 
@@ -506,7 +533,7 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
                 && (LSM_STATUS_ADDR..LSM_STATUS_ADDR + 8).contains(&a)
             {
                 let lsm = (a - LSM_STATUS_ADDR + 1) as u8;
-                s.lsm_state(lsm)
+                s.report_state(lsm)
             } else {
                 s.memory.get(&a).copied().unwrap_or(0)
             };
@@ -652,7 +679,7 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
                 );
             }
             s.lsm_state_reads += 1;
-            let st = s.lsm_state(obj);
+            let st = s.report_state(obj);
             return Reaction::Answer(
                 A_PROPERTY_VALUE_RESPONSE,
                 prop_response(obj, pid, 1, start, &[st]),
@@ -721,7 +748,7 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
                 );
             }
             apply_lsm_event(&mut s, obj, value);
-            let st = s.lsm_state(obj);
+            let st = s.report_state(obj);
             return Reaction::Answer(
                 A_PROPERTY_VALUE_RESPONSE,
                 prop_response(obj, pid, 1, start, &[st]),
@@ -767,6 +794,11 @@ fn apply_lsm_event(s: &mut DeviceState, lsm: u8, event: &[u8]) {
     };
     let cur = s.lsm_state(lsm);
     s.lsm_events.push((lsm, opcode));
+    // Still Unloading or LoadCompleting: the event is ignored (KNX 3/5/1
+    // Table 94) and the answer reports the intermediate state.
+    if s.intermediate.contains_key(&lsm) {
+        return;
+    }
     // The AdditionalLoadControls sub-command selector (octet 1); 0x02 = Task.
     let subtype = event.get(1).copied().unwrap_or(0);
     if opcode == 3
@@ -804,6 +836,16 @@ fn apply_lsm_event(s: &mut DeviceState, lsm: u8, event: &[u8]) {
         _ => cur,
     };
     s.lsm_states.insert(lsm, next);
+    let intermediate = match opcode {
+        LE_LOAD_COMPLETED if cur == LS_LOADING && next == LS_LOADED => Some(5),
+        LE_UNLOAD if cur != LS_UNLOADED => Some(4),
+        _ => None,
+    };
+    if let (Some(state), Some((only, reports))) = (intermediate, s.intermediate_lsm)
+        && only == lsm
+    {
+        s.intermediate.insert(lsm, (state, reports));
+    }
 }
 
 /// The gateway-level fault of issue #192: a link outage in the reconnect phase
@@ -1050,6 +1092,89 @@ async fn run_full_flash(mode: LsmMode) -> Result<(), Box<dyn std::error::Error>>
 #[tokio::test]
 async fn flash_system7_memory_mapped_reaches_loaded() -> Result<(), Box<dyn std::error::Error>> {
     run_full_flash(LsmMode::MemoryMapped).await
+}
+
+/// A full flash of a device whose LSM 1 reports `Unloading` once after the
+/// `Unload` and `LoadCompleting` once after the `LoadCompleted` (issue #479):
+/// the executor re-reads after the 3 s pause of KNX 3/5/1 §4.23.2.4.1 and the
+/// flash reaches Loaded. Returns the device state after the flash.
+async fn run_intermediate_flash(mode: LsmMode) -> Result<Shared, Box<dyn std::error::Error>> {
+    set_sys7_lsm_env(mode);
+    let state = fresh_device(mode, Fault::None);
+    {
+        let mut s = lock(&state);
+        // LSM 1 starts Loaded, so its Unload passes through Unloading.
+        s.lsm_states.insert(1, LS_LOADED);
+        s.intermediate_lsm = Some((1, 1));
+    }
+    let handle = start_gateway(&state).await?;
+    let mut bus = Transport::connect(
+        &ConnectionConfig::tunnel(handle.addr())
+            .with_reconnect(bussard_transport::TunnelReconnect::disabled()),
+    )
+    .await?;
+    let target: bussard_model::IndividualAddress = DEVICE.parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
+    let plan = plan_flash(
+        &mdt_canonical_app()?,
+        DEVICE,
+        MASK_0705,
+        &no_overrides(),
+        &std::collections::BTreeMap::new(),
+        None,
+        &std::collections::BTreeMap::new(),
+    )?;
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await?;
+    let started = std::time::Instant::now();
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_p| {},
+    )
+    .await?;
+    let elapsed = started.elapsed();
+    assert!(outcome.ok(), "flash should reach Loaded: {outcome:?}");
+    {
+        let s = lock(&state);
+        assert_eq!(
+            s.intermediate_reported, 2,
+            "LSM 1 reported Unloading and LoadCompleting once each"
+        );
+        assert!(s.intermediate.is_empty(), "no intermediate state left");
+        for lsm in [1u8, 2, 3] {
+            assert_eq!(s.lsm_state(lsm), LS_LOADED, "LSM {lsm} should be Loaded");
+        }
+    }
+    // One 3 s pause before the re-read of each intermediate state.
+    assert!(
+        elapsed >= Duration::from_secs(6),
+        "two 3 s pauses expected, took {elapsed:?}"
+    );
+    drop(handle);
+    let _ = session.into_disconnect().await;
+    Ok(state)
+}
+
+#[tokio::test]
+async fn test_flash_sys7_property_polls_through_intermediate_states()
+-> Result<(), Box<dyn std::error::Error>> {
+    let state = run_intermediate_flash(LsmMode::Property).await?;
+    // The 0705 form: the write answers carried both intermediate states, and
+    // each was followed by exactly one PID 5 re-read.
+    let s = lock(&state);
+    assert!(s.lsm_state_reads >= 2, "reads: {}", s.lsm_state_reads);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_sys7_memory_mapped_polls_through_intermediate_states()
+-> Result<(), Box<dyn std::error::Error>> {
+    let state = run_intermediate_flash(LsmMode::MemoryMapped).await?;
+    let s = lock(&state);
+    assert_eq!(s.lsm5_property_accesses, 0, "no PID 5 on the 0701 form");
+    Ok(())
 }
 
 /// `LdCtrlDelay` before the restart (issue #615): the executor pauses the

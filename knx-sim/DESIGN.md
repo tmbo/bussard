@@ -148,7 +148,13 @@ is Error. A PID 5 write value is always 10 octets; a shorter one is refused.
 An Unload frees the object's allocation (the octets stay, as the partial
 download relies on) and zeroes PID 7, an allocation sets it
 again, and a device configured with `max_allocation` fails a larger
-allocation (Error, PID 7 zero; Configuration Procedures §3.5.1.2). A master
+allocation (Error, PID 7 zero; Configuration Procedures §3.5.1.2). A device
+configured with `intermediate_load_states: n` reports the optional
+intermediate states of Table 92 `n` times before the settled one (each write
+answer, PID 5 read or memory-mapped status read is one report):
+LoadCompleting (5) after a LoadCompleted from Loading, Unloading (4) after an
+Unload of a machine that held something. A load event in either state is
+ignored and answered with it (Table 94). A master
 reset executes erase codes 2 to 8 (KNX 3/5/2 Table 4) and answers error code 3
 for any channel number other than 0, since the sim models no channels.
 
