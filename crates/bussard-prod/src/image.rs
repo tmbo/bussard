@@ -47,7 +47,7 @@
 //! writes is then set to `0xFF`, the erased flash ETS writes there (issue
 //! #377, see `ERASED_FILL`).
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use bussard_ets::application::{
@@ -710,16 +710,20 @@ fn dynamic_image(
             ),
         ));
     }
-    // A calculation that could not run leaves its outputs at a value ETS
-    // would not have. One that decides a `<choose>`, an `<Assign>` or another
-    // calculation steers the configuration even when nothing writes it.
-    let decides = if config.refused_calculations.is_empty() {
-        HashSet::new()
-    } else {
-        bussard_ets::dynamic::refs_read_by_dynamic(app)
-    };
-    for calc in &config.refused_calculations {
-        if let Some(output) = calc.outputs.iter().find(|o| decides.contains(*o)) {
+    // A calculation that could not run leaves its outputs, and every value
+    // copied or computed from them, at a value ETS would not have. One that
+    // decides a `<choose>` or a `<Repeat>` steers the configuration even when
+    // nothing writes it; one only a display text reads does not matter.
+    let derived = bussard_ets::dynamic::refs_derived_from(app, &config.refused_calculations);
+    if !derived.is_empty() {
+        let decides = bussard_ets::dynamic::refs_read_by_dynamic(app);
+        let mut steering: Vec<(&String, &usize)> = derived
+            .iter()
+            .filter(|(r, _)| decides.contains(*r))
+            .collect();
+        steering.sort();
+        if let Some(&(output, &i)) = steering.first() {
+            let calc = &config.refused_calculations[i];
             return Err(param_err(
                 app,
                 output,
@@ -747,13 +751,9 @@ fn dynamic_image(
             .or_insert_with(|| base_image(app, seg));
     }
 
-    // An output of a calculation that could not run holds a value the
-    // script did not compute; writing it would be a silent wrong image.
-    let refused: BTreeMap<&str, &bussard_ets::dynamic::RefusedCalculation> = config
-        .refused_calculations
-        .iter()
-        .flat_map(|calc| calc.outputs.iter().map(move |r| (r.as_str(), calc)))
-        .collect();
+    // An output of a calculation that could not run, or a value copied from
+    // one, holds a value the script did not compute; writing it would be a
+    // silent wrong image.
     let computed_by: BTreeMap<&str, &str> = app
         .calculations
         .iter()
@@ -765,9 +765,9 @@ fn dynamic_image(
         .collect();
     for slot in dynamic_parameter_slots(app, config)? {
         if let Some(ref_id) = slot.param_ref_id.as_deref()
-            && slot.module.is_none()
-            && let Some(calc) = refused.get(ref_id)
+            && let Some(&i) = derived.get(ref_id)
         {
+            let calc = &config.refused_calculations[i];
             return Err(param_err(
                 app,
                 ref_id,
