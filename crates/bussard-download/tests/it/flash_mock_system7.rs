@@ -3474,12 +3474,13 @@ async fn run_parameters_only_sys7(mode: LsmMode) -> Result<(), Box<dyn std::erro
         partial.steps
     );
     assert!(matches!(partial.steps.last(), Some(FlashStep::Restart)));
-    // ETS restarts the device before a parameter download too, but unloads
-    // nothing (meteodata-1-1-202.pcapng, issue #116).
+    // No pre-download pass (issue #488): ETS's partial download into a
+    // loaded device sends no unload and no restart before the procedure.
     assert!(
-        partial
+        !partial
             .steps
-            .contains(&FlashStep::Sys7PreDownloadRestart { unload: Vec::new() }),
+            .iter()
+            .any(|st| matches!(st, FlashStep::Sys7PreDownloadRestart { .. })),
         "{:?}",
         partial.steps
     );
@@ -4299,8 +4300,8 @@ async fn test_write_sys7_task_segments_carry_the_product_identity()
 /// pre-download pass, as ETS gives none to a factory-fresh device (all 31
 /// System 7 sweep downloads): the first load event is the procedure's own
 /// unload of LSM 1, LSM 4 is never touched, and the device still reaches
-/// Loaded. With the pass (a device with an application) LSM 4 is unloaded
-/// first.
+/// Loaded. With the pass (`flash --full`, ETS's unload before the download)
+/// LSM 4 is unloaded first.
 #[tokio::test]
 async fn test_flash_sys7_skip_prelude_unloads_only_the_procedure_lsms()
 -> Result<(), Box<dyn std::error::Error>> {

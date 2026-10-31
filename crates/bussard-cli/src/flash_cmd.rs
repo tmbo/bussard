@@ -690,6 +690,7 @@ pub fn run(
         Some(&freshness),
         resident.as_ref(),
         no_factory_reset,
+        full,
         model.as_ref(),
         target,
         &secure_material,
@@ -1052,9 +1053,9 @@ fn dry_run(
     // stands in for the pre-flight probe: the verdict shapes the plan as it
     // does live.
     // The recorded objects are System B interface objects, or on a System 7
-    // plan the load-state machines (issue #488: an all-Unloaded record drops
-    // the pre-download pass, as on a factory-fresh device). A property-only
-    // plan keeps the offline shape.
+    // plan the load-state machines. A property-only plan keeps the offline
+    // shape. The System 7 pre-download pass follows `--full` alone, as live
+    // (issue #488).
     let recorded = match resident {
         Some(path) if !parameters_only && !plan.is_property_only() => {
             let recorded = crate::flash_resident::Recorded::read(path)?;
@@ -1076,6 +1077,7 @@ fn dry_run(
         freshness.as_ref(),
         recorded.as_ref().map(|r| &r.state),
         no_factory_reset,
+        full,
     );
     if parameters_only {
         return crate::flash_params::dry_run(target, &plan, output.json);

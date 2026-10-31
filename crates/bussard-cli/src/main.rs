@@ -1013,7 +1013,11 @@ enum Command {
         /// Skip nothing: re-stream every object. By default an object whose
         /// resident image already matches (MCB size and CRC, object `Loaded`)
         /// is skipped when re-flashing the same application, so a
-        /// parameter-only change does not re-download the code segment.
+        /// parameter-only change does not re-download the code segment. On
+        /// System 7 (mask 0701/0705) it also first unloads load-state machines
+        /// 1 to 4 and restarts the device, as ETS does when its Unload command
+        /// precedes the download; a plain flash, like ETS's application
+        /// download, sends neither (issue #488).
         #[arg(long)]
         full: bool,
         /// Skip the factory reset before the download. By default a System B
