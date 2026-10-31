@@ -1,0 +1,72 @@
+{
+ "variant": "reload",
+ "product": "syn-s7-0701",
+ "steps": [
+  {
+   "step": "base",
+   "product": "syn-s7-0701",
+   "signed_id": "M-00FA_A-2801-10-35EF",
+   "mode": "application",
+   "catalog_row": {
+    "y": 1507,
+    "name": "Back-door actuator",
+    "order": "NEST-BKDOOR",
+    "application": "Hintertürantrieb",
+    "version": "1.0",
+    "online": false
+   },
+   "download": {
+    "ia": "1.1.1",
+    "mode": "application",
+    "medium_dialog_kept": false,
+    "password_dialog": false,
+    "certificate_dialog": false,
+    "ok": true
+   },
+   "end": "device restarted",
+   "ets": "ok",
+   "history": [
+    "Historie löschen",
+    "1.1.1",
+    "1.1.1",
+    "1.1.1"
+   ],
+   "frames": 742,
+   "loaded_objects": [
+    "1",
+    "2",
+    "3"
+   ],
+   "ops": 77
+  },
+  {
+   "step": "capture",
+   "product": "syn-s7-0701",
+   "signed_id": "M-00FA_A-2801-10-35EF",
+   "mode": "application",
+   "download": {
+    "ia": "1.1.1",
+    "mode": "application",
+    "medium_dialog_kept": false,
+    "password_dialog": false,
+    "certificate_dialog": false,
+    "ok": true
+   },
+   "end": "device restarted",
+   "ets": "ok",
+   "history": [
+    "Historie löschen",
+    "1.1.1",
+    "1.1.1",
+    "1.1.1"
+   ],
+   "frames": 580,
+   "loaded_objects": [
+    "1",
+    "2",
+    "3"
+   ],
+   "ops": 57
+  }
+ ]
+}

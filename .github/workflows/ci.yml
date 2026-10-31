@@ -444,6 +444,12 @@ jobs:
           BUSSARD_KNX_SIM_BIN="$PWD/knx-sim/target/debug/serve" \
             cargo nextest run -p bussard-cli --profile ci \
             -E 'binary(it) & test(/^sim_catalog_loop::test_sim_catalog_loop_synthetic_catalogue_shard_/)'
+          # The synthetic oracle rows that replay a capture into knx-sim
+          # before bussard writes (the `partial` run variant, epic #596):
+          # the rest of captures/synthetic/rows.txt runs in the test job.
+          KNX_SIM_BIN="$PWD/knx-sim/target/debug/serve" \
+            cargo nextest run -p bussard-cli --profile ci \
+            -E 'binary(it) & test(/^offline_oracle::test_offline_oracle_synthetic_sim_rows_pass_the_check$/)'
           # The transport connection timeout against the Style 3 sim
           # (issue #575): an idle management connection reconnects.
           BUSSARD_KNX_SIM_BIN="$PWD/knx-sim/target/debug/serve" \

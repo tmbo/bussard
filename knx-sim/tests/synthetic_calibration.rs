@@ -13,6 +13,13 @@
 //! segment where ETS allocated it, and memory holding what ETS wrote. A new
 //! product joins when its capture is committed. Ungated: committed files only,
 //! no Python and no bussard crate.
+//!
+//! A run variant whose capture is a download into a device that an earlier
+//! download of the same sim session already programmed (`reload`,
+//! `other-app`, `partial`: `tools/ets-sweep/synthetic/capture.py --variant`)
+//! commits those earlier downloads as `base-requests.txt`. They are replayed
+//! first, into the same device, so the captured download meets the device ETS
+//! met; the checks then apply to the captured download as above.
 
 use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
@@ -155,6 +162,13 @@ fn replay(capture: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let (bytes, app) = product(&name)?;
     let pd = read_knxprod_bytes(&bytes, Some(&app))?;
     let stream = requests(&capture.join("requests.txt"))?;
+    // The earlier downloads of a run variant (module doc), replayed first.
+    let base = capture.join("base-requests.txt");
+    let base = if base.is_file() {
+        requests(&base)?
+    } else {
+        Vec::new()
+    };
     let image: Image =
         serde_norway::from_str(&std::fs::read_to_string(capture.join("image.json"))?)?;
     // The sweep's sim device: Unloaded, at the first individual destination.
@@ -179,7 +193,7 @@ fn replay(capture: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
         },
         sink.clone(),
     )?);
-    for (src, dst, tpdu) in stream {
+    for (src, dst, tpdu) in base.into_iter().chain(stream) {
         let _ = bus.deliver_from_tool(&CemiLData {
             message_code: MessageCode::LDataReq,
             ctrl1: 0xbc,

@@ -18,15 +18,23 @@ use zip::write::SimpleFileOptions;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-/// `tests-support/synthetic-products/syn-minimal/xml/`.
-fn syn_minimal_xml() -> PathBuf {
+/// `tests-support/synthetic-products/<product>/xml/`.
+fn synthetic_xml(product: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests-support/synthetic-products/syn-minimal/xml")
+        .join("../../tests-support/synthetic-products")
+        .join(product)
+        .join("xml")
 }
 
 /// Zips `syn-minimal`'s XML with the stub master into `out`.
 fn zip_syn_minimal(out: &Path) -> TestResult {
-    let root = syn_minimal_xml();
+    zip_synthetic("syn-minimal", out)
+}
+
+/// Zips the synthetic `product`'s XML with the stub master into `out`, the
+/// way the synthetic catalogue ships it.
+pub(crate) fn zip_synthetic(product: &str, out: &Path) -> TestResult {
+    let root = synthetic_xml(product);
     let mut zip = zip::ZipWriter::new(std::fs::File::create(out)?);
     let opts = SimpleFileOptions::default();
     zip.start_file("knx_master.xml", opts)?;

@@ -112,12 +112,44 @@ fn test_manifest_captures_match_committed_xml() -> TestResult {
             .join(product)
             .join("xml");
         let digest = xml_digest(&xml)?;
+        // A run variant is re-captured with its own option.
+        let option = if variant == "defaults" {
+            String::new()
+        } else {
+            format!(" --variant {variant}")
+        };
         if digest != recorded {
             stale.push(format!(
                 "{product}/{variant}: captured from xml/ {recorded}, the committed xml/ is \
                  {digest}. Re-capture it with ETS: `uv run tools/ets-sweep/synthetic/capture.py \
-                 {product}` (tests-support/synthetic-products/README.md, \"Captures\"), and \
-                 commit captures/synthetic/ with the product."
+                 {product}{option}` (tests-support/synthetic-products/README.md, \"Captures\"), \
+                 and commit captures/synthetic/ with the product."
+            ));
+        }
+        // The other products a run variant downloaded first (`other-app`).
+        if let Some(bases) = e["base_xml_sha256"].as_object() {
+            for (base, recorded) in bases {
+                let digest = xml_digest(
+                    &root
+                        .join("tests-support/synthetic-products")
+                        .join(base)
+                        .join("xml"),
+                )?;
+                if Some(digest.as_str()) != recorded.as_str() {
+                    stale.push(format!(
+                        "{product}/{variant}: the first download was {base} of xml/ {recorded}, \
+                         the committed xml/ is {digest}. Re-capture it: `uv run \
+                         tools/ets-sweep/synthetic/capture.py {product}{option}`."
+                    ));
+                }
+            }
+        }
+        // A variant with earlier downloads replays them first (knx-sim's
+        // synthetic_calibration.rs).
+        let dir = root.join("captures/synthetic").join(product).join(variant);
+        if dir.join("base.pcapng").is_file() != dir.join("base-requests.txt").is_file() {
+            stale.push(format!(
+                "{product}/{variant}: base.pcapng and base-requests.txt come together"
             ));
         }
         let dir = root.join("captures/synthetic").join(product).join(variant);

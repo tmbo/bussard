@@ -1,0 +1,29 @@
+normalized operation sequence for 1.1.1 (captures/synthetic/syn-minimal/partial/ets.pcapng)
+dropped: 0 L_Data.con echo(es), 0 repeat(s), 41 L4 ack(s)
+
+   1  connect T_Connect
+   2  descriptor type0 type=0
+   3  prop-read obj0/PID_MAX_APDU_LENGTH count=1 index=1
+   4  authorize Authorize_Request key=FFFFFFFF(free-access)
+   5  prop-desc-read obj2/PID_23 obj=2 pid=23 pid_name=PID_23 prop_index=0
+   6  prop-read obj0/PID_SERIAL_NUMBER count=1 index=1
+   7  prop-read obj4/PID_LOAD_STATE_CONTROL count=1 index=1
+   8  prop-read obj4/PID_PROGRAM_VERSION count=1 index=1
+   9  prop-read obj5/PID_LOAD_STATE_CONTROL count=1 index=1
+  10  prop-read obj0/PID_MANUFACTURER_ID count=1 index=1
+  11  prop-read obj0/PID_TABLE count=1 index=1
+  12  prop-read obj0/PID_HARDWARE_TYPE count=1 index=1
+  13  prop-read obj0/PID_ORDER_INFO count=1 index=1
+  14  prop-read obj4/PID_TABLE_REFERENCE count=1 index=1
+  15  load-event obj4/PID_LOAD_STATE_CONTROL event=Unload index=1
+  16  load-event obj4/PID_LOAD_STATE_CONTROL event=StartLoading index=1
+  17  alloc-record obj4/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlRelSegment seg_size=256 fill=False fill_byte=0x00
+  18  prop-read obj4/PID_TABLE_REFERENCE count=1 index=1
+  19  mem-write 0x6000 addr_int=24576 len=3 sha=28d21021 extended=False
+  20  prop-write obj4/PID_PROGRAM_VERSION count=1 index=1 len=5 sha=162dae9b
+  21  load-event obj4/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1
+  22  restart Restart type=basic
+  23  disconnect T_Disconnect
+
+memory image (1 region(s), chunking removed):
+    0x006000..0x006003 len=3 sha=28d21021

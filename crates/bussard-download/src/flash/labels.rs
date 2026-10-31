@@ -124,6 +124,7 @@ pub(super) fn step_label(step: &FlashStep) -> String {
             start_element,
             count,
             verify,
+            ..
         } => {
             let elements = if *count > 1 {
                 format!(", {count} elements")

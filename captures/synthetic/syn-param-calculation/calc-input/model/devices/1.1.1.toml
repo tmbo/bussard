@@ -1,0 +1,6 @@
+# The device of the calc-input variant of syn-param-calculation (capture.py).
+address = "1.1.1"
+name = "syn-param-calculation"
+
+[parameters]
+delay-s = 500

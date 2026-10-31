@@ -1,0 +1,9 @@
+{
+"about": "The memory ETS allocated and wrote in captures/synthetic/syn-s7-0701/other-app/ets.pcapng (knxtrace image), written by tools/ets-sweep/synthetic/capture.py for knx-sim/tests/synthetic_calibration.rs.",
+"segments": [
+
+],
+"regions": [
+  {"start": 260, "hex": "3200000000000000000000"}
+]
+}

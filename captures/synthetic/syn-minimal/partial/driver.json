@@ -1,0 +1,84 @@
+{
+ "variant": "partial",
+ "product": "syn-minimal",
+ "steps": [
+  {
+   "step": "base",
+   "product": "syn-minimal",
+   "signed_id": "M-00FA_A-2700-10-D80E",
+   "mode": "application",
+   "catalog_row": {
+    "y": 1510,
+    "name": "-side light switch Nest",
+    "order": "NEST-LIGHT",
+    "application": "Nestlichtschalter",
+    "version": "1.0",
+    "online": false
+   },
+   "download": {
+    "ia": "1.1.1",
+    "mode": "application",
+    "medium_dialog_kept": false,
+    "password_dialog": false,
+    "certificate_dialog": false,
+    "ok": true
+   },
+   "end": "device restarted",
+   "ets": "ok",
+   "history": [
+    "Historie löschen",
+    "1.1.1 Nest-side light switch",
+    "Programmieren(Appl.): Abgeschlossen",
+    "Keine Details verfügbar"
+   ],
+   "frames": 520,
+   "loaded_objects": [
+    "1",
+    "2",
+    "3",
+    "4"
+   ],
+   "ops": 43
+  },
+  {
+   "step": "capture",
+   "product": "syn-minimal",
+   "signed_id": "M-00FA_A-2700-10-D80E",
+   "mode": "partial",
+   "params": [
+    {
+     "text": "Delay (s)",
+     "kind": "int",
+     "value": "500",
+     "key": "delay-s",
+     "model": 500,
+     "set": true,
+     "page": "General",
+     "row": "500",
+     "seen": null
+    }
+   ],
+   "download": {
+    "ia": "1.1.1",
+    "mode": "partial",
+    "medium_dialog_kept": false,
+    "password_dialog": false,
+    "certificate_dialog": false,
+    "ok": true
+   },
+   "end": "device restarted",
+   "ets": "ok",
+   "history": [
+    "Historie löschen",
+    "1.1.1 Nest-side light switch",
+    "Programmieren(Part.): Abgeschlossen",
+    "Keine Details verfügbar"
+   ],
+   "frames": 280,
+   "loaded_objects": [
+    "4"
+   ],
+   "ops": 23
+  }
+ ]
+}

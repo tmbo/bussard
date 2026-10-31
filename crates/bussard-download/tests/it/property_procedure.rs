@@ -142,6 +142,7 @@ fn test_plan_flash_lowers_a_property_only_procedure_on_mask_0021() -> TestResult
                 start_element: 1,
                 count: 1,
                 verify: true,
+                from_parameters: true,
             },
             FlashStep::WriteProp {
                 object: PropObject::Type {
@@ -153,6 +154,7 @@ fn test_plan_flash_lowers_a_property_only_procedure_on_mask_0021() -> TestResult
                 start_element: 1,
                 count: 2,
                 verify: true,
+                from_parameters: true,
             },
             FlashStep::WriteProp {
                 object: PropObject::Type {
@@ -164,6 +166,7 @@ fn test_plan_flash_lowers_a_property_only_procedure_on_mask_0021() -> TestResult
                 start_element: 1,
                 count: 1,
                 verify: false,
+                from_parameters: true,
             },
         ]
     );

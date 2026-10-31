@@ -1,0 +1,7 @@
+# The device of the links variant of syn-minimal (capture.py).
+address = "1.1.1"
+name = "syn-minimal"
+
+[links]
+0.listen = ["1/0/1", "1/0/2"]
+1.send = "1/0/3"

@@ -32,18 +32,23 @@ next to it, and zips it on demand.
 | [`syn-ip-address-param`](syn-ip-address-param/product.toml) | `NEST-HOMING` | 07B0 | TypeIPAddress parameter in memory | #457 |
 | [`syn-le-order`](syn-le-order/product.toml) | `NEST-ALTI` | 07B0 | ParameterByteOrder LittleEndian with integers and floats | #403 |
 | [`syn-legacy-patch-always`](syn-legacy-patch-always/product.toml) | `NEST-PATCH` | 07B0 | hidden LegacyPatchAlways parameter, default differs from template | #450 |
+| [`syn-map-error`](syn-map-error/product.toml) | `NEST-FALSE` | 07B0 | LdCtrlMapError around LdCtrlUnload LsmIdx 5 (07B0 ProductProcedure) | #614 |
 | [`syn-master-reset`](syn-master-reset/product.toml) | `NEST-RESET` | 07B0 | Master Reset erase code 1 in the load procedure | #546, #611 |
 | [`syn-master-reset-code4`](syn-master-reset-code4/product.toml) | `NEST-RESET4` | 07B0 | Master Reset erase code 4 after the segment allocation | #546, #600, #611 |
 | [`syn-minimal`](syn-minimal/product.toml) | `NEST-LIGHT` | 07B0 | baseline | #596 |
 | [`syn-param-calculation`](syn-param-calculation/product.toml) | `NEST-CALC` | 07B0 | JavaScript ParameterCalculation, one output LegacyPatchAlways | #427, #450 |
 | [`syn-product-07b0`](syn-product-07b0/product.toml) | `NEST-PLAN` | 07B0 | ProductProcedure on 07B0 with the tables as RelSegments | #614 |
+| [`syn-property-param`](syn-property-param/product.toml) | `NEST-TERR` | 07B0 | parameter placed in a property, written by LdCtrlWriteProp | #669 |
 | [`syn-relseg-fill`](syn-relseg-fill/product.toml) | `NEST-FILL` | 07B0 | RelSegment Mode 0 with Fill 255 | #480 |
 | [`syn-s7-0701`](syn-s7-0701/product.toml) | `NEST-BKDOOR` | 0701 | System 7 baseline (0701, memory-mapped LSM) | #596, #488, #481 |
 | [`syn-s7-0705`](syn-s7-0705/product.toml) | `NEST-DOOR` | 0705 | System 7 baseline (0705, property LSM) | #596, #488, #479, #588, #487 |
 | [`syn-s7-choose-split`](syn-s7-choose-split/product.toml) | `NEST-SPLIT` | 0705 | load-procedure choose splitting the parameter AbsSegment | #411, #413 |
+| [`syn-s7-delay`](syn-s7-delay/product.toml) | `NEST-HATCH` | 0701 | LdCtrlDelay before LdCtrlRestart (0701) | #615 |
 | [`syn-s7-hidden-default`](syn-s7-hidden-default/product.toml) | `NEST-EGGBAK` | 0705 | hidden parameter on System 7, default differs from template | #448 |
 | [`syn-s7-hidden-default-p11`](syn-s7-hidden-default-p11/product.toml) | `NEST-EGGOLD` | 0705 | hidden parameter on System 7 in schema project/11 | #448 |
 | [`syn-s7-lsm5`](syn-s7-lsm5/product.toml) | `NEST-TWIG5` | 0701 | TaskSegment on LsmIdx 5 (0701) | #489 |
+| [`syn-s7-lsm5-0705`](syn-s7-lsm5-0705/product.toml) | `NEST-TWIG5G` | 0705 | TaskSegment on LsmIdx 5 (0705) | #489 |
+| [`syn-s7-no-comobjects`](syn-s7-no-comobjects/product.toml) | `NEST-SILENT` | 0701 | com objects only in a block not reached at defaults (0701) | #562, #475 |
 | [`syn-s7-pei80`](syn-s7-pei80/product.toml) | `NEST-CLAW` | 0701 | PeiType 128 on 0701 | #483 |
 | [`syn-s7-taskptr`](syn-s7-taskptr/product.toml) | `NEST-HUNT` | 0705 | TaskPtr and TaskCtrl2 records on LSM 3 | #527 |
 | [`syn-text-initialvalue`](syn-text-initialvalue/product.toml) | `NEST-NAME` | 07B0 | TypeText with a de-DE InitialValue translation, utf-8 | #473 |
@@ -97,7 +102,7 @@ One `product.toml` per directory. Tables and keys:
 | `[application.options]` | any `Options` attribute of the KNX schema, e.g. `SupportsExtendedMemoryServices = true`, `ParameterByteOrder = "LittleEndian"` | `Options` |
 | `[[segment]]` | `name`, `kind` (`relative`), `lsm`, `size`; optional `fill` (the initial octet, 0) | `RelativeSegment` with its `Data` |
 | `[[parameter_type]]` | `name`, `kind`; `enum`: `size_bits`, `values = [{ value, text }]`; `number`: `size_bits`, `signed`, `min`, `max`; `float`: `encoding` (`DPT 9`, `IEEE-754 Single`, `IEEE-754 Double`; 16, 32, 64 bits), `min`, `max`; `text`: `size_octets`; `ip_address`: `address_type` (`HostAddress`, `SubnetMask`, `DefaultGateway`; 32 bits, the default a dotted quad); `color`: `space` (`RGB`, `HSV`; 24 bits, the default `#` and six hex digits) | `TypeRestriction`, `TypeNumber`, `TypeFloat`, `TypeText`, `TypeIPAddress`, `TypeColor` |
-| `[[parameter]]` | `name`, `type`, `text`, `default`, and either `memory = { segment, offset, bit_offset }`, `union = { name, offset, bit_offset }` (a member at its offset in the union) or `virtual = true` (no memory, it only steers the Dynamic tree; #474); `bit_offset` counts from the octet's most significant bit, 0 to 7, so sub-octet parameters share an octet; optional `access` (`None`, `Read`, `ReadWrite`) and `legacy_patch_always` (#450); a text parameter also `initial_value` and `translations = { "de-DE" = { initial_value } }` (#473) | `Parameter` (`_P-<n>`, a union member `_UP-<n>`), one `ParameterRef` each; a translated `InitialValue` is a `TranslationElement` of the parameter in `Languages` |
+| `[[parameter]]` | `name`, `type`, `text`, `default`, and either `memory = { segment, offset, bit_offset }`, `union = { name, offset, bit_offset }` (a member at its offset in the union), `property = { object_index, property_id, offset, bit_offset }` (placed in an interface-object property, #604 row 30) or `virtual = true` (no memory, it only steers the Dynamic tree; #474); `bit_offset` counts from the octet's most significant bit, 0 to 7, so sub-octet parameters share an octet; optional `access` (`None`, `Read`, `ReadWrite`) and `legacy_patch_always` (#450); a text parameter also `initial_value` and `translations = { "de-DE" = { initial_value } }` (#473) | `Parameter` (`_P-<n>`, a union member `_UP-<n>`), one `ParameterRef` each; a translated `InitialValue` is a `TranslationElement` of the parameter in `Languages` |
 | `[[parameter_ref]]` | `name`, `parameter` | a further `ParameterRef` of the parameter (`_P-<n>_R-<k>`, numbered after every parameter's own ref); blocks and chooses name it like a parameter (#563) |
 | `[[union]]` | `name`, `size_bits`, `memory = { segment, offset, bit_offset }`; optional `default` (the member that is `DefaultUnionParameter`) | `Union` with its `Memory`, after the plain parameters |
 | `[[parameter_calculation]]` | `name`, `language` (`JavaScript`), `inputs` and `outputs` (`[{ parameter, alias }]`), `lr_script`, `rl_script` | a `ParameterCalculation` (`_PC-<n>`) in the inline form: `RLTransformation`, `LRTransformation`, `LParameters`, `RParameters` with `AliasName`s (#427) |
@@ -109,16 +114,21 @@ One `product.toml` per directory. Tables and keys:
 | `[[load_procedure]]` | `merge_id`, `ops = [{ op = "...", ... }]` | `LoadProcedure` |
 
 Load ops: `LdCtrlRelSegment` (`lsm`, `size`, `mode`, `fill`),
-`LdCtrlWriteRelMem` (`object`, `offset`, `size`, `verify`) and
-`LdCtrlMasterReset` (`erase_code`, `channel`). A System 7 product procedure
+`LdCtrlWriteRelMem` (`object`, `offset`, `size`, `verify`),
+`LdCtrlMasterReset` (`erase_code`, `channel`) and
+`LdCtrlWriteProp` (`object`, `prop_id`, optional `start_element`, `count`, `verify`,
+`inline_data` in hex; without `inline_data` the value is what the parameters
+placed in that property compose, so a parameter must be placed there). A System 7 product procedure
 also takes `LdCtrlTaskPtr` (`lsm`, `init_ptr`, `save_ptr`, `serial_ptr`) and
-`LdCtrlTaskCtrl2` (`lsm`, `callback`, `address`, `seg0`, `seg1`). `{ op = "choose", parameter,
+`LdCtrlTaskCtrl2` (`lsm`, `callback`, `address`, `seg0`, `seg1`), and
+`LdCtrlDelay` (`milliseconds`, #615). `{ op = "choose", parameter,
 when = [{ test, ops }, { default = true, ops }] }` renders a `<choose
 ParamRefId>` with its `<when>` branches inside the procedure (#411).
 A 07B0 product procedure (#614) also takes `LdCtrlConnect`,
 `LdCtrlDisconnect`, `LdCtrlUnload`, `LdCtrlLoad` and `LdCtrlLoadCompleted`
-(`lsm`) and `LdCtrlWriteProp` (`object`, `prop_id`, `verify`, `inline_data`
-in hex); its tables are relative segments the procedure allocates and writes
+(`lsm`), and writes the program version by `LdCtrlWriteProp` with
+`inline_data`, and takes `LdCtrlMapError` (`original_error`, `mapped_error`,
+#604 row 38); its tables are relative segments the procedure allocates and writes
 on LSM 1 to 3, with no code segment declared for them.
 
 The schema reaches further than the generator does. These are reserved for
@@ -129,7 +139,7 @@ type kinds `time`, `raw`, VBScript calculations and the
 `LRTransformationFunc` form with a `<Script>`, explicit com
 object refs, and the load
 ops `LdCtrlLoadImageProp`, `LdCtrlCompareProp` and `LdCtrlAbsSegment`, and
-`LdCtrlWriteProp` and the connection and state ops in a merged procedure. An unknown key or op stops with an error naming it.
+the connection and state ops in a merged procedure. An unknown key or op stops with an error naming it.
 
 Ids follow ETS: `M-00FA_A-<number>-<version>-0000` for the application, its
 parts prefixed with it (`_RS-04-00000`, `_PT-<name>`, `_P-<n>`, `_P-<n>_R-<n>`,
@@ -219,6 +229,52 @@ run `--check` against `bussard flash --dry-run`, knx-sim replays
 `requests.txt` and compares its memory with `image.json`
 (`knx-sim/tests/synthetic_calibration.rs`), and the sim loop flashes every
 product with seeded configurations.
+
+### Run variants
+
+A run variant is another download of an existing product, not a product of
+its own (#604, "Run variants"): `capture.py <name> --variant <variant>` runs
+it in one knx-sim process, so ETS meets the device the previous download left,
+and writes `captures/synthetic/<name>/<variant>/` with its own row and
+manifest entry. The variants and their products are `VARIANTS` in
+`tools/ets-sweep/synthetic/capture.py`:
+
+| variant | products | the downloads | the row |
+| --- | --- | --- | --- |
+| `no-ga` | `syn-minimal` | the application, no group address linked (#542) | a flash row, as `defaults` |
+| `links` | `syn-minimal` | the switch object linked to 1/0/1 and 1/0/2, the status object to 1/0/3, then the application (#478, #540) | `dir=` the model template with those links |
+| `reload` | `syn-s7-0705`, `syn-s7-0701` | the application, then the same application again (#488) | `state=loaded` |
+| `other-app` | `syn-s7-0705`, `syn-s7-0701` | a sibling of the same mask (`syn-s7-hidden-default`, `syn-s7-lsm5`), then this application (#488) | `state=loaded` |
+| `partial` | `syn-minimal` | the application, then `Delay (s)` set to 500 in ETS's parameter editor and ETS's partial download (#543, #490) | `run=params base=` the first download, `dir=` the model template |
+| `calc-input` | `syn-param-calculation` | `Delay (s)`, the calculation's input, set to 500, then the application (#427) | `dir=` the model template |
+
+A variant directory holds the files of a `defaults` capture for its last
+download (the one the row compares), and when there were earlier downloads,
+`base.pcapng` and `base-requests.txt` with them; `sim.yaml` then replays
+`base.pcapng` first. `objects.json` is the object table ETS showed before
+the download, `params.json` what the parameter editor set. `model/` is the
+model template of a row that plans with links or a parameter value
+(`bussard.toml`, `devices/1.1.1.toml`, `groups.toml`): the oracle script
+imports the product into a copy of it and pins the device (`dir=` in
+`95-offline-oracle.sh`).
+
+```
+captures/synthetic/<name>/<variant>/base.pcapng        the earlier downloads of the same sim session
+captures/synthetic/<name>/<variant>/base-requests.txt  their tool requests, replayed first by knx-sim
+captures/synthetic/<name>/<variant>/model/             the model template of the row (links, parameters)
+```
+
+In CI, `synthetic_calibration.rs` replays `base-requests.txt` and then
+`requests.txt` into one device, so a variant is checked against the device
+ETS met. A `run=params` row (or `run=apply`) needs knx-sim: it runs in the
+`sim-conformance` job (`test_offline_oracle_synthetic_sim_rows_pass_the_check`,
+`KNX_SIM_BIN`), the other rows in the test job. The sim loop flashes products
+and knows nothing of variants.
+
+`partial` compares ETS's partial download with `bussard flash
+--parameters-only`, the download `apply` runs for a parameter change: `apply`
+itself refuses a device with no links ("refusing to plan an empty table
+set", #542), which is what a defaults download leaves.
 
 **A product change requires a re-capture.** A capture of other XML says
 nothing about the committed product, so

@@ -348,7 +348,9 @@ fn parameter_value(
 }
 
 /// Lowers an `LdCtrlWriteProp` with its `Count` and `Verify` (the System 7
-/// and property-only planners; the System B planner keeps its own lowering).
+/// and property-only planners, and the System B planner for a write without
+/// `InlineData`, issue #669; a System B write with `InlineData` keeps its own
+/// lowering).
 ///
 /// # Errors
 ///
@@ -382,17 +384,20 @@ pub(super) fn lower_write_prop(
     })?;
     let object = prop_object(step, *obj_idx, *obj_type, *occurrence)?;
     let name = format!("{object} PID {prop_id}");
-    let value = match inline_data.as_ref().filter(|d| !d.is_empty()) {
-        Some(data) => data.clone(),
-        None => parameter_value(values, *obj_idx, *obj_type, *occurrence, prop_id)
-            .cloned()
-            .ok_or_else(|| PlanError::UnsupportedWriteProp {
-                step,
-                reason: format!(
-                    "the write to {name} carries no InlineData and no parameter of the \
-                     program is located in that property, so bussard has no value to write"
-                ),
-            })?,
+    let (value, from_parameters) = match inline_data.as_ref().filter(|d| !d.is_empty()) {
+        Some(data) => (data.clone(), false),
+        None => (
+            parameter_value(values, *obj_idx, *obj_type, *occurrence, prop_id)
+                .cloned()
+                .ok_or_else(|| PlanError::UnsupportedWriteProp {
+                    step,
+                    reason: format!(
+                        "the write to {name} carries no InlineData and no parameter of the \
+                         program is located in that property, so bussard has no value to write"
+                    ),
+                })?,
+            true,
+        ),
     };
     let count = count.unwrap_or(1).max(1);
     let count = u16::try_from(count)
@@ -440,6 +445,7 @@ pub(super) fn lower_write_prop(
         start_element,
         count,
         verify: verify.unwrap_or(false),
+        from_parameters,
     })
 }
 
@@ -702,6 +708,7 @@ mod tests {
                 start_element: 1,
                 count: 1,
                 verify: false,
+                from_parameters: true,
             }
         );
         let inline = ops
@@ -717,9 +724,15 @@ mod tests {
             })
             .ok_or("the inline write is unguarded")?;
         match lower_write_prop(3, inline, &values)? {
-            FlashStep::WriteProp { count, value, .. } => {
+            FlashStep::WriteProp {
+                count,
+                value,
+                from_parameters,
+                ..
+            } => {
                 assert_eq!(count, 2);
                 assert_eq!(value.len(), 10);
+                assert!(!from_parameters, "an InlineData value is not the model's");
             }
             other => return Err(format!("expected WriteProp, got {other:?}").into()),
         }

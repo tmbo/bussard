@@ -1,0 +1,176 @@
+# A synthetic product of the catalogue (#604 row 39), syn-s7-0701 plus one
+# construct. Rendered by ../generate.py into xml/; see ../README.md for the schema.
+
+[doc]
+purpose = """
+syn-s7-0701 (mask 0701, ProductProcedure, memory-mapped LSM) with
+LdCtrlDelay MilliSeconds="200" between the last LdCtrlLoadCompleted and
+LdCtrlRestart, the shape of the 16 0701 applications of #615 (e.g.
+M-0076_A-0022-15-D6FE). bussard refused the op as Raw until #646 typed it and
+lowered it to a pause; the capture shows where ETS pauses (the gap in the
+ops.txt timestamps before the restart) and is the oracle row of that change."""
+construct = "LdCtrlDelay before LdCtrlRestart (0701)"
+issues = [615]
+
+[product]
+text = "Slow-hatch timer"
+order_number = "NEST-HATCH"
+hardware_name = "NEST-HATCH"
+hardware_serial = "00FA00280027"
+bus_current = 10
+
+[application]
+number = 0x2827
+version = 0x10
+name = "Slow-hatch timer"
+mask = "0701"
+load_procedure_style = "ProductProcedure"
+pei_type = 0
+address_table_max_entries = 255
+association_table_max_entries = 255
+address_table_segment = "address-table"
+association_table_segment = "association-table"
+com_object_table_segment = "application"
+translations = { "de-DE" = "Schlupfzeitgeber" }
+
+[application.options]
+Comparable = true
+Reconstructable = true
+
+# LSM 1: the address table region (dev/system7-spec.md section 2.3).
+[[segment]]
+name = "address-table"
+kind = "absolute"
+address = 0x4000
+size = 513
+memory_type = "EEPROM"
+allocate_only = true
+
+# LSM 2: the association table region.
+[[segment]]
+name = "association-table"
+kind = "absolute"
+address = 0x4201
+size = 511
+memory_type = "EEPROM"
+allocate_only = true
+
+# LSM 3: the RAM of the com objects: the RAM-flags table at 0x0700, the
+# values of objects 0 and 1 at 0x0702 and 0x0703.
+[[segment]]
+name = "ram"
+kind = "absolute"
+address = 0x0700
+size = 16
+memory_type = "RAM"
+allocate_only = true
+
+# LSM 3: the application, here only the group-object table (section 7.3):
+# count 2, RAM flags at 0x0700, then per object [data ptr][CONFIG][TYPE]:
+# switch 0x0702 C W low (0x17), status 0x0703 C R T low (0x4F), both 1 bit.
+[[segment]]
+name = "application"
+kind = "absolute"
+address = 0x4400
+size = 64
+memory_type = "EEPROM"
+data = "0207000702170007034f00"
+fill = 0xFF
+
+# LSM 3: the parameter image.
+[[segment]]
+name = "parameters"
+kind = "absolute"
+address = 0x4440
+size = 64
+memory_type = "EEPROM"
+fill = 0xFF
+
+[[parameter_type]]
+name = "Mode"
+kind = "enum"
+size_bits = 8
+values = [
+    { value = 0, text = "off" },
+    { value = 1, text = "on" },
+    { value = 2, text = "automatic" },
+]
+
+[[parameter_type]]
+name = "Delay"
+kind = "number"
+size_bits = 16
+signed = false
+min = 0
+max = 65535
+
+[[parameter]]
+name = "mode"
+type = "Mode"
+text = "Operating mode"
+default = 1
+memory = { segment = "parameters", offset = 0, bit_offset = 0 }
+
+[[parameter]]
+name = "delay"
+type = "Delay"
+text = "Delay (s)"
+default = 300
+memory = { segment = "parameters", offset = 1, bit_offset = 0 }
+
+[[com_object]]
+number = 0
+name = "switch"
+text = "Switch"
+function_text = "On/Off"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "W"]
+priority = "Low"
+
+[[com_object]]
+number = 1
+name = "status"
+text = "Status"
+function_text = "On/Off status"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+[[dynamic.block]]
+name = "general"
+text = "General"
+parameters = ["mode", "delay"]
+com_objects = [0, 1]
+
+# The whole download (dev/system7-spec.md section 3, the corpus shape of 0701):
+# the three LSMs torn down, then each loaded with its segments and closed by
+# its TaskSegment. Access 0x33, EEPROM (3) with checksum control (0x80); the
+# RAM segment Access 0, RAM (2). No stack segment, as on most 0701 applications.
+[[load_procedure]]
+ops = [
+    { op = "LdCtrlConnect" },
+    { op = "LdCtrlUnload", lsm = 1 },
+    { op = "LdCtrlUnload", lsm = 2 },
+    { op = "LdCtrlUnload", lsm = 3 },
+    { op = "LdCtrlLoad", lsm = 1 },
+    { op = "LdCtrlAbsSegment", lsm = 1, seg_type = 0, address = 0x4000, size = 513, access = 0x33, mem_type = 3, seg_flags = 0x80 },
+    { op = "LdCtrlTaskSegment", lsm = 1, address = 0x4000 },
+    { op = "LdCtrlLoadCompleted", lsm = 1 },
+    { op = "LdCtrlLoad", lsm = 2 },
+    { op = "LdCtrlAbsSegment", lsm = 2, seg_type = 0, address = 0x4201, size = 511, access = 0x33, mem_type = 3, seg_flags = 0x80 },
+    { op = "LdCtrlTaskSegment", lsm = 2, address = 0x4201 },
+    { op = "LdCtrlLoadCompleted", lsm = 2 },
+    { op = "LdCtrlLoad", lsm = 3 },
+    { op = "LdCtrlAbsSegment", lsm = 3, seg_type = 0, address = 0x0700, size = 16, access = 0, mem_type = 2, seg_flags = 0 },
+    { op = "LdCtrlAbsSegment", lsm = 3, seg_type = 0, address = 0x4400, size = 64, access = 0x33, mem_type = 3, seg_flags = 0x80 },
+    { op = "LdCtrlAbsSegment", lsm = 3, seg_type = 0, address = 0x4440, size = 64, access = 0x33, mem_type = 3, seg_flags = 0x80 },
+    { op = "LdCtrlTaskSegment", lsm = 3, address = 0x4400 },
+    { op = "LdCtrlTaskCtrl1", lsm = 3, address = 0x4430, count = 1 },
+    { op = "LdCtrlLoadCompleted", lsm = 3 },
+    # The construct (#615): a 200 ms pause before the restart.
+    { op = "LdCtrlDelay", milliseconds = 200 },
+    { op = "LdCtrlRestart" },
+    { op = "LdCtrlDisconnect" },
+]

@@ -33,6 +33,8 @@ import paramiko
 
 HOST = os.environ.get("ETS_VM_HOST", "192.168.1.26")
 USER = os.environ.get("ETS_VM_USER", "macremote")
+# The ssh port: a local relay to the VM when this host's Python cannot reach it directly.
+PORT = int(os.environ.get("ETS_VM_PORT", "22"))
 DRIVER_PORT = 8765
 REMOTE_DIR = rf"C:\Users\{USER}\ets-sweep"
 PYTHON = r"C:\Program Files\Python312\python.exe"
@@ -61,7 +63,7 @@ def password() -> str:
 def connect() -> paramiko.SSHClient:
     c = paramiko.SSHClient()
     c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    c.connect(HOST, username=USER, password=password(), timeout=10)
+    c.connect(HOST, port=PORT, username=USER, password=password(), timeout=10)
     return c
 
 
