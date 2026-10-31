@@ -754,15 +754,6 @@ fn dynamic_image(
     // An output of a calculation that could not run, or a value copied from
     // one, holds a value the script did not compute; writing it would be a
     // silent wrong image.
-    let computed_by: BTreeMap<&str, &str> = app
-        .calculations
-        .iter()
-        .flat_map(|c| {
-            c.outputs
-                .iter()
-                .map(move |o| (o.param_ref.as_str(), c.id.as_str()))
-        })
-        .collect();
     for slot in dynamic_parameter_slots(app, config)? {
         if let Some(ref_id) = slot.param_ref_id.as_deref()
             && let Some(&i) = derived.get(ref_id)
@@ -782,6 +773,8 @@ fn dynamic_image(
                 config.value(app, slot.module, ref_id),
                 if config.is_override(app, slot.module, ref_id) {
                     ValueSource::UserOverride
+                } else if config.computed_by(app, slot.module, ref_id).is_some() {
+                    ValueSource::Computed
                 } else {
                     ValueSource::VendorDefault
                 },
@@ -799,7 +792,7 @@ fn dynamic_image(
                     &err,
                     slot.param_ref_id
                         .as_deref()
-                        .and_then(|r| computed_by.get(r)),
+                        .and_then(|r| config.computed_by(app, slot.module, r)),
                 ) {
                     (ProdError::ParameterImage { parameter, reason }, Some(calc)) => {
                         ProdError::ParameterImage {
@@ -1344,6 +1337,8 @@ fn base_image(app: &ApplicationProgram, seg_id: &str) -> Vec<u8> {
 /// - [`ValueSource::UserOverride`] — the value is a caller-supplied override
 ///   (chain step 4). A user asking to write a value outside the declared enum is a
 ///   genuine mistake worth refusing, so the strict membership check stands.
+/// - [`ValueSource::Computed`] — a calculation computed the value; refused
+///   outside the enum or range like an override.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ValueSource {
     /// The vendor's own default (chain steps 1-3): lenient on a non-member enum
@@ -1351,6 +1346,10 @@ enum ValueSource {
     VendorDefault,
     /// A caller-supplied override (chain step 4): strict on both.
     UserOverride,
+    /// A value a `<ParameterCalculation>` computed (issue #427): strict on
+    /// both, as no capture shows what ETS writes for a computed value outside
+    /// its parameter's type (the out-of-range issue).
+    Computed,
 }
 
 /// An encoded parameter value ready to place.
@@ -1445,7 +1444,7 @@ fn encode_value(
                 match source {
                     // A user asking to write a value outside the declared enum is a
                     // genuine mistake — refuse it.
-                    ValueSource::UserOverride => {
+                    ValueSource::UserOverride | ValueSource::Computed => {
                         return Err(param_err(
                             app,
                             pname,
@@ -1778,6 +1777,15 @@ fn encode_int(
     if let Some(why) = out_of_range {
         match source {
             ValueSource::UserOverride => return Err(param_err(app, pname, &why)),
+            // No capture shows what ETS writes for a computed value outside
+            // its type (the out-of-range issue): refused, not guessed.
+            ValueSource::Computed => {
+                return Err(param_err(
+                    app,
+                    pname,
+                    &format!("{why}; a computed value outside its type is not written"),
+                ));
+            }
             ValueSource::VendorDefault => tracing::warn!(
                 parameter = pname,
                 value = n,
@@ -2433,6 +2441,8 @@ pub fn compute_property_values(
                 config.value(app, None, ref_id),
                 if config.is_override(app, None, ref_id) {
                     ValueSource::UserOverride
+                } else if config.computed_by(app, None, ref_id).is_some() {
+                    ValueSource::Computed
                 } else {
                     ValueSource::VendorDefault
                 },
@@ -4371,6 +4381,20 @@ mod tests {
         let app = CalcApp::new("fan = Mode + 0.5");
         let err = app.refusal(&[("P-1_R-1", "1")]);
         assert!(err.contains("calculation PC-1"), "{err}");
+    }
+
+    /// A computed value outside its parameter's declared range is refused
+    /// as computed, not warned about as a vendor default.
+    #[test]
+    fn test_compute_parameter_image_refuses_a_computed_value_out_of_range() {
+        let app = CalcApp::new("fan = Mode * 100");
+        let err = app.refusal(&[("P-1_R-1", "3")]);
+        assert!(
+            err.contains("above the declared maximum 255")
+                && err.contains("computed value outside its type")
+                && err.contains("calculation PC-1"),
+            "{err}"
+        );
     }
 
     /// Two calculations feeding each other never settle: refused.

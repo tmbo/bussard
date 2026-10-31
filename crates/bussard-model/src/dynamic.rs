@@ -968,6 +968,9 @@ pub struct DynamicConfig {
     values: HashMap<(String, String), String>,
     /// The keys of `values` that came from a caller override (not an assign).
     overridden: HashSet<(String, String)>,
+    /// The keys of `values` a calculation computed (and nothing replaced
+    /// since), with the calculation's id.
+    computed: HashMap<(String, String), String>,
 }
 
 impl DynamicConfig {
@@ -993,6 +996,26 @@ impl DynamicConfig {
             self.module_args(module),
             param_ref_id,
         )
+    }
+
+    /// The id of the `<ParameterCalculation>` that computed the value of
+    /// `param_ref_id` (app-relative) in the context of `module`, `None` when
+    /// no calculation ran for it (its inputs at their defaults) or an
+    /// `<Assign>` replaced the computed value.
+    pub fn computed_by<S: DynamicSource + ?Sized>(
+        &self,
+        _app: &S,
+        module: Option<usize>,
+        param_ref_id: &str,
+    ) -> Option<&str> {
+        let instance = if param_ref_id.starts_with("MD-") {
+            self.instance_id(module)
+        } else {
+            ""
+        };
+        self.computed
+            .get(&(instance.to_string(), param_ref_id.to_string()))
+            .map(String::as_str)
     }
 
     /// Whether the value of `param_ref_id` in `module` came from a caller
@@ -1207,7 +1230,7 @@ pub fn evaluate_dynamic<S: DynamicSource + ?Sized>(
     if !settled {
         calcs.refuse_unsettled(app);
     }
-    let (refused, calculated_overrides) = calcs.finish(app, &values);
+    let (refused, calculated_overrides, computed) = calcs.finish(app, &values);
 
     // The written parameters: every reached ParameterRefRef plus the target
     // and source of every reached Assign, without duplicates.
@@ -1294,6 +1317,7 @@ pub fn evaluate_dynamic<S: DynamicSource + ?Sized>(
         calculated_overrides,
         values,
         overridden,
+        computed,
     }
 }
 
@@ -1434,7 +1458,18 @@ struct CalcRuns {
     /// Overrides a calculation replaced, by (module instance id or `""`,
     /// `ParameterRef` id).
     replaced: BTreeMap<(String, String), CalculatedOverride>,
+    /// The latest value each calculation wrote, same keys, with the
+    /// calculation's id.
+    written: HashMap<(String, String), (String, String)>,
 }
+
+/// What [`CalcRuns::finish`] returns: the refused calculations, the replaced
+/// overrides, and the computed values with their calculation's id.
+type CalcOutcome = (
+    Vec<RefusedCalculation>,
+    Vec<CalculatedOverride>,
+    HashMap<(String, String), String>,
+);
 
 /// The `<ModuleDef>` a calculation id belongs to (`MD-3` for `MD-3_PC-1`,
 /// `MD-1_SM-2` for `MD-1_SM-2_PC-1`), `None` for an application-level one.
@@ -1572,6 +1607,8 @@ impl CalcRuns {
                         computed: String::new(),
                     });
             }
+            self.written
+                .insert(key.clone(), (calc.id.clone(), text.clone()));
             values.insert(key, text);
             changed = true;
             self.changed_last_pass.insert(run_key.clone());
@@ -1599,13 +1636,14 @@ impl CalcRuns {
     }
 
     /// The refused calculations in document order (one entry per
-    /// calculation, the first refused instance's), and the replaced
-    /// overrides whose final computed value differs from the override.
+    /// calculation, the first refused instance's), the replaced overrides
+    /// whose final computed value differs from the override, and the values
+    /// still holding what a calculation computed, with its id.
     fn finish<S: DynamicSource + ?Sized>(
         self,
         app: &S,
         values: &HashMap<(String, String), String>,
-    ) -> (Vec<RefusedCalculation>, Vec<CalculatedOverride>) {
+    ) -> CalcOutcome {
         let mut by_calc: HashMap<String, RefusedCalculation> = HashMap::new();
         for ((id, _), refusal) in self.refused {
             by_calc.entry(id).or_insert(refusal);
@@ -1623,7 +1661,14 @@ impl CalcRuns {
                 (!same_value(app, &o.param_ref, &o.computed, &o.overridden)).then_some(o)
             })
             .collect();
-        (in_order, replaced)
+        // A computed value an `<Assign>` replaced afterwards is not computed.
+        let computed = self
+            .written
+            .into_iter()
+            .filter(|(key, (_, text))| values.get(key) == Some(text))
+            .map(|(key, (id, _))| (key, id))
+            .collect();
+        (in_order, replaced, computed)
     }
 }
 
