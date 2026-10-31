@@ -508,6 +508,10 @@ pub struct ParamDetail {
     /// flash writes (issue #540); `None` when the plan does not write the
     /// table (System 7, or a procedure whose code image carries it).
     pub object_table: Option<bussard_download::ObjectTableCheck>,
+    /// The interface-object properties the program's parameters are placed
+    /// in, with what the device holds there (issue #706): a change to such a
+    /// parameter touches no memory octet, so the memory diff alone misses it.
+    pub properties: Vec<bussard_download::ParamProperty>,
 }
 
 /// A parameter read-back: the report, and the detail when the memory was
@@ -594,6 +598,9 @@ pub async fn read_state<Ch: L4Channel>(
         return state;
     }
     let regions = read_parameter_regions(l4, &plan).await;
+    // The properties the parameters live in, on the same connection (issue
+    // #706).
+    let properties = bussard_download::read_parameter_properties(l4, &plan, app).await;
     // The group-object table the full flash writes, against the device's
     // (issue #540): a link the last flash did not know left its object's
     // Communication flag off, and `apply` reloads the table to switch it on.
@@ -667,6 +674,7 @@ pub async fn read_state<Ch: L4Channel>(
             octets,
             unwritten,
             object_table,
+            properties,
         }),
         sys7_identity,
     }
@@ -1430,6 +1438,45 @@ fn object_table_plan(
     }
 }
 
+/// The plan row and change line of a property-placed parameter whose
+/// property differs (issue #706): `territory-mark (object 4 PID 201) = 07,
+/// was 5A`, values as the property's octets.
+fn property_change(prop: &bussard_download::ParamProperty) -> (ParameterChange, PlanChange) {
+    let hex = |bytes: &[u8]| -> String { bytes.iter().map(|b| format!("{b:02X}")).collect() };
+    let name = if prop.parameters.is_empty() {
+        prop.label()
+    } else {
+        prop.parameters.join(", ")
+    };
+    let key = prop
+        .parameters
+        .first()
+        .map_or_else(|| prop.label(), |n| bussard_model::slug(n));
+    let device = prop.device.as_deref().map(hex);
+    let model = hex(&prop.model);
+    let sentence = format!(
+        "{key} ({}) = {model}, was {}",
+        prop.label(),
+        device.as_deref().unwrap_or("unreadable")
+    );
+    (
+        ParameterChange {
+            key: key.clone(),
+            name,
+            device,
+            model,
+        },
+        PlanChange {
+            mark: ChangeMark::Changed,
+            subject: ChangeSubject::Parameter,
+            channel: None,
+            key,
+            object: None,
+            sentence,
+        },
+    )
+}
+
 /// Builds the plan of writing the model to `target`.
 ///
 /// `params` is the parameter read-back, `None` when no product data was at
@@ -1452,6 +1499,7 @@ pub fn build_device_plan(
     let mut refusal = None;
     let mut needs_flash = None;
     let mut parameter_octets = 0;
+    let mut parameter_properties: Vec<String> = Vec::new();
     let mut parameters = Vec::new();
     let mut octet_ranges = Vec::new();
 
@@ -1557,7 +1605,22 @@ pub fn build_device_plan(
                             if let Some(note) = unwritten_note_for(&octet_ranges) {
                                 notes.push(note);
                             }
-                            if octets > 0 {
+                            // A parameter placed in a property changes no
+                            // memory octet (issue #706): its property is
+                            // compared on its own and written by the same
+                            // parameter-only download.
+                            let changed_props =
+                                bussard_download::changed_properties(&detail.properties);
+                            for prop in &changed_props {
+                                let (row, change) = property_change(prop);
+                                parameters.push(row);
+                                changes.push(change);
+                            }
+                            parameter_properties =
+                                changed_props.iter().map(|p| p.label()).collect();
+                            if octets == 0 && !changed_props.is_empty() {
+                                partial = Some(p);
+                            } else if octets > 0 {
                                 if report.is_noop()
                                     && parameters.is_empty()
                                     && device_managed_only(&octet_ranges)
@@ -1602,6 +1665,7 @@ pub fn build_device_plan(
         address_table: tables_change.then_some(report.resulting_address_count),
         association_table: tables_change.then_some(report.resulting_association_count),
         parameter_octets,
+        parameter_properties,
         security_object: false,
         // A change of the group-object table is a full download: the image
         // and the tables, never "nothing" (issue #326). The flash planner

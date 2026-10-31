@@ -1747,16 +1747,24 @@ impl MockDevice {
                 } else {
                     0
                 };
-                if let Some(&(old_base, old_size)) = self.segments.get(&oi) {
-                    for i in 0..old_size {
-                        self.memory.remove(&old_base.wrapping_add(i));
-                    }
-                }
                 let base = self
                     .segment_bases
                     .get(&oi)
                     .copied()
                     .unwrap_or_else(|| segment_base_for(oi));
+                // Mode 0 of the same segment keeps the memory contents
+                // (Configuration Procedures 03_05_03 §3.5.1.2: the partial
+                // download of a parameter-only change); any other
+                // allocation starts from a fresh segment.
+                let keeps =
+                    value.get(6) == Some(&0) && self.segments.get(&oi) == Some(&(base, size));
+                if let Some(&(old_base, old_size)) = self.segments.get(&oi)
+                    && !keeps
+                {
+                    for i in 0..old_size {
+                        self.memory.remove(&old_base.wrapping_add(i));
+                    }
+                }
                 self.segments.insert(oi, (base, size));
             }
             return answer(self.load_state(oi));

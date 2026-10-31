@@ -114,6 +114,11 @@ pub struct PlanWrites {
     pub association_table: Option<usize>,
     /// How many parameter octets differ and are written.
     pub parameter_octets: usize,
+    /// The interface-object properties a parameter is placed in whose
+    /// device value differs from the model's (issue #706), each as `object 4
+    /// PID 201`; the parameter-only download writes them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub parameter_properties: Vec<String>,
     /// The security object is reprogrammed for a change of its own (the
     /// tunnelling addresses `admit_tunnel_senders` admits, issue #297, or a
     /// group address that leaves or joins Data Secure, issue #331); the
@@ -228,6 +233,7 @@ impl PlanWrites {
     pub fn is_empty(&self) -> bool {
         self.address_table.is_none()
             && self.parameter_octets == 0
+            && self.parameter_properties.is_empty()
             && !self.security_object
             && self.full_image.is_none()
             && self.interface_properties.is_empty()
@@ -278,6 +284,17 @@ impl PlanWrites {
                 "{} parameter octet{}",
                 self.parameter_octets,
                 if self.parameter_octets == 1 { "" } else { "s" }
+            ));
+        }
+        if !self.parameter_properties.is_empty() {
+            parts.push(format!(
+                "parameter propert{} ({})",
+                if self.parameter_properties.len() == 1 {
+                    "y"
+                } else {
+                    "ies"
+                },
+                self.parameter_properties.join(", ")
             ));
         }
         if !self.interface_properties.is_empty() {
@@ -777,6 +794,7 @@ mod tests {
                 address_table: Some(3),
                 association_table: Some(3),
                 parameter_octets: 0,
+                parameter_properties: Vec::new(),
                 security_object: false,
                 full_image: None,
                 interface_properties: Vec::new(),

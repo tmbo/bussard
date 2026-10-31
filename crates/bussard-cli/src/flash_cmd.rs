@@ -504,8 +504,12 @@ pub fn run(
                                     .is_ok() =>
                             {
                                 Some(
-                                    crate::flash_params::read_parameters_on(dev.l4_mut(), plan)
-                                        .await,
+                                    crate::flash_params::read_parameters_on(
+                                        dev.l4_mut(),
+                                        plan,
+                                        app,
+                                    )
+                                    .await,
                                 )
                             }
                             _ => None,
