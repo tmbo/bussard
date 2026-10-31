@@ -18,9 +18,10 @@
 //! - **Parameters**: the parameter memory decoded and compared with the
 //!   model ([`crate::params::read_flashed_parameters`], the plan's decode).
 //! - **Load-procedure properties** (issue #390): every property an
-//!   `LdCtrlWriteProp` of a System 7 or property-only flash wrote, read back
-//!   by the object and PID the plan addressed and compared with the value
-//!   the plan wrote.
+//!   `LdCtrlWriteProp` of a System 7 or property-only flash wrote, and every
+//!   property a System B flash wrote from the property-located parameters
+//!   (issue #669), read back by the object and PID the plan addressed and
+//!   compared with the value the plan wrote.
 //! - **Security object** (KNX Data Secure, issue #331): the element count of
 //!   the group key table (PID 53, whose keys are write-only), the security
 //!   individual address table (PID 54) and the group-object security flags
@@ -146,10 +147,12 @@ pub struct ExpectedProperty {
 }
 
 impl ExpectedProperty {
-    /// The property writes of `flash` a read-back compares: those of a System
-    /// 7 or property-only plan, and the KNXnet/IP parameters of any plan. A
-    /// System B plan's program-version writes keep the read-back they had
-    /// before issue #390 (none).
+    /// The property writes of `flash` a read-back compares: every write of a
+    /// System 7 or property-only plan, the writes of a System B plan whose
+    /// value the property-located parameters compose (issue #669), and the
+    /// KNXnet/IP parameters of any plan. A System B plan's program-version
+    /// and other `InlineData` writes keep the read-back they had before issue
+    /// #390 (none).
     pub fn from_flash_plan(flash: &FlashPlan) -> Vec<ExpectedProperty> {
         // The KNXnet/IP parameters of a device with a KNX IP interface built
         // in (issue #455), on every plan: read back by object type 11, which
@@ -166,9 +169,11 @@ impl ExpectedProperty {
                 value: w.value.clone(),
             })
         });
-        if !flash.is_sys7() && !flash.is_property_only() {
-            return knxnet.collect();
-        }
+        // A System B plan reads back the writes whose value the model's
+        // property-located parameters compose (issue #669); its program-version
+        // and other `InlineData` writes keep the read-back they had before
+        // issue #390 (none).
+        let every_write = flash.is_sys7() || flash.is_property_only();
         let knxnet: Vec<ExpectedProperty> = knxnet.collect();
         flash
             .steps
@@ -180,6 +185,37 @@ impl ExpectedProperty {
                     value,
                     start_element,
                     count,
+                    from_parameters,
+                    ..
+                } if every_write || *from_parameters => Some(ExpectedProperty {
+                    object: *object,
+                    prop_id: *prop_id,
+                    start: *start_element,
+                    count: (*count).max(1),
+                    value: value.clone(),
+                }),
+                _ => None,
+            })
+            .chain(knxnet)
+            .collect()
+    }
+
+    /// The property writes of `flash` whose value the program's
+    /// property-located parameters compose (issue #669), on every system: what
+    /// a parameter write (an apply) must find in the device's properties, as
+    /// it must find the parameter memory.
+    pub fn from_parameter_writes(flash: &FlashPlan) -> Vec<ExpectedProperty> {
+        flash
+            .steps
+            .iter()
+            .filter_map(|step| match step {
+                FlashStep::WriteProp {
+                    object,
+                    prop_id,
+                    value,
+                    start_element,
+                    count,
+                    from_parameters: true,
                     ..
                 } => Some(ExpectedProperty {
                     object: *object,
@@ -190,7 +226,6 @@ impl ExpectedProperty {
                 }),
                 _ => None,
             })
-            .chain(knxnet)
             .collect()
     }
 
@@ -1082,6 +1117,90 @@ mod tests {
         let out = WriteReadback::unreadable("timeout".to_string());
         assert!(!out.verified);
         assert!(out.failure().is_some_and(|f| f.contains("timeout")));
+    }
+
+    /// The System B plan of the synthetic `syn-property-param` (issue #669):
+    /// an 8-bit parameter placed in object 4 PID 201, written by an
+    /// `LdCtrlWriteProp` without `InlineData`.
+    fn property_param_plan() -> TestResult<FlashPlan> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../tests-support/synthetic-products/syn-property-param/xml/M-00FA/\
+             M-00FA_A-271E-10-0000.xml",
+        );
+        let app = bussard_prod::application::parse_application_program(
+            "M-00FA_A-271E-10-0000",
+            &std::fs::read(path)?,
+        )?;
+        let template = bussard_prod::MasterTemplate::builtin_for_mask("07B0")
+            .ok_or("a built-in 07B0 template")?
+            .ops;
+        let overrides = std::collections::BTreeMap::new();
+        let tables = bussard_download::build_table_images(None, "1.1.1".parse()?, &app, &overrides);
+        Ok(bussard_download::plan_flash(
+            &app,
+            "1.1.1",
+            0x07B0,
+            &overrides,
+            &std::collections::BTreeMap::new(),
+            Some(&template),
+            &tables,
+        )?)
+    }
+
+    #[test]
+    fn test_from_flash_plan_reads_back_a_system_b_parameter_property() -> TestResult {
+        let plan = property_param_plan()?;
+        assert!(!plan.is_sys7() && !plan.is_property_only());
+        // The parameter's property, not the template's PID_PROGRAM_VERSION.
+        assert_eq!(
+            ExpectedProperty::from_flash_plan(&plan),
+            vec![ExpectedProperty {
+                object: PropObject::Index(4),
+                prop_id: 201,
+                start: 1,
+                count: 1,
+                value: vec![0x5A],
+            }]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_read_back_compares_a_system_b_parameter_property() -> TestResult {
+        let plan = property_param_plan()?;
+        let expected = Expected {
+            properties: ExpectedProperty::from_flash_plan(&plan),
+            ..Expected::default()
+        };
+        // One device holds the model's value, the other what a flash that
+        // skipped the write leaves.
+        for (held, verified) in [(0x5A, true), (0xFF, false)] {
+            let device = bussard_testkit::MockDevice::new("1.1.1".parse()?).with_property(
+                4,
+                201,
+                1,
+                &[held],
+            );
+            let gw = bussard_testkit::MockGateway::builder()
+                .device(device)
+                .start()
+                .await?;
+            let mut bus = bussard_transport::Transport::connect(
+                &bussard_transport::ConnectionConfig::tunnel(gw.addr()),
+            )
+            .await?;
+            let mut l4 =
+                Layer4Connection::connect(&mut bus, "1.1.1".parse()?, "0.0.255".parse()?).await?;
+            let out = read_back(&mut l4, &expected).await;
+            let _ = l4.disconnect().await;
+            assert_eq!(out.verified, verified, "{:?}", out.leftovers);
+            assert_eq!(out.compared.properties, Some(1));
+            if !verified {
+                assert_eq!(out.leftovers[0].item, "object 4 PID 201");
+                assert_eq!(out.leftovers[0].device, "FF");
+            }
+        }
+        Ok(())
     }
 
     #[tokio::test]

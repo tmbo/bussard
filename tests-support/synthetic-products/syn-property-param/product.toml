@@ -12,8 +12,8 @@ composes. PID 201 is a manufacturer property of the application object that
 only this product's procedure names (knx-sim seeds it writable from the
 procedure). Regression row for property placement: the capture shows the
 property write ETS makes from the parameter. ETS 6.4.1 wrote `5A` to obj 4
-PID 201; bussard writes nothing there on System B (#669), so the row holds
-`props=differs` until the fix."""
+PID 201; bussard wrote nothing there on System B until #669, which also made
+the oracle headline count a property-write difference."""
 construct = "parameter placed in a property, written by LdCtrlWriteProp"
 issues = [669]
 

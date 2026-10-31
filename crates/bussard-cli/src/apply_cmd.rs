@@ -621,7 +621,14 @@ pub(crate) fn apply_desired(
         } else {
             None
         },
-        properties: Vec::new(),
+        // The properties the parameters live in (issue #669), when the
+        // parameters are written.
+        properties: match (partial, param_detail) {
+            (Some(_), Some(detail)) => {
+                bussard_service::verify::ExpectedProperty::from_parameter_writes(&detail.plan)
+            }
+            _ => Vec::new(),
+        },
         table_bases: plan_cmd::table_bases(write.product),
     };
     let (code, read_back) = if tables_change || object_table.is_some() {

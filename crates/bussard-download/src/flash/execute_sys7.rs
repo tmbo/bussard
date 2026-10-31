@@ -277,6 +277,7 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                         start_element,
                         count,
                         verify,
+                        ..
                     } => {
                         // A property write of the procedure (issue #390), with its
                         // Count and Verify, as on System B.

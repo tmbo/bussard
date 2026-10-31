@@ -62,7 +62,11 @@
 #                                give (identical, differs or not-comparable);
 #                                unchecked when absent. For a property-only
 #                                plan (a KNX IP interface, mask 0021), whose
-#                                memory verdict is always not-comparable
+#                                memory verdict is always not-comparable.
+#                                The headline verdict counts the property
+#                                writes whatever this option says: a row
+#                                whose memory is identical but whose property
+#                                writes differ is `differs` (issue #669)
 #                loadctl=VERDICT the verdict the load-control parity must give
 #                                (identical, differs or not-comparable);
 #                                unchecked when absent. For a row whose
@@ -160,7 +164,9 @@
 # association table) is compared, not blind.
 #
 # --check turns the run into a gate (the corpus-gated CI test uses it): every
-# row whose capture and product exist must give its expected verdict, its
+# row whose capture and product exist must give its expected verdict (the
+# headline: the memory verdict, turned `differs` when the memory is identical
+# and the property writes differ, issue #669), its
 # confirmed= verdict when the row names one, and at least its recorded
 # coverage, else the script exits 1. Rows without a capture
 # or product data are skipped.
@@ -787,7 +793,14 @@ for dev in devices:
         detail += "  loadctl=n/c"
     if r.get("verdict") == "not-comparable" and parts and not r.get("reason", "").startswith("thin"):
         detail += "  (%s)" % (r.get("reason") or "nothing compared")
-    print(FMT % (dev, r.get("system") or "-", r["verdict"], cov_text, conf_text, detail))
+    # The headline counts the property writes (issue #669): identical memory
+    # with a property write ETS made and bussard did not (or with another
+    # value) is a difference in what the device holds.
+    verdict = r["verdict"]
+    if verdict == "identical" and props.get("verdict") == "differs":
+        verdict = "differs"
+        detail += "  (property writes differ)"
+    print(FMT % (dev, r.get("system") or "-", verdict, cov_text, conf_text, detail))
     shown = conf.get("mismatches", [])
     for m in shown[:20]:
         print("%-9s   confirmed mismatch 0x%06X (%s+0x%X): bussard %s, ETS/device %s" % (
@@ -799,8 +812,8 @@ for dev in devices:
                                             os.path.join(out, dev, "diff.txt")))
     if row.get("skipped"):
         continue
-    if r["verdict"] != row.get("expect", "identical"):
-        failures.append("%s: %s, expected %s" % (dev, r["verdict"], row.get("expect")))
+    if verdict != row.get("expect", "identical"):
+        failures.append("%s: %s, expected %s" % (dev, verdict, row.get("expect")))
     want_props = row.get("expect_props")
     if want_props and props.get("verdict", "not-comparable") != want_props:
         failures.append("%s: property writes %s, expected %s" % (

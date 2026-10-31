@@ -1503,7 +1503,13 @@ impl BussardMcp {
             } else {
                 None
             },
-            properties: Vec::new(),
+            // The properties the parameters live in (issue #669), when the
+            // parameters are written.
+            properties: param_write
+                .map(|(_, detail)| {
+                    bussard_service::verify::ExpectedProperty::from_parameter_writes(&detail.plan)
+                })
+                .unwrap_or_default(),
             table_bases: product
                 .as_ref()
                 .and_then(|p| p.app())

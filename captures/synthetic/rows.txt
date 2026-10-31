@@ -21,7 +21,7 @@
 1.1.1|captures/synthetic/syn-minimal/defaults/ets.pcapng|tests-support/synthetic-products/syn-minimal/xml|M-00FA_A-2700-10-0000|syn-minimal defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-param-calculation/defaults/ets.pcapng|tests-support/synthetic-products/syn-param-calculation/xml|M-00FA_A-270B-10-0000|syn-param-calculation defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-product-07b0/defaults/ets.pcapng|tests-support/synthetic-products/syn-product-07b0/xml|M-00FA_A-2725-10-0000|syn-product-07b0 defaults|100.0|loadctl=identical
-1.1.1|captures/synthetic/syn-property-param/defaults/ets.pcapng|tests-support/synthetic-products/syn-property-param/xml|M-00FA_A-271E-10-0000|syn-property-param defaults|100.0|loadctl=identical props=differs
+1.1.1|captures/synthetic/syn-property-param/defaults/ets.pcapng|tests-support/synthetic-products/syn-property-param/xml|M-00FA_A-271E-10-0000|syn-property-param defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-relseg-fill/defaults/ets.pcapng|tests-support/synthetic-products/syn-relseg-fill/xml|M-00FA_A-2707-10-0000|syn-relseg-fill defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-s7-0701/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-0701/xml|M-00FA_A-2801-10-0000|syn-s7-0701 defaults|100.0|loadctl=identical state=fresh
 1.1.1|captures/synthetic/syn-s7-0701/reload/ets.pcapng|tests-support/synthetic-products/syn-s7-0701/xml|M-00FA_A-2801-10-0000|syn-s7-0701 reload: ETS read-compared the image the device held and wrote no memory, #384|100.0|expect=not-comparable confirmed=identical loadctl=differs state=loaded

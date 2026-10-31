@@ -61,6 +61,7 @@ pub(super) async fn flash_properties<C: Connector, F: FnMut(Progress)>(
                     start_element,
                     count,
                     verify,
+                    ..
                 } => {
                     write_property_value(
                         session.l4(),

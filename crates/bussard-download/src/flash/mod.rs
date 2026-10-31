@@ -311,6 +311,12 @@ pub enum FlashStep {
         /// `Verify="true"`: read the property back right after writing it and
         /// fail the flash on a difference, as ETS does.
         verify: bool,
+        /// The value comes from the program's property-located parameters
+        /// (`<Parameter><Property …/></Parameter>`), not from the op's
+        /// `InlineData`: the model decides it, so the post-write read-back
+        /// compares it on every system (issue #669), and the executor never
+        /// skips it as a template write to an absent object.
+        from_parameters: bool,
     },
     /// Verify an interface-object property against expected data
     /// (`LdCtrlCompareProp`) — the read-only precondition check that is the twin

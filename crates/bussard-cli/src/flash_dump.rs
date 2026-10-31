@@ -448,6 +448,7 @@ pub fn write_dump(
                 start_element,
                 count,
                 verify,
+                ..
             } if plan.is_sys7() || plan.is_property_only() => {
                 let hex: String = value.iter().map(|b| format!("{b:02x}")).collect();
                 let mut prop = match object {

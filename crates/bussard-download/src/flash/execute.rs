@@ -817,15 +817,19 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                         start_element,
                         count,
                         verify,
+                        from_parameters,
                     } => {
                         // A spliced template writes properties on obj4 and obj5 (the app
                         // id, PID 13). Skip a write to an object index the device does not
                         // expose (obj5 on a device without a PEI program), exactly like
                         // the load-control steps — otherwise the device NAKs the write to
                         // the absent object and fails the flash. A `u32::MAX`-bounded index
-                        // is compared against the discovered table.
+                        // is compared against the discovered table. A value the model's
+                        // parameters compose is never skipped (issue #669): a device
+                        // without its object fails the write instead.
                         if let Some(obj_idx) = object.index()
                             && plan.spliced_from_template
+                            && !*from_parameters
                             && !object_table.iter().any(|(i, _)| u32::from(*i) == obj_idx)
                         {
                             return Ok(());
