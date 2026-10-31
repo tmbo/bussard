@@ -153,14 +153,15 @@ class Product:
         check_keys(f"{w} [doc]", self.doc, {"purpose", "construct", "issues"})
         self.product = p = spec["product"]
         check_keys(f"{w} [product]", p, {"text", "order_number", "hardware_name", "hardware_serial",
-                                         "bus_current"}, {"hardware_version", "rail_mounted"})
+                                         "bus_current"}, {"hardware_version", "rail_mounted", "ip_enabled"})
         if not re.fullmatch(r"00FA[0-9A-F]{8}", p["hardware_serial"]):
             raise SpecError(f"{w} [product]: hardware_serial must be 00FA followed by 8 hex digits")
         self.app = a = spec["application"]
         check_keys(f"{w} [application]", a,
                    {"number", "version", "name", "mask", "load_procedure_style",
                     "address_table_max_entries", "association_table_max_entries"},
-                   {"options", "translations", "schema", "min_ets_version"} | SYS7_APP_KEYS)
+                   {"options", "translations", "schema", "min_ets_version", "additional_addresses_count"}
+                   | SYS7_APP_KEYS)
         if a["number"] not in APP_NUMBERS:
             raise SpecError(f"{w} [application]: number {a['number']:#06x} is outside the synthetic "
                             f"range {APP_NUMBERS.start:#06x}..{APP_NUMBERS.stop - 1:#06x}")
@@ -174,10 +175,13 @@ class Product:
         if self.system7:
             check_system7_application(w, a)
         else:
-            if a["mask"] != "07B0":
+            if a["mask"] not in MEDIUM_TYPES:
                 raise not_yet(f"{w} [application]", f"mask {a['mask']} (System 7 and others)")
+            if a["mask"] != "07B0" and a["load_procedure_style"] != "MergedProcedure":
+                raise not_yet(f"{w} [application]", f"LoadProcedureStyle {a['load_procedure_style']} on mask {a['mask']}")
             for k in sorted(SYS7_APP_KEYS & a.keys()):
                 raise SpecError(f"{w} [application]: `{k}` belongs to a System 7 mask ({', '.join(SYS7_MASKS)})")
+        check_ip_enabled(w, p, a)
         for k in a.get("options", {}):
             if k not in OPTIONS:
                 raise SpecError(f"{w} [application.options]: unknown option `{k}`")
@@ -649,6 +653,34 @@ B_PRODUCT_LOAD_OPS = {
 ALL_LOAD_OPS = LOAD_OPS | SYS7_LOAD_OPS | B_PRODUCT_LOAD_OPS
 
 
+# ------------------------------- IP-enabled TP hardware (#604 row 34, #455)
+# syn-ip-enabled-tp: a TP device with a KNX IP interface built in, the shape of
+# the Zennio ALLinBOX family: `IsIPEnabled` on the Hardware, and the tunnelling
+# addresses the interface offers as the application's AdditionalAddressesCount.
+
+def check_ip_enabled(w: str, p: dict, a: dict) -> None:
+    """`[product] ip_enabled` and `[application] additional_addresses_count`
+    come together, on a 07B0 application (the corpus shape; #455)."""
+    if bool(p.get("ip_enabled")) != ("additional_addresses_count" in a):
+        raise SpecError(f"{w}: `[product] ip_enabled = true` and `[application] additional_addresses_count` "
+                        "come together (an IP-enabled TP device offers tunnelling addresses)")
+    if "additional_addresses_count" not in a:
+        return
+    if a["mask"] != "07B0":
+        raise not_yet(f"{w} [application]", f"an IP-enabled device on mask {a['mask']}")
+    if not 1 <= a["additional_addresses_count"] <= 255:
+        raise SpecError(f"{w} [application]: additional_addresses_count is 1 to 255")
+
+
+# ------------------------------------- System B on other media (#604 row 35)
+# The System B masks a product may name, with the medium its
+# Hardware2Program declares: 07B0 on TP (MT-0), and 57B0, System B on KNX IP
+# (MT-5; syn-ip-57b0, #389), merged procedure only, as the one corpus 57B0
+# application (M-0002_A-A0C8-10-B22C-O01B8), and 27B0, System B on KNX RF
+# (MT-2; syn-rf-27b0, #604 row 36).
+MEDIUM_TYPES = {"07B0": "MT-0", "57B0": "MT-5", "27B0": "MT-2"}
+
+
 def check_system7_application(w: str, a: dict) -> None:
     if a["load_procedure_style"] != "ProductProcedure":
         raise not_yet(f"{w} [application]", f"LoadProcedureStyle {a['load_procedure_style']} on mask {a['mask']}")
@@ -915,6 +947,7 @@ def render_hardware(p: Product) -> bytes:
     x.open("Hardware", [("Id", p.hw_id), ("Name", pr["hardware_name"]), ("SerialNumber", pr["hardware_serial"]),
                         ("VersionNumber", pr.get("hardware_version", 1)), ("BusCurrent", pr["bus_current"]),
                         ("HasIndividualAddress", True), ("HasApplicationProgram", True),
+                        ("IsIPEnabled", True if pr.get("ip_enabled") else None),  # #455
                         ("NonRegRelevantDataVersion", 0)])
     x.open("Products")
     x.open("Product", [("Id", p.product_id), ("Text", pr["text"]), ("OrderNumber", pr["order_number"]),
@@ -924,7 +957,7 @@ def render_hardware(p: Product) -> bytes:
     x.close("Product")
     x.close("Products")
     x.open("Hardware2Programs")
-    x.open("Hardware2Program", [("Id", p.h2p_id), ("MediumTypes", "MT-0")])
+    x.open("Hardware2Program", [("Id", p.h2p_id), ("MediumTypes", MEDIUM_TYPES.get(p.app["mask"], "MT-0"))])
     x.empty("ApplicationProgramRef", [("RefId", p.app_id)])
     x.empty("RegistrationInfo", [("RegistrationStatus", "Registered")])
     x.close("Hardware2Program")
@@ -1055,6 +1088,7 @@ def render_application(p: Product) -> bytes:
         ("ProgramType", "ApplicationProgram"), ("MaskVersion", f"MV-{a['mask']}"), ("Name", a["name"]),
         ("LoadProcedureStyle", a["load_procedure_style"]), ("PeiType", a.get("pei_type", 0)), ("DefaultLanguage", "en-US"),
         ("DynamicTableManagement", False), ("Linkable", False), ("MinEtsVersion", min_ets_version(p)),
+        ("AdditionalAddressesCount", a.get("additional_addresses_count")),  # #455
         ("NonRegRelevantDataVersion", 0)])
     x.open("Static")
     x.open("Code")

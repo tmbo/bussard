@@ -1,0 +1,114 @@
+# A synthetic product of the catalogue (#604 row 35), syn-minimal plus one
+# construct. Rendered by ../generate.py into xml/; see ../README.md for the schema.
+
+[doc]
+purpose = """
+syn-minimal on mask 57B0, System B on KNX IP (Hardware2Program
+MediumTypes="MT-5"), with the same merged procedure, segment, parameters and
+com objects. The corpus has one such application (M-0002_A-A0C8-10-B22C-O01B8),
+and the KNX IP interface work of #389 needs the procedure ETS runs on a native
+IP device. bussard plans it from its built-in 57B0 template (#607). The
+product renders, bussard imports and plans it, and the sim loop flashes it
+into knx-sim, which models 57B0 as System B. No ETS capture: ETS 6.4.1 imports
+the signed product ("Import erfolgreich", catalogue medium IP), but refuses to
+add it to the sweep's TP line 1.1, "Das Gerät ... ist nicht kompatibel zu dem
+Medientyp der Linie" (2026-10-31). A capture needs the device on an IP line of
+the sweep project and a driver flow for it."""
+construct = "System B on KNX IP (mask 57B0, MT-5)"
+issues = [389]
+
+[product]
+text = "Thermal-updraft sensor"
+order_number = "NEST-THERMAL"
+hardware_name = "NEST-THERMAL"
+hardware_serial = "00FA002A0023"
+bus_current = 10
+
+[application]
+number = 0x2A23
+version = 0x10
+name = "Thermal-updraft sensor"
+mask = "57B0"
+load_procedure_style = "MergedProcedure"
+address_table_max_entries = 32
+association_table_max_entries = 32
+translations = { "de-DE" = "Thermiksensor" }
+
+[application.options]
+Comparable = true
+Reconstructable = true
+
+[[segment]]
+name = "main"
+kind = "relative"
+lsm = 4
+size = 256
+fill = 0xFF
+
+[[parameter_type]]
+name = "Mode"
+kind = "enum"
+size_bits = 8
+values = [
+    { value = 0, text = "off" },
+    { value = 1, text = "on" },
+    { value = 2, text = "automatic" },
+]
+
+[[parameter_type]]
+name = "Delay"
+kind = "number"
+size_bits = 16
+signed = false
+min = 0
+max = 65535
+
+[[parameter]]
+name = "mode"
+type = "Mode"
+text = "Operating mode"
+default = 1
+memory = { segment = "main", offset = 0, bit_offset = 0 }
+
+[[parameter]]
+name = "delay"
+type = "Delay"
+text = "Delay (s)"
+default = 300
+memory = { segment = "main", offset = 1, bit_offset = 0 }
+
+[[com_object]]
+number = 0
+name = "switch"
+text = "Switch"
+function_text = "On/Off"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "W"]
+priority = "Low"
+
+[[com_object]]
+number = 1
+name = "status"
+text = "Status"
+function_text = "On/Off status"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+[[dynamic.block]]
+name = "general"
+text = "General"
+parameters = ["mode", "delay"]
+com_objects = [0, 1]
+
+# The application's part of the 57B0 mask procedure: MergeId 2 allocates the
+# parameter segment, MergeId 4 writes it.
+[[load_procedure]]
+merge_id = 2
+ops = [{ op = "LdCtrlRelSegment", lsm = 4, size = 256, mode = 0, fill = 0 }]
+
+[[load_procedure]]
+merge_id = 4
+ops = [{ op = "LdCtrlWriteRelMem", object = 4, offset = 0, size = 256, verify = false }]

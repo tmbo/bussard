@@ -10,12 +10,13 @@
 1.1.1|captures/synthetic/syn-choose-partial-segment/defaults/ets.pcapng|tests-support/synthetic-products/syn-choose-partial-segment/xml|M-00FA_A-2708-10-0000|syn-choose-partial-segment defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-choose-per-ref/defaults/ets.pcapng|tests-support/synthetic-products/syn-choose-per-ref/xml|M-00FA_A-2719-10-0000|syn-choose-per-ref defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-color-param/defaults/ets.pcapng|tests-support/synthetic-products/syn-color-param/xml|M-00FA_A-2728-10-0000|syn-color-param defaults|100.0|loadctl=identical
-1.1.1|captures/synthetic/syn-color-param-hsv/defaults/ets.pcapng|tests-support/synthetic-products/syn-color-param-hsv/xml|M-00FA_A-27A8-10-0000|syn-color-param-hsv defaults|100.0|expect=differs loadctl=identical
-1.1.1|captures/synthetic/syn-color-param-hsv2/defaults/ets.pcapng|tests-support/synthetic-products/syn-color-param-hsv2/xml|M-00FA_A-27A9-10-0000|syn-color-param-hsv2 defaults|100.0|expect=differs loadctl=identical
+1.1.1|captures/synthetic/syn-color-param-hsv/defaults/ets.pcapng|tests-support/synthetic-products/syn-color-param-hsv/xml|M-00FA_A-27A8-10-0000|syn-color-param-hsv defaults|100.0|loadctl=identical
+1.1.1|captures/synthetic/syn-color-param-hsv2/defaults/ets.pcapng|tests-support/synthetic-products/syn-color-param-hsv2/xml|M-00FA_A-27A9-10-0000|syn-color-param-hsv2 defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-com-objects/defaults/ets.pcapng|tests-support/synthetic-products/syn-com-objects/xml|M-00FA_A-271B-10-0000|syn-com-objects defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-dynamic-tests/defaults/ets.pcapng|tests-support/synthetic-products/syn-dynamic-tests/xml|M-00FA_A-271C-10-0000|syn-dynamic-tests defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-hidden-default/defaults/ets.pcapng|tests-support/synthetic-products/syn-hidden-default/xml|M-00FA_A-270C-10-0000|syn-hidden-default defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-ip-address-param/defaults/ets.pcapng|tests-support/synthetic-products/syn-ip-address-param/xml|M-00FA_A-2715-10-0000|syn-ip-address-param defaults|100.0|loadctl=identical
+1.1.1|captures/synthetic/syn-ip-enabled-tp/defaults/ets.pcapng|tests-support/synthetic-products/syn-ip-enabled-tp/xml|M-00FA_A-2A22-10-0000|syn-ip-enabled-tp defaults|100.0|loadctl=identical dir=captures/synthetic/syn-ip-enabled-tp/defaults/model
 1.1.1|captures/synthetic/syn-le-order/defaults/ets.pcapng|tests-support/synthetic-products/syn-le-order/xml|M-00FA_A-2704-10-0000|syn-le-order defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-legacy-patch-always/defaults/ets.pcapng|tests-support/synthetic-products/syn-legacy-patch-always/xml|M-00FA_A-2714-10-0000|syn-legacy-patch-always defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-map-error/defaults/ets.pcapng|tests-support/synthetic-products/syn-map-error/xml|M-00FA_A-2726-10-0000|syn-map-error defaults|100.0|loadctl=identical

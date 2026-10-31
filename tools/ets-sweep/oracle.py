@@ -11,7 +11,8 @@
 For each application with outcome `captured` in results/defaults.json: build
 the scratch model (one device 1.1.1, the application at its defaults, no
 links; oracle_model.py) and run scripts/campaign/95-offline-oracle.sh on the
-row `1.1.1|<capture>|<product>|<application>`. The verdict, coverage and the
+row `1.1.1|<capture>|<product>|<application>`, with `state=fresh` on a
+System 7 mask (`device_state`: the sim starts factory-fresh, #640). The verdict, coverage and the
 region summary land in results/oracle.json, keyed by application id, with the
 load-control verdict and its differences under `loadctl` (issue #419). Nothing
 touches a bus; the model and the oracle output live next to the capture under
@@ -95,6 +96,33 @@ def shared_root(captures: Path, work: Path | None) -> Path:
     return (work or captures) / ".oracle-products"
 
 
+# The masks whose load state ETS never reads before its download (System 7,
+# dev/system7-spec.md): their rows name the device state (#488, #640).
+SYSTEM7_MASKS = frozenset({"0700", "0701", "0705"})
+# The runs that download into a device a previous download of the same sim
+# already programmed (the synthetic run variants of #604); every other run
+# starts on a factory-fresh knx-sim.
+LOADED_RUNS = frozenset({"reload", "other-app"})
+
+
+def device_state(mask: str, variant: str) -> str:
+    """The `state=` row option of a capture (95-offline-oracle.sh, issue #488):
+    `state=loaded` for a System 7 run into a programmed device (`reload`,
+    `other-app`), `state=fresh` for any other System 7 run (the sim starts
+    factory-fresh and ETS reads no System 7 load state, so knxtrace records
+    none), empty for other masks. The sweep's rows (`row`) and the synthetic
+    captures' rows (`synthetic/capture.py`) both take it from here (#640)."""
+    if str(mask).upper() not in SYSTEM7_MASKS:
+        return ""
+    return "state=loaded" if variant in LOADED_RUNS else "state=fresh"
+
+
+def row(app: str, capture: Path, product: Path, mask: str, variant: str = "plain-defaults") -> str:
+    """The oracle row of a sweep capture: device 1.1.1, no note, no recorded
+    coverage, and the device state of a System 7 mask (`device_state`)."""
+    return "|".join(["1.1.1", str(capture), str(product), app, "", "", device_state(mask, variant)]).rstrip("|")
+
+
 def run_row(app: str, entry: dict, captures: Path, work: Path | None, seed: bool = False,
             variant: str = "plain-defaults", links: dict | None = None) -> dict:
     run_dir = captures / app / variant
@@ -108,8 +136,8 @@ def run_row(app: str, entry: dict, captures: Path, work: Path | None, seed: bool
     shared = oracle_model.shared_import(shared_root(captures, work), product, seed=seed_dir)
     model = oracle_model.build(work_dir / "model", product, app, mask=entry.get("mask", ""),
                                friendly_name=catalog_row_name(run_dir), shared=shared, links=links)
-    row = f"1.1.1|{capture}|{product}|{app}"
-    r = subprocess.run(["bash", str(ORACLE), "--dir", str(model), "--out", str(work_dir / "oracle"), "--row", row],
+    r = subprocess.run(["bash", str(ORACLE), "--dir", str(model), "--out", str(work_dir / "oracle"),
+                        "--row", row(app, capture, product, entry.get("mask", ""), variant)],
                        capture_output=True, text=True, timeout=1800, env={**os.environ, "BUSSARD_NO_DOTENV": "1"})
     text = ANSI.sub("", r.stdout + r.stderr)
     summary = next((l for l in text.splitlines() if l.startswith("1.1.1 ")), "")

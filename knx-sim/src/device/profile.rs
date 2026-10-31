@@ -185,7 +185,11 @@ pub fn parse_mask(mask_version: &str) -> Option<u16> {
 /// simulator would need that generation's model).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaskFamily {
-    /// System B (mask 0x07B0).
+    /// System B: mask 0x07B0 on TP, and 0x57B0, System B on KNX IP (bussard
+    /// issue #389, the synthetic product `syn-ip-57b0`). The sim models both
+    /// alike behind its tunnel: same load-state machines and tables, the
+    /// device descriptor reporting the true mask. The KNXnet/IP parameter
+    /// object of an IP device is not added; a config's `knxnet` block does that.
     SystemB,
     /// System 7 (mask 0x0700 / 0x0701 / 0x0705).
     System7,
@@ -196,7 +200,7 @@ pub enum MaskFamily {
 /// Classify a raw mask into its family.
 pub fn mask_family(mask: u16) -> MaskFamily {
     match mask {
-        0x07B0 => MaskFamily::SystemB,
+        0x07B0 | 0x57B0 => MaskFamily::SystemB,
         0x0700 | 0x0701 | 0x0705 => MaskFamily::System7,
         _ => MaskFamily::Other,
     }
@@ -253,6 +257,8 @@ mod tests {
     #[test]
     fn test_mask_family_classification() {
         assert_eq!(mask_family(0x07B0), MaskFamily::SystemB);
+        assert_eq!(mask_family(0x57B0), MaskFamily::SystemB);
+        assert_eq!(mask_family(0x27B0), MaskFamily::Other);
         assert_eq!(mask_family(0x0705), MaskFamily::System7);
         assert_eq!(mask_family(0x0701), MaskFamily::System7);
         assert_eq!(mask_family(0x0700), MaskFamily::System7);

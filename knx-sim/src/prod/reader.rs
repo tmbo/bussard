@@ -173,7 +173,7 @@ fn attach_pei_programs<R: Read + std::io::Seek>(
             if !pd
                 .written_props
                 .iter()
-                .any(|&(o, p, _)| o == prop.0 && p == prop.1)
+                .any(|&(o, p, _, _)| o == prop.0 && p == prop.1)
             {
                 pd.written_props.push(prop);
             }
@@ -297,7 +297,7 @@ fn parse_application_program(
     let mut typed_cands: Candidates<(u16, u8)> = Vec::new();
     let mut chooses = ChooseStack::default();
     let mut defaults = Defaults::default();
-    let mut written_props: Vec<(u8, u8, usize)> = Vec::new();
+    let mut written_props: Vec<(u8, u8, usize, u16)> = Vec::new();
     let mut task_segment_lsms: Vec<u8> = Vec::new();
     let mut completes_loads = false;
     let mut compare_mems: Vec<(u16, Vec<u8>)> = Vec::new();
@@ -464,12 +464,16 @@ fn parse_application_program(
                     let len = attr(&e, "InlineData")
                         .and_then(|hex| decode_hex(&hex))
                         .map_or(1, |v| v.len().max(1));
+                    // `Count` elements of `len / Count` octets (issue #692).
+                    let count = parse_u32(&e, "Count")?
+                        .and_then(|v| u16::try_from(v).ok())
+                        .unwrap_or(1);
                     if let (Some(object), Some(pid)) = (object, pid)
                         && !written_props
                             .iter()
-                            .any(|&(o, p, _)| o == object && p == pid)
+                            .any(|&(o, p, _, _)| o == object && p == pid)
                     {
-                        written_props.push((object, pid, len));
+                        written_props.push((object, pid, len, count));
                     }
                 }
                 b"LdCtrlLoadCompleted" if in_app => completes_loads = true,
@@ -773,9 +777,9 @@ mod tests {
         }
         let pd = read_knxprod_bytes(buf.get_ref(), Some("M-0002_A-488A-11-4A38"))?;
         assert_eq!(pd.application_id, "M-0002_A-488A-11-4A38");
-        assert!(pd.written_props.contains(&(4, 16, 1)));
-        assert!(pd.written_props.contains(&(5, 16, 1)));
-        assert!(pd.written_props.contains(&(5, 13, 5)));
+        assert!(pd.written_props.contains(&(4, 16, 1, 1)));
+        assert!(pd.written_props.contains(&(5, 16, 1, 1)));
+        assert!(pd.written_props.contains(&(5, 13, 5, 1)));
         assert!(pd.object(5).is_some(), "the PEI program's object 5");
         Ok(())
     }

@@ -149,6 +149,14 @@ pub struct Property {
     /// The PDT an `A_PropertyDescription_Read` reports, when the property
     /// carries a specific one; `None` reports [`PDT_GENERIC_01`].
     pub pdt: Option<u8>,
+    /// The number of elements the value holds, which an
+    /// `A_PropertyDescription_Read` reports as the maximum number of elements
+    /// (Application Layer 3/3/7, `max_nr_of_elem`). 1 for a property the sim
+    /// treats as one opaque value; more for a product property a load
+    /// procedure writes with `Count` > 1 ([`Property::with_elements`]), whose
+    /// value is then `max_elements` elements of equal size, addressed by
+    /// `start_index` 1..=`max_elements`.
+    pub max_elements: u16,
 }
 
 impl Property {
@@ -158,6 +166,7 @@ impl Property {
             value,
             read_only: false,
             pdt: None,
+            max_elements: 1,
         }
     }
 
@@ -167,6 +176,7 @@ impl Property {
             value,
             read_only: true,
             pdt: None,
+            max_elements: 1,
         }
     }
 
@@ -175,6 +185,72 @@ impl Property {
     pub fn sized(mut self) -> Self {
         self.pdt = Some(generic_pdt_for_len(self.value.len()));
         self
+    }
+
+    /// The same property as an array of `count` elements of equal size, as a
+    /// load procedure declares it with `LdCtrlWriteProp Count="N"` and
+    /// `InlineData` of `len` octets (bussard issue #692): described with
+    /// `count` elements and the generic PDT of `len / count` octets
+    /// ([`generic_pdt_for_len`]). A count of 0 or 1, or one that does not
+    /// divide the value's length, leaves the property one element of the
+    /// whole value ([`Property::sized`]).
+    pub fn with_elements(self, count: u16) -> Self {
+        let len = self.value.len();
+        let n = usize::from(count);
+        if n <= 1 || len == 0 || !len.is_multiple_of(n) {
+            return self.sized();
+        }
+        Self {
+            pdt: Some(generic_pdt_for_len(len / n)),
+            max_elements: count,
+            ..self
+        }
+    }
+
+    /// The size of one element in octets: the whole value for a one-element
+    /// property, else the value's length over [`Property::max_elements`].
+    pub fn element_size(&self) -> usize {
+        self.value.len() / usize::from(self.max_elements.max(1))
+    }
+
+    /// The octets of `count` elements from 1-based `start` of an array
+    /// property, or `None` when the range is empty or runs past
+    /// [`Property::max_elements`]. Start 0 with count 1 reads the current
+    /// number of elements as two octets (Resources 3/5/1, array properties).
+    pub fn read_elements(&self, start: u16, count: u8) -> Option<Vec<u8>> {
+        if start == 0 {
+            return (count == 1).then(|| self.max_elements.to_be_bytes().to_vec());
+        }
+        let (from, to) = self.element_range(start, count)?;
+        self.value.get(from..to).map(<[u8]>::to_vec)
+    }
+
+    /// Write `data` as `count` elements from 1-based `start` of an array
+    /// property. Returns `false`, writing nothing, when the range is empty,
+    /// runs past [`Property::max_elements`], or `data` is not `count`
+    /// elements long: a real device refuses such a write whole.
+    pub fn write_elements(&mut self, start: u16, count: u8, data: &[u8]) -> bool {
+        let Some((from, to)) = self.element_range(start, count) else {
+            return false;
+        };
+        match self.value.get_mut(from..to) {
+            Some(slot) if slot.len() == data.len() => {
+                slot.copy_from_slice(data);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The octet range of `count` elements from 1-based `start`.
+    fn element_range(&self, start: u16, count: u8) -> Option<(usize, usize)> {
+        let start = usize::from(start);
+        let count = usize::from(count);
+        if start == 0 || count == 0 || start + count - 1 > usize::from(self.max_elements) {
+            return None;
+        }
+        let size = self.element_size();
+        Some(((start - 1) * size, (start - 1 + count) * size))
     }
 }
 
@@ -226,7 +302,8 @@ impl InterfaceObject {
     /// Returns `None` once the index runs past the object's property list — the
     /// terminating signal an enumerating tool reads as `max_elements == 0`. The
     /// simulator reports every property as [`PDT_GENERIC_01`] (or the PDT the
-    /// property carries, [`Property::pdt`]) with a single element (it stores opaque bytes, so it does not model per-PID arrays), a
+    /// property carries, [`Property::pdt`]) with [`Property::max_elements`]
+    /// elements (1 unless a product's load procedure writes it as an array), a
     /// read level of 3 (the ETS free-access default), and a write level of 0 for a
     /// writable property or 15 for a read-only one.
     pub fn describe_at_index(&self, property_index: u8) -> Option<PropertyDescription> {
@@ -239,7 +316,7 @@ impl InterfaceObject {
             pid,
             pdt: prop.pdt.unwrap_or(PDT_GENERIC_01),
             writable: !prop.read_only,
-            max_elements: 1,
+            max_elements: prop.max_elements,
             read_level: 3,
             write_level: if prop.read_only { 15 } else { 0 },
         })
@@ -311,5 +388,51 @@ mod tests {
         assert_eq!(d.pid, PID_PROGMODE);
         assert!(d.writable);
         assert!(obj.describe_pid(0x99).is_none(), "unknown PID → None");
+    }
+
+    #[test]
+    fn test_describe_pid_two_elements_of_five_octets() -> Result<(), String> {
+        // `LdCtrlWriteProp ObjIdx="3" PropId="204" Count="2"` with 10 octets
+        // of InlineData (syn-s7-pid204, bussard issue #692): two elements of
+        // PDT_GENERIC_05 (0x15), writable.
+        let mut obj = InterfaceObject::new();
+        obj.set_property(PID_OBJECT_TYPE, Property::read_only(vec![0x00, 0x03]));
+        obj.set_property(204, Property::writable(vec![0x00; 10]).with_elements(2));
+        let d = obj.describe_pid(204).ok_or("PID 204 described")?;
+        assert_eq!(d.pdt, 0x15, "PDT_GENERIC_05");
+        assert_eq!(d.max_elements, 2);
+        assert!(d.writable);
+        assert_eq!(d.write_level, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_with_elements_falls_back_to_one_element() {
+        // Count 1, or a count that does not divide the length: one element of
+        // the whole value, as before #692.
+        let one = Property::writable(vec![0x00; 10]).with_elements(1);
+        assert_eq!((one.max_elements, one.pdt), (1, Some(0x1A)));
+        let odd = Property::writable(vec![0x00; 10]).with_elements(3);
+        assert_eq!((odd.max_elements, odd.pdt), (1, Some(0x1A)));
+    }
+
+    #[test]
+    fn test_write_elements_by_range() -> Result<(), String> {
+        let mut prop = Property::writable(vec![0x00; 10]).with_elements(2);
+        assert!(prop.write_elements(1, 2, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]));
+        assert!(prop.write_elements(2, 1, &[0xA, 0xB, 0xC, 0xD, 0xE]));
+        assert_eq!(prop.value, vec![1, 2, 3, 4, 5, 0xA, 0xB, 0xC, 0xD, 0xE]);
+        assert_eq!(
+            prop.read_elements(1, 1).ok_or("element 1")?,
+            vec![1, 2, 3, 4, 5]
+        );
+        assert_eq!(prop.read_elements(0, 1).ok_or("count")?, vec![0, 2]);
+        // Past the end, a short value, or index 0 is refused whole.
+        assert!(!prop.write_elements(2, 2, &[0; 10]));
+        assert!(!prop.write_elements(1, 2, &[0; 9]));
+        assert!(!prop.write_elements(0, 1, &[0; 5]));
+        assert!(prop.read_elements(3, 1).is_none());
+        assert_eq!(prop.value, vec![1, 2, 3, 4, 5, 0xA, 0xB, 0xC, 0xD, 0xE]);
+        Ok(())
     }
 }

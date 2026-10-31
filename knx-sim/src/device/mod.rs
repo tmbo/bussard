@@ -385,7 +385,7 @@ impl Device {
             }
             profile::MaskFamily::Other => {
                 return Err(format!(
-                    "mask 0x{mask:04x} is not a modelled family (only System B 07B0 and \
+                    "mask 0x{mask:04x} is not a modelled family (only System B 07B0/57B0 and \
                      System 7 0705/0701 are simulated)"
                 ));
             }

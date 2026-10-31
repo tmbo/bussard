@@ -20,6 +20,10 @@
 //! commits those earlier downloads as `base-requests.txt`. They are replayed
 //! first, into the same device, so the captured download meets the device ETS
 //! met; the checks then apply to the captured download as above.
+//!
+//! A device whose `sim.yaml` has a `knxnet` block (an IP-enabled TP product,
+//! `syn-ip-enabled-tp`, bussard issue #455) gets that KNXnet/IP parameter
+//! object, as the sim in the VM had it, so ETS's writes to it are replayed too.
 
 use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
@@ -27,6 +31,7 @@ use std::sync::Arc;
 
 use knx_sim::bus::Bus;
 use knx_sim::bus::event::{Event, RecordingSink};
+use knx_sim::config::KnxnetSimConfig;
 use knx_sim::device::{Device, LoadState, ProfileOverrides, profile};
 use knx_sim::prod::read_knxprod_bytes;
 use knx_sim::wire::{CemiLData, IndividualAddress, MessageCode};
@@ -60,6 +65,30 @@ struct SegmentRec {
 struct Region {
     start: u32,
     hex: String,
+}
+
+/// The part of a capture's `sim.yaml` the replay reads: the device's
+/// `knxnet` block, if any.
+#[derive(Deserialize)]
+struct SimYaml {
+    devices: Vec<SimDevice>,
+}
+
+/// One device of `sim.yaml`.
+#[derive(Deserialize)]
+struct SimDevice {
+    #[serde(default)]
+    knxnet: Option<KnxnetSimConfig>,
+}
+
+/// The `knxnet` block of the capture's `sim.yaml` (none without the file).
+fn knxnet_of(capture: &Path) -> Result<Option<KnxnetSimConfig>, Box<dyn std::error::Error>> {
+    let path = capture.join("sim.yaml");
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let sim: SimYaml = serde_norway::from_str(&std::fs::read_to_string(path)?)?;
+    Ok(sim.devices.into_iter().next().and_then(|d| d.knxnet))
 }
 
 /// The repository root (knx-sim is a workspace of its own one level down).
@@ -183,7 +212,7 @@ fn replay(capture: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     // `sim.yaml` without `lsm_access` gets it: memory mapped on 0700 and
     // 0701, property on 0705 (`Device::from_product` would keep property).
     let mask = profile::parse_mask(&pd.mask_version).unwrap_or(0x07B0);
-    bus.add_device(Device::from_product_with_overrides(
+    let device = Device::from_product_with_overrides(
         IndividualAddress(ia),
         &pd,
         LoadState::Unloaded,
@@ -192,7 +221,12 @@ fn replay(capture: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
             ..Default::default()
         },
         sink.clone(),
-    )?);
+    )?;
+    let device = match knxnet_of(capture)? {
+        Some(k) => device.with_knxnet(&k.parameters(IndividualAddress(ia))?, k.listed),
+        None => device,
+    };
+    bus.add_device(device);
     for (src, dst, tpdu) in base.into_iter().chain(stream) {
         let _ = bus.deliver_from_tool(&CemiLData {
             message_code: MessageCode::LDataReq,

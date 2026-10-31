@@ -917,5 +917,66 @@ class MinEtsVersion(unittest.TestCase):
             generate.Product("test", s)
 
 
+class IpEnabled(unittest.TestCase):
+    """syn-ip-enabled-tp (#604 row 34, #455): IsIPEnabled hardware and the
+    application's AdditionalAddressesCount."""
+
+    def ip_spec(self) -> dict:
+        s = spec()
+        s["product"]["ip_enabled"] = True
+        s["application"]["additional_addresses_count"] = 2
+        return s
+
+    def test_render_ip_enabled_hardware_and_tunnel_count(self) -> None:
+        p = generate.Product("test", self.ip_spec())
+        files = generate.render(p)
+        self.assertIn('HasApplicationProgram="true" IsIPEnabled="true"', files["M-00FA/Hardware.xml"].decode())
+        self.assertIn('MinEtsVersion="6.0" AdditionalAddressesCount="2"', files[f"M-00FA/{p.app_file}"].decode())
+
+    def test_plain_product_has_neither(self) -> None:
+        p = generate.Product("test", spec())
+        files = generate.render(p)
+        self.assertNotIn("IsIPEnabled", files["M-00FA/Hardware.xml"].decode())
+        self.assertNotIn("AdditionalAddressesCount", files[f"M-00FA/{p.app_file}"].decode())
+
+    def test_ip_enabled_without_tunnel_count_refused(self) -> None:
+        s = self.ip_spec()
+        del s["application"]["additional_addresses_count"]
+        with self.assertRaisesRegex(generate.SpecError, "come together"):
+            generate.Product("test", s)
+
+
+class SystemBOnIp(unittest.TestCase):
+    """syn-ip-57b0 (#604 row 35, #389): mask 57B0 with MediumTypes MT-5."""
+
+    def test_render_57b0_with_medium_ip(self) -> None:
+        s = spec()
+        s["application"]["mask"] = "57B0"
+        p = generate.Product("test", s)
+        files = generate.render(p)
+        self.assertIn('MaskVersion="MV-57B0"', files[f"M-00FA/{p.app_file}"].decode())
+        self.assertIn('MediumTypes="MT-5"', files["M-00FA/Hardware.xml"].decode())
+        self.assertIn('MediumTypes="MT-0"', generate.render(generate.Product("t", spec()))["M-00FA/Hardware.xml"].decode())
+
+    def test_render_27b0_with_medium_rf(self) -> None:
+        s = spec()
+        s["application"]["mask"] = "27B0"
+        files = generate.render(generate.Product("test", s))
+        self.assertIn('MediumTypes="MT-2"', files["M-00FA/Hardware.xml"].decode())
+
+    def test_57b0_product_procedure_not_yet(self) -> None:
+        s = spec()
+        s["application"]["mask"] = "57B0"
+        s["application"]["load_procedure_style"] = "ProductProcedure"
+        with self.assertRaisesRegex(generate.SpecError, "no product uses it yet"):
+            generate.Product("test", s)
+
+    def test_other_masks_not_yet(self) -> None:
+        s = spec()
+        s["application"]["mask"] = "091A"
+        with self.assertRaisesRegex(generate.SpecError, "no product uses it yet"):
+            generate.Product("test", s)
+
+
 if __name__ == "__main__":
     unittest.main()

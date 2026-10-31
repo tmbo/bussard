@@ -113,11 +113,12 @@ pub struct ProductData {
     /// branch (bussard issue #400), else the first compare of that PID does.
     pub device_compare_props: Vec<(u8, Vec<u8>)>,
     /// Every property the application's `LdCtrlWriteProp` steps write, as
-    /// `(object index, PID, value length)`. A real device of that hardware
+    /// `(object index, PID, value length, element count)`: the length of the
+    /// step's `InlineData` and its `Count` (1 when absent). A real device of that hardware
     /// accepts those writes (an ABB i-bus program writes the PEI type to
     /// object 4 or 5 PID 16, others object 0 PID 52 or 86), so the simulated
     /// device seeds each one writable where it lacks it.
-    pub written_props: Vec<(u8, u8, usize)>,
+    pub written_props: Vec<(u8, u8, usize, u16)>,
     /// The LSM indices the application's load procedures finalise with an
     /// `LdCtrlTaskSegment` (System 7), or `None` when the product carries no
     /// procedure that completes a load (a synthetic product): then every LSM
