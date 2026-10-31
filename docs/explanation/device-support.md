@@ -220,8 +220,9 @@ after 2 seconds.
   calculations that keep changing each other's results, and a value in the
   device file for a parameter a calculation computes differently: remove it,
   or change the parameters the calculation reads.
-  Verified byte for byte on Ekinex EK-E72 thermostats; the dimming curves of
-  a Jung LED dimmer are computed but not yet compared with an ETS download.
+  Verified byte for byte against ETS downloads of Ekinex EK-E72 thermostats
+  (VBScript), a Jung LED dimmer (JavaScript) and the synthetic product that
+  changes a calculation's input.
 - **Not implemented:** secure routing (multicast), activating or deactivating
   Data Secure on a device, and activation from the FDSK certificate. Use ETS.
 
