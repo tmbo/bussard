@@ -235,7 +235,10 @@ after 2 seconds.
   calculation, rather than write a value the script did not compute. So do
   calculations that keep changing each other's results, and a value in the
   device file for a parameter a calculation computes differently: remove it,
-  or change the parameters the calculation reads.
+  or change the parameters the calculation reads. `bussard device`,
+  `bussard doc`, `bussard diff`, `viz` and the MCP model tools show a
+  computed parameter with the value the download writes, marked as computed
+  by its calculation.
   Verified byte for byte against ETS downloads of Ekinex EK-E72 thermostats
   (VBScript), a Jung LED dimmer (JavaScript) and the synthetic product that
   changes a calculation's input.

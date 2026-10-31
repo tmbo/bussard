@@ -172,6 +172,15 @@ property and no union place, with `virtual: true` (#474). With the
 `<choose>` whose only branch is the default one on a parameter no page shows: ETS
 takes no branch of it (see the module docs of `bussard_model::dynamic`).
 
+Format 13 adds `calculations:`, the application's `<ParameterCalculation>`s in
+document order (#712): each with its app-relative `id`, its `language`, its
+left-to-right script `lr_script`, and its `inputs` and `outputs`, each a
+`param_ref` with the `alias` the script names it by. The evaluator runs them over
+the model the same way as over the parsed application program (the trigger rule
+is on `CalcRuns` in `bussard_model::dynamic`), so `bussard device`, `bussard doc`,
+`bussard diff` and the MCP model tools show a computed output with the value a
+download writes, marked as computed by its calculation.
+
 Format 6 drops `blocks`, `parameter_when` and `ref_values`, and a
 parameter's `default` is its own `Value` (format 5 and older gave a parameter with one
 ref that ref's `Value`; the ref's `value` carries it now). The ETS pages `bussard

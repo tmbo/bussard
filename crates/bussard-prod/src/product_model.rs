@@ -434,6 +434,10 @@ struct Model<'a> {
     /// The module arguments' `Allocates` by app-relative id (issue #449).
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     argument_allocates: BTreeMap<&'a str, i64>,
+    /// The `<ParameterCalculation>`s, ids and refs app-relative (format 13,
+    /// issue #712).
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    calculations: &'a [bussard_model::dynamic::ParameterCalculation],
     /// The application's Dynamic section (issue #345), appended by
     /// [`serialize_model`] one flow-style node per line.
     #[serde(skip)]
@@ -637,6 +641,7 @@ fn build_model<'a>(app: &'a ApplicationProgram, product: &ProductData) -> Model<
             .iter()
             .map(|(id, n)| (id.as_str(), *n))
             .collect(),
+        calculations: &app.calculations,
         dynamic: &app.dynamic,
         module_dynamics: app
             .module_dynamics

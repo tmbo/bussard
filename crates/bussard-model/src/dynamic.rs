@@ -934,6 +934,21 @@ pub struct CalculatedOverride {
     pub computed: String,
 }
 
+/// A value a `<ParameterCalculation>` computed (see
+/// [`DynamicConfig::computed_values`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ComputedValue<'a> {
+    /// The module instance id the value belongs to, `""` for an
+    /// application-level parameter.
+    pub module_instance: &'a str,
+    /// The app-relative `ParameterRef` id.
+    pub param_ref: &'a str,
+    /// The calculation's app-relative id (e.g. `PC-1`).
+    pub calculation: &'a str,
+    /// The computed value.
+    pub value: &'a str,
+}
+
 /// The result of evaluating an application's Dynamic section.
 #[derive(Debug, Clone, Default)]
 pub struct DynamicConfig {
@@ -1016,6 +1031,29 @@ impl DynamicConfig {
         self.computed
             .get(&(instance.to_string(), param_ref_id.to_string()))
             .map(String::as_str)
+    }
+
+    /// Every value a `<ParameterCalculation>` computed and nothing replaced
+    /// since (see [`Self::computed_by`]), sorted by module instance and ref:
+    /// what the views show as computed (issue #712). The trigger rule on
+    /// `CalcRuns` decides which calculations ran, so a configuration whose
+    /// inputs all hold their defaults yields none.
+    pub fn computed_values(&self) -> Vec<ComputedValue<'_>> {
+        let mut out: Vec<ComputedValue<'_>> = self
+            .computed
+            .iter()
+            .filter_map(|((instance, param_ref), calculation)| {
+                let value = self.values.get(&(instance.clone(), param_ref.clone()))?;
+                Some(ComputedValue {
+                    module_instance: instance,
+                    param_ref,
+                    calculation,
+                    value,
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| (a.module_instance, a.param_ref).cmp(&(b.module_instance, b.param_ref)));
+        out
     }
 
     /// Whether the value of `param_ref_id` in `module` came from a caller

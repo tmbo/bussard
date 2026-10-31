@@ -60,8 +60,8 @@ pub use address::{AddressParseError, GroupAddress, IndividualAddress};
 pub use analysis::{ModelAnalysis, analyze};
 pub use bundle::{Bundle, BundleError, BundleManifest};
 pub use change::{
-    Change, ChangeKind, ChangeSet, LinkRole, describe, name_parameters, render_text,
-    settle_parameters,
+    Change, ChangeKind, ChangeSet, LinkRole, compute_parameters, describe, name_parameters,
+    render_text, settle_parameters,
 };
 pub use codec::{
     DateTime, EncodeError, Float16RangeError, HvacMode, ParseValueError, Rgbw, TypedValue, decode,
