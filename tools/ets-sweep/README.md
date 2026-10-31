@@ -662,3 +662,14 @@ back (OCR reads nothing on a selected row).
   (`00014b00` with no links). Row (`dir=` the committed model template with
   those links): `identical`, `addr=ok(8) assoc=ok(14) gobj=ok(4)`, load
   control `identical` (#478, #540).
+- `partial` of `syn-minimal` (2026-10-31): a defaults download, then
+  `Delay (s)` set from 300 to 500 in the parameter editor and ETS's
+  "Partiell" download (23 operations): reads of obj 4's load state and
+  `PID_PROGRAM_VERSION`, obj 5's load state and obj 4's
+  `PID_TABLE_REFERENCE`, then obj 4 Unload, StartLoading, `LdCtrlRelSegment`
+  256 octets Mode 0 without fill, `PID_TABLE_REFERENCE` again, 3 octets at
+  `0x6000` (`01 01 f4`), `PID_PROGRAM_VERSION`, LoadCompleted, restart.
+  Objects 1 to 3 are not touched. Row (`run=params`, knx-sim replaying the
+  defaults download, then `bussard flash --parameters-only`): `identical`,
+  `memory 0x6000=ok(3)`, load control `identical` (4 records) (#543, #490).
+  `bussard apply` refuses this device, which has no links (#542).
