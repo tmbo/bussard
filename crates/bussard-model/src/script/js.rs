@@ -9,7 +9,7 @@
 //! Functions, objects, `new`, `typeof` and everything else are refused.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use super::{Budget, ScriptError, ScriptValue};
@@ -52,23 +52,50 @@ pub(super) fn run(
         .collect()
 }
 
-/// Refuses a `let`/`const` in a nested scope whose name the script also uses
-/// elsewhere: this subset keeps every variable global, so such a declaration
-/// would overwrite the outer variable where JavaScript shadows it. A nested
-/// `let` used only inside its block (`for (let i = 0; …)`) behaves the same
-/// either way and is accepted.
+/// Refuses a `let`/`const` in a nested scope that this subset's flat
+/// environment would not scope as JavaScript does: every variable is global
+/// here, so a block-scoped name is accepted only when every use of it lies
+/// inside a block that declares it, no other declaration of it (a `var`, a
+/// top-level `let`, a block declaring it around this one) or input or output
+/// shares the name, and no implicit global of that name exists. A nested
+/// `let` used only inside its block (`for (let i = 0; …)`, also in two
+/// separate loops) behaves the same either way and is accepted.
 fn check_block_scoping(
     parser: &Parser,
     inputs: &[(&str, ScriptValue)],
     outputs: &[&str],
 ) -> Result<(), ScriptError> {
-    for name in &parser.nested_lexical {
-        let declared_twice = parser.declared.get(name).is_some_and(|n| *n > 1);
-        let outer = inputs.iter().any(|(n, _)| n == name) || outputs.contains(&name.as_str());
-        if declared_twice || outer {
-            return Err(ScriptError::unsupported(format!(
-                "block-scoped {name} shadows another variable of the same name"
-            )));
+    let shadows = |name: &str| {
+        Err(ScriptError::unsupported(format!(
+            "block-scoped {name} shadows another variable of the same name"
+        )))
+    };
+    for (k, (name, start, end)) in parser.lexical_ranges.iter().enumerate() {
+        let outer = inputs.iter().any(|(n, _)| n == name)
+            || outputs.contains(&name.as_str())
+            || parser.outer_declared.contains(name);
+        if outer {
+            return shadows(name);
+        }
+        // Two blocks declaring the same name, one inside the other.
+        let nested = parser
+            .lexical_ranges
+            .iter()
+            .enumerate()
+            .any(|(j, (n, s, e))| j != k && n == name && s < end && start < e);
+        if nested {
+            return shadows(name);
+        }
+        // A use outside every block declaring it is an implicit global.
+        let escapes = parser.refs.iter().any(|(n, at)| {
+            n == name
+                && !parser
+                    .lexical_ranges
+                    .iter()
+                    .any(|(m, s, e)| m == name && (*s..*e).contains(at))
+        });
+        if escapes {
+            return shadows(name);
         }
     }
     Ok(())
@@ -261,7 +288,9 @@ enum Expr {
 #[derive(Debug, Clone, PartialEq)]
 enum Stmt {
     Expr(Expr),
-    Var(Vec<(String, Option<Expr>)>),
+    /// A declaration: whether it is lexical (`let`/`const`), and its names
+    /// with their initializers.
+    Var(bool, Vec<(String, Option<Expr>)>),
     Block(Vec<Stmt>),
     If(Expr, Box<Stmt>, Option<Box<Stmt>>),
     For {
@@ -296,13 +325,17 @@ struct Parser {
     /// The current nesting of statements and unary expressions (see
     /// [`super::MAX_DEPTH`]).
     depth: usize,
-    /// Every `let`/`const` declared inside a block or loop, which this
-    /// subset makes global (see [`check_block_scoping`]).
-    nested_lexical: Vec<String>,
-    /// Every declared name, with how many times it is declared.
-    declared: HashMap<String, usize>,
-    /// How many blocks and loop bodies enclose the current statement.
-    block_depth: usize,
+    /// The open blocks, loops and switches: the token index each starts at
+    /// and the `let`/`const` names declared directly in it.
+    scopes: Vec<(usize, Vec<String>)>,
+    /// Every `let`/`const` declared inside a block, loop or switch, which this
+    /// subset makes global, with the token range of its scope (see
+    /// [`check_block_scoping`]).
+    lexical_ranges: Vec<(String, usize, usize)>,
+    /// Names declared by `var` or by a top-level `let`/`const`.
+    outer_declared: HashSet<String>,
+    /// Every use of a name, with its token index.
+    refs: Vec<(String, usize)>,
 }
 
 impl Parser {
@@ -311,9 +344,10 @@ impl Parser {
             toks,
             i: 0,
             depth: 0,
-            nested_lexical: Vec::new(),
-            declared: HashMap::new(),
-            block_depth: 0,
+            scopes: Vec::new(),
+            lexical_ranges: Vec::new(),
+            outer_declared: HashSet::new(),
+            refs: Vec::new(),
         }
     }
 
@@ -359,13 +393,24 @@ impl Parser {
 
     fn statement(&mut self) -> Result<Stmt, ScriptError> {
         super::enter(&mut self.depth)?;
-        // A statement inside another statement (a block, a branch, a loop
-        // body) is in a nested scope.
-        self.block_depth += 1;
         let stmt = self.statement_inner();
-        self.block_depth -= 1;
         self.depth -= 1;
         stmt
+    }
+
+    /// Opens a block scope starting at token `start`.
+    fn open_scope(&mut self, start: usize) {
+        self.scopes.push((start, Vec::new()));
+    }
+
+    /// Closes the innermost block scope at the current token, recording the
+    /// range of each `let`/`const` it declares.
+    fn close_scope(&mut self) {
+        if let Some((start, names)) = self.scopes.pop() {
+            let end = self.i;
+            self.lexical_ranges
+                .extend(names.into_iter().map(|n| (n, start, end)));
+        }
     }
 
     fn statement_inner(&mut self) -> Result<Stmt, ScriptError> {
@@ -373,6 +418,7 @@ impl Parser {
             return Ok(Stmt::Block(Vec::new()));
         }
         if self.accept("{") {
+            self.open_scope(self.i - 1);
             let mut body = Vec::new();
             while !self.accept("}") {
                 if *self.peek() == Tok::Eof {
@@ -380,6 +426,7 @@ impl Parser {
                 }
                 body.push(self.statement()?);
             }
+            self.close_scope();
             return Ok(Stmt::Block(body));
         }
         if self.at("var") || self.at("let") || self.at("const") {
@@ -400,15 +447,13 @@ impl Parser {
             return Ok(Stmt::If(cond, then, other));
         }
         if self.accept("for") {
+            // A `let` in the loop head is scoped to the loop.
+            self.open_scope(self.i - 1);
             self.expect("(")?;
             let init = if self.at(";") {
                 None
             } else if self.at("var") || self.at("let") || self.at("const") {
-                // A `let` in the loop head is scoped to the loop.
-                self.block_depth += 1;
-                let decl = self.declaration();
-                self.block_depth -= 1;
-                Some(Box::new(decl?))
+                Some(Box::new(self.declaration()?))
             } else {
                 Some(Box::new(Stmt::Expr(self.expr()?)))
             };
@@ -426,6 +471,7 @@ impl Parser {
             };
             self.expect(")")?;
             let body = Box::new(self.statement()?);
+            self.close_scope();
             return Ok(Stmt::For {
                 init,
                 cond,
@@ -473,6 +519,7 @@ impl Parser {
         let subject = self.expr()?;
         self.expect(")")?;
         self.expect("{")?;
+        self.open_scope(self.i - 1);
         let mut clauses = Vec::new();
         while !self.accept("}") {
             let test = if self.accept("case") {
@@ -495,6 +542,7 @@ impl Parser {
             }
             clauses.push((test, body));
         }
+        self.close_scope();
         Ok(Stmt::Switch(subject, clauses))
     }
 
@@ -506,10 +554,11 @@ impl Parser {
             let Tok::Name(name) = self.next() else {
                 return Err(ScriptError::unsupported("bad declaration"));
             };
-            *self.declared.entry(name.clone()).or_default() += 1;
-            // `block_depth` counts the statement holding this declaration.
-            if lexical && self.block_depth > 1 {
-                self.nested_lexical.push(name.clone());
+            match self.scopes.last_mut() {
+                Some((_, names)) if lexical => names.push(name.clone()),
+                _ => {
+                    self.outer_declared.insert(name.clone());
+                }
             }
             let init = if self.accept("=") {
                 Some(self.assignment()?)
@@ -518,7 +567,7 @@ impl Parser {
             };
             decls.push((name, init));
             if !self.accept(",") {
-                return Ok(Stmt::Var(decls));
+                return Ok(Stmt::Var(lexical, decls));
             }
         }
     }
@@ -661,7 +710,10 @@ impl Parser {
             Tok::Kw("false") => Ok(Expr::Bool(false)),
             Tok::Kw("null") => Ok(Expr::Null),
             Tok::Kw("undefined") => Ok(Expr::Undefined),
-            Tok::Name(name) => Ok(Expr::Name(name)),
+            Tok::Name(name) => {
+                self.refs.push((name.clone(), self.i - 1));
+                Ok(Expr::Name(name))
+            }
             Tok::Op("(") => {
                 let e = self.expr()?;
                 self.expect(")")?;
@@ -1143,13 +1195,19 @@ impl Interp {
             Stmt::Expr(e) => {
                 self.eval(e)?;
             }
-            Stmt::Var(decls) => {
+            Stmt::Var(lexical, decls) => {
                 for (name, init) in decls {
                     match init {
                         Some(e) => {
                             let v = self.eval(e)?;
                             self.env.insert(name.clone(), v);
                         }
+                        // A `let` is a fresh binding each time it runs (every
+                        // loop iteration), so it starts undefined.
+                        None if *lexical => {
+                            self.env.insert(name.clone(), Value::Undefined);
+                        }
+                        // A `var` keeps the value it already has.
                         None => {
                             self.env.entry(name.clone()).or_insert(Value::Undefined);
                         }
@@ -1626,6 +1684,41 @@ mod tests {
             )?,
             Some(6.0)
         );
+        // An implicit global (assigned without a declaration) that a nested
+        // `let` shadows would be clobbered by it: refused.
+        assert!(refused(
+            "tmp = x * 2; if (x > 3) { let tmp = 0; } y = tmp;",
+            &input,
+            &["y"]
+        ));
+        // A block declaring the name inside another that declares it too.
+        assert!(refused(
+            "var y = 0; { let a = 1; { let a = 2; } y = a; }",
+            &[],
+            &["y"]
+        ));
+        // Two loops each with their own counter are fine.
+        assert_eq!(
+            number(
+                "var y = 0; for (let i = 0; i < 2; i++) { y += i; } for (let i = 0; i < 3; i++) { y += i; }",
+                &[],
+                "y"
+            )?,
+            Some(4.0)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_run_let_without_initializer_is_fresh_each_iteration() -> Result<(), ScriptError> {
+        // `m` is re-created as undefined each iteration, so only the
+        // iterations that set it count; a `var` would keep the value.
+        let src = "var count = 0;
+            for (var i = 0; i < 5; i++) { let m; if (i % 2 == 0) { m = 1; } if (m === 1) { count++; } }";
+        assert_eq!(number(src, &[], "count")?, Some(3.0));
+        let src = "var count = 0;
+            for (var i = 0; i < 5; i++) { var m; if (i == 0) { m = 1; } if (m === 1) { count++; } }";
+        assert_eq!(number(src, &[], "count")?, Some(5.0));
         Ok(())
     }
 }

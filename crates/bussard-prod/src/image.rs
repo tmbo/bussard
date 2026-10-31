@@ -47,7 +47,7 @@
 //! writes is then set to `0xFF`, the erased flash ETS writes there (issue
 //! #377, see `ERASED_FILL`).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ops::Range;
 
 use bussard_ets::application::{
@@ -227,13 +227,17 @@ pub fn compute_parameter_image_placed_with(
         let images = dynamic_image(app, &config, &mut placed)?;
         return Ok((images, placed));
     }
-    // Calculations run inside the Dynamic evaluation; the vendor-default path
-    // below would write their outputs at their defaults, not what ETS computes.
-    if let Some(calc) = app.calculations.first() {
+    // Calculations run inside the Dynamic evaluation, which this path does
+    // not do. ETS runs one only once an input leaves its vendor default (the
+    // trigger rule, issue #427), so at the defaults the outputs keep their
+    // defaults and this path writes what ETS writes; an override that would
+    // run a script is refused rather than leave its outputs stale.
+    if let Some(calc) = bussard_ets::dynamic::calculation_triggered_by(app, overrides) {
         return Err(ProdError::ParameterImage {
             parameter: calc.id.clone(),
-            reason: "is a parameter calculation, which bussard runs only for an \
-                     application whose Dynamic section it evaluates; this one it does not"
+            reason: "is a parameter calculation whose input the model sets, which bussard \
+                     runs only for an application whose Dynamic section it evaluates; this \
+                     one it does not"
                 .to_string(),
         });
     }
@@ -709,7 +713,11 @@ fn dynamic_image(
     // A calculation that could not run leaves its outputs at a value ETS
     // would not have. One that decides a `<choose>`, an `<Assign>` or another
     // calculation steers the configuration even when nothing writes it.
-    let decides = bussard_ets::dynamic::refs_read_by_dynamic(app);
+    let decides = if config.refused_calculations.is_empty() {
+        HashSet::new()
+    } else {
+        bussard_ets::dynamic::refs_read_by_dynamic(app)
+    };
     for calc in &config.refused_calculations {
         if let Some(output) = calc.outputs.iter().find(|o| decides.contains(*o)) {
             return Err(param_err(
@@ -4305,7 +4313,7 @@ mod tests {
         app.options = "";
         assert_eq!(app.image(&[("P-1_R-1", "1")])?[..3], [1, 4, 9]);
         app.script = "fan = Abs(-4)";
-        let err = app.refusal(&[]);
+        let err = app.refusal(&[("P-1_R-1", "1")]);
         assert!(err.contains("calculation PC-1"), "{err}");
         Ok(())
     }
@@ -4316,18 +4324,34 @@ mod tests {
     fn test_compute_parameter_image_refuses_a_branch_steered_by_an_unrunnable_calculation() {
         let mut app = CalcApp::new("fan = Abs(-4)");
         app.fan_memory = false;
-        let err = app.refusal(&[]);
+        let err = app.refusal(&[("P-1_R-1", "1")]);
         assert!(err.contains("decides which parameters"), "{err}");
     }
 
-    /// The vendor-default path (no Dynamic section) cannot run calculations,
-    /// so it refuses rather than write their outputs at their defaults.
+    /// The vendor-default path (no Dynamic section) cannot run calculations.
+    /// At the defaults ETS runs none either, so it writes the defaults; an
+    /// override of an input, which would run one, is refused.
     #[test]
-    fn test_compute_parameter_image_refuses_calculations_without_dynamic() {
-        let mut app = CalcApp::new("If Mode = 1 Then fan = 4 Else fan = 0");
+    fn test_compute_parameter_image_refuses_calculations_without_dynamic() -> Result<()> {
+        let mut app = CalcApp::new("If Mode = 0 Then fan = 4 Else fan = 0");
         app.dynamic = false;
-        let err = app.refusal(&[]);
+        assert_eq!(app.image(&[])?[..2], [0, 0]);
+        assert_eq!(app.image(&[("P-1_R-1", "0")])?[..2], [0, 0]);
+        let err = app.refusal(&[("P-1_R-1", "1")]);
         assert!(err.contains("PC-1") && err.contains("Dynamic"), "{err}");
+        Ok(())
+    }
+
+    /// At the vendor defaults no calculation runs, as in ETS (the `defaults`
+    /// run of the syn-param-calculation capture): its output keeps its
+    /// default, and a script bussard cannot run is not refused.
+    #[test]
+    fn test_compute_parameter_image_runs_no_calculation_at_defaults() -> Result<()> {
+        let app = CalcApp::new("If Mode = 0 Then fan = 4 Else fan = 0");
+        assert_eq!(app.image(&[])?[..3], [0, 0, 0]);
+        let app = CalcApp::new("fan = Abs(-4)");
+        assert_eq!(app.image(&[])?[..3], [0, 0, 0]);
+        Ok(())
     }
 
     /// A script that reads its own output runs once per input change, as in
@@ -4335,7 +4359,7 @@ mod tests {
     #[test]
     fn test_compute_parameter_image_runs_a_calculation_once_per_input_change() -> Result<()> {
         let app = CalcApp::new("fan = fan + 1 + Mode");
-        assert_eq!(app.image(&[])?[1], 1);
+        assert_eq!(app.image(&[])?[1], 0);
         assert_eq!(app.image(&[("P-1_R-1", "2")])?[1], 3);
         Ok(())
     }
@@ -4345,7 +4369,7 @@ mod tests {
     #[test]
     fn test_compute_parameter_image_names_the_calculation_of_an_unencodable_value() {
         let app = CalcApp::new("fan = Mode + 0.5");
-        let err = app.refusal(&[]);
+        let err = app.refusal(&[("P-1_R-1", "1")]);
         assert!(err.contains("calculation PC-1"), "{err}");
     }
 
@@ -4353,12 +4377,13 @@ mod tests {
     #[test]
     fn test_compute_parameter_image_refuses_calculations_that_never_settle() {
         let mut app = CalcApp::new("fan = Mode + 1");
+        // `extra` set off its default starts PC-2, which feeds PC-1 and back.
         app.more_calcs = r#"<ParameterCalculation Id="A_PC-2" Name="Back" Language="VBScript">
-         <LParameters><ParameterRefRef RefId="A_P-2_R-2" /></LParameters>
+         <LParameters><ParameterRefRef RefId="A_P-2_R-2" /><ParameterRefRef RefId="A_P-3_R-3" /></LParameters>
          <RParameters><ParameterRefRef RefId="A_P-1_R-1" AliasName="Mode" /></RParameters>
-         <LRTransformation>Mode = fan Mod 200</LRTransformation>
+         <LRTransformation>Mode = (fan + extra) Mod 200</LRTransformation>
         </ParameterCalculation>"#;
-        let err = app.refusal(&[]);
+        let err = app.refusal(&[("P-3_R-3", "1")]);
         assert!(err.contains("did not settle"), "{err}");
     }
 
@@ -4401,8 +4426,9 @@ mod tests {
             r#"<RParameters><ParameterRefRef RefId="A_P-4_R-4" /></RParameters>"#,
         );
         let app = parse_application_program("A", xml.as_bytes())?;
-        let images = compute_parameter_image(&app, &BTreeMap::new(), &BTreeMap::new())?;
-        assert_eq!(images["A_RS-1"][3..5], *b"10");
+        let overrides = BTreeMap::from([("P-1_R-1".to_string(), "3".to_string())]);
+        let images = compute_parameter_image(&app, &overrides, &BTreeMap::new())?;
+        assert_eq!(images["A_RS-1"][3..5], *b"13");
         Ok(())
     }
 
@@ -4412,7 +4438,8 @@ mod tests {
     fn test_compute_parameter_image_refuses_output_of_unrunnable_calculation() -> Result<()> {
         let xml = calc_xml("fan = Abs(-4)");
         let app = parse_application_program("A", xml.as_bytes())?;
-        let err = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())
+        let overrides = BTreeMap::from([("P-1_R-1".to_string(), "1".to_string())]);
+        let err = compute_parameter_image(&app, &overrides, &BTreeMap::new())
             .err()
             .map(|e| e.to_string())
             .unwrap_or_default();

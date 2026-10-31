@@ -1204,7 +1204,7 @@ pub fn evaluate_dynamic<S: DynamicSource + ?Sized>(
     if !settled {
         calcs.refuse_unsettled(app);
     }
-    let (refused, calculated_overrides) = calcs.finish(app.calculations(), &values);
+    let (refused, calculated_overrides) = calcs.finish(app, &values);
 
     // The written parameters: every reached ParameterRefRef plus the target
     // and source of every reached Assign, without duplicates.
@@ -1314,6 +1314,14 @@ pub fn refs_read_by_dynamic<S: DynamicSource + ?Sized>(app: &S) -> HashSet<Strin
                         walk(&when.children, out);
                     }
                 }
+                DynamicNode::Repeat {
+                    param_ref_id,
+                    children,
+                    ..
+                } => {
+                    out.extend(param_ref_id.iter().cloned());
+                    walk(children, out);
+                }
                 DynamicNode::Assign {
                     source: Some(source),
                     ..
@@ -1326,6 +1334,10 @@ pub fn refs_read_by_dynamic<S: DynamicSource + ?Sized>(app: &S) -> HashSet<Strin
     }
     let mut out = HashSet::new();
     walk(app.dynamic(), &mut out);
+    // A module's body can read an application-level parameter too.
+    for (_, body) in app.module_dynamics() {
+        walk(body, &mut out);
+    }
     for calc in app.calculations() {
         out.extend(calc.inputs.iter().map(|p| p.param_ref.clone()));
     }
@@ -1340,6 +1352,18 @@ pub fn refs_read_by_dynamic<S: DynamicSource + ?Sized>(app: &S) -> HashSet<Strin
 /// calculation runs again only when its inputs differ from its last run: a
 /// script that reads its own output (`y = y + 1`) runs once, as in ETS, and
 /// does not drift with every pass.
+///
+/// The trigger rule: a calculation runs only once one of its inputs holds a
+/// value other than its vendor default (the model sets it, or another
+/// calculation computed it). ETS never runs the script for a device inserted
+/// at its defaults: the synthetic capture
+/// `captures/synthetic/syn-param-calculation` run `defaults` holds both
+/// outputs at their declared default (`00 00`), not the script's result,
+/// while run `calc-input` (the input changed in the parameter editor) holds
+/// the script's result for both, the shown read-only output and the hidden
+/// one (issue #427). With every input at its default, the outputs keep their
+/// stored value (the default, or the model's override) and nothing is
+/// refused.
 #[derive(Default)]
 struct CalcRuns {
     /// The input values each calculation last ran with, by calculation id.
@@ -1369,17 +1393,36 @@ impl CalcRuns {
     ) -> bool {
         self.changed_last_pass.clear();
         let mut changed = false;
+        let no_values = HashMap::new();
         for calc in app.calculations() {
-            let key: Vec<String> = calc
+            // Every input and output, resolved once for this pass.
+            let current: Vec<Option<String>> = calc
                 .inputs
                 .iter()
-                .map(|p| value_of(app, values, "", None, &p.param_ref).unwrap_or_default())
+                .chain(&calc.outputs)
+                .map(|p| value_of(app, values, "", None, &p.param_ref))
                 .collect();
-            if self.last_inputs.get(&calc.id) == Some(&key) {
-                continue;
+            let key: Vec<String> = current[..calc.inputs.len()]
+                .iter()
+                .map(|v| v.clone().unwrap_or_default())
+                .collect();
+            match self.last_inputs.get(&calc.id) {
+                Some(last) if *last == key => continue,
+                // Never ran: only an input off its vendor default triggers it
+                // (see the trigger rule above).
+                None => {
+                    let triggered =
+                        calc.inputs.iter().zip(&current).any(|(p, now)| {
+                            off_default(app, &no_values, &p.param_ref, now.as_deref())
+                        });
+                    if !triggered {
+                        continue;
+                    }
+                }
+                Some(_) => {}
             }
             self.last_inputs.insert(calc.id.clone(), key);
-            let results = match run_one(app, values, calc) {
+            let results = match run_one(app, calc, &current) {
                 Ok(results) => {
                     self.refused.remove(&calc.id);
                     results
@@ -1401,7 +1444,10 @@ impl CalcRuns {
                     continue;
                 };
                 let key = (String::new(), p.param_ref.clone());
-                if values.get(&key) == Some(&text) {
+                if values
+                    .get(&key)
+                    .is_some_and(|old| same_value(app, &p.param_ref, old, &text))
+                {
                     continue;
                 }
                 if overridden.remove(&key)
@@ -1446,13 +1492,14 @@ impl CalcRuns {
 
     /// The refused calculations in document order, and the replaced
     /// overrides whose final computed value differs from the override.
-    fn finish(
+    fn finish<S: DynamicSource + ?Sized>(
         self,
-        app_calcs: &[ParameterCalculation],
+        app: &S,
         values: &HashMap<(String, String), String>,
     ) -> (Vec<RefusedCalculation>, Vec<CalculatedOverride>) {
         let mut refused = self.refused;
-        let in_order = app_calcs
+        let in_order = app
+            .calculations()
             .iter()
             .filter_map(|c| refused.remove(&c.id))
             .collect();
@@ -1464,20 +1511,21 @@ impl CalcRuns {
                     .get(&(String::new(), o.param_ref.clone()))
                     .cloned()
                     .unwrap_or_default();
-                (o.computed != o.overridden).then_some(o)
+                (!same_value(app, &o.param_ref, &o.computed, &o.overridden)).then_some(o)
             })
             .collect();
         (in_order, replaced)
     }
 }
 
-/// Runs one calculation on the current `values` and returns the text of each
-/// output, in order (`None` for one the script leaves unset), or why it could
-/// not run.
+/// Runs one calculation and returns the text of each output, in order (`None`
+/// for one the script leaves unset), or why it could not run. `current` holds
+/// the value of each input and then each output, as [`CalcRuns::run`]
+/// resolved them for this pass.
 fn run_one<S: DynamicSource + ?Sized>(
     app: &S,
-    values: &HashMap<(String, String), String>,
     calc: &ParameterCalculation,
+    current: &[Option<String>],
 ) -> Result<Vec<Option<String>>, String> {
     let param_of = |p: &CalculationParameter| -> Result<&str, String> {
         if p.param_ref.starts_with("MD-") {
@@ -1498,7 +1546,7 @@ fn run_one<S: DynamicSource + ?Sized>(
     };
     let mut inputs = Vec::new();
     // The script may read its outputs too (their current values).
-    for p in calc.inputs.iter().chain(&calc.outputs) {
+    for (p, value) in calc.inputs.iter().chain(&calc.outputs).zip(current) {
         let var = name(p)?;
         let is_text = app.parameter_is_text(param_of(p)?).ok_or_else(|| {
             format!(
@@ -1506,7 +1554,7 @@ fn run_one<S: DynamicSource + ?Sized>(
                 p.param_ref
             )
         })?;
-        let Some(value) = value_of(app, values, "", None, &p.param_ref) else {
+        let Some(value) = value.clone() else {
             return Err(format!("parameter {} has no value", p.param_ref));
         };
         let value = if is_text {
@@ -1541,14 +1589,66 @@ fn run_one<S: DynamicSource + ?Sized>(
                 Some(ScriptValue::Number(n)) if !n.is_finite() => {
                     return Err(format!("output {} computes to {n}", p.param_ref));
                 }
+                // `+ 0.0` turns -0 into 0, which ETS shows as "0".
                 Some(ScriptValue::Number(n)) if n.fract() == 0.0 && n.abs() < 1e15 => {
-                    Some(format!("{n:.0}"))
+                    Some(format!("{:.0}", n + 0.0))
                 }
                 Some(ScriptValue::Number(n)) => Some(n.to_string()),
                 Some(ScriptValue::Text(t)) => Some(t),
             })
         })
         .collect()
+}
+
+/// The first calculation of `app` that `overrides` (keyed by app-relative
+/// `ParameterRef` id) would run: one an override sets an input of to a value
+/// other than its vendor default (see the trigger rule on `CalcRuns`).
+/// `None` when every calculation input keeps its default, so no script runs.
+pub fn calculation_triggered_by<'a, S: DynamicSource + ?Sized>(
+    app: &'a S,
+    overrides: &BTreeMap<String, String>,
+) -> Option<&'a ParameterCalculation> {
+    let no_values = HashMap::new();
+    app.calculations().iter().find(|calc| {
+        calc.inputs.iter().any(|p| {
+            overrides
+                .get(&p.param_ref)
+                .is_some_and(|v| off_default(app, &no_values, &p.param_ref, Some(v)))
+        })
+    })
+}
+
+/// Whether `now` differs from the vendor default of `param_ref` (`no_values`
+/// is an empty value map, so [`value_of`] resolves the default).
+fn off_default<S: DynamicSource + ?Sized>(
+    app: &S,
+    no_values: &HashMap<(String, String), String>,
+    param_ref: &str,
+    now: Option<&str>,
+) -> bool {
+    let default = value_of(app, no_values, "", None, param_ref);
+    match (now, default.as_deref()) {
+        (Some(now), Some(default)) => !same_value(app, param_ref, now, default),
+        (now, default) => now != default,
+    }
+}
+
+/// Whether two values of the parameter `param_ref` are the same value: equal
+/// numbers for a numeric parameter (`"1.0"` and `"1"`, `"1E-07"` and
+/// `"0.0000001"` encode to the same bytes), equal text otherwise.
+fn same_value<S: DynamicSource + ?Sized>(app: &S, param_ref: &str, a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    let numeric = app
+        .parameter_ref(param_ref)
+        .and_then(|(param_id, _)| app.parameter_is_text(param_id))
+        == Some(false);
+    numeric
+        && matches!(
+            (a.trim().parse::<f64>(), b.trim().parse::<f64>()),
+            (Ok(x), Ok(y)) if x == y
+        )
 }
 
 /// The evaluations of one program's Dynamic section, memoized by the value
@@ -2775,6 +2875,7 @@ mod tests {
         refs: HashMap<String, (String, Option<String>)>,
         /// parameter id -> default
         params: HashMap<String, Option<String>>,
+        calcs: Vec<ParameterCalculation>,
     }
 
     impl DynamicSource for TestSource {
@@ -2813,6 +2914,12 @@ mod tests {
         }
         fn unions(&self) -> &[Union] {
             &[]
+        }
+        fn calculations(&self) -> &[ParameterCalculation] {
+            &self.calcs
+        }
+        fn parameter_is_text(&self, param_id: &str) -> Option<bool> {
+            self.params.contains_key(param_id).then_some(false)
         }
     }
 
@@ -3143,5 +3250,103 @@ mod tests {
             taken_branches(&[WhenTest::Unknown("x".to_string())], Some(1.0)),
             Vec::<usize>::new()
         );
+    }
+    /// [`source`] with the JavaScript calculation `script` reading `P-1_R-1`
+    /// as `a` and writing `P-3_R-3` as `b`.
+    fn calc_source(script: &str) -> TestSource {
+        let mut src = source();
+        let param = |r: &str, alias: &str| CalculationParameter {
+            param_ref: r.to_string(),
+            alias: Some(alias.to_string()),
+        };
+        src.calcs.push(ParameterCalculation {
+            id: "PC-1".to_string(),
+            language: "JavaScript".to_string(),
+            lr_script: script.to_string(),
+            inputs: vec![param("P-1_R-1", "a")],
+            outputs: vec![param("P-3_R-3", "b")],
+        });
+        src
+    }
+
+    fn overrides(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
+
+    /// With every input at its vendor default the script does not run (the
+    /// `defaults` run of the syn-param-calculation capture): the output keeps
+    /// its default or the model's override, and nothing is refused, not even
+    /// a script bussard cannot run.
+    #[test]
+    fn test_evaluate_dynamic_runs_no_calculation_at_defaults() {
+        let src = calc_source("b = 5;");
+        let cfg = evaluate_dynamic(&src, &BTreeMap::new());
+        assert_eq!(cfg.value(&src, None, "P-3_R-3").as_deref(), Some("0"));
+        let cfg = evaluate_dynamic(&src, &overrides(&[("P-3_R-3", "7")]));
+        assert_eq!(cfg.value(&src, None, "P-3_R-3").as_deref(), Some("7"));
+        assert!(cfg.calculated_overrides.is_empty());
+        // An input set to its default value is still at its default.
+        let cfg = evaluate_dynamic(&src, &overrides(&[("P-1_R-1", "0.0")]));
+        assert_eq!(cfg.value(&src, None, "P-3_R-3").as_deref(), Some("0"));
+        let src = calc_source("function f() {}");
+        let cfg = evaluate_dynamic(&src, &BTreeMap::new());
+        assert!(cfg.refused_calculations.is_empty());
+        // An input off its default runs it (the `calc-input` run).
+        let src = calc_source("b = 5;");
+        let cfg = evaluate_dynamic(&src, &overrides(&[("P-1_R-1", "2")]));
+        assert_eq!(cfg.value(&src, None, "P-3_R-3").as_deref(), Some("5"));
+    }
+
+    /// A computed negative zero is the value 0, written `"0"`.
+    #[test]
+    fn test_evaluate_dynamic_writes_negative_zero_as_zero() {
+        let src = calc_source("b = -a * 0;");
+        let cfg = evaluate_dynamic(&src, &overrides(&[("P-1_R-1", "1")]));
+        assert_eq!(cfg.value(&src, None, "P-3_R-3").as_deref(), Some("0"));
+    }
+
+    /// An override that spells the computed number differently is the same
+    /// value, not a replaced override.
+    #[test]
+    fn test_evaluate_dynamic_compares_a_numeric_override_by_value() {
+        let src = calc_source("b = a * 2;");
+        for spelled in ["10.0", "10", " 1e1", "10.00"] {
+            let cfg = evaluate_dynamic(&src, &overrides(&[("P-1_R-1", "5"), ("P-3_R-3", spelled)]));
+            assert!(cfg.calculated_overrides.is_empty(), "{spelled}");
+        }
+        let src = calc_source("b = a / 10000000;");
+        let cfg = evaluate_dynamic(&src, &overrides(&[("P-1_R-1", "1"), ("P-3_R-3", "1E-07")]));
+        assert!(cfg.calculated_overrides.is_empty());
+        let cfg = evaluate_dynamic(&src, &overrides(&[("P-1_R-1", "1"), ("P-3_R-3", "0.5")]));
+        assert_eq!(cfg.calculated_overrides.len(), 1);
+    }
+
+    /// A parameter a module body's `<choose>` or `<Assign Source>` reads
+    /// decides the configuration as much as one the application's own
+    /// Dynamic section reads.
+    #[test]
+    fn test_refs_read_by_dynamic_walks_module_bodies() {
+        let mut src = source();
+        src.module_dynamics.insert(
+            "MD-2".to_string(),
+            vec![block(
+                "MD-2_PB-1",
+                vec![
+                    choose("P-7_R-7", vec![(WhenTest::Default, vec![])]),
+                    DynamicNode::Assign {
+                        target: "MD-2_P-1_R-1".to_string(),
+                        source: Some("P-8_R-8".to_string()),
+                        value: None,
+                    },
+                ],
+            )],
+        );
+        let read = refs_read_by_dynamic(&src);
+        assert!(read.contains("P-1_R-1"));
+        assert!(read.contains("P-7_R-7"));
+        assert!(read.contains("P-8_R-8"));
     }
 }

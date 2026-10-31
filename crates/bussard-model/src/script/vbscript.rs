@@ -704,8 +704,16 @@ impl Interp {
             Expr::Not(inner) => Value::Num(!whole(&self.eval(inner)?)? as f64),
             Expr::Cmp(op, a, b) => {
                 let (a, b) = (self.eval(a)?, self.eval(b)?);
+                // VBScript's rules for comparing Variants: a numeric operand is
+                // always less than a string one (never equal, no conversion,
+                // no type mismatch); an Empty one is "" next to a string and 0
+                // next to a number.
                 let ordering = match (&a, &b) {
                     (Value::Str(x), Value::Str(y)) => x.cmp(y),
+                    (Value::Num(_), Value::Str(_)) => std::cmp::Ordering::Less,
+                    (Value::Str(_), Value::Num(_)) => std::cmp::Ordering::Greater,
+                    (Value::Empty, Value::Str(y)) => "".cmp(y.as_str()),
+                    (Value::Str(x), Value::Empty) => x.as_str().cmp(""),
                     _ => a
                         .num()?
                         .partial_cmp(&b.num()?)
@@ -773,6 +781,24 @@ mod tests {
                 _ => None,
             },
         )
+    }
+
+    #[test]
+    fn test_run_compares_a_number_with_a_string_as_less() -> Result<(), ScriptError> {
+        let src = "If label = 2 Then\n  r = 1\nElse\n  r = 0\nEnd If\nlt = (2 < label)";
+        for text in ["2", "on"] {
+            let inputs = [("label", ScriptValue::Text(text.to_string()))];
+            let out = run(src, &inputs, &["r", "lt"])?;
+            assert_eq!(
+                out,
+                vec![
+                    Some(ScriptValue::Number(0.0)),
+                    Some(ScriptValue::Number(-1.0))
+                ],
+                "label = {text:?}"
+            );
+        }
+        Ok(())
     }
 
     #[test]

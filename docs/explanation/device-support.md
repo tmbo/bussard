@@ -210,7 +210,11 @@ after 2 seconds.
 - **Calculated parameters.** Some programs compute parameter values with a
   small script instead of storing what you set, such as a thermostat's fan
   settings or a dimmer's dimming curve. bussard runs these scripts (the
-  VBScript and JavaScript that product data uses). A script it cannot run
+  VBScript and JavaScript that product data uses). Like ETS, it runs a
+  script only once a value the script reads differs from the product's
+  default; at the defaults the computed values keep their defaults (shown
+  by the ETS captures `syn-param-calculation` `defaults` and `calc-input`).
+  A script it cannot run
   makes `plan`, `apply` and `flash` refuse that device and name the
   calculation, rather than write a value the script did not compute. So do
   calculations that keep changing each other's results, and a value in the
