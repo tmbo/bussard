@@ -55,7 +55,7 @@ fn fetch_happy_path() -> Result<(), Box<dyn std::error::Error>> {
     let e = entry(url, sha256_hex(&body), body.len() as u64);
 
     let got = fetch_entry(&e, DownloadConsent::granted())?;
-    assert_eq!(got, body);
+    assert_eq!(got.bytes(), &body[..]);
     Ok(())
 }
 

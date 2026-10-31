@@ -408,6 +408,36 @@ pub fn inner_knxprod_bytes(wrapper: &[u8], entry: &str, path: &Path) -> Result<V
     read_capped(file, entry, MAX_INNER_KNXPROD_SIZE, path)
 }
 
+/// The inner `.knxprod` entries of the ZIP-served wrapper `wrapper`, as
+/// `(entry name, uncompressed size)`. A plain `.knxprod` (whose
+/// entries are XML, never `.knxprod`) yields an empty list. `path` only labels
+/// errors.
+pub fn inner_knxprod_entries(wrapper: &[u8], path: &Path) -> Result<Vec<(String, u64)>> {
+    let mut archive = ZipArchive::new(Cursor::new(wrapper)).map_err(|source| ProdError::Zip {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let names: Vec<String> = archive
+        .file_names()
+        .filter_map(std::result::Result::ok)
+        .map(std::borrow::Cow::into_owned)
+        .take(MAX_WRAPPER_ENTRIES)
+        .filter(|name| is_knxprod_entry(name))
+        .collect();
+    let mut out = Vec::with_capacity(names.len());
+    for name in names {
+        let size = archive
+            .by_name(&name)
+            .map_err(|source| ProdError::Zip {
+                path: path.to_path_buf(),
+                source,
+            })?
+            .size();
+        out.push((name, size));
+    }
+    Ok(out)
+}
+
 /// Is `name` a `.knxprod` entry (case-insensitive extension, and a real file —
 /// not a directory placeholder)? Used to spot the payload inside a ZIP-served
 /// wrapper, which may sit at the root or one folder deep.

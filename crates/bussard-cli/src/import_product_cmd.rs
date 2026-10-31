@@ -118,12 +118,20 @@ fn run_order_number(
     }
 
     println!("Downloading…");
-    let bytes = bussard_prod::fetch_entry(entry, DownloadConsent::granted())
+    let verified = bussard_prod::fetch_entry(entry, DownloadConsent::granted())
         .context("downloading product data")?;
-    println!("Downloaded and verified {} bytes.", bytes.len());
+    match &verified {
+        bussard_prod::Verified::Download(bytes) => {
+            println!("Downloaded and verified {} bytes.", bytes.len());
+        }
+        bussard_prod::Verified::Inner { name, bytes } => println!(
+            "Downloaded a ZIP of several products; verified {name} ({} bytes) inside it.",
+            bytes.len()
+        ),
+    }
 
     // Store the download under <dir>/products/, then import from there.
-    let cached = store_download(entry, dir, &bytes)?;
+    let cached = store_download(entry, dir, verified)?;
 
     import_from_file(
         &cached,
@@ -176,16 +184,15 @@ pub(crate) fn fetch_to_store(
     dir: &Path,
     consent: DownloadConsent,
 ) -> anyhow::Result<std::path::PathBuf> {
-    let bytes = match entry.url.strip_prefix("file://") {
+    let verified = match entry.url.strip_prefix("file://") {
         Some(local) => {
             let bytes = std::fs::read(local).with_context(|| format!("reading {}", entry.url))?;
-            bussard_prod::fetch::verify(entry, &bytes)?;
-            bytes
+            bussard_prod::fetch::verify(entry, bytes)?
         }
         None => bussard_prod::fetch_entry(entry, consent)
             .with_context(|| format!("downloading {}", entry.url))?,
     };
-    store_download(entry, dir, &bytes)
+    store_download(entry, dir, verified)
 }
 
 /// Stores a verified download under `<dir>/products/` and returns the path.
@@ -194,17 +201,26 @@ pub(crate) fn fetch_to_store(
 /// ([`bussard_prod::IndexEntry::inner`]) stores that file under its own name
 /// instead of the wrapper: the download's SHA-256 covers it, and the store
 /// then holds a plain archive every later command reads without a selection.
+/// A download verified by one of its inner `.knxprod` files
+/// ([`bussard_prod::Verified::Inner`], a bundle of several products, #711) is
+/// stored the same way, as that inner file under its own name.
 fn store_download(
     entry: &bussard_prod::IndexEntry,
     dir: &Path,
-    bytes: &[u8],
+    verified: bussard_prod::Verified,
 ) -> anyhow::Result<std::path::PathBuf> {
-    let Some(name) = &entry.inner else {
-        return crate::product_store::store_bytes(dir, &entry.filename, bytes);
+    let (name, inner) = match verified {
+        bussard_prod::Verified::Inner { name, bytes } => (name, bytes),
+        bussard_prod::Verified::Download(bytes) => {
+            let Some(name) = &entry.inner else {
+                return crate::product_store::store_bytes(dir, &entry.filename, &bytes);
+            };
+            let inner = bussard_prod::inner_knxprod_bytes(&bytes, name, Path::new(&entry.filename))
+                .with_context(|| format!("extracting {name} from {}", entry.filename))?;
+            (name.clone(), inner)
+        }
     };
-    let inner = bussard_prod::inner_knxprod_bytes(bytes, name, Path::new(&entry.filename))
-        .with_context(|| format!("extracting {name} from {}", entry.filename))?;
-    let stored = Path::new(name)
+    let stored = Path::new(&name)
         .file_name()
         .map_or_else(|| name.clone(), |n| n.to_string_lossy().into_owned());
     crate::product_store::store_bytes(dir, &stored, &inner)
