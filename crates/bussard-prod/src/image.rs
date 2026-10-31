@@ -2485,13 +2485,13 @@ mod tests {
         Ok(())
     }
 
-    /// Issue #616: a `<TypeColor>` value (`#FF0000`, also for `HSV`) is
-    /// placed as one octet per component in the written order, decodes back to
-    /// the same string, and a value that is not a hex colour refuses.
-    ///
-    /// The written order is bussard's reading; the ETS capture of the
-    /// synthetic `syn-color-param` (RGB) and `syn-color-param-hsv` products
-    /// must confirm it.
+    /// Issue #616: an `RGB`/`RGBW` `<TypeColor>` value is placed as one octet
+    /// per component in the written order and decodes back to the same
+    /// string; an `HSV` value (RGB hex too) is placed as the hue, saturation
+    /// and value octets ETS writes (`#2A80C0` is `91 C7 C0`) and decodes to an
+    /// RGB value with the same octets; a value that is not a hex colour
+    /// refuses. Checked against the ETS captures of the synthetic
+    /// `syn-color-param` and `syn-color-param-hsv{,2}` products.
     #[test]
     fn test_compute_parameter_image_type_color()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -2508,7 +2508,7 @@ mod tests {
         ])?;
         let image = image_of(&app)?;
         assert_eq!(image.get(4..7), Some(&[0xFF, 0x80, 0x01][..]));
-        assert_eq!(image.get(8..11), Some(&[0x2A, 0x80, 0xC0][..]));
+        assert_eq!(image.get(8..11), Some(&[0x91, 0xC7, 0xC0][..]));
         assert_eq!(image.get(12..16), Some(&[0x11, 0x22, 0x33, 0x44][..]));
         let on = app.parameters.get("M-1_A-1_P-0").ok_or("no on")?;
         assert_eq!(
@@ -2518,6 +2518,12 @@ mod tests {
         assert_eq!(
             canonical_parameter_value(&app, on, Some("#ff8001")).as_deref(),
             Some("#FF8001")
+        );
+        let hsv = app.parameters.get("M-1_A-1_P-1").ok_or("no hsv")?;
+        let read = decode_parameter_value(&app, hsv, &image, 8, 0).ok_or("no hsv decode")?;
+        assert_eq!(
+            canonical_parameter_value(&app, hsv, Some("#2a80c0")).as_deref(),
+            Some(read.as_str())
         );
         let bad = app_with(&[("on", r#"<TypeColor Space="RGB" />"#, Some("red"), 0, 0)])?;
         let err = compute_parameter_image(&bad, &no_overrides(), &no_bases());
