@@ -37,7 +37,9 @@ interface.
 A device is activated once ETS has turned Data Secure on and written its tool
 key and sending sequence number. bussard operates activated devices but never
 activates, re-keys or deactivates one; activation from the FDSK certificate
-is not implemented. Keep those steps in ETS.
+is not implemented. Keep those steps in ETS. KNXnet/IP Secure of an IP
+interface is the exception: `bussard interface secure on|off` switches it
+with the key store's credentials.
 
 An activated device answers a plain identity read with mask `FFFF`. A device
 whose model file says `security.activated: true` is never tried in the clear:

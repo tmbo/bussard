@@ -12,7 +12,7 @@ device half-programmed. The write path is built to make those cases loud.
 Read commands (`monitor`, `read`, `scan`, `plan`, `reconstruct`) never
 transmit device programming and are never gated. These commands write:
 `write`, `apply`, `flash`, `assign`, `adopt`, `commission`, `restore`,
-`replace`, `restart` and `test`. [What each write command does](write-commands.md)
+`replace`, `restart`, `test`, `interface secure` and `secure diag --clear`. [What each write command does](write-commands.md)
 covers each one.
 
 Two long-running servers can also write. They pass the same gate once, at
@@ -20,7 +20,7 @@ startup, rather than per command:
 
 - `bussard mcp --allow-writes` hands an LLM the bus for group writes for the
   session, and `bussard mcp --allow-programming` lets it write one device's
-  tables after you approve the plan.
+  tables and parameters after you approve the plan.
 - `bussard viz --allow-writes` arms the page's group-write endpoint, and
   `bussard viz --watch-prog` puts broadcast reads on the bus on a timer.
 

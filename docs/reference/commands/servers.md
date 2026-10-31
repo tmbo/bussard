@@ -14,9 +14,9 @@ Started from a terminal, the server prints how to register it once it is ready: 
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--passive` | off | Never transmit on the bus; omits the `knx_read_group` tool. |
-| `--allow-writes` | off | Register the `knx_write_group` tool. Mutually exclusive with `--passive`. |
-| `--allow-programming` | off | Register the programming tier: `knx_plan_device`, `knx_apply_device`, `knx_apply_status`, `knx_last_apply` and `knx_restore_parameters`. Mutually exclusive with `--passive`. |
+| `--passive` | off | Never transmit on the bus; omits `knx_read_group`, `knx_describe_device` and `knx_bus_reconnect`. |
+| `--allow-writes` | off | Register `knx_write_group` and `knx_run_tests`. Mutually exclusive with `--passive`. |
+| `--allow-programming` | off | Register the programming tier: `knx_plan_device`, `knx_apply_device`, `knx_apply_status`, `knx_last_apply`, `knx_restore_parameters`, `knx_clear_security_log` and `knx_interface_secure`. Mutually exclusive with `--passive`. |
 | `--plan-ttl-minutes <MINUTES>` | `10` | How long a `knx_plan_device` digest stays valid for `knx_apply_device`. Needs `--allow-programming`. |
 | `--allow-remote-gateway` | off | Permit `--allow-writes` or `--allow-programming` against a non-loopback (real) gateway. Without it (or `BUSSARD_ALLOW_REAL_GATEWAY=1`) such a server refuses to start. |
 | `--no-model-edits` | off | Withhold the model-edit tools (`knx_set_group`, `knx_remove_group`, `knx_add_link`, `knx_remove_link`, `knx_set_device`, `knx_set_parameter`, `knx_set_interface`, `knx_undo`, `knx_discard_edits`, `knx_scaffold_groups`, `knx_reserve_groups`). They write the model's TOML files behind a history snapshot and never touch the bus, so they are registered by default. |
@@ -29,7 +29,7 @@ What `--keyring` covers:
 - `knx_describe_device` and `knx_plan_device` wrap their session with the target's tool key, as `bussard describe --keyring` and `bussard plan --keyring` do. A device the keyring does not list is read in the clear through the secure tunnel, unless the model marks it `security.activated`; then they refuse.
 - `knx_apply_device` writes a device the keyring lists over KNX Data Secure and reprograms its security object, as `bussard apply --keyring` does.
 - Its group keys secure `knx_read_group` and `knx_write_group` on a secured group address (the results carry `secured`). A secured group address without a key is refused.
-- Secured telegrams on the live bus are decrypted (`knx_wait_for_telegram`, `knx_recent_telegrams`, `knx_infer_group`), and so are those re-decoded from `--capture`.
+- Secured telegrams on the live bus are decrypted (`knx_wait_for_telegram`, `knx_recent_telegrams`, `knx_infer_group`), and so are those re-decoded from `--capture-db`.
 - `knx_validate` checks the keyring against the model.
 
 Behaviour:

@@ -90,6 +90,7 @@ Behaviour:
 - `--full` walks the descriptions again, `--refresh-facts` re-reads everything, and a changed mask or application id re-reads on its own.
 - A KNX IP interface's KNXnet/IP parameter object is read on every run and printed as a `KNXnet/IP` section (`knxnet` in JSON), as `status <ADDRESS>` prints it.
 - A security-activated device refuses plain management access. Pass its tool key with `--keyring` (or `--tool-key` for a test device) and `describe` runs over KNX Data Secure.
+- A device without a tool key that refuses the plain walk is tried once more under its factory key (FDSK) from the key store. One that answers there was reset to default or never commissioned: `describe` says so and tells you to commission it with ETS and import the new keyring. Nothing is written under the factory key.
 - A walk that finds no interface object after a successful descriptor read is a failure, not an empty device: `describe` exits 1 with the `--keyring` hint on stderr. System 1 (BCU1) devices have no interface objects and are exempt.
 - The text output prints `KNX Secure (model):` and `KNX Secure (this run):` lines. No key material appears in text or JSON.
 
@@ -101,7 +102,7 @@ Behaviour:
 | `secured_management` | refused walk, with a key | `"unanswered"`: the secured walk returned no interface object. |
 | `error` | refused walk | The error message, with the KNX Secure hint. |
 | `secure.model` | the model has a security block | What the import recorded: `secure_capable`, `activated`, `has_fdsk_certificate`. An export made before ETS activated the device says `activated: false`. `tables` (a Data-Secure-capable product) holds the capacities the product declares: `max_group_key_table_entries`, `max_individual_address_entries`, `max_p2p_key_table_entries`; a download that does not fit is refused before anything is unloaded. |
-| `secure.device` | model security, a tool key, or a refused walk | What the device did in this run: `plain_management` (`answered`, `refused`, or `not_attempted` with a key) and `secured_management` (`used`, `not_attempted` without a key, `unanswered`, or `factory_key` when the device refused plain access and answered under its FDSK from the key store, issue #532). |
+| `secure.device` | model security, a tool key, or a refused walk | What the device did in this run: `plain_management` (`answered`, `refused`, or `not_attempted` with a key) and `secured_management` (`used`, `not_attempted` without a key, `unanswered`, or `factory_key` when the device refused plain access and answered under its FDSK from the key store). |
 
 ??? note "Details"
     `describe` sends `A_DeviceDescriptor_Read`, `A_PropertyValue_Read` (object discovery) and `A_PropertyDescription_Read`, never a write. Reusing the facts takes the descriptor read plus one property read: on a KNX Data Secure device about 4 requests instead of about 110. An activated device still answers the plain descriptor read and the PID 56 read, then refuses the interface-object walk.
@@ -131,7 +132,7 @@ $ bussard reconstruct --line 1.1 --out rebuilt/
 
 Behaviour:
 
-- System B (mask `07B0`) only. In line mode other masks are recorded as stubs; in single-device mode they are refused.
+- Single-device mode reads System B (`x7B0`) and System 7 (`0705`, `0701`, `0700`) and refuses other masks. Line mode reads System B and records every other mask as a stub.
 - The comparison is by group-address set per object. Send or listen direction cannot be recovered from the address and association tables alone.
 - Without `--product`, the archive `bussard.lock` pins in `<dir>/products/` is used. A pinned archive that is missing or changed prints a warning, and the parameters are not read.
 - A KNX Data Secure-activated device without its tool key stops with "mask FFFF (System ?) ... can: describe only" plus the `--keyring` hint. With `--keyring` or `--tool-key`, every read runs over KNX Data Secure and the device reports its real mask.
