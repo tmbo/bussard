@@ -483,12 +483,30 @@ def line_1_1() -> tuple[int, int]:
     raise RuntimeError("'1.1 TP Linie' did not appear in the Topologie tree")
 
 
+def click_tab(word: str) -> bool:
+    """Clicks the tab `word` of the strip above the centre view, where OCR
+    reads it; OCR may join the strip into one line ('Segmente 0 Geräte 3'),
+    so the word is aimed at by its share of the line's characters."""
+    tab = find_text(word, (680, 150, 1600, 220))
+    if tab is None:
+        return False
+    text = tab["text"]
+    at = max(text.find(word), 0) + len(word) // 2
+    click(tab["x"] + tab["w"] * at // max(len(text), 1), tab["y"] + tab["h"] // 2)
+    return True
+
+
 @flow("devices")
 def flow_devices(req: dict) -> dict:
     """The devices on line 1.1 of the active project, by OCR of the device list."""
     require_project(req["project"])
     click(*line_1_1())
     time.sleep(1.5)
+    # The line view reopens on the tab it showed last; after a device's
+    # parameter view that can be 'Segmente' (2026-10-31): the device list is
+    # the 'Geräte' tab.
+    if click_tab("Geräte"):
+        time.sleep(1.5)
     x0, y0, x1, y1 = LAYOUT["device_list"]
     # Row centres: every OCR line below the header, clustered by height.
     centres: list[int] = []
@@ -749,37 +767,35 @@ def flow_export_project(req: dict) -> dict:
 
 
 # ---------------------------------------------------------------- parameter editor (#424)
-# UNVERIFIED against ETS (written offline, 2026-10-30). The parameter view is
-# part of the main window, so it is read by OCR: the page list on the left,
-# each parameter a row of label and control. Regions are first guesses of the
-# 4112-wide layout and are the first thing to correct from a screenshot.
-PARAM_PAGES = (680, 260, 1250, 2400)
-PARAM_AREA = (1250, 260, 3300, 2400)
+# Checked against ETS 6.4.1 on 2026-10-31 (syn-minimal): the device's
+# 'Parameter' tab, next to 'Kommunikationsobjekte' above the object table,
+# shows the page list on the left (to x 1120) and each parameter as a row of
+# label (from x 1140) and control (from x 1625), above the catalogue pane
+# (y 1300). The device's context menu has
+# no parameter entry: the first version of this flow matched another entry
+# and restarted the device. Read by OCR, as the main window has no tree.
+PARAM_PAGES = (680, 260, 1120, 1300)
+PARAM_AREA = (1125, 260, 3300, 1300)
 
 
 def open_device_parameters(ia: str) -> str:
-    """Opens the parameter view of device `ia`: its Topologie node's context
-    menu, the entry that names the parameters."""
-    from pywinauto import mouse
-
-    click(*line_1_1())
-    time.sleep(1)
-    tree = [l for l in ocr(LAYOUT["tree"]) if re.match(rf"^\W*{re.escape(ia)}\b", l["text"].strip())]
-    if not tree:
-        raise RuntimeError(f"device {ia} not in the Topologie tree")
-    t = tree[0]
-    s = scale()
-    mouse.right_click(coords=(int((t["x"] + t["w"] // 2) * s), int((t["y"] + t["h"] // 2) * s)))
-    time.sleep(1.2)
-    items = menu_items()
-    entry = next((i for i in items if re.match(r"^Parameter", i)), None)
-    if entry is None:
-        keys("{ESC}")
-        raise RuntimeError(f"no parameter entry in the device's menu: {items[:16]}")
-    menu_click(entry)
-    time.sleep(3)
-    wait_busy()
-    return entry
+    """Opens the parameter view of device `ia`: the device selected in the
+    Topologie tree, then its 'Parameter' tab."""
+    open_device_objects(ia)
+    for _ in range(3):
+        time.sleep(1.5)
+        tab = find_text("Parameter", (680, 150, 1600, 220))
+        if tab is None:
+            raise RuntimeError("no 'Parameter' tab above the device's view")
+        text = tab["text"]
+        at = max(text.find("Parameter"), 0) + len("Parameter") // 2
+        click(tab["x"] + tab["w"] * at // max(len(text), 1), tab["y"] + tab["h"] // 2)
+        time.sleep(2)
+        wait_busy()
+        # The object table's header is gone once the parameter view shows.
+        if not find_text("Objektfunktion", (680, 220, 3400, 260)):
+            return "Parameter"
+    raise RuntimeError("the 'Parameter' tab did not open")
 
 
 def param_page_lines() -> list[dict]:
@@ -1202,12 +1218,28 @@ def open_device_objects(ia: str) -> None:
         tabs = " ".join(l["text"] for l in ocr((680, 150, 1600, 220)))
     if "Kommunikationsobjekte" not in tabs:
         raise RuntimeError(f"the object table did not open: {tabs!r}")
-    click(1090, 188)  # the 'Kommunikationsobjekte' tab
+    # The tab where OCR reads it: its place moves with the tabs before it (a
+    # device without channels has no 'Kanäle' tab, and 1090 then hits the
+    # 'Parameter' tab; syn-minimal, 2026-10-31).
+    tab = find_text("Kommunikationsobjekte", (680, 150, 1600, 220))
+    if tab is not None:
+        # OCR may join the strip into one line ('Kanäle 5 Kommunikationsobjekte
+        # 22'): aim at the word by its share of the line's characters.
+        text = tab["text"]
+        at = max(text.find("Kommunikation"), 0) + len("Kommunikation") // 2
+        click(tab["x"] + tab["w"] * at // max(len(text), 1), tab["y"] + tab["h"] // 2)
+    else:
+        click(1090, 188)
     time.sleep(1)
 
 
-def read_objects() -> list[dict]:
-    """Rows of the open object table: number, name, addresses, flags."""
+def read_objects(numbers: list[int] | None = None) -> list[dict]:
+    """Rows of the open object table: number, name, addresses, flags.
+
+    `numbers`, the object numbers the caller knows the table lists in order
+    (a synthetic product's com objects): when OCR reads no number at all and
+    the table has exactly that many rows, the rows take them in order. Windows
+    OCR reads neither a lone '0' nor a lone '1' (syn-minimal, 2026-10-31)."""
     lines = ocr(GO_TABLE)
     rows: dict[int, dict] = {}
     # Numbers magnified: a lone '1' in a selected row went unread.
@@ -1223,6 +1255,9 @@ def read_objects() -> list[dict]:
         if GO_COLS["name"][0] <= l["x"] + 4 < GO_COLS["name"][1] and all(abs(y - cy) >= 14 for y in rows):
             rows[cy] = {"number": None, "y": cy, "name": "", "gas": [], "flags": ""}
     ordered = sorted(rows.values(), key=lambda r: r["y"])
+    if numbers and all(r["number"] is None for r in ordered) and len(ordered) == len(numbers):
+        for r, n in zip(ordered, numbers):
+            r["number"] = int(n)
     for i, r in enumerate(ordered):
         if r["number"] is not None:
             continue
@@ -1277,11 +1312,11 @@ def flow_objects(req: dict) -> dict:
     addresses and the flags ETS shows (K L S Ü A)."""
     require_project(req["project"])
     open_device_objects(req["ia"])
-    return {"objects": read_objects()}
+    return {"objects": read_objects(req.get("numbers"))}
 
 
-def _object_row(number: int) -> dict:
-    rows = read_objects()
+def _object_row(number: int, numbers: list[int] | None = None) -> dict:
+    rows = read_objects(numbers)
     hit = [r for r in rows if r["number"] == number]
     if not hit:
         raise RuntimeError(f"object {number} not in the table (hidden by a parameter?): {[r['number'] for r in rows]}")
@@ -1298,16 +1333,19 @@ def flow_link(req: dict) -> dict:
     from pywinauto import mouse
 
     open_device_objects(req["ia"])
-    row = _object_row(int(req["number"]))
+    row = _object_row(int(req["number"]), req.get("numbers"))
     if req["ga"] in row["gas"]:
         return {"linked": True, "already": True, "row": row}
     s = scale()
     mouse.right_click(coords=(int(1000 * s), int(row["y"] * s)))
     time.sleep(1.2)
     menu_click("Verbinden mit...")
-    time.sleep(2)
-    if not find_text("Mit Gruppenadresse verbinden", (1500, 560, 2600, 680)):
-        raise RuntimeError("the link dialog did not open")
+    # The dialog can take several seconds to open (syn-minimal, 2026-10-31).
+    t0 = time.time()
+    while not find_text("Mit Gruppenadresse verbinden", (1500, 560, 2600, 680)):
+        if time.time() - t0 > 12:
+            raise RuntimeError("the link dialog did not open")
+        time.sleep(1)
     click(1720, 1718)  # the address field left of 'Neue Gruppenadresse'
     time.sleep(0.3)
     keys("^a")
@@ -1329,7 +1367,19 @@ def flow_link(req: dict) -> dict:
     else:
         raise RuntimeError("the link dialog did not close")
     time.sleep(1)
-    row = _object_row(int(req["number"]))
+    # An address the project already holds with another object size: ETS asks
+    # whether to take the object's datatype for it ('... abweichende
+    # Objektgröße ...', syn-minimal, 2026-10-31). OK takes it.
+    if find_text("abweichende Objektgröße", (1260, 1100, 2850, 1260), min_ratio=0.7):
+        click_text("OK", (2450, 1410, 2700, 1500))
+        time.sleep(1.5)
+    row = _object_row(int(req["number"]), req.get("numbers"))
+    if req["ga"] not in row["gas"]:
+        # OCR reads nothing on the selected row (blue text): click below the
+        # rows to clear the selection and read again (syn-minimal, 2026-10-31).
+        click(1500, GO_TABLE[3] - 20)
+        time.sleep(1)
+        row = _object_row(int(req["number"]), req.get("numbers"))
     if req["ga"] not in row["gas"]:
         raise RuntimeError(f"object {req['number']} shows {row['gas']} after linking {req['ga']}")
     return {"linked": True, "row": row}
@@ -1343,7 +1393,7 @@ def flow_unlink(req: dict) -> dict:
     from pywinauto import mouse
 
     open_device_objects(req["ia"])
-    row = _object_row(int(req["number"]))
+    row = _object_row(int(req["number"]), req.get("numbers"))
     if req["ga"] not in row["gas"]:
         return {"unlinked": True, "already": True, "row": row}
     s = scale()
@@ -1351,7 +1401,7 @@ def flow_unlink(req: dict) -> dict:
     time.sleep(1.2)
     menu_click("Trennen")
     time.sleep(2)
-    row = _object_row(int(req["number"]))
+    row = _object_row(int(req["number"]), req.get("numbers"))
     if req["ga"] in row["gas"]:
         raise RuntimeError(f"object {req['number']} still shows {req['ga']}: {row}")
     return {"unlinked": True, "row": row}

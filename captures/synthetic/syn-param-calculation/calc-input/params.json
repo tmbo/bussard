@@ -1,0 +1,18 @@
+{
+ "pages": [
+  "General"
+ ],
+ "changes": [
+  {
+   "text": "Delay (s)",
+   "kind": "int",
+   "value": "500",
+   "key": "delay-s",
+   "model": 500,
+   "set": true,
+   "page": "General",
+   "row": "500",
+   "seen": null
+  }
+ ]
+}

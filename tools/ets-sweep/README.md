@@ -401,9 +401,14 @@ found) or failed. `oracle` imports each export with `bussard import` and runs
 the oracle row with the export as the product data, so the model holds
 exactly what ETS downloaded; verdicts in `results/oracle-params.json`.
 
-The parameter editor was written without ETS at hand (2026-10-30): the
-regions of the page list and the parameter area (`PARAM_PAGES`, `PARAM_AREA`
-in the driver) are first guesses to correct from a screenshot.
+The parameter editor was written without ETS at hand (2026-10-30) and first
+ran on 2026-10-31 (the synthetic run variants `partial` and `calc-input`):
+the view is the device's `Parameter` tab (the device's context menu has no
+parameter entry; the first version picked another entry and restarted the
+device), the page list ends at x 1120 and the labels start at x 1140, both
+above the catalogue pane (y 1300). Setting an integer by typing into its
+field works (`Delay (s)`); enumerations and multi-page products are
+unverified.
 
 ## Synthetic products: signing (#596)
 
@@ -622,3 +627,57 @@ Results (ETS 6.4.1 build 6.4.8718, VM sim 06a27ec0):
   (none), read-confirmed octets `identical`, load control
   `differs(1, first obj4#1 unload)` (`expect=not-comparable
   confirmed=identical loadctl=differs state=loaded`).
+- `other-app` of `syn-s7-0705` (2026-10-31): `syn-s7-hidden-default` (0705)
+  downloaded first, then `syn-s7-0705` into the same sim; both "Abgeschlossen".
+  The second download is request for request the `defaults` download: no
+  pre-download pass for a device that holds another application either.
+  Row: memory `identical`, load control `differs(1, first obj4#1 unload)`.
+- `other-app` of `syn-s7-0701` (2026-10-31): `syn-s7-lsm5` first, then
+  `syn-s7-0701`; the second download equals the `reload` one (unloads of LSM 1
+  to 3, read-compare, no memory written, the TaskSegment records name
+  `syn-s7-0701`). Row as `reload`. ETS reads no application id before a
+  System 7 download, so it cannot tell a programmed device from a fresh one,
+  and it sends the same stream (#488).
+- `no-ga` of `syn-minimal` (2026-10-31): ETS's object table before the
+  download shows both objects without an address (`objects.json`). The
+  download is request for request the `defaults` one: both tables loaded with
+  a count of 0 (`00 00` at `0xA000` and `0xC000`) and completed (#542). Row:
+  `identical`, `addr=ok(2) assoc=ok(2)`, load control `identical`.
+
+Driver fixes the variants needed (2026-10-31): the objects tab is clicked
+where OCR reads it (with no `Kanäle` tab the fixed position hit `Parameter`);
+the line view's `Geräte` tab is clicked before the device list is read (after
+a device view the line reopened on `Segmente`, so no device was deleted and
+`catalog_add` stacked devices at 1.1.2, 1.1.3); `objects`, `link` and
+`unlink` take `numbers`, the object numbers the table lists, because Windows
+OCR reads neither a lone `0` nor a lone `1`; `link` waits up to 12 s for its
+dialog, answers ETS's question about an address that already has another
+object size with OK, and clears the row selection before it reads the link
+back (OCR reads nothing on a selected row).
+- `links` of `syn-minimal` (2026-10-31): the switch object linked to 1/0/1
+  and 1/0/2, the status object to 1/0/3, then the application download. ETS
+  writes the address table `0003 0801 0802 0803`, the association table
+  `0003 0001 0000 0003 0001 0002 0000` (1/0/1 to object 0, 1/0/3 to object
+  1, 1/0/2 to object 0) and the group-object table `00014f00`
+  (`00014b00` with no links). Row (`dir=` the committed model template with
+  those links): `identical`, `addr=ok(8) assoc=ok(14) gobj=ok(4)`, load
+  control `identical` (#478, #540).
+- `partial` of `syn-minimal` (2026-10-31): a defaults download, then
+  `Delay (s)` set from 300 to 500 in the parameter editor and ETS's
+  "Partiell" download (23 operations): reads of obj 4's load state and
+  `PID_PROGRAM_VERSION`, obj 5's load state and obj 4's
+  `PID_TABLE_REFERENCE`, then obj 4 Unload, StartLoading, `LdCtrlRelSegment`
+  256 octets Mode 0 without fill, `PID_TABLE_REFERENCE` again, 3 octets at
+  `0x6000` (`01 01 f4`), `PID_PROGRAM_VERSION`, LoadCompleted, restart.
+  Objects 1 to 3 are not touched. Row (`run=params`, knx-sim replaying the
+  defaults download, then `bussard flash --parameters-only`): `identical`,
+  `memory 0x6000=ok(3)`, load control `identical` (4 records) (#543, #490).
+  `bussard apply` refuses this device, which has no links (#542).
+- `calc-input` of `syn-param-calculation` (2026-10-31): `Delay (s)`, the
+  calculation's input, set from 300 to 500, then the application download
+  into a fresh sim. ETS wrote `01 01 f4 03 e9 01 fb` at `0x6000`: both
+  outputs computed (1001 and 507), the hidden `LegacyPatchAlways` one
+  included. At defaults it wrote `00 00` for both: ETS runs the script when
+  an input changes. Row (`dir=` the model template with `delay-s = 500`):
+  `differs`, `par=4/256@+0x3` (bussard runs no calculation), pinned
+  `expect=differs` (#427).

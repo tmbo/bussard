@@ -1,0 +1,9 @@
+# The model the synthetic oracle rows plan against (captures/synthetic/rows.txt):
+# no devices, the import language of the ETS sweep project. The dry run of a
+# row adds the device from its product at the vendor defaults.
+[connection]
+transport = "tunnel"
+gateway = "127.0.0.1:3671"
+
+[import]
+language = "de-DE"

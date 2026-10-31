@@ -770,12 +770,54 @@ class SystemBProductProcedure(unittest.TestCase):
         with self.assertRaisesRegex(generate.SpecError, "`LdCtrlTaskSegment` is part of the schema"):
             generate.Product("test", s)
 
+    def test_render_map_error_around_unload(self) -> None:
+        s = self.product_spec()
+        s["load_procedure"][0]["ops"][1:1] = [
+            {"op": "LdCtrlMapError", "original_error": 3221498632, "mapped_error": 0},
+            {"op": "LdCtrlUnload", "lsm": 5},
+            {"op": "LdCtrlMapError", "original_error": 3221498632, "mapped_error": 3221498632}]
+        self.assertIn('<LdCtrlConnect />\n'
+                      '                <LdCtrlMapError OriginalError="3221498632" MappedError="0" />\n'
+                      '                <LdCtrlUnload LsmIdx="5" />\n'
+                      '                <LdCtrlMapError OriginalError="3221498632" MappedError="3221498632" />\n',
+                      app_xml(s))
+
+    def test_map_error_not_yet_in_a_merged_procedure(self) -> None:
+        s = spec()
+        s["load_procedure"][0]["ops"].append({"op": "LdCtrlMapError", "original_error": 1, "mapped_error": 0})
+        with self.assertRaisesRegex(generate.SpecError, "`LdCtrlMapError` is part of the schema"):
+            generate.Product("test", s)
+
     def test_write_prop_without_value_refused(self) -> None:
         s = self.product_spec()
         del s["load_procedure"][0]["ops"][5]["inline_data"]
         with self.assertRaisesRegex(generate.SpecError, "no parameter is placed in object 4 PID 13 and the op has "
                                                         "no inline_data"):
             generate.Product("test", s)
+
+
+class Delay(unittest.TestCase):
+    """syn-s7-delay (#615): LdCtrlDelay in a System 7 product procedure."""
+
+    def test_render_delay_before_restart(self) -> None:
+        s = product_spec("syn-s7-0701")
+        s["load_procedure"][0]["ops"][-2:-2] = [{"op": "LdCtrlDelay", "milliseconds": 200}]
+        x = app_xml(s)
+        self.assertIn('<LdCtrlLoadCompleted LsmIdx="3" />\n'
+                      '                <LdCtrlDelay MilliSeconds="200" />\n'
+                      '                <LdCtrlRestart />', x)
+
+    def test_delay_refused_on_system_b(self) -> None:
+        b = product_spec("syn-minimal")
+        b["load_procedure"][0]["ops"].append({"op": "LdCtrlDelay", "milliseconds": 200})
+        with self.assertRaisesRegex(generate.SpecError, "no product uses it yet"):
+            generate.Product("t", b)
+
+    def test_delay_missing_milliseconds_refused(self) -> None:
+        s = product_spec("syn-s7-0701")
+        s["load_procedure"][0]["ops"][-2:-2] = [{"op": "LdCtrlDelay"}]
+        with self.assertRaisesRegex(generate.SpecError, "missing key `milliseconds`"):
+            generate.Product("t", s)
 
 
 if __name__ == "__main__":

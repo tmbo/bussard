@@ -607,6 +607,9 @@ SYS7_LOAD_OPS = {
     "LdCtrlTaskPtr": {"lsm": "LsmIdx", "init_ptr": "InitPtr", "save_ptr": "SavePtr", "serial_ptr": "SerialPtr"},
     "LdCtrlTaskCtrl2": {"lsm": "LsmIdx", "callback": "Callback", "address": "Address", "seg0": "Seg0",
                         "seg1": "Seg1"},
+    # syn-s7-delay (#604 row 39, #615): a pause in the procedure, as 16 0701
+    # applications have it before LdCtrlRestart.
+    "LdCtrlDelay": {"milliseconds": "MilliSeconds"},
 }
 MEMORY_TYPES = ("EEPROM", "RAM")
 
@@ -625,6 +628,9 @@ B_PRODUCT_LOAD_OPS = {
     "LdCtrlLoad": {"lsm": "LsmIdx"},
     "LdCtrlLoadCompleted": {"lsm": "LsmIdx"},
     "LdCtrlWriteProp": LOAD_OPS["LdCtrlWriteProp"],
+    # syn-map-error (#604 row 38, #614): an ETS error code mapped to another
+    # (0 = success) for the ops that follow, until mapped back to itself.
+    "LdCtrlMapError": {"original_error": "OriginalError", "mapped_error": "MappedError"},
 }
 # Every op table, for rendering (each spec is checked against its own table).
 ALL_LOAD_OPS = LOAD_OPS | SYS7_LOAD_OPS | B_PRODUCT_LOAD_OPS
