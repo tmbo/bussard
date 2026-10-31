@@ -13,7 +13,7 @@ $ curl -s http://127.0.0.1:8080/api/state
 | Endpoint | Returns |
 |---|---|
 | `GET /` | The website shell. `GET /assets/{file}` serves the embedded JS and CSS modules. |
-| `GET /api/model` | The precomputed model projection: devices, groups, ranges, links, senders and listeners, and per device and channel the `parameters` rows `{key, text, value, default, non_default}`. `text`, `default` and `non_default` are `null` without the product model. Rebuilt in place by `POST /api/reload`. |
+| `GET /api/model` | The precomputed model projection: devices, groups, ranges, links, senders and listeners, and per device and channel the `parameters` rows `{key, text, value, default, non_default, computed_by}`. `text`, `default` and `non_default` are `null` without the product model. A parameter a `<ParameterCalculation>` computes has the computed value in `value` and the calculation's id in `computed_by` (`null` otherwise). Rebuilt in place by `POST /api/reload`. |
 | `GET /api/state` | `{bus: {state, transport, connected, gateway, loopback}, seq, values, prog}`. `gateway` is the resolved endpoint (`192.0.2.10:3671`, or `multicast 224.0.23.12:3671`; `null` in model-only mode) and `loopback` says whether it is a loopback address. `values` is the last value, payload, DPT and source per group address. `prog` is an array of the individual addresses currently seen in programming mode (empty when none, or when `--watch-prog` is off). |
 | `GET /api/traffic` | Server-Sent Events, see [the traffic stream](#the-traffic-stream). |
 | `POST /api/group-write` | `{address, value?, payload?, dpt?, force?}`. Encodes and sends a GroupValueWrite; returns `200` with an echo of what was written. See [group writes](#group-writes). |

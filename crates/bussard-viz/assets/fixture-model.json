@@ -487,6 +487,7 @@
           "name": "Blind 1 - Living Room",
           "parameters": [
             {
+              "computed_by": null,
               "default": "Rollladen / Markise ohne Lamellenverstellung",
               "key": "betriebsart",
               "non_default": true,
@@ -494,6 +495,7 @@
               "value": "Jalousie mit Lamellenverstellung"
             },
             {
+              "computed_by": null,
               "default": "60",
               "key": "gesamtfahrzeit-auf-ab-in-sekunden",
               "non_default": true,
@@ -501,6 +503,7 @@
               "value": "90"
             },
             {
+              "computed_by": null,
               "default": "Keine Reaktion",
               "key": "verhalten-bei-busspannungswiederkehr",
               "non_default": true,
@@ -508,6 +511,7 @@
               "value": "Position vor Busspannungsausfall wiederherstellen"
             },
             {
+              "computed_by": null,
               "default": "Auffahren und Bedienung sperren bis Windalarmende",
               "key": "reaktion-bei-windalarm",
               "non_default": false,
@@ -521,6 +525,7 @@
           "name": "Blind 2 - Kitchen",
           "parameters": [
             {
+              "computed_by": null,
               "default": "Rollladen / Markise ohne Lamellenverstellung",
               "key": "betriebsart",
               "non_default": false,
@@ -528,6 +533,7 @@
               "value": "Rollladen / Markise ohne Lamellenverstellung"
             },
             {
+              "computed_by": null,
               "default": "60",
               "key": "gesamtfahrzeit-auf-ab-in-sekunden",
               "non_default": false,
@@ -535,6 +541,7 @@
               "value": "60"
             },
             {
+              "computed_by": null,
               "default": "Keine Reaktion",
               "key": "verhalten-bei-busspannungswiederkehr",
               "non_default": false,
@@ -542,6 +549,7 @@
               "value": "Keine Reaktion"
             },
             {
+              "computed_by": null,
               "default": "Auffahren und Bedienung sperren bis Windalarmende",
               "key": "reaktion-bei-windalarm",
               "non_default": false,
@@ -555,6 +563,7 @@
           "name": "Blind 3 - Bedroom",
           "parameters": [
             {
+              "computed_by": null,
               "default": "Rollladen / Markise ohne Lamellenverstellung",
               "key": "betriebsart",
               "non_default": true,
@@ -562,6 +571,7 @@
               "value": "Jalousie mit Lamellenverstellung"
             },
             {
+              "computed_by": null,
               "default": "60",
               "key": "gesamtfahrzeit-auf-ab-in-sekunden",
               "non_default": true,
@@ -569,6 +579,7 @@
               "value": "75"
             },
             {
+              "computed_by": null,
               "default": "Keine Reaktion",
               "key": "verhalten-bei-busspannungswiederkehr",
               "non_default": true,
@@ -576,6 +587,7 @@
               "value": "Abfahren"
             },
             {
+              "computed_by": null,
               "default": "Auffahren und Bedienung sperren bis Windalarmende",
               "key": "reaktion-bei-windalarm",
               "non_default": true,
@@ -708,6 +720,7 @@
       "name": "Blind Actuator 4-fold",
       "parameters": [
         {
+          "computed_by": null,
           "default": "10",
           "key": "sendeverzoegerung-nach-busspannungswiederkehr",
           "non_default": true,
@@ -715,6 +728,7 @@
           "value": "30"
         },
         {
+          "computed_by": null,
           "default": "Keine Ueberwachung",
           "key": "windalarm-ueberwachungszeitraum",
           "non_default": true,

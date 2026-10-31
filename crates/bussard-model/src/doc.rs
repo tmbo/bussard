@@ -143,10 +143,16 @@ pub struct ParameterDoc {
     pub key: String,
     /// The human part of the key (the slug before `@`).
     pub label: String,
-    /// The configured value.
+    /// The configured value; for a calculation output, the value the
+    /// calculation computes from the configuration, which a download writes
+    /// (issue #712).
     pub value: String,
     /// The vendor default, when a cached product model supplies one.
     pub default: Option<String>,
+    /// The app-relative id of the `<ParameterCalculation>` that computed
+    /// `value` (e.g. `PC-1`), when one did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub computed_by: Option<String>,
 }
 
 /// One device, as the documentation describes it.
@@ -633,24 +639,47 @@ fn device_doc(
         .and_then(|p| p.application_ref.as_deref())
         .and_then(|app| products.get(app));
 
-    let parameters: Vec<ParameterDoc> = device
+    // The values the calculations compute under this configuration, by
+    // device-form ref (issue #712): the same evaluation a download runs.
+    let mut computed = product_model
+        .filter(|m| !m.calculations.is_empty())
+        .map(|m| crate::device_view::Evaluated::of_device(m, device).computed_parameters())
+        .unwrap_or_default();
+    let doc_of = |key: &str, value: String, computed_by: Option<String>| ParameterDoc {
+        label: key
+            .split_once('@')
+            .map_or(key.to_string(), |(slug, _)| slug.replace('-', " ")),
+        default: product_model.and_then(|m| {
+            crate::param_model::key_to_model_ref(key)
+                .and_then(|r| m.ref_default(&r).map(str::to_string))
+        }),
+        key: key.to_string(),
+        value,
+        computed_by,
+    };
+    let mut parameters: Vec<ParameterDoc> = device
         .parameters
         .iter()
         // A hidden value (the lock's `hidden[]`) is not part of the user's
         // configuration.
         .filter(|(key, _)| !crate::files::is_hidden_mem_key(key))
-        .map(|(key, value)| ParameterDoc {
-            label: key
-                .split_once('@')
-                .map_or(key.clone(), |(slug, _)| slug.replace('-', " ")),
-            default: product_model.and_then(|m| {
-                crate::param_model::key_to_model_ref(key)
-                    .and_then(|r| m.ref_default(&r).map(str::to_string))
-            }),
-            key: key.clone(),
-            value: value.clone(),
+        .map(|(key, value)| {
+            let reference = key.split_once('@').map_or("", |(_, r)| r);
+            match computed.remove(reference) {
+                Some((calc, v)) => doc_of(key, v, Some(calc)),
+                None => doc_of(key, value.clone(), None),
+            }
         })
         .collect();
+    // A computed output the file does not store is still written.
+    for (reference, (calc, value)) in computed {
+        let slug = device
+            .lock
+            .parameters
+            .get(&reference)
+            .map_or(reference.as_str(), |p| p.key.as_str());
+        parameters.push(doc_of(&format!("{slug}@{reference}"), value, Some(calc)));
+    }
 
     let product = device.product.as_ref();
     DeviceDoc {

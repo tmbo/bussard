@@ -226,9 +226,11 @@ class Inspector {
    * sub-header, then one row per value with the vendor label (the file key
    * when the product model is missing) across the left columns and the value
    * across the right ones. A value that differs from the vendor default is
-   * marked; the default is on the tooltip. Read-only.
+   * marked; the default is on the tooltip. A value a parameter calculation
+   * computes is marked as computed, with the calculation on the tooltip.
+   * Read-only.
    * @param {HTMLElement} tbody
-   * @param {Array<{key:string, text:?string, value:?string, default:?string, non_default:?boolean}>} params
+   * @param {Array<{key:string, text:?string, value:?string, default:?string, non_default:?boolean, computed_by:?string}>} params
    * @param {number} colCount - the table's column count.
    */
   _appendParameterRows(tbody, params, colCount) {
@@ -251,7 +253,12 @@ class Inspector {
       const valueTd = el("td", "param-value");
       valueTd.colSpan = colCount - LABEL_COLS;
       valueTd.appendChild(el("span", "param-value-text", shown != null ? shown : "—"));
-      if (p.non_default) {
+      if (p.computed_by) {
+        // A calculation output: information, not a problem (issue #712).
+        const mark = el("span", "param-computed", "computed");
+        mark.title = `Computed by calculation ${p.computed_by}`;
+        valueTd.appendChild(mark);
+      } else if (p.non_default) {
         const mark = el("span", "param-changed", "changed");
         mark.title = p.default != null ? `Vendor default: ${p.default}` : "Differs from the vendor default";
         valueTd.appendChild(mark);

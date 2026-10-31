@@ -277,16 +277,23 @@ pub fn describe(old: &Model, new: &Model) -> ChangeSet {
 /// parameter's text from the cached product model, e.g. `Nachtabsenkung on …`
 /// becomes `Night setback on …`.
 ///
-/// `models` are the two sides the set was described from (the device is looked
-/// up in each, in order, for its `application_ref`). A change whose device has
+/// `models` are the two sides the set was described from, the new side
+/// first, then the old (the device is looked up in each, in order, for its
+/// `application_ref`). A change whose device has
 /// no cached product model, or whose parameter has no text, keeps the label
 /// derived from its key: nothing degrades to silence.
 ///
 /// It settles the values first ([`settle_parameters`]): a change whose two
 /// sides name the same enum member is dropped, and enum values read as their
 /// label with the code after it.
+///
+/// Then it brings in the parameter calculations ([`compute_parameters`]): a
+/// calculation output reads as the value the calculation computes on each
+/// side, so an output that changes because one of its inputs did is a change
+/// too (issue #712).
 pub fn name_parameters(set: &mut ChangeSet, models: [&Model; 2], products: &ProductModels) {
     settle_parameters(set, models, products);
+    compute_parameters(set, models, products);
     for change in &mut set.changes {
         if change.kind != ChangeKind::ParameterChanged {
             continue;
@@ -344,23 +351,13 @@ pub fn settle_parameters(set: &mut ChangeSet, models: [&Model; 2], products: &Pr
         if def.labels.is_empty() {
             return true;
         }
-        let code = |v: &str| -> String {
-            enum_code(&def.labels, v)
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| v.trim().to_string())
-        };
+        let code = |v: &str| enum_value_code(def, v);
         if let (Some(from), Some(to)) = (change.from.as_deref(), change.to.as_deref())
             && code(from) == code(to)
         {
             return false;
         }
-        let shown = |v: &str| -> String {
-            let c = code(v);
-            match enum_label(&def.labels, &c) {
-                Some(label) => format!("{} ({c})", label.trim()),
-                None => v.to_string(),
-            }
-        };
+        let shown = |v: &str| shown_enum_value(def, v);
         let name = models
             .iter()
             .find_map(|m| m.devices.get(&ia))
@@ -383,6 +380,137 @@ pub fn settle_parameters(set: &mut ChangeSet, models: [&Model; 2], products: &Pr
         }
         true
     });
+}
+
+/// Brings the `<ParameterCalculation>` outputs of every device with a
+/// parameter change into the set (issue #712). `models` are the new side,
+/// then the old.
+///
+/// Each side is evaluated over the device's cached product model, the same
+/// evaluation (and trigger rule) a download runs. An output a calculation
+/// computes on either side reads as its effective value on each: when the two
+/// differ it is one change, marked with the calculation's id, in place of any
+/// change of the value the file stores; when they are the same, a change of
+/// the stored value is dropped, as the device does not change. A device whose
+/// application differs between the sides, or that has no cached product
+/// model, is left as described.
+pub fn compute_parameters(set: &mut ChangeSet, models: [&Model; 2], products: &ProductModels) {
+    let [new, old] = models;
+    let devices: BTreeSet<IndividualAddress> = set
+        .changes
+        .iter()
+        .filter(|c| c.kind == ChangeKind::ParameterChanged)
+        .filter_map(|c| c.device.as_deref()?.parse().ok())
+        .collect();
+    for ia in devices {
+        let (Some(after), Some(before)) = (new.devices.get(&ia), old.devices.get(&ia)) else {
+            continue;
+        };
+        let app_of = |d: &LoadedDevice| -> Option<String> {
+            d.device.product.as_ref()?.application_ref.clone()
+        };
+        let Some(app) = app_of(after) else {
+            continue;
+        };
+        if app_of(before).as_deref() != Some(app.as_str()) {
+            continue;
+        }
+        let Some(product) = products.get(&app) else {
+            continue;
+        };
+        if product.calculations.is_empty() {
+            continue;
+        }
+        let eval_after = crate::device_view::Evaluated::of_device(product, &after.device);
+        let eval_before = crate::device_view::Evaluated::of_device(product, &before.device);
+        let computed_after = eval_after.computed_parameters();
+        let computed_before = eval_before.computed_parameters();
+        let outputs: BTreeSet<&String> = computed_after
+            .keys()
+            .chain(computed_before.keys())
+            .collect();
+        let device_name = if after.device.name.trim().is_empty() {
+            ia.to_string()
+        } else {
+            format!("{} ({ia})", after.device.name.trim())
+        };
+        let address = ia.to_string();
+        let of_device = |c: &Change| {
+            c.kind == ChangeKind::ParameterChanged && c.device.as_deref() == Some(address.as_str())
+        };
+        for reference in outputs {
+            let held = set.changes.iter().position(|c| {
+                of_device(c)
+                    && c.field.as_deref().map(parameter_identity) == Some(reference.as_str())
+            });
+            // In the held change's place, else after the device's last one.
+            let at = held.or_else(|| set.changes.iter().rposition(&of_device).map(|i| i + 1));
+            let held = held.map(|i| set.changes.remove(i));
+            let from = eval_before.value(reference);
+            let to = eval_after.value(reference);
+            if from == to {
+                continue;
+            }
+            let calc = computed_after
+                .get(reference)
+                .or_else(|| computed_before.get(reference))
+                .map(|(calc, _)| calc.as_str())
+                .unwrap_or_default();
+            let key = held
+                .and_then(|c| c.field)
+                .or_else(|| {
+                    after
+                        .device
+                        .lock
+                        .parameters
+                        .get(reference.as_str())
+                        .map(|p| format!("{}@{reference}", p.key))
+                })
+                .unwrap_or_else(|| format!("{reference}@{reference}"));
+            // Shown as a set value of the parameter is ([`settle_parameters`]).
+            let shown = |v: Option<&str>| -> Option<String> {
+                let v = v?;
+                Some(match parameter_def(models, products, ia, &key) {
+                    Some(def) if !def.labels.is_empty() => shown_enum_value(def, v),
+                    _ => v.to_string(),
+                })
+            };
+            let Some(sentence) = parameter_sentence(
+                &parameter_label(&key),
+                &device_name,
+                shown(from.as_deref()).as_deref(),
+                shown(to.as_deref()).as_deref(),
+            ) else {
+                continue;
+            };
+            let change = Change::new(
+                ChangeKind::ParameterChanged,
+                format!("{sentence} Computed by calculation {calc}."),
+            )
+            .with_device(ia)
+            .with_field(key, from, to);
+            let at = at.unwrap_or(set.changes.len()).min(set.changes.len());
+            set.changes.insert(at, change);
+        }
+    }
+}
+
+/// The code of enumeration value `v` of `def`, written as a label or a code.
+fn enum_value_code(def: &ParamDef, v: &str) -> String {
+    enum_code(&def.labels, v)
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| v.trim().to_string())
+}
+
+/// How a parameter change shows value `v` of `def`: an enumeration member as
+/// its label with the code after it (`Kurzer und langer Tastendruck (5)`),
+/// anything else as it is.
+fn shown_enum_value(def: &ParamDef, v: &str) -> String {
+    let c = enum_value_code(def, v);
+    match enum_label(&def.labels, &c) {
+        Some(label) => format!("{} ({c})", label.trim()),
+        None => v.to_string(),
+    }
 }
 
 /// The product-model definition of parameter `key` on device `ia`, looked

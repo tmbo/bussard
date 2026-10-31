@@ -77,6 +77,13 @@ pub struct ProductModel {
     /// `identity.mask_version` is `xxB0` (issue #474).
     #[serde(default)]
     pub system_b: bool,
+    /// The application's `<ParameterCalculation>`s, in document order, ids
+    /// and refs app-relative (`calculations:`, format 13, issue #712): what
+    /// the Dynamic evaluation runs through this model's
+    /// [`crate::dynamic::DynamicSource`] impl, so the views show the value a
+    /// download computes and writes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub calculations: Vec<crate::dynamic::ParameterCalculation>,
     /// The ETS parameter pages and channels, derived from [`Self::dynamic`]
     /// on first use ([`Self::blocks`]).
     #[serde(skip)]
@@ -167,8 +174,9 @@ pub struct ObjectDef {
 /// issue #449, and a text
 /// parameter's `initial_value:`, issue #473; format 11 a colour type,
 /// `color: { space: RGB }`, issue #616; format 12 a virtual parameter's
-/// `virtual: true`, issue #474).
-pub const MODEL_FORMAT: u32 = 12;
+/// `virtual: true`, issue #474; format 13 the `<ParameterCalculation>`s,
+/// `calculations:`, issue #712).
+pub const MODEL_FORMAT: u32 = 13;
 
 /// Whether the model file at `path` is of the current [`MODEL_FORMAT`]. Reads
 /// only the head of the file, where the emitter puts the key.
@@ -297,6 +305,8 @@ struct RawModel {
     argument_allocates: BTreeMap<String, i64>,
     #[serde(default)]
     identity: Option<RawIdentity>,
+    #[serde(default)]
+    calculations: Vec<crate::dynamic::ParameterCalculation>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -517,6 +527,7 @@ impl ProductModel {
                 .identity
                 .and_then(|i| i.mask_version)
                 .is_some_and(|m| is_system_b_mask(&m)),
+            calculations: raw.calculations,
             pages: std::sync::OnceLock::new(),
             pages_with_modules: std::sync::OnceLock::new(),
             ref_index: std::sync::OnceLock::new(),
@@ -693,6 +704,22 @@ impl crate::dynamic::DynamicSource for ProductModel {
 
     fn is_system_b(&self) -> bool {
         self.system_b
+    }
+
+    fn calculations(&self) -> &[crate::dynamic::ParameterCalculation] {
+        &self.calculations
+    }
+
+    fn parameter_name(&self, param_id: &str) -> Option<&str> {
+        self.parameters.get(param_id)?.name.as_deref()
+    }
+
+    fn parameter_is_text(&self, param_id: &str) -> Option<bool> {
+        match self.parameters.get(param_id)?.kind {
+            ParamKind::Text { .. } => Some(true),
+            ParamKind::Int { .. } | ParamKind::Enum { .. } | ParamKind::Float => Some(false),
+            _ => None,
+        }
     }
 }
 

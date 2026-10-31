@@ -984,7 +984,8 @@ body.query-active .ga-sub:not(.match) { opacity: 0.35; }
 .insp-table tr.co-param td.param-label { color: var(--text-dim); }
 .insp-table tr.co-param td.param-value { color: var(--text); }
 .insp-table tr.co-param.non-default td.param-value .param-value-text { font-weight: 600; }
-.param-changed {
+.param-changed,
+.param-computed {
   display: inline-block;
   margin-left: 6px;
   padding: 0 5px;
@@ -994,6 +995,11 @@ body.query-active .ga-sub:not(.match) { opacity: 0.35; }
   font-size: 10px;
   white-space: nowrap;
   vertical-align: 1px;
+}
+/* A computed value is information, not a problem (issue #712). */
+.param-computed {
+  border-color: var(--border-soft);
+  color: var(--text-dim);
 }
 
 /* Send/listen cells: a GA chip with a secondary line of remote devices. The

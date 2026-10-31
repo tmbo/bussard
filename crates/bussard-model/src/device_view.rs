@@ -129,6 +129,27 @@ pub struct ParamRow {
     /// [`IgnoredOverride::reason`] does.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ignored: Option<String>,
+    /// The value a `<ParameterCalculation>` computes for this parameter under
+    /// the device's configuration, rendered like `value`: what a download
+    /// writes, whatever the file stores (issue #712). `None` when no
+    /// calculation ran for it (its inputs at their defaults).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub computed: Option<String>,
+    /// The app-relative id of the calculation that computed
+    /// [`Self::computed`] (e.g. `PC-1`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub computed_by: Option<String>,
+}
+
+impl ParamRow {
+    /// The value the device ends up with: the computed one, else the file's,
+    /// else the vendor default.
+    pub fn effective(&self) -> Option<&str> {
+        self.computed
+            .as_deref()
+            .or(self.value.as_deref())
+            .or(self.default.as_deref())
+    }
 }
 
 /// One object of a scope.
@@ -410,10 +431,24 @@ pub fn device_overrides(device: &Device) -> (BTreeMap<String, String>, Vec<Strin
     (out, malformed)
 }
 
+/// The device-form ref of app-relative `param_ref` in module instance
+/// `module_instance` (`""` for none): `MD-3_M-18_MI-1_P-14_R-14` for
+/// `MD-3_P-14_R-14` in `MD-3_M-18_MI-1`, the ref itself outside any.
+pub fn device_ref(module_instance: &str, param_ref: &str) -> String {
+    let Some((module_def, _)) = module_instance.split_once('_') else {
+        return param_ref.to_string();
+    };
+    match param_ref.strip_prefix(module_def) {
+        Some(rest) => format!("{module_instance}{rest}"),
+        None => param_ref.to_string(),
+    }
+}
+
 /// A device's configuration as the Dynamic evaluator sees it: one
 /// [`evaluate_dynamic`] of the product model with the device's values.
-/// Every value the view prints or tests comes from here.
-struct Evaluated<'a> {
+/// Every value the view prints or tests comes from here, and the doc and
+/// diff read the calculation outputs from it (issue #712).
+pub struct Evaluated<'a> {
     product: &'a ProductModel,
     config: DynamicConfig,
 }
@@ -427,6 +462,30 @@ impl<'a> Evaluated<'a> {
         }
     }
 
+    /// Evaluates `product` with the values `device` stores
+    /// ([`device_overrides`]).
+    pub fn of_device(product: &'a ProductModel, device: &Device) -> Self {
+        Self::new(product, &device_overrides(device).0)
+    }
+
+    /// The values the `<ParameterCalculation>`s compute under this
+    /// configuration, keyed by device-form ref (`P-3_R-3`, or
+    /// `MD-3_M-18_MI-1_P-14_R-14` in a module instance, see [`device_ref`]),
+    /// each as (calculation id, value). Empty when every calculation input
+    /// holds its default (the trigger rule, [`DynamicConfig::computed_values`]).
+    pub fn computed_parameters(&self) -> BTreeMap<String, (String, String)> {
+        self.config
+            .computed_values()
+            .into_iter()
+            .map(|c| {
+                (
+                    device_ref(c.module_instance, c.param_ref),
+                    (c.calculation.to_string(), c.value.to_string()),
+                )
+            })
+            .collect()
+    }
+
     /// The reached module instance and the app-relative ref of a device-file
     /// ref key (`MD-3_M-18_MI-1_P-14_R-14`, or a plain `P-1_R-1`).
     fn locate(&self, key: &str) -> (Option<usize>, String) {
@@ -435,9 +494,9 @@ impl<'a> Evaluated<'a> {
         (module, reference)
     }
 
-    /// The device's value of a ref: stored, assigned, else the vendor
-    /// default ([`DynamicConfig::value`]).
-    fn value(&self, key: &str) -> Option<String> {
+    /// The device's value of a device-form ref: computed, stored, assigned,
+    /// else the vendor default ([`DynamicConfig::value`]).
+    pub fn value(&self, key: &str) -> Option<String> {
         let (module, reference) = self.locate(key);
         self.config.value(self.product, module, &reference)
     }
@@ -446,6 +505,15 @@ impl<'a> Evaluated<'a> {
     fn vendor_default(&self, key: &str) -> Option<String> {
         let (module, reference) = self.locate(key);
         self.config.vendor_default(self.product, module, &reference)
+    }
+
+    /// The calculation that computed the value of a ref, with the value
+    /// ([`DynamicConfig::computed_by`]); `None` when none ran for it.
+    fn computed(&self, key: &str) -> Option<(String, String)> {
+        let (module, reference) = self.locate(key);
+        let calc = self.config.computed_by(self.product, module, &reference)?;
+        let value = self.config.value(self.product, module, &reference)?;
+        Some((calc.to_string(), value))
     }
 
     /// [`Self::value`] as a number, what a `<when>` test reads.
@@ -492,7 +560,13 @@ fn param_row(
         .and_then(|id| product.and_then(|p| p.parameters.get(id)));
     let default = evaluated.and_then(|e| e.vendor_default(&entry.reference));
     let value = entry.stored.as_deref().map(|v| display_value(def, v));
-    let at_default = def.map(|_| match (entry.stored.as_deref(), default.as_deref()) {
+    // A calculation output holds what the calculation computed (issue #712).
+    let computed = evaluated.and_then(|e| e.computed(&entry.reference));
+    let effective = computed
+        .as_ref()
+        .map(|(_, v)| v.as_str())
+        .or(entry.stored.as_deref());
+    let at_default = def.map(|_| match (effective, default.as_deref()) {
         (None, _) => true,
         (Some(v), Some(d)) => same_value(def, v, d),
         (Some(_), None) => false,
@@ -540,6 +614,8 @@ fn param_row(
         choices,
         range,
         ignored: None,
+        computed: computed.as_ref().map(|(_, v)| display_value(def, v)),
+        computed_by: computed.map(|(calc, _)| calc),
     }
 }
 
@@ -2893,17 +2969,16 @@ impl DeviceView {
                         .parameters
                         .iter()
                         .map(|p| {
-                            let value = p
-                                .value
-                                .clone()
-                                .or_else(|| p.default.clone())
-                                .unwrap_or_else(|| "-".to_string());
-                            let marker = match (&p.ignored, p.at_default) {
-                                (Some(why), _) => format!("ignored: {why}"),
-                                (None, Some(true)) => "default".to_string(),
-                                (None, Some(false)) => "set".to_string(),
-                                (None, None) if p.value.is_some() => "set".to_string(),
-                                (None, None) => String::new(),
+                            let value = p.effective().unwrap_or("-").to_string();
+                            let marker = match (&p.ignored, p.at_default, &p.computed_by) {
+                                (Some(why), ..) => format!("ignored: {why}"),
+                                (None, _, Some(calc)) => {
+                                    format!("computed by calculation {calc}")
+                                }
+                                (None, Some(true), None) => "default".to_string(),
+                                (None, Some(false), None) => "set".to_string(),
+                                (None, None, None) if p.value.is_some() => "set".to_string(),
+                                (None, None, None) => String::new(),
                             };
                             let allowed = if !p.choices.is_empty() {
                                 p.choices.join(" | ")
@@ -3026,6 +3101,22 @@ impl DeviceView {
                 (Some(why), false) => format!("ignored: {why}; {hint}"),
                 (None, _) => hint,
             };
+            // A computed output is the calculation's to set, not the file's
+            // (issue #712): shown commented out with its computed value.
+            if let (Some(calc), Some(v)) = (&p.computed_by, &p.computed) {
+                let note = format!("computed by calculation {calc}");
+                let hint = if hint.is_empty() {
+                    note
+                } else {
+                    format!("{note}; {hint}")
+                };
+                out.push_str(&format!(
+                    "# {} = {}   # {hint}\n",
+                    toml_key(&p.key),
+                    toml_string(v)
+                ));
+                continue;
+            }
             let comment = if hint.is_empty() {
                 String::new()
             } else {

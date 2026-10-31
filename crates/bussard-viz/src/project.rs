@@ -29,7 +29,9 @@
 //!   has one), the vendor `default` and `non_default`. The rows come from
 //!   [`bussard_model::device_view`], the same data `bussard device` prints;
 //!   without the product model (`.bussard/models/<application>.yaml`) `text`,
-//!   `default` and `non_default` are `null`.
+//!   `default` and `non_default` are `null`. A parameter a
+//!   `<ParameterCalculation>` computes has the computed `value` and the
+//!   calculation's id in `computed_by` (issue #712).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -173,9 +175,12 @@ fn project_parameter(p: &ParamRow) -> Value {
     json!({
         "key": p.key,
         "text": p.text,
-        "value": p.value,
+        // A calculation output shows what the calculation computes, which a
+        // download writes (issue #712).
+        "value": p.computed.as_ref().or(p.value.as_ref()),
         "default": p.default,
         "non_default": p.at_default.map(|d| !d),
+        "computed_by": p.computed_by,
     })
 }
 
