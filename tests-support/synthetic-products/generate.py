@@ -175,8 +175,10 @@ class Product:
         if self.system7:
             check_system7_application(w, a)
         else:
-            if a["mask"] != "07B0":
+            if a["mask"] not in MEDIUM_TYPES:
                 raise not_yet(f"{w} [application]", f"mask {a['mask']} (System 7 and others)")
+            if a["mask"] != "07B0" and a["load_procedure_style"] != "MergedProcedure":
+                raise not_yet(f"{w} [application]", f"LoadProcedureStyle {a['load_procedure_style']} on mask {a['mask']}")
             for k in sorted(SYS7_APP_KEYS & a.keys()):
                 raise SpecError(f"{w} [application]: `{k}` belongs to a System 7 mask ({', '.join(SYS7_MASKS)})")
         check_ip_enabled(w, p, a)
@@ -670,6 +672,14 @@ def check_ip_enabled(w: str, p: dict, a: dict) -> None:
         raise SpecError(f"{w} [application]: additional_addresses_count is 1 to 255")
 
 
+# ------------------------------------- System B on other media (#604 row 35)
+# The System B masks a product may name, with the medium its
+# Hardware2Program declares: 07B0 on TP (MT-0), and 57B0, System B on KNX IP
+# (MT-5; syn-ip-57b0, #389), merged procedure only, as the one corpus 57B0
+# application (M-0002_A-A0C8-10-B22C-O01B8).
+MEDIUM_TYPES = {"07B0": "MT-0", "57B0": "MT-5"}
+
+
 def check_system7_application(w: str, a: dict) -> None:
     if a["load_procedure_style"] != "ProductProcedure":
         raise not_yet(f"{w} [application]", f"LoadProcedureStyle {a['load_procedure_style']} on mask {a['mask']}")
@@ -946,7 +956,7 @@ def render_hardware(p: Product) -> bytes:
     x.close("Product")
     x.close("Products")
     x.open("Hardware2Programs")
-    x.open("Hardware2Program", [("Id", p.h2p_id), ("MediumTypes", "MT-0")])
+    x.open("Hardware2Program", [("Id", p.h2p_id), ("MediumTypes", MEDIUM_TYPES.get(p.app["mask"], "MT-0"))])
     x.empty("ApplicationProgramRef", [("RefId", p.app_id)])
     x.empty("RegistrationInfo", [("RegistrationStatus", "Registered")])
     x.close("Hardware2Program")

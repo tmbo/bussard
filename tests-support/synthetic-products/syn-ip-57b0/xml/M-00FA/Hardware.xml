@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<KNX xmlns="http://knx.org/xml/project/23">
+  <ManufacturerData>
+    <Manufacturer RefId="M-00FA">
+      <Hardware>
+        <Hardware Id="M-00FA_H-00FA002A0023-1" Name="NEST-THERMAL" SerialNumber="00FA002A0023" VersionNumber="1" BusCurrent="10" HasIndividualAddress="true" HasApplicationProgram="true" NonRegRelevantDataVersion="0">
+          <Products>
+            <Product Id="M-00FA_H-00FA002A0023-1_P-NEST.2DTHERMAL" Text="Thermal-updraft sensor" OrderNumber="NEST-THERMAL" IsRailMounted="false" DefaultLanguage="en-US" NonRegRelevantDataVersion="0">
+              <RegistrationInfo RegistrationStatus="Registered" />
+            </Product>
+          </Products>
+          <Hardware2Programs>
+            <Hardware2Program Id="M-00FA_H-00FA002A0023-1_HP-2A23-10-0000" MediumTypes="MT-5">
+              <ApplicationProgramRef RefId="M-00FA_A-2A23-10-0000" />
+              <RegistrationInfo RegistrationStatus="Registered" />
+            </Hardware2Program>
+          </Hardware2Programs>
+        </Hardware>
+      </Hardware>
+    </Manufacturer>
+  </ManufacturerData>
+</KNX>

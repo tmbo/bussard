@@ -2,7 +2,7 @@
 //! #346).
 //!
 //! For every application of the product corpus that bussard can flash and
-//! knx-sim can simulate (masks `07B0`, `0705`, `0701`), the loop:
+//! knx-sim can simulate (masks `07B0`, `57B0`, `0705`, `0701`), the loop:
 //!
 //! 1. builds configurations: the vendor defaults, plus N seeded generated ones
 //!    that flip the parameters a `<choose>` of the Dynamic section tests (the
@@ -63,8 +63,9 @@ const SHARDS: usize = 8;
 /// The device's individual address on the simulated bus.
 const DEVICE: &str = "1.1.10";
 
-/// The masks knx-sim models and bussard flashes.
-const SIM_MASKS: [&str; 3] = ["07B0", "0705", "0701"];
+/// The masks knx-sim models and bussard flashes. 57B0 (System B on KNX IP)
+/// is a System B device behind the sim's tunnel (`syn-ip-57b0`, issue #389).
+const SIM_MASKS: [&str; 4] = ["07B0", "57B0", "0705", "0701"];
 
 /// How long one `bussard` command may run before it counts as hung.
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(180);

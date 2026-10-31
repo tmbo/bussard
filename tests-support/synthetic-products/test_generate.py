@@ -946,5 +946,31 @@ class IpEnabled(unittest.TestCase):
             generate.Product("test", s)
 
 
+class SystemBOnIp(unittest.TestCase):
+    """syn-ip-57b0 (#604 row 35, #389): mask 57B0 with MediumTypes MT-5."""
+
+    def test_render_57b0_with_medium_ip(self) -> None:
+        s = spec()
+        s["application"]["mask"] = "57B0"
+        p = generate.Product("test", s)
+        files = generate.render(p)
+        self.assertIn('MaskVersion="MV-57B0"', files[f"M-00FA/{p.app_file}"].decode())
+        self.assertIn('MediumTypes="MT-5"', files["M-00FA/Hardware.xml"].decode())
+        self.assertIn('MediumTypes="MT-0"', generate.render(generate.Product("t", spec()))["M-00FA/Hardware.xml"].decode())
+
+    def test_57b0_product_procedure_not_yet(self) -> None:
+        s = spec()
+        s["application"]["mask"] = "57B0"
+        s["application"]["load_procedure_style"] = "ProductProcedure"
+        with self.assertRaisesRegex(generate.SpecError, "no product uses it yet"):
+            generate.Product("test", s)
+
+    def test_other_masks_not_yet(self) -> None:
+        s = spec()
+        s["application"]["mask"] = "091A"
+        with self.assertRaisesRegex(generate.SpecError, "no product uses it yet"):
+            generate.Product("test", s)
+
+
 if __name__ == "__main__":
     unittest.main()

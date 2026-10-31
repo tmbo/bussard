@@ -695,6 +695,24 @@ mod tests {
         assert!(err.is_err(), "unmodelled mask must be refused");
     }
 
+    #[test]
+    fn test_system_b_ip_mask_57b0_builds_a_system_b_device() -> Result<(), String> {
+        // Mask 57B0 (System B on KNX IP, syn-ip-57b0, bussard issue #389) is
+        // modelled as System B and reports its own mask in DD0.
+        let mut product = crate::testfixtures::synthetic_mdt_sys7_product();
+        product.mask_version = "MV-57B0".into();
+        let dev = Device::from_product_with_overrides(
+            IndividualAddress::new(1, 1, 5),
+            &product,
+            LoadState::Unloaded,
+            ProfileOverrides::default(),
+            std::sync::Arc::new(RecordingSink::new()),
+        )?;
+        assert!(!dev.profile().is_system7());
+        assert_eq!(dev.profile().mask(), 0x57B0);
+        Ok(())
+    }
+
     /// A System B device built from `pd` at 1.1.2, connected and authorized.
     fn connected_device(
         pd: &crate::prod::ProductData,
