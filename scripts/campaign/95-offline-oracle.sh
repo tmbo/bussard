@@ -65,11 +65,20 @@
 #                                give (identical, differs or not-comparable);
 #                                unchecked when absent. For a property-only
 #                                plan (a KNX IP interface, mask 0021), whose
-#                                memory verdict is always not-comparable.
-#                                The headline verdict counts the property
-#                                writes whatever this option says: a row
-#                                whose memory is identical but whose property
-#                                writes differ is `differs` (issue #669)
+#                                memory verdict is always not-comparable,
+#                                and for a row with a known property
+#                                difference (props=differs, the note names
+#                                the issue or decision, #683).
+#                                Without this option the headline verdict
+#                                counts the property writes: a row whose
+#                                memory is identical but whose property
+#                                writes differ is `differs` (issue #669).
+#                                With it the headline is the memory verdict
+#                                and the property verdict is checked here.
+#                                ETS-only writes of the security object's
+#                                mode, tool key and send sequence (type 17
+#                                PIDs 51, 56, 59) and of PID_PROGMODE are
+#                                listed as not compared, never counted
 #                loadctl=VERDICT the verdict the load-control parity must give
 #                                (identical, differs or not-comparable);
 #                                unchecked when absent. For a row whose
@@ -169,7 +178,7 @@
 # --check turns the run into a gate (the corpus-gated CI test uses it): every
 # row whose capture and product exist must give its expected verdict (the
 # headline: the memory verdict, turned `differs` when the memory is identical
-# and the property writes differ, issue #669), its
+# and the property writes differ, issue #669, unless the row pins props=), its
 # confirmed= verdict when the row names one, and at least its recorded
 # coverage, else the script exits 1. Rows without a capture
 # or product data are skipped.
@@ -793,6 +802,9 @@ for dev in devices:
             props.get("bussard_only", []))
     if props.get("commissioning"):
         detail += " [ETS commissioning %d, not counted]" % len(props["commissioning"])
+    if props.get("not_compared"):
+        detail += " [ETS-only not compared: %s]" % ", ".join(
+            "%s PID %s" % (e["key"][0], e["key"][1]) for e in props["not_compared"])
     lc = r.get("load_controls") or {}
     if lc.get("verdict") == "identical":
         detail += "  loadctl=ok(%d)" % lc.get("ets_records", 0)
@@ -807,9 +819,11 @@ for dev in devices:
         detail += "  (%s)" % (r.get("reason") or "nothing compared")
     # The headline counts the property writes (issue #669): identical memory
     # with a property write ETS made and bussard did not (or with another
-    # value) is a difference in what the device holds.
+    # value) is a difference in what the device holds. A row that pins the
+    # property verdict with props= is judged on it there instead, so a known
+    # property difference (issue #683) does not hide a memory difference.
     verdict = r["verdict"]
-    if verdict == "identical" and props.get("verdict") == "differs":
+    if verdict == "identical" and props.get("verdict") == "differs" and not row.get("expect_props"):
         verdict = "differs"
         detail += "  (property writes differ)"
     print(FMT % (dev, r.get("system") or "-", verdict, cov_text, conf_text, detail))

@@ -1322,6 +1322,30 @@ def _ip_secure_entry(entry: Dict[str, object]) -> bool:
     return (_obj_label(entry["object"]), int(entry["pid"])) in IP_SECURE_PROPERTIES
 
 
+# ETS-only writes a flash plan is not held to (issue #683): listed with the
+# reason, not counted. Each applies only while bussard plans no write of that
+# property. The security object's tool key is key material and its send
+# sequence a counter (owner decision 2026-10-31: the rows cannot compare
+# either); the security mode command is the Data Secure activation, which
+# stays ETS's job (#156); and PID_PROGMODE belongs to the address assignment
+# ETS runs in the same capture before the download, which `bussard assign`
+# makes, not `bussard flash`.
+NOT_COMPARED_ETS_WRITES = {
+    ("type17.1", 51): "security mode: the Data Secure activation, ETS's job (#156)",
+    ("type17.1", 56): "tool key: key material",
+    ("type17.1", 59): "send sequence number: a counter, not compared",
+    ("obj0", 54): "PID_PROGMODE: the address assignment before the download (bussard assign)",
+}
+
+
+def _not_compared_reason(key: list, ours_keys: set) -> Optional[str]:
+    """Why an ETS-only write is listed and not counted, or None."""
+    prop = (str(key[0]), int(key[1]))
+    if prop in ours_keys:
+        return None
+    return NOT_COMPARED_ETS_WRITES.get(prop)
+
+
 def compare_properties(
     plan: dict,
     image_dir: str,
@@ -1399,6 +1423,17 @@ def compare_properties(
     commissioning: List[Dict[str, object]] = []
     reason = ""
     property_only = plan.get("system") == "properties"
+    not_compared: List[Dict[str, object]] = []
+    if not property_only and not ip_secure:
+        ours_props = {(_obj_label(e["object"]), int(e["pid"])) for e in ours}
+        kept: List[Dict[str, object]] = []
+        for e in ets_only:
+            why = _not_compared_reason(e["key"], ours_props)
+            if why:
+                not_compared.append(dict(e, why=why))
+            else:
+                kept.append(e)
+        ets_only = kept
     if property_only:
         ours_keys = {(_obj_label(e["object"]), int(e["pid"])) for e in ours}
         commissioning = [e for e in ets_only if _is_commissioning(
@@ -1433,6 +1468,8 @@ def compare_properties(
     if property_only:
         out["reason"] = reason
         out["commissioning"] = commissioning
+    if not_compared:
+        out["not_compared"] = not_compared
     return out
 
 
@@ -1844,6 +1881,11 @@ def render_properties(props: Optional[Dict[str, object]]) -> List[str]:
             "      ETS only:     #%-3s %s %s" % (e["ets_seq"], e["service"], _key_text(e["key"]))
         )
     lines.extend(_commissioning_lines(props))
+    lines.extend(
+        "      ETS only, not compared: #%-3s %s %s: %s"
+        % (e["ets_seq"], e["service"], _key_text(e["key"]), e["why"])
+        for e in props.get("not_compared") or []
+    )
     return lines
 
 

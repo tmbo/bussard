@@ -1302,6 +1302,51 @@ class TestPropertyWrites(unittest.TestCase):
         lines = "\n".join(memimage.render_properties(props))
         self.assertIn("bussard only: step   1 type11.1 PID 204 (1 octets)", lines)
 
+    def test_compare_properties_lists_activation_and_progmode_writes_as_not_compared(self):
+        """Issue #683: on a flash plan, ETS-only writes of the security mode,
+        tool key and send sequence (type 17 PIDs 51, 56, 59) and of
+        PID_PROGMODE are listed with the reason, not counted; any other
+        ETS-only write (PID_DEVICE_CONTROL here) still differs."""
+        path = tempfile.mkstemp(suffix=".pcapng")[1]
+        self.addCleanup(os.unlink, path)
+        tool, dev = "0.0.0", "1.1.45"
+        frames = [
+            cemi_ldata(tool, dev, t_connect()),
+            cemi_ldata(tool, dev, prop_write(0, 54, 1, 1, bytes([0]), seq=0)),
+            cemi_ldata(tool, dev, func_command(17, 51, bytes([0, 0, 1]), seq=1)),
+            cemi_ldata(tool, dev, ext_write(17, 56, 1, 1, bytes([0x55] * 16), seq=2)),
+            cemi_ldata(tool, dev, ext_write(17, 59, 1, 1, bytes.fromhex("0040b4b79d29"), seq=3)),
+            cemi_ldata(tool, dev, prop_write(0, 14, 1, 1, bytes([4]), seq=4)),
+            cemi_ldata(tool, dev, prop_write(4, 13, 1, 1, bytes.fromhex("0112000310"), seq=5)),
+            cemi_ldata(tool, dev, t_disconnect()),
+        ]
+        udp_capture(path, [(tunneling_request(f, seq=n), True) for n, f in enumerate(frames)])
+        out = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, out, ignore_errors=True)
+        self.assertEqual(main(["image", path, "--device", dev, "--out", out]), 0)
+        plan_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, plan_dir, ignore_errors=True)
+        plan = {
+            "device": dev, "system": "B", "application": {"id": "M-0112_A-1"}, "tables": [],
+            "steps": [{"index": 1, "label": "1.", "property": {
+                "object": 4, "pid": 13, "start_element": 1, "length": 5, "data": "0112000310"}}],
+        }
+        with open(os.path.join(plan_dir, "plan.json"), "w") as fh:
+            json.dump(plan, fh)
+        props = memimage.compare(plan_dir, out)["properties"]
+        self.assertEqual(
+            [e["key"] for e in props["not_compared"]],
+            [["obj0", 54, 1], ["type17.1", 51, 3], ["type17.1", 56, 16], ["type17.1", 59, 6]],
+        )
+        self.assertEqual([e["key"] for e in props["ets_only"]], [["obj0", 14, 1]])
+        self.assertEqual(props["verdict"], memimage.DIFFERS)
+        lines = "\n".join(memimage.render_properties(props))
+        self.assertIn("ETS only, not compared: #1   A_PropertyValue_Write obj0 PID 54 (1 octets)", lines)
+        self.assertIn("tool key: key material", lines)
+        # A write bussard plans itself is compared, not listed.
+        self.assertIsNone(memimage._not_compared_reason(["type17.1", 59, 6], {("type17.1", 59)}))
+        self.assertIsNone(memimage._not_compared_reason(["obj0", 14, 1], set()))
+
     def test_normalize_names_the_extended_property_services(self):
         buckets = norm.normalize(knxip.frames_from_file(self.ip_capture(True)), "1.1.200")
         ops = buckets["1.1.200"].requests()
