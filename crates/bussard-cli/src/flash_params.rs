@@ -133,6 +133,7 @@ pub(crate) fn run(mut ctx: Context<'_>) -> anyhow::Result<ExitCode> {
         return Ok(ExitCode::FAILURE);
     }
     let regions = read.regions;
+    let properties = read.properties;
 
     let partial = match ctx.plan.parameters_only(&regions) {
         Ok(partial) => partial,
@@ -178,19 +179,28 @@ pub(crate) fn run(mut ctx: Context<'_>) -> anyhow::Result<ExitCode> {
         note: None,
         kept: decoded.kept,
     };
+    // A parameter placed in a property changes no memory octet (issue
+    // #706): its property is compared on its own.
+    let changed_props = bussard_download::changed_properties(&properties);
     if ctx.json {
-        print_json(target, &partial, &regions, &params)?;
+        print_json(target, &partial, &regions, &params, &changed_props)?;
     } else {
-        print_plan(target, &partial, &regions, &params);
+        print_plan(target, &partial, &regions, &params, &changed_props);
     }
-    if partial.changed_octets() == 0 {
+    if partial.changed_octets() == 0 && changed_props.is_empty() {
         println!(
             "\nnothing to do: {target} already holds these parameter values (no load state touched)"
         );
         return Ok(ExitCode::SUCCESS);
     }
 
-    if !confirm(target, &ctx.gateway, ctx.yes, partial.changed_octets())? {
+    if !confirm(
+        target,
+        &ctx.gateway,
+        ctx.yes,
+        partial.changed_octets(),
+        changed_props.len(),
+    )? {
         eprintln!("aborted: nothing written.");
         return Ok(ExitCode::FAILURE);
     }
@@ -217,6 +227,7 @@ pub(crate) fn run(mut ctx: Context<'_>) -> anyhow::Result<ExitCode> {
     // Write, restart, verify, then read the parameters back on the same
     // (post-restart) connection instead of a fourth session (issue #215).
     let plan = ctx.plan;
+    let app = ctx.app;
     let handed_over = ctx.handover.take();
     let (outcome, after) = ctx.runtime.block_on(crate::flash_cmd::execute_then(
         ctx.service,
@@ -230,7 +241,12 @@ pub(crate) fn run(mut ctx: Context<'_>) -> anyhow::Result<ExitCode> {
         ctx.json,
         &std::cell::Cell::new(None),
         handed_over,
-        async |l4| read_parameter_regions(l4, plan).await,
+        async |l4| {
+            (
+                read_parameter_regions(l4, plan).await,
+                bussard_download::read_parameter_properties(l4, plan, app).await,
+            )
+        },
     ));
     match outcome {
         Ok(outcome) if outcome.ok() => {}
@@ -248,14 +264,34 @@ pub(crate) fn run(mut ctx: Context<'_>) -> anyhow::Result<ExitCode> {
 
     // Verify like `apply`: read the parameter memory back and compare every
     // octet the download meant to change.
-    let after = match after {
-        Some(regions) => regions,
-        None => ctx.runtime.block_on(read_device(&ctx))?.regions,
+    let (after, after_props) = match after {
+        Some(read) => read,
+        None => {
+            let read = ctx.runtime.block_on(read_device(&ctx))?;
+            (read.regions, read.properties)
+        }
     };
+    // The properties the download wrote read back as the model (issue #706).
+    let unverified: Vec<String> = bussard_download::changed_properties(&after_props)
+        .iter()
+        .map(|p| p.sentence())
+        .collect();
+    if !unverified.is_empty() {
+        eprintln!(
+            "\nERROR: the parameter read-back does not match: {}",
+            unverified.join("; ")
+        );
+        recovery_notice(target, &backup_path);
+        return Ok(ExitCode::FAILURE);
+    }
     match verify_readback(&partial, &after, &runtime_segments(ctx.plan)) {
         Ok(octets) => {
+            let props = match changed_props.len() {
+                0 => String::new(),
+                n => format!(" and {n} property value(s)"),
+            };
             println!(
-                "\nparameters verified: {octets} changed octet(s) read back from {target}; \
+                "\nparameters verified: {octets} changed octet(s){props} read back from {target}; \
                  the application is Loaded"
             );
             Ok(ExitCode::SUCCESS)
@@ -272,6 +308,8 @@ pub(crate) fn run(mut ctx: Context<'_>) -> anyhow::Result<ExitCode> {
 pub(crate) struct DeviceRead {
     /// The parameter regions.
     regions: ParamRegions,
+    /// The properties the parameters are placed in (issue #706).
+    properties: Vec<bussard_download::ParamProperty>,
     /// Why the System 7 code comparison says this is another application.
     code_mismatch: Option<String>,
     /// Which System 7 link table the model would change (issue #146).
@@ -297,7 +335,7 @@ async fn read_device(ctx: &Context<'_>) -> anyhow::Result<DeviceRead> {
             // read-back goes out in APDU-sized chunks without re-reading it
             // (issue #194).
             dev.l4_mut().set_max_apdu(ctx.facts.max_apdu);
-            Ok::<_, ServiceError>(read_parameters_on(dev.l4_mut(), ctx.plan).await)
+            Ok::<_, ServiceError>(read_parameters_on(dev.l4_mut(), ctx.plan, ctx.app).await)
         })
         .await
         .with_context(|| format!("connecting to {} to read its parameters", ctx.target))
@@ -308,8 +346,10 @@ async fn read_device(ctx: &Context<'_>) -> anyhow::Result<DeviceRead> {
 pub(crate) async fn read_parameters_on<Ch: bussard_mgmt::L4Channel>(
     l4: &mut bussard_mgmt::Layer4Connection<Ch>,
     plan: &FlashPlan,
+    app: &ApplicationProgram,
 ) -> DeviceRead {
     let regions = read_parameter_regions(l4, plan).await;
+    let properties = bussard_download::read_parameter_properties(l4, plan, app).await;
     let (code_mismatch, table_change) = if plan.is_sys7() {
         (
             sys7_code_mismatch(l4, plan).await,
@@ -320,6 +360,7 @@ pub(crate) async fn read_parameters_on<Ch: bussard_mgmt::L4Channel>(
     };
     DeviceRead {
         regions,
+        properties,
         code_mismatch,
         table_change,
     }
@@ -405,6 +446,7 @@ fn print_plan(
     partial: &FlashPlan,
     regions: &ParamRegions,
     params: &ParamPlan,
+    properties: &[&bussard_download::ParamProperty],
 ) {
     println!("Parameter-only download for {target}");
     println!(
@@ -423,6 +465,17 @@ fn print_plan(
     println!("  memory      :");
     for (segment, address, len, changed) in region_rows(partial, regions) {
         println!("      {segment} at {address:#08X}: {changed} of {len} octet(s) change");
+    }
+    if !properties.is_empty() {
+        println!("  properties  :");
+        for p in properties {
+            let names = if p.parameters.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", p.parameters.join(", "))
+            };
+            println!("      {}{names}: written", p.sentence());
+        }
     }
     for (segment, octets) in partial.unwritten_bits() {
         let offsets: Vec<String> = octets.iter().map(|(i, _)| i.to_string()).collect();
@@ -456,6 +509,7 @@ fn print_json(
     partial: &FlashPlan,
     regions: &ParamRegions,
     params: &ParamPlan,
+    properties: &[&bussard_download::ParamProperty],
 ) -> anyhow::Result<()> {
     let value = serde_json::json!({
         "device": target.to_string(),
@@ -479,6 +533,12 @@ fn print_json(
             "offsets": octets.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
             "written": false,
             "reason": "no parameter the configuration reaches is placed there; ETS does not write this octet in a download",
+        })).collect::<Vec<_>>(),
+        "properties": properties.iter().map(|p| serde_json::json!({
+            "property": p.label(),
+            "parameters": p.parameters,
+            "model": p.model.iter().map(|b| format!("{b:02X}")).collect::<String>(),
+            "device": p.device.as_ref().map(|d| d.iter().map(|b| format!("{b:02X}")).collect::<String>()),
         })).collect::<Vec<_>>(),
         "procedure": bussard_download::trace(partial),
     });
@@ -542,10 +602,16 @@ fn confirm(
     gateway: &str,
     yes: bool,
     octets: usize,
+    properties: usize,
 ) -> anyhow::Result<bool> {
+    let what = if properties == 0 {
+        format!("{octets} octet(s)")
+    } else {
+        format!("{octets} octet(s), {properties} propert(y/ies)")
+    };
     crate::confirm::confirm(
         yes,
-        &format!("download the parameters ({octets} octet(s)) to {target} via {gateway}?"),
+        &format!("download the parameters ({what}) to {target} via {gateway}?"),
         &format!("flash the parameters of {target} via {gateway}"),
     )
 }

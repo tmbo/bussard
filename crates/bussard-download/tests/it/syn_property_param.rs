@@ -9,7 +9,8 @@
 use std::collections::BTreeMap;
 
 use bussard_download::{
-    FlashStep, PlanError, PropObject, Session, build_table_images, flash, plan_flash,
+    FlashStep, PlanError, PropObject, Session, build_table_images, changed_properties, flash,
+    plan_flash, planned_parameter_regions, read_parameter_properties, read_parameter_regions,
     read_property_value, template_ops_for,
 };
 use bussard_mgmt::connection::Layer4Connection;
@@ -175,5 +176,110 @@ async fn test_flash_writes_and_reads_back_the_property_placed_parameter() -> Tes
     assert_eq!(held, vec![0x5A]);
     let dev = gw.with_device(ia("1.1.1")?, |d| d.clone())?;
     assert_eq!(dev.property(4, 201), Some(&[0x5A][..]));
+    Ok(())
+}
+
+/// The System B device the synthetic product loads onto.
+fn device() -> TestResult<MockDevice> {
+    Ok(MockDevice::system_b(ia("1.1.1")?)
+        .with_object_types(&[
+            OT_DEVICE,
+            OT_ADDRESS_TABLE,
+            OT_ASSOCIATION_TABLE,
+            OT_GROUP_OBJECT_TABLE,
+            OT_APPLICATION_PROGRAM,
+        ])
+        // PID_PROGRAM_VERSION, written by the template.
+        .with_writable_property(4, 13, 5, &[0; 5])
+        .with_writable_property(4, 201, 1, &[0xFF]))
+}
+
+#[test]
+fn test_parameters_only_plans_a_change_of_the_property_placed_parameter_alone() -> TestResult {
+    // Issue #706: the device holds the defaults (memory and 5A in PID 201);
+    // the model changes only the property-placed parameter to 7.
+    let (product, _tmp) = product()?;
+    let app = product.applications.first().ok_or("one application")?;
+    let overrides = BTreeMap::from([(TERRITORY_REF.to_string(), "7".to_string())]);
+    let plan = plan_of(&product, app, &overrides).map_err(|e| e.to_string())?;
+    let regions = planned_parameter_regions(&plan);
+    let partial = plan.parameters_only(&regions)?;
+    // No memory octet differs ...
+    assert_eq!(partial.changed_octets(), 0);
+    // ... the property does, and it is the only one.
+    let mut properties = partial.parameter_properties();
+    for p in &mut properties {
+        p.device = Some(vec![0x5A]);
+    }
+    let changed = changed_properties(&properties);
+    assert_eq!(changed.len(), 1, "{properties:?}");
+    assert_eq!(changed[0].object, PropObject::Index(4));
+    assert_eq!(changed[0].prop_id, 201);
+    assert_eq!(changed[0].model, vec![0x07]);
+    assert_eq!(
+        changed[0].parameter_names(app),
+        vec!["Territory mark".to_string()],
+        "the parameter behind the property"
+    );
+    // The download writes that property and no other.
+    assert_eq!(territory_writes(&partial).len(), 1, "{:?}", partial.steps);
+    let other_props: Vec<&FlashStep> = partial
+        .steps
+        .iter()
+        .filter(|s| matches!(s, FlashStep::WriteProp { prop_id, .. } if *prop_id != 201 && *prop_id != 13))
+        .collect();
+    assert!(other_props.is_empty(), "{other_props:?}");
+    // The defaults change nothing.
+    let defaults = plan_of(&product, app, &BTreeMap::new()).map_err(|e| e.to_string())?;
+    let mut properties = defaults.parameters_only(&regions)?.parameter_properties();
+    for p in &mut properties {
+        p.device = Some(vec![0x5A]);
+    }
+    assert!(changed_properties(&properties).is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_parameters_only_download_lands_the_property_placed_parameter() -> TestResult {
+    let (product, _tmp) = product()?;
+    let app = product.applications.first().ok_or("one application")?;
+    let defaults = plan_of(&product, app, &BTreeMap::new()).map_err(|e| e.to_string())?;
+    let overrides = BTreeMap::from([(TERRITORY_REF.to_string(), "7".to_string())]);
+    let plan = plan_of(&product, app, &overrides).map_err(|e| e.to_string())?;
+    let gw = MockGateway::builder().device(device()?).start().await?;
+    let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
+    let l4 = Layer4Connection::connect(&mut bus, ia("1.1.1")?, ia("0.0.255")?).await?;
+    let mut session = Session::from_connection(l4);
+    // The device holds the defaults.
+    let outcome = flash(
+        &mut session,
+        &defaults,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await?;
+    assert!(outcome.ok(), "{outcome:?}");
+    // The parameter read: memory as the model, the property not.
+    let regions = read_parameter_regions(session.l4(), &plan).await;
+    let properties = read_parameter_properties(session.l4(), &plan, app).await;
+    let partial = plan.parameters_only(&regions)?;
+    assert_eq!(partial.changed_octets(), 0);
+    let changed = changed_properties(&properties);
+    assert_eq!(changed.len(), 1, "{properties:?}");
+    assert_eq!(changed[0].device, Some(vec![0x5A]));
+    // The download lands it, and the read-back finds the model's value.
+    let outcome = flash(
+        &mut session,
+        &partial,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await?;
+    assert!(outcome.ok(), "{outcome:?}");
+    let after = read_parameter_properties(session.l4(), &plan, app).await;
+    let _ = session.into_disconnect().await;
+    assert!(changed_properties(&after).is_empty(), "{after:?}");
+    let dev = gw.with_device(ia("1.1.1")?, |d| d.clone())?;
+    assert_eq!(dev.property(4, 201), Some(&[0x07][..]));
     Ok(())
 }

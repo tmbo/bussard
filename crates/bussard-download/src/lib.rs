@@ -33,6 +33,7 @@ pub mod model_params;
 pub mod object_table;
 pub mod param_decode;
 pub mod param_plan;
+pub mod param_props;
 pub mod plan;
 pub mod preflight;
 pub mod program;
@@ -111,6 +112,7 @@ pub use param_plan::{
     read_current_parameter_memory, read_current_parameter_memory_with_objects,
     read_parameter_regions, read_parameter_regions_with_objects, regions_memory,
 };
+pub use param_props::{ParamProperty, changed_properties, read_parameter_properties};
 pub use plan::{LoadStep, ObjectGa, PlanReport, plan};
 pub use preflight::{
     Freshness, ResidentObject, ResidentState, assess_freshness, format_app_id,
