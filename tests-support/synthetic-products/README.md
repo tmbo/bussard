@@ -54,6 +54,7 @@ next to it, and zips it on demand.
 | [`syn-s7-lsm5-0705`](syn-s7-lsm5-0705/product.toml) | `NEST-TWIG5G` | 0705 | TaskSegment on LsmIdx 5 (0705) | #489 |
 | [`syn-s7-no-comobjects`](syn-s7-no-comobjects/product.toml) | `NEST-SILENT` | 0701 | com objects only in a block not reached at defaults (0701) | #562, #475 |
 | [`syn-s7-pei80`](syn-s7-pei80/product.toml) | `NEST-CLAW` | 0701 | PeiType 128 on 0701 | #483 |
+| [`syn-s7-static-split`](syn-s7-static-split/product.toml) | `NEST-FORK` | 0705 | static split of the parameter AbsSegment, a parameter in the gap | #657, #411 |
 | [`syn-s7-taskptr`](syn-s7-taskptr/product.toml) | `NEST-HUNT` | 0705 | TaskPtr and TaskCtrl2 records on LSM 3 | #527 |
 | [`syn-text-initialvalue`](syn-text-initialvalue/product.toml) | `NEST-NAME` | 07B0 | TypeText with a de-DE InitialValue translation, utf-8 | #473 |
 | [`syn-text-undeclared`](syn-text-undeclared/product.toml) | `NEST-SQUAWK` | 07B0 | TypeText non-ASCII default, no TextParameterEncoding | #416 |

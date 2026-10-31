@@ -1,0 +1,5 @@
+# Written by generate.py --signed-id after tools/ets-sweep/synthetic/sign.py.
+# Stale when xml_sha256 differs from the committed xml/ (generate.py --check says so).
+application_id = "M-00FA_A-2889-10-C690"
+hardware2program_id = "M-00FA_H-00FA00280089-1_HP-2889-10-C690"
+xml_sha256 = "0fbf04e06454417679fcf2556c788a3a2e5af7e70959f6f1e99a892edf9effe0"
