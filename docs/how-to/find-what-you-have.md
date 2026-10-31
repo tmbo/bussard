@@ -61,7 +61,7 @@ The summary is the point: which devices the model knows, which are unexpected, a
 $ bussard describe 1.1.4
 ```
 
-`describe` lists the device's interface objects and every property it reports, with type, size and access level. Use it on an unknown device during commissioning. It never writes. A Secure device needs its tool key: pass `--keyring`.
+`describe` lists the device's interface objects and every property it reports, with type, size and access level. Use it on an unknown device during commissioning. It never writes. A Secure device needs its tool key: pass `--keyring`. A Secure device that answers only under its factory key (FDSK) from the key store was reset or never commissioned; `describe` says so, and you commission it with ETS and import the new keyring.
 
 ```console
 $ bussard reconstruct 1.1.4

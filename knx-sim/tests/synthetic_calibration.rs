@@ -32,7 +32,7 @@ use std::sync::Arc;
 use knx_sim::bus::Bus;
 use knx_sim::bus::event::{Event, RecordingSink};
 use knx_sim::config::KnxnetSimConfig;
-use knx_sim::device::{Device, LoadState, ProfileOverrides, profile};
+use knx_sim::device::{Device, LoadState, MasterResetSupport, ProfileOverrides, profile};
 use knx_sim::prod::read_knxprod_bytes;
 use knx_sim::wire::{CemiLData, IndividualAddress, MessageCode};
 use serde::Deserialize;
@@ -75,20 +75,24 @@ struct SimYaml {
 }
 
 /// One device of `sim.yaml`.
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct SimDevice {
     #[serde(default)]
     knxnet: Option<KnxnetSimConfig>,
+    /// The device's answer to a Master Reset (the `bare-restart` variant of
+    /// `syn-master-reset` refuses it, bussard #611).
+    #[serde(default)]
+    master_reset: MasterResetSupport,
 }
 
-/// The `knxnet` block of the capture's `sim.yaml` (none without the file).
-fn knxnet_of(capture: &Path) -> Result<Option<KnxnetSimConfig>, Box<dyn std::error::Error>> {
+/// The device of the capture's `sim.yaml` (the defaults without the file).
+fn sim_device(capture: &Path) -> Result<SimDevice, Box<dyn std::error::Error>> {
     let path = capture.join("sim.yaml");
     if !path.is_file() {
-        return Ok(None);
+        return Ok(SimDevice::default());
     }
     let sim: SimYaml = serde_norway::from_str(&std::fs::read_to_string(path)?)?;
-    Ok(sim.devices.into_iter().next().and_then(|d| d.knxnet))
+    Ok(sim.devices.into_iter().next().unwrap_or_default())
 }
 
 /// The repository root (knx-sim is a workspace of its own one level down).
@@ -222,7 +226,9 @@ fn replay(capture: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
         },
         sink.clone(),
     )?;
-    let device = match knxnet_of(capture)? {
+    let sim = sim_device(capture)?;
+    let device = device.with_master_reset(sim.master_reset);
+    let device = match sim.knxnet {
         Some(k) => device.with_knxnet(&k.parameters(IndividualAddress(ia))?, k.listed),
         None => device,
     };

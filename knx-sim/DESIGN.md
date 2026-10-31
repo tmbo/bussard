@@ -126,7 +126,11 @@ management APDUs, is the oracle encoded in `tests/`.
 
 1. Connect; `A_Authorize(FF FF FF FF)` → level 0.
 2. `PID_LOAD_STATE_CONTROL` (PID 5) load event `Unload (04)` on objects 1..5.
-3. `A_Restart` master reset — bare APCI `0x380`, no payload. Device reboots.
+3. On object 4: `StartLoading`, the 256-octet `RelSegment`, then the `A_Restart`
+   master reset `0x381` with erase code 4, channel 0, answered by
+   `A_Restart_Response` error 0, process time 0 (`43 81 04 00`). Device reboots.
+   (The bare `0x380`s in the capture are the restart after the address
+   assignment and the final restart; bussard issue #611.)
 4. Reconnect; per loadable object: `StartLoading (01)`, then allocate with the
    `RelSegment` sub-command `03 0b <size big-endian>`.
 5. Per object: read `PID_TABLE_REFERENCE` (PID 7) to learn the segment base,
@@ -148,9 +152,20 @@ is Error. A PID 5 write value is always 10 octets; a shorter one is refused.
 An Unload frees the object's allocation (the octets stay, as the partial
 download relies on) and zeroes PID 7, an allocation sets it
 again, and a device configured with `max_allocation` fails a larger
-allocation (Error, PID 7 zero; Configuration Procedures §3.5.1.2). A master
+allocation (Error, PID 7 zero; Configuration Procedures §3.5.1.2). A device
+configured with `intermediate_load_states: n` reports the optional
+intermediate states of Table 92 `n` times before the settled one (each write
+answer, PID 5 read or memory-mapped status read is one report):
+LoadCompleting (5) after a LoadCompleted from Loading, Unloading (4) after an
+Unload of a machine that held something. A load event in either state is
+ignored and answered with it (Table 94). A master
 reset executes erase codes 2 to 8 (KNX 3/5/2 Table 4) and answers error code 3
-for any channel number other than 0, since the sim models no channels.
+for any channel number other than 0, since the sim models no channels. The
+`master_reset` device option models a device without the Master Reset:
+`refuse` answers every erase code with error code 2 ("unsupported erase
+code") and runs nothing, `basic` runs the request as a Basic Restart without
+an answer (bussard issue #611; ETS 6.4.1 fails a download into a `refuse`
+device at the procedure's Master Reset).
 
 A table only ever arrives this way. An `A_PropertyValue_Write` to `PID_TABLE`
 (PID 23) is **refused** with a zero-count `A_PropertyValue_Response`, exactly as

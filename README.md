@@ -95,18 +95,36 @@ $ claude mcp add knx -- bussard mcp --dir "$PWD"    # let Claude debug your bus
 
 ## Install
 
-See [the install docs](https://bussard.tmbo.dev/docs/getting-started/install/) on how to get bussard running on your system.
+On macOS or Linux, `brew install tmbo/tap/bussard`, or the install script, which picks the binary for your machine and checks its SHA-256:
+
+```console
+$ curl -fsSL https://raw.githubusercontent.com/tmbo/bussard/main/install.sh | sh
+```
+
+On Windows: `irm https://raw.githubusercontent.com/tmbo/bussard/main/install.ps1 | iex`.
+
+Or download a binary from the [latest release](https://github.com/tmbo/bussard/releases/latest). Each release has five, each with a `.sha256` file next to it:
+
+| Asset | Platform |
+|---|---|
+| `bussard-linux-x64` | Linux, x86-64 |
+| `bussard-linux-arm64` | Linux, ARM64 |
+| `bussard-macos-arm64` | macOS, Apple silicon |
+| `bussard-macos-x64` | macOS, Intel |
+| `bussard-windows-x64.exe` | Windows, x86-64 |
+
+Building from source needs Rust 1.88 or newer: `cargo install --path crates/bussard-cli`. [The install docs](https://bussard.tmbo.dev/docs/getting-started/install/) have the details. Read [the safety page](docs/explanation/safety.md) before your first write.
 
 ## Safety
 
 `bussard` writes to physical building infrastructure. **Read
-[the safety page](https://bussard.tmbo.dev/docs/explanation/safety/) before your first write**. It is the single
+[the safety page](docs/explanation/safety.md) ([on the website](https://bussard.tmbo.dev/docs/explanation/safety/)) before your first write**. It is the single
 read-before-your-first-write guide. In case you like living dangerously, TL;DR:
 
 - Every device write is plan-before-apply: bussard reads the live state, shows the diff, asks for confirmation, backs up, writes, and verifies.
 - Writes to a non local gateway are refused unless you opt in with `--allow-remote-gateway` (or `BUSSARD_ALLOW_REAL_GATEWAY=1`). Every write confirmation names the resolved gateway.
 - A group address marked `protected = true` (wind alarm or central functions) is refused. You can only write these by adding `--force` on the CLI. An LLM connecting to bussard over MCP has no override at all and cannot modify protected group addresses.
-- The MCP server has four tiers: passive (never transmits), read (default, rate-limited), write (opt-in via `--allow-writes`) and programming (opt-in via `--allow-programming`: one device's link tables after a plan the human approved).
+- The MCP server has four bus tiers: passive (never transmits), read (default, rate-limited), write (opt-in via `--allow-writes`) and programming (opt-in via `--allow-programming`: one device's link tables and changed parameters after a plan the human approved). A separate Home Assistant tier (`--allow-home-assistant`) writes Home Assistant's KNX config, never the bus.
 
 ## Documentation
 

@@ -27,7 +27,8 @@
 //!
 //! On a System 7 plan `objects` are the load-state machines instead (`index`
 //! the LSM, 1 to 4): a record with every LSM `Unloaded` is a factory-fresh
-//! device, which gets no pre-download pass (issue #488).
+//! device. The record shapes the freshness verdict only; the System 7
+//! pre-download pass follows `--full` alone (issue #488).
 
 use std::collections::BTreeMap;
 use std::path::Path;

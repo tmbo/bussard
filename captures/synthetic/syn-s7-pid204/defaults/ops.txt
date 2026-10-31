@@ -1,5 +1,5 @@
 normalized operation sequence for 1.1.1 (captures/synthetic/syn-s7-pid204/defaults/ets.pcapng)
-dropped: 0 L_Data.con echo(es), 0 repeat(s), 120 L4 ack(s)
+dropped: 0 L_Data.con echo(es), 0 repeat(s), 122 L4 ack(s)
 
    1  connect T_Connect
    2  descriptor type0 type=0
@@ -19,7 +19,7 @@ dropped: 0 L_Data.con echo(es), 0 repeat(s), 120 L4 ack(s)
   16  mem-read 0x4000 addr_int=16384 count=1
   17  mem-write 0x4000 addr_int=16384 len=1 sha=4bf5122f extended=False
   18  mem-read 0x4000 addr_int=16384 count=1
-  19  mem-write 0x0104 addr_int=260 len=11 sha=220e71f5 extended=False
+  19  mem-write 0x0104 addr_int=260 len=11 sha=064a40a2 extended=False
   20  mem-read 0xb6ea addr_int=46826 count=1
   21  mem-write 0x0104 addr_int=260 len=11 sha=56227be9 extended=False
   22  mem-read 0xb6ea addr_int=46826 count=1
@@ -28,7 +28,7 @@ dropped: 0 L_Data.con echo(es), 0 repeat(s), 120 L4 ack(s)
   25  mem-write 0x0104 addr_int=260 len=11 sha=383f2bb3 extended=False
   26  mem-read 0xb6eb addr_int=46827 count=1
   27  mem-read 0x4201 addr_int=16897 count=1
-  28  mem-write 0x0104 addr_int=260 len=11 sha=993f0375 extended=False
+  28  mem-write 0x0104 addr_int=260 len=11 sha=3a299654 extended=False
   29  mem-read 0xb6eb addr_int=46827 count=1
   30  mem-write 0x0104 addr_int=260 len=11 sha=951cfacc extended=False
   31  mem-read 0xb6eb addr_int=46827 count=1
@@ -71,14 +71,15 @@ dropped: 0 L_Data.con echo(es), 0 repeat(s), 120 L4 ack(s)
   68  mem-write 0x447c addr_int=17532 len=4 sha=ad95131b extended=False
   69  mem-read 0x447c addr_int=17532 count=4
   70  prop-desc-read obj3/PID_204 obj=3 pid=204 pid_name=PID_204 prop_index=0
-  71  mem-write 0x0104 addr_int=260 len=11 sha=87349c4a extended=False
-  72  mem-read 0xb6ec addr_int=46828 count=1
-  73  mem-write 0x0104 addr_int=260 len=11 sha=aa5398e6 extended=False
-  74  mem-read 0xb6ec addr_int=46828 count=1
-  75  mem-write 0x0104 addr_int=260 len=11 sha=809c4572 extended=False
-  76  mem-read 0xb6ec addr_int=46828 count=1
-  77  restart Restart type=basic
-  78  disconnect T_Disconnect
+  71  prop-write obj3/PID_204 count=2 index=1 len=10 sha=d540d6f1
+  72  mem-write 0x0104 addr_int=260 len=11 sha=5390c90c extended=False
+  73  mem-read 0xb6ec addr_int=46828 count=1
+  74  mem-write 0x0104 addr_int=260 len=11 sha=aa5398e6 extended=False
+  75  mem-read 0xb6ec addr_int=46828 count=1
+  76  mem-write 0x0104 addr_int=260 len=11 sha=809c4572 extended=False
+  77  mem-read 0xb6ec addr_int=46828 count=1
+  78  restart Restart type=basic
+  79  disconnect T_Disconnect
 
 memory image (3 region(s), chunking removed):
     0x000104..0x00010f len=11 sha=809c4572
