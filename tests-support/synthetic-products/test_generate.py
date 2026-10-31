@@ -958,6 +958,12 @@ class SystemBOnIp(unittest.TestCase):
         self.assertIn('MediumTypes="MT-5"', files["M-00FA/Hardware.xml"].decode())
         self.assertIn('MediumTypes="MT-0"', generate.render(generate.Product("t", spec()))["M-00FA/Hardware.xml"].decode())
 
+    def test_render_27b0_with_medium_rf(self) -> None:
+        s = spec()
+        s["application"]["mask"] = "27B0"
+        files = generate.render(generate.Product("test", s))
+        self.assertIn('MediumTypes="MT-2"', files["M-00FA/Hardware.xml"].decode())
+
     def test_57b0_product_procedure_not_yet(self) -> None:
         s = spec()
         s["application"]["mask"] = "57B0"

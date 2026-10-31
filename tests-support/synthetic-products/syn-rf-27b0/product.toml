@@ -1,0 +1,112 @@
+# A synthetic product of the catalogue (#604 row 36), syn-minimal plus one
+# construct. Rendered by ../generate.py into xml/; see ../README.md for the schema.
+
+[doc]
+purpose = """
+syn-minimal on mask 27B0, System B on KNX RF (Hardware2Program
+MediumTypes="MT-2"), with the same merged procedure, segment, parameters and
+com objects. The corpus has 45 RF 27B0 applications (27 of them Secure, the
+later candidate of a secure twin). bussard plans it from its built-in 27B0
+template (#607). knx-sim has no RF model, so the sim loop skips it
+(sim-loop-refusals.json). ETS 6.4.1 imports the signed product ("Import
+erfolgreich", catalogue medium RF) but refuses to add it to the sweep's TP line
+1.1, "Das Gerät ... ist nicht kompatibel zu dem Medientyp der Linie"
+(2026-10-31), so this is a render, import and plan product with no capture."""
+construct = "System B on KNX RF (mask 27B0, MT-2)"
+issues = [604]
+
+[product]
+text = "Radio chick monitor"
+order_number = "NEST-RADIO"
+hardware_name = "NEST-RADIO"
+hardware_serial = "00FA002A0024"
+bus_current = 10
+
+[application]
+number = 0x2A24
+version = 0x10
+name = "Radio chick monitor"
+mask = "27B0"
+load_procedure_style = "MergedProcedure"
+address_table_max_entries = 32
+association_table_max_entries = 32
+translations = { "de-DE" = "Funk-Kükenwächter" }
+
+[application.options]
+Comparable = true
+Reconstructable = true
+
+[[segment]]
+name = "main"
+kind = "relative"
+lsm = 4
+size = 256
+fill = 0xFF
+
+[[parameter_type]]
+name = "Mode"
+kind = "enum"
+size_bits = 8
+values = [
+    { value = 0, text = "off" },
+    { value = 1, text = "on" },
+    { value = 2, text = "automatic" },
+]
+
+[[parameter_type]]
+name = "Delay"
+kind = "number"
+size_bits = 16
+signed = false
+min = 0
+max = 65535
+
+[[parameter]]
+name = "mode"
+type = "Mode"
+text = "Operating mode"
+default = 1
+memory = { segment = "main", offset = 0, bit_offset = 0 }
+
+[[parameter]]
+name = "delay"
+type = "Delay"
+text = "Delay (s)"
+default = 300
+memory = { segment = "main", offset = 1, bit_offset = 0 }
+
+[[com_object]]
+number = 0
+name = "switch"
+text = "Switch"
+function_text = "On/Off"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "W"]
+priority = "Low"
+
+[[com_object]]
+number = 1
+name = "status"
+text = "Status"
+function_text = "On/Off status"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+[[dynamic.block]]
+name = "general"
+text = "General"
+parameters = ["mode", "delay"]
+com_objects = [0, 1]
+
+# The application's part of the 27B0 mask procedure: MergeId 2 allocates the
+# parameter segment, MergeId 4 writes it.
+[[load_procedure]]
+merge_id = 2
+ops = [{ op = "LdCtrlRelSegment", lsm = 4, size = 256, mode = 0, fill = 0 }]
+
+[[load_procedure]]
+merge_id = 4
+ops = [{ op = "LdCtrlWriteRelMem", object = 4, offset = 0, size = 256, verify = false }]

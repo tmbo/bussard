@@ -45,6 +45,7 @@ next to it, and zips it on demand.
 | [`syn-product-07b0`](syn-product-07b0/product.toml) | `NEST-PLAN` | 07B0 | ProductProcedure on 07B0 with the tables as RelSegments | #614 |
 | [`syn-property-param`](syn-property-param/product.toml) | `NEST-TERR` | 07B0 | parameter placed in a property, written by LdCtrlWriteProp | #669 |
 | [`syn-relseg-fill`](syn-relseg-fill/product.toml) | `NEST-FILL` | 07B0 | RelSegment Mode 0 with Fill 255 | #480 |
+| [`syn-rf-27b0`](syn-rf-27b0/product.toml) | `NEST-RADIO` | 27B0 | System B on KNX RF (mask 27B0, MT-2) | #604 |
 | [`syn-s7-0701`](syn-s7-0701/product.toml) | `NEST-BKDOOR` | 0701 | System 7 baseline (0701, memory-mapped LSM) | #596, #488, #481 |
 | [`syn-s7-0705`](syn-s7-0705/product.toml) | `NEST-DOOR` | 0705 | System 7 baseline (0705, property LSM) | #596, #488, #479, #588, #487 |
 | [`syn-s7-choose-split`](syn-s7-choose-split/product.toml) | `NEST-SPLIT` | 0705 | load-procedure choose splitting the parameter AbsSegment | #411, #413 |
@@ -106,7 +107,7 @@ One `product.toml` per directory. Tables and keys:
 | --- | --- | --- |
 | `[doc]` | `purpose` (one paragraph), `construct` (a few words), `issues` (numbers) | the catalogue row; not in the XML |
 | `[product]` | `text`, `order_number`, `hardware_name`, `hardware_serial` (`00FA` + 8 hex digits), `bus_current` (mA); optional `hardware_version` (1), `rail_mounted` (false), `ip_enabled` (`IsIPEnabled`: a KNX IP interface built in, with `additional_addresses_count`; #455) | `Hardware`, `Product`, `Hardware2Program`, `CatalogItem` |
-| `[application]` | `number` (0x2700 to 0x2AFF: 0x27xx System B, 0x28xx System 7, 0x29xx Secure, 0x2Axx RF and IP), `version` (one octet), `name`, `mask` (`07B0`; `57B0`, System B on KNX IP, merged procedure only, rendered with `MediumTypes="MT-5"`; or `0705`/`0701` for System 7), `load_procedure_style` (`MergedProcedure` or `ProductProcedure` on 07B0, `ProductProcedure` on System 7), `address_table_max_entries`, `association_table_max_entries`; optional `translations` (`{ "de-DE" = "..." }` for the name); optional `schema` (`23`, or `11`: namespace `http://knx.org/xml/project/11` and `MinEtsVersion="4.0"` in all three files, the shape of the #448 vendor applications; `sign.py` then uses ETS's project-11 master data); optional `min_ets_version` (a string, `"4.0"`: `MinEtsVersion` apart from the schema's, #448); optional `additional_addresses_count` (`AdditionalAddressesCount`, the tunnelling addresses of an `ip_enabled` 07B0 device, #455); System 7 only: `address_table_segment`, `association_table_segment`, `com_object_table_segment` (the absolute segment each table starts in, offset 0; required) and `pei_type` (0) | `ApplicationProgram`, `AddressTable`, `AssociationTable`, `Languages` |
+| `[application]` | `number` (0x2700 to 0x2AFF: 0x27xx System B, 0x28xx System 7, 0x29xx Secure, 0x2Axx RF and IP), `version` (one octet), `name`, `mask` (`07B0`; `57B0`, System B on KNX IP, or `27B0`, on KNX RF, merged procedure only, rendered with `MediumTypes="MT-5"` or `"MT-2"`; or `0705`/`0701` for System 7), `load_procedure_style` (`MergedProcedure` or `ProductProcedure` on 07B0, `ProductProcedure` on System 7), `address_table_max_entries`, `association_table_max_entries`; optional `translations` (`{ "de-DE" = "..." }` for the name); optional `schema` (`23`, or `11`: namespace `http://knx.org/xml/project/11` and `MinEtsVersion="4.0"` in all three files, the shape of the #448 vendor applications; `sign.py` then uses ETS's project-11 master data); optional `min_ets_version` (a string, `"4.0"`: `MinEtsVersion` apart from the schema's, #448); optional `additional_addresses_count` (`AdditionalAddressesCount`, the tunnelling addresses of an `ip_enabled` 07B0 device, #455); System 7 only: `address_table_segment`, `association_table_segment`, `com_object_table_segment` (the absolute segment each table starts in, offset 0; required) and `pei_type` (0) | `ApplicationProgram`, `AddressTable`, `AssociationTable`, `Languages` |
 | `[application.options]` | any `Options` attribute of the KNX schema, e.g. `SupportsExtendedMemoryServices = true`, `ParameterByteOrder = "LittleEndian"` | `Options` |
 | `[[segment]]` | `name`, `kind` (`relative`), `lsm`, `size`; optional `fill` (the initial octet, 0) | `RelativeSegment` with its `Data` |
 | `[[parameter_type]]` | `name`, `kind`; `enum`: `size_bits`, `values = [{ value, text }]`; `number`: `size_bits`, `signed`, `min`, `max`; `float`: `encoding` (`DPT 9`, `IEEE-754 Single`, `IEEE-754 Double`; 16, 32, 64 bits), `min`, `max`; `text`: `size_octets`; `ip_address`: `address_type` (`HostAddress`, `SubnetMask`, `DefaultGateway`; 32 bits, the default a dotted quad); `color`: `space` (`RGB`, `HSV`; 24 bits, the default `#` and six hex digits) | `TypeRestriction`, `TypeNumber`, `TypeFloat`, `TypeText`, `TypeIPAddress`, `TypeColor` |
@@ -313,11 +314,15 @@ entry.
 | product | why | ETS result (2026-10-31) |
 | --- | --- | --- |
 | `syn-ip-57b0` | mask 57B0 is a KNX IP device (`MT-5`); ETS will not place it on a TP line | "Import erfolgreich"; adding it to line 1.1: "ist nicht kompatibel zu dem Medientyp der Linie" |
+| `syn-rf-27b0` | mask 27B0 is a KNX RF device (`MT-2`); ETS will not place it on a TP line, and knx-sim has no RF model (the sim loop skips it, `sim-loop-refusals.json`) | "Import erfolgreich"; adding it to line 1.1: "ist nicht kompatibel zu dem Medientyp der Linie" |
 
 A product bussard refuses to flash, where the refusal is the finding it
 exists for, is listed in `sim-loop-refusals.json` with the open issue and a
 phrase of the refusal; the synthetic sim loop accepts that refusal and fails
 once the product flashes.
+A product whose mask knx-sim does not model (`syn-rf-27b0`) is listed there
+too, with the loop's "is not simulated" phrase and a `note`; it goes when the
+sim models the mask.
 
 The tests `crates/bussard-prod/tests/it/synthetic_products.rs` and
 `knx-sim/tests/synthetic_products.rs` zip every product's `xml/` with the stub

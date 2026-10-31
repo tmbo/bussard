@@ -676,8 +676,9 @@ def check_ip_enabled(w: str, p: dict, a: dict) -> None:
 # The System B masks a product may name, with the medium its
 # Hardware2Program declares: 07B0 on TP (MT-0), and 57B0, System B on KNX IP
 # (MT-5; syn-ip-57b0, #389), merged procedure only, as the one corpus 57B0
-# application (M-0002_A-A0C8-10-B22C-O01B8).
-MEDIUM_TYPES = {"07B0": "MT-0", "57B0": "MT-5"}
+# application (M-0002_A-A0C8-10-B22C-O01B8), and 27B0, System B on KNX RF
+# (MT-2; syn-rf-27b0, #604 row 36).
+MEDIUM_TYPES = {"07B0": "MT-0", "57B0": "MT-5", "27B0": "MT-2"}
 
 
 def check_system7_application(w: str, a: dict) -> None:
