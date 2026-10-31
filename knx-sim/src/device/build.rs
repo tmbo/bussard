@@ -153,7 +153,10 @@ fn procedure_object_type(product: &ProductData, object_index: u8) -> u16 {
 /// not load stays absent, as before.
 ///
 /// The seeded properties are described with the generic PDT of their length
-/// ([`Property::sized`]), the one fact the procedure gives about them.
+/// ([`Property::sized`]), the one fact the procedure gives about them; a
+/// property a step writes with `Count` > 1 is that many elements of the
+/// generic PDT of `len / Count` octets ([`Property::with_elements`], bussard
+/// issue #692), so ETS, which reads the description first, writes it.
 fn seed_procedure_props(
     objects: &mut BTreeMap<u8, InterfaceObject>,
     product: &ProductData,
@@ -163,7 +166,12 @@ fn seed_procedure_props(
         .object_compare_props
         .iter()
         .map(|(object, _, _)| *object)
-        .chain(product.written_props.iter().map(|&(object, _, _)| object));
+        .chain(
+            product
+                .written_props
+                .iter()
+                .map(|&(object, _, _, _)| object),
+        );
     for object in addressed {
         if object >= first_new_object && !objects.contains_key(&object) {
             let mut io = InterfaceObject::new();
@@ -182,21 +190,23 @@ fn seed_procedure_props(
         let written = product
             .written_props
             .iter()
-            .any(|&(o, p, _)| o == *object && p == *pid);
+            .find(|&&(o, p, _, _)| o == *object && p == *pid);
         if let Some(io) = objects.get_mut(object) {
-            let prop = if written {
-                Property::writable(value.clone())
-            } else {
-                Property::read_only(value.clone())
+            let prop = match written {
+                Some(&(_, _, _, count)) => Property::writable(value.clone()).with_elements(count),
+                None => Property::read_only(value.clone()).sized(),
             };
-            io.set_property(*pid, prop.sized());
+            io.set_property(*pid, prop);
         }
     }
-    for &(object, pid, len) in &product.written_props {
+    for &(object, pid, len, count) in &product.written_props {
         if let Some(io) = objects.get_mut(&object)
             && !io.has_property(pid)
         {
-            io.set_property(pid, Property::writable(vec![0x00; len]).sized());
+            io.set_property(
+                pid,
+                Property::writable(vec![0x00; len]).with_elements(count),
+            );
         }
     }
 }
@@ -793,6 +803,11 @@ mod tests {
     fn glass_touch_product(
         device_default: &str,
     ) -> Result<crate::prod::ProductData, Box<dyn std::error::Error>> {
+        app_product(&glass_touch_app(device_default))
+    }
+
+    /// An application XML packed as a `.knxprod` and read back.
+    fn app_product(xml: &str) -> Result<crate::prod::ProductData, Box<dyn std::error::Error>> {
         use std::io::Write as _;
         let mut buf = std::io::Cursor::new(Vec::new());
         {
@@ -800,10 +815,50 @@ mod tests {
             let options = zip::write::SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Stored);
             zip.start_file("M-0083/M-0083_A-018C-23-81D7.xml", options)?;
-            zip.write_all(glass_touch_app(device_default).as_bytes())?;
+            zip.write_all(xml.as_bytes())?;
             zip.finish()?;
         }
         Ok(crate::prod::read_knxprod_bytes(buf.get_ref(), None)?)
+    }
+
+    #[test]
+    fn test_build_counted_write_prop_is_an_array() -> Result<(), Box<dyn std::error::Error>> {
+        // Bussard issue #692: `LdCtrlWriteProp Count="2"` with 10 octets of
+        // InlineData (the syn-s7-pid204 shape) is two elements of 5 octets.
+        // ETS reads the description first and writes only what fits it.
+        let xml = glass_touch_app("1").replace(
+            r#"<LdCtrlWriteProp ObjIdx="7" PropId="161" Verify="false" InlineData="01" />"#,
+            r#"<LdCtrlWriteProp ObjIdx="7" PropId="161" Verify="false" InlineData="01" />
+              <LdCtrlWriteProp ObjIdx="7" PropId="204" Count="2" Verify="false" InlineData="00004440000000448000" />"#,
+        );
+        let pd = app_product(&xml)?;
+        assert!(pd.written_props.contains(&(7, 204, 10, 2)));
+        let mut dev = connected_device(&pd)?;
+        // Writable PDT_GENERIC_05 (0x15), two elements, read 3 / write 0.
+        let d = describe(&mut dev, 7, 204)?;
+        assert_eq!(d[3], 0x80 | 0x15, "writable, PDT_GENERIC_05");
+        assert_eq!(d[4..6], [0, 2], "two elements");
+        assert_eq!(d[6], 0x30);
+        // ETS's write: count 2 from index 1, 10 octets, echoed and stored.
+        let value = [0x00, 0x00, 0x44, 0x40, 0x00, 0x00, 0x00, 0x44, 0x80, 0x00];
+        let mut write = vec![7, 204, 0x20, 0x01];
+        write.extend_from_slice(&value);
+        let r = dev.handle_cemi(&data(&dev, 0x3D7, &write))?;
+        assert_eq!(r.responses[0].tpdu[4], 0x20, "count 2 echoed");
+        assert_eq!(prop_response_value(&r), value.to_vec());
+        // Read back whole, and element 2 alone.
+        let r = dev.handle_cemi(&data(&dev, 0x3D5, &[7, 204, 0x20, 0x01]))?;
+        assert_eq!(prop_response_value(&r), value.to_vec());
+        let r = dev.handle_cemi(&data(&dev, 0x3D5, &[7, 204, 0x10, 0x02]))?;
+        assert_eq!(prop_response_value(&r), value[5..].to_vec());
+        // A write past the second element is refused whole (count 0).
+        let mut over = vec![7, 204, 0x20, 0x02];
+        over.extend_from_slice(&value);
+        let r = dev.handle_cemi(&data(&dev, 0x3D7, &over))?;
+        assert_eq!(r.responses[0].tpdu[4], 0x00, "zero-count refusal");
+        let r = dev.handle_cemi(&data(&dev, 0x3D5, &[7, 204, 0x20, 0x01]))?;
+        assert_eq!(prop_response_value(&r), value.to_vec(), "unchanged");
+        Ok(())
     }
 
     #[test]
@@ -839,7 +894,7 @@ mod tests {
         // with no application segment) creates nothing, as before.
         let mut pd = crate::testfixtures::synthetic_mdt_sys7_product();
         pd.mask_version = "MV-07B0".into();
-        pd.written_props.push((4, 16, 1));
+        pd.written_props.push((4, 16, 1, 1));
         let dev = Device::from_product(
             IndividualAddress::new(1, 1, 2),
             &pd,
@@ -864,7 +919,7 @@ mod tests {
             return Ok(());
         };
         let pd = crate::prod::read_knxprod_bytes(&bytes, Some("M-0083_A-018C-23-81D7"))?;
-        assert!(pd.written_props.contains(&(7, 161, 1)));
+        assert!(pd.written_props.contains(&(7, 161, 1, 1)));
         let mut dev = connected_device(&pd)?;
         assert!(!dev.profile().is_system7(), "mask 07B0 is System B");
         // The device-selection default (255) matches no branch: the first

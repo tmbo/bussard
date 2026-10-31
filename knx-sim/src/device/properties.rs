@@ -207,7 +207,16 @@ impl Device {
             self.objects
                 .get(&object)
                 .and_then(|o| o.property(pid))
-                .map(|p| p.value.clone())
+                .and_then(|p| {
+                    // An array property (a product's `Count` > 1 write, issue
+                    // #692) answers the elements asked for; a range past its
+                    // end is the zero-count refusal below.
+                    if p.max_elements > 1 {
+                        p.read_elements(start, count)
+                    } else {
+                        Some(p.value.clone())
+                    }
+                })
         };
         match value {
             Some(value) => {
@@ -404,7 +413,24 @@ impl Device {
         if prop.read_only {
             return Err(DeviceError::ReadOnlyProperty { object, pid });
         }
-        prop.value = value.to_vec();
+        if prop.max_elements > 1 {
+            // An array property (a product's `Count` > 1 write, issue #692):
+            // `count` elements from `start`. A write that does not fit the
+            // described elements is refused whole with the zero-count response.
+            if !prop.write_elements(start, count, value) {
+                let resp = self.respond(
+                    tool,
+                    0x3D6,
+                    &[object, pid, (start >> 8) as u8 & 0x0F, (start & 0xFF) as u8],
+                );
+                return Ok(DeviceReaction {
+                    responses: vec![resp],
+                    did_master_reset: false,
+                });
+            }
+        } else {
+            prop.value = value.to_vec();
+        }
         self.emit(Event::PropertyWritten {
             device: self.address,
             object,
@@ -636,7 +662,7 @@ mod tests {
             max_size: None,
             image: Vec::new(),
         });
-        pd.written_props.push((4, PID_PEI_TYPE, 1));
+        pd.written_props.push((4, PID_PEI_TYPE, 1, 1));
         let mut dev = Device::from_product_with_overrides(
             IndividualAddress::new(1, 1, 2),
             &pd,
