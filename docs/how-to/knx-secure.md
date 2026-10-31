@@ -109,7 +109,7 @@ Write again, then read the counters again:
 - The cryptographic count went up: the device holds another group key for the address than the sender used. Re-import the current keyring and apply the device.
 - The access count went up: a group object's security flags do not match the telegram's security (for example authentication only against authentication and encryption).
 
-`bussard secure diag 1.1.5 --clear` resets the counters and the report after a confirmation, so the next write starts from zero. A device found on its factory key instead (it was reset to default) is named as such by every command; commission it again with ETS and import the new keyring.
+`bussard secure diag 1.1.5 --clear` resets the counters and the report after a confirmation, so the next write starts from zero. Over MCP, `knx_describe_device` returns the same counters and `knx_clear_security_log` clears them after your yes. A device found on its factory key instead (it was reset to default) is named as such by every command; commission it again with ETS and import the new keyring.
 
 ## Next steps
 

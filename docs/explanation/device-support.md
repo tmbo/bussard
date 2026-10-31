@@ -33,20 +33,24 @@ uses the same table.
 | `57B0` | System B | KNX-IP | yes | yes | yes | yes | tables live in device-allocated segments found via PID_TABLE_REFERENCE; full read and write support |
 <!-- mask-table:end -->
 
-One exception to the `flash` column: on mask `0021` (the Jung IPS 300 SREG
-KNX IP interface) `flash` runs an application whose load procedure holds only
-property compares and writes. It loads no object, never factory-resets the
-interface, and ends with a read-back of every property it wrote.
+One exception to the `flash` column: on mask `0021` (System 2, such as the
+Jung IPS 300 SREG KNX IP interface) `flash` runs an application whose load
+procedure holds only property compares and writes. It loads no object, never
+factory-resets the interface, and ends with a read-back of every property it
+wrote. Every other System 1 and System 2 download (BCU1, BCU2: memory
+allocation and table writes) is refused before anything is written; program
+those devices with ETS.
 
 - **`flash`** supports System B (`07B0`, and the `57B0` / `27B0` KNX-IP and
   RF variants) and System 7 (`0705` / `0701` / `0700`). Another family, a mask
-  that differs between application and device, or a load procedure with an
-  operation bussard cannot execute refuses the procedure rather than leaving a
-  device half-flashed.
+  that differs between application and device, a System B device whose
+  manufacturer is not the application's, or a load procedure with an
+  operation bussard cannot execute refuses the procedure rather than leaving
+  a device half-flashed.
 - **`apply`, `plan` and single-device `reconstruct`** support System B
-  (`x7B0`) and System 7 (`0705` / `0701`). Another mask is refused with a
-  message naming the mask and the supported families; line-mode `reconstruct`
-  records it as a stub instead.
+  (`x7B0`) and System 7 (`0705` / `0701` / `0700`). Another mask is refused
+  with a message naming the mask and the supported families; line-mode
+  `reconstruct` records it as a stub instead.
 - **System 7 tables without product data.** These three commands run without
   a `.knxprod`, so they assume the usual table addresses. A device that keeps
   its tables elsewhere reads back as an empty table set, never as wrong links,
@@ -79,6 +83,10 @@ interface, and ends with a read-back of every property it wrote.
   writing its tables (a basic restart). It waits for the device to answer
   again, then reads the tables back, so the read-back also shows that the
   write survived the restart.
+- **System 7 load-state machines.** A System 7 device has four load-state
+  machines (address table, association table, application, PEI program).
+  Some products name a fifth in their load procedure; `flash` sends no record
+  for it, as ETS sends none.
 
 ??? note "Details"
     On System B each table lives in a segment the device allocates: `apply`
@@ -144,10 +152,12 @@ on a second tunnel, and it reports free when the reply is not a device
 descriptor.
 
 ??? note "Details"
-    The commands that check are `scan`, `assign`, `adopt`, `describe`, `plan`,
-    `apply`, `flash`, `reconstruct`, `backup`, `restore`, `replace`,
-    `commission`, `audit --live`, `plan --line` / `apply --line`, and the MCP
-    tools `knx_plan_device` and `knx_apply_device`. Only an
+    The commands that check are `scan`, `assign`, `adopt`, `describe`,
+    `status <ADDRESS>`, `plan`, `apply`, `flash`, `restart`, `reconstruct`,
+    `backup`, `restore`, `replace`, `commission`, `audit --live`,
+    `plan --line` / `apply --line`, `interface secure`, `secure diag`, and the
+    MCP tools `knx_plan_device`, `knx_apply_device` and
+    `knx_interface_secure`. Only an
     `A_DeviceDescriptor_Response` counts as proof. Under `--yes`, `flash` also
     keeps the pre-flight's device connection for the write phase.
 
@@ -189,26 +199,46 @@ after 2 seconds.
 
 - **KNX Data Secure.** bussard programs a Data Secure device with its tool key
   on `flash` and `apply`, and reads one back with `describe`, `plan` and
-  `reconstruct`. The handshake and security-object bytes match ETS, and a full
-  flash has completed on a real activated device. Two parts are inferred from
-  one device with one group key: the packing of several group keys, and the
-  security-flag bits beyond `0x03`. Secured group communication (`monitor`,
-  `capture`, `read`, `write` with `--keyring`) is verified against the
-  simulator only.
+  `reconstruct`. The handshake and security-object bytes match ETS, full
+  flashes have completed on real activated devices, and secured group
+  telegrams decrypt on a live bus. One part is inferred: the layout of a
+  sender table (the devices a receiver accepts secured telegrams from) with
+  more than one entry, since every download observed so far writes at most
+  one.
+- **Data Secure activation.** bussard operates devices ETS has activated. It
+  does not activate a factory-fresh device from its FDSK certificate, re-key
+  one or switch Data Secure off; use ETS. A device that answers only under
+  its factory key (FDSK), because it was reset or never commissioned, is
+  recognised by `describe` with the FDSK from the key store and named as
+  such. bussard writes nothing under the factory key.
 - **KNXnet/IP Secure tunnelling.** A secure-only interface needs a tunnelling
-  user, from `--keyring` or `--secure-user <id> --secure-password-env <VAR>`;
-  without either, bussard refuses at once and names the cause. The frames
-  match an ETS capture and the whole path runs against the simulator, but no
-  session against real hardware has run yet, so start with a read-only
-  `monitor --keyring`. A mismatch would show as a refused authentication,
-  never as a wrong write.
+  user, from the key store, `--keyring`, or `--secure-user <id>
+  --secure-password-env <VAR>`; without one, bussard refuses at once and
+  names the cause. Secure tunnelling runs against real secure-only
+  interfaces. `bussard interface secure on|off`, which switches an
+  interface's security, matches an ETS capture step for step but has not yet
+  run against a real interface.
 - **Secure session keepalive.** Some interfaces drop a session idle for 60
   seconds, so bussard sends a keepalive every 30 seconds
   (`BUSSARD_SECURE_KEEPALIVE_SECS` changes it; `bussard test --secure-idle
   <secs>` measures an interface read-only). The session runs over TCP only,
   as the KNX standard requires.
-- **Not implemented:** secure routing (multicast), activating or deactivating
-  Data Secure on a device, and activation from the FDSK certificate. Use ETS.
+- **Computed parameters.** Some application programs compute parameter values
+  with a script (`<ParameterCalculation>`), which ETS runs when an input
+  changes. bussard does not run these scripts: a computed parameter keeps its
+  vendor default or the value the device file sets. At a first download with
+  untouched inputs ETS writes the defaults too; once you change an input, the
+  computed values can differ from what ETS would write.
+- **Text parameters.** A text parameter is written in the code page its
+  program declares. A program that declares none is written in ISO 8859-1, as
+  ETS does; a character whose octet differs between ISO 8859-1,
+  Windows-1252 and ISO 8859-15 (the euro sign, for example) or lies beyond
+  U+00FF is refused there. A declared code page bussard does not know takes
+  ASCII only.
+- **System 1 and System 2.** BCU1 and BCU2 devices are identified and
+  described, but not programmed, except the property-only applications on
+  `0021` above.
+- **Not implemented:** secure routing (multicast).
 
 ## Next steps
 

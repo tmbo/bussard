@@ -68,7 +68,7 @@ flash M-0083_A-000D-23-5BFD (2 memory write(s)) to 1.1.5? [y/N] y
 flash verified: application program M-0083_A-000D-23-5BFD is Loaded on 1.1.5, and its parameters match the model
 ```
 
-`flash` refuses before writing when the mask (the device's system generation) is not System B or System 7, the application's mask does not match the device, or the vendor's load procedure has a step bussard cannot run. It also refuses a device that already carries a different application, an unknown one, or a load state it cannot read; `--force` overrides that and destroys what is there. The same application again needs no flag.
+`flash` refuses before writing when the mask (the device's system generation) is not System B or System 7, the application's mask does not match the device, the vendor's load procedure has a step bussard cannot run, or (on System B) the device reports another manufacturer than the application's. It also refuses a device that already carries a different application, an unknown one, or a load state it cannot read; `--force` overrides that and destroys what is there. The same application again needs no flag.
 
 If a flash fails midway, run it again: it rewrites the application whole. A device with a BCU access key needs `--bcu-key <HEX>`. `--dry-run` prints the plan without a gateway.
 

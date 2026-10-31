@@ -46,7 +46,7 @@ The client starts the server itself. Run `bussard mcp` by hand and it prints thi
 
 The default server reads the model, watches the bus, sends rate-limited read requests, and edits the model files. It cannot program a device and cannot write a value to the bus.
 
-Safety rails: every model edit the assistant makes is saved to the history first and comes back as a plain sentence for the assistant to quote. Group addresses marked `protected = true` cannot be changed or linked over MCP at all. Device programming (`plan`, `apply`, `flash`) is on the command line; the server can write one device's link tables only when you start it with `--allow-programming` and approve the plan.
+Safety rails: every model edit the assistant makes is saved to the history first and comes back as a plain sentence for the assistant to quote. Group addresses marked `protected = true` cannot be changed or linked over MCP at all. Device programming (`plan`, `apply`, `flash`) is on the command line; the server can write one device's link tables and parameters only when you start it with `--allow-programming` and approve the plan.
 
 ## Saturday morning: how good is my project file?
 
@@ -146,15 +146,16 @@ Assistant:  (calls knx_model_lookup, then knx_add_link)
                 bussard apply 1.1.7 --allow-remote-gateway
 ```
 
-The model now says what the house should do; the actuator does not know yet. `bussard status` shows every pending change in the same sentences. Look at what programming the actuator would change:
+The model now says what the house should do; the actuator does not know yet. `bussard status` shows every pending change in the same sentences. Look at what programming the actuator would change (the output is illustrative):
 
 ```console
 $ bussard plan 1.1.7
-...
-1 addition(s), 0 removal(s), 5 unchanged:
-  + add:    object    4 → 1/1/1
-
-run `bussard apply 1.1.7` to write these changes (with confirmation).
+1.1.7 Outdoor switch actuator
+  channel c (Porch light)
+    + schalten now listens on 1/1/1 (Hallway light)
+  unchanged: 5 objects
+  writes: address table (6 entries), association table (6 entries)
+  backup: captures/backups
 ```
 
 !!! warning
@@ -163,7 +164,7 @@ run `bussard apply 1.1.7` to write these changes (with confirmation).
 ```console
 $ bussard apply 1.1.7 --allow-remote-gateway
 ...
-apply 1 change(s) to 1.1.7 via 192.0.2.10:3671? [y/N] y
+apply this change to 1.1.7 through 192.0.2.10:3671? [y/N] y
 backup written to captures/backups/1.1.7-1790445600.json
 
 apply verified: address table Loaded (6 entries), association table Loaded (6 entries)

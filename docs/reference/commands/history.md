@@ -46,13 +46,14 @@ $ bussard undo
 | Flag / arg | Default | Meaning |
 |---|---|---|
 | `[SNAPSHOT]` | the newest one that differs from the working files | The snapshot to restore: its id or number. |
-| `--json` | off | Print `{"schema", "restored", "created_at", "undo_snapshot", "changes": [...]}`. `restored` is `null`, with a `reason`, when nothing was restored. |
+| `--json` | off | Print `{"schema", "restored", "created_at", "undo_snapshot", "changes": [...], "key_store"}`. `restored` is `null`, with a `reason`, when nothing was restored. `key_store` is `null` unless the undo changed a group address's Data Secure state: then `{"ok": true, "sentences"}`, or `{"ok": false, "reason"}` when the key store did not follow. |
 
 Behaviour:
 
 - Files only. Devices keep their tables until you push the restored model to them with `plan` and `apply`.
 - bussard takes a snapshot before each write, so `undo` with no argument reverts exactly the last change, whether it was a model edit or a bus-only command like `apply`.
 - The state before the undo is itself snapshotted, so a second `undo` reverts the first.
+- An undo that flips a group address's Data Secure state also changes the key store: the group key comes back from the snapshot's copy, or leaves the store. It needs `BUSSARD_KEYRING_PASSWORD`.
 
 ## Related
 

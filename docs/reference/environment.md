@@ -36,7 +36,7 @@ A flag beats its variable, the variable beats `bussard.toml`, and `bussard.toml`
     - `BUSSARD_FLASH_REBOOT_WAIT_MS`: the poll probes every 500 ms, from 0.5 s after the process time of a restart the device confirmed, or from 1.5 s after a bare `A_Restart`.
     - `BUSSARD_SPARSE_MERGE_GAP`: a gap is joined only when the joined run needs fewer memory-write requests than the two runs apart. The octets written into the gap are the ones the device already holds: the segment's fill, or the read-back memory on a parameters-only download. The default sits under the break-even of about 115 octets for a 200 ms request at 1.7 ms per octet.
 
-Test-harness variables (`BUSSARD_VIRTUAL_DEVICE*`, `BUSSARD_TEST_MULTICAST`, `BUSSARD_PRODUCT_CORPUS`) gate bussard's own test suites, never the CLI.
+Test-harness variables gate or shorten bussard's own test suites and are not meant for normal use: `BUSSARD_VIRTUAL_DEVICE*`, `BUSSARD_TEST_MULTICAST` and `BUSSARD_PRODUCT_CORPUS` select test inputs; `BUSSARD_ADDRESS_PROBE_MS`, `BUSSARD_ASSIGN_WAIT_MS`, `BUSSARD_BUS_BACKOFF_MS`, `BUSSARD_CONNECT_WAIT_MS`, `BUSSARD_MGMT_TIMEOUT_MS`, `BUSSARD_READ_TIMEOUT_MS` and `BUSSARD_SCAN_DISCOVERY_MS` shorten waits against a mock; `BUSSARD_FLASH_SYS7_LSM`, `BUSSARD_SECURE_ALGORITHM` and `BUSSARD_ORACLE_SALT` serve the simulator and offline comparisons.
 
 ## The `.env` file
 
@@ -45,7 +45,7 @@ bussard reads the `BUSSARD_*` variables from a `.env` file too, so you do not ha
 ```
 # knx/.env, never committed
 BUSSARD_KEYRING_PASSWORD='s3cret # with a hash'
-BUSSARD_GATEWAY=192.168.1.74
+BUSSARD_GATEWAY=192.0.2.10
 export BUSSARD_PROJECT_PASSWORD="project pw"
 ```
 
