@@ -42,6 +42,59 @@ impl Device {
         self
     }
 
+    /// Makes every load-state machine pass through the intermediate states
+    /// of KNX 03_05_01 §4.23.2.3.1 (Table 92): after a `LoadCompleted` that
+    /// takes it from Loading to Loaded it reports `LoadCompleting` (5), after
+    /// an `Unload` of a machine that was not Unloaded it reports `Unloading`
+    /// (4), `reports` times before the settled state (bussard issue #479).
+    /// Each report is one observation by the tool: the answer to a property
+    /// load-control write, a `PID_LOAD_STATE_CONTROL` read, or a read of the
+    /// memory-mapped status octet. A load event that arrives while a machine
+    /// is still intermediate is ignored and answered with the unchanged
+    /// intermediate state (Table 94). 0 (the default) settles at once, as
+    /// before; `u32::MAX` never settles.
+    pub fn with_intermediate_load_states(mut self, reports: u32) -> Self {
+        self.intermediate_reports = reports;
+        self
+    }
+
+    /// Notes the intermediate state a transition from `prior` by `event`
+    /// passes through, when the device is configured to report one.
+    fn begin_intermediate(&mut self, lsm_index: u8, prior: LoadState, completed: bool) {
+        if self.intermediate_reports == 0 {
+            return;
+        }
+        let state = match (completed, prior) {
+            // LoadCompleted from Loading: LoadCompleting (5).
+            (true, LoadState::Loading) => 5,
+            // Unload of a machine that held something: Unloading (4).
+            (false, p) if p != LoadState::Unloaded => 4,
+            _ => return,
+        };
+        self.intermediate
+            .insert(lsm_index, (state, self.intermediate_reports));
+    }
+
+    /// Whether `lsm_index` is still in an intermediate state.
+    pub(super) fn is_intermediate(&self, lsm_index: u8) -> bool {
+        self.intermediate.contains_key(&lsm_index)
+    }
+
+    /// The load-state octet `lsm_index` reports to the tool now: its
+    /// intermediate state while it has reports left (each call uses one),
+    /// else its live state. `None` for an LSM the device does not have.
+    pub(super) fn report_load_state(&mut self, lsm_index: u8) -> Option<u8> {
+        if let Some((state, left)) = self.intermediate.get_mut(&lsm_index) {
+            let state = *state;
+            *left = left.saturating_sub(1);
+            if *left == 0 {
+                self.intermediate.remove(&lsm_index);
+            }
+            return Some(state);
+        }
+        self.load_state(lsm_index).map(|s| s.to_byte())
+    }
+
     pub(super) fn on_load_state_write(
         &mut self,
         tool: IndividualAddress,
@@ -50,6 +103,33 @@ impl Device {
         start: u16,
         value: &[u8],
     ) -> Result<DeviceReaction, DeviceError> {
+        if !self.loadables.contains_key(&object) {
+            return Err(DeviceError::NoProperty {
+                object,
+                pid: PID_LOAD_STATE_CONTROL,
+            });
+        }
+        let event =
+            LoadEvent::decode(value).map_err(|e| DeviceError::LoadControl(e.to_string()))?;
+        // Still Unloading or LoadCompleting: the event is ignored and the
+        // answer carries the unchanged intermediate state (Table 94).
+        if self.is_intermediate(object) {
+            let reported = self.report_load_state(object).unwrap_or(0x00);
+            let data = [
+                object,
+                PID_LOAD_STATE_CONTROL,
+                (count << 4) | ((start >> 8) as u8 & 0x0F),
+                (start & 0xFF) as u8,
+                reported,
+            ];
+            let resp = self.respond(tool, 0x3D6, &data);
+            return Ok(DeviceReaction {
+                responses: vec![resp],
+                did_master_reset: false,
+            });
+        }
+        // An allocation happens only in Loading and is ignored in every other
+        // state (Configuration Procedures §3.5.1.2), so note the state first.
         let state = self
             .loadables
             .get_mut(&object)
@@ -57,10 +137,6 @@ impl Device {
                 object,
                 pid: PID_LOAD_STATE_CONTROL,
             })?;
-        let event =
-            LoadEvent::decode(value).map_err(|e| DeviceError::LoadControl(e.to_string()))?;
-        // An allocation happens only in Loading and is ignored in every other
-        // state (Configuration Procedures §3.5.1.2), so note the state first.
         let prior = state.lsm.state();
         let new_state = match state.lsm.apply(event) {
             Ok(s) => s,
@@ -141,14 +217,25 @@ impl Device {
         if new_state == LoadState::Loaded {
             self.refresh_group_comm();
         }
-        // The write response reports the resulting load state as the value.
+        match event {
+            LoadEvent::LoadCompleted if new_state == LoadState::Loaded => {
+                self.begin_intermediate(object, prior, true);
+            }
+            LoadEvent::Unload => self.begin_intermediate(object, prior, false),
+            _ => {}
+        }
+        // The write response reports the resulting load state as the value
+        // (the intermediate one first, when the device passes through it).
         let mut data = vec![
             object,
             PID_LOAD_STATE_CONTROL,
             (count << 4) | ((start >> 8) as u8 & 0x0F),
             (start & 0xFF) as u8,
         ];
-        data.push(new_state.to_byte());
+        data.push(
+            self.report_load_state(object)
+                .unwrap_or(new_state.to_byte()),
+        );
         let resp = self.respond(tool, 0x3D6, &data);
         Ok(DeviceReaction {
             responses: vec![resp],
@@ -168,6 +255,11 @@ impl Device {
     ) -> Result<(), DeviceError> {
         let event = sys7_lsm::Sys7Event::decode(event_record)
             .map_err(|e| DeviceError::LoadControl(e.to_string()))?;
+        // Still Unloading or LoadCompleting: the event is ignored (Table 94);
+        // the property realisation's answer reports the intermediate state.
+        if self.is_intermediate(lsm_index) {
+            return Ok(());
+        }
         let s7 = self
             .sys7
             .as_mut()
@@ -190,6 +282,7 @@ impl Device {
             object: lsm_index,
             pid: PID_LOAD_STATE_CONTROL,
         })?;
+        let prior = lsm.state();
         let step = match lsm.apply(event) {
             Ok(s) => s,
             Err(e) => {
@@ -252,6 +345,15 @@ impl Device {
                     object: lsm_index,
                     state: new_state.to_byte(),
                 });
+                match event {
+                    sys7_lsm::Sys7Event::LoadCompleted if new_state == LoadState::Loaded => {
+                        self.begin_intermediate(lsm_index, prior, true);
+                    }
+                    sys7_lsm::Sys7Event::Unload => {
+                        self.begin_intermediate(lsm_index, prior, false);
+                    }
+                    _ => {}
+                }
                 // Every System 7 LSM state change re-evaluates the runtime
                 // routing, not just the one that reaches Loaded. A `LoadCompleted`
                 // brings the device alive on the freshly written tables; an
@@ -274,7 +376,7 @@ impl Device {
     /// the runtime-readable `ApplicationLoadStatus` resource (0xB6EC on
     /// BimM112), and ETS reads it before a partial download and refuses with
     /// "the loaded application does not match" on 0x00 (EK-E72, 2026-10-28).
-    pub(super) fn sys7_status_bytes(&self, addr: u16, n: usize) -> Option<Vec<u8>> {
+    pub(super) fn sys7_status_bytes(&mut self, addr: u16, n: usize) -> Option<Vec<u8>> {
         let s7 = self.sys7.as_ref()?;
         let base = s7.profile.mm_lsm.status_addr;
         // The status region spans one octet per LSM index starting at `base`
@@ -287,10 +389,7 @@ impl Device {
         let mut out = Vec::with_capacity(n);
         for i in 0..n {
             let lsm_index = (addr.wrapping_add(i as u16).wrapping_sub(base)) as u8 + 1;
-            let state = self
-                .load_state(lsm_index)
-                .map(|s| s.to_byte())
-                .unwrap_or(0x00);
+            let state = self.report_load_state(lsm_index).unwrap_or(0x00);
             out.push(state);
         }
         Some(out)
@@ -697,6 +796,112 @@ mod tests {
             gc.on_group_read(GroupAddress(0x0801)).is_none(),
             "the removed GA no longer routes"
         );
+        Ok(())
+    }
+
+    /// bussard issue #479: a device configured with
+    /// `with_intermediate_load_states(2)` reports LoadCompleting twice after a
+    /// LoadCompleted and Unloading twice after an Unload, then the settled
+    /// state, and ignores a load event in between (Table 94).
+    fn intermediate_states(access: LsmAccess) -> Result<(), Box<dyn std::error::Error>> {
+        let mut dev = sys7_device(access).with_intermediate_load_states(2);
+        connect(&mut dev)?;
+        dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
+        let base = dev
+            .sys7
+            .as_ref()
+            .ok_or("a System 7 device")?
+            .profile
+            .mm_lsm
+            .status_addr;
+        // One status-octet read of LSM 1 (the ApplicationLoadStatus region
+        // answers in both realisations).
+        let status = |dev: &mut Device| -> Result<u8, Box<dyn std::error::Error>> {
+            let r = dev.handle_cemi(&data(dev, 0x200 | 1, &base.to_be_bytes()))?;
+            Ok(*r
+                .responses
+                .first()
+                .and_then(|f| f.tpdu.last())
+                .ok_or("empty status response")?)
+        };
+        // A load event to LSM 1; the property realisation's answer is a report.
+        let event =
+            |dev: &mut Device, e: [u8; 10]| -> Result<Option<u8>, Box<dyn std::error::Error>> {
+                if access == LsmAccess::MemoryMapped {
+                    send_event(dev, access, 1, e)?;
+                    return Ok(None);
+                }
+                let mut payload = vec![1, PID_LOAD_STATE_CONTROL, 0x10, 0x01];
+                payload.extend_from_slice(&e);
+                let r = dev.handle_cemi(&data(dev, 0x3D7, &payload))?;
+                Ok(r.responses.first().and_then(|f| f.tpdu.last()).copied())
+            };
+        event(&mut dev, simple(0x01))?; // StartLoading
+        event(&mut dev, alloc(0x4000, 16))?;
+        event(&mut dev, task(0x4000))?;
+        let mut seen: Vec<u8> = event(&mut dev, simple(0x02))?.into_iter().collect();
+        while seen.len() < 3 {
+            seen.push(status(&mut dev)?);
+        }
+        assert_eq!(seen, vec![5, 5, 1], "LoadCompleting twice, then Loaded");
+        assert_eq!(dev.load_state(1), Some(LoadState::Loaded));
+
+        // Unload, then a StartLoading while still Unloading: ignored.
+        let mut seen: Vec<u8> = event(&mut dev, simple(0x04))?.into_iter().collect();
+        seen.extend(event(&mut dev, simple(0x01))?);
+        while seen.last() != Some(&0) && seen.len() < 4 {
+            seen.push(status(&mut dev)?);
+        }
+        assert_eq!(seen, vec![4, 4, 0], "Unloading twice, then Unloaded");
+        assert_eq!(
+            dev.load_state(1),
+            Some(LoadState::Unloaded),
+            "the StartLoading sent while Unloading was ignored"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_with_intermediate_load_states_property_lsm() -> Result<(), Box<dyn std::error::Error>> {
+        intermediate_states(LsmAccess::Property)
+    }
+
+    #[test]
+    fn test_with_intermediate_load_states_memory_mapped_lsm()
+    -> Result<(), Box<dyn std::error::Error>> {
+        intermediate_states(LsmAccess::MemoryMapped)
+    }
+
+    #[test]
+    fn test_with_intermediate_load_states_system_b() -> Result<(), Box<dyn std::error::Error>> {
+        let mut dev = system_b_device()?.with_intermediate_load_states(1);
+        connect(&mut dev)?;
+        dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
+        let write = |dev: &mut Device, e: u8| -> Result<u8, Box<dyn std::error::Error>> {
+            let r = dev.handle_cemi(&data(
+                dev,
+                0x3D7,
+                &[0x01, 0x05, 0x10, 0x01, e, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            ))?;
+            Ok(*r
+                .responses
+                .first()
+                .and_then(|f| f.tpdu.last())
+                .ok_or("empty answer")?)
+        };
+        let read = |dev: &mut Device| -> Result<u8, Box<dyn std::error::Error>> {
+            let r = dev.handle_cemi(&data(dev, 0x3D5, &[0x01, 0x05, 0x10, 0x01]))?;
+            Ok(*r
+                .responses
+                .first()
+                .and_then(|f| f.tpdu.last())
+                .ok_or("empty answer")?)
+        };
+        assert_eq!(write(&mut dev, 0x01)?, LoadState::Loading.to_byte());
+        assert_eq!(write(&mut dev, 0x02)?, 5, "LoadCompleting in the answer");
+        assert_eq!(read(&mut dev)?, LoadState::Loaded.to_byte());
+        assert_eq!(write(&mut dev, 0x04)?, 4, "Unloading in the answer");
+        assert_eq!(read(&mut dev)?, LoadState::Unloaded.to_byte());
         Ok(())
     }
 

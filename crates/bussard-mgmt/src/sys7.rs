@@ -24,7 +24,10 @@
 //! ETS 6 sweep captures of nine manufacturers.
 
 use crate::connection::{L4Channel, Layer4Connection, property_request, property_write_request};
-use crate::load::{LoadControl, LoadState, Result, WriteError, read_memory_strict, write_memory};
+use crate::load::{
+    IntermediatePoll, IntermediateWait, LoadControl, LoadState, Result, WriteError,
+    read_memory_strict, write_memory,
+};
 
 /// The size of a standard KNX load-event record: 10 octets (`[XKNX
 /// LOAD_EVENT_SIZE=10]`, KNX 3/5/1 §4.23.2). Octet 0 is the event opcode; the
@@ -395,18 +398,31 @@ impl LsmAccess {
         }
     }
 
-    /// The state `lsm` is in after an event: the state the event's answer
-    /// carried (`reported`), else a separate [`read_state`](Self::read_state).
+    /// The state `lsm` settles in after `control`: the state the event's
+    /// answer carried (`reported`), else a separate
+    /// [`read_state`](Self::read_state), then re-read with `poll` while it is
+    /// intermediate (`Unloading`, `LoadCompleting`, KNX 3/5/1 §4.23.2.4.1,
+    /// issue #479). On the memory-mapped realisation the re-read is the same
+    /// status-octet read as the first one. Still intermediate after
+    /// `poll.max_wait` fails with [`WriteError::LoadStateTimeout`].
     async fn state_after<Ch: L4Channel>(
         &self,
         l4: &mut Layer4Connection<Ch>,
         lsm: u8,
+        control: LoadControl,
         reported: Option<LoadState>,
+        poll: IntermediatePoll,
     ) -> Result<LoadState> {
-        match reported {
-            Some(state) => Ok(state),
-            None => self.read_state(l4, lsm).await,
+        let mut state = match reported {
+            Some(state) => state,
+            None => self.read_state(l4, lsm).await?,
+        };
+        let wait = IntermediateWait::start(poll);
+        while let Some(pause) = wait.pause(state, l4.target(), lsm, control)? {
+            tokio::time::sleep(pause).await;
+            state = self.read_state(l4, lsm).await?;
         }
+        Ok(state)
     }
 
     /// Reads the current [`LoadState`] octet of load-state machine `lsm` (1-based).
@@ -453,6 +469,22 @@ impl LsmAccess {
         }
     }
 
+    /// Reads the state of `lsm` like [`read_state`](Self::read_state) and
+    /// re-reads it with `poll` while it is intermediate (`Unloading`,
+    /// `LoadCompleting`), for a gate that checks the state before a load: a
+    /// machine still completing the last load is not yet `Loaded` (issue
+    /// #479). Still intermediate after `poll.max_wait` fails with
+    /// [`WriteError::LoadStateTimeout`] naming [`LoadControl::NoOperation`].
+    pub async fn read_settled_state<Ch: L4Channel>(
+        &self,
+        l4: &mut Layer4Connection<Ch>,
+        lsm: u8,
+        poll: IntermediatePoll,
+    ) -> Result<LoadState> {
+        self.state_after(l4, lsm, LoadControl::NoOperation, None, poll)
+            .await
+    }
+
     /// Drives `lsm` through a single load event and verifies the resulting state.
     ///
     /// Sends `control` as a simple 10-octet event and takes the resulting state
@@ -468,24 +500,43 @@ impl LsmAccess {
     /// stack) `Loaded`; `LoadCompleted` must reach `Loaded`; `Unload` is not
     /// state-checked (mirrors the System B discipline in
     /// [`crate::load::write_load_control`]).
+    ///
+    /// An intermediate state (`Unloading` after `Unload`, `LoadCompleting`
+    /// after `LoadCompleted`) is re-read with the [`IntermediatePoll::STANDARD`]
+    /// timing until the machine settles; the checks above apply to the settled
+    /// state (issue #479).
     pub async fn drive<Ch: L4Channel>(
         &self,
         l4: &mut Layer4Connection<Ch>,
         lsm: u8,
         control: LoadControl,
     ) -> Result<LoadState> {
+        self.drive_with_poll(l4, lsm, control, IntermediatePoll::STANDARD)
+            .await
+    }
+
+    /// [`drive`](Self::drive) with the intermediate-state timing `poll`
+    /// instead of [`IntermediatePoll::STANDARD`].
+    pub async fn drive_with_poll<Ch: L4Channel>(
+        &self,
+        l4: &mut Layer4Connection<Ch>,
+        lsm: u8,
+        control: LoadControl,
+        poll: IntermediatePoll,
+    ) -> Result<LoadState> {
         let address = l4.target();
         let event = simple_event(control);
         let reported = self.send_event(l4, lsm, &event).await?;
         // The verdict on the load trusts the write's answer only when it is
         // the `Loaded` a conformant 0705 device answers (issue #211); anything
-        // else, or no answer state at all, is read back as before (#116).
+        // else, or no answer state at all, is read back as before (#116). An
+        // intermediate answer (`LoadCompleting`) goes straight to the re-reads.
         let reported = if control == LoadControl::LoadCompleted {
-            reported.filter(|state| *state == LoadState::Loaded)
+            reported.filter(|state| *state == LoadState::Loaded || state.is_intermediate())
         } else {
             reported
         };
-        let state = self.state_after(l4, lsm, reported).await?;
+        let state = self.state_after(l4, lsm, control, reported, poll).await?;
         if state == LoadState::Error {
             return Err(WriteError::LoadError {
                 address,
@@ -541,7 +592,15 @@ impl LsmAccess {
     ) -> Result<()> {
         let address = l4.target();
         let reported = self.send_event(l4, lsm, event).await?;
-        let state = self.state_after(l4, lsm, reported).await?;
+        let state = self
+            .state_after(
+                l4,
+                lsm,
+                LoadControl::AdditionalLoadControls,
+                reported,
+                IntermediatePoll::STANDARD,
+            )
+            .await?;
         match state {
             LoadState::Error => Err(WriteError::LoadError {
                 address,

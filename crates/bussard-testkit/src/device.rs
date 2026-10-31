@@ -35,10 +35,11 @@ use crate::consts::{
     A_PROPERTY_EXT_VALUE_WRITE_CON, A_PROPERTY_EXT_VALUE_WRITE_CON_RESPONSE, A_PROPERTY_VALUE_READ,
     A_PROPERTY_VALUE_RESPONSE, A_PROPERTY_VALUE_WRITE, A_RESTART, A_USER_MEMORY_READ,
     A_USER_MEMORY_RESPONSE, A_USER_MEMORY_WRITE, APCI_SELECTOR, LE_ADDITIONAL, LE_LOAD_COMPLETED,
-    LE_START_LOADING, LE_UNLOAD, LS_LOADED, LS_LOADING, LS_UNLOADED, OT_ADDRESS_TABLE,
-    OT_ASSOCIATION_TABLE, OT_DEVICE, OT_GROUP_OBJECT_TABLE, OT_KNXNET_IP_PARAMETER, PID_IO_LIST,
-    PID_LOAD_STATE_CONTROL, PID_MANUFACTURER_ID, PID_OBJECT_TYPE, PID_ORDER_INFO, PID_PROGMODE,
-    PID_SERIAL_NUMBER, PID_TABLE, PID_TABLE_REFERENCE, SUB_REL_SEGMENT,
+    LE_START_LOADING, LE_UNLOAD, LS_LOAD_COMPLETING, LS_LOADED, LS_LOADING, LS_UNLOADED,
+    LS_UNLOADING, OT_ADDRESS_TABLE, OT_ASSOCIATION_TABLE, OT_DEVICE, OT_GROUP_OBJECT_TABLE,
+    OT_KNXNET_IP_PARAMETER, PID_IO_LIST, PID_LOAD_STATE_CONTROL, PID_MANUFACTURER_ID,
+    PID_OBJECT_TYPE, PID_ORDER_INFO, PID_PROGMODE, PID_SERIAL_NUMBER, PID_TABLE,
+    PID_TABLE_REFERENCE, SUB_REL_SEGMENT,
 };
 
 /// The Data Secure SCF octet of an `S-A_Sync_Req` (tool access).
@@ -169,6 +170,17 @@ pub struct MockDevice {
     pub object_types: Vec<u16>,
     /// Load state per object index (absent means `Unloaded`).
     pub load_states: HashMap<u8, u8>,
+    /// How many times the device reports the intermediate load state before
+    /// the settled one: `LoadCompleting` (5) after a `LoadCompleted` from
+    /// `Loading`, `Unloading` (4) after an `Unload` of an object that was not
+    /// `Unloaded` (KNX 3/5/1 §4.23.2.3.1, issue #479). The answer to the write
+    /// is the first report, every `PID_LOAD_STATE_CONTROL` read the next.
+    /// 0 (the default) settles at once. See
+    /// [`MockDevice::with_intermediate_load_states`].
+    pub intermediate_reports: u32,
+    /// The intermediate state each object still reports, and how many more
+    /// times: `(state octet, remaining reports)`.
+    pub intermediate: HashMap<u8, (u8, u32)>,
     /// Allocated segment per object index: `(base, size)`.
     pub segments: HashMap<u8, (u32, u32)>,
     /// Sparse 24-bit memory.
@@ -584,6 +596,8 @@ impl MockDevice {
             authorize_level: 0,
             object_types: vec![OT_DEVICE],
             load_states: HashMap::new(),
+            intermediate_reports: 0,
+            intermediate: HashMap::new(),
             segments: HashMap::new(),
             memory: HashMap::new(),
             memory_write_policy: MemoryWritePolicy::Anywhere,
@@ -908,6 +922,33 @@ impl MockDevice {
         self
     }
 
+    /// Reports the intermediate load state `reports` times before the settled
+    /// one: `LoadCompleting` (5) before `Loaded` after a `LoadCompleted`,
+    /// `Unloading` (4) before `Unloaded` after an `Unload` (issue #479). The
+    /// write's answer is the first report, each `PID_LOAD_STATE_CONTROL` read
+    /// the next. A load event written while the object is still intermediate
+    /// is ignored and answered with the intermediate state, as KNX 3/5/1
+    /// Table 94 has it for `LoadCompleting`. `u32::MAX` never settles.
+    pub fn with_intermediate_load_states(mut self, reports: u32) -> Self {
+        self.intermediate_reports = reports;
+        self
+    }
+
+    /// The load state `object_index` reports to the tool now: the pending
+    /// intermediate state while it has reports left (each call uses one),
+    /// else [`MockDevice::load_state`].
+    fn report_load_state(&mut self, object_index: u8) -> u8 {
+        if let Some((state, left)) = self.intermediate.get_mut(&object_index) {
+            let state = *state;
+            *left = left.saturating_sub(1);
+            if *left == 0 {
+                self.intermediate.remove(&object_index);
+            }
+            return state;
+        }
+        self.load_state(object_index)
+    }
+
     /// Holds every application-layer answer back by `delay` after the `T_ACK`.
     pub fn with_response_delay(mut self, delay: Duration) -> Self {
         self.response_delay = Some(delay);
@@ -1186,7 +1227,19 @@ impl MockDevice {
             A_MEMORY_EXTENDED_WRITE => self.memory_extended_write(data),
             A_USER_MEMORY_READ => self.user_memory_read(data),
             A_USER_MEMORY_WRITE => self.user_memory_write(data),
-            A_PROPERTY_VALUE_READ => self.property_read(data),
+            A_PROPERTY_VALUE_READ => match decode_prop_header(data) {
+                // A PID 5 read of an object still in an intermediate state.
+                Some((oi, PID_LOAD_STATE_CONTROL, _, start))
+                    if self.intermediate.contains_key(&oi) =>
+                {
+                    let state = self.report_load_state(oi);
+                    Reaction::Answer(
+                        A_PROPERTY_VALUE_RESPONSE,
+                        prop_response(oi, PID_LOAD_STATE_CONTROL, 1, start, &[state]),
+                    )
+                }
+                _ => self.property_read(data),
+            },
             A_PROPERTY_EXT_VALUE_READ => self.property_ext_read(data),
             A_PROPERTY_EXT_VALUE_WRITE_CON => self.property_ext_write(data),
             A_PROPERTY_VALUE_WRITE => self.property_write(data),
@@ -1619,6 +1672,11 @@ impl MockDevice {
             )
         };
         let event = value.first().copied().unwrap_or(0);
+        // Still Unloading or LoadCompleting: the event is ignored and the
+        // answer is the unchanged intermediate state (KNX 3/5/1 Table 94).
+        if self.intermediate.contains_key(&oi) {
+            return answer(self.report_load_state(oi));
+        }
         // LdCtrlRelSegment: allocate a fresh segment of the requested size.
         if event == LE_ADDITIONAL && value.get(1) == Some(&SUB_REL_SEGMENT) {
             if self.load_state(oi) == LS_LOADING {
@@ -1641,14 +1699,24 @@ impl MockDevice {
             }
             return answer(self.load_state(oi));
         }
+        let prior = self.load_state(oi);
         let new_state = match event {
             LE_START_LOADING => LS_LOADING,
             LE_LOAD_COMPLETED => LS_LOADED,
             LE_UNLOAD => LS_UNLOADED,
-            _ => self.load_state(oi),
+            _ => prior,
         };
         self.load_states.insert(oi, new_state);
-        answer(new_state)
+        let intermediate = match event {
+            LE_LOAD_COMPLETED if prior == LS_LOADING => Some(LS_LOAD_COMPLETING),
+            LE_UNLOAD if prior != LS_UNLOADED => Some(LS_UNLOADING),
+            _ => None,
+        };
+        if let Some(state) = intermediate.filter(|_| self.intermediate_reports > 0) {
+            self.intermediate
+                .insert(oi, (state, self.intermediate_reports));
+        }
+        answer(self.report_load_state(oi))
     }
 }
 
@@ -1718,6 +1786,59 @@ mod tests {
         dev.handle_broadcast(A_INDIVIDUAL_ADDRESS_WRITE, &[0x11, 0x07]);
         assert_eq!(dev.address.to_string(), "1.1.7");
         assert!(!dev.programming);
+        Ok(())
+    }
+
+    /// The state octet of a `PID_LOAD_STATE_CONTROL` answer.
+    fn pid5_state(reaction: &Reaction) -> Option<u8> {
+        match reaction {
+            Reaction::Answer(A_PROPERTY_VALUE_RESPONSE, data) => data.get(4).copied(),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn test_with_intermediate_load_states_reports_load_completing_then_loaded()
+    -> Result<(), BoxError> {
+        let mut dev = device()?.with_intermediate_load_states(2);
+        let event = |e: u8| {
+            [
+                1,
+                PID_LOAD_STATE_CONTROL,
+                0x10,
+                0x01,
+                e,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]
+        };
+        let read = [1, PID_LOAD_STATE_CONTROL, 0x10, 0x01];
+        // StartLoading: no intermediate state.
+        let start = dev.handle_request(A_PROPERTY_VALUE_WRITE, &event(LE_START_LOADING));
+        assert_eq!(pid5_state(&start), Some(LS_LOADING));
+        // LoadCompleted: the answer and one read report LoadCompleting, then Loaded.
+        let done = dev.handle_request(A_PROPERTY_VALUE_WRITE, &event(LE_LOAD_COMPLETED));
+        assert_eq!(pid5_state(&done), Some(LS_LOAD_COMPLETING));
+        // An event written meanwhile is ignored (Table 94).
+        let ignored = dev.handle_request(A_PROPERTY_VALUE_WRITE, &event(LE_START_LOADING));
+        assert_eq!(pid5_state(&ignored), Some(LS_LOAD_COMPLETING));
+        let settled = dev.handle_request(A_PROPERTY_VALUE_READ, &read);
+        assert_eq!(pid5_state(&settled), Some(LS_LOADED));
+        assert_eq!(dev.load_state(1), LS_LOADED);
+        // Unload of a loaded object: Unloading before Unloaded.
+        let unload = dev.handle_request(A_PROPERTY_VALUE_WRITE, &event(LE_UNLOAD));
+        assert_eq!(pid5_state(&unload), Some(LS_UNLOADING));
+        let still = dev.handle_request(A_PROPERTY_VALUE_READ, &read);
+        assert_eq!(pid5_state(&still), Some(LS_UNLOADING));
+        let gone = dev.handle_request(A_PROPERTY_VALUE_READ, &read);
+        assert_eq!(pid5_state(&gone), Some(LS_UNLOADED));
         Ok(())
     }
 

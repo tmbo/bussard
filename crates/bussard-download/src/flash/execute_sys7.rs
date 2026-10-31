@@ -7,7 +7,9 @@ use super::session::{
 };
 use super::verify::take_sample;
 use super::{FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageRef, Progress};
-use bussard_mgmt::load::{LoadControl, LoadState, WriteError, read_mcb_table, read_memory};
+use bussard_mgmt::load::{
+    IntermediatePoll, LoadControl, LoadState, WriteError, read_mcb_table, read_memory,
+};
 
 /// Executes a validated **System 7** [`FlashPlan`] (`[system7-spec §3/§4]`).
 ///
@@ -105,7 +107,11 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                         // application (issue #146): the machine must hold it,
                         // or nothing is written.
                         if plan.is_parameters_only() {
-                            let actual = lsm.read_state(session.l4(), octet).await?;
+                            // A machine still completing an earlier load
+                            // (LoadCompleting) is waited out (issue #479).
+                            let actual = lsm
+                                .read_settled_state(session.l4(), octet, IntermediatePoll::STANDARD)
+                                .await?;
                             if actual != LoadState::Loaded {
                                 return Err(WriteError::NotLoaded {
                                     address: session.l4().target(),
