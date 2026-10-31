@@ -770,6 +770,24 @@ class SystemBProductProcedure(unittest.TestCase):
         with self.assertRaisesRegex(generate.SpecError, "`LdCtrlTaskSegment` is part of the schema"):
             generate.Product("test", s)
 
+    def test_render_map_error_around_unload(self) -> None:
+        s = self.product_spec()
+        s["load_procedure"][0]["ops"][1:1] = [
+            {"op": "LdCtrlMapError", "original_error": 3221498632, "mapped_error": 0},
+            {"op": "LdCtrlUnload", "lsm": 5},
+            {"op": "LdCtrlMapError", "original_error": 3221498632, "mapped_error": 3221498632}]
+        self.assertIn('<LdCtrlConnect />\n'
+                      '                <LdCtrlMapError OriginalError="3221498632" MappedError="0" />\n'
+                      '                <LdCtrlUnload LsmIdx="5" />\n'
+                      '                <LdCtrlMapError OriginalError="3221498632" MappedError="3221498632" />\n',
+                      app_xml(s))
+
+    def test_map_error_not_yet_in_a_merged_procedure(self) -> None:
+        s = spec()
+        s["load_procedure"][0]["ops"].append({"op": "LdCtrlMapError", "original_error": 1, "mapped_error": 0})
+        with self.assertRaisesRegex(generate.SpecError, "`LdCtrlMapError` is part of the schema"):
+            generate.Product("test", s)
+
     def test_write_prop_without_value_refused(self) -> None:
         s = self.product_spec()
         del s["load_procedure"][0]["ops"][5]["inline_data"]

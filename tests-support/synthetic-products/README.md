@@ -32,6 +32,7 @@ next to it, and zips it on demand.
 | [`syn-ip-address-param`](syn-ip-address-param/product.toml) | `NEST-HOMING` | 07B0 | TypeIPAddress parameter in memory | #457 |
 | [`syn-le-order`](syn-le-order/product.toml) | `NEST-ALTI` | 07B0 | ParameterByteOrder LittleEndian with integers and floats | #403 |
 | [`syn-legacy-patch-always`](syn-legacy-patch-always/product.toml) | `NEST-PATCH` | 07B0 | hidden LegacyPatchAlways parameter, default differs from template | #450 |
+| [`syn-map-error`](syn-map-error/product.toml) | `NEST-FALSE` | 07B0 | LdCtrlMapError around LdCtrlUnload LsmIdx 5 (07B0 ProductProcedure) | #614 |
 | [`syn-master-reset`](syn-master-reset/product.toml) | `NEST-RESET` | 07B0 | Master Reset erase code 1 in the load procedure | #546, #611 |
 | [`syn-master-reset-code4`](syn-master-reset-code4/product.toml) | `NEST-RESET4` | 07B0 | Master Reset erase code 4 after the segment allocation | #546, #600, #611 |
 | [`syn-minimal`](syn-minimal/product.toml) | `NEST-LIGHT` | 07B0 | baseline | #596 |
@@ -124,7 +125,8 @@ ParamRefId>` with its `<when>` branches inside the procedure (#411).
 A 07B0 product procedure (#614) also takes `LdCtrlConnect`,
 `LdCtrlDisconnect`, `LdCtrlUnload`, `LdCtrlLoad` and `LdCtrlLoadCompleted`
 (`lsm`), and writes the program version by `LdCtrlWriteProp` with
-`inline_data`; its tables are relative segments the procedure allocates and writes
+`inline_data`, and takes `LdCtrlMapError` (`original_error`, `mapped_error`,
+#604 row 38); its tables are relative segments the procedure allocates and writes
 on LSM 1 to 3, with no code segment declared for them.
 
 The schema reaches further than the generator does. These are reserved for

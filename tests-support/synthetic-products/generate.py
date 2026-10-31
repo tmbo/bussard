@@ -628,6 +628,9 @@ B_PRODUCT_LOAD_OPS = {
     "LdCtrlLoad": {"lsm": "LsmIdx"},
     "LdCtrlLoadCompleted": {"lsm": "LsmIdx"},
     "LdCtrlWriteProp": LOAD_OPS["LdCtrlWriteProp"],
+    # syn-map-error (#604 row 38, #614): an ETS error code mapped to another
+    # (0 = success) for the ops that follow, until mapped back to itself.
+    "LdCtrlMapError": {"original_error": "OriginalError", "mapped_error": "MappedError"},
 }
 # Every op table, for rendering (each spec is checked against its own table).
 ALL_LOAD_OPS = LOAD_OPS | SYS7_LOAD_OPS | B_PRODUCT_LOAD_OPS
