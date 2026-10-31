@@ -29,8 +29,9 @@ use crate::translation::TranslationCollector;
 use bussard_model::Dpt;
 pub use bussard_model::color_codec::ColorSpace;
 pub use bussard_model::dynamic::{
-    Allocator, BlockRef, ChannelRef, CompareOp, ComputedArg, DynamicNode, DynamicWhen, EnumValue,
-    LabelMatch, Memory, Union, UnionMember, WhenTest, enum_member_by_label, flatten_containers,
+    Allocator, BlockRef, CalculationParameter, ChannelRef, CompareOp, ComputedArg, DynamicNode,
+    DynamicWhen, EnumValue, LabelMatch, Memory, ParameterCalculation, Union, UnionMember, WhenTest,
+    enum_member_by_label, flatten_containers,
 };
 
 /// A base `<ComObject>` from the application program.
@@ -1077,6 +1078,10 @@ pub struct ApplicationProgram {
     /// parameters onto one shared memory region; empty for an application with
     /// no unions.
     pub unions: Vec<Union>,
+    /// `<ParameterCalculation>` scripts, in document order; empty for an
+    /// application without them.
+    #[serde(default)]
+    pub calculations: Vec<ParameterCalculation>,
     /// Parameter refs, keyed by full `Id`.
     pub parameter_refs: HashMap<String, ParameterRef>,
     /// Code segments, keyed by full `Id`.
@@ -1403,6 +1408,42 @@ pub fn parse_application_program_in(
                 let raw = t.into_inner();
                 seg_buf.push_str(&String::from_utf8_lossy(&raw));
             }
+            Event::Text(t) if state.calc_script.is_some() => {
+                let text = t.decode().map_err(|source| EtsError::Xml {
+                    context: context.clone(),
+                    source: source.into(),
+                })?;
+                if let Some(script) = state.calc_script.as_mut() {
+                    script.push_str(&text);
+                }
+            }
+            Event::CData(t) if state.calc_script.is_some() => {
+                let text = t.decode().map_err(|source| EtsError::Xml {
+                    context: context.clone(),
+                    source: source.into(),
+                })?;
+                if let Some(script) = state.calc_script.as_mut() {
+                    script.push_str(&text);
+                }
+            }
+            Event::GeneralRef(r) if state.calc_script.is_some() => {
+                // quick-xml reports `&lt;`, `&amp;`, `&#10;` … as their own
+                // events; scripts are full of them.
+                let text = match r.resolve_char_ref() {
+                    Ok(Some(c)) => c.to_string(),
+                    _ => {
+                        let name = r.decode().map_err(|source| EtsError::Xml {
+                            context: context.clone(),
+                            source: source.into(),
+                        })?;
+                        quick_xml::escape::resolve_predefined_entity(&name)
+                            .map_or_else(|| format!("&{name};"), str::to_string)
+                    }
+                };
+                if let Some(script) = state.calc_script.as_mut() {
+                    script.push_str(&text);
+                }
+            }
             Event::Empty(e) => {
                 handle_empty(
                     &e,
@@ -1434,6 +1475,19 @@ pub fn parse_application_program_in(
                     seg_buf.clear();
                 }
                 b"RelativeSegment" | b"AbsoluteSegment" => cur_segment_id = None,
+                b"LRTransformation" => {
+                    if let (Some(script), Some(calc)) =
+                        (state.calc_script.take(), state.calc.as_mut())
+                    {
+                        calc.lr_script = script;
+                    }
+                }
+                b"LParameters" | b"RParameters" => state.calc_outputs = None,
+                b"ParameterCalculation" => {
+                    if let Some(calc) = state.calc.take() {
+                        app.calculations.push(calc);
+                    }
+                }
                 b"Language" => translations.exit_language(),
                 b"TranslationElement" => translations.exit_element(),
                 b"Parameter" => state.param_id = None,
@@ -1657,6 +1711,17 @@ fn handle_start(
         }
         b"RelativeSegment" => insert_segment(app, m, SegmentKind::Relative),
         b"AbsoluteSegment" => insert_segment(app, m, SegmentKind::Absolute),
+        b"ParameterCalculation" => {
+            state.calc = Some(ParameterCalculation {
+                id: relative_attr(m, b"Id", &app.id).unwrap_or_default(),
+                language: get(m, b"Language").unwrap_or_default().to_string(),
+                ..ParameterCalculation::default()
+            });
+        }
+        b"LParameters" if state.calc.is_some() => state.calc_outputs = Some(false),
+        b"RParameters" if state.calc.is_some() => state.calc_outputs = Some(true),
+        b"LRTransformation" if state.calc.is_some() => state.calc_script = Some(String::new()),
+        b"ParameterRefRef" if state.calc_outputs.is_some() => calc_parameter(state, m, &app.id),
         b"Options" => insert_options(app, m),
         b"Extension" => insert_extension(app, m),
         b"ComObjectTable" => insert_com_object_table(app, m),
@@ -1823,6 +1888,7 @@ fn handle_empty(
     let m = &*attrs;
     state.tree.empty(e.local_name().as_ref(), m, &app.id);
     match e.local_name().as_ref() {
+        b"ParameterRefRef" if state.calc_outputs.is_some() => calc_parameter(state, m, &app.id),
         b"ComObject" => insert_com_object(app, m),
         b"ComObjectRef" => insert_com_object_ref(app, m),
         b"Channel" => insert_channel(app, m),
@@ -2136,6 +2202,26 @@ fn insert_com_object_ref(app: &mut ApplicationProgram, m: &Attrs) {
     );
 }
 
+/// Adds a `<ParameterRefRef>` inside an open calculation's `<LParameters>`
+/// or `<RParameters>` to its inputs or outputs.
+fn calc_parameter(state: &mut ParseState, m: &Attrs, app_id: &str) {
+    let (Some(calc), Some(outputs)) = (state.calc.as_mut(), state.calc_outputs) else {
+        return;
+    };
+    let Some(param_ref) = relative_attr(m, b"RefId", app_id) else {
+        return;
+    };
+    let param = CalculationParameter {
+        param_ref,
+        alias: get(m, b"AliasName").map(str::to_string),
+    };
+    if outputs {
+        calc.outputs.push(param);
+    } else {
+        calc.inputs.push(param);
+    }
+}
+
 /// An id-valued attribute with the `<app-id>_` prefix stripped (kept verbatim
 /// when it lacks the prefix); `None` when absent or empty.
 fn relative_attr(m: &Attrs, key: &[u8], app_id: &str) -> Option<String> {
@@ -2361,6 +2447,13 @@ struct ParseState {
     dynamic: DynamicState,
     /// The Dynamic-section tree being built (see [`DynamicNode`]).
     tree: DynTreeBuilder,
+    /// The `<ParameterCalculation>` currently being built.
+    calc: Option<ParameterCalculation>,
+    /// Which of its parameter lists is open: `Some(true)` inside
+    /// `<RParameters>`, `Some(false)` inside `<LParameters>`.
+    calc_outputs: Option<bool>,
+    /// Its `<LRTransformation>` script text while that element is open.
+    calc_script: Option<String>,
 }
 
 /// Builds the [`DynamicNode`] trees of the application's Dynamic section and of
@@ -3190,6 +3283,53 @@ mod tests {
             assert_eq!(app.prefer_partial_download, partial, "{options}");
             assert_eq!(app.downloads_invisible_parameters(), writes, "{options}");
         }
+        Ok(())
+    }
+
+    /// A `<ParameterCalculation>` keeps its language, its script with the XML
+    /// escapes resolved, and its input and output refs (app-relative, with
+    /// their `AliasName`s).
+    #[test]
+    fn test_parse_application_program_parameter_calculation() -> Result<()> {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/20"><ApplicationProgram Id="M-1_A-1" Name="t"><Static>
+            <ParameterCalculations>
+              <ParameterCalculation Id="M-1_A-1_PC-2" Name="Fan" Language="VBScript">
+                <LParameters>
+                  <ParameterRefRef RefId="M-1_A-1_P-3_R-3" AliasName="mode" />
+                  <ParameterRefRef RefId="M-1_A-1_P-4_R-4" />
+                </LParameters>
+                <RParameters><ParameterRefRef RefId="M-1_A-1_P-5_R-5" AliasName="fan" /></RParameters>
+                <LRTransformation>If mode &lt; 2 And mode &gt; 0 Then fan = 4&#10;s = "a &amp; b"</LRTransformation>
+                <RLTransformation>mode = 1</RLTransformation>
+              </ParameterCalculation>
+            </ParameterCalculations>
+            </Static></ApplicationProgram></KNX>"#;
+        let app = parse_application_program_str("M-1_A-1", xml)?;
+        let [calc] = app.calculations.as_slice() else {
+            panic!("expected one calculation, got {:?}", app.calculations);
+        };
+        assert_eq!(calc.id, "PC-2");
+        assert_eq!(calc.language, "VBScript");
+        assert_eq!(
+            calc.lr_script,
+            "If mode < 2 And mode > 0 Then fan = 4\ns = \"a & b\""
+        );
+        let refs = |ps: &[CalculationParameter]| -> Vec<(String, Option<String>)> {
+            ps.iter()
+                .map(|p| (p.param_ref.clone(), p.alias.clone()))
+                .collect()
+        };
+        assert_eq!(
+            refs(&calc.inputs),
+            [
+                ("P-3_R-3".to_string(), Some("mode".to_string())),
+                ("P-4_R-4".to_string(), None),
+            ]
+        );
+        assert_eq!(
+            refs(&calc.outputs),
+            [("P-5_R-5".to_string(), Some("fan".to_string()))]
+        );
         Ok(())
     }
 

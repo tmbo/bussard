@@ -227,6 +227,20 @@ pub fn compute_parameter_image_placed_with(
         let images = dynamic_image(app, &config, &mut placed)?;
         return Ok((images, placed));
     }
+    // Calculations run inside the Dynamic evaluation, which this path does
+    // not do. ETS runs one only once an input leaves its vendor default (the
+    // trigger rule, issue #427), so at the defaults the outputs keep their
+    // defaults and this path writes what ETS writes; an override that would
+    // run a script is refused rather than leave its outputs stale.
+    if let Some(calc) = bussard_ets::dynamic::calculation_triggered_by(app, overrides) {
+        return Err(ProdError::ParameterImage {
+            parameter: calc.id.clone(),
+            reason: "is a parameter calculation whose input the model sets, which bussard \
+                     runs only for an application whose Dynamic section it evaluates; this \
+                     one it does not"
+                .to_string(),
+        });
+    }
     // Pre-index the first ParameterRef Value override per parameter id, in a
     // deterministic order (sorted by ref id) so a fixed ref wins reproducibly.
     let mut ref_value: BTreeMap<&str, &str> = BTreeMap::new();
@@ -648,8 +662,10 @@ pub fn uses_dynamic_image(app: &ApplicationProgram) -> bool {
 /// This reproduces the ETS 6 image of a Jung 52921ST (F50, app A-D142-21)
 /// byte for byte, where the template-plus-every-default image differed in 240
 /// of 6152 octets (see the `f50_golden` test in `bussard-download`). Values an
-/// application computes with `<ParameterCalculation>` scripts (a Jung A-3030
-/// LED dimmer's dimming curves) are not produced.
+/// application computes with `<ParameterCalculation>` scripts (an Ekinex
+/// EK-E72's fan block, a Jung A-3030 LED dimmer's dimming curves) come from
+/// the Dynamic evaluation, which runs them; an output of a script bussard
+/// cannot run is refused rather than written.
 ///
 /// # Errors
 ///
@@ -680,6 +696,45 @@ fn dynamic_image(
             "names a parameter ref this application does not define",
         ));
     }
+    // A calculated parameter is not the user's to set: an override the
+    // calculation replaced with another value would leave the model and the
+    // device disagreeing for good.
+    if let Some(o) = config.calculated_overrides.first() {
+        return Err(param_err(
+            app,
+            &o.param_ref,
+            &format!(
+                "is computed by calculation {} as {:?}, but the model sets {:?}: remove it from \
+                 the device file, or change the parameters the calculation reads",
+                o.calculation, o.computed, o.overridden
+            ),
+        ));
+    }
+    // A calculation that could not run leaves its outputs, and every value
+    // copied or computed from them, at a value ETS would not have. One that
+    // decides a `<choose>` or a `<Repeat>` steers the configuration even when
+    // nothing writes it; one only a display text reads does not matter.
+    let derived = bussard_ets::dynamic::refs_derived_from(app, &config.refused_calculations);
+    if !derived.is_empty() {
+        let decides = bussard_ets::dynamic::refs_read_by_dynamic(app);
+        let mut steering: Vec<(&String, &usize)> = derived
+            .iter()
+            .filter(|(r, _)| decides.contains(*r))
+            .collect();
+        steering.sort();
+        if let Some(&(output, &i)) = steering.first() {
+            let calc = &config.refused_calculations[i];
+            return Err(param_err(
+                app,
+                output,
+                &format!(
+                    "is computed by calculation {}, which bussard cannot run ({}), and decides \
+                     which parameters the configuration shows",
+                    calc.id, calc.reason
+                ),
+            ));
+        }
+    }
 
     // Seed every segment a parameter can land in, so the image set matches the
     // vendor-default path even where no reached parameter falls.
@@ -696,7 +751,32 @@ fn dynamic_image(
             .or_insert_with(|| base_image(app, seg));
     }
 
+    // An output of a calculation that could not run, or a value copied from
+    // one, holds a value the script did not compute; writing it would be a
+    // silent wrong image.
+    let computed_by: BTreeMap<&str, &str> = app
+        .calculations
+        .iter()
+        .flat_map(|c| {
+            c.outputs
+                .iter()
+                .map(move |o| (o.param_ref.as_str(), c.id.as_str()))
+        })
+        .collect();
     for slot in dynamic_parameter_slots(app, config)? {
+        if let Some(ref_id) = slot.param_ref_id.as_deref()
+            && let Some(&i) = derived.get(ref_id)
+        {
+            let calc = &config.refused_calculations[i];
+            return Err(param_err(
+                app,
+                ref_id,
+                &format!(
+                    "is computed by calculation {}, which bussard cannot run: {}",
+                    calc.id, calc.reason
+                ),
+            ));
+        }
         let (value, source) = match slot.param_ref_id.as_deref() {
             Some(ref_id) => (
                 config.value(app, slot.module, ref_id),
@@ -711,7 +791,25 @@ fn dynamic_image(
                 ValueSource::VendorDefault,
             ),
         };
-        let range = write_slot(app, &mut images, &slot, value.as_deref(), source)?;
+        let range =
+            write_slot(app, &mut images, &slot, value.as_deref(), source).map_err(|err| {
+                // A computed value that does not fit its parameter (a fraction
+                // for an integer, say) names the calculation behind it.
+                match (
+                    &err,
+                    slot.param_ref_id
+                        .as_deref()
+                        .and_then(|r| computed_by.get(r)),
+                ) {
+                    (ProdError::ParameterImage { parameter, reason }, Some(calc)) => {
+                        ProdError::ParameterImage {
+                            parameter: parameter.clone(),
+                            reason: format!("{reason} (the value computed by calculation {calc})"),
+                        }
+                    }
+                    _ => err,
+                }
+            })?;
         mark(placed, slot.segment, range);
     }
 
@@ -1040,6 +1138,19 @@ fn invisible_parameter_slots<'a>(
         })
         .collect();
     params.sort_by(|a, b| a.id.cmp(&b.id));
+    // A hidden calculation output is written with the value the calculation
+    // computed (and refused with it), not its default: give it its ref.
+    let calculated: BTreeMap<&str, &str> = app
+        .calculations
+        .iter()
+        .flat_map(|c| &c.outputs)
+        .filter_map(|o| {
+            let pref = app
+                .parameter_refs
+                .get(&format!("{prefix}{}", o.param_ref))?;
+            Some((pref.ref_id.as_str(), o.param_ref.as_str()))
+        })
+        .collect();
     for param in params {
         if let Some(&(ui, mi)) = union_of.get(param.id.as_str())
             && (occupied_unions.contains(&ui) || !app.unions[ui].members[mi].is_default)
@@ -1049,7 +1160,8 @@ fn invisible_parameter_slots<'a>(
         let Some(at) = location(app, union_of, param) else {
             continue;
         };
-        slots.push(slot_at(app, config, param, at, None, None)?);
+        let param_ref = calculated.get(param.id.as_str()).map(|r| (*r).to_string());
+        slots.push(slot_at(app, config, param, at, None, param_ref)?);
     }
     Ok(())
 }
@@ -4032,6 +4144,307 @@ mod tests {
         // An override naming no ref of the application is refused.
         overrides.insert("P-99_R-1".to_string(), "1".to_string());
         assert!(compute_parameter_image(&app, &overrides, &BTreeMap::new()).is_err());
+        Ok(())
+    }
+
+    /// A `<ParameterCalculation>` derives `fan` from `mode` (the Ekinex EK-E72
+    /// shape: its fan block switch comes from a VBScript), and `fan` decides
+    /// whether `extra` is shown. `{script}` is the calculation's script.
+    fn calc_xml(script: &str) -> String {
+        CalcApp::new(script).xml()
+    }
+
+    /// The variants of [`calc_xml`] the calculation tests need.
+    struct CalcApp<'a> {
+        script: &'a str,
+        language: &'a str,
+        /// Whether the walk reaches `fan` (else it is a hidden parameter).
+        fan_shown: bool,
+        /// Whether `fan` has memory (else it is display-only).
+        fan_memory: bool,
+        /// The `<Options>` element, or nothing for ETS's defaults (which
+        /// download hidden parameters).
+        options: &'a str,
+        /// More calculations, after `PC-1`.
+        more_calcs: &'a str,
+        /// More Dynamic nodes, after the choose.
+        more_dynamic: &'a str,
+        /// Whether the application has a Dynamic section at all.
+        dynamic: bool,
+    }
+
+    impl<'a> CalcApp<'a> {
+        fn new(script: &'a str) -> Self {
+            Self {
+                script,
+                language: "VBScript",
+                fan_shown: true,
+                fan_memory: true,
+                options: r#"<Options DownloadInvisibleParameters="None" />"#,
+                more_calcs: "",
+                more_dynamic: "",
+                dynamic: true,
+            }
+        }
+
+        fn xml(&self) -> String {
+            let fan_memory = if self.fan_memory {
+                r#"<Memory CodeSegment="A_RS-1" Offset="1" BitOffset="0" />"#
+            } else {
+                ""
+            };
+            let fan_ref = if self.fan_shown {
+                r#"<ParameterRefRef RefId="A_P-2_R-2" />"#
+            } else {
+                ""
+            };
+            let dynamic = if self.dynamic {
+                format!(
+                    r#"<Dynamic>
+       <ChannelIndependentBlock><ParameterBlock Id="A_PB-1">
+        <ParameterRefRef RefId="A_P-1_R-1" />
+        {fan_ref}
+        <choose ParamRefId="A_P-2_R-2"><when test="4"><ParameterRefRef RefId="A_P-3_R-3" /></when></choose>
+        {more}
+       </ParameterBlock></ChannelIndependentBlock>
+      </Dynamic>"#,
+                    more = self.more_dynamic
+                )
+            } else {
+                String::new()
+            };
+            format!(
+                r#"<KNX xmlns="http://knx.org/xml/project/20">
+     <ApplicationProgram Id="A" MaskVersion="MV-07B0" Name="calc">
+      <Static>
+       <Code><RelativeSegment Id="A_RS-1" Size="5" LoadStateMachine="4" Offset="0"><Data>AAAAAAA=</Data></RelativeSegment></Code>
+       <ParameterTypes>
+        <ParameterType Id="A_PT-1" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+        <ParameterType Id="A_PT-2" Name="t"><TypeText SizeInBit="16" /></ParameterType>
+       </ParameterTypes>
+       <Parameters>
+        <Parameter Id="A_P-1" Name="mode" ParameterType="A_PT-1" Value="0"><Memory CodeSegment="A_RS-1" Offset="0" BitOffset="0" /></Parameter>
+        <Parameter Id="A_P-2" Name="fan" ParameterType="A_PT-1" Value="0">{fan_memory}</Parameter>
+        <Parameter Id="A_P-3" Name="extra" ParameterType="A_PT-1" Value="9"><Memory CodeSegment="A_RS-1" Offset="2" BitOffset="0" /></Parameter>
+        <Parameter Id="A_P-4" Name="label" ParameterType="A_PT-2" Value="1"><Memory CodeSegment="A_RS-1" Offset="3" BitOffset="0" /></Parameter>
+       </Parameters>
+       <ParameterRefs>
+        <ParameterRef Id="A_P-1_R-1" RefId="A_P-1" />
+        <ParameterRef Id="A_P-2_R-2" RefId="A_P-2" />
+        <ParameterRef Id="A_P-3_R-3" RefId="A_P-3" />
+        <ParameterRef Id="A_P-4_R-4" RefId="A_P-4" />
+       </ParameterRefs>
+       <ParameterCalculations>
+        <ParameterCalculation Id="A_PC-1" Name="Fan" Language="{language}">
+         <LParameters><ParameterRefRef RefId="A_P-1_R-1" AliasName="Mode" /></LParameters>
+         <RParameters><ParameterRefRef RefId="A_P-2_R-2" /></RParameters>
+         <LRTransformation>{script}</LRTransformation>
+        </ParameterCalculation>
+        {more_calcs}
+       </ParameterCalculations>
+       {options}
+      </Static>
+      {dynamic}
+     </ApplicationProgram></KNX>"#,
+                language = self.language,
+                script = self.script,
+                more_calcs = self.more_calcs,
+                options = self.options,
+            )
+        }
+
+        fn image(&self, overrides: &[(&str, &str)]) -> Result<Vec<u8>> {
+            let app = parse_application_program("A", self.xml().as_bytes())?;
+            let overrides = overrides
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect();
+            Ok(compute_parameter_image(&app, &overrides, &BTreeMap::new())?["A_RS-1"].clone())
+        }
+
+        fn refusal(&self, overrides: &[(&str, &str)]) -> String {
+            self.image(overrides)
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_default()
+        }
+    }
+
+    /// A calculated value is written, steers the Dynamic section like any
+    /// other value, and wins over an override of the computed parameter.
+    #[test]
+    fn test_compute_parameter_image_runs_parameter_calculations() -> Result<()> {
+        let xml = calc_xml("If Mode = 1 Then fan = 4 Else fan = 0");
+        let app = parse_application_program("A", xml.as_bytes())?;
+        let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
+        assert_eq!(images["A_RS-1"][..3], [0, 0, 0]);
+        let mut overrides = BTreeMap::new();
+        overrides.insert("P-1_R-1".to_string(), "1".to_string());
+        let images = compute_parameter_image(&app, &overrides, &BTreeMap::new())?;
+        // fan = 4 shows extra, written with its default.
+        assert_eq!(images["A_RS-1"][..3], [1, 4, 9]);
+        // An override that agrees with the calculation is harmless.
+        overrides.insert("P-2_R-2".to_string(), "4".to_string());
+        let images = compute_parameter_image(&app, &overrides, &BTreeMap::new())?;
+        assert_eq!(images["A_RS-1"][..3], [1, 4, 9]);
+        Ok(())
+    }
+
+    /// An override of a calculated parameter that the calculation replaces
+    /// with another value is refused, not dropped: the model would otherwise
+    /// disagree with the device for good.
+    #[test]
+    fn test_compute_parameter_image_refuses_an_override_the_calculation_replaces() {
+        let app = CalcApp::new("If Mode = 1 Then fan = 4 Else fan = 0");
+        let err = app.refusal(&[("P-1_R-1", "1"), ("P-2_R-2", "7")]);
+        assert!(
+            err.contains("computed by calculation PC-1 as \"4\"") && err.contains("\"7\""),
+            "{err}"
+        );
+    }
+
+    /// With ETS's default `DownloadInvisibleParameters`, a calculation output
+    /// the walk never reaches is still written with the computed value, and
+    /// refused when the calculation cannot run.
+    #[test]
+    fn test_compute_parameter_image_writes_a_hidden_calculation_output() -> Result<()> {
+        let mut app = CalcApp::new("If Mode = 1 Then fan = 4 Else fan = 0");
+        app.fan_shown = false;
+        app.options = "";
+        assert_eq!(app.image(&[("P-1_R-1", "1")])?[..3], [1, 4, 9]);
+        app.script = "fan = Abs(-4)";
+        let err = app.refusal(&[("P-1_R-1", "1")]);
+        assert!(err.contains("calculation PC-1"), "{err}");
+        Ok(())
+    }
+
+    /// A calculation that cannot run whose display-only output decides a
+    /// `<choose>` is refused, though nothing writes the output itself.
+    #[test]
+    fn test_compute_parameter_image_refuses_a_branch_steered_by_an_unrunnable_calculation() {
+        let mut app = CalcApp::new("fan = Abs(-4)");
+        app.fan_memory = false;
+        let err = app.refusal(&[("P-1_R-1", "1")]);
+        assert!(err.contains("decides which parameters"), "{err}");
+    }
+
+    /// The vendor-default path (no Dynamic section) cannot run calculations.
+    /// At the defaults ETS runs none either, so it writes the defaults; an
+    /// override of an input, which would run one, is refused.
+    #[test]
+    fn test_compute_parameter_image_refuses_calculations_without_dynamic() -> Result<()> {
+        let mut app = CalcApp::new("If Mode = 0 Then fan = 4 Else fan = 0");
+        app.dynamic = false;
+        assert_eq!(app.image(&[])?[..2], [0, 0]);
+        assert_eq!(app.image(&[("P-1_R-1", "0")])?[..2], [0, 0]);
+        let err = app.refusal(&[("P-1_R-1", "1")]);
+        assert!(err.contains("PC-1") && err.contains("Dynamic"), "{err}");
+        Ok(())
+    }
+
+    /// At the vendor defaults no calculation runs, as in ETS (the `defaults`
+    /// run of the syn-param-calculation capture): its output keeps its
+    /// default, and a script bussard cannot run is not refused.
+    #[test]
+    fn test_compute_parameter_image_runs_no_calculation_at_defaults() -> Result<()> {
+        let app = CalcApp::new("If Mode = 0 Then fan = 4 Else fan = 0");
+        assert_eq!(app.image(&[])?[..3], [0, 0, 0]);
+        let app = CalcApp::new("fan = Abs(-4)");
+        assert_eq!(app.image(&[])?[..3], [0, 0, 0]);
+        Ok(())
+    }
+
+    /// A script that reads its own output runs once per input change, as in
+    /// ETS, and does not drift with the evaluation's passes.
+    #[test]
+    fn test_compute_parameter_image_runs_a_calculation_once_per_input_change() -> Result<()> {
+        let app = CalcApp::new("fan = fan + 1 + Mode");
+        assert_eq!(app.image(&[])?[1], 0);
+        assert_eq!(app.image(&[("P-1_R-1", "2")])?[1], 3);
+        Ok(())
+    }
+
+    /// A computed value the parameter cannot hold is refused naming the
+    /// calculation.
+    #[test]
+    fn test_compute_parameter_image_names_the_calculation_of_an_unencodable_value() {
+        let app = CalcApp::new("fan = Mode + 0.5");
+        let err = app.refusal(&[("P-1_R-1", "1")]);
+        assert!(err.contains("calculation PC-1"), "{err}");
+    }
+
+    /// Two calculations feeding each other never settle: refused.
+    #[test]
+    fn test_compute_parameter_image_refuses_calculations_that_never_settle() {
+        let mut app = CalcApp::new("fan = Mode + 1");
+        // `extra` set off its default starts PC-2, which feeds PC-1 and back.
+        app.more_calcs = r#"<ParameterCalculation Id="A_PC-2" Name="Back" Language="VBScript">
+         <LParameters><ParameterRefRef RefId="A_P-2_R-2" /><ParameterRefRef RefId="A_P-3_R-3" /></LParameters>
+         <RParameters><ParameterRefRef RefId="A_P-1_R-1" AliasName="Mode" /></RParameters>
+         <LRTransformation>Mode = (fan + extra) Mod 200</LRTransformation>
+        </ParameterCalculation>"#;
+        let err = app.refusal(&[("P-3_R-3", "1")]);
+        assert!(err.contains("did not settle"), "{err}");
+    }
+
+    /// One calculation reading another's output sees the computed value,
+    /// whichever comes first in the document.
+    #[test]
+    fn test_compute_parameter_image_chains_calculations() -> Result<()> {
+        let mut app = CalcApp::new("If Mode = 1 Then fan = 4 Else fan = 0");
+        app.more_calcs = r#"<ParameterCalculation Id="A_PC-2" Name="Extra" Language="VBScript">
+         <LParameters><ParameterRefRef RefId="A_P-2_R-2" /></LParameters>
+         <RParameters><ParameterRefRef RefId="A_P-3_R-3" /></RParameters>
+         <LRTransformation>extra = fan * 2</LRTransformation>
+        </ParameterCalculation>"#;
+        assert_eq!(app.image(&[("P-1_R-1", "1")])?[..3], [1, 4, 8]);
+        Ok(())
+    }
+
+    /// An `<Assign>` to a calculation output wins over the calculation; one to
+    /// a calculation input makes the calculation run with the assigned value.
+    #[test]
+    fn test_compute_parameter_image_assigns_and_calculations() -> Result<()> {
+        let mut app = CalcApp::new("If Mode = 1 Then fan = 4 Else fan = 0");
+        app.more_dynamic = r#"<Assign TargetParamRefRef="A_P-2_R-2" Value="7" />"#;
+        assert_eq!(app.image(&[("P-1_R-1", "1")])?[1], 7);
+        app.more_dynamic = r#"<Assign TargetParamRefRef="A_P-1_R-1" Value="1" />"#;
+        assert_eq!(app.image(&[])?[..3], [1, 4, 9]);
+        Ok(())
+    }
+
+    /// A text parameter reaches a JavaScript script as a string, so `+`
+    /// concatenates though the text looks like a number.
+    #[test]
+    fn test_compute_parameter_image_passes_text_parameters_as_strings() -> Result<()> {
+        let mut app = CalcApp::new("label = label + Mode;");
+        app.language = "JavaScript";
+        app.more_dynamic = r#"<ParameterRefRef RefId="A_P-4_R-4" />"#;
+        // PC-1 writes `fan` from the script; rewire it to read `label` too.
+        let xml = app.xml().replace(
+            r#"<RParameters><ParameterRefRef RefId="A_P-2_R-2" /></RParameters>"#,
+            r#"<RParameters><ParameterRefRef RefId="A_P-4_R-4" /></RParameters>"#,
+        );
+        let app = parse_application_program("A", xml.as_bytes())?;
+        let overrides = BTreeMap::from([("P-1_R-1".to_string(), "3".to_string())]);
+        let images = compute_parameter_image(&app, &overrides, &BTreeMap::new())?;
+        assert_eq!(images["A_RS-1"][3..5], *b"13");
+        Ok(())
+    }
+
+    /// A calculation bussard cannot run makes the image refuse to write its
+    /// output, naming the calculation, rather than write a stale value.
+    #[test]
+    fn test_compute_parameter_image_refuses_output_of_unrunnable_calculation() -> Result<()> {
+        let xml = calc_xml("fan = Abs(-4)");
+        let app = parse_application_program("A", xml.as_bytes())?;
+        let overrides = BTreeMap::from([("P-1_R-1".to_string(), "1".to_string())]);
+        let err = compute_parameter_image(&app, &overrides, &BTreeMap::new())
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert!(err.contains("calculation PC-1"), "{err}");
+        assert!(err.contains("abs()"), "{err}");
         Ok(())
     }
 

@@ -48,6 +48,7 @@ pub mod param_model;
 pub mod reconcile;
 pub mod scaffold;
 pub mod schema;
+pub mod script;
 pub mod secure_invariants;
 pub mod secure_links;
 pub mod tests_schema;
