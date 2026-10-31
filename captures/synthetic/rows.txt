@@ -46,6 +46,7 @@
 1.1.1|captures/synthetic/syn-s7-lsm5-0705/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-lsm5-0705/xml|M-00FA_A-2820-10-0000|syn-s7-lsm5-0705 defaults|100.0|loadctl=identical state=fresh
 1.1.1|captures/synthetic/syn-s7-no-comobjects/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-no-comobjects/xml|M-00FA_A-281A-10-0000|syn-s7-no-comobjects defaults|100.0|loadctl=identical state=fresh
 1.1.1|captures/synthetic/syn-s7-pei80/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-pei80/xml|M-00FA_A-2810-10-0000|syn-s7-pei80 defaults|100.0|loadctl=identical state=fresh
+1.1.1|captures/synthetic/syn-s7-pid204/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-pid204/xml|M-00FA_A-2821-10-0000|syn-s7-pid204 defaults|100.0|expect=differs loadctl=identical props=differs state=fresh
 1.1.1|captures/synthetic/syn-s7-static-split/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-static-split/xml|M-00FA_A-2889-10-0000|syn-s7-static-split defaults: bussard refuses the product, #657, #411||expect=not-comparable state=fresh
 1.1.1|captures/synthetic/syn-s7-taskptr/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-taskptr/xml|M-00FA_A-2811-10-0000|syn-s7-taskptr defaults|100.0|loadctl=identical state=fresh
 1.1.1|captures/synthetic/syn-text-initialvalue/defaults/ets.pcapng|tests-support/synthetic-products/syn-text-initialvalue/xml|M-00FA_A-2718-10-0000|syn-text-initialvalue defaults|100.0|loadctl=identical
