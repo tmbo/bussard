@@ -287,15 +287,10 @@ def oracle_verdict(product: str, app: str, variant: str = VARIANT, extra: str = 
         raise SystemExit(f"oracle row of {product} gave no summary:\n{text[-1500:]}")
     lc = next((json.loads(l[len("@loadctl "):]) for l in text.splitlines() if l.startswith("@loadctl ")), {})
     confirmed = next((l.split()[1] for l in text.splitlines() if l.startswith("@confirmed ")), None)
-    regions = m.group(5).strip()
-    out = {"verdict": m.group(2), "coverage": m.group(3), "regions": regions, "loadctl": lc.get("verdict")}
+    out = {"verdict": m.group(2), "coverage": m.group(3), "regions": m.group(5).strip(),
+           "loadctl": lc.get("verdict")}
     if confirmed:
         out["confirmed"] = confirmed
-    # The headline verdict does not count the property writes (a row is
-    # `identical` with `props=differs`), so a property difference is recorded
-    # on its own and held by the row's `props=` (syn-property-param).
-    if "props=differs" in regions:
-        out["props"] = "differs"
     return out
 
 
@@ -331,8 +326,6 @@ def row_options(oracle: dict) -> str:
         opts.append(f"confirmed={oracle['confirmed']}")
     if oracle.get("loadctl") in ("identical", "differs"):
         opts.append(f"loadctl={oracle['loadctl']}")
-    if oracle.get("props") == "differs":
-        opts.append("props=differs")
     return " ".join(opts)
 
 
@@ -531,8 +524,12 @@ def run_variant(c, product: str, variant: str, signed: dict[str, tuple[Path, str
                     raise RuntimeError(f"catalog add added nothing: {add.get('row')}")
                 info["catalog_row"] = add.get("row")
                 in_project = step["product"]
+            # The object numbers the table lists, in order: OCR reads no lone
+            # digit, so the driver takes them from here (`read_objects`).
+            numbers = sorted(o["number"] for o in generate_spec(step["product"]).get("com_object", []))
             for number, ga in step["links"]:
-                info.setdefault("links", []).append(flow("link", ia="1.1.1", number=number, ga=ga).get("row"))
+                info.setdefault("links", []).append(
+                    flow("link", ia="1.1.1", number=number, ga=ga, numbers=numbers).get("row"))
             if step["params"]:
                 pages = flow("param_pages", ia="1.1.1").get("pages") or []
                 done = []
@@ -546,7 +543,7 @@ def run_variant(c, product: str, variant: str, signed: dict[str, tuple[Path, str
                 if not all(d["set"] for d in done):
                     raise RuntimeError(f"the parameter editor did not set {[d for d in done if not d['set']]}")
             if step.get("objects"):
-                objects = flow("objects", ia="1.1.1")["objects"]
+                objects = flow("objects", ia="1.1.1", numbers=numbers)["objects"]
                 (out / "objects.json").write_text(json.dumps(objects, indent=1, ensure_ascii=False) + "\n")
                 info["objects"] = [{"number": o.get("number"), "gas": o.get("gas"), "flags": o.get("flags")}
                                    for o in objects]
@@ -677,7 +674,7 @@ def capture_variant(product: str, variant: str, args) -> int:
         "steps": [{"product": s["product"], "mode": s["mode"], "ets": s.get("ets"), "ops": s.get("ops")}
                   for s in result["steps"]],
         "row_options": extra,
-        "oracle": {k: verdict[k] for k in ("verdict", "coverage", "confirmed", "loadctl", "props") if k in verdict},
+        "oracle": {k: verdict[k] for k in ("verdict", "coverage", "confirmed", "loadctl") if k in verdict},
     }
     for p in involved:
         if p != product:
@@ -741,8 +738,7 @@ def main() -> int:
         "product": product, "variant": VARIANT, "order_number": order, "application": app, "signed_id": sid,
         "xml_sha256": xml_sha256(product), "ets": ets, "knx_sim": build, "captured": when,
         "ops": result.get("ops"), "requests": requests,
-        "oracle": {"verdict": verdict["verdict"], "coverage": verdict["coverage"], "loadctl": verdict["loadctl"],
-                   **({"props": verdict["props"]} if "props" in verdict else {})},
+        "oracle": {"verdict": verdict["verdict"], "coverage": verdict["coverage"], "loadctl": verdict["loadctl"]},
     }
     entries.append(entry)
     write_manifest(entries)

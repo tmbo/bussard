@@ -401,9 +401,14 @@ found) or failed. `oracle` imports each export with `bussard import` and runs
 the oracle row with the export as the product data, so the model holds
 exactly what ETS downloaded; verdicts in `results/oracle-params.json`.
 
-The parameter editor was written without ETS at hand (2026-10-30): the
-regions of the page list and the parameter area (`PARAM_PAGES`, `PARAM_AREA`
-in the driver) are first guesses to correct from a screenshot.
+The parameter editor was written without ETS at hand (2026-10-30) and first
+ran on 2026-10-31 (the synthetic run variants `partial` and `calc-input`):
+the view is the device's `Parameter` tab (the device's context menu has no
+parameter entry; the first version picked another entry and restarted the
+device), the page list ends at x 1120 and the labels start at x 1140, both
+above the catalogue pane (y 1300). Setting an integer by typing into its
+field works (`Delay (s)`); enumerations and multi-page products are
+unverified.
 
 ## Synthetic products: signing (#596)
 
@@ -633,3 +638,19 @@ Results (ETS 6.4.1 build 6.4.8718, VM sim 06a27ec0):
   `syn-s7-0701`). Row as `reload`. ETS reads no application id before a
   System 7 download, so it cannot tell a programmed device from a fresh one,
   and it sends the same stream (#488).
+- `no-ga` of `syn-minimal` (2026-10-31): ETS's object table before the
+  download shows both objects without an address (`objects.json`). The
+  download is request for request the `defaults` one: both tables loaded with
+  a count of 0 (`00 00` at `0xA000` and `0xC000`) and completed (#542). Row:
+  `identical`, `addr=ok(2) assoc=ok(2)`, load control `identical`.
+
+Driver fixes the variants needed (2026-10-31): the objects tab is clicked
+where OCR reads it (with no `Kanäle` tab the fixed position hit `Parameter`);
+the line view's `Geräte` tab is clicked before the device list is read (after
+a device view the line reopened on `Segmente`, so no device was deleted and
+`catalog_add` stacked devices at 1.1.2, 1.1.3); `objects`, `link` and
+`unlink` take `numbers`, the object numbers the table lists, because Windows
+OCR reads neither a lone `0` nor a lone `1`; `link` waits up to 12 s for its
+dialog, answers ETS's question about an address that already has another
+object size with OK, and clears the row selection before it reads the link
+back (OCR reads nothing on a selected row).
