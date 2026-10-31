@@ -1,5 +1,11 @@
 //! The programming tier (issue #118): `knx_plan_device` and `knx_apply_device`.
 //!
+//! The tier also carries the safety net around them (issue #717):
+//! `knx_restore_tables` writes a backup's link tables back through the same
+//! write and read-back as `knx_apply_device` (the `restore_tables`
+//! submodule), and `knx_restart_device` restarts a device with
+//! [`bussard_service::restart`] (the `restart` submodule).
+//!
 //! Registered only when the server runs with `--allow-programming`. The tier
 //! writes a device's group-address and association tables and the parameter
 //! octets that differ from the model (issue #274), the same write `bussard
@@ -116,11 +122,13 @@ use crate::state::ConnState;
 mod flash;
 mod interface;
 mod ip_secure;
+mod restart;
 mod restore;
+mod restore_tables;
 mod secure_diag;
 
 /// The tools of the programming tier, in registration order.
-pub const PROGRAMMING_TOOLS: [&str; 7] = [
+pub const PROGRAMMING_TOOLS: [&str; 9] = [
     "knx_plan_device",
     "knx_apply_device",
     "knx_interface_secure",
@@ -128,6 +136,8 @@ pub const PROGRAMMING_TOOLS: [&str; 7] = [
     "knx_apply_status",
     "knx_last_apply",
     "knx_restore_parameters",
+    "knx_restart_device",
+    "knx_restore_tables",
 ];
 
 /// How long a plan stays valid for `knx_apply_device` unless configured.
@@ -152,6 +162,10 @@ pub struct ProgrammingTier {
     jobs: crate::apply_jobs::ApplyJobs,
     /// Restore plans produced in this session, by digest (issue #290).
     restore_plans: std::sync::Mutex<HashMap<String, restore::PendingRestore>>,
+    /// Restart questions asked in this session, by digest (issue #717).
+    restarts: std::sync::Mutex<HashMap<String, restart::PendingRestart>>,
+    /// Table-restore plans produced in this session, by digest (issue #717).
+    table_restores: std::sync::Mutex<HashMap<String, restore_tables::PendingTables>>,
 }
 
 impl ProgrammingTier {
@@ -169,6 +183,8 @@ impl ProgrammingTier {
             bus_lock: tokio::sync::Mutex::new(()),
             jobs: crate::apply_jobs::ApplyJobs::new(),
             restore_plans: std::sync::Mutex::new(HashMap::new()),
+            restarts: std::sync::Mutex::new(HashMap::new()),
+            table_restores: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -204,6 +220,22 @@ impl ProgrammingTier {
     /// The restore plan table, recovering from a poisoned lock.
     fn restore_plans(&self) -> std::sync::MutexGuard<'_, HashMap<String, restore::PendingRestore>> {
         self.restore_plans
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The restart question table, recovering from a poisoned lock.
+    fn restarts(&self) -> std::sync::MutexGuard<'_, HashMap<String, restart::PendingRestart>> {
+        self.restarts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The table-restore plan table, recovering from a poisoned lock.
+    fn table_restores(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<String, restore_tables::PendingTables>> {
+        self.table_restores
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
@@ -252,6 +284,34 @@ pub struct RestoreParametersArgs {
     /// `<dir>/captures/backups/parameters/` (e.g. `"1.1.18-1790880058.json"`),
     /// or a path to one there.
     pub backup: String,
+    /// Omit it to get the restore plan and its digest; pass that digest
+    /// (after the human's explicit yes) to write.
+    #[serde(default)]
+    pub plan_digest: Option<String>,
+}
+
+/// Arguments for `knx_restart_device`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RestartDeviceArgs {
+    /// The individual address of the device, e.g. `"1.1.4"`.
+    pub address: String,
+    /// Omit it to get the restart form, the question and its digest; pass
+    /// that digest (after the human's explicit yes) to restart.
+    #[serde(default)]
+    pub plan_digest: Option<String>,
+}
+
+/// Arguments for `knx_restore_tables`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RestoreTablesArgs {
+    /// The individual address of the device, e.g. `"1.1.4"`.
+    pub address: String,
+    /// The backup to restore from, under `<dir>/captures/backups/`: the
+    /// `backup` name knx_backup_device returned (a directory; its newest
+    /// file for the device is used), or a file name there. Omit it for the
+    /// newest pre-write backup an apply kept of the device.
+    #[serde(default)]
+    pub backup: Option<String>,
     /// Omit it to get the restore plan and its digest; pass that digest
     /// (after the human's explicit yes) to write.
     #[serde(default)]
@@ -419,6 +479,70 @@ impl BussardMcp {
             .restore_parameters(
                 &args.address,
                 &args.backup,
+                args.plan_digest.as_deref().map(str::trim),
+            )
+            .await
+        {
+            Ok(value) => ok(value),
+            Err(reason) => refusal(&args.address, reason),
+        }
+    }
+
+    /// `knx_restart_device` (registered only with `--allow-programming`).
+    #[tool(
+        description = "Restart ONE device on the PHYSICAL bus in the form ETS uses for it and \
+        wait until it answers again, as `bussard restart <address>` does (issue #717), in two \
+        calls. Without plan_digest: sends nothing and returns `form` (\"confirmed\", the \
+        master reset a secure-capable System B application answers, or \"basic\", a bare \
+        A_Restart), `form_reason`, the `question` and a plan_digest. Tell the human the device \
+        restarts and ask the question. With the plan_digest (ONLY after the human's explicit \
+        yes in this conversation): restarts as a job like knx_apply_device (`started: true` \
+        with a `job`: poll knx_apply_status). The result says `confirmed` (the device answered \
+        the restart with error code 0; a basic restart is never confirmed, only seen to answer \
+        again), `mask` and `answered_after_ms`; `ok: false` with the reason when a confirmed \
+        restart is refused or the device does not come back. Only available with \
+        --allow-programming."
+    )]
+    async fn knx_restart_device(
+        &self,
+        Parameters(args): Parameters<RestartDeviceArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        match self
+            .restart_device_tool(&args.address, args.plan_digest.as_deref().map(str::trim))
+            .await
+        {
+            Ok(value) => ok(value),
+            Err(reason) => refusal(&args.address, reason),
+        }
+    }
+
+    /// `knx_restore_tables` (registered only with `--allow-programming`).
+    #[tool(
+        description = "Write a backup's group-address and association tables back onto ONE \
+        device on the PHYSICAL bus, as `bussard restore <backup> <address>` does (issue #717), \
+        in two calls. `backup` names a knx_backup_device run (its `backup` field) or a file \
+        under captures/backups/; omitted, the newest pre-write backup an apply kept of the \
+        device. Without plan_digest: reads the device (read-only) and returns the plan: \
+        `plan` (what is added and removed), `additions`, `removals`, the table sizes, \
+        `security_object` on a secured device, the `question` and a plan_digest; `noop: true` \
+        when the device already holds the backup's tables. Show the plan to the human and ask \
+        the question. With the plan_digest (ONLY after the human's explicit yes in this \
+        conversation): re-reads the device, refuses if the device or the backup moved, records \
+        a history snapshot, backs up the current tables, writes them with knx_apply_device's \
+        engine and reads them back independently, as a job (`started: true` with a `job`: poll \
+        knx_apply_status; knx_last_apply recovers it). `verified` is true only when the \
+        read-back matches the backup. Only the link tables are written, never parameters. \
+        Refuses a backup of another device or mask, a backup outside captures/backups, and a \
+        change touching a protected group address. Only available with --allow-programming."
+    )]
+    async fn knx_restore_tables(
+        &self,
+        Parameters(args): Parameters<RestoreTablesArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        match self
+            .restore_tables(
+                &args.address,
+                args.backup.as_deref(),
                 args.plan_digest.as_deref().map(str::trim),
             )
             .await
@@ -1385,6 +1509,7 @@ impl BussardMcp {
             "snapshot": snapshot,
         });
         Ok(Prepared {
+            origin: Origin::Model,
             model: std::sync::Arc::clone(&model),
             product: product.source,
             target,
@@ -1413,6 +1538,7 @@ impl BussardMcp {
     /// failure is the result (`ok: false` with the reason and the recovery).
     async fn apply_write(&self, tier: &ProgrammingTier, job: &str, p: Prepared) -> Value {
         let Prepared {
+            origin,
             model,
             product,
             target,
@@ -1467,11 +1593,12 @@ impl BussardMcp {
             (Some(partial), Some(detail)) => Some((partial, detail)),
             _ => None,
         };
+        let (tool, planner) = (origin.tool(), origin.planner());
         let recovery = format!(
-            "The device may be left with partially written or unloaded tables. The pre-apply \
-             state is backed up at {backup_path}. Re-planning and re-applying {target} is safe \
-             (the tables are rewritten wholesale); do not assume the device works until a new \
-             knx_plan_device reports nothing to do."
+            "The device may be left with partially written or unloaded tables. The pre-write \
+             state is backed up at {backup_path}. Planning {target} again with {planner} and \
+             writing it is safe (the tables are rewritten wholesale); do not assume the device \
+             works until a new plan reports nothing to do."
         );
 
         // What the write means to leave on the device, for the read-back
@@ -1568,7 +1695,7 @@ impl BussardMcp {
                 let restarted = matches!(&outcome, Ok(summary) if summary.restarted);
                 stopped = outcome.is_err();
                 tracing::info!(
-                    "audit: knx_apply_device {target} tables via {gateway}: {}; backup {backup_path}",
+                    "audit: {tool} {target} tables via {gateway}: {}; backup {backup_path}",
                     if verified { "verified" } else { "FAILED" }
                 );
                 tier.jobs.progress(
@@ -1771,7 +1898,7 @@ impl BussardMcp {
                     ),
                 };
                 tracing::info!(
-                    "audit: knx_apply_device {target} parameters via {gateway}: {}",
+                    "audit: {tool} {target} parameters via {gateway}: {}",
                     if ok { "verified" } else { "FAILED" }
                 );
                 result["parameters"] = parameters;
@@ -1800,7 +1927,8 @@ impl BussardMcp {
                 job,
                 format!(
                     "reading {target} back (tables, parameters, security object) to compare it \
-                     with the model"
+                     with {}",
+                    origin.truth()
                 ),
             );
             let read_options = L4Options {
@@ -1819,7 +1947,7 @@ impl BussardMcp {
             )
             .await;
             tracing::info!(
-                "audit: knx_apply_device {target} read-back via {gateway}: {}",
+                "audit: {tool} {target} read-back via {gateway}: {}",
                 if readback.verified {
                     "verified"
                 } else {
@@ -1838,10 +1966,11 @@ impl BussardMcp {
                 result["reason"] = json!(failure);
                 if result.get("recovery").is_none_or(Value::is_null) {
                     result["recovery"] = json!(format!(
-                        "The items listed still differ from the model on {target}. The \
-                         pre-apply state is backed up at {backup_path}. Plan {target} again \
-                         with knx_plan_device and re-apply; do not report the change as done \
-                         until a plan reports nothing to do."
+                        "The items listed still differ from {} on {target}. The pre-write \
+                         state is backed up at {backup_path}. Plan {target} again with \
+                         {planner} and write it again; do not report the change as done until \
+                         a plan reports nothing to do.",
+                        origin.truth()
                     ));
                 }
             }
@@ -1850,7 +1979,9 @@ impl BussardMcp {
             result["ok"] = json!(true);
             result["verified"] = json!(true);
         }
-        if result["ok"] == json!(true) {
+        // A restore writes a backup, not the model: the session's model
+        // edits are still pending on the device after it.
+        if result["ok"] == json!(true) && origin == Origin::Model {
             self.session_edits()
                 .applied(target, built.parameters_skipped.is_none());
         }
@@ -1902,6 +2033,8 @@ impl BussardMcp {
 
 /// What an apply whose pre-flight passed carries into its write.
 struct Prepared {
+    /// Where the desired tables came from (issue #717).
+    origin: Origin,
     /// The model the plan was made from (the read-back compares with it).
     model: std::sync::Arc<Model>,
     /// The product data the parameters are decoded with, when the lock pins
@@ -1943,6 +2076,43 @@ struct Prepared {
     flash: Option<flash::FlashImage>,
     /// The result so far (address, gateway, backups, snapshot).
     result: Value,
+}
+
+/// Where a write's desired tables came from: the model's device file
+/// (`knx_apply_device`) or a backup (`knx_restore_tables`, issue #717), as
+/// the CLI's `apply` and `restore` share one write path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    /// The model's links.
+    Model,
+    /// A backup file's tables.
+    Backup,
+}
+
+impl Origin {
+    /// The tool that writes it, for the audit line.
+    fn tool(self) -> &'static str {
+        match self {
+            Origin::Model => "knx_apply_device",
+            Origin::Backup => "knx_restore_tables",
+        }
+    }
+
+    /// What the read-back compares with.
+    fn truth(self) -> &'static str {
+        match self {
+            Origin::Model => "the model",
+            Origin::Backup => "the backup",
+        }
+    }
+
+    /// The tool that plans it again.
+    fn planner(self) -> &'static str {
+        match self {
+            Origin::Model => "knx_plan_device",
+            Origin::Backup => "knx_restore_tables (without plan_digest)",
+        }
+    }
 }
 
 /// [`JobObserver::what`] of a parameter-only write.
@@ -2011,10 +2181,19 @@ impl bussard_service::download::FlashObserver for JobObserver<'_> {
 /// The `next_step` of an apply that finished within its call.
 fn inline_next_step(job: &str, target: IndividualAddress, result: &Value) -> String {
     if result["ok"] == true {
+        // The table backup taken before the write (issue #717): the way back.
+        let undo = if result["backup"].is_string() {
+            format!(
+                " To undo it, knx_restore_tables with address {target} (no backup argument) \
+                 plans writing those pre-write tables back."
+            )
+        } else {
+            String::new()
+        };
         format!(
             "The write finished within this call (job {job}). Tell the human the outcome and \
              the backup paths; knx_apply_status with job {job} or knx_last_apply with address \
-             {target} returns this result again."
+             {target} returns this result again.{undo}"
         )
     } else {
         format!(
@@ -2156,16 +2335,20 @@ fn refuse_protected(model: &Model, report: &PlanReport) -> Result<(), String> {
 /// is none. A pinned archive that is missing or changed does not refuse the
 /// plan: it refuses the parameter part, with its recovery line, and the links
 /// are still planned (issue #274).
-struct ProductFor {
+pub(crate) struct ProductFor {
     /// The product data, when the lock pins an intact archive.
-    source: Option<ProductSource>,
+    pub(crate) source: Option<ProductSource>,
     /// Why the parameters are not compared, when the lookup failed.
-    refusal: Option<String>,
+    pub(crate) refusal: Option<String>,
 }
 
 /// Resolves the product data for `target` the way `bussard apply` does,
 /// warning instead of refusing (see [`ProductFor`]).
-fn product_for(dir: &std::path::Path, model: &Model, target: IndividualAddress) -> ProductFor {
+pub(crate) fn product_for(
+    dir: &std::path::Path,
+    model: &Model,
+    target: IndividualAddress,
+) -> ProductFor {
     match resolve_product(
         dir,
         Selection::default(),
@@ -2283,6 +2466,35 @@ async fn read_device(
             MaskProfile::from_mask(mask).capabilities().summary()
         )),
     }
+}
+
+/// What `knx_reconstruct_device` reads (issue #717): the live tables, the
+/// identity verdict and, with `product`, the parameter read-back, on the one
+/// session [`read_device`] opens for `knx_plan_device` (the source-address
+/// probe, the device facts, the free-access authorize). Read-only.
+pub(crate) async fn read_for_reconstruct(
+    service: &BusService,
+    target: IndividualAddress,
+    keys: (&Option<Key16>, &Option<Key16>),
+    dir: &std::path::Path,
+    model: &Model,
+    product: Option<&ProductSource>,
+) -> Result<(LiveTables, Option<IdentityCheck>, Option<ParamState>), String> {
+    let (tool_key, factory_key) = keys;
+    let (_, read) = read_device(
+        service,
+        target,
+        tool_key,
+        factory_key,
+        &SequenceHighWater::new(),
+        dir,
+        model,
+        product,
+        &[],
+        None,
+    )
+    .await?;
+    Ok((read.live, read.check, read.params))
 }
 
 /// Reads the properties a property-only load procedure writes (issue #390)

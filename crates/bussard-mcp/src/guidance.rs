@@ -142,8 +142,10 @@ impl Tiers {
                 .to_string()
         } else {
             "This server reads the model files, observes the bus, reads group values \
-             (knx_read_group) and introspects devices (knx_describe_device). It reports the \
-             bus connection (knx_bus_status) and rebuilds it on request (knx_bus_reconnect)."
+             (knx_read_group), introspects devices (knx_describe_device), backs devices up \
+             (knx_backup_device) and reads a device's tables back against the model \
+             (knx_reconstruct_device). It reports the bus connection (knx_bus_status) and \
+             rebuilds it on request (knx_bus_reconnect)."
                 .to_string()
         });
         parts.push(if self.model_edits {
@@ -262,15 +264,19 @@ impl Tiers {
         out.push(if self.passive {
             "Observe with knx_recent_telegrams and knx_wait_for_telegram (the latter enables \
              'press the button now' debugging). Passive mode: nothing is transmitted, so \
-             knx_read_group and knx_describe_device are not available. knx_bus_status says \
+             knx_read_group, knx_describe_device, knx_backup_device and knx_reconstruct_device \
+             are not available. knx_bus_status says \
              why the bus is not connected (the last transport error, the attempts, the next \
              retry)."
                 .to_string()
         } else {
             "Observe with knx_recent_telegrams and knx_wait_for_telegram (the latter enables \
              'press the button now' debugging); knx_read_group reads a value and \
-             knx_describe_device introspects a device's interface objects over the bus. When a \
-             bus tool says the bus is not connected, knx_bus_status says why (the last \
+             knx_describe_device introspects a device's interface objects over the bus. \
+             knx_backup_device backs one device or all of them up (tables, and the parameter \
+             memory a System B device bounds) under captures/backups, and \
+             knx_reconstruct_device reads a device's tables back and diffs them against the \
+             model; both are read-only on the bus. When a bus tool says the bus is not connected, knx_bus_status says why (the last \
              transport error, the attempts, the next retry) and knx_bus_reconnect connects \
              afresh now; neither writes to the bus."
                 .to_string()
@@ -310,16 +316,21 @@ impl Tiers {
                  knx_apply_status with that job until `done` is true and report its result; \
                  a plan whose device read is slow answers `started` the same way, and the \
                  finished job's result is the plan to show. knx_last_apply recovers a device's latest result when a reply is lost. \
-                 knx_restore_parameters replays a parameter backup an apply kept, with the same \
-                 plan, explicit yes and job flow."
+                 knx_restore_parameters replays a parameter backup an apply kept, and \
+                 knx_restore_tables writes a backup's link tables back (a knx_backup_device run \
+                 or the pre-write backup an apply kept), with the same plan, explicit yes and \
+                 job flow; knx_restart_device restarts a device in the form ETS uses, after the \
+                 human's yes to its question."
                     .to_string(),
             );
         } else {
             out.push(
                 "This server runs without --allow-programming, so edits stay in the files. \
                  Restarted with that flag, knx_plan_device and knx_apply_device push a \
-                 device's links and parameter values; without it, the push is `bussard plan \
-                 <ia>` and `bussard apply <ia>` at the CLI."
+                 device's links and parameter values, knx_restore_tables writes a backup's link \
+                 tables back and knx_restart_device restarts a device; without it, they are \
+                 `bussard plan <ia>`, `bussard apply <ia>`, `bussard restore <backup> <ia>` and \
+                 `bussard restart <ia>` at the CLI."
                     .to_string(),
             );
         }

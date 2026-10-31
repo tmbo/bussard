@@ -1530,20 +1530,23 @@ enum Command {
     /// Run the MCP server over stdio: model tools and bus reads by default;
     /// bus writes and device programming only when their flags allow it.
     Mcp {
-        /// Passive mode: never transmit on the bus (omits the `knx_read_group`
-        /// tool). The server only observes.
+        /// Passive mode: never transmit on the bus (omits `knx_read_group`,
+        /// `knx_describe_device`, `knx_backup_device`, `knx_reconstruct_device`
+        /// and `knx_bus_reconnect`). The server only observes.
         #[arg(long)]
         passive: bool,
         /// Allow bus writes: registers the `knx_write_group` tool. Off by
         /// default. Mutually exclusive with `--passive`.
         #[arg(long, conflicts_with = "passive")]
         allow_writes: bool,
-        /// Programming tier: registers `knx_plan_device` and
-        /// `knx_apply_device`, which write one device's link tables after a
-        /// plan the human approved (issue #118); parameters stay with
-        /// `bussard apply`. Off by default. Mutually
-        /// exclusive with `--passive`; a non-loopback gateway also needs
-        /// `--allow-remote-gateway` or BUSSARD_ALLOW_REAL_GATEWAY=1.
+        /// Programming tier: registers `knx_plan_device`, `knx_apply_device`,
+        /// `knx_apply_status`, `knx_last_apply`, `knx_restore_parameters`,
+        /// `knx_restore_tables`, `knx_restart_device`,
+        /// `knx_clear_security_log` and `knx_interface_secure`, which write
+        /// one device after a plan the human approved (issues #118, #717).
+        /// Off by default. Mutually exclusive with `--passive`; a
+        /// non-loopback gateway also needs `--allow-remote-gateway` or
+        /// BUSSARD_ALLOW_REAL_GATEWAY=1.
         #[arg(long, conflicts_with = "passive")]
         allow_programming: bool,
         /// How many minutes a `knx_plan_device` digest stays valid for

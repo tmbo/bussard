@@ -141,9 +141,11 @@ async fn tools_list_default_mode() -> TestResult {
     assert_eq!(
         names, expected,
         "default mode with --no-model-edits exposes 14 bus/model tools, the 2 \
-         history read tools and the 2 bundle/diff tools"
+         device backup/reconstruct tools, the 2 history read tools and the 2 bundle/diff tools"
     );
-    assert_eq!(tools.len(), 18);
+    assert_eq!(tools.len(), 20);
+    assert!(names.contains(&"knx_backup_device".to_string()));
+    assert!(names.contains(&"knx_reconstruct_device".to_string()));
     assert!(names.contains(&"knx_show_device".to_string()));
     assert!(names.contains(&"knx_describe_change".to_string()));
     assert!(names.contains(&"knx_infer_group".to_string()));
@@ -169,7 +171,7 @@ async fn tools_list_with_allow_writes() -> TestResult {
         names, expected,
         "--allow-writes adds knx_write_group and knx_run_tests"
     );
-    assert_eq!(tools.len(), 20);
+    assert_eq!(tools.len(), 22);
     assert!(names.contains(&"knx_run_tests".to_string()));
     assert!(names.contains(&"knx_write_group".to_string()));
     assert!(names.contains(&"knx_read_group".to_string()));
@@ -187,10 +189,13 @@ async fn tools_list_in_passive_mode() -> TestResult {
     assert_eq!(
         tools.len(),
         15,
-        "passive mode omits knx_read_group, knx_describe_device and knx_bus_reconnect, \
-         and keeps knx_bus_status and the file-only history, bundle and diff tools"
+        "passive mode omits knx_read_group, knx_describe_device, knx_backup_device, \
+         knx_reconstruct_device and knx_bus_reconnect, and keeps knx_bus_status and the \
+         file-only history, bundle and diff tools"
     );
     assert!(!names.contains(&"knx_read_group".to_string()));
+    assert!(!names.contains(&"knx_backup_device".to_string()));
+    assert!(!names.contains(&"knx_reconstruct_device".to_string()));
     assert!(!names.contains(&"knx_describe_device".to_string()));
     assert!(names.contains(&"knx_project_summary".to_string()));
     assert!(

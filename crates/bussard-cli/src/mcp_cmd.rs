@@ -41,7 +41,8 @@ pub struct McpModes {
     pub passive: bool,
     /// Register `knx_write_group`.
     pub allow_writes: bool,
-    /// Register the programming tier (`knx_plan_device`, `knx_apply_device`).
+    /// Register the programming tier (`knx_plan_device`, `knx_apply_device`,
+    /// `knx_restore_tables`, `knx_restart_device`, …).
     pub allow_programming: bool,
     /// How long a plan digest stays valid.
     pub plan_ttl: std::time::Duration,

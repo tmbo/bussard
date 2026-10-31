@@ -46,6 +46,8 @@
 //! | `knx_discard_edits` | Drop one device's or group address's unapplied edits, leaving the rest. |
 //! | `knx_export_bundle` | Write the model and history as one `.bussard` handover file. |
 //! | `knx_diff_project` | What a received `.knxproj` or bundle would change, as sentences. |
+//! | `knx_backup_device` | Back one device or every device up (tables, bounded parameter memory) under `captures/backups/<timestamp>/`, as `bussard backup` (read-only on the bus; not in `--passive`). |
+//! | `knx_reconstruct_device` | Read one device's tables back and diff them against the model, as `bussard reconstruct` (read-only on the bus; not in `--passive`). |
 //! | `knx_plan_device` | Read one device's live tables and return the plan `bussard plan` prints, plus a `plan_digest` (registered only with `--allow-programming`). |
 //! | `knx_ha_status` | Home Assistant's version, KNX integration, entity counts and the state of the KNX YAML file (registered only with the Home Assistant tier). |
 //! | `knx_ha_plan` | What writing the generated KNX YAML would change, per entity, plus a `plan_digest` (Home Assistant tier). |
@@ -57,6 +59,8 @@
 //! | `knx_apply_status` | One apply job's step, progress and final result (issue #289; registered only with `--allow-programming`). |
 //! | `knx_last_apply` | The latest apply job for a device, from the session or its record under `.bussard/history/` (registered only with `--allow-programming`). |
 //! | `knx_restore_parameters` | Plan, then with the digest write, the replay of a parameter backup from `captures/backups/parameters/` onto one device: refused on a device, application or mask mismatch, only placed octets, device-managed ones kept, verified by read-back, run as a job (issue #290; registered only with `--allow-programming`). |
+//! | `knx_restart_device` | Name the restart form, then with the digest restart one device and wait until it answers, as `bussard restart`, run as a job (issue #717; registered only with `--allow-programming`). |
+//! | `knx_restore_tables` | Plan, then with the digest write, a backup's link tables onto one device with `knx_apply_device`'s write and read-back, run as a job (issue #717; registered only with `--allow-programming`). |
 //!
 //! The ten from `knx_describe_change` to `knx_discard_edits` are model tools: they
 //! read and write the model files (TOML) under the model directory and never touch the bus,
@@ -68,27 +72,29 @@
 //! only read the model (the export writes one file outside it) and are
 //! available in every tier.
 //!
-//! In `--passive` mode the two bus-touching read tools (`knx_read_group` and
-//! `knx_describe_device`) are unregistered and the server never transmits;
+//! In `--passive` mode the bus-touching read tools (`knx_read_group`,
+//! `knx_describe_device`, `knx_backup_device` and `knx_reconstruct_device`)
+//! are unregistered and the server never transmits;
 //! `knx_infer_group` stays, because it only reads the telegram ring, and
 //! `knx_audit` stays but refuses `live: true`.
 //! `knx_write_group` and `knx_run_tests` are registered only when the server is
 //! started with `--allow-writes` (which conflicts with `--passive`); both write
 //! to the physical bus, and both hard-refuse `protected` GAs.
 //!
-//! Tool counts per tier: `--passive` 23, default 26, `--allow-writes` 28. With
-//! `--no-model-edits` the eight model-edit tools (the six above plus the two
-//! reservation tools) are withheld, giving 15, 18 and 20.
+//! Tool counts per tier: `--passive` 26, default 31, `--allow-writes` 33. With
+//! `--no-model-edits` the eleven model-edit tools are withheld, giving 15, 20
+//! and 22.
 //!
-//! `--allow-programming` (issue #118) adds the five programming tools
+//! `--allow-programming` (issue #118) adds the nine programming tools
 //! ([`tools_program::PROGRAMMING_TOOLS`]) to any non-passive tier. They write
 //! device tables, so they pass the non-loopback write gate on every call, run
 //! the source-address probe, and apply only a plan whose digest this session
 //! produced minutes ago and which a fresh read still reproduces. The write
 //! runs as a job (issue #289, [`apply_jobs`]): `knx_apply_status` and
 //! `knx_last_apply` report it. `knx_restore_parameters` (issue #290) replays
-//! a parameter backup with the same plan, digest and job flow. See
-//! [`tools_program`].
+//! a parameter backup with the same plan, digest and job flow, and
+//! `knx_restore_tables` and `knx_restart_device` (issue #717) the link tables
+//! of a backup and a device restart. See [`tools_program`].
 //!
 //! `--allow-home-assistant` (issue #280) adds the six Home Assistant tools
 //! ([`tools_ha::HA_TOOLS`]) when `bussard.toml` has a `[home_assistant]`
@@ -142,6 +148,7 @@ pub mod session_edits;
 pub mod state;
 pub mod tools;
 pub mod tools_audit;
+pub mod tools_device;
 pub mod tools_diff;
 pub mod tools_groups;
 pub mod tools_ha;
@@ -335,17 +342,18 @@ pub async fn run_with_ready(config: &McpConfig, on_ready: impl FnOnce()) -> anyh
 
 /// The set of tool names exposed, in registration order. Used by tests and docs.
 ///
-/// - passive mode: 23 tools (no bus-touching tools: no `knx_read_group`, no
-///   `knx_describe_device`, no `knx_bus_reconnect`, no `knx_write_group`, no
-///   `knx_run_tests`). `knx_infer_group` is there: it only reads the telegram
-///   ring. `knx_bus_status` reads the connection state. `knx_audit` is there
-///   too, but refuses `live: true`.
-/// - default mode: 26 tools (adds `knx_read_group`, `knx_describe_device` and
-///   `knx_bus_reconnect`).
-/// - `--allow-writes`: 28 tools (adds `knx_write_group` and `knx_run_tests`).
-/// - `--no-model-edits` removes the eight model-edit tools
+/// - passive mode: 26 tools (no bus-touching tools: no `knx_read_group`, no
+///   `knx_describe_device`, no `knx_backup_device`, no `knx_reconstruct_device`,
+///   no `knx_bus_reconnect`, no `knx_write_group`, no `knx_run_tests`).
+///   `knx_infer_group` is there: it only reads the telegram ring.
+///   `knx_bus_status` reads the connection state. `knx_audit` is there too,
+///   but refuses `live: true`.
+/// - default mode: 31 tools (adds `knx_read_group`, `knx_describe_device`,
+///   `knx_bus_reconnect` and [`tools_device::DEVICE_TOOLS`]).
+/// - `--allow-writes`: 33 tools (adds `knx_write_group` and `knx_run_tests`).
+/// - `--no-model-edits` removes the eleven model-edit tools
 ///   ([`tools_model::MODEL_EDIT_TOOLS`], including the two reservation tools) from
-///   any of those (15, 18 and 20 tools).
+///   any of those (15, 20 and 22 tools).
 ///
 /// The two model/history read tools (`knx_describe_change`, `knx_history`),
 /// the two bundle/diff tools (`knx_export_bundle`, `knx_diff_project`) and the
@@ -400,6 +408,7 @@ pub fn tool_names_with_ha(
         names.push("knx_read_group");
         names.push("knx_describe_device");
         names.push("knx_bus_reconnect");
+        names.extend(tools_device::DEVICE_TOOLS);
     }
     if allow_writes && !passive {
         names.push("knx_write_group");

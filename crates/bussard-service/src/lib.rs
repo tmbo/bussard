@@ -36,6 +36,9 @@
 //!   device (links, `secure` flags, the security intent and lock facts).
 //! - [`describe`]: the interface-object walk and the PID / object-type name
 //!   tables shared by `bussard describe` and `knx_describe_device`.
+//! - [`backup`]: the device reads behind `bussard backup` and
+//!   `knx_backup_device`; [`reconstruct`]: a device's tables diffed against
+//!   the model (`bussard reconstruct`, `knx_reconstruct_device`, issue #717).
 //! - [`restore`]: replaying a parameter backup (`bussard restore
 //!   --parameters`, `knx_restore_parameters`, issue #290).
 //!
@@ -44,6 +47,7 @@
 
 pub mod admission;
 pub mod adopt;
+pub mod backup;
 pub mod bus;
 pub mod describe;
 pub mod download;
@@ -62,6 +66,7 @@ pub mod model_handle;
 pub mod params;
 pub mod policy;
 pub mod property_plan;
+pub mod reconstruct;
 pub mod restart;
 pub mod restore;
 pub mod secure;

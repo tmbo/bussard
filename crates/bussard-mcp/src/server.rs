@@ -79,6 +79,7 @@ impl BussardMcp {
             + Self::learn_router()
             + Self::audit_router()
             + Self::diff_router()
+            + Self::device_router()
             + Self::program_router()
             + Self::ha_router()
             + Self::ha_automation_router();
@@ -94,6 +95,11 @@ impl BussardMcp {
             // Introspection actively transmits management traffic, so it is a
             // bus-touching tool: unavailable in passive (observe-only) mode.
             tool_router.remove_route("knx_describe_device");
+            // The backup and reconstruct reads transmit management traffic
+            // too (issue #717).
+            for name in crate::tools_device::DEVICE_TOOLS {
+                tool_router.remove_route(name);
+            }
         }
         if !state.allow_writes || state.passive {
             tool_router.remove_route("knx_write_group");
