@@ -160,7 +160,7 @@ class Product:
         check_keys(f"{w} [application]", a,
                    {"number", "version", "name", "mask", "load_procedure_style",
                     "address_table_max_entries", "association_table_max_entries"},
-                   {"options", "translations", "schema"} | SYS7_APP_KEYS)
+                   {"options", "translations", "schema", "min_ets_version"} | SYS7_APP_KEYS)
         if a["number"] not in APP_NUMBERS:
             raise SpecError(f"{w} [application]: number {a['number']:#06x} is outside the synthetic "
                             f"range {APP_NUMBERS.start:#06x}..{APP_NUMBERS.stop - 1:#06x}")
@@ -701,8 +701,19 @@ SCHEMAS = {
 }
 
 
+def min_ets_version(p: "Product") -> str:
+    """`MinEtsVersion`: the schema's, or `[application] min_ets_version`.
+
+    syn-s7-hidden-default-ets4 (#448): the project/23 product with
+    MinEtsVersion 4.0 tells whether ETS keys the hidden-default rule on the
+    schema or on MinEtsVersion."""
+    return p.app.get("min_ets_version", SCHEMAS[p.schema]["min_ets"])
+
+
 def check_schema(w: str, a: dict) -> int:
     schema = a.get("schema", 23)
+    if "min_ets_version" in a and not re.fullmatch(r"[0-9]+\.[0-9]+[a-z]?", str(a["min_ets_version"])):
+        raise SpecError(f"{w} [application]: min_ets_version is a version like \"4.0\" (a string)")
     if schema not in SCHEMAS:
         raise SpecError(f"{w} [application]: schema is one of {sorted(SCHEMAS)}")
     return schema
@@ -872,7 +883,7 @@ def render_application(p: Product) -> bytes:
         ("Id", p.app_id), ("ApplicationNumber", a["number"]), ("ApplicationVersion", a["version"]),
         ("ProgramType", "ApplicationProgram"), ("MaskVersion", f"MV-{a['mask']}"), ("Name", a["name"]),
         ("LoadProcedureStyle", a["load_procedure_style"]), ("PeiType", a.get("pei_type", 0)), ("DefaultLanguage", "en-US"),
-        ("DynamicTableManagement", False), ("Linkable", False), ("MinEtsVersion", SCHEMAS[p.schema]["min_ets"]),
+        ("DynamicTableManagement", False), ("Linkable", False), ("MinEtsVersion", min_ets_version(p)),
         ("NonRegRelevantDataVersion", 0)])
     x.open("Static")
     x.open("Code")

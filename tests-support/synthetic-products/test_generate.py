@@ -820,5 +820,25 @@ class Delay(unittest.TestCase):
             generate.Product("t", s)
 
 
+class MinEtsVersion(unittest.TestCase):
+    """syn-s7-hidden-default-ets4 (#448): MinEtsVersion apart from the schema."""
+
+    def test_render_min_ets_version_override(self) -> None:
+        s = spec()
+        s["application"]["min_ets_version"] = "4.0"
+        x = app_xml(s)
+        self.assertIn('MinEtsVersion="4.0"', x)
+        self.assertIn('xmlns="http://knx.org/xml/project/23"', x)
+
+    def test_min_ets_version_default_follows_schema(self) -> None:
+        self.assertIn('MinEtsVersion="6.0"', app_xml(spec()))
+
+    def test_min_ets_version_must_be_a_version_string(self) -> None:
+        s = spec()
+        s["application"]["min_ets_version"] = 4
+        with self.assertRaisesRegex(generate.SpecError, "min_ets_version is a version"):
+            generate.Product("test", s)
+
+
 if __name__ == "__main__":
     unittest.main()
