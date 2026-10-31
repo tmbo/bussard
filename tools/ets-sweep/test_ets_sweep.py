@@ -499,6 +499,55 @@ class TestCaptureRows(unittest.TestCase):
                         .endswith("|100.0|loadctl=identical state=fresh"))
         self.assertTrue(capture.oracle_row("syn-minimal", "A", "100.0", "loadctl=identical")
                         .endswith("|100.0|loadctl=identical"))
+    def test_oracle_row_variant_state_replaces_fresh(self):
+        # A run variant into a programmed System 7 device names its state (#488).
+        row = capture.oracle_row("syn-s7-0705", "A", "100.0", "loadctl=differs", variant="reload",
+                                 extra=capture.variant_options("syn-s7-0705", "reload"))
+        self.assertIn("/syn-s7-0705/reload/ets.pcapng|", row)
+        self.assertTrue(row.endswith("|100.0|loadctl=differs state=loaded"))
+
+    def test_row_options_records_the_confirmed_verdict(self):
+        self.assertEqual(capture.row_options({"verdict": "not-comparable", "confirmed": "identical",
+                                              "loadctl": "differs"}),
+                         "expect=not-comparable confirmed=identical loadctl=differs")
+
+
+class TestCaptureVariants(unittest.TestCase):
+    def test_variant_steps_name_the_base_and_the_capture(self):
+        steps = capture.variant_steps("syn-s7-0705", "other-app")
+        self.assertEqual([(s["name"], s["product"]) for s in steps],
+                         [("base", "syn-s7-hidden-default"), ("capture", "syn-s7-0705")])
+        self.assertEqual([s["mode"] for s in capture.variant_steps("syn-minimal", "partial")],
+                         ["application", "partial"])
+
+    def test_variant_steps_refuse_a_product_the_variant_does_not_run_on(self):
+        with self.assertRaises(SystemExit):
+            capture.variant_steps("syn-minimal", "reload")
+
+    def test_variant_options(self):
+        self.assertEqual(capture.variant_options("syn-minimal", "links"),
+                         "dir=captures/synthetic/syn-minimal/links/model")
+        self.assertEqual(capture.variant_options("syn-minimal", "partial"),
+                         "run=params base=captures/synthetic/syn-minimal/partial/base.pcapng "
+                         "dir=captures/synthetic/syn-minimal/partial/model lsm=property")
+
+    def test_model_template_links_and_parameters(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            capture.model_template("syn-minimal", "links", Path(tmp))
+            device = (Path(tmp) / "model" / "devices" / "1.1.1.toml").read_text()
+            # The switch object listens to both addresses, the status object sends.
+            self.assertIn('0.listen = ["1/0/1", "1/0/2"]', device)
+            self.assertIn('1.send = "1/0/3"', device)
+            self.assertIn('"1/0/3"', (Path(tmp) / "model" / "groups.toml").read_text())
+        with tempfile.TemporaryDirectory() as tmp:
+            capture.model_template("syn-param-calculation", "calc-input", Path(tmp))
+            self.assertIn("delay-s = 500", (Path(tmp) / "model" / "devices" / "1.1.1.toml").read_text())
+        with tempfile.TemporaryDirectory() as tmp:
+            capture.model_template("syn-s7-0705", "reload", Path(tmp))
+            self.assertFalse((Path(tmp) / "model").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

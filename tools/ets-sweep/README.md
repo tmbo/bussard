@@ -577,3 +577,48 @@ not cover the product texts). `PID_PROGRAM_VERSION` on the wire is
 the rendered id. The row of the committed files (the `xml/` zipped with the
 stub master): `identical`, coverage 100.0%, load control `identical` (17
 records), `par=ok(256) gobj=ok(4) assoc=ok(2) addr=ok(2) props=ok(1)`.
+
+## Synthetic products: run variants (#596 step 5)
+
+    uv run tools/ets-sweep/synthetic/capture.py <product> --variant <variant> [--sim-build SHA]
+
+A run variant is another download of a synthetic product (#604, "Run
+variants"; the table is in `tests-support/synthetic-products/README.md`,
+"Run variants"). `capture.py` signs and imports every product the variant
+downloads, starts ONE knx-sim in the VM with the variant's product (as
+`series.py` does for the partial series), and runs the downloads in order:
+for each, the device added to the project when its product changes
+(`other-app`), the links (`link` flow), the parameter changes
+(`param_pages`/`set_param`, as `params.py` uses them), the object table
+(`objects`), the download in the step's mode (`application`, or `partial`
+for ETS's "Partiell"), the wait for the device's restart, ETS's history, and
+the step's slice of the sim's pcap. The run directory is
+`captures/ets-sweep/<signed id>/<variant>/<step>/` (gitignored); the last
+step is copied to `captures/synthetic/<product>/<variant>/`, the earlier
+ones as `base.pcapng` and `base-requests.txt`. The row's options follow the
+variant: `state=loaded` for a System 7 download into a programmed device,
+`dir=<variant>/model` for a model template with links or a parameter value,
+`run=params base=<variant>/base.pcapng` for the partial download
+(`95-offline-oracle.sh` replays the base into a loopback knx-sim, runs
+`bussard flash --parameters-only` against it and compares the device state).
+
+Results (ETS 6.4.1 build 6.4.8718, VM sim 06a27ec0):
+
+- `reload` of `syn-s7-0705` (2026-10-30): both downloads "Programmieren(Appl.):
+  Abgeschlossen", 44 operations each. The second download's 85 tool requests
+  are identical to the first's and to the `defaults` capture: on a device
+  that holds the same application ETS runs no pre-download unload of LSM 1
+  to 4 and no restart, it goes straight to the procedure's own unloads of
+  LSM 1 to 3 (#488). Row: memory `identical` (100.0 %), load control
+  `differs(1, first obj4#1 unload)`: bussard plans the pass on a device with
+  loaded LSMs (`state=loaded`). With `state=fresh` the same capture compares
+  `loadctl=ok(19)`.
+- `reload` of `syn-s7-0701` (2026-10-31): both downloads "Abgeschlossen"
+  (77 and 57 operations). The second one also starts with the procedure's
+  own unloads of LSM 1 to 3 (`14`, `24`, `34` at `0x0104`), no LSM 4 record,
+  no restart, and read-compares instead of writing: every segment it would
+  write is read back in 12-octet reads and found equal, so it writes no
+  memory, only the load-state records. Row: written octets `not-comparable`
+  (none), read-confirmed octets `identical`, load control
+  `differs(1, first obj4#1 unload)` (`expect=not-comparable
+  confirmed=identical loadctl=differs state=loaded`).
