@@ -41,7 +41,7 @@
 1.1.1|captures/synthetic/syn-s7-hidden-default-ets4/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-hidden-default-ets4/xml|M-00FA_A-288E-10-0000|syn-s7-hidden-default-ets4 defaults|100.0|expect=differs loadctl=identical state=fresh
 1.1.1|captures/synthetic/syn-s7-hidden-default-p11/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-hidden-default-p11/xml|M-00FA_A-288D-10-0000|syn-s7-hidden-default-p11 defaults|100.0|loadctl=identical state=fresh
 1.1.1|captures/synthetic/syn-s7-lsm5/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-lsm5/xml|M-00FA_A-280F-11-0000|syn-s7-lsm5 defaults|100.0|loadctl=identical state=fresh
-1.1.1|captures/synthetic/syn-s7-lsm5-0705/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-lsm5-0705/xml|M-00FA_A-2820-10-0000|syn-s7-lsm5-0705 defaults|100.0|loadctl=differs state=fresh
+1.1.1|captures/synthetic/syn-s7-lsm5-0705/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-lsm5-0705/xml|M-00FA_A-2820-10-0000|syn-s7-lsm5-0705 defaults|100.0|loadctl=identical state=fresh
 1.1.1|captures/synthetic/syn-s7-no-comobjects/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-no-comobjects/xml|M-00FA_A-281A-10-0000|syn-s7-no-comobjects defaults|100.0|loadctl=identical state=fresh
 1.1.1|captures/synthetic/syn-s7-pei80/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-pei80/xml|M-00FA_A-2810-10-0000|syn-s7-pei80 defaults|100.0|loadctl=identical state=fresh
 1.1.1|captures/synthetic/syn-s7-taskptr/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-taskptr/xml|M-00FA_A-2811-10-0000|syn-s7-taskptr defaults|100.0|loadctl=identical state=fresh

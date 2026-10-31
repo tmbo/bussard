@@ -122,33 +122,37 @@ pub(super) fn sys7_procedure_end(ops: &[LoadOp]) -> usize {
         .map_or(ops.len(), |i| i + 1)
 }
 
-/// The load-state machines the memory-mapped form of a System 7 device has:
-/// one per object type, the address table (1), the association table (2), the
-/// application program (3) and the PEI program (4), with their states at
+/// The load-state machines a System 7 device has: one per object type, the
+/// address table (1), the association table (2), the application program (3)
+/// and the PEI program (4). The memory-mapped form keeps their states at
 /// `B6EAh` to `B6EDh` (KNX 3/5/2 §3.31.2, which supports "only one state
-/// machine of each type").
+/// machine of each type"); the property form addresses them as interface
+/// objects 1 to 4 by `PID_LOAD_STATE_CONTROL`.
 ///
-/// A record on another index names no machine. ETS sends none (issue #489):
-/// its full download of the synthetic `syn-s7-lsm5` (0701, an
-/// `LdCtrlTaskSegment LsmIdx="5"` inside LSM 3's load, the shape of the
-/// Busch-Jaeger 0701 applications such as `M-0002_A-A002-13`) executes no LSM 5
-/// op and writes no record with high nibble 5 to `0x0104`
-/// (`captures/synthetic/syn-s7-lsm5/defaults/requests.txt`: its 18 records
-/// name LSMs 1 to 3 only), and on the house binary input 1.1.44
-/// (`binaereingang-1-1-44.pcapng`) none of ETS's 23 records names LSM 5. knx-sim leaves an
-/// unopened machine Unloaded on such a record (#529), so sending it fails the
-/// flash. The property realisation (0705) is not settled by a capture yet
-/// (`syn-s7-lsm5-0705`, #604 row 32) and keeps the record.
-pub(super) const SYS7_MEMORY_MAPPED_LSMS: std::ops::RangeInclusive<u32> = 1..=4;
+/// A record on another index names no machine, and ETS sends none on either
+/// realisation:
+///
+/// - 0701 (memory-mapped, issue #489): ETS's full download of the synthetic
+///   `syn-s7-lsm5` (an `LdCtrlTaskSegment LsmIdx="5"` inside LSM 3's load, the
+///   shape of the Busch-Jaeger 0701 applications such as `M-0002_A-A002-13`)
+///   executes no LSM 5 op and writes no record with high nibble 5 to `0x0104`
+///   (`captures/synthetic/syn-s7-lsm5/defaults/requests.txt`: its 18 records
+///   name LSMs 1 to 3 only), and on the house binary input 1.1.44
+///   (`binaereingang-1-1-44.pcapng`) none of ETS's 23 records names LSM 5.
+/// - 0705 (property, issue #680): ETS's full download of `syn-s7-lsm5-0705`
+///   (`syn-s7-0705` plus the same TaskSegment on LsmIdx 5) runs 44 operations
+///   and none on object 5 (`captures/synthetic/syn-s7-lsm5-0705/defaults/ops.txt`);
+///   the sequence equals `syn-s7-0705`'s apart from the application number.
+///
+/// 0700 shares the memory-mapped lowering with 0701. knx-sim leaves an
+/// unopened machine Unloaded on such a record (#529) and refuses the property
+/// write with a T_NAK, so sending it fails the flash.
+pub(super) const SYS7_LSMS: std::ops::RangeInclusive<u32> = 1..=4;
 
-/// Whether a System 7 Additional Load Controls record on `lsm` is sent: always
-/// under the property realisation, and under the memory-mapped one only for
-/// an LSM in [`SYS7_MEMORY_MAPPED_LSMS`] (issue #489).
-pub(super) fn sys7_lsm_record_sent(profile: &bussard_mgmt::Sys7Profile, lsm: u32) -> bool {
-    match profile.lsm {
-        bussard_mgmt::LsmRealisation::MemoryMapped { .. } => SYS7_MEMORY_MAPPED_LSMS.contains(&lsm),
-        bussard_mgmt::LsmRealisation::Property => true,
-    }
+/// Whether a System 7 Additional Load Controls record on `lsm` is sent: only
+/// for an LSM in [`SYS7_LSMS`], on every realisation (issues #489, #680).
+pub(super) fn sys7_lsm_record_sent(lsm: u32) -> bool {
+    SYS7_LSMS.contains(&lsm)
 }
 
 /// The load-state machines ETS unloads before a full System 7 download: LSMs 1
@@ -538,11 +542,12 @@ pub(super) fn plan_flash_sys7(
             }
             LoadOp::TaskSegment { lsm_idx, address } => {
                 let lsm = check_sys7_lsm(step_no, lsm_idx.unwrap_or(0))?;
-                // A TaskSegment on an LSM the memory-mapped form has no machine
-                // for (LsmIdx 5 on the Busch-Jaeger 0701 applications) is not
-                // sent: ETS sends no record for it
-                // (captures/synthetic/syn-s7-lsm5, issue #489).
-                if !sys7_lsm_record_sent(&s7_profile, lsm) {
+                // A TaskSegment on an LSM outside 1 to 4 (LsmIdx 5 on the
+                // Busch-Jaeger 0701 applications and on 0705 products) is not
+                // sent: ETS sends no record for it on either realisation
+                // (captures/synthetic/syn-s7-lsm5 and syn-s7-lsm5-0705,
+                // issues #489 and #680).
+                if !sys7_lsm_record_sent(lsm) {
                     continue;
                 }
                 let addr = address.ok_or_else(|| PlanError::UnresolvableImage {

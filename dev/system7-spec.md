@@ -240,12 +240,15 @@ The LSM index is the object type of the loadable part `[MP §3.31.2, p. 134]`:
   (`captures/synthetic/syn-s7-lsm5/defaults/`, ETS 6.4.1) writes 18 records to
   `0x0104`, none with high nibble 5, and 1.1.44's capture has none either. A
   product variant that also loaded and completed LSM 5 failed inside ETS
-  ("System.ArgumentException: lsm"). **Rule (issue #489):** under the
-  memory-mapped realisation the planner sends no `TaskSegment` record for an
-  LSM outside 1 to 4 (`SYS7_MEMORY_MAPPED_LSMS` in `plan_sys7.rs`); knx-sim
-  leaves an unopened machine Unloaded on such a record (#529), which failed
-  bussard's flash. The property realisation (0705) keeps the record until
-  `syn-s7-lsm5-0705` (#604 row 32) shows what ETS does there.
+  ("System.ArgumentException: lsm"). On 0705 (property realisation) ETS
+  sends none either: its download of `syn-s7-lsm5-0705`
+  (`captures/synthetic/syn-s7-lsm5-0705/defaults/`, 44 operations) has no
+  operation on object 5 and equals `syn-s7-0705`'s apart from the application
+  number. **Rule (issues #489, #680):** on every realisation (0700 and 0701
+  memory-mapped, 0705 property) the planner sends no `TaskSegment` record for
+  an LSM outside 1 to 4 (`SYS7_LSMS` in `plan_sys7.rs`); knx-sim leaves an
+  unopened machine Unloaded on such a record (#529) and refuses the property
+  write with a T_NAK, both of which failed bussard's flash.
 
 **Two ETS differences bussard keeps (issue #178, 2308.16REGHM `A-2088-11`).**
 The application declares `DynamicTableManagement="1"`, and ETS places the
