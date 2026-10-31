@@ -742,11 +742,11 @@ fn run_loop(
     for k in 1..=settings.configs {
         configs.push(Configuration::generated(app, &mut rng, k));
     }
-    if configs.iter().all(|c| c.links.is_empty()) {
-        return Err(Stop::Skip(
-            "no configuration shows a com-object to link (plan needs links)".to_string(),
-        ));
-    }
+    // No configuration shows a com-object to link (every object behind a
+    // branch the defaults do not take, `syn-s7-no-comobjects`, issue #562):
+    // `plan` needs links, so the loop flashes the defaults to a fresh device
+    // and takes the flash's own read-back as the check.
+    let flash_only = configs.iter().all(|c| c.links.is_empty());
 
     let work = Work::create(settings, app, file).map_err(infra("setup"))?;
     seed(app, &work.model).map_err(infra("write the product model"))?;
@@ -758,6 +758,21 @@ fn run_loop(
         sim: None,
         gateway: String::new(),
     };
+
+    if flash_only {
+        bench.fresh_device(true)?;
+        bench.write_device(&configs[0]).map_err(infra("setup"))?;
+        bench.flash(&format!(
+            "flash[0] ({}, no com-object to link)",
+            configs[0].label
+        ))?;
+        *flashed += 1;
+        drop(bench);
+        if settings.work.is_none() {
+            let _ = std::fs::remove_dir_all(&work.root);
+        }
+        return Ok(());
+    }
 
     // Each configuration goes to a factory-fresh device: flash, then plan.
     let mut last: Option<Configuration> = None;

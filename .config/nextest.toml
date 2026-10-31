@@ -90,9 +90,9 @@ slow-timeout = { period = "300s", terminate-after = 12 }
 # catalogue, not with a slower test: a row or product that alone takes
 # minutes is a bug.
 [[profile.default.overrides]]
-filter = 'test(/^sim_catalog_loop::test_sim_catalog_loop_synthetic_catalogue_shard_[0-9]+$/) | test(/^offline_oracle::test_offline_oracle_synthetic_rows_pass_the_check$/)'
+filter = 'test(/^sim_catalog_loop::test_sim_catalog_loop_synthetic_catalogue_shard_[0-9]+$/) | test(/^offline_oracle::test_offline_oracle_synthetic_(sim_)?rows_pass_the_check$/)'
 slow-timeout = { period = "60s", terminate-after = 10 }
 
 [[profile.ci.overrides]]
-filter = 'test(/^sim_catalog_loop::test_sim_catalog_loop_synthetic_catalogue_shard_[0-9]+$/) | test(/^offline_oracle::test_offline_oracle_synthetic_rows_pass_the_check$/)'
+filter = 'test(/^sim_catalog_loop::test_sim_catalog_loop_synthetic_catalogue_shard_[0-9]+$/) | test(/^offline_oracle::test_offline_oracle_synthetic_(sim_)?rows_pass_the_check$/)'
 slow-timeout = { period = "60s", terminate-after = 10 }
