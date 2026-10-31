@@ -264,6 +264,22 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
         })?;
     outcome.reboot_readiness = session.reboot_readiness().to_vec();
     outcome.verify_echoes = session.verify_echoes();
+    match session.verify_mode_declined() {
+        Some(bussard_mgmt::VerifyModeOutcome::Refused { previous }) => {
+            outcome.warnings.push(format!(
+                "the device refused verify mode (PID_DEVICE_CONTROL stays {previous:#04X}); the \
+                 memory writes were not verified by echo"
+            ));
+        }
+        Some(bussard_mgmt::VerifyModeOutcome::Unsupported) => {
+            outcome.warnings.push(
+                "the device has no readable PID_DEVICE_CONTROL; the memory writes were not \
+                 verified by echo"
+                    .to_string(),
+            );
+        }
+        _ => {}
+    }
     Ok(outcome)
 }
 
@@ -1021,6 +1037,11 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                         }
                     }
                     FlashStep::Delay { milliseconds } => delay_step(*milliseconds).await,
+                    // ETS switches verify mode on right before the first plain
+                    // memory write of a `Verify="true"` load control (issue
+                    // #705): `write_image` does it there, after the segment's
+                    // base is known, and only when the write is not extended.
+                    FlashStep::EnableVerifyMode => session.arm_verify_mode(),
                     FlashStep::LoadCompleted { target } => {
                         // Skip a completion for an object the device does not expose (a
                         // template LSM5 completion on a device without obj5).
@@ -1267,8 +1288,7 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                     | FlashStep::Sys7TaskCtrl2 { .. }
                     | FlashStep::Sys7LoadCompleted { .. }
                     | FlashStep::Sys7CompareMem { .. }
-                    | FlashStep::Sys7PreDownloadRestart { .. }
-                    | FlashStep::Sys7EnableVerifyMode => {}
+                    | FlashStep::Sys7PreDownloadRestart { .. } => {}
                 }
                 Ok(())
             }
@@ -1551,10 +1571,13 @@ pub(super) async fn write_image<C: Connector, F: FnMut(Progress)>(
             });
         };
         let tail_addr = addr.saturating_add(confirmed as u32);
-        // A System 7 download in verify mode compares every echo (issue #524,
+        // A download in verify mode compares every echo (issues #524, #705,
         // Management Procedures 03_05_02 §3.16.3); a new connection sets the
-        // mode again first. Every other download writes as before.
-        let (echoed, result) = match session.ensure_verify_mode().await {
+        // mode again first, and an armed System B download switches it on
+        // before its first plain write. Every other download writes as before.
+        let plain = bussard_mgmt::memory_service(session.l4(), tail_addr, bytes.len() - confirmed)
+            != bussard_mgmt::MemoryService::Extended;
+        let (echoed, result) = match session.ensure_verify_mode(plain).await {
             Ok(true) => (
                 true,
                 bussard_mgmt::write_memory_echoed(

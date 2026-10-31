@@ -187,7 +187,7 @@ fn test_bussard_property_plan_matches_m2_jung_shape() {
 /// pre-download pass (issue #488; #186 and #293 had pinned a restart-only
 /// pass here). ETS then sets verify mode (`obj0/PID_DEVICE_CONTROL` read,
 /// `04` written, ops 33 and 34) before the first memory write, which
-/// `Sys7EnableVerifyMode` reproduces ahead of LSM 3's `StartLoading`
+/// `EnableVerifyMode` reproduces ahead of LSM 3's `StartLoading`
 /// (`dev/system7-spec.md` section 3.1: nothing depends on that order).
 #[test]
 fn test_parameters_only_jung_plan_writes_in_place() -> Result<(), Box<dyn std::error::Error>> {
@@ -223,7 +223,7 @@ fn test_parameters_only_jung_plan_writes_in_place() -> Result<(), Box<dyn std::e
             FlashStep::LoadImageProp { obj_idx, .. } => format!("mcb {obj_idx}"),
             FlashStep::CompareProp { .. } => "compare".to_string(),
             FlashStep::Restart => "restart".to_string(),
-            FlashStep::Sys7EnableVerifyMode => "verify mode".to_string(),
+            FlashStep::EnableVerifyMode => "verify mode".to_string(),
             other => format!("unexpected {other:?}"),
         })
         .collect();

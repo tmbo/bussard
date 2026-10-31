@@ -1024,6 +1024,7 @@ fn load_op_summary(op: &LoadOp) -> String {
             offset,
             size,
             applies_to,
+            ..
         } => format!(
             "write_rel_mem obj={} offset={} size={} applies_to={}",
             opt(obj_idx),

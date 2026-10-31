@@ -425,9 +425,12 @@ pub fn write_dump(
                     "fill_byte": fill.fill,
                 }));
             }
-            // ETS's verify-mode write (issue #116): on a device that holds 00,
-            // as every Jung 0705 capture shows, it writes 04.
-            FlashStep::Sys7EnableVerifyMode => {
+            // ETS's verify-mode write (issues #116, #705): on a device that
+            // holds 00, as every Jung 0705 capture and the 07B0 house captures
+            // of 1.1.45 and 1.1.51 show, it writes 04. A device that already
+            // holds 04 (knx-sim's System B model) gets no write; the oracle
+            // reads that from ETS's PID_DEVICE_CONTROL read.
+            FlashStep::EnableVerifyMode => {
                 record["property"] = json!({
                     "object": bussard_mgmt::apci::DEVICE_OBJECT_INDEX,
                     "pid": bussard_mgmt::PID_DEVICE_CONTROL,

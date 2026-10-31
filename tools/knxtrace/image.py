@@ -483,6 +483,32 @@ def resident_state(ops: DeviceOps) -> Optional[Dict[str, object]]:
     return out
 
 
+# `PID_DEVICE_CONTROL` (obj0 PID 14) and its verify-mode bit (issue #705).
+PID_DEVICE_CONTROL = 14
+VERIFY_MODE_BIT = 0x04
+
+
+def device_control_reads(ops: DeviceOps) -> List[str]:
+    """Every value the device answered to a read of obj0 PID_DEVICE_CONTROL,
+    in order, as hex (issue #705).
+
+    ETS reads the property before it switches verify mode on and writes it
+    only when bit 2 is clear; the oracle needs the value to judge bussard's
+    planned write, which the dry run plans without a device.
+    """
+    out: List[str] = []
+    for op in ops.ops:
+        apdu = op.apdu
+        if op.direction != "res" or op.kind != KIND_PROP_READ or apdu is None or not op.data:
+            continue
+        f = apdu.fields
+        if apdu.name != "A_PropertyValue_Response" or f.get("truncated") or "obj_type" in f:
+            continue
+        if f.get("obj") == 0 and f.get("pid") == PID_DEVICE_CONTROL:
+            out.append(bytes(op.data[:1]).hex())
+    return out
+
+
 # The memory address ETS reads at the end of its Unload command (the
 # programming-mode octet), issue #488.
 UNLOAD_COMMAND_READ = 0x0060
@@ -605,6 +631,7 @@ def compose(ops: DeviceOps, out_dir: str, source: str = "") -> Dict[str, object]
         "table_refs": {str(k): v for k, v in sorted(table_refs(ops).items())},
         "property_writes": len(props),
         "unload_pass": unload_pass(ops),
+        "device_control_reads": device_control_reads(ops),
     }
     with open(os.path.join(out_dir, "regions.json"), "w", encoding="utf-8") as fh:
         json.dump(index, fh, indent=2)
@@ -1338,6 +1365,23 @@ NOT_COMPARED_ETS_WRITES = {
 }
 
 
+def _verify_mode_already_on(image_dir: str) -> bool:
+    """Whether ETS read obj0 PID_DEVICE_CONTROL with the verify-mode bit
+    already set (`regions.json`, issue #705)."""
+    try:
+        with open(os.path.join(image_dir, "regions.json"), encoding="utf-8") as fh:
+            reads = json.load(fh).get("device_control_reads") or []
+    except (OSError, ValueError):
+        return False
+    return any(int(v, 16) & VERIFY_MODE_BIT for v in reads if v)
+
+
+def _is_verify_mode_write(entry: Dict[str, object]) -> bool:
+    """bussard's planned verify-mode switch: obj0 PID 14 := 04."""
+    key = entry.get("key") or []
+    return len(key) >= 2 and str(key[0]) == "obj0" and int(key[1]) == PID_DEVICE_CONTROL
+
+
 def _not_compared_reason(key: list, ours_keys: set) -> Optional[str]:
     """Why an ETS-only write is listed and not counted, or None."""
     prop = (str(key[0]), int(key[1]))
@@ -1424,6 +1468,7 @@ def compare_properties(
     reason = ""
     property_only = plan.get("system") == "properties"
     not_compared: List[Dict[str, object]] = []
+    conditional: List[Dict[str, object]] = []
     if not property_only and not ip_secure:
         ours_props = {(_obj_label(e["object"]), int(e["pid"])) for e in ours}
         kept: List[Dict[str, object]] = []
@@ -1434,6 +1479,13 @@ def compare_properties(
             else:
                 kept.append(e)
         ets_only = kept
+        # The verify-mode switch is conditional (issue #705): bussard, like
+        # ETS, writes it only when the device answers the read with bit 2
+        # clear. Where ETS read it already set, the planned write would not
+        # go out either.
+        if _verify_mode_already_on(image_dir):
+            conditional = [b for b in bussard_only if _is_verify_mode_write(b)]
+            bussard_only = [b for b in bussard_only if b not in conditional]
     if property_only:
         ours_keys = {(_obj_label(e["object"]), int(e["pid"])) for e in ours}
         commissioning = [e for e in ets_only if _is_commissioning(
@@ -1470,6 +1522,8 @@ def compare_properties(
         out["commissioning"] = commissioning
     if not_compared:
         out["not_compared"] = not_compared
+    if conditional:
+        out["conditional"] = conditional
     return out
 
 
@@ -1876,6 +1930,11 @@ def render_properties(props: Optional[Dict[str, object]]) -> List[str]:
         lines.append("      sender table (PID 54): bussard %s" % st["bussard"])
     for b in props["bussard_only"]:
         lines.append("      bussard only: step %3s %s" % (b["step"], _key_text(b["key"])))
+    for b in props.get("conditional") or []:
+        lines.append(
+            "      bussard, not sent: step %3s %s: ETS read the verify-mode bit already set (#705)"
+            % (b["step"], _key_text(b["key"]))
+        )
     for e in props["ets_only"]:
         lines.append(
             "      ETS only:     #%-3s %s %s" % (e["ets_seq"], e["service"], _key_text(e["key"]))

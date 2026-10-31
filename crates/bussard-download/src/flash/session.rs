@@ -457,8 +457,9 @@ pub struct Session<C: Connector> {
     readiness: Vec<RebootReadiness>,
     /// The measurement of the confirmed restart being waited out, if any.
     pending_readiness: Option<PendingReadiness>,
-    /// Verify mode of a System 7 download (issue #524): whether the plan
-    /// switched it on, and whether the current connection has it.
+    /// Verify mode of a download (System 7 issue #524, System B issue #705):
+    /// whether the plan switched it on, and whether the current connection
+    /// has it.
     verify: VerifyModeState,
     /// Whether memory above `0xFFFF` goes over `A_UserMemory_*` (an
     /// application without extended memory services, issue #472), set on
@@ -466,13 +467,21 @@ pub struct Session<C: Connector> {
     user_memory_above_64k: bool,
 }
 
-/// The verify-mode bookkeeping of a [`Session`] (issue #524).
+/// The verify-mode bookkeeping of a [`Session`] (issues #524, #705).
 ///
 /// The device clears verify mode whenever the transport connection closes
 /// (Resources 03_05_01 §4.2.14), so the session remembers that the download
 /// wants it and sets it again on the first write of every later connection.
 #[derive(Debug, Default)]
 struct VerifyModeState {
+    /// A System B plan reached its verify-mode step (issue #705): the next
+    /// write that goes out over the plain memory services switches verify
+    /// mode on first, as ETS does; an extended write leaves it alone.
+    armed: bool,
+    /// What the device answered when the armed switch did not take: no
+    /// readable `PID_DEVICE_CONTROL`, or a refused write. The writes go out
+    /// unechoed and the flash warns.
+    declined: Option<bussard_mgmt::VerifyModeOutcome>,
     /// The plan switched verify mode on and the device took it.
     wanted: bool,
     /// The current connection has verify mode on. Cleared by every new
@@ -886,19 +895,55 @@ impl<C: Connector> Session<C> {
         Ok(outcome)
     }
 
-    /// Whether the next plain memory write must have its verify echo
-    /// compared. When the download wants verify mode and the current
-    /// connection is a new one, this sets it again first (Resources 03_05_01
-    /// §4.2.14: the device cleared it when the previous connection closed).
+    /// Arms verify mode for a System B download (issue #705): the next write
+    /// that goes out over the plain memory services switches it on first
+    /// ([`Self::ensure_verify_mode`]), where ETS does, after the segment's
+    /// `PID_TABLE_REFERENCE` read and before its first `A_Memory_Write`.
+    pub(super) fn arm_verify_mode(&mut self) {
+        if !self.verify.wanted {
+            self.verify.armed = true;
+        }
+    }
+
+    /// What the device answered when an armed verify-mode switch did not
+    /// take (issue #705), `None` when it took or was never tried.
+    pub(super) fn verify_mode_declined(&self) -> Option<bussard_mgmt::VerifyModeOutcome> {
+        self.verify.declined
+    }
+
+    /// Whether the next memory write must have its verify echo compared.
+    /// `plain` says whether that write goes out over the plain (or user)
+    /// memory services; an extended write is confirmed by its own response.
+    ///
+    /// An armed System B download (issue #705) switches verify mode on here
+    /// before its first plain write. When the download wants verify mode and
+    /// the current connection is a new one, this sets it again first
+    /// (Resources 03_05_01 §4.2.14: the device cleared it when the previous
+    /// connection closed).
     ///
     /// # Errors
     ///
     /// The property exchange's error, or a [`MgmtError::MalformedResponse`]
     /// when the device refuses verify mode on the new connection after taking
     /// it on an earlier one: the writes would go out unverified.
-    pub(super) async fn ensure_verify_mode(&mut self) -> Result<bool, WriteError> {
+    pub(super) async fn ensure_verify_mode(&mut self, plain: bool) -> Result<bool, WriteError> {
         if !self.verify.wanted {
-            return Ok(false);
+            if !(self.verify.armed && plain) {
+                return Ok(false);
+            }
+            self.verify.armed = false;
+            return match bussard_mgmt::enable_verify_mode(self.l4()).await? {
+                bussard_mgmt::VerifyModeOutcome::Enabled { .. }
+                | bussard_mgmt::VerifyModeOutcome::AlreadyOn(_) => {
+                    self.verify.wanted = true;
+                    self.verify.on_connection = true;
+                    Ok(true)
+                }
+                other => {
+                    self.verify.declined = Some(other);
+                    Ok(false)
+                }
+            };
         }
         if self.verify.on_connection {
             return Ok(true);

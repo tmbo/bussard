@@ -390,7 +390,7 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                             session.reconnect_after_reboot().await?;
                         }
                     }
-                    FlashStep::Sys7EnableVerifyMode => {
+                    FlashStep::EnableVerifyMode => {
                         // From here every segment write's echo is compared
                         // with the chunk (DMP_MemWrite_RCoV, Management
                         // Procedures 03_05_02 §3.16.3), and the session sets

@@ -673,6 +673,10 @@ pub enum LoadOp {
         size: Option<u32>,
         /// `AppliesTo` filter.
         applies_to: Option<String>,
+        /// `Verify`: `Some(true)` asks the tool to confirm every write (ETS
+        /// switches the device's verify mode on before the first such write on
+        /// a mask with the `VerifyMode` feature, issue #705). `None` when absent.
+        verify: Option<bool>,
     },
     /// `<LdCtrlWriteMem …>`: write into absolute memory.
     WriteMem {
@@ -2913,6 +2917,7 @@ pub(crate) fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m
             offset: u(b"Offset"),
             size: u(b"Size"),
             applies_to: s(b"AppliesTo"),
+            verify: get(m, b"Verify").map(parse_xml_bool),
         },
         b"LdCtrlWriteMem" => LoadOp::WriteMem {
             address: u(b"Address"),
@@ -3692,6 +3697,32 @@ mod tests {
             }
         ));
         assert!(matches!(ops[2], LoadOp::WriteRelMem { .. }));
+        Ok(())
+    }
+
+    #[test]
+    fn test_push_load_op_write_rel_mem_verify()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // Issue #705: ETS switches verify mode on before a `Verify="true"`
+        // write; the attribute is kept, absent stays `None`.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-1" Name="x">
+          <LoadProcedures><LoadProcedure MergeId="1">
+           <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="32" Verify="true" />
+           <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="32" Verify="false" />
+           <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="32" />
+          </LoadProcedure></LoadProcedures>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program_str("M-1_A-1", xml)?;
+        let verify: Vec<Option<bool>> = app.load_procedures[0]
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                LoadOp::WriteRelMem { verify, .. } => Some(*verify),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(verify, vec![Some(true), Some(false), None]);
         Ok(())
     }
 

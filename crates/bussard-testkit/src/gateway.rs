@@ -1076,6 +1076,7 @@ pub(crate) fn line_output(line: &mut [MockDevice], cemi: &CemiFrame) -> Vec<Out>
                 TpciKind::Connect => {
                     dev.send_seq = Some(0);
                     dev.connects += 1;
+                    dev.on_transport_connect();
                 }
                 TpciKind::Disconnect => dev.send_seq = None,
                 TpciKind::NumberedData(client_seq) => {

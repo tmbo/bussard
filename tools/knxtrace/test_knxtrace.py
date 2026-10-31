@@ -1347,6 +1347,71 @@ class TestPropertyWrites(unittest.TestCase):
         self.assertIsNone(memimage._not_compared_reason(["type17.1", 59, 6], {("type17.1", 59)}))
         self.assertIsNone(memimage._not_compared_reason(["obj0", 14, 1], set()))
 
+    def verify_mode_capture(self, value: int, written: bool) -> str:
+        """ETS reads obj0 PID_DEVICE_CONTROL (answer `value`), writes 04 when
+        `written`, then PID 13 (issue #705)."""
+        path = tempfile.mkstemp(suffix=".pcapng")[1]
+        self.addCleanup(os.unlink, path)
+        tool, dev = "0.0.0", "1.1.45"
+        frames = [
+            cemi_ldata(tool, dev, t_connect()),
+            cemi_ldata(tool, dev, numbered(0, 0x3D5, bytes([0, 14, 0x10, 0x01]))),
+            cemi_ldata(dev, tool, prop_response(0, 14, 1, 1, bytes([value]), seq=0), mc=0x29),
+        ]
+        if written:
+            frames.append(cemi_ldata(tool, dev, prop_write(0, 14, 1, 1, bytes([4]), seq=1)))
+        frames += [
+            cemi_ldata(tool, dev, prop_write(4, 13, 1, 1, bytes.fromhex("0112000310"), seq=2)),
+            cemi_ldata(tool, dev, t_disconnect()),
+        ]
+        udp_capture(path, [(tunneling_request(f, seq=n), True) for n, f in enumerate(frames)])
+        return path
+
+    def verify_mode_props(self, capture: str) -> dict:
+        out = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, out, ignore_errors=True)
+        self.assertEqual(main(["image", capture, "--device", "1.1.45", "--out", out]), 0)
+        plan_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, plan_dir, ignore_errors=True)
+        plan = {
+            "device": "1.1.45", "system": "B", "application": {"id": "M-0112_A-1"}, "tables": [],
+            "steps": [
+                {"index": 1, "label": "1.", "property": {
+                    "object": 0, "pid": 14, "start_element": 1, "length": 1, "data": "04"}},
+                {"index": 2, "label": "2.", "property": {
+                    "object": 4, "pid": 13, "start_element": 1, "length": 5, "data": "0112000310"}},
+            ],
+        }
+        with open(os.path.join(plan_dir, "plan.json"), "w") as fh:
+            json.dump(plan, fh)
+        return memimage.compare(plan_dir, out)["properties"]
+
+    def test_compare_properties_verify_mode_write_matches_when_ets_wrote_it(self):
+        """Issue #705: ETS read 00 and wrote 04, as on 1.1.45; bussard's
+        planned verify-mode write matches."""
+        props = self.verify_mode_props(self.verify_mode_capture(0x00, written=True))
+        self.assertEqual(props["verdict"], memimage.IDENTICAL)
+        self.assertEqual([m["key"] for m in props["matched"]], [["obj0", 14, 1], ["obj4", 13, 5]])
+        self.assertNotIn("conditional", props)
+
+    def test_compare_properties_verify_mode_already_on_is_not_bussard_only(self):
+        """Issue #705: ETS read 04 (knx-sim's System B model) and wrote
+        nothing; bussard would not write either, so the planned write is
+        listed, not counted."""
+        props = self.verify_mode_props(self.verify_mode_capture(0x04, written=False))
+        self.assertEqual(props["verdict"], memimage.IDENTICAL)
+        self.assertEqual(props["bussard_only"], [])
+        self.assertEqual([b["key"] for b in props["conditional"]], [["obj0", 14, 1]])
+        self.assertIn("bussard, not sent: step   1 obj0 PID 14",
+                      "\n".join(memimage.render_properties(props)))
+
+    def test_compare_properties_verify_mode_read_clear_and_not_written_differs(self):
+        """Issue #705: ETS read 00 and wrote nothing: the planned write is a
+        real difference."""
+        props = self.verify_mode_props(self.verify_mode_capture(0x00, written=False))
+        self.assertEqual(props["verdict"], memimage.DIFFERS)
+        self.assertEqual([b["key"] for b in props["bussard_only"]], [["obj0", 14, 1]])
+
     def test_normalize_names_the_extended_property_services(self):
         buckets = norm.normalize(knxip.frames_from_file(self.ip_capture(True)), "1.1.200")
         ops = buckets["1.1.200"].requests()
