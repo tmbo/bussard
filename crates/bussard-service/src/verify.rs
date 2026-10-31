@@ -971,6 +971,8 @@ mod tests {
                 Vec::new()
             },
             task_identity: None,
+            address_segment: None,
+            association_segment: None,
         })
     }
 

@@ -134,7 +134,7 @@ pub use plan::{
 pub use plan_sys7::allocation_change;
 pub(crate) use plan_sys7::sys7_lsm_override;
 pub use plan_sys7::{
-    Sys7PlanTables, Sys7TableBases, Sys7TableImage, linked_flags_from_system_b,
+    Sys7PlanTables, Sys7SegmentOp, Sys7TableBases, Sys7TableImage, linked_flags_from_system_b,
     plan_flash_sys7_with_hawk, sys7_profile_from_hawk, sys7_table_bases, sys7_tables_from_system_b,
     sys7_task_identity,
 };

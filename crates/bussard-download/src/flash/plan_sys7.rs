@@ -417,14 +417,10 @@ pub(super) fn plan_flash_sys7(
                 // when the product declares them (`Access`/`MemType`/`SegFlags`,
                 // which the ETS captures reproduce verbatim: `f2 03 80`,
                 // `f3 03 80`, `f3 03 00`), else from the address-derived defaults.
-                let mem_type = mem_type
-                    .and_then(|m| u8::try_from(m).ok())
-                    .unwrap_or_else(|| mem_type_for_addr(addr, &s7_profile));
-                let (default_access, default_seg_flags) = bussard_mgmt::alloc_attr_octets(mem_type);
-                let seg_flags = seg_flags_octet(*seg_flags).unwrap_or(default_seg_flags);
-                let access = access
-                    .and_then(|a| u8::try_from(a).ok())
-                    .unwrap_or(default_access);
+                // The same resolution `apply` uses for its table records
+                // ([`Sys7SegmentOp::alloc_record`], issue #588).
+                let (mem_type, access, seg_flags) =
+                    sys7_segment_attrs(addr, *access, *mem_type, *seg_flags, &s7_profile);
                 // A table LSM (1 = group addresses, 2 = associations) streams the
                 // table computed from the model, never the product's `<Data>`
                 // template: the Jung 3361-1MWW ships a 255-entry placeholder table
@@ -505,18 +501,14 @@ pub(super) fn plan_flash_sys7(
                 // `SegType="1"` allocates a stack segment: ETS sends it as
                 // AllocAbsStackSeg (subtype 01), every other octet as for a
                 // data segment (issue #487, MDT `A-0222` LSM 3 record 4).
-                let seg_type = match seg_type.unwrap_or(0) {
-                    0 => bussard_mgmt::sys7::S7_SUB_ALLOC_DATA,
-                    1 => bussard_mgmt::sys7::S7_SUB_ALLOC_STACK,
-                    other => {
-                        return Err(PlanError::UnresolvableImage {
-                            step: step_no,
-                            reason: format!(
-                                "LdCtrlAbsSegment SegType {other} is not a data (0) or stack (1) segment"
-                            ),
-                        });
-                    }
-                };
+                let seg_type =
+                    sys7_segment_type(*seg_type).ok_or_else(|| PlanError::UnresolvableImage {
+                        step: step_no,
+                        reason: format!(
+                            "LdCtrlAbsSegment SegType {} is not a data (0) or stack (1) segment",
+                            seg_type.unwrap_or(0)
+                        ),
+                    })?;
                 steps.push(FlashStep::Sys7AbsSegment {
                     lsm,
                     address: addr,
@@ -1708,6 +1700,89 @@ pub(super) fn seg_flags_octet(seg_flags: Option<u32>) -> Option<u8> {
     seg_flags.and_then(|f| u8::try_from(f).ok())
 }
 
+/// The attribute octets `(mem_type, access, seg_flags)` of the allocation
+/// record for an `LdCtrlAbsSegment` at `addr`: the op's own `MemType`,
+/// `Access` and `SegFlags` when it declares them (ETS copies them verbatim:
+/// `f2 03 80`, `f3 03 80`, `ff 03 80` on the EK-E72 tables), else the
+/// address-derived memory type and [`bussard_mgmt::alloc_attr_octets`]. The
+/// one resolution `flash` and `apply` share (issue #588).
+pub fn sys7_segment_attrs(
+    addr: u32,
+    access: Option<u32>,
+    mem_type: Option<u32>,
+    seg_flags: Option<u32>,
+    profile: &bussard_mgmt::Sys7Profile,
+) -> (u8, u8, u8) {
+    let mem_type = mem_type
+        .and_then(|m| u8::try_from(m).ok())
+        .unwrap_or_else(|| mem_type_for_addr(addr, profile));
+    let (default_access, default_seg_flags) = bussard_mgmt::alloc_attr_octets(mem_type);
+    let seg_flags = seg_flags_octet(seg_flags).unwrap_or(default_seg_flags);
+    let access = access
+        .and_then(|a| u8::try_from(a).ok())
+        .unwrap_or(default_access);
+    (mem_type, access, seg_flags)
+}
+
+/// The Additional Load Controls subtype an `LdCtrlAbsSegment` `SegType` goes
+/// out as: `0` (or absent) AllocAbsDataSeg, `1` AllocAbsStackSeg (KNX 3/5/2
+/// §3.31.2; issue #487). `None` for any other value.
+pub fn sys7_segment_type(seg_type: Option<u32>) -> Option<u8> {
+    match seg_type.unwrap_or(0) {
+        0 => Some(bussard_mgmt::sys7::S7_SUB_ALLOC_DATA),
+        1 => Some(bussard_mgmt::sys7::S7_SUB_ALLOC_STACK),
+        _ => None,
+    }
+}
+
+/// One table segment a System 7 procedure allocates (`LdCtrlAbsSegment` on
+/// LSM 1 or 2, the first of each) with the attributes its allocation record
+/// carries. `flash` sends it from the procedure; `apply` sends the same record
+/// for the table it rewrites, as ETS's partial downloads do (issue #588: the
+/// EK-E72 steps B to D allocate `0x4000`/237 and `0x40ED`/235 with access
+/// `ff`, the product's own attributes, never the written length).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sys7SegmentOp {
+    /// The op's `Address`.
+    pub address: u32,
+    /// The op's `Size` (0 when absent).
+    pub size: u32,
+    /// The op's `Access`.
+    pub access: Option<u32>,
+    /// The op's `MemType`.
+    pub mem_type: Option<u32>,
+    /// The op's `SegFlags`.
+    pub seg_flags: Option<u32>,
+    /// The op's `SegType`.
+    pub seg_type: Option<u32>,
+}
+
+impl Sys7SegmentOp {
+    /// The allocation record for this segment placed at `address` with `size`
+    /// octets (a packed table moves and resizes it, issue #383), its attribute
+    /// octets resolved as `flash` resolves them ([`sys7_segment_attrs`],
+    /// [`sys7_segment_type`]). `None` for a `SegType` that is neither a data
+    /// nor a stack segment.
+    pub fn alloc_record(
+        &self,
+        address: u16,
+        size: u16,
+        profile: &bussard_mgmt::Sys7Profile,
+    ) -> Option<[u8; bussard_mgmt::sys7::LOAD_EVENT_SIZE]> {
+        let seg_type = sys7_segment_type(self.seg_type)?;
+        let (mem_type, access, seg_flags) = sys7_segment_attrs(
+            u32::from(address),
+            self.access,
+            self.mem_type,
+            self.seg_flags,
+            profile,
+        );
+        Some(bussard_mgmt::encode_alloc_segment(
+            seg_type, address, size, access, mem_type, seg_flags,
+        ))
+    }
+}
+
 /// Derives a [`bussard_mgmt::Sys7Profile`] from a mask's parsed
 /// `HawkConfigurationData` (`[system7-spec §2.4/§5]`).
 ///
@@ -1816,11 +1891,17 @@ pub struct Sys7TableBases {
     /// program keeps it in its own application segment, never behind the
     /// address table: the EK-E72 at `0x41D8`, the Jung `A-2088` at `0x43FF`.
     pub object_table: Option<u16>,
+    /// The LSM 1 segment op itself, whose allocation record `apply` sends
+    /// when it rewrites the address table (issue #588).
+    pub address_segment: Option<Sys7SegmentOp>,
+    /// The LSM 2 segment op itself, whose allocation record `apply` sends
+    /// when it rewrites the association table (issue #588).
+    pub association_segment: Option<Sys7SegmentOp>,
 }
 
-/// The first `LdCtrlAbsSegment` (address, size) `app`'s procedure allocates on
-/// LSM 1 and on LSM 2.
-fn table_allocations(app: &ApplicationProgram) -> [Option<(u32, u32)>; 2] {
+/// The first `LdCtrlAbsSegment` `app`'s procedure allocates on LSM 1 and on
+/// LSM 2.
+fn table_segment_ops(app: &ApplicationProgram) -> [Option<Sys7SegmentOp>; 2] {
     // Every branch of every block, read without a configuration: no corpus
     // program allocates inside a `<choose>` (issue #402).
     let ops = super::plan::self_contained_blocks(app)
@@ -1832,12 +1913,28 @@ fn table_allocations(app: &ApplicationProgram) -> [Option<(u32, u32)>; 2] {
                 lsm_idx: Some(l),
                 address: Some(a),
                 size,
-                ..
-            } if *l == lsm => Some((*a, size.unwrap_or(0))),
+                access,
+                mem_type,
+                seg_flags,
+                seg_type,
+            } if *l == lsm => Some(Sys7SegmentOp {
+                address: *a,
+                size: size.unwrap_or(0),
+                access: *access,
+                mem_type: *mem_type,
+                seg_flags: *seg_flags,
+                seg_type: *seg_type,
+            }),
             _ => None,
         })
     };
     [alloc(1), alloc(2)]
+}
+
+/// The first `LdCtrlAbsSegment` (address, size) `app`'s procedure allocates on
+/// LSM 1 and on LSM 2.
+fn table_allocations(app: &ApplicationProgram) -> [Option<(u32, u32)>; 2] {
+    table_segment_ops(app).map(|op| op.map(|op| (op.address, op.size)))
 }
 
 /// A table segment's size as a bound: unknown when the procedure gives none
@@ -1871,7 +1968,8 @@ fn packs_tables(app: &ApplicationProgram, allocs: &[Option<(u32, u32)>; 2]) -> b
 /// takes them from the product. With `DynamicTableManagement` the association
 /// table follows the address table instead ([`Sys7TableBases::packed_end`]).
 pub fn sys7_table_bases(app: &ApplicationProgram) -> Sys7TableBases {
-    let allocs = table_allocations(app);
+    let segments = table_segment_ops(app);
+    let allocs = segments.map(|op| op.map(|op| (op.address, op.size)));
     let base = |i: usize| allocs[i].and_then(|(a, _)| u16::try_from(a).ok());
     let packed_end = match allocs {
         [_, Some((a2, s2))] if packs_tables(app, &allocs) => {
@@ -1887,6 +1985,8 @@ pub fn sys7_table_bases(app: &ApplicationProgram) -> Sys7TableBases {
         address_size: segment_size(allocs[0]),
         association_size: segment_size(allocs[1]),
         object_table: declared_object_table(app),
+        address_segment: segments[0],
+        association_segment: segments[1],
     }
 }
 
@@ -3502,6 +3602,22 @@ mod tests {
                 address_size: Some(511),
                 association_size: Some(255),
                 object_table: None,
+                address_segment: Some(Sys7SegmentOp {
+                    address: 16384,
+                    size: 511,
+                    access: None,
+                    mem_type: None,
+                    seg_flags: None,
+                    seg_type: Some(0)
+                }),
+                association_segment: Some(Sys7SegmentOp {
+                    address: 16895,
+                    size: 255,
+                    access: None,
+                    mem_type: None,
+                    seg_flags: None,
+                    seg_type: Some(0)
+                }),
             }
         );
         Ok(())
@@ -3564,6 +3680,22 @@ mod tests {
                     manufacturer: 0x00B6,
                     application_number: 0x4537,
                     application_version: 3,
+                }),
+                address_segment: Some(Sys7SegmentOp {
+                    address: 16384,
+                    size: 237,
+                    access: None,
+                    mem_type: None,
+                    seg_flags: None,
+                    seg_type: Some(0)
+                }),
+                association_segment: Some(Sys7SegmentOp {
+                    address: 16621,
+                    size: 235,
+                    access: None,
+                    mem_type: None,
+                    seg_flags: None,
+                    seg_type: Some(0)
                 }),
             }
         );
@@ -3710,6 +3842,22 @@ mod tests {
                 address_size: Some(511),
                 association_size: Some(511),
                 object_table: None,
+                address_segment: Some(Sys7SegmentOp {
+                    address: 16384,
+                    size: 511,
+                    access: Some(242),
+                    mem_type: Some(3),
+                    seg_flags: Some(128),
+                    seg_type: Some(0)
+                }),
+                association_segment: Some(Sys7SegmentOp {
+                    address: 16895,
+                    size: 511,
+                    access: Some(242),
+                    mem_type: Some(3),
+                    seg_flags: Some(128),
+                    seg_type: Some(0)
+                }),
             }
         );
         Ok(())
