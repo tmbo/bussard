@@ -42,6 +42,11 @@ use crate::consts::{
     PID_TABLE_REFERENCE, SUB_REL_SEGMENT,
 };
 
+/// `PID_DEVICE_CONTROL` of the device object (Resources 03_05_01 §4.2.14).
+const PID_DEVICE_CONTROL: u8 = 14;
+/// Its verify-mode bit (bit 2).
+const VERIFY_MODE_BIT: u8 = 0x04;
+
 /// The Data Secure SCF octet of an `S-A_Sync_Req` (tool access).
 const SCF_SYNC_REQ: u8 = 0x92;
 
@@ -190,6 +195,14 @@ pub struct MockDevice {
     /// Answer `A_Memory_Write` with an `A_Memory_Response` echo (verify mode)
     /// instead of a bare `T_ACK`. `A_UserMemory_Write` likewise.
     pub echo_memory_writes: bool,
+    /// The device models verify mode (issue #705, set with
+    /// [`MockDevice::with_verify_mode_control`]): it echoes a plain or user
+    /// memory write only while bit 2 of `obj0/PID_DEVICE_CONTROL` is set, and
+    /// clears the bit on every `T_Connect` (Resources 03_05_01 §4.2.14.7).
+    pub verify_mode_control: bool,
+    /// For each plain or user memory write, whether verify mode was on, in
+    /// order (a device built with [`MockDevice::with_verify_mode_control`]).
+    pub writes_in_verify_mode: Vec<bool>,
     /// Whether the device serves `A_MemoryExtended_Read`/`_Write`. A device
     /// whose application does not announce the services leaves them
     /// unanswered (issue #472); `true` by default.
@@ -602,6 +615,8 @@ impl MockDevice {
             memory: HashMap::new(),
             memory_write_policy: MemoryWritePolicy::Anywhere,
             echo_memory_writes: true,
+            verify_mode_control: false,
+            writes_in_verify_mode: Vec::new(),
             extended_memory: true,
             segment_bases: HashMap::new(),
             user_memory_writes: 0,
@@ -820,6 +835,53 @@ impl MockDevice {
     pub fn without_memory_write_echo(mut self) -> Self {
         self.echo_memory_writes = false;
         self
+    }
+
+    /// Models verify mode (issue #705): serves a writable
+    /// `obj0/PID_DEVICE_CONTROL` holding `initial`, echoes a plain or user
+    /// memory write with its `A_Memory_Response` only while bit 2 is set (a
+    /// bare `T_ACK` otherwise), and clears the bit on every `T_Connect`, as
+    /// a device clears it when its connection closes.
+    pub fn with_verify_mode_control(mut self, initial: u8) -> Self {
+        self.verify_mode_control = true;
+        self.with_writable_property(0, PID_DEVICE_CONTROL, 1, &[initial])
+    }
+
+    /// Whether verify mode is on: bit 2 of `obj0/PID_DEVICE_CONTROL` on a
+    /// device built with [`MockDevice::with_verify_mode_control`], else
+    /// [`echo_memory_writes`](Self::echo_memory_writes).
+    pub fn verify_mode(&self) -> bool {
+        if !self.verify_mode_control {
+            return self.echo_memory_writes;
+        }
+        self.properties
+            .get(&(0, PID_DEVICE_CONTROL))
+            .and_then(|p| p.data.first())
+            .is_some_and(|b| b & VERIFY_MODE_BIT != 0)
+    }
+
+    /// A new transport connection: a device that models verify mode clears
+    /// it (Resources 03_05_01 §4.2.14.7).
+    pub(crate) fn on_transport_connect(&mut self) {
+        if !self.verify_mode_control {
+            return;
+        }
+        if let Some(b) = self
+            .properties
+            .get_mut(&(0, PID_DEVICE_CONTROL))
+            .and_then(|p| p.data.first_mut())
+        {
+            *b &= !VERIFY_MODE_BIT;
+        }
+    }
+
+    /// Records whether verify mode is on for one memory write and returns it.
+    fn note_memory_write_echo(&mut self) -> bool {
+        let on = self.verify_mode();
+        if self.verify_mode_control {
+            self.writes_in_verify_mode.push(on);
+        }
+        on
     }
 
     /// Leaves `A_MemoryExtended_Read`/`_Write` unanswered: an application
@@ -1303,7 +1365,7 @@ impl MockDevice {
         if !self.write_mem(u32::from(addr), &value) {
             return Reaction::Nak;
         }
-        if !self.echo_memory_writes {
+        if !self.note_memory_write_echo() {
             return Reaction::Ack;
         }
         let mut payload = addr.to_be_bytes().to_vec();
@@ -1339,7 +1401,7 @@ impl MockDevice {
         if !self.write_mem(addr, value) {
             return Reaction::Nak;
         }
-        if !self.echo_memory_writes {
+        if !self.note_memory_write_echo() {
             return Reaction::Ack;
         }
         // Verify mode: the device reads the area back and answers with it

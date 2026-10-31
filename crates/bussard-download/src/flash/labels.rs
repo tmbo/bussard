@@ -297,8 +297,9 @@ pub(super) fn step_label(step: &FlashStep) -> String {
                 program.writes.len()
             )
         }
-        FlashStep::Sys7EnableVerifyMode => {
-            "[S7] enable verify mode (object 0 PID_DEVICE_CONTROL bit 2, written only when clear)"
+        FlashStep::EnableVerifyMode => {
+            "enable verify mode (object 0 PID_DEVICE_CONTROL bit 2, written only when clear; \
+             the device echoes every memory write from here)"
                 .to_string()
         }
     }

@@ -345,6 +345,20 @@ impl FlashPlan {
                     steps.push(step.clone());
                 }
                 FlashStep::Restart | FlashStep::Delay { .. } => steps.push(step.clone()),
+                // The verify-mode switch ahead of a `Verify="true"` parameter
+                // write (issue #705) stays with that write; the one ahead of a
+                // table write goes with it (ETS's partial download of
+                // `syn-minimal`, whose parameter write is `Verify="false"`,
+                // never touches PID_DEVICE_CONTROL).
+                FlashStep::EnableVerifyMode
+                    if matches!(
+                        self.steps.get(i + 1),
+                        Some(FlashStep::WriteRelMem { image, .. })
+                            if image.kind == ImageKind::Parameters
+                    ) =>
+                {
+                    steps.push(step.clone());
+                }
                 _ => {}
             }
         }
@@ -430,7 +444,7 @@ impl FlashPlan {
                 | FlashStep::LoadImageProp { .. } => {
                     steps.push(step.clone());
                 }
-                FlashStep::Restart | FlashStep::Delay { .. } | FlashStep::Sys7EnableVerifyMode => {
+                FlashStep::Restart | FlashStep::Delay { .. } | FlashStep::EnableVerifyMode => {
                     steps.push(step.clone());
                 }
                 // No pre-download pass (issue #488): ETS's partial download

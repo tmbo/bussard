@@ -217,12 +217,14 @@ fn builtin_system_b_full_load() -> Vec<LoadOp> {
         applies_to: None,
         fill: SegmentFill::NONE,
     };
-    // `Offset="0" Size="1048576"`: the whole table image, the size a sentinel.
+    // `Offset="0" Size="1048576" Verify="true"`: the whole table image, the
+    // size a sentinel.
     let write_rel_mem = |obj: u32| LoadOp::WriteRelMem {
         obj_idx: Some(obj),
         offset: Some(0),
         size: Some(1_048_576),
         applies_to: None,
+        verify: Some(true),
     };
     // `PID_PROGRAM_VERSION` (13) with the all-zero placeholder the planner
     // replaces by the application's id.

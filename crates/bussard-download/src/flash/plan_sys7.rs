@@ -168,7 +168,7 @@ pub(super) const SYS7_PRELUDE_UNLOAD_LSMS: [u32; 4] = [1, 2, 3, 4];
 ///   ETS runs it before anything else; the vendor's read-only preconditions
 ///   (`CompareProp`, `CompareMem`) stay ahead of it here, so a device that
 ///   fails them is refused before its application is unloaded.
-/// - [`FlashStep::Sys7EnableVerifyMode`] right after the first `StartLoading`,
+/// - [`FlashStep::EnableVerifyMode`] right after the first `StartLoading`,
 ///   when the mask declares the Hawk `VerifyMode` feature and streams blind.
 ///   ETS writes `obj0/PID_DEVICE_CONTROL` after the first allocation record;
 ///   the allocation and its stream are one step here, so the write goes out
@@ -184,7 +184,7 @@ fn add_ets_prelude(steps: &mut Vec<FlashStep>, profile: &bussard_mgmt::Sys7Profi
             .iter()
             .position(|s| matches!(s, FlashStep::Sys7StartLoading { .. }))
     {
-        steps.insert(first_load + 1, FlashStep::Sys7EnableVerifyMode);
+        steps.insert(first_load + 1, FlashStep::EnableVerifyMode);
     }
     // A procedure that loads nothing (a bare restart) gets no prelude.
     let loads = steps.iter().any(|s| {
@@ -3061,7 +3061,7 @@ mod tests {
             &bussard_mgmt::Sys7Profile::corpus_default_for_mask(0x0705),
         );
         let mut expected = procedure();
-        expected.insert(3, FlashStep::Sys7EnableVerifyMode);
+        expected.insert(3, FlashStep::EnableVerifyMode);
         expected.insert(
             1,
             FlashStep::Sys7PreDownloadRestart {
@@ -3076,7 +3076,7 @@ mod tests {
             &mut steps,
             &bussard_mgmt::Sys7Profile::corpus_default_for_mask(0x0701),
         );
-        assert!(!steps.contains(&FlashStep::Sys7EnableVerifyMode));
+        assert!(!steps.contains(&FlashStep::EnableVerifyMode));
         assert!(matches!(
             steps.get(1),
             Some(FlashStep::Sys7PreDownloadRestart { .. })

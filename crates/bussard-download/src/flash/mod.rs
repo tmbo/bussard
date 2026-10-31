@@ -629,13 +629,23 @@ pub enum FlashStep {
         /// The 1-based LSM indices to unload before the restart, in order.
         unload: Vec<u32>,
     },
-    /// Switch on the device's verify mode (`obj0/PID_DEVICE_CONTROL` bit 2)
-    /// before the first segment write, as ETS does on a mask with the Hawk
-    /// `VerifyMode` feature (issue #116, see
+    /// Switch on the device's verify mode (`obj0/PID_DEVICE_CONTROL` bit 2),
+    /// as ETS does on a mask with the Hawk `VerifyMode` feature (see
     /// [`bussard_mgmt::enable_verify_mode`]). Reads the property and writes it
     /// back with the bit set only when the bit is clear; a device without the
-    /// property is left alone.
-    Sys7EnableVerifyMode,
+    /// property is left alone. From then on the device answers every plain
+    /// memory write with an `A_Memory_Response` echo, which the executor
+    /// compares with the chunk written.
+    ///
+    /// On System 7 it runs before the first segment write (issue #116). On
+    /// System B (issue #705) it precedes the first `Verify="true"`
+    /// `LdCtrlWriteRelMem` of an application written over the plain memory
+    /// services, and the executor switches the mode on right before that
+    /// write's first `A_Memory_Write`, after the segment base is known; an
+    /// extended write leaves the property alone, as ETS does. The device
+    /// clears the bit when the connection closes, so a later connection sets
+    /// it again; nothing clears it explicitly, as in every ETS capture.
+    EnableVerifyMode,
     /// The KNXnet/IP parameter object writes ETS makes after the application
     /// of a device with a KNX IP interface built in (issue #455), from the
     /// device file's `[knxnet]` table; each write is read back. Added by

@@ -471,8 +471,27 @@ pub fn plan_flash_with_memo(
     // on the first `LdCtrlWriteProp` without `InlineData` (issue #669).
     let mut property_values: Option<bussard_prod::PropertyValues> = None;
 
+    // ETS switches verify mode on before the first `Verify="true"` relative
+    // memory write it sends over the plain memory services (issue #705).
+    let verify_mode_at = system_b_verify_mode(app, device_mask)
+        .then(|| {
+            ops.iter().position(|op| {
+                matches!(
+                    op,
+                    LoadOp::WriteRelMem {
+                        verify: Some(true),
+                        ..
+                    }
+                )
+            })
+        })
+        .flatten();
+
     for (i, op) in ops.iter().enumerate() {
         let step_no = i + 1;
+        if verify_mode_at == Some(i) {
+            steps.push(FlashStep::EnableVerifyMode);
+        }
         if let Some(code) = error_maps.keys().next()
             && !matches!(
                 op,
@@ -757,6 +776,7 @@ pub fn plan_flash_with_memo(
                 size,
                 applies_to,
                 obj_idx,
+                ..
             } => {
                 let current = obj_idx
                     .and_then(|idx| rel_segment_by_object.get(&idx))
@@ -1185,6 +1205,26 @@ pub fn plan_flash_with_memo(
         par_procedure: false,
         kept,
     })
+}
+
+/// Whether a System B download of `app` on `device_mask` switches the
+/// device's verify mode on before its first `Verify="true"` memory write, as
+/// ETS does (issue #705).
+///
+/// Every System B mask bussard flashes (`07B0`, `17B0`, `27B0`, `57B0`)
+/// declares the Hawk `VerifyMode` feature in `knx_master.xml`. ETS reads
+/// `obj0/PID_DEVICE_CONTROL` and writes bit 2 when it is clear before the
+/// first plain `A_Memory_Write` of such a load control (the house captures of
+/// 1.1.45 and 1.1.51, the DA.tp sweep and the synthetic System B captures).
+/// An application that is Data Secure enabled or declares
+/// `SupportsExtendedMemoryServices` is written with `A_MemoryExtended_Write`,
+/// which a response confirms already: ETS never touches the property there
+/// (the Jung, ABB and Siemens secure applications of the house,
+/// `syn-user-memory-extmem`).
+pub(super) fn system_b_verify_mode(app: &ApplicationProgram, device_mask: u16) -> bool {
+    device_mask & 0x0FFF == 0x07B0
+        && !app.is_secure_enabled
+        && !app.supports_extended_memory_services
 }
 
 /// The one ETS error code the product corpus maps (`LdCtrlMapError
