@@ -673,3 +673,11 @@ back (OCR reads nothing on a selected row).
   defaults download, then `bussard flash --parameters-only`): `identical`,
   `memory 0x6000=ok(3)`, load control `identical` (4 records) (#543, #490).
   `bussard apply` refuses this device, which has no links (#542).
+- `calc-input` of `syn-param-calculation` (2026-10-31): `Delay (s)`, the
+  calculation's input, set from 300 to 500, then the application download
+  into a fresh sim. ETS wrote `01 01 f4 03 e9 01 fb` at `0x6000`: both
+  outputs computed (1001 and 507), the hidden `LegacyPatchAlways` one
+  included. At defaults it wrote `00 00` for both: ETS runs the script when
+  an input changes. Row (`dir=` the model template with `delay-s = 500`):
+  `differs`, `par=4/256@+0x3` (bussard runs no calculation), pinned
+  `expect=differs` (#427).
