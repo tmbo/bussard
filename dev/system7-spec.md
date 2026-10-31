@@ -557,6 +557,13 @@ parameter-only download and the diff never touch them), not placed, and named
 in the plan (`LSM 3 segment 0x4440 octets 1..3 kept`). A parameter placed in
 a gap is reported as kept on the device (the device's value and the model's,
 no verdict), never as a difference, by `flash`, `plan` and the read-back.
+The same holds for allocations outside any `<choose>` (issue #657):
+`CONFIRMED` against the synthetic `syn-s7-static-split` (`captures/synthetic/
+syn-s7-static-split/defaults/ops.txt`, ETS 6.4.1, 2026-10-31), which is
+`syn-s7-choose-split` with the `<choose>` removed. ETS sends the same records
+and writes, leaves `0x4441..0x4442` alone, and the sequence and image equal
+the `<choose>` case's. The Jung `M-0004_A-5015-13-7E56-O00F4` (4 of the 14
+octets of `AS-5DAF` allocated, parameters at octets 12 and 13) plans this way.
 System B has the same rule for a `<choose>` branch that writes part of a
 relative segment (`KeptOctets`, PR #647).
 

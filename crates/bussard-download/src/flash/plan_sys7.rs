@@ -344,26 +344,14 @@ pub(super) fn plan_flash_sys7(
         }
         gaps_of.insert(split.seg.id.clone(), split.parts.gaps.clone());
     }
+    // A split the procedure makes outside any `<choose>` is planned the same
+    // way, the gap kept even with a parameter placed there (issue #657): ETS's
+    // download of the synthetic `syn-s7-static-split`
+    // (`captures/synthetic/syn-s7-static-split/defaults/ops.txt`) sends the
+    // records 0x4440 (1 octet) and 0x4443 (61 octets), writes 0x4440 and
+    // 0x4443..0x447F, and never writes or reads 0x4441..0x4442, where `delay`
+    // sits; the sequence and image are `syn-s7-choose-split`'s.
     let kept: Vec<KeptOctets> = splits.iter().filter_map(SegmentSplit::kept).collect();
-    // A split no `<choose>` makes has no capture: a parameter placed in its
-    // gap refuses, as before issue #411.
-    for split in splits.iter().filter(|s| !s.by_choose) {
-        let placed_here = placed.get(&split.seg.id);
-        if let Some(&(start, end)) =
-            split.parts.gaps.iter().find(|(start, end)| {
-                placed_here.is_some_and(|p| p.range(start..end).next().is_some())
-            })
-        {
-            return Err(PlanError::UnsupportedOp {
-                op: format!(
-                    "LdCtrlAbsSegment allocations outside any <choose> that leave octets \
-                     {start}..{end} of segment {} unallocated while the configuration places \
-                     a parameter there (no ETS capture shows what ETS writes there)",
-                    split.seg.id
-                ),
-            });
-        }
-    }
 
     // With `DynamicTableManagement` ETS sizes the address-table segment to the
     // table and moves the association table directly behind it (issue #383).
@@ -903,22 +891,16 @@ pub(super) struct SegmentSplit<'a> {
     len: usize,
     /// The LSM the first part is allocated on.
     lsm: Option<u32>,
-    /// The parts and the gaps.
+    /// The parts and the gaps. A `<choose>` branch or the procedure itself
+    /// may make the split; ETS downloads both alike (issues #411 and #657).
     parts: SegmentParts,
-    /// Whether a `<choose>` branch makes the split: the allocations outside
-    /// every `<choose>` do not split the segment. Only such a split is
-    /// planned as the `syn-s7-choose-split` capture shows (issue #411); a
-    /// procedure that always allocates a segment in part (the Jung
-    /// `M-0004_A-5015-13-7E56-O00F4`, `AS-5DAF`: 4 of 14 octets) has no
-    /// capture, and a parameter placed in its gap still refuses.
-    by_choose: bool,
 }
 
 impl SegmentSplit<'_> {
     /// The octets of the segment no allocation holds, as [`KeptOctets`]
     /// (issue #411); `None` when the parts cover the whole image.
     fn kept(&self) -> Option<KeptOctets> {
-        (self.by_choose && !self.parts.gaps.is_empty()).then(|| KeptOctets {
+        (!self.parts.gaps.is_empty()).then(|| KeptOctets {
             object: self.lsm.unwrap_or(0),
             segment: self.seg.id.clone(),
             allocated: self.len,
@@ -958,25 +940,6 @@ pub(super) fn sys7_segment_splits<'a>(
         })
         .collect();
     let allocations: Vec<(u32, u32)> = records.iter().map(|&(_, a, s)| (a, s)).collect();
-    // The allocations no `<choose>` guards: a segment they split already is
-    // split by the procedure itself, not by a branch.
-    let unguarded: Vec<(u32, u32)> = super::plan::self_contained_blocks(app)
-        .into_iter()
-        .flat_map(|p| {
-            p.ops
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| p.guards_of(*i).is_empty())
-                .filter_map(|(_, op)| match op {
-                    LoadOp::AbsSegment {
-                        address: Some(a),
-                        size,
-                        ..
-                    } => Some((*a, size.unwrap_or(0))),
-                    _ => None,
-                })
-        })
-        .collect();
     seg_by_addr
         .into_iter()
         .filter_map(|(base, seg)| {
@@ -987,14 +950,12 @@ pub(super) fn sys7_segment_splits<'a>(
                 .iter()
                 .find(|&&(_, a, _)| Some(a) == first)
                 .and_then(|&(lsm, _, _)| lsm);
-            let by_choose = sys7_segment_parts(&unguarded, base, len).is_none();
             Some(SegmentSplit {
                 seg,
                 base,
                 len,
                 lsm,
                 parts,
-                by_choose,
             })
         })
         .collect()
@@ -1016,7 +977,10 @@ pub(super) fn sys7_segment_splits<'a>(
 /// allocates `0x4440` (1 octet) and `0x4443` (61 octets), streams `0x4440`
 /// and `0x4443..0x447F`, and never writes or reads `0x4441..0x4442`, where
 /// the 16-bit parameter `delay` sits; the download completes. The MDT
-/// `A-0054-14` and `A-0255-21` with `P-203` = 1 have the same shape.
+/// `A-0054-14` and `A-0255-21` with `P-203` = 1 have the same shape. A
+/// procedure that allocates a segment in parts outside any `<choose>` is
+/// downloaded alike (issue #657, `syn-s7-static-split`, the same sequence and
+/// image), the Jung `M-0004_A-5015-13-7E56-O00F4` among them.
 pub(super) fn sys7_kept_octets(
     app: &ApplicationProgram,
     ops: &[LoadOp],
@@ -3945,7 +3909,7 @@ mod tests {
     /// `P-5` at offset 14 that is always shown.
     ///
     /// With `unconditional`, the procedure allocates the two parts outside
-    /// any `<choose>` (the Jung `A-5015` shape, no capture).
+    /// any `<choose>` (the Jung `A-5015` shape, `syn-s7-static-split`, #657).
     fn split_segment_app(
         gap_param: bool,
         unconditional: bool,
@@ -4124,27 +4088,30 @@ mod tests {
     }
 
     #[test]
-    fn test_plan_flash_sys7_refuses_a_parameter_in_an_unconditional_gap()
+    fn test_plan_flash_sys7_keeps_a_parameter_in_an_unconditional_gap()
     -> Result<(), Box<dyn std::error::Error>> {
-        // Split outside any `<choose>`: no capture says what ETS writes, so a
-        // placed parameter in the gap (P-5 at 14) still refuses.
-        match plan_split(&split_segment_app(true, true)?, "1") {
-            Err(PlanError::UnsupportedOp { op }) => {
-                assert!(
-                    op.contains("outside any <choose>")
-                        && op.contains("octets 12..16 of segment M-0083_A-S_AS-48"),
-                    "{op}"
-                );
-            }
-            other => return Err(format!("expected the refusal, got {other:?}").into()),
-        }
-        // Without a parameter in the gap it plans as in #413, nothing kept.
+        // Split outside any `<choose>`: planned as ETS downloads
+        // `syn-s7-static-split` (issue #657), the parts written and the gaps
+        // kept, P-5's octet (14) among them.
+        let plan = plan_split(&split_segment_app(true, true)?, "1")?;
+        assert_eq!(
+            split_layout(&plan),
+            vec![(0x4800, 6, 0, 6), (0x4808, 4, 8, 4)]
+        );
+        let kept = plan.kept();
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert_eq!(kept[0].ranges, vec![(6, 8), (12, 16)]);
+        let placed = plan.placed_octets("M-0083_A-S_AS-48").ok_or("placed")?;
+        assert!(!placed.contains(&14));
+        let mask = plan.segment_mask("M-0083_A-S_AS-48").ok_or("a mask")?;
+        assert_eq!(mask[14], 0x00);
+        // Without a parameter in the gap the layout is the same.
         let plan = plan_split(&split_segment_app(false, true)?, "1")?;
         assert_eq!(
             split_layout(&plan),
             vec![(0x4800, 6, 0, 6), (0x4808, 4, 8, 4)]
         );
-        assert!(plan.kept().is_empty());
+        assert_eq!(plan.kept().len(), 1);
         Ok(())
     }
 
@@ -4183,9 +4150,9 @@ mod tests {
     /// allocates an absolute segment in parts (System 7) or writes a segment
     /// only in part (System B, the #402 refusal), each decided one choose and
     /// one branch at a time. Prints one `SPLIT-SEGMENT` line per such program
-    /// and a `SPLIT-SEGMENT-SUMMARY`, and asserts that no System 7 procedure
-    /// but the known Jung `A-5015-13` splits a segment outside a `<choose>`:
-    /// the layout of every other System 7 plan is the one before #413.
+    /// and a `SPLIT-SEGMENT-SUMMARY`, and asserts that every System 7
+    /// procedure that splits a segment outside a `<choose>` (the Jung
+    /// `A-5015-13`) plans at its defaults with the gap kept (issue #657).
     #[test]
     fn test_sys7_segment_parts_on_the_corpus() -> Result<(), Box<dyn std::error::Error>> {
         use bussard_prod::application::LoadProcedure;
@@ -4262,9 +4229,8 @@ mod tests {
                         })
                         .collect()
                 };
-                // Outside a `<choose>`, no System 7 procedure splits a
-                // segment: the layout of every other plan is the one before
-                // #413.
+                // A System 7 procedure that splits a segment outside a
+                // `<choose>` plans as ETS downloads `syn-s7-static-split`.
                 if is_sys7 {
                     let unguarded: Vec<&LoadOp> = blocks
                         .iter()
@@ -4281,7 +4247,17 @@ mod tests {
                         .iter()
                         .any(|&(base, len, _)| sys7_segment_parts(&allocs, base, len).is_some())
                     {
-                        default_splits.push(app.id.clone());
+                        let kept = plan_flash(
+                            app,
+                            "1.1.99",
+                            device_mask,
+                            &BTreeMap::new(),
+                            &BTreeMap::new(),
+                            None,
+                            &BTreeMap::new(),
+                        )
+                        .map(|plan| plan.kept().len());
+                        default_splits.push((app.id.clone(), kept));
                     }
                 }
                 if blocks.iter().all(|p| p.chooses.is_empty()) {
@@ -4348,15 +4324,25 @@ mod tests {
             "SPLIT-SEGMENT-SUMMARY|System 7 {sys7} of {sys7_choose} with a load <choose>|System B {sys_b} of {sys_b_choose} with a load <choose>|splits outside a choose {}",
             default_splits.len()
         );
-        // The one known split outside a `<choose>`, in the corpus since the
+        // The known split outside a `<choose>`, in the corpus since the
         // crawled vendor archives were folded in (#613, 2026-10-30): the Jung
         // `A-5015-13` allocates 4 of the 14 octets of `AS-5DAF` and places
-        // parameters at octets 12 and 13. No capture shows what ETS writes
-        // there, so the planner refuses it (issue #411 keeps only a gap a
-        // `<choose>` makes); a new one is reported here.
-        const KNOWN: &[&str] = &["M-0004_A-5015-13-7E56-O00F4"];
-        default_splits.retain(|id| !KNOWN.contains(&id.as_str()));
-        assert!(default_splits.is_empty(), "{default_splits:#?}");
+        // parameters at octets 12 and 13. It plans, the gap kept (#657).
+        for (id, kept) in &default_splits {
+            println!("SPLIT-OUTSIDE-CHOOSE|{id}|{kept:?}");
+        }
+        assert!(
+            default_splits
+                .iter()
+                .any(|(id, _)| id == "M-0004_A-5015-13-7E56-O00F4"),
+            "{default_splits:#?}"
+        );
+        assert!(
+            default_splits
+                .iter()
+                .all(|(_, kept)| kept.as_ref().is_ok_and(|n| *n > 0)),
+            "{default_splits:#?}"
+        );
         Ok(())
     }
 }

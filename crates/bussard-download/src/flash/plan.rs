@@ -1530,9 +1530,10 @@ fn kept_from(
 /// read-back and the plan, which decode a device's parameters without a
 /// [`FlashPlan`] at hand. System B: the octets of a segment the taken
 /// `<choose>` branch writes in part; System 7: the octets of a segment the
-/// taken branch allocates in parts and leaves between or after them
+/// procedure allocates in parts (in a taken branch or outside any
+/// `<choose>`) and leaves between or after them
 /// ([`super::plan_sys7::sys7_kept_octets`]). Empty for a property-only
-/// application, for a procedure without a `<choose>`, and when the load
+/// application, for a System B procedure without a `<choose>`, and when the load
 /// procedure cannot be decided (the planner refuses such a plan on its own).
 pub fn kept_octets(
     app: &ApplicationProgram,
@@ -1547,9 +1548,8 @@ pub fn kept_octets(
     else {
         return Vec::new();
     };
-    if app.load_procedures.iter().all(|p| p.chooses.is_empty()) {
-        return Vec::new();
-    }
+    // System 7: a procedure may split a segment outside any `<choose>` too
+    // (issue #657, the Jung `A-5015-13`), so the check runs without one.
     if profile.is_system_7() {
         let config = memo.evaluate_for(app, overrides);
         return match super::plan_props::guarded_ops(app, &config) {
@@ -1564,7 +1564,7 @@ pub fn kept_octets(
             Err(_) => Vec::new(),
         };
     }
-    if !profile.capabilities().flash {
+    if !profile.capabilities().flash || app.load_procedures.iter().all(|p| p.chooses.is_empty()) {
         return Vec::new();
     }
     let config = memo.evaluate_for(app, overrides);
