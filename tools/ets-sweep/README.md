@@ -654,3 +654,11 @@ OCR reads neither a lone `0` nor a lone `1`; `link` waits up to 12 s for its
 dialog, answers ETS's question about an address that already has another
 object size with OK, and clears the row selection before it reads the link
 back (OCR reads nothing on a selected row).
+- `links` of `syn-minimal` (2026-10-31): the switch object linked to 1/0/1
+  and 1/0/2, the status object to 1/0/3, then the application download. ETS
+  writes the address table `0003 0801 0802 0803`, the association table
+  `0003 0001 0000 0003 0001 0002 0000` (1/0/1 to object 0, 1/0/3 to object
+  1, 1/0/2 to object 0) and the group-object table `00014f00`
+  (`00014b00` with no links). Row (`dir=` the committed model template with
+  those links): `identical`, `addr=ok(8) assoc=ok(14) gobj=ok(4)`, load
+  control `identical` (#478, #540).
