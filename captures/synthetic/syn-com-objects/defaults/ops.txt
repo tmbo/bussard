@@ -1,0 +1,53 @@
+normalized operation sequence for 1.1.1 (captures/synthetic/syn-com-objects/defaults/ets.pcapng)
+dropped: 0 L_Data.con echo(es), 0 repeat(s), 83 L4 ack(s)
+
+   1  connect T_Connect
+   2  descriptor type0 type=0
+   3  prop-read obj0/PID_MAX_APDU_LENGTH count=1 index=1
+   4  authorize Authorize_Request key=FFFFFFFF(free-access)
+   5  prop-desc-read obj2/PID_23 obj=2 pid=23 pid_name=PID_23 prop_index=0
+   6  prop-read obj0/PID_SERIAL_NUMBER count=1 index=1
+   7  prop-read obj0/PID_MANUFACTURER_ID count=1 index=1
+   8  prop-read obj0/PID_TABLE count=1 index=1
+   9  prop-read obj0/PID_HARDWARE_TYPE count=1 index=1
+  10  prop-read obj0/PID_ORDER_INFO count=1 index=1
+  11  load-event obj5/PID_LOAD_STATE_CONTROL event=Unload index=1
+  12  load-event obj4/PID_LOAD_STATE_CONTROL event=Unload index=1
+  13  load-event obj3/PID_LOAD_STATE_CONTROL event=Unload index=1
+  14  load-event obj2/PID_LOAD_STATE_CONTROL event=Unload index=1
+  15  load-event obj1/PID_LOAD_STATE_CONTROL event=Unload index=1
+  16  load-event obj4/PID_LOAD_STATE_CONTROL event=StartLoading index=1
+  17  alloc-record obj4/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlRelSegment seg_size=256 fill=False fill_byte=0x00
+  18  load-event obj3/PID_LOAD_STATE_CONTROL event=StartLoading index=1
+  19  alloc-record obj3/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlRelSegment seg_size=68 fill=False fill_byte=0x00
+  20  load-event obj1/PID_LOAD_STATE_CONTROL event=StartLoading index=1
+  21  alloc-record obj1/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlRelSegment seg_size=2 fill=False fill_byte=0x00
+  22  load-event obj2/PID_LOAD_STATE_CONTROL event=StartLoading index=1
+  23  alloc-record obj2/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlRelSegment seg_size=2 fill=False fill_byte=0x00
+  24  prop-read obj4/PID_TABLE_REFERENCE count=1 index=1
+  25  mem-write 0x6000 addr_int=24576 len=63 sha=12ac7e41 extended=False
+  26  mem-write 0x603f addr_int=24639 len=63 sha=d12449c8 extended=False
+  27  mem-write 0x607e addr_int=24702 len=63 sha=d12449c8 extended=False
+  28  mem-write 0x60bd addr_int=24765 len=63 sha=d12449c8 extended=False
+  29  mem-write 0x60fc addr_int=24828 len=4 sha=ad95131b extended=False
+  30  prop-read obj3/PID_TABLE_REFERENCE count=1 index=1
+  31  prop-read obj0/PID_DEVICE_CONTROL count=1 index=1
+  32  mem-write 0x8000 addr_int=32768 len=63 sha=643e815c extended=False
+  33  mem-write 0x803f addr_int=32831 len=5 sha=7dfca173 extended=False
+  34  prop-read obj2/PID_TABLE_REFERENCE count=1 index=1
+  35  mem-write 0xc000 addr_int=49152 len=2 sha=96a296d2 extended=False
+  36  prop-read obj1/PID_TABLE_REFERENCE count=1 index=1
+  37  mem-write 0xa000 addr_int=40960 len=2 sha=96a296d2 extended=False
+  38  prop-write obj4/PID_PROGRAM_VERSION count=1 index=1 len=5 sha=5c052543
+  39  load-event obj4/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1
+  40  load-event obj3/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1
+  41  load-event obj2/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1
+  42  load-event obj1/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1
+  43  restart Restart type=basic
+  44  disconnect T_Disconnect
+
+memory image (4 region(s), chunking removed):
+    0x006000..0x006100 len=256 sha=9dd1a6fb
+    0x008000..0x008044 len=68 sha=406fc9bf
+    0x00a000..0x00a002 len=2 sha=96a296d2
+    0x00c000..0x00c002 len=2 sha=96a296d2
