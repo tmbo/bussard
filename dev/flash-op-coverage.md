@@ -137,10 +137,15 @@ The images the table ops stream are built in `crates/bussard-download/src/comput
 - Group object table, realisation type 7 (§4.18.6, Tables 86 to 88): count
   word, then one descriptor word per ASAP: bit 15 update, 14 transmit, 13 read
   on init, 12 write, 11 read, 10 communication, 9 to 8 priority, 7 to 0 value
-  field type. Priority is always written Low (#541); value field types above
-  14 fall back to 0 (#545). An unlinked object gets communication cleared,
-  which is why `apply` has to rewrite this table when a link set changes
-  (#540).
+  field type. The priority is the product's, Low when it declares none
+  (#541); the value field type covers every `ObjectSize`, and a System B plan
+  refuses a size without a code (#545). An unlinked object gets communication
+  cleared, which is why `apply` has to rewrite this table when a link set
+  changes (#540). Every object the Dynamic walk reaches gets its descriptor;
+  one with no flags at all keeps its priority and value field type (`03 00`
+  for a Low 1-bit object, as ETS writes it, #686). The synthetic
+  `syn-com-objects` capture checks all of this: every size code, every flag
+  combination, three priorities and read on init.
 
 ## Parameters the configuration does not show
 

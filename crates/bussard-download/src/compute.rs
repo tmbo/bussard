@@ -540,8 +540,10 @@ pub struct LinkedObject {
 /// Every com-object ref the evaluation reached gets a descriptor at its ASAP:
 /// the com-object's `Number`, plus, for a module com-object, the module
 /// instance's value for the argument its `BaseNumber` names. A com-object behind
-/// a branch that is not taken gets none, and so does an unlinked one whose
-/// flags are all disabled (issue #474). The flags are the ref merged onto the
+/// a branch that is not taken gets none. One the evaluation reached always gets
+/// its type octet (priority and size code), even unlinked and with every flag
+/// disabled: ETS writes `03 00` for such an object (issue #686, the synthetic
+/// `syn-com-objects`, object 2). The flags are the ref merged onto the
 /// base, with Communication set exactly when the ASAP is linked (ETS registers
 /// a shown but unlinked object with Communication cleared, e.g. the F50's
 /// parameter-enabled object 7 as `1300`). The size code comes from the ref's
@@ -606,16 +608,13 @@ pub fn dynamic_group_object_descriptors(
         else {
             continue;
         };
-        // An unlinked object whose product flags are all disabled gets no
-        // descriptor: ETS leaves it out of the table (issue #474, the Zennio
-        // Flat push buttons' "dummy" objects behind `Flat_AlwaysFALSE`, which
-        // ETS writes as `00 00`). The full sweep oracle separates this from a
-        // `<choose>` rule: ETS takes the same default-only branch on a
-        // read-only, never-shown parameter in the Busch-Jaeger `A-A072` and
-        // ABB `A-A00F`, whose objects carry flags.
-        if !linked.contains_key(&asap) && base.flags.merge(cref.flags).to_flags().is_empty() {
-            continue;
-        }
+        // A reached object gets its descriptor whatever its flags: ETS writes
+        // a shown, unlinked object with every flag disabled as its priority
+        // and size code (`03 00`, `syn-com-objects` object 2, captured
+        // 2026-10-31 in `captures/synthetic/syn-com-objects/defaults/`, issue
+        // #686). The Zennio Flat "dummy" objects ETS leaves at `00 00` (issue
+        // #474) are not reached: the `<choose>` on their never-shown virtual
+        // parameter selects no branch (`bussard_model::dynamic`).
         by_asap.insert(asap, descriptor(asap, base, cref));
     }
     for (&asap, link) in linked {

@@ -7,6 +7,7 @@
 mod apply_mock;
 mod apply_object_table_mock;
 mod builtin_template;
+mod com_object_descriptors;
 mod compare_rel_mem;
 mod enum_default_plan;
 mod ets_golden;

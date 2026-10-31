@@ -11,8 +11,8 @@ once; priorities cycle Low, High, Alert; object 23 also has the
 read-on-init flag. Regression row for the group-object table descriptors on
 System B: priority (#541), the size codes and their range (#545) and the
 flag octet (#540). The capture shows the descriptor ETS writes for each.
-It differs in one: object 2, with no flag at all, gets 03 00 (priority Low,
-1 bit) from ETS and 00 00 from bussard (#686)."""
+Object 2, with no flag at all, gets 03 00 (priority Low, 1 bit) from ETS;
+bussard wrote 00 00 until #686."""
 construct = "one com object per size code, every flag combination, three priorities, ReadOnInit"
 issues = [541, 545, 540, 686]
 

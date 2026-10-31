@@ -182,10 +182,9 @@ fn compare(
     let view_objects: BTreeSet<u16> = shown_objects(&model, products, address)
         .map_err(|e| e.to_string())?
         .iter()
-        // An object with every flag disabled is shown but gets no
-        // descriptor (issue #474).
+        // Every shown object gets a descriptor, one with every flag disabled
+        // too (issue #686).
         .filter_map(|r| app.resolve(r))
-        .filter(|(base, cref)| !base.flags.merge(cref.flags).to_flags().is_empty())
         .map(|(base, _)| base.number)
         .filter(|n| *n != 0)
         .collect();
@@ -468,14 +467,15 @@ fn test_parameter_image_is_the_same_under_hidden_and_visible_keys() -> TestResul
     Ok(())
 }
 
-/// Issue #474: a reached, unlinked com-object whose flags are all disabled
-/// gets no group-object descriptor; the fixture's object 4 is one, objects 5
-/// to 8 (reached the same way, with flags) keep theirs. Linked, it gets one.
+/// Issue #686: a reached, unlinked com-object whose flags are all disabled
+/// gets its descriptor's type octet (priority and size code) with no flags,
+/// as ETS writes it (`syn-com-objects`, object 2: `03 00`). The fixture's
+/// object 4 is one; objects 5 to 8 are reached the same way, with flags.
 /// The fixture is System B, where the default-only `<choose>`s in front of
 /// objects 4, 5 and 8 select no branch (the Dynamic walk, issue #474), so the
 /// test rewrites the mask to a System 7 one, where they are taken.
 #[test]
-fn test_dynamic_group_object_descriptors_leave_out_flagless_objects() -> TestResult {
+fn test_dynamic_group_object_descriptors_keep_flagless_objects() -> TestResult {
     let (id, xml) = FIXTURES
         .iter()
         .find(|(id, _)| *id == "M-00FA_A-0563-10-0000")
@@ -483,16 +483,23 @@ fn test_dynamic_group_object_descriptors_leave_out_flagless_objects() -> TestRes
     let xml = std::str::from_utf8(xml)?.replace("MV-07B0", "MV-0701");
     let app = parse_application_program(id, xml.as_bytes())?;
     let config = evaluate_dynamic(&app, &BTreeMap::new());
-    let asaps: BTreeSet<u16> = dynamic_group_object_descriptors(&app, &config, &BTreeMap::new())
+    let descriptors = dynamic_group_object_descriptors(&app, &config, &BTreeMap::new());
+    let asaps: BTreeSet<u16> = descriptors.iter().map(|d| d.asap).collect();
+    assert_eq!(asaps, BTreeSet::from([1, 4, 5, 6, 7, 8]));
+    let four = descriptors
         .iter()
-        .map(|d| d.asap)
-        .collect();
-    assert_eq!(asaps, BTreeSet::from([1, 5, 6, 7, 8]));
+        .find(|d| d.asap == 4)
+        .ok_or("a descriptor for object 4")?;
+    assert!(four.flags.is_empty(), "{:?}", four.flags);
     let linked = BTreeMap::from([(4u16, bussard_download::compute::LinkedObject::default())]);
-    let asaps: BTreeSet<u16> = dynamic_group_object_descriptors(&app, &config, &linked)
-        .iter()
-        .map(|d| d.asap)
-        .collect();
-    assert!(asaps.contains(&4), "{asaps:?}");
+    let linked_four = dynamic_group_object_descriptors(&app, &config, &linked)
+        .into_iter()
+        .find(|d| d.asap == 4)
+        .ok_or("a descriptor for linked object 4")?;
+    assert!(
+        linked_four
+            .flags
+            .contains(bussard_model::Flags::COMMUNICATION)
+    );
     Ok(())
 }
