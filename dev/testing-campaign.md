@@ -293,7 +293,8 @@ summary table with a coverage column. A row is
 optional: the coverage recorded for the row, and `expect=<verdict>`,
 `confirmed=<verdict>` (the verdict on the read-confirmed octets),
 `props=<verdict>` (the property-write parity, for a property-only plan whose
-memory verdict is always not comparable) or `scope=<regions>`. `run=secure-on`
+memory verdict is always not comparable, or a row with a known property
+difference, see below) or `scope=<regions>`. `run=secure-on`
 or `run=secure-off` (issue #398) compares `bussard interface secure on|off
 --dry-run` instead of a flash: the KNXnet/IP Secure property writes (type 17
 PIDs 51, 56, 59, type 11 PIDs 91 to 97) against the capture's, key material by
@@ -321,6 +322,26 @@ with an ETS download that did not admit the tunnelling senders). The
 summary adds `props=ok(n)` or `props=differs(...)` for the property parity. Results land in `captures/campaign/<date>/offline-oracle/`
 unless `--out` says otherwise. A row file names real captures, so keep it
 under `captures/` as well.
+
+The headline verdict counts the property writes (#669): a row whose memory
+is identical but whose property writes differ reads `differs`, so a property
+ETS wrote and bussard did not cannot hide behind `identical`. A row with a
+known property difference pins it with `props=differs` and names the issue or
+decision in its note (#683); the headline of such a row is the memory verdict,
+so a memory difference still fails it, and `props=` holds the property
+verdict. Some ETS-only writes are listed as `[ETS-only not compared: ...]`
+and never counted, whatever the row says: the security object's tool key
+(type 17 PID 56, key material) and send sequence (PID 59, a counter), its
+security mode command (PID 51, the Data Secure activation, which stays ETS's
+job, #156), and `PID_PROGMODE` (object 0 PID 54), which belongs to the
+address assignment ETS runs in the same capture (`bussard assign` writes it,
+not `flash`). Each applies only while bussard plans no write of that property.
+The pinned rows on the reference installation fall into three groups: a
+capture older than a model change (a Data Secure activation, a group set
+plain or a rotated key), which a new `Vollständig` capture clears; a plain
+System B application on which ETS switches verify mode on before its plain
+memory writes (#705); and, with `expect=differs`, a parameter change made
+after the capture. The per-row triage is in #683.
 
 Read a `differs` with the capture's context in mind: ETS downloads the
 parameters the ETS project held that day, and a partial download writes only

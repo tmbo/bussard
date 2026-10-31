@@ -336,14 +336,24 @@ def oracle_verdict(product: str, app: str, variant: str = VARIANT, extra: str = 
         raise SystemExit(f"oracle row of {product} gave no summary:\n{text[-1500:]}")
     lc = next((json.loads(l[len("@loadctl "):]) for l in text.splitlines() if l.startswith("@loadctl ")), {})
     confirmed = next((l.split()[1] for l in text.splitlines() if l.startswith("@confirmed ")), None)
-    out = {"verdict": m.group(2), "coverage": m.group(3), "regions": m.group(5).strip(),
-           "loadctl": lc.get("verdict")}
+    out = {"verdict": memory_verdict(m.group(2), m.group(5)), "coverage": m.group(3),
+           "regions": m.group(5).strip(), "loadctl": lc.get("verdict")}
     if confirmed:
         out["confirmed"] = confirmed
     props = props_verdict(out["regions"])
     if props:
         out["props"] = props
     return out
+
+
+def memory_verdict(headline: str, regions: str) -> str:
+    """The memory verdict of a row: the headline, except where only the
+    property writes turned it `differs` (issue #669). The row records the
+    property parity as `props=` (`props_verdict`), and the script judges a
+    row that pins `props=` on its memory verdict (issue #683)."""
+    if headline == "differs" and "(property writes differ)" in regions:
+        return "identical"
+    return headline
 
 
 PROPS_REGION = re.compile(r"\bprops=(ok|differs|n/c)\b")

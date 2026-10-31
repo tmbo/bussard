@@ -649,6 +649,13 @@ class TestCaptureRecapture(unittest.TestCase):
             self.assertTrue(found and all(k == kind for k, _ in found), product)
             self.assertIsNone(capture.version_mismatch(found, capture.expected_program_version(product)), product)
 
+    def test_memory_verdict_drops_a_property_only_difference(self):
+        self.assertEqual(capture.memory_verdict(
+            "differs", "par=ok(1) props=differs(bussard-only 1, ets-only 0, value 0)  (property writes differ)"),
+            "identical")
+        self.assertEqual(capture.memory_verdict("differs", "par=1/2@+0x0 props=ok(1)"), "differs")
+        self.assertEqual(capture.memory_verdict("identical", "par=ok(1)"), "identical")
+
     def test_props_verdict_from_regions(self):
         self.assertEqual(capture.props_verdict("par=ok(256) props=ok(1)"), "identical")
         self.assertEqual(capture.props_verdict("props=differs(bussard-only 1, ets-only 0, value 0)"), "differs")
@@ -663,9 +670,12 @@ class TestCaptureRecapture(unittest.TestCase):
 
     def test_recapture_of_pid204_reproduces_its_row(self):
         # syn-s7-pid204's props=differs was set by hand; a re-capture with the
-        # same verdicts derives it and writes the committed row again.
-        verdicts = {"verdict": "differs", "coverage": "100.0%", "loadctl": "identical",
-                    "props": capture.props_verdict("props=differs(bussard-only 0, ets-only 1, value 0)")}
+        # same verdicts derives it and writes the committed row again. The
+        # headline the property writes turned `differs` is recorded as the
+        # memory verdict, identical (#683).
+        regions = "props=differs(bussard-only 1, ets-only 0, value 0)  (property writes differ)"
+        verdicts = {"verdict": capture.memory_verdict("differs", regions), "coverage": "100.0%",
+                    "loadctl": "identical", "props": capture.props_verdict(regions)}
         extra = capture.carried_options("", "props=differs")
         row = capture.oracle_row("syn-s7-pid204", "M-00FA_A-2821-10-0000", "100.0", capture.row_options(verdicts),
                                  extra=extra)
