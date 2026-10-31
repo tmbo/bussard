@@ -54,7 +54,7 @@ A device that already matches prints `1.1.47 matches the model; nothing to write
 
 ```console
 $ bussard apply 1.1.47
-apply these 3 changes to 1.1.47 through 192.168.1.74:3671? [y/N] y
+apply these 3 changes to 1.1.47 through 192.0.2.10:3671? [y/N] y
 ```
 
 `apply` validates the model, reads the device, shows the plan, and asks once. Then it backs up the device's tables to `captures/backups/<address>-<timestamp>.json`, writes only what differs, and reads every write back. It refuses before writing when:

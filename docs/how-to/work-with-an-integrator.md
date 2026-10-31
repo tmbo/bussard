@@ -60,11 +60,12 @@ The owner's assistant reads the returned file with `knx_diff_project` and report
 ```console
 $ bussard import house-2026-10-02.bussard
 $ bussard plan 1.0.3
-...
-1 addition(s), 0 removal(s), 2 unchanged:
-  + add:    object    1 → 1/0/1
-
-run `bussard apply 1.0.3` to write these changes (with confirmation).
+1.0.3 Switch actuator
+  channel a (Hallway)
+    + switch now listens on 1/0/1 (Hallway light)
+  unchanged: 2 objects
+  writes: address table (3 entries), association table (3 entries)
+  backup: knx/captures/backups
 ```
 
 !!! warning
@@ -73,7 +74,7 @@ run `bussard apply 1.0.3` to write these changes (with confirmation).
 ```console
 $ bussard apply 1.0.3
 ...
-apply 1 change(s) to 1.0.3 via 127.0.0.1:13671? [y/N] y
+apply this change to 1.0.3 through 127.0.0.1:13671? [y/N] y
 backup written to knx/captures/backups/1.0.3-1790524800.json
 
 apply verified: address table Loaded (3 entries), association table Loaded (3 entries)

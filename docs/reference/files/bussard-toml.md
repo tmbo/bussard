@@ -7,7 +7,7 @@
 ```toml
 [connection]
 transport = "tunnel"              # "tunnel" | "routing"
-gateway = "192.168.1.74:3671"     # host:port for tunnelling
+gateway = "192.0.2.10:3671"     # host:port for tunnelling
 # multicast = "224.0.23.12:3671"  # addr:port for routing; this is the default
 # keyring = "house.knxkeys"       # deprecated: use the key store bussard.keys
 # admit_tunnel_senders = true     # Data Secure: admit the key store's tunnelling

@@ -78,7 +78,9 @@
 //! survived the restart.
 
 use bussard_mgmt::connection::{L4Channel, Layer4Connection};
-use bussard_mgmt::load::{LoadControl, LoadState, WriteError, read_memory, write_memory};
+use bussard_mgmt::load::{
+    IntermediatePoll, LoadControl, LoadState, WriteError, read_memory, write_memory,
+};
 use bussard_mgmt::sys7::{S7_SUB_ALLOC_DATA, encode_alloc_segment, encode_task_segment};
 use bussard_mgmt::{LsmAccess, Sys7Profile, Sys7TaskIdentity, alloc_attr_octets};
 
@@ -410,7 +412,11 @@ pub async fn apply_sys7_tables<Ch: L4Channel>(
         .group_object_base
         .filter(|_| !images.group_object_image.is_empty());
     if object_table.is_some() {
-        let state = lsm.read_state(l4, SYS7_APPLICATION_LSM).await?;
+        // A machine still completing an earlier load (LoadCompleting) is
+        // waited out before the verdict (issue #479).
+        let state = lsm
+            .read_settled_state(l4, SYS7_APPLICATION_LSM, IntermediatePoll::STANDARD)
+            .await?;
         if state != LoadState::Loaded {
             return Err(Sys7ApplyError::ApplicationNotLoaded { state });
         }

@@ -99,6 +99,7 @@ from datasecure import PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE, SECURITY_OBJECT_TY
 from normalize import (
     KIND_ALLOC,
     KIND_LOAD_EVENT,
+    KIND_MEM_READ,
     KIND_MEM_WRITE,
     KIND_PROP_READ,
     KIND_RESTART,
@@ -482,6 +483,43 @@ def resident_state(ops: DeviceOps) -> Optional[Dict[str, object]]:
     return out
 
 
+# The memory address ETS reads at the end of its Unload command (the
+# programming-mode octet), issue #488.
+UNLOAD_COMMAND_READ = 0x0060
+
+
+def unload_pass(ops: DeviceOps) -> bool:
+    """Whether ETS ran its Unload command ahead of the download (issue #488):
+    before the first restart, an unload of load-state machine 4 (object 4's
+    `PID_LOAD_STATE_CONTROL` on 0705, a `0x0104` record of LSM 4 on 0701) and
+    a one-octet read of `0x0060`. ETS's download never sends either: the
+    house captures with an explicit `Entladen` (`26-10-pcaps-with-erase/`)
+    carry both, their same-day downloads without it (`26-10-pcaps/`), the
+    synthetic and the ETS-sweep downloads neither. bussard's equivalent is
+    `flash --full`.
+    """
+    lsm4 = False
+    for op in ops.ops:
+        if op.direction != "req":
+            continue
+        if op.kind == KIND_RESTART:
+            return False
+        apdu = op.apdu
+        if apdu is not None and apdu.name == "A_PropertyValue_Write":
+            f = apdu.fields
+            data = bytes(apdu.payload[PROPERTY_WRITE_SERVICES[apdu.name]:])
+            if f.get("pid") == PID_LOAD_STATE_CONTROL and f.get("obj") == 4 \
+                    and "obj_type" not in f and data[:1] == b"\x04":
+                lsm4 = True
+        elif op.kind == KIND_MEM_WRITE and op.detail.get("addr_int") == SYS7_LSM_CONTROL_ADDR \
+                and op.data[:1] == b"\x44":
+            lsm4 = True
+        elif op.kind == KIND_MEM_READ and op.detail.get("addr_int") == UNLOAD_COMMAND_READ \
+                and lsm4:
+            return True
+    return False
+
+
 def compose(ops: DeviceOps, out_dir: str, source: str = "") -> Dict[str, object]:
     """Writes the composed image of one device's download into `out_dir`.
 
@@ -566,6 +604,7 @@ def compose(ops: DeviceOps, out_dir: str, source: str = "") -> Dict[str, object]
         "allocations": allocs,
         "table_refs": {str(k): v for k, v in sorted(table_refs(ops).items())},
         "property_writes": len(props),
+        "unload_pass": unload_pass(ops),
     }
     with open(os.path.join(out_dir, "regions.json"), "w", encoding="utf-8") as fh:
         json.dump(index, fh, indent=2)

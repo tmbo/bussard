@@ -108,8 +108,10 @@ it should take up a change at startup.
   `--product`.
 - **Refuses** before any bus access a pinned archive that is missing or
   changed, and a `--product` or `--application` that contradicts the lock
-  unless `--force` (which then pins it). Identity drift against the lock is
-  printed, not refused: a flash is how it is fixed.
+  unless `--force` (which then pins it). On System B it refuses a device whose
+  manufacturer is neither the application's nor its original manufacturer,
+  unless `--force`. Identity drift against the lock is printed, not refused:
+  a flash is how it is fixed.
 - **Backs up nothing.** A factory-fresh device has no prior application to
   save, and the command says so before it writes:
 
@@ -164,7 +166,9 @@ until a flash reports the application `Loaded` and verified.
 tunnel of up to 60 seconds, and resumes the current step. Longer, it stops
 with a hint naming the gateway and the device partly written: re-run it.
 `apply`, `describe`, `reconstruct`, `plan` and `write` reconnect too but do not
-resume; run them again. A pending group write goes out up to a minute late.
+resume; run them again. A pending group write goes out up to a minute late. A
+device connection left idle past the device's 6 s timeout (at a confirmation
+prompt, for example) is reopened at the next request, with no error.
 
 ??? note "Details"
     - **Load-state reads.** System B: `PID_LOAD_STATE_CONTROL` of the
@@ -312,9 +316,9 @@ table indexes the address table.
     security flags (PID 61), then completed. After a restart `flash` probes
     with a plain `A_DeviceDescriptor_Read` every 500 ms for up to 30 s, then
     sends the S-A_Sync_Req on that connection. An unanswered Sync_Req is
-    repeated up to five times (1, 2, 4, 8 s backoff) after a restart and three
-    times (1, 2 s) otherwise, then the flash stops with "did not answer the
-    Data Secure sync request".
+    sent seven times in all after a restart (1 s, then 2 s apart, about 32 s)
+    and three times (1, 2 s) otherwise, then the flash stops with "did not
+    answer the Data Secure sync request".
 
 ## Secured group addresses need an admitted sender
 

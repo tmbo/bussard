@@ -22,6 +22,8 @@ knx/
   .bussard/models/        @generated product models, rebuilt from products/ when missing
   .bussard/model-cache/   the product models converted to JSON, rebuilt when a model changes
   .bussard/last_export.json
+  .bussard/tunnel-users/  which KNXnet/IP Secure tunnelling user each running bussard holds
+  .bussard/instances/     the running `bussard mcp` processes for this model
 ```
 
 Each file has its own page under `files/`; see [Related](#related).
@@ -171,9 +173,9 @@ tunnels = ["1.1.22", "1.1.23"]
 current_assignment = ["dhcp"]
 assignment = ["dhcp"]
 assignment_mode = "dhcp"
-current_address = "192.168.1.74"
+current_address = "192.0.2.10"
 current_netmask = "255.255.255.0"
-current_gateway = "192.168.1.1"
+current_gateway = "192.0.2.1"
 mac = "00:22:D1:04:62:7D"
 routing_multicast = "224.0.23.12"
 capabilities = ["device management", "tunnelling"]

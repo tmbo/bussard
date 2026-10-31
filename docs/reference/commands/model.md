@@ -39,7 +39,7 @@ Behaviour:
 - A directory that already holds `bussard.toml` is refused.
 - A directory with anything else in it (other than `.git`, `.env`, `.gitignore` and `.bussard/`), or with a model one level down in `knx/`, gets a question first: `the current directory /home/me/house is not empty (12 entries, a model exists in knx/); initialise a model in the current directory? [y/N]`. `--yes` answers it; without a terminal and without `--yes`, `init` refuses.
 - In a non-empty directory `init` keeps existing files and adds its `.bussard/`, `*.knxkeys` and `.env` lines to an existing `.gitignore`, each only when missing.
-- With a project, `init` looks for an ETS keyring export (`.knxkeys`) in the project's directory. Exactly one is recorded as `connection.keyring` (relative to the model directory when it sits next to it, else absolute), so bus commands use it without `--keyring`, and `init` reminds you to set `BUSSARD_KEYRING_PASSWORD`. Several are listed and none is picked. The password is never written anywhere.
+- With a project, `init` looks for an ETS keyring export (`.knxkeys`) in the project's directory. With `BUSSARD_KEYRING_PASSWORD` set, the import merges exactly one into the key store `bussard.keys` (see [`keys`](secure.md#bussard-keys-verb)). Without the password, `init` records it as the deprecated `connection.keyring` (relative to the model directory when it sits next to it, else absolute) and prints the `bussard keys import` command that moves it into the store. Several are listed and none is picked. The password is never written anywhere.
 - Gateway discovery is multicast and does not cross subnets. When it finds nothing, `init` still writes a valid skeleton with a placeholder gateway.
 - When every tunnel slot is taken, `init` prints the no-free-tunnel message (exit code 4 on [Global options](../global-options.md)) and still writes the skeleton.
 - `init` reports KNXnet/IP Secure as `tunnelling is secure-only (needs tunnelling credentials)`, `supported, plain tunnelling allowed` or `not advertised`. A secure-only interface skips the plain reachability check, and `init` names the credentials a command needs. Discovery lists such interfaces as `KNXnet/IP Secure only`.
@@ -173,7 +173,7 @@ $ bussard validate
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--json` | off | Print `{"schema", "diagnostics": [...]}`; each diagnostic has `code`, `severity`, `message` and `location`. `--format` is gone: use `--json`. |
+| `--json` | off | Print `{"schema", "diagnostics": [...]}`; each diagnostic has `code`, `severity`, `message` and `location`. |
 
 Behaviour:
 

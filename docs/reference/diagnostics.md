@@ -15,7 +15,6 @@ Every code `bussard validate` and the `knx_validate` MCP tool report, with its s
 | W005 | warning | Same size but different DPT main types on one group address (`5.001` against `6.010`). Subtypes of one main type agree (`1.001`, `1.005`, `1.019` on one 1-bit address is normal in ETS), as does a main type alone (`1`). |
 | I006 | info | More than one sending object on a group address. Normal in KNX: two push buttons on one light, a central function next to a local one. Listed for review. |
 | E007 | error | Impossible flags: no C flag, or `send` without T. |
-| W008 | warning | A listening object with neither W nor U. |
 | I009 | info | An orphaned object: T or W, never linked. |
 | I010 | info | A group address defined but never linked. |
 | W011 | warning | A group address without a DPT; `monitor` cannot decode it. |
@@ -26,7 +25,6 @@ Every code `bussard validate` and the `knx_validate` MCP tool report, with its s
 | E016 | error | A parameter key is malformed (no `@`) or not in the product model. |
 | E017 | error | A parameter value is invalid: unparseable, out of range, or not an enum member. |
 | I017 | info | A parameter value equals the vendor default (redundant). |
-| I018 | info | A device has parameters but no product model in `.bussard/models/` to validate against. |
 | E020 | error | A duplicate group address in `groups.toml` (both lines), or a duplicate object in a device file. |
 | E021 | error | A device has channels, parameters or keyed objects but no lock entry. |
 | E022 | error | A device's `product` differs from its lock entry. |

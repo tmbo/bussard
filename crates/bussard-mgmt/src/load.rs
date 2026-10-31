@@ -84,9 +84,12 @@ pub const PID_PROGRAM_VERSION: u8 = 13;
 /// The load state of a loadable interface object, as read from
 /// `PID_LOAD_STATE_CONTROL`.
 ///
-/// Encoding per the KNX load-state machine (3/5/1); the current state is read
-/// back as the `PID_LOAD_STATE_CONTROL` octet: `Unloaded=0, Loaded=1, Loading=2,
-/// Error=3`.
+/// Encoding per the KNX load-state machine (KNX 3/5/1 §4.23.2.3.1, Table 92);
+/// the current state is read back as the `PID_LOAD_STATE_CONTROL` octet:
+/// `Unloaded=0, Loaded=1, Loading=2, Error=3, Unloading=4, LoadCompleting=5`.
+/// The last two are optional intermediate states a device may report while an
+/// `Unload` or a `LoadCompleted` is still being processed (issue #479); a client
+/// re-reads until the machine settles, see [`IntermediatePoll`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoadState {
     /// No valid content; the object is empty (value 0).
@@ -97,7 +100,13 @@ pub enum LoadState {
     Loading,
     /// The last load failed; recover with [`LoadControl::Unload`] (value 3).
     Error,
-    /// A value outside the standard 0–3 range (forward-compatibility).
+    /// The unload is still in progress (value 4, optional): an intermediate
+    /// state on the way to [`LoadState::Unloaded`].
+    Unloading,
+    /// The load is being completed, e.g. a checksum is being computed (value
+    /// 5, optional): an intermediate state on the way to [`LoadState::Loaded`].
+    LoadCompleting,
+    /// A value outside the standard 0–5 range (forward-compatibility).
     Other(u8),
 }
 
@@ -109,8 +118,16 @@ impl LoadState {
             1 => LoadState::Loaded,
             2 => LoadState::Loading,
             3 => LoadState::Error,
+            4 => LoadState::Unloading,
+            5 => LoadState::LoadCompleting,
             other => LoadState::Other(other),
         }
+    }
+
+    /// Whether this is one of the intermediate states (`Unloading`,
+    /// `LoadCompleting`) a client waits out by re-reading the state.
+    pub fn is_intermediate(self) -> bool {
+        matches!(self, LoadState::Unloading | LoadState::LoadCompleting)
     }
 
     /// The octet a device reports for this state.
@@ -120,6 +137,8 @@ impl LoadState {
             LoadState::Loaded => 1,
             LoadState::Loading => 2,
             LoadState::Error => 3,
+            LoadState::Unloading => 4,
+            LoadState::LoadCompleting => 5,
             LoadState::Other(v) => v,
         }
     }
@@ -132,8 +151,97 @@ impl std::fmt::Display for LoadState {
             LoadState::Loaded => write!(f, "Loaded"),
             LoadState::Loading => write!(f, "Loading"),
             LoadState::Error => write!(f, "Error"),
+            LoadState::Unloading => write!(f, "Unloading"),
+            LoadState::LoadCompleting => write!(f, "LoadCompleting"),
             LoadState::Other(v) => write!(f, "Unknown({v})"),
         }
+    }
+}
+
+/// How a client waits out the intermediate load states
+/// ([`LoadState::Unloading`], [`LoadState::LoadCompleting`]) after a load
+/// event (issue #479).
+///
+/// The client re-reads the state every `period` until it leaves the
+/// intermediate state, and fails with [`WriteError::LoadStateTimeout`] when it
+/// still reports one after `max_wait`. [`IntermediatePoll::STANDARD`] is the
+/// timing the KNX Standard gives; the other values exist for tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IntermediatePoll {
+    /// The pause before each re-read of the state.
+    pub period: std::time::Duration,
+    /// How long the state may stay intermediate before the write fails.
+    pub max_wait: std::time::Duration,
+}
+
+impl IntermediatePoll {
+    /// The standard timing: a re-read every 3 s for at most 30 s.
+    ///
+    /// 3 s is the longest re-read period KNX 3/5/1 §4.23.2.4.1 allows while a
+    /// machine is LoadCompleting: half the 6 s transport-layer timeout, so the
+    /// reads also keep the connection open. 30 s is the bound of KNX 3/5/2
+    /// §3.31.4.1 (DMP_DownloadLoadablePart_RCo_IO), which re-reads an
+    /// Unloading machine for 30 seconds before it breaks with an error. No
+    /// capture has shown either state yet: the ETS downloads of 1.1.12, 1.1.16,
+    /// 1.1.5, 1.1.52 and the synthetic `syn-s7-0705`/`syn-s7-0701` runs all
+    /// answer the final state at once (issue #479), so this wait only runs on
+    /// a device that reports 4 or 5.
+    pub const STANDARD: IntermediatePoll = IntermediatePoll {
+        period: std::time::Duration::from_secs(3),
+        max_wait: std::time::Duration::from_secs(30),
+    };
+}
+
+impl Default for IntermediatePoll {
+    fn default() -> Self {
+        IntermediatePoll::STANDARD
+    }
+}
+
+/// One bounded wait through the intermediate load states, started when the
+/// first state after a load event was read: [`IntermediateWait::pause`] says
+/// whether to re-read, after how long, or that the wait ran out.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct IntermediateWait {
+    started: tokio::time::Instant,
+    poll: IntermediatePoll,
+}
+
+impl IntermediateWait {
+    /// Starts the wait now.
+    pub(crate) fn start(poll: IntermediatePoll) -> Self {
+        IntermediateWait {
+            started: tokio::time::Instant::now(),
+            poll,
+        }
+    }
+
+    /// `Ok(None)` when `state` is settled (not intermediate), `Ok(Some(pause))`
+    /// when the caller sleeps `pause` and reads the state again, and
+    /// [`WriteError::LoadStateTimeout`] when it is still intermediate after
+    /// `max_wait`. The last pause is cut to end at `max_wait`, so the final
+    /// read happens when the bound has passed.
+    pub(crate) fn pause(
+        &self,
+        state: LoadState,
+        address: IndividualAddress,
+        object_index: u8,
+        control: LoadControl,
+    ) -> Result<Option<std::time::Duration>> {
+        if !state.is_intermediate() {
+            return Ok(None);
+        }
+        let waited = self.started.elapsed();
+        if waited >= self.poll.max_wait {
+            return Err(WriteError::LoadStateTimeout {
+                address,
+                object_index,
+                control,
+                last: state,
+                waited,
+            });
+        }
+        Ok(Some(self.poll.period.min(self.poll.max_wait - waited)))
     }
 }
 
@@ -268,6 +376,27 @@ pub enum WriteError {
         /// Discovery context (object type + discovered object table), or the
         /// empty default when the primitive was driven without it.
         context: LoadStateContext,
+    },
+
+    /// A load event left the object in an intermediate state (`Unloading`,
+    /// `LoadCompleting`) and it was still there when the bounded wait of
+    /// [`IntermediatePoll`] ran out (issue #479).
+    #[error(
+        "{address}: object {object_index} still reports {last} {waited:.1?} after {control}; \
+         the device did not finish the load event in time (KNX 3/5/2 §3.31.4 waits at most 30 s). \
+         Check the device and run the download again"
+    )]
+    LoadStateTimeout {
+        /// The device.
+        address: IndividualAddress,
+        /// The interface object (load-state machine) index.
+        object_index: u8,
+        /// The control event written.
+        control: LoadControl,
+        /// The intermediate state the last read reported.
+        last: LoadState,
+        /// How long the client re-read the state.
+        waited: std::time::Duration,
     },
 
     /// The KNX Data Secure security interface object (type 17) did not reach
@@ -1028,6 +1157,15 @@ pub fn echoed_load_state(
     }
 }
 
+/// The intermediate state (`Unloading`, `LoadCompleting`) a load-control
+/// answer carries as its one state octet, if any.
+fn intermediate_answer(response: &crate::apci::PropertyValueResponse) -> Option<LoadState> {
+    match (response.count, response.data.as_slice()) {
+        (1.., [octet]) => Some(LoadState::from_octet(*octet)).filter(|s| s.is_intermediate()),
+        _ => None,
+    }
+}
+
 /// Writes a load control to a loadable object and confirms the resulting load
 /// state.
 ///
@@ -1046,10 +1184,26 @@ pub fn echoed_load_state(
 /// [`LoadControl::expected_state`]: a device that lands in [`LoadState::Error`]
 /// surfaces [`WriteError::LoadError`]; any other mismatch surfaces
 /// [`WriteError::UnexpectedLoadState`].
+///
+/// An intermediate state (`Unloading`, `LoadCompleting`, in the answer or the
+/// read) is re-read with the [`IntermediatePoll::STANDARD`] timing until the
+/// object settles, and fails with [`WriteError::LoadStateTimeout`] when it
+/// does not (issue #479).
 pub async fn write_load_control<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     object_index: u8,
     control: LoadControl,
+) -> Result<LoadState> {
+    write_load_control_with_poll(l4, object_index, control, IntermediatePoll::STANDARD).await
+}
+
+/// [`write_load_control`] with the intermediate-state timing `poll` instead
+/// of [`IntermediatePoll::STANDARD`].
+pub async fn write_load_control_with_poll<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    object_index: u8,
+    control: LoadControl,
+    poll: IntermediatePoll,
 ) -> Result<LoadState> {
     let control_value = control.encode_full();
     let resp = property_write_request(
@@ -1061,7 +1215,7 @@ pub async fn write_load_control<Ch: L4Channel>(
         &control_value,
     )
     .await?;
-    confirm_load_control(l4, object_index, control, &resp).await
+    confirm_load_control(l4, object_index, control, &resp, poll).await
 }
 
 /// [`write_load_control`] for a step whose procedure maps the device's
@@ -1092,25 +1246,36 @@ pub async fn write_load_control_unless_absent<Ch: L4Channel>(
     if resp.count == 0 {
         return Ok(None);
     }
-    confirm_load_control(l4, object_index, control, &resp)
+    confirm_load_control(l4, object_index, control, &resp, IntermediatePoll::STANDARD)
         .await
         .map(Some)
 }
 
 /// Confirms the state a load-control write left `object_index` in: the state
-/// its answer `resp` carries, else a read, then the check of
-/// [`write_load_control`].
+/// its answer `resp` carries, else a read, re-read through an intermediate
+/// state with `poll`, then the check of [`write_load_control`].
 async fn confirm_load_control<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     object_index: u8,
     control: LoadControl,
     resp: &crate::apci::PropertyValueResponse,
+    poll: IntermediatePoll,
 ) -> Result<LoadState> {
     let address = l4.target();
-    let state = match echoed_load_state(control, resp) {
+    let mut state = match echoed_load_state(control, resp) {
         Some(state) => state,
-        None => read_load_state(l4, object_index).await?,
+        // An answer carrying an intermediate state goes straight to the
+        // re-reads: an immediate read would only see the same state.
+        None => match intermediate_answer(resp) {
+            Some(state) => state,
+            None => read_load_state(l4, object_index).await?,
+        },
     };
+    let wait = IntermediateWait::start(poll);
+    while let Some(pause) = wait.pause(state, address, object_index, control)? {
+        tokio::time::sleep(pause).await;
+        state = read_load_state(l4, object_index).await?;
+    }
     if state == LoadState::Error {
         return Err(WriteError::LoadError {
             address,
@@ -1621,8 +1786,11 @@ mod tests {
             (1, LoadState::Loaded),
             (2, LoadState::Loading),
             (3, LoadState::Error),
+            (4, LoadState::Unloading),
+            (5, LoadState::LoadCompleting),
         ] {
             assert_eq!(LoadState::from_octet(v), s);
+            assert_eq!(s.is_intermediate(), v >= 4);
             assert_eq!(s.octet(), v);
         }
         assert_eq!(LoadState::from_octet(9), LoadState::Other(9));

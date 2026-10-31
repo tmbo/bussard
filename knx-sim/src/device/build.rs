@@ -359,6 +359,8 @@ impl Device {
             restart_process_time_s: DEFAULT_RESTART_PROCESS_TIME_S,
             max_allocation: None,
             master_reset: MasterResetSupport::Supported,
+            intermediate_reports: 0,
+            intermediate: std::collections::BTreeMap::new(),
             events,
         };
         // A device constructed already `Loaded` (a previously-programmed device)
@@ -546,6 +548,8 @@ impl Device {
             restart_process_time_s: DEFAULT_RESTART_PROCESS_TIME_S,
             max_allocation: None,
             master_reset: MasterResetSupport::Supported,
+            intermediate_reports: 0,
+            intermediate: std::collections::BTreeMap::new(),
             events,
         };
         device.refresh_group_comm();
@@ -622,6 +626,8 @@ impl Device {
             restart_process_time_s: DEFAULT_RESTART_PROCESS_TIME_S,
             max_allocation: None,
             master_reset: MasterResetSupport::Supported,
+            intermediate_reports: 0,
+            intermediate: std::collections::BTreeMap::new(),
             events,
         }
     }

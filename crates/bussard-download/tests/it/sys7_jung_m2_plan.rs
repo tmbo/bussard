@@ -180,10 +180,12 @@ fn test_bussard_property_plan_matches_m2_jung_shape() {
 /// into load state Error), no task segment and no task control, keeps the MCB
 /// reads of objects 1 to 3, and ends with the restart.
 ///
-/// Issue #116 (#186) put ETS's System 7 prelude in front of it, and #293
-/// pinned it here: the capture opens with a basic restart and no unload pass
-/// (ops 1 to 9), so the plan starts with `Sys7PreDownloadRestart` with no
-/// LSM to unload; ETS then sets verify mode (`obj0/PID_DEVICE_CONTROL` read,
+/// The capture opens with a basic restart and no unload pass (ops 1 to 9):
+/// that restart closes the individual-address part of ETS's "address and
+/// application" download (an `A_IndividualAddress_Read` and a serial-number
+/// read precede it), which bussard's `flash` does not run, so the plan has no
+/// pre-download pass (issue #488; #186 and #293 had pinned a restart-only
+/// pass here). ETS then sets verify mode (`obj0/PID_DEVICE_CONTROL` read,
 /// `04` written, ops 33 and 34) before the first memory write, which
 /// `Sys7EnableVerifyMode` reproduces ahead of LSM 3's `StartLoading`
 /// (`dev/system7-spec.md` section 3.1: nothing depends on that order).
@@ -221,19 +223,12 @@ fn test_parameters_only_jung_plan_writes_in_place() -> Result<(), Box<dyn std::e
             FlashStep::LoadImageProp { obj_idx, .. } => format!("mcb {obj_idx}"),
             FlashStep::CompareProp { .. } => "compare".to_string(),
             FlashStep::Restart => "restart".to_string(),
-            FlashStep::Sys7PreDownloadRestart { unload } if unload.is_empty() => {
-                "prelude restart".to_string()
-            }
             FlashStep::Sys7EnableVerifyMode => "verify mode".to_string(),
             other => format!("unexpected {other:?}"),
         })
         .collect();
-    let head: Vec<&str> = shape.iter().take(3).map(String::as_str).collect();
-    assert_eq!(
-        head,
-        ["prelude restart", "verify mode", "start 3"],
-        "{shape:?}"
-    );
+    let head: Vec<&str> = shape.iter().take(2).map(String::as_str).collect();
+    assert_eq!(head, ["verify mode", "start 3"], "{shape:?}");
     assert!(
         shape.iter().all(|s| !s.starts_with("unexpected")),
         "{shape:?}"

@@ -290,6 +290,13 @@ pub struct Device {
     /// How the device answers a Master Reset; see
     /// [`Device::with_master_reset`].
     master_reset: MasterResetSupport,
+    /// How many times a load-state machine reports the intermediate state
+    /// before the settled one (bussard issue #479); 0 settles at once. See
+    /// [`Device::with_intermediate_load_states`].
+    intermediate_reports: u32,
+    /// The intermediate state octet each LSM still reports, and how many
+    /// more times.
+    intermediate: std::collections::BTreeMap<u8, (u8, u32)>,
     events: std::sync::Arc<dyn EventSink>,
 }
 

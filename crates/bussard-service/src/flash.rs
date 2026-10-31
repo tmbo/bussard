@@ -180,12 +180,13 @@ impl<'a> FlashInputs<'a> {
         freshness: Option<&Freshness>,
         resident: Option<&ResidentState>,
         no_factory_reset: bool,
+        unload_first: bool,
         model: Option<&Model>,
         target: IndividualAddress,
         material: &SecureMaterial,
         extra_senders: &[IndividualAddress],
     ) -> Result<Option<Vec<SecureSenderEntry>>, SecurityPlanError> {
-        apply_freshness(plan, freshness, resident, no_factory_reset);
+        apply_freshness(plan, freshness, resident, no_factory_reset, unload_first);
         self.add_security_steps(plan, model, target, material, extra_senders)
     }
 
@@ -317,12 +318,12 @@ pub fn com_object_words(app: &ApplicationProgram, number: u16) -> (Option<String
 /// filled-segment download. `freshness` is `None` offline (a dry run), where
 /// only the planner's own reset shows. `no_factory_reset` waives it.
 ///
-/// A System 7 device whose every load-state machine the probe read answers
-/// `Unloaded` gets no pre-download unload-and-restart pass, as ETS gives none
-/// to a factory-fresh device (issue #488, [`FlashPlan::fit_sys7_prelude`]);
-/// without a probed state, a [`Freshness::Fresh`] verdict does the same. A
-/// device with an LSM Loaded or Loading, or a resident application id, keeps
-/// it; offline without a recorded state the plan keeps it too.
+/// ETS's System 7 pre-download pass ([`FlashPlan::skip_sys7_prelude`], issue
+/// #488: unload LSMs 1 to 4, basic restart) stays only with `unload_first`
+/// (`flash --full`, ETS's explicit unload before a download). An application
+/// download drops it whatever the device holds, as ETS sends no pass before
+/// an application download to a fresh device, one with the same application
+/// or one with another (`dev/system7-spec.md` section 3.1).
 ///
 /// A System B device that already holds this application
 /// ([`Freshness::SameApplication`]) gets the product's `AppliesTo="par"`
@@ -334,6 +335,7 @@ pub fn apply_freshness(
     freshness: Option<&Freshness>,
     resident: Option<&ResidentState>,
     no_factory_reset: bool,
+    unload_first: bool,
 ) {
     if matches!(
         freshness,
@@ -341,13 +343,8 @@ pub fn apply_freshness(
     ) {
         plan.require_factory_reset();
     }
-    // The System 7 pre-download pass follows the probed LSM states when there
-    // are any (issue #488): a Loading LSM is `Fresh` to the gate but keeps the
-    // pass. Without a probed state only the verdict can tell.
-    match resident {
-        Some(state) => plan.fit_sys7_prelude(state),
-        None if matches!(freshness, Some(Freshness::Fresh)) => plan.skip_sys7_prelude(),
-        None => {}
+    if !unload_first {
+        plan.skip_sys7_prelude();
     }
     if matches!(freshness, Some(Freshness::SameApplication { .. })) {
         plan.use_par_procedure(resident);
@@ -562,6 +559,7 @@ mod tests {
                 Some(&freshness),
                 None,
                 false,
+                false,
                 Some(&model),
                 target,
                 &plain,
@@ -575,6 +573,7 @@ mod tests {
                 &mut mcp,
                 Some(&freshness),
                 None,
+                false,
                 false,
                 Some(&model),
                 target,
@@ -621,18 +620,18 @@ mod tests {
         let (plain, _) =
             FlashInputs::from_model(&product, plain_app, "1.1.4", Some(&model), target);
         let mut plain_plan = plain.plan(0x07B0)?;
-        apply_freshness(&mut plain_plan, Some(&resident), None, false);
+        apply_freshness(&mut plain_plan, Some(&resident), None, false, false);
         assert!(!plain_plan.has_factory_reset());
         let mut secure_app = plain_app.clone();
         secure_app.is_secure_enabled = true;
         let app = &secure_app;
         let (inputs, _) = FlashInputs::from_model(&product, app, "1.1.4", Some(&model), target);
         let mut plan = inputs.plan(0x07B0)?;
-        apply_freshness(&mut plan, Some(&resident), None, false);
+        apply_freshness(&mut plan, Some(&resident), None, false, false);
         assert!(plan.has_factory_reset());
         assert!(!skip_unchanged(false, &plan, &resident));
         let mut waived = inputs.plan(0x07B0)?;
-        apply_freshness(&mut waived, Some(&resident), None, true);
+        apply_freshness(&mut waived, Some(&resident), None, true, false);
         assert!(!waived.has_factory_reset());
         std::fs::remove_dir_all(&dir)?;
         Ok(())
@@ -694,11 +693,15 @@ mod tests {
         Ok(())
     }
 
-    /// Issue #488: a System 7 device with no loaded application gets no
-    /// pre-download pass (ETS gives none to a factory-fresh device); one with
-    /// an application, an unreadable one and the offline plan keep it.
+    /// Issue #488: an application download runs no System 7 pre-download
+    /// pass on a fresh device, one that holds the same application or one
+    /// that holds another (the synthetic `defaults`, `reload` and
+    /// `other-app` captures of `syn-s7-0705`/`syn-s7-0701`), nor offline;
+    /// `flash --full` (ETS's explicit unload before the download, the house
+    /// captures `jung-1131`, `automitschalter-standard-110`,
+    /// `26-10-pcaps-with-erase/pm-1-1-52`) keeps it on every one.
     #[test]
-    fn test_apply_freshness_drops_the_sys7_prelude_on_a_fresh_device() -> TestResult {
+    fn test_apply_freshness_sys7_prelude_only_with_unload_first() -> TestResult {
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
          <ApplicationProgram PeiType="0" Id="M-0083_A-E" ApplicationNumber="14" ApplicationVersion="35"
             MaskVersion="MV-0705" Name="MDT S7" LoadProcedureStyle="ProductProcedure">
@@ -737,23 +740,39 @@ mod tests {
             })
         };
         assert!(prelude(&planned));
-        let resident = Freshness::Resident {
-            resident: None,
+        let same = Freshness::SameApplication {
+            resident: "0083000E23".to_string(),
+        };
+        let other = Freshness::Resident {
+            resident: Some("00FA280D10".to_string()),
             objects: vec!["LSM 3".to_string()],
             reason: None,
         };
         let unknown = Freshness::Unknown {
             reason: "unreadable".to_string(),
         };
-        for (freshness, kept) in [
-            (Some(&Freshness::Fresh), false),
-            (Some(&resident), true),
-            (Some(&unknown), true),
-            (None, true),
+        for freshness in [
+            Some(&Freshness::Fresh),
+            Some(&same),
+            Some(&other),
+            Some(&unknown),
+            None,
         ] {
-            let mut plan = planned.clone();
-            apply_freshness(&mut plan, freshness, None, true);
-            assert_eq!(prelude(&plan), kept, "{freshness:?}");
+            for unload_first in [false, true] {
+                let mut plan = planned.clone();
+                apply_freshness(&mut plan, freshness, None, true, unload_first);
+                assert_eq!(
+                    prelude(&plan),
+                    unload_first,
+                    "{freshness:?}, unload_first {unload_first}"
+                );
+                // The procedure's own unload stays either way.
+                assert!(
+                    plan.steps
+                        .contains(&bussard_download::FlashStep::Sys7Unload { lsm: 3 }),
+                    "{freshness:?}"
+                );
+            }
         }
         Ok(())
     }
