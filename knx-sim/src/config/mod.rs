@@ -22,7 +22,7 @@ use serde::Deserialize;
 
 use crate::bus::event::EventSink;
 use crate::bus::{Bus, StimulusJob};
-use crate::device::{Device, LoadState};
+use crate::device::{Device, LoadState, MasterResetSupport};
 use crate::prod::read_knxprod;
 use crate::wire::IndividualAddress;
 
@@ -282,6 +282,14 @@ pub struct DeviceConfig {
     /// Omit for no limit (the default).
     #[serde(default)]
     pub max_allocation: Option<u32>,
+    /// How the device answers a Master Reset (`A_Restart` restart type 1):
+    /// `supported` (the default, the confirmed form every captured device
+    /// answers, KNX Virtual included), `refuse` (error code 2 "unsupported
+    /// erase code", nothing runs) or `basic` (no answer, a Basic Restart
+    /// runs). The last two model a device without the Master Reset, for a
+    /// tool's fallback (bussard issue #611).
+    #[serde(default)]
+    pub master_reset: MasterResetSupport,
     /// Whether the device starts in KNX programming mode (default `false`). A
     /// device in programming mode answers the broadcast `A_IndividualAddress_Read`
     /// — the discovery step `bussard assign` and `bussard viz --watch-prog` use.
@@ -653,7 +661,8 @@ impl SimConfig {
             })?
             .with_l4_exchange_budget(effective_l4_budget(dc.l4_exchange_budget))
             .with_strict_l4_drop(dc.l4_strict_drop)
-            .with_max_allocation(dc.max_allocation);
+            .with_max_allocation(dc.max_allocation)
+            .with_master_reset(dc.master_reset);
             let device = match &dc.security {
                 Some(sec) if sec.status == SecurityStatus::Factory => {
                     device.with_factory_security()

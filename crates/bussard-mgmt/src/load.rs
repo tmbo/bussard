@@ -702,24 +702,18 @@ pub async fn read_manufacturer_id<Ch: L4Channel>(
     Ok(Some(u16::from_be_bytes([resp.data[0], resp.data[1]])))
 }
 
-/// Realises an `LdCtrlMasterReset` op the way ETS→KNX-Virtual does on the wire
-/// (only there; every other device gets the confirmed [`master_reset`]):
-/// as a **bare `A_Restart`** (APCI [`A_RESTART`](crate::apci::A_RESTART) = `0x380`,
-/// no payload), not the confirmed master-reset `A_Restart` (`0x381` + erase/channel).
+/// The Basic Restart a client calls instead of a Master Reset the device does
+/// not support (KNX 3/5/2 §3.7.1.2.3.1): a **bare `A_Restart`** (APCI
+/// [`A_RESTART`](crate::apci::A_RESTART) = `0x380`, no payload). The flash
+/// sends it after a [`master_reset`] answered with error code 2 ("unsupported
+/// erase code"); every `LdCtrlMasterReset` first goes out in the confirmed form
+/// (issue #611: ETS sends that form to KNX Virtual too).
 ///
-/// The ETS→KNX-Virtual DA.tp capture shows the mid-procedure master reset sent as
-/// `4f 80` — a numbered `A_Restart` with an empty APDU. The device T_ACKs it at
-/// the transport layer and then simply reboots; it sends **no** application-layer
-/// `A_Restart_Response`. So this sends the bare restart as a numbered telegram
-/// (requiring the transport ACK, since a request that never lands is a real
-/// failure) and treats the following silence / disconnect / mid-session drop as
-/// the expected accepted outcome — the device is rebooting. The `erase_code` and
-/// `channel_number` from the op are accepted for the trace/label but are **not**
-/// on the wire in this realisation (a bare `A_Restart` carries no operands); they
-/// are logged for diagnosis only.
-///
-/// Clean-room: encoding and semantics from the published KNX spec (A_Restart) and
-/// verified against the real ETS→KNX-Virtual capture (bare `0x380`).
+/// The device T_ACKs the bare restart at the transport layer and reboots; it
+/// sends no application-layer `A_Restart_Response`. So this sends it as a
+/// numbered telegram without awaiting the ACK and treats the following silence
+/// or disconnect as the expected outcome. The op's `erase_code` and
+/// `channel_number` are not on the wire in this form.
 pub async fn master_reset_via_basic_restart<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     _erase_code: u8,

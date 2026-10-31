@@ -1045,23 +1045,14 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                         // KNX 3/5/2 §3.7.1.2.3: a Master Reset is the confirmed
                         // A_Restart (restart type 1) with the op's erase code and
                         // channel number, answered by A_Restart_Response with an
-                        // error code and a process time. KNX Virtual alone gets the
-                        // bare A_Restart (0x380) its ETS capture shows. Either way
-                        // the device reboots and drops the L4 connection: wait it
-                        // out, reconnect and re-authorize. The support rule (error
-                        // code 2 falls back to a basic restart) is in the
+                        // error code and a process time. ETS sends this form to
+                        // every device it has been captured against, KNX Virtual
+                        // included (issue #611); the device's answer decides the
+                        // fallback (error code 2: a basic restart). The device
+                        // reboots and drops the L4 connection: wait it out,
+                        // reconnect and re-authorize. The rule is in the
                         // `restart_form` module docs.
-                        if plan.targets_knx_virtual() {
-                            master_reset_via_basic_restart(
-                                session.l4(),
-                                *erase_code,
-                                *channel_number,
-                            )
-                            .await?;
-                            session.reconnect_after_reboot().await?;
-                        } else {
-                            master_reset_confirmed(session, *erase_code, *channel_number).await?;
-                        }
+                        master_reset_confirmed(session, *erase_code, *channel_number).await?;
 
                         // The master reset ERASES the app object's load state (back to
                         // `Unloaded`) and drops the segment allocated before it (erase

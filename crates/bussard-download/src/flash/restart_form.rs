@@ -39,12 +39,22 @@
 //!   fails the flash before anything is written; `--no-factory-reset` is the
 //!   way past it.
 //! - A load procedure's `LdCtrlMasterReset` goes out in the confirmed form
-//!   with the op's erase code and channel number (§3.7.1.2.3) on every device
-//!   but KNX Virtual, whose ETS capture shows a bare `A_Restart`. Error code 2
-//!   means the device does not support that Master Reset, so the flash sends a
-//!   Basic Restart instead and goes on; any other error code fails it. No
-//!   vendor application in the corpus carries the op (only KNX Virtual's
-//!   DA.tp does), so no capture of the confirmed form exists yet.
+//!   with the op's erase code and channel number (§3.7.1.2.3) on every
+//!   device, as ETS sends it (issue #611). ETS does not choose the form per
+//!   device: the KNX Virtual DA.tp capture (`shared-with-windows/dumpfile.pcap`,
+//!   the request stream in `knx-sim/tests/fixtures/ets_da_tp_flash_requests.txt`)
+//!   has `A_Restart` master reset, erase code 4, channel 0, answered by
+//!   `A_Restart_Response` error 0, process time 0, exactly as the knx-sim
+//!   captures of the same DA.tp and of `syn-master-reset` have it; its two bare
+//!   `A_Restart`s are the restart after the address assignment and the
+//!   terminal restart. No read before the reset differs between the two
+//!   devices, so there is nothing on the device to key a choice on.
+//! - The device's answer decides what follows. Error code 0: wait the process
+//!   time and reconnect. Error code 2 ("unsupported erase code") means the
+//!   device does not support that Master Reset, so the flash sends a Basic
+//!   Restart instead and goes on; any other error code fails it. No answer:
+//!   the reboot poll decides. knx-sim's `master_reset: refuse` device option
+//!   models the error-code-2 device for the sim loop and the ETS capture.
 
 use bussard_mgmt::MaskProfile;
 use bussard_prod::ApplicationProgram;
