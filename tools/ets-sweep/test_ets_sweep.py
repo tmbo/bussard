@@ -19,6 +19,7 @@ import apply_rows  # noqa: E402
 import defaults  # noqa: E402
 import followups  # noqa: E402
 import nightly  # noqa: E402
+import oracle  # noqa: E402
 import oracle_model  # noqa: E402
 import params  # noqa: E402
 import secure  # noqa: E402
@@ -567,6 +568,120 @@ class TestCaptureVariants(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             capture.model_template("syn-s7-0705", "reload", Path(tmp))
             self.assertFalse((Path(tmp) / "model").exists())
+
+
+class TestOracleDeviceState(unittest.TestCase):
+    """One function names the device state of the sweep's rows and of the
+    synthetic captures' rows (#640, #488)."""
+
+    def test_device_state_system_7_fresh_and_loaded(self):
+        self.assertEqual(oracle.device_state("0701", "plain-defaults"), "state=fresh")
+        self.assertEqual(oracle.device_state("0705", "defaults"), "state=fresh")
+        self.assertEqual(oracle.device_state("0700", "reload"), "state=loaded")
+        self.assertEqual(oracle.device_state("0705", "other-app"), "state=loaded")
+        self.assertEqual(oracle.device_state("07B0", "plain-defaults"), "")
+        self.assertEqual(oracle.device_state("", "plain-defaults"), "")
+
+    def test_row_writes_state_fresh_on_a_system_7_defaults_capture(self):
+        cap, prod = Path("/c/ets.pcapng"), Path("/p/x.knxprod")
+        self.assertEqual(oracle.row("M-1_A-1", cap, prod, "0701"),
+                         "1.1.1|/c/ets.pcapng|/p/x.knxprod|M-1_A-1|||state=fresh")
+        self.assertEqual(oracle.row("M-1_A-1", cap, prod, "07B0"), "1.1.1|/c/ets.pcapng|/p/x.knxprod|M-1_A-1")
+
+    def test_capture_device_state_is_the_oracle_one(self):
+        self.assertEqual(capture.device_state("syn-s7-0705"), "state=fresh")
+        self.assertEqual(capture.device_state("syn-s7-0705", "reload"), "state=loaded")
+        self.assertEqual(capture.variant_options("syn-s7-0701", "other-app"), "state=loaded")
+        self.assertEqual(capture.device_state("syn-minimal"), "")
+
+
+class TestCaptureRecapture(unittest.TestCase):
+    """A re-capture after an XML change needs a version bump; a capture must
+    carry the spec's program version; hand-set row options survive (#650)."""
+
+    ENTRY = {"product": "syn-x", "variant": "defaults", "signed_id": "M-00FA_A-2800-10-E9F3", "xml_sha256": "old"}
+
+    def test_app_version_reads_the_version_octet(self):
+        self.assertEqual(capture.app_version("M-00FA_A-280F-11-48D6"), 0x11)
+        self.assertIsNone(capture.app_version(""))
+
+    def test_recapture_refusal_first_capture_and_same_xml_pass(self):
+        self.assertIsNone(capture.recapture_refusal("syn-x", "new", 0x10, []))
+        self.assertIsNone(capture.recapture_refusal("syn-x", "old", 0x10, [self.ENTRY]))
+        self.assertIsNone(capture.recapture_refusal("syn-y", "new", 0x10, [self.ENTRY]))
+
+    def test_recapture_refusal_changed_xml_without_bump_names_the_bump(self):
+        why = capture.recapture_refusal("syn-x", "new", 0x10, [self.ENTRY])
+        self.assertIsNotNone(why)
+        self.assertIn("to 0x11", why)
+        self.assertIn("syn-x/product.toml", why)
+        self.assertIn("defaults (M-00FA_A-2800-10-E9F3)", why)
+
+    def test_recapture_refusal_changed_xml_with_bump_passes(self):
+        self.assertIsNone(capture.recapture_refusal("syn-x", "new", 0x11, [self.ENTRY]))
+        # A variant still on the old XML and version does not block the bumped capture.
+        variant = {**self.ENTRY, "variant": "reload"}
+        self.assertIsNone(capture.recapture_refusal("syn-x", "new", 0x11, [self.ENTRY, variant]))
+
+    def test_recapture_refusal_committed_catalogue_passes(self):
+        # Every committed capture matches its product's xml/ today.
+        entries = capture.load_manifest()
+        for e in entries:
+            version = int(capture.generate_spec(e["product"])["application"]["version"])
+            self.assertIsNone(capture.recapture_refusal(e["product"], capture.xml_sha256(e["product"]),
+                                                        version, entries), e["product"])
+
+    def test_version_mismatch_property_write(self):
+        sha = "162dae9b"  # sha256 of 00fa270010, as knxtrace prints it
+        self.assertIsNone(capture.version_mismatch([("sha", sha)], "00fa270010"))
+        self.assertIn("sha=162dae9b", capture.version_mismatch([("sha", sha)], "00fa270011"))
+
+    def test_version_mismatch_task_segment_and_none(self):
+        self.assertIsNone(capture.version_mismatch([("app_id", "00fa280f11")] * 3, "00fa280f11"))
+        self.assertIn("app_id=00fa280f10", capture.version_mismatch([("app_id", "00fa280f10")], "00fa280f11"))
+        self.assertIn("no program version", capture.version_mismatch([], "00fa280f11"))
+
+    def test_downloaded_versions_of_committed_captures(self):
+        # Property form (07B0), LdCtrlTaskSegment in ops.txt (0705), the
+        # memory-mapped records in the pcap (0701).
+        for product, kind in (("syn-minimal", "sha"), ("syn-s7-0705", "app_id"), ("syn-s7-lsm5", "app_id")):
+            found = capture.downloaded_versions(capture.OUT / product / "defaults")
+            self.assertTrue(found and all(k == kind for k, _ in found), product)
+            self.assertIsNone(capture.version_mismatch(found, capture.expected_program_version(product)), product)
+
+    def test_props_verdict_from_regions(self):
+        self.assertEqual(capture.props_verdict("par=ok(256) props=ok(1)"), "identical")
+        self.assertEqual(capture.props_verdict("props=differs(bussard-only 1, ets-only 0, value 0)"), "differs")
+        self.assertEqual(capture.props_verdict("props=n/c(bussard 1, ETS ran no procedure write)"), "not-comparable")
+        self.assertIsNone(capture.props_verdict("par=ok(256)"))
+
+    def test_carried_options_recomputes_derived_and_keeps_hand_set(self):
+        self.assertEqual(capture.carried_options("", "props=differs"), "")
+        self.assertEqual(capture.carried_options("dir=a/model", "dir=b/model scope=memory phase=2"),
+                         "dir=a/model scope=memory phase=2")
+        self.assertEqual(capture.carried_options("state=loaded", "state=loaded expect=differs"), "state=loaded")
+
+    def test_recapture_of_pid204_reproduces_its_row(self):
+        # syn-s7-pid204's props=differs was set by hand; a re-capture with the
+        # same verdicts derives it and writes the committed row again.
+        verdicts = {"verdict": "differs", "coverage": "100.0%", "loadctl": "identical",
+                    "props": capture.props_verdict("props=differs(bussard-only 0, ets-only 1, value 0)")}
+        extra = capture.carried_options("", "props=differs")
+        row = capture.oracle_row("syn-s7-pid204", "M-00FA_A-2821-10-0000", "100.0", capture.row_options(verdicts),
+                                 extra=extra)
+        committed = [l for l in capture.ROWS.read_text().splitlines() if "syn-s7-pid204 defaults" in l]
+        self.assertEqual([row], committed)
+
+    def test_write_rows_reproduces_the_committed_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "rows.txt"
+            saved = capture.ROWS
+            capture.ROWS = out
+            try:
+                capture.write_rows(capture.load_manifest())
+            finally:
+                capture.ROWS = saved
+            self.assertEqual(out.read_text(), saved.read_text())
 
 
 if __name__ == "__main__":

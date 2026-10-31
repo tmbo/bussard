@@ -27,6 +27,14 @@ For `tests-support/synthetic-products/<product>/` it runs the whole flow:
      build, the `xml/` digest (`generate.py`'s, as in `signed.toml`), the
      signed id, the date, the oracle verdict and coverage.
 
+Before signing, it refuses a product whose committed `xml/` differs from a
+manifest entry of it unless `[application] version` is above the one in that
+entry's signed id: ETS keeps the application it imported first under the
+same order number and version (#650). After the download it checks that the
+capture wrote the spec's program version and stops before copying otherwise.
+A re-capture recomputes the entry's row options and keeps the hand-set ones
+it cannot derive (`carried_options`).
+
 `--variant <name>` captures a run variant instead of the `defaults` download
 (#604, "Run variants"; `VARIANTS` below): the same product downloaded another
 way, in one knx-sim process so ETS sees the device a step before left
@@ -67,6 +75,7 @@ sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
 import calibrate  # noqa: E402
 import distil  # noqa: E402
+import oracle  # noqa: E402
 
 REPO = HERE.parents[2]
 CATALOGUE = REPO / "tests-support" / "synthetic-products"
@@ -269,15 +278,17 @@ def write_image(dst: Path, rel: str) -> None:
     (dst / "image.json").write_text("\n".join(lines) + "\n")
 
 
-def device_state(product: str) -> str:
-    """`state=fresh` for a System 7 product: the sim starts unloaded
-    (`sim_yaml`), and ETS reads no load state before a System 7 download, so
-    the oracle needs the row to say so to plan as on a fresh device (#488)."""
+def device_state(product: str, variant: str = VARIANT) -> str:
+    """The row's `state=` for a System 7 product (`oracle.device_state`, the
+    function the sweep's rows use too, #640): `state=fresh` where the sim
+    starts unloaded (`sim_yaml`), since ETS reads no load state before a
+    System 7 download and the oracle must plan as on a fresh device (#488);
+    `state=loaded` for the `reload` and `other-app` variants."""
     try:
         mask = tomllib.loads((CATALOGUE / product / "product.toml").read_text())["application"]["mask"]
     except (OSError, KeyError, ValueError):
         return ""
-    return "state=fresh" if str(mask) in ("0700", "0701", "0705") else ""
+    return oracle.device_state(str(mask), variant)
 
 
 def oracle_row(product: str, app: str, coverage: str = "", options: str = "", why: str = "",
@@ -288,7 +299,7 @@ def oracle_row(product: str, app: str, coverage: str = "", options: str = "", wh
     rel = (OUT / product / variant).relative_to(REPO).as_posix()
     xml = (CATALOGUE / product / "xml").relative_to(REPO).as_posix()
     note = f"{product} {variant}{': ' + why if why else ''}"
-    state = "" if "state=" in extra or "run=" in extra else device_state(product)
+    state = "" if "state=" in extra or "run=" in extra else device_state(product, variant)
     options = " ".join(o for o in (options, extra, state) if o)
     return f"1.1.1|{rel}/ets.pcapng|{xml}|{app}|{note}|{coverage}|{options}".rstrip("|")
 
@@ -329,7 +340,21 @@ def oracle_verdict(product: str, app: str, variant: str = VARIANT, extra: str = 
            "loadctl": lc.get("verdict")}
     if confirmed:
         out["confirmed"] = confirmed
+    props = props_verdict(out["regions"])
+    if props:
+        out["props"] = props
     return out
+
+
+PROPS_REGION = re.compile(r"\bprops=(ok|differs|n/c)\b")
+
+
+def props_verdict(regions: str) -> str | None:
+    """The property-write parity of a row from the summary's regions
+    (`props=ok(..)`, `props=differs(..)`, `props=n/c(..)`), as the `props=`
+    row option names it; None when the row reports none."""
+    m = PROPS_REGION.search(regions)
+    return {"ok": "identical", "differs": "differs", "n/c": "not-comparable"}[m.group(1)] if m else None
 
 
 def load_manifest() -> list[dict]:
@@ -352,19 +377,37 @@ def write_manifest(entries: list[dict]) -> None:
     )
 
 
-def row_options(oracle: dict) -> str:
-    """The row's `expect=` and `loadctl=` from the recorded verdicts, so `--check`
-    holds a product to what its capture showed: a `differs` row is the evidence
-    of an open bug and stays green until the fix changes the verdict (#596
-    step 4). `identical` is the script's default and is not written."""
+def row_options(verdicts: dict) -> str:
+    """The row's `expect=`, `confirmed=`, `loadctl=` and `props=` from the
+    recorded verdicts, so `--check` holds a product to what its capture
+    showed: a `differs` row is the evidence of an open bug and stays green
+    until the fix changes the verdict (#596 step 4). An identical headline or
+    property parity is the script's default and is not written."""
     opts = []
-    if oracle.get("verdict") in ("differs", "not-comparable"):
-        opts.append(f"expect={oracle['verdict']}")
-    if oracle.get("confirmed") in ("identical", "differs", "not-comparable"):
-        opts.append(f"confirmed={oracle['confirmed']}")
-    if oracle.get("loadctl") in ("identical", "differs"):
-        opts.append(f"loadctl={oracle['loadctl']}")
+    if verdicts.get("verdict") in ("differs", "not-comparable"):
+        opts.append(f"expect={verdicts['verdict']}")
+    if verdicts.get("confirmed") in ("identical", "differs", "not-comparable"):
+        opts.append(f"confirmed={verdicts['confirmed']}")
+    if verdicts.get("loadctl") in ("identical", "differs"):
+        opts.append(f"loadctl={verdicts['loadctl']}")
+    if verdicts.get("props") in ("differs", "not-comparable"):
+        opts.append(f"props={verdicts['props']}")
     return " ".join(opts)
+
+
+# The row options capture.py derives on every capture: from the verdicts
+# (`row_options`), the device state (`device_state`), the variant
+# (`variant_options`) and an IP-enabled product's model (`knxnet_model`).
+DERIVED_OPTIONS = frozenset({"expect", "confirmed", "loadctl", "props", "state", "dir", "run", "base", "lsm"})
+
+
+def carried_options(derived: str, previous: str) -> str:
+    """A re-captured entry's `row_options`: the ones this capture derived,
+    then those of the entry it replaces that capture.py cannot derive (set by
+    hand, e.g. `scope=` or `phase=`). A derived option of the old entry (a
+    hand-set `props=differs`, say) is dropped: the new verdicts decide it."""
+    kept = [w for w in previous.split() if w.split("=", 1)[0] not in DERIVED_OPTIONS]
+    return " ".join(o for o in (derived, *kept) if o)
 
 
 def write_rows(entries: list[dict]) -> None:
@@ -391,6 +434,113 @@ def write_rows(entries: list[dict]) -> None:
         rows.append(oracle_row(e["product"], e["application"], coverage, row_options(e["oracle"]), why,
                                e["variant"], e.get("row_options", "")))
     ROWS.write_text(head + "\n".join(rows) + "\n")
+
+
+# ---------------------------------------------------------------------------
+# Stale catalogue imports (#650). ETS keeps the application it imported first
+# under an order number and application version: importing changed XML under
+# the same version reports "imported" and the download uses the old program.
+# A re-capture after an XML change therefore needs `[application] version`
+# above every version the product was captured with (the version octet of the
+# manifest's signed id), and a capture is checked to carry the spec's version.
+# ---------------------------------------------------------------------------
+
+APP_ID = re.compile(r"_A-([0-9A-F]{4})-([0-9A-F]{2})-", re.IGNORECASE)
+
+
+def app_version(app_id: str) -> int | None:
+    """The application version octet of an application id
+    (`M-00FA_A-280F-11-48D6` gives 0x11); None for no id."""
+    m = APP_ID.search(app_id or "")
+    return int(m.group(2), 16) if m else None
+
+
+def recapture_refusal(product: str, digest: str, version: int, entries: list[dict]) -> str | None:
+    """Why a capture of `product` at `digest` and application `version` would
+    test a stale import, or None. Stale: a manifest entry of the product was
+    captured from other XML under this version or a higher one, so ETS's
+    catalogue may hold that XML under the version the spec names."""
+    mine = [(e, app_version(e.get("signed_id", ""))) for e in entries if e.get("product") == product]
+    recorded = [v for _, v in mine if v is not None]
+    stale = [e for e, v in mine if v is not None and v >= version and e.get("xml_sha256") != digest]
+    if not stale:
+        return None
+    newest = max(recorded)
+    where = ", ".join(f"{e['variant']} ({e['signed_id']})" for e in stale)
+    bump = (f"bump [application] version in tests-support/synthetic-products/{product}/product.toml "
+            f"to 0x{newest + 1:02X}" if newest < 0xFF else
+            f"give tests-support/synthetic-products/{product}/product.toml a new [application] number")
+    return (f"{product}: the committed xml/ differs from the XML of its capture {where}, and "
+            f"[application] version 0x{version:02X} is not above 0x{newest:02X}. ETS keeps the application "
+            f"it imported first under the same order number and version and reports \"imported\" anyway, "
+            f"so the download would test the old XML (#650): {bump}, run generate.py, then capture again.")
+
+
+def check_recapture(product: str) -> None:
+    """Refuses (SystemExit) a capture `recapture_refusal` calls stale."""
+    version = int(generate_spec(product)["application"]["version"])
+    why = recapture_refusal(product, xml_sha256(product), version, load_manifest())
+    if why:
+        raise SystemExit(why)
+
+
+def expected_program_version(product: str) -> str:
+    """The `PID_PROGRAM_VERSION` value of the spec, hex: manufacturer 00FA,
+    the application number, the version."""
+    a = generate_spec(product)["application"]
+    return f"00fa{int(a['number']):04x}{int(a['version']):02x}"
+
+
+PROGRAM_VERSION_WRITE = re.compile(r"prop-write \S+/PID_PROGRAM_VERSION .*\bsha=([0-9a-f]{8})")
+TASK_SEGMENT_APP = re.compile(r"ctrl=LdCtrlTaskSegment .*\bapp_id=([0-9a-f]{10})")
+LSM_RECORD = 0x0104  # the memory-mapped load-state records of 0700/0701
+LD_CTRL_TASK_SEGMENT = 0x02
+
+
+def downloaded_versions(run_dir: Path) -> list[tuple[str, str]]:
+    """What the capture in `run_dir` wrote as the program version, as
+    (`sha`, first 8 hex of the value's sha256) for a `PID_PROGRAM_VERSION`
+    write in `ops.txt` (knxtrace prints its digest only) and (`app_id`, hex)
+    for a LdCtrlTaskSegment record, from `ops.txt` on the property form
+    (0705) and from `ets.pcapng` on the memory-mapped form (0700/0701, an
+    11-octet record at 0x0104 whose last five octets are the id)."""
+    ops = (run_dir / "ops.txt").read_text()
+    found = [("sha", m.group(1)) for m in PROGRAM_VERSION_WRITE.finditer(ops)]
+    found += [("app_id", m.group(1)) for m in TASK_SEGMENT_APP.finditer(ops)]
+    if found or not (run_dir / "ets.pcapng").exists():
+        return found
+    sys.path.insert(0, str(REPO / "tools" / "knxtrace"))
+    import knxtrace
+
+    pcap = str(run_dir / "ets.pcapng")
+    for op in knxtrace.resolve(knxtrace.load_ops(pcap, None), "1.1.1", pcap, None).requests():
+        data = op.data or b""
+        if (op.kind == "mem-write" and op.detail.get("addr_int") == LSM_RECORD and len(data) == 11
+                and data[1] == LD_CTRL_TASK_SEGMENT):
+            found.append(("app_id", data[-5:].hex()))
+    return found
+
+
+def version_mismatch(found: list[tuple[str, str]], expected: str) -> str | None:
+    """Why the program versions a capture wrote are not `expected`, or None."""
+    if not found:
+        return ("the capture writes no program version (no PID_PROGRAM_VERSION, no LdCtrlTaskSegment); "
+                f"expected {expected}")
+    sha = hashlib.sha256(bytes.fromhex(expected)).hexdigest()[:8]
+    wrong = [f"{kind}={value}" for kind, value in found if value != (sha if kind == "sha" else expected)]
+    if wrong:
+        return f"ETS downloaded another program version than the spec's {expected} (sha {sha}): {', '.join(wrong)}"
+    return None
+
+
+def check_downloaded_version(product: str, run_dir: Path) -> None:
+    """Fails loudly (SystemExit) when the capture in `run_dir` did not
+    download the spec's program version: ETS used a stale catalogue entry
+    (#650). Runs before anything is copied under captures/synthetic/."""
+    why = version_mismatch(downloaded_versions(run_dir), expected_program_version(product))
+    if why:
+        raise SystemExit(f"{product}: {why} in {run_dir}. ETS's catalogue holds a stale import; bump "
+                         f"[application] version and capture again (#650).")
 
 
 # ---------------------------------------------------------------------------
@@ -465,8 +615,8 @@ def variant_options(product: str, variant: str) -> str:
     variant that links or changes a parameter, the `run=params` of a partial
     download replayed over its base."""
     rel = (OUT / product / variant).relative_to(REPO).as_posix()
-    if variant in ("reload", "other-app"):
-        return "state=loaded"
+    if variant in oracle.LOADED_RUNS:
+        return device_state(product, variant)
     if variant in ("links", "calc-input"):
         return f"dir={rel}/model"
     if variant == "partial":
@@ -691,6 +841,8 @@ def capture_variant(product: str, variant: str, args) -> int:
         import vm
 
         build = sim_build(args.sim_build)
+        for p in involved:
+            check_recapture(p)
         signed = {p: sign(p) for p in involved}
         c = vm.connect()
         for p in involved:
@@ -700,8 +852,9 @@ def capture_variant(product: str, variant: str, args) -> int:
         sid = signed[product][1]
         result = run_variant(c, product, variant, signed)
         when = datetime.date.today().isoformat()
+    check_downloaded_version(product, calibrate.CAPTURES / sid / variant / steps[-1]["name"])
     dst = copy_variant(product, variant, sid, app, mask)
-    extra = variant_options(product, variant)
+    extra = carried_options(variant_options(product, variant), previous.get("row_options", ""))
     verdict = oracle_verdict(product, app, variant, extra)
     requests = sum(1 for l in (dst / "requests.txt").read_text().splitlines() if l and not l.startswith("#"))
     entry = {
@@ -712,7 +865,7 @@ def capture_variant(product: str, variant: str, args) -> int:
         "steps": [{"product": s["product"], "mode": s["mode"], "ets": s.get("ets"), "ops": s.get("ops")}
                   for s in result["steps"]],
         "row_options": extra,
-        "oracle": {k: verdict[k] for k in ("verdict", "coverage", "confirmed", "loadctl") if k in verdict},
+        "oracle": {k: verdict[k] for k in ("verdict", "coverage", "confirmed", "loadctl", "props") if k in verdict},
     }
     for p in involved:
         if p != product:
@@ -758,6 +911,7 @@ def main() -> int:
         import vm
 
         build = sim_build(args.sim_build)
+        check_recapture(product)
         signed, sid = sign(product)
         c = vm.connect()
         imported = ets_import(c, signed, order)
@@ -769,15 +923,16 @@ def main() -> int:
         when = datetime.date.today().isoformat()
         if result.get("outcome") != "captured":
             raise SystemExit(f"ETS did not complete the download: {result}")
+    check_downloaded_version(product, calibrate.run_dir(sid))
     dst = copy_capture(product, sid, app, mask)
-    extra = knxnet_model(product, dst)
+    extra = carried_options(knxnet_model(product, dst), previous.get("row_options", ""))
     verdict = oracle_verdict(product, app, extra=extra)
     requests = sum(1 for l in (dst / "requests.txt").read_text().splitlines() if l and not l.startswith("#"))
     entry = {
         "product": product, "variant": VARIANT, "order_number": order, "application": app, "signed_id": sid,
         "xml_sha256": xml_sha256(product), "ets": ets, "knx_sim": build, "captured": when,
         "ops": result.get("ops"), "requests": requests,
-        "oracle": {"verdict": verdict["verdict"], "coverage": verdict["coverage"], "loadctl": verdict["loadctl"]},
+        "oracle": {k: verdict[k] for k in ("verdict", "coverage", "loadctl", "props") if k in verdict},
     }
     if extra:
         entry["row_options"] = extra

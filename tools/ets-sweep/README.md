@@ -43,6 +43,17 @@ committed and replayed in CI.
 PowerShell script files are blocked by the Restricted execution policy, which is
 why the driver is Python.
 
+**Stale catalogue entries.** ETS's catalogue keeps the first application it
+imported under an order number and application version; a later import of
+changed XML under the same version reports "imported" and changes nothing
+(#650). The VM's catalogue still holds `NEST-TWIG5` version 1.0
+(`syn-s7-lsm5` at application version 0x10, the variant ETS failed with
+"System.ArgumentException: lsm") next to the captured 1.1; the
+driver has no flow that removes a catalogue entry, so it stays. `capture.py`
+refuses a re-capture of changed XML without a version bump and checks the
+downloaded `PID_PROGRAM_VERSION` against the spec
+(`tests-support/synthetic-products/README.md`, "Captures").
+
 ## Starting the driver (once per VM boot)
 
 ssh commands run in session 0 and cannot reach the desktop, and a scheduled

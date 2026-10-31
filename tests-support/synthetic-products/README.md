@@ -295,6 +295,23 @@ product's `xml/` digest differs from its manifest entry, and names the
 `capture.py` command. A spec change that does not reach the XML (the `[doc]`
 table) needs none.
 
+**A re-capture after an XML change needs a version bump.** ETS keeps the
+application it imported first under an order number and application version:
+importing changed XML under the same version reports "imported", and the
+download then uses the old program (#650; `syn-s7-lsm5` tested a stale 0x10
+three times before its bump to 0x11). So raise `[application] version` with
+any change that reaches `xml/`. `capture.py` refuses to capture a product
+whose `xml/` digest differs from a manifest entry of it unless the version
+is above the one in that entry's signed id, and names the version to bump
+to. After the download it checks that ETS wrote the spec's version
+(`PID_PROGRAM_VERSION` in `ops.txt`, or the LdCtrlTaskSegment record's
+application id on System 7) and stops before copying anything if not.
+
+A re-capture recomputes the row's options from the new verdicts (`expect=`,
+`confirmed=`, `loadctl=`, `props=`) and from the product and variant
+(`state=`, `dir=`, `run=`, `base=`, `lsm=`). Any other option on the
+replaced entry's `row_options` (set by hand, e.g. `scope=`) is kept.
+
 An IP-enabled product (`ip_enabled`, #455) has a KNX IP interface built in.
 Its `sim.yaml` gives the device the KNXnet/IP parameter object (`knxnet:`,
 as `sweep.py` does in the VM, since ETS aborts without one), and the knx-sim
