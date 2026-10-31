@@ -76,6 +76,13 @@ the parameter download, and a read-back of each. The result carries the
 verify outcome, what was written and the backup paths. `apply --line` stays
 CLI-only.
 
+The safety net around an apply is in chat too. `knx_backup_device` and
+`knx_reconstruct_device` back a device up and read its tables back against
+the model; they only read, so they are in the default tier.
+`knx_restore_tables` writes a backup's link tables back through the same
+plan, approval and read-back as an apply, and `knx_restart_device` restarts
+a device in the form ETS uses, after your yes.
+
 ??? note "Details"
     The digest is a SHA-256 over the device address, the model's links and
     parameter values for it, the desired tables, the parameter image the

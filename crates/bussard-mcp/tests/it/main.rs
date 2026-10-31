@@ -19,6 +19,7 @@ mod mcp_ha_automation;
 mod mcp_interface;
 mod mcp_learn;
 mod mcp_program;
+mod mcp_safety_net;
 mod mcp_server;
 mod model_edit_tools;
 mod model_lookup_texts;

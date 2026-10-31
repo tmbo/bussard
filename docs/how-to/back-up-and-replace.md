@@ -31,6 +31,8 @@ Back up part of the installation with `--line 1.1` or a list of addresses, and w
 
 Besides this, `apply` saves each device's tables to `captures/backups/` before it writes, and its parameters to `captures/backups/parameters/` when they change.
 
+The assistant takes the same backup with `knx_backup_device`, for one device or all of them. It reads only.
+
 ## Restore a device's links
 
 !!! warning
@@ -41,6 +43,8 @@ $ bussard restore knx/captures/backups/20260922T101500Z 1.1.4
 ```
 
 `restore` takes the newest backup of that device in the directory and runs it through `apply`: plan, confirmation, a fresh backup, write, read-back. A device that has not changed since the backup plans empty and nothing is written. `restore` writes link tables only; parameters in a table backup are reported, not written.
+
+With `--allow-programming` the assistant does the same with `knx_restore_tables`, after your yes to the plan.
 
 ## Restore a parameter backup
 
