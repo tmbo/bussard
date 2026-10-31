@@ -819,6 +819,60 @@ class ComObjectSizes(unittest.TestCase):
             generate.Product("test", s)
 
 
+class ModuleRepeat(unittest.TestCase):
+    """syn-module-repeat (#449): allocators, a ModuleDef and a `<Repeat>`."""
+
+    def module_spec(self) -> dict:
+        s = spec(allocator=[{"name": "pa", "start": 16, "max": 63}, {"name": "oa", "start": 2, "max": 9}],
+                 module_def=[{"name": "m", "arguments": [{"name": "pb", "allocates": 4}, {"name": "ob", "allocates": 1}],
+                              "parameter": [{"name": "mp", "type": "Delay", "text": "MP", "default": 7,
+                                             "memory": {"segment": "main", "offset": 0, "bit_offset": 0,
+                                                        "base": "pb"}}],
+                              "com_object": [{"number": 0, "base": "ob", "name": "mo", "text": "MO",
+                                              "function_text": "F", "size": "1 Bit", "dpt": "DPST-1-1",
+                                              "flags": ["C", "W"], "priority": "Low"}],
+                              "block": [{"name": "mb", "text": "MB", "parameters": ["mp"], "com_objects": [0]}]}])
+        s["dynamic"]["block"][0]["repeat"] = [{"name": "r", "parameter": "mode", "module": "m",
+                                              "args": {"pb": "pa", "ob": "oa"}}]
+        return s
+
+    def test_render_allocators_module_def_and_repeat(self) -> None:
+        xml = app_xml(self.module_spec())
+        a = "M-00FA_A-2700-10-0000"
+        self.assertIn(f'<Allocator Id="{a}_L-1" Name="pa" Start="16" maxInclusive="63" />', xml)
+        self.assertIn('            </Allocators>\n            <Options', xml)
+        self.assertIn(f'          </Static>\n          <ModuleDefs>\n            <ModuleDef Id="{a}_MD-1" Name="m">', xml)
+        self.assertIn(f'<Memory CodeSegment="{a}_RS-04-00000" Offset="0" BitOffset="0" BaseOffset="{a}_MD-1_A-1" />', xml)
+        self.assertIn(f'BaseNumber="{a}_MD-1_A-2" />', xml)
+        self.assertIn(f'<Repeat Id="{a}_X-1" Name="r" ParameterRefId="{a}_P-1_R-1">\n'
+                      f'                  <Module Id="{a}_MD-1_M-1" Name="r" RefId="{a}_MD-1">\n'
+                      f'                    <NumericArg RefId="{a}_MD-1_A-1" AllocatorRefId="{a}_L-1" />\n'
+                      f'                    <NumericArg RefId="{a}_MD-1_A-2" AllocatorRefId="{a}_L-2" />', xml)
+
+    def test_no_module_renders_nothing(self) -> None:
+        xml = app_xml(spec())
+        self.assertNotIn("Allocators", xml)
+        self.assertNotIn("ModuleDefs", xml)
+
+    def test_repeat_missing_argument_refused(self) -> None:
+        s = self.module_spec()
+        del s["dynamic"]["block"][0]["repeat"][0]["args"]["ob"]
+        with self.assertRaisesRegex(generate.SpecError, "args must name every argument"):
+            generate.Product("test", s)
+
+    def test_repeat_literal_count_not_yet(self) -> None:
+        s = self.module_spec()
+        s["dynamic"]["block"][0]["repeat"][0]["count"] = 3
+        with self.assertRaisesRegex(generate.SpecError, "no product uses it yet"):
+            generate.Product("test", s)
+
+    def test_module_parameter_unknown_base_refused(self) -> None:
+        s = self.module_spec()
+        s["module_def"][0]["parameter"][0]["memory"]["base"] = "nope"
+        with self.assertRaisesRegex(generate.SpecError, "unknown argument `nope`"):
+            generate.Product("test", s)
+
+
 class Delay(unittest.TestCase):
     """syn-s7-delay (#615): LdCtrlDelay in a System 7 product procedure."""
 

@@ -37,6 +37,7 @@ next to it, and zips it on demand.
 | [`syn-master-reset`](syn-master-reset/product.toml) | `NEST-RESET` | 07B0 | Master Reset erase code 1 in the load procedure | #546, #611 |
 | [`syn-master-reset-code4`](syn-master-reset-code4/product.toml) | `NEST-RESET4` | 07B0 | Master Reset erase code 4 after the segment allocation | #546, #600, #611 |
 | [`syn-minimal`](syn-minimal/product.toml) | `NEST-LIGHT` | 07B0 | baseline | #596 |
+| [`syn-module-repeat`](syn-module-repeat/product.toml) | `NEST-TRIFEED` | 07B0 | ModuleDef with allocator-fed bases, instantiated three times by a Repeat | #449 |
 | [`syn-param-calculation`](syn-param-calculation/product.toml) | `NEST-CALC` | 07B0 | JavaScript ParameterCalculation, one output LegacyPatchAlways | #427, #450 |
 | [`syn-product-07b0`](syn-product-07b0/product.toml) | `NEST-PLAN` | 07B0 | ProductProcedure on 07B0 with the tables as RelSegments | #614 |
 | [`syn-property-param`](syn-property-param/product.toml) | `NEST-TERR` | 07B0 | parameter placed in a property, written by LdCtrlWriteProp | #669 |
@@ -111,6 +112,9 @@ One `product.toml` per directory. Tables and keys:
 | `[[dynamic.block]]` | `name`, `text`, `parameters` (names), `com_objects` (numbers) | a `ParameterBlock` in the `ChannelIndependentBlock`; a parameter no block names is never shown (#448) |
 | `choose` of a block | `[{ parameter, when = [{ test or default = true, parameters, com_objects, assign }] }]`; `assign = [{ target, source }]` (parameter names) | a `<choose ParamRefId>` inside the `ParameterBlock` after its refs, each `<when>` holding refs and com objects directly (#345), then its `<Assign TargetParamRefRef SourceParamRefRef>`s (#604 row 31) |
 | `[[dynamic.channel]]` | `name`, `text`, `number` (a string), `[[dynamic.channel.block]]` (keys as `[[dynamic.block]]`) | a `<Channel>` (`_CH-<n>`) after the `ChannelIndependentBlock`, its blocks numbered after every other (#345) |
+| `repeat` of a block | `[{ name, parameter, module, args }]`; `parameter` counts the instances, `args` maps every argument of the module to an `[[allocator]]` | a `<Repeat ParameterRefId>` after the block's chooses, holding one `<Module>` (`<module>_M-<n>`) with a `<NumericArg AllocatorRefId>` per argument (#449) |
+| `[[allocator]]` | `name`, `start`, `max` | an `<Allocator>` (`_L-<n>`) in `<Allocators>` after the load procedures |
+| `[[module_def]]` | `name`, `arguments` (`[{ name, allocates }]`), `[[module_def.parameter]]` (as `[[parameter]]` with `memory = { segment, offset, bit_offset, base }`, `base` an argument), `[[module_def.com_object]]` (as `[[com_object]]` plus `base`), `[[module_def.block]]` (`name`, `text`, `parameters`, `com_objects`) | a `<ModuleDef>` (`_MD-<n>`) in `<ModuleDefs>` between Static and Dynamic: `<Arguments>`, its parameters with `BaseOffset`, its `<ComObjects>` with `BaseNumber`, its parameter blocks (#449) |
 | `[[dynamic.choose]]` | `parameter` (or a `[[parameter_ref]]`), `[[dynamic.choose.when]]` with `test` (as ETS writes it: `"1"`, `"0 2"`, `">=2"`) or `default = true`, and `[[dynamic.choose.when.block]]` (keys as `[[dynamic.block]]`) | a `<choose ParamRefId>` in the `ChannelIndependentBlock` after the blocks, each `<when>` holding its blocks, numbered after them (#474, #563) |
 | `[[load_procedure]]` | `merge_id`, `ops = [{ op = "...", ... }]` | `LoadProcedure` |
 

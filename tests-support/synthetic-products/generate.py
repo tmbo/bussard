@@ -148,7 +148,7 @@ class Product:
         w = name
         check_keys(w, spec, {"doc", "product", "application", "segment", "parameter_type",
                              "parameter", "com_object", "dynamic", "load_procedure"},
-                   {"union", "parameter_calculation", "parameter_ref"})
+                   {"union", "parameter_calculation", "parameter_ref", "allocator", "module_def"})
         self.doc = spec["doc"]
         check_keys(f"{w} [doc]", self.doc, {"purpose", "construct", "issues"})
         self.product = p = spec["product"]
@@ -341,6 +341,10 @@ class Product:
             oid = f"{self.app_id}_O-{o['number']}"
             self.objects[o["number"]] = dict(o, id=oid, ref=f"{oid}_R-{i + 1}")
 
+        # syn-module-repeat (#604 row 19, #449): allocators and module
+        # definitions, before the Dynamic tree that instantiates them.
+        check_modules(w, self, spec)
+
         dyn = spec["dynamic"]
         check_keys(f"{w} [dynamic]", dyn, {"block"}, {"choose", "channel"})
         self.blocks = [self.check_block(f"{w} [[dynamic.block]] #{i + 1}", b, i + 1)
@@ -377,10 +381,11 @@ class Product:
     def check_block(self, bw: str, b: dict, number: int) -> dict:
         """A parameter block of the Dynamic tree, given its `_PB-<number>`;
         its `choose`s (#345) follow its refs."""
-        check_keys(bw, b, {"name", "text", "parameters", "com_objects"}, {"choose"}, {"inline"})
+        check_keys(bw, b, {"name", "text", "parameters", "com_objects"}, {"choose", "repeat"}, {"inline"})
         self.check_refs(bw, b)
         chooses = [self.check_block_choose(f"{bw} choose #{k + 1}", c) for k, c in enumerate(b.get("choose", []))]
-        return dict(b, id=f"{self.app_id}_PB-{number}", choose=chooses)
+        repeats = [check_repeat(f"{bw} repeat #{k + 1}", self, r) for k, r in enumerate(b.get("repeat", []))]
+        return dict(b, id=f"{self.app_id}_PB-{number}", choose=chooses, repeat=repeats)
 
     def check_refs(self, where: str, b: dict) -> None:
         """The `parameters` (or `[[parameter_ref]]`s) and `com_objects` a block
@@ -716,6 +721,162 @@ def check_schema(w: str, a: dict) -> int:
     return schema
 
 
+# ------------------------------- module definitions (#604 row 19, #449)
+# syn-module-repeat: `[[allocator]]`s (`<Allocator Id Name Start
+# maxInclusive>` after the load procedures), `[[module_def]]`s (`<ModuleDef>`
+# with `<Arguments>`, its own parameters and com objects placed relative to an
+# argument (`BaseOffset`, `BaseNumber`) and its own parameter blocks), and a
+# block's `repeat`, a `<Repeat ParameterRefId>` instantiating one module whose
+# arguments draw on allocators (`<NumericArg AllocatorRefId>`), the shape of
+# the corpus (Repeat inside a ParameterBlock, counted by a parameter).
+
+def check_modules(w: str, p: "Product", spec: dict) -> None:
+    p.allocators = {}
+    for i, al in enumerate(spec.get("allocator", [])):
+        aw = f"{w} [[allocator]] #{i + 1}"
+        check_keys(aw, al, {"name", "start", "max"})
+        if not 0 <= al["start"] <= al["max"]:
+            raise SpecError(f"{aw}: needs 0 <= start <= max")
+        p.allocators[al["name"]] = dict(al, id=f"{p.app_id}_L-{i + 1}")
+    p.module_defs = {}
+    for i, md in enumerate(spec.get("module_def", [])):
+        mw = f"{w} [[module_def]] #{i + 1}"
+        check_keys(mw, md, {"name", "arguments", "parameter", "com_object", "block"})
+        mid = f"{p.app_id}_MD-{i + 1}"
+        args = {}
+        for k, arg in enumerate(md["arguments"]):
+            check_keys(f"{mw} arguments #{k + 1}", arg, {"name", "allocates"})
+            args[arg["name"]] = dict(arg, id=f"{mid}_A-{k + 1}")
+        params = {}
+        for k, prm in enumerate(md["parameter"]):
+            pw = f"{mw} parameter #{k + 1}"
+            check_keys(pw, prm, {"name", "type", "text", "default", "memory"})
+            if prm["type"] not in p.types:
+                raise SpecError(f"{pw}: unknown parameter type `{prm['type']}`")
+            m = prm["memory"]
+            check_keys(f"{pw} memory", m, {"segment", "offset", "bit_offset", "base"})
+            if m["segment"] not in p.segments:
+                raise SpecError(f"{pw}: unknown segment `{m['segment']}`")
+            if m["base"] not in args:
+                raise SpecError(f"{pw}: unknown argument `{m['base']}`")
+            pid = f"{mid}_P-{k + 1}"
+            params[prm["name"]] = dict(prm, id=pid, ref=f"{pid}_R-{k + 1}")
+        objects = {}
+        for k, o in enumerate(md["com_object"]):
+            ow = f"{mw} com_object #{k + 1}"
+            check_keys(ow, o, {"number", "base", "name", "text", "function_text", "size", "dpt", "flags",
+                               "priority"})
+            if o["base"] not in args:
+                raise SpecError(f"{ow}: unknown argument `{o['base']}`")
+            if set(o["flags"]) - set(FLAGS) or o["priority"] not in ("Low", "High", "Alert"):
+                raise SpecError(f"{ow}: flags are of {list(FLAGS)}, priority is Low, High or Alert")
+            oid = f"{mid}_O-{o['number']}"
+            objects[o["number"]] = dict(o, id=oid, ref=f"{oid}_R-{k + 1}")
+        blocks = []
+        for k, b in enumerate(md["block"]):
+            bw = f"{mw} block #{k + 1}"
+            check_keys(bw, b, {"name", "text", "parameters", "com_objects"})
+            for pn in b["parameters"]:
+                if pn not in params:
+                    raise SpecError(f"{bw}: unknown module parameter `{pn}`")
+            for on in b["com_objects"]:
+                if on not in objects:
+                    raise SpecError(f"{bw}: unknown module com object {on}")
+            blocks.append(dict(b, id=f"{mid}_PB-{k + 1}"))
+        p.module_defs[md["name"]] = dict(md, id=mid, args=args, params=params, objects=objects, blocks=blocks)
+
+
+def check_repeat(rw: str, p: "Product", r: dict) -> dict:
+    """A block's `repeat`: `name`, `parameter` (the count), `module` and
+    `args` (argument name -> allocator name); a literal `Count` is part of
+    the schema but unused yet."""
+    check_keys(rw, r, {"name", "parameter", "module", "args"}, set(), {"count"})
+    if r["parameter"] not in p.params:
+        raise SpecError(f"{rw}: unknown parameter `{r['parameter']}`")
+    md = p.module_defs.get(r["module"])
+    if md is None:
+        raise SpecError(f"{rw}: unknown module_def `{r['module']}`")
+    if set(r["args"]) != set(md["args"]):
+        raise SpecError(f"{rw}: args must name every argument of `{r['module']}`: {sorted(md['args'])}")
+    for arg, al in r["args"].items():
+        if al not in p.allocators:
+            raise SpecError(f"{rw}: argument `{arg}` names unknown allocator `{al}`")
+    p.repeats = getattr(p, "repeats", 0) + 1
+    return dict(r, id=f"{p.app_id}_X-{p.repeats}", module_id=f"{md['id']}_M-{p.repeats}")
+
+
+def render_repeat(x: "Xml", p: "Product", r: dict) -> None:
+    md = p.module_defs[r["module"]]
+    x.open("Repeat", [("Id", r["id"]), ("Name", r["name"]), ("ParameterRefId", p.ref_id(r["parameter"]))])
+    x.open("Module", [("Id", r["module_id"]), ("Name", r["name"]), ("RefId", md["id"])])
+    for name, arg in md["args"].items():
+        x.empty("NumericArg", [("RefId", arg["id"]), ("AllocatorRefId", p.allocators[r["args"][name]]["id"])])
+    x.close("Module")
+    x.close("Repeat")
+
+
+def render_allocators(x: "Xml", p: "Product") -> None:
+    if not p.allocators:
+        return
+    x.open("Allocators")
+    for al in p.allocators.values():
+        x.empty("Allocator", [("Id", al["id"]), ("Name", al["name"]), ("Start", al["start"]),
+                              ("maxInclusive", al["max"])])
+    x.close("Allocators")
+
+
+def render_module_defs(x: "Xml", p: "Product") -> None:
+    """`<ModuleDefs>` between the application's Static and Dynamic sections."""
+    if not p.module_defs:
+        return
+    x.open("ModuleDefs")
+    for md in p.module_defs.values():
+        x.open("ModuleDef", [("Id", md["id"]), ("Name", md["name"])])
+        x.open("Arguments")
+        for arg in md["args"].values():
+            x.empty("Argument", [("Id", arg["id"]), ("Name", arg["name"]), ("Allocates", arg["allocates"])])
+        x.close("Arguments")
+        x.open("Static")
+        x.open("Parameters")
+        for prm in md["params"].values():
+            m = prm["memory"]
+            x.open("Parameter", [("Id", prm["id"]), ("Name", prm["name"]),
+                                 ("ParameterType", p.types[prm["type"]]["id"]), ("Text", prm["text"]),
+                                 ("Value", prm["default"])])
+            x.empty("Memory", [("CodeSegment", p.segments[m["segment"]]["id"]), ("Offset", m["offset"]),
+                               ("BitOffset", m["bit_offset"]), ("BaseOffset", md["args"][m["base"]]["id"])])
+            x.close("Parameter")
+        x.close("Parameters")
+        x.open("ParameterRefs")
+        for prm in md["params"].values():
+            x.empty("ParameterRef", [("Id", prm["ref"]), ("RefId", prm["id"])])
+        x.close("ParameterRefs")
+        x.open("ComObjects")
+        for o in md["objects"].values():
+            x.empty("ComObject", [("Id", o["id"]), ("Name", o["name"]), ("Text", o["text"]), ("Number", o["number"]),
+                                  ("FunctionText", o["function_text"]), ("ObjectSize", o["size"])]
+                    + [(FLAGS[f], flag(f in o["flags"])) for f in ("R", "W", "C", "T", "U", "I")]
+                    + [("DatapointType", o["dpt"]), ("Priority", o["priority"]),
+                       ("BaseNumber", md["args"][o["base"]]["id"])])
+        x.close("ComObjects")
+        x.open("ComObjectRefs")
+        for o in md["objects"].values():
+            x.empty("ComObjectRef", [("Id", o["ref"]), ("RefId", o["id"])])
+        x.close("ComObjectRefs")
+        x.close("Static")
+        x.open("Dynamic")
+        for b in md["blocks"]:
+            x.open("ParameterBlock", [("Id", b["id"]), ("Name", b["name"]), ("Text", b["text"])])
+            for pn in b["parameters"]:
+                x.empty("ParameterRefRef", [("RefId", md["params"][pn]["ref"])])
+            for on in b["com_objects"]:
+                x.empty("ComObjectRefRef", [("RefId", md["objects"][on]["ref"])])
+            x.close("ParameterBlock")
+        x.close("Dynamic")
+        x.close("ModuleDef")
+    x.close("ModuleDefs")
+
+
 # ------------------------------------------------------------------ rendering
 
 def render_catalog(p: Product) -> bytes:
@@ -838,6 +999,8 @@ def render_block(x: Xml, p: Product, b: dict) -> None:
                                    ("SourceParamRefRef", p.ref_id(a["source"]))])
             x.close("when")
         x.close("choose")
+    for r in b.get("repeat", []):  # #449
+        render_repeat(x, p, r)
     x.close("ParameterBlock")
 
 
@@ -951,8 +1114,10 @@ def render_application(p: Product) -> bytes:
         render_load_ops(x, p, lp["ops"])
         x.close("LoadProcedure")
     x.close("LoadProcedures")
+    render_allocators(x, p)
     x.empty("Options", [(k, v) for k, v in a.get("options", {}).items()])
     x.close("Static")
+    render_module_defs(x, p)
     x.open("Dynamic")
     x.open("ChannelIndependentBlock")
     for b in p.blocks:

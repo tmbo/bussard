@@ -1,0 +1,182 @@
+# A synthetic product of the catalogue (#604 row 19), syn-minimal plus one
+# construct. Rendered by ../generate.py into xml/; see ../README.md for the schema.
+
+[doc]
+purpose = """
+syn-minimal with a ModuleDef "feeder" (a 16-bit parameter at +0 of its
+parameter base, default 0x1234, and a 1-bit com object at number 0 of its
+object base) instantiated by a <Repeat> inside the general block, counted by
+a memoryless parameter (default 3). Each instance draws its parameter base
+from allocator "feeder_params" (Start 16, Allocates 4) and its object base
+from "feeder_objects" (Start 2, Allocates 1), so the three feeders' parameters
+land at +0x10, +0x14 and +0x18 and their objects are 2, 3 and 4. Issue #449
+(closed): bussard resolved an allocator-fed BaseOffset to 0 and wrote no
+repeated instance. The capture is expected to show 12 34 at the three bases
+and descriptors for objects 2 to 4, as bussard plans since #449; a
+regression row. Order number NEST-TRIFEED, not NEST-FEED3 as in #604: the
+capture driver's OCR of ETS's catalogue reads "NEST-FEED3" as "NEST-FEED"
+and never finds the row (2026-10-31). Application version 0x13: versions
+0x10 to 0x12 were imported into the VM's ETS under NEST-FEED3 by those
+attempts, and ETS keeps the first import of an application id (#650)."""
+construct = "ModuleDef with allocator-fed bases, instantiated three times by a Repeat"
+issues = [449]
+
+[product]
+text = "Triple chick feeder"
+order_number = "NEST-TRIFEED"
+hardware_name = "NEST-TRIFEED"
+hardware_serial = "00FA00270013"
+bus_current = 10
+
+[application]
+number = 0x2713
+version = 0x13
+name = "Triple chick feeder"
+mask = "07B0"
+load_procedure_style = "MergedProcedure"
+address_table_max_entries = 32
+association_table_max_entries = 32
+translations = { "de-DE" = "Dreifach-Kükenfütterer" }
+
+[application.options]
+Comparable = true
+Reconstructable = true
+
+[[segment]]
+name = "main"
+kind = "relative"
+lsm = 4
+size = 256
+fill = 0xFF
+
+[[parameter_type]]
+name = "Mode"
+kind = "enum"
+size_bits = 8
+values = [
+    { value = 0, text = "off" },
+    { value = 1, text = "on" },
+    { value = 2, text = "automatic" },
+]
+
+[[parameter_type]]
+name = "Delay"
+kind = "number"
+size_bits = 16
+signed = false
+min = 0
+max = 65535
+
+[[parameter_type]]
+name = "Count"
+kind = "number"
+size_bits = 8
+signed = false
+min = 0
+max = 3
+
+[[parameter]]
+name = "mode"
+type = "Mode"
+text = "Operating mode"
+default = 1
+memory = { segment = "main", offset = 0, bit_offset = 0 }
+
+[[parameter]]
+name = "delay"
+type = "Delay"
+text = "Delay (s)"
+default = 300
+memory = { segment = "main", offset = 1, bit_offset = 0 }
+
+# The construct, part 1: the number of feeders, memoryless, shown in the
+# general block; it counts the <Repeat>.
+[[parameter]]
+name = "feeders"
+type = "Count"
+text = "Number of feeders"
+default = 3
+virtual = true
+
+[[com_object]]
+number = 0
+name = "switch"
+text = "Switch"
+function_text = "On/Off"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "W"]
+priority = "Low"
+
+[[com_object]]
+number = 1
+name = "status"
+text = "Status"
+function_text = "On/Off status"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+# The construct, part 2: the allocators and the module definition.
+[[allocator]]
+name = "feeder_params"
+start = 16
+max = 63
+
+[[allocator]]
+name = "feeder_objects"
+start = 2
+max = 31
+
+[[module_def]]
+name = "feeder"
+arguments = [{ name = "param_base", allocates = 4 }, { name = "object_base", allocates = 1 }]
+
+[[module_def.parameter]]
+name = "portion"
+type = "Delay"
+text = "Portion size"
+default = 4660
+memory = { segment = "main", offset = 0, bit_offset = 0, base = "param_base" }
+
+[[module_def.com_object]]
+number = 0
+base = "object_base"
+name = "feeding"
+text = "Feeding"
+function_text = "Feeder on/off"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "W"]
+priority = "Low"
+
+[[module_def.block]]
+name = "feeder"
+text = "Feeder"
+parameters = ["portion"]
+com_objects = [0]
+
+[[dynamic.block]]
+name = "general"
+text = "General"
+parameters = ["mode", "delay", "feeders"]
+com_objects = [0, 1]
+
+# The construct, part 3: the <Repeat> in the general block, one feeder
+# instance per count, each drawing its bases from the allocators.
+[[dynamic.block.repeat]]
+name = "feeders"
+parameter = "feeders"
+module = "feeder"
+args = { param_base = "feeder_params", object_base = "feeder_objects" }
+
+# The application's part of the 07B0 mask procedure: MergeId 2 allocates the
+# parameter segment, MergeId 4 writes it.
+[[load_procedure]]
+merge_id = 2
+ops = [{ op = "LdCtrlRelSegment", lsm = 4, size = 256, mode = 0, fill = 0 }]
+
+[[load_procedure]]
+merge_id = 4
+ops = [{ op = "LdCtrlWriteRelMem", object = 4, offset = 0, size = 256, verify = false }]
