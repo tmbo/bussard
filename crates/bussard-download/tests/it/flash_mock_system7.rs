@@ -164,6 +164,9 @@ struct DeviceState {
     /// Every TaskSegment record (`03 02 …`) as `(lsm, record)`, so a test can
     /// check the application identity it carries.
     task_records: Vec<(u8, [u8; 10])>,
+    /// Every segment allocation record (`03 00 …`, `03 01 …`) as
+    /// `(lsm, record)`.
+    alloc_records: Vec<(u8, [u8; 10])>,
     /// The address and length of every segment content write.
     segment_writes: Vec<(u16, usize)>,
     /// Interface objects the device does not have: in property mode a
@@ -272,6 +275,7 @@ fn fresh_device(mode: LsmMode, fault: Fault) -> Shared {
         lsm5_property_accesses: 0,
         lsm_events: Vec::new(),
         task_records: Vec::new(),
+        alloc_records: Vec::new(),
         segment_writes: Vec::new(),
         absent_objects: Vec::new(),
         device_control: 0,
@@ -774,6 +778,12 @@ fn apply_lsm_event(s: &mut DeviceState, lsm: u8, event: &[u8]) {
         && let Ok(record) = <[u8; 10]>::try_from(event)
     {
         s.task_records.push((lsm, record));
+    }
+    if opcode == 3
+        && subtype <= 0x01
+        && let Ok(record) = <[u8; 10]>::try_from(event)
+    {
+        s.alloc_records.push((lsm, record));
     }
     let next = match opcode {
         LE_UNLOAD => LS_UNLOADED,
@@ -2413,6 +2423,8 @@ fn bases_with_object_table() -> bussard_download::Sys7TableBases {
         association_size: None,
         object_table: Some(OBJECT_TABLE),
         task_identity: Some(JUNG_TASK_IDENTITY),
+        address_segment: None,
+        association_segment: None,
     }
 }
 
@@ -2485,7 +2497,7 @@ async fn test_read_sys7_tables_at_survives_a_refused_object_table_read()
         "{notes}"
     );
     // The newly linked object is then named as unchecked, and no flag written.
-    let images = sys7_table_images(&live, &desired_first_link_on_object_2()?, target.raw())?;
+    let images = sys7_table_images(&live, &desired_first_link_on_object_2()?)?;
     assert!(images.flag_writes.is_empty());
     assert!(images.group_object_image.is_empty());
     assert_eq!(images.unchecked_flags, vec![2]);
@@ -2509,7 +2521,7 @@ async fn test_sys7_table_images_refuses_growth_without_a_known_segment_end()
     assert_eq!(live.address_capacity, 5, "CNT + own IA + one GA");
     let notes = live.tables.notes.join(" | ");
     assert!(notes.contains("segment end is unknown"), "{notes}");
-    let err = sys7_table_images(&live, &desired_first_link_on_object_2()?, target.raw())
+    let err = sys7_table_images(&live, &desired_first_link_on_object_2()?)
         .err()
         .ok_or("growing the table past its current length is refused")?;
     assert!(
@@ -2531,12 +2543,7 @@ async fn test_sys7_table_images_refuses_growth_without_a_known_segment_end()
         send: Some(ga("1/0/9")?),
         listen: Vec::new(),
     }]);
-    assert_eq!(
-        sys7_table_images(&live, &same, target.raw())?
-            .address_region
-            .len(),
-        5
-    );
+    assert_eq!(sys7_table_images(&live, &same)?.address_region.len(), 5);
     let _ = l4.disconnect().await;
     drop(handle);
     Ok(())
@@ -2552,7 +2559,7 @@ async fn test_apply_sys7_tables_refuses_an_unloaded_application()
     seed_apply_device(&state, target.raw());
     let mut l4 = authed_connection(&mut bus, target).await?;
     let live = bussard_download::read_sys7_tables_at(&mut l4, bases_with_object_table()).await?;
-    let images = sys7_table_images(&live, &desired_first_link_on_object_2()?, target.raw())?;
+    let images = sys7_table_images(&live, &desired_first_link_on_object_2()?)?;
     assert!(!images.group_object_image.is_empty());
     {
         let mut s = lock(&state);
@@ -2602,7 +2609,7 @@ async fn test_apply_sys7_tables_completes_lsm_3_after_a_failed_object_write()
     seed_apply_device(&state, target.raw());
     let mut l4 = authed_connection(&mut bus, target).await?;
     let live = bussard_download::read_sys7_tables_at(&mut l4, bases_with_object_table()).await?;
-    let images = sys7_table_images(&live, &desired_first_link_on_object_2()?, target.raw())?;
+    let images = sys7_table_images(&live, &desired_first_link_on_object_2()?)?;
     let flag = images
         .flag_writes
         .first()
@@ -2640,17 +2647,20 @@ async fn test_apply_sys7_tables_completes_lsm_3_after_a_failed_object_write()
 }
 
 /// A second address on an already linked object changes no flag: the
-/// group-object table and LSM 3 are left alone, and the device still restarts.
+/// group-object table is still rewritten unchanged inside an LSM 3 bracket, as
+/// ETS's EK-E72 partial download of that change does (issue #588), and the
+/// device restarts.
 #[tokio::test]
-async fn test_apply_sys7_tables_leaves_lsm_3_alone_without_a_flag_change()
+async fn test_apply_sys7_tables_rewrites_lsm_3_without_a_flag_change()
 -> Result<(), Box<dyn std::error::Error>> {
     let (mut bus, state, handle) = setup(LsmMode::Property, Fault::None).await?;
     let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
-    seed_apply_device(&state, target.raw());
+    let go_image = seed_apply_device(&state, target.raw());
     let mut l4 = authed_connection(&mut bus, target).await?;
     let live = bussard_download::read_sys7_tables_at(&mut l4, bases_with_object_table()).await?;
-    let images = sys7_table_images(&live, &desired_links()?, target.raw())?;
+    let images = sys7_table_images(&live, &desired_links()?)?;
     assert!(images.flag_writes.is_empty());
+    assert_eq!(images.group_object_image, go_image);
     lock(&state).lsm_events.clear();
     let profile = bussard_mgmt::MaskProfile::from_mask(MASK_0705)
         .sys7_default_profile()
@@ -2664,18 +2674,121 @@ async fn test_apply_sys7_tables_leaves_lsm_3_alone_without_a_flag_change()
     )
     .await?;
     assert!(outcome.ok(), "{outcome:?}");
-    assert_eq!(outcome.object_state, None);
+    assert_eq!(
+        outcome.object_state,
+        Some(bussard_mgmt::load::LoadState::Loaded)
+    );
     assert!(outcome.restarted);
     {
         let s = lock(&state);
-        assert!(
-            s.lsm_events.iter().all(|&(lsm, _)| lsm != 3),
-            "LSM 3 untouched: {:?}",
-            s.lsm_events
+        let lsm3: Vec<u8> = s
+            .lsm_events
+            .iter()
+            .filter(|&&(lsm, _)| lsm == 3)
+            .map(|&(_, op)| op)
+            .collect();
+        assert_eq!(
+            lsm3,
+            vec![LE_START_LOADING, LE_LOAD_COMPLETED],
+            "LSM 3: StartLoading, LoadCompleted, nothing else"
         );
+        let after: Vec<u8> = (0..go_image.len())
+            .map(|i| {
+                s.memory
+                    .get(&(OBJECT_TABLE + i as u16))
+                    .copied()
+                    .unwrap_or(0)
+            })
+            .collect();
+        assert_eq!(after, go_image, "the table rewritten unchanged");
         assert_eq!(s.restarts_seen, 1);
     }
     let _ = l4.disconnect().await;
+    drop(handle);
+    Ok(())
+}
+
+/// The EK-E72 shape of ETS's partial downloads (issue #588): each table LSM
+/// gets the product's own allocation record (the whole segment, access `ff`),
+/// and the address table's own-address entry (`0x4001..0x4002`) is never
+/// written; the device keeps what it held there.
+#[tokio::test]
+async fn test_apply_sys7_tables_sends_the_product_records_and_skips_the_own_address()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (mut bus, state, handle) = setup(LsmMode::Property, Fault::None).await?;
+    let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
+    // The device holds a vendor placeholder in its own-address slot.
+    seed_apply_device(&state, 0x0000);
+    let segment = |address: u32, size: u32| bussard_download::Sys7SegmentOp {
+        address,
+        size,
+        access: Some(255),
+        mem_type: Some(3),
+        seg_flags: Some(128),
+        seg_type: Some(0),
+    };
+    let bases = bussard_download::Sys7TableBases {
+        address_segment: Some(segment(0x4000, 0x201)),
+        association_segment: Some(segment(0x4201, 0xEB)),
+        ..bases_with_object_table()
+    };
+    let mut l4 = authed_connection(&mut bus, target).await?;
+    let live = bussard_download::read_sys7_tables_at(&mut l4, bases).await?;
+    assert_eq!(live.own_ia, 0x0000);
+    let images = sys7_table_images(&live, &desired_first_link_on_object_2()?)?;
+    {
+        let mut s = lock(&state);
+        s.segment_writes.clear();
+        s.alloc_records.clear();
+    }
+    let profile = bussard_mgmt::MaskProfile::from_mask(MASK_0705)
+        .sys7_default_profile()
+        .ok_or("a System 7 profile")?;
+    let outcome = apply_sys7_tables(
+        &mut l4,
+        &lsm_access_for(LsmMode::Property),
+        &profile,
+        &images,
+        &JUNG_TASK_IDENTITY,
+    )
+    .await?;
+    assert!(outcome.ok(), "{outcome:?}");
+    let _ = l4.disconnect().await;
+    let s = lock(&state);
+    assert_eq!(
+        s.alloc_records,
+        vec![
+            (
+                1,
+                [0x03, 0x00, 0x40, 0x00, 0x02, 0x01, 0xFF, 0x03, 0x80, 0x00]
+            ),
+            (
+                2,
+                [0x03, 0x00, 0x42, 0x01, 0x00, 0xEB, 0xFF, 0x03, 0x80, 0x00]
+            ),
+        ]
+    );
+    assert!(
+        s.segment_writes
+            .iter()
+            .all(|&(at, len)| at + len as u16 <= 0x4001 || at >= 0x4003),
+        "the own-address entry is never written: {:?}",
+        s.segment_writes
+    );
+    assert_eq!(
+        s.segment_writes.first(),
+        Some(&(0x4000, 1)),
+        "the count octet alone first"
+    );
+    assert_eq!(
+        (
+            s.memory.get(&0x4001).copied(),
+            s.memory.get(&0x4002).copied()
+        ),
+        (Some(0x00), Some(0x00)),
+        "the device keeps its own-address slot"
+    );
+    drop(s);
     drop(handle);
     Ok(())
 }
@@ -2738,7 +2851,7 @@ async fn run_table_apply(mode: LsmMode) -> Result<(), Box<dyn std::error::Error>
     assert!(report.removals.is_empty());
 
     // --- apply: the two table LSMs, then object 2's communication flag -------
-    let images = sys7_table_images(&live, &desired, own_ia)?;
+    let images = sys7_table_images(&live, &desired)?;
     assert_eq!(
         images.address_region.len(),
         9,
@@ -3028,7 +3141,7 @@ async fn apply_system7_tables_fails_on_a_verify_mismatch() -> Result<(), Box<dyn
     let mut l4 = authed_connection(&mut bus, target).await?;
     let live = bussard_download::read_sys7_tables_at(&mut l4, bases_without_object_table()).await?;
     let desired = desired_links()?;
-    let images = sys7_table_images(&live, &desired, own_ia)?;
+    let images = sys7_table_images(&live, &desired)?;
     let profile = bussard_mgmt::MaskProfile::from_mask(MASK_0705)
         .sys7_default_profile()
         .ok_or("a System 7 profile")?;
@@ -3978,7 +4091,7 @@ async fn test_write_sys7_refuses_without_task_identity() -> Result<(), Box<dyn s
         live
     };
     assert_eq!(live.task_identity, None, "no product data, no identity");
-    let images = sys7_table_images(&live, &desired_links()?, target.raw())?;
+    let images = sys7_table_images(&live, &desired_links()?)?;
     let writes_before = lock(&state).memory_writes_seen;
     let result = bussard_download::write_sys7(
         &mut bus,
@@ -4031,7 +4144,7 @@ async fn test_write_sys7_task_segments_carry_the_product_identity()
         let _ = l4.disconnect().await;
         live
     };
-    let images = sys7_table_images(&live, &desired_links()?, target.raw())?;
+    let images = sys7_table_images(&live, &desired_links()?)?;
     assert_eq!(images.task_identity, Some(e72));
     let outcome = bussard_download::write_sys7(
         &mut bus,

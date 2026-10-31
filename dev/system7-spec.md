@@ -903,6 +903,33 @@ and the sim must accept. ETS synthesizes the CONFIG/TYPE bytes itself (not from
 - Each GA = 2 bytes big-endian (15 significant bits, D15 reserved). TSAP 1..N map
   to GAs in order; the GAs are sorted ascending and the implementation-specific
   maximum length "shall be checked" `[Res §4.16.3.1]` (the segment-size check).
+- Nobody writes entry 0. The standard's configuration procedure for this
+  table writes the length octet and the group addresses from `0119h` on, never
+  the individual-address entry at `0117h`-`0118h` `[Res §4.16.3.4.1]`. ETS does
+  the same on System 7: the count octet at `0x4000`, then the group addresses
+  from `0x4003`, in the full download and in every partial one (EK-E72 sweep
+  series, steps A to D). `flash` masks the entry out, and `apply` skips it
+  (issue #588); a device keeps whatever its segment held there.
+
+**Table-only partial download (`bussard apply`, issue #588).** What ETS 6.4.1
+sends for a link change on the EK-E72 (`M-00B6_A-4537-03-DE59`, steps B, C
+and D of `captures/ets-sweep/M-00B6_A-4537-03-DE59/`) and `apply` reproduces
+(owner decision 2026-10-31: follow ETS on the wire):
+
+| LSM | ETS | `apply` |
+|---|---|---|
+| 1, 2 | `Unload` both | the same |
+| 1 | `StartLoading`; the product's own `AbsSegment` record, the whole segment with its attribute octets (`03 00 4000 00ed ff 03 80 00`); the count octet at `+0`, the group addresses from `+3`; `TaskSegment`; `LoadCompleted` | the same record, built by the resolution `flash` uses (`Sys7SegmentOp::alloc_record`); a `DynamicTableManagement` product gets the packed segments `flash` allocates; without the product's op, the written span with access `f2` |
+| 2 | the same with `03 00 40ed 00eb ff 03 80 00` and the whole association table | the same |
+| 3 | `StartLoading`, the whole group-object table rewritten (flag octets changed when a link set changes one, unchanged otherwise), `LoadCompleted`; no `Unload`, no segment record | the same wherever the product declares the table; in all three steps, also step D, where no flag changes |
+| - | basic `A_Restart` | the same |
+
+Before #588 `apply` wrote the own-address entry, allocated the written table
+length with access `f2` (`[MP §3.31.2]`: bits 0 to 3 of the access octet are
+the write level, 4 to 7 the read level), and skipped LSM 3 when no flag
+changed; the final tables were the same. The `run=apply` rows of the series
+(`tools/ets-sweep/apply_rows.py`) are identical on memory and load control
+since.
 
 ### 7.2 Association table (GrOAT) `[Res §4.17.3.1, p. 245; endrekatona, knx-stack, CONFIRMED]`
 

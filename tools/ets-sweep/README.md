@@ -263,12 +263,13 @@ next to them or under `--work` with absolute paths and are not committed.
 First run, EK-E72 series of 2026-10-28 (`M-00B6_A-4537-03-DE59`, steps B, C, D):
 association table, group-object table and C flags identical in all three;
 two differences in every step, both in `apply` only (the full download of step
-A is identical under `flash`): `apply` writes the address table's first entry
+A is identical under `flash`): `apply` wrote the address table's first entry
 (the device's own address, 2 octets) that ETS never writes, and its
-`AbsSegment` records allocate the written table length with access `f2`
+`AbsSegment` records allocated the written table length with access `f2`
 where ETS allocates the whole segment (`0x00ED`, `0x00EB`) with `ff`. In step
 D ETS also restarts LSM 3 and rewrites the unchanged group-object table, which
-`apply` skips.
+`apply` skipped. Since #588 `apply` does all three as ETS does, and every row
+is `identical` (memory and load control).
 `apply_rows.py --line-step b` adds a `run=apply-line` row for step B (`apply
 --line 1.1`, the line mode's own path to the tables); on the EK-E72 it gives
 the same verdict as the device row.

@@ -11,13 +11,13 @@
 //! - **LSM 2** owns the `0x4201` region — the association table (GrOAT).
 //!
 //! So an `apply` here is the same shape as a download, restricted to the table
-//! LSMs: `Unload` both, then load each in turn (`StartLoading`, allocate the
-//! region as an absolute Data segment, stream the image in 12-octet
-//! `A_Memory_Write` chunks with a read-back verify per chunk, commit a
-//! `TaskSegment` descriptor, `LoadCompleted`). The parameter image and the
-//! application are never rewritten: a link change must not reset parameters
-//! (issue #91). Only the group-object table's communication flags change, and
-//! only when a link set changes which objects are linked.
+//! LSMs: `Unload` both, then load each in turn (`StartLoading`, the product's
+//! allocation record for the segment, the image streamed in 12-octet
+//! `A_Memory_Write` chunks with a read-back verify per chunk, a `TaskSegment`
+//! descriptor, `LoadCompleted`). The parameter image and the application are
+//! never rewritten: a link change must not reset parameters (issue #91). Only
+//! the group-object table's communication flags change, and only when a link
+//! set changes which objects are linked.
 //!
 //! # Op-sequence ordering
 //!
@@ -30,11 +30,32 @@
 //! 2. `StartLoading` LSM 1, allocate and stream the address table, `TaskSegment`,
 //!    `LoadCompleted` LSM 1.
 //! 3. The same on LSM 2 for the association table.
-//! 4. When a communication flag changes: `StartLoading` LSM 3, the whole
-//!    group-object table rewritten from its live image with the flag octets
-//!    changed, `LoadCompleted` LSM 3. ETS sends no `Unload` and no segment
+//! 4. `StartLoading` LSM 3, the whole group-object table rewritten from its
+//!    live image (with the flag octets changed, when one changes),
+//!    `LoadCompleted` LSM 3. ETS does this in every one of the three partial
+//!    downloads, also in the one that changes no flag (step D, a second
+//!    address on a linked object), so bussard does too wherever the product
+//!    declares the table (issue #588). ETS sends no `Unload` and no segment
 //!    record on LSM 3 here, and neither does bussard.
 //! 5. A basic `A_Restart` (see below).
+//!
+//! # The allocation records and the own-address entry
+//!
+//! ETS's partial downloads send the product's own `LdCtrlAbsSegment` record
+//! for each table: the whole segment with the product's attribute octets (the
+//! EK-E72: `03 00 4000 00ed ff 03 80 00` and `03 00 40ed 00eb ff 03 80 00`),
+//! never the written length. `apply` sends the same record, built by the
+//! resolution the full download uses ([`crate::Sys7SegmentOp::alloc_record`]),
+//! so the two paths cannot diverge; a packed product
+//! (`DynamicTableManagement`, issue #383) gets the moved and resized segments
+//! `flash` allocates. Without the product's op the record falls back to the
+//! written span with the default attributes.
+//!
+//! ETS never writes the address table's first entry, the device's own address
+//! (octets `+1..+2`): it writes the count octet and the group addresses from
+//! `+3` on, in the full download and in every partial one. `flash` leaves the
+//! entry unwritten as well, and so does `apply` (issue #588; owner decision
+//! 2026-10-31: follow ETS on the wire).
 //!
 //! A device evaluates group telegrams against a table only in the `Loaded` state
 //! (KNX 3/5/1 load-state machine), so no partially-updated table is ever active.
@@ -79,8 +100,8 @@
 
 use bussard_mgmt::connection::{L4Channel, Layer4Connection};
 use bussard_mgmt::load::{LoadControl, LoadState, WriteError, read_memory, write_memory};
-use bussard_mgmt::sys7::{S7_SUB_ALLOC_DATA, encode_alloc_segment, encode_task_segment};
-use bussard_mgmt::{LsmAccess, Sys7Profile, Sys7TaskIdentity, alloc_attr_octets};
+use bussard_mgmt::sys7::encode_task_segment;
+use bussard_mgmt::{LsmAccess, Sys7Profile, Sys7TaskIdentity};
 
 use crate::compute::DesiredTables;
 use crate::compute_sys7::{
@@ -88,6 +109,7 @@ use crate::compute_sys7::{
 };
 use crate::tables_sys7::{Sys7LiveTables, read_region};
 use std::collections::BTreeSet;
+use std::ops::Range;
 
 /// The load-state machine that owns the `0x4000` address-table region
 /// (`[system7-spec §3]`).
@@ -146,6 +168,17 @@ pub enum Sys7ApplyError {
         /// The state LSM 3 reported.
         state: LoadState,
     },
+    /// The product allocates a table segment with a `SegType` that is
+    /// neither a data nor a stack segment (nothing was written).
+    #[error(
+        "the product allocates the table segment at {address:#06X} with SegType {seg_type}, which is not a data (0) or stack (1) segment; nothing was written"
+    )]
+    UnsupportedSegmentType {
+        /// The segment start.
+        address: u16,
+        /// The op's `SegType`.
+        seg_type: u32,
+    },
     /// An underlying management / load error.
     #[error(transparent)]
     Write(#[from] WriteError),
@@ -160,8 +193,14 @@ pub struct Sys7TableImages {
     /// Where the LSM 2 region starts on this device
     /// ([`Sys7LiveTables::association_base`]).
     pub association_base: u16,
-    /// The LSM 1 image: the new address table, nothing behind it.
+    /// The LSM 1 image: the new address table, nothing behind it. Its
+    /// own-address entry (octets `1..3`) holds what the device reads there
+    /// today and is never written ([`SYS7_OWN_ADDRESS_OCTETS`]).
     pub address_region: Vec<u8>,
+    /// The allocation record of the address-table segment.
+    pub address_alloc: Sys7TableAlloc,
+    /// The allocation record of the association-table segment.
+    pub association_alloc: Sys7TableAlloc,
     /// The `0x4201` association-table image.
     pub association_image: Vec<u8>,
     /// The communication-flag changes, in object order. They are written as
@@ -171,8 +210,9 @@ pub struct Sys7TableImages {
     /// is to be written.
     pub group_object_base: Option<u16>,
     /// The whole group-object table as read, with the flag octets of
-    /// [`Self::flag_writes`] changed. Empty when no flag changes, and then the
-    /// table (and LSM 3) is not touched.
+    /// [`Self::flag_writes`] changed. It is rewritten even when no flag
+    /// changes, as ETS does (see the module docs). Empty when the table was
+    /// not read, and then the table (and LSM 3) is not touched.
     pub group_object_image: Vec<u8>,
     /// Objects the model links anew whose communication flag could not be
     /// checked, because the group-object table's place is unknown (no product
@@ -182,6 +222,75 @@ pub struct Sys7TableImages {
     /// ([`Sys7LiveTables::task_identity`]). `None` without product data:
     /// [`crate::write_sys7`] then refuses before it touches the device.
     pub task_identity: Option<bussard_mgmt::Sys7TaskIdentity>,
+}
+
+/// The octets of the address-table image that hold the device's own address
+/// (entry 0, TSAP 0). Neither ETS nor bussard writes them (see the module
+/// docs).
+pub const SYS7_OWN_ADDRESS_OCTETS: std::ops::Range<usize> = 1..3;
+
+/// The allocation record `apply` sends for one table segment (see the module
+/// docs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sys7TableAlloc {
+    /// Where the segment starts: the table's base.
+    pub address: u16,
+    /// The octets allocated: the product's whole segment, the packed span of
+    /// a `DynamicTableManagement` product, or without the product's op the
+    /// written table.
+    pub size: u16,
+    /// The product's op whose attribute octets the record carries; `None`
+    /// gives the default attributes.
+    pub op: Option<crate::flash::Sys7SegmentOp>,
+}
+
+impl Sys7TableAlloc {
+    /// The allocation for a table of `written` octets at `base`: the
+    /// product's whole segment when its op allocates at `base`, the packed
+    /// size `packed` when the table moves with the address table, else the
+    /// written length. The op's attribute octets are kept in every case.
+    fn new(
+        op: Option<crate::flash::Sys7SegmentOp>,
+        base: u16,
+        written: usize,
+        packed: Option<usize>,
+    ) -> Self {
+        let fit = |n: usize| u16::try_from(n).unwrap_or(u16::MAX);
+        let size = match (packed, op) {
+            (Some(size), _) => fit(size),
+            (None, Some(op)) if op.address == u32::from(base) && op.size > 0 => {
+                u16::try_from(op.size).unwrap_or(u16::MAX)
+            }
+            _ => fit(written),
+        };
+        Self {
+            address: base,
+            size,
+            op,
+        }
+    }
+
+    /// The `AdditionalLoadControls` record for this allocation, built as
+    /// `flash` builds it ([`crate::Sys7SegmentOp::alloc_record`]).
+    pub fn record(
+        &self,
+        profile: &Sys7Profile,
+    ) -> Result<[u8; bussard_mgmt::sys7::LOAD_EVENT_SIZE], Sys7ApplyError> {
+        let op = self.op.unwrap_or(crate::flash::Sys7SegmentOp {
+            address: u32::from(self.address),
+            size: u32::from(self.size),
+            access: None,
+            mem_type: Some(u32::from(profile.eeprom_mem_type)),
+            seg_flags: None,
+            seg_type: None,
+        });
+        op.alloc_record(self.address, self.size, profile).ok_or(
+            Sys7ApplyError::UnsupportedSegmentType {
+                address: self.address,
+                seg_type: op.seg_type.unwrap_or(0),
+            },
+        )
+    }
 }
 
 /// One communication-flag change: the CONFIG octet of one object's descriptor.
@@ -247,12 +356,9 @@ impl Sys7VerifyOutcome {
 /// Computes the two region images from the model's desired tables and the
 /// device's live state.
 ///
-/// `own_ia` goes into address-table slot 0 (TSAP 0, `[system7-spec §7.1]`) and is
-/// the **address bussard is talking to**, not the value decoded off the device:
-/// a System 7 download streams the product's static segment image, which carries
-/// whatever own-IA slot the vendor shipped (commonly `0x0000`), and `A_Memory`
-/// is the only thing that ever fixes it up. Writing the connected address is the
-/// only value that can be right.
+/// Address-table slot 0 (TSAP 0, `[system7-spec §7.1]`) carries the value the
+/// device reads there today ([`Sys7LiveTables::own_ia`]): it is never written,
+/// as ETS never writes it (see the module docs).
 ///
 /// The address table is refused past [`Sys7LiveTables::address_capacity`], the
 /// association table past its region. The communication flags follow the links
@@ -260,9 +366,8 @@ impl Sys7VerifyOutcome {
 pub fn sys7_table_images(
     live: &Sys7LiveTables,
     desired: &DesiredTables,
-    own_ia: u16,
 ) -> Result<Sys7TableImages, Sys7ApplyError> {
-    let address_region = sys7_address_table(own_ia, desired);
+    let address_region = sys7_address_table(live.own_ia, desired);
     if address_region.len() > live.address_capacity {
         return Err(Sys7ApplyError::RegionOverflow {
             table: "address",
@@ -296,10 +401,26 @@ pub fn sys7_table_images(
         });
     }
 
+    // The records ETS sends: the product's whole segments, or the packed
+    // span `flash` allocates (`sys7_packed_tables`).
+    let address_alloc = Sys7TableAlloc::new(
+        live.address_segment,
+        live.address_base,
+        address_region.len(),
+        live.packed_end.map(|_| address_region.len()),
+    );
+    let association_alloc = Sys7TableAlloc::new(
+        live.association_segment,
+        association_base,
+        association_image.len(),
+        live.packed_end
+            .map(|end| usize::from(end).saturating_sub(usize::from(association_base))),
+    );
+
     let linked: BTreeSet<u16> = desired.associations.iter().map(|&(_, a)| a).collect();
     let (flag_writes, unchecked_flags) = sys7_flag_writes(live, &linked);
     let (group_object_base, group_object_image) = match live.group_object_base {
-        Some(base) if !flag_writes.is_empty() => {
+        Some(base) if !live.group_object_image.is_empty() => {
             let mut image = live.group_object_image.clone();
             for flag in &flag_writes {
                 // `sys7_flag_writes` only names descriptors the image holds.
@@ -315,6 +436,8 @@ pub fn sys7_table_images(
         address_base: live.address_base,
         association_base,
         address_region,
+        address_alloc,
+        association_alloc,
         association_image,
         flag_writes,
         group_object_base,
@@ -422,14 +545,16 @@ pub async fn apply_sys7_tables<Ch: L4Channel>(
         .await?;
 
     // 2: the address table, loaded to completion.
+    let address_runs = address_runs(images.address_region.len());
     let address_state = load_table(
         l4,
         lsm,
         profile,
         SYS7_ADDRESS_LSM,
         "address",
-        images.address_base,
+        &images.address_alloc,
         &images.address_region,
+        &address_runs,
         task_identity,
     )
     .await?;
@@ -441,20 +566,22 @@ pub async fn apply_sys7_tables<Ch: L4Channel>(
         profile,
         SYS7_ASSOCIATION_LSM,
         "association",
-        images.association_base,
+        &images.association_alloc,
         &images.association_image,
+        &whole(images.association_image.len()),
         task_identity,
     )
     .await?;
 
-    // 4: the group-object table with the changed flags, inside an LSM 3
-    // bracket and with no Unload, as ETS writes it.
+    // 4: the group-object table (with the changed flags, if any), inside an
+    // LSM 3 bracket and with no Unload, as ETS writes it.
     let object_state = match object_table {
         Some(base) => {
             lsm.drive(l4, SYS7_APPLICATION_LSM, LoadControl::StartLoading)
                 .await?;
+            let whole = whole(images.group_object_image.len());
             if let Err(err) =
-                write_verified(l4, "group-object", base, &images.group_object_image).await
+                write_verified(l4, "group-object", base, &images.group_object_image, &whole).await
             {
                 // Leave the application running: every chunk is the table as
                 // read with only flag octets changed, so what is on the device
@@ -487,7 +614,8 @@ pub async fn apply_sys7_tables<Ch: L4Channel>(
     let mut outcome = Sys7VerifyOutcome {
         address_state,
         association_state,
-        addresses_match: addr_back == images.address_region,
+        // The own-address entry was not written, so it is not compared.
+        addresses_match: runs_match(&addr_back, &images.address_region, &address_runs),
         associations_match: assoc_back == images.association_image,
         object_state,
         flags_match,
@@ -507,8 +635,9 @@ pub async fn apply_sys7_tables<Ch: L4Channel>(
 }
 
 /// Loads one table to completion on its LSM (after its `Unload`):
-/// `StartLoading`, the segment allocation, the image streamed and verified,
-/// `TaskSegment`, `LoadCompleted`. Returns the final load state.
+/// `StartLoading`, the segment's allocation record (see the module docs), the
+/// image's `runs` streamed and verified, `TaskSegment`, `LoadCompleted`.
+/// Returns the final load state.
 #[allow(clippy::too_many_arguments)] // one LSM's load: the connection, the LSM and its image
 async fn load_table<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
@@ -516,47 +645,45 @@ async fn load_table<Ch: L4Channel>(
     profile: &Sys7Profile,
     index: u8,
     table: &'static str,
-    base: u16,
+    alloc: &Sys7TableAlloc,
     image: &[u8],
+    runs: &[Range<usize>],
     task_identity: &Sys7TaskIdentity,
 ) -> Result<LoadState, Sys7ApplyError> {
+    let record = alloc.record(profile)?;
+    let base = alloc.address;
     lsm.drive(l4, index, LoadControl::StartLoading).await?;
-    alloc_region(l4, lsm, profile, index, base, image.len()).await?;
-    write_verified(l4, table, base, image).await?;
+    lsm.send_control(l4, index, &record).await?;
+    write_verified(l4, table, base, image, runs).await?;
     lsm.send_control(l4, index, &encode_task_segment(base, task_identity))
         .await?;
     Ok(lsm.drive(l4, index, LoadControl::LoadCompleted).await?)
 }
 
-/// Sends the absolute Data-segment allocation record for one table region
-/// (`[system7-spec §4.2]`), sized to exactly the image about to be streamed.
-///
-/// Allocating the written span (rather than the whole region) keeps the device's
-/// own bound check honest: nothing outside the image is claimed, so a later read
-/// of a stale byte past the table is out of segment on a device that enforces it.
-async fn alloc_region<Ch: L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
-    lsm: &LsmAccess,
-    profile: &Sys7Profile,
-    index: u8,
-    base: u16,
-    len: usize,
-) -> Result<(), WriteError> {
-    let mem_type = profile.eeprom_mem_type;
-    let (access, seg_flags) = alloc_attr_octets(mem_type);
-    let record = encode_alloc_segment(
-        S7_SUB_ALLOC_DATA,
-        base,
-        len.min(usize::from(u16::MAX)) as u16,
-        access,
-        mem_type,
-        seg_flags,
-    );
-    lsm.send_control(l4, index, &record).await
+/// The octet ranges of an address-table image of `len` octets that `apply`
+/// writes: the count octet and the group addresses, never the own-address
+/// entry ([`SYS7_OWN_ADDRESS_OCTETS`]).
+fn address_runs(len: usize) -> Vec<Range<usize>> {
+    let own = SYS7_OWN_ADDRESS_OCTETS;
+    [0..own.start.min(len), own.end.min(len)..len]
+        .into_iter()
+        .filter(|run| !run.is_empty())
+        .collect()
 }
 
-/// Streams `image` to `base` in 12-octet `A_Memory_Write` chunks, reading each
-/// chunk back and comparing before the next one goes out
+/// One run over the whole of an image of `len` octets.
+fn whole(len: usize) -> Vec<Range<usize>> {
+    std::iter::once(0..len).collect()
+}
+
+/// Whether `back` equals `image` on every octet of `runs`.
+fn runs_match(back: &[u8], image: &[u8], runs: &[Range<usize>]) -> bool {
+    runs.iter()
+        .all(|run| back.get(run.clone()) == image.get(run.clone()))
+}
+
+/// Streams the `runs` of `image` to `base` in 12-octet `A_Memory_Write`
+/// chunks, reading each chunk back and comparing before the next one goes out
 /// (`[system7-spec §6]`: `A_Memory_Write` is unconfirmed, so read-back is the
 /// only verification).
 ///
@@ -569,24 +696,28 @@ async fn write_verified<Ch: L4Channel>(
     table: &'static str,
     base: u16,
     image: &[u8],
+    runs: &[Range<usize>],
 ) -> Result<(), Sys7ApplyError> {
     let chunk = usize::from(l4.max_memory_chunk()).max(1);
-    let mut offset = 0usize;
-    while offset < image.len() {
-        let take = chunk.min(image.len() - offset);
-        let at = base.wrapping_add(offset as u16);
-        let piece = &image[offset..offset + take];
-        write_memory(l4, u32::from(at), piece).await?;
-        let got = read_memory(l4, u32::from(at), take as u8).await?;
-        if got != piece {
-            return Err(Sys7ApplyError::VerifyMismatch {
-                table,
-                addr: at,
-                expected: piece.to_vec(),
-                got,
-            });
+    for run in runs {
+        let end = run.end.min(image.len());
+        let mut offset = run.start;
+        while offset < end {
+            let take = chunk.min(end - offset);
+            let at = base.wrapping_add(offset as u16);
+            let piece = &image[offset..offset + take];
+            write_memory(l4, u32::from(at), piece).await?;
+            let got = read_memory(l4, u32::from(at), take as u8).await?;
+            if got != piece {
+                return Err(Sys7ApplyError::VerifyMismatch {
+                    table,
+                    addr: at,
+                    expected: piece.to_vec(),
+                    got,
+                });
+            }
+            offset += take;
         }
-        offset += take;
     }
     Ok(())
 }
@@ -623,6 +754,21 @@ mod tests {
             group_object_image: Vec::new(),
             group_objects: Vec::new(),
             task_identity: None,
+            address_segment: None,
+            association_segment: None,
+        }
+    }
+
+    /// The EK-E72's table segment ops (`M-00B6_A-4537-03`): LSM 1 `0x4000`/237
+    /// and LSM 2 `0x40ED`/235, `Access="255" MemType="3" SegFlags="128"`.
+    fn e72_segment(address: u32, size: u32) -> crate::flash::Sys7SegmentOp {
+        crate::flash::Sys7SegmentOp {
+            address,
+            size,
+            access: Some(255),
+            mem_type: Some(3),
+            seg_flags: Some(128),
+            seg_type: Some(0),
         }
     }
 
@@ -633,6 +779,8 @@ mod tests {
     fn e72() -> Sys7LiveTables {
         let mut live = live(0x1127, 237);
         live.association_base = 0x40ED;
+        live.address_segment = Some(e72_segment(0x4000, 237));
+        live.association_segment = Some(e72_segment(0x40ED, 235));
         live.tables.associations = vec![(1, 20), (2, 24), (3, 27), (4, 38), (5, 52)];
         live.group_object_base = Some(0x41D8);
         live.group_objects = (0..=52)
@@ -688,8 +836,7 @@ mod tests {
     fn test_sys7_table_images_writes_only_the_address_table() {
         // The octets behind the address table are the unused rest of its
         // segment, never carried along: the image is the table and nothing more.
-        let images =
-            sys7_table_images(&live(0x1105, 237), &desired_one_link(), 0x1105).expect("images");
+        let images = sys7_table_images(&live(0x1105, 237), &desired_one_link()).expect("images");
         assert_eq!(
             images.address_region,
             vec![0x02, 0x11, 0x05, 0x08, 0x01],
@@ -699,10 +846,79 @@ mod tests {
     }
 
     #[test]
+    fn test_sys7_table_images_keeps_the_own_address_the_device_holds() {
+        // Slot 0 carries what the device reads (a vendor placeholder here),
+        // not the connected address: it is never written (issue #588).
+        let images = sys7_table_images(&live(0x0000, 237), &desired_one_link()).expect("images");
+        assert_eq!(images.address_region, vec![0x02, 0x00, 0x00, 0x08, 0x01]);
+    }
+
+    #[test]
+    fn test_address_runs_skip_the_own_address_entry() {
+        // ETS's EK-E72 partial downloads write 0x4000 (1 octet) and 0x4003..:
+        // never 0x4001..0x4002 (issue #588).
+        assert_eq!(address_runs(13), vec![0..1, 3..13]);
+        assert_eq!(address_runs(3), vec![0..1]);
+        let image = [0x06, 0x11, 0x01, 0x08, 0x09];
+        assert!(runs_match(
+            &[0x06, 0x00, 0x00, 0x08, 0x09],
+            &image,
+            &address_runs(5)
+        ));
+        assert!(!runs_match(
+            &[0x05, 0x11, 0x01, 0x08, 0x09],
+            &image,
+            &address_runs(5)
+        ));
+    }
+
+    #[test]
+    fn test_sys7_table_images_allocates_the_whole_segments_as_ets() -> Result<(), Sys7ApplyError> {
+        // EK-E72 step B (a first link on object 31): ETS sends
+        // `03 00 4000 00ed ff 03 80 00` and `03 00 40ed 00eb ff 03 80 00`,
+        // the product's whole segments with its access octet, not the
+        // written 13 and 11 octets with `f2` (issue #588).
+        let images = sys7_table_images(&e72(), &desired_e72(&[20, 24, 27, 31, 38, 52]))?;
+        let profile = Sys7Profile::corpus_default();
+        assert_eq!(
+            images.address_alloc.record(&profile)?,
+            [0x03, 0x00, 0x40, 0x00, 0x00, 0xED, 0xFF, 0x03, 0x80, 0x00]
+        );
+        assert_eq!(
+            images.association_alloc.record(&profile)?,
+            [0x03, 0x00, 0x40, 0xED, 0x00, 0xEB, 0xFF, 0x03, 0x80, 0x00]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_sys7_table_alloc_falls_back_to_the_written_span() -> Result<(), Sys7ApplyError> {
+        // Without the product's op: the written table with the default
+        // attributes, the record apply sent before #588.
+        let images = sys7_table_images(&live(0x1105, 237), &desired_one_link())?;
+        assert_eq!(
+            images
+                .address_alloc
+                .record(&Sys7Profile::corpus_default())?,
+            [0x03, 0x00, 0x40, 0x00, 0x00, 0x05, 0xF2, 0x03, 0x80, 0x00]
+        );
+        // An op at another base than the device reports keeps its attributes
+        // but not its size.
+        let mut moved = live(0x1105, 237);
+        moved.address_segment = Some(e72_segment(0x4100, 237));
+        let images = sys7_table_images(&moved, &desired_one_link())?;
+        assert_eq!(
+            (images.address_alloc.address, images.address_alloc.size),
+            (0x4000, 5)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_sys7_table_images_refuses_an_address_table_past_its_segment() {
         // A three-octet segment holds the own IA and no group address: refuse
         // rather than write into whatever follows it.
-        let err = sys7_table_images(&live(0x1105, 3), &desired_one_link(), 0x1105)
+        let err = sys7_table_images(&live(0x1105, 3), &desired_one_link())
             .expect_err("an address table past its segment is refused");
         assert!(
             matches!(
@@ -727,11 +943,26 @@ mod tests {
         let mut live = live(0x1131, SYS7_ADDRESS_REGION_LEN);
         live.association_base = 0x401F;
         live.packed_end = Some(0x43FE);
-        let images = sys7_table_images(&live, &desired_one_link(), 0x1131)?;
+        live.address_segment = Some(e72_segment(0x4000, 0x1FF));
+        live.association_segment = Some(e72_segment(0x41FF, 0x1FF));
+        let images = sys7_table_images(&live, &desired_one_link())?;
         assert_eq!(images.address_base, 0x4000);
         assert_eq!(images.address_region.len(), 5);
         assert_eq!(images.association_base, 0x4005);
         assert_eq!(images.association_image, vec![0x01, 0x01, 0x01]);
+        // The segments flash allocates for the packed layout: the address
+        // table's own length, and the association table up to the end.
+        assert_eq!(
+            (images.address_alloc.address, images.address_alloc.size),
+            (0x4000, 5)
+        );
+        assert_eq!(
+            (
+                images.association_alloc.address,
+                images.association_alloc.size
+            ),
+            (0x4005, 0x43FE - 0x4005)
+        );
         Ok(())
     }
 
@@ -741,7 +972,7 @@ mod tests {
         // (M-00E1_A-A00D: 0x4000/23 + 0x4017/21, so they end at 0x402C).
         let mut live = live(0x1131, SYS7_ADDRESS_REGION_LEN);
         live.packed_end = Some(0x4007);
-        let err = sys7_table_images(&live, &desired_one_link(), 0x1131);
+        let err = sys7_table_images(&live, &desired_one_link());
         assert!(
             matches!(
                 err,
@@ -830,7 +1061,7 @@ mod tests {
         // A first link on object 32: the whole table, as ETS writes it, with
         // the one CONFIG octet at 0x425D changed (DB -> DF) and nothing else.
         let live = e72();
-        let images = sys7_table_images(&live, &desired_e72(&[20, 24, 27, 32, 38, 52]), 0x1127)?;
+        let images = sys7_table_images(&live, &desired_e72(&[20, 24, 27, 32, 38, 52]))?;
         assert_eq!(images.group_object_base, Some(0x41D8));
         assert_eq!(
             images.group_object_image.len(),
@@ -845,12 +1076,25 @@ mod tests {
     }
 
     #[test]
-    fn test_sys7_table_images_leaves_the_object_table_alone_without_a_flag_change()
+    fn test_sys7_table_images_rewrites_the_object_table_without_a_flag_change()
     -> Result<(), Sys7ApplyError> {
-        // A second address on a linked object changes no flag: ETS rewrote the
-        // table unchanged, bussard does not touch it (or LSM 3) at all.
-        let images = sys7_table_images(&e72(), &desired_e72(&[20, 24, 27, 38, 52]), 0x1127)?;
+        // A second address on a linked object changes no flag: ETS still
+        // rewrites the table unchanged inside an LSM 3 bracket (EK-E72 step
+        // D), and so does bussard (issue #588).
+        let live = e72();
+        let images = sys7_table_images(&live, &desired_e72(&[20, 24, 27, 38, 52]))?;
         assert!(images.flag_writes.is_empty());
+        assert_eq!(images.group_object_base, Some(0x41D8));
+        assert_eq!(images.group_object_image, live.group_object_image);
+        Ok(())
+    }
+
+    #[test]
+    fn test_sys7_table_images_leaves_an_unread_object_table_alone() -> Result<(), Sys7ApplyError> {
+        let mut live = e72();
+        live.group_object_base = None;
+        live.group_object_image.clear();
+        let images = sys7_table_images(&live, &desired_e72(&[20, 24, 27, 38, 52]))?;
         assert_eq!(images.group_object_base, None);
         assert!(images.group_object_image.is_empty());
         Ok(())
