@@ -263,12 +263,13 @@ next to them or under `--work` with absolute paths and are not committed.
 First run, EK-E72 series of 2026-10-28 (`M-00B6_A-4537-03-DE59`, steps B, C, D):
 association table, group-object table and C flags identical in all three;
 two differences in every step, both in `apply` only (the full download of step
-A is identical under `flash`): `apply` writes the address table's first entry
+A is identical under `flash`): `apply` wrote the address table's first entry
 (the device's own address, 2 octets) that ETS never writes, and its
-`AbsSegment` records allocate the written table length with access `f2`
+`AbsSegment` records allocated the written table length with access `f2`
 where ETS allocates the whole segment (`0x00ED`, `0x00EB`) with `ff`. In step
 D ETS also restarts LSM 3 and rewrites the unchanged group-object table, which
-`apply` skips.
+`apply` skipped. Since #588 `apply` does all three as ETS does, and every row
+is `identical` (memory and load control).
 `apply_rows.py --line-step b` adds a `run=apply-line` row for step B (`apply
 --line 1.1`, the line mode's own path to the tables); on the EK-E72 it gives
 the same verdict as the device row.
@@ -649,6 +650,13 @@ Results (ETS 6.4.1 build 6.4.8718, VM sim 06a27ec0):
   `syn-s7-0701`). Row as `reload`. ETS reads no application id before a
   System 7 download, so it cannot tell a programmed device from a fresh one,
   and it sends the same stream (#488).
+- `bare-restart` of `syn-master-reset` (2026-10-31, VM sim 9fc21ded): knx-sim
+  with `master_reset: refuse` answers the procedure's confirmed Master Reset
+  (erase code 1) with error code 2. ETS sends `T_ACK`, then `T_Disconnect`,
+  and ends "Programmieren(Appl.): fehlgeschlagen" after 19 operations; its
+  log: "ConfirmedRestart(ConfirmedRestart, 0) fehlgeschlagen:
+  UnsupportedEraseCode". No Basic Restart follows, so there is no capture to
+  commit; bussard fails the flash the same way (#611).
 - `no-ga` of `syn-minimal` (2026-10-31): ETS's object table before the
   download shows both objects without an address (`objects.json`). The
   download is request for request the `defaults` one: both tables loaded with

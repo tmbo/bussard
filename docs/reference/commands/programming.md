@@ -1,6 +1,6 @@
 # Programming commands
 
-The commands that write devices: `plan`, `apply`, `flash`, `commission`, `backup`, `restore` and `replace`, with their flags, refusals and verification steps.
+The commands that write devices: `plan`, `apply`, `flash`, `commission`, `backup`, `restore`, `replace` and `restart`, with their flags, refusals and verification steps.
 
 Every device write follows the same order: read the live state, show the plan, ask once, back up, write, verify by reading back. A refusal exits non-zero before anything is written. The confirmation rules, the real-gateway gate and the exit codes are on [Global options](../global-options.md); why the rails exist is in [What each write command does](../../explanation/write-commands.md).
 
@@ -40,7 +40,7 @@ Behaviour:
 
 - Read-only on the bus.
 - Refuses to compute an empty table set for a device with no links in the model, because applying it would wipe the device. A KNX IP interface is the exception (see [KNX IP interfaces](#knx-ip-interfaces)).
-- Supports System B (`x7B0`) and System 7 (`0705`, `0701`). On other masks it refuses.
+- Supports System B (`x7B0`) and System 7 (`0705`, `0701`, `0700`). On other masks it refuses.
 - Parameters are compared only when product data is at hand; without it a `note:` line says so.
 - Prints the device's [identity verdict](#one-identity-verdict) against `bussard.lock` as part of the report.
 - Uses a `--product` or `--application` that contradicts the lock, with a warning.
@@ -80,7 +80,7 @@ A device whose file has a `[knxnet]` table and no links is planned as its KNXnet
 ~ friendly name = "Bocklisch Beta", was "Bocklisch Alpha"
 + tunnel address 1.1.30 added
 - tunnel address 1.1.29 removed
-~ static address = 192.168.1.80, was 0.0.0.0
+~ static address = 192.0.2.80, was 0.0.0.0
 ~ assignment = static, was dhcp
 ```
 
@@ -105,7 +105,7 @@ Write the model to one device: its link tables and the parameter octets that dif
 $ bussard apply 1.1.47
 1.1.47 Jalousieaktor Kind 2
   ...
-apply these 3 changes to 1.1.47 through 192.168.1.74:3671? [y/N]
+apply these 3 changes to 1.1.47 through 192.0.2.10:3671? [y/N]
 ```
 
 The output above is illustrative: the plan is the one [`plan`](#bussard-plan-address) prints. The steps:
@@ -152,7 +152,7 @@ Behaviour:
 ??? note "Details"
     System B (`x7B0`): each table is written into a segment the device allocates for it: StartLoading, `LdCtrlRelSegment`, read the placement from `PID_TABLE_REFERENCE`, memory-write the count word plus the elements, LoadCompleted. The `PID_TABLE` property array is never written, because real devices refuse it. With product data, a group-object table that differs from the one a full flash writes (a newly linked object whose communication flag is off) is reloaded first the same way, from the full flash's image, and read back. A parameter change then runs the parameter-only download: the standard's partial download of the parameter object (unload, load, a Mode 0 re-allocation that keeps the memory, the differing octets), then the load completes and the device restarts.
 
-    System 7 (`0705`, `0701`): a link change follows ETS 6.4.1's table-only download: Unload LSM 1 and 2, then each table loaded to completion in turn (StartLoading, allocate, 12-octet writes with read-back verify, TaskSegment, LoadCompleted), then a basic restart. Parameters and the application are not rewritten. `apply` waits for the device to answer again after the restart and reads the tables back from the restarted device. The address table is written alone, bounded by its segment; when its end is unknown (no product data, and no association table the device reports), the table is not grown. With product data, the communication flag of each object that gains its first link is switched on, and of each object that loses its last link switched off: the group-object table the product declares is rewritten whole with those octets changed, inside a StartLoading/LoadCompleted bracket on LSM 3, and read back. A device ignores an object whose flag is off, so without product data `plan` names the newly linked objects whose flag it could not check.
+    System 7 (`0705`, `0701`, `0700`): a link change follows ETS 6.4.1's table-only download: Unload LSM 1 and 2, then each table loaded to completion in turn (StartLoading, the product's allocation record for the whole table segment, 12-octet writes with read-back verify, TaskSegment, LoadCompleted), then a basic restart. Parameters and the application are not rewritten. `apply` waits for the device to answer again after the restart and reads the tables back from the restarted device. The address table is written alone, bounded by its segment, and without its first entry (the device's own address), which ETS never writes either; when the segment's end is unknown (no product data, and no association table the device reports), the table is not grown. With product data, the group-object table the product declares is rewritten whole inside a StartLoading/LoadCompleted bracket on LSM 3 and read back, as ETS does on every table download: the communication flag of each object that gains its first link is switched on, and of each object that loses its last link switched off. A device ignores an object whose flag is off, so without product data `plan` names the newly linked objects whose flag it could not check. A device ignores an object whose flag is off, so without product data `plan` names the newly linked objects whose flag it could not check.
 
     With `--keyring`, `apply` rewrites the security object next to the tables, because the group key table indexes the address table.
 
@@ -199,7 +199,7 @@ The pre-flight report leads with one line per parameter the flash changes, named
 | `--order-number <ORDER>` | | Select the application by hardware order number (e.g. `AKK-0216.03`), resolved through the product's hardware catalogue. Exactly one match is required. |
 | `--yes` | off | Skip the confirmation prompt. Without a terminal the command is refused unless this is given. |
 | `--force` | off | Flash a device that is **not** factory-fresh: it carries a different or unidentifiable application, or its load state could not be read. Destructive: the resident application, its parameters and its links are overwritten with no backup. Not needed to re-flash the same application. Also accepts a `--product` or `--application` that contradicts the lock. |
-| `--full` | off | Skip nothing: re-stream every object. By default, when the device already carries the same application (or none), an object whose resident image matches and which reports `Loaded` is skipped, and the output lists each skipped step. A parameter-only change then re-downloads the parameter segment but not the code segment. |
+| `--full` | off | Skip nothing: re-stream every object. By default, when the device already carries the same application (or none), an object whose resident image matches and which reports `Loaded` is skipped, and the output lists each skipped step. A parameter-only change then re-downloads the parameter segment but not the code segment. On System 7 (mask 0701/0705) it also first unloads load-state machines 1 to 4 and restarts the device, as ETS does after its Unload command; a plain flash sends neither, like ETS's application download. |
 | `--parameters-only` | off | Rewrite only the parameter memory of a device that already runs this application (see [parameter-only download](#parameter-only-download)). Conflicts with `--full`, `--force` and `--no-factory-reset`. With `--dry-run` it prints the op sequence offline. |
 | `--no-factory-reset` | off | Leave out the factory reset (secure-capable System B applications). Use this only when you know the device holds no stale image, for example a device fresh from the box. |
 | `--bcu-key <HEX>` | free access | The device's BCU access key, in hex (`FFFFFFFF` or `0x11223344`). Unset presents the free-access key `FFFFFFFF`, correct for an unkeyed device; a keyed device needs its project key here or it denies access. |
@@ -215,7 +215,8 @@ The pre-flight report leads with one line per parameter the flash changes, named
 Behaviour:
 
 - Product data: the archive `bussard.lock` pins, verified by its SHA-256. A pinned archive that is missing or changed refuses the flash before any bus access, naming the recovery step (see [product data](../product-data.md)).
-- Supports System B (`07B0` and the `57B0`, `27B0` variants) and System 7 (`0705`, `0701`, `0700`). Refuses before any write on an unsupported mask family, a mask mismatch, or an unsupported load-procedure operation. A procedure with an unrecognized op is refused whole.
+- Supports System B (`07B0` and the `57B0`, `27B0` variants) and System 7 (`0705`, `0701`, `0700`), and on `0021` an application whose load procedure only compares and writes properties (a KNX IP interface). Refuses before any write on an unsupported mask family, a mask mismatch, or an unsupported load-procedure operation. A procedure with an unrecognized op is refused whole.
+- On System B the pre-flight reads the device's manufacturer and refuses, naming both, when it is neither the application's manufacturer nor its original manufacturer. `--force` overrides, as for a resident application.
 - Prints the device's [identity verdict](#one-identity-verdict) but does not refuse on drift: a flash is how drift is fixed. The factory-freshness check decides instead.
 - The parameter memory image is the vendor defaults plus the parameter values in the device file, so a flash also carries parameter changes.
 - No backup exists for a flash. Recovery from a failed or interrupted flash is re-running the same `flash`; if that does not recover the device, download it with ETS. Do not assume a device works until a flash reports the application `Loaded` and verified.
@@ -271,7 +272,7 @@ With `--keyring` (or `--tool-key`), `flash` programs the device's security objec
 ??? note "Details"
     The security object is unloaded right after the other objects. After the tables and parameters it is reloaded with the security individual address table (cleared, then one `[IA][sequence]` entry per sender, with the sender's keyring `SequenceNumber` when the model marks it `activated`, else 0), the group key table (one entry per keyed group address the device links) and the group-object security flags, then completed.
 
-    After any restart `flash` triggers on a Data Secure device, the device can answer at the transport layer before its security layer is ready and drop the first `S-A_Sync_Req`. `flash` probes the rebooted device with a plain `A_DeviceDescriptor_Read` every 500 ms for up to 30 s, keeps that connection and sends the sync request on it. A sync request the device acknowledges but does not answer is repeated: up to five attempts with a 1, 2, 4, 8 s backoff after a restart, three attempts (1, 2 s) on any other secured connection. Then the flash stops with "did not answer the Data Secure sync request".
+    After any restart `flash` triggers on a Data Secure device, the device can answer at the transport layer before its security layer is ready and drop the first `S-A_Sync_Req`. `flash` probes the rebooted device with a plain `A_DeviceDescriptor_Read` every 500 ms for up to 30 s, keeps that connection and sends the sync request on it. A sync request the device acknowledges but does not answer is repeated: seven attempts after a restart (1 s, then 2 s between them, about 32 s in all), three attempts (1, 2 s) on any other secured connection. No pause outlasts the device's 6 s connection timeout. Then the flash stops with "did not answer the Data Secure sync request".
 
 ### Verification and restarts
 
@@ -280,7 +281,7 @@ With `--keyring` (or `--tool-key`), `flash` programs the device's security objec
 
     On System B the pre-flight reads the load state and the resident application id (`PID_PROGRAM_VERSION`) of the application objects (interface-object types 3 and 4); the other objects are read only when no application object answers. System 7 reads every load-state machine.
 
-    Supported load-procedure operations on System B: `Unload`, `Load`, `LoadCompleted`, `RelSegment`, `WriteRelMem`, `WriteMem`, `WriteProp`, `CompareProp`, `LoadImageProp`, `Restart`. On System 7: `Unload`, `Load`, `AbsSegment` (allocate and stream), `TaskSegment`, `TaskCtrl1`, `LoadCompleted`, the obj0/PID78 `CompareProp`, `CompareMem`, `LoadImageProp` and `Restart`. Unrecognized ops (e.g. `LdCtrlCompareRelMem`) refuse the procedure.
+    Supported load-procedure operations on System B: `Unload`, `Load`, `LoadCompleted`, `RelSegment`, `WriteRelMem`, `WriteMem`, `WriteProp`, `CompareProp`, `CompareRelMem`, `LoadImageProp`, `MasterReset`, `Delay` (a pause), `MapError` (only around an `Unload`, whose mapped error then counts as success) and `Restart`. On System 7: `Unload`, `Load`, `AbsSegment` (allocate and stream), `TaskSegment`, `TaskCtrl1`, `TaskPtr`, `TaskCtrl2`, `LoadCompleted`, `CompareProp`, `WriteProp`, `CompareMem`, `LoadImageProp`, `Delay` and `Restart`. A `TaskSegment` for a load-state machine outside 1 to 4 is not sent, as ETS sends none. Any other op refuses the procedure.
 
     On a System 7 mask whose product data declares no `VerifyMode` (Theben `0700`, `0701`), `flash` reads every chunk first, writes only the chunks that differ from the image and reads written chunks back, so a re-flash of an unchanged device writes nothing but the load-state records. The plan shows these segments as `stream segment (read-compare, N octets)`, and `plan.json` from `--dump-images` marks them `"write_mode": "read-compare"` (a `VerifyMode` mask such as Jung `0705` stays `"blind"`).
 
@@ -340,7 +341,7 @@ It refuses before any write when:
 **The write set.** Only the octets a parameter is placed in under the current configuration are compared and written: a parameter the Dynamic section reaches, a hidden parameter the application downloads at its default, and the device-managed octets alongside another write. Every other octet keeps the device's value, because ETS's download does not write it either. When such an octet differs from the model's image, the plan lists it as not written (`unwritten` in `--json`, `written: false` in `octet_ranges`) and does not count it. The same rule holds for `apply`, `restore --parameters` and the MCP `knx_apply_device`. A full `flash` still writes the whole image, as an ETS full download does, so a device that needs those octets cleared gets a full flash.
 
 ??? note "Details"
-    System B (Configuration Procedures 03_05_03 §3.5.3, as ETS runs the product's `par` procedure, issue #543): a check that the object holding the parameter segment is `Loaded`, `Unload` and `StartLoading` on it, its segment re-allocated in Mode 0 with no fill (the device keeps the memory and the base), the procedure's property writes on that object (the `PID_MCB_TABLE` seed and `PID_PROGRAM_VERSION`), the differing parameter octets at the base the object reports through `PID_TABLE_REFERENCE` after the allocation (the whole image if the device moved the segment, nothing if the reference reads zero), `LoadCompleted`, the procedure's MCB checks on that object, and the terminal restart. No factory reset, no table object.
+    System B (Configuration Procedures 03_05_03 §3.5.3, as ETS runs the product's `par` procedure): a check that the object holding the parameter segment is `Loaded`, `Unload` and `StartLoading` on it, its segment re-allocated in Mode 0 with no fill (the device keeps the memory and the base), the procedure's property writes on that object (the `PID_MCB_TABLE` seed and `PID_PROGRAM_VERSION`), the differing parameter octets at the base the object reports through `PID_TABLE_REFERENCE` after the allocation (the whole image if the device moved the segment, nothing if the reference reads zero), `LoadCompleted`, the procedure's MCB checks on that object, and the terminal restart. No factory reset, no table object.
 
     System 7: `StartLoading` on the load-state machine that holds the parameter segments (LSM 3), the differing octets written in place into each parameter segment, `LoadCompleted`, the procedure's MCB reads of objects 1 to 3, and the restart. No `AbsSegment` record, no task segment, no task control: re-sending the allocation put a device into load state Error. The executor reads LSM 3 first and writes nothing unless it is `Loaded`. LSM 1 and 2 (the tables) are not touched.
 
@@ -544,9 +545,9 @@ Restart one device and wait until it answers again.
 
 ```console
 $ bussard restart 1.1.39
-gateway: 192.168.1.74:3671
+gateway: 192.0.2.10:3671
 restart form: confirmed (M-0002_A-A0ED-10-9B4E is a secure-capable System B application (IsSecureEnabled))
-restart 1.1.39 (Binary input) via 192.168.1.74:3671? [y/N] y
+restart 1.1.39 (Binary input) via 192.0.2.10:3671? [y/N] y
 1.1.39 restarted: it confirmed the restart (A_Restart_Response, process time 0 s) and answered again after 2.0 s (mask 07B0)
 ```
 
@@ -554,9 +555,9 @@ A device that gets the basic form is reported as `restart sent`, never `restarte
 
 ```console
 $ bussard restart 1.1.52
-gateway: 192.168.1.74:3671
+gateway: 192.0.2.10:3671
 restart form: basic (M-0004_A-A012-12-D63A-O000A is not a secure-capable System B application)
-restart 1.1.52 (Presence detector) via 192.168.1.74:3671? [y/N] y
+restart 1.1.52 (Presence detector) via 192.0.2.10:3671? [y/N] y
 1.1.52: restart sent (a basic A_Restart, which the device does not confirm); it answered again after 2.0 s (mask 0705). The restart itself is not verified.
 ```
 

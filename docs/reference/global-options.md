@@ -172,6 +172,7 @@ Progress never goes to stdout. The plain lines contain no cursor-control codes b
 |---|---|
 | `0` | Success. |
 | `1` | Any other error or refusal. A network timeout exits `1`. |
+| `2` | A usage error: an unknown flag, a missing argument or a value that does not parse. Nothing ran. |
 | `3` | `import` re-imported the project but left hand-authored conflicts un-applied. The files were written with your edits intact; reconcile the reported fields. |
 | `4` | The gateway has no free tunnelling connection (`E_NO_MORE_CONNECTIONS`, status `0x24`). Every tunnel slot is taken, usually by Home Assistant, an open ETS project or another bussard process. See [Device support](../explanation/device-support.md) for the tunnel budget. |
 

@@ -378,8 +378,8 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
     /// out the reboot and reconnects.
     ///
     /// This is the same realisation the download engine uses for its terminal
-    /// restart (`crate::load::master_reset_via_basic_restart`), which is the one
-    /// verified against the real ETS→KNX-Virtual capture.
+    /// basic restart, the one verified against the real ETS→KNX-Virtual
+    /// capture.
     pub async fn restart(&mut self) -> Result<()> {
         let (apci, payload) = apci::encode_restart(0);
         self.inner.send_data_unacked(apci, &payload).await

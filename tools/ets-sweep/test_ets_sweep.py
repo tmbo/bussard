@@ -668,19 +668,14 @@ class TestCaptureRecapture(unittest.TestCase):
                          "dir=a/model scope=memory phase=2")
         self.assertEqual(capture.carried_options("state=loaded", "state=loaded expect=differs"), "state=loaded")
 
-    def test_recapture_of_pid204_reproduces_its_row(self):
-        # syn-s7-pid204's props=differs was set by hand; a re-capture with the
-        # same verdicts derives it and writes the committed row again. The
-        # headline the property writes turned `differs` is recorded as the
-        # memory verdict, identical (#683).
-        regions = "props=differs(bussard-only 1, ets-only 0, value 0)  (property writes differ)"
+    def test_row_options_of_a_property_only_difference(self):
+        # A headline the property writes alone turned `differs` (#669) is
+        # recorded as the memory verdict, identical, with `props=differs`:
+        # the script judges a row that pins props= on its memory (#683).
+        regions = "par=ok(1) props=differs(bussard-only 1, ets-only 0, value 0)  (property writes differ)"
         verdicts = {"verdict": capture.memory_verdict("differs", regions), "coverage": "100.0%",
                     "loadctl": "identical", "props": capture.props_verdict(regions)}
-        extra = capture.carried_options("", "props=differs")
-        row = capture.oracle_row("syn-s7-pid204", "M-00FA_A-2821-10-0000", "100.0", capture.row_options(verdicts),
-                                 extra=extra)
-        committed = [l for l in capture.ROWS.read_text().splitlines() if "syn-s7-pid204 defaults" in l]
-        self.assertEqual([row], committed)
+        self.assertEqual(capture.row_options(verdicts), "loadctl=identical props=differs")
 
     def test_write_rows_reproduces_the_committed_rows(self):
         with tempfile.TemporaryDirectory() as tmp:

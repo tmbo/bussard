@@ -15,7 +15,7 @@ tier:
 | Passive | `--passive` | Read and edit the model files, watch the bus. Nothing is transmitted. |
 | Read | none | Also read group values and introspect devices, rate-limited. |
 | Write | `--allow-writes` | Also send group values (`knx_write_group`, `knx_run_tests`). Protected addresses are refused. |
-| Programming | `--allow-programming` | Also write one device's link tables and parameters after you approve the plan, and replay a parameter backup (`knx_restore_parameters`). Not with `--passive`. |
+| Programming | `--allow-programming` | Also write one device's link tables and parameters after you approve the plan, replay a parameter backup (`knx_restore_parameters`), clear a Secure device's security failures log (`knx_clear_security_log`) and switch KNXnet/IP Secure of an IP interface (`knx_interface_secure`), each after your yes. Not with `--passive`. |
 | Home Assistant | `--allow-home-assistant` | Read Home Assistant and rewrite its KNX configuration, each change after your yes. Never touches the bus. |
 
 Model edits touch files only, at every tier; `--no-model-edits` withholds
@@ -175,8 +175,9 @@ it can be undone.
 
 Snapshots carry the model files (`bussard.toml`, `groups.toml`,
 `bussard.lock`, `devices/*.toml`, and `tests.toml` and `ha.toml` when
-present) and nothing else, so a snapshot cannot leak a key, a password or
-vendor data. A bundle from `bussard export` holds the same files, the
+present). A Data Secure switch of a group address also keeps a copy of the
+encrypted key store, so `undo` restores the key. A snapshot never holds a
+password, a plain key or vendor data. A bundle from `bussard export` holds the same files, the
 snapshots and a manifest, copied from an allow-list: never `products/`,
 captures, keyrings, `.knxproj` or `.knxprod` files, or `.env`. It carries your gateway address
 in `bussard.toml`, and an import into an existing model keeps the

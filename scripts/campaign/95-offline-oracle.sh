@@ -20,7 +20,10 @@
 # pre-flight probe reads live: knxtrace writes it as `resident.json` and the
 # dry run plans against it (`--resident`, issue #490), so a device that
 # already holds the application gets the product's `par` load procedure and
-# an object whose MCB already matches is skipped, as on the bus.
+# an object whose MCB already matches is skipped, as on the bus. A capture
+# in which ETS ran its Unload command before the download (knxtrace's
+# `unload_pass`) is planned with `flash --full`, bussard's equivalent, which
+# keeps the System 7 pre-download pass (issue #488).
 #
 # A row is `device|capture|product|application|note|coverage|options`, one per
 # line in the rows file (a line starting with `#` is a comment, blank lines are
@@ -86,17 +89,17 @@
 #                                its download, so knxtrace records none; the
 #                                dry run then plans against a record with LSMs
 #                                1 to 4 Unloaded, as the pre-flight probe reads
-#                                a fresh device, and drops the pre-download
-#                                pass (issue #488). A resident.json knxtrace
-#                                wrote wins. For System 7 rows
+#                                a fresh device (the freshness verdict; the
+#                                pre-download pass follows --full alone, issue
+#                                #488). A resident.json knxtrace wrote wins.
+#                                For System 7 rows
 #                state=loaded    the capture programs a device that already
 #                                holds an application (the `reload` and
 #                                `other-app` run variants of a synthetic
 #                                System 7 product, epic #596): the dry run
 #                                plans against a record with LSMs 1 to 3
 #                                Loaded and LSM 4 Unloaded, as the pre-flight
-#                                probe reads a programmed device, so the
-#                                pre-download pass stays (issue #488). A
+#                                probe reads a programmed device. A
 #                                resident.json knxtrace wrote wins
 #                dir=MODEL       without run=: the model the dry run plans
 #                                with instead of --dir (a run variant whose
@@ -663,6 +666,15 @@ PY
       printf '%s\n' '{"objects": [{"index": 1, "state": 1}, {"index": 2, "state": 1}, {"index": 3, "state": 1}, {"index": 4, "state": 0}]}' \
         >"$dir/loaded.json"
       app_args+=(--resident "$dir/loaded.json")
+    fi
+    # ETS ran its Unload command ahead of the download (issue #488: an
+    # unload of LSM 4 and a 0x0060 read before the first restart, knxtrace's
+    # `unload_pass`): bussard's equivalent is `flash --full`, which keeps
+    # the System 7 pre-download pass a plain flash drops.
+    if "$PYTHON" -c 'import json, sys; sys.exit(0 if json.load(open(sys.argv[1])).get("unload_pass") else 1)' \
+         "$dir/ets/regions.json" 2>/dev/null; then
+      app_args+=(--full)
+      note "ETS unloaded the device before its download: planned with --full"
     fi
     # dir= (a run variant's model template, epic #596): the row's own model.
     local plan_dir="$PLAN_DIR"

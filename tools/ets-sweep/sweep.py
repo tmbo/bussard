@@ -136,7 +136,7 @@ class RemoteSim:
     DIR = vm.REMOTE_DIR + r"\sim"
 
     def __init__(self, c, knxprod: Path, app: str, ia: str, port: int, secure: dict | None, local_log: Path, mask: str = "",
-                 properties: list[dict] | None = None):
+                 properties: list[dict] | None = None, device_options: dict | None = None):
         self.c = c
         self.local_log = local_log
         self.start = time.time()
@@ -158,6 +158,9 @@ class RemoteSim:
             dev["security"] = secure
         if properties:
             dev["properties"] = properties
+        # Device options a run variant sets (synthetic/capture.py VARIANTS
+        # "sim"), e.g. `master_reset: refuse` (#611).
+        dev.update(device_options or {})
         if ip_enabled(knxprod, app):
             # Hardware with a KNX IP interface built in: ETS looks for its
             # KNXnet/IP parameter object (type 11) after the download and

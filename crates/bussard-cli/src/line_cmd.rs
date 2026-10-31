@@ -778,7 +778,7 @@ async fn visit_one(
     // System 7 region images are computed before anything is backed up or
     // written, so an image that would not fit refuses without touching the device.
     let images = match &sys7_live {
-        Some(s7) => match sys7_table_images(s7, desired, target.address.raw()) {
+        Some(s7) => match sys7_table_images(s7, desired) {
             Ok(images) => Some(images),
             Err(err) => {
                 return make(

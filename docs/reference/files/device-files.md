@@ -117,7 +117,7 @@ Once the product data is available, `import` or `adopt` rewrites the lock with k
 
 The file stores the value you mean. bussard accepts:
 
-- a string: an enum label (`"Jalousie"`), an enum code (`"2"`), a number with unit (`"21 °C"`, `"15 min"`), or free text for a text parameter, which must fit the field in the program's text code page;
+- a string: an enum label (`"Jalousie"`), an enum code (`"2"`), a number with unit (`"21 °C"`, `"15 min"`), free text for a text parameter, which must fit the field in the program's text code page, or a colour for a colour parameter (`"#FF8000"`, `"#FF800010"` with a white channel);
 - an integer or a bool, converted to its string form.
 
 A float is refused with a fix-it hint, because `1.10` and `1.1` cannot be told apart after parsing.
@@ -139,9 +139,9 @@ A KNX IP interface or router carries the settings of its KNXnet/IP parameter obj
 ```toml
 [knxnet]
 assignment = "dhcp"            # or "static"
-address = "192.168.1.74"       # static only
+address = "192.0.2.10"       # static only
 netmask = "255.255.255.0"      # static only
-gateway = "192.168.1.1"        # static only
+gateway = "192.0.2.1"        # static only
 friendly_name = "Bocklisch Alpha"
 tunnels = ["1.1.22", "1.1.23", "1.1.24", "1.1.25", "1.1.26", "1.1.27", "1.1.28", "1.1.29"]
 ```

@@ -53,8 +53,12 @@ From each application program bussard reads the identity (id, application number
 !!! note
     A text parameter is written in the code page the program declares (`TextParameterEncoding`, for example `iso-8859-15` or `utf-8`). A character outside that code page, or a text longer than the field, is refused. A program that declares no encoding is written in ISO 8859-1 (Latin-1), as ETS writes it; there a character whose octet differs between ISO 8859-1, Windows-1252 and ISO 8859-15 (the euro sign, for example) is refused.
 
+    A colour parameter (`TypeColor`) is written as `#` and two hex digits per component: `#RRGGBB` for an RGB or HSV colour, `#RRGGBBWW` for RGBW. RGB and RGBW values are placed one octet per component in that order; an HSV parameter takes the RGB value and is stored as hue, saturation and value octets, as ETS converts it.
+
+    Parameters a program computes with a `<ParameterCalculation>` script are not computed: bussard does not run the scripts, so such a parameter keeps its vendor default. ETS runs a script when one of its inputs changes, so a device configured in ETS can hold a computed value that `plan` can report as a difference.
+
 ??? note "Details"
-    The program XML is streamed, never loaded as a whole document; 20 to 28 MB per program is normal. Com-objects are resolved from the `ComObject` base table and the `ComObjectRef` overrides into effective number, DPT, flags, size and text, the same way the `.knxproj` importer does. Parameter types cover `TypeNumber`, `TypeRestriction`, `TypeText`, `TypeFloat` and `TypeNone`; any other `Type*` element is kept by name. A parameter-ref `Value` or `Access` overrides the parameter's own. Code segments (`RelativeSegment`, `AbsoluteSegment`) keep their id, size, address or offset and load-state machine; the binary payload is dropped. The `LdCtrl*` load procedure is parsed into a typed op list, and unknown ops are kept verbatim.
+    The program XML is streamed, never loaded as a whole document; 20 to 28 MB per program is normal. Com-objects are resolved from the `ComObject` base table and the `ComObjectRef` overrides into effective number, DPT, flags, size and text, the same way the `.knxproj` importer does. Parameter types cover `TypeNumber`, `TypeRestriction`, `TypeText`, `TypeFloat`, `TypeColor` (spaces RGB, RGBW and HSV) and `TypeNone`; any other `Type*` element is kept by name. A parameter-ref `Value` or `Access` overrides the parameter's own. Code segments (`RelativeSegment`, `AbsoluteSegment`) keep their id, size, address or offset and load-state machine; the binary payload is dropped. The `LdCtrl*` load procedure is parsed into a typed op list, and unknown ops are kept verbatim.
 
 ## The product store (`products/`)
 

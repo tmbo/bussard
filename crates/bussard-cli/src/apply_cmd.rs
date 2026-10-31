@@ -521,8 +521,7 @@ pub(crate) fn apply_desired(
     let sys7 = match &sys7_live {
         Some(s7) => Some((
             s7.clone(),
-            sys7_table_images(s7, &desired, target.raw())
-                .context("computing the System 7 table images")?,
+            sys7_table_images(s7, &desired).context("computing the System 7 table images")?,
         )),
         None => None,
     };

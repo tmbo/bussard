@@ -259,6 +259,7 @@ manifest entry. The variants and their products are `VARIANTS` in
 | `other-app` | `syn-s7-0705`, `syn-s7-0701` | a sibling of the same mask (`syn-s7-hidden-default`, `syn-s7-lsm5`), then this application (#488) | `state=loaded` |
 | `partial` | `syn-minimal` | the application, then `Delay (s)` set to 500 in ETS's parameter editor and ETS's partial download (#543, #490) | `run=params base=` the first download, `dir=` the model template |
 | `calc-input` | `syn-param-calculation` | `Delay (s)`, the calculation's input, set to 500, then the application (#427) | `dir=` the model template |
+| `bare-restart` | `syn-master-reset` | the application into a device whose knx-sim config has `master_reset: refuse`: it answers the confirmed Master Reset with error code 2 (#611) | none: ETS 6.4.1 fails the download ("ConfirmedRestart ... fehlgeschlagen: UnsupportedEraseCode", 2026-10-31), no Basic Restart follows |
 
 A variant directory holds the files of a `defaults` capture for its last
 download (the one the row compares), and when there were earlier downloads,

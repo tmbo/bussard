@@ -280,22 +280,91 @@ ETS does around the vendor procedure and what bussard reproduces. Captures:
 **What ETS sends before the procedure.** In order, each on its own L4
 connection:
 
-1. *Unload pass* (full downloads only: 1.1.49, 1.1.31, 1.1.1, 1.1.46,
-   Meteodata new and 140 S; absent from 1.1.52, 1.1.32 and the Meteodata
-   parameter download): `A_Authorize`, `Unload` of LSMs 1, 2, 3 and 4, a
-   one-octet `A_Memory_Read` of `0x0060` (answer `00`), disconnect. On 0705
-   each unload's `A_PropertyValue_Response` carries the new state (`00`); on
-   0701 each record write to `0x0104` is followed by a status read at
+1. *Unload pass* (only after ETS's explicit Unload command, see the table
+   below): `A_Authorize`, `Unload` of LSMs 1, 2, 3 and 4, a one-octet
+   `A_Memory_Read` of `0x0060` (answer `00`), disconnect. On 0705 each
+   unload's `A_PropertyValue_Response` carries the new state (`00`); on 0701
+   each record write to `0x0104` is followed by a status read at
    `0xB6EA + lsm - 1`.
-2. *Restart pass* (every capture): a connect/descriptor/disconnect probe,
-   then connect, descriptor, `PID_MAX_APDU_LENGTH`, `PID_SERIAL_NUMBER`, basic
+2. *Restart pass* (every house capture, none of the knx-sim captures): an
+   `A_IndividualAddress_Read` broadcast (who is in programming mode) around a
+   connect/descriptor/disconnect probe, an
+   `A_IndividualAddressSerialNumber_Read` of the device's serial number, then
+   connect, descriptor, `PID_MAX_APDU_LENGTH`, `PID_SERIAL_NUMBER`, basic
    `A_Restart`. The device reboots and answers again on a fresh connection.
+   This is the individual-address part of ETS's "Physikalische Adresse &
+   Applikationsprogramm" download: ETS finds the device already at its
+   address (no `A_IndividualAddress_Write`) and restarts it.
 3. *Procedure connection*: a second probe, then descriptor,
    `PID_MAX_APDU_LENGTH`, `A_Authorize`, `PID_SERIAL_NUMBER`, a one-octet read
    of `0xB6EC`, the load state of the application program (object type 3,
    `[MP §3.31.2, p. 134]`; answer `00`, Unloaded after the unload pass; on
    0701 the reads of `0xB6EA..0xB6ED` are the load states of object types 1
    to 4), `PID_MANUFACTURER_ID`, `PID_HARDWARE_TYPE`, then the procedure.
+
+**When ETS runs the passes (issue #488, settled 2026-10-31).** ETS decides
+before it reads the device: the unload follows the authorize directly, and
+the same application, another application or none on the device gives the
+same stream. What decides is the command the operator chose. Every System 7
+capture (`tools/knxtrace ops`; "IA part" means the
+`A_IndividualAddress_Read` and serial-number reads before the restart):
+
+| capture | device, mask | ETS command | device before | unload pass | IA part + restart |
+|---|---|---|---|---|---|
+| `captures/synthetic/syn-s7-0705/defaults` | sim, 0705 | application | fresh | no | no |
+| `captures/synthetic/syn-s7-0705/reload` | sim, 0705 | application | same application | no | no |
+| `captures/synthetic/syn-s7-0705/other-app` | sim, 0705 | application | other application | no | no |
+| `captures/synthetic/syn-s7-0701/defaults`, `reload`, `other-app` | sim, 0701 | application | fresh, same, other | no | no |
+| ETS sweep, 31 applications (`captures/ets-sweep/<app>/plain-defaults`) | sim, 0705/0701 | application | fresh | no | no |
+| `captures/ets-sweep/M-00B6_A-4537-03-DE59/b-*`, `c-*`, `d-*` | sim, 0705 | partial | same application | no | no |
+| `shared-with-windows/26-10-pcaps/pm-1-1-52` | 1.1.52, 0705 | address & application | same application | no | yes |
+| `shared-with-windows/26-10-pcaps/schaltaktor-1-1-49` | 1.1.49, 0705 | address & application | same application | no | yes |
+| `shared-with-windows/26-10-pcaps/binaereingang-1-1-44` | 1.1.44, 0701 | address & application | same application | no | yes |
+| `shared-with-windows/26-10-pcaps/meteodata-1-1-202-26-10` | 1.1.202, 0701 | address & application | same application | no | yes |
+| `shared-with-windows/26-10-pcaps-with-erase/pm-1-1-52` | 1.1.52, 0705 | Unload, then address & application | same application | yes | yes |
+| `shared-with-windows/26-10-pcaps-with-erase/schaltaktor-1-1-49` | 1.1.49, 0705 | Unload, then address & application | same application | yes | yes |
+| `shared-with-windows/26-10-pcaps-with-erase/binaereingang-1-1-44` | 1.1.44, 0701 | Unload, then address & application | same application | yes | yes |
+| `shared-with-windows/26-10-pcaps-with-erase/meteodata-1-1-202-26-10` | 1.1.202, 0701 | Unload, then address & application | same application | yes | yes |
+| `shared-with-windows/bad-eg-pm-1-1-18-new` (1.1.32), `bad-eg-pm-1-1-18` | 1.1.32, 0705 | address & application | programmed | no | yes |
+| `shared-with-windows/pm-mini-1-1-52` | 1.1.52, 0705 | address & application | programmed | no | yes |
+| `shared-with-windows/meteodata-1-1-202` | 1.1.202, 0701 | address & application (parameters) | programmed | no | yes |
+| `shared-with-windows/jung-1131-download` | 1.1.31, 0705 | Unload (inferred), then address & application | programmed | yes | yes |
+| `shared-with-windows/automitschalter-standard-110-download` | 1.1.46, 0705 | Unload (inferred), then address & application | programmed | yes | yes |
+| `shared-with-windows/binaereingang-6fach-download` | 1.1.1, 0705 | Unload (inferred), then address & application | programmed | yes | yes |
+| `shared-with-windows/schaltaktor-8-fach-download`, `schaltaktor-8fach-1-1-49` | 1.1.49, 0705 | Unload (inferred), then address & application | programmed | yes | yes |
+| `shared-with-windows/meteodata-1-1-202-new`, `meteodata-140-s-download` | 1.1.202, 0701 | Unload (inferred), then address & application | programmed | yes | yes |
+
+The rule the table gives:
+
+- **Unload pass: ETS's Unload command ("Entladen → Applikationsprogramm"), not
+  the download.** The 2026-10-26 pairs settle it: the same four devices, the
+  same project and day, carry the pass in the set the owner recorded with an
+  explicit Unload first (`26-10-pcaps-with-erase/`, `captures/campaign/rows/README.md`)
+  and not in the set without (`26-10-pcaps/`). The pass always comes before
+  the address part on its own connection, where the download's own sequence
+  (1.1.32, the `26-10-pcaps/` set) starts with the address part; so it is a
+  separate command ahead of the download. The 2026-09 captures of 1.1.31,
+  1.1.46, 1.1.1, 1.1.49 and 1.1.202 have the same shape, with 5 to 40 s
+  between the unload's disconnect and the address part (the confirmed set: 5
+  to 7 s), the pause of an operator starting the next command; their Unload
+  is inferred from that shape, no note records it.
+- **Restart pass: the address part of an "address and application"
+  download.** Every house capture has it, each preceded by the
+  `A_IndividualAddress_Read` and serial-number reads; none of the knx-sim
+  captures, all application or partial downloads (the driver's `"mode":
+  "application"`), has it. The device's state plays no part (the `reload` and
+  `other-app` variants send the stream of `defaults`).
+
+**What bussard does.** `flash` writes no individual address (`assign` and
+`commission` do), so it is ETS's application download: no unload pass and no
+restart, on a fresh device and on a programmed one, with `--force` (another
+application) too; `--parameters-only` and the MCP flash likewise. `flash
+--full` is ETS's Unload followed by the download: it keeps
+`Sys7PreDownloadRestart` (unload LSMs 1 to 4, then the restart; the restart
+stands for the address part's, which follows ETS's Unload in every such
+capture). The offline oracle plans a capture whose ETS stream holds the Unload
+command (knxtrace's `unload_pass`: an unload of LSM 4 and the `0x0060` read
+before the first restart) with `--full`.
 
 **Verify mode (`PID_DEVICE_CONTROL`).** On every 0705 download ETS reads
 `obj0/PID_DEVICE_CONTROL` (PID 14, answer `00`) right after the first
@@ -320,29 +389,12 @@ MV-0701, not a device limitation, and ETS read-compare-writes it instead
 **What bussard reproduces.**
 
 - `Sys7PreDownloadRestart`: unload LSMs 1 to 4, basic restart, wait for the
-  reboot, reconnect and re-authorize. It goes in front of the procedure's
-  first state-changing step, after the vendor's read-only preconditions
-  (`CompareProp`, `CompareMem`), so a device that fails them is refused before
-  its application is unloaded. The pass follows the device's resident state
-  (issue #488, `FlashPlan::fit_sys7_prelude`): a device whose every LSM the
-  pre-flight probe reads answers Unloaded, with no application id, gets no
-  pass at all; an LSM in Loaded, Loading or Error, a resident
-  `PID_PROGRAM_VERSION`, or a probe that read nothing keeps it. Evidence for
-  the fresh device: ETS runs no pass in all 31 System 7 sweep downloads and in
-  the synthetic captures `syn-s7-0705` and `syn-s7-0701` (`defaults`, a
-  factory-fresh knx-sim; after the connect come the identity reads and the
-  procedure's own unloads of LSMs 1 to 3, no unload of LSM 4, no restart). On
-  a programmed device the captures disagree, so the pass stays as before:
-  1.1.31 and 1.1.46 (`jung-1131`, `automitschalter-standard-110`) run the
-  full pass, 1.1.32 (`bad-eg-pm-1-1-18-new`, same application as 1.1.31) only
-  the restart, and the EK-E72 partial downloads on the sim
-  (`captures/ets-sweep/M-00B6_A-4537-03-DE59/b-*` to `d-*`) none; ETS decides
-  before reading anything from the device, so the trigger is project state.
-  The offline dry run has no device and keeps the pass, unless `--resident`
-  records the LSM states; the oracle's `state=fresh` row option records a
-  fresh device for a capture that reads none (the synthetic System 7 rows). A
-  parameter-only flash restarts without unloading, like the Meteodata
-  parameter capture. An LSM the device lacks (count 0) or that answers Error
+  reboot, reconnect and re-authorize. The planner puts it in front of the
+  procedure's first state-changing step, after the vendor's read-only
+  preconditions (`CompareProp`, `CompareMem`), so a device that fails them is
+  refused before its application is unloaded. Only `flash --full` keeps it;
+  every other download drops it (`FlashPlan::skip_sys7_prelude`, issue #488,
+  the table above). An LSM the device lacks (count 0) or that answers Error
   is skipped with a warning; the procedure's own unloads stay strict.
 - `Sys7EnableVerifyMode` on masks with `VerifyMode` (0705): read PID 14 and
   write it back with bit 2 set, only when the bit is clear, keeping the other
@@ -903,6 +955,33 @@ and the sim must accept. ETS synthesizes the CONFIG/TYPE bytes itself (not from
 - Each GA = 2 bytes big-endian (15 significant bits, D15 reserved). TSAP 1..N map
   to GAs in order; the GAs are sorted ascending and the implementation-specific
   maximum length "shall be checked" `[Res §4.16.3.1]` (the segment-size check).
+- Nobody writes entry 0. The standard's configuration procedure for this
+  table writes the length octet and the group addresses from `0119h` on, never
+  the individual-address entry at `0117h`-`0118h` `[Res §4.16.3.4.1]`. ETS does
+  the same on System 7: the count octet at `0x4000`, then the group addresses
+  from `0x4003`, in the full download and in every partial one (EK-E72 sweep
+  series, steps A to D). `flash` masks the entry out, and `apply` skips it
+  (issue #588); a device keeps whatever its segment held there.
+
+**Table-only partial download (`bussard apply`, issue #588).** What ETS 6.4.1
+sends for a link change on the EK-E72 (`M-00B6_A-4537-03-DE59`, steps B, C
+and D of `captures/ets-sweep/M-00B6_A-4537-03-DE59/`) and `apply` reproduces
+(owner decision 2026-10-31: follow ETS on the wire):
+
+| LSM | ETS | `apply` |
+|---|---|---|
+| 1, 2 | `Unload` both | the same |
+| 1 | `StartLoading`; the product's own `AbsSegment` record, the whole segment with its attribute octets (`03 00 4000 00ed ff 03 80 00`); the count octet at `+0`, the group addresses from `+3`; `TaskSegment`; `LoadCompleted` | the same record, built by the resolution `flash` uses (`Sys7SegmentOp::alloc_record`); a `DynamicTableManagement` product gets the packed segments `flash` allocates; without the product's op, the written span with access `f2` |
+| 2 | the same with `03 00 40ed 00eb ff 03 80 00` and the whole association table | the same |
+| 3 | `StartLoading`, the whole group-object table rewritten (flag octets changed when a link set changes one, unchanged otherwise), `LoadCompleted`; no `Unload`, no segment record | the same wherever the product declares the table; in all three steps, also step D, where no flag changes |
+| - | basic `A_Restart` | the same |
+
+Before #588 `apply` wrote the own-address entry, allocated the written table
+length with access `f2` (`[MP §3.31.2]`: bits 0 to 3 of the access octet are
+the write level, 4 to 7 the read level), and skipped LSM 3 when no flag
+changed; the final tables were the same. The `run=apply` rows of the series
+(`tools/ets-sweep/apply_rows.py`) are identical on memory and load control
+since.
 
 ### 7.2 Association table (GrOAT) `[Res §4.17.3.1, p. 245; endrekatona, knx-stack, CONFIRMED]`
 

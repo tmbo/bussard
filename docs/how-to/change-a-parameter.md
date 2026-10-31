@@ -28,12 +28,15 @@ betriebsart = "Jalousie"
 windalarm = "1"
 ```
 
-The file stores only values that differ from the vendor default, and a choice takes its label. Edit the value, then run `bussard validate`: with product data it checks that the key exists and the value is in range.
+The file stores only values that differ from the vendor default, and a choice takes its label. A colour takes `#` and two hex digits per component, such as `#FF8000`. Edit the value, then run `bussard validate`: with product data it checks that the key exists and the value is in range.
 
 The assistant does the same with `knx_set_parameter`, using the keys `knx_show_device` lists. It changes the file only.
 
 !!! note
     A re-import of an ETS project takes parameter values from ETS. If you still re-import, make the change in ETS too.
+
+!!! note
+    Some products compute a parameter from others with a script that ETS runs when you change an input. bussard does not run these scripts yet, so a computed parameter keeps its vendor default. Check such a device against ETS before you rely on the value.
 
 ## Preview it
 

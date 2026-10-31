@@ -767,7 +767,7 @@ impl BussardMcp {
         // A System 7 image that would not fit its memory region must refuse at
         // plan time, before the human is asked anything.
         if let Some(s7) = live.sys7() {
-            sys7_table_images(s7, &desired, target.raw())
+            sys7_table_images(s7, &desired)
                 .map_err(|e| format!("computing the System 7 table images: {e}"))?;
         }
         let mut built = built_plan(&model, target, &gateway, &dir, &read, &report, &product);
@@ -1301,7 +1301,7 @@ impl BussardMcp {
             || !built.plan.writes.communication_flags.is_empty();
         let images = match live.sys7() {
             Some(s7) if tables_change => Some(
-                sys7_table_images(s7, &desired, target.raw())
+                sys7_table_images(s7, &desired)
                     .map_err(|e| format!("computing the System 7 table images: {e}"))?,
             ),
             _ => None,

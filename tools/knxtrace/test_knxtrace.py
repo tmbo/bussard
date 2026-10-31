@@ -2327,6 +2327,69 @@ class TestResidentState(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(out, memimage.RESIDENT_FILE)))
 
 
+class TestUnloadPass(unittest.TestCase):
+    """`unload_pass`: ETS's Unload command ahead of the download (#488)."""
+
+    def regions(self, frames) -> dict:
+        path = tempfile.mkstemp(suffix=".pcapng")[1]
+        self.addCleanup(os.unlink, path)
+        udp_capture(path, [(tunneling_request(f, seq=n), True) for n, f in enumerate(frames)])
+        out = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, out, ignore_errors=True)
+        self.assertEqual(main(["image", path, "--device", "1.1.5", "--out", out]), 0)
+        with open(os.path.join(out, "regions.json")) as fh:
+            return json.load(fh)
+
+    UNLOAD = bytes([4]) + bytes(9)
+
+    def download(self, tool: str, dev: str) -> list:
+        return [
+            cemi_ldata(tool, dev, t_connect()),
+            cemi_ldata(tool, dev, prop_write(1, 5, 1, 1, self.UNLOAD, seq=0)),
+            cemi_ldata(tool, dev, mem_write(0x4000, b"\x01", seq=1)),
+            cemi_ldata(tool, dev, t_disconnect()),
+        ]
+
+    def test_compose_flags_the_unload_command_on_0705(self):
+        tool, dev = "0.0.0", "1.1.5"
+        frames = [cemi_ldata(tool, dev, t_connect())]
+        frames += [cemi_ldata(tool, dev, prop_write(o, 5, 1, 1, self.UNLOAD, seq=o - 1))
+                   for o in (1, 2, 3, 4)]
+        frames += [
+            cemi_ldata(tool, dev, mem_read(0x0060, 1, seq=4)),
+            cemi_ldata(tool, dev, t_disconnect()),
+            cemi_ldata(tool, dev, t_connect()),
+            cemi_ldata(tool, dev, numbered(0, 0x380)),
+            cemi_ldata(tool, dev, t_disconnect()),
+        ] + self.download(tool, dev)
+        self.assertTrue(self.regions(frames)["unload_pass"])
+
+    def test_compose_flags_the_unload_command_on_0701(self):
+        tool, dev = "0.0.0", "1.1.5"
+        frames = [cemi_ldata(tool, dev, t_connect())]
+        frames += [cemi_ldata(tool, dev, mem_write(0x0104, bytes([lsm << 4 | 4]) + bytes(10),
+                                                   seq=lsm - 1)) for lsm in (1, 2, 3, 4)]
+        frames += [cemi_ldata(tool, dev, mem_read(0x0060, 1, seq=4)),
+                   cemi_ldata(tool, dev, t_disconnect())] + self.download(tool, dev)
+        self.assertTrue(self.regions(frames)["unload_pass"])
+
+    def test_compose_sees_no_unload_command_in_a_download(self):
+        tool, dev = "0.0.0", "1.1.5"
+        # The restart of ETS's address part, then the download: no unload.
+        frames = [
+            cemi_ldata(tool, dev, t_connect()),
+            cemi_ldata(tool, dev, numbered(0, 0x380)),
+            cemi_ldata(tool, dev, t_disconnect()),
+        ] + self.download(tool, dev)
+        self.assertFalse(self.regions(frames)["unload_pass"])
+        # An LSM 4 unload with no 0x0060 read is the procedure's, not ETS's
+        # Unload command.
+        frames = [cemi_ldata(tool, dev, t_connect()),
+                  cemi_ldata(tool, dev, prop_write(4, 5, 1, 1, self.UNLOAD, seq=0)),
+                  cemi_ldata(tool, dev, t_disconnect())] + self.download(tool, dev)
+        self.assertFalse(self.regions(frames)["unload_pass"])
+
+
 class TestLoadControls(unittest.TestCase):
     """`load_controls.json` and the load-control parity (issue #419)."""
 

@@ -287,7 +287,36 @@ pub struct Device {
     /// (Configuration Procedures §3.5.1.2); `None` allocates any size. See
     /// [`Device::with_max_allocation`].
     max_allocation: Option<u32>,
+    /// How the device answers a Master Reset; see
+    /// [`Device::with_master_reset`].
+    master_reset: MasterResetSupport,
+    /// How many times a load-state machine reports the intermediate state
+    /// before the settled one (bussard issue #479); 0 settles at once. See
+    /// [`Device::with_intermediate_load_states`].
+    intermediate_reports: u32,
+    /// The intermediate state octet each LSM still reports, and how many
+    /// more times.
+    intermediate: std::collections::BTreeMap<u8, (u8, u32)>,
     events: std::sync::Arc<dyn EventSink>,
+}
+
+/// How a device answers a Master Reset (`A_Restart` with restart type 1, KNX
+/// 3/5/2 §3.7.1.2.3), the `master_reset` device option (bussard issue #611).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MasterResetSupport {
+    /// The confirmed form: `A_Restart_Response` and the reset of the erase
+    /// code (the default; every captured device, KNX Virtual included).
+    #[default]
+    Supported,
+    /// A device without the Master Reset that implements the confirmed
+    /// answer: every erase code is answered with error code 2, "unsupported
+    /// erase code", and nothing runs (no reset, no reboot).
+    Refuse,
+    /// A device without the Master Reset that does not answer it: the
+    /// request runs as a Basic Restart (reboot, nothing erased) and no
+    /// `A_Restart_Response` goes out.
+    Basic,
 }
 
 impl Device {

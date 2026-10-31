@@ -165,6 +165,12 @@ pub struct Sys7LiveTables {
     /// The application identity a write's TaskSegment records carry, from the
     /// product ([`Sys7TableBases::task_identity`]); `None` without product data.
     pub task_identity: Option<bussard_mgmt::Sys7TaskIdentity>,
+    /// The product's LSM 1 segment op ([`Sys7TableBases::address_segment`]):
+    /// the allocation record a write sends for the address table.
+    pub address_segment: Option<crate::flash::Sys7SegmentOp>,
+    /// The product's LSM 2 segment op
+    /// ([`Sys7TableBases::association_segment`]).
+    pub association_segment: Option<crate::flash::Sys7SegmentOp>,
 }
 
 /// Reads and decodes a System 7 device's address, group-object and association
@@ -251,14 +257,13 @@ pub async fn read_sys7_tables_at<Ch: L4Channel>(
     };
 
     if own_ia != address.raw() {
-        // The own-IA slot (TSAP 0) is the device's individual address. A System 7
-        // download streams the product's static segment image, which carries the
-        // vendor's placeholder there, so a freshly flashed device commonly reads
-        // back `0000` until something writes the real one. Worth reporting, never
-        // worth refusing.
+        // The own-IA slot (TSAP 0) is the device's individual address. Neither
+        // ETS nor bussard (`flash` and `apply`, issue #588) ever writes it, so a
+        // device keeps whatever its segment held, commonly the vendor's
+        // placeholder `0000`. Worth reporting, never worth refusing.
         notes.push(format!(
             "the address table's own-IA slot reads {own_ia:04X}, not {address} \
-             ({:04X}) — a vendor placeholder a table write will correct",
+             ({:04X}); ETS and bussard leave that slot to the device",
             address.raw()
         ));
     }
@@ -391,6 +396,8 @@ pub async fn read_sys7_tables_at<Ch: L4Channel>(
         group_object_image,
         group_objects,
         task_identity: bases.task_identity,
+        address_segment: bases.address_segment,
+        association_segment: bases.association_segment,
     })
 }
 
