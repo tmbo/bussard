@@ -376,8 +376,8 @@ impl Device {
     /// A real device T_ACKs every numbered data telegram at the transport layer,
     /// including an `A_Restart` — which, unlike a property/memory verb, carries no
     /// application-layer response. The management tool waits for that T_ACK before
-    /// it considers the restart delivered (see bussard's
-    /// `master_reset_via_basic_restart`), so the simulator must emit it before it
+    /// it considers the restart delivered (bussard's terminal basic restart),
+    /// so the simulator must emit it before it
     /// reboots and drops the connection, or the tool retransmits into the void.
     fn t_ack(&self, to: IndividualAddress, seq: u8) -> CemiLData {
         self.t_control(to, Tpci::ack_byte(seq))

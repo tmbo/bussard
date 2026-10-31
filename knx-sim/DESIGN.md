@@ -158,7 +158,8 @@ for any channel number other than 0, since the sim models no channels. The
 `master_reset` device option models a device without the Master Reset:
 `refuse` answers every erase code with error code 2 ("unsupported erase
 code") and runs nothing, `basic` runs the request as a Basic Restart without
-an answer (bussard issue #611).
+an answer (bussard issue #611; ETS 6.4.1 fails a download into a `refuse`
+device at the procedure's Master Reset).
 
 A table only ever arrives this way. An `A_PropertyValue_Write` to `PID_TABLE`
 (PID 23) is **refused** with a zero-count `A_PropertyValue_Response`, exactly as

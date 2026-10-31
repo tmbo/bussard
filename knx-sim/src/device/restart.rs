@@ -145,8 +145,8 @@ impl Device {
     /// How the device answers a Master Reset (builder-style; the
     /// `master_reset` device option). [`MasterResetSupport::Supported`] by
     /// default; the other two model a device without the Master Reset, so a
-    /// tool's fallback to a Basic Restart can be exercised (bussard issue
-    /// #611).
+    /// tool's handling of the refusal can be exercised (bussard issue #611:
+    /// ETS fails the download on `Refuse`).
     pub fn with_master_reset(mut self, support: MasterResetSupport) -> Self {
         self.master_reset = support;
         self

@@ -181,8 +181,7 @@ enum RestartKind {
     /// A load procedure's Master Reset (`A_Restart` master reset, an erase
     /// code other than 1 and 7).
     MasterReset,
-    /// A bare `A_Restart` (a terminal restart, or the Basic Restart after a
-    /// refused Master Reset).
+    /// A bare `A_Restart` (a terminal restart).
     BasicRestart,
 }
 
@@ -489,8 +488,7 @@ struct DeviceState {
     /// Whether a basic restart (`A_Restart`, terminal step) has been seen — so the
     /// terminal-restart-silence test can assert the restart was actually sent.
     saw_basic_restart: bool,
-    /// Count of bare `A_Restart`s (0x380) seen: the fallback after a refused
-    /// Master Reset and the terminal restart.
+    /// Count of bare `A_Restart`s (0x380) seen.
     basic_restarts_seen: usize,
     /// The device does not support the Master Reset: it answers every
     /// master-reset `A_Restart` other than erase codes 1 and 7 with error code
@@ -754,21 +752,16 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
         // error_code = 0x00, process_time = 1 s (the tool waits at least that).
         return Reaction::Answer(A_RESTART_RESPONSE, vec![0x00, 0x00, 0x01]);
     }
-    // Basic restart (bare A_Restart, 0x380, no payload): the terminal restart,
-    // or the Basic Restart a client sends after a Master Reset the device
-    // refused with error code 2 (`master_reset_unsupported`). The device T_ACKs
-    // it (fire-and-forget, no A_Restart_Response). Every `LdCtrlMasterReset`
-    // goes out in the confirmed form (0x381, above), on KNX Virtual too
-    // (issue #611).
+    // Basic restart (bare A_Restart, 0x380, no payload): the terminal restart.
+    // The device T_ACKs it (fire-and-forget, no A_Restart_Response). Every
+    // `LdCtrlMasterReset` goes out in the confirmed form (0x381, above), on KNX
+    // Virtual too (issue #611).
     if req_apci & APCI_SELECTOR == A_RESTART_SEL {
         s.saw_basic_restart = true;
         arm_restart_outage(&mut s, RestartKind::BasicRestart);
         s.after_terminal_restart = Some(Vec::new());
         s.basic_restarts_seen += 1;
-        if s.master_reset_unsupported && s.master_resets_seen > 0 && s.basic_restarts_seen == 1 {
-            // The fallback Basic Restart: the device reboots.
-            s.l4_dead_after_master_reset = true;
-        } else if s.fault == Fault::SilentAfterBasicRestart {
+        if s.fault == Fault::SilentAfterBasicRestart {
             s.l4_dead_after_master_reset = true;
         } else if s.fault == Fault::UnloadedAfterBasicRestart {
             // The device reboots (goes silent on this link) and, on the next
@@ -3828,15 +3821,11 @@ async fn flash_master_reset_expecting_confirmed_form(id: &str) -> TestResult {
 }
 
 /// Issue #611: a device that refuses the confirmed Master Reset with error
-/// code 2 ("unsupported erase code", KNX 3/5/2 §3.7.1.2.3) gets a Basic
-/// Restart instead (§3.7.1.2.3.1), and the flash goes on and verifies.
+/// code 2 ("unsupported erase code", KNX 3/5/2 §3.7.1.2.3) fails the flash,
+/// as it fails ETS's download (the `bare-restart` run of `syn-master-reset`):
+/// no Basic Restart goes out instead, and nothing is written after it.
 #[tokio::test]
-async fn test_flash_master_reset_refused_falls_back_to_a_basic_restart() -> TestResult {
-    // SAFETY of env: nextest runs this test in its own process; the var only
-    // shortens the post-reboot poll.
-    unsafe {
-        std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
-    }
+async fn test_flash_master_reset_refused_fails_the_flash() -> TestResult {
     let (handle, state, gw) = setup_bus(Fault::None).await?;
     lock(&state)?.master_reset_unsupported = true;
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
@@ -3852,32 +3841,31 @@ async fn test_flash_master_reset_refused_falls_back_to_a_basic_restart() -> Test
     )?;
     let connector = LeaseConnector::plain(handle.clone(), target, source, None);
     let mut session = Session::open_with_key(connector, None).await?;
-    let outcome = flash(
+    let result = flash(
         &mut session,
         &plan,
         bussard_download::FlashOptions::default(),
         |_| {},
     )
-    .await?;
+    .await;
     let _ = session.into_disconnect().await;
-    assert!(outcome.ok(), "{outcome:?}");
-    assert_eq!(outcome.load_state, LoadState::Loaded);
+    let err = match result {
+        Ok(outcome) => return Err(format!("the flash must fail: {outcome:?}").into()),
+        Err(err) => err,
+    };
+    assert!(
+        err.to_string().contains("refused the master reset"),
+        "the error names the refusal: {err}"
+    );
     {
         let s = lock(&state)?;
         assert_eq!(s.master_resets_seen, 1, "the confirmed form went out once");
         assert_eq!(s.last_master_reset_payload, vec![4, 0]);
-        // The fallback Basic Restart and the terminal restart.
-        assert_eq!(
-            s.basic_restarts_seen, 2,
-            "a Basic Restart followed the refusal"
-        );
-        assert!(s.connects >= 2, "reconnected after the Basic Restart");
+        assert_eq!(s.basic_restarts_seen, 0, "no Basic Restart instead");
+        assert!(s.memory.is_empty(), "nothing written after the refusal");
     }
     let _ = handle.close().await;
     drop(gw);
-    unsafe {
-        std::env::remove_var("BUSSARD_FLASH_REBOOT_WAIT_MS");
-    }
     Ok(())
 }
 

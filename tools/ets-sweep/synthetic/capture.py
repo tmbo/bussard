@@ -578,7 +578,9 @@ VARIANTS: dict[str, dict] = {
     "bare-restart": {"products": ("syn-master-reset",),
                      "doc": "the application download into a device without the Master Reset: knx-sim "
                             "`master_reset: refuse` answers the confirmed A_Restart with error code 2 "
-                            "(unsupported erase code); what ETS sends then (#611)",
+                            "(unsupported erase code); what ETS sends then (#611). Result 2026-10-31: ETS "
+                            "6.4.1 disconnects and fails the download (UnsupportedEraseCode), no Basic "
+                            "Restart, so the run raises and nothing is committed",
                      "sim": {"master_reset": "refuse"}},
 }
 # `other-app`: the application loaded first, a sibling of the same mask with

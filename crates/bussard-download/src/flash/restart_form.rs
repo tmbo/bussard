@@ -50,11 +50,14 @@
 //!   terminal restart. No read before the reset differs between the two
 //!   devices, so there is nothing on the device to key a choice on.
 //! - The device's answer decides what follows. Error code 0: wait the process
-//!   time and reconnect. Error code 2 ("unsupported erase code") means the
-//!   device does not support that Master Reset, so the flash sends a Basic
-//!   Restart instead and goes on; any other error code fails it. No answer:
-//!   the reboot poll decides. knx-sim's `master_reset: refuse` device option
-//!   models the error-code-2 device for the sim loop and the ETS capture.
+//!   time and reconnect. Any other error code fails the flash, error code 2
+//!   ("unsupported erase code") included: ETS fails its download there and
+//!   sends no Basic Restart instead (the `bare-restart` run of
+//!   `syn-master-reset` against knx-sim's `master_reset: refuse`, 2026-10-31,
+//!   ETS 6.4.1: "ConfirmedRestart … fehlgeschlagen: UnsupportedEraseCode"). So
+//!   bussard does not call the Basic Restart of §3.7.1.2.3.1 either; a device
+//!   without the Master Reset cannot take a product whose procedure needs one,
+//!   in ETS or in bussard. No answer: the reboot poll decides.
 
 use bussard_mgmt::MaskProfile;
 use bussard_prod::ApplicationProgram;

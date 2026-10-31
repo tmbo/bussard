@@ -649,6 +649,13 @@ Results (ETS 6.4.1 build 6.4.8718, VM sim 06a27ec0):
   `syn-s7-0701`). Row as `reload`. ETS reads no application id before a
   System 7 download, so it cannot tell a programmed device from a fresh one,
   and it sends the same stream (#488).
+- `bare-restart` of `syn-master-reset` (2026-10-31, VM sim 9fc21ded): knx-sim
+  with `master_reset: refuse` answers the procedure's confirmed Master Reset
+  (erase code 1) with error code 2. ETS sends `T_ACK`, then `T_Disconnect`,
+  and ends "Programmieren(Appl.): fehlgeschlagen" after 19 operations; its
+  log: "ConfirmedRestart(ConfirmedRestart, 0) fehlgeschlagen:
+  UnsupportedEraseCode". No Basic Restart follows, so there is no capture to
+  commit; bussard fails the flash the same way (#611).
 - `no-ga` of `syn-minimal` (2026-10-31): ETS's object table before the
   download shows both objects without an address (`objects.json`). The
   download is request for request the `defaults` one: both tables loaded with

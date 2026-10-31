@@ -286,8 +286,9 @@ pub struct DeviceConfig {
     /// `supported` (the default, the confirmed form every captured device
     /// answers, KNX Virtual included), `refuse` (error code 2 "unsupported
     /// erase code", nothing runs) or `basic` (no answer, a Basic Restart
-    /// runs). The last two model a device without the Master Reset, for a
-    /// tool's fallback (bussard issue #611).
+    /// runs). The last two model a device without the Master Reset; ETS
+    /// fails a download whose procedure resets such a device (bussard issue
+    /// #611).
     #[serde(default)]
     pub master_reset: MasterResetSupport,
     /// Whether the device starts in KNX programming mode (default `false`). A

@@ -702,32 +702,6 @@ pub async fn read_manufacturer_id<Ch: L4Channel>(
     Ok(Some(u16::from_be_bytes([resp.data[0], resp.data[1]])))
 }
 
-/// The Basic Restart a client calls instead of a Master Reset the device does
-/// not support (KNX 3/5/2 §3.7.1.2.3.1): a **bare `A_Restart`** (APCI
-/// [`A_RESTART`](crate::apci::A_RESTART) = `0x380`, no payload). The flash
-/// sends it after a [`master_reset`] answered with error code 2 ("unsupported
-/// erase code"); every `LdCtrlMasterReset` first goes out in the confirmed form
-/// (issue #611: ETS sends that form to KNX Virtual too).
-///
-/// The device T_ACKs the bare restart at the transport layer and reboots; it
-/// sends no application-layer `A_Restart_Response`. So this sends it as a
-/// numbered telegram without awaiting the ACK and treats the following silence
-/// or disconnect as the expected outcome. The op's `erase_code` and
-/// `channel_number` are not on the wire in this form.
-pub async fn master_reset_via_basic_restart<Ch: L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
-    _erase_code: u8,
-    _channel_number: u8,
-) -> Result<()> {
-    let (apci, payload) = crate::apci::encode_restart(0);
-    // Fire-and-forget: a device reboots on A_Restart and never T_ACKs it (it
-    // drops the L4 link immediately), so send without awaiting the ACK — waiting
-    // would retransmit and spuriously report the device absent. The caller waits
-    // out the reboot and reconnects.
-    l4.send_data_unacked(apci, &payload).await?;
-    Ok(())
-}
-
 /// The process time above which bussard warns before it waits it out.
 ///
 /// KNX 3/5/2 §3.7.1.2.2 makes the process time a minimum the client waits
@@ -776,8 +750,8 @@ pub fn restart_process_wait(response: &RestartResponse) -> std::time::Duration {
 /// [`MgmtError::MalformedResponse`]; silence surfaces the connection's own error.
 ///
 /// A load procedure's `LdCtrlMasterReset` uses this form with the op's erase
-/// code and channel number on every device but KNX Virtual, which gets
-/// [`master_reset_via_basic_restart`] as its capture shows.
+/// code and channel number on every device, KNX Virtual included, as ETS
+/// does (issue #611).
 pub async fn master_reset<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     erase_code: u8,
