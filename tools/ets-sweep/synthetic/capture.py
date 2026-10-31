@@ -185,6 +185,8 @@ def sim_yaml(product: str, app: str, mask: str = "07B0", variant: str = VARIANT,
     prod = os.path.relpath(CATALOGUE / product / "build" / f"{product}.knxprod", OUT / product / variant)
     replay = ("# The device starts as the variant's earlier downloads left it:\nreplay:\n- base.pcapng\n"
               if base else "")
+    # The variant's own device options (VARIANTS "sim"), e.g. master_reset (#611).
+    options = "".join(f"  {k}: {v}\n" for k, v in VARIANTS.get(variant, {}).get("sim", {}).items())
     return (
         f"# knx-sim device of the ETS capture next to this file (epic #596), on loopback.\n"
         f"# The product is the committed xml/ zipped with the stub master:\n"
@@ -193,7 +195,7 @@ def sim_yaml(product: str, app: str, mask: str = "07B0", variant: str = VARIANT,
         f"# only in its fingerprint, which never reaches the wire.\n"
         f"gateway:\n  host: 127.0.0.1\n  port: 3672\n  tunnel_address: 1.1.254\n"
         f"devices:\n- address: 1.1.1\n  knxprod: {prod}\n  application: {app}\n"
-        f"  initial_state: unloaded\n  lsm_access: {lsm_access(mask)}\n{knxnet_sim(product)}{replay}"
+        f"  initial_state: unloaded\n  lsm_access: {lsm_access(mask)}\n{options}{knxnet_sim(product)}{replay}"
     )
 
 
@@ -573,6 +575,11 @@ VARIANTS: dict[str, dict] = {
     "calc-input": {"products": ("syn-param-calculation",),
                    "doc": "the input of the ParameterCalculation changed in ETS's parameter editor, then the "
                           "application download into a fresh device (#427)"},
+    "bare-restart": {"products": ("syn-master-reset",),
+                     "doc": "the application download into a device without the Master Reset: knx-sim "
+                            "`master_reset: refuse` answers the confirmed A_Restart with error code 2 "
+                            "(unsupported erase code); what ETS sends then (#611)",
+                     "sim": {"master_reset": "refuse"}},
 }
 # `other-app`: the application loaded first, a sibling of the same mask with
 # the smallest delta.
@@ -603,6 +610,7 @@ def variant_steps(product: str, variant: str) -> list[dict]:
         "other-app": [{**one, "product": OTHER_APP.get(product, "")}, dict(one)],
         "partial": [dict(one), {**one, "mode": "partial", "params": PARAMS.get(product, [])}],
         "calc-input": [{**one, "params": PARAMS.get(product, [])}],
+        "bare-restart": [dict(one)],
     }[variant]
     for i, step in enumerate(steps):
         step["name"] = "capture" if i == len(steps) - 1 else f"base-{i + 1}" if len(steps) > 2 else "base"
@@ -691,7 +699,8 @@ def run_variant(c, product: str, variant: str, signed: dict[str, tuple[Path, str
 
     # The sim's device is the variant's product throughout: `other-app` loads
     # the sibling's application into it first.
-    sim = sweep.RemoteSim(c, target.resolve(), sid, "1.1.1", 3672, None, run / "sim.log", mask=mask)
+    sim = sweep.RemoteSim(c, target.resolve(), sid, "1.1.1", 3672, None, run / "sim.log", mask=mask,
+                          device_options=VARIANTS[variant].get("sim"))
     in_project = None
     try:
         for step in steps:
