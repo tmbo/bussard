@@ -4,7 +4,7 @@
     <Manufacturer RefId="M-00FA">
       <Catalog>
         <CatalogSection Id="M-00FA_CS-27" Name="The buzzard's nest" Number="27" DefaultLanguage="en-US" NonRegRelevantDataVersion="0">
-          <CatalogItem Id="M-00FA_H-00FA00280021-1_HP-2821-10-0000_CI-NEST.2DPLUME-1" Name="Plumage programmer" Number="1" VisibleDescription="Plumage programmer" ProductRefId="M-00FA_H-00FA00280021-1_P-NEST.2DPLUME" Hardware2ProgramRefId="M-00FA_H-00FA00280021-1_HP-2821-10-0000" DefaultLanguage="en-US" NonRegRelevantDataVersion="0" />
+          <CatalogItem Id="M-00FA_H-00FA00280021-1_HP-2821-11-0000_CI-NEST.2DPLUME-1" Name="Plumage programmer" Number="1" VisibleDescription="Plumage programmer" ProductRefId="M-00FA_H-00FA00280021-1_P-NEST.2DPLUME" Hardware2ProgramRefId="M-00FA_H-00FA00280021-1_HP-2821-11-0000" DefaultLanguage="en-US" NonRegRelevantDataVersion="0" />
         </CatalogSection>
       </Catalog>
     </Manufacturer>

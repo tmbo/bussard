@@ -10,6 +10,6 @@ gateway:
 devices:
 - address: 1.1.1
   knxprod: ../../../../tests-support/synthetic-products/syn-s7-pid204/build/syn-s7-pid204.knxprod
-  application: M-00FA_A-2821-10-0000
+  application: M-00FA_A-2821-11-0000
   initial_state: unloaded
   lsm_access: memory
