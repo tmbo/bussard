@@ -4,7 +4,7 @@
     <Manufacturer RefId="M-00FA">
       <Catalog>
         <CatalogSection Id="M-00FA_CS-27" Name="The buzzard's nest" Number="27" DefaultLanguage="en-US" NonRegRelevantDataVersion="0">
-          <CatalogItem Id="M-00FA_H-00FA00270013-2_HP-2713-11-0000_CI-NEST.2DFEED3-1" Name="Triple chick feeder" Number="1" VisibleDescription="Triple chick feeder" ProductRefId="M-00FA_H-00FA00270013-2_P-NEST.2DFEED3" Hardware2ProgramRefId="M-00FA_H-00FA00270013-2_HP-2713-11-0000" DefaultLanguage="en-US" NonRegRelevantDataVersion="0" />
+          <CatalogItem Id="M-00FA_H-00FA00270013-1_HP-2713-13-0000_CI-NEST.2DTRIFEED-1" Name="Triple chick feeder" Number="1" VisibleDescription="Triple chick feeder" ProductRefId="M-00FA_H-00FA00270013-1_P-NEST.2DTRIFEED" Hardware2ProgramRefId="M-00FA_H-00FA00270013-1_HP-2713-13-0000" DefaultLanguage="en-US" NonRegRelevantDataVersion="0" />
         </CatalogSection>
       </Catalog>
     </Manufacturer>

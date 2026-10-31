@@ -13,24 +13,24 @@ land at +0x10, +0x14 and +0x18 and their objects are 2, 3 and 4. Issue #449
 (closed): bussard resolved an allocator-fed BaseOffset to 0 and wrote no
 repeated instance. The capture is expected to show 12 34 at the three bases
 and descriptors for objects 2 to 4, as bussard plans since #449; a
-regression row. Application version 0x11 and hardware version 2: the VM's
-ETS catalogue already holds an earlier "Triple Chick feeder" (order number
-NEST-FEED) under application 0x2713 version 0x10 and hardware 00FA00270013-1,
-which ETS keeps on a re-import (#650)."""
+regression row. Order number NEST-TRIFEED, not NEST-FEED3 as in #604: the
+capture driver's OCR of ETS's catalogue reads "NEST-FEED3" as "NEST-FEED"
+and never finds the row (2026-10-31). Application version 0x13: versions
+0x10 to 0x12 were imported into the VM's ETS under NEST-FEED3 by those
+attempts, and ETS keeps the first import of an application id (#650)."""
 construct = "ModuleDef with allocator-fed bases, instantiated three times by a Repeat"
 issues = [449]
 
 [product]
 text = "Triple chick feeder"
-order_number = "NEST-FEED3"
-hardware_name = "NEST-FEED3"
+order_number = "NEST-TRIFEED"
+hardware_name = "NEST-TRIFEED"
 hardware_serial = "00FA00270013"
-hardware_version = 2
 bus_current = 10
 
 [application]
 number = 0x2713
-version = 0x11
+version = 0x13
 name = "Triple chick feeder"
 mask = "07B0"
 load_procedure_style = "MergedProcedure"
