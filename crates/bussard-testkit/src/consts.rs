@@ -115,6 +115,10 @@ pub const LS_UNLOADED: u8 = 0;
 pub const LS_LOADED: u8 = 1;
 /// Load state `Loading`.
 pub const LS_LOADING: u8 = 2;
+/// Load state `Unloading`, intermediate (KNX 3/5/1 Table 92).
+pub const LS_UNLOADING: u8 = 4;
+/// Load state `LoadCompleting`, intermediate (KNX 3/5/1 Table 92).
+pub const LS_LOAD_COMPLETING: u8 = 5;
 /// Load event `StartLoading`.
 pub const LE_START_LOADING: u8 = 1;
 /// Load event `LoadCompleted`.

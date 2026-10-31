@@ -178,7 +178,7 @@ impl Device {
         // (Spec Resources 03.05.01 §4.23.2; ref `knx-device-spec-references.md`
         // §2.1/§2.3.)
         let value = if pid == PID_LOAD_STATE_CONTROL {
-            self.load_state(object).map(|s| vec![s.to_byte()])
+            self.report_load_state(object).map(|s| vec![s])
         } else if pid == PID_MCB_TABLE {
             // PID_MCB_TABLE (27) is device-computed: answer with the 8-octet
             // memory-control-block entry (size + CRC-16/AUG-CCITT) over the bytes
@@ -325,15 +325,18 @@ impl Device {
             if let Some(s7) = &self.sys7 {
                 if s7.profile.lsm_access == profile::LsmAccess::Property {
                     self.apply_sys7_event(tool, object, value)?;
-                    // Property-based LSM write echoes the resulting state.
-                    let state = self.load_state(object).unwrap_or(LoadState::Error);
+                    // Property-based LSM write echoes the resulting state
+                    // (the intermediate one first, bussard issue #479).
+                    let state = self
+                        .report_load_state(object)
+                        .unwrap_or(LoadState::Error.to_byte());
                     let mut data = vec![
                         object,
                         PID_LOAD_STATE_CONTROL,
                         (count << 4) | ((start >> 8) as u8 & 0x0F),
                         (start & 0xFF) as u8,
                     ];
-                    data.push(state.to_byte());
+                    data.push(state);
                     let resp = self.respond(tool, 0x3D6, &data);
                     return Ok(DeviceReaction {
                         responses: vec![resp],
