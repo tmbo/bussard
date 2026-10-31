@@ -259,6 +259,7 @@ product = "NEST-CALC"
 application = "{app_id}"
 mask = "07B0"
 parameters = [
+  {{ key = "operating-mode", ref = "P-1_R-1", param = "P-1" }},
   {{ key = "delay-s", ref = "P-2_R-2", param = "P-2" }},
   {{ key = "twice-the-delay-plus-one", ref = "P-3_R-3", param = "P-3" }},
 ]
@@ -430,5 +431,53 @@ fn test_name_parameters_synthetic_param_calculation_names_the_computed_output() 
         ),
         "{sentences:?}"
     );
+    Ok(())
+}
+
+/// A computed enumeration output reads in the diff as a set value of it
+/// does: its label with the code after it (issue #712). The product has no
+/// enumeration output, so the test adds a calculation `PC-9` that sets the
+/// `mode` enumeration from `delay`.
+#[test]
+fn test_name_parameters_synthetic_param_calculation_shows_an_enum_output_by_label() -> TestResult {
+    let (app, mut products) = param_calculation_product()?;
+    let mut product = products.get(&app.id).ok_or("no product model")?.clone();
+    product
+        .calculations
+        .push(bussard_model::dynamic::ParameterCalculation {
+            id: "PC-9".to_string(),
+            language: "JavaScript".to_string(),
+            lr_script: "m = d > 400 ? 2 : 1;".to_string(),
+            inputs: vec![bussard_model::dynamic::CalculationParameter {
+                param_ref: "P-2_R-2".to_string(),
+                alias: Some("d".to_string()),
+            }],
+            outputs: vec![bussard_model::dynamic::CalculationParameter {
+                param_ref: "P-1_R-1".to_string(),
+                alias: Some("m".to_string()),
+            }],
+        });
+    products.insert(app.id.clone(), product);
+    let old = param_calculation_model(&app.id, None)?;
+    let new = param_calculation_model(&app.id, Some("500"))?;
+    let mut changes = bussard_model::change::describe(&old, &new);
+    bussard_model::change::name_parameters(&mut changes, [&new, &old], &products);
+    let sentences: Vec<&str> = changes
+        .changes
+        .iter()
+        .map(|c| c.sentence.as_str())
+        .collect();
+    let mode = changes
+        .changes
+        .iter()
+        .find(|c| c.field.as_deref() == Some("operating-mode@P-1_R-1"))
+        .ok_or_else(|| format!("no change of mode: {sentences:?}"))?;
+    assert_eq!(
+        mode.sentence,
+        "Operating mode on syn-param-calculation (1.1.1): on (1) to automatic (2). \
+         Computed by calculation PC-9."
+    );
+    assert_eq!(mode.from.as_deref(), Some("1"));
+    assert_eq!(mode.to.as_deref(), Some("2"));
     Ok(())
 }

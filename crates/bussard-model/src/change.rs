@@ -351,23 +351,13 @@ pub fn settle_parameters(set: &mut ChangeSet, models: [&Model; 2], products: &Pr
         if def.labels.is_empty() {
             return true;
         }
-        let code = |v: &str| -> String {
-            enum_code(&def.labels, v)
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| v.trim().to_string())
-        };
+        let code = |v: &str| enum_value_code(def, v);
         if let (Some(from), Some(to)) = (change.from.as_deref(), change.to.as_deref())
             && code(from) == code(to)
         {
             return false;
         }
-        let shown = |v: &str| -> String {
-            let c = code(v);
-            match enum_label(&def.labels, &c) {
-                Some(label) => format!("{} ({c})", label.trim()),
-                None => v.to_string(),
-            }
-        };
+        let shown = |v: &str| shown_enum_value(def, v);
         let name = models
             .iter()
             .find_map(|m| m.devices.get(&ia))
@@ -477,11 +467,19 @@ pub fn compute_parameters(set: &mut ChangeSet, models: [&Model; 2], products: &P
                         .map(|p| format!("{}@{reference}", p.key))
                 })
                 .unwrap_or_else(|| format!("{reference}@{reference}"));
+            // Shown as a set value of the parameter is ([`settle_parameters`]).
+            let shown = |v: Option<&str>| -> Option<String> {
+                let v = v?;
+                Some(match parameter_def(models, products, ia, &key) {
+                    Some(def) if !def.labels.is_empty() => shown_enum_value(def, v),
+                    _ => v.to_string(),
+                })
+            };
             let Some(sentence) = parameter_sentence(
                 &parameter_label(&key),
                 &device_name,
-                from.as_deref(),
-                to.as_deref(),
+                shown(from.as_deref()).as_deref(),
+                shown(to.as_deref()).as_deref(),
             ) else {
                 continue;
             };
@@ -494,6 +492,24 @@ pub fn compute_parameters(set: &mut ChangeSet, models: [&Model; 2], products: &P
             let at = at.unwrap_or(set.changes.len()).min(set.changes.len());
             set.changes.insert(at, change);
         }
+    }
+}
+
+/// The code of enumeration value `v` of `def`, written as a label or a code.
+fn enum_value_code(def: &ParamDef, v: &str) -> String {
+    enum_code(&def.labels, v)
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| v.trim().to_string())
+}
+
+/// How a parameter change shows value `v` of `def`: an enumeration member as
+/// its label with the code after it (`Kurzer und langer Tastendruck (5)`),
+/// anything else as it is.
+fn shown_enum_value(def: &ParamDef, v: &str) -> String {
+    let c = enum_value_code(def, v);
+    match enum_label(&def.labels, &c) {
+        Some(label) => format!("{} ({c})", label.trim()),
+        None => v.to_string(),
     }
 }
 
