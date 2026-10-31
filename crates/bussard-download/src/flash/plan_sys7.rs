@@ -4331,10 +4331,10 @@ mod tests {
         for (id, kept) in &default_splits {
             println!("SPLIT-OUTSIDE-CHOOSE|{id}|{kept:?}");
         }
+        // CI's committed fixtures do not carry it; the full corpus does.
+        const JUNG: &str = "M-0004_A-5015-13-7E56-O00F4";
         assert!(
-            default_splits
-                .iter()
-                .any(|(id, _)| id == "M-0004_A-5015-13-7E56-O00F4"),
+            !seen.contains(JUNG) || default_splits.iter().any(|(id, _)| id == JUNG),
             "{default_splits:#?}"
         );
         assert!(
