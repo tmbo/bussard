@@ -20,12 +20,12 @@
 1.1.1|captures/synthetic/syn-master-reset/defaults/ets.pcapng|tests-support/synthetic-products/syn-master-reset/xml|M-00FA_A-270A-10-0000|syn-master-reset defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-master-reset-code4/defaults/ets.pcapng|tests-support/synthetic-products/syn-master-reset-code4/xml|M-00FA_A-278A-10-0000|syn-master-reset-code4 defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-minimal/defaults/ets.pcapng|tests-support/synthetic-products/syn-minimal/xml|M-00FA_A-2700-10-0000|syn-minimal defaults|100.0|loadctl=identical
-1.1.1|captures/synthetic/syn-minimal/no-ga/ets.pcapng|tests-support/synthetic-products/syn-minimal/xml|M-00FA_A-2700-10-0000|syn-minimal no-ga|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-minimal/links/ets.pcapng|tests-support/synthetic-products/syn-minimal/xml|M-00FA_A-2700-10-0000|syn-minimal links|100.0|loadctl=identical dir=captures/synthetic/syn-minimal/links/model
+1.1.1|captures/synthetic/syn-minimal/no-ga/ets.pcapng|tests-support/synthetic-products/syn-minimal/xml|M-00FA_A-2700-10-0000|syn-minimal no-ga|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-minimal/partial/ets.pcapng|tests-support/synthetic-products/syn-minimal/xml|M-00FA_A-2700-10-0000|syn-minimal partial|100.0|loadctl=identical run=params base=captures/synthetic/syn-minimal/partial/base.pcapng dir=captures/synthetic/syn-minimal/partial/model lsm=property
 1.1.1|captures/synthetic/syn-param-calculation/defaults/ets.pcapng|tests-support/synthetic-products/syn-param-calculation/xml|M-00FA_A-270B-10-0000|syn-param-calculation defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-product-07b0/defaults/ets.pcapng|tests-support/synthetic-products/syn-product-07b0/xml|M-00FA_A-2725-10-0000|syn-product-07b0 defaults|100.0|loadctl=identical
-1.1.1|captures/synthetic/syn-property-param/defaults/ets.pcapng|tests-support/synthetic-products/syn-property-param/xml|M-00FA_A-271E-10-0000|syn-property-param defaults|100.0|loadctl=identical props=differs
+1.1.1|captures/synthetic/syn-property-param/defaults/ets.pcapng|tests-support/synthetic-products/syn-property-param/xml|M-00FA_A-271E-10-0000|syn-property-param defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-relseg-fill/defaults/ets.pcapng|tests-support/synthetic-products/syn-relseg-fill/xml|M-00FA_A-2707-10-0000|syn-relseg-fill defaults|100.0|loadctl=identical
 1.1.1|captures/synthetic/syn-s7-0701/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-0701/xml|M-00FA_A-2801-10-0000|syn-s7-0701 defaults|100.0|loadctl=identical state=fresh
 1.1.1|captures/synthetic/syn-s7-0701/other-app/ets.pcapng|tests-support/synthetic-products/syn-s7-0701/xml|M-00FA_A-2801-10-0000|syn-s7-0701 other-app: ETS read-compared the image the device held and wrote no memory, #384|100.0|expect=not-comparable confirmed=identical loadctl=differs state=loaded
@@ -38,6 +38,7 @@
 1.1.1|captures/synthetic/syn-s7-hidden-default/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-hidden-default/xml|M-00FA_A-280D-10-0000|syn-s7-hidden-default defaults|100.0|loadctl=identical state=fresh
 1.1.1|captures/synthetic/syn-s7-hidden-default-p11/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-hidden-default-p11/xml|M-00FA_A-288D-10-0000|syn-s7-hidden-default-p11 defaults|100.0|loadctl=identical state=fresh
 1.1.1|captures/synthetic/syn-s7-lsm5/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-lsm5/xml|M-00FA_A-280F-11-0000|syn-s7-lsm5 defaults|100.0|loadctl=identical state=fresh
+1.1.1|captures/synthetic/syn-s7-no-comobjects/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-no-comobjects/xml|M-00FA_A-281A-10-0000|syn-s7-no-comobjects defaults|100.0|loadctl=identical state=fresh
 1.1.1|captures/synthetic/syn-s7-pei80/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-pei80/xml|M-00FA_A-2810-10-0000|syn-s7-pei80 defaults|100.0|loadctl=identical state=fresh
 1.1.1|captures/synthetic/syn-s7-taskptr/defaults/ets.pcapng|tests-support/synthetic-products/syn-s7-taskptr/xml|M-00FA_A-2811-10-0000|syn-s7-taskptr defaults|100.0|loadctl=identical state=fresh
 1.1.1|captures/synthetic/syn-text-initialvalue/defaults/ets.pcapng|tests-support/synthetic-products/syn-text-initialvalue/xml|M-00FA_A-2718-10-0000|syn-text-initialvalue defaults|100.0|loadctl=identical
