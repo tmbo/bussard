@@ -40,6 +40,11 @@ architecture.
   "Hardware revision: to R1.9" and `01000000` for "from R2.0"; the default is
   "from R2.0", so the simulated device reports `01000000`. A configuration
   that selects the other revision is refused, as on that hardware.
+  A property the procedure writes with `LdCtrlWriteProp` is seeded writable
+  and described by its size: `Count` elements of `len / Count` octets of
+  `InlineData`, with the generic PDT of that element size (a `Count="2"` write
+  of 10 octets is two `PDT_GENERIC_05` elements). ETS reads that description
+  before the write and skips a write that does not fit it (#692).
 - A virtual bus with an **observable event stream** (`src/bus`) — the seam a
   future read-only HTML visualization will consume. Today a `TracingSink` logs
   every telegram + state change to stdout.
