@@ -1,0 +1,1 @@
+- `bussard mcp --help` builds the tier flags' tool lists and the tool counts per tier from the server's registration tables, so they always match what the server registers. `--help` texts no longer cite issue numbers. The mask table in the device-support page marks `flash` on `0021` as `property-only` (#704).

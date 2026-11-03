@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 /// The mask whose property-only procedures bussard plans although it does
 /// not download the family (0021, the BCU2-family mask of the Jung IPS 300
 /// SREG KNX IP interface, issue #390).
-pub(super) const PROPERTY_ONLY_MASK: u16 = 0x0021;
+pub(super) const PROPERTY_ONLY_MASK: u16 = bussard_mgmt::PROPERTY_ONLY_FLASH_MASK;
 
 /// The interface object type of the device object: always interface object
 /// 0 (KNX 3/5/1), so an op naming it by type is addressed by index.

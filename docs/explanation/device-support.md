@@ -20,7 +20,7 @@ uses the same table.
 | `0012` | System 1 | TP1 | no | no | no | yes | classified but unsupported; program it with ETS |
 | `0013` | System 1 | TP1 | no | no | no | yes | classified but unsupported; program it with ETS |
 | `0020` | System 2 | TP1 | no | no | no | yes | classified but unsupported; program it with ETS |
-| `0021` | System 2 | TP1 | no | no | no | yes | classified but unsupported; program it with ETS |
+| `0021` | System 2 | TP1 | no | property-only | no | yes | classified but unsupported; program it with ETS |
 | `0025` | System 2 | TP1 | no | no | no | yes | classified but unsupported; program it with ETS |
 | `0300` | System 2 | TP1 | no | no | no | yes | classified but unsupported; program it with ETS |
 | `0310` | System 2 | TP1 | no | no | no | yes | classified but unsupported; program it with ETS |
@@ -33,16 +33,17 @@ uses the same table.
 | `57B0` | System B | KNX-IP | yes | yes | yes | yes | tables live in device-allocated segments found via PID_TABLE_REFERENCE; full read and write support |
 <!-- mask-table:end -->
 
-One exception to the `flash` column: on mask `0021` (System 2, such as the
-Jung IPS 300 SREG KNX IP interface) `flash` runs an application whose load
-procedure holds only property compares and writes. It loads no object, never
+The `flash` column reads `property-only` on mask `0021` (System 2, such as
+the Jung IPS 300 SREG KNX IP interface): `flash` runs an application there
+only when its load procedure holds property compares and writes alone. It loads no object, never
 factory-resets the interface, and ends with a read-back of every property it
 wrote. Every other System 1 and System 2 download (BCU1, BCU2: memory
 allocation and table writes) is refused before anything is written; program
 those devices with ETS.
 
 - **`flash`** supports System B (`07B0`, and the `57B0` / `27B0` KNX-IP and
-  RF variants) and System 7 (`0705` / `0701` / `0700`). Another family, a mask
+  RF variants), System 7 (`0705` / `0701` / `0700`) and the property-only
+  procedures on `0021`. Another family, a mask
   that differs between application and device, a System B device whose
   manufacturer is not the application's, or a load procedure with an
   operation bussard cannot execute refuses the procedure rather than leaving
