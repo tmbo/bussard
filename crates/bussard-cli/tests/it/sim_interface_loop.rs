@@ -24,11 +24,22 @@ struct Sim {
 
 impl Sim {
     fn start(bin: &Path, root: &Path, listed: bool) -> Result<Sim, Box<dyn std::error::Error>> {
+        Sim::start_as(bin, root, listed, "")
+    }
+
+    /// [`start`](Self::start) with `gateway_extra` appended to the `gateway`
+    /// block of the configuration.
+    fn start_as(
+        bin: &Path,
+        root: &Path,
+        listed: bool,
+        gateway_extra: &str,
+    ) -> Result<Sim, Box<dyn std::error::Error>> {
         let port = std::net::UdpSocket::bind("127.0.0.1:0")?
             .local_addr()?
             .port();
         let yaml = format!(
-            "gateway:\n  host: \"127.0.0.1\"\n  port: {port}\n\ndevices:\n  - address: \"1.1.200\"\n    \
+            "gateway:\n  host: \"127.0.0.1\"\n  port: {port}\n{gateway_extra}\ndevices:\n  - address: \"1.1.200\"\n    \
              initial_state: loaded\n    knxnet:\n      friendly_name: \"Bocklisch Alpha\"\n      \
              tunnels: [\"1.1.22\", \"1.1.23\", \"1.1.24\", \"1.1.25\"]\n      tunnel_slots: 8\n      \
              listed: {listed}\n"
@@ -101,12 +112,18 @@ fn bussard(
 }
 
 fn run_loop(listed: bool) -> TestResult {
+    run_loop_via(listed, false)
+}
+
+/// The loop, over a tunnel or (`device_management`) over a KNXnet/IP device
+/// management connection to the simulated interface itself (issue #523).
+fn run_loop_via(listed: bool, device_management: bool) -> TestResult {
     let Some(bin) = std::env::var_os("BUSSARD_KNX_SIM_BIN").map(PathBuf::from) else {
         eprintln!("BUSSARD_KNX_SIM_BIN unset; skipping the knx-sim interface loop.");
         return Ok(());
     };
     let root = std::env::temp_dir().join(format!(
-        "bussard-sim-interface-{}-{listed}",
+        "bussard-sim-interface-{}-{listed}-{device_management}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&root);
@@ -119,8 +136,19 @@ fn run_loop(listed: bool) -> TestResult {
          assignment = \"dhcp\"\nfriendly_name = \"Bocklisch Beta\"\n\
          tunnels = [\"1.1.22\", \"1.1.23\", \"1.1.24\", \"1.1.25\", \"1.1.26\", \"1.1.27\"]\n",
     )?;
-    let sim = Sim::start(&bin, &root, listed)?;
+    let sim = if device_management {
+        Sim::start_as(&bin, &root, listed, "  interface_device: \"1.1.200\"\n")?
+    } else {
+        Sim::start(&bin, &root, listed)?
+    };
     let gateway = format!("127.0.0.1:{}", sim.port);
+    let bussard = |model: &Path, gateway: &str, args: &[&str]| {
+        let mut args = args.to_vec();
+        if device_management {
+            args.push("--device-management");
+        }
+        bussard(model, gateway, &args)
+    };
 
     let plan = bussard(&model, &gateway, &["plan", "1.1.200"])?;
     let out = String::from_utf8_lossy(&plan.stdout);
@@ -155,4 +183,9 @@ fn test_sim_interface_apply_then_plan_is_a_noop_by_type() -> TestResult {
 #[test]
 fn test_sim_interface_apply_then_plan_is_a_noop_by_index() -> TestResult {
     run_loop(true)
+}
+
+#[test]
+fn test_sim_interface_apply_then_plan_is_a_noop_over_device_management() -> TestResult {
+    run_loop_via(false, true)
 }

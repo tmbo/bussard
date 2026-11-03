@@ -335,3 +335,76 @@ fn test_interface_secure_on_then_off_against_knx_sim() -> TestResult {
     drop(sim);
     Ok(())
 }
+
+/// Both switches over a KNXnet/IP device management connection (issue #523):
+/// `on` over plain UDP to the factory-state interface, `off` inside a
+/// KNXnet/IP Secure session of the management user (user 1) whose password
+/// `on` generated into the key store, over TCP.
+#[test]
+fn test_interface_secure_on_then_off_over_device_management_against_knx_sim() -> TestResult {
+    let Some(bin) = std::env::var_os("BUSSARD_KNX_SIM_BIN").map(PathBuf::from) else {
+        eprintln!("BUSSARD_KNX_SIM_BIN unset; skipping the knx-sim device management loop.");
+        return Ok(());
+    };
+    let root = scratch("sim-devmgmt")?;
+    let model = model(&root.0)?;
+    let sim = Sim::start(&bin, &root.0)?;
+    let gateway = format!("127.0.0.1:{}", sim.port);
+
+    let on = bussard(
+        &model,
+        &gateway,
+        &[
+            "interface",
+            "secure",
+            "on",
+            "1.1.200",
+            "--yes",
+            "--device-management",
+        ],
+    )?;
+    let out = String::from_utf8_lossy(&on.stdout);
+    let err = String::from_utf8_lossy(&on.stderr);
+    let log = std::fs::read_to_string(root.0.join("sim.log")).unwrap_or_default();
+    assert!(on.status.success(), "on: {out}\n{err}\nsim: {log}");
+    assert!(
+        out.contains("KNXnet/IP Secure switched on for 1.1.200: verified"),
+        "{out}"
+    );
+    assert!(
+        log.contains("KNXnet/IP Secure on, secure-only tunnelling"),
+        "{log}"
+    );
+
+    let off = bussard(
+        &model,
+        &gateway,
+        &[
+            "interface",
+            "secure",
+            "off",
+            "1.1.200",
+            "--yes",
+            "--allow-self-reconfigure",
+            "--device-management",
+        ],
+    )?;
+    let out = String::from_utf8_lossy(&off.stdout);
+    let err = String::from_utf8_lossy(&off.stderr);
+    let log = std::fs::read_to_string(root.0.join("sim.log")).unwrap_or_default();
+    assert!(off.status.success(), "off: {out}\n{err}\nsim: {log}");
+    assert!(
+        out.contains("KNXnet/IP Secure switched off for 1.1.200: verified"),
+        "{out}"
+    );
+    assert!(
+        log.contains("KNXnet/IP Secure off, plain tunnelling"),
+        "{log}"
+    );
+    // `off` ran inside a session; the sim admits only the management user
+    // to a device management connection there.
+    assert!(log.contains("SECURE session authenticated"), "{log}");
+    assert!(!log.contains("not the management user"), "{log}");
+    drop(sim);
+    Ok(())
+}

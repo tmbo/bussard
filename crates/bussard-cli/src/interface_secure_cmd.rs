@@ -145,6 +145,32 @@ pub(crate) fn run(
     let runtime = tokio::runtime::Runtime::new()?;
     let probed = runtime.block_on(probe_gateway(&config));
     let gateway_ia = probed.and_then(|(ia, _)| ia);
+    // A device management connection (issue #523): asked for, or the
+    // interface is the gateway and has no free tunnelling slot.
+    let store_path = KeyStore::path(dir);
+    let config = if config.transport == bussard_transport::TransportKind::DeviceManagement {
+        crate::interface_session::device_management_config(
+            &runtime,
+            config,
+            target,
+            Some(&store_path),
+        )?
+    } else if gateway_ia == Some(target)
+        && runtime.block_on(crate::interface_session::tunnel_slots_full(&config))
+    {
+        eprintln!(
+            "note: the interface has no free tunnelling connection; switching {target} over a \
+             KNXnet/IP device management connection instead of a tunnel"
+        );
+        crate::interface_session::device_management_config(
+            &runtime,
+            config,
+            target,
+            Some(&store_path),
+        )?
+    } else {
+        config
+    };
     if switch == Switch::On && gateway_ia == Some(target) && probed.is_some_and(|(_, s)| s) {
         eprintln!(
             "refusing: {target} already runs KNXnet/IP Secure (its tunnelling is secure-only). \

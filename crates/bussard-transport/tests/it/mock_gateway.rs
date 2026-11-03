@@ -1328,7 +1328,7 @@ async fn test_tunnel_mock_gateway_with_data_port_serves_the_session() -> TestRes
 fn tunnel_of(conn: &Transport) -> TestResult<&bussard_transport::Tunnel> {
     match conn {
         Transport::Tunnel(t) => Ok(t),
-        Transport::Router(_) => Err("expected a tunnel".into()),
+        Transport::Router(_) | Transport::DeviceManagement(_) => Err("expected a tunnel".into()),
     }
 }
 

@@ -135,6 +135,13 @@ pub struct GatewayStats {
     /// endpoint (TUNNELLING_REQUEST/ACK on the control port, any other service
     /// on the data port). They are dropped unanswered.
     pub misrouted: usize,
+    /// The cEMI frames received on a device management connection (issue
+    /// #523), in order: `M_PropRead.req` (`FC`), `M_PropWrite.req` (`F6`),
+    /// `M_Reset.req` (`F1`), cEMI `T_Data_Connected.req` (`41`) and
+    /// `T_Data_Individual.req` (`4A`).
+    pub device_configuration: Vec<Vec<u8>>,
+    /// DEVICE_CONFIGURATION_ACKs received from the client.
+    pub device_configuration_acks: usize,
     /// Whether the gateway task has ended.
     pub finished: bool,
 }
@@ -157,6 +164,7 @@ pub struct GatewayBuilder {
     confirm: Option<(Duration, ConfirmHook)>,
     tunnel_ia: u16,
     data_port: bool,
+    interface_device: Option<IndividualAddress>,
 }
 
 impl Default for GatewayBuilder {
@@ -178,6 +186,7 @@ impl Default for GatewayBuilder {
             confirm: None,
             tunnel_ia: crate::consts::TUNNEL_IA_RAW,
             data_port: false,
+            interface_device: None,
         }
     }
 }
@@ -191,6 +200,17 @@ impl GatewayBuilder {
     /// counted in [`GatewayStats::misrouted`].
     pub fn data_port(mut self) -> Self {
         self.data_port = true;
+        self
+    }
+
+    /// Serves device management connections (CRI `02 03`, issue #523) for
+    /// the device at `address` on the line: the KNXnet/IP server's own
+    /// device. Without it a device management CONNECT is refused with
+    /// `E_CONNECTION_TYPE`. The connection's channel is the tunnel channel
+    /// with bit 7 set; [`refuse_connect`](Self::refuse_connect) does not
+    /// apply to it (it takes no tunnelling slot).
+    pub fn interface_device(mut self, address: IndividualAddress) -> Self {
+        self.interface_device = Some(address);
         self
     }
 
@@ -392,6 +412,8 @@ impl GatewayBuilder {
             served: 0,
             down_until: None,
             stale_channel: None,
+            interface_device: self.interface_device,
+            mgmt: None,
         };
         let task = tokio::spawn(server.run(cmd_rx));
         Ok(MockGateway {
@@ -605,6 +627,24 @@ struct Server {
     down_until: Option<Option<tokio::time::Instant>>,
     /// The channel the outage dropped, until the client disconnects it.
     stale_channel: Option<u8>,
+    /// The device that answers device management connections.
+    interface_device: Option<IndividualAddress>,
+    /// The open device management connection.
+    mgmt: Option<Mgmt>,
+}
+
+/// One device management connection of the mock (issue #523).
+struct Mgmt {
+    /// The client.
+    peer: SocketAddr,
+    /// Its channel id.
+    channel: u8,
+    /// The next sequence number expected from the client.
+    rx_seq: u8,
+    /// The sequence number of the next request to the client.
+    tx_seq: u8,
+    /// The transport connection to the device.
+    session: crate::devmgmt::MgmtSession,
 }
 
 /// Whether the gateway loop should keep going.
@@ -797,7 +837,45 @@ impl Server {
             }
         }
         match service {
+            ServiceType::ConnectRequest
+                if body.get(17) == Some(&knxnet::CONNECTION_TYPE_DEVICE_MGMT) =>
+            {
+                self.on_mgmt_connect(from).await
+            }
             ServiceType::ConnectRequest => self.on_connect(from).await,
+            ServiceType::DeviceConfigurationRequest => self.on_device_configuration(&body).await,
+            ServiceType::DeviceConfigurationAck => {
+                self.stats.send_modify(|s| s.device_configuration_acks += 1);
+                Flow::Continue
+            }
+            ServiceType::ConnectionstateRequest
+                if self
+                    .mgmt
+                    .as_ref()
+                    .is_some_and(|m| body.first() == Some(&m.channel)) =>
+            {
+                self.stats.send_modify(|s| s.heartbeats += 1);
+                let channel = body.first().copied().unwrap_or(0);
+                let resp = knxnet::connectionstate_response(channel, 0);
+                self.send(&resp, from).await
+            }
+            ServiceType::DisconnectRequest
+                if self
+                    .mgmt
+                    .as_ref()
+                    .is_some_and(|m| body.first() == Some(&m.channel)) =>
+            {
+                let channel = body.first().copied().unwrap_or(0);
+                self.mgmt = None;
+                let resp = knxnet::disconnect_response(channel, 0);
+                let flow = self.send(&resp, from).await;
+                self.stats.send_modify(|s| s.disconnects += 1);
+                if self.keep_serving || self.peer.is_some() {
+                    flow
+                } else {
+                    Flow::Stop
+                }
+            }
             ServiceType::ConnectionstateRequest => {
                 self.stats.send_modify(|s| s.heartbeats += 1);
                 if self.answer_heartbeats {
@@ -853,6 +931,85 @@ impl Server {
         self.gw_seq = self.gw_seq.wrapping_add(1);
         let frame = wire::frame(ServiceType::TunnelingFeatureResponse, &response);
         self.send_data(&frame, from).await
+    }
+
+    /// Answers a device management CONNECT_REQUEST (3/8/3 §4.2.4): the
+    /// channel, the control endpoint as data endpoint, the CRD `02 03`.
+    async fn on_mgmt_connect(&mut self, from: SocketAddr) -> Flow {
+        self.stats.send_modify(|s| s.connects += 1);
+        if self.interface_device.is_none() {
+            let reply = wire::frame(ServiceType::ConnectResponse, &connect_refusal_body(0x22));
+            return self.send(&reply, from).await;
+        }
+        // `refuse_connect` models the tunnelling slots; a device management
+        // connection takes none of them.
+        let channel = self.channel | 0x80;
+        let port = self.sock.local_addr().map(|a| a.port()).unwrap_or(0);
+        let mut body = vec![channel, 0x00, 0x08, 0x01, 127, 0, 0, 1];
+        body.extend_from_slice(&port.to_be_bytes());
+        body.extend_from_slice(&[0x02, knxnet::CONNECTION_TYPE_DEVICE_MGMT]);
+        let reply = wire::frame(ServiceType::ConnectResponse, &body);
+        self.mgmt = Some(Mgmt {
+            peer: from,
+            channel,
+            rx_seq: 0,
+            tx_seq: 0,
+            session: crate::devmgmt::MgmtSession::default(),
+        });
+        self.stats.send_modify(|s| s.channels.push(channel));
+        self.send(&reply, from).await
+    }
+
+    /// A DEVICE_CONFIGURATION_REQUEST: ACK it (3/8/3 §2.3.2: a repeat is
+    /// acknowledged again, an unexpected sequence discarded), then send the
+    /// interface device's answers as DEVICE_CONFIGURATION_REQUESTs.
+    async fn on_device_configuration(&mut self, body: &[u8]) -> Flow {
+        let Ok((header, cemi)) = knxnet::parse_tunneling_header(body) else {
+            return Flow::Continue;
+        };
+        let (Some(mgmt), Some(device)) = (self.mgmt.as_mut(), self.interface_device) else {
+            return Flow::Continue;
+        };
+        let peer = mgmt.peer;
+        if header.channel_id != mgmt.channel {
+            let ack = knxnet::device_configuration_ack(header.channel_id, header.seq, 0x21);
+            return self.send(&ack, peer).await;
+        }
+        if header.seq == mgmt.rx_seq.wrapping_sub(1) {
+            let ack = knxnet::device_configuration_ack(mgmt.channel, header.seq, 0);
+            return self.send(&ack, peer).await;
+        }
+        if header.seq != mgmt.rx_seq {
+            return Flow::Continue;
+        }
+        mgmt.rx_seq = mgmt.rx_seq.wrapping_add(1);
+        let channel = mgmt.channel;
+        let cemi = cemi.to_vec();
+        self.stats
+            .send_modify(|s| s.device_configuration.push(cemi.clone()));
+        let ack = knxnet::device_configuration_ack(channel, header.seq, 0);
+        if matches!(self.send(&ack, peer).await, Flow::Stop) {
+            return Flow::Stop;
+        }
+        let answers = match (self.line.lock(), self.mgmt.as_mut()) {
+            (Ok(mut line), Some(mgmt)) => mgmt.session.serve(&mut line, device, &cemi),
+            _ => Vec::new(),
+        };
+        for answer in answers {
+            let Some(mgmt) = self.mgmt.as_mut() else {
+                break;
+            };
+            let header = ConnectionHeader {
+                channel_id: mgmt.channel,
+                seq: mgmt.tx_seq,
+            };
+            mgmt.tx_seq = mgmt.tx_seq.wrapping_add(1);
+            let frame = knxnet::device_configuration_request(header, &answer);
+            if matches!(self.send(&frame, peer).await, Flow::Stop) {
+                return Flow::Stop;
+            }
+        }
+        Flow::Continue
     }
 
     async fn on_connect(&mut self, from: SocketAddr) -> Flow {

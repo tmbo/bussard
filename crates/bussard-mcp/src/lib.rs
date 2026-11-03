@@ -308,6 +308,7 @@ pub fn transport_tag(kind: &TransportKind) -> &'static str {
     match kind {
         TransportKind::Tunnel => "tunnel",
         TransportKind::Routing => "routing",
+        TransportKind::DeviceManagement => "device-management",
     }
 }
 

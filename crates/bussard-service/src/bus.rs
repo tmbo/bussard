@@ -231,11 +231,17 @@ impl BusService {
     /// reconnect, a re-established tunnel or a different assigned address
     /// probes again; an occupied address refuses every time.
     ///
+    /// A device management connection (issue #523) has no bus to probe: its
+    /// source is `0.0.0`, as ETS presents on one, and nothing is sent.
+    ///
     /// # Errors
     ///
     /// [`ServiceError::SourceCheck`] when a device answers at that address or
     /// the probe cannot run.
     pub async fn checked_source(&self, skip: bool) -> Result<IndividualAddress, ServiceError> {
+        if self.config.transport == bussard_transport::TransportKind::DeviceManagement {
+            return Ok(IndividualAddress::from_raw(0));
+        }
         Ok(self.probe_memo.checked_source(&self.handle, skip).await?)
     }
 

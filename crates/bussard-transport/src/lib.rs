@@ -51,6 +51,7 @@
 pub mod cemi;
 pub mod config;
 mod conn;
+pub mod devmgmt;
 pub mod discovery;
 mod error;
 pub mod guidance;
@@ -69,6 +70,7 @@ pub use config::{
     TunnelReconnect,
 };
 pub use conn::{BusConnection, TimestampedFrame};
+pub use devmgmt::DeviceManagement;
 pub use discovery::{
     describe_gateway, describe_gateway_extended, discover, discover_all, local_ipv4_interfaces,
 };
@@ -85,7 +87,8 @@ pub use tunnel::{
 
 use crate::cemi::CemiFrame;
 
-/// A config-driven bus connection, dispatching to [`Tunnel`] or [`Router`].
+/// A config-driven bus connection, dispatching to [`Tunnel`], [`Router`] or
+/// [`DeviceManagement`].
 ///
 /// Use [`Transport::connect`] as the single entry point when the transport is
 /// chosen at runtime from configuration.
@@ -94,6 +97,8 @@ pub enum Transport {
     Tunnel(Tunnel),
     /// A routing (multicast) connection.
     Router(Router),
+    /// A device management connection to the gateway itself (issue #523).
+    DeviceManagement(DeviceManagement),
 }
 
 impl Transport {
@@ -102,6 +107,9 @@ impl Transport {
         match config.transport {
             TransportKind::Tunnel => Ok(Transport::Tunnel(Tunnel::connect(config).await?)),
             TransportKind::Routing => Ok(Transport::Router(Router::connect(config).await?)),
+            TransportKind::DeviceManagement => Ok(Transport::DeviceManagement(
+                DeviceManagement::connect(config).await?,
+            )),
         }
     }
 
@@ -115,7 +123,7 @@ impl Transport {
     pub fn assigned_individual_address(&self) -> Option<u16> {
         match self {
             Transport::Tunnel(t) => t.assigned_individual_address().filter(|&ia| ia != 0),
-            Transport::Router(_) => None,
+            Transport::Router(_) | Transport::DeviceManagement(_) => None,
         }
     }
 
@@ -125,6 +133,7 @@ impl Transport {
         match self {
             Transport::Tunnel(t) => t.secure_user_id(),
             Transport::Router(_) => None,
+            Transport::DeviceManagement(d) => d.secure_user_id(),
         }
     }
 
@@ -134,7 +143,7 @@ impl Transport {
     pub fn max_apdu_length(&self) -> Option<u16> {
         match self {
             Transport::Tunnel(t) => t.max_apdu_length(),
-            Transport::Router(_) => None,
+            Transport::Router(_) | Transport::DeviceManagement(_) => None,
         }
     }
 
@@ -144,7 +153,7 @@ impl Transport {
     pub fn link_state(&self) -> Option<tokio::sync::watch::Receiver<LinkState>> {
         match self {
             Transport::Tunnel(t) => Some(t.link_state()),
-            Transport::Router(_) => None,
+            Transport::Router(_) | Transport::DeviceManagement(_) => None,
         }
     }
 }
@@ -154,6 +163,7 @@ impl BusConnection for Transport {
         match self {
             Transport::Tunnel(t) => t.send(frame).await,
             Transport::Router(r) => r.send(frame).await,
+            Transport::DeviceManagement(d) => d.send(frame).await,
         }
     }
 
@@ -161,6 +171,7 @@ impl BusConnection for Transport {
         match self {
             Transport::Tunnel(t) => t.recv().await,
             Transport::Router(r) => r.recv().await,
+            Transport::DeviceManagement(d) => d.recv().await,
         }
     }
 
@@ -168,6 +179,7 @@ impl BusConnection for Transport {
         match self {
             Transport::Tunnel(t) => t.close().await,
             Transport::Router(r) => r.close().await,
+            Transport::DeviceManagement(d) => d.close().await,
         }
     }
 }

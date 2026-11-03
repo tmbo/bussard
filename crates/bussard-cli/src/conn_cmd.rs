@@ -31,6 +31,10 @@ pub struct ConnOverrides {
     /// `--refresh-facts`: ignore the stored device facts
     /// (`<dir>/.bussard/facts/<ia>.toml`, issue #209) and read them again.
     pub refresh_facts: bool,
+    /// `--device-management`: manage the KNXnet/IP interface named by
+    /// `--gateway` over a device management connection instead of a tunnel
+    /// (issue #523).
+    pub device_management: bool,
 }
 
 /// Environment variable that names the model directory when `--dir` is not
@@ -361,6 +365,15 @@ pub struct BusSession {
 }
 
 impl BusSession {
+    /// A session over an already opened `service`, closed on drop like one
+    /// from [`open`](Self::open).
+    pub fn from_service(runtime: &tokio::runtime::Runtime, service: BusService) -> BusSession {
+        BusSession {
+            service,
+            runtime: runtime.handle().clone(),
+        }
+    }
+
     /// Opens the tunnel on `runtime` under `policy` (applying the write gate)
     /// and waits (bounded) for it to come up.
     ///
@@ -521,6 +534,12 @@ pub fn resolve_config(
         )
     };
 
+    if use_routing && overrides.device_management {
+        anyhow::bail!(
+            "--device-management connects to one KNXnet/IP interface; it cannot be combined with \
+             routing (pass --gateway host[:port])"
+        );
+    }
     if use_routing {
         let multicast = match config_conn.and_then(|c| c.multicast.as_deref()) {
             Some(m) => parse_socket(m).context("parsing multicast address from bussard.toml")?,
@@ -548,7 +567,11 @@ pub fn resolve_config(
     let gateway = parse_socket(&gateway_str).context("parsing gateway address")?;
 
     Ok(ConnectionConfig {
-        transport: TransportKind::Tunnel,
+        transport: if overrides.device_management {
+            TransportKind::DeviceManagement
+        } else {
+            TransportKind::Tunnel
+        },
         gateway: Some(gateway),
         multicast: SocketAddrV4::new(DEFAULT_MULTICAST, DEFAULT_PORT),
         multicast_ttl: DEFAULT_MULTICAST_TTL,

@@ -367,6 +367,10 @@ pub enum TransportKind {
     Tunnel,
     /// KNXnet/IP routing (multicast).
     Routing,
+    /// A KNXnet/IP device management connection to the gateway itself
+    /// (connection type 03h, issue #523): it manages the KNXnet/IP server's
+    /// own device and has no bus behind it.
+    DeviceManagement,
 }
 
 /// Configuration for opening a bus connection.
@@ -408,6 +412,22 @@ impl ConnectionConfig {
             reconnect: TunnelReconnect::default(),
             secure: None,
         }
+    }
+
+    /// Convenience constructor for a device management connection to the
+    /// KNXnet/IP server at `gateway` (issue #523).
+    pub fn device_management(gateway: SocketAddrV4) -> Self {
+        ConnectionConfig {
+            transport: TransportKind::DeviceManagement,
+            ..ConnectionConfig::tunnel(gateway)
+        }
+    }
+
+    /// This configuration as a device management connection to the same
+    /// gateway, with the same credentials (issue #523).
+    pub fn into_device_management(mut self) -> Self {
+        self.transport = TransportKind::DeviceManagement;
+        self
     }
 
     /// Convenience constructor for a routing (multicast) connection using the

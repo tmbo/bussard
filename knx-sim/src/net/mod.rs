@@ -70,6 +70,9 @@ struct SecureGateway {
     secure_only: bool,
     /// (user id, password key, tunnel individual address).
     users: Vec<(u8, [u8; 16], u16)>,
+    /// The password key of the management user (user 1), which may open
+    /// device management connections (3/8/9 §2.2.1.4.2; bussard #523).
+    management: Option<[u8; 16]>,
     /// The TCP endpoint (`None` with `tcp: false`).
     listener: Option<TcpListener>,
     next_id: usize,
@@ -88,6 +91,9 @@ struct SecureGateway {
 const SESSION_TIMEOUT: Duration = Duration::from_secs(60);
 /// `timeoutAuthentication` (KNX IP Secure 3/8/9 §2.2.3.5.2.1.1).
 const AUTHENTICATION_TIMEOUT: Duration = Duration::from_secs(10);
+/// The management user's id: only it may open a device management
+/// connection inside a secure session (3/8/9 §2.2.1.4.2).
+const MANAGEMENT_USER: u8 = 1;
 /// The exact length of a SESSION_REQUEST (3/8/9 §2.2.3.6.4).
 const SESSION_REQUEST_LEN: usize = 46;
 /// The exact length of a SESSION_AUTHENTICATE (3/8/9 §2.2.3.8.5).
@@ -349,6 +355,7 @@ impl KnxnetIpServer {
             device_key: state.device_key,
             secure_only: true,
             users: state.users,
+            management: state.management,
             listener,
             next_id: 0,
             conns: BTreeMap::new(),
@@ -386,6 +393,7 @@ impl KnxnetIpServer {
             device_key: ipsecure::device_authentication_key(&cfg.device_authentication_code),
             secure_only: cfg.secure_only,
             users,
+            management: None,
             listener,
             next_id: 0,
             conns: BTreeMap::new(),
@@ -902,7 +910,13 @@ impl KnxnetIpServer {
             return false;
         };
         let device_key = secure.device_key;
-        let users: Vec<(u8, [u8; 16])> = secure.users.iter().map(|(i, k, _)| (*i, *k)).collect();
+        let mut users: Vec<(u8, [u8; 16])> =
+            secure.users.iter().map(|(i, k, _)| (*i, *k)).collect();
+        if let Some(key) = secure.management
+            && !users.iter().any(|(i, _)| *i == MANAGEMENT_USER)
+        {
+            users.push((MANAGEMENT_USER, key));
+        }
         let all_users = secure.users.clone();
         let tunnel_of = |user: u8| {
             all_users
@@ -1152,6 +1166,18 @@ impl KnxnetIpServer {
             let out = KnxnetIpFrame::encode(service::CONNECT_RESPONSE, &[0x00, E_CONNECTION_TYPE]);
             return self.send_frame(&out, peer);
         }
+        // Inside a session only the management user may (3/8/9 §2.2.1.4.2).
+        if let Some(SessionState::Established { user, .. }) = self.session_state(peer)
+            && *user != MANAGEMENT_USER
+        {
+            tracing::info!(
+                ?peer,
+                user,
+                "device management CONNECT refused: not the management user"
+            );
+            let out = KnxnetIpFrame::encode(service::CONNECT_RESPONSE, &[0x00, E_CONNECTION_TYPE]);
+            return self.send_frame(&out, peer);
+        }
         let channel = 0x80u8.wrapping_add(self.mgmt.len() as u8);
         self.mgmt.insert(peer, (channel, 0));
         let mut body = vec![channel, 0x00];
@@ -1278,6 +1304,12 @@ impl KnxnetIpServer {
                 .device(IndividualAddress(device))
                 .is_some_and(|d| d.l4_connected_to(IndividualAddress(0)));
             if !open || !self.mgmt_transport.contains_key(&peer) {
+                if open {
+                    // The connection of an earlier device management
+                    // connection: it ended with that connection (3/8/3
+                    // §2.6.1.6), so close it before opening this one's.
+                    self.bus.deliver_from_tool(&frame(vec![0x81]));
+                }
                 self.bus.deliver_from_tool(&frame(vec![0x80]));
                 self.mgmt_transport.insert(peer, 0);
             }

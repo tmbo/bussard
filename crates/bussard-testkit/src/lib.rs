@@ -131,6 +131,7 @@
 
 pub mod consts;
 pub mod device;
+mod devmgmt;
 pub mod gateway;
 pub mod ha;
 pub mod secure_gateway;

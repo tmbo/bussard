@@ -188,6 +188,31 @@ On a KNXnet/IP Secure interface each slot belongs to a tunnelling user. With
 process on this host holds, and moves on when the interface refuses one. With
 `--secure-user` you fix the slot, so pick one Home Assistant does not hold.
 
+## Managing the IP interface itself
+
+The commands that manage a KNX IP interface (`plan` and `apply` of a device
+file with a `[knxnet]` table, `describe` of the interface, `interface secure
+on|off`) reach it over a tunnel to its own individual address. When no tunnel
+can do that, bussard opens a KNXnet/IP device management connection to the
+interface instead, as ETS does. It needs no tunnel slot and no tunnel
+address:
+
+- `--device-management` asks for it. This is the way to reach a
+  factory-fresh interface, which still calls itself 15.15.255.
+- Without the flag, `plan`, `apply` and `describe` switch to it when the
+  interface is the gateway and either has no free slot or another device
+  answers at the tunnel's address. `interface secure` switches when the
+  interface is the gateway and reports no free slot. Each prints a `note:`
+  line with the reason.
+
+The tunnel stays the default. bussard opens a device management connection
+only to a gateway that names the target (or 15.15.255) as its own address,
+because such a connection reaches the interface whatever address is asked
+for. On a KNXnet/IP Secure interface it signs in as the management user,
+with the `ManagementPassword` the keyring or key store holds for the
+interface. The writes and the read-back are the same as over a tunnel. Only
+the carrier differs.
+
 **Reconnecting is not a write.** `knx_bus_reconnect` drops the MCP server's
 connection to the interface and opens a new one. Nothing is sent onto the KNX
 bus, so it needs only the read tier; in `--passive` mode the server

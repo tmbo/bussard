@@ -392,6 +392,7 @@ pub fn run(
     // A KNX IP interface (a `[knxnet]` table, no links): its KNXnet/IP
     // parameter object, plus the properties its property-only load
     // procedure writes when it has one, in one plan (issue #391).
+    crate::interface_cmd::refuse_device_management(&overrides, &model, target)?;
     if crate::interface_cmd::interface_only(&model, target).is_some() {
         return crate::interface_cmd::plan(
             target,

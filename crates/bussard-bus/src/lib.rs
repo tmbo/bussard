@@ -117,6 +117,13 @@ pub fn no_free_tunnel_seen() -> bool {
     NO_FREE_TUNNEL_SEEN.load(Ordering::Relaxed)
 }
 
+/// Forgets a refusal [`no_free_tunnel_seen`] recorded, for a command that
+/// went on over another connection (a device management connection, issue
+/// #523) and whose outcome no longer depends on the tunnel.
+pub fn clear_no_free_tunnel_seen() {
+    NO_FREE_TUNNEL_SEEN.store(false, Ordering::Relaxed);
+}
+
 /// The first connect error in this process that retrying cannot fix (issue
 /// #182): a secure-only interface without credentials, a refused KNXnet/IP
 /// Secure password, or an interface that failed its own authentication. The
