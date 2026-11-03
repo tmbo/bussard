@@ -416,10 +416,30 @@ impl SecurityObject {
     /// tool access under its FDSK (a KNX IP interface before IP Secure is
     /// switched on, bussard issue #398): security mode off.
     pub fn new_factory() -> Self {
+        Self::new_activated().into_factory()
+    }
+
+    /// This object in factory state (security mode off), keeping the table
+    /// capacities the product declared ([`Self::with_capacity`]): a
+    /// secure-capable device before ETS commissions it (bussard issue #423,
+    /// the synthetic product `syn-secure`).
+    pub fn into_factory(self) -> Self {
         SecurityObject {
             security_mode: 0,
-            ..Self::new_activated()
+            ..self
         }
+    }
+
+    /// The group key table's capacity in rows
+    /// (`MaxSecurityGroupKeyTableEntries`, or [`MAX_GROUP_KEY_ROWS`]).
+    pub fn group_key_capacity(&self) -> u16 {
+        self.group_key_capacity
+    }
+
+    /// The individual address table's capacity in rows
+    /// (`MaxSecurityIndividualAddressEntries`, or [`MAX_IA_TABLE_ROWS`]).
+    pub fn ia_capacity(&self) -> u16 {
+        self.ia_capacity
     }
 
     /// Records one security failure (KNX 3/3/7 §5.4, KNX 3/5/1 §6.3.9 and

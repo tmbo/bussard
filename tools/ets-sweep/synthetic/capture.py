@@ -45,6 +45,12 @@ variant's last download, the earlier downloads as `base.pcapng` and
 (`model/`) where the variant links objects or changes a parameter; its own
 row and manifest entry.
 
+A secure-capable product (`[application.security]`, syn-secure, #423) is
+downloaded as `secure.py` downloads a vendor one: the sim device in factory
+state with a synthetic FDSK and serial number, the secure project, the
+password from `$ETS_SWEEP_PROJECT_PASSWORD`, the device certificate, and the
+keyring exported and fetched into the sweep's run directory.
+
 `--no-ets` skips steps 1 to 3 and reuses the sweep's run directory (the ETS
 version, simulator build and date come from `--ets-version`, `--sim-build`
 and `--captured`, else from the manifest entry it replaces). `--sim-build`
@@ -195,8 +201,62 @@ def sim_yaml(product: str, app: str, mask: str = "07B0", variant: str = VARIANT,
         f"# only in its fingerprint, which never reaches the wire.\n"
         f"gateway:\n  host: 127.0.0.1\n  port: 3672\n  tunnel_address: 1.1.254\n"
         f"devices:\n- address: 1.1.1\n  knxprod: {prod}\n  application: {app}\n"
-        f"  initial_state: unloaded\n  lsm_access: {lsm_access(mask)}\n{options}{knxnet_sim(product)}{replay}"
+        f"  initial_state: unloaded\n  lsm_access: {lsm_access(mask)}\n{options}{knxnet_sim(product)}"
+        f"{secure_sim(product, app)}{replay}"
     )
+
+
+# ------------------------------------------- KNX Data Secure (#604 row 18, #423)
+# A secure-capable product (`[application.security]`, syn-secure) is downloaded
+# the way secure.py downloads a vendor application: the sim device in factory
+# state with a synthetic FDSK and serial number, the sweep's secure project,
+# the project password from $ETS_SWEEP_PROJECT_PASSWORD, the device
+# certificate typed at ETS's prompt and the keyring exported after the
+# download (into the sweep's run directory, never under captures/synthetic/).
+# The identity is derived from the rendered application id, so a re-sign keeps
+# the certificate ETS already holds. Decoding the secured frames for the row
+# (`knxtrace --keyring`) is the #423 bring-up.
+
+def is_secure(product: str) -> bool:
+    return "security" in generate_spec(product)["application"]
+
+
+def secure_sim(product: str, app: str) -> str:
+    """The `security:` and `properties:` (serial number) lines of a secure
+    product's loopback sim device; empty for a plain product."""
+    if not is_secure(product):
+        return ""
+    import secure
+
+    block, props = secure.sim_security(app)
+    return (f"  security:\n    status: {block['status']}\n    tool_key: {block['tool_key']}\n  properties:\n"
+            + "".join(f"  - object: {p['object']}\n    pid: {p['pid']}\n    value: {p['value']}\n" for p in props))
+
+
+def secure_run(product: str, app: str) -> dict:
+    """The `sweep.run_one` keywords of a secure product's download, as
+    secure.py passes them; empty for a plain product. Reads the project
+    password, so a missing one stops the capture before it signs."""
+    if not is_secure(product):
+        return {}
+    import secure
+
+    pw = secure.password()
+    block, props = secure.sim_security(app)
+    serial, fdsk = secure.synthetic_identity(app)
+    return {"project": secure.PROJECT, "secure": block, "properties": props,
+            "flow_extra": {"project_password": pw, "certificate": secure.certificate_text(serial, fdsk)},
+            "after_download": secure.export_hook(pw)}
+
+
+def fetch_keyring(c, sid: str) -> Path:
+    """The keyring the export hook left in the VM, next to the sweep's run."""
+    import vm
+
+    remote = f"{vm.REMOTE_DIR}\\keyrings\\{sid}.knxkeys"
+    local = calibrate.run_dir(sid) / "project.knxkeys"
+    c.open_sftp().get(remote.replace("\\", "/"), str(local))
+    return local
 
 
 # -------------------------------- IP-enabled TP hardware (#604 row 34, #455)
@@ -933,12 +993,17 @@ def main() -> int:
 
         build = sim_build(args.sim_build)
         check_recapture(product)
+        run_kw = secure_run(product, app)  # #423; empty for a plain product
         signed, sid = sign(product)
         c = vm.connect()
         imported = ets_import(c, signed, order)
         print(f"ETS import: {imported['import']}, catalogue row {imported['catalog_row']}")
         ets = ets_version(c)
-        result = calibrate.calibrate_one(signed, sid, order, True, Path(tempfile.mkdtemp()), mask)
+        if run_kw:
+            vm.run(c, f'mkdir "{vm.REMOTE_DIR}\\keyrings"')
+        result = calibrate.calibrate_one(signed, sid, order, True, Path(tempfile.mkdtemp()), mask, **run_kw)
+        if run_kw and result.get("outcome") == "captured":
+            print(f"keyring: {fetch_keyring(c, sid)} (the project password)")
         print(f"ETS download: {result.get('outcome')} ets={result.get('ets')} ops={result.get('ops')} "
               f"loaded={result.get('loaded_objects')}; signed-product oracle: {result.get('oracle', {}).get('summary')}")
         when = datetime.date.today().isoformat()

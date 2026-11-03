@@ -60,6 +60,7 @@ next to it, and zips it on demand.
 | [`syn-s7-pid204`](syn-s7-pid204/product.toml) | `NEST-PLUME` | 0701 | LdCtrlWriteProp PID 204 with Count 2 on the application object (0701) | #692 |
 | [`syn-s7-static-split`](syn-s7-static-split/product.toml) | `NEST-FORK` | 0705 | static split of the parameter AbsSegment, a parameter in the gap | #657, #411 |
 | [`syn-s7-taskptr`](syn-s7-taskptr/product.toml) | `NEST-HUNT` | 0705 | TaskPtr and TaskCtrl2 records on LSM 3 | #527 |
+| [`syn-secure`](syn-secure/product.toml) | `NEST-GUARD` | 07B0 | KNX Data Secure capable 07B0, factory state with a synthetic FDSK | #423, #537, #201 |
 | [`syn-text-initialvalue`](syn-text-initialvalue/product.toml) | `NEST-NAME` | 07B0 | TypeText with a de-DE InitialValue translation, utf-8 | #473 |
 | [`syn-text-undeclared`](syn-text-undeclared/product.toml) | `NEST-SQUAWK` | 07B0 | TypeText non-ASCII default, no TextParameterEncoding | #416 |
 | [`syn-union-bitfields`](syn-union-bitfields/product.toml) | `NEST-BITS` | 07B0 | 16-bit union of two types, sub-octet parameters packed by BitOffset | #604 |
@@ -107,7 +108,7 @@ One `product.toml` per directory. Tables and keys:
 | --- | --- | --- |
 | `[doc]` | `purpose` (one paragraph), `construct` (a few words), `issues` (numbers) | the catalogue row; not in the XML |
 | `[product]` | `text`, `order_number`, `hardware_name`, `hardware_serial` (`00FA` + 8 hex digits), `bus_current` (mA); optional `hardware_version` (1), `rail_mounted` (false), `ip_enabled` (`IsIPEnabled`: a KNX IP interface built in, with `additional_addresses_count`; #455) | `Hardware`, `Product`, `Hardware2Program`, `CatalogItem` |
-| `[application]` | `number` (0x2700 to 0x2AFF: 0x27xx System B, 0x28xx System 7, 0x29xx Secure, 0x2Axx RF and IP), `version` (one octet), `name`, `mask` (`07B0`; `57B0`, System B on KNX IP, or `27B0`, on KNX RF, merged procedure only, rendered with `MediumTypes="MT-5"` or `"MT-2"`; or `0705`/`0701` for System 7), `load_procedure_style` (`MergedProcedure` or `ProductProcedure` on 07B0, `ProductProcedure` on System 7), `address_table_max_entries`, `association_table_max_entries`; optional `translations` (`{ "de-DE" = "..." }` for the name); optional `schema` (`23`, or `11`: namespace `http://knx.org/xml/project/11` and `MinEtsVersion="4.0"` in all three files, the shape of the #448 vendor applications; `sign.py` then uses ETS's project-11 master data); optional `min_ets_version` (a string, `"4.0"`: `MinEtsVersion` apart from the schema's, #448); optional `additional_addresses_count` (`AdditionalAddressesCount`, the tunnelling addresses of an `ip_enabled` 07B0 device, #455); System 7 only: `address_table_segment`, `association_table_segment`, `com_object_table_segment` (the absolute segment each table starts in, offset 0; required) and `pei_type` (0) | `ApplicationProgram`, `AddressTable`, `AssociationTable`, `Languages` |
+| `[application]` | `number` (0x2700 to 0x2AFF: 0x27xx System B, 0x28xx System 7, 0x29xx Secure, 0x2Axx RF and IP), `version` (one octet), `name`, `mask` (`07B0`; `57B0`, System B on KNX IP, or `27B0`, on KNX RF, merged procedure only, rendered with `MediumTypes="MT-5"` or `"MT-2"`; or `0705`/`0701` for System 7), `load_procedure_style` (`MergedProcedure` or `ProductProcedure` on 07B0, `ProductProcedure` on System 7), `address_table_max_entries`, `association_table_max_entries`; optional `translations` (`{ "de-DE" = "..." }` for the name); optional `schema` (`23`, or `11`: namespace `http://knx.org/xml/project/11` and `MinEtsVersion="4.0"` in all three files, the shape of the #448 vendor applications; `sign.py` then uses ETS's project-11 master data); optional `min_ets_version` (a string, `"4.0"`: `MinEtsVersion` apart from the schema's, #448); optional `additional_addresses_count` (`AdditionalAddressesCount`, the tunnelling addresses of an `ip_enabled` 07B0 device, #455); optional `security = { group_key_table_entries, individual_address_entries }` (`IsSecureEnabled="true"` with `MaxSecurityGroupKeyTableEntries` and `MaxSecurityIndividualAddressEntries`, KNX Data Secure on a 07B0 merged application, #423); System 7 only: `address_table_segment`, `association_table_segment`, `com_object_table_segment` (the absolute segment each table starts in, offset 0; required) and `pei_type` (0) | `ApplicationProgram`, `AddressTable`, `AssociationTable`, `Languages` |
 | `[application.options]` | any `Options` attribute of the KNX schema, e.g. `SupportsExtendedMemoryServices = true`, `ParameterByteOrder = "LittleEndian"` | `Options` |
 | `[[segment]]` | `name`, `kind` (`relative`), `lsm`, `size`; optional `fill` (the initial octet, 0) | `RelativeSegment` with its `Data` |
 | `[[parameter_type]]` | `name`, `kind`; `enum`: `size_bits`, `values = [{ value, text }]`; `number`: `size_bits`, `signed`, `min`, `max`; `float`: `encoding` (`DPT 9`, `IEEE-754 Single`, `IEEE-754 Double`; 16, 32, 64 bits), `min`, `max`; `text`: `size_octets`; `ip_address`: `address_type` (`HostAddress`, `SubnetMask`, `DefaultGateway`; 32 bits, the default a dotted quad); `color`: `space` (`RGB`, `HSV`; 24 bits, the default `#` and six hex digits) | `TypeRestriction`, `TypeNumber`, `TypeFloat`, `TypeText`, `TypeIPAddress`, `TypeColor` |
@@ -333,6 +334,22 @@ entry.
 | --- | --- | --- |
 | `syn-ip-57b0` | mask 57B0 is a KNX IP device (`MT-5`); ETS will not place it on a TP line | "Import erfolgreich"; adding it to line 1.1: "ist nicht kompatibel zu dem Medientyp der Linie" |
 | `syn-rf-27b0` | mask 27B0 is a KNX RF device (`MT-2`); ETS will not place it on a TP line, and knx-sim has no RF model (the sim loop skips it, `sim-loop-refusals.json`) | "Import erfolgreich"; adding it to line 1.1: "ist nicht kompatibel zu dem Medientyp der Linie" |
+
+A product whose capture is pending has no `captures/synthetic/` directory,
+no `signed.toml`, no row and no manifest entry either, until it is captured:
+
+| product | pending on | capture |
+| --- | --- | --- |
+| `syn-secure` | the secure project `ets-sweep-secure` in the VM and the driver's secure flows meeting ETS (#423) | `ETS_SWEEP_PROJECT_PASSWORD=... uv run tools/ets-sweep/synthetic/capture.py syn-secure` |
+
+A secure product (`[application.security]`) is captured the way
+`tools/ets-sweep/secure.py` captures a vendor one: `capture.py` starts the
+sim device in factory state with the synthetic FDSK and serial number
+`secure.py` derives from the rendered application id, adds it in the secure
+project, sends the project password and the device certificate to the
+driver, and fetches the exported keyring into the sweep's run directory
+(never under `captures/synthetic/`). Its `sim.yaml` carries the same
+`security:` block and serial number.
 
 A product bussard refuses to flash, where the refusal is the finding it
 exists for, is listed in `sim-loop-refusals.json` with the open issue and a

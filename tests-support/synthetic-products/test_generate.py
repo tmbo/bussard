@@ -946,6 +946,50 @@ class IpEnabled(unittest.TestCase):
             generate.Product("test", s)
 
 
+class Secure(unittest.TestCase):
+    """syn-secure (#604 row 18, #423): IsSecureEnabled and the two security
+    table sizes on the application, in the corpus's attribute order."""
+
+    def secure_spec(self) -> dict:
+        s = spec()
+        s["application"]["security"] = {"group_key_table_entries": 4, "individual_address_entries": 4}
+        return s
+
+    def test_render_secure_application(self) -> None:
+        self.assertIn('Linkable="false" IsSecureEnabled="true" MinEtsVersion="6.0" '
+                      'MaxSecurityIndividualAddressEntries="4" MaxSecurityGroupKeyTableEntries="4" ',
+                      app_xml(self.secure_spec()))
+
+    def test_plain_application_is_not_secure(self) -> None:
+        xml = app_xml(spec())
+        self.assertNotIn("IsSecureEnabled", xml)
+        self.assertNotIn("MaxSecurity", xml)
+
+    def test_security_needs_both_sizes(self) -> None:
+        s = self.secure_spec()
+        del s["application"]["security"]["individual_address_entries"]
+        with self.assertRaisesRegex(generate.SpecError, "missing key `individual_address_entries`"):
+            generate.Product("test", s)
+
+    def test_security_size_range(self) -> None:
+        s = self.secure_spec()
+        s["application"]["security"]["group_key_table_entries"] = 0
+        with self.assertRaisesRegex(generate.SpecError, "1 to 65535"):
+            generate.Product("test", s)
+
+    def test_p2p_table_not_yet(self) -> None:
+        s = self.secure_spec()
+        s["application"]["security"]["p2p_key_table_entries"] = 2
+        with self.assertRaisesRegex(generate.SpecError, "no product uses it yet"):
+            generate.Product("test", s)
+
+    def test_secure_on_other_masks_not_yet(self) -> None:
+        s = self.secure_spec()
+        s["application"]["mask"] = "27B0"
+        with self.assertRaisesRegex(generate.SpecError, "no product uses it yet"):
+            generate.Product("test", s)
+
+
 class SystemBOnIp(unittest.TestCase):
     """syn-ip-57b0 (#604 row 35, #389): mask 57B0 with MediumTypes MT-5."""
 

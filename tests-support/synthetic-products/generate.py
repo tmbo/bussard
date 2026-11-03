@@ -160,7 +160,8 @@ class Product:
         check_keys(f"{w} [application]", a,
                    {"number", "version", "name", "mask", "load_procedure_style",
                     "address_table_max_entries", "association_table_max_entries"},
-                   {"options", "translations", "schema", "min_ets_version", "additional_addresses_count"}
+                   {"options", "translations", "schema", "min_ets_version", "additional_addresses_count",
+                    "security"}
                    | SYS7_APP_KEYS)
         if a["number"] not in APP_NUMBERS:
             raise SpecError(f"{w} [application]: number {a['number']:#06x} is outside the synthetic "
@@ -182,6 +183,7 @@ class Product:
             for k in sorted(SYS7_APP_KEYS & a.keys()):
                 raise SpecError(f"{w} [application]: `{k}` belongs to a System 7 mask ({', '.join(SYS7_MASKS)})")
         check_ip_enabled(w, p, a)
+        check_security(w, a)
         for k in a.get("options", {}):
             if k not in OPTIONS:
                 raise SpecError(f"{w} [application.options]: unknown option `{k}`")
@@ -672,6 +674,39 @@ def check_ip_enabled(w: str, p: dict, a: dict) -> None:
         raise SpecError(f"{w} [application]: additional_addresses_count is 1 to 255")
 
 
+# ------------------------------------------- KNX Data Secure (#604 row 18)
+# syn-secure: `[application.security]` makes the application Data Secure
+# capable, the shape of the 183 secure-capable 07B0 applications of the
+# corpus (all MergedProcedure): `IsSecureEnabled="true"` and the two table
+# sizes 180 and 181 of them declare. None of them has a load-procedure op for
+# security (ETS writes the security object itself, outside the product's
+# procedure), so the procedure stays the parent's.
+
+SECURITY_KEYS = {"group_key_table_entries": "MaxSecurityGroupKeyTableEntries",
+                 "individual_address_entries": "MaxSecurityIndividualAddressEntries"}
+
+
+def check_security(w: str, a: dict) -> None:
+    """`[application.security]`: both table sizes, on a 07B0 merged
+    application (the corpus shape; #423, #537)."""
+    if "security" not in a:
+        return
+    sw = f"{w} [application.security]"
+    check_keys(sw, a["security"], set(SECURITY_KEYS), set(), {"p2p_key_table_entries"})
+    if a["mask"] != "07B0" or a["load_procedure_style"] != "MergedProcedure":
+        raise not_yet(sw, f"a secure application on mask {a['mask']} with {a['load_procedure_style']}")
+    for k in SECURITY_KEYS:
+        if not 1 <= a["security"][k] <= 0xFFFF:
+            raise SpecError(f"{sw}: {k} is 1 to 65535")
+
+
+def security_attrs(a: dict) -> list[tuple[str, object]]:
+    """The table sizes after MinEtsVersion, in the corpus's order; none for a
+    plain application."""
+    sec = a.get("security", {})
+    return [(SECURITY_KEYS[k], sec.get(k)) for k in ("individual_address_entries", "group_key_table_entries")]
+
+
 # ------------------------------------- System B on other media (#604 row 35)
 # The System B masks a product may name, with the medium its
 # Hardware2Program declares: 07B0 on TP (MT-0), and 57B0, System B on KNX IP
@@ -1087,7 +1122,9 @@ def render_application(p: Product) -> bytes:
         ("Id", p.app_id), ("ApplicationNumber", a["number"]), ("ApplicationVersion", a["version"]),
         ("ProgramType", "ApplicationProgram"), ("MaskVersion", f"MV-{a['mask']}"), ("Name", a["name"]),
         ("LoadProcedureStyle", a["load_procedure_style"]), ("PeiType", a.get("pei_type", 0)), ("DefaultLanguage", "en-US"),
-        ("DynamicTableManagement", False), ("Linkable", False), ("MinEtsVersion", min_ets_version(p)),
+        ("DynamicTableManagement", False), ("Linkable", False),
+        ("IsSecureEnabled", True if "security" in a else None),  # #423
+        ("MinEtsVersion", min_ets_version(p)), *security_attrs(a),
         ("AdditionalAddressesCount", a.get("additional_addresses_count")),  # #455
         ("NonRegRelevantDataVersion", 0)])
     x.open("Static")

@@ -516,11 +516,14 @@ impl Device {
     /// Puts the device's security object in factory state (security mode
     /// off), for a device that takes Data Secure tool access under its FDSK:
     /// a KNX IP interface before IP Secure is switched on (bussard issue
-    /// #398). No effect on a plain device.
+    /// #398), or a secure-capable device before ETS commissions it (#423).
+    /// The table capacities the product declared stay. No effect on a plain
+    /// device.
     pub fn with_factory_security(mut self) -> Self {
-        if self.security_object.is_some() {
-            self.security_object = Some(SecurityObject::new_factory());
-        }
+        self.security_object = self
+            .security_object
+            .take()
+            .map(SecurityObject::into_factory);
         self
     }
 
