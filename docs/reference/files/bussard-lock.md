@@ -58,7 +58,7 @@ hidden = [
 
 | Key | Type | Meaning |
 |---|---|---|
-| `version` | integer | The lock format version, `3`. See [Lock version](#lock-version). |
+| `version` | integer | The lock format version: `4` when a device entry carries a `serial_number`, `3` otherwise. See [Lock version](#lock-version). |
 | `written_by` | string | The build that wrote the lock (`bussard 0.1.0`, plus the short git commit when the build has one). Informational only. |
 | `source` | string | The project file the model was imported from. |
 | `language` | string | The language the lock's texts and keys were derived in. See [Text language](#text-language). |
@@ -91,6 +91,7 @@ hidden = [
 | `manufacturer_ref` | string | The manufacturer id, for example `M-0004`. |
 | `hardware_ref` | string, optional | The hardware ref, when the application resolves a distinct one. |
 | `mask` | string | The mask version (the device's system type), for example `07B0`. |
+| `serial_number` | string, optional | The serial number the device reported (PID 11 of the device object), twelve upper-case hex digits, for example `00FA01020304`. `adopt`, `assign`, `scan` and `describe` record it; a device certificate's serial selects its device by it (`bussard keys add-certificate`). A serial is held by one device only: recording it on one removes it from any other. |
 | `secure_capable` | bool, optional | The device can run KNX Data Secure. |
 | `has_fdsk_certificate` | bool, optional | The device carries a factory key certificate. |
 | `sequence_number` | integer, optional | The device's Data Secure sequence number as the project recorded it. |
@@ -210,14 +211,14 @@ A program without the chosen language keeps its untranslated texts. The choice i
 
 ## Lock version
 
-bussard reads and writes lock version 3 only. A lock of another version is refused with the fix: `bussard import <export> --dir <dir>` regenerates it.
+bussard reads lock versions 3 and 4. It writes version 4 when a device entry carries a `serial_number` and version 3 otherwise, so a lock without serial numbers stays readable by a build that reads only version 3. A lock of another version, or a version 3 lock that carries a `serial_number`, is refused with the fix: `bussard import <export> --dir <dir>` regenerates it.
 
-- Each build supports exactly one lock version, and any change to the lock's schema (a field added, renamed or removed) bumps it.
+- Any change to the lock's schema (a field added, renamed or removed) bumps the version. A build reads an older version only when the newer one just adds optional keys, as version 4 does.
 - bussard reads `version` before anything else, so a build that meets a newer lock refuses it with the version message instead of a field error. Since it never reads that lock, it can never rewrite it with fields dropped.
 - `written_by` is never checked and never used for compatibility, and a lock without it loads. A version refusal quotes it: `lock format version 2, written by bussard 0.1.0 8d6e18f, is not supported`.
 - The device files carry no format version; they are user-owned and validated field by field.
 
-Version history: 2 added the `[[product]]` entries and the per-device product hash and application id; 3 indexes the parameters at their vendor default in `parameters[]`, and adds their `default` and `written_by`.
+Version history: 2 added the `[[product]]` entries and the per-device product hash and application id; 3 indexes the parameters at their vendor default in `parameters[]`, and adds their `default` and `written_by`; 4 adds the per-device `serial_number`.
 
 ## Related
 

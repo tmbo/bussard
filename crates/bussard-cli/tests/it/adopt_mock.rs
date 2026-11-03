@@ -365,6 +365,11 @@ fn adopt_happy_path_writes_rich_device_file() -> TestResult {
         "expected the pinned application; lock:\n{lock}"
     );
     assert!(lock.contains("objects = ["), "lock:\n{lock}");
+    // The serial number the device reported is recorded (issue #752).
+    assert!(
+        lock.contains("serial_number = \"000102030405\""),
+        "lock:\n{lock}"
+    );
     // The two com-objects with their DPTs.
     assert!(
         lock.contains("dpt = \"1.001\""),

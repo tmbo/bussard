@@ -228,6 +228,12 @@ fn assign_writes_address_and_stub_file() -> TestResult {
     let lock = lock_body.ok_or("bussard.lock should exist")?;
     assert!(lock.contains("MDT"), "lock:\n{lock}");
     assert!(lock.contains("mask = "), "lock:\n{lock}");
+    // The serial number the device reported is recorded (issue #752).
+    assert!(
+        lock.contains("serial_number = \"000102030405\""),
+        "lock:\n{lock}"
+    );
+    assert!(lock.contains("version = 4"), "lock:\n{lock}");
     Ok(())
 }
 

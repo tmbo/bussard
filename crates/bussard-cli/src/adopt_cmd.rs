@@ -607,13 +607,19 @@ async fn adopt_flow(
             .with_args([target.to_string()])
             .with_result("before writing the adopted device file"),
     );
+    // The lock records the serial the device reported (issue #752), and a
+    // certificate entered for it before moves to it in the key store.
     let path = write_device_file(
         model_out.as_ref().or(model),
         dir,
         device.clone(),
+        verified.serial.as_deref(),
         "device file",
     )?;
     println!("  wrote {}", path.display());
+    if let Some(serial) = &verified.serial {
+        crate::keys_cmd::attach_learned_serials(dir, &[(target, serial.clone())], false);
+    }
 
     // Step 4: links scaffolding (print only — the model stays untouched), or
     // the links a secured device already holds (recorded in the model).

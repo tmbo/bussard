@@ -284,13 +284,13 @@ async fn assign_flow(
 
     // A certificate entered before the device had an address (issue #728):
     // its factory key moves to the new address now that the serial is known.
-    if let Some(serial) = verified.serial.as_deref() {
-        crate::keys_cmd::attach_after_assign(dir, target, serial);
+    if let Some(serial) = &verified.serial {
+        crate::keys_cmd::attach_learned_serials(dir, &[(target, serial.clone())], json);
     }
 
-    // 6. Create the stub device file.
+    // 6. Create the stub device file; the lock records the serial (#752).
     let device = build_stub_device(target, &verified);
-    let path = write_stub_device_file(model, dir, device)?;
+    let path = write_stub_device_file(model, dir, device, verified.serial.as_deref())?;
 
     // 7. Next steps.
     if json {
@@ -998,17 +998,21 @@ fn write_stub_device_file(
     model: Option<&Model>,
     dir: &Path,
     device: Device,
+    serial: Option<&[u8]>,
 ) -> anyhow::Result<std::path::PathBuf> {
-    write_device_file(model, dir, device, "stub device file")
+    write_device_file(model, dir, device, serial, "stub device file")
 }
 
 /// Inserts `device` into the model (or a fresh one) and saves it without
-/// pruning; shared by `assign` and `adopt`. `what` names the file in the error
-/// context. Returns the path of the device file that was written.
+/// pruning; shared by `assign` and `adopt`. `serial`, the serial number the
+/// device reported, goes into its lock entry and off any other device's
+/// (issue #752). `what` names the file in the error context. Returns the path
+/// of the device file that was written.
 pub(crate) fn write_device_file(
     model: Option<&Model>,
     dir: &Path,
     device: Device,
+    serial: Option<&[u8]>,
     what: &str,
 ) -> anyhow::Result<std::path::PathBuf> {
     let address = device.address;
@@ -1022,6 +1026,9 @@ pub(crate) fn write_device_file(
             file_stem: file_stem.clone(),
         },
     );
+    if let Some(serial) = serial.and_then(|s| <[u8; 6]>::try_from(s).ok()) {
+        model.record_serial(address, &serial);
+    }
     model
         .save(dir)
         .with_context(|| format!("saving the {what} to {}", dir.display()))?;

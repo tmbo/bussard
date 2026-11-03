@@ -8,9 +8,12 @@
 //! number selects the device, so labels can be entered in any order:
 //!
 //! - a device in the key store with that serial takes the FDSK (`stored`);
+//! - so does a device whose `bussard.lock` entry records that serial (issue
+//!   #752): `adopt`, `assign`, `scan` and `describe` record the serial a device
+//!   reports ([`record_serials`]), so a device ETS never saw is matched too;
 //! - without one the FDSK is kept under the serial (`unassigned`) until a
-//!   device reports it ([`attach_serial`], called by `bussard assign`) or an
-//!   ETS keyring import brings a device with that serial;
+//!   device reports it ([`attach_serials`], called by `adopt`, `assign`, `scan`
+//!   and `describe`) or an ETS keyring import brings a device with that serial;
 //! - the same FDSK again changes nothing (`already_stored`);
 //! - another FDSK for the serial is never overwritten (`conflict`).
 //!
@@ -25,7 +28,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use bussard_model::IndividualAddress;
+use bussard_model::{IndividualAddress, SerialRecord};
 use bussard_project::keystore::{
     AttachOutcome, FdskEnrolment, KeyStore, KeyStoreError, SerialNumber,
 };
@@ -132,6 +135,8 @@ pub struct CertificateEnrolment {
     store: KeyStore,
     /// The model's device names by address.
     names: BTreeMap<IndividualAddress, String>,
+    /// The serial numbers `bussard.lock` records, and their device (#752).
+    lock_serials: BTreeMap<SerialNumber, IndividualAddress>,
 }
 
 impl std::fmt::Debug for CertificateEnrolment {
@@ -170,6 +175,18 @@ impl CertificateEnrolment {
             path: path.clone(),
             source,
         })?;
+        let lock_serials = model
+            .as_ref()
+            .map(|m| {
+                m.devices
+                    .iter()
+                    .filter_map(|(ia, d)| {
+                        let text = d.device.lock.serial_number.as_deref()?;
+                        text.parse::<SerialNumber>().ok().map(|s| (s, *ia))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let names = model
             .map(|m| {
                 m.devices
@@ -183,6 +200,7 @@ impl CertificateEnrolment {
             password: Password::new(password),
             store,
             names,
+            lock_serials,
         })
     }
 
@@ -194,17 +212,26 @@ impl CertificateEnrolment {
     /// Enters one certificate: decodes `text`, matches its serial number,
     /// stores the FDSK and reads it back (see the module docs).
     ///
+    /// The serial number selects a device in the key store first, then a
+    /// device whose lock entry records it (#752); a certificate matched by
+    /// the lock also records the serial for that device in the key store.
+    ///
     /// A label whose check does not match is entered only when its serial
-    /// number matches a device in the store (the check variant is not yet
-    /// confirmed on a real label, #201); otherwise it is `invalid`, so a
-    /// mistyped label does not become an unassigned key.
+    /// number matches a device (the check variant is not yet confirmed on a
+    /// real label, #201); otherwise it is `invalid`, so a mistyped label does
+    /// not become an unassigned key.
     pub fn enroll_certificate(&mut self, text: &str) -> EnrolOutcome {
         let certificate = match Certificate::decode(text) {
             Ok(c) => c,
             Err(err) => return EnrolOutcome::bare(EnrolStatus::Invalid, err.to_string()),
         };
         let serial = SerialNumber(certificate.serial);
-        let matched = self.store.device_with_serial(serial);
+        let in_store = self.store.device_with_serial(serial);
+        let in_lock = match in_store {
+            Some(_) => None,
+            None => self.lock_serials.get(&serial).copied(),
+        };
+        let matched = in_store.or(in_lock);
         let mut outcome = EnrolOutcome {
             status: EnrolStatus::Invalid,
             serial: Some(serial.to_string()),
@@ -229,7 +256,49 @@ impl CertificateEnrolment {
             );
         }
         let fdsk = certificate.fdsk.clone();
+        // A device only the lock knows by this serial: the store learns the
+        // serial for it, and a certificate entered earlier moves to it.
+        let mut moved = false;
+        let mut claimed = None;
+        if let Some(ia) = in_lock {
+            let held = self.store.devices.get(&ia);
+            if held.and_then(|d| d.serial).is_some_and(|s| s != serial) {
+                outcome.status = EnrolStatus::Conflict;
+                outcome.message = Some(format!(
+                    "{ia} reported this serial number, but the key store names another one for \
+                     it; nothing was written (see `bussard keys show`)"
+                ));
+                return outcome;
+            }
+            if self.store.unassigned.contains_key(&serial) {
+                match self.store.attach_serial(ia, serial) {
+                    AttachOutcome::Attached => moved = true,
+                    AttachOutcome::NothingPending => {}
+                    AttachOutcome::Conflict => {
+                        outcome.status = EnrolStatus::Conflict;
+                        outcome.message = Some(format!(
+                            "the key store holds another factory key for {ia}; nothing was \
+                             written"
+                        ));
+                        return outcome;
+                    }
+                }
+            } else {
+                claimed = Some((ia, held.is_none()));
+                self.store.devices.entry(ia).or_default().serial = Some(serial);
+            }
+        }
         let result = self.store.enrol_fdsk(serial, certificate.fdsk);
+        if !result.changed()
+            && let Some((ia, created)) = claimed
+        {
+            // Nothing is written: the in-memory store goes back as it was.
+            if created {
+                self.store.devices.remove(&ia);
+            } else if let Some(device) = self.store.devices.get_mut(&ia) {
+                device.serial = None;
+            }
+        }
         outcome.status = match result {
             FdskEnrolment::Stored(_) => EnrolStatus::Stored,
             FdskEnrolment::Unassigned => EnrolStatus::Unassigned,
@@ -243,7 +312,7 @@ impl CertificateEnrolment {
                 EnrolStatus::Conflict
             }
         };
-        if result.changed()
+        if (result.changed() || moved)
             && let Err(err) = self.save_and_verify(serial, &fdsk)
         {
             outcome.status = EnrolStatus::Error;
@@ -360,6 +429,84 @@ pub fn attach_serial(
         read_back(dir, password, serial, &fdsk)?;
     }
     Ok(outcome)
+}
+
+/// Moves the unassigned certificates whose serial a device reported to that
+/// device, after `adopt`, `assign`, `scan` or `describe` read it (#752). The
+/// store is loaded and saved once, and only when it holds an unassigned key
+/// for one of `serials`; returns the outcome per device that had one.
+///
+/// # Errors
+///
+/// The store does not load, or the write or its read-back fails.
+pub fn attach_serials(
+    dir: &Path,
+    password: &str,
+    serials: &[(IndividualAddress, SerialNumber)],
+) -> Result<Vec<(IndividualAddress, SerialNumber, AttachOutcome)>, EnrolError> {
+    let path = KeyStore::path(dir);
+    let Some(mut store) = KeyStore::load(dir, password).map_err(|source| EnrolError::Load {
+        path: path.clone(),
+        source,
+    })?
+    else {
+        return Ok(Vec::new());
+    };
+    let mut outcomes = Vec::new();
+    let mut attached = Vec::new();
+    for (ia, serial) in serials {
+        let Some(fdsk) = store.unassigned.get(serial).cloned() else {
+            continue;
+        };
+        let outcome = store.attach_serial(*ia, *serial);
+        if outcome == AttachOutcome::Attached {
+            attached.push((*serial, fdsk));
+        }
+        outcomes.push((*ia, *serial, outcome));
+    }
+    if !attached.is_empty() {
+        store
+            .save(dir, password)
+            .map_err(|source| EnrolError::Save { path, source })?;
+        for (serial, fdsk) in &attached {
+            read_back(dir, password, *serial, fdsk)?;
+        }
+    }
+    Ok(outcomes)
+}
+
+/// Why [`record_serials`] could not update the lock.
+#[derive(Debug, thiserror::Error)]
+pub enum RecordSerialsError {
+    /// The model did not load.
+    #[error("loading the model to record serial numbers: {0}")]
+    Load(#[from] bussard_model::LoadError),
+    /// The model did not save.
+    #[error("saving serial numbers to bussard.lock: {0}")]
+    Save(#[from] bussard_model::SaveError),
+}
+
+/// Records the serial number each device reported in its `bussard.lock`
+/// entry (#752), for `scan` and `describe`, which read it anyway. A device
+/// the model does not hold is skipped. The model is saved once, and only when
+/// a serial changed; returns the record per device.
+///
+/// # Errors
+///
+/// The model does not load or save.
+pub fn record_serials(
+    dir: &Path,
+    serials: &[(IndividualAddress, SerialNumber)],
+) -> Result<Vec<(IndividualAddress, SerialRecord)>, RecordSerialsError> {
+    let mut model = bussard_model::Model::load(dir)?;
+    let records: Vec<(IndividualAddress, SerialRecord)> = serials
+        .iter()
+        .map(|(ia, serial)| (*ia, model.record_serial(*ia, &serial.0)))
+        .collect();
+    if records.iter().any(|(_, r)| r.changed()) {
+        model.save(dir)?;
+    }
+    Ok(records)
 }
 
 /// The secure-capable devices of `model` the store holds no factory key for,
@@ -493,6 +640,104 @@ mod tests {
         let again = enroll_certificate(&dir, PASSWORD, &label(SERIAL, 0x5A))?;
         assert_eq!(again.status, EnrolStatus::AlreadyStored);
         assert_eq!(again.ia.as_deref(), Some("1.1.40"));
+        std::fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    /// A model in `dir` with one device at `ia` whose lock records `serial`.
+    fn model_with_serial(dir: &Path, ia: &str, serial: [u8; 6]) -> TestResult {
+        std::fs::create_dir_all(dir.join("devices"))?;
+        std::fs::write(
+            dir.join("devices").join(format!("{ia}.toml")),
+            format!("address = \"{ia}\"\nname = \"Synthetic actuator\"\n"),
+        )?;
+        let mut model = bussard_model::Model::load(dir)?;
+        assert!(model.record_serial(ia.parse()?, &serial).changed());
+        model.save(dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_enroll_certificate_matches_a_lock_serial() -> TestResult {
+        let dir = temp_dir("lock")?;
+        model_with_serial(&dir, "1.1.40", SERIAL)?;
+        let mut session = CertificateEnrolment::open(&dir, PASSWORD)?;
+        let outcome = session.enroll_certificate(&label(SERIAL, 0x3C));
+        assert_eq!(outcome.status, EnrolStatus::Stored);
+        assert_eq!(outcome.ia.as_deref(), Some("1.1.40"));
+        assert_eq!(outcome.name.as_deref(), Some("Synthetic actuator"));
+        let back = KeyStore::load(&dir, PASSWORD)?.ok_or("no store")?;
+        assert_eq!(
+            back.device_with_serial(SerialNumber(SERIAL)),
+            Some("1.1.40".parse()?)
+        );
+        assert!(back.unassigned.is_empty());
+        let again = session.enroll_certificate(&label(SERIAL, 0x3C));
+        assert_eq!(again.status, EnrolStatus::AlreadyStored);
+        std::fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_enroll_certificate_lock_serial_moves_an_unassigned_key() -> TestResult {
+        let dir = temp_dir("lock-move")?;
+        // Entered before any device reported the serial: unassigned.
+        let first = enroll_certificate(&dir, PASSWORD, &label(SERIAL, 0x4D))?;
+        assert_eq!(first.status, EnrolStatus::Unassigned);
+        // Then the lock learns it (scan, describe) and the label is entered again.
+        model_with_serial(&dir, "1.1.41", SERIAL)?;
+        let again = enroll_certificate(&dir, PASSWORD, &label(SERIAL, 0x4D))?;
+        assert_eq!(again.status, EnrolStatus::AlreadyStored);
+        assert_eq!(again.ia.as_deref(), Some("1.1.41"));
+        let back = KeyStore::load(&dir, PASSWORD)?.ok_or("no store")?;
+        assert!(back.unassigned.is_empty());
+        assert_eq!(
+            back.device_with_serial(SerialNumber(SERIAL)),
+            Some("1.1.41".parse()?)
+        );
+        std::fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_enroll_certificate_lock_serial_conflicts_with_the_store() -> TestResult {
+        let dir = temp_dir("lock-conflict")?;
+        model_with_serial(&dir, "1.1.42", SERIAL)?;
+        let mut store = KeyStore::new("synthetic");
+        store.devices.entry("1.1.42".parse()?).or_default().serial =
+            Some(SerialNumber([0, 0xFA, 7, 7, 7, 7]));
+        store.save(&dir, PASSWORD)?;
+        let outcome = enroll_certificate(&dir, PASSWORD, &label(SERIAL, 0x6E))?;
+        assert_eq!(outcome.status, EnrolStatus::Conflict);
+        let back = KeyStore::load(&dir, PASSWORD)?.ok_or("no store")?;
+        assert!(back.fdsk_for_serial(SerialNumber(SERIAL)).is_none());
+        std::fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_record_serials_then_attach_serials() -> TestResult {
+        let dir = temp_dir("record")?;
+        model_with_serial(&dir, "1.1.43", [0, 0xFA, 1, 1, 1, 1])?;
+        enroll_certificate(&dir, PASSWORD, &label(SERIAL, 0x7F))?;
+        let ia: IndividualAddress = "1.1.43".parse()?;
+        let unknown: IndividualAddress = "1.1.99".parse()?;
+        let records = record_serials(
+            &dir,
+            &[(ia, SerialNumber(SERIAL)), (unknown, SerialNumber(SERIAL))],
+        )?;
+        assert!(records[0].1.changed());
+        assert_eq!(records[1].1, SerialRecord::NotModelled);
+        let model = bussard_model::Model::load(&dir)?;
+        assert_eq!(model.device_with_serial(&SERIAL), Some(ia));
+        let outcomes = attach_serials(&dir, PASSWORD, &[(ia, SerialNumber(SERIAL))])?;
+        assert_eq!(
+            outcomes,
+            vec![(ia, SerialNumber(SERIAL), AttachOutcome::Attached)]
+        );
+        assert!(attach_serials(&dir, PASSWORD, &[(ia, SerialNumber(SERIAL))])?.is_empty());
+        let back = KeyStore::load(&dir, PASSWORD)?.ok_or("no store")?;
+        assert_eq!(back.device_with_serial(SerialNumber(SERIAL)), Some(ia));
         std::fs::remove_dir_all(&dir)?;
         Ok(())
     }

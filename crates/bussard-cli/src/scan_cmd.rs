@@ -250,6 +250,15 @@ pub fn run(
         ));
     }
 
+    // The serial numbers the probes read go into the lock (issue #752); no
+    // extra request, the probe reads PID 11 anyway.
+    let serials: Vec<_> = report
+        .found
+        .iter()
+        .filter_map(|f| Some((f.address, f.serial.clone()?, f.identity.as_ref()?.verdict)))
+        .collect();
+    crate::keys_cmd::learn_serials(dir, model.as_ref(), &serials, json);
+
     if json {
         print_json(&report, timing)?;
     } else {

@@ -254,9 +254,10 @@ fn test_describe_reuses_facts_with_identical_output() -> TestResult {
     );
     assert_eq!(count(&warm_requests, A_PROPERTY_DESCRIPTION_READ), 0);
     assert_eq!(object_type_reads(&warm_requests), 0);
-    // Descriptor, authorize and the application-id check only.
+    // Descriptor, authorize, the application-id check and the serial number
+    // (PID 11, never cached: it names the hardware, issue #752) only.
     assert!(
-        warm_requests.len() <= 3,
+        warm_requests.len() <= 4,
         "warm describe sent {} requests: {warm_requests:?}",
         warm_requests.len()
     );

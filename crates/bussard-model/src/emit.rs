@@ -13,9 +13,8 @@ use std::path::Path;
 use toml_edit::{Array, DocumentMut, InlineTable, Item, Table, TableLike, Value};
 
 use crate::files::{
-    DeviceEntries, EntryValue, LOCK_HEADER, LOCK_VERSION, LockDevice, Placement, Resolver,
-    TableRef, channel_label, device_entries, existing_placements, handle_of, ordered_channels,
-    scope_entries,
+    DeviceEntries, EntryValue, LOCK_HEADER, LockDevice, Placement, Resolver, TableRef,
+    channel_label, device_entries, existing_placements, handle_of, ordered_channels, scope_entries,
 };
 use crate::loader::SaveError;
 use crate::param_model::ProductModels;
@@ -535,7 +534,8 @@ pub(crate) fn render_lock(
     devices: &[LockDevice],
 ) -> String {
     let mut out = format!(
-        "{LOCK_HEADER}\nversion = {LOCK_VERSION}\nwritten_by = {}\n",
+        "{LOCK_HEADER}\nversion = {}\nwritten_by = {}\n",
+        crate::files::lock_version_for(devices),
         basic_string(&crate::files::lock_written_by())
     );
     if let Some(s) = source {
@@ -562,6 +562,7 @@ pub(crate) fn render_lock(
             ("manufacturer_ref", &d.manufacturer_ref),
             ("hardware_ref", &d.hardware_ref),
             ("mask", &d.mask),
+            ("serial_number", &d.serial_number),
         ];
         for (k, v) in strings {
             if let Some(v) = v {

@@ -627,36 +627,122 @@ pub fn run_add_certificate(dir: &Path, from_stdin: bool, json: bool) -> anyhow::
     })
 }
 
-/// After `bussard assign` read `serial` off the device now at `ia`: moves a
-/// certificate entered for that serial to `ia` in the key store (issue
-/// #728). Without the password or a store, or with nothing pending, it does
-/// nothing; a failure is a warning, never an assign failure.
-pub fn attach_after_assign(dir: &Path, ia: bussard_model::IndividualAddress, serial: &[u8]) {
+/// After `adopt`, `assign`, `scan` or `describe` read the serial numbers of
+/// these devices (issue #728, #752): moves a certificate entered for one of
+/// them to its device in the key store. Without the password or a store, or
+/// with nothing pending, it does nothing; a failure is a warning, never a
+/// command failure. Messages go to stderr under `--json`.
+pub fn attach_learned_serials(
+    dir: &Path,
+    serials: &[(bussard_model::IndividualAddress, Vec<u8>)],
+    json: bool,
+) {
     use bussard_project::keystore::{AttachOutcome, SerialNumber};
-    let Ok(serial) = <[u8; 6]>::try_from(serial).map(SerialNumber) else {
-        return;
-    };
-    if !KeyStore::path(dir).exists() {
+    let serials: Vec<(bussard_model::IndividualAddress, SerialNumber)> = serials
+        .iter()
+        .filter_map(|(ia, s)| {
+            <[u8; 6]>::try_from(s.as_slice())
+                .ok()
+                .map(|s| (*ia, SerialNumber(s)))
+        })
+        .collect();
+    if serials.is_empty() || !KeyStore::path(dir).exists() {
         return;
     }
     let Ok(password) = password().map(bussard_secure::Password::new) else {
         return;
     };
-    match bussard_service::attach_serial(dir, password.expose(), ia, serial) {
-        Ok(AttachOutcome::Attached) => println!(
-            "  factory key (FDSK) of the certificate for serial {serial} attached to {ia} in the \
-             key store"
-        ),
-        Ok(AttachOutcome::NothingPending) => {}
-        Ok(AttachOutcome::Conflict) => eprintln!(
-            "warning: the key store has a certificate for serial {serial}, but its entry for {ia} \
-             names another serial number or factory key; nothing changed (see `bussard keys \
-             show`)"
-        ),
+    let outcomes = match bussard_service::attach_serials(dir, password.expose(), &serials) {
+        Ok(outcomes) => outcomes,
         Err(err) => {
-            eprintln!("warning: the certificate for serial {serial} was not attached: {err}")
+            eprintln!("warning: certificates were not attached to the devices just read: {err}");
+            return;
+        }
+    };
+    for (ia, serial, outcome) in outcomes {
+        match outcome {
+            AttachOutcome::Attached => {
+                let line = format!(
+                    "  factory key (FDSK) of the certificate for serial {serial} attached to {ia} \
+                     in the key store"
+                );
+                if json {
+                    eprintln!("{line}");
+                } else {
+                    println!("{line}");
+                }
+            }
+            AttachOutcome::NothingPending => {}
+            AttachOutcome::Conflict => eprintln!(
+                "warning: the key store has a certificate for serial {serial}, but its entry for \
+                 {ia} names another serial number or factory key; nothing changed (see `bussard \
+                 keys show`)"
+            ),
         }
     }
+}
+
+/// After `scan` or `describe` read serial numbers (issue #752): records each
+/// one in the `bussard.lock` entry of its device and attaches a certificate
+/// entered for it before ([`attach_learned_serials`]). Only a device the
+/// model holds and whose identity did not drift is recorded, and the model
+/// is reloaded and saved only when a serial differs from what `model` holds.
+/// A failure is a warning; messages go to stderr.
+pub fn learn_serials(
+    dir: &Path,
+    model: Option<&bussard_model::Model>,
+    read: &[(
+        bussard_model::IndividualAddress,
+        Vec<u8>,
+        bussard_model::identity::IdentityVerdict,
+    )],
+    json: bool,
+) {
+    use bussard_model::identity::IdentityVerdict;
+    use bussard_project::keystore::SerialNumber;
+    let Some(model) = model else {
+        return;
+    };
+    let fresh: Vec<(bussard_model::IndividualAddress, SerialNumber)> = read
+        .iter()
+        .filter(|(_, _, verdict)| *verdict != IdentityVerdict::Drift)
+        .filter_map(|(ia, bytes, _)| {
+            let serial = <[u8; 6]>::try_from(bytes.as_slice()).ok()?;
+            let held = model.devices.get(ia)?.device.lock.serial_number.as_deref();
+            let text = bussard_model::format_serial(&serial);
+            (held != Some(text.as_str()) || model.device_with_serial(&serial) != Some(*ia))
+                .then_some((*ia, SerialNumber(serial)))
+        })
+        .collect();
+    if fresh.is_empty() {
+        return;
+    }
+    let records = match bussard_service::record_serials(dir, &fresh) {
+        Ok(records) => records,
+        Err(err) => {
+            eprintln!("warning: the serial numbers just read were not recorded: {err}");
+            return;
+        }
+    };
+    let mut recorded = Vec::new();
+    for ((ia, record), (_, serial)) in records.into_iter().zip(&fresh) {
+        if let bussard_model::SerialRecord::Recorded { previous, cleared } = record {
+            match previous {
+                Some(previous) => eprintln!(
+                    "note: {ia} reports serial number {serial}, bussard.lock had {previous} (the \
+                     hardware was replaced?); recorded {serial}"
+                ),
+                None => eprintln!("recorded serial number {serial} of {ia} in bussard.lock"),
+            }
+            for other in cleared {
+                eprintln!(
+                    "note: serial number {serial} was recorded for {other} too; removed there"
+                );
+            }
+            recorded.push((ia, serial.0.to_vec()));
+        }
+    }
+    attach_learned_serials(dir, &recorded, json);
 }
 
 /// One line per entered label: serial, matched address and name, status.
