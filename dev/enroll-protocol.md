@@ -82,8 +82,8 @@ Down (bussard to page):
 
 | type | fields |
 |---|---|
-| `result` | `id` (echoes the certificate), `status`, `serial` (12 hex digits), optional `ia`, `name`, `message` |
-| `closed` | `stored` (count): bussard ended the session |
+| `result` | `id` (echoes the certificate), `status`, `serial` (12 hex digits; absent when the label could not be decoded), optional `ia`, `name`, `message` |
+| `closed` | `stored` (count): bussard ended the session; best effort, see below |
 
 `status` is one of `stored` (matched to a device and saved), `unassigned`
 (saved under its serial, no device in the model has it yet), `already_stored`
@@ -92,6 +92,11 @@ different FDSK for this serial; nothing written), `invalid` (format or check
 failed; the page should have caught it), `error` (`message` says why).
 
 No down message ever carries an FDSK, a tool key or any other key.
+
+bussard posts `closed` and then deletes the session, so a phone that polls
+after the `DELETE` sees only `"closed": true` and never the `closed` message.
+The page treats both as the end of the session and shows its own tally of
+`result`s; `closed.stored` is a convenience, not the record.
 
 ## Relay API
 
