@@ -61,11 +61,11 @@ type TestResult = Result<(), BoxError>;
 const SHARDS: usize = 8;
 
 /// The device's individual address on the simulated bus.
-const DEVICE: &str = "1.1.10";
+pub(crate) const DEVICE: &str = "1.1.10";
 
 /// The masks knx-sim models and bussard flashes. 57B0 (System B on KNX IP)
 /// is a System B device behind the sim's tunnel (`syn-ip-57b0`, issue #389).
-const SIM_MASKS: [&str; 4] = ["07B0", "57B0", "0705", "0701"];
+pub(crate) const SIM_MASKS: [&str; 4] = ["07B0", "57B0", "0705", "0701"];
 
 /// How long one `bussard` command may run before it counts as hung.
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(180);
@@ -209,7 +209,7 @@ synthetic_shard_tests!(
 /// `tests-support/synthetic-products/sim-loop-refusals.json`: application id
 /// to a phrase the refusal must contain. Each one is the finding its product
 /// exists for, and names the open issue.
-fn read_synthetic_refusals() -> Result<BTreeMap<String, String>, BoxError> {
+pub(crate) fn read_synthetic_refusals() -> Result<BTreeMap<String, String>, BoxError> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests-support/synthetic-products/sim-loop-refusals.json");
     let value: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
@@ -228,7 +228,7 @@ fn read_synthetic_refusals() -> Result<BTreeMap<String, String>, BoxError> {
 
 /// Zips every synthetic product's `xml/` with the stub master into `dir` as
 /// `<product>.knxprod`; returns the product names.
-fn synthetic_knxprods(dir: &Path) -> Result<Vec<String>, BoxError> {
+pub(crate) fn synthetic_knxprods(dir: &Path) -> Result<Vec<String>, BoxError> {
     use std::io::Write as _;
     let catalogue =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests-support/synthetic-products");
@@ -894,22 +894,22 @@ fn run_property_loop(
 /// A device configuration: parameter values by device-file ref key, and links
 /// by com-object number.
 #[derive(Debug, Clone)]
-struct Configuration {
+pub(crate) struct Configuration {
     /// `defaults`, `generated 1`, ...
-    label: String,
+    pub(crate) label: String,
     /// Ref key (`P-12_R-3`, `MD-1_M-2_MI-1_P-3_R-4`) to value.
-    values: BTreeMap<String, String>,
+    pub(crate) values: BTreeMap<String, String>,
     /// Com-object number to its links.
-    links: BTreeMap<u16, Link>,
+    pub(crate) links: BTreeMap<u16, Link>,
     /// The next free group address number.
-    next_ga: u32,
+    pub(crate) next_ga: u32,
 }
 
 /// The links of one com-object.
 #[derive(Debug, Clone, Default)]
-struct Link {
-    send: Option<String>,
-    listen: Vec<String>,
+pub(crate) struct Link {
+    pub(crate) send: Option<String>,
+    pub(crate) listen: Vec<String>,
 }
 
 /// The shown com-objects of a configuration, by number.
@@ -919,7 +919,10 @@ fn shown_objects(app: &ApplicationProgram, config: &DynamicConfig) -> Vec<GroupO
 
 /// The object table shape a configuration gives: what a parameter change
 /// must keep for `apply` to write it as a parameter download.
-fn object_shape(app: &ApplicationProgram, values: &BTreeMap<String, String>) -> Vec<(u16, u8, u8)> {
+pub(crate) fn object_shape(
+    app: &ApplicationProgram,
+    values: &BTreeMap<String, String>,
+) -> Vec<(u16, u8, u8)> {
     let config = evaluate_dynamic(app, values);
     shown_objects(app, &config)
         .iter()
@@ -933,7 +936,7 @@ fn object_shape(app: &ApplicationProgram, values: &BTreeMap<String, String>) -> 
 /// single ref inside a page): the enable switches. Conditions inside a
 /// `<ModuleDef>` are not counted; their switches take their turn with the
 /// other parameters.
-fn switches(app: &ApplicationProgram) -> HashSet<String> {
+pub(crate) fn switches(app: &ApplicationProgram) -> HashSet<String> {
     let index = bussard_model::dynamic::RefIndex::new(app);
     index
         .parameters()
@@ -1021,7 +1024,7 @@ const MAX_CALC_DRAWS: usize = 8;
 /// syn-param-calculation script `delay * 2 + 1` would otherwise make the
 /// generated configuration unflashable by construction, not by a bussard
 /// bug.
-fn draw_for(
+pub(crate) fn draw_for(
     app: &ApplicationProgram,
     values: &BTreeMap<String, String>,
     key: &str,
@@ -1191,7 +1194,7 @@ fn draw_text(len: usize, codec: TextCodec, rng: &mut SplitMix64) -> Option<Strin
 
 impl Configuration {
     /// The vendor defaults with a few links.
-    fn defaults(app: &ApplicationProgram, rng: &mut SplitMix64) -> Configuration {
+    pub(crate) fn defaults(app: &ApplicationProgram, rng: &mut SplitMix64) -> Configuration {
         let mut config = Configuration {
             label: "defaults".to_string(),
             values: BTreeMap::new(),
@@ -1256,7 +1259,12 @@ impl Configuration {
 
     /// Links up to `count` shown com-objects: a sending object gets a send
     /// address, a writable one a listening address.
-    fn add_links(&mut self, app: &ApplicationProgram, rng: &mut SplitMix64, count: usize) {
+    pub(crate) fn add_links(
+        &mut self,
+        app: &ApplicationProgram,
+        rng: &mut SplitMix64,
+        count: usize,
+    ) {
         let config = evaluate_dynamic(app, &self.values);
         let mut candidates: Vec<GroupObjectDescriptor> = shown_objects(app, &config)
             .into_iter()
@@ -1291,7 +1299,11 @@ impl Configuration {
     /// allocations (issue #411: a System 7 `<choose>` that allocates a
     /// segment in parts needs a full download), one link is added on an
     /// object that had none and one removed.
-    fn partial_change(&self, app: &ApplicationProgram, rng: &mut SplitMix64) -> Configuration {
+    pub(crate) fn partial_change(
+        &self,
+        app: &ApplicationProgram,
+        rng: &mut SplitMix64,
+    ) -> Configuration {
         let mut out = self.clone();
         out.label = format!("{} + partial change", self.label);
         let shape = object_shape(app, &self.values);
@@ -1342,7 +1354,7 @@ impl Configuration {
     }
 
     /// The device file.
-    fn device_toml(&self) -> String {
+    pub(crate) fn device_toml(&self) -> String {
         let mut s = format!(
             "address = \"{DEVICE}\"\nname = \"sim loop ({})\"\n",
             self.label
@@ -1370,7 +1382,7 @@ impl Configuration {
     }
 
     /// `groups.toml` declaring every address the links use.
-    fn groups_toml(&self) -> String {
+    pub(crate) fn groups_toml(&self) -> String {
         let mut gas: BTreeSet<&str> = BTreeSet::new();
         for link in self.links.values() {
             gas.extend(link.send.as_deref());
@@ -1388,10 +1400,10 @@ impl Configuration {
 }
 
 /// SplitMix64: a small seeded generator, so a run is reproducible.
-struct SplitMix64(u64);
+pub(crate) struct SplitMix64(u64);
 
 impl SplitMix64 {
-    fn new(seed: u64) -> SplitMix64 {
+    pub(crate) fn new(seed: u64) -> SplitMix64 {
         SplitMix64(seed)
     }
 
@@ -1470,7 +1482,7 @@ fn link_or_copy(target: &Path, link: &Path) -> std::io::Result<()> {
 /// device's KNXnet/IP parameter object (issue #455): its
 /// `AdditionalAddressesCount`, except on a property-only procedure (mask
 /// 0021), which writes the object itself.
-fn knxnet_tunnels(app: &ApplicationProgram, mask: &str) -> u16 {
+pub(crate) fn knxnet_tunnels(app: &ApplicationProgram, mask: &str) -> u16 {
     if mask == "0021" {
         return 0;
     }
@@ -1480,7 +1492,7 @@ fn knxnet_tunnels(app: &ApplicationProgram, mask: &str) -> u16 {
 /// The `[knxnet]` table ETS's project gives a device with a KNX IP interface
 /// built in (the ETS sweep, issue #455): DHCP, a friendly name, and the
 /// highest tunnelling addresses of the device's line. Empty for any other.
-fn knxnet_table(app: &ApplicationProgram, mask: &str) -> String {
+pub(crate) fn knxnet_table(app: &ApplicationProgram, mask: &str) -> String {
     let n = knxnet_tunnels(app, mask);
     if n == 0 {
         return String::new();

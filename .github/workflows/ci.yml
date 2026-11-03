@@ -485,6 +485,13 @@ jobs:
           BUSSARD_KNX_SIM_BIN="$PWD/knx-sim/target/debug/serve" \
             cargo nextest run -p bussard-cli --profile ci \
             -E 'binary(it) & test(/^sim_catalog_loop::test_sim_catalog_loop_synthetic_catalogue_shard_/)'
+          # bussard's own request streams over the synthetic catalogue against
+          # the committed goldens (epic #596 step 7), and the same write through
+          # the CLI and the MCP server (step 8, the #314 class). Needs python3
+          # for tools/knxtrace.
+          BUSSARD_KNX_SIM_BIN="$PWD/knx-sim/target/debug/serve" \
+            cargo nextest run -p bussard-cli --profile ci \
+            -E 'binary(it) & test(/^synthetic_streams::test_synthetic_streams_(golden|cli_mcp)_shard_/)'
           # The synthetic oracle rows that replay a capture into knx-sim
           # before bussard writes (the `partial` run variant, epic #596):
           # the rest of captures/synthetic/rows.txt runs in the test job.

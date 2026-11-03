@@ -1,0 +1,388 @@
+# Golden request stream (epic #596), written by
+# crates/bussard-cli/tests/it/synthetic_streams.rs; regenerate with
+# BUSSARD_UPDATE_GOLDENS=1 (dev/testing.md).
+#
+# command: bussard flash 1.1.10 --yes
+# product: syn-user-memory-extmem (M-00FA_A-2796-10-0000)
+# device:  a fresh knx-sim device
+# format:  tools/knxtrace/knxtrace.py ops, without the operation numbers
+#          and the capture header
+#
+# devices/1.1.10.toml:
+#   address = "1.1.10"
+#   name = "sim loop (defaults)"
+#
+#   [links]
+#   1.send = "1/0/1"
+
+connect T_Connect
+authorize Authorize_Request key=FFFFFFFF(free-access)
+descriptor type0 type=0
+prop-read obj0/PID_MAX_APDU_LENGTH count=1 index=1
+prop-read obj0/PID_71 count=1 index=0
+prop-read obj0/PID_1 count=1 index=1
+prop-read obj1/PID_1 count=1 index=1
+prop-read obj2/PID_1 count=1 index=1
+prop-read obj3/PID_1 count=1 index=1
+prop-read obj4/PID_1 count=1 index=1
+prop-read obj5/PID_1 count=1 index=1
+prop-read obj6/PID_1 count=1 index=1
+prop-read obj4/PID_PROGRAM_VERSION count=1 index=1
+prop-read obj4/PID_LOAD_STATE_CONTROL count=1 index=1
+prop-read obj4/PID_PROGRAM_VERSION count=1 index=1
+prop-read obj0/PID_MANUFACTURER_ID count=1 index=1
+prop-desc-read obj2/PID_23 obj=2 pid=23 pid_name=PID_23 prop_index=0
+prop-read obj1/PID_27 count=1 index=0
+prop-read obj2/PID_27 count=1 index=0
+prop-read obj3/PID_27 count=1 index=0
+prop-read obj4/PID_27 count=1 index=0
+load-event obj5/PID_LOAD_STATE_CONTROL event=Unload index=1
+load-event obj4/PID_LOAD_STATE_CONTROL event=Unload index=1
+load-event obj3/PID_LOAD_STATE_CONTROL event=Unload index=1
+load-event obj2/PID_LOAD_STATE_CONTROL event=Unload index=1
+load-event obj1/PID_LOAD_STATE_CONTROL event=Unload index=1
+load-event obj4/PID_LOAD_STATE_CONTROL event=StartLoading index=1
+alloc-record obj4/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlRelSegment seg_size=8448 fill=False fill_byte=0x00
+prop-read obj4/PID_TABLE_REFERENCE count=1 index=1
+load-event obj3/PID_LOAD_STATE_CONTROL event=StartLoading index=1
+alloc-record obj3/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlRelSegment seg_size=4 fill=False fill_byte=0x00
+prop-read obj3/PID_TABLE_REFERENCE count=1 index=1
+load-event obj1/PID_LOAD_STATE_CONTROL event=StartLoading index=1
+alloc-record obj1/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlRelSegment seg_size=4 fill=False fill_byte=0x00
+prop-read obj1/PID_TABLE_REFERENCE count=1 index=1
+load-event obj2/PID_LOAD_STATE_CONTROL event=StartLoading index=1
+alloc-record obj2/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlRelSegment seg_size=6 fill=False fill_byte=0x00
+prop-read obj2/PID_TABLE_REFERENCE count=1 index=1
+mem-write 0x010000 addr_int=65536 len=61 sha=48aa87a4 extended=True
+mem-write 0x01003d addr_int=65597 len=61 sha=085c099f extended=True
+mem-write 0x01007a addr_int=65658 len=61 sha=085c099f extended=True
+mem-write 0x0100b7 addr_int=65719 len=61 sha=085c099f extended=True
+mem-write 0x0100f4 addr_int=65780 len=61 sha=085c099f extended=True
+mem-write 0x010131 addr_int=65841 len=61 sha=085c099f extended=True
+mem-write 0x01016e addr_int=65902 len=61 sha=085c099f extended=True
+mem-write 0x0101ab addr_int=65963 len=61 sha=085c099f extended=True
+mem-write 0x0101e8 addr_int=66024 len=61 sha=085c099f extended=True
+mem-write 0x010225 addr_int=66085 len=61 sha=085c099f extended=True
+mem-write 0x010262 addr_int=66146 len=61 sha=085c099f extended=True
+mem-write 0x01029f addr_int=66207 len=61 sha=085c099f extended=True
+mem-write 0x0102dc addr_int=66268 len=61 sha=085c099f extended=True
+mem-write 0x010319 addr_int=66329 len=61 sha=085c099f extended=True
+mem-write 0x010356 addr_int=66390 len=61 sha=085c099f extended=True
+mem-write 0x010393 addr_int=66451 len=61 sha=085c099f extended=True
+mem-write 0x0103d0 addr_int=66512 len=61 sha=085c099f extended=True
+mem-write 0x01040d addr_int=66573 len=61 sha=085c099f extended=True
+mem-write 0x01044a addr_int=66634 len=61 sha=085c099f extended=True
+mem-write 0x010487 addr_int=66695 len=61 sha=085c099f extended=True
+mem-write 0x0104c4 addr_int=66756 len=61 sha=085c099f extended=True
+mem-write 0x010501 addr_int=66817 len=61 sha=085c099f extended=True
+mem-write 0x01053e addr_int=66878 len=61 sha=085c099f extended=True
+mem-write 0x01057b addr_int=66939 len=61 sha=085c099f extended=True
+mem-write 0x0105b8 addr_int=67000 len=61 sha=085c099f extended=True
+mem-write 0x0105f5 addr_int=67061 len=61 sha=085c099f extended=True
+mem-write 0x010632 addr_int=67122 len=61 sha=085c099f extended=True
+mem-write 0x01066f addr_int=67183 len=61 sha=085c099f extended=True
+mem-write 0x0106ac addr_int=67244 len=61 sha=085c099f extended=True
+mem-write 0x0106e9 addr_int=67305 len=61 sha=085c099f extended=True
+mem-write 0x010726 addr_int=67366 len=61 sha=085c099f extended=True
+mem-write 0x010763 addr_int=67427 len=61 sha=085c099f extended=True
+mem-write 0x0107a0 addr_int=67488 len=61 sha=085c099f extended=True
+mem-write 0x0107dd addr_int=67549 len=61 sha=085c099f extended=True
+mem-write 0x01081a addr_int=67610 len=61 sha=085c099f extended=True
+mem-write 0x010857 addr_int=67671 len=61 sha=085c099f extended=True
+mem-write 0x010894 addr_int=67732 len=61 sha=085c099f extended=True
+mem-write 0x0108d1 addr_int=67793 len=61 sha=085c099f extended=True
+mem-write 0x01090e addr_int=67854 len=61 sha=085c099f extended=True
+mem-write 0x01094b addr_int=67915 len=61 sha=085c099f extended=True
+mem-write 0x010988 addr_int=67976 len=61 sha=085c099f extended=True
+mem-write 0x0109c5 addr_int=68037 len=61 sha=085c099f extended=True
+mem-write 0x010a02 addr_int=68098 len=61 sha=085c099f extended=True
+mem-write 0x010a3f addr_int=68159 len=61 sha=085c099f extended=True
+mem-write 0x010a7c addr_int=68220 len=61 sha=085c099f extended=True
+mem-write 0x010ab9 addr_int=68281 len=61 sha=085c099f extended=True
+mem-write 0x010af6 addr_int=68342 len=61 sha=085c099f extended=True
+mem-write 0x010b33 addr_int=68403 len=61 sha=085c099f extended=True
+mem-write 0x010b70 addr_int=68464 len=61 sha=085c099f extended=True
+mem-write 0x010bad addr_int=68525 len=61 sha=085c099f extended=True
+mem-write 0x010bea addr_int=68586 len=61 sha=085c099f extended=True
+mem-write 0x010c27 addr_int=68647 len=61 sha=085c099f extended=True
+mem-write 0x010c64 addr_int=68708 len=61 sha=085c099f extended=True
+mem-write 0x010ca1 addr_int=68769 len=61 sha=085c099f extended=True
+mem-write 0x010cde addr_int=68830 len=61 sha=085c099f extended=True
+mem-write 0x010d1b addr_int=68891 len=61 sha=085c099f extended=True
+mem-write 0x010d58 addr_int=68952 len=61 sha=085c099f extended=True
+mem-write 0x010d95 addr_int=69013 len=61 sha=085c099f extended=True
+mem-write 0x010dd2 addr_int=69074 len=61 sha=085c099f extended=True
+mem-write 0x010e0f addr_int=69135 len=61 sha=085c099f extended=True
+mem-write 0x010e4c addr_int=69196 len=61 sha=085c099f extended=True
+mem-write 0x010e89 addr_int=69257 len=61 sha=085c099f extended=True
+mem-write 0x010ec6 addr_int=69318 len=61 sha=085c099f extended=True
+mem-write 0x010f03 addr_int=69379 len=61 sha=085c099f extended=True
+mem-write 0x010f40 addr_int=69440 len=61 sha=085c099f extended=True
+mem-write 0x010f7d addr_int=69501 len=61 sha=085c099f extended=True
+mem-write 0x010fba addr_int=69562 len=61 sha=085c099f extended=True
+mem-write 0x010ff7 addr_int=69623 len=61 sha=085c099f extended=True
+mem-write 0x011034 addr_int=69684 len=61 sha=085c099f extended=True
+mem-write 0x011071 addr_int=69745 len=61 sha=085c099f extended=True
+mem-write 0x0110ae addr_int=69806 len=61 sha=085c099f extended=True
+mem-write 0x0110eb addr_int=69867 len=61 sha=085c099f extended=True
+mem-write 0x011128 addr_int=69928 len=61 sha=085c099f extended=True
+mem-write 0x011165 addr_int=69989 len=61 sha=085c099f extended=True
+mem-write 0x0111a2 addr_int=70050 len=61 sha=085c099f extended=True
+mem-write 0x0111df addr_int=70111 len=61 sha=085c099f extended=True
+mem-write 0x01121c addr_int=70172 len=61 sha=085c099f extended=True
+mem-write 0x011259 addr_int=70233 len=61 sha=085c099f extended=True
+mem-write 0x011296 addr_int=70294 len=61 sha=085c099f extended=True
+mem-write 0x0112d3 addr_int=70355 len=61 sha=085c099f extended=True
+mem-write 0x011310 addr_int=70416 len=61 sha=085c099f extended=True
+mem-write 0x01134d addr_int=70477 len=61 sha=085c099f extended=True
+mem-write 0x01138a addr_int=70538 len=61 sha=085c099f extended=True
+mem-write 0x0113c7 addr_int=70599 len=61 sha=085c099f extended=True
+mem-write 0x011404 addr_int=70660 len=61 sha=085c099f extended=True
+mem-write 0x011441 addr_int=70721 len=61 sha=085c099f extended=True
+mem-write 0x01147e addr_int=70782 len=61 sha=085c099f extended=True
+mem-write 0x0114bb addr_int=70843 len=61 sha=085c099f extended=True
+mem-write 0x0114f8 addr_int=70904 len=61 sha=085c099f extended=True
+mem-write 0x011535 addr_int=70965 len=61 sha=085c099f extended=True
+mem-write 0x011572 addr_int=71026 len=61 sha=085c099f extended=True
+mem-write 0x0115af addr_int=71087 len=61 sha=085c099f extended=True
+mem-write 0x0115ec addr_int=71148 len=61 sha=085c099f extended=True
+mem-write 0x011629 addr_int=71209 len=61 sha=085c099f extended=True
+mem-write 0x011666 addr_int=71270 len=61 sha=085c099f extended=True
+mem-write 0x0116a3 addr_int=71331 len=61 sha=085c099f extended=True
+mem-write 0x0116e0 addr_int=71392 len=61 sha=085c099f extended=True
+mem-write 0x01171d addr_int=71453 len=61 sha=085c099f extended=True
+mem-write 0x01175a addr_int=71514 len=61 sha=085c099f extended=True
+mem-write 0x011797 addr_int=71575 len=61 sha=085c099f extended=True
+mem-write 0x0117d4 addr_int=71636 len=61 sha=085c099f extended=True
+mem-write 0x011811 addr_int=71697 len=61 sha=085c099f extended=True
+mem-write 0x01184e addr_int=71758 len=61 sha=085c099f extended=True
+mem-write 0x01188b addr_int=71819 len=61 sha=085c099f extended=True
+mem-write 0x0118c8 addr_int=71880 len=61 sha=085c099f extended=True
+mem-write 0x011905 addr_int=71941 len=61 sha=085c099f extended=True
+mem-write 0x011942 addr_int=72002 len=61 sha=085c099f extended=True
+mem-write 0x01197f addr_int=72063 len=61 sha=085c099f extended=True
+mem-write 0x0119bc addr_int=72124 len=61 sha=085c099f extended=True
+mem-write 0x0119f9 addr_int=72185 len=61 sha=085c099f extended=True
+mem-write 0x011a36 addr_int=72246 len=61 sha=085c099f extended=True
+mem-write 0x011a73 addr_int=72307 len=61 sha=085c099f extended=True
+mem-write 0x011ab0 addr_int=72368 len=61 sha=085c099f extended=True
+mem-write 0x011aed addr_int=72429 len=61 sha=085c099f extended=True
+mem-write 0x011b2a addr_int=72490 len=61 sha=085c099f extended=True
+mem-write 0x011b67 addr_int=72551 len=61 sha=085c099f extended=True
+mem-write 0x011ba4 addr_int=72612 len=61 sha=085c099f extended=True
+mem-write 0x011be1 addr_int=72673 len=61 sha=085c099f extended=True
+mem-write 0x011c1e addr_int=72734 len=61 sha=085c099f extended=True
+mem-write 0x011c5b addr_int=72795 len=61 sha=085c099f extended=True
+mem-write 0x011c98 addr_int=72856 len=61 sha=085c099f extended=True
+mem-write 0x011cd5 addr_int=72917 len=61 sha=085c099f extended=True
+mem-write 0x011d12 addr_int=72978 len=61 sha=085c099f extended=True
+mem-write 0x011d4f addr_int=73039 len=61 sha=085c099f extended=True
+mem-write 0x011d8c addr_int=73100 len=61 sha=085c099f extended=True
+mem-write 0x011dc9 addr_int=73161 len=61 sha=085c099f extended=True
+mem-write 0x011e06 addr_int=73222 len=61 sha=085c099f extended=True
+mem-write 0x011e43 addr_int=73283 len=61 sha=085c099f extended=True
+mem-write 0x011e80 addr_int=73344 len=61 sha=085c099f extended=True
+mem-write 0x011ebd addr_int=73405 len=61 sha=085c099f extended=True
+mem-write 0x011efa addr_int=73466 len=61 sha=085c099f extended=True
+mem-write 0x011f37 addr_int=73527 len=61 sha=085c099f extended=True
+mem-write 0x011f74 addr_int=73588 len=61 sha=085c099f extended=True
+mem-write 0x011fb1 addr_int=73649 len=61 sha=085c099f extended=True
+mem-write 0x011fee addr_int=73710 len=61 sha=085c099f extended=True
+mem-write 0x01202b addr_int=73771 len=61 sha=085c099f extended=True
+mem-write 0x012068 addr_int=73832 len=61 sha=085c099f extended=True
+mem-write 0x0120a5 addr_int=73893 len=61 sha=085c099f extended=True
+mem-write 0x0120e2 addr_int=73954 len=30 sha=f28e9473 extended=True
+mem-write 0x8000 addr_int=32768 len=4 sha=e5e121e5 extended=False
+mem-write 0xc000 addr_int=49152 len=6 sha=7b9453f4 extended=False
+mem-write 0xa000 addr_int=40960 len=4 sha=bf2fcd6c extended=False
+prop-write obj4/PID_PROGRAM_VERSION count=1 index=1 len=5 sha=e54568ce
+load-event obj4/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1
+load-event obj3/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1
+load-event obj2/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1
+load-event obj1/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1
+restart Restart type=basic
+connect T_Connect
+descriptor type0 type=0
+disconnect T_Disconnect
+connect T_Connect
+authorize Authorize_Request key=FFFFFFFF(free-access)
+prop-read obj4/PID_1 count=1 index=1
+prop-read obj4/PID_LOAD_STATE_CONTROL count=1 index=1
+mem-read 0x010000 addr_int=65536 count=4
+mem-read 0x8000 addr_int=32768 count=4
+mem-read 0xc000 addr_int=49152 count=4
+mem-read 0xa000 addr_int=40960 count=4
+descriptor type0 type=0
+prop-read obj0/PID_1 count=1 index=1
+prop-read obj1/PID_1 count=1 index=1
+prop-read obj2/PID_1 count=1 index=1
+prop-read obj3/PID_1 count=1 index=1
+prop-read obj4/PID_1 count=1 index=1
+prop-read obj5/PID_1 count=1 index=1
+prop-read obj6/PID_1 count=1 index=1
+prop-read obj1/PID_23 count=1 index=0
+prop-read obj1/PID_TABLE_REFERENCE count=1 index=1
+mem-read 0xa000 addr_int=40960 count=2
+mem-read 0xa002 addr_int=40962 count=2
+prop-desc-read obj2/PID_23 obj=2 pid=23 pid_name=PID_23 prop_index=0
+prop-read obj2/PID_23 count=1 index=0
+prop-read obj2/PID_TABLE_REFERENCE count=1 index=1
+mem-read 0xc000 addr_int=49152 count=2
+mem-read 0xc002 addr_int=49154 count=4
+prop-read obj3/PID_23 count=1 index=0
+prop-read obj3/PID_TABLE_REFERENCE count=1 index=1
+mem-read 0x8000 addr_int=32768 count=2
+prop-read obj0/PID_1 count=1 index=1
+prop-read obj1/PID_1 count=1 index=1
+prop-read obj2/PID_1 count=1 index=1
+prop-read obj3/PID_1 count=1 index=1
+prop-read obj4/PID_1 count=1 index=1
+prop-read obj5/PID_1 count=1 index=1
+prop-read obj6/PID_1 count=1 index=1
+prop-read obj4/PID_TABLE_REFERENCE count=1 index=1
+mem-read 0x010000 addr_int=65536 count=61
+mem-read 0x01003d addr_int=65597 count=61
+mem-read 0x01007a addr_int=65658 count=61
+mem-read 0x0100b7 addr_int=65719 count=61
+mem-read 0x0100f4 addr_int=65780 count=61
+mem-read 0x010131 addr_int=65841 count=61
+mem-read 0x01016e addr_int=65902 count=61
+mem-read 0x0101ab addr_int=65963 count=61
+mem-read 0x0101e8 addr_int=66024 count=61
+mem-read 0x010225 addr_int=66085 count=61
+mem-read 0x010262 addr_int=66146 count=61
+mem-read 0x01029f addr_int=66207 count=61
+mem-read 0x0102dc addr_int=66268 count=61
+mem-read 0x010319 addr_int=66329 count=61
+mem-read 0x010356 addr_int=66390 count=61
+mem-read 0x010393 addr_int=66451 count=61
+mem-read 0x0103d0 addr_int=66512 count=61
+mem-read 0x01040d addr_int=66573 count=61
+mem-read 0x01044a addr_int=66634 count=61
+mem-read 0x010487 addr_int=66695 count=61
+mem-read 0x0104c4 addr_int=66756 count=61
+mem-read 0x010501 addr_int=66817 count=61
+mem-read 0x01053e addr_int=66878 count=61
+mem-read 0x01057b addr_int=66939 count=61
+mem-read 0x0105b8 addr_int=67000 count=61
+mem-read 0x0105f5 addr_int=67061 count=61
+mem-read 0x010632 addr_int=67122 count=61
+mem-read 0x01066f addr_int=67183 count=61
+mem-read 0x0106ac addr_int=67244 count=61
+mem-read 0x0106e9 addr_int=67305 count=61
+mem-read 0x010726 addr_int=67366 count=61
+mem-read 0x010763 addr_int=67427 count=61
+mem-read 0x0107a0 addr_int=67488 count=61
+mem-read 0x0107dd addr_int=67549 count=61
+mem-read 0x01081a addr_int=67610 count=61
+mem-read 0x010857 addr_int=67671 count=61
+mem-read 0x010894 addr_int=67732 count=61
+mem-read 0x0108d1 addr_int=67793 count=61
+mem-read 0x01090e addr_int=67854 count=61
+mem-read 0x01094b addr_int=67915 count=61
+mem-read 0x010988 addr_int=67976 count=61
+mem-read 0x0109c5 addr_int=68037 count=61
+mem-read 0x010a02 addr_int=68098 count=61
+mem-read 0x010a3f addr_int=68159 count=61
+mem-read 0x010a7c addr_int=68220 count=61
+mem-read 0x010ab9 addr_int=68281 count=61
+mem-read 0x010af6 addr_int=68342 count=61
+mem-read 0x010b33 addr_int=68403 count=61
+mem-read 0x010b70 addr_int=68464 count=61
+mem-read 0x010bad addr_int=68525 count=61
+mem-read 0x010bea addr_int=68586 count=61
+mem-read 0x010c27 addr_int=68647 count=61
+mem-read 0x010c64 addr_int=68708 count=61
+mem-read 0x010ca1 addr_int=68769 count=61
+mem-read 0x010cde addr_int=68830 count=61
+mem-read 0x010d1b addr_int=68891 count=61
+mem-read 0x010d58 addr_int=68952 count=61
+mem-read 0x010d95 addr_int=69013 count=61
+mem-read 0x010dd2 addr_int=69074 count=61
+mem-read 0x010e0f addr_int=69135 count=61
+mem-read 0x010e4c addr_int=69196 count=61
+mem-read 0x010e89 addr_int=69257 count=61
+mem-read 0x010ec6 addr_int=69318 count=61
+mem-read 0x010f03 addr_int=69379 count=61
+mem-read 0x010f40 addr_int=69440 count=61
+mem-read 0x010f7d addr_int=69501 count=61
+mem-read 0x010fba addr_int=69562 count=61
+mem-read 0x010ff7 addr_int=69623 count=61
+mem-read 0x011034 addr_int=69684 count=61
+mem-read 0x011071 addr_int=69745 count=61
+mem-read 0x0110ae addr_int=69806 count=61
+mem-read 0x0110eb addr_int=69867 count=61
+mem-read 0x011128 addr_int=69928 count=61
+mem-read 0x011165 addr_int=69989 count=61
+mem-read 0x0111a2 addr_int=70050 count=61
+mem-read 0x0111df addr_int=70111 count=61
+mem-read 0x01121c addr_int=70172 count=61
+mem-read 0x011259 addr_int=70233 count=61
+mem-read 0x011296 addr_int=70294 count=61
+mem-read 0x0112d3 addr_int=70355 count=61
+mem-read 0x011310 addr_int=70416 count=61
+mem-read 0x01134d addr_int=70477 count=61
+mem-read 0x01138a addr_int=70538 count=61
+mem-read 0x0113c7 addr_int=70599 count=61
+mem-read 0x011404 addr_int=70660 count=61
+mem-read 0x011441 addr_int=70721 count=61
+mem-read 0x01147e addr_int=70782 count=61
+mem-read 0x0114bb addr_int=70843 count=61
+mem-read 0x0114f8 addr_int=70904 count=61
+mem-read 0x011535 addr_int=70965 count=61
+mem-read 0x011572 addr_int=71026 count=61
+mem-read 0x0115af addr_int=71087 count=61
+mem-read 0x0115ec addr_int=71148 count=61
+mem-read 0x011629 addr_int=71209 count=61
+mem-read 0x011666 addr_int=71270 count=61
+mem-read 0x0116a3 addr_int=71331 count=61
+mem-read 0x0116e0 addr_int=71392 count=61
+mem-read 0x01171d addr_int=71453 count=61
+mem-read 0x01175a addr_int=71514 count=61
+mem-read 0x011797 addr_int=71575 count=61
+mem-read 0x0117d4 addr_int=71636 count=61
+mem-read 0x011811 addr_int=71697 count=61
+mem-read 0x01184e addr_int=71758 count=61
+mem-read 0x01188b addr_int=71819 count=61
+mem-read 0x0118c8 addr_int=71880 count=61
+mem-read 0x011905 addr_int=71941 count=61
+mem-read 0x011942 addr_int=72002 count=61
+mem-read 0x01197f addr_int=72063 count=61
+mem-read 0x0119bc addr_int=72124 count=61
+mem-read 0x0119f9 addr_int=72185 count=61
+mem-read 0x011a36 addr_int=72246 count=61
+mem-read 0x011a73 addr_int=72307 count=61
+mem-read 0x011ab0 addr_int=72368 count=61
+mem-read 0x011aed addr_int=72429 count=61
+mem-read 0x011b2a addr_int=72490 count=61
+mem-read 0x011b67 addr_int=72551 count=61
+mem-read 0x011ba4 addr_int=72612 count=61
+mem-read 0x011be1 addr_int=72673 count=61
+mem-read 0x011c1e addr_int=72734 count=61
+mem-read 0x011c5b addr_int=72795 count=61
+mem-read 0x011c98 addr_int=72856 count=61
+mem-read 0x011cd5 addr_int=72917 count=61
+mem-read 0x011d12 addr_int=72978 count=61
+mem-read 0x011d4f addr_int=73039 count=61
+mem-read 0x011d8c addr_int=73100 count=61
+mem-read 0x011dc9 addr_int=73161 count=61
+mem-read 0x011e06 addr_int=73222 count=61
+mem-read 0x011e43 addr_int=73283 count=61
+mem-read 0x011e80 addr_int=73344 count=61
+mem-read 0x011ebd addr_int=73405 count=61
+mem-read 0x011efa addr_int=73466 count=61
+mem-read 0x011f37 addr_int=73527 count=61
+mem-read 0x011f74 addr_int=73588 count=61
+mem-read 0x011fb1 addr_int=73649 count=61
+mem-read 0x011fee addr_int=73710 count=61
+mem-read 0x01202b addr_int=73771 count=61
+mem-read 0x012068 addr_int=73832 count=61
+mem-read 0x0120a5 addr_int=73893 count=61
+mem-read 0x0120e2 addr_int=73954 count=30
+disconnect T_Disconnect
+
+memory image (4 region(s), chunking removed):
+    0x008000..0x008004 len=4 sha=e5e121e5
+    0x00a000..0x00a004 len=4 sha=bf2fcd6c
+    0x00c000..0x00c006 len=6 sha=7b9453f4
+    0x010000..0x012100 len=8448 sha=57c96569

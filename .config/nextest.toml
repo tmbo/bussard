@@ -85,14 +85,17 @@ slow-timeout = { period = "300s", terminate-after = 12 }
 #   shards (`..._synthetic_catalogue_shard_<k>`), ten products each at 40;
 # - the oracle rows' `--check`, about 1 to 3 s per row on a quiet host and up
 #   to 25 s on a loaded one, runs the rows on four workers inside the test.
+# - the golden request streams and the CLI/MCP equivalence
+#   (`synthetic_streams.rs`), one to five simulator sessions per product, run
+#   as four shards each.
 # Either way a shard or the rows test needs up to about 2 to 4 minutes at 40;
 # the budget below gives 10 before nextest kills it. Grow it with the
 # catalogue, not with a slower test: a row or product that alone takes
 # minutes is a bug.
 [[profile.default.overrides]]
-filter = 'test(/^sim_catalog_loop::test_sim_catalog_loop_synthetic_catalogue_shard_[0-9]+$/) | test(/^offline_oracle::test_offline_oracle_synthetic_(sim_)?rows_pass_the_check$/)'
+filter = 'test(/^sim_catalog_loop::test_sim_catalog_loop_synthetic_catalogue_shard_[0-9]+$/) | test(/^offline_oracle::test_offline_oracle_synthetic_(sim_)?rows_pass_the_check$/) | test(/^synthetic_streams::test_synthetic_streams_(golden|cli_mcp)_shard_[0-9]+$/)'
 slow-timeout = { period = "60s", terminate-after = 10 }
 
 [[profile.ci.overrides]]
-filter = 'test(/^sim_catalog_loop::test_sim_catalog_loop_synthetic_catalogue_shard_[0-9]+$/) | test(/^offline_oracle::test_offline_oracle_synthetic_(sim_)?rows_pass_the_check$/)'
+filter = 'test(/^sim_catalog_loop::test_sim_catalog_loop_synthetic_catalogue_shard_[0-9]+$/) | test(/^offline_oracle::test_offline_oracle_synthetic_(sim_)?rows_pass_the_check$/) | test(/^synthetic_streams::test_synthetic_streams_(golden|cli_mcp)_shard_[0-9]+$/)'
 slow-timeout = { period = "60s", terminate-after = 10 }

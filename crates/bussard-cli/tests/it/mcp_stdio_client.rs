@@ -29,7 +29,7 @@ impl McpServer {
         password: &str,
         extra: &[&str],
     ) -> TestResult<McpServer> {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_bussard"))
+        let child = Command::new(env!("CARGO_BIN_EXE_bussard"))
             .env("BUSSARD_MGMT_TIMEOUT_MS", "300")
             .env("BUSSARD_ADDRESS_PROBE_MS", "200")
             .env("BUSSARD_KEYRING_PASSWORD", password)
@@ -47,6 +47,38 @@ impl McpServer {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()?;
+        McpServer::handshake(child)
+    }
+
+    /// Starts `bussard mcp --dir <dir> --gateway 127.0.0.1:<port> <extra…>`
+    /// with no keyring and the environment `env` (on top of the inherited
+    /// one, minus `BUSSARD_ALLOW_REAL_GATEWAY` and `BUSSARD_KEYRING`), and
+    /// completes the handshake.
+    pub(crate) fn start_without_keyring(
+        dir: &Path,
+        port: u16,
+        env: &[(&str, &str)],
+        extra: &[&str],
+    ) -> TestResult<McpServer> {
+        let child = Command::new(env!("CARGO_BIN_EXE_bussard"))
+            .envs(env.iter().copied())
+            .env_remove("BUSSARD_ALLOW_REAL_GATEWAY")
+            .env_remove("BUSSARD_KEYRING")
+            .arg("mcp")
+            .arg("--dir")
+            .arg(dir)
+            .arg("--gateway")
+            .arg(format!("127.0.0.1:{port}"))
+            .args(extra)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()?;
+        McpServer::handshake(child)
+    }
+
+    /// Takes the pipes of a spawned server and completes the MCP handshake.
+    fn handshake(mut child: Child) -> TestResult<McpServer> {
         let stdin = child.stdin.take().ok_or("no stdin pipe")?;
         let stdout = child.stdout.take().ok_or("no stdout pipe")?;
         let (tx, lines) = channel();
