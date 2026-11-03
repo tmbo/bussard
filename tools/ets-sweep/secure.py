@@ -34,10 +34,10 @@ types it), never the command line or a file in the repository.
 
 The certificate format (`certificate_text`): 36 characters in six groups of
 six, the RFC 4648 base32 of the serial number (6 octets) and the FDSK (16
-octets) with a 4-bit check in the 4 spare bits. Which check ETS expects is
-NOT verified yet (written offline, 2026-10-30): the default is CRC-4/ITU over
-the 22 octets; `cert --check` on the label of a real device says which
-variant matches, and `--check-variant` picks it for the run.
+octets) with a 4-bit check in the 4 spare bits: plain CRC-4 over the 22
+octets (`crc4`), confirmed on two real labels (#201, 2026-11-03); the
+contract is dev/enroll-protocol.md, "Certificate text". `cert --check` on a
+label says whether its check matches.
 """
 from __future__ import annotations
 
@@ -62,33 +62,18 @@ KNXTRACE = HERE.parents[1] / "tools" / "knxtrace" / "knxtrace.py"
 PID_SERIAL_NUMBER = 11
 
 
-def crc4(data: bytes, poly: int = 0x3, init: int = 0x0, reflected: bool = True) -> int:
-    """A 4-bit CRC over `data` (CRC-4/ITU by default: x^4 + x + 1, reflected)."""
-    crc = init
-    if reflected:
-        rpoly = int(f"{poly:04b}"[::-1], 2)
-        for byte in data:
-            crc ^= byte
-            for _ in range(8):
-                crc = (crc >> 1) ^ rpoly if crc & 1 else crc >> 1
-            crc &= 0xF
-        return crc
+def crc4(data: bytes) -> int:
+    """The certificate check: plain CRC-4 over `data`, x^4 + x + 1 (0x3), init
+    0, MSB first (not reflected), no final XOR, direct (not augmented). Not
+    CRC-4/ITU, the reflected variant."""
+    crc = 0
     for byte in data:
         for bit in range(7, -1, -1):
-            top = (crc >> 3) & 1
-            crc = ((crc << 1) & 0xF) | ((byte >> bit) & 1)
+            top = ((crc >> 3) & 1) ^ ((byte >> bit) & 1)
+            crc = (crc << 1) & 0xF
             if top:
-                crc ^= poly
-    return crc & 0xF
-
-
-# The 4-bit checks a label might carry; `cert --check` tells which one a real
-# label uses.
-CHECKS = {
-    "crc4-itu": lambda d: crc4(d),
-    "crc4-plain": lambda d: crc4(d, reflected=False),
-    "none": lambda d: 0,
-}
+                crc ^= 0x3
+    return crc
 
 
 def _bits_to_base32(value: int, bits: int) -> str:
@@ -96,18 +81,18 @@ def _bits_to_base32(value: int, bits: int) -> str:
     return "".join(alphabet[(value >> (bits - 5 * (i + 1))) & 0x1F] for i in range(bits // 5))
 
 
-def certificate_text(serial: bytes, fdsk: bytes, check: str = "crc4-itu") -> str:
+def certificate_text(serial: bytes, fdsk: bytes) -> str:
     """The device certificate text ETS takes for a device (see the module
     doc): six groups of six base32 characters, dash-separated."""
     if len(serial) != 6 or len(fdsk) != 16:
         raise ValueError("a serial number is 6 octets and an FDSK 16")
     data = serial + fdsk
-    raw = _bits_to_base32((int.from_bytes(data, "big") << 4) | CHECKS[check](data), 180)
+    raw = _bits_to_base32((int.from_bytes(data, "big") << 4) | crc4(data), 180)
     return "-".join(raw[i:i + 6] for i in range(0, 36, 6))
 
 
 def parse_certificate(text: str) -> dict:
-    """Serial, FDSK and the check variants a label satisfies. The FDSK is
+    """Serial, FDSK, the check nibble and whether it matches. The FDSK is
     returned for the sim config only; nothing here prints it."""
     clean = re.sub(r"[\s-]", "", text).upper()
     if not re.fullmatch(r"[A-Z2-7]{36}", clean):
@@ -119,7 +104,7 @@ def parse_certificate(text: str) -> dict:
     data = (value >> 4).to_bytes(22, "big")
     tail = value & 0xF
     return {"serial": data[:6], "fdsk": data[6:], "check": tail,
-            "matches": [name for name, f in CHECKS.items() if f(data) == tail]}
+            "check_ok": crc4(data) == tail}
 
 
 def synthetic_identity(app: str) -> tuple[bytes, bytes]:
@@ -224,7 +209,7 @@ def run(args) -> int:
         r = sweep.run_one(c, path, job["id"], str(job["order_numbers"][0]), variant=VARIANT, project=PROJECT,
                           mask=job["mask"], properties=props, secure=secure,
                           flow_extra={"project_password": pw,
-                                      "certificate": certificate_text(serial, fdsk, args.check_variant)},
+                                      "certificate": certificate_text(serial, fdsk)},
                           after_download=export_hook(pw))
         entry = {"file": job["file"], "mask": job["mask"], "when": datetime.now(timezone.utc).isoformat(),
                  "outcome": r["outcome"], "error": r.get("error"), "ets": r.get("ets"), "ops": r.get("ops"),
@@ -259,21 +244,19 @@ def main() -> int:
     p.add_argument("--filter", default="")
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--redo", action="store_true")
-    p.add_argument("--check-variant", default="crc4-itu", choices=sorted(CHECKS))
     p = sub.add_parser("cert")
     p.add_argument("--serial", help="12 hex digits")
     p.add_argument("--fdsk", help="32 hex digits")
-    p.add_argument("--check-variant", default="crc4-itu", choices=sorted(CHECKS))
-    p.add_argument("--check", help="a real label: which check variant it carries (the FDSK is not printed)")
+    p.add_argument("--check", help="a real label: its serial and whether its check matches (the FDSK is not printed)")
     sub.add_parser("jobs")
     args = ap.parse_args()
     if args.cmd == "cert":
         if args.check:
             info = parse_certificate(args.check)
             print(f"serial {info['serial'].hex().upper()}, check nibble {info['check']:X}, "
-                  f"matches: {', '.join(info['matches']) or 'none of ' + ', '.join(CHECKS)}")
-            return 0 if info["matches"] else 1
-        print(certificate_text(bytes.fromhex(args.serial), bytes.fromhex(args.fdsk), args.check_variant))
+                  f"{'matches' if info['check_ok'] else 'does NOT match'}")
+            return 0 if info["check_ok"] else 1
+        print(certificate_text(bytes.fromhex(args.serial), bytes.fromhex(args.fdsk)))
         return 0
     if args.cmd == "jobs":
         for j in jobs():

@@ -6,11 +6,12 @@
 //! 4648 base32 (`A-Z`, `2-7`), printed as six groups of six separated by
 //! dashes, decoded as a 180-bit big-endian number whose upper 176 bits are the
 //! serial number (6 octets) and the FDSK (16 octets) and whose lower 4 bits are
-//! a check, CRC-4/ITU over the 22 octets.
+//! a check, plain CRC-4 over the 22 octets (see [`crc4`]), confirmed on real
+//! labels (#201).
 //!
-//! The check variant is not yet confirmed on a real label (#201), so
-//! [`Certificate::decode`] reports a mismatch in [`Certificate::check_ok`]
-//! instead of refusing the label; the caller decides.
+//! [`Certificate::decode`] reports a check mismatch in
+//! [`Certificate::check_ok`] rather than as an error, so a caller can still
+//! show the serial number; a label with a mismatch is not a valid certificate.
 //!
 //! # Key hygiene
 //!
@@ -67,21 +68,20 @@ pub fn normalize(text: &str) -> String {
         .collect()
 }
 
-/// CRC-4/ITU (x^4 + x + 1, reflected, init 0) over `data`.
-pub fn crc4_itu(data: &[u8]) -> u8 {
-    // The reflected polynomial of 0x3.
-    const POLY: u8 = 0xC;
+/// The certificate check: plain CRC-4 over `data`, polynomial x^4 + x + 1
+/// (`0x3`), init 0, MSB first (not reflected), no final XOR, computed
+/// directly (not augmented). Not CRC-4/ITU, which is the reflected variant.
+pub fn crc4(data: &[u8]) -> u8 {
+    const POLY: u8 = 0x3;
     let mut crc: u8 = 0;
     for &byte in data {
-        crc ^= byte;
-        for _ in 0..8 {
-            crc = if crc & 1 == 1 {
-                (crc >> 1) ^ POLY
-            } else {
-                crc >> 1
-            };
+        for bit in (0..8).rev() {
+            let top = ((crc >> 3) & 1) ^ ((byte >> bit) & 1);
+            crc = (crc << 1) & 0xF;
+            if top == 1 {
+                crc ^= POLY;
+            }
         }
-        crc &= 0xF;
     }
     crc
 }
@@ -95,7 +95,8 @@ pub struct Certificate {
     pub fdsk: Key16,
     /// The 4-bit check the label carries.
     pub check: u8,
-    /// Whether [`check`](Self::check) is the CRC-4/ITU of the serial and FDSK.
+    /// Whether [`check`](Self::check) is the [`crc4`] of the serial and FDSK.
+    /// A label without it is not a valid certificate.
     pub check_ok: bool,
 }
 
@@ -118,7 +119,8 @@ pub fn serial_hex(serial: &[u8; 6]) -> String {
 
 impl Certificate {
     /// Normalizes and decodes `text` (see the module docs). A check mismatch
-    /// is not an error: it is reported in [`check_ok`](Self::check_ok).
+    /// is reported in [`check_ok`](Self::check_ok), not as an error, so the
+    /// caller can name the serial number when it refuses the label.
     ///
     /// # Errors
     ///
@@ -150,7 +152,7 @@ impl Certificate {
         let mut fdsk = [0u8; 16];
         fdsk.copy_from_slice(&bits[6..DATA_LEN]);
         let check = bits[DATA_LEN] >> 4;
-        let check_ok = crc4_itu(&bits[..DATA_LEN]) == check;
+        let check_ok = crc4(&bits[..DATA_LEN]) == check;
         let certificate = Certificate {
             serial,
             fdsk: Key16::new(fdsk),
@@ -162,12 +164,12 @@ impl Certificate {
     }
 
     /// The label text for `serial` and `fdsk`, six dash-separated groups of
-    /// six, with the CRC-4/ITU check. For tests and synthetic devices.
+    /// six, with the [`crc4`] check. For tests and synthetic devices.
     pub fn encode(serial: &[u8; 6], fdsk: &Key16) -> String {
         let mut data = zeroize::Zeroizing::new([0u8; DATA_LEN + 1]);
         data[..6].copy_from_slice(serial);
         data[6..DATA_LEN].copy_from_slice(fdsk.bytes());
-        data[DATA_LEN] = crc4_itu(&data[..DATA_LEN]) << 4;
+        data[DATA_LEN] = crc4(&data[..DATA_LEN]) << 4;
         let mut out = String::with_capacity(CERTIFICATE_LEN + 5);
         for i in 0..CERTIFICATE_LEN {
             let mut value = 0usize;
@@ -283,7 +285,7 @@ mod tests {
     #[test]
     fn test_decode_lookalike_digits_read_as_letters() -> TestResult {
         // The first vector with O, I and B typed as 0, 1 and 8 where it has them.
-        let typed = "ad5aca-qdasqk-d1vdus-s2nj5i-vgvkxl-fnv2x5";
+        let typed = "ad5aca-qdasqk-d1vdus-s2nj5i-vgvkxl-fnv2xr";
         let cert = Certificate::decode(typed)?;
         assert_eq!(serial_hex(&cert.serial), "00FA01020304");
         assert!(cert.check_ok);
@@ -292,7 +294,7 @@ mod tests {
 
     #[test]
     fn test_certificate_debug_redacts_fdsk() -> TestResult {
-        let cert = Certificate::decode("AD5ACA-QDASQK-DIVDUS-S2NJ5I-VGVKXL-FNV2X5")?;
+        let cert = Certificate::decode("AD5ACA-QDASQK-DIVDUS-S2NJ5I-VGVKXL-FNV2XR")?;
         let shown = format!("{cert:?}");
         assert!(shown.contains("00FA01020304"));
         assert!(!shown.to_ascii_uppercase().contains("A0A1A2"));
@@ -301,9 +303,12 @@ mod tests {
     }
 
     #[test]
-    fn test_crc4_itu_known_values() {
-        assert_eq!(crc4_itu(&[]), 0);
-        // CRC-4/ITU check value of "123456789".
-        assert_eq!(crc4_itu(b"123456789"), 0x7);
+    fn test_crc4_known_values() {
+        assert_eq!(crc4(&[]), 0);
+        // The plain (non-reflected) CRC-4 of "123456789"; CRC-4/ITU gives 0x7.
+        assert_eq!(crc4(b"123456789"), 0xE);
+        // The direct algorithm gives M(x) * x^4 mod (x^4 + x + 1); for M = 1
+        // that is x + 1.
+        assert_eq!(crc4(&[0x01]), 0x3);
     }
 }

@@ -309,10 +309,10 @@ fn add_certificate(
 
 /// The first certificate vector of `dev/enroll/vectors-v1.json` (synthetic:
 /// serial 00FA01020304, FDSK A0..AF).
-const LABEL: &str = "AD5ACA-QDASQK-DIVDUS-S2NJ5I-VGVKXL-FNV2X5";
+const LABEL: &str = "AD5ACA-QDASQK-DIVDUS-S2NJ5I-VGVKXL-FNV2XR";
 
 /// The second vector (serial 0083A1B2C3D4, an all-zero FDSK).
-const LABEL_ZERO: &str = "ACB2DM-WD2QAA-AAAAAA-AAAAAA-AAAAAA-AAAAAG";
+const LABEL_ZERO: &str = "ACB2DM-WD2QAA-AAAAAA-AAAAAA-AAAAAA-AAAAAD";
 
 /// The same serial as [`LABEL`] with another (synthetic) FDSK, built with the
 /// codec so the check matches.
