@@ -561,6 +561,19 @@ impl ProductModel {
         })
     }
 
+    /// The `<ParameterCalculation>` that writes app-relative ref `reference`
+    /// (`P-3_R-3`, `MD-3_P-14_R-14`) as one of its outputs, if any: ETS shows
+    /// such a parameter read-only, and a download writes what the
+    /// calculation computes (issue #712).
+    pub fn calculation_writing(
+        &self,
+        reference: &str,
+    ) -> Option<&crate::dynamic::ParameterCalculation> {
+        self.calculations
+            .iter()
+            .find(|c| c.outputs.iter().any(|o| o.param_ref == reference))
+    }
+
     /// The vendor default of app-relative parameter ref `reference`: a text
     /// parameter's `InitialValue` (issue #473), else the ref's own `Value`
     /// when the model records one, else the parameter's default. This is the

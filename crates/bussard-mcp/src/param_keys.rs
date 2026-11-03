@@ -216,6 +216,53 @@ fn ref_of(key: &str) -> Option<&str> {
         .filter(|r| !r.is_empty())
 }
 
+/// Refuses a value for an output of a `<ParameterCalculation>` (issue #712).
+/// ETS shows such a parameter read-only, and a download writes the value the
+/// calculation computes from its inputs, never one the device file stores, so
+/// the refusal names the calculation and the input keys to set instead. A
+/// script has no inverse in general, so the value is not redirected to the
+/// inputs. `None` when `key` is no calculation output or the product model is
+/// not at hand.
+pub fn calculation_output_refusal(
+    device: &Device,
+    products: &ProductModels,
+    key: &str,
+) -> Option<String> {
+    let app = device.product.as_ref()?.application_ref.as_deref()?;
+    let product = products.get(app)?;
+    let key_ref = ref_of(key)?;
+    let model_ref = bussard_model::param_model::key_to_model_ref(key)?;
+    let calc = product.calculation_writing(&model_ref)?;
+    // The module instance the key sits in (`MD-3_M-18_MI-1`), `""` for an
+    // application-level ref: the inputs are read in the same instance.
+    let instance = match model_ref.split_once('_') {
+        Some((module_def, rest)) if module_def.starts_with("MD-") => {
+            key_ref.strip_suffix(&format!("_{rest}")).unwrap_or("")
+        }
+        _ => "",
+    };
+    let inputs: Vec<String> = calc
+        .inputs
+        .iter()
+        .map(|input| {
+            let reference = bussard_model::device_view::device_ref(instance, &input.param_ref);
+            match device.lock.parameters.get(&reference) {
+                Some(locked) if locked.key.contains('@') => locked.key.clone(),
+                Some(locked) => format!("{}@{reference}", locked.key),
+                None => reference,
+            }
+        })
+        .collect();
+    Some(format!(
+        "{key} is an output of calculation {} ({}): ETS shows it read-only and a download \
+         writes the value the calculation computes from its inputs, so it cannot be set. \
+         Set its inputs instead: {}. knx_show_device shows the computed value.",
+        calc.id,
+        calc.language,
+        inputs.join(", ")
+    ))
+}
+
 /// Whether `text` has the shape of an app-relative parameter ref:
 /// `P-7305_R-7305`, `MD-1_M-3_MI-1_P-3_R-45` or `UP-12_R-3`.
 fn looks_like_ref(text: &str) -> bool {
