@@ -239,8 +239,9 @@ pub struct BusDiagnostics {
     /// The interface the bus connects to, as an operator reads it
     /// (`192.0.2.10:3671`, or `multicast 224.0.23.12:3671`).
     pub interface: String,
-    /// The KNXnet/IP Secure tunnelling user of the current (or last)
-    /// connection, if secure.
+    /// The KNXnet/IP Secure tunnelling user of the current connection, if
+    /// secure. `None` while the bus is not connected: the user of a past
+    /// connection says nothing about why the bus is down.
     pub tunnel_user: Option<u8>,
     /// The exact error of the last failed connect attempt or of the last lost
     /// connection. Kept after a successful reconnect, as history.
@@ -456,8 +457,9 @@ impl BusHandle {
             interface: self.shared.interface.clone(),
             ..BusDiagnostics::default()
         };
+        let connected = self.shared.state() == BusState::Connected;
         if let Ok(d) = self.shared.diag.lock() {
-            out.tunnel_user = d.tunnel_user;
+            out.tunnel_user = d.tunnel_user.filter(|_| connected);
             out.last_error = d.last_error.clone();
             out.last_error_at = d.last_error_at;
             out.attempts = d.attempts;

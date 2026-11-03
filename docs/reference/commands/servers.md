@@ -41,6 +41,8 @@ Behaviour:
 
 **Claude Desktop.** Settings > Developer > Edit Config opens `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`). Paste the entry and restart Claude Desktop. The server shows under the tools icon in a chat, not in the connector list. The custom connector dialog takes only the HTTPS URL of a remote server, which would need an HTTP transport; bussard does not offer one.
 
+**macOS Local Network permission.** macOS asks whether bussard may find and connect to devices on the local network. Without it the interface is unreachable and the bus status reports that the operating system refused access to the local network. Allow it in the prompt or under System Settings > Privacy & Security > Local Network. macOS ties the permission to the binary, so a rebuilt or updated bussard needs it again. A server still running from the old binary loses it as soon as the new one is allowed: restart Claude Desktop after allowing, and check that no old `bussard mcp` process is left.
+
 ## `bussard viz`
 
 Serve the network-visualization website: an HTTP server that renders the model as a bus-spine diagram and streams live traffic.

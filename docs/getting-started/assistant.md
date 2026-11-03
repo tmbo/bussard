@@ -29,6 +29,8 @@ Other clients take a `mcpServers` JSON entry. Use absolute paths, because the cl
 
 In Claude Desktop, Settings > Developer > Edit Config opens `claude_desktop_config.json` (on macOS in `~/Library/Application Support/Claude/`). Paste the entry and restart Claude Desktop. The server shows under the tools icon in a chat, not in the connector list: that dialog takes only the HTTPS URL of a remote server, and bussard does not offer an HTTP transport yet.
 
+On macOS the first connection triggers the Local Network prompt: allow it, or the server cannot reach the interface and `knx_bus_status` says the operating system refused access to the local network. The permission belongs to the binary, so after you update bussard, allow it again (System Settings > Privacy & Security > Local Network) and restart Claude Desktop.
+
 The server reads the `.env` in or next to the model directory itself, so the passwords need not be in the client's config.
 
 ## What the default server can do

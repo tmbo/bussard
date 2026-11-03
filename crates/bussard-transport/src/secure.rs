@@ -150,10 +150,15 @@ pub(crate) async fn tcp_connect(
     };
     match time::timeout(timeout, connect).await {
         Ok(Ok(stream)) => Ok(stream),
-        Ok(Err(source)) => Err(TransportError::Io {
-            peer: Some(SocketAddr::from(gateway)),
-            source,
-        }),
+        // A fresh socket: an unreachable private host here is the OS
+        // refusing local-network access (macOS Local Network privacy).
+        Ok(Err(source)) => Err(crate::error::classify_fresh_socket_error(
+            gateway,
+            TransportError::Io {
+                peer: Some(SocketAddr::from(gateway)),
+                source,
+            },
+        )),
         Err(_) => Err(TransportError::Timeout("TCP connect to the gateway")),
     }
 }

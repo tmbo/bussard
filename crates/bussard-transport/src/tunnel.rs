@@ -692,9 +692,16 @@ impl Tunnel {
     /// endpoint the response names.
     async fn handshake(link: &mut Link, hpai: Hpai) -> Result<Granted> {
         let req = knxnet::connect_request(hpai, hpai);
-        link.send(&req)
-            .await
-            .map_err(|e| crate::secure::at_stage(e, "the connection to take CONNECT_REQUEST"))?;
+        link.send(&req).await.map_err(|e| {
+            // The CONNECT_REQUEST is the first datagram of a fresh UDP
+            // socket; over a secure link the TCP session already carried the
+            // handshake, so a broken pipe there is the peer hanging up.
+            let e = match link {
+                Link::Udp(udp) => crate::error::classify_fresh_socket_error(udp.control, e),
+                Link::Secure(_) => e,
+            };
+            crate::secure::at_stage(e, "the connection to take CONNECT_REQUEST")
+        })?;
 
         let mut buf = [0u8; 512];
         let deadline = Instant::now() + CONNECT_TIMEOUT;
@@ -733,7 +740,10 @@ pub(crate) async fn udp_socket(
     // Bind an ephemeral local UDP port on the chosen interface.
     let local_bind = SocketAddrV4::new(local_interface, 0);
     let socket = UdpSocket::bind(local_bind).await?;
-    socket.connect(gateway).await?;
+    socket
+        .connect(gateway)
+        .await
+        .map_err(|e| crate::error::classify_fresh_socket_error(gateway, e.into()))?;
     // Advertise the REAL local endpoint (classic mode). Wildcard route-back
     // HPAIs are NAT-friendly and real gateways (e.g. the Jung IP interface)
     // honor them, but simpler stacks take the HPAI literally and reply to
@@ -761,10 +771,33 @@ pub(crate) async fn udp_socket(
 ///   candidate users come in the order [`order_users`] gives (issue #287):
 ///   not held by another bussard process on this host first, then a free
 ///   tunnel slot first.
+///
+/// A probe nobody answers (a timeout) or whose answer cannot be decoded
+/// falls back to plain. A probe that fails with a socket error returns that
+/// error: the plain tunnel would hit the same socket, and a refused local
+/// network ([`TransportError::LocalNetworkDenied`]) must reach the operator
+/// instead of the plain CONNECT's error.
 pub(crate) async fn plan_connection(
     config: &ConnectionConfig,
     gateway: SocketAddrV4,
 ) -> Result<Plan> {
+    plan_connection_with(config, gateway, || {
+        crate::discovery::describe_gateway_extended(gateway, SECURE_PROBE_TIMEOUT)
+    })
+    .await
+}
+
+/// [`plan_connection`] with the secure probe passed in, so a test can make it
+/// fail the way a real socket does.
+async fn plan_connection_with<F, Fut>(
+    config: &ConnectionConfig,
+    gateway: SocketAddrV4,
+    probe: F,
+) -> Result<Plan>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<GatewayDescription>>,
+{
     let Some(secure) = &config.secure else {
         return Ok(Plan::Plain {
             probed: None,
@@ -783,17 +816,19 @@ pub(crate) async fn plan_connection(
             }),
         };
     }
-    let probed =
-        match crate::discovery::describe_gateway_extended(gateway, SECURE_PROBE_TIMEOUT).await {
-            Ok(d) => d,
-            Err(err) => {
-                tracing::debug!(%err, "KNXnet/IP Secure probe of {gateway} failed; trying plain");
-                return Ok(Plan::Plain {
-                    probed: None,
-                    keyring_note: None,
-                });
-            }
-        };
+    let probed = match probe().await {
+        Ok(d) => d,
+        Err(err @ (TransportError::Io { .. } | TransportError::LocalNetworkDenied { .. })) => {
+            return Err(err);
+        }
+        Err(err) => {
+            tracing::debug!(%err, "KNXnet/IP Secure probe of {gateway} failed; trying plain");
+            return Ok(Plan::Plain {
+                probed: None,
+                keyring_note: None,
+            });
+        }
+    };
     let host = probed.individual_address;
     let candidates: Vec<SecureUser> = secure
         .users
@@ -2198,5 +2233,50 @@ mod tests {
         let fatal = TransportError::SecureServerUnverified { gateway };
         let picked = pick_error(vec![fatal, io(std::io::ErrorKind::BrokenPipe)]);
         assert!(!picked.is_fatal(), "got {picked}");
+    }
+
+    /// A keyring configuration for `CONTROL`, so `plan_connection` probes.
+    fn keyring_config() -> ConnectionConfig {
+        ConnectionConfig::tunnel(CONTROL).with_secure(Some(crate::SecureTunnelConfig::new(
+            vec![secure_user(2, 0x1116)],
+            SecureSource::Keyring,
+        )))
+    }
+
+    #[tokio::test]
+    async fn test_plan_connection_with_probe_socket_error_is_surfaced() -> Result<()> {
+        let config = keyring_config();
+        // The OS refused the probe's socket (macOS Local Network privacy): the
+        // classified error comes back, no plain attempt is planned.
+        let plan = plan_connection_with(&config, CONTROL, || async {
+            Err(crate::error::classify_fresh_socket_error(
+                CONTROL,
+                io(std::io::ErrorKind::BrokenPipe),
+            ))
+        })
+        .await;
+        assert!(
+            matches!(plan, Err(TransportError::LocalNetworkDenied { gateway, .. }) if gateway == CONTROL),
+            "{:?}",
+            plan.err()
+        );
+        // Any other socket error is surfaced too.
+        let plan = plan_connection_with(&config, CONTROL, || async {
+            Err(io(std::io::ErrorKind::PermissionDenied))
+        })
+        .await;
+        assert!(matches!(plan, Err(TransportError::Io { .. })));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_plan_connection_with_unanswered_probe_falls_back_to_plain() -> Result<()> {
+        let config = keyring_config();
+        let plan = plan_connection_with(&config, CONTROL, || async {
+            Err(TransportError::Timeout("SEARCH_RESPONSE_EXTENDED"))
+        })
+        .await?;
+        assert!(matches!(plan, Plan::Plain { probed: None, .. }));
+        Ok(())
     }
 }

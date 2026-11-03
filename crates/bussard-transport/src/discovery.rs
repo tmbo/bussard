@@ -12,7 +12,7 @@ use tokio::net::UdpSocket;
 use tokio::time::Instant;
 
 use crate::config::{DEFAULT_MULTICAST, DEFAULT_PORT};
-use crate::error::{Result, TransportError};
+use crate::error::{Result, TransportError, classify_fresh_socket_error};
 use crate::knxnet::{self, GatewayDescription, GatewayInfo, Hpai, ServiceType};
 
 /// Discovers KNXnet/IP gateways on the local network.
@@ -105,7 +105,10 @@ pub async fn describe_gateway(
         0,
     )))
     .await?;
-    socket.connect(endpoint).await?;
+    socket
+        .connect(endpoint)
+        .await
+        .map_err(|e| classify_fresh_socket_error(endpoint, e.into()))?;
     let local = match socket.local_addr()? {
         SocketAddr::V4(v4) => v4,
         SocketAddr::V6(_) => {
@@ -117,7 +120,8 @@ pub async fn describe_gateway(
     };
     socket
         .send(&knxnet::description_request(Hpai::new(local)))
-        .await?;
+        .await
+        .map_err(|e| classify_fresh_socket_error(endpoint, e.into()))?;
 
     let deadline = Instant::now() + timeout;
     let mut buf = [0u8; 1024];
@@ -160,11 +164,23 @@ pub async fn describe_gateway_extended(
     endpoint: SocketAddrV4,
     timeout: Duration,
 ) -> Result<GatewayDescription> {
-    match search_extended_tcp(endpoint, timeout).await {
+    let tcp_err = match search_extended_tcp(endpoint, timeout).await {
         Ok(d) => return Ok(d),
-        Err(err) => tracing::debug!(%err, "extended search over TCP to {endpoint} failed"),
+        Err(err) => {
+            tracing::debug!(%err, "extended search over TCP to {endpoint} failed");
+            err
+        }
+    };
+    match search_extended_udp(endpoint, timeout).await {
+        // The TCP connect already showed the OS refusing local-network access;
+        // an unanswered UDP probe adds nothing to that.
+        Err(TransportError::Timeout(_))
+            if matches!(tcp_err, TransportError::LocalNetworkDenied { .. }) =>
+        {
+            Err(tcp_err)
+        }
+        other => other,
     }
-    search_extended_udp(endpoint, timeout).await
 }
 
 /// SEARCH_REQUEST_EXTENDED over a short-lived TCP connection.
@@ -210,7 +226,10 @@ async fn search_extended_udp(
         0,
     )))
     .await?;
-    socket.connect(endpoint).await?;
+    socket
+        .connect(endpoint)
+        .await
+        .map_err(|e| classify_fresh_socket_error(endpoint, e.into()))?;
     let local = match socket.local_addr()? {
         SocketAddr::V4(v4) => v4,
         SocketAddr::V6(_) => {
@@ -222,7 +241,8 @@ async fn search_extended_udp(
     };
     socket
         .send(&knxnet::search_request_extended(Hpai::new(local)))
-        .await?;
+        .await
+        .map_err(|e| classify_fresh_socket_error(endpoint, e.into()))?;
     socket
         .send(&knxnet::description_request(Hpai::new(local)))
         .await?;
