@@ -325,14 +325,20 @@ export function normalizeCertificate(input) {
     .replace(/8/g, "B");
 }
 
-/** CRC-4/ITU (x^4 + x + 1, reflected, init 0, no final xor). */
-export function crc4itu(bytes) {
+/**
+ * The certificate check: CRC-4 with polynomial x^4 + x + 1, MSB first (not
+ * reflected), init 0, no final xor, over serial || FDSK. Confirmed on real
+ * labels 2026-11-03 (#201).
+ */
+export function crc4knx(bytes) {
   let crc = 0;
   for (const byte of bytes) {
-    crc ^= byte;
-    for (let i = 0; i < 8; i++) crc = crc & 1 ? (crc >>> 1) ^ 0x0c : crc >>> 1;
+    for (let i = 7; i >= 0; i--) {
+      const feedback = ((crc >>> 3) ^ (byte >>> i)) & 1;
+      crc = ((crc << 1) & 0x0f) ^ (feedback ? 0x03 : 0);
+    }
   }
-  return crc & 0x0f;
+  return crc;
 }
 
 /**
@@ -376,7 +382,7 @@ export function checkCertificate(input) {
   // 180 = 22 * 8 + 4: the last 4 bits remain in `acc`.
   const data = bytes.slice(0, 22);
   const check = acc & 0x0f;
-  const expected = crc4itu(data);
+  const expected = crc4knx(data);
   const serial = toHex(data.slice(0, 6)).toUpperCase();
   const fdsk = data.slice(6, 22);
   return {

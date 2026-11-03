@@ -95,9 +95,20 @@ class TestParams(unittest.TestCase):
 
 
 class TestSecure(unittest.TestCase):
-    def test_crc4_itu_check_value(self):
-        # CRC-4/G-704 (ITU): check value 0x7 over "123456789".
-        self.assertEqual(secure.crc4(b"123456789"), 0x7)
+    def test_crc4_knx_check_value(self):
+        # The certificate check (x^4 + x + 1, MSB first, init 0): 0xE over
+        # "123456789"; the reflected CRC-4/G-704 (ITU) gives 0x7.
+        self.assertEqual(secure.crc4(b"123456789"), 0xE)
+        self.assertEqual(secure.crc4(b"123456789", reflected=True), 0x7)
+
+    def test_certificate_text_matches_the_enrolment_vectors(self):
+        # dev/enroll/vectors-v1.json: synthetic serials and FDSKs, the same
+        # rule as bussard and the enrolment page.
+        vectors = json.loads((Path(__file__).resolve().parents[2] / "dev" / "enroll" / "vectors-v1.json").read_text())
+        for v in vectors["certificates"]["valid"]:
+            serial, fdsk = bytes.fromhex(v["serial"]), bytes.fromhex(v["fdsk"])
+            self.assertEqual(secure.certificate_text(serial, fdsk), v["text"])
+            self.assertEqual(secure.crc4(serial + fdsk), v["check"])
 
     def test_certificate_round_trip_and_groups(self):
         serial, fdsk = bytes.fromhex("00FA12345678"), bytes(range(16))
@@ -105,7 +116,7 @@ class TestSecure(unittest.TestCase):
         self.assertRegex(text, r"^([A-Z2-7]{6}-){5}[A-Z2-7]{6}$")
         info = secure.parse_certificate(text.lower().replace("-", " "))
         self.assertEqual((info["serial"], info["fdsk"]), (serial, fdsk))
-        self.assertIn("crc4-itu", info["matches"])
+        self.assertIn("crc4-knx", info["matches"])
         # This serial and FDSK have a non-zero CRC, so the unchecked label fails it.
         self.assertNotEqual(secure.crc4(serial + fdsk), 0)
         unchecked = secure.parse_certificate(secure.certificate_text(serial, fdsk, "none"))
@@ -564,7 +575,7 @@ class TestCaptureSecure(unittest.TestCase):
         self.assertEqual(kw["secure"], {"status": "factory", "tool_key": "5e2c820a4e1b264302afda130b69c915"})
         self.assertEqual(kw["properties"], [{"object": 0, "pid": 11, "value": "00fad4730c98"}])
         self.assertEqual(kw["flow_extra"], {"project_password": "Synthetic1234",
-                                            "certificate": "AD5NI4-YMTBPC-ZAQKJY-NSMQYC-V7NBGC-3JZEKS"})
+                                            "certificate": "AD5NI4-YMTBPC-ZAQKJY-NSMQYC-V7NBGC-3JZEKR"})
         self.assertTrue(callable(kw["after_download"]))
 
     def test_secure_run_needs_the_password(self):

@@ -34,10 +34,12 @@ types it), never the command line or a file in the repository.
 
 The certificate format (`certificate_text`): 36 characters in six groups of
 six, the RFC 4648 base32 of the serial number (6 octets) and the FDSK (16
-octets) with a 4-bit check in the 4 spare bits. Which check ETS expects is
-NOT verified yet (written offline, 2026-10-30): the default is CRC-4/ITU over
-the 22 octets; `cert --check` on the label of a real device says which
-variant matches, and `--check-variant` picks it for the run.
+octets) with a 4-bit check in the 4 spare bits. The check is `crc4-knx`:
+CRC-4, polynomial x^4 + x + 1, MSB first (not reflected), init 0, no final
+xor, over the 22 octets. Verified 2026-11-03 against 4 real device labels
+(#201); the reflected CRC-4/ITU guessed before (`crc4-itu`) matched none.
+`cert --check` on a label says which variant it carries, and
+`--check-variant` still picks another one for a run.
 """
 from __future__ import annotations
 
@@ -62,8 +64,10 @@ KNXTRACE = HERE.parents[1] / "tools" / "knxtrace" / "knxtrace.py"
 PID_SERIAL_NUMBER = 11
 
 
-def crc4(data: bytes, poly: int = 0x3, init: int = 0x0, reflected: bool = True) -> int:
-    """A 4-bit CRC over `data` (CRC-4/ITU by default: x^4 + x + 1, reflected)."""
+def crc4(data: bytes, poly: int = 0x3, init: int = 0x0, reflected: bool = False) -> int:
+    """A 4-bit CRC over `data`. The default is the certificate check (x^4 + x
+    + 1, MSB first, init 0, no final xor; check value 0xE over "123456789");
+    `reflected=True` gives CRC-4/ITU (check value 0x7)."""
     crc = init
     if reflected:
         rpoly = int(f"{poly:04b}"[::-1], 2)
@@ -75,18 +79,16 @@ def crc4(data: bytes, poly: int = 0x3, init: int = 0x0, reflected: bool = True) 
         return crc
     for byte in data:
         for bit in range(7, -1, -1):
-            top = (crc >> 3) & 1
-            crc = ((crc << 1) & 0xF) | ((byte >> bit) & 1)
-            if top:
-                crc ^= poly
-    return crc & 0xF
+            feedback = ((crc >> 3) ^ (byte >> bit)) & 1
+            crc = ((crc << 1) & 0xF) ^ (poly if feedback else 0)
+    return crc
 
 
-# The 4-bit checks a label might carry; `cert --check` tells which one a real
-# label uses.
+# The 4-bit checks a label might carry; `cert --check` tells which one a
+# label uses. Real labels carry `crc4-knx` (verified 2026-11-03, #201).
 CHECKS = {
-    "crc4-itu": lambda d: crc4(d),
-    "crc4-plain": lambda d: crc4(d, reflected=False),
+    "crc4-knx": lambda d: crc4(d),
+    "crc4-itu": lambda d: crc4(d, reflected=True),
     "none": lambda d: 0,
 }
 
@@ -96,7 +98,7 @@ def _bits_to_base32(value: int, bits: int) -> str:
     return "".join(alphabet[(value >> (bits - 5 * (i + 1))) & 0x1F] for i in range(bits // 5))
 
 
-def certificate_text(serial: bytes, fdsk: bytes, check: str = "crc4-itu") -> str:
+def certificate_text(serial: bytes, fdsk: bytes, check: str = "crc4-knx") -> str:
     """The device certificate text ETS takes for a device (see the module
     doc): six groups of six base32 characters, dash-separated."""
     if len(serial) != 6 or len(fdsk) != 16:
@@ -259,11 +261,11 @@ def main() -> int:
     p.add_argument("--filter", default="")
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--redo", action="store_true")
-    p.add_argument("--check-variant", default="crc4-itu", choices=sorted(CHECKS))
+    p.add_argument("--check-variant", default="crc4-knx", choices=sorted(CHECKS))
     p = sub.add_parser("cert")
     p.add_argument("--serial", help="12 hex digits")
     p.add_argument("--fdsk", help="32 hex digits")
-    p.add_argument("--check-variant", default="crc4-itu", choices=sorted(CHECKS))
+    p.add_argument("--check-variant", default="crc4-knx", choices=sorted(CHECKS))
     p.add_argument("--check", help="a real label: which check variant it carries (the FDSK is not printed)")
     sub.add_parser("jobs")
     args = ap.parse_args()

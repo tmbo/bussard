@@ -13,7 +13,7 @@ import {
   certificateMessage,
   checkCertificate,
   concatBytes,
-  crc4itu,
+  crc4knx,
   deriveSessionKey,
   doneMessage,
   extractFromQr,
@@ -248,9 +248,15 @@ test("test_checkCertificate_valid_vectors", () => {
   }
 });
 
-test("test_crc4itu_over_vector_bytes", () => {
+test("test_crc4knx_check_value", () => {
+  assert.equal(crc4knx(new Uint8Array(0)), 0);
+  // MSB-first CRC-4, poly 0x3, init 0, no final xor: check value of "123456789".
+  assert.equal(crc4knx(new TextEncoder().encode("123456789")), 0x0e);
+});
+
+test("test_crc4knx_over_vector_bytes", () => {
   for (const v of vectors.certificates.valid) {
-    assert.equal(crc4itu(fromHex(v.serial + v.fdsk)), v.check);
+    assert.equal(crc4knx(fromHex(v.serial + v.fdsk)), v.check);
   }
 });
 
@@ -276,8 +282,8 @@ test("test_checkCertificate_malformed_vectors", () => {
     assert.ok(["malformed", "incomplete"].includes(checkCertificate(text).status), text);
   }
   assert.equal(checkCertificate("ABC").status, "incomplete");
-  assert.equal(checkCertificate("AD5ACAQDASQKDIVDUSS2NJ5IVGVKXLFNV2X!").status, "malformed");
-  assert.equal(checkCertificate("AD5ACAQDASQKDIVDUSS2NJ5IVGVKXLFNV2X5A").status, "malformed");
+  assert.equal(checkCertificate("AD5ACAQDASQKDIVDUSS2NJ5IVGVKXLFNV2XR!").status, "malformed");
+  assert.equal(checkCertificate("AD5ACAQDASQKDIVDUSS2NJ5IVGVKXLFNV2XRA").status, "malformed");
   assert.equal(checkCertificate("  ").status, "empty");
 });
 

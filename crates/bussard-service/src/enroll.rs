@@ -5,7 +5,10 @@
 //! A certificate is the 36-character label of a KNX Secure device (serial
 //! number, factory default setup key, check; see
 //! [`bussard_secure::certificate`] and `dev/enroll-protocol.md`). Its serial
-//! number selects the device, so labels can be entered in any order:
+//! number selects the device, so labels can be entered in any order. A label
+//! whose check fails is mistyped and is `invalid`, whatever its serial number
+//! matches: a typo in the FDSK part leaves the serial intact, so a serial match
+//! is no evidence the key is right. Otherwise:
 //!
 //! - a device in the key store with that serial takes the FDSK (`stored`);
 //! - without one the FDSK is kept under the serial (`unassigned`) until a
@@ -68,8 +71,9 @@ pub struct EnrolOutcome {
     /// That device's name in the model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// Whether the label's check matched (CRC-4/ITU, not yet confirmed on a
-    /// real label); absent when the text did not decode.
+    /// Whether the label's check matched ([`bussard_secure::certificate::crc4_knx`]);
+    /// `false` means the label was refused as mistyped. Absent when the text
+    /// did not decode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check_ok: Option<bool>,
     /// A sentence for the user, when there is more to say than the status.
@@ -194,10 +198,9 @@ impl CertificateEnrolment {
     /// Enters one certificate: decodes `text`, matches its serial number,
     /// stores the FDSK and reads it back (see the module docs).
     ///
-    /// A label whose check does not match is entered only when its serial
-    /// number matches a device in the store (the check variant is not yet
-    /// confirmed on a real label, #201); otherwise it is `invalid`, so a
-    /// mistyped label does not become an unassigned key.
+    /// A label whose check does not match is `invalid` and nothing is
+    /// written, even when its serial number matches a device: the typo may be
+    /// in the FDSK.
     pub fn enroll_certificate(&mut self, text: &str) -> EnrolOutcome {
         let certificate = match Certificate::decode(text) {
             Ok(c) => c,
@@ -214,19 +217,12 @@ impl CertificateEnrolment {
             message: None,
         };
         if !certificate.check_ok {
-            if matched.is_none() {
-                outcome.message = Some(
-                    "the label's check does not match and no device has its serial number; \
-                     re-check the text (nothing was written)"
-                        .to_string(),
-                );
-                return outcome;
-            }
             outcome.message = Some(
-                "the label's check does not match (CRC-4/ITU, not yet confirmed on a real \
-                 label); entered because the serial number matched"
+                "the label's check character does not match: the text is mistyped; \
+                 compare it with the label (nothing was written)"
                     .to_string(),
             );
+            return outcome;
         }
         let fdsk = certificate.fdsk.clone();
         let result = self.store.enrol_fdsk(serial, certificate.fdsk);
@@ -452,11 +448,34 @@ mod tests {
         assert_eq!(outcome.status, EnrolStatus::Invalid);
         assert!(outcome.serial.is_none());
         // The bad_check vector: no device has its serial, so nothing is kept.
-        let bad = session.enroll_certificate("AD5ACAQDASQKDIVDUSS2NJ5IVGVKXLFNV2X4");
+        let bad = session.enroll_certificate("AD5ACAQDASQKDIVDUSS2NJ5IVGVKXLFNV2X5");
         assert_eq!(bad.status, EnrolStatus::Invalid);
         assert_eq!(bad.check_ok, Some(false));
         assert!(session.store().unassigned.is_empty());
         assert!(!KeyStore::path(&dir).exists());
+        std::fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_enroll_certificate_bad_check_refused_even_with_matching_serial() -> TestResult {
+        let dir = temp_dir("badcheck-match")?;
+        let mut store = KeyStore::new("synthetic");
+        store.devices.entry("1.1.12".parse()?).or_default().serial = Some(SerialNumber(SERIAL));
+        store.save(&dir, PASSWORD)?;
+        // A synthetic label with the lowest bit of its last character (a
+        // check bit) flipped: the serial and FDSK are intact, the check fails.
+        const ALPHABET: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+        let mut text = label(SERIAL, 0xA5);
+        let last = text.pop().ok_or("empty label")?;
+        let index = ALPHABET.find(last).ok_or("not base32")?;
+        text.push(ALPHABET.chars().nth(index ^ 1).ok_or("index")?);
+        let outcome = enroll_certificate(&dir, PASSWORD, &text)?;
+        assert_eq!(outcome.status, EnrolStatus::Invalid);
+        assert_eq!(outcome.check_ok, Some(false));
+        assert_eq!(outcome.ia.as_deref(), Some("1.1.12"));
+        let back = KeyStore::load(&dir, PASSWORD)?.ok_or("no store")?;
+        assert!(back.fdsk_for_serial(SerialNumber(SERIAL)).is_none());
         std::fs::remove_dir_all(&dir)?;
         Ok(())
     }

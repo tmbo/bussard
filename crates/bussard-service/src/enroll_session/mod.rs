@@ -685,7 +685,7 @@ mod tests {
         else {
             return Err("the vector certificate was not handled".into());
         };
-        assert_eq!(store.texts, ["AD5ACAQDASQKDIVDUSS2NJ5IVGVKXLFNV2X5"]);
+        assert_eq!(store.texts, ["AD5ACAQDASQKDIVDUSS2NJ5IVGVKXLFNV2XR"]);
         assert_eq!(outcome.status, EnrollStatus::Stored);
         assert_eq!(session.stored(), 1);
 

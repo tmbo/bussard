@@ -26,8 +26,8 @@ web page, the hosted relay) checks itself against those vectors.
 3. The phone opens the link. The page generates its own X25519 key pair
    `(p_sk, p_pk)` once per page load, derives the session key, shows the
    fingerprint, and opens the camera.
-4. Each scanned or typed certificate is normalized and checked on the phone,
-   then sent encrypted (`up`).
+4. Each scanned or typed certificate is normalized and checked on the phone;
+   one whose check fails is not sent. The rest go encrypted (`up`).
 5. bussard long-polls `up`, decrypts, matches the serial against the model,
    stores the FDSK, and answers with a `result` (`down`, encrypted for that
    phone key). The page shows it per sticker.
@@ -151,9 +151,19 @@ Normalization, identical on the page and in bussard: drop whitespace and
 `-`, uppercase, map `0` to `O`, `1` to `I` and `8` to `B` (base32 has none of
 them), then require exactly 36 characters of the alphabet.
 
-The check is CRC-4/ITU (x^4 + x + 1, reflected, init 0) over the 22 bytes in
-the vectors. **Not yet confirmed on a real label** (#201): until it is, a
-check mismatch is reported but the serial match and `--verify` decide.
-Whether the label's QR code carries the same text is also unconfirmed; the
+The check is CRC-4 with the polynomial x^4 + x + 1 (0x3), MSB first (not
+reflected: each byte from bit 7 to bit 0), init 0, no final xor, over the
+22 bytes serial || FDSK. As a shift register: for each input bit `b`,
+`c = ((c << 1) & 0xF) ^ (0x3 if (c >> 3) ^ b else 0)`. Its check value over
+`"123456789"` is `0xE`. Confirmed on 2026-11-03 against four real device
+labels (#201); the reflected CRC-4/ITU assumed before matched none of them.
+
+A label whose check fails is mistyped: the page does not send it and bussard
+answers `invalid` and writes nothing, even when the serial number matches a
+device (the typo may be in the FDSK). A wrong check character is rejected
+with certainty; a wrong data character slips through only when the 5-bit
+change is the generator pattern `10011` itself, one of the 31 possible
+wrong characters per position.
+Whether the label's QR code carries the same text is not yet confirmed; the
 page extracts the first 36-character base32 run (dashes allowed) from a QR
 payload.

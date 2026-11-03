@@ -389,10 +389,11 @@ dialog, the export password). The keyring lands next to the capture as
 
 The driver's secure flows were written without ETS at hand (2026-10-30):
 they anchor on dialog text and fail with what they saw, and the repair loop
-keeps a screenshot. The certificate's 4-bit check is not confirmed either:
-`secure.py cert --check "<label>"` on a real device's FDSK label prints its
-serial and which check (`crc4-itu`, `crc4-plain`, `none`) it carries, never
-the key; `run --check-variant` picks the one ETS takes.
+keeps a screenshot. The certificate's 4-bit check is `crc4-knx` (CRC-4,
+x^4 + x + 1, MSB first, init 0), verified 2026-11-03 against 4 real labels
+(#201). `secure.py cert --check "<label>"` prints a label's serial and which
+check (`crc4-knx`, `crc4-itu`, `none`) it carries, never the key;
+`run --check-variant` overrides the default `crc4-knx`.
 
 ## Part 5: generated parameter sets (#424), not yet run
 

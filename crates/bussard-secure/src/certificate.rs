@@ -6,11 +6,14 @@
 //! 4648 base32 (`A-Z`, `2-7`), printed as six groups of six separated by
 //! dashes, decoded as a 180-bit big-endian number whose upper 176 bits are the
 //! serial number (6 octets) and the FDSK (16 octets) and whose lower 4 bits are
-//! a check, CRC-4/ITU over the 22 octets.
+//! a check, [`crc4_knx`] over the 22 octets.
 //!
-//! The check variant is not yet confirmed on a real label (#201), so
-//! [`Certificate::decode`] reports a mismatch in [`Certificate::check_ok`]
-//! instead of refusing the label; the caller decides.
+//! The check is CRC-4 with the polynomial x^4 + x + 1, MSB first (not
+//! reflected), init 0, no final xor. It was confirmed against four real device
+//! labels on 2026-11-03 (#201); the reflected CRC-4/ITU guessed before matched
+//! none of them. [`Certificate::decode`] reports a mismatch in
+//! [`Certificate::check_ok`] so a caller can name the serial number the typo
+//! belongs to; a label whose check fails is mistyped and must not be entered.
 //!
 //! # Key hygiene
 //!
@@ -67,21 +70,17 @@ pub fn normalize(text: &str) -> String {
         .collect()
 }
 
-/// CRC-4/ITU (x^4 + x + 1, reflected, init 0) over `data`.
-pub fn crc4_itu(data: &[u8]) -> u8 {
-    // The reflected polynomial of 0x3.
-    const POLY: u8 = 0xC;
+/// The certificate check over `data`: CRC-4 with the polynomial x^4 + x + 1
+/// (0x3), MSB first (each octet from bit 7 to bit 0, not reflected), init 0,
+/// no final xor. Its check value over `"123456789"` is `0xE`.
+pub fn crc4_knx(data: &[u8]) -> u8 {
+    const POLY: u8 = 0x3;
     let mut crc: u8 = 0;
     for &byte in data {
-        crc ^= byte;
-        for _ in 0..8 {
-            crc = if crc & 1 == 1 {
-                (crc >> 1) ^ POLY
-            } else {
-                crc >> 1
-            };
+        for bit in (0..8).rev() {
+            let feedback = ((crc >> 3) ^ (byte >> bit)) & 1;
+            crc = ((crc << 1) & 0xF) ^ if feedback == 1 { POLY } else { 0 };
         }
-        crc &= 0xF;
     }
     crc
 }
@@ -95,7 +94,8 @@ pub struct Certificate {
     pub fdsk: Key16,
     /// The 4-bit check the label carries.
     pub check: u8,
-    /// Whether [`check`](Self::check) is the CRC-4/ITU of the serial and FDSK.
+    /// Whether [`check`](Self::check) is the [`crc4_knx`] of the serial and
+    /// FDSK. `false` means the label was mistyped.
     pub check_ok: bool,
 }
 
@@ -118,7 +118,8 @@ pub fn serial_hex(serial: &[u8; 6]) -> String {
 
 impl Certificate {
     /// Normalizes and decodes `text` (see the module docs). A check mismatch
-    /// is not an error: it is reported in [`check_ok`](Self::check_ok).
+    /// is reported in [`check_ok`](Self::check_ok), not as an error, so the
+    /// caller can name the serial number; the caller refuses such a label.
     ///
     /// # Errors
     ///
@@ -150,7 +151,7 @@ impl Certificate {
         let mut fdsk = [0u8; 16];
         fdsk.copy_from_slice(&bits[6..DATA_LEN]);
         let check = bits[DATA_LEN] >> 4;
-        let check_ok = crc4_itu(&bits[..DATA_LEN]) == check;
+        let check_ok = crc4_knx(&bits[..DATA_LEN]) == check;
         let certificate = Certificate {
             serial,
             fdsk: Key16::new(fdsk),
@@ -162,12 +163,12 @@ impl Certificate {
     }
 
     /// The label text for `serial` and `fdsk`, six dash-separated groups of
-    /// six, with the CRC-4/ITU check. For tests and synthetic devices.
+    /// six, with the [`crc4_knx`] check. For tests and synthetic devices.
     pub fn encode(serial: &[u8; 6], fdsk: &Key16) -> String {
         let mut data = zeroize::Zeroizing::new([0u8; DATA_LEN + 1]);
         data[..6].copy_from_slice(serial);
         data[6..DATA_LEN].copy_from_slice(fdsk.bytes());
-        data[DATA_LEN] = crc4_itu(&data[..DATA_LEN]) << 4;
+        data[DATA_LEN] = crc4_knx(&data[..DATA_LEN]) << 4;
         let mut out = String::with_capacity(CERTIFICATE_LEN + 5);
         for i in 0..CERTIFICATE_LEN {
             let mut value = 0usize;
@@ -283,7 +284,7 @@ mod tests {
     #[test]
     fn test_decode_lookalike_digits_read_as_letters() -> TestResult {
         // The first vector with O, I and B typed as 0, 1 and 8 where it has them.
-        let typed = "ad5aca-qdasqk-d1vdus-s2nj5i-vgvkxl-fnv2x5";
+        let typed = "ad5aca-qdasqk-d1vdus-s2nj5i-vgvkxl-fnv2xr";
         let cert = Certificate::decode(typed)?;
         assert_eq!(serial_hex(&cert.serial), "00FA01020304");
         assert!(cert.check_ok);
@@ -292,7 +293,7 @@ mod tests {
 
     #[test]
     fn test_certificate_debug_redacts_fdsk() -> TestResult {
-        let cert = Certificate::decode("AD5ACA-QDASQK-DIVDUS-S2NJ5I-VGVKXL-FNV2X5")?;
+        let cert = Certificate::decode("AD5ACA-QDASQK-DIVDUS-S2NJ5I-VGVKXL-FNV2XR")?;
         let shown = format!("{cert:?}");
         assert!(shown.contains("00FA01020304"));
         assert!(!shown.to_ascii_uppercase().contains("A0A1A2"));
@@ -301,9 +302,94 @@ mod tests {
     }
 
     #[test]
-    fn test_crc4_itu_known_values() {
-        assert_eq!(crc4_itu(&[]), 0);
-        // CRC-4/ITU check value of "123456789".
-        assert_eq!(crc4_itu(b"123456789"), 0x7);
+    fn test_crc4_knx_known_values() {
+        assert_eq!(crc4_knx(&[]), 0);
+        assert_eq!(crc4_knx(&[0]), 0);
+        // 0x08 is x^3; times x^4 is x^7, and x^7 mod (x^4 + x + 1) is
+        // x^3 + x + 1.
+        assert_eq!(crc4_knx(&[0x08]), 0xB);
+        // Check value of "123456789" for this (non-reflected) variant; the
+        // reflected CRC-4/ITU gives 0x7.
+        assert_eq!(crc4_knx(b"123456789"), 0xE);
+    }
+
+    /// The remainder of `data` times x^4 divided by x^4 + x + 1, by long
+    /// division over the whole bit string: an independent definition.
+    fn crc4_by_division(data: &[u8]) -> u8 {
+        let mut rem: u32 = 0;
+        for &byte in data {
+            for bit in (0..8).rev() {
+                rem = (rem << 1) | u32::from((byte >> bit) & 1);
+                if rem & 0x10 != 0 {
+                    rem ^= 0x13;
+                }
+            }
+        }
+        for _ in 0..4 {
+            rem <<= 1;
+            if rem & 0x10 != 0 {
+                rem ^= 0x13;
+            }
+        }
+        u8::try_from(rem).unwrap_or(0xFF)
+    }
+
+    #[test]
+    fn test_crc4_knx_matches_polynomial_division() {
+        let mut data = [0u8; DATA_LEN];
+        for round in 0u8..64 {
+            for (i, b) in data.iter_mut().enumerate() {
+                *b = b
+                    .wrapping_mul(31)
+                    .wrapping_add(round ^ u8::try_from(i).unwrap_or(0));
+            }
+            assert_eq!(crc4_knx(&data), crc4_by_division(&data));
+        }
+    }
+
+    #[test]
+    fn test_encode_decode_round_trip_synthetic() -> TestResult {
+        for seed in 0u8..32 {
+            let serial = [0x00, 0xFA, seed, seed ^ 0x5A, 0x10, seed.wrapping_mul(7)];
+            let mut fdsk = [0u8; 16];
+            for (i, b) in fdsk.iter_mut().enumerate() {
+                *b = seed.wrapping_mul(13).wrapping_add(u8::try_from(i)?);
+            }
+            let text = Certificate::encode(&serial, &Key16::new(fdsk));
+            let cert = Certificate::decode(&text)?;
+            assert_eq!(cert.serial, serial);
+            assert_eq!(cert.fdsk.bytes(), &fdsk);
+            assert!(cert.check_ok);
+            let mut data = serial.to_vec();
+            data.extend_from_slice(&fdsk);
+            assert_eq!(cert.check, crc4_knx(&data));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_decode_any_single_character_typo_fails_the_check() -> TestResult {
+        // One wrong base32 character xors a 5-bit pattern into the 180-bit
+        // codeword. The check misses it only when that pattern is the
+        // generator 10011 itself, so exactly one of the 31 wrong characters
+        // per position slips through.
+        let text = Certificate::encode(&[0x00, 0xFA, 1, 2, 3, 4], &Key16::new([0xA5; 16]));
+        let plain: Vec<u8> = text.bytes().filter(|&c| c != b'-').collect();
+        let mut missed = 0usize;
+        for pos in 0..plain.len() {
+            for &other in ALPHABET {
+                if other == plain[pos] {
+                    continue;
+                }
+                let mut typo = plain.clone();
+                typo[pos] = other;
+                let cert = Certificate::decode(std::str::from_utf8(&typo)?)?;
+                if cert.check_ok {
+                    missed += 1;
+                }
+            }
+        }
+        assert_eq!(missed, plain.len());
+        Ok(())
     }
 }
