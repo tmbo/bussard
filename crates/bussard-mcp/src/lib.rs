@@ -21,7 +21,7 @@
 //! | `knx_model_lookup` | Case-insensitive substring search over the model. |
 //! | `knx_get_group` | A GA's definition, links touching it, and its last telegram. |
 //! | `knx_get_device` | A device's full definition plus its links. |
-//! | `knx_show_device` | A device's channels, and one channel's parameters (choices, defaults) and objects, in its device file's words; optionally as paste-ready TOML. |
+//! | `knx_show_device` | A device's channels, and one channel's parameters (choices, defaults) and objects, in its device file's words; optionally as paste-ready TOML; with `live: true` also what `bussard status <ia>` reads over the bus (refused in `--passive`, issue #747). |
 //! | `knx_recent_telegrams` | Recent telegrams from the ring (and capture DB). |
 //! | `knx_wait_for_telegram` | Block for the next matching telegram ("press the button now"). |
 //! | `knx_validate` | Model validation diagnostics as JSON: errors and warnings by default, infos on request, filtered by device or group. |
@@ -50,6 +50,7 @@
 //! | `knx_job_status` | One job of the server's job table, of any tier: `step`, `question`, `done`, `result` (issue #746; registered in every tier). |
 //! | `knx_backup_device` | Back one device or every device up (tables, bounded parameter memory) under `captures/backups/<timestamp>/`, as `bussard backup` (read-only on the bus; not in `--passive`). |
 //! | `knx_reconstruct_device` | Read one device's tables back and diff them against the model, as `bussard reconstruct` (read-only on the bus; not in `--passive`). |
+//! | `knx_find_devices` | Scan one line for devices as `bussard scan`, run as a job: mask, manufacturer and order number per responder, names first (read-only on the bus; not in `--passive`, issue #747). |
 //! | `knx_plan_device` | Read one device's live tables and return the plan `bussard plan` prints, plus a `plan_digest` (registered only with `--allow-programming`). |
 //! | `knx_ha_status` | Home Assistant's version, KNX integration, entity counts and the state of the KNX YAML file (registered only with the Home Assistant tier). |
 //! | `knx_ha_plan` | What writing the generated KNX YAML would change, per entity, plus a `plan_digest` (Home Assistant tier). |
@@ -75,10 +76,10 @@
 //! available in every tier.
 //!
 //! In `--passive` mode the bus-touching read tools (`knx_read_group`,
-//! `knx_describe_device`, `knx_backup_device` and `knx_reconstruct_device`)
-//! are unregistered and the server never transmits;
+//! `knx_describe_device`, `knx_backup_device`, `knx_reconstruct_device` and
+//! `knx_find_devices`) are unregistered and the server never transmits;
 //! `knx_infer_group` stays, because it only reads the telegram ring, and
-//! `knx_audit` stays but refuses `live: true`.
+//! `knx_audit` and `knx_show_device` stay but refuse `live: true`.
 //! `knx_write_group` and `knx_run_tests` are registered only when the server is
 //! started with `--allow-writes` (which conflicts with `--passive`); both write
 //! to the physical bus, and both hard-refuse `protected` GAs.
@@ -86,9 +87,9 @@
 //! `knx_job_status` reads the server's one job table ([`jobs`], issue #746)
 //! and never touches the bus, so it is registered in every tier.
 //!
-//! Tool counts per tier: `--passive` 27, default 32, `--allow-writes` 34. With
-//! `--no-model-edits` the eleven model-edit tools are withheld, giving 16, 21
-//! and 23.
+//! Tool counts per tier: `--passive` 27, default 33, `--allow-writes` 35. With
+//! `--no-model-edits` the eleven model-edit tools are withheld, giving 16, 22
+//! and 24.
 //!
 //! `--allow-programming` (issue #118) adds the nine programming tools
 //! ([`tools_program::PROGRAMMING_TOOLS`]) to any non-passive tier. They write
@@ -158,6 +159,7 @@ pub mod tools;
 pub mod tools_audit;
 pub mod tools_device;
 pub mod tools_diff;
+mod tools_find;
 pub mod tools_groups;
 pub mod tools_ha;
 pub mod tools_ha_automation;
@@ -387,12 +389,12 @@ pub async fn run_http_with_ready(
 ///   `knx_infer_group` is there: it only reads the telegram ring.
 ///   `knx_bus_status` reads the connection state. `knx_audit` is there too,
 ///   but refuses `live: true`.
-/// - default mode: 32 tools (adds `knx_read_group`, `knx_describe_device`,
+/// - default mode: 33 tools (adds `knx_read_group`, `knx_describe_device`,
 ///   `knx_bus_reconnect` and [`tools_device::DEVICE_TOOLS`]).
-/// - `--allow-writes`: 34 tools (adds `knx_write_group` and `knx_run_tests`).
+/// - `--allow-writes`: 35 tools (adds `knx_write_group` and `knx_run_tests`).
 /// - `--no-model-edits` removes the eleven model-edit tools
 ///   ([`tools_model::MODEL_EDIT_TOOLS`], including the two reservation tools) from
-///   any of those (16, 21 and 23 tools).
+///   any of those (16, 22 and 24 tools).
 ///
 /// The two model/history read tools (`knx_describe_change`, `knx_history`),
 /// the two bundle/diff tools (`knx_export_bundle`, `knx_diff_project`),

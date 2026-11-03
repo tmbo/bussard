@@ -539,7 +539,10 @@ const READ_INSTRUCTIONS: &str = "bussard: KNX as code over MCP. The installation
     device's interface objects over the bus. knx_backup_device backs one device or all of \
     them up (tables, and the parameter memory a System B device bounds) under \
     captures/backups, and knx_reconstruct_device reads a device's tables back and diffs them \
-    against the model; both are read-only on the bus. When a bus tool says the bus is not \
+    against the model; both are read-only on the bus. To find what is on the bus, \
+    knx_find_devices scans a line as a job (mask, manufacturer and order number per device) \
+    and knx_show_device with live: true reads one device's identity and, for an IP \
+    interface, its IP settings and tunnels; both only read. When a bus tool says the bus is not \
     connected, knx_bus_status says why (the last transport error, the attempts, the next \
     retry) and knx_bus_reconnect connects afresh now; neither writes to the bus. Change the \
     model with the edit tools, never by writing files: knx_set_group, knx_remove_group, \
@@ -573,7 +576,10 @@ const PROGRAMMING_INSTRUCTIONS: &str = "bussard: KNX as code over MCP. The insta
     introspects a device's interface objects over the bus. knx_backup_device backs one \
     device or all of them up (tables, and the parameter memory a System B device bounds) \
     under captures/backups, and knx_reconstruct_device reads a device's tables back and \
-    diffs them against the model; both are read-only on the bus. When a bus tool says the \
+    diffs them against the model; both are read-only on the bus. To find what is on the bus, \
+    knx_find_devices scans a line as a job (mask, manufacturer and order number per device) \
+    and knx_show_device with live: true reads one device's identity and, for an IP \
+    interface, its IP settings and tunnels; both only read. When a bus tool says the \
     bus is not connected, knx_bus_status says why (the last transport error, the attempts, \
     the next retry) and knx_bus_reconnect connects afresh now; neither writes to the bus. \
     Change the model with the edit tools, never by writing files: knx_set_group, \

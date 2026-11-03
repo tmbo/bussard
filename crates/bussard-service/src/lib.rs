@@ -74,9 +74,11 @@ pub mod property_plan;
 pub mod reconstruct;
 pub mod restart;
 pub mod restore;
+pub mod scan;
 pub mod secure;
 pub mod security_change;
 pub mod security_diag;
+pub mod status;
 pub mod verify;
 pub mod write;
 

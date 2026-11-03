@@ -1,5 +1,6 @@
-//! The device safety-net reads of the default tier (issue #717):
-//! `knx_backup_device` and `knx_reconstruct_device`.
+//! The device reads of the default tier: the safety-net reads
+//! `knx_backup_device` and `knx_reconstruct_device` (issue #717), and the line
+//! scan `knx_find_devices` (issue #747, body in [`crate::tools_find`]).
 //!
 //! Both are read-only on the bus and call the `bussard-service` functions the
 //! CLI's `bussard backup` and `bussard reconstruct <address>` call:
@@ -35,7 +36,11 @@ use crate::server::BussardMcp;
 use crate::state::ConnState;
 
 /// The tools this module registers: the default tier, omitted in `--passive`.
-pub const DEVICE_TOOLS: [&str; 2] = ["knx_backup_device", "knx_reconstruct_device"];
+pub const DEVICE_TOOLS: [&str; 3] = [
+    "knx_backup_device",
+    "knx_reconstruct_device",
+    "knx_find_devices",
+];
 
 /// Arguments for `knx_backup_device`.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -54,6 +59,21 @@ pub struct BackupDeviceArgs {
 pub struct ReconstructDeviceArgs {
     /// The individual address of the device to read back, e.g. `"1.1.4"`.
     pub address: String,
+}
+
+/// Arguments for `knx_find_devices`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct FindDevicesArgs {
+    /// The line to scan, `"1.1"` (area.line; a full address's device part
+    /// is ignored).
+    pub line: String,
+    /// The first device number to probe (default 0). Narrow the range when
+    /// the device numbers of interest are known: a full line is 256 probes.
+    #[serde(default)]
+    pub from: Option<u8>,
+    /// The last device number to probe (default 255).
+    #[serde(default)]
+    pub to: Option<u8>,
 }
 
 #[tool_router(router = device_router, vis = "pub(crate)")]
@@ -110,11 +130,48 @@ impl BussardMcp {
             Err(reason) => refusal(&args.address, reason),
         }
     }
+
+    /// `knx_find_devices` (omitted in passive mode).
+    #[tool(
+        description = "Find the devices on ONE line (`line`, e.g. \"1.1\") over the bus, as \
+        `bussard scan` does (issue #747): probes each address one at a time and reads each \
+        responder's mask, manufacturer, order number and serial, over KNX Data Secure when \
+        the server's --keyring holds the device's tool key. READ-ONLY on the bus. `from` and \
+        `to` narrow the device numbers (default 0 to 255); an absent address costs tens of \
+        milliseconds to about 3 s depending on the interface, so a full line can take \
+        minutes. Runs as a job: when it ends within a few seconds the call returns the \
+        result, otherwise `started: true` and a `job` id for knx_job_status, whose \
+        `progress` counts the addresses `probed` and the devices `found` so far. The result \
+        has `summary` (one sentence, names first), `devices` (per responder: `name` from the \
+        model or null, `address`, `known` (in the model), `mask`, `system_type`, \
+        `manufacturer`, `order_number`, `serial`, `secure` for a Data Secure device, \
+        `identity_line` against bussard.lock), `not_in_model`, `missing_from_bus` (model \
+        devices in the scanned range that did not answer) and `timing`. Tell the human the \
+        summary. Only available when the server is NOT in passive mode."
+    )]
+    async fn knx_find_devices(
+        &self,
+        Parameters(args): Parameters<FindDevicesArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = match crate::tools_find::ScanRequest::parse(&args.line, args.from, args.to) {
+            Ok(request) => self.find_devices(request).await,
+            Err(reason) => Err(reason),
+        };
+        match result {
+            Ok(value) => ok(value),
+            Err(reason) => ok(json!({
+                "line": args.line,
+                "ok": false,
+                "refused": true,
+                "reason": reason,
+            })),
+        }
+    }
 }
 
 impl BussardMcp {
     /// The connected bus of a default-tier device read, or why there is none.
-    fn device_read_bus(&self) -> Result<bussard_service::BusService, String> {
+    pub(crate) fn device_read_bus(&self) -> Result<bussard_service::BusService, String> {
         let state = self.state();
         if state.passive {
             return Err("server is in passive mode; bus management traffic is disabled".into());

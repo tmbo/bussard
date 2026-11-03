@@ -50,6 +50,14 @@
 //! reads a device while a write runs and the other way round. A second plan
 //! of the same device while its plan job runs gets that job back. Plan jobs
 //! are not recorded on disk and are not an apply for `knx_last_apply`.
+//!
+//! **Scan jobs (issue #747).** `knx_find_devices` sweeps a line, which takes
+//! seconds per address, so it runs as a job of the same table
+//! ([`JobKind::Scan`], claimed with [`JobTable::claim_scan`]). A scan has no
+//! device address: its job carries `address: null` and `line`, and reports
+//! the addresses probed and the devices found so far in `progress`. It takes
+//! the one slot, so a scan never runs while a plan or an apply reads or
+//! writes a device.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -78,6 +86,8 @@ pub enum JobKind {
     Apply,
     /// The device read and diff of `knx_plan_device` (issue #332).
     Plan,
+    /// The line scan of `knx_find_devices` (issue #747).
+    Scan,
 }
 
 impl JobKind {
@@ -86,6 +96,7 @@ impl JobKind {
         match self {
             JobKind::Apply => "apply",
             JobKind::Plan => "plan",
+            JobKind::Scan => "scan",
         }
     }
 }
@@ -113,8 +124,11 @@ enum JobState {
 struct Job {
     /// Apply or plan.
     kind: JobKind,
-    /// The device written or read.
-    address: IndividualAddress,
+    /// The device written or read; `None` for a job about no one device
+    /// (a line scan).
+    address: Option<IndividualAddress>,
+    /// What the job is about, in words: the device address, or `line 1.1`.
+    subject: String,
     /// When the call that started the job came in.
     started_at: SystemTime,
     /// When the write ended.
@@ -218,8 +232,8 @@ impl JobTable {
         busy_message(&self.inner(), wanting)
     }
 
-    /// The job writing now and its device, if any.
-    pub fn running(&self) -> Option<(String, IndividualAddress)> {
+    /// The job running now and its device (`None` for a line scan), if any.
+    pub fn running(&self) -> Option<(String, Option<IndividualAddress>)> {
         let inner = self.inner();
         let id = inner.running.clone()?;
         let address = inner.jobs.get(&id)?.address;
@@ -233,7 +247,25 @@ impl JobTable {
         if let Some(refusal) = busy_message(&inner, JobKind::Apply) {
             return Err(refusal);
         }
-        Ok(insert(&mut inner, JobKind::Apply, address))
+        Ok(insert(&mut inner, JobKind::Apply, Some(address), None))
+    }
+
+    /// Claims the slot for a scan of `line` (`"1.1"`, issue #747) and returns
+    /// the new job's id, or the refusal naming the job that runs. A new scan
+    /// drops the finished scan jobs of the same line (it supersedes them).
+    pub fn claim_scan(&self, line: &str) -> Result<String, String> {
+        let mut inner = self.inner();
+        if let Some(refusal) = busy_message(&inner, JobKind::Scan) {
+            return Err(refusal);
+        }
+        let id = insert(&mut inner, JobKind::Scan, None, Some(line));
+        inner.jobs.retain(|job_id, job| {
+            *job_id == id
+                || !(job.kind == JobKind::Scan
+                    && job.state == JobState::Done
+                    && job.context["line"] == line)
+        });
+        Ok(id)
     }
 
     /// Claims the slot for a plan of `address` (issue #332): a new job, the
@@ -245,7 +277,7 @@ impl JobTable {
         if let Some(id) = &inner.running
             && let Some(job) = inner.jobs.get(id)
             && job.kind == JobKind::Plan
-            && job.address == address
+            && job.address == Some(address)
         {
             return Ok(PlanClaim::Running(id.clone()));
         }
@@ -253,9 +285,11 @@ impl JobTable {
             return Err(refusal);
         }
         // Inserted before the prune, so the new id never reuses a dropped one.
-        let id = insert(&mut inner, JobKind::Plan, address);
+        let id = insert(&mut inner, JobKind::Plan, Some(address), None);
         inner.jobs.retain(|_, job| {
-            !(job.kind == JobKind::Plan && job.address == address && job.state == JobState::Done)
+            !(job.kind == JobKind::Plan
+                && job.address == Some(address)
+                && job.state == JobState::Done)
         });
         Ok(PlanClaim::New(id))
     }
@@ -279,7 +313,7 @@ impl JobTable {
         job.result = Some(json!({
             "ok": false,
             "refused": true,
-            "address": job.address.to_string(),
+            "address": job.address.map(|a| a.to_string()),
             "reason": reason,
         }));
         job.done.send_replace(true);
@@ -290,47 +324,77 @@ impl JobTable {
 fn busy_message(inner: &Inner, wanting: JobKind) -> Option<String> {
     let id = inner.running.as_ref()?;
     let job = inner.jobs.get(id)?;
-    let device = job.address;
+    let device = &job.subject;
+    let again = match wanting {
+        JobKind::Scan => "scan again",
+        _ => "plan again",
+    };
     Some(match (job.kind, wanting) {
         (JobKind::Apply, JobKind::Apply) => format!(
             "an apply is already running on this server: job {id} for {device}; one apply at a \
              time. Call knx_apply_status with job {id} until it is done, then plan again"
         ),
-        (JobKind::Apply, JobKind::Plan) => format!(
+        (JobKind::Apply, _) => format!(
             "an apply is running on this server (job {id} for {device}); call \
-             knx_apply_status with job {id} until it is done, then plan again"
+             knx_apply_status with job {id} until it is done, then {again}"
         ),
         (JobKind::Plan, _) => format!(
             "a plan is already running on this server: job {id} reads {device}; one bus job at \
              a time. Call knx_apply_status with job {id} until it is done, then call again"
         ),
+        (JobKind::Scan, _) => format!(
+            "a scan is already running on this server: job {id} sweeps {device}; one bus job at \
+             a time. Call knx_job_status with job {id} until it is done, then call again"
+        ),
     })
 }
 
 /// Inserts a new running job and marks it as the one in the slot.
-fn insert(inner: &mut Inner, kind: JobKind, address: IndividualAddress) -> String {
+/// `line` is the line of a scan, which has no `address`.
+fn insert(
+    inner: &mut Inner,
+    kind: JobKind,
+    address: Option<IndividualAddress>,
+    line: Option<&str>,
+) -> String {
     let now = SystemTime::now();
     let stamp = now
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
     let prefix = kind.as_str();
-    let mut id = format!("{prefix}-{stamp}-{address}");
+    let tag = match (address, line) {
+        (Some(address), _) => address.to_string(),
+        (None, Some(line)) => line.to_string(),
+        (None, None) => "bus".to_string(),
+    };
+    let subject = match (address, line) {
+        (Some(address), _) => address.to_string(),
+        (None, Some(line)) => format!("line {line}"),
+        (None, None) => "the bus".to_string(),
+    };
+    let mut id = format!("{prefix}-{stamp}-{tag}");
     let mut seq = 1;
     while inner.jobs.contains_key(&id) {
         seq += 1;
-        id = format!("{prefix}-{stamp}-{address}-{seq}");
+        id = format!("{prefix}-{stamp}-{tag}-{seq}");
     }
     let (done, _) = tokio::sync::watch::channel(false);
     let step = match kind {
         JobKind::Apply => "pre-flight: reading the device and checking the plan",
         JobKind::Plan => "reading the device",
+        JobKind::Scan => "scanning the line",
+    };
+    let context = match line {
+        Some(line) => json!({ "line": line }),
+        None => Value::Null,
     };
     inner.jobs.insert(
         id.clone(),
         Job {
             kind,
             address,
+            subject,
             started_at: now,
             finished_at: None,
             began: Instant::now(),
@@ -338,7 +402,7 @@ fn insert(inner: &mut Inner, kind: JobKind, address: IndividualAddress) -> Strin
             step: step.to_string(),
             question: None,
             progress: Map::new(),
-            context: Value::Null,
+            context,
             result: None,
             record: None,
             done,
@@ -373,7 +437,9 @@ impl JobTable {
             job.step = "writing".to_string();
             let address = job.address;
             let status = job.status(id);
-            inner.last.insert(address, id.to_string());
+            if let Some(address) = address {
+                inner.last.insert(address, id.to_string());
+            }
             status
         };
         persist(&status);
@@ -421,7 +487,7 @@ impl JobTable {
             job.done.send_replace(true);
             let (address, kind) = (job.address, job.kind);
             let status = job.status(id);
-            if kind == JobKind::Apply {
+            if let (JobKind::Apply, Some(address)) = (kind, address) {
                 inner.last.insert(address, id.to_string());
             }
             status
@@ -504,7 +570,7 @@ impl Job {
         let mut status = json!({
             "job": id,
             "kind": self.kind.as_str(),
-            "address": self.address.to_string(),
+            "address": self.address.map(|a| a.to_string()),
             "state": state,
             "done": self.state == JobState::Done,
             "started_at": bussard_monitor::timefmt::to_rfc3339(self.started_at),
@@ -588,6 +654,23 @@ fn restored(mut record: Value) -> Value {
 fn next_step(status: &Value) -> String {
     let job = status["job"].as_str().unwrap_or_default();
     let address = status["address"].as_str().unwrap_or_default();
+    if status["kind"] == "scan" {
+        let line = status["line"].as_str().unwrap_or_default();
+        return match status["state"].as_str() {
+            Some("running") => format!(
+                "Still scanning line {line} ({}; {} device(s) found so far). Call \
+                 knx_job_status with job {job} again in a few seconds; the scan continues in \
+                 the server whether or not you poll. Nothing is written.",
+                status["step"].as_str().unwrap_or("probing"),
+                status["progress"]["found"].as_u64().unwrap_or(0)
+            ),
+            _ if status["result"]["ok"] == true => format!(
+                "The scan of line {line} is done: `result` is exactly what knx_find_devices \
+                 returns. Tell the human result.summary and the devices by name."
+            ),
+            _ => format!("The scan of line {line} did not run: tell the human result.reason."),
+        };
+    }
     if status["kind"] == "plan" {
         return match status["state"].as_str() {
             Some("running") => format!(

@@ -1,6 +1,8 @@
 //! Mock-gateway tests of the safety-net tools (issue #717):
 //! `knx_backup_device` and `knx_reconstruct_device` in the default tier,
-//! `knx_restart_device` and `knx_restore_tables` in the programming tier.
+//! `knx_restart_device` and `knx_restore_tables` in the programming tier;
+//! and of the find reads (issue #747): `knx_find_devices` and
+//! `knx_show_device {live: true}` against a mock line.
 //!
 //! The device is the writable System B mock of `bussard-testkit`
 //! ([`MockDevice::system_b`]) on a loopback [`MockGateway`]; the full MCP
@@ -14,7 +16,7 @@ use std::time::Duration;
 
 use bussard_mcp::McpConfig;
 use bussard_model::{GroupAddress, IndividualAddress};
-use bussard_testkit::{MockDevice, MockGateway};
+use bussard_testkit::{MockDevice, MockGateway, MockKnxnet};
 use bussard_transport::ConnectionConfig;
 use rmcp::ServiceExt;
 use rmcp::model::CallToolRequestParams;
@@ -85,6 +87,7 @@ struct Harness {
     server_task: tokio::task::JoinHandle<()>,
     gateway: MockGateway,
     dir: tempfile::TempDir,
+    state: std::sync::Arc<bussard_mcp::SharedState>,
 }
 
 impl Harness {
@@ -98,15 +101,51 @@ impl Harness {
             .device(system_b_device()?)
             .start()
             .await?;
+        Self::serve_line(gateway, programming, &[]).await
+    }
+
+    /// Starts a mock line with `devices`, whose gateway confirms frames as a
+    /// real interface does (a negative con for an empty address, issue #45),
+    /// and a default-tier server against it; `extra` adds device files to the
+    /// model.
+    async fn start_line(
+        devices: Vec<MockDevice>,
+        extra: &[(&str, &str)],
+    ) -> anyhow::Result<Harness> {
+        let gateway = MockGateway::builder()
+            .channel(CHANNEL)
+            .keep_serving()
+            .idle_timeout(Duration::from_secs(60))
+            .confirmations()
+            .devices(devices)
+            .start()
+            .await?;
+        Self::serve_line(gateway, false, extra).await
+    }
+
+    /// Writes the model (plus `extra` device files) and serves it against
+    /// `gateway`.
+    async fn serve_line(
+        gateway: MockGateway,
+        programming: bool,
+        extra: &[(&str, &str)],
+    ) -> anyhow::Result<Harness> {
         let dir = tempfile::tempdir()?;
         write_model(dir.path())?;
+        for (address, file) in extra {
+            std::fs::write(
+                dir.path().join("devices").join(format!("{address}.toml")),
+                file,
+            )?;
+        }
         let connection = ConnectionConfig::tunnel(gateway.addr());
-        let (client, server_task) = serve(dir.path(), connection, programming).await?;
+        let (client, server_task, state) = serve(dir.path(), connection, programming).await?;
         Ok(Harness {
             client,
             server_task,
             gateway,
             dir,
+            state,
         })
     }
 
@@ -199,6 +238,7 @@ async fn serve(
 ) -> anyhow::Result<(
     rmcp::service::RunningService<rmcp::RoleClient, ()>,
     tokio::task::JoinHandle<()>,
+    std::sync::Arc<bussard_mcp::SharedState>,
 )> {
     fast_mock_timeouts();
     let config = McpConfig {
@@ -221,14 +261,14 @@ async fn serve(
     }
     state.bus.wire(service);
     let (server_io, client_io) = tokio::io::duplex(64 * 1024);
-    let server = bussard_mcp::server::BussardMcp::new(state);
+    let server = bussard_mcp::server::BussardMcp::new(std::sync::Arc::clone(&state));
     let server_task = tokio::spawn(async move {
         if let Ok(running) = server.serve(server_io).await {
             let _ = running.waiting().await;
         }
     });
     let client = ().serve(client_io).await?;
-    Ok((client, server_task))
+    Ok((client, server_task, state))
 }
 
 #[tokio::test]
@@ -462,4 +502,212 @@ async fn test_passive_mode_omits_the_device_reads() -> anyhow::Result<()> {
         assert!(bussard_mcp::tool_names(false, false, true).contains(&tool));
     }
     Ok(())
+}
+
+// --- knx_find_devices and the live device status (issue #747) ---
+
+/// A second device on the line, not in the model: a plain System 1 actuator
+/// with manufacturer, serial and order number.
+fn stray_device() -> anyhow::Result<MockDevice> {
+    Ok(MockDevice::new("1.1.7".parse()?)
+        .with_mask(0x0012)
+        .with_manufacturer(0x0083)
+        .with_serial([0x00, 0x83, 0x12, 0x34, 0x56, 0x78])
+        .with_order_info(b"MTN649912"))
+}
+
+/// A KNX IP interface at 1.1.200 with eight tunnelling addresses.
+fn ip_interface() -> anyhow::Result<MockDevice> {
+    let knxnet = MockKnxnet {
+        tunnels: (22..=29)
+            .map(|n| format!("1.1.{n}").parse())
+            .collect::<Result<Vec<IndividualAddress>, _>>()?,
+        friendly_name: "Bocklisch Alpha".to_string(),
+        ..MockKnxnet::default()
+    };
+    Ok(MockDevice::new("1.1.200".parse()?)
+        .with_mask(0x0021)
+        .with_knxnet(&knxnet))
+}
+
+/// The line of the find tests: the model's 1.1.4, a stray 1.1.7 and the IP
+/// interface; the model also has 1.1.9, which is not on the line.
+async fn find_harness() -> anyhow::Result<Harness> {
+    Harness::start_line(
+        vec![
+            system_b_device()?
+                .with_manufacturer(0x0083)
+                .with_order_info(b"JAL0410"),
+            stray_device()?,
+            ip_interface()?,
+        ],
+        &[("1.1.9", "address = \"1.1.9\"\nname = \"Licht Flur\"\n")],
+    )
+    .await
+}
+
+/// Every write the mock line saw.
+fn line_writes(h: &Harness) -> anyhow::Result<usize> {
+    Ok(h.gateway.devices()?.iter().map(|d| d.writes).sum())
+}
+
+#[tokio::test]
+async fn test_knx_find_devices_lists_the_line_names_first() -> anyhow::Result<()> {
+    let h = find_harness().await?;
+    let names = h.names().await?;
+    assert!(names.iter().any(|n| n == "knx_find_devices"), "{names:?}");
+
+    let done = h
+        .call(
+            "knx_find_devices",
+            json!({"line": "1.1", "from": 0, "to": 10}),
+        )
+        .await?;
+    assert_eq!(done["ok"], true, "{done}");
+    assert_eq!(done["line"], "1.1", "{done}");
+    let devices = done["devices"].as_array().cloned().unwrap_or_default();
+    assert_eq!(devices.len(), 2, "1.1.4 and 1.1.7 answer in 0..=10: {done}");
+    assert_eq!(devices[0]["name"], "Jalousie Wohnen", "{done}");
+    assert_eq!(devices[0]["address"], "1.1.4", "{done}");
+    assert_eq!(devices[0]["known"], true, "{done}");
+    assert_eq!(devices[0]["order_number"], "JAL0410", "{done}");
+    assert_eq!(devices[1]["name"], Value::Null, "{done}");
+    assert_eq!(devices[1]["address"], "1.1.7", "{done}");
+    assert_eq!(devices[1]["known"], false, "{done}");
+    assert_eq!(devices[1]["mask"], "0012", "{done}");
+    assert_eq!(devices[1]["order_number"], "MTN649912", "{done}");
+    assert_eq!(devices[1]["serial"], "008312345678", "{done}");
+    assert!(devices[1]["manufacturer"].is_string(), "{done}");
+    assert_eq!(done["not_in_model"], json!(["1.1.7"]), "{done}");
+    assert_eq!(
+        done["missing_from_bus"],
+        json!([{"name": "Licht Flur", "address": "1.1.9"}]),
+        "{done}"
+    );
+    let summary = done["summary"].as_str().unwrap_or_default();
+    assert!(
+        summary.starts_with(
+            "2 device(s) answered on line 1.1 (11 addresses probed): \
+             Jalousie Wohnen (1.1.4), 1.1.7 (not in the model)."
+        ),
+        "{summary}"
+    );
+    assert!(summary.contains("Licht Flur (1.1.9)"), "{summary}");
+    assert_eq!(done["timing"]["addresses"], 11, "{done}");
+
+    // A bad line or range is refused before the bus is touched.
+    let bad = h.call("knx_find_devices", json!({"line": "16.1"})).await?;
+    assert_eq!(bad["refused"], true, "{bad}");
+    let bad = h
+        .call(
+            "knx_find_devices",
+            json!({"line": "1.1", "from": 9, "to": 3}),
+        )
+        .await?;
+    assert_eq!(bad["refused"], true, "{bad}");
+    assert_eq!(line_writes(&h)?, 0, "a scan must never write");
+    h.stop().await
+}
+
+#[tokio::test]
+async fn test_knx_find_devices_runs_as_a_job_with_progress() -> anyhow::Result<()> {
+    let h = find_harness().await?;
+    // No read wait: the call answers with the job at once.
+    h.state.jobs.set_read_wait(Duration::ZERO);
+    let first = h
+        .call(
+            "knx_find_devices",
+            json!({"line": "1.1", "from": 0, "to": 40}),
+        )
+        .await?;
+    assert_eq!(first["started"], true, "{first}");
+    let job = first["job"].as_str().unwrap_or_default().to_string();
+    assert!(job.starts_with("scan-"), "{first}");
+
+    // One bus job at a time: a second scan names the running one.
+    let second = h
+        .call(
+            "knx_find_devices",
+            json!({"line": "1.1", "from": 0, "to": 1}),
+        )
+        .await?;
+    assert_eq!(second["refused"], true, "{second}");
+    assert!(
+        second["reason"].as_str().unwrap_or_default().contains(&job),
+        "{second}"
+    );
+
+    let mut status = Value::Null;
+    for _ in 0..200 {
+        status = h.call("knx_job_status", json!({"job": job})).await?;
+        assert_eq!(status["kind"], "scan", "{status}");
+        assert_eq!(status["address"], Value::Null, "{status}");
+        assert_eq!(status["line"], "1.1", "{status}");
+        assert!(status["progress"]["probed"].is_u64(), "{status}");
+        if status["done"] == true {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(status["done"], true, "{status}");
+    assert_eq!(status["progress"]["probed"], 41, "{status}");
+    assert_eq!(status["progress"]["total"], 41, "{status}");
+    assert_eq!(status["progress"]["found"], 2, "{status}");
+    assert_eq!(status["result"]["ok"], true, "{status}");
+    assert_eq!(
+        status["result"]["devices"].as_array().map(Vec::len),
+        Some(2),
+        "{status}"
+    );
+    assert_eq!(line_writes(&h)?, 0, "a scan must never write");
+    h.stop().await
+}
+
+#[tokio::test]
+async fn test_knx_show_device_live_reads_an_ip_interface() -> anyhow::Result<()> {
+    let h = find_harness().await?;
+    // 1.1.200 is not in the model: the live read still answers.
+    let shown = h
+        .call(
+            "knx_show_device",
+            json!({"address": "1.1.200", "live": true}),
+        )
+        .await?;
+    let live = &shown["live"];
+    assert_eq!(live["ok"], true, "{shown}");
+    assert!(shown["model_view"].is_string(), "{shown}");
+    assert_eq!(live["mask"], "0021", "{shown}");
+    let first = live["sentences"][0].as_str().unwrap_or_default();
+    assert!(
+        first.starts_with("1.1.200 answers with mask 0021"),
+        "{first}"
+    );
+    assert!(live["knxnet"].is_object(), "{shown}");
+    let lines = serde_json::to_string(&live["knxnet_lines"])?;
+    assert!(lines.contains("Bocklisch Alpha"), "{lines}");
+    assert!(
+        lines.contains("1.1.22"),
+        "the tunnelling addresses: {lines}"
+    );
+
+    // A model device: the device view plus `live`, names first.
+    let shown = h
+        .call("knx_show_device", json!({"address": "1.1.4", "live": true}))
+        .await?;
+    assert_eq!(shown["live"]["ok"], true, "{shown}");
+    assert_eq!(shown["live"]["name"], "Jalousie Wohnen", "{shown}");
+    let first = shown["live"]["sentences"][0].as_str().unwrap_or_default();
+    assert!(
+        first.starts_with("Jalousie Wohnen (1.1.4) answers"),
+        "{first}"
+    );
+    assert!(shown["live"]["identity"].is_object(), "{shown}");
+
+    // Without `live` nothing is read from the bus.
+    let offline = h
+        .call("knx_show_device", json!({"address": "1.1.4"}))
+        .await?;
+    assert!(offline.get("live").is_none(), "{offline}");
+    assert_eq!(line_writes(&h)?, 0, "a live status must never write");
+    h.stop().await
 }

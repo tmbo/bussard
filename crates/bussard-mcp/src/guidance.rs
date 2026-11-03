@@ -143,9 +143,10 @@ impl Tiers {
         } else {
             "This server reads the model files, observes the bus, reads group values \
              (knx_read_group), introspects devices (knx_describe_device), backs devices up \
-             (knx_backup_device) and reads a device's tables back against the model \
-             (knx_reconstruct_device). It reports the bus connection (knx_bus_status) and \
-             rebuilds it on request (knx_bus_reconnect)."
+             (knx_backup_device), reads a device's tables back against the model \
+             (knx_reconstruct_device), finds the devices on a line (knx_find_devices) and \
+             reads one device's live status (knx_show_device with live: true). It reports the \
+             bus connection (knx_bus_status) and rebuilds it on request (knx_bus_reconnect)."
                 .to_string()
         });
         parts.push(if self.model_edits {
@@ -264,8 +265,9 @@ impl Tiers {
         out.push(if self.passive {
             "Observe with knx_recent_telegrams and knx_wait_for_telegram (the latter enables \
              'press the button now' debugging). Passive mode: nothing is transmitted, so \
-             knx_read_group, knx_describe_device, knx_backup_device and knx_reconstruct_device \
-             are not available. knx_bus_status says \
+             knx_read_group, knx_describe_device, knx_backup_device, knx_reconstruct_device \
+             and knx_find_devices are not available, nor knx_show_device's live read. \
+             knx_bus_status says \
              why the bus is not connected (the last transport error, the attempts, the next \
              retry)."
                 .to_string()
@@ -276,7 +278,10 @@ impl Tiers {
              knx_backup_device backs one device or all of them up (tables, and the parameter \
              memory a System B device bounds) under captures/backups, and \
              knx_reconstruct_device reads a device's tables back and diffs them against the \
-             model; both are read-only on the bus. When a bus tool says the bus is not connected, knx_bus_status says why (the last \
+             model; both are read-only on the bus. To find what is on the bus, \
+             knx_find_devices scans a line as a job (mask, manufacturer and order number per \
+             device) and knx_show_device with live: true reads one device's identity and, for \
+             an IP interface, its IP settings and tunnels; both only read. When a bus tool says the bus is not connected, knx_bus_status says why (the last \
              transport error, the attempts, the next retry) and knx_bus_reconnect connects \
              afresh now; neither writes to the bus."
                 .to_string()
