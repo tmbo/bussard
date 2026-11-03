@@ -218,7 +218,7 @@ pub struct UndoArgs {
 ///
 /// `knx_scaffold_groups` and `knx_reserve_groups` live on the group-planning
 /// router but write `groups.toml`, so they are withheld with the others.
-pub const MODEL_EDIT_TOOLS: [&str; 11] = [
+pub const MODEL_EDIT_TOOLS: [&str; 12] = [
     "knx_scaffold_groups",
     "knx_reserve_groups",
     "knx_set_group",
@@ -230,6 +230,8 @@ pub const MODEL_EDIT_TOOLS: [&str; 11] = [
     "knx_set_interface",
     "knx_undo",
     "knx_discard_edits",
+    // Imports write the model files too (issue #743, `crate::tools_files`).
+    "knx_import_file",
 ];
 
 /// The read-only model/history tools, available in every tier.

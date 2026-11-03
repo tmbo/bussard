@@ -7,8 +7,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use anyhow::Context;
-use bussard_model::bundle::{self, ExportOptions};
+use bussard_model::bundle;
 use bussard_model::history::History;
 
 /// Runs `bussard export [FILE] [--no-history] [--json]`.
@@ -21,15 +20,7 @@ pub fn run(
     no_history: bool,
     json: bool,
 ) -> anyhow::Result<ExitCode> {
-    let out = file.map_or_else(|| bundle::default_bundle_path(dir), Path::to_path_buf);
-    let manifest = bundle::export(
-        dir,
-        &out,
-        ExportOptions {
-            include_history: !no_history,
-        },
-    )
-    .with_context(|| format!("exporting {}", dir.display()))?;
+    let (out, manifest) = bussard_service::files::export::bundle(dir, file, !no_history)?;
 
     if json {
         let value = serde_json::json!({ "path": out.display().to_string(), "manifest": manifest });
@@ -83,6 +74,7 @@ pub fn stale_export_hint(dir: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bussard_model::bundle::ExportOptions;
     use bussard_model::history::SnapshotReason;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;

@@ -17,8 +17,9 @@ use std::io::IsTerminal;
 use std::path::Path;
 use std::process::ExitCode;
 
-use bussard_model::{MergeReport, Model};
-use bussard_service::setup::{self, DownloadPrompt, SetupError};
+use bussard_model::Model;
+use bussard_service::files::import::ImportOutcome;
+use bussard_service::setup::{DownloadPrompt, SetupError};
 
 use crate::console::Console;
 use crate::import_bundle::ConflictChoice;
@@ -89,15 +90,10 @@ pub fn run_json(
     Ok(code)
 }
 
-/// Writes the freshly-imported `model` to `dir`.
-///
-/// On a **fresh** target (no existing model) this saves the whole model. On a
-/// **re-import** (an existing model is present) it merges: generated sections
-/// come from the fresh import, hand-authored fields are preserved from disk, and
-/// any hand-authored conflict is reported (path, field, ours vs theirs) instead
-/// of being overwritten. Returns [`EXIT_CONFLICTS`] when conflicts were
-/// reported so the outcome is non-zero-ish while the on-disk hand edits stay
-/// intact.
+/// Writes the freshly-imported `model` to `dir`
+/// ([`bussard_service::files::import::write_model`]): a fresh import, or a
+/// re-import that merges and reports every hand-edited conflict. Returns
+/// [`EXIT_CONFLICTS`] when conflicts are left for a human.
 ///
 /// `choice` settles hand-authored conflicts (see [`ConflictChoice`]); `source`
 /// names the incoming side in sentences (`"project"` or `"bundle"`).
@@ -113,139 +109,34 @@ pub(crate) fn write_model(
     fetch: Option<crate::product_fetch::Consent>,
     project: Option<&Path>,
 ) -> anyhow::Result<ExitCode> {
-    let mut out = Console;
     let mut fetch = fetch;
-    // History (issue #110): record an edit made outside bussard before the
-    // import overwrites it, then snapshot the pre-import state so `bussard undo`
-    // can put it back.
-    if dir.is_dir() {
-        crate::product_store::prepare(dir);
-    }
-    setup::import::before_write(dir, &mut out);
-
-    // A re-import is any target that already holds a loadable model.
-    let Some(mut ours) = load_existing_model(dir) else {
-        let prompt = fetch.as_mut().map(|c| c as &mut dyn DownloadPrompt);
-        setup::import::write_fresh(model, dir, project, prompt, &mut out)?;
-        return Ok(ExitCode::SUCCESS);
-    };
-
-    bussard_model::normalize_spellings(&mut ours, &model);
-    let (mut to_save, merge) = bussard_model::merge(&ours, &model);
-    let kept = crate::import_bundle::resolve_conflicts(
-        &ours,
-        &model,
-        &mut to_save,
-        &merge,
+    let prompt = fetch.as_mut().map(|c| c as &mut dyn DownloadPrompt);
+    let outcome = bussard_service::files::import::write_model(
+        model,
+        dir,
         choice,
         source,
+        prompt,
+        project,
+        &mut Console,
+        &mut Console,
     )?;
-
-    // A group address a device file uses but the plan does not define is
-    // declared in groups.toml, named after the object that uses it first.
-    let declared = bussard_model::declare_used_groups(&mut to_save);
-
-    // An import that changes nothing leaves the files alone, so hand-written
-    // comments and formatting survive a no-op re-import.
-    if ours == to_save {
-        println!(
-            "{} already matches the import; no file written",
-            dir.display()
-        );
-        crate::import_bundle::print_changes(&ours, &to_save);
-        let prompt = fetch.as_mut().map(|c| c as &mut dyn DownloadPrompt);
-        setup::import::after_write(dir, &to_save, project, prompt, &mut out)?;
-        return Ok(report_merge(&merge, kept, choice));
-    }
-
-    // An import writes the files a fresh import would, in the same order,
-    // even over a model an older writer laid out differently (issue #235).
-    let report = to_save.save_pruning_as_import(dir)?;
-    println!(
-        "imported {} group addresses, {} devices, {} link entries → {}",
-        to_save.groups.groups.len(),
-        to_save.devices.len(),
-        to_save.links.links.values().map(Vec::len).sum::<usize>(),
-        crate::conn_cmd::describe_dir(dir)
-    );
-    for d in &declared {
-        println!("{}", d.sentence());
-    }
-    setup::import::knxnet_summary(&to_save, &mut out);
-    if !report.renamed.is_empty() {
-        println!("renamed {} device file(s)", report.renamed.len());
-    }
-    if !report.pruned.is_empty() {
-        println!("pruned {} stale device file(s)", report.pruned.len());
-    }
-
-    let prompt = fetch.as_mut().map(|c| c as &mut dyn DownloadPrompt);
-    setup::import::after_write(dir, &to_save, project, prompt, &mut out)?;
-    // W042 (issue #348): a group address the model ran plain that the
-    // project secures again needs an apply on the devices it names.
-    crate::keys_cmd::print_warnings(&bussard_model::resecured_by_import(&ours, &to_save));
-    crate::import_bundle::print_changes(&ours, &to_save);
-    Ok(report_merge(&merge, kept, choice))
+    Ok(exit_code(&outcome))
 }
 
-/// Loads an existing model from `dir`, or `None` if the directory holds no
-/// model yet (fresh import) or cannot be loaded as one.
-fn load_existing_model(dir: &Path) -> Option<Model> {
-    // Only treat the target as a re-import if it actually has model content: a
-    // groups file, a lock or at least one `devices/*.toml`. An empty/absent
-    // directory (or one `bussard init` just created) is a fresh import.
-    let has_groups = dir.join("groups.toml").exists() || dir.join("bussard.lock").exists();
-    let has_devices = dir
-        .join("devices")
-        .read_dir()
-        .map(|mut rd| {
-            rd.any(|e| e.is_ok_and(|e| e.file_name().to_string_lossy().ends_with(".toml")))
-        })
-        .unwrap_or(false);
-    if !has_groups && !has_devices {
-        return None;
-    }
-    Model::load(dir).ok()
-}
-
-/// Prints the re-import merge outcome and returns the process exit code.
-///
-/// `kept` is how many conflicts still hold the local value. They exit
-/// [`EXIT_CONFLICTS`] only when nobody chose (no `--mine`, `--theirs` or
-/// `--interactive`); the sentences were already printed by
-/// [`crate::import_bundle::resolve_conflicts`].
-fn report_merge(report: &MergeReport, kept: usize, choice: ConflictChoice) -> ExitCode {
-    if report.groups_added + report.devices_added > 0 {
-        println!(
-            "re-import: added {} new device(s), {} new group address(es)",
-            report.devices_added, report.groups_added
-        );
-    }
-    if report.groups_removed + report.devices_removed > 0 {
-        println!(
-            "re-import: {} device(s) and {} group address(es) left the project",
-            report.devices_removed, report.groups_removed
-        );
-    }
-
-    // Informational notes: generated identity that moved with the project
-    // (application_ref / mask), channels that left, dangling channel references
-    // dropped. Not conflicts: nothing hand-authored was overridden.
-    for note in &report.notes {
-        println!("re-import: note: {note}");
-    }
-
-    if !report.has_conflicts() {
-        println!("re-import: generated sections refreshed; no hand-edited conflicts.");
-        return ExitCode::SUCCESS;
-    }
-    if choice != ConflictChoice::Report || kept == 0 {
+/// The exit code of an import: [`EXIT_CONFLICTS`] when hand-edited conflicts
+/// are left for a human (nobody chose `--mine`, `--theirs` or
+/// `--interactive`), with the line that says how to settle them; the
+/// sentences were already printed.
+pub(crate) fn exit_code(outcome: &ImportOutcome) -> ExitCode {
+    if !outcome.unresolved {
         return ExitCode::SUCCESS;
     }
     eprintln!(
         "\nGenerated sections (com_objects, links wiring, parameters) were refreshed. \
-         The {kept} hand-edited field(s) above were KEPT. Re-run with --theirs to take the \
-         incoming values, --mine to keep these and exit 0, or --interactive to choose each."
+         The {} hand-edited field(s) above were KEPT. Re-run with --theirs to take the \
+         incoming values, --mine to keep these and exit 0, or --interactive to choose each.",
+        outcome.kept
     );
     ExitCode::from(EXIT_CONFLICTS)
 }

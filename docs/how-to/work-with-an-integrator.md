@@ -20,10 +20,10 @@ On both sides an assistant usually does the reading and writing over MCP, and th
 
 The handover bundle is the delivered state. At acceptance the integrator exports it, and the model checksum from its manifest goes on the acceptance protocol. From then on:
 
-1. The owner exports the current model (`bussard export`, or `knx_export_bundle` over MCP), or describes the wish in words.
+1. The owner exports the current model (`bussard export`, or `knx_export` over MCP), or describes the wish in words.
 2. The integrator runs `bussard diff` between the delivered bundle and the one received. That lists, in sentences, everything the owner changed since handover: the warranty question, answered before work starts.
 3. The integrator makes the change, in ETS or in bussard, and sends back a `.knxproj` or a bundle.
-4. The owner previews the file (`bussard diff`, or `knx_diff_project`) and imports it with `bussard import`. Names, rooms and descriptions the owner wrote stay hers; each disagreement is reported as a sentence.
+4. The owner previews the file (`bussard diff`, or `knx_diff_project`) and imports it with `bussard import` (or `knx_import_file` over MCP). Names, rooms and descriptions the owner wrote stay hers; each disagreement is reported as a sentence.
 5. Whoever is on site runs `plan` and `apply` for the devices that changed.
 
 `bussard history` on either side shows who changed what, when, and which gateway each device write went to.

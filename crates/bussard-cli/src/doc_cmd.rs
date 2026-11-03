@@ -13,8 +13,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::Context;
-use bussard_model::doc::{DocFormat, InstallationDoc, write_files};
-use bussard_model::{Model, ProductModels};
+use bussard_model::doc::DocFormat;
 
 /// Renders the documentation for the model in `dir`.
 ///
@@ -22,25 +21,18 @@ use bussard_model::{Model, ProductModels};
 /// written to disk. Otherwise the rendered files are written under `out` and the
 /// paths are listed on stdout.
 pub fn run(dir: &Path, out: &Path, format: DocFormat, json: bool) -> anyhow::Result<ExitCode> {
-    let model =
-        Model::load(dir).with_context(|| format!("loading the model from {}", dir.display()))?;
-    let products = ProductModels::load(dir);
-    let doc = InstallationDoc::build(&model, &products, dir);
-
     if json {
+        let doc = bussard_service::files::export::doc_model(dir)?;
         let text = crate::output::render(crate::output::schema::DOC, &doc)
             .context("serializing the documentation model to JSON")?;
         println!("{text}");
         return Ok(ExitCode::SUCCESS);
     }
 
-    let files = doc.render(format);
-    write_files(&files, out)
-        .with_context(|| format!("writing the documentation to {}", out.display()))?;
-
+    let files = bussard_service::files::export::doc(dir, out, format)?;
     println!("wrote {} file(s) to {}:", files.len(), out.display());
     for file in &files {
-        println!("  {}", file.path);
+        println!("  {file}");
     }
     Ok(ExitCode::SUCCESS)
 }

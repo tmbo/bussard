@@ -566,16 +566,32 @@ fn cli_name(command: &Command) -> String {
 /// Maps a `-v` repeat count to a tracing `EnvFilter` directive string, unless an
 /// explicit `RUST_LOG` is set (which always wins). `0` → `warn` (the default).
 fn verbosity_filter(verbose: u8) -> tracing_subscriber::EnvFilter {
-    if let Ok(filter) = tracing_subscriber::EnvFilter::try_from_default_env() {
-        return filter;
-    }
-    let level = match verbose {
-        0 => "warn",
-        1 => "info",
-        2 => "debug",
-        _ => "trace",
+    let filter = match tracing_subscriber::EnvFilter::try_from_default_env() {
+        Ok(filter) => filter,
+        Err(_) => {
+            let level = match verbose {
+                0 => "warn",
+                1 => "info",
+                2 => "debug",
+                _ => "trace",
+            };
+            tracing_subscriber::EnvFilter::new(level)
+        }
     };
-    tracing_subscriber::EnvFilter::new(level)
+    cap_rmcp(filter)
+}
+
+/// Caps the MCP SDK's own events at `info`, whatever `RUST_LOG` or `-v` say.
+///
+/// At `debug` rmcp logs every request with its raw arguments, which would put
+/// a `password` argument of `knx_import_file` or `knx_export` in the log
+/// (issue #743). bussard logs each `tools/call` itself, with string values
+/// redacted (`bussard_mcp::args::redact_strings`).
+fn cap_rmcp(filter: tracing_subscriber::EnvFilter) -> tracing_subscriber::EnvFilter {
+    match "rmcp=info".parse() {
+        Ok(directive) => filter.add_directive(directive),
+        Err(_) => filter,
+    }
 }
 
 /// The group-address addressing scheme, as a CLI value.

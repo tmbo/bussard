@@ -19,8 +19,9 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use anyhow::{Context, anyhow, bail};
+use anyhow::{Context, bail};
 use bussard_project::keystore::{BackboneChange, ImportReport, KeyStore, SaveOutcome};
+use bussard_service::files::keyring;
 use bussard_service::setup;
 
 /// The environment variable carrying the keyring (and key store) password.
@@ -57,17 +58,10 @@ fn import_quiet(dir: &Path, file: &Path) -> anyhow::Result<(ImportReport, SaveOu
     Ok(setup::import::import_keyring(dir, file)?)
 }
 
-/// Loads the store in `dir`, failing with a hint when there is none.
+/// Loads the store in `dir`, failing with a hint when there is none
+/// ([`bussard_service::files::keyring::load_existing`]).
 fn load_existing(dir: &Path, password: &str) -> anyhow::Result<KeyStore> {
-    let path = KeyStore::path(dir);
-    KeyStore::load(dir, password)
-        .with_context(|| format!("loading the key store {}", path.display()))?
-        .ok_or_else(|| {
-            anyhow!(
-                "no key store at {}; create it with `bussard keys import <file.knxkeys>`",
-                path.display()
-            )
-        })
+    Ok(keyring::load_existing(dir, password)?)
 }
 
 /// Runs `bussard keys import <file>`.
@@ -210,53 +204,23 @@ fn print_report(store: &Path, file: &Path, r: &ImportReport, outcome: SaveOutcom
     println!("  (key material is never printed)");
 }
 
-/// Runs `bussard keys export <file>`.
+/// Runs `bussard keys export <file>`
+/// ([`bussard_service::files::keyring::export_keyring`]).
 pub fn run_export(dir: &Path, file: &Path, force: bool, json: bool) -> anyhow::Result<ExitCode> {
     let password = password()?;
-    if file.exists() && !force {
-        bail!("{} exists; pass --force to overwrite it", file.display());
-    }
-    let store = load_existing(dir, &password)?;
-    let export = store
-        .export_knxkeys(&password)
-        .context("building the .knxkeys export")?;
-    std::fs::write(file, &export.xml).with_context(|| format!("writing {}", file.display()))?;
-    // The export's time, so `validate` can tell when the key store changed
-    // after it (W040, issue #348).
-    if let Err(err) = bussard_model::KeyStoreMeta::record_export(dir, file) {
-        eprintln!("warning: the export was not recorded: {err}");
-    }
-    let skipped: Vec<String> = export
-        .skipped_devices
-        .iter()
-        .map(|ia| ia.to_string())
-        .collect();
-    // Verified means read back and compared (issue #349): the file as written,
-    // its signature checked, decrypted and its key set compared with the store.
-    let written = std::fs::read_to_string(file)
-        .with_context(|| format!("reading {} back", file.display()))?;
-    let check = store
-        .check_export(&written, &password)
-        .with_context(|| format!("reading {} back", file.display()))?;
-    let omitted = omitted_group_addresses(dir, &store, &check);
-    let carried: Vec<String> = check
-        .group_addresses
-        .iter()
-        .map(ToString::to_string)
-        .collect();
-    let omitted_s: Vec<String> = omitted.iter().map(ToString::to_string).collect();
-    let leftovers = check.leftovers();
+    let export =
+        keyring::export_keyring(dir, file, &password, force, &mut crate::console::Console)?;
     if json {
         let value = serde_json::json!({
             "file": file.display().to_string(),
             "devices": export.devices,
             "group_keys": export.group_keys,
             "interfaces": export.interfaces,
-            "skipped_devices": skipped,
-            "verified": check.verified(),
-            "group_addresses": carried,
-            "omitted_group_addresses": omitted_s,
-            "leftovers": leftovers,
+            "skipped_devices": export.skipped_devices,
+            "verified": export.verified,
+            "group_addresses": export.group_addresses,
+            "omitted_group_addresses": export.omitted_group_addresses,
+            "leftovers": export.leftovers,
         });
         crate::output::print(crate::output::schema::KEYS_EXPORT, &value)?;
     } else {
@@ -267,37 +231,37 @@ pub fn run_export(dir: &Path, file: &Path, force: bool, json: bool) -> anyhow::R
             export.group_keys,
             export.interfaces
         );
-        if !skipped.is_empty() {
+        if !export.skipped_devices.is_empty() {
             println!(
                 "  left out (no tool key, ETS needs one): {}",
-                skipped.join(", ")
+                export.skipped_devices.join(", ")
             );
         }
         println!(
             "  group addresses carried: {}",
-            if carried.is_empty() {
+            if export.group_addresses.is_empty() {
                 "none".to_string()
             } else {
-                carried.join(", ")
+                export.group_addresses.join(", ")
             }
         );
-        if !omitted_s.is_empty() {
+        if !export.omitted_group_addresses.is_empty() {
             println!(
                 "  group addresses omitted (secure in the model or the store, no key in the \
                  export): {}",
-                omitted_s.join(", ")
+                export.omitted_group_addresses.join(", ")
             );
         }
-        if check.verified() {
+        if export.verified {
             println!("  verified: read back, decrypted and compared with the key store");
         } else {
-            for leftover in &leftovers {
+            for leftover in &export.leftovers {
                 eprintln!("ERROR: {leftover}");
             }
         }
         println!("  keep it out of git: the model's .gitignore lists *.knxkeys");
     }
-    if !check.verified() {
+    if !export.verified {
         eprintln!(
             "ERROR: {} does not carry the key store's keys; do not hand it on",
             file.display()
@@ -305,32 +269,6 @@ pub fn run_export(dir: &Path, file: &Path, force: bool, json: bool) -> anyhow::R
         return Ok(ExitCode::FAILURE);
     }
     Ok(ExitCode::SUCCESS)
-}
-
-/// The group addresses the model marks secure or the store keys that the
-/// export `check` read back does not carry, ascending. A model that does not
-/// load contributes nothing (the store's own keys are still checked).
-fn omitted_group_addresses(
-    dir: &Path,
-    store: &KeyStore,
-    check: &bussard_project::keystore::ExportCheck,
-) -> Vec<bussard_model::GroupAddress> {
-    let mut wanted: std::collections::BTreeSet<bussard_model::GroupAddress> =
-        store.group_keys.keys().copied().collect();
-    if let Ok(model) = bussard_model::Model::load(dir) {
-        wanted.extend(
-            model
-                .groups
-                .groups
-                .iter()
-                .filter(|(_, g)| g.secure)
-                .map(|(ga, _)| *ga),
-        );
-    }
-    wanted
-        .into_iter()
-        .filter(|ga| !check.group_addresses.contains(ga))
-        .collect()
 }
 
 /// Runs `bussard keys show`.
