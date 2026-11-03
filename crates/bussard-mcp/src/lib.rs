@@ -173,6 +173,7 @@ pub mod tools_device;
 pub mod tools_diff;
 pub mod tools_files;
 mod tools_find;
+pub mod tools_enroll;
 pub mod tools_groups;
 pub mod tools_ha;
 pub mod tools_ha_automation;
@@ -498,6 +499,9 @@ pub fn tool_names_with_ha(
     names.extend(tools_jobs::JOB_TOOLS);
     if !no_model_edits {
         names.extend(tools_model::MODEL_EDIT_TOOLS);
+        // Certificate enrolment writes the key store, not the model, but is
+        // withheld with the model edits (issue #732).
+        names.extend(tools_enroll::ENROLL_TOOLS);
     }
     if allow_programming && !passive {
         names.extend(tools_program::PROGRAMMING_TOOLS);

@@ -18,7 +18,7 @@ certificate:
 00FA01020304 1.1.12 "Aktor Küche": stored
 certificate:
 1 stored, 0 unassigned, 0 already stored, 0 conflict(s), 0 invalid, 0 error(s) (key material is never printed)
-$ bussard keys enroll --relay https://relay.example
+$ bussard keys enroll
 ```
 
 The output above is illustrative and abridged.
@@ -32,9 +32,10 @@ The output above is illustrative and abridged.
 | `add-certificate` | | Enter device certificates (the 36-character FDSK labels), one per line, without echo; an empty line ends. |
 | `add-certificate --stdin` | off | Read the labels from standard input, one per line, instead of asking on the terminal. |
 | `enroll` | | Take device certificates (the FDSK labels) from a phone. |
-| `enroll --relay <URL>` | `[enroll] relay` | The relay the phone and bussard exchange encrypted messages through. Required when `bussard.toml` names none. |
+| `enroll --relay <URL>` | `[enroll] relay`, else the hosted relay | The relay the phone and bussard exchange encrypted messages through. The hosted page talks only to the hosted relay; another relay needs a self-hosted page (`--page`). |
 | `enroll --page <URL>` | `[enroll] page`, else the hosted page | The page the link opens. |
 | `enroll --no-qr` | off | Leave the QR code out. |
+| `enroll --local` | off | Serve the page and the relay on `127.0.0.1` instead, for a browser on this computer; needs no relay. Not with `--relay` or `--page`. |
 | `--json` | off | Print the result as JSON (below). |
 
 What each verb does:
@@ -43,7 +44,7 @@ What each verb does:
 - **`export`** writes the ETS element and attribute set with a fresh `Created`, signed with the keyring key. A device without a tool key is left out and named.
 - **`show`** prints the backbone, each device with its serial number and which keys it has, each interface with its user id and host, the number of group keys, the serial numbers of certificates without a device, and the secure-capable devices of the model without a factory key. `--json` gives `project`, `created`, `has_backbone_key`, `devices[]` (`address`, `serial`, `has_tool_key`, `has_fdsk`, `has_management_password`, `has_authentication`), `interfaces[]`, `group_keys` (the addresses), `unassigned_certificates` (serial numbers) and `devices_without_fdsk` (addresses).
 - **`add-certificate`** decodes each label (36 base32 characters in six dash-separated groups: serial number, factory key and a 4-bit check; spaces and dashes are ignored, and `0`, `1`, `8` are read as `O`, `I`, `B`) and matches its serial number against the devices in the store. It prints one line per label: the serial number, the matched address and device name, and the status. `stored`: saved on the device with that serial. `unassigned`: no device has the serial yet, so the key is kept under it until `bussard assign` reads that serial off a device (or a `keys import` brings it). `already_stored`: nothing changed. `conflict`: the store holds another factory key for the serial; nothing is written. `invalid`: not a certificate, or its check does not match. A label whose check does not match is `invalid` and nothing is written; its serial number is still shown. Every saved label is read back from the store before it is reported. The command fails when any label was a conflict, invalid or not saved. `--json` prints `store` and `results[]` (`status`, `serial`, `ia`, `name`, `check_ok`, `message`).
-- **`enroll`** prints a link, its QR code and a fingerprint. Open the link on the phone, check that the page shows the same fingerprint, and scan the labels. The phone encrypts each label to this session; the page's server and the relay see only ciphertext. bussard prints one line per label: the serial, the outcome (`stored`, `unassigned`, `already_stored`, `conflict`, `invalid` or `error`) and the matched device. The session ends when the phone finishes, on `q` and Enter, or on Ctrl-C, and the relay forgets it after 30 minutes at the latest. `--json` prints one object per line: `session` (`link`, `fingerprint`), `phone`, `certificate` (`result`), `ignored`, `done` and `end` (`stored`, `certificates`). Each label is entered exactly as `add-certificate` enters it (same statuses, same read-back). Needs `BUSSARD_KEYRING_PASSWORD`; the store must be writable before the link is shown.
+- **`enroll`** prints a link, its QR code and a fingerprint. Open the link on the phone, check that the page shows the same fingerprint, and scan the labels. The phone encrypts each label to this session; the page's server and the relay see only ciphertext. bussard prints one line per label: the serial, the outcome (`stored`, `unassigned`, `already_stored`, `conflict`, `invalid` or `error`) and the matched device. The session ends when the phone finishes, on `q` and Enter, or on Ctrl-C, and the relay forgets it after 30 minutes at the latest. With `--local` bussard serves the page and the relay itself on `127.0.0.1` at a free port, on one origin, so the link names no relay and no QR code is printed: open the link in a browser on the same computer and scan with its camera or type the labels. `--json` prints one object per line: `session` (`link`, `fingerprint`, `local`), `phone`, `certificate` (`result`), `ignored`, `done` and `end` (`stored`, `certificates`). Each label is entered exactly as `add-certificate` enters it (same statuses, same read-back). Needs `BUSSARD_KEYRING_PASSWORD`; the store must be writable before the link is shown.
 
 Behaviour:
 

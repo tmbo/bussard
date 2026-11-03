@@ -721,7 +721,8 @@ enum KeysCommand {
     /// and Enter, or on Ctrl-C. Prints serials and addresses, never a key.
     Enroll {
         /// The relay base URL. Default: `relay` in the `[enroll]` table of
-        /// bussard.toml.
+        /// bussard.toml, else the hosted relay. The hosted page talks only
+        /// to the hosted relay; another relay needs its own page (`--page`).
         #[arg(long, value_name = "URL")]
         relay: Option<String>,
         /// The enrolment page the link opens. Default: `page` in `[enroll]`,
@@ -731,6 +732,10 @@ enum KeysCommand {
         /// Leave out the QR code.
         #[arg(long)]
         no_qr: bool,
+        /// Serve the page and the relay on 127.0.0.1 instead, for a browser
+        /// on this computer (a webcam or typed labels); no hosted relay.
+        #[arg(long, conflicts_with_all = ["relay", "page"])]
+        local: bool,
     },
 }
 
@@ -1937,9 +1942,21 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
             KeysCommand::AddCertificate { stdin } => {
                 keys_cmd::run_add_certificate(dir, stdin, json)
             }
-            KeysCommand::Enroll { relay, page, no_qr } => {
-                enroll_cmd::run(dir, enroll_cmd::EnrollOptions { relay, page, no_qr }, json)
-            }
+            KeysCommand::Enroll {
+                relay,
+                page,
+                no_qr,
+                local,
+            } => enroll_cmd::run(
+                dir,
+                enroll_cmd::EnrollOptions {
+                    relay,
+                    page,
+                    no_qr,
+                    local,
+                },
+                json,
+            ),
         },
         Command::ImportProduct {
             file,

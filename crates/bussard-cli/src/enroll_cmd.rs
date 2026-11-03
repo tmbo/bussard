@@ -4,9 +4,11 @@
 //! Prints the link, a terminal QR code of it and the fingerprint, then one
 //! line per certificate the phone sends until the phone sends `done`, the
 //! user types `q` (and Enter) or presses Ctrl-C. The relay comes from
-//! `--relay` or `[enroll] relay` in `bussard.toml`; there is no built-in
-//! default yet. Never prints a certificate or a key: only serials,
-//! addresses, names and statuses.
+//! `--relay`, then `[enroll] relay` in `bussard.toml`, then the hosted relay
+//! ([`bussard_service::enroll_session::DEFAULT_RELAY`]). `--local` (#732) serves the page and the relay on
+//! 127.0.0.1 instead ([`bussard_viz::enroll_local`]), for a browser on this
+//! computer. Never prints a certificate or a key: only serials, addresses,
+//! names and statuses.
 
 use std::io::BufRead;
 use std::path::Path;
@@ -14,9 +16,10 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::{Context, bail};
+use anyhow::Context;
 use bussard_service::enroll_session::{
-    CertificateOutcome, DEFAULT_PAGE, EnrollEnd, EnrollEvent, EnrollSession, HttpRelay, RunOptions,
+    CertificateOutcome, EnrollEnd, EnrollEvent, EnrollSession, HttpRelay, RunOptions,
+    hosted_endpoints,
 };
 use serde_json::json;
 
@@ -32,6 +35,8 @@ pub struct EnrollOptions {
     pub page: Option<String>,
     /// `--no-qr`: leave the QR code out.
     pub no_qr: bool,
+    /// `--local`: serve the page and the relay on loopback.
+    pub local: bool,
 }
 
 /// Runs `bussard keys enroll`.
@@ -40,15 +45,8 @@ pub fn run(dir: &Path, options: EnrollOptions, json_out: bool) -> anyhow::Result
         .with_context(|| format!("reading {}", dir.join("bussard.toml").display()))?
         .enroll
         .unwrap_or_default();
-    let Some(relay_url) = options.relay.or(config.relay) else {
-        bail!(
-            "no enrolment relay: pass --relay <URL> or set `relay` in the [enroll] table of bussard.toml"
-        );
-    };
-    let page = options
-        .page
-        .or(config.page)
-        .unwrap_or_else(|| DEFAULT_PAGE.to_string());
+    // Local mode serves its own page and relay.
+    let hosted = (!options.local).then(|| hosted_endpoints(options.relay, options.page, &config));
 
     // Password, store and write access are checked before the link is shown.
     let password = bussard_secure::Password::new(crate::keys_cmd::password()?);
@@ -56,15 +54,36 @@ pub fn run(dir: &Path, options: EnrollOptions, json_out: bool) -> anyhow::Result
     drop(password);
 
     let mut session = EnrollSession::new().context("starting the enrolment session")?;
-    let relay = HttpRelay::new(&relay_url, &session)?;
-    let link = session.link(&page, Some(relay.base()));
+    let (local, relay, link) = match hosted {
+        Some((relay_url, page)) => {
+            let relay = HttpRelay::new(&relay_url, &session)?;
+            let link = session.link(&page, Some(relay.base()));
+            (None, relay, link)
+        }
+        None => {
+            let server = bussard_viz::enroll_local::LocalEnrollServer::start()
+                .context("starting the local enrolment page")?;
+            let relay = HttpRelay::new(&server.relay_url(), &session)?;
+            // Same origin: the link names no relay.
+            let link = session.link(&server.page_url(), None);
+            (Some(server), relay, link)
+        }
+    };
     let fingerprint = session.fingerprint();
 
     if json_out {
         crate::output::print(
             crate::output::schema::KEYS_ENROLL,
-            &json!({ "event": "session", "link": link, "fingerprint": fingerprint }),
+            &json!({
+                "event": "session",
+                "link": link,
+                "fingerprint": fingerprint,
+                "local": local.is_some(),
+            }),
         )?;
+    } else if local.is_some() {
+        // A phone cannot reach 127.0.0.1: no QR code.
+        println!("Open this link in a browser on this computer and scan or type the labels:\n");
     } else {
         println!("Open this link on the phone and scan the certificate labels:\n");
         if !options.no_qr {
@@ -93,6 +112,9 @@ pub fn run(dir: &Path, options: EnrollOptions, json_out: bool) -> anyhow::Result
             }
         },
     )?;
+    if let Some(server) = local {
+        server.finish();
+    }
     if let Some(err) = print_error {
         return Err(err);
     }
@@ -237,26 +259,6 @@ mod tests {
     fn test_qr_renders_the_link() -> anyhow::Result<()> {
         let out = qr("https://page.invalid/enroll/#v=1")?;
         assert!(out.lines().count() > 10);
-        Ok(())
-    }
-
-    #[test]
-    fn test_run_without_relay_names_the_settings() -> anyhow::Result<()> {
-        // A directory without bussard.toml: the default config.
-        let dir = Path::new("/nonexistent/bussard-enroll-test");
-        let options = EnrollOptions {
-            relay: None,
-            page: None,
-            no_qr: true,
-        };
-        let Err(err) = run(dir, options, false) else {
-            anyhow::bail!("ran without a relay");
-        };
-        let text = err.to_string();
-        assert!(
-            text.contains("--relay") && text.contains("[enroll]"),
-            "{text}"
-        );
         Ok(())
     }
 }

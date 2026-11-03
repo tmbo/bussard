@@ -49,7 +49,7 @@ pub struct BussardConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home_assistant: Option<HomeAssistantConfig>,
     /// Certificate enrolment from a phone (`bussard keys enroll`, issue
-    /// #729). Absent means `--relay` must be given.
+    /// #729). Absent means the hosted page and relay.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enroll: Option<EnrollConfig>,
 }
@@ -61,7 +61,8 @@ pub struct BussardConfig {
 #[serde(deny_unknown_fields)]
 pub struct EnrollConfig {
     /// The relay base URL, e.g. `"https://relay.example"`. `--relay` beats
-    /// it.
+    /// it; the default is the hosted relay. The hosted page talks only to
+    /// the hosted relay, so another relay needs its own page (`page`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relay: Option<String>,
     /// The enrolment page the link opens. `--page` beats it; the default is

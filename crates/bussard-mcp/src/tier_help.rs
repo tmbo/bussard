@@ -3,7 +3,7 @@
 //! the tool names and counts they print cannot drift from the server
 //! (issue #704).
 
-use crate::{tool_names_with_ha, tools_ha, tools_model, tools_program};
+use crate::{tool_names_with_ha, tools_enroll, tools_ha, tools_model, tools_program};
 
 /// How many tools each tier registers, from [`crate::tool_names_with_ha`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,7 +14,8 @@ pub struct TierCounts {
     pub default: usize,
     /// Tools with `--allow-writes`, model edits included.
     pub writes: usize,
-    /// Tools `--no-model-edits` removes from any tier.
+    /// Tools `--no-model-edits` removes from any tier (the model edits and
+    /// the certificate enrolment).
     pub model_edits: usize,
     /// Tools `--allow-programming` adds to any non-passive tier.
     pub programming: usize,
@@ -28,7 +29,7 @@ pub fn tier_counts() -> TierCounts {
         passive: names(true, false, false, false, false).len(),
         default: names(false, false, false, false, false).len(),
         writes: names(false, true, false, false, false).len(),
-        model_edits: tools_model::MODEL_EDIT_TOOLS.len(),
+        model_edits: no_model_edits_omitted().len(),
         programming: tools_program::PROGRAMMING_TOOLS.len(),
         home_assistant: tools_ha::HA_TOOLS.len(),
     }
@@ -48,6 +49,16 @@ pub fn writes_added() -> Vec<&'static str> {
         &names(false, false, false, false, false),
         &names(false, true, false, false, false),
     )
+}
+
+/// The tools `--no-model-edits` withholds: the model edits and the
+/// certificate enrolment, which writes the key store.
+pub fn no_model_edits_omitted() -> Vec<&'static str> {
+    tools_model::MODEL_EDIT_TOOLS
+        .iter()
+        .chain(&tools_enroll::ENROLL_TOOLS)
+        .copied()
+        .collect()
 }
 
 /// Help for `--passive`.
@@ -80,8 +91,8 @@ pub fn allow_programming_help() -> String {
 pub fn no_model_edits_help() -> String {
     format!(
         "Refuse model edits: omits {}. The read tools stay available. Model edits only touch \
-         the model files (never the bus), so they are on by default.",
-        code_list(&tools_model::MODEL_EDIT_TOOLS)
+         the model files and the key store (never the bus), so they are on by default.",
+        code_list(&no_model_edits_omitted())
     )
 }
 
