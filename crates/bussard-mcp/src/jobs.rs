@@ -306,7 +306,7 @@ impl JobTable {
         if let Some(refusal) = busy_message(&inner, JobKind::Read) {
             return Err(refusal);
         }
-        Ok(insert(&mut inner, JobKind::Read, address))
+        Ok(insert(&mut inner, JobKind::Read, Some(address), None))
     }
 
     /// Ends a job whose pre-flight refused: nothing was written. The job
@@ -349,13 +349,13 @@ fn busy_message(inner: &Inner, wanting: JobKind) -> Option<String> {
             "an apply is already running on this server: job {id} for {device}; one apply at a \
              time. Call knx_apply_status with job {id} until it is done, then plan again"
         ),
-        (JobKind::Apply, _) => format!(
-            "an apply is running on this server (job {id} for {device}); call \
-             knx_apply_status with job {id} until it is done, then {again}"
-        ),
         (JobKind::Apply, JobKind::Read) => format!(
             "an apply is running on this server (job {id} for {device}); call \
              knx_job_status with job {id} until it is done, then call again"
+        ),
+        (JobKind::Apply, _) => format!(
+            "an apply is running on this server (job {id} for {device}); call \
+             knx_apply_status with job {id} until it is done, then {again}"
         ),
         (JobKind::Read, _) => format!(
             "a read is already running on this server: job {id} reads {device}; one bus job at \

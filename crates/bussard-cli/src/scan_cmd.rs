@@ -202,17 +202,6 @@ pub(crate) async fn probe_with_key(
     Some(Found::from_identity(identity, status))
 }
 
-/// Reads a 2-byte property as a `u16`, returning `None` on any failure.
-pub(crate) async fn read_u16<Ch: L4Channel>(
-    dev: &mut DeviceConnection<Ch>,
-    pid: u8,
-) -> Option<u16> {
-    match dev.read_device_property(pid).await {
-        Ok(bytes) if bytes.len() >= 2 => Some(u16::from_be_bytes([bytes[0], bytes[1]])),
-        _ => None,
-    }
-}
-
 /// Parses a `area.line` (e.g. `1.1`) or a full `area.line.device` (ignoring the
 /// device part) into `(area, line)` ([`scan::parse_line`]).
 pub(crate) fn parse_line(line: &str) -> anyhow::Result<(u8, u8)> {
