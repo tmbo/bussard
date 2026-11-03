@@ -34,6 +34,7 @@ mod import_product_cmd;
 mod init_cmd;
 mod interface_cmd;
 mod interface_secure_cmd;
+mod interface_session;
 mod keys_cmd;
 mod learn_cmd;
 mod line_cmd;
@@ -105,6 +106,16 @@ struct Global {
     /// configure it). No environment variable can select it.
     #[arg(long, global = true)]
     routing: bool,
+    /// Manage the KNX IP interface at `--gateway` itself over a KNXnet/IP
+    /// device management connection instead of a tunnel (issue #523): for
+    /// `plan`/`apply` of an interface, `describe` of it and `interface
+    /// secure`. Needs no tunnelling slot and no individual address of the
+    /// tunnel, so it reaches an interface whose slots are taken, whose
+    /// tunnel address is duplicated, or that is factory-fresh. Inside
+    /// KNXnet/IP Secure it authenticates as the management user (the
+    /// keyring's `ManagementPassword` for the interface).
+    #[arg(long, global = true)]
+    device_management: bool,
     /// An ETS `.knxkeys` keyring. Its tunnelling users open a KNXnet/IP Secure
     /// tunnel, its device entries carry the KNX Data Secure tool keys for
     /// management, and its group keys secure and decrypt group telegrams.
@@ -344,6 +355,8 @@ struct Resolved {
     gateway: Option<String>,
     /// `--routing`.
     routing: bool,
+    /// `--device-management`.
+    device_management: bool,
     /// The keyring the command itself consumes (tool keys, group keys), when
     /// it has a use for one beyond the tunnel.
     keyring: Option<PathBuf>,
@@ -386,6 +399,7 @@ impl Resolved {
             routing: self.routing,
             skip_address_check: false,
             refresh_facts: false,
+            device_management: self.device_management,
         }
     }
 
@@ -413,6 +427,21 @@ fn resolve_globals(global: &Global, command: &Command) -> anyhow::Result<Resolve
     // working directory's `.env` and decides the model directory; the `.env`
     // the lookup order then finds for that directory supplies every other
     // `BUSSARD_*` variable, behind the process environment.
+    if global.device_management
+        && !matches!(
+            command,
+            Command::Plan { .. }
+                | Command::Apply { .. }
+                | Command::Describe { .. }
+                | Command::Interface { .. }
+        )
+    {
+        anyhow::bail!(
+            "--device-management manages a KNX IP interface itself; only `plan`, `apply`, \
+             `describe` and `interface secure` take it, not `bussard {}`",
+            cli_name(command)
+        );
+    }
     let cwd = std::path::Path::new(".");
     let role = command.role();
     let dir = conn_cmd::resolve_model_dir(
@@ -505,6 +534,7 @@ fn resolve_globals(global: &Global, command: &Command) -> anyhow::Result<Resolve
         dir,
         gateway,
         routing: global.routing,
+        device_management: global.device_management,
         keyring: slot,
         json: global.json,
         allow_remote_gateway: global.allow_remote_gateway,

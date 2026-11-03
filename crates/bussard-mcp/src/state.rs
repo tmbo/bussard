@@ -122,6 +122,7 @@ impl BusStatus {
         match self.transport {
             TransportKind::Tunnel => "tunnel",
             TransportKind::Routing => "routing",
+            TransportKind::DeviceManagement => "device-management",
         }
     }
 

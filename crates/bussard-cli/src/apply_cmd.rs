@@ -184,6 +184,7 @@ pub fn run(
     // A KNX IP interface (a `[knxnet]` table, no links) is written as
     // properties of its KNXnet/IP parameter object (issue #391); a
     // property-only load procedure it also has stays `flash`'s.
+    crate::interface_cmd::refuse_device_management(&overrides, &model, target)?;
     if crate::interface_cmd::interface_only(&model, target).is_some() {
         hint_installation_backup(dir);
         return crate::interface_cmd::apply(

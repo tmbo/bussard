@@ -93,6 +93,16 @@ pub enum TransportError {
     /// The connection has already been closed locally.
     #[error("connection is closed")]
     Closed,
+    /// A device management connection reaches the KNXnet/IP server itself
+    /// and has no bus behind it (issue #523): it cannot carry `what`.
+    #[error(
+        "a KNXnet/IP device management connection reaches the interface itself only; it cannot \
+         carry {what}"
+    )]
+    NotOnDeviceManagement {
+        /// What was asked of it.
+        what: &'static str,
+    },
 
     /// The interface only accepts KNXnet/IP Secure tunnelling and bussard has no
     /// credentials for it (issue #182). Fatal: retrying cannot help.

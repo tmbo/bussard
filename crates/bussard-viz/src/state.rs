@@ -121,6 +121,7 @@ impl BusStatus {
         self.transport.as_ref().map(|t| match t {
             TransportKind::Tunnel => "tunnel",
             TransportKind::Routing => "routing",
+            TransportKind::DeviceManagement => "device-management",
         })
     }
 

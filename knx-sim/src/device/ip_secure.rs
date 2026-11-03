@@ -54,6 +54,10 @@ pub struct IpSecureState {
     pub device_key: [u8; 16],
     /// `(user id, password key, tunnelling address)` per tunnelling user.
     pub users: Vec<(u8, [u8; 16], u16)>,
+    /// The password key of the management user (user 1), when its hash was
+    /// written: it opens device management connections inside a session
+    /// (KNX IP Secure 3/8/9 §2.2.1.4.2; bussard issue #523).
+    pub management: Option<[u8; 16]>,
     /// The secured service families.
     pub families: Vec<u8>,
 }
@@ -295,6 +299,7 @@ impl IpSecureObject {
                 Some(IpSecureState {
                     device_key,
                     users,
+                    management: self.hashes.first().copied().filter(|k| *k != [0; 16]),
                     families,
                 })
             }
@@ -348,10 +353,12 @@ mod tests {
         let state = obj.applied().cloned().unwrap_or(IpSecureState {
             device_key: [0; 16],
             users: Vec::new(),
+            management: None,
             families: Vec::new(),
         });
         assert_eq!(state.device_key, auth);
         assert_eq!(state.users, vec![(2, [0x22; 16], 0x1116)]);
+        assert_eq!(state.management, Some([0x21; 16]));
         assert_eq!(obj.epoch(), 1);
         // Tunnelling not secured: plain after the next reset.
         assert!(

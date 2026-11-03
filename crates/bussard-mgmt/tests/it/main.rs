@@ -6,6 +6,7 @@
 
 mod al_negative_mock;
 mod assign_mock;
+mod device_mgmt_mock;
 mod io_list_mock;
 mod knxnet_mock;
 mod load_echo_mock;

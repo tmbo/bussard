@@ -5,6 +5,7 @@
 //! nextest still runs every test in its own process.
 
 mod codec_fuzz;
+mod device_mgmt;
 mod mock_gateway;
 mod secure_tunnel;
 mod wire_trace_off;

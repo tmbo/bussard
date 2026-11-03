@@ -236,6 +236,74 @@ pub fn tunnel_config(
     }
 }
 
+/// The management user (user id 1) of the KNXnet/IP Secure interface
+/// `device`, from its `ManagementPassword` in the keyring (or key store) at
+/// `keyring`: what a device management connection to the interface needs
+/// inside a secure session (KNX IP Secure 3/8/9 §2.2.1.4.2; issue #523).
+/// `None` when the keyring has no management password for `device`.
+///
+/// # Errors
+///
+/// The keyring cannot be read or decrypted.
+pub fn management_user(
+    keyring: &Path,
+    device: IndividualAddress,
+) -> Result<Option<bussard_transport::SecureUser>, SecureKeyError> {
+    let keyring = load_keyring(keyring)?;
+    Ok(keyring
+        .devices
+        .iter()
+        .find(|d| d.ia == device)
+        .and_then(|d| {
+            Some(bussard_transport::SecureUser {
+                user_id: bussard_transport::devmgmt::MANAGEMENT_USER,
+                password: d.management_password.clone()?,
+                device_authentication_code: d.authentication.clone(),
+                tunnel_ia: None,
+                host_ia: Some(device.raw()),
+            })
+        }))
+}
+
+/// `config` with the management user of `device` from `keyring` as its
+/// KNXnet/IP Secure credentials, for a device management connection (issue
+/// #523). Explicit credentials for user 1 (`--secure-user 1`) are kept; a
+/// keyring without a management password for `device` leaves `config`
+/// without credentials, so the connection is plain.
+///
+/// # Errors
+///
+/// As [`management_user`].
+pub fn with_management_user(
+    mut config: bussard_transport::ConnectionConfig,
+    keyring: Option<&Path>,
+    device: IndividualAddress,
+) -> Result<bussard_transport::ConnectionConfig, SecureKeyError> {
+    use bussard_transport::devmgmt::MANAGEMENT_USER;
+    if config
+        .secure
+        .as_ref()
+        .is_some_and(|s| s.users.iter().any(|u| u.user_id == MANAGEMENT_USER))
+    {
+        return Ok(config);
+    }
+    let user = match keyring {
+        Some(path) => management_user(path, device)?,
+        None => None,
+    };
+    config.secure = user.map(|user| match config.secure.take() {
+        Some(secure) => bussard_transport::SecureTunnelConfig {
+            users: vec![user],
+            ..secure
+        },
+        None => bussard_transport::SecureTunnelConfig::new(
+            vec![user],
+            bussard_transport::SecureSource::Keyring,
+        ),
+    });
+    Ok(config)
+}
+
 /// Whether `model` records `target` as KNX Data Secure-activated
 /// (`security.activated: true` in its device file). A device the model does not
 /// know, or no model at all, is not activated.

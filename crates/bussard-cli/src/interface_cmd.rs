@@ -35,6 +35,27 @@ pub(crate) fn interface_only(model: &Model, target: IndividualAddress) -> Option
     bussard_service::knxnet::interface_config(model, target)
 }
 
+/// Refuses `--device-management` for a device that is not planned as an IP
+/// interface: the connection reaches the KNXnet/IP server's own device only
+/// (issue #523).
+///
+/// # Errors
+///
+/// The flag is set and `target` has no `[knxnet]` table (or has links).
+pub(crate) fn refuse_device_management(
+    overrides: &ConnOverrides,
+    model: &Model,
+    target: IndividualAddress,
+) -> anyhow::Result<()> {
+    if overrides.device_management && interface_only(model, target).is_none() {
+        anyhow::bail!(
+            "--device-management reaches the KNX IP interface itself; {target} is not planned as \
+             one (devices/{target}.toml needs a [knxnet] table and no links)"
+        );
+    }
+    Ok(())
+}
+
 /// The property-only load procedure of the interface's application (issue
 /// #390), when its product data is at hand: `plan` reads the properties it
 /// writes on the same session and shows them after the `[knxnet]` changes;
@@ -185,8 +206,18 @@ pub(crate) fn plan(
     };
     let gateway = gateway_display(&config);
     let runtime = tokio::runtime::Runtime::new()?;
-    let bus = BusSession::open(&runtime, config.clone(), WritePolicy::ReadOnly)?;
-    let source = runtime.block_on(bus.service().checked_source(overrides.skip_address_check))?;
+    let crate::interface_session::InterfaceSession {
+        bus,
+        source,
+        config,
+    } = crate::interface_session::open(
+        &runtime,
+        config,
+        WritePolicy::ReadOnly,
+        target,
+        tool_key_source.keyring,
+        overrides.skip_address_check,
+    )?;
     let options = session.options(source)?;
     let (read, plan, rows) = read_and_plan(
         &runtime,
@@ -284,12 +315,18 @@ pub(crate) fn apply(
     enforce_write_gate(&config, inputs.allow_remote_gateway)?;
     let gateway = gateway_display(&config);
     let runtime = tokio::runtime::Runtime::new()?;
-    let bus = BusSession::open(
+    let crate::interface_session::InterfaceSession {
+        bus,
+        source,
+        config,
+    } = crate::interface_session::open(
         &runtime,
-        config.clone(),
+        config,
         WritePolicy::transmit(inputs.allow_remote_gateway),
+        target,
+        tool_key_source.keyring,
+        overrides.skip_address_check,
     )?;
-    let source = runtime.block_on(bus.service().checked_source(overrides.skip_address_check))?;
     let options = session.options(source)?;
     let (read, plan, _) = read_and_plan(
         &runtime,

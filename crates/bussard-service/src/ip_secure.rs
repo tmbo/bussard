@@ -1314,9 +1314,22 @@ pub async fn run_switch(
     // After the restart: through the target itself the tunnel is plain after
     // `off` and secure after `on`.
     let switch = plan.switch;
+    let target = plan.target;
     let after_config = || -> Result<bussard_transport::ConnectionConfig, SwitchError> {
         let mut config = ctx.config.clone();
-        if target_is_gateway {
+        if config.transport == bussard_transport::TransportKind::DeviceManagement {
+            // A device management connection reaches the target itself
+            // (issue #523): plain after `off`, inside a session of the
+            // management user the switch set after `on`.
+            config.secure = None;
+            if switch == Switch::On {
+                config = crate::secure::with_management_user(
+                    config,
+                    Some(&KeyStore::path(ctx.dir)),
+                    target,
+                )?;
+            }
+        } else if target_is_gateway {
             config.secure = match switch {
                 Switch::On => {
                     crate::secure::tunnel_config(crate::secure::TunnelCredentialSource {

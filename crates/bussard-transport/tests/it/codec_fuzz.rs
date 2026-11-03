@@ -196,7 +196,8 @@ fn knxnet_unknown_service_types_rejected() -> Result<(), Box<dyn std::error::Err
         0x0421, 0x0530, 0x0531, 0x0532,
         // Core v2 extended search, Tunnelling v2 features, KNXnet/IP Secure.
         0x020B, 0x020C, 0x0422, 0x0423, 0x0424, 0x0425, 0x0950, 0x0951, 0x0952, 0x0953, 0x0954,
-        0x0955,
+        0x0955, // Device Management (issue #523).
+        0x0310, 0x0311,
     ];
     for svc in 0u16..=0x0A00 {
         let hdr = [0x06, 0x10, (svc >> 8) as u8, (svc & 0xff) as u8, 0x00, 0x06];

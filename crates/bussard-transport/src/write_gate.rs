@@ -46,11 +46,13 @@ pub struct WriteGateRefused {
 /// for routing.
 pub fn gateway_display(config: &ConnectionConfig) -> String {
     match (&config.transport, config.gateway) {
-        (TransportKind::Tunnel, Some(gw)) => gw.to_string(),
+        (TransportKind::Tunnel | TransportKind::DeviceManagement, Some(gw)) => gw.to_string(),
         (TransportKind::Routing, _) => format!("multicast {}", config.multicast),
         // A tunnel with no gateway cannot be built by the config resolvers, but
         // render something honest rather than panicking.
-        (TransportKind::Tunnel, None) => "<no gateway>".to_string(),
+        (TransportKind::Tunnel | TransportKind::DeviceManagement, None) => {
+            "<no gateway>".to_string()
+        }
     }
 }
 
@@ -60,7 +62,7 @@ pub fn gateway_display(config: &ConnectionConfig) -> String {
 /// the real bus, so it must go through the same opt-in gate.
 pub fn is_loopback_gateway(config: &ConnectionConfig) -> bool {
     match config.transport {
-        TransportKind::Tunnel => config
+        TransportKind::Tunnel | TransportKind::DeviceManagement => config
             .gateway
             .map(|gw| gw.ip().is_loopback())
             .unwrap_or(false),

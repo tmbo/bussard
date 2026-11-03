@@ -28,7 +28,7 @@ use bussard_service::describe::{object_type_name, pid_name};
 use bussard_service::facts::property_desc;
 use bussard_service::{FactsCache, FactsSource, FactsWant, L4Options, SourcePolicy, WritePolicy};
 
-use crate::conn_cmd::{ConnOverrides, load_model_required, open_service, resolve_config};
+use crate::conn_cmd::{ConnOverrides, load_model_required, resolve_config};
 
 /// One interface object plus its enumerated properties, shaped for text and
 /// `--json`.
@@ -204,14 +204,23 @@ pub fn run(
     let full = facts_options.full;
 
     let runtime = tokio::runtime::Runtime::new()?;
+    // Read-only on the bus: descriptor, property and description reads. The
+    // interface itself may be read over a device management connection
+    // (issue #523, see `interface_session`).
+    let session = crate::interface_session::open(
+        &runtime,
+        config,
+        WritePolicy::ReadOnly,
+        target,
+        tool_key_source.keyring,
+        overrides.skip_address_check,
+    )?;
+    let source = session.source;
+    let service = session.bus.service();
     let (result, on_factory_key) = runtime
         .block_on(async move {
-            // Read-only on the bus: descriptor, property and description reads.
-            let service = open_service(config, WritePolicy::ReadOnly).await?;
             let options = L4Options {
-                source: SourcePolicy::Check {
-                    skip: overrides.skip_address_check,
-                },
+                source: SourcePolicy::Known(source),
                 tool_key,
                 factory_key,
                 high_water: secure_seq,
@@ -229,7 +238,7 @@ pub fn run(
             // reads) counts as refused too.
             let refused = outcome.as_ref().map_or(true, walk_refused);
             let on_factory_key = bussard_service::identity::refused_walk_answers_under_factory_key(
-                &service, target, &options, refused,
+                service, target, &options, refused,
             )
             .await;
             service.close().await;

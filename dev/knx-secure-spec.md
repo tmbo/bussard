@@ -909,10 +909,12 @@ pcap and keyring from the environment) re-checks every CONFIRMED row.
 What ETS did in session 3 was a **device management** connection to the
 interface (CRI `02 03`: 24-octet CONNECT_REQUEST, 18-octet response; 3/8/3
 Device Management §4.2.3, §4.2.4), not a tunnel; tunnelling uses the same
-session with the tunnel CRI. bussard has no device management connection and
-configures the interface over the tunnel instead (#523). Inside a session the
+session with the tunnel CRI. bussard configures the interface over the tunnel
+by default; since #523 it can open the same device management connection
+(`bussard_transport::devmgmt`, byte-identical 24-octet CONNECT_REQUEST) on
+`--device-management` or when the tunnel is unavailable. Inside a session the
 management user (id 1) may open it; a tunnelling user may not (3/8/9
-§2.2.1.4.2).
+§2.2.1.4.2), so bussard authenticates with the keyring's `ManagementPassword`.
 
 The client (`crates/bussard-transport/src/secure.rs`, `tunnel.rs`):
 

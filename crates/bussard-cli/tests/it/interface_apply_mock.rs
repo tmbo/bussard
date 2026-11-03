@@ -65,14 +65,24 @@ struct Bench {
 
 impl Bench {
     fn start(device: MockDevice) -> TestResult<Bench> {
+        Bench::start_with(device, |builder| builder)
+    }
+
+    /// [`start`](Self::start) with the gateway builder adjusted by `adjust`.
+    fn start_with(
+        device: MockDevice,
+        adjust: impl FnOnce(bussard_testkit::GatewayBuilder) -> bussard_testkit::GatewayBuilder,
+    ) -> TestResult<Bench> {
         let rt = tokio::runtime::Runtime::new()?;
         let gw = rt.block_on(
-            MockGateway::builder()
-                .channel(CHANNEL)
-                .keep_serving()
-                .idle_timeout(Duration::from_secs(30))
-                .device(device)
-                .start(),
+            adjust(
+                MockGateway::builder()
+                    .channel(CHANNEL)
+                    .keep_serving()
+                    .idle_timeout(Duration::from_secs(30))
+                    .device(device),
+            )
+            .start(),
         )?;
         let gateway = format!("127.0.0.1:{}", gw.port());
         Ok(Bench {
@@ -98,6 +108,10 @@ impl Bench {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()?)
+    }
+
+    fn stats(&self) -> TestResult<bussard_testkit::GatewayStats> {
+        Ok(self.gw.as_ref().ok_or("gateway stopped")?.stats())
     }
 
     fn device(&self) -> TestResult<MockDevice> {
@@ -229,5 +243,156 @@ fn test_interface_apply_refuses_to_reconfigure_its_own_tunnel() -> TestResult {
     let device = bench.device()?;
     assert_eq!(device.knxnet_property(60), Some(&[192, 168, 1, 80][..]));
     assert_eq!(device.knxnet_property(55), Some(&[0x01][..]));
+    Ok(())
+}
+
+/// The gateway is the interface 1.1.200 itself: its description names it,
+/// and it serves device management connections (issue #523).
+fn interface_gateway(builder: bussard_testkit::GatewayBuilder) -> bussard_testkit::GatewayBuilder {
+    let mut description = bussard_testkit::wire::description_response_body("IPS 300", 4, 0);
+    description[4..6].copy_from_slice(&0x11C8u16.to_be_bytes());
+    builder
+        .interface_device(IndividualAddress::from_raw(0x11C8))
+        .description(description)
+}
+
+/// The cEMI message codes the interface received on device management
+/// connections.
+fn device_configuration_codes(bench: &Bench) -> TestResult<Vec<u8>> {
+    Ok(bench
+        .stats()?
+        .device_configuration
+        .iter()
+        .filter_map(|c| c.first().copied())
+        .collect())
+}
+
+#[test]
+fn test_interface_plan_apply_over_device_management() -> TestResult {
+    let model = TempModel::new("bussard-interface-devmgmt", CHANGED)?;
+    let bench = Bench::start_with(interface([192, 168, 1, 74])?, interface_gateway)?;
+
+    let plan = bench.run(&model.dir(), &["plan", "1.1.200", "--device-management"])?;
+    let (stdout, stderr) = text(&plan);
+    assert!(plan.status.success(), "{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("~ friendly name = \"Bocklisch Beta\", was \"Bocklisch Alpha\""),
+        "{stdout}"
+    );
+
+    let apply = bench.run(
+        &model.dir(),
+        &["apply", "1.1.200", "--yes", "--device-management"],
+    )?;
+    let (stdout, stderr) = text(&apply);
+    assert!(apply.status.success(), "{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("apply verified: 2 properties written"),
+        "{stdout}"
+    );
+    let device = bench.device()?;
+    let name = device.knxnet_property(76).ok_or("PID 76")?;
+    assert_eq!(&name[..14], b"Bocklisch Beta");
+    // The property writes went as local device management, no tunnel was
+    // opened.
+    let codes = device_configuration_codes(&bench)?;
+    assert!(codes.contains(&0xF6), "{codes:02X?}");
+    assert!(
+        !bench
+            .stats()?
+            .services
+            .contains(&bussard_transport::knxnet::ServiceType::TunnelingRequest)
+    );
+
+    let again = bench.run(
+        &model.dir(),
+        &["plan", "1.1.200", "--json", "--device-management"],
+    )?;
+    let (stdout, stderr) = text(&again);
+    assert!(again.status.success(), "{stdout}\n{stderr}");
+    let json: serde_json::Value = serde_json::from_str(&stdout)?;
+    assert_eq!(json["noop"], true, "{stdout}");
+    Ok(())
+}
+
+#[test]
+fn test_interface_plan_falls_back_to_device_management_without_a_free_tunnel() -> TestResult {
+    let model = TempModel::new("bussard-interface-devmgmt-full", CHANGED)?;
+    let bench = Bench::start_with(interface([192, 168, 1, 74])?, |b| {
+        interface_gateway(b).refuse_connect(0x24)
+    })?;
+    let plan = bench.run(&model.dir(), &["plan", "1.1.200"])?;
+    let (stdout, stderr) = text(&plan);
+    assert!(plan.status.success(), "{stdout}\n{stderr}");
+    assert!(
+        stderr.contains("note: the interface has no free tunnelling connection"),
+        "{stderr}"
+    );
+    assert!(stdout.contains("+ tunnel address 1.1.30 added"), "{stdout}");
+    assert!(!device_configuration_codes(&bench)?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn test_interface_device_management_refuses_another_gateway() -> TestResult {
+    let model = TempModel::new("bussard-interface-devmgmt-other", CHANGED)?;
+    // The gateway describes itself as 1.0.0, not the interface 1.1.200.
+    let bench = Bench::start_with(interface([192, 168, 1, 74])?, |b| {
+        b.interface_device(IndividualAddress::from_raw(0x11C8))
+            .description(bussard_testkit::wire::description_response_body(
+                "IPS 300", 4, 0,
+            ))
+    })?;
+    let plan = bench.run(&model.dir(), &["plan", "1.1.200", "--device-management"])?;
+    let (stdout, stderr) = text(&plan);
+    assert!(!plan.status.success(), "{stdout}\n{stderr}");
+    assert!(stderr.contains("is the KNXnet/IP server 1.0.0"), "{stderr}");
+    assert!(device_configuration_codes(&bench)?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn test_interface_plan_falls_back_to_device_management_on_a_duplicated_tunnel_address() -> TestResult
+{
+    let model = TempModel::new("bussard-interface-devmgmt-dup", CHANGED)?;
+    // A device on the line answers at the tunnel's address.
+    let tunnel = IndividualAddress::from_raw(bussard_testkit::consts::TUNNEL_IA_RAW);
+    let bench = Bench::start_with(interface([192, 168, 1, 74])?, |b| {
+        interface_gateway(b).device(MockDevice::new(tunnel))
+    })?;
+    let plan = bench.run(&model.dir(), &["plan", "1.1.200"])?;
+    let (stdout, stderr) = text(&plan);
+    assert!(plan.status.success(), "{stdout}\n{stderr}");
+    assert!(
+        stderr.contains(&format!("answers at the tunnel address {tunnel}")),
+        "{stderr}"
+    );
+    assert!(stdout.contains("+ tunnel address 1.1.30 added"), "{stdout}");
+    Ok(())
+}
+
+#[test]
+fn test_describe_reads_the_interface_over_device_management() -> TestResult {
+    let model = TempModel::new("bussard-interface-devmgmt-describe", CHANGED)?;
+    let bench = Bench::start_with(interface([192, 168, 1, 74])?, interface_gateway)?;
+    let describe = bench.run(
+        &model.dir(),
+        &["describe", "1.1.200", "--device-management"],
+    )?;
+    let (stdout, stderr) = text(&describe);
+    assert!(describe.status.success(), "{stdout}\n{stderr}");
+    assert!(stdout.contains("0021"), "{stdout}");
+    assert!(!device_configuration_codes(&bench)?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn test_device_management_flag_is_refused_for_other_commands() -> TestResult {
+    let model = TempModel::new("bussard-interface-devmgmt-flag", CHANGED)?;
+    let bench = Bench::start(interface([192, 168, 1, 74])?)?;
+    let read = bench.run(&model.dir(), &["read", "1/0/1", "--device-management"])?;
+    let (stdout, stderr) = text(&read);
+    assert!(!read.status.success(), "{stdout}\n{stderr}");
+    assert!(stderr.contains("only `plan`, `apply`"), "{stderr}");
     Ok(())
 }

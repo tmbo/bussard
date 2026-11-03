@@ -198,7 +198,7 @@ pub enum LinkState {
 /// The socket under a tunnel: plain UDP, or a KNXnet/IP Secure session over
 /// TCP (issue #71 Phase B, #513). The tunnel state machine talks plain
 /// KNXnet/IP frames to either.
-enum Link {
+pub(crate) enum Link {
     /// The classic tunnel: one UDP socket talking to the gateway's control and
     /// data endpoints.
     Udp(UdpLink),
@@ -208,7 +208,7 @@ enum Link {
 
 /// The socket of a plain UDP tunnel and the two gateway endpoints it talks to
 /// (see "Control and data endpoints" in the module docs).
-struct UdpLink {
+pub(crate) struct UdpLink {
     /// Connected to the control endpoint while the data endpoint is the same
     /// one (the kernel filters inbound datagrams and reports a refused port),
     /// unconnected once a CONNECT_RESPONSE names a distinct data endpoint,
@@ -226,7 +226,7 @@ struct UdpLink {
 impl UdpLink {
     /// A link over `socket`, connected to the gateway's `control` endpoint
     /// (see [`udp_socket`]), with the data endpoint not yet known.
-    fn new(socket: UdpSocket, control: SocketAddrV4) -> Self {
+    pub(crate) fn new(socket: UdpSocket, control: SocketAddrV4) -> Self {
         UdpLink {
             socket,
             connected: true,
@@ -324,7 +324,7 @@ fn resolve_data_endpoint(hpai: Option<SocketAddrV4>, control: SocketAddrV4) -> S
 impl Link {
     /// Sends one plain KNXnet/IP frame (wrapped on a secure link) to the
     /// control endpoint.
-    async fn send(&mut self, frame: &[u8]) -> Result<()> {
+    pub(crate) async fn send(&mut self, frame: &[u8]) -> Result<()> {
         match self {
             Link::Udp(udp) => udp.send_to(frame, udp.control).await,
             Link::Secure(link) => link.send(frame).await,
@@ -333,7 +333,7 @@ impl Link {
 
     /// Sends a TUNNELING_REQUEST or TUNNELING_ACK: to the data endpoint on a
     /// plain UDP tunnel, through the session on a secure link.
-    async fn send_data(&mut self, frame: &[u8]) -> Result<()> {
+    pub(crate) async fn send_data(&mut self, frame: &[u8]) -> Result<()> {
         match self {
             Link::Udp(udp) => udp.send_to(frame, udp.data).await,
             Link::Secure(link) => link.send(frame).await,
@@ -341,7 +341,7 @@ impl Link {
     }
 
     /// Receives the next plain KNXnet/IP frame into `buf`. Cancel-safe.
-    async fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {
+    pub(crate) async fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {
         match self {
             Link::Udp(udp) => udp.recv(buf).await,
             Link::Secure(link) => link.recv(buf).await,
@@ -350,7 +350,7 @@ impl Link {
 
     /// Adopts the data endpoint of a CONNECT_RESPONSE. A secure session keeps
     /// route-back semantics, so only the plain UDP tunnel uses it.
-    async fn adopt_data_endpoint(&mut self, hpai: Option<SocketAddrV4>) -> Result<()> {
+    pub(crate) async fn adopt_data_endpoint(&mut self, hpai: Option<SocketAddrV4>) -> Result<()> {
         match self {
             Link::Udp(udp) => udp.adopt_data_endpoint(hpai).await,
             Link::Secure(_) => Ok(()),
@@ -382,19 +382,19 @@ impl Link {
 
     /// Whether the link runs over UDP (the plain tunnel; a secure session
     /// is TCP-only).
-    fn is_udp(&self) -> bool {
+    pub(crate) fn is_udp(&self) -> bool {
         matches!(self, Link::Udp(_))
     }
 
     /// Whether the tunnelling layer uses TUNNELING_ACK: over UDP only. Over
     /// TCP it does not (CONFIRMED against the ETS capture: no ACKs on a TCP
     /// tunnel).
-    fn acks(&self) -> bool {
+    pub(crate) fn acks(&self) -> bool {
         self.is_udp()
     }
 
     /// Sends the secure session keepalive; a no-op on UDP.
-    async fn keepalive(&mut self) -> Result<()> {
+    pub(crate) async fn keepalive(&mut self) -> Result<()> {
         match self {
             Link::Udp(_) => Ok(()),
             Link::Secure(link) => link.keepalive().await,
@@ -402,7 +402,7 @@ impl Link {
     }
 
     /// Ends a secure session (best effort); a no-op on UDP.
-    async fn close(&mut self) {
+    pub(crate) async fn close(&mut self) {
         if let Link::Secure(link) = self {
             link.close().await;
         }
@@ -691,43 +691,50 @@ impl Tunnel {
     /// and any assigned individual address. A plain UDP link adopts the data
     /// endpoint the response names.
     async fn handshake(link: &mut Link, hpai: Hpai) -> Result<Granted> {
-        let req = knxnet::connect_request(hpai, hpai);
-        link.send(&req).await.map_err(|e| {
-            // The CONNECT_REQUEST is the first datagram of a fresh UDP
-            // socket; over a secure link the TCP session already carried the
-            // handshake, so a broken pipe there is the peer hanging up.
-            let e = match link {
-                Link::Udp(udp) => crate::error::classify_fresh_socket_error(udp.control, e),
-                Link::Secure(_) => e,
-            };
-            crate::secure::at_stage(e, "the connection to take CONNECT_REQUEST")
-        })?;
+        connect_handshake(link, &knxnet::connect_request(hpai, hpai)).await
+    }
+}
 
-        let mut buf = [0u8; 512];
-        let deadline = Instant::now() + CONNECT_TIMEOUT;
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            let n = time::timeout(remaining, link.recv(&mut buf))
-                .await
-                .map_err(|_| TransportError::Timeout("CONNECT_RESPONSE"))?
-                .map_err(|e| crate::secure::at_stage(e, "CONNECT_RESPONSE"))?;
-            let parsed = knxnet::parse(&buf[..n])?;
-            if parsed.service == ServiceType::ConnectResponse {
-                let granted = accept_connect_response(parsed.body)?;
-                link.adopt_data_endpoint(granted.data_endpoint).await?;
-                return Ok(granted);
-            }
-            if matches!(link, Link::Udp(_)) {
-                return Err(TransportError::InvalidField {
-                    field: "expected CONNECT_RESPONSE",
-                    value: 0,
-                });
-            }
-            // Over a secure session other frames can precede the
-            // answer (a TUNNELLING_FEATURE_INFO, say): skip them. The session
-            // has already authenticated every one of them, so a stray frame is
-            // the interface's, not a spoof.
+/// Sends the CONNECT_REQUEST `req` on `link` and waits for its
+/// CONNECT_RESPONSE, returning what it granted. A plain UDP link adopts the
+/// data endpoint the response names. Shared by the tunnel and the device
+/// management connection (issue #523), which differ only in the CRI.
+pub(crate) async fn connect_handshake(link: &mut Link, req: &[u8]) -> Result<Granted> {
+    link.send(req).await.map_err(|e| {
+        // The CONNECT_REQUEST is the first datagram of a fresh UDP
+        // socket; over a secure link the TCP session already carried the
+        // handshake, so a broken pipe there is the peer hanging up.
+        let e = match link {
+            Link::Udp(udp) => crate::error::classify_fresh_socket_error(udp.control, e),
+            Link::Secure(_) => e,
+        };
+        crate::secure::at_stage(e, "the connection to take CONNECT_REQUEST")
+    })?;
+
+    let mut buf = [0u8; 512];
+    let deadline = Instant::now() + CONNECT_TIMEOUT;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let n = time::timeout(remaining, link.recv(&mut buf))
+            .await
+            .map_err(|_| TransportError::Timeout("CONNECT_RESPONSE"))?
+            .map_err(|e| crate::secure::at_stage(e, "CONNECT_RESPONSE"))?;
+        let parsed = knxnet::parse(&buf[..n])?;
+        if parsed.service == ServiceType::ConnectResponse {
+            let granted = accept_connect_response(parsed.body)?;
+            link.adopt_data_endpoint(granted.data_endpoint).await?;
+            return Ok(granted);
         }
+        if matches!(link, Link::Udp(_)) {
+            return Err(TransportError::InvalidField {
+                field: "expected CONNECT_RESPONSE",
+                value: 0,
+            });
+        }
+        // Over a secure session other frames can precede the
+        // answer (a TUNNELLING_FEATURE_INFO, say): skip them. The session
+        // has already authenticated every one of them, so a stray frame is
+        // the interface's, not a spoof.
     }
 }
 
@@ -1152,7 +1159,7 @@ fn is_tcp_refusal(err: &TransportError) -> bool {
 /// Turns a refused plain CONNECT into its error: a secure-only interface
 /// becomes [`TransportError::SecureRequired`] (issue #182), anything else
 /// stays the gateway status (or `NoMoreConnections`).
-async fn refusal(
+pub(crate) async fn refusal(
     gateway: SocketAddrV4,
     status: u8,
     context: &'static str,
@@ -1178,19 +1185,19 @@ async fn refusal(
 }
 
 /// What a successful CONNECT_RESPONSE granted.
-struct Granted {
+pub(crate) struct Granted {
     /// The channel id.
-    channel_id: u8,
+    pub(crate) channel_id: u8,
     /// The individual address the gateway assigned, if it named one.
-    assigned_ia: Option<u16>,
+    pub(crate) assigned_ia: Option<u16>,
     /// The data endpoint HPAI the server prepared for the channel (Core
     /// §5.2), as sent: route-back zeros are resolved by the link.
-    data_endpoint: Option<SocketAddrV4>,
+    pub(crate) data_endpoint: Option<SocketAddrV4>,
 }
 
 /// Decodes a CONNECT_RESPONSE body into what it granted, turning a refusal
 /// into its error.
-fn accept_connect_response(body: &[u8]) -> Result<Granted> {
+pub(crate) fn accept_connect_response(body: &[u8]) -> Result<Granted> {
     let resp = knxnet::parse_connect_response(body)?;
     // A full interface is a capacity refusal, not a transport fault: give it
     // its own variant so the CLI can name the likely other clients and exit

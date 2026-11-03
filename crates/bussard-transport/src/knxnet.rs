@@ -86,6 +86,13 @@ pub enum ServiceType {
     SessionStatus = 0x0954,
     /// TIMER_NOTIFY — secure routing timer sync (unused by unicast tunnelling).
     TimerNotify = 0x0955,
+    /// DEVICE_CONFIGURATION_REQUEST — a cEMI local device management or
+    /// cEMI transport-layer frame on a device management connection
+    /// (KNXnet/IP Device Management 3/8/3 §4.2.6, issue #523).
+    DeviceConfigurationRequest = 0x0310,
+    /// DEVICE_CONFIGURATION_ACK — the receiver's acknowledgement of one
+    /// DEVICE_CONFIGURATION_REQUEST, over UDP only (3/8/3 §2.3.2, §4.2.7).
+    DeviceConfigurationAck = 0x0311,
 }
 
 impl ServiceType {
@@ -119,6 +126,8 @@ impl ServiceType {
             0x0953 => SessionAuthenticate,
             0x0954 => SessionStatus,
             0x0955 => TimerNotify,
+            0x0310 => DeviceConfigurationRequest,
+            0x0311 => DeviceConfigurationAck,
             other => {
                 return Err(TransportError::InvalidField {
                     field: "KNXnet/IP service type",
@@ -279,6 +288,42 @@ pub fn connect_request(control: Hpai, data: Hpai) -> Vec<u8> {
     body.push(TUNNEL_LINK_LAYER);
     body.push(0x00);
     frame(ServiceType::ConnectRequest, &body)
+}
+
+/// Connection type code for a device management connection (KNXnet/IP
+/// Device Management 3/8/3 §4.2.3: `DEVICE_MGMT_CONNECTION`, 03h).
+pub const CONNECTION_TYPE_DEVICE_MGMT: u8 = 0x03;
+
+/// Builds a CONNECT_REQUEST for a device management connection: control
+/// HPAI, data HPAI and the 2-octet CRI `02 03` (3/8/3 §4.2.3, p. 22; no
+/// host-protocol-dependent data follows the connection type).
+pub fn connect_request_device_mgmt(control: Hpai, data: Hpai) -> Vec<u8> {
+    let mut body = Vec::with_capacity(18);
+    control.encode(&mut body);
+    data.encode(&mut body);
+    body.push(0x02);
+    body.push(CONNECTION_TYPE_DEVICE_MGMT);
+    frame(ServiceType::ConnectRequest, &body)
+}
+
+/// Builds a DEVICE_CONFIGURATION_REQUEST: the connection header and a raw
+/// cEMI frame (3/8/3 §4.2.6). The cEMI is passed as octets because a device
+/// management connection carries local management (`M_PropRead.req`, ...)
+/// and cEMI transport-layer frames, not only `L_Data`.
+pub fn device_configuration_request(header: ConnectionHeader, cemi: &[u8]) -> Vec<u8> {
+    let mut body = Vec::with_capacity(4 + cemi.len());
+    header.encode(&mut body);
+    body.extend_from_slice(cemi);
+    frame(ServiceType::DeviceConfigurationRequest, &body)
+}
+
+/// Builds a DEVICE_CONFIGURATION_ACK for `seq` on `channel_id` (3/8/3
+/// §4.2.7): the connection header with the status in its last octet.
+pub fn device_configuration_ack(channel_id: u8, seq: u8, status: u8) -> Vec<u8> {
+    frame(
+        ServiceType::DeviceConfigurationAck,
+        &[CONNECTION_HEADER_LEN, channel_id, seq, status],
+    )
 }
 
 /// The parsed result of a CONNECT_RESPONSE.
