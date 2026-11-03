@@ -1,0 +1,85 @@
+{
+  "_comment": "Test vectors for dev/enroll-protocol.md (protocol v1). Synthetic keys only; never a real device's.",
+  "session": {
+    "bussard_secret": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "bussard_public": "B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9_AsrhtHHw",
+    "phone_secret": "65666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f8081828384",
+    "phone_public": "VxR2nRFr92Q2rnS8eT0sMK0ZA8WaxSc4BcfiaYtBDDY",
+    "session_id": "yMnKy8zNzs_Q0dLT1NXW1w",
+    "shared_secret": "c9ea6a3f79a000b60b076d4afc990b272f3f0b5aaa3f0b8713c209273e363863",
+    "key": "334673a4288dac3a58bb7994d94fff965fd1345ce23ee1b4ec76bcda6a3b265b",
+    "fingerprint": "6989-2F01",
+    "link": "https://bussard.tmbo.dev/enroll/#v=1&s=yMnKy8zNzs_Q0dLT1NXW1w&k=B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9_AsrhtHHw&r=https%3A%2F%2Frelay.example"
+  },
+  "messages": [
+    {
+      "direction": "up",
+      "aad": "bussard-enroll-v1/up/yMnKy8zNzs_Q0dLT1NXW1w",
+      "plaintext": "{\"type\":\"certificate\",\"id\":1,\"text\":\"AD5ACAQDASQKDIVDUSS2NJ5IVGVKXLFNV2X5\"}",
+      "envelope": {
+        "v": 1,
+        "pk": "VxR2nRFr92Q2rnS8eT0sMK0ZA8WaxSc4BcfiaYtBDDY",
+        "n": "AAECAwQFBgcICQoL",
+        "c": "ImLkHJEi1Chew50Y0I8uLMGMi4JHXW2AJsa_BzVb6CHm0vF8oDcgSD88PqtuDxFDSxpc9JxYtKEvSpSpqJqoowXtbq11B6JVFwsO9LevHblBZBfvVkgotcAU6w"
+      }
+    },
+    {
+      "direction": "down",
+      "aad": "bussard-enroll-v1/down/yMnKy8zNzs_Q0dLT1NXW1w",
+      "plaintext": "{\"type\":\"result\",\"id\":1,\"status\":\"stored\",\"serial\":\"00FA01020304\",\"ia\":\"1.1.20\",\"name\":\"Test actuator\"}",
+      "envelope": {
+        "v": 1,
+        "pk": "VxR2nRFr92Q2rnS8eT0sMK0ZA8WaxSc4BcfiaYtBDDY",
+        "n": "MjM0NTY3ODk6Ozw9",
+        "c": "jwHSpGdBxpT8hPd5zyft6jk3sZ08oMHR7RrNi1B3vzv0sWfa3psh9Y50BVmyORC_rYnT8NOG4YKo9ayMhJ4igvwJumKxkQPiXd1o7HR3mkZXx_8GIegN7diuUR1RvUXuS-x0wM23JlMeCTVeP0pxDSnRDf5ctSk"
+      }
+    },
+    {
+      "direction": "up",
+      "aad": "bussard-enroll-v1/up/yMnKy8zNzs_Q0dLT1NXW1w",
+      "plaintext": "{\"type\":\"done\"}",
+      "envelope": {
+        "v": 1,
+        "pk": "VxR2nRFr92Q2rnS8eT0sMK0ZA8WaxSc4BcfiaYtBDDY",
+        "n": "FBUWFxgZGhscHR4f",
+        "c": "x0JRXT06ybprlo55aXMa5hJzSl5cXzJ6IuasQMABNg"
+      }
+    }
+  ],
+  "certificates": {
+    "valid": [
+      {
+        "text": "AD5ACA-QDASQK-DIVDUS-S2NJ5I-VGVKXL-FNV2X5",
+        "serial": "00FA01020304",
+        "fdsk": "A0A1A2A3A4A5A6A7A8A9AAABACADAEAF",
+        "check": 13
+      },
+      {
+        "text": "ACB2DM-WD2QAA-AAAAAA-AAAAAA-AAAAAA-AAAAAG",
+        "serial": "0083A1B2C3D4",
+        "fdsk": "00000000000000000000000000000000",
+        "check": 6
+      },
+      {
+        "text": "777777-777777-777777-777777-777777-777777",
+        "serial": "FFFFFFFFFFFF",
+        "fdsk": "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+        "check": 15
+      }
+    ],
+    "normalize": [
+      {
+        "input": "ad5aca - qdasqk - divdus - s2nj5i - vgvkxl - fnv2x5",
+        "normalized": "AD5ACAQDASQKDIVDUSS2NJ5IVGVKXLFNV2X5"
+      }
+    ],
+    "bad_check": [
+      "AD5ACAQDASQKDIVDUSS2NJ5IVGVKXLFNV2X4"
+    ],
+    "malformed": [
+      "ABC",
+      "AD5ACAQDASQKDIVDUSS2NJ5IVGVKXLFNV2X5A",
+      "AD5ACAQDASQKDIVDUSS2NJ5IVGVKXLFNV2X!"
+    ]
+  }
+}
