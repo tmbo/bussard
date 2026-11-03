@@ -47,7 +47,9 @@ those devices with ETS.
   that differs between application and device, a System B device whose
   manufacturer is not the application's, or a load procedure with an
   operation bussard cannot execute refuses the procedure rather than leaving
-  a device half-flashed.
+  a device half-flashed. A System B device with no links in the model gets
+  empty address and association tables, as ETS writes them, and then reacts
+  to no group telegram.
 - **`apply`, `plan` and single-device `reconstruct`** support System B
   (`x7B0`) and System 7 (`0705` / `0701` / `0700`). Another mask is refused
   with a message naming the mask and the supported families; line-mode

@@ -247,8 +247,12 @@ pub fn build_table_images_with(
     // The device's model links, if any. A `--dir` model that has no entry for
     // this device (or an empty link list) is a *bare vendor-default* flash: the
     // device is programmed with the application's out-of-box group objects but no
-    // group addresses (an empty address/association table), exactly as a
-    // factory-fresh ETS download of an unassigned device would.
+    // group addresses (an empty address/association table), as ETS does: every
+    // System B `plain-defaults` capture of the ETS sweep (118 applications) and
+    // `captures/synthetic/syn-minimal/no-ga` write the count word `00 00` to obj 1
+    // and obj 2 and complete their load, and those rows compare identical. With
+    // no table entry there is no TSAP, so no group telegram reaches an object
+    // (Resources 3/5/1 §4.16.8.2.4 and Table 78, issue #542).
     let links: &[bussard_model::schema::Link] = model
         .and_then(|m| m.links.links.get(&target))
         .map(Vec::as_slice)
