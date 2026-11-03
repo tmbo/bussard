@@ -61,8 +61,9 @@ GO_TABLE = (680, 260, 3400, 1240)
 # One representative per table layout (#478). `file` is relative to the main
 # corpus unless `path` names the product (a knx-sim fixture).
 REPRESENTATIVES = [
-    {"app": "M-0004_A-A011-13-60BC-O000A", "search": "3361-1MWW", "mask": "0705",
-     "why": "0705 with load control through properties (Jung 3361-1M)"},
+    {"app": "M-0007_A-20BA-11-05A3-O000A", "search": "6173/11 U", "mask": "0705",
+     "why": "0705 with the tables loaded through properties (LdCtrlLoadImageProp, PID 27; Busch-Jaeger "
+            "6173/11 U, the platform of the Jung 3361-1M, whose defaults run was driver-error)"},
     {"app": "M-0083_A-000E-23-2274", "search": "AKK-01UP.03", "mask": "0705",
      "why": "0705 with load control through memory (MDT AKK)"},
     {"app": "M-00B6_A-4537-03-DE59", "search": "EK-E72", "mask": "0705",
