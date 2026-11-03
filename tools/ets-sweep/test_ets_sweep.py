@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -531,6 +532,49 @@ class TestCaptureIpEnabled(unittest.TestCase):
             text = (dst / "model" / "devices" / "1.1.1.toml").read_text()
             self.assertIn('friendly_name = "Treetop uplink"', text)
             self.assertIn('tunnels = ["1.1.254", "1.1.255"]', text)
+
+
+class TestCaptureSecure(unittest.TestCase):
+    """A secure-capable product (syn-secure, #423): the sim device starts in
+    factory state with secure.py's synthetic FDSK and serial number, the
+    download goes through the secure project with the certificate."""
+
+    APP = "M-00FA_A-2900-10-0000"
+
+    def test_secure_sim_only_for_a_secure_product(self):
+        self.assertEqual(capture.secure_sim("syn-minimal", "A"), "")
+        # The pair knx-sim/tests/synthetic_products.rs builds the device with.
+        self.assertEqual(capture.secure_sim("syn-secure", self.APP),
+                         "  security:\n    status: factory\n    tool_key: 5e2c820a4e1b264302afda130b69c915\n"
+                         "  properties:\n  - object: 0\n    pid: 11\n    value: 00fad4730c98\n")
+        self.assertIn("    status: factory\n", capture.sim_yaml("syn-secure", self.APP))
+
+    def test_secure_run_passes_the_secure_flow(self):
+        self.assertEqual(capture.secure_run("syn-minimal", self.APP), {})
+        old = os.environ.get(secure.PASSWORD_ENV)
+        os.environ[secure.PASSWORD_ENV] = "Synthetic1234"
+        try:
+            kw = capture.secure_run("syn-secure", self.APP)
+        finally:
+            if old is None:
+                del os.environ[secure.PASSWORD_ENV]
+            else:
+                os.environ[secure.PASSWORD_ENV] = old
+        self.assertEqual(kw["project"], secure.PROJECT)
+        self.assertEqual(kw["secure"], {"status": "factory", "tool_key": "5e2c820a4e1b264302afda130b69c915"})
+        self.assertEqual(kw["properties"], [{"object": 0, "pid": 11, "value": "00fad4730c98"}])
+        self.assertEqual(kw["flow_extra"], {"project_password": "Synthetic1234",
+                                            "certificate": "AD5NI4-YMTBPC-ZAQKJY-NSMQYC-V7NBGC-3JZEKS"})
+        self.assertTrue(callable(kw["after_download"]))
+
+    def test_secure_run_needs_the_password(self):
+        old = os.environ.pop(secure.PASSWORD_ENV, None)
+        try:
+            with self.assertRaises(SystemExit):
+                capture.secure_run("syn-secure", self.APP)
+        finally:
+            if old is not None:
+                os.environ[secure.PASSWORD_ENV] = old
 
 
 class TestCaptureVariants(unittest.TestCase):

@@ -67,15 +67,17 @@ def run_dir(app: str) -> Path:
 
 
 def calibrate_one(knxprod: Path, app: str, search: str, ets: bool, work: Path | None,
-                  mask: str = "07B0") -> dict:
+                  mask: str = "07B0", **run_kw) -> dict:
     """ETS download (unless `ets` is off), request fixture and oracle row of one product.
 
     `mask` picks the sim's load-state machine in the VM (memory-mapped on 0701,
-    as `sweep.RemoteSim` does) and the oracle model's mask."""
+    as `sweep.RemoteSim` does) and the oracle model's mask. `run_kw` goes to
+    `sweep.run_one` (a secure product's project, sim security and driver
+    extras, capture.secure_run; #423)."""
     out: dict = {"app": app, "knxprod": str(knxprod)}
     if ets:
         c = sweep.vm.connect()
-        r = sweep.run_learning(c, knxprod, app, search, mask=mask)
+        r = sweep.run_learning(c, knxprod, app, search, mask=mask, **run_kw)
         out.update({k: r.get(k) for k in ("outcome", "ets", "ops", "loaded_objects", "seconds", "error")})
     else:
         try:

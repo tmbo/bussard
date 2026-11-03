@@ -114,3 +114,57 @@ fn test_read_knxprod_bytes_synthetic_minimal_contents() -> TestResult {
     );
     Ok(())
 }
+
+/// The synthetic identity `tools/ets-sweep/secure.py` (`synthetic_identity`)
+/// derives for syn-secure's rendered application id `M-00FA_A-2900-10-0000`:
+/// the serial number (manufacturer 00FA, four hash octets) and the FDSK.
+/// Synthetic, never a real device's; `capture.py` writes the same pair into
+/// the capture's `sim.yaml` (`test_ets_sweep.py` checks that side).
+const SYN_SECURE_SERIAL: &str = "00fad4730c98";
+const SYN_SECURE_FDSK: &str = "5e2c820a4e1b264302afda130b69c915";
+
+/// syn-secure (bussard #604 row 18, #423) is a Data Secure capable 07B0
+/// product. knx-sim builds its device in factory state, as ETS meets it before
+/// commissioning: security mode off, the FDSK as tool key, the serial number
+/// on the device object, and the security object sized by the product's
+/// `MaxSecurityGroupKeyTableEntries` and `MaxSecurityIndividualAddressEntries`
+/// (4 and 4).
+#[test]
+fn test_build_bus_synthetic_secure_factory_device() -> TestResult {
+    use std::sync::Arc;
+
+    use knx_sim::bus::event::RecordingSink;
+    use knx_sim::config::SimConfig;
+    use knx_sim::wire::IndividualAddress;
+
+    let app = "M-00FA_A-2900-10-0000";
+    let bytes = knxprod(&catalogue_dir().join("syn-secure"))?;
+    let data = read_knxprod_bytes(&bytes, Some(app))?;
+    assert_eq!(data.security_capacity.group_key_rows, Some(4));
+    assert_eq!(data.security_capacity.ia_rows, Some(4));
+
+    let dir = std::env::temp_dir().join(format!("knx-sim-syn-secure-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("syn-secure.knxprod"), &bytes)?;
+    let yaml = format!(
+        "gateway:\n  host: 127.0.0.1\n  port: 3672\n\
+         devices:\n- address: 1.1.1\n  knxprod: syn-secure.knxprod\n  application: {app}\n  \
+         initial_state: unloaded\n  security:\n    status: factory\n    tool_key: {SYN_SECURE_FDSK}\n  \
+         properties:\n  - object: 0\n    pid: 11\n    value: {SYN_SECURE_SERIAL}\n"
+    );
+    let built = SimConfig::from_yaml(&yaml)?.build_bus(&dir, Arc::new(RecordingSink::new()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let bus = built?;
+
+    let address: IndividualAddress = "1.1.1".parse()?;
+    let device = bus.device(address).ok_or("no device 1.1.1")?;
+    let security = device.security_object().ok_or("no security object")?;
+    assert_eq!(
+        security.security_mode(),
+        0,
+        "factory state: security mode off"
+    );
+    assert_eq!(security.group_key_capacity(), 4);
+    assert_eq!(security.ia_capacity(), 4);
+    Ok(())
+}

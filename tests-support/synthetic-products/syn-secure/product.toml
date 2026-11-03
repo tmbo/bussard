@@ -1,0 +1,124 @@
+# A synthetic product of the catalogue (#604 row 18), syn-minimal plus one
+# construct. Rendered by ../generate.py into xml/; see ../README.md for the schema.
+
+[doc]
+purpose = """
+syn-minimal (mask 07B0, MergedProcedure) made KNX Data Secure capable:
+IsSecureEnabled="true" with MaxSecurityGroupKeyTableEntries="4" and
+MaxSecurityIndividualAddressEntries="4", the shape of the 183 secure-capable
+07B0 applications of the 918-file corpus (all MergedProcedure, MinEtsVersion
+5.0; 180 and 181 of them declare the two sizes; e.g. M-00A6_A-0025-30-A50D,
+2026-11-03). None of them has a load-procedure op or a placed property for
+security, so the procedure and the parameters stay the parent's: ETS writes
+the security object itself. Nor do they mark a com object secured: two
+ComObjectRefs carry SecurityRequired, both "None". The secured group object is
+the switch object's group address, which ETS secures in the secure project
+(group security is project data, not product data). knx-sim builds the device in factory state (security mode off) with a
+synthetic FDSK and serial number (tools/ets-sweep/secure.py). The capture of
+ETS commissioning it (FDSK tool access, tool key, security mode on, the group
+key and sender tables, then the secured download) answers #423 for a product
+of our own, sizes the tables #537 checks, and is the reference for #201 tier
+2. Capture pending: it needs the #423 secure project in the VM."""
+construct = "KNX Data Secure capable 07B0, factory state with a synthetic FDSK"
+issues = [423, 537, 201]
+
+[product]
+text = "Nest-guard lock"
+order_number = "NEST-GUARD"
+hardware_name = "NEST-GUARD"
+hardware_serial = "00FA00290000"
+bus_current = 10
+
+[application]
+number = 0x2900
+version = 0x10
+name = "Nest-guard lock"
+mask = "07B0"
+load_procedure_style = "MergedProcedure"
+address_table_max_entries = 32
+association_table_max_entries = 32
+translations = { "de-DE" = "Nestwächterschloss" }
+
+[application.options]
+Comparable = true
+Reconstructable = true
+
+# KNX Data Secure (#423, #537): IsSecureEnabled and the two table sizes.
+[application.security]
+group_key_table_entries = 4
+individual_address_entries = 4
+
+[[segment]]
+name = "main"
+kind = "relative"
+lsm = 4
+size = 256
+fill = 0xFF
+
+[[parameter_type]]
+name = "Mode"
+kind = "enum"
+size_bits = 8
+values = [
+    { value = 0, text = "off" },
+    { value = 1, text = "on" },
+    { value = 2, text = "automatic" },
+]
+
+[[parameter_type]]
+name = "Delay"
+kind = "number"
+size_bits = 16
+signed = false
+min = 0
+max = 65535
+
+[[parameter]]
+name = "mode"
+type = "Mode"
+text = "Operating mode"
+default = 1
+memory = { segment = "main", offset = 0, bit_offset = 0 }
+
+[[parameter]]
+name = "delay"
+type = "Delay"
+text = "Delay (s)"
+default = 300
+memory = { segment = "main", offset = 1, bit_offset = 0 }
+
+[[com_object]]
+number = 0
+name = "switch"
+text = "Switch"
+function_text = "On/Off"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "W"]
+priority = "Low"
+
+[[com_object]]
+number = 1
+name = "status"
+text = "Status"
+function_text = "On/Off status"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+[[dynamic.block]]
+name = "general"
+text = "General"
+parameters = ["mode", "delay"]
+com_objects = [0, 1]
+
+# The application's part of the 07B0 mask procedure: MergeId 2 allocates the
+# parameter segment, MergeId 4 writes it.
+[[load_procedure]]
+merge_id = 2
+ops = [{ op = "LdCtrlRelSegment", lsm = 4, size = 256, mode = 0, fill = 0 }]
+
+[[load_procedure]]
+merge_id = 4
+ops = [{ op = "LdCtrlWriteRelMem", object = 4, offset = 0, size = 256, verify = false }]

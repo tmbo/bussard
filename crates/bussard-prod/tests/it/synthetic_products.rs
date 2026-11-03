@@ -153,6 +153,48 @@ fn test_read_knxprod_synthetic_minimal_contents() -> TestResult {
     Ok(())
 }
 
+/// syn-secure (#604 row 18, #423): the Data Secure capable product reads as
+/// secure-capable with the table sizes it declares (4 group keys, 4 sender
+/// addresses), and `import-product`'s model carries them (#537), while the
+/// procedure stays syn-minimal's.
+#[test]
+fn test_read_knxprod_synthetic_secure_contents() -> TestResult {
+    let tmp = tempfile::tempdir()?;
+    let path = tmp.path().join("syn-secure.knxprod");
+    zip_product(&catalogue_dir().join("syn-secure"), &path)?;
+    let data = bussard_prod::read_knxprod(&path)?;
+    let app = data.applications.first().ok_or("no application")?;
+    assert_eq!(app.id, "M-00FA_A-2900-10-0000");
+    assert!(app.is_secure_enabled);
+    assert_eq!(app.security_capacity.group_key_table_entries, Some(4));
+    assert_eq!(app.security_capacity.individual_address_entries, Some(4));
+    assert_eq!(app.security_capacity.p2p_key_table_entries, None);
+    assert_eq!(app.resolved_com_objects().len(), 2);
+
+    let minimal = tmp.path().join("syn-minimal.knxprod");
+    zip_product(&catalogue_dir().join("syn-minimal"), &minimal)?;
+    let plain = bussard_prod::read_knxprod(&minimal)?;
+    let plain_app = plain.applications.first().ok_or("no application")?;
+    assert!(!plain_app.is_secure_enabled);
+    // `LoadProcedure` has no `PartialEq`; its debug form compares every op.
+    assert_eq!(
+        format!("{:?}", app.load_procedures),
+        format!("{:?}", plain_app.load_procedures)
+    );
+
+    let yaml = bussard_prod::product_model::model_yaml(app, &data)?;
+    let model = bussard_model::param_model::ProductModel::from_yaml(&yaml, &app.id)?;
+    assert_eq!(
+        model.data_secure,
+        Some(bussard_model::param_model::DataSecureCapacity {
+            group_key_table_entries: Some(4),
+            individual_address_entries: Some(4),
+            p2p_key_table_entries: None,
+        })
+    );
+    Ok(())
+}
+
 /// Issue #448: the hidden 16-bit parameter at +3 of the parameter segment
 /// (default `12 34` over the template `FF FF`) is written at its default
 /// where ETS wrote it (System B, and System 7 with `MinEtsVersion` 6.0) and
