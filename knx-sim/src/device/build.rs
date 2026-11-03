@@ -501,12 +501,8 @@ impl Device {
         if let Some(app) = objects.get_mut(&3)
             && app.property(PID_PROGRAM_VERSION).is_none()
         {
-            let manufacturer = product
-                .application_id
-                .strip_prefix("M-")
-                .and_then(|m| m.get(..4))
-                .and_then(|m| u16::from_str_radix(m, 16).ok())
-                .unwrap_or(0);
+            let manufacturer =
+                crate::prod::program_manufacturer(&product.application_id).unwrap_or(0);
             let mut id = manufacturer.to_be_bytes().to_vec();
             id.extend_from_slice(
                 &u16::try_from(product.application_number)
