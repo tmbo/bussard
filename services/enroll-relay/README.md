@@ -125,26 +125,22 @@ A step is one of:
 
 ## Deploy
 
-Deployment is the owner's decision (#731: account and hostname). Nothing in
-this directory names an account or a route. With a Cloudflare account on the
-Workers Free plan or higher (SQLite-backed Durable Objects are available on
-both):
+The project's relay runs on the owner's Cloudflare account at
+`relay.bussard.tmbo.dev` (decided 2026-11-03, #731); `wrangler.toml` carries
+that route and turns the `workers.dev` URL off. On the Workers Free plan or
+higher (SQLite-backed Durable Objects are available on both):
 
 1. `cd services/enroll-relay && npx wrangler@4 login`.
-2. Pick the hostname, for example `relay.bussard.tmbo.dev`, on a zone in that
-   account, and add the route to `wrangler.toml`:
-
-   ```toml
-   routes = [{ pattern = "relay.bussard.tmbo.dev", custom_domain = true }]
-   ```
-
-3. `npx wrangler@4 deploy`. The first deploy applies migration `v1`, which
+2. `npx wrangler@4 deploy`. The first deploy applies migration `v1`, which
    creates the `Session` Durable Object class.
-4. Check it: `curl -i https://relay.bussard.tmbo.dev/v1/sessions/AAAAAAAAAAAAAAAAAAAAAA/down`
+3. Check it: `curl -i https://relay.bussard.tmbo.dev/v1/sessions/AAAAAAAAAAAAAAAAAAAAAA/down`
    answers `404` with `access-control-allow-origin: *`. Or run the cases
    against it: `RELAY_URL=https://relay.bussard.tmbo.dev npm test` (the
    expiry cases are skipped).
-5. Set bussard's default relay URL to the hostname (#201, #729).
+
+A self-hosted copy replaces the `routes` entry with a hostname on its own
+zone, and needs a self-hosted page too (`[enroll] page` and `relay` in
+`bussard.toml`), because the hosted page only connects to the project's relay.
 
 Keep Workers Logs off (`[observability] enabled = false`): request URLs carry
 session ids. Do not add `console.log` to the Worker; `wrangler tail` would
