@@ -157,33 +157,6 @@ fn counts(diagnostics: &[Diagnostic]) -> (usize, usize) {
     (count(Severity::Error), count(Severity::Warning))
 }
 
-/// The one-line validation summary `import` prints after writing:
-/// `validation: 0 error(s), 2 warning(s)`, followed by each error.
-///
-/// Errors never undo the import (the files are what the project says); they
-/// are what the owner fixes next, so they are listed with their location.
-pub(crate) fn print_summary(dir: &Path) {
-    let model = match Model::load(dir) {
-        Ok(model) => model,
-        Err(err) => {
-            println!("validation: the written model does not load: {err}");
-            return;
-        }
-    };
-    let diagnostics = validate_in_dir(&model, dir);
-    let (errors, warnings) = counts(&diagnostics);
-    println!("validation: {errors} error(s), {warnings} warning(s)");
-    for d in diagnostics.iter().filter(|d| d.severity == Severity::Error) {
-        println!("  error[{}]: {} ({})", d.code, d.message, d.location);
-    }
-    if errors + warnings > 0 {
-        println!(
-            "  run `bussard validate --dir {}` for the details",
-            dir.display()
-        );
-    }
-}
-
 /// The validation gate in front of a device write: prints every error (and the
 /// warning count) and returns `false` when the model has errors, so the caller
 /// stops before the bus is touched.

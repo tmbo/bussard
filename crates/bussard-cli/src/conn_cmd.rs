@@ -331,15 +331,7 @@ pub const EXIT_NO_FREE_TUNNEL: u8 = 4;
 /// Names the clients that most often hold the slots, because the fix is almost
 /// always "stop one of them", not "retry".
 pub fn no_free_tunnel_message(gateway: impl std::fmt::Display) -> String {
-    format!(
-        "error: {gateway} has no free tunnelling connection (E_NO_MORE_CONNECTIONS).\n\
-         A KNXnet/IP interface has a fixed number of tunnel slots, often one to five, and each \
-         client holds one for as long as it is connected. The usual occupants are Home \
-         Assistant's KNX integration, an open ETS project, and another bussard command or \
-         `bussard viz` / `bussard mcp` still running.\n\
-         Close one of them (or wait for its connection to time out) and retry; \
-         `bussard init --gateway {gateway}` prints the slot count when the interface reports it."
-    )
+    bussard_service::setup::gateway::no_free_tunnel_message(gateway)
 }
 
 /// One KNXnet/IP tunnel held open for a whole command, closed on every exit path.
@@ -414,11 +406,7 @@ impl Drop for BusSession {
 /// `dir` for a message: `the current directory <absolute path>` when `dir` is
 /// the working directory (the default without `--dir`), else `dir` as given.
 pub fn describe_dir(dir: &Path) -> String {
-    let canonical = |p: &Path| std::fs::canonicalize(p).ok();
-    match (canonical(dir), canonical(Path::new("."))) {
-        (Some(d), Some(cwd)) if d == cwd => format!("the current directory {}", d.display()),
-        _ => dir.display().to_string(),
-    }
+    bussard_service::setup::skeleton::describe_dir(dir)
 }
 
 /// The one "no model" error: where bussard looked, what the command needed

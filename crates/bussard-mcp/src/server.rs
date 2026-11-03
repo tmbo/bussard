@@ -166,6 +166,11 @@ impl BussardMcp {
         &self.state
     }
 
+    /// How many tools this server registers.
+    pub fn tool_count(&self) -> usize {
+        self.tool_router.list_all().len()
+    }
+
     /// The warm management connection (issue #215). Every tool that opens a
     /// management connection holds its lock for the session.
     pub(crate) fn warm(&self) -> &crate::warm::WarmConnection {

@@ -19,10 +19,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context, bail};
 use bussard_prod::{DownloadConsent, ProductData, ProductIndex};
-
-/// The committed pointer index, baked into the binary. Points order numbers at
-/// vendor-hosted `.knxprod` downloads (never the payloads themselves).
-const PRODUCT_INDEX_JSON: &str = include_str!("../../../data/product-index.json");
+use bussard_service::setup::products;
 
 /// Dispatches the three `import-product` modes:
 ///
@@ -156,115 +153,30 @@ fn confirm_download(yes_download: bool) -> anyhow::Result<bool> {
     }
 }
 
-/// The environment variable that points bussard at another pointer index (a
-/// JSON file of the same shape), for a private mirror or a test. Unset uses
-/// the index baked into the binary.
-pub(crate) const PRODUCT_INDEX_ENV: &str = "BUSSARD_PRODUCT_INDEX";
-
-/// Loads and parses the pointer index: the file [`PRODUCT_INDEX_ENV`] names,
-/// else the committed one.
+/// Loads and parses the pointer index
+/// ([`bussard_service::setup::products::load_index`]).
 pub(crate) fn load_index() -> anyhow::Result<ProductIndex> {
-    if let Some(path) = bussard_model::dotenv::var_os(PRODUCT_INDEX_ENV).filter(|p| !p.is_empty()) {
-        let path = std::path::PathBuf::from(path);
-        let bytes = std::fs::read(&path)
-            .with_context(|| format!("reading the product index {}", path.display()))?;
-        return ProductIndex::from_json_bytes(&bytes)
-            .with_context(|| format!("parsing the product index {}", path.display()));
-    }
-    ProductIndex::from_json_str(PRODUCT_INDEX_JSON).context("parsing the product-data index")
+    Ok(products::load_index()?)
 }
 
-/// Downloads (or, for a `file://` pointer, reads) the `.knxprod` an index
-/// entry names, verifies its size and SHA-256 against the entry, and stores
-/// it under `<dir>/products/`. Returns the stored path.
-///
-/// `consent` is the caller's proof that the human agreed to the download.
-pub(crate) fn fetch_to_store(
-    entry: &bussard_prod::IndexEntry,
-    dir: &Path,
-    consent: DownloadConsent,
-) -> anyhow::Result<std::path::PathBuf> {
-    let verified = match entry.url.strip_prefix("file://") {
-        Some(local) => {
-            let bytes = std::fs::read(local).with_context(|| format!("reading {}", entry.url))?;
-            bussard_prod::fetch::verify(entry, bytes)?
-        }
-        None => bussard_prod::fetch_entry(entry, consent)
-            .with_context(|| format!("downloading {}", entry.url))?,
-    };
-    store_download(entry, dir, verified)
-}
-
-/// Stores a verified download under `<dir>/products/` and returns the path.
-///
-/// An entry that names an inner `.knxprod` of a ZIP-served download
-/// ([`bussard_prod::IndexEntry::inner`]) stores that file under its own name
-/// instead of the wrapper: the download's SHA-256 covers it, and the store
-/// then holds a plain archive every later command reads without a selection.
-/// A download verified by one of its inner `.knxprod` files
-/// ([`bussard_prod::Verified::Inner`], a bundle of several products, #711) is
-/// stored the same way, as that inner file under its own name.
+/// Stores a verified download under `<dir>/products/` and returns the path
+/// ([`bussard_service::setup::products::store_download`]).
 fn store_download(
     entry: &bussard_prod::IndexEntry,
     dir: &Path,
     verified: bussard_prod::Verified,
 ) -> anyhow::Result<std::path::PathBuf> {
-    let (name, inner) = match verified {
-        bussard_prod::Verified::Inner { name, bytes } => (name, bytes),
-        bussard_prod::Verified::Download(bytes) => {
-            let Some(name) = &entry.inner else {
-                return crate::product_store::store_bytes(dir, &entry.filename, &bytes);
-            };
-            let inner = bussard_prod::inner_knxprod_bytes(&bytes, name, Path::new(&entry.filename))
-                .with_context(|| format!("extracting {name} from {}", entry.filename))?;
-            (name.clone(), inner)
-        }
-    };
-    let stored = Path::new(&name)
-        .file_name()
-        .map_or_else(|| name.clone(), |n| n.to_string_lossy().into_owned());
-    crate::product_store::store_bytes(dir, &stored, &inner)
-}
-
-/// Generates the product models of a `.knxprod` already stored under
-/// `<dir>/products/`, quietly, then pins the archive in `bussard.lock` under
-/// `origin` when one is given (lock v2, issue #228). Returns the model file
-/// names written.
-pub(crate) fn generate_models_pinned(
-    file: &Path,
-    dir: &Path,
-    origin: Option<bussard_model::schema::ProductOrigin>,
-) -> anyhow::Result<Vec<String>> {
-    let product = read_in_model_language(file, dir, None)?;
-    if product.applications.is_empty() {
-        bail!(
-            "no application programs found in {} (is it a valid .knxprod?)",
-            file.display()
-        );
-    }
-    let written = write_product_models(&product, dir)?;
-    if let Some(origin) = origin {
-        let entry = crate::lock_pin::archive_entry(file, dir, &product, origin)?;
-        crate::lock_pin::pin(dir, &[entry]);
-    }
-    Ok(written)
+    Ok(products::store_download(entry, dir, verified)?)
 }
 
 /// Reads every application program of `file` with its texts in the model's
-/// language (see [`crate::product_cache::model_language`]), so the generated
-/// models label enum members as the device files do and a label checked
-/// against them (MCP `knx_set_parameter`) resolves in that language (issue
-/// #231). Without a recorded language, en-US.
+/// language ([`bussard_service::setup::products::read_in_model_language`]).
 fn read_in_model_language(
     file: &Path,
     dir: &Path,
     inner: Option<&str>,
 ) -> anyhow::Result<ProductData> {
-    let language = crate::product_cache::model_language(None, dir);
-    bussard_prod::read_knxprod_selected_in(file, inner, None, language.as_deref(), |_| {
-        bussard_prod::AppSelection::All
-    })
-    .with_context(|| format!("reading product data from {}", file.display()))
+    Ok(products::read_in_model_language(file, dir, inner)?)
 }
 
 /// Writes one model file per application program under
@@ -273,9 +185,7 @@ pub(crate) fn write_product_models(
     product: &ProductData,
     dir: &Path,
 ) -> anyhow::Result<Vec<String>> {
-    Ok(bussard_prod::product_model::write_product_models(
-        product, dir,
-    )?)
+    Ok(products::write_product_models(product, dir)?)
 }
 
 /// Where a to-be-imported file came from, for the report line.

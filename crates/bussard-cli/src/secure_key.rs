@@ -14,7 +14,7 @@ use bussard_model::IndividualAddress;
 use bussard_service::GroupKeys;
 
 pub use bussard_service::secure::{
-    KEYRING_PASSWORD_ENV, SecureKeyError, SecureMaterial, ToolKeySource, layer, model_activated,
+    SecureKeyError, SecureMaterial, ToolKeySource, layer, model_activated,
 };
 
 /// The tunnelling addresses `[connection] admit_tunnel_senders` adds to a
@@ -166,7 +166,7 @@ pub(crate) fn secure_hint(
 
 /// Loads the group keys of `--keyring` for secured group communication
 /// (issue #172), or `None` without a keyring. The password comes from
-/// [`KEYRING_PASSWORD_ENV`]; the error names the file, never a key.
+/// [`bussard_service::secure::KEYRING_PASSWORD_ENV`]; the error names the file, never a key.
 pub fn group_keys(keyring: Option<&Path>) -> anyhow::Result<Option<GroupKeys>> {
     let Some(path) = keyring else {
         return Ok(None);

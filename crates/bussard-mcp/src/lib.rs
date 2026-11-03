@@ -17,6 +17,7 @@
 //!
 //! | Tool | Purpose |
 //! |------|---------|
+//! | `knx_setup` | Onboarding state only: find the gateway, write the model directory and import the ETS export, as `bussard init` does; then the full tool set registers (issue #745). |
 //! | `knx_project_summary` | Project name, counts, rooms, GA ranges, bus status, validation counts. |
 //! | `knx_model_lookup` | Case-insensitive substring search over the model. |
 //! | `knx_get_group` | A GA's definition, links touching it, and its last telegram. |
@@ -84,6 +85,13 @@
 //! started with `--allow-writes` (which conflicts with `--passive`); both write
 //! to the physical bus, and both hard-refuse `protected` GAs.
 //!
+//! Started on a missing or empty directory, the server is in its onboarding
+//! state ([`onboarding`], issue #745): it registers only `knx_setup`, which
+//! runs the setup of `bussard init` (gateway, skeleton, the ETS import), and
+//! `knx_bus_status`. After a successful `knx_setup` it registers the full
+//! set of the tiers it was started with and sends
+//! `notifications/tools/list_changed`.
+//!
 //! `knx_job_status` reads the server's one job table ([`jobs`], issue #746)
 //! and never touches the bus, so it is registered in every tier.
 //!
@@ -148,6 +156,7 @@ pub mod http;
 pub mod instances;
 pub mod jobs;
 pub mod model_handle;
+pub mod onboarding;
 pub mod param_keys;
 pub mod run;
 mod secure_group;
@@ -379,6 +388,29 @@ pub async fn run_http_with_ready(
         );
     }
     run::serve_http_with_ready(state, service, options, on_ready).await
+}
+
+/// Serves the onboarding server (issue #745) over stdio: `--dir` names a
+/// missing or empty directory ([`onboarding::is_onboarding_dir`]), so only
+/// `knx_setup` and `knx_bus_status` are registered until `knx_setup` has
+/// written the model; then the full tool set of `onboarding.config`'s tiers.
+/// `on_ready` runs once the server is about to wait for a client.
+pub async fn run_onboarding_with_ready(
+    onboarding: onboarding::Onboarding,
+    on_ready: impl FnOnce(),
+) -> anyhow::Result<()> {
+    run::serve_onboarding_stdio(onboarding::SetupMcp::new(onboarding), on_ready).await
+}
+
+/// [`run_onboarding_with_ready`] over streamable HTTP (issue #265). The
+/// listen address is checked first, as in [`run_http_with_ready`].
+pub async fn run_onboarding_http_with_ready(
+    onboarding: onboarding::Onboarding,
+    options: &http::HttpOptions,
+    on_ready: impl FnOnce(std::net::SocketAddr),
+) -> anyhow::Result<()> {
+    options.check()?;
+    run::serve_onboarding_http(onboarding::SetupMcp::new(onboarding), options, on_ready).await
 }
 
 /// The set of tool names exposed, in registration order. Used by tests and docs.

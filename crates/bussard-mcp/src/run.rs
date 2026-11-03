@@ -66,7 +66,7 @@ pub async fn serve_stdio_with_ready(
 
 /// Wires the bus service into the state and starts the ring feeder. Returns
 /// the bus handle (to close it on exit) and the feeder task (to abort it).
-fn wire_bus(
+pub(crate) fn wire_bus(
     state: &Arc<SharedState>,
     service: BusService,
 ) -> (BusHandle, tokio::task::JoinHandle<()>) {
@@ -74,6 +74,54 @@ fn wire_bus(
     state.bus.wire(service);
     let feeder = spawn_ring_feeder(state, &handle, server_group_keyring(state));
     (handle, feeder)
+}
+
+/// Serves the onboarding server (issue #745) over stdio until the client
+/// disconnects, then closes the bus the full server opened, if it did.
+/// `on_ready` runs right before the server waits for the client.
+pub async fn serve_onboarding_stdio(
+    server: crate::onboarding::SetupMcp,
+    on_ready: impl FnOnce(),
+) -> anyhow::Result<()> {
+    tracing::info!("mcp: serving on stdio (onboarding: no model yet)");
+    on_ready();
+    let running = server
+        .clone()
+        .serve(stdio())
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to start MCP stdio service: {e}"))?;
+    let quit_reason = running
+        .waiting()
+        .await
+        .map_err(|e| anyhow::anyhow!("MCP service error: {e}"))?;
+    tracing::info!("MCP client disconnected: {quit_reason:?}");
+    server.shutdown().await;
+    Ok(())
+}
+
+/// Serves the onboarding server (issue #745) over streamable HTTP on
+/// `options.listen` until Ctrl-C, like [`serve_http_with_ready`].
+pub async fn serve_onboarding_http(
+    server: crate::onboarding::SetupMcp,
+    options: &HttpOptions,
+    on_ready: impl FnOnce(SocketAddr),
+) -> anyhow::Result<()> {
+    let listener = tokio::net::TcpListener::bind(options.listen)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to bind {}: {e}", options.listen))?;
+    let addr = listener.local_addr()?;
+    tracing::info!(
+        "mcp: serving streamable HTTP on {} (onboarding: no model yet)",
+        crate::http::url(addr)
+    );
+    on_ready(addr);
+    let shutdown = async {
+        let _ = tokio::signal::ctrl_c().await;
+        tracing::info!("mcp: shutdown requested");
+    };
+    let served = crate::http::serve_on(listener, server.clone(), options, shutdown).await;
+    server.shutdown().await;
+    served
 }
 
 /// Wires the bus service into the state like [`serve_stdio`], then serves

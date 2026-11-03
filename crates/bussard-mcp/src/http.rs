@@ -2,7 +2,7 @@
 //! gates as stdio, reachable at a URL for clients that take one.
 //!
 //! [`serve_on`] mounts rmcp's [`StreamableHttpService`] at [`MCP_PATH`]. Every
-//! MCP session gets a clone of one [`BussardMcp`], so all sessions share the
+//! MCP session gets a clone of one [`crate::server::BussardMcp`], so all sessions share the
 //! server's single bus connection, its warm management connection and its
 //! limiters, exactly as the one stdio client does.
 //!
@@ -23,8 +23,6 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
-
-use crate::server::BussardMcp;
 
 /// The path the MCP endpoint is served at: `http://<listen>/mcp`.
 pub const MCP_PATH: &str = "/mcp";
@@ -106,7 +104,10 @@ pub fn generate_token() -> anyhow::Result<String> {
 /// The axum app: the MCP endpoint at [`MCP_PATH`], behind the bearer check
 /// when `options` has a token. Returns the app and a callback that ends every
 /// open MCP session (for shutdown).
-fn app(server: BussardMcp, options: &HttpOptions) -> (axum::Router, impl FnOnce() + Send + use<>) {
+fn app<S>(server: S, options: &HttpOptions) -> (axum::Router, impl FnOnce() + Send + use<S>)
+where
+    S: rmcp::ServerHandler + Clone + Send + Sync + 'static,
+{
     let mut config = StreamableHttpServerConfig::default();
     if options.allow_remote_clients {
         // A reverse proxy forwards its own host name; the token guards the
@@ -135,12 +136,15 @@ fn app(server: BussardMcp, options: &HttpOptions) -> (axum::Router, impl FnOnce(
 
 /// Serves MCP over streamable HTTP on `listener` until `shutdown` resolves,
 /// then ends every open session and returns.
-pub async fn serve_on(
+pub async fn serve_on<S>(
     listener: tokio::net::TcpListener,
-    server: BussardMcp,
+    server: S,
     options: &HttpOptions,
     shutdown: impl Future<Output = ()> + Send + 'static,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+where
+    S: rmcp::ServerHandler + Clone + Send + Sync + 'static,
+{
     let (router, end_sessions) = app(server, options);
     axum::serve(listener, router)
         .with_graceful_shutdown(async move {

@@ -4,6 +4,8 @@ bussard runs as an MCP server, so an LLM assistant such as Claude can read your 
 
 You need a model directory ([Your first model](first-model.md)) and an assistant that speaks MCP: Claude Code, Claude Desktop, or any other MCP client.
 
+No model yet? Register the server on an empty folder (`--dir` names a folder that is empty or does not exist yet) and say "set up my house". The server starts with one tool, `knx_setup`: it finds the gateway, writes the model into that folder and imports your ETS export, as `bussard init` does. Put the `.knxproj` next to the folder or tell the assistant where it is. Afterwards the server offers its full tool set in the same conversation.
+
 ## Register the server
 
 The server talks over stdin and stdout, so the client starts it; there is nothing to connect to. Run `bussard mcp` by hand in the model directory and it prints the Claude Code command and the JSON entry below with your binary's full path, the model directory and the flags you gave, ready to paste. It never prints a password.

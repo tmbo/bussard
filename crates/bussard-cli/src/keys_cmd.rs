@@ -21,6 +21,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context, anyhow, bail};
 use bussard_project::keystore::{BackboneChange, ImportReport, KeyStore, SaveOutcome};
+use bussard_service::setup;
 
 /// The environment variable carrying the keyring (and key store) password.
 const KEYRING_PASSWORD_ENV: &str = "BUSSARD_KEYRING_PASSWORD";
@@ -32,132 +33,28 @@ pub(crate) fn password() -> anyhow::Result<String> {
         .map_err(|_| bussard_service::secure::SecureKeyError::MissingPassword.into())
 }
 
-/// The `.knxkeys` exports in the directory of `project` (sorted).
-pub fn neighbour_keyrings(project: &Path) -> Vec<std::path::PathBuf> {
-    let parent = match project.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
-        _ => std::path::PathBuf::from("."),
-    };
-    let mut found: Vec<std::path::PathBuf> = std::fs::read_dir(&parent)
-        .map(|entries| {
-            entries
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| {
-                    p.is_file()
-                        && p.extension()
-                            .and_then(|e| e.to_str())
-                            .is_some_and(|e| e.eq_ignore_ascii_case("knxkeys"))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    found.sort();
-    found
-}
-
-/// Whether the key store password is set (a store can be written).
-pub fn password_available() -> bool {
-    bussard_model::dotenv::var_os(KEYRING_PASSWORD_ENV).is_some()
-}
-
 /// After an import of `project` into `dir`: merges the one `.knxkeys` next to
-/// the project into `bussard.keys` (issue #241 item 2). Several exports are
-/// listed and none is picked; without the password the command to run is
-/// printed. Never fails the import: a keyring that does not load is a
-/// warning.
+/// the project into `bussard.keys` (issue #241 item 2,
+/// [`bussard_service::setup::import::import_neighbour`]). Never fails the
+/// import: a keyring that does not load is a warning.
 pub fn import_neighbour(project: &Path, dir: &Path) {
-    let mut found = neighbour_keyrings(project);
-    match found.len() {
-        0 => {}
-        1 => {
-            let file = found.remove(0);
-            if !password_available() {
-                println!(
-                    "Found the ETS keyring {}. To keep its keys in {}, set                      {KEYRING_PASSWORD_ENV} and run `bussard keys import {}` (the password is                      never stored).",
-                    file.display(),
-                    KeyStore::path(dir).display(),
-                    file.display()
-                );
-                return;
-            }
-            match import_quiet(dir, &file) {
-                Ok((report, outcome)) => {
-                    let what = match outcome {
-                        SaveOutcome::Written { backup: false } => "created",
-                        SaveOutcome::Written { backup: true } => "updated",
-                        SaveOutcome::Unchanged => "already up to date",
-                    };
-                    println!(
-                        "Imported the ETS keyring {} into {} ({what}: {} device(s) added, {} tool                          key(s) rotated, {} group key(s) added, {} rotated). It is encrypted                          with {KEYRING_PASSWORD_ENV}; keep that password, bussard never stores                          it.",
-                        file.display(),
-                        KeyStore::path(dir).display(),
-                        report.devices_added.len(),
-                        report.tool_keys_rotated.len(),
-                        report.group_keys_added.len(),
-                        report.group_keys_rotated.len(),
-                    );
-                    print_warnings(&rekeyed_warnings(dir, &report));
-                }
-                Err(err) => eprintln!(
-                    "warning: the ETS keyring {} was not imported into the key store: {err:#}",
-                    file.display()
-                ),
-            }
-        }
-        _ => {
-            println!(
-                "Found several ETS keyrings next to the project; import the current one with                  `bussard keys import <file>`:"
-            );
-            for p in &found {
-                println!("  {}", p.display());
-            }
-        }
-    }
+    setup::import::import_neighbour(project, dir, &mut crate::console::Console);
 }
 
 /// W042 (issue #348): the group keys an import added for group addresses the
-/// model in `dir` runs plain, each naming the devices the next apply would
-/// secure again. Empty without a loadable model.
+/// model in `dir` runs plain.
 fn rekeyed_warnings(dir: &Path, report: &ImportReport) -> Vec<bussard_model::Diagnostic> {
-    let Ok(model) = bussard_model::Model::load(dir) else {
-        return Vec::new();
-    };
-    let added: Vec<bussard_model::GroupAddress> = report
-        .group_keys_added
-        .iter()
-        .filter_map(|ga| ga.parse().ok())
-        .collect();
-    bussard_model::rekeyed_by_keys_import(&model, &added)
+    setup::import::rekeyed_warnings(dir, report)
 }
 
 /// Prints warnings as `warning[CODE]: message` on stderr.
 pub(crate) fn print_warnings(diags: &[bussard_model::Diagnostic]) {
-    for d in diags {
-        eprintln!("warning[{}]: {}", d.code, d.message);
-    }
+    setup::import::warn_diagnostics(diags, &mut crate::console::Console);
 }
 
 /// Merges `file` into the store in `dir` and saves it.
 fn import_quiet(dir: &Path, file: &Path) -> anyhow::Result<(ImportReport, SaveOutcome)> {
-    let password = password()?;
-    let xml = std::fs::read_to_string(file)
-        .with_context(|| format!("reading keyring {}", file.display()))?;
-    let keyring = bussard_project::parse_keyring(&xml, &password).with_context(|| {
-        format!(
-            "loading keyring {} (the store and the export share {KEYRING_PASSWORD_ENV})",
-            file.display()
-        )
-    })?;
-    let path = KeyStore::path(dir);
-    let mut store = KeyStore::load(dir, &password)
-        .with_context(|| format!("loading the key store {}", path.display()))?
-        .unwrap_or_else(|| KeyStore::new(&keyring.project));
-    let report = store.merge_keyring(&keyring);
-    let outcome = store
-        .save(dir, &password)
-        .with_context(|| format!("writing the key store {}", path.display()))?;
-    Ok((report, outcome))
+    Ok(setup::import::import_keyring(dir, file)?)
 }
 
 /// Loads the store in `dir`, failing with a hint when there is none.

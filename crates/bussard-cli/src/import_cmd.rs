@@ -18,13 +18,15 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use bussard_model::{MergeReport, Model};
+use bussard_service::setup::{self, DownloadPrompt, SetupError};
 
+use crate::console::Console;
 use crate::import_bundle::ConflictChoice;
 
 /// Exit code returned when a re-import left hand-authored conflicts un-applied.
 /// Distinct from success (0) so scripts/CI can detect that a human must
 /// reconcile the reported fields; the write still happened (hand edits intact).
-const EXIT_CONFLICTS: u8 = 3;
+pub(crate) const EXIT_CONFLICTS: u8 = 3;
 
 /// Runs `bussard import` from a `.knxproj` file.
 ///
@@ -43,29 +45,35 @@ pub fn run_knxproj(
     choice: ConflictChoice,
     consent: crate::product_fetch::Consent,
 ) -> anyhow::Result<ExitCode> {
-    let password = resolve_password(password_flag);
-    let options = bussard_project::ImportOptions::for_dir(dir);
-
-    let model = match bussard_project::import_with(path, password.as_deref(), &options) {
-        Ok(model) => model,
-        Err(bussard_project::ImportError::PasswordRequired) => {
-            // If we have no password yet and a TTY is available, prompt once.
-            if password.is_none() && std::io::stdin().is_terminal() {
-                let pw = prompt_password()?;
-                bussard_project::import_with(path, Some(&pw), &options)?
-            } else {
-                anyhow::bail!(
-                    "project is password-protected; provide --password, set \
-                     BUSSARD_PROJECT_PASSWORD, or run in a terminal to be prompted"
-                );
-            }
-        }
-        Err(e) => return Err(e.into()),
-    };
-
+    let model = load_project(path, dir, password_flag)?;
     let code = write_model(model, dir, choice, "project", Some(consent), Some(path))?;
     crate::keys_cmd::import_neighbour(path, dir);
     Ok(code)
+}
+
+/// Loads the project at `path` for `dir`
+/// ([`bussard_service::setup::import::load_project`]): the password from the
+/// flag, then `BUSSARD_PROJECT_PASSWORD`, then a prompt when stdin is a
+/// terminal.
+pub(crate) fn load_project(
+    path: &Path,
+    dir: &Path,
+    password_flag: Option<String>,
+) -> anyhow::Result<Model> {
+    Ok(bussard_service::setup::import::load_project(
+        path,
+        dir,
+        password_flag,
+        ask_password,
+    )?)
+}
+
+/// The project password from a prompt, when stdin is a terminal.
+pub(crate) fn ask_password() -> Result<Option<String>, SetupError> {
+    if !std::io::stdin().is_terminal() {
+        return Ok(None);
+    }
+    prompt_password().map(Some).map_err(SetupError::source)
 }
 
 /// Runs `bussard import --from-json`.
@@ -105,38 +113,33 @@ pub(crate) fn write_model(
     fetch: Option<crate::product_fetch::Consent>,
     project: Option<&Path>,
 ) -> anyhow::Result<ExitCode> {
+    let mut out = Console;
+    let mut fetch = fetch;
     // History (issue #110): record an edit made outside bussard before the
     // import overwrites it, then snapshot the pre-import state so `bussard undo`
     // can put it back.
     if dir.is_dir() {
         crate::product_store::prepare(dir);
     }
-    crate::history_cmd::capture_external_edit(dir);
-    crate::history_cmd::snapshot(
-        dir,
-        bussard_model::history::SnapshotReason::new("import")
-            .with_result("before writing the imported model"),
-    );
+    setup::import::before_write(dir, &mut out);
 
     // A re-import is any target that already holds a loadable model.
-    let existing = load_existing_model(dir);
-
-    let (mut to_save, merge_report) = match existing {
-        Some(mut ours) => {
-            bussard_model::normalize_spellings(&mut ours, &model);
-            let (mut merged, report) = bussard_model::merge(&ours, &model);
-            let kept = crate::import_bundle::resolve_conflicts(
-                &ours,
-                &model,
-                &mut merged,
-                &report,
-                choice,
-                source,
-            )?;
-            (merged, Some((ours, report, kept)))
-        }
-        None => (model, None),
+    let Some(mut ours) = load_existing_model(dir) else {
+        let prompt = fetch.as_mut().map(|c| c as &mut dyn DownloadPrompt);
+        setup::import::write_fresh(model, dir, project, prompt, &mut out)?;
+        return Ok(ExitCode::SUCCESS);
     };
+
+    bussard_model::normalize_spellings(&mut ours, &model);
+    let (mut to_save, merge) = bussard_model::merge(&ours, &model);
+    let kept = crate::import_bundle::resolve_conflicts(
+        &ours,
+        &model,
+        &mut to_save,
+        &merge,
+        choice,
+        source,
+    )?;
 
     // A group address a device file uses but the plan does not define is
     // declared in groups.toml, named after the object that uses it first.
@@ -144,31 +147,20 @@ pub(crate) fn write_model(
 
     // An import that changes nothing leaves the files alone, so hand-written
     // comments and formatting survive a no-op re-import.
-    if let Some((ours, merge, kept)) = &merge_report
-        && *ours == to_save
-    {
+    if ours == to_save {
         println!(
             "{} already matches the import; no file written",
             dir.display()
         );
-        crate::import_bundle::print_changes(ours, &to_save);
-        if fetch.is_some() {
-            crate::lock_pin::pin_import(dir, project, &to_save);
-        }
-        fetch_product_data(dir, &to_save, fetch)?;
-        crate::product_store::complete_all_models(dir);
-        crate::validate_cmd::print_summary(dir);
-        return Ok(report_merge(merge, *kept, choice));
+        crate::import_bundle::print_changes(&ours, &to_save);
+        let prompt = fetch.as_mut().map(|c| c as &mut dyn DownloadPrompt);
+        setup::import::after_write(dir, &to_save, project, prompt, &mut out)?;
+        return Ok(report_merge(&merge, kept, choice));
     }
 
     // An import writes the files a fresh import would, in the same order,
     // even over a model an older writer laid out differently (issue #235).
     let report = to_save.save_pruning_as_import(dir)?;
-    // A fresh import writes the same `.gitignore` as `init`, so the `.env`
-    // with the project password is not committed by accident.
-    if merge_report.is_none() {
-        crate::init_cmd::merge_gitignore(&dir.join(".gitignore"))?;
-    }
     println!(
         "imported {} group addresses, {} devices, {} link entries → {}",
         to_save.groups.groups.len(),
@@ -179,7 +171,7 @@ pub(crate) fn write_model(
     for d in &declared {
         println!("{}", d.sentence());
     }
-    print_knxnet_summary(&to_save);
+    setup::import::knxnet_summary(&to_save, &mut out);
     if !report.renamed.is_empty() {
         println!("renamed {} device file(s)", report.renamed.len());
     }
@@ -187,106 +179,13 @@ pub(crate) fn write_model(
         println!("pruned {} stale device file(s)", report.pruned.len());
     }
 
-    // The lock pins where each device's product data comes from.
-    if fetch.is_some() {
-        crate::lock_pin::pin_import(dir, project, &to_save);
-    }
-    // Product data fetches itself: every order number without it is looked up
-    // in the pointer index, with one question for the whole list.
-    fetch_product_data(dir, &to_save, fetch)?;
-    // The product models of every pinned archive, in the lock's language, so
-    // the first command after an import finds them written (issue #255).
-    crate::product_store::complete_all_models(dir);
-    // Validation is part of import: the summary says what to fix next.
-    crate::validate_cmd::print_summary(dir);
-    if let Some((ours, merge, kept)) = merge_report {
-        // W042 (issue #348): a group address the model ran plain that the
-        // project secures again needs an apply on the devices it names.
-        crate::keys_cmd::print_warnings(&bussard_model::resecured_by_import(&ours, &to_save));
-        crate::import_bundle::print_changes(&ours, &to_save);
-        return Ok(report_merge(&merge, kept, choice));
-    }
-    Ok(ExitCode::SUCCESS)
-}
-
-/// One line per IP interface whose `[knxnet]` table the model holds (issue
-/// #391): the assignment and the tunnel addresses. The project states the
-/// assignment only when it is not ETS's default, so a `dhcp` line says it is
-/// that default, and every line names the command that reads what the
-/// project does not carry (the address in use, the MAC address).
-fn print_knxnet_summary(model: &Model) {
-    for (ia, loaded) in &model.devices {
-        let Some(k) = &loaded.device.knxnet else {
-            continue;
-        };
-        let how = match k.assignment {
-            bussard_model::knxnet::IpAssignment::Dhcp => {
-                "IP assignment dhcp (ETS's default; the project names no other)".to_string()
-            }
-            bussard_model::knxnet::IpAssignment::Static => format!(
-                "static IP address {}",
-                k.address.map_or("(none)".to_string(), |a| a.to_string())
-            ),
-        };
-        let tunnels = if k.tunnels.is_empty() {
-            "no tunnel addresses".to_string()
-        } else {
-            format!(
-                "tunnel addresses {}",
-                bussard_model::knxnet::join_addresses(&k.tunnels)
-            )
-        };
-        println!(
-            "{ia}: KNXnet/IP settings: {how}, {tunnels}; `bussard status {ia}` reads the \
-             address in use and the MAC address from the device"
-        );
-    }
-}
-
-/// The download step of `import`: fetch what is missing, then say how many
-/// devices are written without product data and where to get it.
-fn fetch_product_data(
-    dir: &Path,
-    model: &Model,
-    fetch: Option<crate::product_fetch::Consent>,
-) -> anyhow::Result<()> {
-    let Some(consent) = fetch else {
-        return Ok(());
-    };
-    let orders: Vec<String> = model
-        .devices
-        .values()
-        .filter_map(|d| d.device.product.as_ref()?.order_number.clone())
-        .collect();
-    let outcome = crate::product_fetch::fetch_missing(dir, &orders, consent)?;
-    let missing: std::collections::BTreeSet<String> = outcome
-        .missing()
-        .iter()
-        .map(|o| bussard_prod::normalize_order_number(o))
-        .collect();
-    let without = model
-        .devices
-        .values()
-        .filter(|d| {
-            match d
-                .device
-                .product
-                .as_ref()
-                .and_then(|p| p.order_number.as_deref())
-            {
-                Some(order) => missing.contains(&bussard_prod::normalize_order_number(order)),
-                None => true,
-            }
-        })
-        .count();
-    if without > 0 {
-        println!(
-            "{without} device(s) written without product data: their files carry identity, \
-             location and links by number; `apply` writes their links, not their parameters"
-        );
-    }
-    crate::product_fetch::print_missing(&outcome, dir);
-    Ok(())
+    let prompt = fetch.as_mut().map(|c| c as &mut dyn DownloadPrompt);
+    setup::import::after_write(dir, &to_save, project, prompt, &mut out)?;
+    // W042 (issue #348): a group address the model ran plain that the
+    // project secures again needs an apply on the devices it names.
+    crate::keys_cmd::print_warnings(&bussard_model::resecured_by_import(&ours, &to_save));
+    crate::import_bundle::print_changes(&ours, &to_save);
+    Ok(report_merge(&merge, kept, choice))
 }
 
 /// Loads an existing model from `dir`, or `None` if the directory holds no
@@ -349,12 +248,6 @@ fn report_merge(report: &MergeReport, kept: usize, choice: ConflictChoice) -> Ex
          incoming values, --mine to keep these and exit 0, or --interactive to choose each."
     );
     ExitCode::from(EXIT_CONFLICTS)
-}
-
-/// Resolves the password from the flag or the environment (no prompt here).
-fn resolve_password(flag: Option<String>) -> Option<String> {
-    flag.or_else(|| bussard_model::dotenv::var("BUSSARD_PROJECT_PASSWORD").ok())
-        .filter(|s| !s.is_empty())
 }
 
 /// Prompts for the project password on the terminal.

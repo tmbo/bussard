@@ -1,7 +1,9 @@
 //! The `bussard mcp` subcommand: run the MCP server over stdio, or over
 //! streamable HTTP with `--listen` (issue #265).
 //!
-//! The model is required (the server is useless without one). The bus
+//! On a missing or empty `--dir` the server starts in its onboarding state
+//! (issue #745): `knx_setup` and `knx_bus_status` only, until `knx_setup`
+//! has written the model. Otherwise the model must load. The bus
 //! connection is resolved from the model's `bussard.toml` plus overrides, but is
 //! opened lazily by the server's stream task, which reconnects — so a bus that
 //! is down at startup does not stop the server. All logging is on stderr
@@ -86,6 +88,9 @@ pub fn run(
         no_model_edits,
         allow_home_assistant,
     } = modes;
+    if bussard_mcp::onboarding::is_onboarding_dir(dir) {
+        return run_onboarding(dir, overrides, modes, capture_db, keyring, listen);
+    }
     if !dir.exists() {
         anyhow::bail!(
             "model directory {} not found; the MCP server needs a loaded model (pass --dir)",
@@ -146,9 +151,114 @@ pub fn run(
     Ok(ExitCode::SUCCESS)
 }
 
+/// Runs the server in its onboarding state (issue #745): `dir` is missing or
+/// empty, so it starts with `knx_setup` and `knx_bus_status` only and
+/// resolves the bus connection once `knx_setup` has written `bussard.toml`.
+fn run_onboarding(
+    dir: &Path,
+    overrides: ConnOverrides,
+    modes: McpModes,
+    capture_db: Option<PathBuf>,
+    keyring: Option<PathBuf>,
+    listen: Option<Listen>,
+) -> anyhow::Result<ExitCode> {
+    let config = McpConfig {
+        dir: dir.to_path_buf(),
+        // A placeholder: no bus is opened before `knx_setup` wrote the model.
+        connection: bussard_transport::ConnectionConfig::tunnel(std::net::SocketAddrV4::new(
+            std::net::Ipv4Addr::UNSPECIFIED,
+            bussard_transport::config::DEFAULT_PORT,
+        )),
+        passive: modes.passive,
+        allow_writes: modes.allow_writes,
+        no_model_edits: modes.no_model_edits,
+        capture_db,
+        allow_programming: modes.allow_programming,
+        allow_remote_gateway: modes.allow_remote_gateway,
+        plan_ttl: modes.plan_ttl,
+        keyring: keyring.clone(),
+        allow_home_assistant: modes.allow_home_assistant,
+    };
+    let default_gateway = overrides.gateway.clone();
+    let routing = overrides.routing;
+    let model_dir = dir.to_path_buf();
+    let resolve: bussard_mcp::onboarding::ResolveConnection =
+        std::sync::Arc::new(move |model: &Model| {
+            let connection = resolve_config(Some(model), &overrides)?;
+            // The key store the import may have written (issue #241).
+            let keyring = crate::conn_cmd::resolve_keyring(None, None, &model_dir)
+                .map(|resolved| resolved.path);
+            Ok((connection, keyring))
+        });
+    let onboarding = bussard_mcp::onboarding::Onboarding {
+        config,
+        resolve,
+        default_gateway,
+        routing,
+    };
+
+    if let Some(listen) = listen {
+        let (options, generated) = http_options(listen)?;
+        let has_token = options.bearer_token.is_some();
+        let terminal = std::io::stderr().is_terminal();
+        let runtime = tokio::runtime::Runtime::new()?;
+        runtime.block_on(async {
+            bussard_mcp::run_onboarding_http_with_ready(onboarding, &options, |addr| {
+                announce_http(addr, generated.as_deref(), has_token, terminal);
+                eprintln!("{}", onboarding_note(dir));
+            })
+            .await
+        })?;
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let hint = std::io::stderr()
+        .is_terminal()
+        .then(|| ConnectHint::for_this_process(dir, keyring.is_some(), &[]))
+        .flatten();
+    let note = onboarding_note(dir);
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(async move {
+        bussard_mcp::run_onboarding_with_ready(onboarding, || {
+            if let Some(hint) = &hint {
+                eprint!("{}", hint.render());
+                eprintln!("{note}");
+            }
+        })
+        .await
+    })?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The line a person at the terminal reads when the server starts in its
+/// onboarding state.
+fn onboarding_note(dir: &Path) -> String {
+    format!(
+        "No model in {} yet: the server starts with knx_setup and knx_bus_status only. Ask          the assistant to set up the house; after knx_setup the full tool set registers.",
+        dir.display()
+    )
+}
+
 /// Runs the server over streamable HTTP (issue #265): resolves the bearer
 /// token, prints the URL once the listener is up, and serves until Ctrl-C.
 fn run_http(config: &McpConfig, listen: Listen) -> anyhow::Result<ExitCode> {
+    let (options, generated) = http_options(listen)?;
+    let has_token = options.bearer_token.is_some();
+    let terminal = std::io::stderr().is_terminal();
+
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(async {
+        bussard_mcp::run_http_with_ready(config, &options, |addr| {
+            announce_http(addr, generated.as_deref(), has_token, terminal);
+        })
+        .await
+    })?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The HTTP options for `listen`, and the bearer token generated for a
+/// non-loopback bind without [`TOKEN_ENV`].
+fn http_options(listen: Listen) -> anyhow::Result<(HttpOptions, Option<String>)> {
     let from_env = std::env::var(TOKEN_ENV).ok().filter(|t| !t.is_empty());
     // A non-loopback bind needs a token; generate one when the operator opted
     // in without setting it. A loopback bind uses one only when it is set.
@@ -164,24 +274,20 @@ fn run_http(config: &McpConfig, listen: Listen) -> anyhow::Result<ExitCode> {
         bearer_token: from_env.or_else(|| generated.clone()),
         allowed_hosts: listen.allow_host,
     };
-    let has_token = options.bearer_token.is_some();
-    let terminal = std::io::stderr().is_terminal();
+    Ok((options, generated))
+}
 
-    let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(async {
-        bussard_mcp::run_http_with_ready(config, &options, |addr| {
-            let url = bussard_mcp::http::url(addr);
-            eprintln!("bussard mcp serving streamable HTTP on {url} (Ctrl-C to stop)");
-            if let Some(token) = &generated {
-                eprintln!("bearer token, shown once (set {TOKEN_ENV} to choose your own): {token}");
-            }
-            if terminal {
-                eprint!("{}", http_hint(&url, has_token));
-            }
-        })
-        .await
-    })?;
-    Ok(ExitCode::SUCCESS)
+/// Prints where the HTTP server listens, the generated token once, and on a
+/// terminal how to register it.
+fn announce_http(addr: SocketAddr, generated: Option<&str>, has_token: bool, terminal: bool) {
+    let url = bussard_mcp::http::url(addr);
+    eprintln!("bussard mcp serving streamable HTTP on {url} (Ctrl-C to stop)");
+    if let Some(token) = generated {
+        eprintln!("bearer token, shown once (set {TOKEN_ENV} to choose your own): {token}");
+    }
+    if terminal {
+        eprint!("{}", http_hint(&url, has_token));
+    }
 }
 
 /// How to register an HTTP server at `url` with a client, for a person at a
