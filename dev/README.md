@@ -20,6 +20,19 @@ is rendered there.
 | [personas/](personas/README.md) | The owner and integrator personas, their journeys and the issue drafts derived from them. |
 | `knx-standard-3.0.0/` | The KNX Standard 3.0.0 text (`_txt/`, pdftotext of every volume), licensed and read-only: cite document, section and page in notes and issues, never paste paragraphs or tables; it is not committed. The 3.0.0 review of the System 7 and System 2 clauses is folded into [system7-spec.md](system7-spec.md). |
 
+## Claude Desktop and a dev build (macOS)
+
+macOS grants Local Network access per code identity. A `cargo build` binary
+is ad-hoc signed, so every build has a new identity: when Claude Desktop
+starts the rebuilt `target/debug/bussard`, the grant moves to it and an
+older `bussard mcp` still running loses network access at once (its error is
+`LocalNetworkDenied`). To keep a dev session's server stable, point
+`claude_desktop_config.json` at a copy that `cargo build` does not overwrite
+(`cp target/debug/bussard ~/.local/bin/bussard-mcp`, refreshed when you want
+the new build and followed by a Desktop restart), or sign the dev binary
+with a stable identity (`codesign -s "<your Apple Development identity>" -f
+target/debug/bussard`).
+
 ## Private data
 
 The repository must never describe a real installation. Raw installation data

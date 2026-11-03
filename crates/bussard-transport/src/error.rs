@@ -173,6 +173,29 @@ pub enum TransportError {
     #[error("KNXnet/IP Secure: {0}")]
     Secure(#[from] bussard_secure::ipsecure::IpSecureError),
 
+    /// The operating system refused this process access to the local network:
+    /// a fresh socket's TCP `connect` failed with `EHOSTUNREACH`, or its first
+    /// connected-UDP `send` with `EPIPE`, towards a private (RFC 1918) or
+    /// link-local gateway. macOS answers that way when the Local Network
+    /// privacy permission is missing. Built by [`classify_fresh_socket_error`];
+    /// not fatal, because the user may grant the permission while the bus
+    /// keeps retrying.
+    #[error(
+        "the operating system refused bussard access to the local network ({source}, \
+         connecting to {gateway}). On macOS, allow bussard (or the app that starts it) under \
+         System Settings > Privacy & Security > Local Network. A rebuilt or updated bussard \
+         needs the permission again, and a server started from an older build loses it once \
+         the newer build is allowed: restart it after allowing. If the permission is already \
+         granted, check that the interface at {gateway} is powered and on the network"
+    )]
+    LocalNetworkDenied {
+        /// The gateway the socket was opened to.
+        gateway: SocketAddrV4,
+        /// The socket error the operating system returned.
+        #[source]
+        source: io::Error,
+    },
+
     /// An underlying socket I/O error.
     #[error("socket error{}: {source}", .peer.map(|p| format!(" ({p})")).unwrap_or_default())]
     Io {
@@ -301,7 +324,38 @@ impl TransportError {
                 | TransportError::Disconnected(_)
                 | TransportError::Io { .. }
                 | TransportError::SecureSessionEnded(_)
+                | TransportError::LocalNetworkDenied { .. }
         )
+    }
+}
+
+/// Whether a socket error on a FRESH socket towards `gateway` is the
+/// operating system refusing local-network access: `HostUnreachable` (a TCP
+/// `connect`) or `BrokenPipe` (the first `send` on a connected UDP socket),
+/// and `gateway` is a private (RFC 1918) or link-local address. macOS answers
+/// exactly that way for a process without the Local Network permission, while
+/// the router and the internet stay reachable.
+///
+/// Only call it for the connect or the first send of a socket opened for this
+/// attempt: on a live link a broken pipe is the peer hanging up.
+pub fn is_local_network_refusal(gateway: SocketAddrV4, source: &io::Error) -> bool {
+    let ip = gateway.ip();
+    (ip.is_private() || ip.is_link_local())
+        && matches!(
+            source.kind(),
+            io::ErrorKind::HostUnreachable | io::ErrorKind::BrokenPipe
+        )
+}
+
+/// Turns a socket error from a fresh socket's connect or first send into
+/// [`TransportError::LocalNetworkDenied`] when [`is_local_network_refusal`]
+/// says so; any other error is returned unchanged.
+pub fn classify_fresh_socket_error(gateway: SocketAddrV4, err: TransportError) -> TransportError {
+    match err {
+        TransportError::Io { source, .. } if is_local_network_refusal(gateway, &source) => {
+            TransportError::LocalNetworkDenied { gateway, source }
+        }
+        other => other,
     }
 }
 
@@ -348,6 +402,73 @@ mod tests {
             err.to_string(),
             "gateway returned error status 0x7f (TUNNELING_ACK)"
         );
+    }
+
+    fn io_err(kind: io::ErrorKind) -> TransportError {
+        TransportError::Io {
+            peer: None,
+            source: io::Error::from(kind),
+        }
+    }
+
+    const LAN: SocketAddrV4 = SocketAddrV4::new(std::net::Ipv4Addr::new(10, 1, 2, 3), 3671);
+
+    #[test]
+    fn test_classify_fresh_socket_error_broken_pipe_on_lan_is_denied() {
+        let err = classify_fresh_socket_error(LAN, io_err(io::ErrorKind::BrokenPipe));
+        assert!(
+            matches!(err, TransportError::LocalNetworkDenied { gateway, .. } if gateway == LAN),
+            "{err:?}"
+        );
+        let text = err.to_string();
+        assert!(text.contains("Local Network"), "{text}");
+        assert!(text.contains("restart"), "{text}");
+        assert!(text.contains("10.1.2.3:3671"), "{text}");
+        assert!(!err.is_fatal());
+        assert!(err.is_link_loss());
+    }
+
+    #[test]
+    fn test_classify_fresh_socket_error_host_unreachable_on_private_ranges_is_denied() {
+        for ip in [
+            [10, 0, 0, 5],
+            [172, 16, 3, 1],
+            [192, 168, 0, 9],
+            [169, 254, 7, 7],
+        ] {
+            let gw = SocketAddrV4::new(ip.into(), 3671);
+            let err = classify_fresh_socket_error(gw, io_err(io::ErrorKind::HostUnreachable));
+            assert!(
+                matches!(err, TransportError::LocalNetworkDenied { .. }),
+                "{gw}: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_classify_fresh_socket_error_connection_refused_stays_io() {
+        let err = classify_fresh_socket_error(LAN, io_err(io::ErrorKind::ConnectionRefused));
+        assert!(matches!(err, TransportError::Io { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn test_classify_fresh_socket_error_public_address_stays_io() {
+        let public = SocketAddrV4::new(std::net::Ipv4Addr::new(203, 0, 113, 10), 3671);
+        for kind in [io::ErrorKind::BrokenPipe, io::ErrorKind::HostUnreachable] {
+            let err = classify_fresh_socket_error(public, io_err(kind));
+            assert!(matches!(err, TransportError::Io { .. }), "{err:?}");
+        }
+        let lo = SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 3671);
+        let err = classify_fresh_socket_error(lo, io_err(io::ErrorKind::BrokenPipe));
+        assert!(matches!(err, TransportError::Io { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn test_classify_fresh_socket_error_timeout_unchanged() {
+        let err = classify_fresh_socket_error(LAN, TransportError::Timeout("CONNECT_RESPONSE"));
+        assert!(matches!(err, TransportError::Timeout(_)), "{err:?}");
+        let err = classify_fresh_socket_error(LAN, io_err(io::ErrorKind::TimedOut));
+        assert!(matches!(err, TransportError::Io { .. }), "{err:?}");
     }
 
     #[test]

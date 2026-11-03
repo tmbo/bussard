@@ -565,7 +565,7 @@ impl BussardMcp {
 
     /// `knx_bus_status` (issue #287).
     #[tool(
-        description = "The live bus connection in detail, read-only: state, interface, tunnelling user, the exact last transport error and when it happened (last_error, last_error_at), failed connect attempts since the bus was last connected, seconds until the next attempt (retry_in_seconds), and other bussard mcp processes serving this model directory on this host. Call it when a bus tool says the bus is not connected, instead of guessing; knx_bus_reconnect connects afresh."
+        description = "The live bus connection in detail, read-only: state, interface, tunnelling user (while connected), the exact last transport error and when it happened (last_error, last_error_at), failed connect attempts since the bus was last connected, seconds until the next attempt (retry_in_seconds), and other bussard mcp processes serving this model directory on this host. Call it when a bus tool says the bus is not connected, instead of guessing; knx_bus_reconnect connects afresh. A last_error saying the operating system refused access to the local network is a permission the user grants on their computer (macOS: Local Network); reconnecting cannot fix it until they do."
     )]
     async fn knx_bus_status(&self) -> Result<CallToolResult, ErrorData> {
         let mut out = self.state.bus.to_json();

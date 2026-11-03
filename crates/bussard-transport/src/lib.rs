@@ -72,7 +72,10 @@ pub use conn::{BusConnection, TimestampedFrame};
 pub use discovery::{
     describe_gateway, describe_gateway_extended, discover, discover_all, local_ipv4_interfaces,
 };
-pub use error::{E_NO_MORE_CONNECTIONS, Result, TransportError, status_name};
+pub use error::{
+    E_NO_MORE_CONNECTIONS, Result, TransportError, classify_fresh_socket_error,
+    is_local_network_refusal, status_name,
+};
 pub use router::Router;
 pub use secure_idle::{SecureIdleOutcome, SecureIdleReport, probe_secure_idle};
 pub use tunnel::{

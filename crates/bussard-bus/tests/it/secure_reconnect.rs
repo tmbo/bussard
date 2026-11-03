@@ -119,6 +119,8 @@ async fn test_bus_reconnects_within_one_backoff_after_the_listener_returns() -> 
     let down = handle.diagnostics();
     assert_ne!(handle.status(), BusState::Connected);
     assert!(down.last_error.is_some() && down.last_error_at.is_some());
+    // The user of the lost connection is history, not the current state.
+    assert_eq!(down.tunnel_user, None, "{down:?}");
     // A refused TCP connect on an interface whose UDP still advertises Secure
     // is fatal at startup, but this bus connected before: it keeps trying.
     assert_ne!(handle.status(), BusState::Closed, "{down:?}");
