@@ -125,6 +125,13 @@ fn read_counted_table(mem: &Memory, base: u16, elem_size: usize) -> Option<Vec<u
 
 /// The group addresses of the address table (obj1) at `addr_base`, in table
 /// order: index `i` holds TSAP `i + 1`. Empty when the table is refused.
+///
+/// A Loaded table of length 0 is what ETS and `bussard flash` write for a
+/// device with no group address (issue #542). Resources 3/5/1 §4.16.8.2.4 has
+/// such a table accept every group address; that is the data link layer's
+/// filter, which the simulator does not model. A TSAP exists only for a table
+/// entry (Table 78), so no telegram maps to a TSAP and none reaches a group
+/// object, which is what an empty list here gives [`GroupComm::from_tables`].
 pub(super) fn address_table(memory: &Memory, addr_base: u16) -> Vec<GroupAddress> {
     read_counted_table(memory, addr_base, 2)
         .unwrap_or_default()
@@ -349,6 +356,25 @@ mod tests {
             .expect("count write");
         let gc = GroupComm::from_tables(&mem, 0xA000, 0xC000, 0x8000);
         assert!(gc.is_empty(), "an oversized address count is refused");
+    }
+
+    #[test]
+    fn test_from_tables_count_zero_reaches_no_object() {
+        // The empty tables ETS writes on a download with no group address
+        // (count word 00 00 in obj 1 and obj 2, issue #542): no table entry
+        // gives a TSAP, so a write to any group address updates nothing and a
+        // read gets no answer (Resources 3/5/1 §4.16.8.2.4, Table 78).
+        let mut mem = seeded_memory();
+        mem.write(1, 0xA000, &0u16.to_be_bytes())
+            .expect("address count write");
+        mem.write(2, 0xC000, &0u16.to_be_bytes())
+            .expect("association count write");
+        let mut gc = GroupComm::from_tables(&mem, 0xA000, 0xC000, 0x8000);
+        for ga in [0x0801, 0x0802, 0x0001, 0xFFFF] {
+            assert!(gc.on_group_write(GroupAddress(ga), &[0x01]).is_empty());
+            assert_eq!(gc.on_group_read(GroupAddress(ga)), None);
+        }
+        assert!(gc.objects().values().all(|o| o.gas.is_empty()));
     }
 
     #[test]

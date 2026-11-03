@@ -58,6 +58,19 @@ offsets (recorded in `bussard.lock`, #48) to place per-channel parameters. Which
 (a load state machine plus memory-mapped segments on System B, absolute memory writes on System 7 and System 1/2) depends on the mask
 version each device reports; `bussard scan` reports this.
 
+**Empty System B tables (#542).** A `flash` of a System B device with no links loads the
+address and association tables with length 0 and completes their load, as ETS does: all
+118 System B applications of the ETS sweep (`plain-defaults` captures, `ops.txt`: the
+count word `00 00` at each `PID_TABLE_REFERENCE`, then LoadCompleted on obj 1 and 2) and
+the synthetic `syn-minimal no-ga` row compare identical. Resources 3/5/1 §4.16.8.2.4 says
+a Loaded address table of length 0 accepts every group address; that is the data link
+layer's address filter. A TSAP exists only for a table entry (Table 78) and the
+Transport Layer maps group addresses to TSAPs only through the table (3/3/4 §1.2), so
+no telegram reaches a group object, and the "standard association table" of §4.17.5.2.5
+(ASAP = TSAP) has no TSAP to map. A bare-flashed device therefore acts on no group
+telegram. `apply` and `restore` still refuse an empty table set, because there it would
+remove links the device has.
+
 ## 3. What's inside a `.knxprod`
 
 A ZIP containing XML (`Catalog.xml`, `Hardware.xml`, ApplicationProgram XML) plus an
