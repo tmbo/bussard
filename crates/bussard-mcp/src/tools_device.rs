@@ -22,6 +22,10 @@ use bussard_service::backup::{
     BackupInputs, capture_devices, default_out_dir, select_targets, write_backup_run,
 };
 use bussard_service::reconstruct::{Diff, DifferenceKind, build_report};
+use bussard_service::reconstruct_line::{
+    OutDir, SweepObserver, build_summary, check_out_dir, discovery_timeouts,
+    inject_reconstruct_banners, sweep_line, synthesize_model,
+};
 use bussard_service::secure::ToolKeySource;
 use bussard_service::{FactsCache, identity_line};
 use rmcp::ErrorData;
@@ -55,10 +59,27 @@ pub struct BackupDeviceArgs {
 }
 
 /// Arguments for `knx_reconstruct_device`.
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ReconstructDeviceArgs {
     /// The individual address of the device to read back, e.g. `"1.1.4"`.
-    pub address: String,
+    /// Pass either `address` or `line`.
+    #[serde(default)]
+    pub address: Option<String>,
+    /// A line, e.g. `"1.1"`: sweep it and synthesize a fresh model from the
+    /// tables, as `bussard reconstruct --line` does.
+    #[serde(default)]
+    pub line: Option<String>,
+    /// With `line`: the fresh (absent or empty) directory to write the model
+    /// to, relative to the model directory. Default:
+    /// `captures/reconstructed/line-<line>-<unix time>`.
+    #[serde(default)]
+    pub out: Option<String>,
+    /// With `line`: the first device number to probe (default 0).
+    #[serde(default)]
+    pub from: Option<u8>,
+    /// With `line`: the last device number to probe (default 255).
+    #[serde(default)]
+    pub to: Option<u8>,
 }
 
 /// Arguments for `knx_find_devices`.
@@ -118,16 +139,46 @@ impl BussardMcp {
         model disagree on), `changes`, plus `matches` and `note`. The tables do not say \
         whether an object sends or listens, so the diff compares group-address sets per \
         object. Quote the sentences to the human. Use it after an apply or a restore, or to \
-        see what ETS or another tool left on a device. Only available when the server is NOT \
-        in passive mode."
+        see what ETS or another tool left on a device. LINE FORM: pass `line` (e.g. \"1.1\") \
+        instead of `address` to sweep the line (device numbers `from` to `to`, default 0 to \
+        255) and synthesize a fresh model from the tables, as `bussard reconstruct --line` \
+        does: written to `out` (a fresh directory relative to the model directory; default \
+        captures/reconstructed/line-<line>-<time>), never into the model this server serves. \
+        Group names and DPTs are placeholders and every group address is recorded as listen. \
+        It runs as a job (about 3 s per address; `started: true` with a `job`: poll \
+        knx_job_status) and returns `out`, `devices_found`, `devices_read`, \
+        `devices_skipped`, `group_addresses`, `links` and `device_details`. Only available \
+        when the server is NOT in passive mode."
     )]
     async fn knx_reconstruct_device(
         &self,
         Parameters(args): Parameters<ReconstructDeviceArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        match self.reconstruct_device(&args.address).await {
-            Ok(value) => ok(value),
-            Err(reason) => refusal(&args.address, reason),
+        let given = |v: &Option<String>| {
+            v.as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+        };
+        match (given(&args.address), given(&args.line)) {
+            (Some(address), None) => match self.reconstruct_device(&address).await {
+                Ok(value) => ok(value),
+                Err(reason) => refusal(&address, reason),
+            },
+            (None, Some(line)) => match self.reconstruct_line(&line, &args).await {
+                Ok(value) => ok(value),
+                Err(reason) => ok(json!({
+                    "line": line,
+                    "ok": false,
+                    "refused": true,
+                    "reason": reason,
+                })),
+            },
+            (Some(_), Some(_)) => refusal("", "pass either `address` or `line`, not both".into()),
+            (None, None) => refusal(
+                "",
+                "pass a device `address`, or a `line` (e.g. \"1.1\") to sweep".into(),
+            ),
         }
     }
 
@@ -375,6 +426,268 @@ impl BussardMcp {
             format!("{target}'s link tables match the model.")
         });
         Ok(out)
+    }
+}
+
+/// A [`SweepObserver`] that reports the sweep as the job's step.
+struct JobProgress {
+    /// The job table.
+    jobs: Arc<crate::jobs::JobTable>,
+    /// The sweep's job.
+    job: String,
+    /// The addresses to probe.
+    total: usize,
+    /// The addresses probed so far.
+    probed: usize,
+}
+
+impl SweepObserver for JobProgress {
+    fn probing(&mut self, addr: IndividualAddress, found: usize) {
+        self.jobs.step(
+            &self.job,
+            format!(
+                "probing {addr} ({} of {}), {found} device(s) found",
+                self.probed + 1,
+                self.total
+            ),
+        );
+    }
+
+    fn advance(&mut self) {
+        self.probed += 1;
+    }
+}
+
+/// Resolves `out` (relative to the model directory, without `..`) or the
+/// default `captures/reconstructed/line-<line>-<unix time>`.
+fn reconstruct_out(
+    dir: &std::path::Path,
+    out: Option<&str>,
+    line: &str,
+) -> Result<std::path::PathBuf, String> {
+    match out.map(str::trim).filter(|o| !o.is_empty()) {
+        Some(out) => {
+            let path = std::path::Path::new(out);
+            let escapes = path.components().any(|c| {
+                !matches!(
+                    c,
+                    std::path::Component::Normal(_) | std::path::Component::CurDir
+                )
+            });
+            if escapes {
+                return Err(format!(
+                    "out {out:?} must be a relative path inside the model directory, without \
+                     `..`"
+                ));
+            }
+            Ok(dir.join(path))
+        }
+        None => {
+            let unix = SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            Ok(dir
+                .join("captures")
+                .join("reconstructed")
+                .join(format!("line-{line}-{unix}")))
+        }
+    }
+}
+
+impl BussardMcp {
+    /// `knx_reconstruct_device` with `line`; `Err` is a refusal reason.
+    ///
+    /// The sweep runs as a read job of the server's job table (it takes up
+    /// to about 3 s per address): the call answers with the result when the
+    /// sweep ends within the read wait, else with `started: true` and the
+    /// job id for knx_job_status.
+    async fn reconstruct_line(
+        &self,
+        line: &str,
+        args: &ReconstructDeviceArgs,
+    ) -> Result<Value, String> {
+        let began = std::time::Instant::now();
+        let (area, line_no) = bussard_service::line::parse_line(line).map_err(|e| e.to_string())?;
+        let line_text = format!("{area}.{line_no}");
+        let (from, to) = (args.from.unwrap_or(0), args.to.unwrap_or(255));
+        if from > to {
+            return Err(format!(
+                "invalid range: from {from} is greater than to {to}"
+            ));
+        }
+        let state = Arc::clone(self.state());
+        let dir = state.dir.clone();
+        let out = reconstruct_out(&dir, args.out.as_deref(), &line_text)?;
+        match check_out_dir(&out).map_err(|e| e.to_string())? {
+            OutDir::Fresh => {}
+            OutDir::File => {
+                return Err(format!(
+                    "out {} is a file; expected a fresh (absent or empty) directory",
+                    out.display()
+                ));
+            }
+            OutDir::NotEmpty => {
+                return Err(format!(
+                    "out {} is not empty; reconstruction never merges into an existing model \
+                     (choose a fresh directory)",
+                    out.display()
+                ));
+            }
+        }
+        let service = self.device_read_bus()?;
+        let at = IndividualAddress::new(area, line_no, 0).map_err(|e| e.to_string())?;
+        let job = state.jobs.claim_read(at)?;
+        let me = self.clone();
+        let id = job.clone();
+        let worker_line = line_text.clone();
+        let worker = tokio::spawn(async move {
+            let result = me
+                .reconstruct_line_body(
+                    &id,
+                    &service,
+                    (area, line_no),
+                    (from, to),
+                    &out,
+                    &worker_line,
+                )
+                .await
+                .unwrap_or_else(
+                    |reason| json!({"line": worker_line, "ok": false, "reason": reason}),
+                );
+            me.state().jobs.finish(&id, result);
+        });
+        let watched = job.clone();
+        let jobs = Arc::clone(&state.jobs);
+        tokio::spawn(async move {
+            if let Err(err) = worker.await {
+                jobs.finish(
+                    &watched,
+                    json!({
+                        "ok": false,
+                        "reason": format!("the line sweep stopped unexpectedly: {err}"),
+                    }),
+                );
+            }
+        });
+        let wait = state.jobs.read_wait().saturating_sub(began.elapsed());
+        if state.jobs.wait(&job, wait).await {
+            let mut result = state.jobs.result(&job).unwrap_or_else(|| json!({}));
+            result["job"] = json!(job);
+            return Ok(result);
+        }
+        let estimate = bussard_service::reconstruct_line::PER_ADDRESS_ESTIMATE
+            * (u32::from(to) - u32::from(from) + 1);
+        Ok(json!({
+            "started": true,
+            "done": false,
+            "kind": "read",
+            "job": job,
+            "line": line_text,
+            "step": "sweeping the line",
+            "next_step": format!(
+                "The sweep of line {line_text} ({from} to {to}) runs in the server as job {job}, \
+                 read-only on the bus; it can take up to about {} minute(s). Tell the human it \
+                 is running, then call knx_job_status with job {job} every few seconds until \
+                 `done` is true and report its `result`.",
+                estimate.as_secs().div_ceil(60)
+            ),
+        }))
+    }
+
+    /// The sweep, the synthesized model and its summary, run inside the
+    /// read job; `Err` is the reason it stopped.
+    async fn reconstruct_line_body(
+        &self,
+        job: &str,
+        service: &bussard_service::BusService,
+        (area, line_no): (u8, u8),
+        (from, to): (u8, u8),
+        out: &std::path::Path,
+        line: &str,
+    ) -> Result<Value, String> {
+        let state = Arc::clone(self.state());
+        // The model dir only supplies the connection block; the synthesized
+        // model is written to `out`, never merged into it.
+        let model = state.model.reload();
+        let history = bussard_model::history::History::open(&state.dir);
+        if let Err(err) = history.snapshot_if_changed_externally() {
+            tracing::warn!("could not record a history snapshot: {err}");
+        }
+        let found = {
+            let _permit = state.read_limiter.acquire().await;
+            let mut warm = self.warm().lock().await;
+            warm.release().await;
+            let source = service
+                .checked_source(false)
+                .await
+                .map_err(|e| e.to_string())?;
+            let mut progress = JobProgress {
+                jobs: Arc::clone(&state.jobs),
+                job: job.to_string(),
+                total: usize::from(to.saturating_sub(from)) + 1,
+                probed: 0,
+            };
+            let found = sweep_line(
+                service,
+                area,
+                line_no,
+                from,
+                to,
+                source,
+                discovery_timeouts(),
+                &mut progress,
+            )
+            .await;
+            drop(warm);
+            found
+        };
+        state.jobs.step(job, "writing the reconstructed model");
+        let config = bussard_model::schema::BussardConfig {
+            connection: model.config.connection.clone(),
+            lint: None,
+            import: None,
+            home_assistant: None,
+            enroll: None,
+        };
+        let synthesized = synthesize_model(&found, config);
+        synthesized
+            .save(out)
+            .map_err(|e| format!("writing the reconstructed model to {}: {e}", out.display()))?;
+        inject_reconstruct_banners(out).map_err(|e| {
+            let cause = std::error::Error::source(&e)
+                .map(|c| format!(": {c}"))
+                .unwrap_or_default();
+            format!("{e}{cause}")
+        })?;
+        // `out` was empty, so there is no prior state to preserve; the
+        // snapshot records the reconstructed model itself as the baseline
+        // the next edit is measured against (issue #110).
+        let out_history = bussard_model::history::History::open(out);
+        if out_history.has_model_files()
+            && let Err(err) = out_history.snapshot(
+                bussard_model::history::SnapshotReason::new("mcp knx_reconstruct_device")
+                    .with_args(["--line".to_string(), line.to_string()])
+                    .with_result("the model reconstructed from the line sweep"),
+            )
+        {
+            tracing::warn!("could not record a history snapshot: {err}");
+        }
+        let summary = build_summary(line, out, &found, &synthesized);
+        let mut value = serde_json::to_value(&summary).map_err(|e| e.to_string())?;
+        value["ok"] = json!(true);
+        value["started"] = json!(false);
+        value["done"] = json!(true);
+        value["next_step"] = json!(format!(
+            "Tell the human {} device(s) answered on line {line}: {} read, {} recorded as stubs \
+             (name each stub with its skip_reason), and that the model in {} is a scaffold \
+             synthesized from the tables: group names and DPTs are placeholders and every group \
+             address is recorded as listen, so it needs naming (watch the bus) before it is \
+             treated as the truth. It was written to its own directory; the model this server \
+             serves is unchanged.",
+            summary.devices_found, summary.devices_read, summary.devices_skipped, summary.out
+        ));
+        Ok(value)
     }
 }
 

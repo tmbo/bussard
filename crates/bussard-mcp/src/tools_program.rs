@@ -122,6 +122,7 @@ use crate::state::ConnState;
 mod flash;
 mod interface;
 mod ip_secure;
+mod line;
 mod restart;
 mod restore;
 mod restore_tables;
@@ -168,6 +169,8 @@ pub struct ProgrammingTier {
     restarts: std::sync::Mutex<HashMap<String, restart::PendingRestart>>,
     /// Table-restore plans produced in this session, by digest (issue #717).
     table_restores: std::sync::Mutex<HashMap<String, restore_tables::PendingTables>>,
+    /// Line plans produced in this session, by digest (issue #748).
+    line_plans: std::sync::Mutex<HashMap<String, line::PendingLinePlan>>,
 }
 
 impl ProgrammingTier {
@@ -189,6 +192,7 @@ impl ProgrammingTier {
             restore_plans: std::sync::Mutex::new(HashMap::new()),
             restarts: std::sync::Mutex::new(HashMap::new()),
             table_restores: std::sync::Mutex::new(HashMap::new()),
+            line_plans: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -235,6 +239,13 @@ impl ProgrammingTier {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    /// The line plan table, recovering from a poisoned lock.
+    fn line_plans(&self) -> std::sync::MutexGuard<'_, HashMap<String, line::PendingLinePlan>> {
+        self.line_plans
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// The table-restore plan table, recovering from a poisoned lock.
     fn table_restores(
         &self,
@@ -261,16 +272,28 @@ struct PendingPlan {
 /// Arguments for `knx_plan_device`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PlanDeviceArgs {
-    /// The individual address of the device to plan, e.g. `"1.1.4"`.
-    pub address: String,
+    /// The individual address of the device to plan, e.g. `"1.1.4"`. Pass
+    /// either `address` or `line`.
+    #[serde(default)]
+    pub address: Option<String>,
+    /// A line, e.g. `"1.1"`: plan every device the model has on it, as
+    /// `bussard plan --line` does (the link tables only).
+    #[serde(default)]
+    pub line: Option<String>,
 }
 
 /// Arguments for `knx_apply_device`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ApplyDeviceArgs {
-    /// The individual address of the device to write, e.g. `"1.1.4"`.
-    pub address: String,
-    /// The `plan_digest` returned by `knx_plan_device` for this device.
+    /// The individual address of the device to write, e.g. `"1.1.4"`. Pass
+    /// either `address` or `line`, as in the plan.
+    #[serde(default)]
+    pub address: Option<String>,
+    /// A line, e.g. `"1.1"`: write the line plan `knx_plan_device` returned
+    /// for it, as `bussard apply --line` does.
+    #[serde(default)]
+    pub line: Option<String>,
+    /// The `plan_digest` returned by `knx_plan_device` for this device or line.
     pub plan_digest: String,
     /// Optional: the `state_hash` from the same plan (or from `bussard plan
     /// --json`). When given, the write is refused unless a fresh read of the
@@ -399,16 +422,30 @@ impl BussardMcp {
         System B device reads its whole parameter memory): when the read does not end within \
         about 20 s the call answers `started: true` with a `job` id instead of the plan; call \
         knx_apply_status with that job every few seconds until `done` is true, and its `result` \
-        is the plan exactly as described here, plan_digest included. Only available with \
-        --allow-programming."
+        is the plan exactly as described here, plan_digest included. LINE FORM: pass `line` \
+        (e.g. \"1.1\") instead of `address` to plan every device the model has on the line, \
+        as `bussard plan --line` does: each device is read and its link tables diffed (links \
+        only, no parameters); `devices` lists each with `status` (changes, unchanged, \
+        skipped or failed, with `detail`), `changes`, `sentences` and `notes`, plus `totals`, \
+        all `sentences`, the `question` and ONE plan_digest over the whole line. It runs as a \
+        job like the device form (`started: true` with a `job`: poll knx_job_status). Show \
+        every device with changes and every skipped or failed one to the human. Only \
+        available with --allow-programming."
     )]
     async fn knx_plan_device(
         &self,
         Parameters(args): Parameters<PlanDeviceArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        match self.plan_device(&args.address).await {
-            Ok(value) => ok(value),
-            Err(reason) => refusal(&args.address, reason),
+        match target_of(args.address.as_deref(), args.line.as_deref()) {
+            Err(reason) => refusal("", reason),
+            Ok(Target::Line(line)) => match self.plan_line(line).await {
+                Ok(value) => ok(value),
+                Err(reason) => ok(line::line_refusal(line, reason)),
+            },
+            Ok(Target::Device(address)) => match self.plan_device(address).await {
+                Ok(value) => ok(value),
+                Err(reason) => refusal(address, reason),
+            },
         }
     }
 
@@ -436,23 +473,39 @@ impl BussardMcp {
         with the tables, exactly as `bussard apply --keyring` does. A plan with `method: \
         \"flash\"` runs the full application download `bussard flash --yes` writes (the \
         parameter memory backed up first, then the download, the restart and the read-back) \
-        as the same job; call it only after the human said yes to flashing the device. Only \
-        available with --allow-programming."
+        as the same job; call it only after the human said yes to flashing the device. LINE \
+        FORM: pass `line` and the plan_digest of knx_plan_device's line plan (instead of \
+        `address`) after the human's explicit yes to it, to write the line as `bussard apply \
+        --line` does: one job (poll knx_job_status) that writes each device with changes in \
+        address order, each backed up first and verified by an independent read-back; a \
+        device that fails is reported and the next one is tried, and a device whose fresh read \
+        no longer matches the plan is not written. Refused when the model's devices or links \
+        on the line changed since the plan, or the model has validation errors. The result \
+        lists per device `status` (applied, unchanged, skipped, failed), `verified`, \
+        `changes`, `sentences`, `backup` and `detail`; `ok` is true only when no device \
+        failed: report every failed device. Only available with --allow-programming."
     )]
     async fn knx_apply_device(
         &self,
         Parameters(args): Parameters<ApplyDeviceArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        match self
-            .apply_device(
-                &args.address,
-                args.plan_digest.trim(),
-                args.plan_hash.as_deref().map(str::trim),
-            )
-            .await
-        {
-            Ok(value) => ok(value),
-            Err(reason) => refusal(&args.address, reason),
+        match target_of(args.address.as_deref(), args.line.as_deref()) {
+            Err(reason) => refusal("", reason),
+            Ok(Target::Line(line)) => match self.apply_line(line, args.plan_digest.trim()).await {
+                Ok(value) => ok(value),
+                Err(reason) => ok(line::line_refusal(line, reason)),
+            },
+            Ok(Target::Device(address)) => match self
+                .apply_device(
+                    address,
+                    args.plan_digest.trim(),
+                    args.plan_hash.as_deref().map(str::trim),
+                )
+                .await
+            {
+                Ok(value) => ok(value),
+                Err(reason) => refusal(address, reason),
+            },
         }
     }
 
@@ -2278,6 +2331,28 @@ fn security_json(security: Option<&SecurityInputs>, desired: &DesiredTables, noo
             "secured_objects": inputs.secure_objects.iter().collect::<Vec<_>>(),
         }),
         _ => Value::Null,
+    }
+}
+
+/// What a plan or apply call names: one device or a whole line.
+enum Target<'a> {
+    /// `address`.
+    Device(&'a str),
+    /// `line`.
+    Line(&'a str),
+}
+
+/// The one target of a call that takes `address` or `line`; `Err` when it
+/// names both or neither.
+fn target_of<'a>(address: Option<&'a str>, line: Option<&'a str>) -> Result<Target<'a>, String> {
+    let given = |v: Option<&'a str>| v.map(str::trim).filter(|v| !v.is_empty());
+    match (given(address), given(line)) {
+        (Some(address), None) => Ok(Target::Device(address)),
+        (None, Some(line)) => Ok(Target::Line(line)),
+        (Some(_), Some(_)) => Err("pass either `address` or `line`, not both".into()),
+        (None, None) => {
+            Err("pass a device `address`, or a `line` (e.g. \"1.1\") for every device on it".into())
+        }
     }
 }
 

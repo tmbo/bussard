@@ -30,30 +30,27 @@
 //! The diff therefore compares **GA sets per object** — a model `send:` and a
 //! model `listen:` entry are treated alike.
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::ExitCode;
-use std::time::Duration;
 
 use anyhow::{Context, anyhow};
-use bussard_mgmt::apci::{PID_MANUFACTURER_ID, PID_ORDER_INFO, PID_SERIAL_NUMBER};
-use bussard_mgmt::tables::{DeviceTables, read_tables};
-use bussard_mgmt::{MaskProfile, manufacturers, system_type};
+use bussard_model::IndividualAddress;
 use bussard_model::schema::{
-    BussardConfig, ComObject, Connection as ModelConnection, Device, Group, Groups, Link, Links,
-    Product, Transport as ModelTransport,
+    BussardConfig, Connection as ModelConnection, Transport as ModelTransport,
 };
-use bussard_model::{Dpt, Flags, GroupAddress, IndividualAddress, LoadedDevice, Model};
+use bussard_service::WritePolicy;
 use bussard_service::reconstruct::{ReconstructReport, build_report};
-use bussard_service::{Authorize, BusService, L4Options, ServiceError, SourcePolicy, WritePolicy};
+use bussard_service::reconstruct_line::{
+    LineSummary, OutDir, PER_ADDRESS_ESTIMATE, SweepObserver, build_summary, check_out_dir,
+    discovery_timeouts, inject_reconstruct_banners, sweep_line, synthesize_model,
+};
 use bussard_transport::TransportKind;
 
-use crate::assign_cmd::{clean_ascii, hex};
 use crate::conn_cmd::{
     ConnOverrides, checked_source_or_close, load_model_optional, load_model_required, open_service,
     resolve_config,
 };
-use crate::scan_cmd::{discovery_timeouts, parse_line, read_u16};
+use crate::scan_cmd::parse_line;
 
 /// Runs `bussard reconstruct`.
 pub fn run(
@@ -219,78 +216,6 @@ fn print_text(report: &ReconstructReport) {
 // need human/monitor annotation.
 // ===========================================================================
 
-/// Per-address budget for the up-front estimate (duplicated from `scan_cmd`).
-const PER_ADDRESS_ESTIMATE: Duration = Duration::from_millis(3200);
-
-/// The reconstruction banner injected atop every synthesized file. It states
-/// the provenance (table read-back, not ETS) and the three things a human or
-/// the monitor must still supply: names, DPTs and send/listen directions.
-const RECONSTRUCT_BANNER: &str = "\
-# ⚠ RECONSTRUCTED from on-device table read-back (`bussard reconstruct --line`).
-#
-# This model was synthesized WITHOUT an ETS project, by reading each System B
-# device's group-address and association tables over the bus. It is a scaffold,
-# not ground truth:
-#   • GA and com-object names are placeholders — annotate them (watch the bus
-#     with `bussard monitor`, then name what you observe).
-#   • DPTs are unknown (groups.toml carries no `dpt`; validation warns W011).
-#   • send/listen DIRECTION is not recoverable from these tables (the transmit
-#     flag lives in the group object table), so every GA is recorded as `listen`.
-#   • com-object flags are placeholder `CW` stubs so the model validates.
-# Verify against reality before treating this as the source of truth.
-#
-";
-
-/// A device that responded to the line sweep. System B devices carry read
-/// tables; everything else is recorded as a stub (mask only, tables skipped).
-struct LineDevice {
-    address: IndividualAddress,
-    mask: u16,
-    manufacturer_id: Option<u16>,
-    serial: Option<Vec<u8>>,
-    order: Option<String>,
-    /// The read tables, present only for System B devices.
-    tables: Option<DeviceTables>,
-    /// Why the tables were skipped (non-System-B, or a read error), if skipped.
-    skipped: Option<String>,
-}
-
-/// The line-mode summary, shaped for both text and `--json`.
-#[derive(serde::Serialize)]
-struct LineSummary {
-    line: String,
-    out: String,
-    /// Devices whose tables were read (System B).
-    devices_read: usize,
-    /// Devices recorded as a stub (mask noted, tables skipped).
-    devices_skipped: usize,
-    /// Total responders on the line.
-    devices_found: usize,
-    /// Distinct group addresses across all read tables.
-    group_addresses: usize,
-    /// Total (object → GA) links synthesized.
-    links: usize,
-    /// Per-device breakdown.
-    device_details: Vec<LineDeviceDetail>,
-}
-
-/// One device row in the line-mode summary.
-#[derive(serde::Serialize)]
-struct LineDeviceDetail {
-    address: String,
-    mask: String,
-    system_type: String,
-    /// `"read"` for System B devices, `"stub"` otherwise.
-    status: &'static str,
-    /// The skip reason, when the device was recorded as a stub.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    skip_reason: Option<String>,
-    /// Distinct GAs read from this device (0 for stubs).
-    group_addresses: usize,
-    /// Links synthesized for this device (0 for stubs).
-    links: usize,
-}
-
 /// Runs `bussard reconstruct --line`.
 pub fn run_line(
     line: &str,
@@ -336,8 +261,29 @@ pub fn run_line(
     let found = runtime.block_on(async move {
         let service = open_service(config, WritePolicy::ReadOnly).await?;
         let source = checked_source_or_close(&service, &conn).await?;
+        let mut progress = Progress(crate::progress::SweepDisplay::new(
+            "reconstructing",
+            usize::from(to.saturating_sub(from)) + 1,
+            json,
+        ));
         let found = tokio::select! {
-            found = sweep_line(&service, area, line_no, from, to, source, json) => found,
+            found = sweep_line(
+                &service,
+                area,
+                line_no,
+                from,
+                to,
+                source,
+                discovery_timeouts(),
+                &mut progress,
+            ) => {
+                progress.0.finish();
+                eprintln!(
+                    "\rsweep complete: {} device(s) found            ",
+                    found.len()
+                );
+                found
+            }
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\ninterrupted; closing the bus connection");
                 Vec::new()
@@ -347,7 +293,7 @@ pub fn run_line(
         anyhow::Ok(found)
     })?;
 
-    let model = synthesize_model(&found, &overrides, dir);
+    let model = synthesize_model(&found, model_config(&overrides, dir));
     model
         .save(out)
         .with_context(|| format!("writing the reconstructed model to {}", out.display()))?;
@@ -374,321 +320,32 @@ pub fn run_line(
 /// Fails if `out` exists and is a non-empty directory (or a file). Reconstruction
 /// must never merge into an existing model.
 fn ensure_empty_out(out: &Path) -> anyhow::Result<()> {
-    if !out.exists() {
-        return Ok(());
-    }
-    if out.is_file() {
-        return Err(anyhow!(
+    match check_out_dir(out)? {
+        OutDir::Fresh => Ok(()),
+        OutDir::File => Err(anyhow!(
             "--out {} is a file; expected a fresh (absent or empty) directory",
             out.display()
-        ));
-    }
-    let mut entries = std::fs::read_dir(out)
-        .with_context(|| format!("reading {}", out.display()))?
-        .filter_map(Result::ok);
-    if entries.next().is_some() {
-        return Err(anyhow!(
+        )),
+        OutDir::NotEmpty => Err(anyhow!(
             "--out {} is not empty; reconstruction never merges into an existing model \
              (choose a fresh directory)",
             out.display()
-        ));
-    }
-    Ok(())
-}
-
-/// Sweeps the line, returning every responder with its tables (System B) or a
-/// stub (everything else). One [`Bus`] is shared; each probe leases it.
-async fn sweep_line(
-    service: &BusService,
-    area: u8,
-    line_no: u8,
-    from: u8,
-    to: u8,
-    source: IndividualAddress,
-    json: bool,
-) -> Vec<LineDevice> {
-    let mut found = Vec::new();
-    // Progress to stderr (issue #147): a line rewritten in place, or the live
-    // view on an interactive terminal.
-    let display = crate::progress::SweepDisplay::new(
-        "reconstructing",
-        usize::from(to.saturating_sub(from)) + 1,
-        json,
-    );
-    for device in from..=to {
-        let Ok(addr) = IndividualAddress::new(area, line_no, device) else {
-            continue;
-        };
-        display.probing(addr, found.len());
-        if let Some(dev) = probe_line(service, addr, source).await {
-            found.push(dev);
-        }
-        display.advance();
-    }
-    display.finish();
-    eprintln!(
-        "\rsweep complete: {} device(s) found            ",
-        found.len()
-    );
-    found
-}
-
-/// Probes one address: descriptor first; System B → read tables; anything else
-/// → best-effort product identity, recorded as a stub. Returns `None` for an
-/// absent or refusing device.
-async fn probe_line(
-    service: &BusService,
-    addr: IndividualAddress,
-    source: IndividualAddress,
-) -> Option<LineDevice> {
-    let options = L4Options {
-        source: SourcePolicy::Known(source),
-        timeouts: discovery_timeouts(),
-        authorize: Authorize::Skip,
-        ..L4Options::default()
-    };
-    let (mask, manufacturer_id, serial, order) = service
-        .with_device(addr, &options, async |dev| {
-            let mask = match dev.device_descriptor().await {
-                Ok(mask) => mask,
-                Err(err) => {
-                    if err.device_present() {
-                        tracing::debug!("{addr} present but refused the descriptor read: {err}");
-                    }
-                    return Ok(None);
-                }
-            };
-            // Best-effort product identity for every responder (System B or not).
-            let manufacturer_id = read_u16(dev, PID_MANUFACTURER_ID).await;
-            let serial = dev
-                .read_device_property(PID_SERIAL_NUMBER)
-                .await
-                .ok()
-                .filter(|v| !v.is_empty());
-            let order = dev
-                .read_device_property(PID_ORDER_INFO)
-                .await
-                .ok()
-                .map(|v| clean_ascii(&v))
-                .filter(|s| !s.is_empty());
-            Ok::<_, ServiceError>(Some((mask, manufacturer_id, serial, order)))
-        })
-        .await
-        .ok()
-        .flatten()?;
-
-    // System B → read tables over a fresh Layer 4 session; others → stub. The
-    // profile makes this medium-agnostic: 07B0 (TP1), 57B0 (KNX-IP) and 27B0
-    // (RF) are all read, not just TP1.
-    let (tables, skipped) = if MaskProfile::from_mask(mask).is_system_b() {
-        match read_line_tables(service, addr, source).await {
-            Ok(t) => (Some(t), None),
-            Err(err) => (None, Some(format!("System B table read failed: {err}"))),
-        }
-    } else {
-        (
-            None,
-            Some("not System B; tables skipped, recorded as a device stub".to_string()),
-        )
-    };
-
-    Some(LineDevice {
-        address: addr,
-        mask,
-        manufacturer_id,
-        serial,
-        order,
-        tables,
-        skipped,
-    })
-}
-
-/// Opens a fresh connection-oriented session and reads the device's tables.
-async fn read_line_tables(
-    service: &BusService,
-    addr: IndividualAddress,
-    source: IndividualAddress,
-) -> anyhow::Result<DeviceTables> {
-    let options = L4Options {
-        source: SourcePolicy::Known(source),
-        // Authorize (free access) before reading, as ETS does (issue #52
-        // finding #1).
-        authorize: Authorize::BestEffort(bussard_mgmt::apci::FREE_ACCESS_KEY),
-        ..L4Options::default()
-    };
-    let result = service
-        .with_l4(addr, &options, async |l4| {
-            Ok::<_, ServiceError>(read_tables(l4).await)
-        })
-        .await
-        .map_err(|e| anyhow!("{e}"))?;
-    result.map_err(|e| anyhow!("{e}"))
-}
-
-/// Placeholder flags for a reconstructed com-object: `CW` keeps the model
-/// ERROR-free (C is required for a linked object; W avoids the listen-only
-/// W008 warning) while being honestly minimal — the real flags are unknown.
-fn placeholder_flags() -> Flags {
-    Flags::COMMUNICATION | Flags::WRITE
-}
-
-/// Synthesizes a fresh [`Model`] from the swept devices.
-///
-/// - `groups.toml`: every GA seen across all read tables, named
-///   `GA <addr> (reconstructed)`, no DPT.
-/// - `devices/<ia>.toml`: object → GA set per device, every GA as `listen`
-///   (direction is unrecoverable).
-/// - `bussard.lock`: mask + best-effort product facts; a placeholder com-object
-///   stub per linked object so validation passes.
-/// - `bussard.toml`: the connection actually used for the sweep.
-fn synthesize_model(found: &[LineDevice], overrides: &ConnOverrides, dir: &Path) -> Model {
-    let mut groups: BTreeMap<GroupAddress, Group> = BTreeMap::new();
-    let mut links: BTreeMap<IndividualAddress, Vec<Link>> = BTreeMap::new();
-    let mut devices: BTreeMap<IndividualAddress, LoadedDevice> = BTreeMap::new();
-
-    for dev in found {
-        // The product block is best-effort for every responder.
-        let product = build_product(dev);
-
-        let mut com_objects: BTreeMap<u16, ComObject> = BTreeMap::new();
-        if let Some(tables) = &dev.tables {
-            // object → GA set from the resolved links.
-            let mut per_object: BTreeMap<u16, BTreeSet<GroupAddress>> = BTreeMap::new();
-            for link in &tables.resolved {
-                per_object.entry(link.object).or_default().insert(link.ga);
-                groups
-                    .entry(link.ga)
-                    .or_insert_with(|| reconstructed_group(link.ga));
-            }
-            // Also register any address-table GA that carried no association, so
-            // groups.toml is the honest union of everything seen.
-            for ga in &tables.addresses {
-                groups
-                    .entry(*ga)
-                    .or_insert_with(|| reconstructed_group(*ga));
-            }
-
-            let mut device_links = Vec::with_capacity(per_object.len());
-            for (object, gas) in per_object {
-                com_objects.insert(
-                    object,
-                    ComObject {
-                        dpt: None,
-                        size: Some("unknown".to_string()),
-                        flags: placeholder_flags(),
-                        reference: None,
-                        channel: None,
-                        secure: false,
-                        function: None,
-                        key: None,
-                        text: None,
-                    },
-                );
-                device_links.push(Link {
-                    object,
-                    name: None,
-                    send: None,
-                    listen: gas.into_iter().collect(),
-                });
-            }
-            if !device_links.is_empty() {
-                links.insert(dev.address, device_links);
-            }
-        }
-
-        let device = Device {
-            address: dev.address,
-            name: format!("{} (reconstructed)", dev.address),
-            description: Some(reconstruct_note(dev)),
-            location: None,
-            replaced: None,
-            product,
-            channels: BTreeMap::new(),
-            parameters: BTreeMap::new(),
-            module_bases: BTreeMap::new(),
-            com_objects,
-            // KNX Secure state comes only from the knxproj importer (issue #71).
-            security: None,
-            application_override: None,
-            knxnet: None,
-            lock: Default::default(),
-        };
-        devices.insert(
-            dev.address,
-            LoadedDevice {
-                device,
-                file_stem: dev.address.to_string(),
-            },
-        );
-    }
-
-    Model {
-        config: model_config(overrides, dir),
-        groups: Groups {
-            project: Some("reconstructed (no ETS project)".to_string()),
-            imported_from: None,
-            ranges: BTreeMap::new(),
-            groups,
-        },
-        links: Links { links },
-        devices,
+        )),
     }
 }
 
-/// A placeholder [`Group`] for a reconstructed GA: name only, no DPT.
-fn reconstructed_group(ga: GroupAddress) -> Group {
-    Group {
-        name: format!("GA {ga} (reconstructed)"),
-        dpt: None::<Dpt>,
-        description: None,
-        protected: false,
-        secure: false,
-    }
-}
+/// The CLI's sweep progress: a line rewritten in place, or the live view on
+/// an interactive terminal (issue #147).
+struct Progress(crate::progress::SweepDisplay);
 
-/// A per-device description line noting mask/system and, for stubs, why the
-/// tables were skipped.
-fn reconstruct_note(dev: &LineDevice) -> String {
-    match &dev.skipped {
-        Some(reason) => format!(
-            "reconstructed stub — mask {:04X} ({}); {reason}",
-            dev.mask,
-            system_type(dev.mask)
-        ),
-        None => format!(
-            "reconstructed from table read-back — mask {:04X} ({})",
-            dev.mask,
-            system_type(dev.mask)
-        ),
+impl SweepObserver for Progress {
+    fn probing(&mut self, addr: IndividualAddress, found: usize) {
+        self.0.probing(addr, found);
     }
-}
 
-/// Builds the best-effort product block from the read identity.
-fn build_product(dev: &LineDevice) -> Option<Product> {
-    let manufacturer = dev.manufacturer_id.map(manufacturers::display);
-    let order_number = dev.order.clone();
-    let mask = Some(format!("{:04X}", dev.mask));
-    // Stash the serial in hardware_ref (best-effort provenance; no other slot).
-    let hardware_ref = dev.serial.as_deref().map(|s| format!("serial:{}", hex(s)));
-    if manufacturer.is_none() && order_number.is_none() && hardware_ref.is_none() {
-        // Still record the mask — it decides the read path in later phases.
-        return Some(Product {
-            manufacturer: None,
-            manufacturer_ref: None,
-            order_number: None,
-            hardware_ref: None,
-            application_ref: None,
-            mask,
-        });
+    fn advance(&mut self) {
+        self.0.advance();
     }
-    Some(Product {
-        manufacturer,
-        manufacturer_ref: None,
-        order_number,
-        hardware_ref,
-        application_ref: None,
-        mask,
-    })
 }
 
 /// Builds the `bussard.toml` config recording the connection actually used.
@@ -728,85 +385,6 @@ fn model_config(overrides: &ConnOverrides, dir: &Path) -> BussardConfig {
         import: None,
         home_assistant: None,
         enroll: None,
-    }
-}
-
-/// Prepends [`RECONSTRUCT_BANNER`] to every synthesized hand-editable file
-/// (`bussard.toml`, `groups.toml`, `devices/*.toml`) after `Model::save`. A
-/// TOML comment block at the top is inert, and a later save keeps it. The
-/// generated `bussard.lock` keeps its own header. One-shot: the banner is added
-/// exactly once here.
-fn inject_reconstruct_banners(out: &Path) -> anyhow::Result<()> {
-    let mut files = vec![out.join("bussard.toml"), out.join("groups.toml")];
-    let devices_dir = out.join("devices");
-    if let Ok(rd) = std::fs::read_dir(&devices_dir) {
-        for entry in rd.filter_map(Result::ok) {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("toml") {
-                files.push(path);
-            }
-        }
-    }
-    for path in files {
-        if !path.exists() {
-            continue;
-        }
-        let body = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        std::fs::write(&path, format!("{RECONSTRUCT_BANNER}{body}"))
-            .with_context(|| format!("writing {}", path.display()))?;
-    }
-    Ok(())
-}
-
-/// Builds the line-mode summary from the swept devices and synthesized model.
-fn build_summary(line: &str, out: &Path, found: &[LineDevice], model: &Model) -> LineSummary {
-    let mut details = Vec::with_capacity(found.len());
-    let mut read = 0usize;
-    let mut skipped = 0usize;
-    for dev in found {
-        let (status, gas, dev_links) = match &dev.tables {
-            Some(tables) => {
-                read += 1;
-                let gas: BTreeSet<GroupAddress> = tables
-                    .resolved
-                    .iter()
-                    .map(|l| l.ga)
-                    .chain(tables.addresses.iter().copied())
-                    .collect();
-                let links = model
-                    .links
-                    .links
-                    .get(&dev.address)
-                    .map(Vec::len)
-                    .unwrap_or(0);
-                ("read", gas.len(), links)
-            }
-            None => {
-                skipped += 1;
-                ("stub", 0, 0)
-            }
-        };
-        details.push(LineDeviceDetail {
-            address: dev.address.to_string(),
-            mask: format!("{:04X}", dev.mask),
-            system_type: system_type(dev.mask).to_string(),
-            status,
-            skip_reason: dev.skipped.clone(),
-            group_addresses: gas,
-            links: dev_links,
-        });
-    }
-
-    LineSummary {
-        line: line.to_string(),
-        out: out.display().to_string(),
-        devices_read: read,
-        devices_skipped: skipped,
-        devices_found: found.len(),
-        group_addresses: model.groups.groups.len(),
-        links: model.links.links.values().map(Vec::len).sum(),
-        device_details: details,
     }
 }
 

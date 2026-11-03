@@ -39,6 +39,10 @@
 //! - [`backup`]: the device reads behind `bussard backup` and
 //!   `knx_backup_device`; [`reconstruct`]: a device's tables diffed against
 //!   the model (`bussard reconstruct`, `knx_reconstruct_device`, issue #717).
+//! - [`line`](mod@line): the whole-line plan and apply (`bussard plan --line`, `apply
+//!   --line`, `knx_plan_device` / `knx_apply_device` with `line`, issue #748);
+//!   [`reconstruct_line`]: the line sweep that synthesizes a fresh model
+//!   (`bussard reconstruct --line`, `knx_reconstruct_device` with `line`).
 //! - [`restore`]: replaying a parameter backup (`bussard restore
 //!   --parameters`, `knx_restore_parameters`, issue #290).
 //! - [`setup`]: a model directory from nothing, the gateway, the skeleton
@@ -70,11 +74,13 @@ pub use bussard_transport::guidance;
 pub mod identity;
 pub mod ip_secure;
 pub mod knxnet;
+pub mod line;
 pub mod model_handle;
 pub mod params;
 pub mod policy;
 pub mod property_plan;
 pub mod reconstruct;
+pub mod reconstruct_line;
 pub mod restart;
 pub mod restore;
 pub mod scan;

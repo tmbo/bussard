@@ -20,7 +20,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, anyhow};
-use bussard_mgmt::{DeviceConnection, L4Channel, Timeouts, manufacturers, system_type};
+use bussard_mgmt::{Timeouts, manufacturers, system_type};
 use bussard_model::IndividualAddress;
 use bussard_secure::Key16;
 use bussard_service::BusService;
@@ -200,17 +200,6 @@ pub(crate) async fn probe_with_key(
     let (identity, status) =
         identity::probe(service, addr, &probe_options(source), tool_key).await?;
     Some(Found::from_identity(identity, status))
-}
-
-/// Reads a 2-byte property as a `u16`, returning `None` on any failure.
-pub(crate) async fn read_u16<Ch: L4Channel>(
-    dev: &mut DeviceConnection<Ch>,
-    pid: u8,
-) -> Option<u16> {
-    match dev.read_device_property(pid).await {
-        Ok(bytes) if bytes.len() >= 2 => Some(u16::from_be_bytes([bytes[0], bytes[1]])),
-        _ => None,
-    }
 }
 
 /// Parses a `area.line` (e.g. `1.1`) or a full `area.line.device` (ignoring the

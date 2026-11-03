@@ -7,15 +7,10 @@
 //! iterates the model's devices on a line in address order and reports one
 //! summary table.
 //!
-//! What it reuses, so the batch path can never drift from the single-device one:
-//!
-//! * the desired tables come from [`bussard_download::compute_tables`], exactly
-//!   as [`crate::plan_cmd`] computes them;
-//! * the live read is [`crate::plan_cmd::read_live_tables`], so both device
-//!   families (System B `x7B0`, System 7 `0705` / `0701`) are read the same way;
-//! * the write is [`crate::apply_cmd::execute`] / [`crate::apply_cmd::execute_sys7`]
-//!   after [`crate::apply_cmd::write_backup`] — the same per-device backup, the
-//!   same load sequence, the same read-back verify.
+//! Each device is visited by [`bussard_service::line::visit_device`], the
+//! function `knx_plan_device` and `knx_apply_device` call with `line` too
+//! (issue #748): the same read, the same per-device backup, the same load
+//! sequence and the same read-back verify as the single-device path.
 //!
 //! Two things are new here.
 //!
@@ -37,108 +32,22 @@ use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, bail};
-use bussard_download::{DesiredTables, compute_tables, plan, sys7_flag_writes, sys7_table_images};
-use bussard_mgmt::{MaskProfile, system_type};
+use bussard_mgmt::system_type;
 use bussard_model::{IndividualAddress, Model};
-use bussard_service::{Authorize, BusService, L4Options, ServiceError, SourcePolicy, WritePolicy};
+use bussard_service::line::{
+    DeviceStatus, LineMode as Mode, LineNote, LineOutcome as Outcome, LineTarget as Target,
+    LineVisit, targets_on_line, visit_device,
+};
+use bussard_service::{BusService, WritePolicy};
 
-use crate::apply_cmd;
 use crate::conn_cmd::{
     ConnOverrides, checked_source_or_close, enforce_write_gate, gateway_display,
-    load_model_required, open_service, resolve_config, session_error_detail, session_open_error,
+    load_model_required, open_service, resolve_config,
 };
-use crate::plan_cmd;
 use crate::secure_key::ToolKeySource;
 
 /// The state-file format version, bumped if the shape ever changes.
 const STATE_VERSION: u32 = 1;
-
-/// Which half of the run this is: a read-only preview or the real write.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Mode {
-    /// `plan --line`: read the tables and diff them, never write.
-    Plan,
-    /// `apply --line`: back up, write and verify each device with changes.
-    Apply,
-}
-
-impl Mode {
-    /// The verb used in messages and in the JSON `mode` field.
-    fn verb(self) -> &'static str {
-        match self {
-            Mode::Plan => "plan",
-            Mode::Apply => "apply",
-        }
-    }
-}
-
-/// What happened to one device in a whole-line run.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum DeviceStatus {
-    /// `plan` only: the device differs from the model by this many links.
-    Changes(usize),
-    /// `apply` only: this many link changes were written and verified.
-    Applied(usize),
-    /// The device already matches the model; nothing to do.
-    Unchanged,
-    /// The device was deliberately not touched, for the stated reason.
-    Skipped(String),
-    /// The device could not be planned or written, for the stated reason.
-    Failed(String),
-}
-
-impl DeviceStatus {
-    /// The machine-readable status key for the JSON summary.
-    fn key(&self) -> &'static str {
-        match self {
-            DeviceStatus::Changes(_) => "changes",
-            DeviceStatus::Applied(_) => "applied",
-            DeviceStatus::Unchanged => "unchanged",
-            DeviceStatus::Skipped(_) => "skipped",
-            DeviceStatus::Failed(_) => "failed",
-        }
-    }
-
-    /// The number of link changes this status counted, zero when it counted none.
-    fn changes(&self) -> usize {
-        match self {
-            DeviceStatus::Changes(n) | DeviceStatus::Applied(n) => *n,
-            _ => 0,
-        }
-    }
-
-    /// The reason text for a skip or a failure.
-    fn detail(&self) -> Option<&str> {
-        match self {
-            DeviceStatus::Skipped(d) | DeviceStatus::Failed(d) => Some(d),
-            _ => None,
-        }
-    }
-
-    /// The human cell for the summary table.
-    fn label(&self) -> String {
-        match self {
-            DeviceStatus::Changes(n) => format!("changes: {n}"),
-            DeviceStatus::Applied(n) => format!("applied: {n}"),
-            DeviceStatus::Unchanged => "unchanged".to_string(),
-            DeviceStatus::Skipped(d) => format!("skipped: {d}"),
-            DeviceStatus::Failed(d) => format!("failed: {d}"),
-        }
-    }
-}
-
-/// One device's line in the summary.
-#[derive(Debug, Clone)]
-struct Outcome {
-    /// The device's individual address.
-    address: IndividualAddress,
-    /// Its name from the model.
-    name: String,
-    /// The mask version it reported, when it answered.
-    mask: Option<u16>,
-    /// What happened.
-    status: DeviceStatus,
-}
 
 /// The stable JSON shape of one device row.
 #[derive(Debug, serde::Serialize)]
@@ -236,65 +145,10 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
-/// One device to visit: its model identity plus the tables the model wants on it.
-struct Target {
-    address: IndividualAddress,
-    name: String,
-    /// The desired tables, or the reason this device is skipped without a read.
-    desired: Result<DesiredTables, String>,
-}
-
-/// Parses an `area.line` string (e.g. `1.1`) into its two parts.
-///
-/// A full `area.line.device` is accepted and its device part ignored, so
-/// `--line 1.1.4` is read as line `1.1` rather than rejected.
+/// Parses an `area.line` string (e.g. `1.1`) into its two parts
+/// ([`bussard_service::line::parse_line`]).
 pub(crate) fn parse_line(line: &str) -> anyhow::Result<(u8, u8)> {
-    let parts: Vec<&str> = line.split('.').collect();
-    if parts.len() < 2 {
-        bail!("invalid line {line:?}; expected area.line like \"1.1\"");
-    }
-    let area: u8 = parts[0]
-        .parse()
-        .map_err(|_| anyhow::anyhow!("invalid area in {line:?}"))?;
-    let line_no: u8 = parts[1]
-        .parse()
-        .map_err(|_| anyhow::anyhow!("invalid line in {line:?}"))?;
-    if area > 15 || line_no > 15 {
-        bail!("area and line must each be 0–15 (got {line:?})");
-    }
-    Ok((area, line_no))
-}
-
-/// The model's devices on `area.line`, in address order, each with the tables
-/// the model wants on it.
-///
-/// A device with no links in its device file is carried as a skip rather than an
-/// error: an empty table set would wipe the device, and one unlinked device must
-/// not abort a whole-line run (the single-device `plan` still refuses it).
-fn targets_on_line(model: &Model, area: u8, line_no: u8) -> Vec<Target> {
-    model
-        .devices
-        .iter()
-        .filter(|(ia, _)| ia.area() == area && ia.line() == line_no)
-        .map(|(ia, loaded)| {
-            let links = model
-                .links
-                .links
-                .get(ia)
-                .map(|v| v.as_slice())
-                .unwrap_or(&[]);
-            let desired = if links.is_empty() {
-                Err("no links in the model".to_string())
-            } else {
-                Ok(compute_tables(links))
-            };
-            Target {
-                address: *ia,
-                name: loaded.device.name.clone(),
-                desired,
-            }
-        })
-        .collect()
+    Ok(bussard_service::line::parse_line(line)?)
 }
 
 /// Runs `bussard plan --line`.
@@ -558,6 +412,32 @@ async fn visit_all(
     state_path: &Path,
     collected: &Arc<Mutex<Vec<Outcome>>>,
 ) {
+    // KNX Data Secure (issue #71): one key per device, since a keyring holds
+    // one per address; the admitted tunnelling addresses (issue #297).
+    let material = |address: IndividualAddress| {
+        let activated = crate::secure_key::model_activated(Some(model), address);
+        crate::secure_key::resolve_material(address, tool_key_source, activated)
+            .map_err(|err| format!("{err:#}"))
+    };
+    let tunnel = |secured: bool| {
+        crate::secure_key::admitted_tunnel(Some(model), tool_key_source, secured)
+            .map_err(|err| format!("{err:#}"))
+    };
+    let visit = LineVisit {
+        service,
+        source,
+        model,
+        dir,
+        mode,
+        material: &material,
+        tunnel: &tunnel,
+        on_parse: Some(crate::product_cache::record_parse),
+        expected: None,
+    };
+    let mut print_note = |note: LineNote| match note {
+        LineNote::Detail(line) => eprintln!("  {line}"),
+        LineNote::Warning(line) => eprintln!("{line}"),
+    };
     let total = targets.len();
     for (index, target) in targets.iter().enumerate() {
         eprintln!(
@@ -574,9 +454,12 @@ async fn visit_all(
                 name: target.name.clone(),
                 mask: None,
                 status: DeviceStatus::Skipped("done in an earlier run".to_string()),
+                report: None,
+                fingerprint: None,
+                backup: None,
             }
         } else {
-            visit_one(service, source, model, target, mode, dir, tool_key_source).await
+            visit_device(&visit, target, &mut print_note).await
         };
         eprintln!("  {}", outcome.status.label());
 
@@ -600,481 +483,6 @@ async fn visit_all(
             Err(_) => return,
         }
     }
-}
-
-/// Plans (and, in [`Mode::Apply`], writes) one device.
-async fn visit_one(
-    service: &BusService,
-    source: IndividualAddress,
-    model: &Model,
-    target: &Target,
-    mode: Mode,
-    dir: &Path,
-    tool_key_source: ToolKeySource<'_>,
-) -> Outcome {
-    let make = |mask: Option<u16>, status: DeviceStatus| Outcome {
-        address: target.address,
-        name: target.name.clone(),
-        mask,
-        status,
-    };
-
-    let desired = match &target.desired {
-        Ok(desired) => desired,
-        Err(reason) => return make(None, DeviceStatus::Skipped(reason.clone())),
-    };
-
-    // KNX Data Secure (issue #71): one key per device, since a keyring holds one
-    // per address. A device the keyring does not cover fails alone.
-    let activated = crate::secure_key::model_activated(Some(model), target.address);
-    let material =
-        match crate::secure_key::resolve_material(target.address, tool_key_source, activated) {
-            Ok(material) => material,
-            Err(err) => return make(None, DeviceStatus::Failed(format!("{err:#}"))),
-        };
-    let tool_key = material.tool_key.clone();
-    // `admit_tunnel_senders` (issue #297): a line run keeps the tunnelling
-    // addresses in every table it reprograms, so it never drops them.
-    let tunnel = match crate::secure_key::admitted_tunnel(
-        Some(model),
-        tool_key_source,
-        tool_key.is_some(),
-    ) {
-        Ok(tunnel) => tunnel,
-        Err(err) => return make(None, DeviceStatus::Failed(format!("{err:#}"))),
-    };
-    // A secured System B write reprograms the security object too (issue
-    // #156); on a line walk the keyring is the source of the secured GAs. The
-    // model's links name the secured senders of the IA table (issue #181).
-    let security = tool_key.as_ref().map(|_| {
-        let empty = std::collections::HashMap::new();
-        let keys = material.group_keys.as_ref().unwrap_or(&empty);
-        let mut inputs = bussard_download::security_inputs_for(None, target.address, desired, keys);
-        inputs.senders = bussard_download::secured_senders(
-            Some(model),
-            target.address,
-            keys,
-            &material.device_sequences,
-            &tunnel,
-        );
-        inputs.admitted_tunnel = tunnel
-            .iter()
-            .copied()
-            .filter(|ia| *ia != target.address)
-            .collect();
-        inputs
-    });
-    let secure_seq = bussard_secure::SequenceHighWater::new();
-
-    // The product data places a System 7 device's tables and its group-object
-    // table, as `apply` reads them; without it the communication flags go
-    // unchecked and the plan says so.
-    let product = match bussard_service::params::resolve_product(
-        dir,
-        bussard_service::params::Selection::default(),
-        Some(model),
-        target.address,
-        bussard_service::params::MissingProduct::Warn,
-        Some(crate::product_cache::record_parse),
-    ) {
-        Ok(lookup) => {
-            if let Some(warning) = lookup.warning {
-                eprintln!("  warning: {warning}");
-            }
-            lookup.source
-        }
-        Err(err) => return make(None, DeviceStatus::Failed(one_line(&err.to_string()))),
-    };
-
-    // An application without extended memory services gets its tables above
-    // 0xFFFF written with A_UserMemory_Write (issue #472).
-    let user_memory_above_64k =
-        bussard_download::uses_user_memory(product.as_ref().and_then(|p| p.app()));
-    let (live, object_table) = match read_device_and_object_table(
-        service,
-        source,
-        model,
-        target.address,
-        product.as_ref(),
-        &tool_key,
-        &secure_seq,
-    )
-    .await
-    {
-        Ok((plan_cmd::LiveRead::Tables(live), object_table)) => (live, object_table),
-        Ok((plan_cmd::LiveRead::UnsupportedMask { mask, .. }, _)) => {
-            return make(
-                Some(mask),
-                DeviceStatus::Skipped(format!(
-                    "unsupported mask {mask:04X} ({})",
-                    system_type(mask)
-                )),
-            );
-        }
-        Err(err) => return make(None, DeviceStatus::Failed(one_line(&format!("{err:#}")))),
-    };
-    let sys7_live = live.sys7().cloned();
-    let live = live.tables();
-    let mask = live.mask;
-
-    // Belt and braces before any write: the readers already gate on the family,
-    // but the write path asserts it too (same check as the single-device apply).
-    let profile = MaskProfile::from_mask(mask);
-    if !(profile.is_system_b() || profile.is_system_7()) {
-        return make(
-            Some(mask),
-            DeviceStatus::Skipped(format!(
-                "unsupported mask {mask:04X} ({})",
-                system_type(mask)
-            )),
-        );
-    }
-
-    let report = plan(live, desired);
-    // A System 7 communication flag that does not follow its links is a change
-    // too: `apply` writes it with the tables.
-    let (flag_writes, unchecked) = sys7_live.as_ref().map_or((0, Vec::new()), |s7| {
-        let linked = desired.associations.iter().map(|&(_, a)| a).collect();
-        let (writes, unchecked) = sys7_flag_writes(s7, &linked);
-        (writes.len(), unchecked)
-    });
-    if !unchecked.is_empty() {
-        eprintln!("  {}", unchecked_flags_note(&unchecked));
-    }
-    // A System B group-object table that differs from the image the full
-    // flash writes is reloaded first (issue #540), as the single-device apply
-    // does; without a comparison a newly linked object is named.
-    let reload = match &object_table {
-        Some(check) => match &check.live {
-            Ok(_) => check.change().map(|change| {
-                for sentence in change.sentences() {
-                    eprintln!("  group-object table: {sentence}");
-                }
-                (check.model.clone(), change.objects.len().max(1))
-            }),
-            Err(why) => {
-                note_unchecked_object_table(&report, why);
-                None
-            }
-        },
-        None if sys7_live.is_none() => {
-            note_unchecked_object_table(&report, "no product data writes it");
-            None
-        }
-        None => None,
-    };
-    let tables_change = !report.is_noop() || flag_writes > 0;
-    let changes = report.additions.len()
-        + report.removals.len()
-        + flag_writes
-        + reload.as_ref().map_or(0, |(_, n)| *n);
-    if !tables_change && reload.is_none() {
-        return make(Some(mask), DeviceStatus::Unchanged);
-    }
-    if mode == Mode::Plan {
-        return make(Some(mask), DeviceStatus::Changes(changes));
-    }
-
-    // System 7 region images are computed before anything is backed up or
-    // written, so an image that would not fit refuses without touching the device.
-    let images = match &sys7_live {
-        Some(s7) => match sys7_table_images(s7, desired) {
-            Ok(images) => Some(images),
-            Err(err) => {
-                return make(
-                    Some(mask),
-                    DeviceStatus::Failed(format!("computing the System 7 table images: {err}")),
-                );
-            }
-        },
-        None => None,
-    };
-
-    let backup_path = match apply_cmd::write_backup(dir, target.address, live, sys7_live.as_ref()) {
-        Ok(path) => path,
-        Err(err) => {
-            return make(
-                Some(mask),
-                DeviceStatus::Failed(format!(
-                    "no backup written, so nothing was written to the device: {err:#}"
-                )),
-            );
-        }
-    };
-    eprintln!("  backup written to {}", backup_path.display());
-
-    let channel = match service.lease_channel().await {
-        Ok(channel) => channel,
-        Err(err) => {
-            return make(Some(mask), DeviceStatus::Failed(session_error_detail(&err)));
-        }
-    };
-    let verified = match &images {
-        Some(images) => apply_cmd::execute_sys7(
-            channel,
-            target.address,
-            source,
-            mask,
-            images,
-            &tool_key,
-            &secure_seq,
-        )
-        .await
-        .map(|v| (v.ok(), v.restarted, format!("{v:?}")))
-        .map_err(|e| e.to_string()),
-        None => apply_cmd::execute(
-            channel,
-            target.address,
-            source,
-            desired,
-            &tool_key,
-            &secure_seq,
-            bussard_download::SystemBLoad {
-                security: security.as_ref(),
-                object_table: reload.as_ref().map(|(image, _)| image.as_slice()),
-                keep_tables: !tables_change,
-                user_memory_above_64k,
-            },
-        )
-        .await
-        .map(|v| (v.ok(), false, format!("{v:?}")))
-        .map_err(|e| e.to_string()),
-    };
-
-    match verified {
-        Ok((true, true, _)) => {
-            // A System 7 write ends with a basic restart: wait for the device,
-            // then read its tables back on a fresh connection, which also shows
-            // the write survived the restart.
-            match verify_after_restart(
-                service,
-                source,
-                target.address,
-                mask,
-                desired,
-                product.as_ref(),
-                &tool_key,
-                &secure_seq,
-            )
-            .await
-            {
-                Ok(()) => make(Some(mask), DeviceStatus::Applied(changes)),
-                Err(why) => make(
-                    Some(mask),
-                    DeviceStatus::Failed(format!(
-                        "{}; pre-state backed up to {}",
-                        one_line(&why),
-                        backup_path.display()
-                    )),
-                ),
-            }
-        }
-        Ok((true, _, _)) => {
-            // A verified secured System B write put this PID 54 table on the
-            // device: record it in the lock, as `adopt` does (issue #297). A
-            // reload of the group-object table alone does not write it.
-            if let (Some(inputs), None, true) = (&security, &sys7_live, tables_change)
-                && let Err(err) = bussard_service::admission::record_secure_senders(
-                    dir,
-                    target.address,
-                    &inputs.senders,
-                )
-            {
-                eprintln!("warning: {}: {err}", target.address);
-            }
-            make(Some(mask), DeviceStatus::Applied(changes))
-        }
-        Ok((false, _, detail)) => make(
-            Some(mask),
-            DeviceStatus::Failed(format!(
-                "did not verify: {}; pre-state backed up to {}",
-                one_line(&detail),
-                backup_path.display()
-            )),
-        ),
-        Err(err) => make(
-            Some(mask),
-            DeviceStatus::Failed(format!(
-                "{}; pre-state backed up to {}",
-                one_line(&err),
-                backup_path.display()
-            )),
-        ),
-    }
-}
-
-/// The note for newly linked System 7 objects whose communication flag could
-/// not be checked.
-fn unchecked_flags_note(objects: &[u16]) -> String {
-    let list = objects
-        .iter()
-        .map(u16::to_string)
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!(
-        "object(s) {list}: newly linked, but the communication flag was not checked (the \
-         group-object table was not read: no product data places it, or the device refused \
-         the read); the device may ignore these links"
-    )
-}
-
-/// The read options of a line run: free-access authorize, best-effort, as the
-/// single-device `apply` read phase.
-fn read_options(
-    source: IndividualAddress,
-    tool_key: &Option<bussard_secure::Key16>,
-    secure_seq: &bussard_secure::SequenceHighWater,
-) -> L4Options {
-    L4Options {
-        source: SourcePolicy::Known(source),
-        tool_key: tool_key.clone(),
-        high_water: secure_seq.clone(),
-        // Authorize (free access) before reading, as ETS does (issue #52
-        // finding #1) and as System 7 requires before any memory access.
-        // Best-effort.
-        authorize: Authorize::BestEffort(bussard_mgmt::apci::FREE_ACCESS_KEY),
-        ..L4Options::default()
-    }
-}
-
-/// After a System 7 write's closing restart: waits for the device to answer
-/// again as `mask`, reads its tables back and checks they and the
-/// communication flags match `desired`.
-#[allow(clippy::too_many_arguments)] // the read phase's inputs plus what to compare
-async fn verify_after_restart(
-    service: &BusService,
-    source: IndividualAddress,
-    target: IndividualAddress,
-    mask: u16,
-    desired: &DesiredTables,
-    product: Option<&crate::param_readback::ProductSource>,
-    tool_key: &Option<bussard_secure::Key16>,
-    secure_seq: &bussard_secure::SequenceHighWater,
-) -> Result<(), String> {
-    bussard_service::restart::wait_until_back(
-        service,
-        target,
-        &read_options(source, tool_key, secure_seq),
-        mask,
-        bussard_service::restart::RestartWait::default(),
-    )
-    .await
-    .map_err(|err| err.to_string())?;
-    let live = match read_device(service, source, target, product, tool_key, secure_seq).await {
-        Ok(plan_cmd::LiveRead::Tables(live)) => live,
-        Ok(plan_cmd::LiveRead::UnsupportedMask { mask, .. }) => {
-            return Err(format!(
-                "read back after the restart: mask {mask:04X} is not supported"
-            ));
-        }
-        Err(err) => return Err(format!("read back after the restart: {err:#}")),
-    };
-    if !plan(live.tables(), desired).is_noop() {
-        return Err("read back after the restart: the tables do not match the model".to_string());
-    }
-    if let Some(s7) = live.sys7() {
-        let linked = desired.associations.iter().map(|&(_, a)| a).collect();
-        let (writes, _) = sys7_flag_writes(s7, &linked);
-        if let Some(flag) = writes.first() {
-            return Err(format!(
-                "read back after the restart: object {}'s communication flag reads {:02X}, \
-                 the model needs {:02X}",
-                flag.object, flag.from, flag.to
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Reads one device's live tables on a fresh lease, mirroring the single-device
-/// `apply` read phase (connect, best-effort free-access authorize, read,
-/// disconnect). With the device's `product`, a System 7 device is read where
-/// the product puts its tables, and its group-object table too.
-async fn read_device(
-    service: &BusService,
-    source: IndividualAddress,
-    target: IndividualAddress,
-    product: Option<&crate::param_readback::ProductSource>,
-    tool_key: &Option<bussard_secure::Key16>,
-    secure_seq: &bussard_secure::SequenceHighWater,
-) -> anyhow::Result<plan_cmd::LiveRead> {
-    let options = read_options(source, tool_key, secure_seq);
-    service
-        .with_l4(target, &options, async |l4| {
-            Ok::<_, ServiceError>(plan_cmd::read_live_tables(l4, product).await)
-        })
-        .await
-        .map_err(|err| session_open_error(err, || "connecting to the device".to_string()))?
-}
-
-/// [`read_device`] that, on a System B device with product data, also reads
-/// its group-object table against the image the full flash writes (issue
-/// #540), over the same session.
-async fn read_device_and_object_table(
-    service: &BusService,
-    source: IndividualAddress,
-    model: &Model,
-    target: IndividualAddress,
-    product: Option<&crate::param_readback::ProductSource>,
-    tool_key: &Option<bussard_secure::Key16>,
-    secure_seq: &bussard_secure::SequenceHighWater,
-) -> anyhow::Result<(
-    plan_cmd::LiveRead,
-    Option<bussard_download::ObjectTableCheck>,
-)> {
-    let options = read_options(source, tool_key, secure_seq);
-    service
-        .with_l4(target, &options, async |l4| {
-            let read = plan_cmd::read_live_tables(l4, product).await;
-            let check = match (&read, product) {
-                (Ok(plan_cmd::LiveRead::Tables(live)), Some(product)) if live.sys7().is_none() => {
-                    match product.app().map(|app| {
-                        bussard_download::plan_for_readback(
-                            &product.product,
-                            app,
-                            Some(model),
-                            target,
-                            live.tables().mask,
-                        )
-                    }) {
-                        Some(Ok(plan)) => bussard_download::check_object_table(l4, &plan).await,
-                        _ => None,
-                    }
-                }
-                _ => None,
-            };
-            Ok::<_, ServiceError>(read.map(|read| (read, check)))
-        })
-        .await
-        .map_err(|err| session_open_error(err, || "connecting to the device".to_string()))?
-}
-
-/// Prints the note for newly linked System B objects whose communication flag
-/// was not checked, because the group-object table was not compared.
-fn note_unchecked_object_table(report: &bussard_download::PlanReport, why: &str) {
-    let objects: std::collections::BTreeSet<u16> =
-        report.additions.iter().map(|a| a.object).collect();
-    if objects.is_empty() {
-        return;
-    }
-    let list = objects
-        .iter()
-        .map(u16::to_string)
-        .collect::<Vec<_>>()
-        .join(", ");
-    eprintln!(
-        "  object(s) {list}: newly linked, but the communication flag was not checked (the \
-         group-object table was not compared: {why}); the device may ignore these links"
-    );
-}
-
-/// Flattens a multi-line error into one summary-table cell.
-fn one_line(text: &str) -> String {
-    text.lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .collect::<Vec<_>>()
-        .join("; ")
 }
 
 /// The resume state file for `line` under the model directory.
@@ -1287,10 +695,5 @@ mod tests {
         assert!(!is_done(Some(&state), unseen));
         assert!(!is_done(None, done));
         Ok(())
-    }
-
-    #[test]
-    fn test_one_line_flattens_multiline_errors() {
-        assert_eq!(one_line("a\n\n  b  \nc"), "a; b; c");
     }
 }
