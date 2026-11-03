@@ -47,6 +47,7 @@
 //! | `knx_discard_edits` | Drop one device's or group address's unapplied edits, leaving the rest. |
 //! | `knx_export_bundle` | Write the model and history as one `.bussard` handover file. |
 //! | `knx_diff_project` | What a received `.knxproj` or bundle would change, as sentences. |
+//! | `knx_job_status` | One job of the server's job table, of any tier: `step`, `question`, `done`, `result` (issue #746; registered in every tier). |
 //! | `knx_backup_device` | Back one device or every device up (tables, bounded parameter memory) under `captures/backups/<timestamp>/`, as `bussard backup` (read-only on the bus; not in `--passive`). |
 //! | `knx_reconstruct_device` | Read one device's tables back and diff them against the model, as `bussard reconstruct` (read-only on the bus; not in `--passive`). |
 //! | `knx_plan_device` | Read one device's live tables and return the plan `bussard plan` prints, plus a `plan_digest` (registered only with `--allow-programming`). |
@@ -82,16 +83,20 @@
 //! started with `--allow-writes` (which conflicts with `--passive`); both write
 //! to the physical bus, and both hard-refuse `protected` GAs.
 //!
-//! Tool counts per tier: `--passive` 26, default 31, `--allow-writes` 33. With
-//! `--no-model-edits` the eleven model-edit tools are withheld, giving 15, 20
-//! and 22.
+//! `knx_job_status` reads the server's one job table ([`jobs`], issue #746)
+//! and never touches the bus, so it is registered in every tier.
+//!
+//! Tool counts per tier: `--passive` 27, default 32, `--allow-writes` 34. With
+//! `--no-model-edits` the eleven model-edit tools are withheld, giving 16, 21
+//! and 23.
 //!
 //! `--allow-programming` (issue #118) adds the nine programming tools
 //! ([`tools_program::PROGRAMMING_TOOLS`]) to any non-passive tier. They write
 //! device tables, so they pass the non-loopback write gate on every call, run
 //! the source-address probe, and apply only a plan whose digest this session
 //! produced minutes ago and which a fresh read still reproduces. The write
-//! runs as a job (issue #289, [`apply_jobs`]): `knx_apply_status` and
+//! runs as a job (issue #289) of the server's job table ([`jobs`]):
+//! `knx_job_status`, `knx_apply_status` and
 //! `knx_last_apply` report it. `knx_restore_parameters` (issue #290) replays
 //! a parameter backup with the same plan, digest and job flow, and
 //! `knx_restore_tables` and `knx_restart_device` (issue #717) the link tables
@@ -136,11 +141,11 @@
 
 #![warn(missing_docs)]
 
-pub mod apply_jobs;
 pub mod args;
 pub mod guidance;
 pub mod http;
 pub mod instances;
+pub mod jobs;
 pub mod model_handle;
 pub mod param_keys;
 pub mod run;
@@ -156,6 +161,7 @@ pub mod tools_diff;
 pub mod tools_groups;
 pub mod tools_ha;
 pub mod tools_ha_automation;
+pub mod tools_jobs;
 pub mod tools_learn;
 pub mod tools_model;
 pub mod tools_program;
@@ -280,6 +286,7 @@ pub fn build_state_from_model(
     let bus = state::BusStatus::new(config.connection.transport.clone())
         .with_gateway(config.connection.gateway);
     let ring = bussard_monitor::TelegramRing::new();
+    let jobs = Arc::new(jobs::JobTable::new());
 
     let state = Arc::new(SharedState {
         model: model_handle::ModelHandle::new(config.dir.clone(), model),
@@ -297,10 +304,12 @@ pub fn build_state_from_model(
                 config.connection.clone(),
                 config.allow_remote_gateway,
                 config.plan_ttl,
+                Arc::clone(&jobs),
             )
         }),
         keyring: config.keyring.clone(),
         home_assistant,
+        jobs,
     });
 
     Ok(state)
@@ -371,23 +380,23 @@ pub async fn run_http_with_ready(
 
 /// The set of tool names exposed, in registration order. Used by tests and docs.
 ///
-/// - passive mode: 26 tools (no bus-touching tools: no `knx_read_group`, no
+/// - passive mode: 27 tools (no bus-touching tools: no `knx_read_group`, no
 ///   `knx_describe_device`, no `knx_backup_device`, no `knx_reconstruct_device`,
 ///   no `knx_bus_reconnect`, no `knx_write_group`, no `knx_run_tests`).
 ///   `knx_infer_group` is there: it only reads the telegram ring.
 ///   `knx_bus_status` reads the connection state. `knx_audit` is there too,
 ///   but refuses `live: true`.
-/// - default mode: 31 tools (adds `knx_read_group`, `knx_describe_device`,
+/// - default mode: 32 tools (adds `knx_read_group`, `knx_describe_device`,
 ///   `knx_bus_reconnect` and [`tools_device::DEVICE_TOOLS`]).
-/// - `--allow-writes`: 33 tools (adds `knx_write_group` and `knx_run_tests`).
+/// - `--allow-writes`: 34 tools (adds `knx_write_group` and `knx_run_tests`).
 /// - `--no-model-edits` removes the eleven model-edit tools
 ///   ([`tools_model::MODEL_EDIT_TOOLS`], including the two reservation tools) from
-///   any of those (15, 20 and 22 tools).
+///   any of those (16, 21 and 23 tools).
 ///
 /// The two model/history read tools (`knx_describe_change`, `knx_history`),
-/// the two bundle/diff tools (`knx_export_bundle`, `knx_diff_project`) and the
-/// eleven model-edit tools touch files only, so they are present in every tier
-/// including `--passive`.
+/// the two bundle/diff tools (`knx_export_bundle`, `knx_diff_project`),
+/// `knx_job_status` and the eleven model-edit tools touch files only, so they
+/// are present in every tier including `--passive`.
 pub fn tool_names(passive: bool, allow_writes: bool, no_model_edits: bool) -> Vec<&'static str> {
     tool_names_for(passive, allow_writes, no_model_edits, false)
 }
@@ -445,6 +454,7 @@ pub fn tool_names_with_ha(
     }
     names.extend(tools_model::MODEL_READ_TOOLS);
     names.extend(tools_diff::DIFF_TOOLS);
+    names.extend(tools_jobs::JOB_TOOLS);
     if !no_model_edits {
         names.extend(tools_model::MODEL_EDIT_TOOLS);
     }

@@ -232,7 +232,7 @@ impl BussardMcp {
         let dir = self.state().dir.clone();
         let file = backup_file(&dir, backup, target)?;
         let Some(digest) = digest else {
-            if let Some(refusal) = tier.jobs.busy(crate::apply_jobs::JobKind::Plan) {
+            if let Some(refusal) = tier.jobs.busy(crate::jobs::JobKind::Plan) {
                 return Err(refusal);
             }
             let _guard = tier.bus_lock.lock().await;
@@ -450,7 +450,7 @@ impl BussardMcp {
             History::open(&prepared.dir)
                 .history_dir()
                 .join(id)
-                .join(crate::apply_jobs::RECORD_FILE)
+                .join(crate::jobs::RECORD_FILE)
         });
         tier.jobs.started(job, prepared.result.clone(), record);
         let _ = started.send(Ok(()));

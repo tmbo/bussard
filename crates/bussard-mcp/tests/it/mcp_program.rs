@@ -958,6 +958,59 @@ async fn test_knx_apply_device_slow_preflight_answers_started_and_reports_a_late
     h.stop().await
 }
 
+/// Issue #746: `knx_job_status` reads the same job as `knx_apply_status`, with
+/// the same payload plus `question` (`null`: an apply waits on no human), and
+/// refuses a job it does not know.
+#[tokio::test]
+async fn test_knx_job_status_reads_an_apply_job_like_knx_apply_status() -> anyhow::Result<()> {
+    let h = Harness::start_with(Duration::from_secs(600), Some(Duration::ZERO)).await?;
+    let plan = h
+        .call("knx_plan_device", json!({"address": "1.1.4"}))
+        .await?;
+    let started = h
+        .call(
+            "knx_apply_device",
+            json!({"address": "1.1.4", "plan_digest": digest_of(&plan)?}),
+        )
+        .await?;
+    assert_eq!(started["started"], true, "apply: {started}");
+    let job = started["job"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("no job in {started}"))?
+        .to_string();
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        let status = h.call("knx_job_status", json!({"job": job})).await?;
+        assert_eq!(status["job"], job.as_str(), "{status}");
+        assert_eq!(status["question"], Value::Null, "{status}");
+        assert!(status["step"].is_string(), "{status}");
+        if status["done"] == true {
+            break status;
+        }
+        if std::time::Instant::now() > deadline {
+            anyhow::bail!("job {job} did not finish: {status}");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(status["kind"], "apply", "{status}");
+    assert_eq!(status["result"]["verified"], true, "{status}");
+    let mut legacy = h.call("knx_apply_status", json!({"job": job})).await?;
+    assert!(legacy.get("question").is_none(), "{legacy}");
+    legacy["question"] = Value::Null;
+    let (mut a, mut b) = (status.clone(), legacy);
+    for v in [&mut a, &mut b] {
+        if let Some(map) = v.as_object_mut() {
+            map.remove("elapsed_s");
+        }
+    }
+    assert_eq!(a, b, "knx_job_status and knx_apply_status differ");
+    let unknown = h
+        .call("knx_job_status", json!({"job": "apply-0-1.1.9"}))
+        .await?;
+    assert_eq!(unknown["refused"], true, "{unknown}");
+    h.stop().await
+}
+
 /// Issue #289: a reply the client lost is recoverable: `knx_last_apply`
 /// returns the job's result in the session, and a restarted server reads it
 /// from the record under `.bussard/history`, by address and by job.

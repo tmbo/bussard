@@ -131,7 +131,8 @@ backups inside the call, and the write as a job in the server:
 - A refusal in the pre-flight is the reply; nothing was written.
 - The call waits up to 20 seconds. If the write ends, the reply is the full
   result; if not, it is `started: true` with a job id, and
-  `knx_apply_status {job}` reports the step, the progress and the result.
+  `knx_job_status {job}` reports the step, the progress and the result
+  (`knx_apply_status` still answers too).
 - One apply per server at a time. Another apply or plan while a job runs is
   refused with the job's id.
 - The job record is written to `apply-result.json` in its history snapshot.
