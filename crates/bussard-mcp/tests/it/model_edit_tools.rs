@@ -1009,3 +1009,181 @@ async fn test_add_link_refuses_plain_sender_on_secured_ga() -> TestResult {
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
+
+/// Packs the synthetic catalogue product `name`
+/// (`tests-support/synthetic-products/<name>/xml`) into a `.knxprod` at `out`.
+fn pack_synthetic_product(name: &str, out: &Path) -> TestResult {
+    use std::io::Write;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests-support/synthetic-products")
+        .join(name)
+        .join("xml");
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(out)?);
+    let opts = zip::write::SimpleFileOptions::default();
+    zip.start_file("knx_master.xml", opts)?;
+    zip.write_all(b"<KNX/>")?;
+    let mut stack = vec![root.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                let rel = path
+                    .strip_prefix(&root)?
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                zip.start_file(rel, opts)?;
+                zip.write_all(&std::fs::read(&path)?)?;
+            }
+        }
+    }
+    zip.finish()?;
+    Ok(())
+}
+
+/// A model directory with device 1.1.1 on `syn-param-calculation` (the
+/// `calc-input` capture's shape) at its defaults, the product model imported
+/// from the catalogue XML, and the application the plan builds its image
+/// from.
+fn param_calculation_dir()
+-> Result<(PathBuf, bussard_prod::ApplicationProgram), Box<dyn std::error::Error>> {
+    let dir = model_dir("calc")?;
+    let knxprod = dir.join("syn-param-calculation.knxprod");
+    pack_synthetic_product("syn-param-calculation", &knxprod)?;
+    let data = bussard_prod::read_knxprod(&knxprod)?;
+    std::fs::remove_file(&knxprod)?;
+    let app = data.applications.first().ok_or("no application")?.clone();
+    std::fs::create_dir_all(dir.join(".bussard/models"))?;
+    std::fs::write(
+        dir.join(".bussard/models").join(format!("{}.yaml", app.id)),
+        bussard_prod::product_model::model_yaml(&app, &data)?,
+    )?;
+    std::fs::write(
+        dir.join("bussard.lock"),
+        format!(
+            "version = 3\n\n[[device]]\naddress = \"1.1.1\"\nproduct = \"NEST-CALC\"\n\
+             application = \"{}\"\nmask = \"07B0\"\nparameters = [\n  \
+             {{ key = \"operating-mode\", ref = \"P-1_R-1\", param = \"P-1\" }},\n  \
+             {{ key = \"delay-s\", ref = \"P-2_R-2\", param = \"P-2\" }},\n  \
+             {{ key = \"twice-the-delay-plus-one\", ref = \"P-3_R-3\", param = \"P-3\" }},\n]\n",
+            app.id
+        ),
+    )?;
+    std::fs::remove_file(dir.join("devices").join("1.1.4.toml"))?;
+    std::fs::write(
+        dir.join("devices").join("1.1.1.toml"),
+        "address = \"1.1.1\"\nname = \"syn-param-calculation\"\nproduct = \"NEST-CALC\"\n",
+    )?;
+    Ok((dir, app))
+}
+
+/// What the plan's parameter image holds for parameter `param` (app-relative
+/// id) with `overrides`, decoded the way a read-back decodes it.
+fn planned_value(
+    app: &bussard_prod::ApplicationProgram,
+    overrides: &std::collections::BTreeMap<String, String>,
+    param: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let images = bussard_prod::image::compute_parameter_image(app, overrides, &Default::default())?;
+    let param = app
+        .parameters
+        .get(&format!("{}_{param}", app.id))
+        .ok_or("no parameter")?;
+    let memory = param.memory.as_ref().ok_or("no memory")?;
+    let segment = memory.code_segment.as_deref().ok_or("no segment")?;
+    let image = images.get(segment).ok_or("no image of the segment")?;
+    let value = bussard_prod::image::decode_parameter_value(
+        app,
+        param,
+        image,
+        memory.offset.ok_or("no offset")? as usize,
+        memory.bit_offset.unwrap_or(0),
+    );
+    Ok(value.ok_or("undecodable")?)
+}
+
+/// Issue #712: the MCP model tools show a calculation output with the value
+/// the plan writes. Setting the input `delay` to 500 (the `calc-input`
+/// capture) names the outputs that change, `knx_get_device` lists both
+/// outputs computed by `PC-1` with the plan's values, and
+/// `knx_set_parameter` refuses the output itself, also with `force`, naming
+/// the input to set instead.
+#[tokio::test]
+async fn test_set_parameter_synthetic_param_calculation_views_agree_with_the_plan() -> TestResult {
+    let (dir, app) = param_calculation_dir()?;
+    let (client, task) = connect(server_over(&dir)?).await?;
+
+    // At the defaults no calculation runs, so nothing is computed.
+    let res = call(&client, "knx_get_device", json!({"address": "1.1.1"})).await;
+    assert!(res.get("computed_parameters").is_none(), "{res}");
+
+    let res = call(
+        &client,
+        "knx_set_parameter",
+        json!({"address": "1.1.1", "parameter": "delay-s", "value": "500"}),
+    )
+    .await;
+    assert_eq!(res["ok"], true, "{res}");
+    let text = res.to_string();
+    assert!(
+        text.contains("Computed by calculation PC-1") && text.contains("1001"),
+        "the change names the computed output and its new value: {res}"
+    );
+
+    let overrides: std::collections::BTreeMap<String, String> =
+        [("P-2_R-2".to_string(), "500".to_string())].into();
+    let plan_double = planned_value(&app, &overrides, "P-3")?;
+    let plan_patch = planned_value(&app, &overrides, "P-4")?;
+    assert_eq!((plan_double.as_str(), plan_patch.as_str()), ("1001", "507"));
+    let res = call(&client, "knx_get_device", json!({"address": "1.1.1"})).await;
+    let computed = res["computed_parameters"]
+        .as_array()
+        .ok_or_else(|| format!("no computed_parameters: {res}"))?;
+    let value_of = |suffix: &str| {
+        computed
+            .iter()
+            .find(|c| c["key"].as_str().is_some_and(|k| k.ends_with(suffix)))
+            .map(|c| (c["value"].clone(), c["computed_by"].clone()))
+    };
+    assert_eq!(
+        value_of("twice-the-delay-plus-one@P-3_R-3"),
+        Some((json!(plan_double), json!("PC-1"))),
+        "{res}"
+    );
+    assert_eq!(
+        value_of("P-4_R-4"),
+        Some((json!(plan_patch), json!("PC-1"))),
+        "{res}"
+    );
+
+    for force in [false, true] {
+        let res = call(
+            &client,
+            "knx_set_parameter",
+            json!({"address": "1.1.1", "parameter": "twice-the-delay-plus-one",
+                   "value": "7", "force": force}),
+        )
+        .await;
+        assert_eq!(res["ok"], false, "{res}");
+        let reason = res["reason"].as_str().unwrap_or_default();
+        assert!(
+            reason.contains("calculation PC-1") && reason.contains("delay-s@P-2_R-2"),
+            "the refusal names the calculation and its input: {res}"
+        );
+    }
+    let saved = Model::load(&dir)?;
+    let device = &saved.devices[&"1.1.1".parse()?].device;
+    assert!(
+        !device.parameters.keys().any(|k| k.contains("P-3_R-3")),
+        "the refused output is not stored: {:?}",
+        device.parameters
+    );
+
+    client.cancel().await?;
+    task.abort();
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}

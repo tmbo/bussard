@@ -388,7 +388,7 @@ impl BussardMcp {
 
     /// `knx_get_device`.
     #[tool(
-        description = "Get the full definition of one device by its individual address: identity, product, location, channels, its parameters (by the keys the device file uses) and generated com-object table, plus every link (com-object -> group addresses) on it. ETS-internal values the user cannot set are left out and counted in `hidden_parameters`; `technical: true` includes them. This is the configured state; for what the device can do (inactive channels and pages, functions, choices) use knx_show_device."
+        description = "Get the full definition of one device by its individual address: identity, product, location, channels, its parameters (by the keys the device file uses) and generated com-object table, plus every link (com-object -> group addresses) on it. ETS-internal values the user cannot set are left out and counted in `hidden_parameters`; `technical: true` includes them. Outputs of a <ParameterCalculation> that the configuration computes are listed in `computed_parameters` (key, the value a download writes, `computed_by`: the calculation id); they are not set in the file. This is the configured state; for what the device can do (inactive channels and pages, functions, choices) use knx_show_device."
     )]
     async fn knx_get_device(
         &self,
@@ -398,11 +398,17 @@ impl BussardMcp {
             .address
             .parse()
             .map_err(|_| invalid(format!("invalid individual address {:?}", args.address)))?;
-        ok(tools::get_device(
-            &self.state.model.current(),
-            ia,
-            args.technical,
-        ))
+        let model = self.state.model.current();
+        let app = model
+            .devices
+            .get(&ia)
+            .and_then(|d| d.device.product.as_ref())
+            .and_then(|p| p.application_ref.clone());
+        let products = bussard_model::param_model::ProductModels::load_apps(
+            &self.state.dir,
+            app.iter().map(String::as_str),
+        );
+        ok(tools::get_device(&model, &products, ia, args.technical))
     }
 
     /// `knx_show_device`.

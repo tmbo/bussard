@@ -35,7 +35,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::param_keys::{
-    KeyContext, index_parameter, replace_parameter, resolve_parameter_key, unreached_refusal,
+    KeyContext, calculation_output_refusal, index_parameter, replace_parameter,
+    resolve_parameter_key, unreached_refusal,
 };
 use crate::server::BussardMcp;
 use crate::session_edits::Subject;
@@ -656,7 +657,10 @@ impl BussardMcp {
         that shows it and the ref that is shown instead, because the device would never get \
         the value; `force: true` stores it anyway to prepare a branch before switching to it. \
         A bare parameter id (`P-7305`) or the vendor text names the ref the configuration \
-        shows. Returns the change as sentences: quote them to the human."
+        shows. An output of a <ParameterCalculation> is refused, also with `force`: ETS shows it \
+        read-only and a download writes what the calculation computes, so set the inputs the \
+        refusal names; the change then lists the output's new computed value. \
+        Returns the change as sentences: quote them to the human."
     )]
     async fn knx_set_parameter(
         &self,
@@ -690,6 +694,11 @@ impl BussardMcp {
                 return Err(format!("{ia} is not a device in this model"));
             };
             let key = resolve_parameter_key(&loaded.device, &keys, &wanted, channel.as_deref())?;
+            // Issue #712: a calculation output is the calculation's to set,
+            // also with `force`.
+            if let Some(why) = calculation_output_refusal(&loaded.device, &products, &key) {
+                return Err(why);
+            }
             // Issue #321: a value on a ref the configuration does not show is
             // never written, so it is refused unless the caller prepares a
             // branch on purpose.

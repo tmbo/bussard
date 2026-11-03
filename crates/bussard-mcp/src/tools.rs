@@ -10,6 +10,7 @@ use std::time::SystemTime;
 
 use bussard_mgmt::PropertyDesc;
 use bussard_model::codec::TypedValue;
+use bussard_model::param_model::ProductModels;
 use bussard_model::{Dpt, GroupAddress, IndividualAddress, Model};
 use bussard_monitor::{DecodedTelegram, DestinationRef, Filter, TelegramRing, json_line};
 use serde_json::{Value, json};
@@ -326,11 +327,55 @@ fn technical_param_key(key: &str) -> bool {
     bussard_model::is_hidden_mem_key(key) || key.starts_with(&bussard_model::label_mem_key(""))
 }
 
+/// The calculation outputs of `device` with their computed values, as
+/// `{key, value, computed_by}` (issue #712). The values come from
+/// [`bussard_model::device_view::Evaluated`], one Dynamic evaluation with the
+/// trigger rule of the write path: empty while every input holds its
+/// default. Without `technical` the ETS-internal keys are left out, as from
+/// `parameters`.
+fn computed_parameters(
+    device: &bussard_model::schema::Device,
+    products: &ProductModels,
+    technical: bool,
+) -> Vec<Value> {
+    let Some(product) = device
+        .product
+        .as_ref()
+        .and_then(|p| p.application_ref.as_deref())
+        .and_then(|app| products.get(app))
+        .filter(|p| !p.calculations.is_empty())
+    else {
+        return Vec::new();
+    };
+    bussard_model::device_view::Evaluated::of_device(product, device)
+        .computed_parameters()
+        .into_iter()
+        .map(|(reference, (calc, value))| {
+            let key = match device.lock.parameters.get(&reference) {
+                Some(locked) if locked.key.contains('@') => locked.key.clone(),
+                Some(locked) => format!("{}@{reference}", locked.key),
+                None => reference,
+            };
+            (key, calc, value)
+        })
+        .filter(|(key, ..)| technical || !technical_param_key(key))
+        .map(|(key, calc, value)| json!({"key": key, "value": value, "computed_by": calc}))
+        .collect()
+}
+
 /// `knx_get_device`: the full device definition plus its links. Without
 /// `technical` the `parameters` map keeps the keyed values only and
 /// `hidden_parameters` counts the ETS-internal ones it leaves out (issue
-/// #311).
-pub fn get_device(model: &Model, ia: IndividualAddress, technical: bool) -> Value {
+/// #311). `computed_parameters` lists the outputs of the product model's
+/// `<ParameterCalculation>`s that a calculation computes under this
+/// configuration, with the value a download writes and the calculation's id
+/// (issue #712): the same Dynamic evaluation the write path runs.
+pub fn get_device(
+    model: &Model,
+    products: &ProductModels,
+    ia: IndividualAddress,
+    technical: bool,
+) -> Value {
     let Some(loaded) = model.devices.get(&ia) else {
         return json!({
             "address": ia.to_string(),
@@ -377,14 +422,19 @@ pub fn get_device(model: &Model, ia: IndividualAddress, technical: bool) -> Valu
         })
         .unwrap_or_default();
 
-    json!({
+    let computed = computed_parameters(dev, products, technical);
+    let mut out = json!({
         "address": ia.to_string(),
         "found": true,
         "file_stem": loaded.file_stem,
         "device": device_value,
         "hidden_parameters": hidden,
         "links": links,
-    })
+    });
+    if !computed.is_empty() {
+        out["computed_parameters"] = Value::Array(computed);
+    }
+    out
 }
 
 /// `knx_recent_telegrams`: recent telegrams from the ring, filtered, oldest→newest.
@@ -1017,7 +1067,7 @@ mod tests {
     #[test]
     fn get_device_full_and_links() -> TestResult {
         let m = model()?;
-        let v = get_device(&m, ia("1.1.4")?, false);
+        let v = get_device(&m, &ProductModels::default(), ia("1.1.4")?, false);
         assert_eq!(v["found"], true);
         assert_eq!(v["device"]["name"], "Blind Actuator 4-fold");
         assert_eq!(v["device"]["location"]["room"], "Wohnzimmer");
@@ -1038,7 +1088,7 @@ mod tests {
             bussard_model::label_mem_key("P-3_R-3"),
             "Kanal A".to_string(),
         );
-        let v = get_device(&m, ia("1.1.4")?, false);
+        let v = get_device(&m, &ProductModels::default(), ia("1.1.4")?, false);
         let keys: Vec<&String> = v["device"]["parameters"]
             .as_object()
             .ok_or("no parameters")?
@@ -1046,7 +1096,7 @@ mod tests {
             .collect();
         assert_eq!(keys, ["fahrzeit@P-1_R-1"]);
         assert_eq!(v["hidden_parameters"], 2);
-        let v = get_device(&m, ia("1.1.4")?, true);
+        let v = get_device(&m, &ProductModels::default(), ia("1.1.4")?, true);
         assert_eq!(
             v["device"]["parameters"]
                 .as_object()
@@ -1084,7 +1134,7 @@ mod tests {
     #[test]
     fn get_device_not_found() -> TestResult {
         let m = model()?;
-        let v = get_device(&m, ia("9.9.9")?, false);
+        let v = get_device(&m, &ProductModels::default(), ia("9.9.9")?, false);
         assert_eq!(v["found"], false);
         Ok(())
     }
