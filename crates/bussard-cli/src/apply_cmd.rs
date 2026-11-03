@@ -59,11 +59,11 @@ use std::process::ExitCode;
 use anyhow::{Context, bail};
 use bussard_download::backup::{backups_root, has_installation_backup};
 use bussard_download::{
-    DesiredTables, PlanReport, Sys7LiveTables, Sys7TableImages, VerifyOutcome, plan,
-    sys7_table_images, write_tables_seeded,
+    DesiredTables, PlanReport, Sys7LiveTables, Sys7TableImages, plan, sys7_table_images,
+    write_tables_seeded,
 };
 use bussard_mgmt::tables::DeviceTables;
-use bussard_mgmt::{LeaseChannel, MaskProfile, system_type};
+use bussard_mgmt::{MaskProfile, system_type};
 use bussard_model::IndividualAddress;
 use bussard_service::{L4Options, SourcePolicy};
 
@@ -886,42 +886,6 @@ fn write_tables_then_parameters(
             Ok((ExitCode::FAILURE, false))
         }
     }
-}
-
-/// Runs the on-bus write sequence for a **System 7** device: authorize, then
-/// drive the two table load-state machines (see [`bussard_download::apply_sys7`]).
-///
-/// The LSM realisation (property-based on `0705`, memory-mapped on `0701`) comes
-/// from the mask-family default profile, exactly as the flash path selects it.
-#[allow(clippy::too_many_arguments)] // one connection's worth of context; splitting it hides nothing
-pub(crate) async fn execute_sys7(
-    channel: LeaseChannel,
-    target: IndividualAddress,
-    source: IndividualAddress,
-    mask: u16,
-    images: &Sys7TableImages,
-    tool_key: &Option<bussard_secure::Key16>,
-    secure_seq: &bussard_secure::SequenceHighWater,
-) -> Result<bussard_download::Sys7VerifyOutcome, bussard_download::Sys7ApplyError> {
-    let secure = crate::secure_key::layer(tool_key, secure_seq);
-    bussard_download::write_sys7(channel, target, source, mask, images, secure).await
-}
-
-/// Runs the on-bus write sequence: discover the table objects, then apply,
-/// with the security object and the group-object table reload `load`
-/// carries (issue #540).
-pub(crate) async fn execute(
-    channel: LeaseChannel,
-    target: IndividualAddress,
-    source: IndividualAddress,
-    desired: &DesiredTables,
-    tool_key: &Option<bussard_secure::Key16>,
-    secure_seq: &bussard_secure::SequenceHighWater,
-    load: bussard_download::SystemBLoad<'_>,
-) -> Result<VerifyOutcome, bussard_mgmt::load::WriteError> {
-    let secure = crate::secure_key::layer(tool_key, secure_seq);
-    bussard_download::write_system_b_seeded(channel, target, source, desired, secure, load, None)
-        .await
 }
 
 /// Writes the parameter octets that differ (the `flash --parameters-only`

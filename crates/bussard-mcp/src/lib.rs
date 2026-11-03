@@ -49,16 +49,16 @@
 //! | `knx_diff_project` | What a received `.knxproj` or bundle would change, as sentences. |
 //! | `knx_job_status` | One job of the server's job table, of any tier: `step`, `question`, `done`, `result` (issue #746; registered in every tier). |
 //! | `knx_backup_device` | Back one device or every device up (tables, bounded parameter memory) under `captures/backups/<timestamp>/`, as `bussard backup` (read-only on the bus; not in `--passive`). |
-//! | `knx_reconstruct_device` | Read one device's tables back and diff them against the model, as `bussard reconstruct` (read-only on the bus; not in `--passive`). |
+//! | `knx_reconstruct_device` | Read one device's tables back and diff them against the model, as `bussard reconstruct`; with `line`, sweep a line into a fresh model directory, as `bussard reconstruct --line` (read-only on the bus; not in `--passive`). |
+//! | `knx_plan_device` | Read one device's live tables and return the plan `bussard plan` prints, plus a `plan_digest`; with `line`, every device on a line under one digest, as `bussard plan --line` (registered only with `--allow-programming`). |
 //! | `knx_find_devices` | Scan one line for devices as `bussard scan`, run as a job: mask, manufacturer and order number per responder, names first (read-only on the bus; not in `--passive`, issue #747). |
-//! | `knx_plan_device` | Read one device's live tables and return the plan `bussard plan` prints, plus a `plan_digest` (registered only with `--allow-programming`). |
 //! | `knx_ha_status` | Home Assistant's version, KNX integration, entity counts and the state of the KNX YAML file (registered only with the Home Assistant tier). |
 //! | `knx_ha_plan` | What writing the generated KNX YAML would change, per entity, plus a `plan_digest` (Home Assistant tier). |
 //! | `knx_ha_apply` | Write the planned KNX YAML (backup first) and reload Home Assistant's KNX integration, only with a fresh matching `plan_digest` (Home Assistant tier). |
 //! | `knx_ha_automation_plan` | Render a small rule (when a GA receives a value, send group values) into a bussard-managed Home Assistant automation, plus a `plan_digest` (Home Assistant tier). |
 //! | `knx_ha_automation_apply` | Write the planned automation through the config API (previous JSON backed up) and reload automations, only with a fresh matching `plan_digest` (Home Assistant tier). |
 //! | `knx_ha_automation_remove` | Plan, then with the digest delete, a bussard-managed automation (Home Assistant tier). |
-//! | `knx_apply_device` | Write the planned tables to one device, backup first and verify after, only with a fresh matching `plan_digest` (registered only with `--allow-programming`). |
+//! | `knx_apply_device` | Write the planned tables to one device, backup first and verify after, only with a fresh matching `plan_digest`; with `line`, a line plan as one job, as `bussard apply --line` (registered only with `--allow-programming`). |
 //! | `knx_apply_status` | One apply job's step, progress and final result (issue #289; registered only with `--allow-programming`). |
 //! | `knx_last_apply` | The latest apply job for a device, from the session or its record under `.bussard/history/` (registered only with `--allow-programming`). |
 //! | `knx_restore_parameters` | Plan, then with the digest write, the replay of a parameter backup from `captures/backups/parameters/` onto one device: refused on a device, application or mask mismatch, only placed octets, device-managed ones kept, verified by read-back, run as a job (issue #290; registered only with `--allow-programming`). |

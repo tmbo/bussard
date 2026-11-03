@@ -20,7 +20,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, anyhow};
-use bussard_mgmt::{DeviceConnection, L4Channel, Timeouts, manufacturers, system_type};
+use bussard_mgmt::{Timeouts, manufacturers, system_type};
 use bussard_model::IndividualAddress;
 use bussard_secure::Key16;
 use bussard_service::BusService;

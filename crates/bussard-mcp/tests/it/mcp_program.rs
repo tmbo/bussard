@@ -1275,3 +1275,340 @@ async fn test_knx_plan_device_refuses_an_occupied_source_on_every_call() -> anyh
 
     h.stop().await
 }
+
+// ---------------------------------------------------------------------------
+// The line form (issue #748): `line` on knx_plan_device, knx_apply_device and
+// knx_reconstruct_device, through the functions `bussard plan --line`,
+// `apply --line` and `reconstruct --line` call.
+// ---------------------------------------------------------------------------
+
+/// 1.1.5: already holds its model links (1/3/0 on object 10).
+fn unchanged_device() -> anyhow::Result<MockDevice> {
+    Ok(MockDevice::system_b("1.1.5".parse()?)
+        .with_table(1, &address_table(&["1/3/0"])?)
+        .with_table(2, &association_table(&[(1, 10)]))
+        .with_go_count(40))
+}
+
+/// 1.1.6: holds 1/4/0 on object 30; the model adds 1/4/1 on object 31.
+fn changed_device() -> anyhow::Result<MockDevice> {
+    Ok(MockDevice::system_b("1.1.6".parse()?)
+        .with_table(1, &address_table(&["1/4/0"])?)
+        .with_table(2, &association_table(&[(1, 30)]))
+        .with_go_count(40))
+}
+
+/// Adds 1.1.5 and 1.1.6 to the model next to 1.1.4, with every group they use.
+fn write_line_model(dir: &Path) -> anyhow::Result<()> {
+    std::fs::write(
+        dir.join("devices").join("1.1.5.toml"),
+        "address = \"1.1.5\"\nname = \"Licht Flur\"\n\n[links]\n10.listen = [\"1/3/0\"]\n",
+    )?;
+    std::fs::write(
+        dir.join("devices").join("1.1.6.toml"),
+        "address = \"1.1.6\"\nname = \"Heizung Bad\"\n\n[links]\n\
+         30.listen = [\"1/4/0\"]\n31.listen = [\"1/4/1\"]\n",
+    )?;
+    std::fs::write(
+        dir.join("groups.toml"),
+        "groups = [\n  { address = \"1/2/0\", name = \"Blind move\" },\n  \
+         { address = \"1/2/1\", name = \"Blind stop\" },\n  \
+         { address = \"1/2/2\", name = \"Blind position\" },\n  \
+         { address = \"1/3/0\", name = \"Flur switch\" },\n  \
+         { address = \"1/4/0\", name = \"Bad setpoint\" },\n  \
+         { address = \"1/4/1\", name = \"Bad mode\" },\n]\n",
+    )?;
+    Ok(())
+}
+
+/// A server on line 1.1 with three devices: 1.1.4 and 1.1.6 differ from the
+/// model, 1.1.5 matches it.
+async fn line_harness() -> anyhow::Result<Harness> {
+    let h = Harness::start_line(
+        Duration::from_secs(600),
+        None,
+        None,
+        vec![unchanged_device()?, changed_device()?],
+    )
+    .await?;
+    write_line_model(h.dir.path())?;
+    Ok(h)
+}
+
+/// One device's `(address table, association table)` as the mock holds them.
+fn tables_of(h: &Harness, ia: &str) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+    Ok(h.gateway.with_device(ia.parse()?, |dev| {
+        (
+            dev.table_image(1).unwrap_or_default(),
+            dev.table_image(2).unwrap_or_default(),
+        )
+    })?)
+}
+
+/// How many writes reached one device.
+fn writes_of(h: &Harness, ia: &str) -> anyhow::Result<usize> {
+    Ok(h.gateway.with_device(ia.parse()?, |dev| dev.writes)?)
+}
+
+/// The finished result of a call that may answer `started`.
+async fn finished(h: &Harness, answer: Value) -> anyhow::Result<Value> {
+    if answer["started"] == true {
+        let job = job_of(&answer)?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let status = h.call("knx_job_status", json!({"job": job})).await?;
+            if status["done"] == true {
+                return Ok(status["result"].clone());
+            }
+            if std::time::Instant::now() > deadline {
+                anyhow::bail!("job {job} did not finish: {status}");
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+    Ok(answer)
+}
+
+/// The row of `ia` in a line result.
+fn row<'a>(result: &'a Value, ia: &str) -> anyhow::Result<&'a Value> {
+    result["devices"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|r| r["address"] == ia))
+        .ok_or_else(|| anyhow::anyhow!("no row for {ia} in {result}"))
+}
+
+#[tokio::test]
+async fn test_knx_apply_device_line_plans_writes_and_verifies_every_device() -> anyhow::Result<()> {
+    let h = line_harness().await?;
+
+    let plan = finished(&h, h.call("knx_plan_device", json!({"line": "1.1"})).await?).await?;
+    assert_eq!(plan["ok"], true, "plan: {plan}");
+    assert_eq!(plan["line"], "1.1");
+    assert_eq!(row(&plan, "1.1.4")?["status"], "changes", "{plan}");
+    assert_eq!(row(&plan, "1.1.5")?["status"], "unchanged", "{plan}");
+    assert_eq!(row(&plan, "1.1.6")?["status"], "changes", "{plan}");
+    assert_eq!(plan["totals"]["changed"], 2, "{plan}");
+    let sentences = plan["sentences"].to_string();
+    assert!(
+        sentences.contains("Heizung Bad object 31 now on 1/4/1 (Bad mode)"),
+        "{sentences}"
+    );
+    assert!(
+        plan["question"]
+            .as_str()
+            .is_some_and(|q| q.contains("2 device(s) on line 1.1"))
+    );
+    let digest = digest_of(&plan)?;
+    for ia in ["1.1.4", "1.1.5", "1.1.6"] {
+        assert_eq!(writes_of(&h, ia)?, 0, "planning must not write {ia}");
+    }
+
+    let applied = finished(
+        &h,
+        h.call(
+            "knx_apply_device",
+            json!({"line": "1.1", "plan_digest": digest}),
+        )
+        .await?,
+    )
+    .await?;
+    assert_eq!(applied["ok"], true, "apply: {applied}");
+    assert_eq!(applied["verified"], true, "apply: {applied}");
+    let r4 = row(&applied, "1.1.4")?;
+    assert_eq!(r4["status"], "applied", "{applied}");
+    assert_eq!(r4["verified"], true, "{applied}");
+    assert!(
+        r4["backup"]
+            .as_str()
+            .is_some_and(|b| Path::new(b).is_file()),
+        "{applied}"
+    );
+    assert_eq!(row(&applied, "1.1.5")?["status"], "unchanged", "{applied}");
+    assert_eq!(row(&applied, "1.1.6")?["status"], "applied", "{applied}");
+    assert_eq!(
+        writes_of(&h, "1.1.5")?,
+        0,
+        "an unchanged device is not written"
+    );
+
+    // Every device now holds the model's tables.
+    assert_eq!(
+        tables_of(&h, "1.1.4")?,
+        (
+            address_table(&["1/2/0", "1/2/1", "1/2/2"])?,
+            association_table(&[(1, 20), (2, 21), (3, 22)])
+        )
+    );
+    assert_eq!(
+        tables_of(&h, "1.1.6")?,
+        (
+            address_table(&["1/4/0", "1/4/1"])?,
+            association_table(&[(1, 30), (2, 31)])
+        )
+    );
+
+    // The audit line names the line and the gateway.
+    let latest = bussard_model::history::History::open(h.dir.path())
+        .latest()?
+        .ok_or_else(|| anyhow::anyhow!("no history snapshot recorded"))?;
+    assert_eq!(latest.manifest.reason.command, "mcp knx_apply_device");
+    assert_eq!(
+        latest.manifest.reason.args.get(..2),
+        Some(&["--line".to_string(), "1.1".to_string()][..])
+    );
+
+    // The digest is single use, and a fresh plan has nothing to do.
+    let again = h
+        .call(
+            "knx_apply_device",
+            json!({"line": "1.1", "plan_digest": digest}),
+        )
+        .await?;
+    assert_eq!(again["refused"], true, "{again}");
+    let replan = finished(&h, h.call("knx_plan_device", json!({"line": "1.1"})).await?).await?;
+    assert_eq!(replan["noop"], true, "{replan}");
+    assert!(replan["plan_digest"].is_null(), "{replan}");
+
+    h.stop().await
+}
+
+#[tokio::test]
+async fn test_knx_apply_device_line_does_not_write_a_device_that_changed_since_the_plan()
+-> anyhow::Result<()> {
+    let h = line_harness().await?;
+    let plan = finished(&h, h.call("knx_plan_device", json!({"line": "1.1"})).await?).await?;
+    let digest = digest_of(&plan)?;
+
+    // Someone rewrites 1.1.6's address table between the plan and the apply.
+    let moved = address_table(&["1/4/0", "5/0/0"])?;
+    h.gateway
+        .with_device("1.1.6".parse()?, |dev| dev.preload_table(1, &moved))?;
+
+    let applied = finished(
+        &h,
+        h.call(
+            "knx_apply_device",
+            json!({"line": "1.1", "plan_digest": digest}),
+        )
+        .await?,
+    )
+    .await?;
+    assert_eq!(applied["ok"], false, "{applied}");
+    assert_eq!(applied["verified"], false, "{applied}");
+    assert_eq!(row(&applied, "1.1.4")?["status"], "applied", "{applied}");
+    let r6 = row(&applied, "1.1.6")?;
+    assert_eq!(r6["status"], "failed", "{applied}");
+    assert!(
+        r6["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("changed since the line was planned")),
+        "{applied}"
+    );
+    assert_eq!(
+        writes_of(&h, "1.1.6")?,
+        0,
+        "a moved device must not be written"
+    );
+    assert_eq!(applied["totals"]["failed"], 1, "{applied}");
+
+    h.stop().await
+}
+
+#[tokio::test]
+async fn test_knx_apply_device_line_refuses_when_the_model_changed() -> anyhow::Result<()> {
+    let h = line_harness().await?;
+    let plan = finished(&h, h.call("knx_plan_device", json!({"line": "1.1"})).await?).await?;
+    let digest = digest_of(&plan)?;
+
+    std::fs::write(
+        h.dir.path().join("devices").join("1.1.6.toml"),
+        "address = \"1.1.6\"\nname = \"Heizung Bad\"\n\n[links]\n30.listen = [\"1/4/0\"]\n",
+    )?;
+
+    let applied = h
+        .call(
+            "knx_apply_device",
+            json!({"line": "1.1", "plan_digest": digest}),
+        )
+        .await?;
+    assert_eq!(applied["refused"], true, "{applied}");
+    assert!(
+        applied["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("changed since the plan")),
+        "{applied}"
+    );
+    for ia in ["1.1.4", "1.1.5", "1.1.6"] {
+        assert_eq!(writes_of(&h, ia)?, 0, "a refused apply must not write {ia}");
+    }
+
+    h.stop().await
+}
+
+#[tokio::test]
+async fn test_knx_plan_device_refuses_address_and_line_together() -> anyhow::Result<()> {
+    let h = line_harness().await?;
+    let both = h
+        .call(
+            "knx_plan_device",
+            json!({"address": "1.1.4", "line": "1.1"}),
+        )
+        .await?;
+    assert_eq!(both["refused"], true, "{both}");
+    let neither = h.call("knx_plan_device", json!({})).await?;
+    assert_eq!(neither["refused"], true, "{neither}");
+    let empty_line = h.call("knx_plan_device", json!({"line": "2.3"})).await?;
+    assert_eq!(empty_line["refused"], true, "{empty_line}");
+    assert!(
+        empty_line["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("no devices on line 2.3")),
+        "{empty_line}"
+    );
+    h.stop().await
+}
+
+#[tokio::test]
+async fn test_knx_reconstruct_device_line_synthesizes_a_fresh_model() -> anyhow::Result<()> {
+    let h = line_harness().await?;
+    let result = finished(
+        &h,
+        h.call(
+            "knx_reconstruct_device",
+            json!({"line": "1.1", "from": 4, "to": 7, "out": "recon"}),
+        )
+        .await?,
+    )
+    .await?;
+    assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(result["devices_found"], 3, "{result}");
+    assert_eq!(result["devices_read"], 3, "{result}");
+    let out = h.dir.path().join("recon");
+    let groups = std::fs::read_to_string(out.join("groups.toml"))?;
+    assert!(groups.contains("RECONSTRUCTED"), "{groups}");
+    assert!(groups.contains("1/4/0"), "{groups}");
+    assert!(out.join("devices").join("1.1.6.toml").is_file());
+    let rebuilt = bussard_model::Model::load(&out)?;
+    assert_eq!(rebuilt.devices.len(), 3);
+    for ia in ["1.1.4", "1.1.5", "1.1.6"] {
+        assert_eq!(writes_of(&h, ia)?, 0, "reconstruct is read-only on the bus");
+    }
+
+    // A non-empty or escaping `out` is refused before the bus is touched.
+    let again = h
+        .call(
+            "knx_reconstruct_device",
+            json!({"line": "1.1", "from": 4, "to": 4, "out": "recon"}),
+        )
+        .await?;
+    assert_eq!(again["refused"], true, "{again}");
+    let escape = h
+        .call(
+            "knx_reconstruct_device",
+            json!({"line": "1.1", "out": "../elsewhere"}),
+        )
+        .await?;
+    assert_eq!(escape["refused"], true, "{escape}");
+
+    h.stop().await
+}

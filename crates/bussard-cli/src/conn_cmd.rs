@@ -308,16 +308,6 @@ pub fn session_open_error(err: ServiceError, context: impl FnOnce() -> String) -
     }
 }
 
-/// Renders a management session that could not be opened the way the device
-/// commands report it in a per-device row: `leasing the bus: <cause>` or
-/// `connecting: <cause>`.
-pub fn session_error_detail(err: &ServiceError) -> String {
-    match err {
-        ServiceError::Lease(cause) => format!("leasing the bus: {cause}"),
-        other => format!("connecting: {other}"),
-    }
-}
-
 /// The exit code for "the gateway has no free tunnelling connection"
 /// (`E_NO_MORE_CONNECTIONS`, issue #105).
 ///

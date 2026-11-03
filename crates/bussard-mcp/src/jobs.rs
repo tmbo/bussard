@@ -86,6 +86,9 @@ pub enum JobKind {
     Apply,
     /// The device read and diff of `knx_plan_device` (issue #332).
     Plan,
+    /// A read-only bus job of the default tier: the line sweep of
+    /// `knx_reconstruct_device` (issue #748).
+    Read,
     /// The line scan of `knx_find_devices` (issue #747).
     Scan,
 }
@@ -96,6 +99,7 @@ impl JobKind {
         match self {
             JobKind::Apply => "apply",
             JobKind::Plan => "plan",
+            JobKind::Read => "read",
             JobKind::Scan => "scan",
         }
     }
@@ -294,6 +298,17 @@ impl JobTable {
         Ok(PlanClaim::New(id))
     }
 
+    /// Claims the slot for a read-only bus job of `address` (issue #748),
+    /// or the refusal naming the job that runs. One bus job at a time: a
+    /// read never runs while an apply or a plan does.
+    pub fn claim_read(&self, address: IndividualAddress) -> Result<String, String> {
+        let mut inner = self.inner();
+        if let Some(refusal) = busy_message(&inner, JobKind::Read) {
+            return Err(refusal);
+        }
+        Ok(insert(&mut inner, JobKind::Read, address))
+    }
+
     /// Ends a job whose pre-flight refused: nothing was written. The job
     /// stays done with the refusal as its result, for a caller that already
     /// answered `started` (issue #332); one that gets the refusal in time
@@ -337,6 +352,14 @@ fn busy_message(inner: &Inner, wanting: JobKind) -> Option<String> {
         (JobKind::Apply, _) => format!(
             "an apply is running on this server (job {id} for {device}); call \
              knx_apply_status with job {id} until it is done, then {again}"
+        ),
+        (JobKind::Apply, JobKind::Read) => format!(
+            "an apply is running on this server (job {id} for {device}); call \
+             knx_job_status with job {id} until it is done, then call again"
+        ),
+        (JobKind::Read, _) => format!(
+            "a read is already running on this server: job {id} reads {device}; one bus job at \
+             a time. Call knx_job_status with job {id} until it is done, then call again"
         ),
         (JobKind::Plan, _) => format!(
             "a plan is already running on this server: job {id} reads {device}; one bus job at \
@@ -383,6 +406,7 @@ fn insert(
     let step = match kind {
         JobKind::Apply => "pre-flight: reading the device and checking the plan",
         JobKind::Plan => "reading the device",
+        JobKind::Read => "reading the bus",
         JobKind::Scan => "scanning the line",
     };
     let context = match line {
