@@ -265,12 +265,23 @@ impl MaskProfile {
     /// This is the **single source of truth** for mask support: `plan`, `apply`,
     /// `flash` and `reconstruct` all refuse through it, `bussard audit` renders
     /// it as a column, and [`capability_table`] renders it as the table in
-    /// `docs/explanation/safety.md` (a test asserts the doc matches this function).
+    /// `docs/explanation/device-support.md` (a test asserts the doc matches
+    /// this function).
     pub fn capabilities(self) -> MaskCapabilities {
+        let caps = self.family_capabilities();
+        MaskCapabilities {
+            flash_property_only: self.mask == PROPERTY_ONLY_FLASH_MASK,
+            ..caps
+        }
+    }
+
+    /// The capability row of this mask's family, before per-mask exceptions.
+    fn family_capabilities(self) -> MaskCapabilities {
         match self.family {
             MaskFamily::SystemB => MaskCapabilities {
                 plan_apply: true,
                 flash: true,
+                flash_property_only: false,
                 describe: true,
                 reconstruct: true,
                 note: "tables live in device-allocated segments found via PID_TABLE_REFERENCE; \
@@ -279,6 +290,7 @@ impl MaskProfile {
             MaskFamily::System7 => MaskCapabilities {
                 plan_apply: true,
                 flash: true,
+                flash_property_only: false,
                 describe: true,
                 reconstruct: true,
                 note: "memory-mapped tables (default 0x4000 / 0x4201), A_Authorize required; \
@@ -287,6 +299,7 @@ impl MaskProfile {
             MaskFamily::System2 => MaskCapabilities {
                 plan_apply: false,
                 flash: false,
+                flash_property_only: false,
                 describe: true,
                 reconstruct: false,
                 note: "classified but unsupported; program it with ETS",
@@ -294,6 +307,7 @@ impl MaskProfile {
             MaskFamily::System1 => MaskCapabilities {
                 plan_apply: false,
                 flash: false,
+                flash_property_only: false,
                 describe: true,
                 reconstruct: false,
                 note: "classified but unsupported; program it with ETS",
@@ -301,6 +315,7 @@ impl MaskProfile {
             MaskFamily::Unknown => MaskCapabilities {
                 plan_apply: false,
                 flash: false,
+                flash_property_only: false,
                 describe: true,
                 reconstruct: false,
                 note: "mask not recognised; program it with ETS",
@@ -310,7 +325,7 @@ impl MaskProfile {
 }
 
 /// What bussard can do with one mask version: the capability row behind every
-/// mask refusal and the `docs/explanation/safety.md` support table.
+/// mask refusal and the `docs/explanation/device-support.md` support table.
 ///
 /// Build one with [`MaskProfile::capabilities`]. `describe` is `true` for every
 /// mask because `bussard describe` enumerates interface objects and property
@@ -322,6 +337,11 @@ pub struct MaskCapabilities {
     pub plan_apply: bool,
     /// `bussard flash` can download an application program.
     pub flash: bool,
+    /// `bussard flash` runs an application of this mask only when its load
+    /// procedure holds property operations alone (no memory, no table, no
+    /// load-state machine). `flash` is `false` on such a mask; this marks the
+    /// exception for the support table.
+    pub flash_property_only: bool,
     /// `bussard describe` can enumerate the device's interface objects.
     pub describe: bool,
     /// Single-device `bussard reconstruct` can read the live tables back.
@@ -360,8 +380,8 @@ impl MaskCapabilities {
 /// Every mask version bussard classifies, in ascending order, with its
 /// capabilities.
 ///
-/// This is what `docs/explanation/safety.md`'s "Supported device masks" table is rendered
-/// from and what `bussard audit` groups devices by. Adding a mask to
+/// This is what `docs/explanation/device-support.md`'s "Supported device
+/// masks" table is rendered from and what `bussard audit` groups devices by. Adding a mask to
 /// [`MaskProfile::from_mask`] means adding it here too, or the doc test fails.
 pub fn capability_table() -> Vec<(u16, MaskCapabilities)> {
     KNOWN_MASKS
@@ -369,6 +389,11 @@ pub fn capability_table() -> Vec<(u16, MaskCapabilities)> {
         .map(|&mask| (mask, MaskProfile::from_mask(mask).capabilities()))
         .collect()
 }
+
+/// The mask whose property-only load procedures `bussard flash` runs although
+/// it does not download the family: `0021`, the System 2 (BCU2) mask of the
+/// Jung IPS 300 SREG KNX IP interface (issue #390).
+pub const PROPERTY_ONLY_FLASH_MASK: u16 = 0x0021;
 
 /// Every mask [`MaskProfile::from_mask`] classifies into a named family, in
 /// ascending order.
@@ -672,6 +697,7 @@ mod tests {
             // `describe` is never mask-gated.
             assert!(caps.describe, "{mask:04X}");
             assert_eq!(caps.summary(), "describe only", "{mask:04X}");
+            assert_eq!(caps.flash_property_only, mask == 0x0021, "{mask:04X}");
         }
     }
 

@@ -146,6 +146,7 @@ mod secure_group;
 pub mod server;
 pub mod session_edits;
 pub mod state;
+pub mod tier_help;
 pub mod tools;
 pub mod tools_audit;
 pub mod tools_device;
@@ -357,7 +358,7 @@ pub async fn run_with_ready(config: &McpConfig, on_ready: impl FnOnce()) -> anyh
 ///
 /// The two model/history read tools (`knx_describe_change`, `knx_history`),
 /// the two bundle/diff tools (`knx_export_bundle`, `knx_diff_project`) and the
-/// eight model-edit tools touch files only, so they are present in every tier
+/// eleven model-edit tools touch files only, so they are present in every tier
 /// including `--passive`.
 pub fn tool_names(passive: bool, allow_writes: bool, no_model_edits: bool) -> Vec<&'static str> {
     tool_names_for(passive, allow_writes, no_model_edits, false)

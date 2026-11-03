@@ -103,8 +103,8 @@ pub use probe::{
     probe_own_address, probe_own_address_on, probe_timeouts_from_env,
 };
 pub use profile::{
-    KnxMedium, LsmRealisation, MaskCapabilities, MaskFamily, MaskProfile, Sys7Profile,
-    capability_table,
+    KnxMedium, LsmRealisation, MaskCapabilities, MaskFamily, MaskProfile, PROPERTY_ONLY_FLASH_MASK,
+    Sys7Profile, capability_table,
 };
 pub use secure::SecureLayer;
 pub use sys7::{

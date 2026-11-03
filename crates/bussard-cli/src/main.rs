@@ -131,8 +131,9 @@ struct Global {
     #[arg(long, global = true)]
     skip_address_check: bool,
     /// Ignore the stored device facts (`<dir>/.bussard/facts/<ia>.toml`) and
-    /// read them from the device again (issue #209). Consulted by
+    /// read them from the device again. Consulted by
     /// `reconstruct`, `describe`, `flash`, `plan` and `apply`.
+    // Issue #209.
     #[arg(long, global = true)]
     refresh_facts: bool,
     /// Increase log verbosity: `-v` = info, `-vv` = debug, `-vvv` = trace.
@@ -149,7 +150,8 @@ struct Global {
     no_progress: bool,
     /// KNXnet/IP Secure: the tunnelling user id to authenticate as, with
     /// `--secure-password-env`. Without these flags a `--keyring` that lists the
-    /// interface's tunnelling users picks one automatically (issue #71).
+    /// interface's tunnelling users picks one automatically.
+    // Issue #71.
     #[arg(long, global = true, value_name = "ID")]
     secure_user: Option<u8>,
     /// KNXnet/IP Secure: the name of the environment variable that holds the
@@ -158,9 +160,10 @@ struct Global {
     secure_password_env: Option<String>,
     /// KNXnet/IP Secure: how the secure session's TCP connect is handled.
     /// A unicast secure session runs over TCP only (KNX IP Secure 3/8/9
-    /// §2.2.3.3, issue #513). Default `auto`: an interface that refuses TCP
+    /// §2.2.3.3). Default `auto`: an interface that refuses TCP
     /// but advertises Secure is reported with the likely causes; `tcp`
     /// reports the refusal as it is.
+    // Issue #513.
     #[arg(long, global = true, value_enum, value_name = "TRANSPORT")]
     secure_transport: Option<SecureTransportArg>,
 }
@@ -601,7 +604,7 @@ enum GroupsCommand {
         #[arg(long, value_enum)]
         scheme: Option<SchemeArg>,
     },
-    /// Switch KNX Data Secure on or off for one group address (issue #331).
+    /// Switch KNX Data Secure on or off for one group address.
     ///
     /// `off` removes the group key from the key store (`bussard.keys`) and
     /// clears the `secure` flag of the group and of every com-object linked
@@ -611,6 +614,7 @@ enum GroupsCommand {
     /// `BUSSARD_KEYRING_PASSWORD`. The Secure devices linked to the group
     /// address then need `bussard plan` and `bussard apply`, and every
     /// keyring user (Home Assistant) a new `bussard keys export`.
+    // Issue #331.
     Secure {
         /// The group address, e.g. `1/0/4`.
         #[arg(value_name = "GA")]
@@ -683,7 +687,7 @@ enum SecureCommand {
 #[derive(Debug, Subcommand)]
 enum InterfaceCommand {
     /// Switch KNXnet/IP Secure of a KNX IP interface on or off, the way ETS
-    /// does (issue #398).
+    /// does.
     ///
     /// `on` takes a device in factory state over a plain tunnel: under its
     /// FDSK the security mode and a tool key, then under the tool key the
@@ -694,6 +698,7 @@ enum InterfaceCommand {
     /// the first write. `off` undoes it under the tool key, then again under
     /// the FDSK. Both end with a read-back after the restart. The model never
     /// holds a credential. See https://bussard.tmbo.dev/docs/explanation/safety/ for the recovery.
+    // Issue #398.
     Secure {
         /// `on` or `off`.
         #[arg(value_name = "on|off")]
@@ -840,14 +845,16 @@ enum Command {
         #[arg(long)]
         yes: bool,
         /// A raw KNX Data Secure tool key (32 hex characters) to verify a
-        /// security-activated device with after the address write (issue #203).
+        /// security-activated device with after the address write.
         /// Overrides the keyring, which lists devices by individual address and
         /// so only knows the new address once ETS re-exports it. For a test or
         /// bench device: process arguments are visible to other users.
+        // Issue #203.
         #[arg(long, value_name = "HEX")]
         tool_key: Option<String>,
         /// Write the address although another device already answers at it
-        /// (the check is step 1 of the standard's address write, issue #530).
+        /// (the check is step 1 of the standard's address write).
+        // Issue #530.
         #[arg(long)]
         force: bool,
     },
@@ -873,9 +880,10 @@ enum Command {
         #[arg(long, value_name = "DIR", requires = "line")]
         out: Option<PathBuf>,
         /// The device's vendor `.knxprod`, to read back and decode its parameter
-        /// memory too (issue #119). Default: the archive `bussard.lock` pins for
+        /// memory too. Default: the archive `bussard.lock` pins for
         /// the device in `<dir>/products/`. One that contradicts the lock is
         /// used with a warning.
+        // Issue #119.
         #[arg(long, value_name = "FILE", conflicts_with = "line")]
         product: Option<PathBuf>,
         /// The application program id to decode the parameters with (default:
@@ -883,8 +891,9 @@ enum Command {
         #[arg(long, value_name = "REF", conflicts_with = "line")]
         application: Option<String>,
         /// Read the links and tables only: skip the parameter read-back and the
-        /// product parse behind it (issue #215). On a large parameter segment
+        /// product parse behind it. On a large parameter segment
         /// that read-back is most of the command's time.
+        // Issue #215.
         #[arg(long, conflicts_with_all = ["line", "product", "application"])]
         no_parameters: bool,
         /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
@@ -914,10 +923,11 @@ enum Command {
     },
     /// Manage the KNX Secure key store, `bussard.keys` next to
     /// `bussard.lock`: import an ETS `.knxkeys`, export one for ETS, show a
-    /// summary (issue #241). Key material is NEVER printed.
+    /// summary. Key material is NEVER printed.
     ///
     /// The store is encrypted with the password in
     /// `BUSSARD_KEYRING_PASSWORD` and meant to be committed with the model.
+    // Issue #241.
     Keys {
         #[command(subcommand)]
         command: KeysCommand,
@@ -975,7 +985,8 @@ enum Command {
         #[arg(long)]
         no_download: bool,
         /// Write the address although another device already answers at it
-        /// (the check is step 1 of the standard's address write, issue #530).
+        /// (the check is step 1 of the standard's address write).
+        // Issue #530.
         #[arg(long)]
         force: bool,
     },
@@ -1004,10 +1015,11 @@ enum Command {
         /// refused unless this is given.
         #[arg(long)]
         yes: bool,
-        /// Override the not-factory-fresh refusal (issue #79): flash a device
+        /// Override the not-factory-fresh refusal: flash a device
         /// that already carries a different application. A flash takes no
         /// backup, so this destroys the resident application, its parameters
         /// and its links. Re-flashing the same application does not need it.
+        // Issue #79.
         #[arg(long)]
         force: bool,
         /// Skip nothing: re-stream every object. By default an object whose
@@ -1017,7 +1029,8 @@ enum Command {
         /// System 7 (mask 0701/0705) it also first unloads load-state machines
         /// 1 to 4 and restarts the device, as ETS does when its Unload command
         /// precedes the download; a plain flash, like ETS's application
-        /// download, sends neither (issue #488).
+        /// download, sends neither.
+        // Issue #488.
         #[arg(long)]
         full: bool,
         /// Skip the factory reset before the download. By default a System B
@@ -1025,27 +1038,30 @@ enum Command {
         /// sparsely, or that replaces a device that is not factory-fresh, first
         /// sends a confirmed master reset (erase code 7): the device erases its application, parameters and links and
         /// keeps its individual address, so no octet of a previous image survives
-        /// where the new one writes nothing (issue #117). Use this only when you
+        /// where the new one writes nothing. Use this only when you
         /// know the device holds no stale image.
+        // Issue #117.
         #[arg(long)]
         no_factory_reset: bool,
         /// Rewrite only the parameter memory of a device that already runs this
-        /// application (issue #119): no table write. On System B it runs the
+        /// application: no table write. On System B it runs the
         /// standard's partial download (unload, load, Mode 0 re-allocation that
-        /// keeps the memory, issue #543). Only the octets that differ from what
+        /// keeps the memory). Only the octets that differ from what
         /// the device holds are written, then the load completes and the device
         /// restarts. Refused when
         /// the device runs another application or is not Loaded, and when a
         /// changed parameter shows or hides a com-object (that needs a full flash).
         /// The parameter memory is backed up first. With `--dry-run`, prints the
         /// op sequence offline.
+        // Issues #119, #543.
         #[arg(long, conflicts_with_all = ["full", "force", "no_factory_reset"])]
         parameters_only: bool,
         /// The device's BCU access key, in hex (e.g. `FFFFFFFF` or `0x11223344`),
-        /// presented with A_Authorize on every management connect (issue #52).
+        /// presented with A_Authorize on every management connect.
         /// Unset presents the free-access key (FFFFFFFF) — correct for an unkeyed
         /// device (ETS uses free access by default). A keyed device needs its
         /// project key here or it will deny access.
+        // Issue #52.
         #[arg(long, value_name = "HEX")]
         bcu_key: Option<String>,
         /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
@@ -1076,7 +1092,8 @@ enum Command {
         /// capture) instead of no device: the freshness verdict, the
         /// product's `par` procedure for a device holding this application,
         /// and the skip of objects whose image already matches take the shape
-        /// a live flash takes on that device (issue #490).
+        /// a live flash takes on that device.
+        // Issue #490.
         #[arg(long, value_name = "FILE", requires = "dry_run")]
         resident: Option<PathBuf>,
     },
@@ -1089,13 +1106,15 @@ enum Command {
         #[arg(value_name = "ADDRESS", required_unless_present = "line")]
         address: Option<String>,
         /// Plan every device the model has on this line, e.g. `1.1`, in address
-        /// order, and print one summary table (issue #100).
+        /// order, and print one summary table.
+        // Issue #100.
         #[arg(long, value_name = "LINE", conflicts_with = "address")]
         line: Option<String>,
         /// The device's vendor `.knxprod`, to read back and decode its parameter
-        /// memory too (issue #119). Default: the archive `bussard.lock` pins for
+        /// memory too. Default: the archive `bussard.lock` pins for
         /// the device in `<dir>/products/`. One that contradicts the lock is
         /// used with a warning.
+        // Issue #119.
         #[arg(long, value_name = "FILE", conflicts_with = "line")]
         product: Option<PathBuf>,
         /// The application program id to decode the parameters with (default:
@@ -1119,7 +1138,8 @@ enum Command {
         address: Option<String>,
         /// Apply to every device the model has on this line, e.g. `1.1`, in
         /// address order: one confirmation for the run, one summary table, and a
-        /// resumable state file (issue #100).
+        /// resumable state file.
+        // Issue #100.
         #[arg(long, value_name = "LINE", conflicts_with = "address")]
         line: Option<String>,
         /// Line mode only: continue the run recorded in
@@ -1174,7 +1194,8 @@ enum Command {
     },
     /// Bench mode: walk the model's devices on a line, prompt for each device's
     /// programming button, verify its order number, assign its address, and
-    /// print a label (issue #100).
+    /// print a label.
+    // Issue #100.
     Commission {
         /// The line to commission, e.g. `1.1`.
         #[arg(long, value_name = "LINE")]
@@ -1205,7 +1226,8 @@ enum Command {
     /// Show what has changed in the model since the last history snapshot,
     /// or, given a device ADDRESS, read that device's live state over the bus:
     /// its identity and, for a KNX IP interface, its IP settings, MAC address,
-    /// tunnelling addresses and state (issue #391).
+    /// tunnelling addresses and state.
+    // Issue #391.
     Status {
         /// The device to read, e.g. `1.1.200`. Without it, the model's change
         /// summary.
@@ -1253,11 +1275,12 @@ enum Command {
         snapshot: Option<String>,
     },
     /// Snapshot every device in the installation: tables, and where bussard can
-    /// bound the read, the writable parameter memory (issue #96).
+    /// bound the read, the writable parameter memory.
     ///
     /// Read-only on the bus. Writes one JSON file per device plus a
     /// `manifest.json` that lists every device considered, including the ones
     /// whose mask bussard cannot read.
+    // Issue #96.
     Backup {
         /// Back up only these devices, e.g. `1.1.4 1.1.7` (default: every device
         /// in the model).
@@ -1275,13 +1298,14 @@ enum Command {
         #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
         tool_key: Option<String>,
     },
-    /// Write a device's backed-up link tables back onto it (issue #96), or
-    /// with `--parameters` its backed-up parameter memory (issue #290).
+    /// Write a device's backed-up link tables back onto it, or
+    /// with `--parameters` its backed-up parameter memory.
     ///
     /// `restore <BACKUP_DIR> <ADDRESS>` runs the same plan, confirm, back up,
     /// write and verify path as `apply`, with the backup as the desired state
     /// instead of the model. `restore --parameters <BACKUP_JSON> <ADDRESS>`
     /// replays a parameter backup with `apply`'s parameter-only download.
+    // Issues #96, #290.
     Restore {
         /// `<BACKUP_DIR> <ADDRESS>`: the backup directory (a `bussard backup`
         /// run, or `<dir>/captures/backups` for the per-device snapshots
@@ -1327,7 +1351,8 @@ enum Command {
         tool_key: Option<String>,
     },
     /// Replace a dead device: assign, flash, apply and record, in one guided
-    /// flow with one confirmation (issue #98).
+    /// flow with one confirmation.
+    // Issue #98.
     Replace {
         /// The address of the device being replaced, e.g. `1.1.4`.
         #[arg(value_name = "ADDRESS")]
@@ -1350,7 +1375,8 @@ enum Command {
         #[arg(long)]
         no_flash: bool,
         /// The device's BCU access key, in hex, presented with A_Authorize on
-        /// every management connect (issue #52).
+        /// every management connect.
+        // Issue #52.
         #[arg(long, value_name = "HEX")]
         bcu_key: Option<String>,
         /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
@@ -1510,8 +1536,9 @@ enum Command {
         yes: bool,
         /// Instead of running `tests.toml`: open a KNXnet/IP Secure session,
         /// stay idle (no keepalive, no tunnel) for SECS seconds, and report
-        /// whether the interface dropped it (issue #197). Read-only: nothing
+        /// whether the interface dropped it. Read-only: nothing
         /// is written to the bus and no tunnel slot is taken.
+        // Issue #197.
         #[arg(long, value_name = "SECS", conflicts_with_all = ["file", "force", "skip_manual", "only"])]
         secure_idle: Option<u64>,
     },
@@ -1529,25 +1556,25 @@ enum Command {
     },
     /// Run the MCP server over stdio: model tools and bus reads by default;
     /// bus writes and device programming only when their flags allow it.
+    // The tier flags' help and the tool counts are built from the registration
+    // tables in `bussard_mcp::tier_help`, so they cannot drift (issue #704).
+    #[command(after_help = bussard_mcp::tier_help::tier_counts_help())]
     Mcp {
-        /// Passive mode: never transmit on the bus (omits `knx_read_group`,
-        /// `knx_describe_device`, `knx_backup_device`, `knx_reconstruct_device`
-        /// and `knx_bus_reconnect`). The server only observes.
-        #[arg(long)]
+        #[arg(long, help = bussard_mcp::tier_help::passive_help())]
         passive: bool,
-        /// Allow bus writes: registers the `knx_write_group` tool. Off by
-        /// default. Mutually exclusive with `--passive`.
-        #[arg(long, conflicts_with = "passive")]
+        #[arg(
+            long,
+            conflicts_with = "passive",
+            help = bussard_mcp::tier_help::allow_writes_help()
+        )]
         allow_writes: bool,
-        /// Programming tier: registers `knx_plan_device`, `knx_apply_device`,
-        /// `knx_apply_status`, `knx_last_apply`, `knx_restore_parameters`,
-        /// `knx_restore_tables`, `knx_restart_device`,
-        /// `knx_clear_security_log` and `knx_interface_secure`, which write
-        /// one device after a plan the human approved (issues #118, #717).
-        /// Off by default. Mutually exclusive with `--passive`; a
-        /// non-loopback gateway also needs `--allow-remote-gateway` or
-        /// BUSSARD_ALLOW_REAL_GATEWAY=1.
-        #[arg(long, conflicts_with = "passive")]
+        // The programming tools write one device after an approved plan
+        // (issues #118, #717).
+        #[arg(
+            long,
+            conflicts_with = "passive",
+            help = bussard_mcp::tier_help::allow_programming_help()
+        )]
         allow_programming: bool,
         /// How many minutes a `knx_plan_device` digest stays valid for
         /// `knx_apply_device`.
@@ -1558,24 +1585,14 @@ enum Command {
             requires = "allow_programming"
         )]
         plan_ttl_minutes: u64,
-        /// Refuse model edits: omits the `knx_set_group`, `knx_remove_group`,
-        /// `knx_add_link`, `knx_remove_link`, `knx_set_device`,
-        /// `knx_set_parameter`, `knx_set_interface`, `knx_undo`, `knx_discard_edits`,
-        /// `knx_scaffold_groups` and `knx_reserve_groups` tools. The read tools
-        /// stay available. Model edits only
-        /// touch the model files (never the bus), so they are on by default.
-        #[arg(long)]
+        #[arg(long, help = bussard_mcp::tier_help::no_model_edits_help())]
         no_model_edits: bool,
         /// Path to a capture SQLite database to extend `knx_recent_telegrams`
         /// history beyond the in-memory ring window.
         #[arg(long, value_name = "PATH")]
         capture_db: Option<PathBuf>,
-        /// Home Assistant tier: registers `knx_ha_status`, `knx_ha_plan` and
-        /// `knx_ha_apply` when bussard.toml has a `[home_assistant]` table
-        /// (issue #280). Writes only the KNX YAML file it names, after a plan
-        /// the human approved, then reloads the KNX integration. Off by
-        /// default; never touches the bus.
-        #[arg(long)]
+        // The Home Assistant tier needs a `[home_assistant]` table (issue #280).
+        #[arg(long, help = bussard_mcp::tier_help::allow_home_assistant_help())]
         allow_home_assistant: bool,
     },
 }
