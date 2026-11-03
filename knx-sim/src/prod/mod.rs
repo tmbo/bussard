@@ -23,4 +23,4 @@ pub use model::{
     LdCtrl, LoadProcedure, LoadableObject, ProductData, RelativeSegment, SecurityCapacity,
     TypedProperty,
 };
-pub use reader::{ProdError, read_knxprod, read_knxprod_bytes};
+pub use reader::{ProdError, program_manufacturer, read_knxprod, read_knxprod_bytes};

@@ -605,10 +605,7 @@ fn parse_application_program(
     // apart from the compare and refused "a device of another manufacturer"
     // (ABB A-A001, 2026-10-28): a device of that hardware holds its own, the
     // application id's `M-xxxx`, and the version.
-    let manufacturer = app_id
-        .strip_prefix("M-")
-        .and_then(|m| m.get(..4))
-        .and_then(|m| u16::from_str_radix(m, 16).ok());
+    let manufacturer = program_manufacturer(&app_id);
     let object_compare_props: Vec<(u8, u8, Vec<u8>)> = defaults
         .pick(&object_cands)
         .into_iter()
@@ -694,8 +691,43 @@ fn parse_application_program(
     }))
 }
 
+/// The manufacturer a device reports in its program id (PID 13 of the
+/// application object): the original manufacturer of an OEM application
+/// (`M-0007_A-...-O0002` is ABB's program sold by Busch-Jaeger, and the device
+/// reports 0002), else the application id's `M-xxxx`. ETS copies the reported
+/// value into the TaskSegment records, so a sim reporting 0007 made 40
+/// Busch-Jaeger captures differ from what the house device 1.1.44 gives
+/// (bussard #640, 2026-11-03).
+pub fn program_manufacturer(application_id: &str) -> Option<u16> {
+    let oem = application_id
+        .rsplit_once("-O")
+        .map(|(_, tail)| tail)
+        .filter(|t| t.len() == 4 && t.chars().all(|c| c.is_ascii_hexdigit()));
+    let hex = match oem {
+        Some(t) => t,
+        None => application_id.strip_prefix("M-")?.get(..4)?,
+    };
+    u16::from_str_radix(hex, 16).ok()
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_program_manufacturer_prefers_the_oem_original() {
+        assert_eq!(
+            super::program_manufacturer("M-0007_A-A087-11-C77A-O0002"),
+            Some(0x0002)
+        );
+        assert_eq!(
+            super::program_manufacturer("M-0002_A-A001-13-63C2"),
+            Some(0x0002)
+        );
+        assert_eq!(
+            super::program_manufacturer("M-0071_A-4A11-13-48E1"),
+            Some(0x0071)
+        );
+    }
+
     use super::*;
 
     #[test]
