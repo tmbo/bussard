@@ -61,9 +61,17 @@ def password() -> str:
 
 
 def connect() -> paramiko.SSHClient:
+    """An ssh connection to the VM. When macOS's Local Network privacy blocks
+    this Python ('No route to host' while /usr/bin/nc connects, 2026-11-03),
+    the connection goes through /usr/bin/nc instead: a system binary is not
+    subject to that check, and paramiko speaks ssh over its pipes."""
     c = paramiko.SSHClient()
     c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    c.connect(HOST, port=PORT, username=USER, password=password(), timeout=10)
+    try:
+        c.connect(HOST, port=PORT, username=USER, password=password(), timeout=10)
+    except (OSError, paramiko.ssh_exception.NoValidConnectionsError):
+        proxy = paramiko.ProxyCommand(f"/usr/bin/nc {HOST} {PORT}")
+        c.connect(HOST, port=PORT, username=USER, password=password(), timeout=10, sock=proxy)
     return c
 
 
