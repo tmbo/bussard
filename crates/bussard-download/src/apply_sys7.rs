@@ -107,7 +107,7 @@ use bussard_mgmt::{LsmAccess, Sys7Profile, Sys7TaskIdentity};
 
 use crate::compute::DesiredTables;
 use crate::compute_sys7::{
-    SYS7_GROUP_OBJECT_HEADER_LEN, sys7_address_table, sys7_association_table,
+    SYS7_GROUP_OBJECT_HEADER_LEN, SYS7_MAX_TABLE_INDEX, sys7_address_table, sys7_association_table,
 };
 use crate::tables_sys7::{Sys7LiveTables, read_region};
 use std::collections::BTreeSet;
@@ -139,6 +139,19 @@ pub enum Sys7ApplyError {
         len: usize,
         /// The region's capacity in octets.
         capacity: usize,
+    },
+    /// The model needs a count, TSAP or ASAP past the one-octet System 7 table
+    /// form (issue #739); nothing was written.
+    #[error(
+        "the model needs {what} {value} in the System 7 {table} table, past the one-octet form's 255; nothing was written (issue #739)"
+    )]
+    IndexOverflow {
+        /// Which table (`address`, `association`).
+        table: &'static str,
+        /// What overflowed (`count`, `TSAP`, `ASAP`).
+        what: &'static str,
+        /// The value the model needs.
+        value: usize,
     },
     /// A written chunk did not read back as written.
     #[error(
@@ -355,12 +368,43 @@ impl Sys7VerifyOutcome {
     }
 }
 
+/// Refuses a model the one-octet System 7 tables cannot hold: the builders
+/// in [`crate::compute_sys7`] clamp the count and keep the low octet of each
+/// index, which would link the wrong object (issue #739).
+fn check_one_octet_indices(desired: &DesiredTables) -> Result<(), Sys7ApplyError> {
+    let overflow = |table, what, value: usize| {
+        (value > SYS7_MAX_TABLE_INDEX).then_some(Sys7ApplyError::IndexOverflow {
+            table,
+            what,
+            value,
+        })
+    };
+    let address_count = 1 + desired.addresses.len();
+    let largest = |pick: fn(&(u16, u16)) -> u16| {
+        desired
+            .associations
+            .iter()
+            .map(pick)
+            .max()
+            .map_or(0, usize::from)
+    };
+    overflow("address", "count", address_count)
+        .or_else(|| overflow("association", "count", desired.associations.len()))
+        .or_else(|| overflow("association", "TSAP", largest(|a| a.0)))
+        .or_else(|| overflow("association", "ASAP", largest(|a| a.1)))
+        .map_or(Ok(()), Err)
+}
+
 /// Computes the two region images from the model's desired tables and the
 /// device's live state.
 ///
 /// Address-table slot 0 (TSAP 0, `[system7-spec §7.1]`) carries the value the
 /// device reads there today ([`Sys7LiveTables::own_ia`]): it is never written,
 /// as ETS never writes it (see the module docs).
+///
+/// A table the one-octet form cannot hold (a count, TSAP or ASAP past
+/// [`SYS7_MAX_TABLE_INDEX`]) is refused before anything else
+/// ([`Sys7ApplyError::IndexOverflow`]).
 ///
 /// The address table is refused past [`Sys7LiveTables::address_capacity`], the
 /// association table past its region. The communication flags follow the links
@@ -369,6 +413,7 @@ pub fn sys7_table_images(
     live: &Sys7LiveTables,
     desired: &DesiredTables,
 ) -> Result<Sys7TableImages, Sys7ApplyError> {
+    check_one_octet_indices(desired)?;
     let address_region = sys7_address_table(live.own_ia, desired);
     if address_region.len() > live.address_capacity {
         return Err(Sys7ApplyError::RegionOverflow {
@@ -918,6 +963,61 @@ mod tests {
             (0x4000, 5)
         );
         Ok(())
+    }
+
+    #[test]
+    fn test_sys7_table_images_refuses_an_asap_past_one_octet()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // The Jung Smart Panel (`M-0004_A-5014-11`) numbers com objects up to
+        // 1999 in one-octet tables: object 300 would be written as object 44
+        // (issue #739), so nothing is written.
+        let desired = compute_tables(&[Link {
+            object: 300,
+            name: None,
+            send: Some("1/0/1".parse()?),
+            listen: Vec::new(),
+        }]);
+        let err = sys7_table_images(&live(0x1105, 237), &desired)
+            .expect_err("an ASAP past 255 is refused");
+        assert!(
+            matches!(
+                err,
+                Sys7ApplyError::IndexOverflow {
+                    table: "association",
+                    what: "ASAP",
+                    value: 300,
+                }
+            ),
+            "{err}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_sys7_table_images_refuses_an_address_count_past_one_octet() {
+        // 255 group addresses plus the own-IA slot need a count of 256.
+        let links: Vec<Link> = (0..255u16)
+            .map(|i| Link {
+                object: 1,
+                name: None,
+                send: None,
+                listen: vec![bussard_model::GroupAddress::from_raw(0x0800 + i)],
+            })
+            .collect();
+        let desired = compute_tables(&links);
+        let err = sys7_table_images(&live(0x1105, 4096), &desired)
+            .expect_err("a count past 255 is refused");
+        assert!(
+            matches!(
+                err,
+                Sys7ApplyError::IndexOverflow {
+                    table: "address",
+                    what: "count",
+                    value: 256,
+                }
+            ),
+            "{err}"
+        );
     }
 
     #[test]

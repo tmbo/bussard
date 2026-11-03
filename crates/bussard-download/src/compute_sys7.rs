@@ -17,8 +17,10 @@
 //! system-agnostic) and [`crate::compute::size_code_from_object_size`] (the TYPE
 //! byte is the same KNX length code), but the packing is System-7-specific. The
 //! CONFIG octet follows Group Object Table Realisation Type 2 (Resources
-//! §4.18.4.1, see [`sys7_config_byte`]); every uncertain constant carries an
-//! `S7-CAL:` marker.
+//! §4.18.4.1, see [`sys7_config_byte`]). No `S7-CAL:` marker remains here: the
+//! index width is settled by the corpus (see [`sys7_association_table`]) and
+//! the group-object pointers by the ETS captures (see
+//! [`sys7_group_object_table`]).
 
 use bussard_model::GroupAddress;
 
@@ -47,6 +49,10 @@ pub const SYS7_ADDRESS_ENTRY_LEN: usize = 2;
 
 /// Octets per association-table entry (`[TSAP:1][ASAP:1]`).
 pub const SYS7_ASSOCIATION_ENTRY_LEN: usize = 2;
+
+/// The largest count, TSAP or ASAP the one-octet System 7 tables can hold
+/// (`[system7-spec §7.1, §7.2]`). A table past it is refused, issue #739.
+pub const SYS7_MAX_TABLE_INDEX: usize = 255;
 
 /// Octets of the group-object table header: `[CNT:1][RAM-flags ptr:2 BE]`.
 pub const SYS7_GROUP_OBJECT_HEADER_LEN: usize = 3;
@@ -370,9 +376,15 @@ pub fn sys7_address_table(own_ia: u16, tables: &DesiredTables) -> Vec<u8> {
 /// [`DesiredTables::associations`] in table order (the ordering is computed by
 /// [`crate::compute::compute_tables`], shared with System B).
 ///
-/// `S7-CAL: confirm no 2-byte TSAP/ASAP variant appears in the corpus — 0705
-/// allows ~254 GAs which still fits u8, but a large device could in principle
-/// need a wider index.`
+/// The one-octet form is the only one the product corpus ships: of its 577
+/// System 7 applications (291 on 0701, 286 on 0705, scanned 2026-11-03), 420
+/// carry association `<Data>` in one-octet pairs, 23 a count over zero-filled
+/// pairs and the rest an empty or erased table; none a two-octet layout. Three
+/// 0701 applications (the Jung Smart Panel `M-0004_A-5014-11` / `A-5016-11` and
+/// the Berker Master Control `M-0006_A-5901-01`) declare more entries than the
+/// form can index, issue #739. This builder clamps the count and keeps the low
+/// octet of each index, so its caller refuses a table past
+/// [`SYS7_MAX_TABLE_INDEX`] first (`apply_sys7::sys7_table_images`).
 pub fn sys7_association_table(tables: &DesiredTables) -> Vec<u8> {
     let count = tables.associations.len();
     let mut out = Vec::with_capacity(1 + count * 2);
@@ -455,11 +467,19 @@ pub struct Sys7GroupObject {
 /// the RAM of object 1 (temperature value), and setting the communication flag
 /// of descriptor 32 enabled object 32. The flash post-pass
 /// ([`crate::flash`]) indexes the vendor templates the same way. `ram_flags_ptr` is the base of
-/// the per-object RAM-flags table (default `0x0700`, the low-RAM working region).
-/// Returns `None` when there are no descriptors (nothing to program).
+/// the per-object RAM-flags table. Returns `None` when there are no descriptors
+/// (nothing to program).
 ///
-/// `S7-CAL: confirm the RAM-flags pointer default and the data-ptr allocation
-/// rule against a live 0705 group-object segment.`
+/// This is the inverse of [`decode_sys7_group_object_table`]; no write path
+/// calls it with a pointer of its own. `flash` keeps the RAM-flags pointer and
+/// every data pointer of the product's own image and rewrites only CONFIG and
+/// TYPE; `apply` rewrites only CONFIG over the device's live image. ETS writes
+/// the same pointers: the group-object table at `0x43FF` (header `C8 07 F9`,
+/// data pointers from `0x0700`) compares identical in the 0705 house rows
+/// 1.1.31, 1.1.32 and 1.1.46 (`captures/campaign/rows/rows-house-16.txt`) and
+/// 1.1.49 and 1.1.52 (`rows-2026-10-26.txt`, header `DA 07 00` on 1.1.49), and
+/// in the synthetic `syn-s7-0705 defaults` row (`captures/synthetic/rows.txt`),
+/// all at 100 % coverage.
 pub fn sys7_group_object_table(ram_flags_ptr: u16, objects: &[Sys7GroupObject]) -> Option<Vec<u8>> {
     let max_asap = objects.iter().map(|o| o.asap).max()?;
     let count = usize::from(max_asap) + 1;

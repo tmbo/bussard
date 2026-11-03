@@ -995,8 +995,13 @@ since.
   p. 250]`, so `compute_tables` puts the send link first; on BCU2 the sending
   association is the one whose number equals the ASAP `[Res §4.17.4.3.1,
   p. 248]`, a different build (#525).
-- Index width: 1 byte confirmed on small devices; 0705 allows ~254 GAs, which
-  still fits u8. `S7-CAL: confirm no 2-byte TSAP/ASAP variant in the corpus`.
+- Index width: one octet. A corpus scan (2026-11-03) of all 577 System 7
+  applications (291 on 0701, 286 on 0705) finds 420 association `<Data>`
+  images in one-octet pairs, 23 with a count over zero-filled pairs, the rest
+  empty or erased, and no two-octet layout. Three 0701 applications declare
+  more entries than one octet indexes (Jung Smart Panel `M-0004_A-5014-11` /
+  `A-5016-11`, Berker Master Control `M-0006_A-5901-01`); `apply` refuses a
+  count, TSAP or ASAP past 255 and the rest is #739.
 
 ### 7.3 Group-object table + descriptors `[Selfbus BIM112 dump, CONFIRMED; Res §4.18.3/§4.18.4 for the octets]`
 
