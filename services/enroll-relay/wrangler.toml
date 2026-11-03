@@ -1,0 +1,19 @@
+# Cloudflare Worker for the bussard enrolment relay (#731).
+# Nothing here names an account or a route: the owner picks those at deploy
+# time (README.md, "Deploy").
+name = "bussard-enroll-relay"
+main = "src/worker.js"
+compatibility_date = "2026-10-01"
+
+# The relay never logs bodies, and the request URLs carry session ids, so
+# Workers Logs stay off.
+[observability]
+enabled = false
+
+[[durable_objects.bindings]]
+name = "SESSIONS"
+class_name = "Session"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Session"]
