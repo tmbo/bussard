@@ -1,0 +1,5 @@
+{
+  "private": true,
+  "type": "module",
+  "description": "Static pages served with the website; no build step, no dependencies. Tests: node --test web/tests/"
+}

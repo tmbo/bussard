@@ -8,6 +8,10 @@
   same document, switched by a language toggle and the browser language.
 - `mkdocs.yml`, `hooks.py`, `overrides/`: the documentation site, rendered from
   `../docs` with MkDocs Material and served under `/docs/`.
+- `../web/enroll/`: the certificate enrolment page for the phone (#730),
+  copied as-is to `/enroll/`. Static HTML/CSS/JS, no build step, not in the
+  docs navigation. Protocol: `dev/enroll-protocol.md`; tests:
+  `node --test web/tests/*.test.js`.
 
 Preview the docs locally:
 
@@ -18,7 +22,7 @@ $ uvx --from mkdocs-material mkdocs serve -f website/mkdocs.yml
 Build both parts the way CI does:
 
 ```console
-$ mkdir -p _site && cp website/index.html _site/
+$ mkdir -p _site && cp website/index.html _site/ && cp -R web/enroll _site/enroll
 $ uvx --from mkdocs-material mkdocs build --strict -f website/mkdocs.yml -d "$PWD/_site/docs"
 ```
 
