@@ -18,7 +18,7 @@ On both sides an assistant usually does the reading and writing over MCP, and th
 
 ## Exchange files
 
-The handover bundle is the delivered state. At acceptance the integrator exports it, and the model checksum from its manifest goes on the acceptance protocol ([handover checklist](handover-checklist.md)). From then on:
+The handover bundle is the delivered state. At acceptance the integrator exports it, and the model checksum from its manifest goes on the acceptance protocol. From then on:
 
 1. The owner exports the current model (`bussard export`, or `knx_export_bundle` over MCP), or describes the wish in words.
 2. The integrator runs `bussard diff` between the delivered bundle and the one received. That lists, in sentences, everything the owner changed since handover: the warranty question, answered before work starts.
@@ -112,6 +112,5 @@ jobs:
 
 ## Next steps
 
-- [Handover checklist](handover-checklist.md): what to deliver at acceptance.
 - [Exchange with ETS](exchange-with-ets.md): get names into ETS and read a new export.
 - [Model directory](../reference/model-directory.md): what a bundle contains.

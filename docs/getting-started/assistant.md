@@ -6,30 +6,82 @@ You need a model directory ([Your first model](first-model.md)) and an assistant
 
 ## Register the server
 
-For Claude Code, run this once in the model directory:
+The server talks over stdin and stdout, so the client starts it; there is nothing to connect to. Run `bussard mcp` by hand in the model directory and it prints the Claude Code command and the JSON entry below with your binary's full path, the model directory and the flags you gave, ready to paste. It never prints a password.
 
-```console
-$ claude mcp add knx -- bussard mcp --dir "$PWD"
-```
+=== "Claude Code"
 
-The server talks over stdin and stdout, so the client starts it; there is nothing to connect to. Run `bussard mcp` by hand in the model directory and it prints this command, and the JSON entry below, with your binary's full path, the model directory and the flags you gave, ready to paste. It never prints a password.
+    Run this once in the model directory:
 
-Other clients take a `mcpServers` JSON entry. Use absolute paths, because the client may start the server from any directory:
+    ```console
+    $ claude mcp add knx -- bussard mcp --dir "$PWD"
+    ```
 
-```json
-{
-  "mcpServers": {
-    "knx": {
-      "command": "bussard",
-      "args": ["mcp", "--dir", "/Users/nadia/house"]
+    `claude mcp list` shows the server, and the tools appear in the next conversation you start there.
+
+=== "Claude Desktop"
+
+    Settings > Developer > Edit Config opens `claude_desktop_config.json` (on macOS in `~/Library/Application Support/Claude/`). Paste this entry, with the absolute path of your model directory, and restart Claude Desktop:
+
+    ```json
+    {
+      "mcpServers": {
+        "knx": {
+          "command": "bussard",
+          "args": ["mcp", "--dir", "/Users/nadia/house"]
+        }
+      }
     }
-  }
-}
-```
+    ```
 
-In Claude Desktop, Settings > Developer > Edit Config opens `claude_desktop_config.json` (on macOS in `~/Library/Application Support/Claude/`). Paste the entry and restart Claude Desktop. The server shows under the tools icon in a chat, not in the connector list. That dialog takes only the HTTPS URL of a remote server. `bussard mcp --listen` serves the tools over HTTP for it, but you need a reverse proxy or tunnel in front that terminates TLS and authenticates; see [Over HTTP](../reference/commands/servers.md#over-http). The config file needs neither, so prefer it on the machine that runs bussard.
+    The server shows under the tools icon in a chat, not in the connector list: that dialog takes only the HTTPS URL of a remote server, and bussard does not offer an HTTP transport yet.
 
-On macOS the first connection triggers the Local Network prompt: allow it, or the server cannot reach the interface and `knx_bus_status` says the operating system refused access to the local network. The permission belongs to the binary, so after you update bussard, allow it again (System Settings > Privacy & Security > Local Network) and restart Claude Desktop.
+=== "Cursor"
+
+    Settings > MCP > Add new global MCP server opens `~/.cursor/mcp.json`; a `.cursor/mcp.json` in the project does the same for one project. Paste this entry with the absolute path of your model directory:
+
+    ```json
+    {
+      "mcpServers": {
+        "knx": {
+          "command": "bussard",
+          "args": ["mcp", "--dir", "/Users/nadia/house"]
+        }
+      }
+    }
+    ```
+
+=== "Codex CLI"
+
+    Register the server once, with the absolute path of your model directory:
+
+    ```console
+    $ codex mcp add knx -- bussard mcp --dir /Users/nadia/house
+    ```
+
+    That writes this table into `~/.codex/config.toml`, which you can also edit by hand:
+
+    ```toml
+    [mcp_servers.knx]
+    command = "bussard"
+    args = ["mcp", "--dir", "/Users/nadia/house"]
+    ```
+
+=== "Other clients"
+
+    Any client that starts a stdio MCP server takes a `mcpServers` entry of this shape. Use absolute paths, because the client may start the server from any directory:
+
+    ```json
+    {
+      "mcpServers": {
+        "knx": {
+          "command": "/usr/local/bin/bussard",
+          "args": ["mcp", "--dir", "/Users/nadia/house"]
+        }
+      }
+    }
+    ```
+
+On macOS the first connection from a desktop client triggers the Local Network prompt: allow it, or the server cannot reach the interface and `knx_bus_status` says the operating system refused access to the local network. The permission belongs to the binary, so after you update bussard, allow it again (System Settings > Privacy & Security > Local Network) and restart the client.
 
 The server reads the `.env` in or next to the model directory itself, so the passwords need not be in the client's config.
 

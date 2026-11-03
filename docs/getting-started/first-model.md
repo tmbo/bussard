@@ -48,7 +48,7 @@ Created a fresh KNX model in the current directory /home/me/house.
 
 "4 tunnels, 1 in use" is the tunnel budget: the interface has a fixed number of connection slots, and Home Assistant, ETS and every running bussard command each hold one. With no slot free, bussard says so and exits with code 4 instead of hanging.
 
-You fill an empty model by adopting devices one at a time; [Add a device](../how-to/add-a-device.md) shows how.
+To fill it from the devices already on a line, `bussard reconstruct` reads what they carry into a model; [Start without an ETS project](../how-to/add-a-device.md#start-without-an-ets-project) shows that path. To add devices one at a time, see [Add a device](../how-to/add-a-device.md).
 
 ## Check the model
 

@@ -13,7 +13,6 @@ Each guide answers one question and starts with the command. Pick the task.
 | plan and commission a whole line, run an acceptance test | [Commission a line](commission-a-line.md) |
 | get my names into ETS, see what a new ETS export changes | [Exchange with ETS](exchange-with-ets.md) |
 | send changes to an integrator and get them back | [Work with an integrator](work-with-an-integrator.md) |
-| know what to demand at handover | [Handover checklist](handover-checklist.md) |
 | drive the house from Home Assistant | [Home Assistant](home-assistant.md) |
 | use keyrings, secure interfaces and secured group addresses | [KNX Secure](knx-secure.md) |
 
