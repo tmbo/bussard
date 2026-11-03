@@ -282,6 +282,27 @@ jobs:
       - name: cargo-deny (knx-sim workspace)
         run: cargo deny --all-features --manifest-path knx-sim/Cargo.toml check
 
+  # The hosted enrolment relay (services/enroll-relay, #731) is a Cloudflare
+  # Worker in plain JavaScript with no npm dependencies at all, so there is
+  # nothing to install and no licence gate to run: `node --test` runs the
+  # shared Relay API cases (test/cases.json) against the Worker under Node.
+  enroll-relay:
+    name: enroll-relay worker tests (ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Relay API cases
+        working-directory: services/enroll-relay
+        run: npm test
+
   # MSRV gate: the workspace declares rust-version = "1.88", so verify the code
   # still builds on exactly that toolchain. This is `cargo check` only (no
   # tests): it type-checks the whole workspace without paying for codegen +
