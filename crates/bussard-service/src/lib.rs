@@ -41,6 +41,9 @@
 //!   the model (`bussard reconstruct`, `knx_reconstruct_device`, issue #717).
 //! - [`restore`]: replaying a parameter backup (`bussard restore
 //!   --parameters`, `knx_restore_parameters`, issue #290).
+//! - [`enroll_session`]: the certificate enrolment session (issue #729): the
+//!   end-to-end encrypted relay protocol that carries a device certificate
+//!   label from a phone into the key store.
 //!
 //! The crate never prints. Terminal prompts, JSON shapes and HTTP status codes
 //! stay with the surfaces.
@@ -52,6 +55,7 @@ pub mod bus;
 pub mod describe;
 pub mod download;
 pub mod enroll;
+pub mod enroll_session;
 pub mod error;
 pub mod facts;
 pub mod flash;

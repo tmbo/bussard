@@ -27,6 +27,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 axum = { workspace = true }
+# The in-process enrolment relay (issue #729) stores SHA-256 of each session's
+# owner token, never the token. Already in the tree. MIT OR Apache-2.0.
+sha2 = { workspace = true }
 
 [features]
 # `browser-tests`: enables tests/it/browser_smoke.rs, a headless-Chrome smoke test
@@ -52,6 +55,11 @@ http-body-util = "0.1"
 # futures-util drives the SSE response body stream in the framing test. MIT.
 futures-util = "0.3"
 tempfile = "3"
+# The enrolment end-to-end test: a fake phone (the protocol crypto and the
+# relay's phone-side endpoints over HTTP) against the in-process relay.
+bussard-secure = { workspace = true }
+base64 = { workspace = true }
+ureq = { workspace = true }
 
 [lints]
 workspace = true

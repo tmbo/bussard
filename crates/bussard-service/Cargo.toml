@@ -33,6 +33,13 @@ serde = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
+# The certificate enrolment session (issue #729): JSON messages and relay
+# bodies, base64url fields, and the outbound relay client. All already in the
+# tree (bussard-ha uses ureq the same way). MIT OR Apache-2.0.
+serde_json = { workspace = true }
+base64 = { workspace = true }
+ureq = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

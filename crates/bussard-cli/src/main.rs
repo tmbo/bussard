@@ -17,6 +17,7 @@ mod device_facts;
 mod device_plan;
 mod diff_cmd;
 mod doc_cmd;
+mod enroll_cmd;
 mod export_cmd;
 mod export_groups_cmd;
 mod flash_cmd;
@@ -664,6 +665,25 @@ enum KeysCommand {
         /// Read the labels from standard input, one per line.
         #[arg(long)]
         stdin: bool,
+    },
+    /// Take device certificates (FDSK labels) from a phone: prints a link, its
+    /// QR code and a fingerprint, then one line per label the phone scans.
+    ///
+    /// The phone encrypts each label to this session; the page's server and
+    /// the relay only see ciphertext. Ends when the phone finishes, on `q`
+    /// and Enter, or on Ctrl-C. Prints serials and addresses, never a key.
+    Enroll {
+        /// The relay base URL. Default: `relay` in the `[enroll]` table of
+        /// bussard.toml.
+        #[arg(long, value_name = "URL")]
+        relay: Option<String>,
+        /// The enrolment page the link opens. Default: `page` in `[enroll]`,
+        /// else the hosted page.
+        #[arg(long, value_name = "URL")]
+        page: Option<String>,
+        /// Leave out the QR code.
+        #[arg(long)]
+        no_qr: bool,
     },
 }
 
@@ -1869,6 +1889,9 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
             KeysCommand::Show => keys_cmd::run_show(dir, json),
             KeysCommand::AddCertificate { stdin } => {
                 keys_cmd::run_add_certificate(dir, stdin, json)
+            }
+            KeysCommand::Enroll { relay, page, no_qr } => {
+                enroll_cmd::run(dir, enroll_cmd::EnrollOptions { relay, page, no_qr }, json)
             }
         },
         Command::ImportProduct {

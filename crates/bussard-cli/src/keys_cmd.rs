@@ -26,7 +26,7 @@ use bussard_project::keystore::{BackboneChange, ImportReport, KeyStore, SaveOutc
 const KEYRING_PASSWORD_ENV: &str = "BUSSARD_KEYRING_PASSWORD";
 
 /// Reads the keyring password from the environment.
-fn password() -> anyhow::Result<String> {
+pub(crate) fn password() -> anyhow::Result<String> {
     // The one missing-password wording (issue #228).
     bussard_model::dotenv::var(KEYRING_PASSWORD_ENV)
         .map_err(|_| bussard_service::secure::SecureKeyError::MissingPassword.into())

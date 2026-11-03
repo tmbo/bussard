@@ -20,6 +20,8 @@
 //!
 //! - [`certificate`]: the 36-character device certificate label (serial
 //!   number, FDSK, CRC-4 check), issue #728.
+//! - [`enroll`]: the session crypto of the certificate enrolment protocol
+//!   (X25519, HKDF-SHA256, AES-256-GCM, fingerprint and link; issue #729).
 //! - [`ipsecure`]: the KNXnet/IP Secure session handshake (X25519, device and
 //!   user authentication MACs) and the SECURE_WRAPPER codec (Phase B, spec
 //!   §7-§9). The transport drives it over TCP.
@@ -38,6 +40,7 @@
 pub mod asdu;
 pub mod certificate;
 pub mod crypto;
+pub mod enroll;
 pub mod group;
 pub mod ipsecure;
 pub mod key;
