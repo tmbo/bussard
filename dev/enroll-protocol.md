@@ -107,12 +107,29 @@ JSON over HTTPS. CORS allows any origin on the phone-side endpoints
 | `GET /v1/sessions/{sid}/down?after=<seq>&wait=<s>` | none | same shape as `GET up` |
 | `DELETE /v1/sessions/{sid}` | owner | `204`; later reads answer `{"messages": [], "closed": true}` until expiry |
 
-- owner = `Authorization: Bearer <owner token>`; the relay stores
-  SHA-256 of the token, set by the `PUT`.
+- owner = `Authorization: Bearer <owner token>`, set by the `PUT`.
 - `wait` is a long poll, at most 25 seconds; `after` defaults to 0 and
   `seq` starts at 1 per direction.
-- Limits: 30 minutes per session, 200 messages per direction, 4096 bytes per
-  envelope, `429` beyond them. The relay keeps nothing after expiry.
+- Limits: 200 messages per direction and 4096 bytes per envelope, `429`
+  beyond them; a session expires 30 minutes after its `PUT`, and the relay
+  keeps nothing after expiry.
+- Owner token: the relay stores SHA-256 of the bearer string's UTF-8 bytes.
+
+Status codes the cases in `services/enroll-relay/test/cases.json` pin (the
+hosted Worker and bussard's local relay both pass them):
+
+| situation | status |
+|---|---|
+| missing or wrong owner token | `401` |
+| malformed `sid`, envelope, `after` or `wait` | `400` |
+| `wait` above 25 | clamped to 25, not an error |
+| unknown or expired session, including a long poll still open at expiry | `404` |
+| `POST` after `DELETE` | `404` |
+| `PUT` on a deleted session that has not expired | `409` |
+| envelope over 4096 bytes, or a direction past 200 messages | `429` |
+
+Tests shorten the 30 minutes through a TTL setting (`SESSION_TTL_SECONDS` in
+the Worker); it can only shorten, never lengthen, the expiry.
 
 Anyone who learns the link can post to `up`. That is accepted: they cannot
 read anything, and a forged certificate fails the serial match, the check, or
