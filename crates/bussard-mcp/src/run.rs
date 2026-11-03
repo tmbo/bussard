@@ -1,4 +1,4 @@
-//! Wiring the server to a live bus and the stdio transport.
+//! Wiring the server to a live bus and to the stdio or HTTP transport.
 //!
 //! [`serve_stdio`] wires an opened [`BusService`] into the shared state (so tools can read status and call
 //! [`ops`](bussard_bus::ops)), feeds the shared ring from a frame subscription,
@@ -10,6 +10,7 @@
 //! and `viz` use, so `knx_wait_for_telegram`, `knx_recent_telegrams` and
 //! `knx_infer_group` see the decrypted value and the `secured` fields.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bussard_bus::BusHandle;
@@ -18,6 +19,7 @@ use bussard_service::BusService;
 use rmcp::ServiceExt;
 use rmcp::transport::io::stdio;
 
+use crate::http::HttpOptions;
 use crate::server::BussardMcp;
 use crate::state::SharedState;
 
@@ -39,10 +41,7 @@ pub async fn serve_stdio_with_ready(
     service: BusService,
     on_ready: impl FnOnce(),
 ) -> anyhow::Result<()> {
-    let handle = service.handle().clone();
-    state.bus.wire(service);
-
-    let feeder = spawn_ring_feeder(&state, &handle, server_group_keyring(&state));
+    let (handle, feeder) = wire_bus(&state, service);
 
     // Serve MCP over stdio. `stdio()` returns (stdin, stdout).
     let server = BussardMcp::new(state);
@@ -63,6 +62,53 @@ pub async fn serve_stdio_with_ready(
     let _ = handle.close().await;
     feeder.abort();
     Ok(())
+}
+
+/// Wires the bus service into the state and starts the ring feeder. Returns
+/// the bus handle (to close it on exit) and the feeder task (to abort it).
+fn wire_bus(
+    state: &Arc<SharedState>,
+    service: BusService,
+) -> (BusHandle, tokio::task::JoinHandle<()>) {
+    let handle = service.handle().clone();
+    state.bus.wire(service);
+    let feeder = spawn_ring_feeder(state, &handle, server_group_keyring(state));
+    (handle, feeder)
+}
+
+/// Wires the bus service into the state like [`serve_stdio`], then serves
+/// MCP over streamable HTTP (issue #265) on `options.listen` until Ctrl-C.
+///
+/// `on_ready` gets the bound address (the real port when `listen` asked for
+/// port 0) once the listener is up. Every MCP session shares this one server
+/// and its one bus connection. `options` must have passed
+/// [`HttpOptions::check`]; [`crate::run_http_with_ready`] does that first.
+pub async fn serve_http_with_ready(
+    state: Arc<SharedState>,
+    service: BusService,
+    options: &HttpOptions,
+    on_ready: impl FnOnce(SocketAddr),
+) -> anyhow::Result<()> {
+    let (handle, feeder) = wire_bus(&state, service);
+    let served = async {
+        let listener = tokio::net::TcpListener::bind(options.listen)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to bind {}: {e}", options.listen))?;
+        let addr = listener.local_addr()?;
+        tracing::info!("mcp: serving streamable HTTP on {}", crate::http::url(addr));
+        on_ready(addr);
+        let shutdown = async {
+            let _ = tokio::signal::ctrl_c().await;
+            tracing::info!("mcp: shutdown requested");
+        };
+        crate::http::serve_on(listener, BussardMcp::new(state), options, shutdown).await
+    }
+    .await;
+
+    // Close the bus cleanly (releasing the gateway tunnel slot) before exit.
+    let _ = handle.close().await;
+    feeder.abort();
+    served
 }
 
 /// The server keyring's group keys as a [`GroupKeyring`] for the ring feeder,

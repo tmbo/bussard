@@ -28,6 +28,13 @@ Both default to off. A bare `bussard viz` is a viewer whose write endpoint
 answers `403`, and a bare `bussard mcp` has no write tool, so neither can
 transmit and neither is gated.
 
+`bussard mcp --listen` serves the same tools over HTTP. It binds loopback by
+default and refuses any other address without `--allow-remote-clients`, which
+then requires a bearer token on every request. bussard does not terminate TLS:
+a client that needs HTTPS reaches the server through a reverse proxy or tunnel
+you run, and that front authenticates its users. Anyone who gets through it has
+the tools of the tier you started.
+
 ## Every write asks once
 
 - `--yes` means one thing on every command: skip the confirmation prompt. It
