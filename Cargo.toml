@@ -151,6 +151,15 @@ x25519-dalek = { version = "2", default-features = false, features = ["static_se
 # getrandom: OS randomness for the ephemeral X25519 key and the client serial.
 # Already in the tree transitively. MIT OR Apache-2.0.
 getrandom = "0.2"
+# --- Certificate enrolment (issue #729, protocol dev/enroll-protocol.md) ---
+# aes-gcm: AES-256-GCM, the enrolment envelope's AEAD (the phone page uses
+# WebCrypto's AES-GCM). RustCrypto, cipher-0.4 generation like `aes 0.8`;
+# MSRV 1.56. Apache-2.0 OR MIT. Its tree (aead, ghash, polyval) is the same.
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
+# qrcode: the terminal QR code of the enrolment link `bussard keys enroll`
+# prints. Without default features: no image/svg backends, only the unicode
+# renderer. MSRV 1.67. MIT OR Apache-2.0, no dependencies left.
+qrcode = { version = "0.14", default-features = false }
 
 # ---------------------------------------------------------------------------
 # Local builds: line tables instead of full DWARF. The workspace links ~67

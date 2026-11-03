@@ -48,6 +48,26 @@ pub struct BussardConfig {
     /// (issue #280). Absent means the tier is off, whatever the flags say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home_assistant: Option<HomeAssistantConfig>,
+    /// Certificate enrolment from a phone (`bussard keys enroll`, issue
+    /// #729). Absent means `--relay` must be given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enroll: Option<EnrollConfig>,
+}
+
+/// The `[enroll]` table of `bussard.toml` (issue #729): where
+/// `bussard keys enroll` sends the phone. Neither URL ever sees a key in
+/// readable form (`dev/enroll-protocol.md`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct EnrollConfig {
+    /// The relay base URL, e.g. `"https://relay.example"`. `--relay` beats
+    /// it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay: Option<String>,
+    /// The enrolment page the link opens. `--page` beats it; the default is
+    /// the hosted page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<String>,
 }
 
 /// The default environment variable holding the Home Assistant token.

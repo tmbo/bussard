@@ -19,9 +19,14 @@ zeroize = { workspace = true }
 thiserror = { workspace = true }
 x25519-dalek = { workspace = true }
 getrandom = { workspace = true }
+# Certificate enrolment (issue #729): AES-256-GCM envelopes, and base64url for
+# the session id inside the AAD, the link and the fingerprint input.
+aes-gcm = { workspace = true }
+base64 = { workspace = true }
 
 [dev-dependencies]
-base64 = { workspace = true }
+# The enrolment vectors file (dev/enroll/vectors-v1.json) and the
+# certificate tests.
 serde_json = { workspace = true }
 
 [lints]

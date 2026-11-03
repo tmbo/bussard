@@ -727,6 +727,7 @@ fn model_config(overrides: &ConnOverrides, dir: &Path) -> BussardConfig {
         lint: None,
         import: None,
         home_assistant: None,
+        enroll: None,
     }
 }
 

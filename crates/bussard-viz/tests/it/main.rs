@@ -5,5 +5,7 @@
 //! nextest still runs every test in its own process.
 
 mod browser_smoke;
+mod enroll_e2e;
+mod enroll_relay_cases;
 mod fixture_model;
 mod http_server;

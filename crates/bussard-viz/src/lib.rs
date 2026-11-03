@@ -41,6 +41,7 @@
 
 pub mod api;
 pub mod assets;
+pub mod enroll_relay;
 pub mod error;
 pub mod guard;
 pub mod project;
