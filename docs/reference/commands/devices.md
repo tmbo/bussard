@@ -27,6 +27,7 @@ Behaviour:
 - Without a tool key the row keeps mask `FFFF` with the label `Data Secure activated (mask hidden), no tool key in the keyring` and `"secure": "activated_no_key"`. A key the device does not accept gives `"secure": "key_refused"`.
 - A plain device's row has no `secure` field.
 - `scan` never refuses a Data Secure device; it only labels it.
+- In chat, [`knx_find_devices`](../mcp-tools.md#tools) runs the same sweep as a job.
 
 ??? note "Details: how an absent address is ruled out"
     Most IP interfaces confirm every frame with an `L_Data.con`. When no device acknowledges a frame on TP1, the interface sends a negative confirmation within 22 to 45 ms, and `scan` takes it as proof that the address is absent. A gateway that sends none falls back to the ACK timeout and one repetition, 2 × 1.5 s per absent address. A present device is read with the same frames either way. On a line of 256 addresses with 5 devices that is about 8 s against about 12.5 minutes.
@@ -211,6 +212,7 @@ Behaviour with an `ADDRESS`:
 - What it read is stored with the device facts and compared with the device file's `[knxnet]` table; each difference is one line.
 - A device without the object says so, and is recorded with `no_knxnet = true` in its facts, so the next command does not probe again until the facts are read anew.
 - A KNX Data Secure-activated device needs its tool key, as for `describe`.
+- In chat, [`knx_show_device`](../mcp-tools.md#tools) with `live: true` reads the same.
 
 ??? note "Details"
     The object (type 11) is found in the object table, else in the device object's `PID_IO_LIST`, else with one `A_PropertyExtValue_Read` of object type 11, instance 1, for interfaces that list it in neither. The last two wait at most 1 s for an answer, and a device that leaves them unanswered keeps its connection. Only descriptor and property reads are sent, never a KNXnet/IP Secure property (PID 91 and up).

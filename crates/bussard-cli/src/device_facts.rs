@@ -17,7 +17,7 @@ use std::path::Path;
 
 use bussard_mgmt::{L4Channel, Layer4Connection};
 use bussard_model::IndividualAddress;
-use bussard_model::identity::{IdentityCheck, ReportedIdentity};
+use bussard_model::identity::IdentityCheck;
 use bussard_model::schema::Device;
 use bussard_service::{Authorize, FactsCache};
 
@@ -36,13 +36,7 @@ pub(crate) fn cache(dir: &Path, model_loaded: bool, refresh: bool) -> FactsCache
 /// a stale verdict on the same connection), the best-effort free-access
 /// authorize otherwise.
 pub(crate) fn read_only_authorize(facts: &mut FactsCache, target: IndividualAddress) -> Authorize {
-    let key = bussard_mgmt::apci::FREE_ACCESS_KEY;
-    if facts.may_skip_authorize(target) {
-        facts.defer_authorize(key);
-        Authorize::Skip
-    } else {
-        Authorize::BestEffort(key)
-    }
+    bussard_service::status::read_only_authorize(facts, target)
 }
 
 /// The identity verdict for a device a probe read only the mask of (`scan`,
@@ -57,27 +51,7 @@ pub(crate) fn observe(
     mask: u16,
     device: Option<&Device>,
 ) -> IdentityCheck {
-    let mask_text = bussard_model::facts::format_mask(mask);
-    let stored = if model_loaded {
-        bussard_model::facts::load_facts(dir, target).ok().flatten()
-    } else {
-        None
-    };
-    let application_id = match stored {
-        Some(record) if record.mask.eq_ignore_ascii_case(&mask_text) => record.application_id,
-        Some(_) if mask != bussard_service::identity::HIDDEN_MASK => {
-            let _ = std::fs::remove_file(bussard_model::facts::facts_path(dir, target));
-            None
-        }
-        _ => None,
-    };
-    IdentityCheck::compare(
-        device,
-        ReportedIdentity {
-            mask: mask_text,
-            application_id,
-        },
-    )
+    bussard_service::scan::observe_identity(dir, model_loaded, target, mask, device)
 }
 
 pub(crate) use bussard_service::{Identified, identity_line, seed_of};

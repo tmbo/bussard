@@ -15,60 +15,20 @@
 //! KNXnet/IP Secure property (PID 91 and up) is read. On a Data Secure device
 //! read with its tool key, the security failures log, report and report
 //! control (PID 55, 57, 58) are read too (issue #533).
+//!
+//! The session's reads and the report live in [`bussard_service::status`],
+//! which `knx_show_device {live: true}` calls too (issue #747).
 
 use std::path::Path;
 use std::process::ExitCode;
 
-use anyhow::{Context, anyhow};
-use bussard_mgmt::{Layer4Connection, system_type};
+use anyhow::Context;
 use bussard_model::IndividualAddress;
-use bussard_model::identity::{IdentityCheck, ReportedIdentity};
-use bussard_model::knxnet::{KnxnetConfig, KnxnetFacts};
-use bussard_service::{FactsCache, FactsWant, L4Options, SourcePolicy, WritePolicy};
+use bussard_model::knxnet::KnxnetFacts;
+use bussard_service::status::{StatusReport, read_live_status, status_report};
+use bussard_service::{L4Options, SourcePolicy, WritePolicy};
 
 use crate::conn_cmd::{ConnOverrides, load_model_required, open_service, resolve_config};
-
-/// The `status <ADDRESS> --json` report.
-#[derive(Debug, serde::Serialize)]
-struct Report {
-    /// The device address.
-    address: String,
-    /// The device's name in the model, when it has one.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    name: Option<String>,
-    /// The mask version, `0021`.
-    mask: String,
-    /// The system type of the mask.
-    system_type: String,
-    /// The identity verdict against `bussard.lock`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    identity: Option<IdentityCheck>,
-    /// What the KNXnet/IP parameter object reported; absent on a device
-    /// without one.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    knxnet: Option<KnxnetFacts>,
-    /// The device file's `[knxnet]` table, when it has one.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    model_knxnet: Option<KnxnetConfig>,
-    /// Where the device differs from `[knxnet]`, one sentence each.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    knxnet_drift: Vec<String>,
-    /// The Data Secure diagnostics (PID 55, 57, 58), read on a device
-    /// managed with its tool key (issue #533).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    security: Option<bussard_download::SecurityDiagnostics>,
-}
-
-/// What the session read.
-struct Read {
-    mask: u16,
-    application_id: Option<String>,
-    knxnet: Option<KnxnetFacts>,
-    /// Why the KNXnet/IP object could not be read, when it could not.
-    knxnet_error: Option<String>,
-    /// The Data Secure diagnostics, on a secured session.
-    security: Option<bussard_download::SecurityDiagnostics>,
-}
 
 /// Runs `bussard status <ADDRESS>`.
 pub fn run(
@@ -106,7 +66,11 @@ pub fn run(
                 ..L4Options::default()
             };
             let outcome = service
-                .with_l4(target, &options, async |l4| read_device(l4, &facts).await)
+                .with_l4(target, &options, async |l4| {
+                    read_live_status(l4, &facts)
+                        .await
+                        .map_err(anyhow::Error::from)
+                })
                 .await;
             service.close().await;
             outcome
@@ -117,29 +81,7 @@ pub fn run(
         .as_ref()
         .and_then(|m| m.devices.get(&target))
         .map(|d| &d.device);
-    let identity = IdentityCheck::compare(
-        device,
-        ReportedIdentity {
-            mask: bussard_model::facts::format_mask(read.mask),
-            application_id: read.application_id.clone(),
-        },
-    );
-    let model_knxnet = device.and_then(|d| d.knxnet.clone());
-    let knxnet_drift = match (&read.knxnet, &model_knxnet) {
-        (Some(facts), Some(config)) => facts.drift(config),
-        _ => Vec::new(),
-    };
-    let report = Report {
-        address: target.to_string(),
-        name: device.map(|d| d.name.clone()).filter(|n| !n.is_empty()),
-        mask: bussard_model::facts::format_mask(read.mask),
-        system_type: system_type(read.mask).to_string(),
-        identity: Some(identity),
-        knxnet: read.knxnet,
-        model_knxnet,
-        knxnet_drift,
-        security: read.security,
-    };
+    let report = status_report(target, device, &read);
     if json {
         crate::output::print(crate::output::schema::STATUS_DEVICE, &report)?;
     } else {
@@ -148,58 +90,8 @@ pub fn run(
     Ok(ExitCode::SUCCESS)
 }
 
-/// The descriptor, the device facts (object table, application id) and the
-/// KNXnet/IP parameter object, which is stored with the facts.
-async fn read_device<Ch: bussard_mgmt::L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
-    facts: &FactsCache,
-) -> anyhow::Result<Read> {
-    let target = l4.target();
-    let mask = bussard_mgmt::read_device_descriptor(l4)
-        .await
-        .with_context(|| format!("reading the device descriptor of {target}"))?;
-    if mask == bussard_service::identity::HIDDEN_MASK {
-        return Err(anyhow!(
-            "{target} hides its mask (FFFF): it is KNX Secure-activated and refuses plain \
-             management"
-        ));
-    }
-    let mut established = facts
-        .establish(l4, mask, FactsWant::Table)
-        .await
-        .with_context(|| format!("reading the interface objects of {target}"))?;
-    let application_id = established
-        .record
-        .as_ref()
-        .and_then(|r| r.application_id.clone());
-    let (knxnet, knxnet_error) =
-        match bussard_service::knxnet::read_knxnet_with_facts(l4, facts, &mut established).await {
-            Ok(knxnet) => (knxnet, None),
-            Err(err) => (None, Some(err.to_string())),
-        };
-    // Issue #533: a secured session also reads the failures log and report.
-    let security = if l4.is_secure() {
-        match bussard_download::read_security_diagnostics(l4).await {
-            Ok(diag) => Some(diag),
-            Err(err) => Some(bussard_download::SecurityDiagnostics {
-                notes: vec![format!("Data Secure diagnostics not read: {err}")],
-                ..Default::default()
-            }),
-        }
-    } else {
-        None
-    };
-    Ok(Read {
-        mask,
-        application_id,
-        knxnet,
-        knxnet_error,
-        security,
-    })
-}
-
 /// Prints the report as text.
-fn print_text(target: IndividualAddress, report: &Report, knxnet_error: Option<&str>) {
+fn print_text(target: IndividualAddress, report: &StatusReport, knxnet_error: Option<&str>) {
     let name = report
         .name
         .as_deref()

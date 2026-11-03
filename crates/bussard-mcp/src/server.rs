@@ -248,6 +248,12 @@ pub struct ShowDeviceArgs {
     /// one line.
     #[serde(default)]
     pub inactive: bool,
+    /// Also read the device over the bus, as `bussard status <address>`
+    /// does, and return it as `live`: its mask and identity against
+    /// bussard.lock, and for a KNX IP interface its IP settings, tunnelling
+    /// addresses and state. Read-only; refused in `--passive` mode.
+    #[serde(default)]
+    pub live: bool,
 }
 
 /// Arguments for `knx_validate`.
@@ -436,7 +442,14 @@ impl BussardMcp {
         says what to run, and lists what the lock has. For a KNX IP interface, `knxnet` holds \
         its [knxnet] table (`model`: IP assignment, static settings, friendly name, tunnel \
         addresses), what the device last reported (`device`: address in use, MAC, tunnels, \
-        state) and where they differ (`drift`)."
+        state) and where they differ (`drift`). With `live: true` it also reads the device \
+        over the bus, as `bussard status <address>` does, and adds `live`: `sentences` (names \
+        first; quote them), `mask`, `system_type`, `identity` against bussard.lock, and for a \
+        KNX IP interface `knxnet` (IP address in use and how it was assigned, MAC, friendly \
+        name, tunnelling addresses, device state), `knxnet_lines`, `model_knxnet` and \
+        `knxnet_drift`; `security` on a Data Secure device read with its tool key. The live \
+        read is read-only and refused in passive mode; it works for a device the model does \
+        not have too (a `knx_find_devices` responder)."
     )]
     async fn knx_show_device(
         &self,
@@ -456,9 +469,24 @@ impl BussardMcp {
             &self.state.dir,
             app.iter().map(String::as_str),
         );
-        let view =
-            bussard_model::device_view::device_view(&model, &products, ia, args.channel.as_deref())
-                .map_err(|e| invalid(e.to_string()))?;
+        let view = match bussard_model::device_view::device_view(
+            &model,
+            &products,
+            ia,
+            args.channel.as_deref(),
+        ) {
+            Ok(view) => view,
+            // A live read of a device the model does not have (a scan
+            // responder) still answers, with the reason in `model_view`.
+            Err(e) if args.live => {
+                return ok(json!({
+                    "address": ia.to_string(),
+                    "model_view": e.to_string(),
+                    "live": self.live_part(ia).await,
+                }));
+            }
+            Err(e) => return Err(invalid(e.to_string())),
+        };
         let mut value = tools::show_device_result(
             view,
             args.inactive,
@@ -474,6 +502,9 @@ impl BussardMcp {
             crate::tools_model::knxnet_section(&self.state.dir, &model, ia),
         ) {
             map.insert("knxnet".to_string(), knxnet);
+        }
+        if args.live {
+            value["live"] = self.live_part(ia).await;
         }
         ok(value)
     }

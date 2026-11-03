@@ -18,154 +18,28 @@
 
 use std::path::Path;
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow};
 use bussard_mgmt::{DeviceConnection, L4Channel, Timeouts, manufacturers, system_type};
 use bussard_model::IndividualAddress;
 use bussard_secure::Key16;
-use bussard_service::identity::{self, Identity, ProbeMiss, SecureStatus};
+use bussard_service::BusService;
+use bussard_service::identity;
+use bussard_service::scan::{self, LineRange, ScanReport, Sweep, SweepEvent};
 use bussard_service::secure::ToolKeys;
-use bussard_service::{Authorize, BusService, L4Options, SourcePolicy, WritePolicy};
+use bussard_service::{L4Options, WritePolicy};
+
+pub(crate) use bussard_service::scan::{Found, secure_label};
 
 use crate::assign_cmd::hex;
 use crate::conn_cmd::{
     ConnOverrides, checked_source_or_close, load_model_required, open_service, resolve_config,
 };
 
-/// Environment variable that overrides the per-attempt discovery timeout in
-/// milliseconds. Set only by the integration test to keep a full-line mock sweep
-/// fast; unset in normal use so the standard [`Timeouts::discovery`] budget
-/// applies.
-const DISCOVERY_MS_ENV: &str = "BUSSARD_SCAN_DISCOVERY_MS";
-
-/// The discovery timeout budget, honouring [`DISCOVERY_MS_ENV`] when set.
+/// The discovery timeout budget ([`scan::discovery_timeouts`]), honouring
+/// `BUSSARD_SCAN_DISCOVERY_MS` when set.
 pub(crate) fn discovery_timeouts() -> Timeouts {
-    match bussard_model::dotenv::var(DISCOVERY_MS_ENV)
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-    {
-        Some(ms) => Timeouts {
-            ack_timeout: Duration::from_millis(ms),
-            max_repetitions: 0,
-            response_timeout: Duration::from_millis(ms),
-            // Discovery: a negative con classifies absent (issue #45).
-            absent_on_negative_confirmation: true,
-        },
-        None => Timeouts::discovery(),
-    }
-}
-
-/// Per-address time budget used to estimate the sweep duration up front. A
-/// present device answers in well under this; an absent one costs about
-/// `2 × discovery ack_timeout` on an interface that reports no negative
-/// `L_Data.con` (with one, tens of milliseconds, issue #45). The estimate stays
-/// the worst case.
-const PER_ADDRESS_ESTIMATE: Duration = Duration::from_millis(3200);
-
-/// How one swept address turned out, and how long its probe took (issue #45).
-#[derive(Debug, Clone, Copy)]
-struct AddressTiming {
-    address: IndividualAddress,
-    elapsed: Duration,
-    /// `None` for a found device, the reason otherwise.
-    miss: Option<ProbeMiss>,
-}
-
-impl AddressTiming {
-    /// The stable `--json` spelling of the outcome.
-    fn outcome(&self) -> &'static str {
-        self.miss.map(ProbeMiss::as_str).unwrap_or("present")
-    }
-}
-
-/// What a sweep produced: the responders plus the per-address timing.
-#[derive(Debug, Default)]
-struct Sweep {
-    found: Vec<Found>,
-    timings: Vec<AddressTiming>,
-    elapsed: Duration,
-}
-
-impl Sweep {
-    /// How many addresses a given miss classified.
-    fn count(&self, miss: ProbeMiss) -> usize {
-        self.timings.iter().filter(|t| t.miss == Some(miss)).count()
-    }
-
-    /// The one-line summary: "N addresses in T s (absent by negative
-    /// confirmation: M, by timeout: K)".
-    fn summary(&self) -> String {
-        format!(
-            "{} addresses in {:.1} s (absent by negative confirmation: {}, by timeout: {})",
-            self.timings.len(),
-            self.elapsed.as_secs_f64(),
-            self.count(ProbeMiss::NegativeConfirmation),
-            self.count(ProbeMiss::Timeout)
-        )
-    }
-}
-
-/// A single discovered device and everything read from it.
-#[derive(Debug, Clone)]
-pub(crate) struct Found {
-    pub(crate) address: IndividualAddress,
-    pub(crate) mask: u16,
-    pub(crate) manufacturer_id: Option<u16>,
-    pub(crate) serial: Option<Vec<u8>>,
-    pub(crate) order: Option<String>,
-    /// How the device was identified with respect to KNX Data Secure
-    /// (issue #203).
-    pub(crate) secure: SecureStatus,
-    /// Its identity against `bussard.lock` (issue #228, item 5), filled in
-    /// after the sweep.
-    pub(crate) identity: Option<bussard_model::identity::IdentityCheck>,
-}
-
-impl Found {
-    /// A found device from a probe's identity and status.
-    fn from_identity(identity: Identity, secure: SecureStatus) -> Found {
-        Found {
-            address: identity.address,
-            mask: identity.mask,
-            manufacturer_id: identity.manufacturer_id,
-            serial: identity.serial,
-            order: identity.order,
-            secure,
-            identity: None,
-        }
-    }
-}
-
-/// The row label of a Data Secure-activated device (issue #203); `None` for a
-/// plain device.
-pub(crate) fn secure_label(status: SecureStatus) -> Option<&'static str> {
-    match status {
-        SecureStatus::Plain => None,
-        SecureStatus::Activated => Some("Data Secure activated"),
-        SecureStatus::ActivatedNoKey => {
-            Some("Data Secure activated (mask hidden), no tool key in the keyring")
-        }
-        SecureStatus::KeyRefused => {
-            Some("Data Secure activated (mask hidden), the keyring's tool key was not accepted")
-        }
-    }
-}
-
-/// The final cross-referenced report.
-struct Report {
-    found: Vec<Found>,
-    /// Addresses that responded but are not in the model.
-    not_in_model: Vec<IndividualAddress>,
-    /// Model devices (name) that did not respond, keyed by address.
-    missing: Vec<(IndividualAddress, String)>,
-    /// Whether a model was loaded at all (drives cross-reference columns).
-    have_model: bool,
-    /// The number of devices in the loaded model's inventory. Zero with
-    /// `have_model` true means a model loaded but has no `devices/*.toml` — the
-    /// missing/known cross-reference is then vacuous and must not be reported as
-    /// "all model devices responded" (issue #30).
-    model_device_count: usize,
+    scan::discovery_timeouts()
 }
 
 /// Runs `bussard scan`.
@@ -201,8 +75,13 @@ pub fn run(
     };
 
     // Up-front estimate (address count × per-address budget).
-    let count = to as u32 - from as u32 + 1;
-    let estimate = PER_ADDRESS_ESTIMATE * count;
+    let range = LineRange {
+        area,
+        line: line_no,
+        from,
+        to,
+    };
+    let estimate = range.estimate();
     eprintln!(
         "scanning line {area}.{line_no}.{from}–{to} sequentially — estimated up to {}m{:02}s on TP1",
         estimate.as_secs() / 60,
@@ -222,7 +101,7 @@ pub fn run(
         // through to a clean close so the gateway tunnel slot is released
         // rather than leaked (~2 min hold) — see issue #31.
         let swept = tokio::select! {
-            swept = sweep(&service, area, line_no, from, to, source, json, &key_for) => swept,
+            swept = sweep(&service, range, source, json, &key_for) => swept,
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\ninterrupted; closing the bus connection");
                 Sweep::default()
@@ -232,8 +111,8 @@ pub fn run(
         anyhow::Ok(swept)
     })?;
 
-    let timing = timing_json(&swept);
-    let mut report = cross_reference(swept.found, model.as_ref());
+    let timing = swept.timing_json();
+    let mut report = scan::cross_reference(swept.found, model.as_ref());
     // The identity verdict per device, against the lock and the stored facts
     // (issue #228, item 5); stale facts are dropped for the next connection.
     for f in &mut report.found {
@@ -241,7 +120,7 @@ pub fn run(
             .as_ref()
             .and_then(|m| m.devices.get(&f.address))
             .map(|d| &d.device);
-        f.identity = Some(crate::device_facts::observe(
+        f.identity = Some(scan::observe_identity(
             dir,
             model.is_some(),
             f.address,
@@ -258,63 +137,24 @@ pub fn run(
     Ok(ExitCode::SUCCESS)
 }
 
-/// Sweeps every device address on the line, returning the responders.
-///
-/// One [`Bus`] is shared for the whole sweep; each probe leases it for its
-/// connection-oriented session (TP1 etiquette — one open connection at a time),
-/// releasing the lease before the next address. `key_for` gives the tool key
-/// of a keyring-listed address.
-#[allow(clippy::too_many_arguments)] // one call site; the sweep's inputs, spelled out
+/// Sweeps every device address of `range` with [`scan::sweep`], showing the
+/// progress on stderr (issue #147): a line rewritten in place, or the live
+/// view on an interactive terminal. `key_for` gives the tool key of a
+/// keyring-listed address.
 async fn sweep(
     service: &BusService,
-    area: u8,
-    line_no: u8,
-    from: u8,
-    to: u8,
+    range: LineRange,
     source: IndividualAddress,
     json: bool,
-    key_for: &dyn Fn(IndividualAddress) -> Option<Key16>,
+    key_for: &(dyn Fn(IndividualAddress) -> Option<Key16> + Sync),
 ) -> Sweep {
-    let started = Instant::now();
-    let mut found = Vec::new();
-    let mut timings = Vec::new();
-    // Progress to stderr (issue #147): a line rewritten in place, or the live
-    // view on an interactive terminal.
-    let display = crate::progress::SweepDisplay::new(
-        "scanning",
-        usize::from(to.saturating_sub(from)) + 1,
-        json,
-    );
-    for device in from..=to {
-        let addr = match IndividualAddress::new(area, line_no, device) {
-            Ok(a) => a,
-            Err(_) => continue,
-        };
-        display.probing(addr, found.len());
-
-        let probe_started = Instant::now();
-        let outcome =
-            identity::probe_classified(service, addr, &probe_options(source), key_for(addr)).await;
-        let miss = match outcome {
-            Ok((identity, status)) => {
-                found.push(Found::from_identity(identity, status));
-                None
-            }
-            Err(miss) => Some(miss),
-        };
-        timings.push(AddressTiming {
-            address: addr,
-            elapsed: probe_started.elapsed(),
-            miss,
-        });
-        display.advance();
-    }
+    let display = crate::progress::SweepDisplay::new("scanning", range.count(), json);
+    let swept = scan::sweep(service, range, source, key_for, &mut |event| match event {
+        SweepEvent::Probing { address, found } => display.probing(address, found),
+        SweepEvent::Probed { .. } => display.advance(),
+    })
+    .await;
     display.finish();
-    let swept = Sweep {
-        found,
-        timings,
-        elapsed: started.elapsed(),
-    };
     eprintln!(
         "\rscan complete: {} device(s) found; {}",
         swept.found.len(),
@@ -323,44 +163,15 @@ async fn sweep(
     swept
 }
 
-/// The `timing` object of `--json` (issue #45): the summary counts plus one row
-/// per swept address with its probe time and outcome.
-fn timing_json(swept: &Sweep) -> serde_json::Value {
-    use serde_json::json;
-    json!({
-        "addresses": swept.timings.len(),
-        "total_ms": swept.elapsed.as_millis(),
-        "absent_negative_confirmation": swept.count(ProbeMiss::NegativeConfirmation),
-        "absent_timeout": swept.count(ProbeMiss::Timeout),
-        "refused": swept.count(ProbeMiss::Refused),
-        "per_address": swept
-            .timings
-            .iter()
-            .map(|t| json!({
-                "address": t.address.to_string(),
-                "ms": t.elapsed.as_millis(),
-                "outcome": t.outcome(),
-            }))
-            .collect::<Vec<_>>(),
-    })
-}
-
-/// The session options of a probe: the sweep's checked source, the discovery
-/// timeouts, and no authorize at connect (the probe authorizes after the
-/// descriptor read, as ETS does).
+/// The session options of a probe ([`scan::probe_options`]).
 pub(crate) fn probe_options(source: IndividualAddress) -> L4Options {
-    L4Options {
-        source: SourcePolicy::Known(source),
-        timeouts: discovery_timeouts(),
-        authorize: Authorize::Skip,
-        ..L4Options::default()
-    }
+    scan::probe_options(source)
 }
 
 /// Probes one address in the clear: connect, read the descriptor, and, if
 /// present, best-effort read manufacturer/serial/order. Returns `None` for an
 /// absent or refusing device. A Data Secure-activated device answers mask
-/// `FFFF`; the row is then [`SecureStatus::ActivatedNoKey`].
+/// `FFFF`; the row is then [`identity::SecureStatus::ActivatedNoKey`].
 pub(crate) async fn probe(
     service: &BusService,
     addr: IndividualAddress,
@@ -393,59 +204,14 @@ pub(crate) async fn read_u16<Ch: L4Channel>(
     }
 }
 
-/// Cross-references the discovered devices against the loaded model.
-fn cross_reference(found: Vec<Found>, model: Option<&bussard_model::Model>) -> Report {
-    let have_model = model.is_some();
-    let mut not_in_model = Vec::new();
-    let mut missing = Vec::new();
-
-    if let Some(model) = model {
-        for f in &found {
-            if !model.devices.contains_key(&f.address) {
-                not_in_model.push(f.address);
-            }
-        }
-        for (addr, loaded) in &model.devices {
-            if !found.iter().any(|f| &f.address == addr) {
-                missing.push((*addr, loaded.device.name.clone()));
-            }
-        }
-    }
-
-    let model_device_count = model.map(|m| m.devices.len()).unwrap_or(0);
-
-    Report {
-        found,
-        not_in_model,
-        missing,
-        have_model,
-        model_device_count,
-    }
-}
-
 /// Parses a `area.line` (e.g. `1.1`) or a full `area.line.device` (ignoring the
-/// device part) into `(area, line)`.
+/// device part) into `(area, line)` ([`scan::parse_line`]).
 pub(crate) fn parse_line(line: &str) -> anyhow::Result<(u8, u8)> {
-    let parts: Vec<&str> = line.split('.').collect();
-    if parts.len() < 2 {
-        return Err(anyhow!(
-            "invalid line {line:?}; expected area.line like \"1.1\""
-        ));
-    }
-    let area: u8 = parts[0]
-        .parse()
-        .map_err(|_| anyhow!("invalid area in {line:?}"))?;
-    let line_no: u8 = parts[1]
-        .parse()
-        .map_err(|_| anyhow!("invalid line in {line:?}"))?;
-    if area > 15 || line_no > 15 {
-        return Err(anyhow!("area and line must each be 0–15 (got {line:?})"));
-    }
-    Ok((area, line_no))
+    Ok(scan::parse_line(line)?)
 }
 
 /// Prints the aligned table plus a summary.
-fn print_table(report: &Report) {
+fn print_table(report: &ScanReport) {
     if report.found.is_empty() {
         println!("no devices responded");
     } else {
@@ -467,11 +233,7 @@ fn print_table(report: &Report) {
             } else {
                 "known".to_string()
             };
-            let system = if f.secure.activated() && f.mask == identity::HIDDEN_MASK {
-                "-"
-            } else {
-                system_type(f.mask)
-            };
+            let system = f.system_type();
             let label = secure_label(f.secure)
                 .map(|l| format!("  {l}"))
                 .unwrap_or_default();
@@ -522,7 +284,7 @@ fn print_table(report: &Report) {
 
 /// Prints a stable JSON array of the discovered devices plus the model delta
 /// and the sweep's `timing` (issue #45).
-fn print_json(report: &Report, timing: serde_json::Value) -> anyhow::Result<()> {
+fn print_json(report: &ScanReport, timing: serde_json::Value) -> anyhow::Result<()> {
     use serde_json::json;
     let devices: Vec<_> = report
         .found
@@ -575,21 +337,15 @@ fn print_json(report: &Report, timing: serde_json::Value) -> anyhow::Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bussard_service::identity::SecureStatus;
 
     #[test]
-    fn parse_line_accepts_area_line() -> Result<(), Box<dyn std::error::Error>> {
-        assert_eq!(parse_line("1.1")?, (1, 1));
-        assert_eq!(parse_line("15.15")?, (15, 15));
-        // A full address ignores the device part.
-        assert_eq!(parse_line("2.3.55")?, (2, 3));
-        Ok(())
-    }
-
-    #[test]
-    fn parse_line_rejects_bad_input() {
-        assert!(parse_line("1").is_err());
-        assert!(parse_line("16.1").is_err());
-        assert!(parse_line("x.y").is_err());
+    fn parse_line_keeps_the_service_messages() {
+        let err = parse_line("16.1").err().map(|e| e.to_string());
+        assert_eq!(
+            err.as_deref(),
+            Some("area and line must each be 0–15 (got \"16.1\")")
+        );
     }
 
     #[test]
@@ -674,7 +430,7 @@ mod tests {
         let model = model_with_devices(&addr_refs);
 
         // Only 1.1.1 answered; it IS a model device, so it is "known".
-        let report = cross_reference(vec![found_at("1.1.1")], Some(&model));
+        let report = scan::cross_reference(vec![found_at("1.1.1")], Some(&model));
 
         assert!(report.have_model);
         assert!(
@@ -699,7 +455,7 @@ mod tests {
     fn cross_reference_flags_unexpected_and_all_missing() {
         let model = model_with_devices(&["1.1.4", "1.1.20"]);
         // The IP interface (1.1.200) answered but is not modelled.
-        let report = cross_reference(vec![found_at("1.1.200")], Some(&model));
+        let report = scan::cross_reference(vec![found_at("1.1.200")], Some(&model));
         assert_eq!(report.not_in_model, vec![ia("1.1.200")]);
         assert_eq!(report.missing.len(), 2, "both model devices are missing");
     }
@@ -707,7 +463,7 @@ mod tests {
     /// Without a model, there is no cross-reference at all.
     #[test]
     fn cross_reference_without_model_has_no_delta() {
-        let report = cross_reference(vec![found_at("1.1.1")], None);
+        let report = scan::cross_reference(vec![found_at("1.1.1")], None);
         assert!(!report.have_model);
         assert!(report.not_in_model.is_empty());
         assert!(report.missing.is_empty());
