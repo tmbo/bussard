@@ -16,6 +16,7 @@ mod mcp_flash_sys7;
 mod mcp_groups;
 mod mcp_ha;
 mod mcp_ha_automation;
+mod mcp_http;
 mod mcp_interface;
 mod mcp_learn;
 mod mcp_program;

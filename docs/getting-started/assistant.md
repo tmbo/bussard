@@ -27,7 +27,7 @@ Other clients take a `mcpServers` JSON entry. Use absolute paths, because the cl
 }
 ```
 
-In Claude Desktop, Settings > Developer > Edit Config opens `claude_desktop_config.json` (on macOS in `~/Library/Application Support/Claude/`). Paste the entry and restart Claude Desktop. The server shows under the tools icon in a chat, not in the connector list: that dialog takes only the HTTPS URL of a remote server, and bussard does not offer an HTTP transport yet.
+In Claude Desktop, Settings > Developer > Edit Config opens `claude_desktop_config.json` (on macOS in `~/Library/Application Support/Claude/`). Paste the entry and restart Claude Desktop. The server shows under the tools icon in a chat, not in the connector list. That dialog takes only the HTTPS URL of a remote server. `bussard mcp --listen` serves the tools over HTTP for it, but you need a reverse proxy or tunnel in front that terminates TLS and authenticates; see [Over HTTP](../reference/commands/servers.md#over-http). The config file needs neither, so prefer it on the machine that runs bussard.
 
 On macOS the first connection triggers the Local Network prompt: allow it, or the server cannot reach the interface and `knx_bus_status` says the operating system refused access to the local network. The permission belongs to the binary, so after you update bussard, allow it again (System Settings > Privacy & Security > Local Network) and restart Claude Desktop.
 

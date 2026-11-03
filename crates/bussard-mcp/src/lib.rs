@@ -1,4 +1,5 @@
-//! MCP stdio server for bussard: KNX model and bus tools, tier-gated.
+//! MCP server for bussard (stdio, or streamable HTTP with `--listen`): KNX
+//! model and bus tools, tier-gated.
 //!
 //! This crate implements the phase-0 Model Context Protocol server described in
 //! the design document (§5.5). It loads a KNX-as-code [`Model`] from a directory,
@@ -138,6 +139,7 @@
 pub mod apply_jobs;
 pub mod args;
 pub mod guidance;
+pub mod http;
 pub mod instances;
 pub mod model_handle;
 pub mod param_keys;
@@ -339,6 +341,32 @@ pub async fn run_with_ready(config: &McpConfig, on_ready: impl FnOnce()) -> anyh
         );
     }
     run::serve_stdio_with_ready(state, service, on_ready).await
+}
+
+/// [`run_with_ready`] over streamable HTTP instead of stdio (issue #265):
+/// the same model, tools, tiers and real-gateway write gate, served at
+/// [`http::url`] of the bound address until Ctrl-C.
+///
+/// The listen address is checked first ([`http::HttpOptions::check`]: a
+/// non-loopback bind needs `--allow-remote-clients` and a bearer token), so a
+/// refused bind never loads the model or touches the bus. `on_ready` gets the
+/// bound address once the listener is up.
+pub async fn run_http_with_ready(
+    config: &McpConfig,
+    options: &http::HttpOptions,
+    on_ready: impl FnOnce(std::net::SocketAddr),
+) -> anyhow::Result<()> {
+    options.check()?;
+    let state = build_state(config)?;
+    let _instance = instances::register(&config.dir);
+    let service = BusService::open(config.connection.clone(), config.write_policy())?;
+    if service.gate() == Some(bussard_transport::write_gate::WriteGate::OptedIn) {
+        tracing::warn!(
+            "{}",
+            bussard_service::guidance::opt_in_warning(&service.gateway_display())
+        );
+    }
+    run::serve_http_with_ready(state, service, options, on_ready).await
 }
 
 /// The set of tool names exposed, in registration order. Used by tests and docs.

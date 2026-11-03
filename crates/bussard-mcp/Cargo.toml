@@ -6,7 +6,7 @@ repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "MCP stdio server for bussard: read-only KNX model and bus introspection tools"
+description = "MCP server for bussard (stdio or streamable HTTP): KNX model and bus tools"
 
 [dependencies]
 bussard-model = { workspace = true }
@@ -40,7 +40,16 @@ serde_path_to_error = { workspace = true }
 anyhow = { workspace = true }
 # The official Rust MCP SDK. Apache-2.0. Server + macros + stdio transport +
 # JSON-Schema generation for tool parameters. Pinned to 3.x; MSRV 1.88 < 1.98.
-rmcp = { version = "3.3.0", features = ["server", "macros", "transport-io", "schemars"] }
+# `transport-streamable-http-server` serves `bussard mcp --listen` (issue #265);
+# it adds rand, rand_core, chacha20, sse-stream and async-trait, all
+# MIT OR Apache-2.0.
+rmcp = { version = "3.3.0", features = ["server", "macros", "transport-io", "transport-streamable-http-server", "schemars"] }
+# The HTTP server and the bearer-token middleware for `--listen` (issue #265).
+# Already in the tree through bussard-viz. MIT.
+axum = { workspace = true }
+# OS randomness for the generated `--listen` bearer token. Already in the
+# tree through bussard-secure. MIT OR Apache-2.0.
+getrandom = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
@@ -52,6 +61,9 @@ bussard-transport = { workspace = true }
 bussard-bus = { workspace = true }
 # The client half of rmcp for the in-process integration test.
 rmcp = { version = "3.3.0", features = ["server", "client", "macros", "transport-io", "schemars"] }
+# A blocking HTTP client for the `--listen` tests (issue #265). Already in the
+# tree through bussard-cli. MIT OR Apache-2.0.
+ureq = { workspace = true }
 # The shared mock KNXnet/IP gateway and mock devices (issue #87).
 bussard-testkit = { workspace = true }
 # Writes the test product models from fixture XML through the importer

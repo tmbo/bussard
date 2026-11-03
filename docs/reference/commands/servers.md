@@ -4,7 +4,7 @@ The long-running servers and the installation reports: `mcp` (the assistant's co
 
 ## `bussard mcp`
 
-Run the MCP server over stdio, so an LLM assistant can read the model, watch the bus and, at higher tiers, write. An MCP client starts the server itself; nothing connects to it.
+Run the MCP server, so an LLM assistant can read the model, watch the bus and, at higher tiers, write. By default it talks over stdio: an MCP client starts the server itself and nothing connects to it. With `--listen` it serves the same tools over streamable HTTP for a client that takes a server URL (see [Over HTTP](#over-http)).
 
 ```console
 $ bussard mcp --dir knx
@@ -23,6 +23,9 @@ Started from a terminal, the server prints how to register it once it is ready: 
 | `--allow-home-assistant` | off | Register the Home Assistant tier (`knx_ha_status`, `knx_ha_plan`, `knx_ha_apply` and the three automation tools) when `bussard.toml` has a `[home_assistant]` table. Never touches the bus, so it combines with every tier, `--passive` included. Without the table the flag logs a warning and registers nothing. |
 | `--capture-db <PATH>` | | A `bussard capture` database that extends `knx_recent_telegrams` history beyond the in-memory ring. |
 | `--keyring <FILE>` | the key store | ETS keyring export (`.knxkeys`) for KNX Data Secure. Password from `BUSSARD_KEYRING_PASSWORD`. See below. |
+| `--listen [<ADDR>]` | stdio | Serve streamable HTTP at `http://<ADDR>/mcp` instead of stdio. Without a value it binds `127.0.0.1:0`, a free port, and prints the URL. A non-loopback address is refused without `--allow-remote-clients`. |
+| `--allow-remote-clients` | off | Permit a non-loopback `--listen` address. Every request must then carry `Authorization: Bearer <token>`, with the token from `BUSSARD_MCP_TOKEN` or generated at start and printed once. Turns the `Host` header check off. Needs `--listen`. |
+| `--allow-host <HOST>` | | Also accept this `Host` header on a loopback `--listen`, for a reverse proxy or tunnel that forwards its public host name. Repeatable. Needs `--listen`. |
 
 What `--keyring` covers:
 
@@ -39,7 +42,20 @@ Behaviour:
 - No password is printed. When `BUSSARD_KEYRING_PASSWORD` (or the `--secure-password-env` variable) is exported, a line says the client must provide it and the JSON carries a `<password>` placeholder. When it comes from the `.env` in or next to the model directory, a line says the server reads that file itself.
 - A client that spawns the server with piped stderr gets none of the registration text, only the info-level log line `mcp: serving on stdio` (visible with `-v`).
 
-**Claude Desktop.** Settings > Developer > Edit Config opens `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`). Paste the entry and restart Claude Desktop. The server shows under the tools icon in a chat, not in the connector list. The custom connector dialog takes only the HTTPS URL of a remote server, which would need an HTTP transport; bussard does not offer one.
+**Claude Desktop.** Settings > Developer > Edit Config opens `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`). Paste the entry and restart Claude Desktop. The server shows under the tools icon in a chat, not in the connector list. The custom connector dialog takes only the HTTPS URL of a remote server: use `--listen` behind a TLS front (see below).
+
+### Over HTTP
+
+```console
+$ bussard mcp --dir knx --listen 127.0.0.1:8765
+bussard mcp serving streamable HTTP on http://127.0.0.1:8765/mcp (Ctrl-C to stop)
+```
+
+The tools, the tiers and the real-gateway write gate are the same as over stdio: `--allow-writes`, `--allow-programming`, `--passive`, `--no-model-edits` and `--allow-remote-gateway` mean the same thing. Every client session shares the server's one bus connection. Register it with Claude Code as `claude mcp add --transport http knx http://127.0.0.1:8765/mcp`; started from a terminal, the server prints that command. Port 0 (the default) picks a new port on every start, so pass a fixed one for a lasting registration.
+
+- bussard does not terminate TLS and, on a loopback bind, does not authenticate clients. Claude Desktop's custom connectors need an `https://` URL, so run a reverse proxy or a tunnel in front of the loopback port that terminates TLS and authenticates its users. That is the operator's job. A proxy that forwards its public host name needs `--allow-host <name>`; without it the server answers `403`, which blocks DNS rebinding from a browser.
+- A non-loopback `--listen` address is refused unless `--allow-remote-clients` is given. With it, every request needs `Authorization: Bearer <token>`. Set the token in `BUSSARD_MCP_TOKEN`, or let the server generate one and print it once. The traffic is still plain HTTP: keep it on a network you trust, or behind TLS.
+- `BUSSARD_MCP_TOKEN`, when set, is required on a loopback bind too.
 
 **macOS Local Network permission.** macOS asks whether bussard may find and connect to devices on the local network. Without it the interface is unreachable and the bus status reports that the operating system refused access to the local network. Allow it in the prompt or under System Settings > Privacy & Security > Local Network. macOS ties the permission to the binary, so a rebuilt or updated bussard needs it again. A server still running from the old binary loses it as soon as the new one is allowed: restart Claude Desktop after allowing, and check that no old `bussard mcp` process is left.
 

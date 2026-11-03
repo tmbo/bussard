@@ -1,16 +1,19 @@
-//! The `bussard mcp` subcommand: run the read-only MCP server over stdio.
+//! The `bussard mcp` subcommand: run the MCP server over stdio, or over
+//! streamable HTTP with `--listen` (issue #265).
 //!
 //! The model is required (the server is useless without one). The bus
 //! connection is resolved from the model's `bussard.toml` plus overrides, but is
 //! opened lazily by the server's stream task, which reconnects — so a bus that
 //! is down at startup does not stop the server. All logging is on stderr
-//! (configured in `main`); stdout carries only the MCP wire.
+//! (configured in `main`); on stdio, stdout carries only the MCP wire.
 
 use std::io::IsTerminal as _;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use bussard_mcp::McpConfig;
+use bussard_mcp::http::{HttpOptions, TOKEN_ENV};
 use bussard_model::Model;
 
 use crate::conn_cmd::{ConnOverrides, resolve_config};
@@ -54,12 +57,25 @@ pub struct McpModes {
     pub allow_home_assistant: bool,
 }
 
+/// `--listen` and its companions: serve streamable HTTP instead of stdio.
+#[derive(Debug, Clone)]
+pub struct Listen {
+    /// The address to bind (`127.0.0.1:0` when `--listen` has no value).
+    pub addr: SocketAddr,
+    /// `--allow-remote-clients`: permit a non-loopback bind, with a token.
+    pub allow_remote_clients: bool,
+    /// `--allow-host`: extra `Host` header values on a loopback bind.
+    pub allow_host: Vec<String>,
+}
+
+/// Runs `bussard mcp`, over stdio or, with `listen`, over streamable HTTP.
 pub fn run(
     dir: &Path,
     overrides: ConnOverrides,
     modes: McpModes,
     capture_db: Option<PathBuf>,
     keyring: Option<PathBuf>,
+    listen: Option<Listen>,
 ) -> anyhow::Result<ExitCode> {
     let McpModes {
         passive,
@@ -105,6 +121,10 @@ pub fn run(
         .into_iter()
         .collect();
 
+    if let Some(listen) = listen {
+        return run_http(&config, listen);
+    }
+
     // Built before the server starts (the environment and the arguments do not
     // change), printed only once it is ready and only to a person: a client
     // that spawned the server with pipes gets the info log line alone.
@@ -124,6 +144,70 @@ pub fn run(
     })?;
 
     Ok(ExitCode::SUCCESS)
+}
+
+/// Runs the server over streamable HTTP (issue #265): resolves the bearer
+/// token, prints the URL once the listener is up, and serves until Ctrl-C.
+fn run_http(config: &McpConfig, listen: Listen) -> anyhow::Result<ExitCode> {
+    let from_env = std::env::var(TOKEN_ENV).ok().filter(|t| !t.is_empty());
+    // A non-loopback bind needs a token; generate one when the operator opted
+    // in without setting it. A loopback bind uses one only when it is set.
+    let generated = match &from_env {
+        None if listen.allow_remote_clients && !listen.addr.ip().is_loopback() => {
+            Some(bussard_mcp::http::generate_token()?)
+        }
+        _ => None,
+    };
+    let options = HttpOptions {
+        listen: listen.addr,
+        allow_remote_clients: listen.allow_remote_clients,
+        bearer_token: from_env.or_else(|| generated.clone()),
+        allowed_hosts: listen.allow_host,
+    };
+    let has_token = options.bearer_token.is_some();
+    let terminal = std::io::stderr().is_terminal();
+
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(async {
+        bussard_mcp::run_http_with_ready(config, &options, |addr| {
+            let url = bussard_mcp::http::url(addr);
+            eprintln!("bussard mcp serving streamable HTTP on {url} (Ctrl-C to stop)");
+            if let Some(token) = &generated {
+                eprintln!("bearer token, shown once (set {TOKEN_ENV} to choose your own): {token}");
+            }
+            if terminal {
+                eprint!("{}", http_hint(&url, has_token));
+            }
+        })
+        .await
+    })?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// How to register an HTTP server at `url` with a client, for a person at a
+/// terminal. `has_token`: requests must carry the bearer token, which the
+/// hint names but never prints.
+fn http_hint(url: &str, has_token: bool) -> String {
+    let header = if has_token {
+        " --header 'Authorization: Bearer <token>'"
+    } else {
+        ""
+    };
+    let mut out = format!(
+        "\nClaude Code, register it:\n  claude mcp add --transport http {SERVER_NAME} {url}{header}\n\n\
+         Clients that take a server URL use {url}{}. Port 0 picks a new port on every \
+         start; pass a fixed one (--listen 127.0.0.1:8765) for a lasting registration.\n\n\
+         Claude Desktop's custom connectors need an https:// URL. bussard does not \
+         terminate TLS or authenticate clients: put a reverse proxy or tunnel that does \
+         both in front of this port.\n",
+        if has_token {
+            " with the header Authorization: Bearer <token>"
+        } else {
+            ""
+        }
+    );
+    out.push_str("\nPress Ctrl-C to stop.\n");
+    out
 }
 
 /// The server name the registration uses; matches the docs
@@ -355,8 +439,8 @@ impl ConnectHint {
             out.push('\n');
         }
         out.push_str(
-            "A custom connector URL would need an HTTP transport, which bussard does \
-             not offer yet.\n\nPress Ctrl-C to stop.\n",
+            "For a client that takes a server URL, run `bussard mcp --listen` \
+             (streamable HTTP) instead.\n\nPress Ctrl-C to stop.\n",
         );
         out
     }
@@ -658,6 +742,16 @@ mod tests {
             Some(SecretSource::Exported)
         );
         assert_eq!(secret_source(false, false, true), None);
+    }
+
+    #[test]
+    fn test_http_hint_names_the_url_and_the_tls_job() {
+        let text = http_hint("http://127.0.0.1:8765/mcp", false);
+        assert!(text.contains("claude mcp add --transport http knx http://127.0.0.1:8765/mcp\n"));
+        assert!(text.contains("does not terminate TLS"));
+        assert!(!text.contains("Bearer"));
+        let text = http_hint("http://127.0.0.1:8765/mcp", true);
+        assert!(text.contains("--header 'Authorization: Bearer <token>'"));
     }
 
     #[test]
