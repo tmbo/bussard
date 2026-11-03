@@ -238,6 +238,11 @@ pub struct KeyStore {
     pub devices: BTreeMap<IndividualAddress, StoreDevice>,
     /// The group keys by group address.
     pub group_keys: BTreeMap<GroupAddress, Key16>,
+    /// Factory keys entered from a device certificate whose serial number no
+    /// device in the store has yet (issue #728), by serial number. One moves
+    /// to its device when the device's serial becomes known
+    /// ([`KeyStore::attach_serial`]).
+    pub unassigned: BTreeMap<SerialNumber, Key16>,
 }
 
 impl std::fmt::Debug for KeyStore {
@@ -251,6 +256,14 @@ impl std::fmt::Debug for KeyStore {
             .field(
                 "group_keys",
                 &format_args!("<{} redacted>", self.group_keys.len()),
+            )
+            .field(
+                "unassigned",
+                &self
+                    .unassigned
+                    .keys()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>(),
             )
             .finish()
     }
@@ -285,6 +298,40 @@ pub enum KeyStoreError {
         /// The `Format` attribute found, if any.
         found: Option<String>,
     },
+}
+
+/// What [`KeyStore::enrol_fdsk`] did with a certificate's factory key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FdskEnrolment {
+    /// Stored on the device with the certificate's serial number.
+    Stored(IndividualAddress),
+    /// No device has the serial yet: kept under it.
+    Unassigned,
+    /// The store already holds this key for the serial (on the device, or
+    /// unassigned when `None`). Nothing changed.
+    AlreadyStored(Option<IndividualAddress>),
+    /// The store holds another key for the serial (on the device, or
+    /// unassigned when `None`). Nothing changed.
+    Conflict(Option<IndividualAddress>),
+}
+
+impl FdskEnrolment {
+    /// Whether the store changed.
+    pub fn changed(self) -> bool {
+        matches!(self, Self::Stored(_) | Self::Unassigned)
+    }
+}
+
+/// What [`KeyStore::attach_serial`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttachOutcome {
+    /// The unassigned factory key moved to the device.
+    Attached,
+    /// The store holds no unassigned key for the serial.
+    NothingPending,
+    /// The device entry has another serial number or factory key; nothing
+    /// changed.
+    Conflict,
 }
 
 /// The outcome of [`KeyStore::save`].
@@ -392,6 +439,9 @@ pub struct KeyStoreSummary {
     pub group_key_count: usize,
     /// The group addresses that have a key (three-level).
     pub group_keys: Vec<String>,
+    /// The serial numbers of the factory keys entered from a certificate that
+    /// no device in the store has yet (issue #728).
+    pub unassigned_certificates: Vec<String>,
 }
 
 /// One device of a [`KeyStoreSummary`].
@@ -540,6 +590,7 @@ impl KeyStore {
             interfaces: Vec::new(),
             devices: BTreeMap::new(),
             group_keys: BTreeMap::new(),
+            unassigned: BTreeMap::new(),
         }
     }
 
@@ -577,6 +628,87 @@ impl KeyStore {
             changed = true;
         }
         changed
+    }
+
+    /// The device the store records with serial number `serial`, if any.
+    pub fn device_with_serial(&self, serial: SerialNumber) -> Option<IndividualAddress> {
+        self.devices
+            .iter()
+            .find(|(_, d)| d.serial == Some(serial))
+            .map(|(ia, _)| *ia)
+    }
+
+    /// Enters a factory key read from a device certificate (issue #728). The
+    /// certificate's serial number selects the device; without one the key is
+    /// kept under the serial ([`KeyStore::unassigned`]). A different factory
+    /// key already held for the serial is a conflict: nothing is written.
+    pub fn enrol_fdsk(&mut self, serial: SerialNumber, fdsk: Key16) -> FdskEnrolment {
+        if let Some(ia) = self.device_with_serial(serial) {
+            let device = self.devices.entry(ia).or_default();
+            return match &device.fdsk {
+                Some(held) if *held == fdsk => FdskEnrolment::AlreadyStored(Some(ia)),
+                Some(_) => FdskEnrolment::Conflict(Some(ia)),
+                None => {
+                    device.fdsk = Some(fdsk);
+                    FdskEnrolment::Stored(ia)
+                }
+            };
+        }
+        match self.unassigned.get(&serial) {
+            Some(held) if *held == fdsk => FdskEnrolment::AlreadyStored(None),
+            Some(_) => FdskEnrolment::Conflict(None),
+            None => {
+                self.unassigned.insert(serial, fdsk);
+                FdskEnrolment::Unassigned
+            }
+        }
+    }
+
+    /// The factory key the store holds for `serial`, on a device or
+    /// unassigned.
+    pub fn fdsk_for_serial(&self, serial: SerialNumber) -> Option<&Key16> {
+        match self.device_with_serial(serial) {
+            Some(ia) => self.devices.get(&ia).and_then(|d| d.fdsk.as_ref()),
+            None => self.unassigned.get(&serial),
+        }
+    }
+
+    /// Records that the device at `ia` has serial number `serial` (read off
+    /// the bus by `assign`, issue #728) and moves an unassigned factory key
+    /// for that serial to it. Nothing changes unless the store holds an
+    /// unassigned key for the serial; a device entry with another serial or
+    /// another factory key is a conflict and keeps both as they are.
+    pub fn attach_serial(&mut self, ia: IndividualAddress, serial: SerialNumber) -> AttachOutcome {
+        let Some(fdsk) = self.unassigned.get(&serial) else {
+            return AttachOutcome::NothingPending;
+        };
+        if let Some(device) = self.devices.get(&ia) {
+            let other_serial = device.serial.is_some_and(|s| s != serial);
+            let other_fdsk = device.fdsk.as_ref().is_some_and(|k| k != fdsk);
+            if other_serial || other_fdsk {
+                return AttachOutcome::Conflict;
+            }
+        }
+        if let Some(fdsk) = self.unassigned.remove(&serial) {
+            let device = self.devices.entry(ia).or_default();
+            device.serial = Some(serial);
+            device.fdsk = Some(fdsk);
+        }
+        AttachOutcome::Attached
+    }
+
+    /// Moves each unassigned factory key whose serial a device now carries
+    /// (an import brought it) to that device. A device with another factory key keeps it, and the
+    /// certificate stays unassigned.
+    fn resolve_unassigned(&mut self) {
+        let serials: Vec<SerialNumber> = self.unassigned.keys().copied().collect();
+        for serial in serials {
+            let Some(ia) = self.device_with_serial(serial) else {
+                continue;
+            };
+            // A conflict leaves the certificate unassigned, for `keys show`.
+            let _ = self.attach_serial(ia, serial);
+        }
     }
 
     /// Loads the store from the model directory `dir`: `Ok(None)` when there
@@ -836,6 +968,7 @@ impl KeyStore {
             .filter(|ia| !seen.contains(ia))
             .map(|ia| ia.to_string())
             .collect();
+        self.resolve_unassigned();
         report.fdsks_kept = self.devices.values().filter(|d| d.fdsk.is_some()).count();
 
         // Group keys, by group address.
@@ -1045,6 +1178,7 @@ impl KeyStore {
                 .collect(),
             group_key_count: self.group_keys.len(),
             group_keys: self.group_keys.keys().map(|ga| ga.to_string()).collect(),
+            unassigned_certificates: self.unassigned.keys().map(ToString::to_string).collect(),
         }
     }
 
@@ -1154,6 +1288,20 @@ impl KeyStore {
                 w.open("Device", &attrs, true);
             }
             w.close("Devices");
+        }
+        // Certificates without a device: the store's own element, never in an
+        // export (ETS has no place for them).
+        if store && !self.unassigned.is_empty() {
+            w.open("UnassignedCertificates", &[], false);
+            for (serial, fdsk) in &self.unassigned {
+                let fdsk = w.key(fdsk)?;
+                w.open(
+                    "Certificate",
+                    &[("SerialNumber", serial.to_string()), ("FDSK", fdsk)],
+                    true,
+                );
+            }
+            w.close("UnassignedCertificates");
         }
         Ok(())
     }
@@ -1442,6 +1590,7 @@ fn parse_store(
         interfaces: Vec::new(),
         devices: BTreeMap::new(),
         group_keys: BTreeMap::new(),
+        unassigned: BTreeMap::new(),
     };
     let mut current: Option<StoreInterface> = None;
     let mut in_group_addresses = false;
@@ -1491,6 +1640,16 @@ fn parse_store(
                 b"Device" => {
                     let (ia, device) = parse_device(&e, keyring_key, iv)?;
                     store.devices.insert(ia, device);
+                }
+                b"Certificate" => {
+                    let serial = require(&e, b"SerialNumber", "Certificate")?
+                        .parse::<SerialNumber>()
+                        .map_err(|reason| KeyringError::InvalidAttribute {
+                            attribute: "Certificate/SerialNumber".to_string(),
+                            reason,
+                        })?;
+                    let fdsk = decrypt_key(&e, b"FDSK", "Certificate/FDSK", keyring_key, iv)?;
+                    store.unassigned.insert(serial, fdsk);
                 }
                 _ => {}
             },
@@ -2126,6 +2285,102 @@ mod tests {
         store.group_keys.insert(ga("0/0/1")?, Key16::new([1; 16]));
         let back = KeyStore::parse(&store.to_xml(PASSWORD)?, PASSWORD)?;
         assert_eq!(back.project, store.project);
+        Ok(())
+    }
+
+    #[test]
+    fn test_enrol_fdsk_matches_the_device_by_serial() -> TestResult {
+        let mut store = sample()?;
+        let serial: SerialNumber = "00FA0000ABCD".parse()?;
+        // 1.1.20 holds 0x99 for this serial already.
+        assert_eq!(
+            store.enrol_fdsk(serial, Key16::new([0x99; 16])),
+            FdskEnrolment::AlreadyStored(Some(ia("1.1.20")?))
+        );
+        assert_eq!(
+            store.enrol_fdsk(serial, Key16::new([0x98; 16])),
+            FdskEnrolment::Conflict(Some(ia("1.1.20")?))
+        );
+        assert_eq!(store.fdsk_for_serial(serial), Some(&Key16::new([0x99; 16])));
+        // A device with the serial and no factory key takes it.
+        store.devices.entry(ia("1.1.21")?).or_default().serial = Some("00FA0000ABCE".parse()?);
+        assert_eq!(
+            store.enrol_fdsk("00FA0000ABCE".parse()?, Key16::new([0x55; 16])),
+            FdskEnrolment::Stored(ia("1.1.21")?)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_enrol_fdsk_unassigned_round_trips_and_stays_out_of_export() -> TestResult {
+        let mut store = sample()?;
+        let serial: SerialNumber = "00FA12345678".parse()?;
+        let outcome = store.enrol_fdsk(serial, Key16::new([0x31; 16]));
+        assert_eq!(outcome, FdskEnrolment::Unassigned);
+        assert!(outcome.changed());
+        assert_eq!(
+            store.enrol_fdsk(serial, Key16::new([0x31; 16])),
+            FdskEnrolment::AlreadyStored(None)
+        );
+        assert_eq!(
+            store.enrol_fdsk(serial, Key16::new([0x32; 16])),
+            FdskEnrolment::Conflict(None)
+        );
+        let xml = store.to_xml(PASSWORD)?;
+        assert!(xml.contains("<UnassignedCertificates>"));
+        assert!(xml.contains("SerialNumber=\"00FA12345678\""));
+        let back = KeyStore::parse(&xml, PASSWORD)?;
+        assert_eq!(back.unassigned.get(&serial), Some(&Key16::new([0x31; 16])));
+        assert_eq!(back.summary().unassigned_certificates, vec!["00FA12345678"]);
+        let export = store.export_knxkeys(PASSWORD)?;
+        assert!(!export.xml.contains("00FA12345678"));
+        assert!(!format!("{store:?}").contains("3131"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_attach_serial_moves_the_unassigned_key() -> TestResult {
+        let mut store = sample()?;
+        let serial: SerialNumber = "00FA12345678".parse()?;
+        let target = ia("1.1.30")?;
+        assert_eq!(
+            store.attach_serial(target, serial),
+            AttachOutcome::NothingPending
+        );
+        store.enrol_fdsk(serial, Key16::new([0x31; 16]));
+        // 1.1.20 has another serial: refused, nothing moves.
+        assert_eq!(
+            store.attach_serial(ia("1.1.20")?, serial),
+            AttachOutcome::Conflict
+        );
+        assert!(store.unassigned.contains_key(&serial));
+        assert_eq!(store.attach_serial(target, serial), AttachOutcome::Attached);
+        assert!(store.unassigned.is_empty());
+        let device = store.devices.get(&target).ok_or("no device")?;
+        assert_eq!(device.serial, Some(serial));
+        assert_eq!(device.fdsk, Some(Key16::new([0x31; 16])));
+        assert_eq!(store.device_with_serial(serial), Some(target));
+        Ok(())
+    }
+
+    #[test]
+    fn test_merge_keyring_attaches_an_unassigned_certificate() -> TestResult {
+        let mut source = sample()?;
+        source.record_fdsk(
+            ia("1.1.10")?,
+            Some("00FA12345678".parse()?),
+            Key16::new([0x31; 16]),
+        );
+        let export = source.export_knxkeys(PASSWORD)?;
+        let keyring = parse_keyring(&export.xml, PASSWORD)?;
+        let mut store = KeyStore::new("");
+        store.enrol_fdsk("00FA12345678".parse()?, Key16::new([0x31; 16]));
+        store.merge_keyring(&keyring);
+        assert!(store.unassigned.is_empty());
+        assert_eq!(
+            store.device_with_serial("00FA12345678".parse()?),
+            Some(ia("1.1.10")?)
+        );
         Ok(())
     }
 }

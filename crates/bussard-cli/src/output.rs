@@ -45,6 +45,8 @@ pub mod schema {
     pub const HISTORY: u32 = 1;
     /// `bussard interface secure --json` (issue #398).
     pub const INTERFACE_SECURE: u32 = 1;
+    /// `bussard keys add-certificate --json`.
+    pub const KEYS_ADD_CERTIFICATE: u32 = 1;
     /// `bussard keys export --json`.
     pub const KEYS_EXPORT: u32 = 1;
     /// `bussard keys import --json`.

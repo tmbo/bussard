@@ -51,6 +51,7 @@ pub mod backup;
 pub mod bus;
 pub mod describe;
 pub mod download;
+pub mod enroll;
 pub mod error;
 pub mod facts;
 pub mod flash;
@@ -76,6 +77,9 @@ pub mod verify;
 pub mod write;
 
 pub use bus::{Authorize, BusService, Device, L4Options, Management, SourcePolicy};
+pub use enroll::{
+    CertificateEnrolment, EnrolError, EnrolOutcome, EnrolStatus, attach_serial, enroll_certificate,
+};
 pub use error::ServiceError;
 pub use facts::{
     Established, FactsCache, FactsSource, FactsWant, Identified, drift_refusal,

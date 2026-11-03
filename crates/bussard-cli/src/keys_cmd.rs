@@ -6,6 +6,8 @@
 //!   factory key is never dropped.
 //! - `keys export <file.knxkeys>` writes a signed export ETS accepts.
 //! - `keys show` prints a redaction-safe summary.
+//! - `keys add-certificate` enters device certificates (FDSK labels) through
+//!   [`bussard_service::enroll`] (issue #728).
 //!
 //! `import` and `init` also merge the one `.knxkeys` exported next to the
 //! project into the store ([`import_neighbour`], issue #241 item 2).
@@ -439,8 +441,36 @@ pub fn run_show(dir: &Path, json: bool) -> anyhow::Result<ExitCode> {
     let password = password()?;
     let store = load_existing(dir, &password)?;
     let s = store.summary();
+    // Secure-capable devices of the model whose label is still to enter.
+    let without_fdsk: Vec<String> = bussard_model::Model::load(dir)
+        .map(|model| {
+            bussard_service::enroll::devices_without_fdsk(&model, &store)
+                .iter()
+                .map(|ia| {
+                    let name = model
+                        .devices
+                        .get(ia)
+                        .map(|d| d.device.name.clone())
+                        .unwrap_or_default();
+                    if name.is_empty() {
+                        ia.to_string()
+                    } else {
+                        format!("{ia} ({name})")
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     if json {
-        crate::output::print(crate::output::schema::KEYS_SHOW, &s)?;
+        let mut value = serde_json::to_value(&s)?;
+        if let Some(object) = value.as_object_mut() {
+            let addresses: Vec<String> = without_fdsk
+                .iter()
+                .map(|d| d.split(' ').next().unwrap_or_default().to_string())
+                .collect();
+            object.insert("devices_without_fdsk".to_string(), addresses.into());
+        }
+        crate::output::print(crate::output::schema::KEYS_SHOW, &value)?;
         return Ok(ExitCode::SUCCESS);
     }
     println!(
@@ -499,6 +529,151 @@ pub fn run_show(dir: &Path, json: bool) -> anyhow::Result<ExitCode> {
         println!("{line}");
     }
     println!("  group keys: {}", s.group_key_count);
+    if !s.unassigned_certificates.is_empty() {
+        println!(
+            "  certificates without a device (serial numbers): {}",
+            s.unassigned_certificates.join(", ")
+        );
+    }
+    if !without_fdsk.is_empty() {
+        println!(
+            "  secure-capable devices without a factory key (FDSK): {}",
+            without_fdsk.join(", ")
+        );
+        println!("    enter their labels with `bussard keys add-certificate`");
+    }
     println!("  (key material is never printed)");
     Ok(ExitCode::SUCCESS)
+}
+
+/// Runs `bussard keys add-certificate`: one label per line from the terminal
+/// (without echo, an empty line ends) or, with `--stdin`, every line of
+/// standard input. Needs the password and a writable store before it reads a
+/// label. Fails when any label was invalid, a conflict or not saved.
+pub fn run_add_certificate(dir: &Path, from_stdin: bool, json: bool) -> anyhow::Result<ExitCode> {
+    use std::io::{BufRead, IsTerminal};
+
+    // Held and dropped like a key (zeroized); the labels too.
+    let password = bussard_secure::Password::new(password()?);
+    let mut session = bussard_service::CertificateEnrolment::open(dir, password.expose())?;
+    let interactive = !from_stdin;
+    if interactive && !std::io::stdin().is_terminal() {
+        bail!(
+            "standard input is not a terminal; pipe the labels with `bussard keys              add-certificate --stdin` (never as an argument)"
+        );
+    }
+    let mut outcomes = Vec::new();
+    let mut handle = |text: &str, outcomes: &mut Vec<bussard_service::EnrolOutcome>| {
+        let outcome = session.enroll_certificate(text);
+        if !json {
+            println!("{}", outcome_line(&outcome));
+        }
+        outcomes.push(outcome);
+    };
+    if interactive {
+        eprintln!(
+            "Type or scan one certificate per line (the input is not shown); an empty line ends."
+        );
+        loop {
+            let line = bussard_secure::Password::new(
+                rpassword::prompt_password("certificate: ").context("reading a certificate")?,
+            );
+            if line.expose().trim().is_empty() {
+                break;
+            }
+            handle(line.expose(), &mut outcomes);
+        }
+    } else {
+        for line in std::io::stdin().lock().lines() {
+            let line = bussard_secure::Password::new(line.context("reading standard input")?);
+            if line.expose().trim().is_empty() {
+                continue;
+            }
+            handle(line.expose(), &mut outcomes);
+        }
+    }
+    use bussard_service::EnrolStatus;
+    let failed = outcomes.iter().any(|o| {
+        matches!(
+            o.status,
+            EnrolStatus::Invalid | EnrolStatus::Conflict | EnrolStatus::Error
+        )
+    });
+    if json {
+        crate::output::print(
+            crate::output::schema::KEYS_ADD_CERTIFICATE,
+            &serde_json::json!({
+                "store": KeyStore::path(dir).display().to_string(),
+                "results": outcomes,
+            }),
+        )?;
+    } else {
+        let count = |status: EnrolStatus| outcomes.iter().filter(|o| o.status == status).count();
+        println!(
+            "{} stored, {} unassigned, {} already stored, {} conflict(s), {} invalid, {} error(s) \
+             (key material is never printed)",
+            count(EnrolStatus::Stored),
+            count(EnrolStatus::Unassigned),
+            count(EnrolStatus::AlreadyStored),
+            count(EnrolStatus::Conflict),
+            count(EnrolStatus::Invalid),
+            count(EnrolStatus::Error),
+        );
+    }
+    Ok(if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+/// After `bussard assign` read `serial` off the device now at `ia`: moves a
+/// certificate entered for that serial to `ia` in the key store (issue
+/// #728). Without the password or a store, or with nothing pending, it does
+/// nothing; a failure is a warning, never an assign failure.
+pub fn attach_after_assign(dir: &Path, ia: bussard_model::IndividualAddress, serial: &[u8]) {
+    use bussard_project::keystore::{AttachOutcome, SerialNumber};
+    let Ok(serial) = <[u8; 6]>::try_from(serial).map(SerialNumber) else {
+        return;
+    };
+    if !KeyStore::path(dir).exists() {
+        return;
+    }
+    let Ok(password) = password().map(bussard_secure::Password::new) else {
+        return;
+    };
+    match bussard_service::attach_serial(dir, password.expose(), ia, serial) {
+        Ok(AttachOutcome::Attached) => println!(
+            "  factory key (FDSK) of the certificate for serial {serial} attached to {ia} in the \
+             key store"
+        ),
+        Ok(AttachOutcome::NothingPending) => {}
+        Ok(AttachOutcome::Conflict) => eprintln!(
+            "warning: the key store has a certificate for serial {serial}, but its entry for {ia} \
+             names another serial number or factory key; nothing changed (see `bussard keys \
+             show`)"
+        ),
+        Err(err) => {
+            eprintln!("warning: the certificate for serial {serial} was not attached: {err}")
+        }
+    }
+}
+
+/// One line per entered label: serial, matched address and name, status.
+fn outcome_line(o: &bussard_service::EnrolOutcome) -> String {
+    let status = serde_json::to_value(o.status)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default();
+    let mut line = format!("{} ", o.serial.as_deref().unwrap_or("------------"));
+    match (&o.ia, &o.name) {
+        (Some(ia), Some(name)) if !name.is_empty() => line.push_str(&format!("{ia} {name:?}: ")),
+        (Some(ia), _) => line.push_str(&format!("{ia}: ")),
+        (None, _) => line.push_str("no device: "),
+    }
+    line.push_str(&status);
+    if let Some(message) = &o.message {
+        line.push_str(&format!(" ({message})"));
+    }
+    line
 }
