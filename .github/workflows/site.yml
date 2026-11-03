@@ -1,4 +1,4 @@
-# Builds the website (landing page + rendered docs) and deploys it to GitHub
+# Builds the website (landing page, rendered docs, the /enroll/ page) and deploys it to GitHub
 # Pages. See website/README.md. Requires Pages to be set to "GitHub Actions"
 # as its source in the repository settings.
 name: Site
@@ -9,6 +9,7 @@ on:
     paths:
       - "website/**"
       - "docs/**"
+      - "web/enroll/**"
       - ".github/workflows/site.yml"
   workflow_dispatch:
 
@@ -47,6 +48,9 @@ jobs:
         run: |
           mkdir -p _site
           cp website/index.html _site/
+          # The certificate enrolment page (#730), served at /enroll/ and
+          # linked only from bussard's enrolment link, not from the docs.
+          cp -R web/enroll _site/enroll
           mkdocs build --strict -f website/mkdocs.yml -d "$PWD/_site/docs"
 
       - uses: actions/upload-pages-artifact@v3

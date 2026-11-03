@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- Strict CSP: only this page's own files; network only to the relay the
+       link names (https, or this origin in local mode). No inline script or
+       style, no third-party requests. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' blob: mediastream:; connect-src 'self' https: http://localhost:* http://127.0.0.1:*; base-uri 'none'; form-action 'none'; manifest-src 'none'; worker-src 'none'; frame-src 'none'; object-src 'none'">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>bussard enrol</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header class="top">
+    <span class="brand">bussard</span>
+    <span class="title">Add KNX Secure certificates</span>
+  </header>
+
+  <main>
+    <!-- Shown while the page starts, and instead of everything else on a
+         fatal problem (no link, broken link, browser too old). -->
+    <section id="fatal" class="panel fatal" hidden>
+      <h1 id="fatal-title">Starting</h1>
+      <p id="fatal-text"></p>
+    </section>
+
+    <section id="session" hidden>
+      <div class="fingerprint-box">
+        <div class="fp-label">Session code</div>
+        <div id="fingerprint" class="fingerprint" aria-live="polite">----&#8209;----</div>
+        <p class="fp-hint">Check that bussard shows the same code. If it differs, close this page.</p>
+      </div>
+
+      <div id="banner" class="banner" role="status" hidden></div>
+
+      <div id="capture">
+        <div class="camera">
+          <video id="video" playsinline muted autoplay></video>
+          <div class="reticle" aria-hidden="true"></div>
+          <div id="camera-msg" class="camera-msg" hidden></div>
+          <button id="camera-start" class="camera-start" type="button" hidden>Start camera</button>
+          <div id="scan-toast" class="scan-toast" role="status" hidden></div>
+        </div>
+        <p class="hint">Point the camera at the QR code on the device's certificate sticker, or type the 36 characters printed under it.</p>
+
+        <div class="entry">
+          <label for="typed">Certificate text</label>
+          <input id="typed" type="text" inputmode="text" autocomplete="off" autocorrect="off"
+                 autocapitalize="characters" spellcheck="false" enterkeyhint="send"
+                 placeholder="XXXXXX-XXXXXX-XXXXXX-XXXXXX-XXXXXX-XXXXXX">
+          <div id="typed-preview" class="typed-preview" aria-live="polite"></div>
+          <div id="typed-status" class="typed-status" aria-live="polite">Dashes and spaces are optional.</div>
+          <button id="send" class="primary" type="button" disabled>Send</button>
+        </div>
+      </div>
+
+      <h2 class="list-title">Certificates <span id="count" class="count"></span></h2>
+      <ol id="labels" class="labels"></ol>
+      <p id="labels-empty" class="muted">Nothing sent yet.</p>
+
+      <div class="finish">
+        <button id="done" class="secondary" type="button">Finished</button>
+        <p class="muted small">Ends the session for this phone. bussard stores what it has received.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    Keys are encrypted on this phone for bussard; the relay cannot read them.
+    No tracking, nothing stored on this phone.
+  </footer>
+</body>
+</html>
