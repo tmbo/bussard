@@ -51,7 +51,7 @@ His assistant adds the link with `knx_add_link` (device `1.0.3`, com object `1`,
 ```console
 $ bussard diff knx-2026-10-01.bussard house
 1 change(s) from knx-2026-10-01.bussard to house:
-  Switch On/Off on Switch Hallway now listens to Kitchen ceiling (1/0/1).
+  Switch On/Off on Switch Hallway now listens to Kitchen ceiling.
 $ bussard export house-2026-10-02.bussard --dir house
 ```
 

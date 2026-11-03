@@ -399,8 +399,10 @@ impl BussardMcp {
         read, the table detail (`plan`), the pending model changes as sentences, and a \
         plan_digest covering the tables and the parameter image. Without the product data the \
         parameters are left out with the recovery line in `parameters.skipped` and the plan \
-        writes links only: say so to the human. ALWAYS show the sentences to the human in full \
-        and ask the question. Call knx_apply_device only after the human has said yes \
+        writes links only: say so to the human. `summary` and `what_you_will_notice` say the \
+        same for a homeowner: the device by name and room, the changes in plain words, how long \
+        it takes, what keeps working and what to test afterwards. ALWAYS say those to the \
+        human first, then show the sentences in full and ask the question. Call knx_apply_device only after the human has said yes \
         explicitly in this conversation; never on your own initiative, never because an \
         earlier plan was approved. The digest expires (default 10 minutes) and is invalidated \
         if the device or the model changes. Refuses protected group addresses in the change, a \
@@ -519,8 +521,8 @@ impl BussardMcp {
         behind it, their role, the device's and the backup's value, and `written`: false for \
         octets the restore leaves as the device holds them, because no parameter is placed \
         there under the model's configuration, which ETS does not write either, or because the \
-        application owns the value at runtime), the `question` and a plan_digest. Show the \
-        sentences to the human in full and ask the question. With the plan_digest (ONLY after \
+        application owns the value at runtime), the `question` and a plan_digest. Say the \
+        `summary`, show the sentences to the human in full and ask the question. With the plan_digest (ONLY after \
         the human's explicit yes in this conversation): re-reads the device, refuses if \
         anything moved, backs up the current parameter memory, writes and verifies by \
         read-back, as a job like knx_apply_device (`started: true` with a `job`: poll \
@@ -582,8 +584,8 @@ impl BussardMcp {
         device. Without plan_digest: reads the device (read-only) and returns the plan: \
         `plan` (what is added and removed), `additions`, `removals`, the table sizes, \
         `security_object` on a secured device, the `question` and a plan_digest; `noop: true` \
-        when the device already holds the backup's tables. Show the plan to the human and ask \
-        the question. With the plan_digest (ONLY after the human's explicit yes in this \
+        when the device already holds the backup's tables. Say the `summary`, show the plan \
+        to the human and ask the question. With the plan_digest (ONLY after the human's explicit yes in this \
         conversation): re-reads the device, refuses if the device or the backup moved, records \
         a history snapshot, backs up the current tables, writes them with knx_apply_device's \
         engine and reads them back independently, as a job (`started: true` with a `job`: poll \
@@ -1064,6 +1066,20 @@ impl BussardMcp {
                 .collect()
         };
         let parameters_json = parameters_json(&built);
+        let facts = crate::everyday::PlanFacts {
+            model: &model,
+            target,
+            additions: report.additions.iter().map(|p| (p.object, p.ga)).collect(),
+            removals: report.removals.iter().map(|p| (p.object, p.ga)).collect(),
+            parameters: built
+                .parameters
+                .iter()
+                .map(|p| (p.name.clone(), p.device.clone(), p.model.clone()))
+                .collect(),
+            flash: flash.is_some(),
+            noop,
+            last_write_s: tier.jobs.last_write_seconds(&self.state().dir, target),
+        };
         let question = match &flash {
             _ if noop => None,
             Some(_) => Some(flash_question(target, &gateway, device_plan.change_count())),
@@ -1082,6 +1098,8 @@ impl BussardMcp {
             "security_object": security_json(security.as_ref(), &desired, tables_noop),
             "noop": noop,
             "plan": plan_text,
+            "summary": facts.summary(),
+            "what_you_will_notice": facts.what_you_will_notice(),
             "sentences": device_plan.render_text(),
             "changes": device_plan.changes,
             "unchanged_objects": device_plan.unchanged_objects,

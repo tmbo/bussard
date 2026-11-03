@@ -169,7 +169,8 @@ impl BussardMcp {
                 "process_time_s": done.process_time.map(|t| t.as_secs()),
                 "mask": format!("{:04X}", done.mask),
                 "answered_after_ms": done.answered_after.as_millis() as u64,
-                "summary": if done.confirmed {
+                // The technical line; `summary` is the homeowner's (#306).
+                "outcome": if done.confirmed {
                     format!(
                         "{target} restarted: it confirmed the restart (A_Restart_Response) and \
                          answered again after {:.1} s",

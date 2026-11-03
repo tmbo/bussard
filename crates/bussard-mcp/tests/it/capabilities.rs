@@ -501,7 +501,27 @@ async fn test_show_device_scoped_on_a_meteodata_like_model_stays_small() -> Test
         .cloned()
         .unwrap_or_default();
     assert_eq!(enable.len(), 1, "{c10}");
-    assert_eq!(enable[0]["reference"], "P-10_R-10", "{c10}");
+    assert_eq!(enable[0]["key"], "universalkanal-c10-aktivieren", "{c10}");
+    // The ETS reference a key names is the integrator's (issue #306).
+    assert!(enable[0].get("reference").is_none(), "{c10}");
+    let technical = call(
+        &client,
+        "knx_show_device",
+        json!({"address": "1.1.202", "technical": true}),
+    )
+    .await?;
+    let c10_technical = technical["blocks"]
+        .as_array()
+        .and_then(|b| {
+            b.iter()
+                .find(|b| b["handle"] == "universalkanal-c10-funktion")
+        })
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("no C10 page: {technical}"))?;
+    assert_eq!(
+        c10_technical["inactive"]["enable"][0]["reference"], "P-10_R-10",
+        "{c10_technical}"
+    );
     let also: Vec<&str> = c10["inactive"]["also_needs"]
         .as_array()
         .map(|a| a.iter().filter_map(Value::as_str).collect())
@@ -722,7 +742,12 @@ async fn enable_every_page(
     ia: &str,
 ) -> anyhow::Result<()> {
     for _ in 0..32 {
-        let full = call(client, "knx_show_device", json!({"address": ia})).await?;
+        let full = call(
+            client,
+            "knx_show_device",
+            json!({"address": ia, "technical": true}),
+        )
+        .await?;
         let blocks = full["blocks"].as_array().cloned().unwrap_or_default();
         let Some(step) = blocks
             .iter()
@@ -1160,7 +1185,7 @@ async fn shown_row(
     let shown = call(
         client,
         "knx_show_device",
-        json!({"address": ia, "channel": page}),
+        json!({"address": ia, "channel": page, "technical": true}),
     )
     .await?;
     shown["scope"]["parameters"]
@@ -1422,6 +1447,122 @@ async fn test_meteodata_snapshot_takes_the_c4_brightness_threshold() -> TestResu
     assert!(text.contains("unter 5 lx"), "{text}");
     assert!(!text.contains("wenn-temperatur"), "{text}");
 
+    client.cancel().await?;
+    task.abort();
+    Ok(())
+}
+
+/// The server's tiers in [`serve`]: the default read tier with model edits.
+fn read_tiers() -> bussard_mcp::guidance::Tiers {
+    bussard_mcp::guidance::Tiers {
+        passive: false,
+        writes: false,
+        programming: false,
+        model_edits: true,
+        home_assistant: false,
+    }
+}
+
+/// `knx_show_device` as it was before the homeowner view (issue #306): the
+/// library result the tool returned unchanged.
+fn show_device_before(dir: &Path, ia: &str, channel: Option<&str>) -> anyhow::Result<Value> {
+    let ia: bussard_model::IndividualAddress = ia.parse()?;
+    let model = bussard_model::Model::load(dir)?;
+    let app = model
+        .devices
+        .get(&ia)
+        .and_then(|d| d.device.product.as_ref())
+        .and_then(|p| p.application_ref.clone());
+    let products = bussard_model::ProductModels::load_apps(dir, app.iter().map(String::as_str));
+    let view = bussard_model::device_view::device_view(&model, &products, ia, channel)?;
+    Ok(bussard_mcp::tools::show_device_result(
+        view,
+        false,
+        false,
+        read_tiers(),
+    )?)
+}
+
+/// `technical: true` returns exactly the payload the read tools returned
+/// before issue #306, and the default leaves the ETS ids and wire detail
+/// out; the sizes of both are printed for the PR.
+#[tokio::test]
+async fn test_read_tools_technical_is_the_old_payload_and_the_default_is_smaller() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    write_model(dir.path())?;
+    let meteo = tempfile::tempdir()?;
+    write_meteo(meteo.path())?;
+    for (root, ia, channel) in [
+        (dir.path(), "1.1.30", None),
+        (dir.path(), "1.1.30", Some("generic-0")),
+        (meteo.path(), "1.1.202", None),
+        (meteo.path(), "1.1.202", Some("universalkanal-c4-funktion")),
+    ] {
+        let (client, task) = serve(root).await?;
+        let mut args = json!({"address": ia});
+        if let Some(channel) = channel {
+            args["channel"] = json!(channel);
+        }
+        let plain = call(&client, "knx_show_device", args.clone()).await?;
+        args["technical"] = json!(true);
+        let technical = call(&client, "knx_show_device", args).await?;
+        assert_eq!(
+            technical,
+            show_device_before(root, ia, channel)?,
+            "{ia} {channel:?}"
+        );
+        let (p, t) = (plain.to_string().len(), technical.to_string().len());
+        println!("knx_show_device {ia} {channel:?}: default {p} B, technical {t} B");
+        assert!(p < t, "{ia} {channel:?}: default {p} B, technical {t} B");
+        for key in ["\"reference\":", "\"flags\":", "\"application\":"] {
+            let has = plain.to_string().contains(key);
+            assert!(!has || key == "\"reference\":", "{key} in {plain}");
+        }
+        client.cancel().await?;
+        task.abort();
+    }
+
+    let (client, task) = serve(dir.path()).await?;
+    let model = bussard_model::Model::load(dir.path())?;
+    let plain = call(&client, "knx_get_group", json!({"ga": "4/1/5"})).await?;
+    let technical = call(
+        &client,
+        "knx_get_group",
+        json!({"ga": "4/1/5", "technical": true}),
+    )
+    .await?;
+    let before = bussard_mcp::tools::get_group(
+        &model,
+        &bussard_monitor::TelegramRing::new(),
+        "4/1/5".parse()?,
+    );
+    assert_eq!(technical, before);
+    assert_eq!(plain["links"][0]["what"], "Brightness", "{plain}");
+    println!(
+        "knx_get_group 4/1/5: default {} B, technical {} B",
+        plain.to_string().len(),
+        technical.to_string().len()
+    );
+    for query in ["brightness", "weather", "Temperature"] {
+        let plain = call(&client, "knx_model_lookup", json!({"query": query})).await?;
+        let technical = call(
+            &client,
+            "knx_model_lookup",
+            json!({"query": query, "technical": true}),
+        )
+        .await?;
+        let before = bussard_mcp::tools::model_lookup_with_capabilities(
+            &model,
+            dir.path(),
+            query,
+            50,
+            read_tiers(),
+        );
+        assert_eq!(technical, before, "{query}");
+        let (p, t) = (plain.to_string().len(), technical.to_string().len());
+        println!("knx_model_lookup {query:?}: default {p} B, technical {t} B");
+        assert!(p <= t, "{query}: default {p} B, technical {t} B");
+    }
     client.cancel().await?;
     task.abort();
     Ok(())

@@ -23,8 +23,8 @@
 
 use std::collections::BTreeSet;
 
-use bussard_model::IndividualAddress;
 use bussard_model::change::{ChangeKind, ChangeSet};
+use bussard_model::{IndividualAddress, Model};
 use serde_json::{Value, json};
 
 use crate::state::SharedState;
@@ -37,6 +37,19 @@ const CLI_ONLY: &str = "Still needs the CLI: `bussard flash` to load a new appli
 const ETS_ONLY: &str = "Still needs ETS: the Secure activation of a fresh device, and any \
     setting the device's product model does not expose.";
 
+/// How to talk to the human (issue #306), named once in the instructions.
+pub const HOW_TO_TALK: &str = "How to talk: the human is a homeowner unless she says \
+    otherwise. Name things the way the model names them: rooms, device names, channel names \
+    and group names. Group addresses, individual addresses, com-object numbers, parameter keys \
+    and ETS references are for tool calls, not for the reply: use ids only in tool calls, \
+    unless the human asks for the technical detail or a thing has no name. A result that \
+    changes something, or asks for her yes, carries a `summary` written for her, and a device \
+    plan carries `what_you_will_notice`. Before asking for a yes, say what will change for the \
+    household and what she will notice, then quote the `sentences`: after the summary, never \
+    instead of it. The server writes English; answer in the human's language. \
+    knx_show_device, knx_get_device, knx_get_group and knx_model_lookup take `technical: \
+    true` for the ids and ETS detail an integrator wants.";
+
 /// The Home Assistant tier in the capabilities paragraph.
 const HA_CAPABILITY: &str = "It reads Home Assistant (knx_ha_status) and, after the human \
     said yes to a knx_ha_plan, writes the KNX YAML Home Assistant reads and reloads its KNX \
@@ -48,11 +61,12 @@ const HA_CAPABILITY: &str = "It reads Home Assistant (knx_ha_status) and, after 
 const HA_INSTRUCTIONS: &str = "Home Assistant tier: knx_ha_status reads Home Assistant \
     (version, KNX integration, entity counts, the KNX YAML file) and changes nothing. \
     knx_ha_plan says per entity what writing the KNX YAML generated from the model would add, \
-    change or remove; show those sentences to the human in full and call knx_ha_apply only \
-    after an explicit yes in this conversation. It writes only that one file, keeps a backup \
-    and reloads the KNX integration. For logic the bus cannot do alone (when 4/3/2 receives \
-    1, send 0 to 4/3/10), propose a rule to knx_ha_automation_plan, show its sentence and \
-    automation to the human, and call knx_ha_automation_apply only after an explicit yes; \
+    change or remove; say its summary, show those sentences in full and call knx_ha_apply \
+    only after an explicit yes in this conversation. It writes only that one file, keeps a \
+    backup and reloads the KNX integration. For logic the bus cannot do alone (when the guest \
+    mode switch turns on, turn the hallway light off), propose a rule to \
+    knx_ha_automation_plan, say its summary and show its sentence, and call \
+    knx_ha_automation_apply only after an explicit yes; \
     knx_ha_automation_remove removes one the same way. These touch only automations whose id \
     starts with bussard_ and that carry bussard's marker. Change Home Assistant in no other \
     way.";
@@ -61,7 +75,8 @@ const HA_INSTRUCTIONS: &str = "Home Assistant tier: knx_ha_status reads Home Ass
 /// plus the Home Assistant line when that tier is on and the edit touched a
 /// group address Home Assistant's KNX config uses.
 pub fn next_step(state: &SharedState, changes: &ChangeSet) -> String {
-    let mut out = Tiers::of(state).next_step(changes);
+    let model = state.model.current();
+    let mut out = Tiers::of(state).next_step(changes, Some(&model));
     if let Some(line) = crate::tools_ha::next_step_line(state, changes) {
         out.push(' ');
         out.push_str(&line);
@@ -170,6 +185,11 @@ impl Tiers {
         if self.home_assistant {
             parts.push(HA_CAPABILITY.to_string());
         }
+        parts.push(
+            "Results that change something carry a plain-language `summary` for a homeowner; \
+             ids belong in tool calls."
+                .to_string(),
+        );
         parts.join(" ")
     }
 
@@ -262,6 +282,7 @@ impl Tiers {
              knx_show_device for the candidates.",
             self.names().join(", ")
         )];
+        out.push(HOW_TO_TALK.to_string());
         out.push(if self.passive {
             "Observe with knx_recent_telegrams and knx_wait_for_telegram (the latter enables \
              'press the button now' debugging). Passive mode: nothing is transmitted, so \
@@ -293,8 +314,8 @@ impl Tiers {
              device, knx_discard_edits; knx_undo rolls the whole model back to a snapshot. \
              Parameters are edited with knx_set_parameter using the keys knx_show_device lists \
              (the device needs its product model). Every edit snapshots the files first and \
-             returns the change as sentences: quote them to the human, and follow the result's \
-             next_step."
+             returns a `summary` and the change as sentences: say the summary, then quote the \
+             sentences, and follow the result's next_step."
                 .to_string()
         } else {
             "Model edits are off (--no-model-edits): the model is read-only here.".to_string()
@@ -311,8 +332,9 @@ impl Tiers {
         }
         if self.programming {
             out.push(
-                "Push a device with knx_plan_device, show the plan to the human in full, and \
-                 call knx_apply_device only after an explicit yes in this conversation. It \
+                "Push a device with knx_plan_device: say its summary and what_you_will_notice, \
+                 show its sentences in full, and call knx_apply_device only after an explicit \
+                 yes in this conversation. It \
                  writes the device's links (group-address and association tables) and the \
                  parameter values that differ from the model (one plan sentence each), over KNX \
                  Data Secure when the server's keyring lists the device. A plan without the \
@@ -349,9 +371,11 @@ impl Tiers {
     }
 
     /// The `next_step` after a model edit that produced `changes`: which
-    /// devices the edit touches (from the link and parameter changes) and how
-    /// the edit reaches them at this tier.
-    pub fn next_step(&self, changes: &ChangeSet) -> String {
+    /// devices the edit touches (from the link and parameter changes), named
+    /// by name and room from `model` (issue #306), and how the edit reaches
+    /// them at this tier. The individual address appears only inside the
+    /// tool call or CLI command that needs it.
+    pub fn next_step(&self, changes: &ChangeSet, model: Option<&Model>) -> String {
         let push = Push::of(changes);
         if push.links.is_empty() && push.parameters.is_empty() {
             return "Nothing to push: this change is only in the model files (names, rooms and \
@@ -366,18 +390,19 @@ impl Tiers {
             (false, true) => "the links",
             _ => "the parameter values",
         };
-        let names = list(&devices);
+        let names = list(&devices, model);
         out.push(if self.programming {
             format!(
-                "Push {what} with knx_plan_device for {names} (show the plan to the human; it \
-                 lists every changed link and parameter) and knx_apply_device after an explicit \
-                 yes."
+                "Push {what} of {names} with {} (say the plan's summary and \
+                 what_you_will_notice to the human, then show its sentences: every changed link \
+                 and parameter) and knx_apply_device after an explicit yes.",
+                calls(&devices)
             )
         } else {
             format!(
                 "This server runs without --allow-programming: restart it with that flag to \
-                 push {what} with knx_plan_device and knx_apply_device for {names}, or push \
-                 from the CLI with {}.",
+                 push {what} of {names} with knx_plan_device and knx_apply_device, or push from \
+                 the CLI with {}.",
                 cli(&devices)
             )
         });
@@ -425,14 +450,26 @@ impl Push {
     }
 }
 
-/// `1.1.4`, `1.1.4 and 1.1.5`, `1.1.4, 1.1.5 and 1.1.6`.
-fn list(devices: &BTreeSet<String>) -> String {
-    let items: Vec<&str> = devices.iter().map(String::as_str).collect();
-    match items.split_last() {
-        None => String::new(),
-        Some((last, [])) => (*last).to_string(),
-        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
-    }
+/// The devices by name and room (`Hallway push button in Hallway and
+/// Dimmer`), each by its address when `model` has no name for it.
+fn list(devices: &BTreeSet<String>, model: Option<&Model>) -> String {
+    let items: Vec<String> = devices
+        .iter()
+        .map(|ia| match (model, ia.parse::<IndividualAddress>()) {
+            (Some(model), Ok(ia)) => crate::everyday::device_phrase(model, ia),
+            _ => format!("device {ia}"),
+        })
+        .collect();
+    crate::everyday::join_and(&items)
+}
+
+/// The MCP push call per device: `` knx_plan_device `{"address": "1.1.4"}` ``.
+fn calls(devices: &BTreeSet<String>) -> String {
+    devices
+        .iter()
+        .map(|ia| format!("knx_plan_device `{{\"address\": \"{ia}\"}}`"))
+        .collect::<Vec<_>>()
+        .join(", then ")
 }
 
 /// The CLI push for `devices`: `` `bussard plan 1.1.4` and `bussard apply 1.1.4` ``.
@@ -520,6 +557,70 @@ mod tests {
     }
 
     #[test]
+    fn test_instructions_say_how_to_talk() {
+        for t in [tiers(true, false, false), tiers(false, true, true)] {
+            let text = t.instructions();
+            assert!(text.contains("homeowner"), "{text}");
+            assert!(text.contains("rooms, device names"), "{text}");
+            assert!(text.contains("ids only in tool calls"), "{text}");
+            assert!(text.contains("`summary`"), "{text}");
+            assert!(!text.contains("quote them to the human"), "{text}");
+        }
+    }
+
+    #[test]
+    fn test_next_step_names_devices_by_name_and_room() -> Result<(), Box<dyn std::error::Error>> {
+        use bussard_model::loader::LoadedDevice;
+        use bussard_model::schema::{Device, Location};
+        let ia: IndividualAddress = "1.1.4".parse()?;
+        let mut model = Model {
+            config: Default::default(),
+            groups: Default::default(),
+            links: Default::default(),
+            devices: Default::default(),
+        };
+        model.devices.insert(
+            ia,
+            LoadedDevice {
+                device: Device {
+                    address: ia,
+                    name: "Hallway push button".to_string(),
+                    description: None,
+                    location: Some(Location {
+                        floor: None,
+                        room: Some("Hallway".to_string()),
+                    }),
+                    replaced: None,
+                    product: None,
+                    channels: Default::default(),
+                    parameters: Default::default(),
+                    module_bases: Default::default(),
+                    com_objects: Default::default(),
+                    security: None,
+                    application_override: None,
+                    knxnet: None,
+                    lock: Default::default(),
+                },
+                file_stem: "1.1.4".to_string(),
+            },
+        );
+        let set = ChangeSet {
+            changes: vec![change(ChangeKind::LinkAdded, "1.1.4")],
+        };
+        for t in [tiers(false, false, true), tiers(false, false, false)] {
+            let step = t.next_step(&set, Some(&model));
+            assert!(step.contains("Hallway push button in Hallway"), "{step}");
+            // The address is only inside the call or the command.
+            let outside = step
+                .replace("`{\"address\": \"1.1.4\"}`", "")
+                .replace("`bussard plan 1.1.4`", "")
+                .replace("`bussard apply 1.1.4`", "");
+            assert!(!outside.contains("1.1.4"), "{step}");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn test_names_are_cumulative() {
         assert_eq!(tiers(true, false, false).names(), ["passive"]);
         assert_eq!(tiers(false, false, false).names(), ["read"]);
@@ -534,10 +635,13 @@ mod tests {
         let set = ChangeSet {
             changes: vec![change(ChangeKind::LinkAdded, "1.1.4")],
         };
-        let on = tiers(false, false, true).next_step(&set);
-        assert!(on.contains("knx_plan_device for 1.1.4"), "{on}");
+        let on = tiers(false, false, true).next_step(&set, None);
+        assert!(
+            on.contains("of device 1.1.4 with knx_plan_device `{\"address\": \"1.1.4\"}`"),
+            "{on}"
+        );
         assert!(!on.contains("bussard plan"), "{on}");
-        let off = tiers(false, false, false).next_step(&set);
+        let off = tiers(false, false, false).next_step(&set, None);
         assert!(off.contains("--allow-programming"), "{off}");
         assert!(off.contains("`bussard plan 1.1.4`"), "{off}");
     }
@@ -547,13 +651,13 @@ mod tests {
         let set = ChangeSet {
             changes: vec![change(ChangeKind::ParameterChanged, "1.1.18")],
         };
-        let on = tiers(false, false, true).next_step(&set);
+        let on = tiers(false, false, true).next_step(&set, None);
         assert!(
-            on.contains("Push the parameter values with knx_plan_device for 1.1.18"),
+            on.contains("Push the parameter values of device 1.1.18 with knx_plan_device"),
             "{on}"
         );
         assert!(!on.contains("bussard apply"), "{on}");
-        let off = tiers(false, false, false).next_step(&set);
+        let off = tiers(false, false, false).next_step(&set, None);
         assert!(off.contains("`bussard apply 1.1.18`"), "{off}");
         assert!(off.contains("knx_apply_device"), "{off}");
     }
@@ -578,7 +682,7 @@ mod tests {
         };
         assert!(
             tiers(false, false, true)
-                .next_step(&set)
+                .next_step(&set, None)
                 .starts_with("Nothing to push")
         );
     }

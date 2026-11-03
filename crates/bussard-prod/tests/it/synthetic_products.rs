@@ -516,7 +516,7 @@ fn test_name_parameters_synthetic_param_calculation_shows_an_enum_output_by_labe
         .ok_or_else(|| format!("no change of mode: {sentences:?}"))?;
     assert_eq!(
         mode.sentence,
-        "Operating mode on syn-param-calculation (1.1.1): on (1) to automatic (2). \
+        "Operating mode on syn-param-calculation: on (1) to automatic (2). \
          Computed by calculation PC-9."
     );
     assert_eq!(mode.from.as_deref(), Some("1"));

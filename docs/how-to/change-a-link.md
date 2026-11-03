@@ -76,7 +76,7 @@ bussard saves a copy of the model files before every command that writes the mod
 $ bussard status
 2 pending change(s) since snapshot 20260922T101112Z-001 (2026-09-22T10:11:12Z):
 
-Rocker 1 on Hallway push button (1.1.5) now switches Porch light (0/0/4).
+Rocker 1 on Hallway push button now switches Porch light.
 Porch light (0/0/4) changes type from 1.001 to 1.002.
 
 Nothing has reached any device yet. Run `bussard plan <ia>` to check a device,
@@ -85,7 +85,7 @@ $ bussard history
   1  20260922T100000Z-001  import home.knxproj (before writing the imported model)
      the first snapshot of the model
   2  20260922T101112Z-001  apply 1.1.5 → 192.0.2.10:3671 (before writing the device tables)
-     Rocker 1 on Hallway push button (1.1.5) now switches Porch light (0/0/4) and 1 more
+     Rocker 1 on Hallway push button now switches Porch light and 1 more
 $ bussard undo
 Restored the model files to snapshot 20260922T100000Z-001 (2026-09-22T10:00:00Z).
 The state before this undo is kept as snapshot 20260922T103000Z-001.
@@ -105,7 +105,7 @@ Run `bussard plan 1.1.5` and `bussard apply 1.1.5` to push this to devices.
 $ bussard status
 1 pending change(s) since snapshot 20260922T104500Z-001 (2026-09-22T10:45:00Z):
 
-Living room blind actuator (1.1.4), channel B, now listens to Central down (3/0/1).
+Living room blind actuator, channel B, now listens to Central down.
 ```
 
 The assistant's edits go through the same history; `bussard history --json` shows which tool made each one. They reach a device only when pushed: by you with `plan` and `apply`, or by the assistant when its server runs with `--allow-programming`, each push after your yes to the plan. The assistant refuses a change to a `protected` group address outright. If you dislike a change, `bussard undo`. To run the server without edit tools, start it with `bussard mcp --no-model-edits`.

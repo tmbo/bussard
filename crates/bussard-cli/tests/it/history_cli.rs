@@ -79,7 +79,7 @@ fn test_status_history_show_and_undo_round_trip() -> TestResult {
 
     let out = run(&dir, &["status"])?;
     assert!(
-        out.contains("Group address 0/0/4 is now called \"Front light\" (was \"Porch light\")."),
+        out.contains("Group address Porch light is now called \"Front light\"."),
         "{out}"
     );
     assert!(out.contains("1 pending change(s)"), "{out}");
@@ -106,20 +106,20 @@ fn test_status_history_show_and_undo_round_trip() -> TestResult {
     assert!(out.contains("import home.knxproj"), "{out}");
     assert!(out.contains("apply 1.1.5"), "{out}");
     assert!(
-        out.contains("Group address 0/0/4 is now called \"Front light\""),
+        out.contains("Group address Porch light is now called \"Front light\""),
         "the summary line is the first sentence: {out}"
     );
 
     let out = run(&dir, &["show", "2"])?;
     assert!(
-        out.contains("Group address 0/0/4 is now called \"Front light\""),
+        out.contains("Group address Porch light is now called \"Front light\""),
         "{out}"
     );
 
     // Undo goes back to snapshot 1 and says what that reverts.
     let out = run(&dir, &["undo"])?;
     assert!(
-        out.contains("Group address 0/0/4 is now called \"Porch light\" (was \"Front light\")."),
+        out.contains("Group address Front light is now called \"Porch light\"."),
         "{out}"
     );
     assert!(

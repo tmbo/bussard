@@ -359,10 +359,7 @@ mod tests {
         assert_eq!(edits.for_device(a).len(), 2);
         assert_eq!(edits.for_device(b).len(), 1);
         assert_eq!(edits.for_device(a)[0].tool, "knx_set_parameter");
-        assert_eq!(
-            edits.for_device(a)[1].sentences,
-            ["X on Dev (1.1.4): 2 to 3."]
-        );
+        assert_eq!(edits.for_device(a)[1].sentences, ["X on Dev: 2 to 3."]);
 
         // A rename reaches no device and is not recorded.
         let rename = changes(
@@ -417,7 +414,7 @@ mod tests {
         edits.applied(a, false);
         let pending = edits.for_device(a);
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].sentences, ["X on Dev (1.1.4): 1 to 2."]);
+        assert_eq!(pending[0].sentences, ["X on Dev: 1 to 2."]);
         edits.applied(a, true);
         assert!(edits.for_device(a).is_empty());
         Ok(())

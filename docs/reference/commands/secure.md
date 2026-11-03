@@ -62,8 +62,8 @@ Switch KNX Data Secure on or off for one group address. bussard treats a group a
 
 ```console
 $ bussard groups secure 1/0/4 off
-Licht Küche (1/0/4) now runs plain (KNX Data Secure off).
-Aktor Küche (1.1.5): object 12 now runs plain (KNX Data Secure off).
+Licht Küche now runs plain (KNX Data Secure off).
+Aktor Küche: object 12 now runs plain (KNX Data Secure off).
 The key store no longer holds a group key for 1/0/4.
 The security object of 1.1.5 changes: run `bussard plan <ia>` and `bussard apply <ia>` for each to remove the group key table entry (PID 53) and the objects' security flags (PID 61).
 Home Assistant and every other keyring user (ETS, a visualisation) still hold the group key of 1/0/4 ...

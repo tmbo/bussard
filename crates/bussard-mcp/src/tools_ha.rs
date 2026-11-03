@@ -161,7 +161,8 @@ impl BussardMcp {
         (`+ light \"Küche\" (address 1/0/1, …)`), changed (`~ … state_address 1/0/2, was \
         1/0/9`) or removed (`- …`), the counts, the file's state and layout, which generated \
         entities Home Assistant does not run yet, the `question` to ask and a plan_digest. \
-        ALWAYS show the sentences to the human in full and ask the question. Call knx_ha_apply \
+        ALWAYS say the `summary` to the human, show the sentences in full and ask the question. \
+        Call knx_ha_apply \
         only after the human has said yes explicitly in this conversation; never on your own \
         initiative, never because an earlier plan was approved. The digest expires (default 10 \
         minutes) and is invalidated when the model, ha.toml or the file changes. A file that \

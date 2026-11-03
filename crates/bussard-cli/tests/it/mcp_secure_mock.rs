@@ -1077,11 +1077,11 @@ fn test_mcp_unsecure_a_group_address_end_to_end() -> TestResult {
     );
     let sentences = set["changes"].to_string();
     assert!(
-        sentences.contains("Secured level (1/2/3) now runs plain (KNX Data Secure off)."),
+        sentences.contains("Secured level now runs plain (KNX Data Secure off)."),
         "set: {set}"
     );
     assert!(
-        sentences.contains("Secure actuator (1.1.10): object 22 now runs plain"),
+        sentences.contains("Secure actuator: object 22 now runs plain"),
         "set: {set}"
     );
     assert_eq!(

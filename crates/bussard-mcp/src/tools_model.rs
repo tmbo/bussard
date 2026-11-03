@@ -243,11 +243,12 @@ impl BussardMcp {
     /// `knx_describe_change`.
     #[tool(
         description = "Describe a model change in plain sentences a homeowner can judge, e.g. \
-        \"Rocker 1 on Hallway push button (1.1.5) now switches Porch light (0/0/4).\" With no arguments it \
+        \"Rocker 1 on Hallway push button now switches Porch light.\" With no arguments it \
         describes the PENDING changes: the model files as they are now against the last history \
         snapshot, i.e. everything edited but not yet pushed to any device. Pass `from` and `to` \
         snapshot ids (from knx_history) to describe the change between two snapshots instead. \
-        QUOTE THESE SENTENCES TO THE HUMAN before she confirms anything; a change marked \
+        SAY THE `summary` (the change in rooms and names), THEN QUOTE THESE SENTENCES TO THE \
+        HUMAN before she confirms anything; a change marked \
         touches_protected concerns a safety-critical group address and needs her explicit word."
     )]
     async fn knx_describe_change(
@@ -295,7 +296,17 @@ impl BussardMcp {
 
         let mut changes = describe(&from_model, &to_model);
         settle_changes(&dir, &mut changes, [&to_model, &from_model]);
-        ok(change_json(base, &changes))
+        let mut result = change_json(base, &changes);
+        if let Some(map) = result.as_object_mut() {
+            map.insert(
+                "summary".into(),
+                json!(crate::everyday::edit_summary(
+                    &changes,
+                    [&to_model, &from_model]
+                )),
+            );
+        }
+        ok(result)
     }
 
     /// `knx_history`.
@@ -350,7 +361,7 @@ impl BussardMcp {
         none; one change, undone with knx_undo. The Secure devices linked to it then need \
         knx_plan_device and knx_apply_device (their security object changes), and Home Assistant \
         and every other keyring user need a new `bussard keys export`. Returns the change as \
-        sentences: quote them to the human."
+        sentences and a `summary`: say the summary to the human, then quote the sentences."
     )]
     async fn knx_set_group(
         &self,
@@ -530,7 +541,7 @@ impl BussardMcp {
         \"send\" or \"listen\"). The device's individual address goes in `address` (e.g. \"1.1.4\"). This edits FILES ONLY: the device keeps its current wiring until \
         knx_plan_device and knx_apply_device push it (the result's next_step says how at this \
         server's tier). Protected group addresses are \
-        refused outright. Returns the change as sentences: quote them to the human."
+        refused outright. Returns the change as sentences and a `summary`: say the summary to the human, then quote the sentences."
     )]
     async fn knx_remove_link(
         &self,
@@ -584,7 +595,7 @@ impl BussardMcp {
         description = "Rename a device or change where it lives (floor and room) in its \
         devices/*.toml file. Names and locations are what every other sentence is built from, so \
         good ones make the whole model readable. This edits FILES ONLY and never touches the bus. \
-        Returns the change as sentences: quote them to the human."
+        Returns the change as sentences and a `summary`: say the summary to the human, then quote the sentences."
     )]
     async fn knx_set_device(
         &self,
@@ -660,7 +671,7 @@ impl BussardMcp {
         shows. An output of a <ParameterCalculation> is refused, also with `force`: ETS shows it \
         read-only and a download writes what the calculation computes, so set the inputs the \
         refusal names; the change then lists the output's new computed value. \
-        Returns the change as sentences: quote them to the human."
+        Returns the change as sentences and a `summary`: say the summary to the human, then quote the sentences."
     )]
     async fn knx_set_parameter(
         &self,
@@ -730,7 +741,7 @@ impl BussardMcp {
         knx_apply_device writes them to the interface's KNXnet/IP parameter object; a change of \
         the IP assignment, address or tunnel addresses of the interface this server tunnels \
         through is refused there (the owner applies it with `bussard apply <address> --allow-self-reconfigure`). \
-        Returns the change as sentences: quote them to the human."
+        Returns the change as sentences and a `summary`: say the summary to the human, then quote the sentences."
     )]
     async fn knx_set_interface(
         &self,
@@ -806,7 +817,7 @@ impl BussardMcp {
         knx_plan_device and knx_apply_device push them (the result's next_step names the \
         devices and says how at this server's tier). The state before the undo is \
         itself snapshotted, so an undo can be undone. Returns what the undo reverted, as \
-        sentences: quote them to the human."
+        sentences and a `summary`: say the summary to the human, then quote the sentences."
     )]
     async fn knx_undo(
         &self,
@@ -897,13 +908,19 @@ impl BussardMcp {
             .map(|b| bussard_model::validate_in_dir(b, &dir))
             .unwrap_or_default();
         let diagnostics = bussard_model::validate_in_dir(&restored, &dir);
+        let summary = crate::everyday::edit_summary(
+            &changes,
+            [&restored, before.as_ref().unwrap_or(&restored)],
+        );
         let mut result = json!({
             "ok": true,
             "restored": target.id,
             "snapshot": undo_snapshot,
+            "summary": summary,
             "validation": validation_json(&earlier, &diagnostics),
             "next_step": self.next_step(&changes),
         });
+        crate::everyday::put_for_the_human(&mut result);
         put_changes(&mut result, &changes);
         if let (Some(key_store), Some(map)) = (key_store, result.as_object_mut()) {
             map.insert("key_store".to_string(), key_store);
@@ -923,7 +940,7 @@ impl BussardMcp {
         Secure state the discard flips gets its group key back in the key store, or loses it, \
         as knx_undo does (`key_store`). This edits FILES \
         ONLY and snapshots first, so knx_undo brings the edits back. Returns the dropped edits \
-        as sentences: quote them to the human."
+        as sentences and a `summary`: say the summary to the human, then quote the sentences."
     )]
     async fn knx_discard_edits(
         &self,
@@ -1126,10 +1143,12 @@ impl BussardMcp {
             "discarded": subject.to_string(),
             "dropped": dropped_sentences,
             "snapshot": snapshot,
+            "summary": crate::everyday::edit_summary(&changes, [&edited, &before]),
             "touches_protected": changes.touches_protected(),
             "validation": validation_json(&earlier, &diagnostics),
             "next_step": next_step,
         });
+        crate::everyday::put_for_the_human(&mut result);
         put_changes(&mut result, &changes);
         if let (false, Some(map)) = (notes.is_empty(), result.as_object_mut()) {
             map.insert("note".to_string(), Value::String(notes.join(" ")));
@@ -1279,11 +1298,13 @@ impl BussardMcp {
         let mut result = json!({
             "ok": true,
             "snapshot": snapshot,
+            "summary": crate::everyday::edit_summary(&changes, [&edited, &before]),
             "touches_protected": changes.touches_protected(),
             "groups_declared": declared,
             "validation": validation_json(&earlier, &diagnostics),
             "next_step": self.next_step(&changes),
         });
+        crate::everyday::put_for_the_human(&mut result);
         put_changes(&mut result, &changes);
         if let Some(map) = result.as_object_mut() {
             if let Some(note) = note {

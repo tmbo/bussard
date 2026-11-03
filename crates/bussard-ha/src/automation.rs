@@ -19,6 +19,7 @@
 //! a description ending in the [`MARKER`] line naming the model directory.
 //! bussard only updates or removes an automation that carries both.
 
+use bussard_model::change::Labels;
 use bussard_model::codec::{encode, parse_value};
 use bussard_model::{Dpt, GroupAddress, Model};
 use serde::{Deserialize, Serialize};
@@ -221,8 +222,12 @@ pub fn payload(dpt: &Dpt, value: &str, address: GroupAddress) -> Result<Value, R
     }
 }
 
-/// The rule in one sentence: `when 4/3/2 receives 1, send 0 to 4/3/10`.
-pub fn sentence(rule: &Rule) -> String {
+/// The rule in one sentence, by group-address name (issue #306): `when
+/// Guest mode receives 1, send 0 to Presence`. An address without a name in
+/// `model` reads as the address, and a name another address shares gets the
+/// address in parentheses: `when 4/3/2 receives 1, send 0 to Presence
+/// (4/3/10)`.
+pub fn sentence(model: &Model, rule: &Rule) -> String {
     let received = match &rule.when.value {
         Some(v) => v.trim().to_string(),
         None => "any value".to_string(),
@@ -230,13 +235,24 @@ pub fn sentence(rule: &Rule) -> String {
     let sends: Vec<String> = rule
         .then
         .iter()
-        .map(|t| format!("{} to {}", t.send.value.trim(), t.send.ga.trim()))
+        .map(|t| format!("{} to {}", t.send.value.trim(), ga_name(model, &t.send.ga)))
         .collect();
     format!(
         "when {} receives {received}, send {}",
-        rule.when.ga.trim(),
+        ga_name(model, &rule.when.ga),
         sends.join(", then ")
     )
+}
+
+/// How [`sentence`] names group address `raw`: its name in `groups.toml`,
+/// with the address when another group address has the same name; the
+/// address as given when it has no name or does not parse.
+fn ga_name(model: &Model, raw: &str) -> String {
+    let raw = raw.trim();
+    match raw.parse::<GroupAddress>() {
+        Ok(ga) => Labels::plain([model, model]).ga(ga),
+        Err(_) => raw.to_string(),
+    }
 }
 
 /// Checks `rule` against `model` and renders the automation with `id`,
@@ -293,7 +309,7 @@ pub fn render(
             "data": {"address": target.ga.to_string(), "payload": data},
         }));
     }
-    let sentence = sentence(rule);
+    let sentence = sentence(model, rule);
     let mut description = rule
         .description
         .as_deref()
@@ -402,6 +418,28 @@ mod tests {
     }
 
     #[test]
+    fn test_sentence_names_groups_and_falls_back_to_the_address() -> TestResult {
+        let mut model = model()?;
+        let rule = guest_rule();
+        assert_eq!(
+            sentence(&model, &rule),
+            "when Zu Hause receives 1, send 0 to Gastmodus"
+        );
+        // An unnamed address reads as the address, a shared name gets it.
+        if let Some(g) = model.groups.groups.get_mut(&"4/3/2".parse()?) {
+            g.name = String::new();
+        }
+        if let Some(g) = model.groups.groups.get_mut(&"4/3/20".parse()?) {
+            g.name = "Gastmodus".to_string();
+        }
+        assert_eq!(
+            sentence(&model, &rule),
+            "when 4/3/2 receives 1, send 0 to Gastmodus (4/3/10)"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_render_guest_mode_rule_exactly() -> TestResult {
         let rendered = render(
             &model()?,
@@ -414,7 +452,7 @@ mod tests {
             rendered.to_json(),
             json!({
                 "id": "bussard_guest_mode_end",
-                "alias": "when 4/3/2 receives 1, send 0 to 4/3/10",
+                "alias": "when Zu Hause receives 1, send 0 to Gastmodus",
                 "description": "Zu Hause ends guest mode\n\nmanaged by bussard (model knx)",
                 "mode": "single",
                 "triggers": [{

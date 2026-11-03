@@ -1,1 +1,1 @@
-Group address 0/0/4 (Porch light) removed.
+Group address Porch light removed.

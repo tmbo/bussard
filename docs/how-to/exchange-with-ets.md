@@ -49,7 +49,7 @@ Before you import an integrator's new file, ask what it changes:
 $ bussard diff knx integrator-2026-10-01.bussard
 2 change(s) from knx to integrator-2026-10-01.bussard:
   Group address 1/0/1 is now called "Kitchen ceiling" (was "Light Kitchen").
-  Night setback on Living room thermostat (1.0.4): 2 to 3.
+  Night setback on Living room thermostat: 2 to 3.
 ```
 
 Each side can be a model directory, a `.bussard` bundle or a `.knxproj`. A renamed group address is one rename, not a removal and an addition. `diff` writes nothing and exits 0 whether or not there are differences.

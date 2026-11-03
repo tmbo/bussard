@@ -108,7 +108,7 @@ fn digest(plan: &Value) -> anyhow::Result<String> {
 fn guest_automation(model_name: &str) -> Value {
     json!({
         "id": "bussard_guest_mode_end",
-        "alias": "when 4/3/2 receives 1, send 0 to 4/3/10",
+        "alias": "when Zu Hause receives 1, send 0 to Gastmodus",
         "description": format!("Zu Hause ends guest mode\n\nmanaged by bussard (model {model_name})"),
         "mode": "single",
         "triggers": [{
@@ -143,7 +143,10 @@ async fn test_guest_mode_plan_apply_update_remove() -> TestResult {
     let plan = call(&client, "knx_ha_automation_plan", guest_rule()).await?;
     assert_eq!(plan["ok"], true, "{plan}");
     assert_eq!(plan["op"], "create");
-    assert_eq!(plan["sentence"], "when 4/3/2 receives 1, send 0 to 4/3/10");
+    assert_eq!(
+        plan["sentence"],
+        "when Zu Hause receives 1, send 0 to Gastmodus"
+    );
     assert_eq!(plan["automation"], guest_automation("knx"), "{plan}");
     assert!(
         plan["yaml"]

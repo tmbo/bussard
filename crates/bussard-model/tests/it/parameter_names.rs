@@ -45,7 +45,7 @@ fn test_name_parameters_uses_the_product_model_text() -> TestResult {
     name_parameters(&mut changes, [&new, &old], &products);
     assert_eq!(
         changes.changes[0].sentence,
-        "Night setback on Thermostat (1.1.4): 2 to 3."
+        "Night setback on Thermostat: 2 to 3."
     );
     Ok(())
 }
@@ -75,7 +75,7 @@ fn test_settle_parameters_normalises_label_and_code() -> TestResult {
             "0",
             "5",
             Some(
-                "Funktion on Thermostat (1.1.4): Kurzer Tastendruck (0) to Kurzer und langer \
+                "Funktion on Thermostat: Kurzer Tastendruck (0) to Kurzer und langer \
                  Tastendruck (5).",
             ),
         ),
@@ -83,7 +83,7 @@ fn test_settle_parameters_normalises_label_and_code() -> TestResult {
             "Kurzer Tastendruck",
             "5",
             Some(
-                "Funktion on Thermostat (1.1.4): Kurzer Tastendruck (0) to Kurzer und langer \
+                "Funktion on Thermostat: Kurzer Tastendruck (0) to Kurzer und langer \
                  Tastendruck (5).",
             ),
         ),
@@ -91,7 +91,7 @@ fn test_settle_parameters_normalises_label_and_code() -> TestResult {
         (
             "0",
             "9",
-            Some("Funktion on Thermostat (1.1.4): Kurzer Tastendruck (0) to 9."),
+            Some("Funktion on Thermostat: Kurzer Tastendruck (0) to 9."),
         ),
     ];
     for (from, to, want) in cases {
