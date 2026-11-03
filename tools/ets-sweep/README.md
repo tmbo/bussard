@@ -299,8 +299,9 @@ offline). `results/series.json` records per product why it was chosen and each
 step's outcome, and `summary.py` lists it. `--oracle` writes and runs the
 `run=apply` rows plus the `line apply` row of step B on the Mac
 (`--no-ets --oracle` for series already recorded). The representatives
-(`series.REPRESENTATIVES`): Jung 3361-1M (0705, load control through
-properties), MDT AKK (0705, through memory), Ekinex EK-E72 (0705,
+(`series.REPRESENTATIVES`): Busch-Jaeger 6173/11 U (0705, tables loaded
+through properties; it replaced the Jung 3361-1M, whose defaults run was
+`driver-error`), MDT AKK (0705, through memory), Ekinex EK-E72 (0705,
 group-object table in its own segment), Zennio ACTinBOX MAX6 (0701; the
 Theben 4940275 the issue names failed the defaults sweep), KNX Virtual DA.tp
 (07B0).
