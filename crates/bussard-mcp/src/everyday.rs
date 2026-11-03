@@ -31,6 +31,7 @@ pub const SUMMARIZED_TOOLS: &[&str] = &[
     "knx_plan_device",
     "knx_apply_device",
     "knx_apply_status",
+    "knx_job_status",
     "knx_last_apply",
     "knx_backup_device",
     "knx_reconstruct_device",
@@ -499,7 +500,7 @@ fn job_summary(tool: &str, device: &str, value: &Value) -> String {
             )
         };
     }
-    // A job status (knx_apply_status, knx_last_apply).
+    // A job status (knx_job_status, knx_apply_status, knx_last_apply).
     if value.get("state").is_some() && value.get("job").is_some() && value.get("result").is_some() {
         return match value["state"].as_str() {
             Some("running") if plan_job => {

@@ -1696,6 +1696,12 @@ async fn test_knx_plan_device_summary_and_notice_speak_in_names() -> anyhow::Res
     let summary = last["summary"].as_str().unwrap_or_default();
     assert!(summary.contains("checked"), "{last}");
     assert!(ids_in(summary).is_empty(), "{summary}");
+    // The one job table's status tool speaks the same way (#746).
+    let job = last["job"].as_str().unwrap_or_default().to_string();
+    let status = h.call("knx_job_status", json!({"job": job})).await?;
+    let summary = status["summary"].as_str().unwrap_or_default();
+    assert!(summary.contains("checked"), "{status}");
+    assert!(ids_in(summary).is_empty(), "{summary}");
 
     let replan = h
         .call("knx_plan_device", json!({"address": "1.1.4"}))
