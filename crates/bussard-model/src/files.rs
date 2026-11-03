@@ -37,12 +37,29 @@ use crate::toml_io::{self, ParseError};
 ///   hash and application id.
 /// - v3 (issue #276): `parameters[]` indexes the parameters at their vendor
 ///   default too and carries a ref's `default` override.
-pub const LOCK_VERSION: u32 = 3;
+/// - v4 (issue #752): a device's `serial_number`. v4 only adds that optional
+///   key, so a lock without it is still written (and read) as v3 and an
+///   older build keeps reading it; see [`lock_version_for`].
+pub const LOCK_VERSION: u32 = 4;
+
+/// The version a lock that uses no v4 key is written with, and the oldest one
+/// this build reads.
+pub const LOCK_VERSION_V3: u32 = 3;
+
+/// The version a lock with these device entries is written with: v4 when one
+/// of them carries a `serial_number`, v3 otherwise (issue #752).
+pub(crate) fn lock_version_for(devices: &[LockDevice]) -> u32 {
+    if devices.iter().any(|d| d.serial_number.is_some()) {
+        LOCK_VERSION
+    } else {
+        LOCK_VERSION_V3
+    }
+}
 
 /// A fingerprint of the lock's schema (every struct field and origin kind the
 /// lock reads), recorded with [`LOCK_VERSION`]. A unit test recomputes it; when
 /// it fails, the schema changed: bump `LOCK_VERSION` and record the new value.
-pub const LOCK_SCHEMA_FINGERPRINT: u64 = 0x2163_55f2_94a2_1301;
+pub const LOCK_SCHEMA_FINGERPRINT: u64 = 0x65c7_a802_d2c9_c865;
 
 /// The `version` of a `bussard.lock`, read before anything else so a lock
 /// of another version is refused with the version message, never with a
@@ -143,6 +160,7 @@ pub(crate) struct LockDevice {
     pub manufacturer_ref: Option<String>,
     pub hardware_ref: Option<String>,
     pub mask: Option<String>,
+    pub serial_number: Option<String>,
     #[serde(default)]
     pub secure_capable: bool,
     #[serde(default)]
@@ -1035,6 +1053,7 @@ pub(crate) fn join_device(
             extras.application = lock.application.clone();
         }
         extras.product_sha256 = lock.product_sha256.clone();
+        extras.serial_number = lock.serial_number.clone();
         // The id and version the application ref encodes are rederived on
         // save; only a value that differs from them is kept.
         let derived = lock
@@ -1391,6 +1410,7 @@ pub(crate) fn lock_entry(device: &Device) -> Option<LockDevice> {
         manufacturer_ref: product.manufacturer_ref.clone(),
         hardware_ref: product.hardware_ref.clone(),
         mask: product.mask.clone(),
+        serial_number: device.lock.serial_number.clone(),
         secure_capable: security.secure_capable,
         has_fdsk_certificate: security.has_fdsk_certificate,
         sequence_number: security.sequence_number,
@@ -1408,6 +1428,7 @@ pub(crate) fn lock_entry(device: &Device) -> Option<LockDevice> {
         && entry.manufacturer_ref.is_none()
         && entry.hardware_ref.is_none()
         && entry.mask.is_none()
+        && entry.serial_number.is_none()
         && !entry.secure_capable
         && !entry.has_fdsk_certificate
         && entry.sequence_number.is_none()

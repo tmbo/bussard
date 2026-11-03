@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use crate::address::IndividualAddress;
 use crate::emit::{self, KeyOrder};
-use crate::files::{self, GroupsFile, LOCK_VERSION, LockDevice, LockFile};
+use crate::files::{self, GroupsFile, LOCK_VERSION, LOCK_VERSION_V3, LockDevice, LockFile};
 use crate::param_model::ProductModels;
 use crate::schema::{BussardConfig, Group, Groups, Link, Links, Range};
 use crate::toml_io::{self, ParseError};
@@ -79,8 +79,9 @@ pub enum LoadError {
     },
     /// `bussard.lock` carries a format version this build does not read.
     #[error(
-        "{path}: lock format version {version}{} is not supported (this bussard reads version \
-         {LOCK_VERSION} only); regenerate it with `bussard import <export> --dir <dir>`",
+        "{path}: lock format version {version}{} is not supported (this bussard reads versions \
+         {LOCK_VERSION_V3} and {LOCK_VERSION}); regenerate it with `bussard import <export> --dir \
+         <dir>`",
         written_by.as_deref().map(|w| format!(", written by {w},")).unwrap_or_default()
     )]
     LockVersion {
@@ -238,6 +239,12 @@ fn list_device_files(devices_dir: &Path) -> Vec<String> {
     out
 }
 
+/// Whether this build reads a lock of `version` (v3, or v4 which only adds
+/// `serial_number`).
+fn lock_version_supported(version: u32) -> bool {
+    version == LOCK_VERSION || version == LOCK_VERSION_V3
+}
+
 /// Parses `bussard.lock` text.
 ///
 /// The `version` is read first, leniently: a lock of another version is
@@ -249,7 +256,7 @@ pub(crate) fn parse_lock(path: &Path, text: &str) -> Result<LockFile, LoadError>
         version: Some(version),
         written_by,
     }) = toml::from_str::<files::LockVersionOnly>(text)
-        && version != LOCK_VERSION
+        && !lock_version_supported(version)
     {
         return Err(LoadError::LockVersion {
             path: path.to_path_buf(),
@@ -258,7 +265,9 @@ pub(crate) fn parse_lock(path: &Path, text: &str) -> Result<LockFile, LoadError>
         });
     }
     let lock: LockFile = toml_io::parse(path, text)?;
-    if lock.version != LOCK_VERSION {
+    // A v3 lock carries no v4 key (`serial_number`, issue #752).
+    let v4_keys = files::lock_version_for(&lock.devices) == LOCK_VERSION;
+    if !lock_version_supported(lock.version) || (v4_keys && lock.version != LOCK_VERSION) {
         return Err(LoadError::LockVersion {
             path: path.to_path_buf(),
             version: lock.version,

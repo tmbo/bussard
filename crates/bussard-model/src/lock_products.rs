@@ -294,7 +294,7 @@ pub(crate) fn pin_into(lock: &mut LockFile, entries: &[ProductEntry]) -> PinRepo
     lock.products.sort_by(|a, b| {
         (a.filename.as_deref(), a.sha256.as_str()).cmp(&(b.filename.as_deref(), b.sha256.as_str()))
     });
-    lock.version = crate::files::LOCK_VERSION;
+    lock.version = crate::files::lock_version_for(&lock.devices);
     PinReport {
         linked: linked.into_iter().collect(),
         written: false,
@@ -470,7 +470,7 @@ product = "OTHER-1"
         let mut lock = lock(LOCK)?;
         let report = pin_into(&mut lock, &[vendor_entry("AB12")]);
         assert_eq!(report.linked, vec!["1.1.4".parse()?]);
-        assert_eq!(lock.version, crate::files::LOCK_VERSION);
+        assert_eq!(lock.version, crate::files::LOCK_VERSION_V3);
         assert_eq!(lock.devices[0].product_sha256.as_deref(), Some("ab12"));
         assert_eq!(lock.devices[1].product_sha256, None);
         Ok(())

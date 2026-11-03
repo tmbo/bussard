@@ -103,6 +103,10 @@ struct Report {
     /// interface reported (issue #391); absent on any other device.
     #[serde(skip_serializing_if = "Option::is_none")]
     knxnet: Option<bussard_model::knxnet::KnxnetFacts>,
+    /// The serial number the device reported (PID 11 of the device object),
+    /// lowercase hex; recorded in `bussard.lock` (issue #752).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    serial: Option<String>,
 }
 
 /// KNX Secure status, split into the imported model's claims and what this run
@@ -284,6 +288,15 @@ pub fn run(
             },
         ));
     }
+    // The serial number goes into the lock (issue #752).
+    if let (Some(serial), Some(check)) = (&result.serial, &report.identity) {
+        crate::keys_cmd::learn_serials(
+            dir,
+            model.as_ref(),
+            &[(target, serial.clone(), check.verdict)],
+            json,
+        );
+    }
     let loaded = model.as_ref().and_then(|m| m.devices.get(&target));
     // The product's Data Secure table capacities (issue #537).
     let tables = loaded
@@ -425,6 +438,35 @@ async fn introspect<Ch: bussard_mgmt::L4Channel>(
         .record
         .as_ref()
         .and_then(|record| record.application_id.clone());
+    // The serial number (PID 11 of the device object), one request on the
+    // open session (issue #752): never cached, it names the hardware, not
+    // the product. Skipped when the walk shows no device object or a device
+    // object without PID 11 (a System 1 device has no interface objects).
+    let has_serial = established.record.as_ref().is_some_and(|record| {
+        record.objects.iter().any(|o| {
+            o.index == bussard_mgmt::apci::DEVICE_OBJECT_INDEX
+                && o.object_type == 0
+                && o.properties.as_ref().is_none_or(|ps| {
+                    ps.iter()
+                        .any(|p| p.pid == bussard_mgmt::apci::PID_SERIAL_NUMBER)
+                })
+        })
+    });
+    let serial = if has_serial {
+        bussard_mgmt::read_property_elements(
+            l4,
+            bussard_mgmt::apci::DEVICE_OBJECT_INDEX,
+            bussard_mgmt::apci::PID_SERIAL_NUMBER,
+            1,
+            1,
+        )
+        .await
+        .inspect_err(|err| tracing::debug!("{address}: the serial number did not read: {err}"))
+        .ok()
+        .filter(|v| v.len() == 6)
+    } else {
+        None
+    };
     let object_reports = established
         .record
         .map(|record| record.objects)
@@ -458,8 +500,10 @@ async fn introspect<Ch: bussard_mgmt::L4Channel>(
             secure: None,
             identity: None,
             knxnet,
+            serial: serial.as_deref().map(crate::assign_cmd::hex),
         },
         application_id,
+        serial,
     })
 }
 
@@ -482,6 +526,8 @@ struct Introspection {
     report: Report,
     /// The application id the device reported, when read.
     application_id: Option<String>,
+    /// The serial number the device reported (PID 11), when read.
+    serial: Option<Vec<u8>>,
 }
 
 /// Builds a [`PropertyReport`] row from a [`PropertyDesc`].
@@ -516,6 +562,9 @@ fn print_text(report: &Report) {
         "device {} — mask {} ({})",
         report.address, report.mask, report.system_type
     );
+    if let Some(serial) = &report.serial {
+        println!("  serial: {serial}");
+    }
     if let Some(sec) = &report.secure {
         if let Some(model) = &sec.model {
             let state = if model.activated {

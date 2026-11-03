@@ -51,6 +51,7 @@ pub mod schema;
 pub mod script;
 pub mod secure_invariants;
 pub mod secure_links;
+pub mod serials;
 pub mod tests_schema;
 pub mod text_codec;
 pub mod toml_io;
@@ -73,8 +74,8 @@ pub use doc::{DocError, DocFile, DocFormat, InstallationDoc};
 pub use dpt::{ApduSize, Dpt, DptParseError};
 pub use ets_export::{to_ets_csv, to_ets_xml};
 pub use files::{
-    LOCK_SCHEMA_FINGERPRINT, LOCK_VERSION, hidden_mem_key, is_hidden_mem_key, label_mem_key,
-    lock_written_by, param_mem_key, slug,
+    LOCK_SCHEMA_FINGERPRINT, LOCK_VERSION, LOCK_VERSION_V3, hidden_mem_key, is_hidden_mem_key,
+    label_mem_key, lock_written_by, param_mem_key, slug,
 };
 pub use flags::{Flags, FlagsParseError, Priority};
 pub use history::{History, HistoryError, Snapshot, SnapshotId, SnapshotReason};
@@ -88,6 +89,7 @@ pub use param_model::{ParamDef, ParamKind, ProductModel, ProductModels};
 pub use scaffold::{Plan, PlanRoom, Scheme, scaffold, scaffold_file};
 pub use secure_invariants::{rekeyed_by_keys_import, resecured_by_import};
 pub use secure_links::{ConflictKind, SecureLinkConflict, secure_link_conflicts};
+pub use serials::{SERIAL_LEN, SerialRecord, format_serial};
 pub use tests_schema::{
     Expectation, TestCase, TestFileError, TestSuite, WriteStep, load_tests, load_tests_in_dir,
 };

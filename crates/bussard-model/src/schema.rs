@@ -594,6 +594,11 @@ pub struct DeviceLock {
     /// The `PID_PROGRAM_VERSION` hex the device must report, kept only when
     /// it differs from what the application ref encodes.
     pub application_id: Option<String>,
+    /// The serial number the device reported (PID 11 of the device object),
+    /// twelve upper-case hex digits, e.g. `00FA01020304` (issue #752).
+    /// Recorded by `adopt`, `assign`, `scan` and `describe`, which read it
+    /// anyway; a certificate's serial selects its device by it.
+    pub serial_number: Option<String>,
 }
 
 /// One `[[product]]` entry of `bussard.lock` (lock v2, issue #228): one

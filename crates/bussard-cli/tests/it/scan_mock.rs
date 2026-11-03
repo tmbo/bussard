@@ -26,10 +26,27 @@ struct Device {
 /// A device on the mock line: it `T_ACK`s every numbered request and answers
 /// the management reads a scan issues.
 fn device(addr: &str, mask: u16, manufacturer: u16, order: &[u8]) -> TestResult<MockDevice> {
+    device_with_serial(
+        addr,
+        mask,
+        manufacturer,
+        order,
+        &[0x11, 0x22, 0x33, 0x44, 0x55, 0x66],
+    )
+}
+
+/// [`device`] reporting `serial` as its serial number.
+fn device_with_serial(
+    addr: &str,
+    mask: u16,
+    manufacturer: u16,
+    order: &[u8],
+    serial: &[u8],
+) -> TestResult<MockDevice> {
     let dev = Device {
         mask,
         manufacturer,
-        serial: vec![0x11, 0x22, 0x33, 0x44, 0x55, 0x66],
+        serial: serial.to_vec(),
         order: order.to_vec(),
     };
     Ok(MockDevice::new(ia(addr)?).with_hook(move |_, apci, data| {
@@ -705,5 +722,166 @@ fn measure_full_line_sweep() -> TestResult {
         json["timing"]["absent_timeout"],
         stats.requests
     );
+    Ok(())
+}
+
+/// The made-up key store password of the certificate test.
+const KEYS_PASSWORD: &str = "synthetic-keyring-pw";
+
+/// The first certificate vector of `dev/enroll/vectors-v1.json` (synthetic:
+/// serial 00FA01020304, FDSK A0..AF).
+const LABEL: &str = "AD5ACA-QDASQK-DIVDUS-S2NJ5I-VGVKXL-FNV2X5";
+
+/// The second vector (serial 0083A1B2C3D4, an all-zero FDSK).
+const LABEL_ZERO: &str = "ACB2DM-WD2QAA-AAAAAA-AAAAAA-AAAAAA-AAAAAG";
+
+/// Runs `bussard --dir <model> keys add-certificate --stdin` with `label`.
+fn add_certificate(model: &std::path::Path, label: &str) -> TestResult<std::process::Output> {
+    use std::io::Write as _;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_bussard"))
+        .arg("--dir")
+        .arg(model)
+        .args(["keys", "add-certificate", "--stdin"])
+        .env("BUSSARD_KEYRING_PASSWORD", KEYS_PASSWORD)
+        .env_remove("BUSSARD_KEYRING")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(format!("{label}\n").as_bytes())?;
+    }
+    Ok(child.wait_with_output()?)
+}
+
+/// Issue #752: `scan` records the serial numbers it reads in `bussard.lock`,
+/// so a certificate for a device ETS never saw finds it. A label entered
+/// before the scan moves to its device; one entered after is stored on it.
+#[test]
+fn test_scan_records_serials_and_certificates_find_their_device() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
+    let devices = vec![
+        device_with_serial(
+            "1.1.4",
+            0x07B0,
+            0x0083,
+            b"MDT-JAL0410",
+            &[0x00, 0xFA, 0x01, 0x02, 0x03, 0x04],
+        )?,
+        device_with_serial(
+            "1.1.5",
+            0x07B0,
+            0x0083,
+            b"MDT-JAL0410",
+            &[0x00, 0x83, 0xA1, 0xB2, 0xC3, 0xD4],
+        )?,
+    ];
+    let gw = start_gateway(&rt, devices)?;
+    let port = gw.port();
+
+    let tmp = std::env::temp_dir().join(format!(
+        "bussard-scan-serials-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    ));
+    let model_dir = tmp.join("knx");
+    std::fs::create_dir_all(model_dir.join("devices"))?;
+    for (addr, name) in [
+        ("1.1.4", "Rollladen Wohnzimmer"),
+        ("1.1.5", "Rollladen Bad"),
+    ] {
+        std::fs::write(
+            model_dir.join("devices").join(format!("{addr}.toml")),
+            format!("address = \"{addr}\"\nname = \"{name}\"\n"),
+        )?;
+    }
+
+    // Before the scan no device has the serial: the label waits unassigned.
+    let before = add_certificate(&model_dir, LABEL)?;
+    let before_text = String::from_utf8(before.stdout)?;
+    assert!(
+        before_text.contains("00FA01020304") && before_text.contains("unassigned"),
+        "{before_text}\nstderr: {}",
+        String::from_utf8_lossy(&before.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bussard"))
+        .env("BUSSARD_MGMT_TIMEOUT_MS", "300")
+        .env("BUSSARD_ADDRESS_PROBE_MS", "200")
+        .env("BUSSARD_SCAN_DISCOVERY_MS", "40")
+        .env("BUSSARD_KEYRING_PASSWORD", KEYS_PASSWORD)
+        .env_remove("BUSSARD_KEYRING")
+        .args([
+            "scan",
+            "1.1",
+            "--from",
+            "4",
+            "--to",
+            "5",
+            "--dir",
+            model_dir.to_str().ok_or("temp path is not UTF-8")?,
+            "--gateway",
+            &format!("127.0.0.1:{port}"),
+            "--json",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()?;
+    drop(gw);
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        output.status.success(),
+        "scan should exit 0; stderr:\n{stderr}"
+    );
+    // stdout stays one JSON document; the notes go to stderr.
+    let stdout = String::from_utf8(output.stdout)?;
+    serde_json::from_str::<serde_json::Value>(&stdout)
+        .map_err(|e| format!("scan --json must emit valid JSON: {e}\n{stdout}"))?;
+    assert!(
+        stderr.contains("recorded serial number 00FA01020304 of 1.1.4 in bussard.lock"),
+        "stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("attached to 1.1.4 in the key store"),
+        "stderr:\n{stderr}"
+    );
+
+    let lock = std::fs::read_to_string(model_dir.join("bussard.lock"))?;
+    assert!(lock.contains("version = 4"), "lock:\n{lock}");
+    assert!(
+        lock.contains("serial_number = \"00FA01020304\""),
+        "lock:\n{lock}"
+    );
+    assert!(
+        lock.contains("serial_number = \"0083A1B2C3D4\""),
+        "lock:\n{lock}"
+    );
+    let store = bussard_project::KeyStore::load(&model_dir, KEYS_PASSWORD)?.ok_or("no store")?;
+    assert!(store.unassigned.is_empty(), "the label moved to its device");
+    assert_eq!(
+        store.device_with_serial("00FA01020304".parse()?),
+        Some(ia("1.1.4")?)
+    );
+
+    // After the scan a label for a device only the scan knows is stored on it.
+    let after = add_certificate(&model_dir, LABEL_ZERO)?;
+    let after_text = String::from_utf8(after.stdout.clone())?;
+    assert!(
+        after.status.success(),
+        "{after_text}\nstderr: {}",
+        String::from_utf8_lossy(&after.stderr)
+    );
+    assert!(
+        after_text.contains("0083A1B2C3D4 1.1.5") && after_text.contains("stored"),
+        "{after_text}"
+    );
+    assert!(after_text.contains("Rollladen Bad"), "{after_text}");
+    let store = bussard_project::KeyStore::load(&model_dir, KEYS_PASSWORD)?.ok_or("no store")?;
+    let device = store.devices.get(&ia("1.1.5")?).ok_or("no 1.1.5")?;
+    assert_eq!(device.fdsk, Some(bussard_secure::Key16::new([0; 16])));
+
+    let _ = std::fs::remove_dir_all(&tmp);
     Ok(())
 }
