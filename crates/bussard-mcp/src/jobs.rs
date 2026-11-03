@@ -1,4 +1,16 @@
-//! The apply job model of the programming tier (issue #289).
+//! The server's one job table (issues #289, #746).
+//!
+//! Every long operation of the server runs as a job of this table, whatever
+//! its tier: a client bridge cuts a tool call at 60 s, so a call that may
+//! outlast that answers with a job id and the assistant polls
+//! `knx_job_status {job}` (registered in every tier). A job carries `step`
+//! (what it is doing now), `question` (what the human must do or answer
+//! before it can go on, such as "press the programming button", set with
+//! [`JobTable::ask`]), `done` and, once done, `result`. The table lives in
+//! [`crate::SharedState::jobs`]; the programming tier shares it, and
+//! `knx_apply_status` reads it under its old name and payload.
+//!
+//! The apply job model of the programming tier (issue #289):
 //!
 //! A client bridge caps one tool call at 60 s, and a secured apply with a
 //! restart and a read-back takes longer, so the reply was lost while the
@@ -113,6 +125,9 @@ struct Job {
     state: JobState,
     /// What the job is doing now, in words.
     step: String,
+    /// What the human must do or answer before the job goes on, if anything
+    /// (issue #746): "press the programming button on the new device".
+    question: Option<String>,
     /// Progress counters (download step, octets written, tables outcome).
     progress: Map<String, Value>,
     /// What the pre-flight established (gateway, backups, snapshot).
@@ -137,7 +152,7 @@ struct Inner {
 }
 
 /// The apply jobs of one server.
-pub struct ApplyJobs {
+pub struct JobTable {
     /// The jobs.
     inner: std::sync::Mutex<Inner>,
     /// The reply wait in milliseconds (see [`DEFAULT_REPLY_WAIT`]).
@@ -148,9 +163,9 @@ pub struct ApplyJobs {
     read_wait_ms: AtomicU64,
 }
 
-impl Default for ApplyJobs {
+impl Default for JobTable {
     fn default() -> Self {
-        ApplyJobs {
+        JobTable {
             inner: std::sync::Mutex::new(Inner::default()),
             reply_wait_ms: AtomicU64::new(millis(DEFAULT_REPLY_WAIT)),
             read_wait_ms: AtomicU64::new(millis(DEFAULT_REPLY_WAIT)),
@@ -163,7 +178,7 @@ fn millis(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
-impl ApplyJobs {
+impl JobTable {
     /// An empty table with the default reply wait.
     pub fn new() -> Self {
         Self::default()
@@ -248,7 +263,7 @@ impl ApplyJobs {
     /// Ends a job whose pre-flight refused: nothing was written. The job
     /// stays done with the refusal as its result, for a caller that already
     /// answered `started` (issue #332); one that gets the refusal in time
-    /// drops the job with [`ApplyJobs::abandon`].
+    /// drops the job with [`JobTable::abandon`].
     pub fn refuse(&self, id: &str, reason: &str) {
         let mut inner = self.inner();
         if inner.running.as_deref() == Some(id) {
@@ -260,6 +275,7 @@ impl ApplyJobs {
         job.state = JobState::Done;
         job.finished_at = Some(SystemTime::now());
         job.step = "refused".to_string();
+        job.question = None;
         job.result = Some(json!({
             "ok": false,
             "refused": true,
@@ -320,6 +336,7 @@ fn insert(inner: &mut Inner, kind: JobKind, address: IndividualAddress) -> Strin
             began: Instant::now(),
             state: JobState::Running,
             step: step.to_string(),
+            question: None,
             progress: Map::new(),
             context: Value::Null,
             result: None,
@@ -331,7 +348,7 @@ fn insert(inner: &mut Inner, kind: JobKind, address: IndividualAddress) -> Strin
     id
 }
 
-impl ApplyJobs {
+impl JobTable {
     /// Drops a job: one whose pre-flight refusal is the call's reply
     /// (nothing was written), or a plan the call answered with inline.
     pub fn abandon(&self, id: &str) {
@@ -369,6 +386,15 @@ impl ApplyJobs {
         }
     }
 
+    /// Sets or clears the question the job waits on: what the human must do
+    /// or answer before it goes on (issue #746). `knx_job_status` reports it
+    /// as `question`; the assistant relays it to the human and keeps polling.
+    pub fn ask(&self, id: &str, question: Option<String>) {
+        if let Some(job) = self.inner().jobs.get_mut(id) {
+            job.question = question;
+        }
+    }
+
     /// Sets one progress counter.
     pub fn progress(&self, id: &str, key: &str, value: Value) {
         if let Some(job) = self.inner().jobs.get_mut(id) {
@@ -390,6 +416,7 @@ impl ApplyJobs {
             job.state = JobState::Done;
             job.finished_at = Some(SystemTime::now());
             job.step = "done".to_string();
+            job.question = None;
             job.result = Some(result);
             job.done.send_replace(true);
             let (address, kind) = (job.address, job.kind);
@@ -460,7 +487,8 @@ impl ApplyJobs {
 }
 
 impl Job {
-    /// The job as `knx_apply_status` reports it.
+    /// The job as `knx_apply_status` reports it. `question` is there only
+    /// while the job waits on one, so an apply's payload is unchanged.
     fn status(&self, id: &str) -> Value {
         let state = match self.state {
             JobState::Running => "running",
@@ -487,6 +515,9 @@ impl Job {
             "result": self.result,
             "record": self.record.as_ref().map(|p| p.display().to_string()),
         });
+        if let (Some(question), Some(map)) = (&self.question, status.as_object_mut()) {
+            map.insert("question".to_string(), json!(question));
+        }
         if let (Some(status), Value::Object(context)) = (status.as_object_mut(), &self.context) {
             for (key, value) in context {
                 status.entry(key.clone()).or_insert_with(|| value.clone());
@@ -613,7 +644,7 @@ mod tests {
 
     #[test]
     fn test_claim_refuses_a_second_apply_with_the_running_job() -> Result<(), String> {
-        let jobs = ApplyJobs::new();
+        let jobs = JobTable::new();
         let first = jobs.claim(ia()?)?;
         let refused = jobs.claim(ia()?).err().ok_or("second claim must refuse")?;
         assert!(refused.contains(&first), "{refused}");
@@ -632,11 +663,11 @@ mod tests {
         std::fs::create_dir_all(&snapshot).map_err(|e| e.to_string())?;
         let record = snapshot.join(RECORD_FILE);
 
-        let jobs = ApplyJobs::new();
+        let jobs = JobTable::new();
         let id = jobs.claim(ia()?)?;
         jobs.started(&id, json!({"backup": "b.json"}), Some(record.clone()));
         // A new server (empty session) reads the running record back.
-        let fresh = ApplyJobs::new();
+        let fresh = JobTable::new();
         let cut = fresh
             .last(dir.path(), ia()?)
             .ok_or("no record after restart")?;
@@ -654,7 +685,7 @@ mod tests {
     #[test]
     fn test_claim_plan_joins_the_same_device_and_shares_the_slot_with_apply() -> Result<(), String>
     {
-        let jobs = ApplyJobs::new();
+        let jobs = JobTable::new();
         let other: IndividualAddress = "1.1.5".parse().map_err(|_| "address".to_string())?;
         let PlanClaim::New(plan) = jobs.claim_plan(ia()?)? else {
             return Err("the first plan must be new".into());
@@ -688,7 +719,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_wait_returns_when_the_job_finishes() -> Result<(), String> {
-        let jobs = std::sync::Arc::new(ApplyJobs::new());
+        let jobs = std::sync::Arc::new(JobTable::new());
         let id = jobs.claim(ia()?)?;
         assert!(!jobs.wait(&id, Duration::from_millis(10)).await);
         let finisher = std::sync::Arc::clone(&jobs);

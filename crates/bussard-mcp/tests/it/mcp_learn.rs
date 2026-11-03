@@ -129,6 +129,7 @@ fn server(
         programming: None,
         keyring: None,
         home_assistant: None,
+        jobs: Default::default(),
     });
     Ok(BussardMcp::new(state))
 }

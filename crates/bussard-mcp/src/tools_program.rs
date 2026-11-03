@@ -158,8 +158,10 @@ pub struct ProgrammingTier {
     plans: std::sync::Mutex<HashMap<String, PendingPlan>>,
     /// Serialises programming: one plan or apply on the bus at a time.
     bus_lock: tokio::sync::Mutex<()>,
-    /// The apply jobs (issue #289): one at a time, with status and record.
-    jobs: crate::apply_jobs::ApplyJobs,
+    /// The server's job table (issues #289, #746), shared with
+    /// [`crate::SharedState::jobs`]: one apply or plan at a time, with status
+    /// and record.
+    jobs: std::sync::Arc<crate::jobs::JobTable>,
     /// Restore plans produced in this session, by digest (issue #290).
     restore_plans: std::sync::Mutex<HashMap<String, restore::PendingRestore>>,
     /// Restart questions asked in this session, by digest (issue #717).
@@ -169,11 +171,13 @@ pub struct ProgrammingTier {
 }
 
 impl ProgrammingTier {
-    /// A tier for `connection`, with plans valid for `plan_ttl`.
+    /// A tier for `connection`, with plans valid for `plan_ttl`, running its
+    /// jobs in the server's job table `jobs`.
     pub fn new(
         connection: ConnectionConfig,
         allow_remote_gateway: bool,
         plan_ttl: Duration,
+        jobs: std::sync::Arc<crate::jobs::JobTable>,
     ) -> Self {
         ProgrammingTier {
             connection,
@@ -181,7 +185,7 @@ impl ProgrammingTier {
             plan_ttl,
             plans: std::sync::Mutex::new(HashMap::new()),
             bus_lock: tokio::sync::Mutex::new(()),
-            jobs: crate::apply_jobs::ApplyJobs::new(),
+            jobs,
             restore_plans: std::sync::Mutex::new(HashMap::new()),
             restarts: std::sync::Mutex::new(HashMap::new()),
             table_restores: std::sync::Mutex::new(HashMap::new()),
@@ -189,7 +193,7 @@ impl ProgrammingTier {
     }
 
     /// Sets how long `knx_apply_device` waits for its write before it
-    /// answers `started` (default [`crate::apply_jobs::DEFAULT_REPLY_WAIT`],
+    /// answers `started` (default [`crate::jobs::DEFAULT_REPLY_WAIT`],
     /// counted from the start of the call). Tests pass zero.
     pub fn set_reply_wait(&self, wait: Duration) {
         self.jobs.set_reply_wait(wait);
@@ -198,7 +202,7 @@ impl ProgrammingTier {
     /// Sets how long a call waits for its device read before it answers
     /// with a job id: `knx_plan_device`'s read and `knx_apply_device`'s
     /// pre-flight (issue #332; default
-    /// [`crate::apply_jobs::DEFAULT_REPLY_WAIT`], counted from the start of
+    /// [`crate::jobs::DEFAULT_REPLY_WAIT`], counted from the start of
     /// the call). Tests shrink it to turn a slow read into a job.
     pub fn set_read_wait(&self, wait: Duration) {
         self.jobs.set_read_wait(wait);
@@ -734,8 +738,8 @@ impl BussardMcp {
         refuse_insecure_links(&self.state().model.reload(), target)?;
         let (tier, _, _) = self.programming_preflight()?;
         let (job, fresh) = match tier.jobs.claim_plan(target)? {
-            crate::apply_jobs::PlanClaim::New(job) => (job, true),
-            crate::apply_jobs::PlanClaim::Running(job) => (job, false),
+            crate::jobs::PlanClaim::New(job) => (job, true),
+            crate::jobs::PlanClaim::Running(job) => (job, false),
         };
         if fresh {
             let me = self.clone();
@@ -1255,7 +1259,7 @@ impl BussardMcp {
             History::open(&prepared.dir)
                 .history_dir()
                 .join(id)
-                .join(crate::apply_jobs::RECORD_FILE)
+                .join(crate::jobs::RECORD_FILE)
         });
         tier.jobs.started(job, prepared.result.clone(), record);
         let _ = started.send(Ok(()));
@@ -2121,7 +2125,7 @@ const PARAMETER_DOWNLOAD: &str = "parameter download";
 /// Reports a download's progress into its job.
 struct JobObserver<'a> {
     /// The job table.
-    jobs: &'a crate::apply_jobs::ApplyJobs,
+    jobs: &'a crate::jobs::JobTable,
     /// The job.
     job: &'a str,
     /// What downloads: `"parameter download"` for a parameter-only write,

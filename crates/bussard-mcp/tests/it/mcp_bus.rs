@@ -85,6 +85,7 @@ fn state_for() -> TestResult<Arc<SharedState>> {
         programming: None,
         keyring: None,
         home_assistant: None,
+        jobs: Default::default(),
     }))
 }
 

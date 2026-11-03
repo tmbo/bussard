@@ -331,6 +331,10 @@ pub struct SharedState {
     /// `--allow-home-assistant`) keeps `knx_ha_status`, `knx_ha_plan` and
     /// `knx_ha_apply` unregistered.
     pub home_assistant: Option<crate::tools_ha::HomeAssistantTier>,
+    /// The server's one job table (issue #746): every long operation of any
+    /// tier runs as a job here, read by `knx_job_status`. The programming
+    /// tier holds the same table for its apply and plan jobs.
+    pub jobs: Arc<crate::jobs::JobTable>,
 }
 
 #[cfg(test)]

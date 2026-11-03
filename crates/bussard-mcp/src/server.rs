@@ -79,6 +79,7 @@ impl BussardMcp {
             + Self::learn_router()
             + Self::audit_router()
             + Self::diff_router()
+            + Self::jobs_router()
             + Self::device_router()
             + Self::program_router()
             + Self::ha_router()
