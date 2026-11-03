@@ -18,6 +18,8 @@
 //! - [`session`]: the stateful per-device [`DataSecureSession`] that owns the
 //!   tool key, the send sequence, and the replay-protection table (spec §6.1).
 //!
+//! - [`certificate`]: the 36-character device certificate label (serial
+//!   number, FDSK, CRC-4 check), issue #728.
 //! - [`ipsecure`]: the KNXnet/IP Secure session handshake (X25519, device and
 //!   user authentication MACs) and the SECURE_WRAPPER codec (Phase B, spec
 //!   §7-§9). The transport drives it over TCP.
@@ -34,6 +36,7 @@
 #![forbid(unsafe_code)]
 
 pub mod asdu;
+pub mod certificate;
 pub mod crypto;
 pub mod group;
 pub mod ipsecure;
@@ -44,6 +47,7 @@ pub mod session;
 pub use asdu::{
     A_SECURE_DATA, AsduError, DecodedInner, Scf, SecureService, SecurityAlgorithm, TpAddressing,
 };
+pub use certificate::{Certificate, CertificateError};
 pub use crypto::{
     CryptoError, aes_cbc_decrypt, aes_cbc_encrypt, keyring_encrypt_key, keyring_encrypt_password,
     keyring_iv, keyring_password_prefix, pbkdf2_key, pbkdf2_sha256, random_bytes, salt,

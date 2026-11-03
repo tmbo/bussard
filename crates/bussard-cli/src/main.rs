@@ -651,6 +651,20 @@ enum KeysCommand {
     /// Summarize the key store: devices, interfaces and group addresses,
     /// never a key.
     Show,
+    /// Enter device certificates (the 36-character FDSK labels) into the
+    /// key store (issue #728).
+    ///
+    /// On a terminal it asks for one label per line, without echo, until an
+    /// empty line; with `--stdin` it reads every line of standard input. A
+    /// label is never a command-line argument (shell history). The label's
+    /// serial number selects the device; an unknown serial is kept until
+    /// `bussard assign` reads it off a device. Prints the serial, the matched
+    /// address and the status per label, never a key.
+    AddCertificate {
+        /// Read the labels from standard input, one per line.
+        #[arg(long)]
+        stdin: bool,
+    },
 }
 
 /// The `bussard secure` subcommands (issue #533).
@@ -1853,6 +1867,9 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
             KeysCommand::Import { file } => keys_cmd::run_import(dir, &file, json),
             KeysCommand::Export { file, force } => keys_cmd::run_export(dir, &file, force, json),
             KeysCommand::Show => keys_cmd::run_show(dir, json),
+            KeysCommand::AddCertificate { stdin } => {
+                keys_cmd::run_add_certificate(dir, stdin, json)
+            }
         },
         Command::ImportProduct {
             file,

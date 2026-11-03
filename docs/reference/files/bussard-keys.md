@@ -16,6 +16,9 @@
   <Devices>
     <Device IndividualAddress="1.1.12" ToolKey="..." SerialNumber="00FA12345678" FDSK="..." SequenceNumber="42" />
   </Devices>
+  <UnassignedCertificates>
+    <Certificate SerialNumber="00FA01020304" FDSK="..." />
+  </UnassignedCertificates>
 </Keyring>
 ```
 
@@ -28,6 +31,7 @@
 | `Interface` | element | A KNXnet/IP Secure tunnelling user or other interface: tunnel address, host, user id, session password, device authentication code, and the group addresses it may send to. |
 | `GroupAddresses/Group` | element | One group key per group address, written three-level (`1/2/3`). |
 | `Devices/Device` | element | Tool key, serial number, factory key (FDSK), management password and authentication code. `ToolKey` is optional: a device can be known by its factory key alone. `SequenceNumber` is the value the last ETS export recorded, carried through for the export and the security individual address table. |
+| `UnassignedCertificates/Certificate` | element | A factory key entered with `bussard keys add-certificate` whose serial number no device in the store has yet. It moves to a `Device` when `bussard assign` reads that serial off a device, or when a `keys import` brings a device with it. Never written to an export. |
 
 ## Notes
 

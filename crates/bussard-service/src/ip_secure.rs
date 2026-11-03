@@ -900,6 +900,7 @@ fn store_clone(store: &KeyStore) -> KeyStore {
         interfaces: store.interfaces.clone(),
         devices: store.devices.clone(),
         group_keys: store.group_keys.clone(),
+        unassigned: store.unassigned.clone(),
     }
 }
 

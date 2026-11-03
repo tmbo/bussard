@@ -282,6 +282,12 @@ async fn assign_flow(
         println!("  {}", crate::device_facts::identity_line(target, &check));
     }
 
+    // A certificate entered before the device had an address (issue #728):
+    // its factory key moves to the new address now that the serial is known.
+    if let Some(serial) = verified.serial.as_deref() {
+        crate::keys_cmd::attach_after_assign(dir, target, serial);
+    }
+
     // 6. Create the stub device file.
     let device = build_stub_device(target, &verified);
     let path = write_stub_device_file(model, dir, device)?;

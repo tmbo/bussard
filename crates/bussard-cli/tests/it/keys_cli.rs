@@ -276,3 +276,134 @@ fn test_groups_secure_off_export_reimport_and_undo() -> TestResult {
     let _ = std::fs::remove_dir_all(model.parent().ok_or("no parent")?);
     Ok(())
 }
+
+/// Runs `bussard --dir <model> keys add-certificate <args>` with `input` on
+/// stdin and `password` (or none) in the environment.
+fn add_certificate(
+    model: &Path,
+    args: &[&str],
+    input: &str,
+    password: Option<&str>,
+) -> std::io::Result<Output> {
+    use std::io::Write as _;
+    let mut command = Command::new(env!("CARGO_BIN_EXE_bussard"));
+    command
+        .arg("--dir")
+        .arg(model)
+        .arg("keys")
+        .args(args)
+        .env_remove("BUSSARD_KEYRING")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    match password {
+        Some(pw) => command.env("BUSSARD_KEYRING_PASSWORD", pw),
+        None => command.env_remove("BUSSARD_KEYRING_PASSWORD"),
+    };
+    let mut child = command.spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(input.as_bytes())?;
+    }
+    child.wait_with_output()
+}
+
+/// The first certificate vector of `dev/enroll/vectors-v1.json` (synthetic:
+/// serial 00FA01020304, FDSK A0..AF).
+const LABEL: &str = "AD5ACA-QDASQK-DIVDUS-S2NJ5I-VGVKXL-FNV2X5";
+
+/// The second vector (serial 0083A1B2C3D4, an all-zero FDSK).
+const LABEL_ZERO: &str = "ACB2DM-WD2QAA-AAAAAA-AAAAAA-AAAAAA-AAAAAG";
+
+/// The same serial as [`LABEL`] with another (synthetic) FDSK, built with the
+/// codec so the check matches.
+fn conflicting_label() -> String {
+    bussard_secure::Certificate::encode(
+        &[0x00, 0xFA, 0x01, 0x02, 0x03, 0x04],
+        &bussard_secure::Key16::new([0x5A; 16]),
+    )
+}
+
+#[test]
+fn test_keys_add_certificate_stdin_statuses() -> TestResult {
+    let (model, _) = setup("addcert")?;
+    let input = format!(
+        "{}\n\n{LABEL}\n{}\nNOT-A-LABEL\n",
+        LABEL.to_lowercase(),
+        conflicting_label()
+    );
+    let out = add_certificate(
+        &model,
+        &["--json", "add-certificate", "--stdin"],
+        &input,
+        Some(PASSWORD),
+    )?;
+    // A conflict and an invalid label fail the command; the rest is saved.
+    assert!(!out.status.success());
+    let stdout = String::from_utf8(out.stdout.clone())?;
+    let stderr = String::from_utf8(out.stderr.clone())?;
+    for text in [&stdout, &stderr] {
+        assert!(!text.to_ascii_uppercase().contains("A0A1A2"), "{text}");
+        assert!(!text.contains("QDASQK"), "{text}");
+    }
+    let v: serde_json::Value = serde_json::from_str(&stdout)?;
+    let statuses: Vec<&str> = v["results"]
+        .as_array()
+        .ok_or("no results")?
+        .iter()
+        .filter_map(|r| r["status"].as_str())
+        .collect();
+    assert_eq!(
+        statuses,
+        ["unassigned", "already_stored", "conflict", "invalid"]
+    );
+    assert_eq!(v["results"][0]["serial"], "00FA01020304");
+
+    let show = ok(&keys(&model, &["show"])?)?;
+    assert!(
+        show.contains("certificates without a device (serial numbers): 00FA01020304"),
+        "{show}"
+    );
+
+    // A label for a device the store knows by serial is stored on it.
+    let mut store = bussard_project::KeyStore::load(&model, PASSWORD)?.ok_or("no store")?;
+    store.devices.entry("1.1.7".parse()?).or_default().serial = Some("0083A1B2C3D4".parse()?);
+    store.save(&model, PASSWORD)?;
+    let out = add_certificate(
+        &model,
+        &["add-certificate", "--stdin"],
+        &format!("{LABEL_ZERO}\n"),
+        Some(PASSWORD),
+    )?;
+    let text = ok(&out)?;
+    assert!(text.contains("0083A1B2C3D4 1.1.7: stored"), "{text}");
+    let store = bussard_project::KeyStore::load(&model, PASSWORD)?.ok_or("no store")?;
+    let device = store.devices.get(&"1.1.7".parse()?).ok_or("no 1.1.7")?;
+    assert_eq!(device.fdsk, Some(bussard_secure::Key16::new([0; 16])));
+    Ok(())
+}
+
+#[test]
+fn test_keys_add_certificate_refuses_before_reading() -> TestResult {
+    let (model, _) = setup("addcert-refuse")?;
+    // No password: refused, nothing written.
+    let out = add_certificate(
+        &model,
+        &["add-certificate", "--stdin"],
+        &format!("{LABEL}\n"),
+        None,
+    )?;
+    assert!(!out.status.success());
+    assert!(String::from_utf8(out.stderr)?.contains("BUSSARD_KEYRING_PASSWORD"));
+    assert!(!model.join("bussard.keys").exists());
+    // Not a terminal and no --stdin: refused, never read.
+    let out = add_certificate(
+        &model,
+        &["add-certificate"],
+        &format!("{LABEL}\n"),
+        Some(PASSWORD),
+    )?;
+    assert!(!out.status.success());
+    assert!(String::from_utf8(out.stderr)?.contains("--stdin"));
+    assert!(!model.join("bussard.keys").exists());
+    Ok(())
+}

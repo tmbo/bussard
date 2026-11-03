@@ -6,13 +6,18 @@ The key store, `bussard.keys` next to `bussard.lock`, is bussard's own copy of t
 
 ## `bussard keys <VERB>`
 
-Manage the key store: merge an ETS keyring export into it, write it out as one, or show what it holds.
+Manage the key store: merge an ETS keyring export into it, write it out as one, show what it holds, or enter device certificates.
 
 ```console
 $ bussard keys import Projekt.knxkeys
 devices: 1 added (1.1.13), 1 tool key(s) rotated (1.1.12), 8 unchanged
 $ bussard keys export ha.knxkeys
 $ bussard keys show
+$ bussard keys add-certificate
+certificate:
+00FA01020304 1.1.12 "Aktor Küche": stored
+certificate:
+1 stored, 0 unassigned, 0 already stored, 0 conflict(s), 0 invalid, 0 error(s) (key material is never printed)
 ```
 
 The output above is illustrative and abridged.
@@ -23,17 +28,21 @@ The output above is illustrative and abridged.
 | `export <FILE>` | | Write the store as a `.knxkeys` file ETS accepts. |
 | `export --force` | off | Overwrite FILE if it exists. |
 | `show` | | Print the summary of what the store holds. |
+| `add-certificate` | | Enter device certificates (the 36-character FDSK labels), one per line, without echo; an empty line ends. |
+| `add-certificate --stdin` | off | Read the labels from standard input, one per line, instead of asking on the terminal. |
 | `--json` | off | Print the result as JSON (below). |
 
 What each verb does:
 
 - **`import`** takes new devices, rotated tool keys, changed credentials, factory keys (FDSK) and group keys from the export. Entries the export lacks are kept, and a factory key is never dropped. The report lists what changed by address. Importing the same export twice changes nothing and writes nothing. `--json` prints `written`, `backup`, `changed` and the `report` object.
 - **`export`** writes the ETS element and attribute set with a fresh `Created`, signed with the keyring key. A device without a tool key is left out and named.
-- **`show`** prints the backbone, each device with its serial number and which keys it has, each interface with its user id and host, and the number of group keys. `--json` gives `project`, `created`, `has_backbone_key`, `devices[]` (`address`, `serial`, `has_tool_key`, `has_fdsk`, `has_management_password`, `has_authentication`), `interfaces[]` and `group_keys` (the addresses).
+- **`show`** prints the backbone, each device with its serial number and which keys it has, each interface with its user id and host, the number of group keys, the serial numbers of certificates without a device, and the secure-capable devices of the model without a factory key. `--json` gives `project`, `created`, `has_backbone_key`, `devices[]` (`address`, `serial`, `has_tool_key`, `has_fdsk`, `has_management_password`, `has_authentication`), `interfaces[]`, `group_keys` (the addresses), `unassigned_certificates` (serial numbers) and `devices_without_fdsk` (addresses).
+- **`add-certificate`** decodes each label (36 base32 characters in six dash-separated groups: serial number, factory key and a 4-bit check; spaces and dashes are ignored, and `0`, `1`, `8` are read as `O`, `I`, `B`) and matches its serial number against the devices in the store. It prints one line per label: the serial number, the matched address and device name, and the status. `stored`: saved on the device with that serial. `unassigned`: no device has the serial yet, so the key is kept under it until `bussard assign` reads that serial off a device (or a `keys import` brings it). `already_stored`: nothing changed. `conflict`: the store holds another factory key for the serial; nothing is written. `invalid`: not a certificate. A label whose check does not match is entered only when its serial number matches a device, since the check variant is not yet confirmed on a real label. Every saved label is read back from the store before it is reported. The command fails when any label was a conflict, invalid or not saved. `--json` prints `store` and `results[]` (`status`, `serial`, `ia`, `name`, `check_ok`, `message`).
 
 Behaviour:
 
 - No key material or password is ever printed, in text or JSON.
+- A certificate is never a command-line argument (shell history): `add-certificate` reads it from the terminal without echo, or from standard input with `--stdin`. Without a terminal and without `--stdin` it refuses. It checks the password and that the store can be written before it reads a label.
 - `export` refuses to overwrite an existing FILE unless `--force`.
 - The store and every export it reads or writes share one password, `BUSSARD_KEYRING_PASSWORD`; there is no flag for it.
 - Every bus command reads the store unless `--keyring` or `BUSSARD_KEYRING` names an explicit file (see [Global options](../global-options.md)). `validate` checks the model against it.
