@@ -4,28 +4,40 @@ bussard is a single binary. Use an installer, download it by hand, or build it f
 
 ## Use an installer
 
-On macOS or Linux, `brew install tmbo/tap/bussard` installs from the Homebrew tap. Without Homebrew, the install script downloads the binary for your machine and checks its SHA-256 checksum. The output below is illustrative:
+Pick one. Each installer puts `bussard` on your `PATH` and checks the download against its SHA-256 checksum.
 
-```console
-$ curl -fsSL https://raw.githubusercontent.com/tmbo/bussard/main/install.sh | sh
-Downloading bussard <version> (bussard-macos-arm64)
-Checksum verified
-Installed /usr/local/bin/bussard
+=== "Homebrew (macOS, Linux)"
 
-Next: bussard --help
-```
+    ```console
+    $ brew install tmbo/tap/bussard
+    ```
 
-The script installs to `/usr/local/bin` when it can write there, otherwise to `~/.local/bin`, and tells you how to add that to your `PATH`. Set `BUSSARD_VERSION` to pin a version and `BUSSARD_INSTALL_DIR` to choose the directory.
+    `brew upgrade bussard` updates it later.
 
-On Windows, the PowerShell installer does the same:
+=== "Shell script (macOS, Linux)"
 
-```console
-$ irm https://raw.githubusercontent.com/tmbo/bussard/main/install.ps1 | iex
-Downloading bussard <version> (bussard-windows-x64.exe)
-Checksum verified
-```
+    The script downloads the binary for your machine and verifies its checksum. The output below is illustrative:
 
-It puts `bussard.exe` in `%LOCALAPPDATA%\Programs\bussard`. Windows shows a SmartScreen warning, because the binary is not signed.
+    ```console
+    $ curl -fsSL https://raw.githubusercontent.com/tmbo/bussard/main/install.sh | sh
+    Downloading bussard <version> (bussard-macos-arm64)
+    Checksum verified
+    Installed /usr/local/bin/bussard
+
+    Next: bussard --help
+    ```
+
+    It installs to `/usr/local/bin` when it can write there, otherwise to `~/.local/bin`, and tells you how to add that to your `PATH`. Set `BUSSARD_VERSION` to pin a version and `BUSSARD_INSTALL_DIR` to choose the directory.
+
+=== "PowerShell (Windows)"
+
+    ```console
+    $ irm https://raw.githubusercontent.com/tmbo/bussard/main/install.ps1 | iex
+    Downloading bussard <version> (bussard-windows-x64.exe)
+    Checksum verified
+    ```
+
+    It puts `bussard.exe` in `%LOCALAPPDATA%\Programs\bussard`. Windows shows a SmartScreen warning, because the binary is not signed.
 
 ## Download the binary by hand
 

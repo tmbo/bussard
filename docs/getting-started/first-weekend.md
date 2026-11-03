@@ -9,7 +9,7 @@ An assistant does most of the work. bussard runs as an MCP server, so an assista
 - A KNXnet/IP interface or router in the cabinet, and its IP address. Many houses from the 2010s have only a USB interface; an IP interface is then the first purchase.
 - A laptop on the same network as the interface.
 - An assistant that speaks MCP: Claude Code, Claude Desktop, or any other MCP client.
-- Whatever the previous owner or integrator handed over: the `.knxproj` project file and its password, and the `.knxkeys` keyring for KNX Secure devices. [The handover checklist](../how-to/handover-checklist.md) lists what to ask for. A house with no project file works too; it takes longer.
+- Whatever the previous owner or integrator handed over: the `.knxproj` project file and its password, and the `.knxkeys` keyring for KNX Secure devices. A house with no project file works too; it takes longer.
 
 ## Step 1. Install bussard
 
@@ -42,7 +42,7 @@ For Claude Code, run this once in the model directory:
 $ claude mcp add knx -- bussard mcp --dir "$PWD"
 ```
 
-The client starts the server itself. Run `bussard mcp` by hand and it prints this command and a JSON entry for Claude Desktop and other clients, with your binary's full path, ready to paste. [Connect an assistant](assistant.md) has the JSON form and the Claude Desktop steps.
+The client starts the server itself. Run `bussard mcp` by hand and it prints this command and a JSON entry for Claude Desktop and other clients, with your binary's full path, ready to paste. [Connect an assistant](assistant.md) has the steps for Claude Desktop, Cursor, Codex and other clients.
 
 The default server reads the model, watches the bus, sends rate-limited read requests, and edits the model files. It cannot program a device and cannot write a value to the bus.
 

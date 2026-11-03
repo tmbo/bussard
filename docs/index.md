@@ -11,8 +11,6 @@ It is for the owner of a KNX house who wants to know what every button does, cha
 
 Either way, start with [Install bussard](getting-started/install.md) and [Your first model](getting-started/first-model.md). Read [Safety](explanation/safety.md) before your first write.
 
-The pages below follow the four kinds of the [Divio system](https://docs.divio.com/documentation-system/): tutorials to learn by doing, how-to guides for one task each, reference for every command and file, and explanation for the ideas behind them.
-
 ## Getting started
 
 - [Install bussard](getting-started/install.md): installers, the binary and its checksum, building from source.
@@ -31,7 +29,6 @@ The pages below follow the four kinds of the [Divio system](https://docs.divio.c
 - [Commission a line](how-to/commission-a-line.md): plan group addresses, commission, test.
 - [Exchange with ETS](how-to/exchange-with-ets.md): names into ETS, what a new export changes.
 - [Work with an integrator](how-to/work-with-an-integrator.md): bundles and shared repositories.
-- [Handover checklist](how-to/handover-checklist.md): what an owner asks for and an integrator delivers.
 - [Home Assistant](how-to/home-assistant.md): generate and tune the Home Assistant config.
 - [KNX Secure](how-to/knx-secure.md): the keyring, secure tunnelling, secure a group address.
 

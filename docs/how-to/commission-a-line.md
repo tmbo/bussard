@@ -110,7 +110,6 @@ $ bussard doc --format html --out handover/
 
 ## Next steps
 
-- [Handover checklist](handover-checklist.md): everything to deliver with the line.
 - [Work with an integrator](work-with-an-integrator.md): send the result as a bundle.
 - [Programming commands](../reference/commands/programming.md): every `commission` and `apply --line` flag.
 - [tests.toml](../reference/files/tests-toml.md): every field of the test file.
