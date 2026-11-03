@@ -27,31 +27,13 @@ const TOP_LEVEL_FILES: [&str; 5] = bussard_model::loader::MODEL_FILES;
 ///
 /// Returns the new snapshot's id when one was taken.
 pub fn snapshot(dir: &Path, reason: SnapshotReason) -> Option<SnapshotId> {
-    let history = History::open(dir);
-    // An empty or absent directory has no state worth keeping, and snapshotting
-    // it would create a model directory where there was none.
-    if !history.has_model_files() {
-        return None;
-    }
-    match history.snapshot(reason) {
-        Ok(id) => Some(id),
-        Err(err) => {
-            eprintln!("warning: could not record a history snapshot: {err}");
-            None
-        }
-    }
+    bussard_service::setup::import::snapshot(dir, reason, &mut crate::console::Console)
 }
 
 /// Records an `external edit` snapshot when the working model differs from the
 /// latest one, warning (never failing) if the history cannot be written.
 pub fn capture_external_edit(dir: &Path) {
-    match History::open(dir).snapshot_if_changed_externally() {
-        Ok(Some(id)) => {
-            eprintln!("recorded the current model as history snapshot {id} (external edit)");
-        }
-        Ok(None) => {}
-        Err(err) => eprintln!("warning: could not record a history snapshot: {err}"),
-    }
+    bussard_service::setup::import::capture_external_edit(dir, &mut crate::console::Console);
 }
 
 /// The pending change of the working model against the latest snapshot, or

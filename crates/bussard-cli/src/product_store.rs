@@ -23,31 +23,13 @@ pub(crate) const PRODUCTS_DIR: &str = bussard_service::params::PRODUCTS_DIR;
 /// move to [`PRODUCTS_DIR`] on the first command after the upgrade.
 const LEGACY_VENDOR_DIR: &str = "vendor";
 
-/// Writes `bytes` into `<dir>/products/` under `name` and returns the path.
-/// An identical file there is kept; a different file of that name is never
-/// overwritten (the store is retained data): the new one gets the first
-/// eight hex digits of its hash appended to the stem.
+/// Writes `bytes` into `<dir>/products/` under `name` and returns the path
+/// ([`bussard_service::setup::products::store_bytes`]): an identical file is
+/// kept, a different one of that name never overwritten.
 pub(crate) fn store_bytes(dir: &Path, name: &str, bytes: &[u8]) -> anyhow::Result<PathBuf> {
-    let store = dir.join(PRODUCTS_DIR);
-    std::fs::create_dir_all(&store).with_context(|| format!("creating {}", store.display()))?;
-    let mut target = store.join(name);
-    if let Ok(existing) = std::fs::read(&target) {
-        if existing == bytes {
-            return Ok(target);
-        }
-        let sha = sha256_hex(bytes);
-        let path = Path::new(name);
-        let stem = path
-            .file_stem()
-            .map_or_else(|| name.to_string(), |s| s.to_string_lossy().into_owned());
-        let ext = path
-            .extension()
-            .map(|e| format!(".{}", e.to_string_lossy()))
-            .unwrap_or_default();
-        target = store.join(format!("{stem}-{}{ext}", &sha[..8]));
-    }
-    std::fs::write(&target, bytes).with_context(|| format!("writing {}", target.display()))?;
-    Ok(target)
+    Ok(bussard_service::setup::products::store_bytes(
+        dir, name, bytes,
+    )?)
 }
 
 /// Copies `src` into the store under its own file name (see
@@ -75,6 +57,7 @@ fn same_dir(a: &Path, b: &Path) -> bool {
 }
 
 /// Lowercase hex SHA-256 of `bytes`.
+#[cfg(test)]
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::Digest as _;
     sha2::Sha256::digest(bytes)
@@ -267,22 +250,7 @@ fn migrate_vendor(dir: &Path) -> anyhow::Result<()> {
 ///
 /// Failures are warnings: the command itself reports what it cannot do.
 pub(crate) fn complete_models(dir: &Path, only: Option<&str>) {
-    warn(bussard_prod::product_model::complete_models(dir, only));
-}
-
-/// Writes the product model of every application of every archive the lock
-/// pins that `.bussard/models/` lacks, pinned by a device or not (see
-/// [`bussard_prod::product_model::complete_all_models`]): what `import` has
-/// always written.
-pub(crate) fn complete_all_models(dir: &Path) {
-    warn(bussard_prod::product_model::complete_all_models(dir));
-}
-
-/// Prints the warnings of a model completion.
-fn warn(warnings: Vec<String>) {
-    for warning in warnings {
-        eprintln!("warning: regenerating the product models: {warning}");
-    }
+    bussard_service::setup::products::complete_models(dir, only, &mut crate::console::Console);
 }
 
 #[cfg(test)]

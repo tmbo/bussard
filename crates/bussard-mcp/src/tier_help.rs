@@ -101,8 +101,15 @@ pub fn tier_counts_help() -> String {
     format!(
         "Tools: {} with --passive, {} by default, {} with --allow-writes. --no-model-edits \
          removes {}, --allow-programming adds {} to any tier but --passive, and \
-         --allow-home-assistant adds {}.",
-        c.passive, c.default, c.writes, c.model_edits, c.programming, c.home_assistant
+         --allow-home-assistant adds {}. On a missing or empty --dir the server starts with \
+         {} only and registers its tier's tools once `knx_setup` has written the model.",
+        c.passive,
+        c.default,
+        c.writes,
+        c.model_edits,
+        c.programming,
+        c.home_assistant,
+        code_list(&crate::onboarding::ONBOARDING_TOOLS)
     )
 }
 
@@ -159,6 +166,15 @@ mod tests {
         assert_eq!(c.writes, c.default + writes_added().len());
         assert!(writes_added().contains(&"knx_write_group"));
         assert!(passive_omitted().contains(&"knx_read_group"));
+    }
+
+    #[test]
+    fn test_tier_counts_help_names_the_onboarding_tools() {
+        let help = tier_counts_help();
+        assert!(
+            help.contains("`knx_setup` and `knx_bus_status` only"),
+            "{help}"
+        );
     }
 
     #[test]

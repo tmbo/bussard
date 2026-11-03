@@ -12,10 +12,11 @@
 //! another index, whose entries may use `file://` URLs; `--no-download` skips
 //! the step entirely.
 
-use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use bussard_prod::{DownloadConsent, normalize_order_number};
+use bussard_service::setup::{DownloadAnswer, DownloadPrompt, SetupError};
+
+pub(crate) use bussard_service::setup::products::Outcome;
 
 /// How the caller answers the one download question.
 #[derive(Debug, Clone, Copy, Default)]
@@ -26,54 +27,26 @@ pub(crate) struct Consent {
     pub no_download: bool,
 }
 
-/// What the download step did.
-#[derive(Debug, Default)]
-pub(crate) struct Outcome {
-    /// The order numbers now backed by a cached archive, with its path.
-    pub fetched: Vec<(String, PathBuf)>,
-    /// Order numbers the index does not know.
-    pub not_found: Vec<String>,
-    /// Order numbers the index knows but that were not downloaded (declined,
-    /// `--no-download`, no terminal to ask on, or the download failed), with
-    /// why.
-    pub not_fetched: Vec<(String, String)>,
-}
-
-impl Outcome {
-    /// Every order number that still has no product data.
-    pub(crate) fn missing(&self) -> BTreeSet<String> {
-        self.not_found
-            .iter()
-            .cloned()
-            .chain(self.not_fetched.iter().map(|(o, _)| o.clone()))
-            .collect()
+impl DownloadPrompt for Consent {
+    fn skip_downloads(&self) -> Option<String> {
+        self.no_download.then(|| "--no-download".to_string())
     }
-}
 
-/// The normalized order numbers the archives `bussard.lock` pins cover,
-/// where the archive is in the model's product store.
-pub(crate) fn cached_orders(dir: &Path) -> BTreeSet<String> {
-    bussard_model::lock_products::lock_entries(dir)
-        .into_iter()
-        .filter(|e| e.file.as_deref().is_some_and(|f| dir.join(f).is_file()))
-        .flat_map(|e| e.order_numbers)
-        .map(|o| normalize_order_number(&o))
-        .collect()
-}
-
-/// The sentence for an order number bussard could not find product data for.
-pub(crate) fn not_found_sentence(order: &str, dir: &Path) -> String {
-    format!(
-        "{order}: not in bussard's product index. Download the product data (.knxprod) from \
-         the manufacturer's website (or export it from ETS's catalog), then run `bussard \
-         import-product <file> --dir {}`.",
-        dir.display()
-    )
+    fn download(&mut self, question: &str, files: usize) -> Result<DownloadAnswer, SetupError> {
+        match crate::confirm::download(self.yes_download, question).map_err(SetupError::source)? {
+            crate::confirm::Download::Yes => Ok(DownloadAnswer::Yes),
+            crate::confirm::Download::No => Ok(DownloadAnswer::No),
+            crate::confirm::Download::NoTerminal => Ok(DownloadAnswer::Refused(
+                crate::confirm::download_refusal(&format!("{files} file(s)")),
+            )),
+        }
+    }
 }
 
 /// Looks every order number in `orders` without product data up in the
 /// index, asks once for the whole list, downloads, caches under
-/// `<dir>/vendor/` and generates the models.
+/// `<dir>/products/` and generates the models
+/// ([`bussard_service::setup::products::fetch_missing`]).
 ///
 /// Never fails the caller's command over a download: a refusal or a failed
 /// download is reported in the [`Outcome`] and the command continues without
@@ -81,137 +54,18 @@ pub(crate) fn not_found_sentence(order: &str, dir: &Path) -> String {
 pub(crate) fn fetch_missing(
     dir: &Path,
     orders: &[String],
-    consent: Consent,
+    mut consent: Consent,
 ) -> anyhow::Result<Outcome> {
-    let cached = cached_orders(dir);
-    let mut seen = BTreeSet::new();
-    let missing: Vec<String> = orders
-        .iter()
-        .map(|o| o.trim().to_string())
-        .filter(|o| !o.is_empty())
-        .filter(|o| !cached.contains(&normalize_order_number(o)))
-        .filter(|o| seen.insert(normalize_order_number(o)))
-        .collect();
-    let mut outcome = Outcome::default();
-    if missing.is_empty() {
-        return Ok(outcome);
-    }
-    let index = crate::import_product_cmd::load_index()?;
-    // Group the order numbers by the archive that serves them: one download
-    // often covers a whole product family.
-    let mut downloads: Vec<(&bussard_prod::IndexEntry, Vec<String>)> = Vec::new();
-    for order in &missing {
-        match index.lookup(order) {
-            Some(entry) => match downloads.iter_mut().find(|(e, _)| e.url == entry.url) {
-                Some((_, list)) => list.push(order.clone()),
-                None => downloads.push((entry, vec![order.clone()])),
-            },
-            None => outcome.not_found.push(order.clone()),
-        }
-    }
-    if downloads.is_empty() {
-        return Ok(outcome);
-    }
-    let not_fetched = |why: &str, outcome: &mut Outcome, downloads: &[(_, Vec<String>)]| {
-        for (_, list) in downloads {
-            for order in list {
-                outcome.not_fetched.push((order.clone(), why.to_string()));
-            }
-        }
-    };
-    if consent.no_download {
-        not_fetched("--no-download", &mut outcome, &downloads);
-        return Ok(outcome);
-    }
-
-    let total: u64 = downloads.iter().map(|(e, _)| e.size).sum();
-    println!(
-        "product data missing for {} order number(s); bussard's product index has {} \
-         download(s) for them:",
-        missing.len(),
-        downloads.len()
-    );
-    for (entry, list) in &downloads {
-        println!(
-            "  {}: {} {} ({} bytes from {})",
-            list.join(", "),
-            entry.manufacturer,
-            entry.name,
-            entry.size,
-            entry.url
-        );
-    }
-    println!(
-        "These are copyrighted vendor files; they are stored under {} (committing them is \
-         your decision).",
-        dir.join(crate::product_store::PRODUCTS_DIR).display()
-    );
-    let question = format!(
-        "download {} file(s) ({:.1} MB) now?",
-        downloads.len(),
-        total as f64 / 1_000_000.0
-    );
-    let agreed = match crate::confirm::download(consent.yes_download, &question)? {
-        crate::confirm::Download::Yes => true,
-        crate::confirm::Download::No => false,
-        crate::confirm::Download::NoTerminal => {
-            println!(
-                "{}",
-                crate::confirm::download_refusal(&format!("{} file(s)", downloads.len()))
-            );
-            false
-        }
-    };
-    if !agreed {
-        not_fetched("not downloaded", &mut outcome, &downloads);
-        return Ok(outcome);
-    }
-    for (entry, list) in downloads {
-        let result =
-            crate::import_product_cmd::fetch_to_store(entry, dir, DownloadConsent::granted())
-                .and_then(|path| {
-                    let origin = bussard_model::schema::ProductOrigin::Index {
-                        order_number: list.first().cloned(),
-                        url: Some(entry.url.clone()),
-                    };
-                    crate::import_product_cmd::generate_models_pinned(&path, dir, Some(origin))
-                        .map(|models| (path, models))
-                });
-        match result {
-            Ok((path, models)) => {
-                println!("  cached {} ({} model(s))", path.display(), models.len());
-                for order in list {
-                    outcome.fetched.push((order, path.clone()));
-                }
-            }
-            Err(err) => {
-                eprintln!("  download of {} failed: {err:#}", entry.filename);
-                for order in list {
-                    outcome
-                        .not_fetched
-                        .push((order, format!("the download failed: {err:#}")));
-                }
-            }
-        }
-    }
-    Ok(outcome)
+    Ok(bussard_service::setup::products::fetch_missing(
+        dir,
+        orders,
+        &mut consent,
+        &mut crate::console::Console,
+    )?)
 }
 
 /// Prints the end-of-command report: one sentence per order number without
 /// product data.
 pub(crate) fn print_missing(outcome: &Outcome, dir: &Path) {
-    if outcome.not_found.is_empty() && outcome.not_fetched.is_empty() {
-        return;
-    }
-    println!("product data still missing:");
-    for order in &outcome.not_found {
-        println!("  {}", not_found_sentence(order, dir));
-    }
-    for (order, why) in &outcome.not_fetched {
-        println!(
-            "  {order}: in bussard's product index but {why}; run `bussard import-product \
-             --order-number {order} --dir {}` to fetch it.",
-            dir.display()
-        );
-    }
+    bussard_service::setup::products::report_missing(outcome, dir, &mut crate::console::Console);
 }

@@ -2,180 +2,50 @@
 //! (lock v2, issue #228): `import`, `import-product` and the product-data
 //! download hash the archive and pin it, linking the devices it serves.
 
-use std::collections::BTreeSet;
 use std::path::Path;
 
 use anyhow::Context as _;
+use bussard_model::IndividualAddress;
 use bussard_model::schema::{ProductEntry, ProductOrigin};
-use bussard_model::{IndividualAddress, Model};
 use bussard_prod::ProductData;
+use bussard_service::setup::products;
+
+use crate::console::Console;
 
 /// The `[[product]]` entry for an archive `import-product` or a download
-/// read: its hash, where it lies in the model (when it does), the
-/// applications it carries and every order number its catalogue maps to one.
+/// read ([`bussard_service::setup::products::archive_entry`]).
 pub(crate) fn archive_entry(
     archive: &Path,
     dir: &Path,
     product: &ProductData,
     origin: ProductOrigin,
 ) -> anyhow::Result<ProductEntry> {
-    let (sha256, size) = bussard_model::sha256_file(archive)
-        .with_context(|| format!("hashing {}", archive.display()))?;
-    let file = archive
-        .strip_prefix(dir)
-        .ok()
-        .filter(|_| !matches!(origin, ProductOrigin::Knxproj { .. }))
-        .map(|rel| rel.to_string_lossy().replace('\\', "/"));
-    let mut applications: Vec<String> = product.applications.iter().map(|a| a.id.clone()).collect();
-    applications.sort();
-    applications.dedup();
-    let order_numbers = orders_for(product, &applications);
-    Ok(ProductEntry {
-        sha256,
-        file,
-        filename: archive
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned()),
-        size: Some(size),
-        origin,
-        applications,
-        order_numbers: order_numbers.into_iter().collect(),
-    })
-}
-
-/// Every order number the catalogue maps to one of `applications`.
-fn orders_for(product: &ProductData, applications: &[String]) -> Vec<String> {
-    let orders: BTreeSet<String> = product
-        .hardware
-        .order_to_apps
-        .iter()
-        .filter(|(_, apps)| apps.iter().any(|a| applications.contains(a)))
-        .map(|(order, _)| order.clone())
-        .collect();
-    orders.into_iter().collect()
+    Ok(products::archive_entry(archive, dir, product, origin)?)
 }
 
 /// Extracts each of `applications` from the ETS project export `project`
-/// into its own archive under `<dir>/products/` (once: an identical archive
-/// already there is kept) and returns the `[[product]]` entries to pin,
-/// origin `knxproj` with the export's hash. `product` is the export's
-/// catalogue (for the order numbers).
+/// into its own archive under `<dir>/products/` and returns the
+/// `[[product]]` entries to pin
+/// ([`bussard_service::setup::products::extract_and_entries`]).
 pub(crate) fn extract_and_entries(
     dir: &Path,
     project: &Path,
     product: &ProductData,
     applications: &[String],
 ) -> anyhow::Result<Vec<ProductEntry>> {
-    let (project_hash, _) = bussard_model::sha256_file(project)
-        .with_context(|| format!("hashing {}", project.display()))?;
-    let mut entries = Vec::new();
-    for app in applications {
-        let extracted = match bussard_prod::extract_from_project(project, app) {
-            Ok(extracted) => extracted,
-            // An application the export does not carry stays unpinned.
-            Err(bussard_prod::ProdError::MissingEntry { .. }) => {
-                eprintln!("warning: {} carries no program {app}", project.display());
-                continue;
-            }
-            Err(err) => {
-                return Err(anyhow::Error::from(err)
-                    .context(format!("extracting {app} from {}", project.display())));
-            }
-        };
-        let stored =
-            crate::product_store::store_bytes(dir, &extracted.file_name, &extracted.bytes)?;
-        let (sha256, size) = bussard_model::sha256_file(&stored)
-            .with_context(|| format!("hashing {}", stored.display()))?;
-        let file = stored
-            .strip_prefix(dir)
-            .ok()
-            .map(|rel| rel.to_string_lossy().replace('\\', "/"));
-        entries.push(ProductEntry {
-            sha256,
-            file,
-            filename: stored.file_name().map(|n| n.to_string_lossy().into_owned()),
-            size: Some(size),
-            origin: ProductOrigin::Knxproj {
-                path: project.display().to_string(),
-                project_hash: Some(project_hash.clone()),
-            },
-            order_numbers: orders_for(product, &extracted.applications),
-            applications: extracted.applications,
-        });
-    }
-    Ok(entries)
+    Ok(products::extract_and_entries(
+        dir,
+        project,
+        product,
+        applications,
+        &mut Console,
+    )?)
 }
 
 /// Pins `entries` in `<dir>/bussard.lock` and says which devices now point at
 /// them. A failure is a warning: the archive is cached either way.
 pub(crate) fn pin(dir: &Path, entries: &[ProductEntry]) {
-    match bussard_model::pin_products(dir, entries) {
-        Ok(report) if !report.linked.is_empty() => {
-            let list: Vec<String> = report.linked.iter().map(ToString::to_string).collect();
-            println!(
-                "pinned the product data of {} device(s) in bussard.lock: {}",
-                list.len(),
-                list.join(", ")
-            );
-        }
-        Ok(_) => {}
-        Err(err) => eprintln!("warning: could not record the product data in bussard.lock: {err}"),
-    }
-}
-
-/// Pins the product data of an ETS project export `import` read: every
-/// archive the lock already pins is pinned again (so a device served by a
-/// stored vendor archive keeps, or regains, its link), and each application
-/// the imported devices use that no stored archive carries is extracted once
-/// from the export into `products/` (see [`extract_and_entries`]).
-pub(crate) fn pin_import(dir: &Path, project: Option<&Path>, model: &Model) {
-    let mut entries = pinned_archives(dir);
-    if let Some(project) = project {
-        let served: BTreeSet<&String> =
-            entries.iter().flat_map(|e| e.applications.iter()).collect();
-        let missing: BTreeSet<String> = model
-            .devices
-            .values()
-            .filter_map(|d| d.device.product.as_ref()?.application_ref.clone())
-            .filter(|app| !served.contains(app))
-            .collect();
-        if !missing.is_empty() {
-            let catalog = bussard_prod::read_knxprod_selected(project, None, None, |_| {
-                bussard_prod::AppSelection::Exact(Vec::new())
-            });
-            match catalog.map_err(anyhow::Error::from).and_then(|catalog| {
-                let apps: Vec<String> = missing.into_iter().collect();
-                extract_and_entries(dir, project, &catalog, &apps)
-            }) {
-                Ok(extracted) => {
-                    if !extracted.is_empty() {
-                        println!(
-                            "extracted {} application program(s) from {} into {}",
-                            extracted.len(),
-                            project.display(),
-                            dir.join(crate::product_store::PRODUCTS_DIR).display()
-                        );
-                    }
-                    entries.extend(extracted);
-                }
-                Err(err) => eprintln!(
-                    "warning: could not extract the product data from {}: {err:#}",
-                    project.display()
-                ),
-            }
-        }
-    }
-    if !entries.is_empty() {
-        pin(dir, &entries);
-    }
-}
-
-/// The lock's entries that name an archive the model holds.
-fn pinned_archives(dir: &Path) -> Vec<ProductEntry> {
-    bussard_model::lock_products::lock_entries(dir)
-        .into_iter()
-        .filter(|e| e.file.is_some())
-        .collect()
+    products::pin(dir, entries, &mut Console);
 }
 
 /// `flash --product <file> --force`: stores `file` in `<dir>/products/` (an

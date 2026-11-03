@@ -494,6 +494,190 @@ fn test_mcp_set_parameter_at_default_reveals_dependent_parameters() -> TestResul
     Ok(())
 }
 
+/// Sends one JSON-RPC request and reads stdout until its response, counting
+/// the `notifications/tools/list_changed` seen on the way. Every line must be
+/// JSON.
+fn request(
+    stdin: &mut impl Write,
+    reader: &mut impl BufRead,
+    id: u64,
+    method: &str,
+    params: serde_json::Value,
+    list_changed: &mut usize,
+) -> TestResult<serde_json::Value> {
+    writeln!(
+        stdin,
+        "{}",
+        serde_json::json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})
+    )?;
+    stdin.flush()?;
+    for _ in 0..20 {
+        let line = read_line(reader);
+        if line.is_empty() {
+            break;
+        }
+        let v: serde_json::Value = serde_json::from_str(&line)
+            .map_err(|e| format!("non-JSON on stdout: {line:?} ({e})"))?;
+        if v["method"] == "notifications/tools/list_changed" {
+            *list_changed += 1;
+            continue;
+        }
+        if v["id"] == id {
+            return Ok(v);
+        }
+    }
+    Err(format!("no response to {method}").into())
+}
+
+/// The sorted tool names of a `tools/list` response.
+fn tool_list(response: &serde_json::Value) -> TestResult<Vec<String>> {
+    let mut names = response["result"]["tools"]
+        .as_array()
+        .ok_or("tools array")?
+        .iter()
+        .map(|t| t["name"].as_str().map(str::to_string).ok_or("tool name"))
+        .collect::<Result<Vec<_>, _>>()?;
+    names.sort();
+    Ok(names)
+}
+
+/// Issue #745: on a missing directory the server starts with `knx_setup`
+/// and `knx_bus_status` only; `knx_setup` against a mock gateway writes the
+/// model, the server says the tool list changed and lists the full default
+/// tier. The password argument appears nowhere in the output.
+#[test]
+fn test_mcp_knx_setup_on_an_empty_directory_registers_the_full_tool_set() -> TestResult {
+    use bussard_testkit::MockGateway;
+
+    const PASSWORD: &str = "pw-never-echoed-745";
+    let tmp = std::env::temp_dir().join(format!("bussard-mcp-setup-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp)?;
+    let knx = tmp.join("knx");
+
+    let rt = tokio::runtime::Runtime::new()?;
+    let gw = rt.block_on(
+        MockGateway::builder()
+            .channel(7)
+            .keep_serving()
+            .idle_timeout(Duration::from_secs(60))
+            .start(),
+    )?;
+    let gateway = format!("127.0.0.1:{}", gw.port());
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_bussard"))
+        .args(["mcp", "--dir"])
+        .arg(&knx)
+        .current_dir(&tmp)
+        .env("BUSSARD_NO_DOTENV", "1")
+        .env_remove("BUSSARD_GATEWAY")
+        .env_remove("BUSSARD_KEYRING")
+        .env_remove("BUSSARD_ALLOW_REAL_GATEWAY")
+        .env_remove("BUSSARD_PROJECT_PASSWORD")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut stdin = child.stdin.take().ok_or("no stdin pipe")?;
+    let mut reader = BufReader::new(child.stdout.take().ok_or("no stdout pipe")?);
+    let mut changed = 0;
+
+    let init = request(
+        &mut stdin,
+        &mut reader,
+        1,
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "probe", "version": "0"}
+        }),
+        &mut changed,
+    )?;
+    assert_eq!(
+        init["result"]["capabilities"]["tools"]["listChanged"], true,
+        "{init}"
+    );
+    writeln!(
+        stdin,
+        "{}",
+        serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"})
+    )?;
+
+    let before = request(
+        &mut stdin,
+        &mut reader,
+        2,
+        "tools/list",
+        serde_json::json!({}),
+        &mut changed,
+    )?;
+    assert_eq!(tool_list(&before)?, ["knx_bus_status", "knx_setup"]);
+
+    let setup = request(
+        &mut stdin,
+        &mut reader,
+        3,
+        "tools/call",
+        serde_json::json!({"name": "knx_setup",
+            "arguments": {"gateway": gateway, "password": PASSWORD}}),
+        &mut changed,
+    )?;
+    let text = setup["result"]["content"][0]["text"]
+        .as_str()
+        .ok_or_else(|| format!("no text content in {setup}"))?;
+    let result: serde_json::Value = serde_json::from_str(text)?;
+    assert_eq!(result["done"], true, "{result}");
+
+    let after = request(
+        &mut stdin,
+        &mut reader,
+        4,
+        "tools/list",
+        serde_json::json!({}),
+        &mut changed,
+    )?;
+    let mut expected: Vec<String> = bussard_mcp::tool_names(false, false, false)
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    expected.sort();
+    assert_eq!(tool_list(&after)?, expected);
+    assert_eq!(result["tools"], expected.len(), "{result}");
+    assert!(
+        changed >= 1,
+        "the server sent notifications/tools/list_changed"
+    );
+
+    let config = std::fs::read_to_string(knx.join("bussard.toml"))?;
+    assert!(
+        config.contains(&format!("gateway = \"{gateway}\"")),
+        "{config}"
+    );
+    assert!(knx.join("groups.toml").is_file());
+
+    drop(stdin);
+    let _ = child.wait_timeout(Duration::from_millis(500));
+    let _ = child.kill();
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        std::io::Read::read_to_string(&mut pipe, &mut stderr)?;
+    }
+    let _ = child.wait();
+    drop(gw);
+    assert!(
+        !text.contains(PASSWORD),
+        "the result never echoes the password"
+    );
+    assert!(
+        !stderr.contains(PASSWORD),
+        "the log never echoes the password"
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
+    Ok(())
+}
+
 /// Reads one line, returning it trimmed (empty string on EOF).
 fn read_line(reader: &mut impl BufRead) -> String {
     let mut line = String::new();

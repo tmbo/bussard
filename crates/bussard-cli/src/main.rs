@@ -11,6 +11,7 @@ mod capture_cmd;
 mod commission_cmd;
 mod confirm;
 mod conn_cmd;
+mod console;
 mod describe_cmd;
 mod device_cmd;
 mod device_facts;

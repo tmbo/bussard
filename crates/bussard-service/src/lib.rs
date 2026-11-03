@@ -41,6 +41,9 @@
 //!   the model (`bussard reconstruct`, `knx_reconstruct_device`, issue #717).
 //! - [`restore`]: replaying a parameter backup (`bussard restore
 //!   --parameters`, `knx_restore_parameters`, issue #290).
+//! - [`setup`]: a model directory from nothing, the gateway, the skeleton
+//!   and the import of an ETS export (`bussard init`, `knx_setup`, issue
+//!   #745), and the product store and download step `import` shares.
 //! - [`enroll_session`]: the certificate enrolment session (issue #729): the
 //!   end-to-end encrypted relay protocol that carries a device certificate
 //!   label from a phone into the key store.
@@ -78,6 +81,7 @@ pub mod scan;
 pub mod secure;
 pub mod security_change;
 pub mod security_diag;
+pub mod setup;
 pub mod status;
 pub mod verify;
 pub mod write;
