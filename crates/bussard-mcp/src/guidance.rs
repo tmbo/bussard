@@ -320,8 +320,11 @@ impl Tiers {
              returns a `summary` and the change as sentences: say the summary, then quote the \
              sentences, and follow the result's next_step. KNX Secure device certificates (the \
              FDSK labels) enter the key store through knx_enroll_certificates and \
-             knx_enroll_status: the human scans them on the page the link opens; never ask for \
-             a label in chat."
+             knx_enroll_status: the chat app shows the human the page link and its session \
+             code directly, and the human scans the certificates there. Never write, repeat or \
+             guess an enrolment link or session code yourself, and never ask for a certificate \
+             in chat; when the chat app cannot show the link, point the human to \
+             `bussard keys enroll` in a terminal."
                 .to_string()
         } else {
             "Model edits are off (--no-model-edits): the model is read-only here.".to_string()

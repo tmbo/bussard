@@ -3,19 +3,34 @@
 //!
 //! `knx_enroll_certificates` starts the enrolment session of
 //! [`bussard_service::enroll_session`] (the one `bussard keys enroll` runs)
-//! in a thread of the server process and returns the link and the
-//! fingerprint. The human opens the link on a phone (or, with `local: true`,
-//! in a browser on the computer running the server) and scans the labels;
-//! each one is entered into the key store exactly as `bussard keys
-//! add-certificate` enters it. `knx_enroll_status` reports the results so
-//! far: serial, address, name and status per label.
+//! in a thread of the server process and shows the link to the human with
+//! URL-mode elicitation (issue #798). The human opens the link on a phone
+//! (or, with `local: true`, in a browser on the computer running the server)
+//! and scans the labels; each one is entered into the key store exactly as
+//! `bussard keys add-certificate` enters it. `knx_enroll_status` reports the
+//! results so far: serial, address, name and status per label.
+//!
+//! # The link never passes through the assistant
+//!
+//! A link and session code the assistant relays prove nothing: a prompt
+//! injection could hand the human an attacker's link with a matching code
+//! (#798, finding F1 of the #201 security review). So the link and the
+//! session code go to the human only in the elicitation, which the client
+//! shows with the full URL and asks consent for; no tool result carries
+//! either. A client that does not declare URL-mode elicitation gets a
+//! refusal pointing at `bussard keys enroll`, and no session starts.
+//!
+//! Two transports of the same request (MCP 2026-07-28, client features):
+//! from protocol 2026-07-28 the tool answers with an `InputRequiredResult`
+//! holding the `elicitation/create` request and the client calls the tool
+//! again with the human's answer (multi round-trip, SEP-2322); before it,
+//! the server sends `elicitation/create` to the client while the call runs.
 //!
 //! # Key hygiene
 //!
 //! No tool input or output carries a certificate text or a key. The labels
 //! travel from the page to this process end to end encrypted; the tools see
-//! only [`CertificateOutcome`]s, which hold none. The link carries the
-//! session's public key, which is meant to be shown.
+//! only [`CertificateOutcome`]s, which hold none.
 //!
 //! The tools write the key store, never the model or the bus: they are
 //! withheld with `--no-model-edits` like the model edits and registered in
@@ -33,9 +48,14 @@ use bussard_service::enroll_session::{
     EnrollTally, HttpRelay, RunOptions, data_path, hosted_endpoints,
 };
 use bussard_viz::enroll_local::LocalEnrollServer;
-use rmcp::ErrorData;
-use rmcp::model::CallToolResult;
+use rmcp::handler::server::tool::{InputResponses, RequestState};
+use rmcp::model::{
+    CallToolResponse, CallToolResult, ElicitRequest, ElicitRequestParams, ElicitResult,
+    ElicitationAction, InputRequest, InputRequests, InputRequiredResult, ProtocolVersion,
+};
 use rmcp::schemars::{self, JsonSchema};
+use rmcp::service::RequestContext;
+use rmcp::{ErrorData, RoleServer};
 use rmcp::{tool, tool_router};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -52,6 +72,13 @@ const SESSION_LIFETIME_SECS: u64 = 30 * 60;
 
 /// The longest `wait_seconds` of `knx_enroll_status`.
 const MAX_STATUS_WAIT_SECS: u64 = 120;
+
+/// The `requestState` prefix of a multi round-trip enrolment call; the rest
+/// is the session's elicitation id.
+const REQUEST_STATE_PREFIX: &str = "enroll:";
+
+/// The key of the elicitation in `InputRequiredResult.inputRequests`.
+const INPUT_KEY: &str = "enroll_page";
 
 /// The long-poll wait of the session loop: how long a `stop` takes at most
 /// to be noticed.
@@ -99,8 +126,9 @@ struct Progress {
 /// One enrolment session of this server.
 #[derive(Debug)]
 struct EnrollJob {
-    link: String,
-    fingerprint: String,
+    /// The id of the elicitation that showed the link, and the handle a
+    /// multi round-trip retry names the session by.
+    elicitation_id: String,
     local: bool,
     started: Instant,
     stop: Arc<AtomicBool>,
@@ -166,13 +194,84 @@ fn ok(value: Value) -> Result<CallToolResult, ErrorData> {
 }
 
 /// A refusal: `ok: false` and the reason, as a normal result.
-fn refusal(reason: impl Into<String>) -> Result<CallToolResult, ErrorData> {
-    ok(json!({
+fn refused(reason: impl Into<String>) -> CallToolResult {
+    CallToolResult::structured(json!({
         "ok": false,
         "refused": true,
         "reason": reason.into(),
         "summary": "Nothing was changed and no certificate page was opened (`reason` says why).",
     }))
+}
+
+/// The refusal for a client that cannot show a link to the human itself.
+fn no_url_elicitation() -> CallToolResult {
+    CallToolResult::structured(json!({
+        "ok": false,
+        "refused": true,
+        "reason": "this chat app cannot show a link to the human directly (it does not \
+                   declare URL-mode elicitation), and the certificate page link must never \
+                   pass through the assistant",
+        "summary": "This chat app cannot open the certificate page for you. Run \
+                    `bussard keys enroll` in a terminal in your project folder instead; it \
+                    shows the link, a QR code for your phone and the session code.",
+        "next_step": "Tell the human to run `bussard keys enroll` in a terminal in the project \
+                      folder. Do not offer a link or a session code yourself, and never ask \
+                      for a certificate in chat.",
+    }))
+}
+
+/// Whether the client of this call declared URL-mode elicitation: only then
+/// can the link reach the human without passing through the assistant.
+fn shows_urls(context: &RequestContext<RoleServer>) -> bool {
+    context
+        .client_capabilities()
+        .and_then(|caps| caps.elicitation)
+        .is_some_and(|elicitation| elicitation.url.is_some())
+}
+
+/// The host of `link` (`bussard.tmbo.dev`, `127.0.0.1:8123`), for the
+/// elicitation message.
+fn link_host(link: &str) -> &str {
+    let rest = link.split_once("://").map_or(link, |(_, rest)| rest);
+    rest.split(['/', '#', '?']).next().unwrap_or(rest)
+}
+
+/// The elicitation message: what the page is, where it is served from and
+/// the session code to check. Written by the server and shown by the
+/// client; the assistant never sees it.
+fn elicitation_message(host: &str, code: &str, local: bool) -> String {
+    let open = if local {
+        "Open it in a browser on this computer"
+    } else {
+        "Open it on the phone you scan with"
+    };
+    format!(
+        "bussard asks you to open its certificate page on {host}. {open}, check that the page \
+         shows the session code {code}, then scan the certificates on your Secure devices. \
+         They go into your key store, never into the chat."
+    )
+}
+
+/// A fresh random elicitation id.
+fn new_elicitation_id() -> Result<String, String> {
+    let mut bytes = [0u8; 16];
+    getrandom::getrandom(&mut bytes).map_err(|e| format!("drawing a random id: {e}"))?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Ends `job`'s session and waits for it to close.
+async fn close(job: &EnrollJob) {
+    if job.running() {
+        job.stop.store(true, Ordering::SeqCst);
+        wait_for_change(job, Duration::from_secs(RUN_WAIT_SECS + 15), true).await;
+    }
+}
+
+/// A started session: the job and what the elicitation shows.
+struct Started {
+    job: Arc<EnrollJob>,
+    link: String,
+    message: String,
 }
 
 /// One label as the tools report it: never a key.
@@ -226,8 +325,6 @@ fn status_json(job: &EnrollJob) -> Value {
         "session": if running { "running" } else { "ended" },
         "end": progress.end,
         "error": progress.error,
-        "link": job.link,
-        "fingerprint": job.fingerprint,
         "local": job.local,
         "phones": progress.phones,
         "certificates": progress.results.len(),
@@ -323,147 +420,80 @@ impl BussardMcp {
     /// `knx_enroll_certificates`: start a certificate enrolment session.
     #[tool(
         description = "Start a session that takes KNX Secure device certificates (the \
-        36-character FDSK labels printed on Secure devices) from a phone camera into the key \
-        store, without the labels passing through this chat. Returns `link` and \
-        `fingerprint`. Give the human both: they open the link on the phone, check that the \
-        page shows the same fingerprint, and scan the labels. Each label is matched to a \
-        device by its serial number and stored, end to end encrypted on the way; this tool \
-        and knx_enroll_status never return a label or a key. NEVER ask the human to paste a \
-        label into the chat. Follow up with knx_enroll_status. `local: true` serves the page \
-        from this server on 127.0.0.1 instead, for a browser on the same computer (a webcam \
-        or typed labels); without it the hosted page and relay (or the [enroll] table of \
-        bussard.toml) are used. One \
-        session at a time; it ends when the human finishes on the phone, on \
-        knx_enroll_status with stop: true, or after 30 minutes. Writes the key store only \
+        36-character codes printed on Secure devices) from a phone camera into the key store, \
+        without them passing through this chat. The chat app shows the human the certificate \
+        page link and the session code itself (MCP URL elicitation) and asks before opening \
+        it; neither ever reaches you. NEVER write, repeat or guess a link or a session code \
+        for this: one coming from you proves nothing. The human opens the page, checks the \
+        session code and scans the certificates. Each one is matched to a device by its \
+        serial number and stored, end to end encrypted on the way; this tool and \
+        knx_enroll_status never return a certificate or a key. NEVER ask the human to paste \
+        a certificate into the chat. When the chat app cannot show a link, the tool refuses: \
+        tell the human to run `bussard keys enroll` in a terminal. Follow up with \
+        knx_enroll_status. `local: true` serves the page from this server on 127.0.0.1 \
+        instead, for a browser on the same computer (a webcam or typed codes); without it \
+        the hosted page and relay (or the [enroll] table of bussard.toml) are used. One \
+        session at a time; it ends when the human finishes on the phone, declines the link, \
+        on knx_enroll_status with stop: true, or after 30 minutes. Writes the key store only \
         (needs BUSSARD_KEYRING_PASSWORD on the server), never the model or the bus."
     )]
     async fn knx_enroll_certificates(
         &self,
         Parameters(args): Parameters<EnrollArgs>,
-    ) -> Result<CallToolResult, ErrorData> {
-        if let Some(job) = self.enroll.current()
-            && job.running()
+        context: RequestContext<RoleServer>,
+        RequestState(request_state): RequestState,
+        InputResponses(input_responses): InputResponses,
+    ) -> Result<CallToolResponse, ErrorData> {
+        // The client's second round of a 2026-07-28 call: the human's answer.
+        if let Some(state) = request_state {
+            let answer = input_responses
+                .and_then(|responses| responses.get(INPUT_KEY).cloned())
+                .and_then(|value| serde_json::from_value::<ElicitResult>(value).ok());
+            return Ok(self.enroll_answered(&state, answer).await.into());
+        }
+        if !shows_urls(&context) {
+            return Ok(no_url_elicitation().into());
+        }
+        let started = match self.start_enrolment(args.local) {
+            Ok(started) => started,
+            Err(refused) => return Ok(refused.into()),
+        };
+        let id = started.job.elicitation_id.clone();
+        let params = ElicitRequestParams::UrlElicitationParams {
+            meta: None,
+            message: started.message,
+            url: started.link,
+            elicitation_id: id.clone(),
+        };
+        if context
+            .protocol_version()
+            .is_some_and(|v| v >= ProtocolVersion::V_2026_07_28)
         {
-            return ok(json!({
-                "ok": false,
-                "refused": true,
-                "reason": "an enrolment session is already running; finish it with \
-                           knx_enroll_status (stop: true) before starting another",
-                "link": job.link,
-                "fingerprint": job.fingerprint,
-                "local": job.local,
-                "summary": "A certificate page is already open; finish it first.",
-            }));
+            let mut requests = InputRequests::new();
+            requests.insert(
+                INPUT_KEY.to_owned(),
+                InputRequest::Elicitation(ElicitRequest::new(params)),
+            );
+            return Ok(InputRequiredResult::new(
+                Some(requests),
+                Some(format!("{REQUEST_STATE_PREFIX}{id}")),
+            )
+            .into());
         }
-        let dir = self.state().dir.clone();
-        let Ok(password) =
-            bussard_model::dotenv::var(bussard_service::secure::KEYRING_PASSWORD_ENV)
-        else {
-            return refusal(format!(
-                "{}; the server needs it to write the key store (ask the human to set it and \
-                 restart the server; never ask for the password in chat)",
-                bussard_service::secure::SecureKeyError::MissingPassword
-            ));
-        };
-        let password = Password::new(password);
-        // The store must load and be writable before the link is shown.
-        if let Err(err) =
-            bussard_service::CertificateEnrolment::open(&dir, password.expose()).map(drop)
-        {
-            return refusal(format!("{err}; no session was started"));
-        }
-        let endpoint = if args.local {
-            match LocalEnrollServer::start() {
-                Ok(server) => Endpoint::Local(server),
-                Err(err) => return refusal(format!("starting the local enrolment page: {err}")),
-            }
-        } else {
-            match hosted_endpoint(&dir) {
-                Ok(endpoint) => endpoint,
-                Err(reason) => return refusal(reason),
+        let action = match context.peer.create_elicitation(params).await {
+            Ok(result) => result.action,
+            Err(err) => {
+                // Logged only: a client's error text could echo the link.
+                tracing::warn!(%err, "enrolment: the client did not show the link");
+                close(&started.job).await;
+                return Ok(refused(
+                    "the chat app did not show the certificate page link; the session was \
+                     closed. Run `bussard keys enroll` in a terminal instead",
+                )
+                .into());
             }
         };
-        let session = match EnrollSession::new() {
-            Ok(session) => session,
-            Err(err) => return refusal(format!("starting the enrolment session: {err}")),
-        };
-        let (relay_url, page, relay_in_link, local) = match endpoint {
-            Endpoint::Hosted { relay, page } => (relay, page, true, None),
-            Endpoint::Local(server) => (server.relay_url(), server.page_url(), false, Some(server)),
-        };
-        let relay = match HttpRelay::new(&relay_url, &session) {
-            Ok(relay) => relay,
-            Err(err) => return refusal(err.to_string()),
-        };
-        // Local mode: page and relay share the origin, so the link names no relay.
-        let link = session.link(&page, relay_in_link.then(|| relay.base()));
-        let fingerprint = session.fingerprint();
-        let is_local = local.is_some();
-        let (changed, _) = watch::channel(0u64);
-        let job = Arc::new(EnrollJob {
-            link: link.clone(),
-            fingerprint: fingerprint.clone(),
-            local: is_local,
-            started: Instant::now(),
-            stop: Arc::new(AtomicBool::new(false)),
-            progress: Arc::default(),
-            changed: Arc::new(changed),
-        });
-        let sink = FreshKeyStore {
-            dir: dir.clone(),
-            password,
-        };
-        let thread_job = Arc::clone(&job);
-        let spawned = std::thread::Builder::new()
-            .name("enroll-session".to_owned())
-            .spawn(move || run_session(session, relay, sink, local, &thread_job));
-        if let Err(err) = spawned {
-            return refusal(format!("starting the enrolment session: {err}"));
-        }
-        *lock(&self.enroll.0) = Some(job);
-
-        let mut result = json!({
-            "ok": true,
-            "link": link,
-            "fingerprint": fingerprint,
-            "local": is_local,
-            "expires_in_seconds": SESSION_LIFETIME_SECS,
-            "data_path": data_path(is_local).join(" "),
-            "read_more": DOCS_URL,
-            "summary": format!(
-                "The certificate page is ready. Open the link {}, check that it shows the code \
-                 {fingerprint}, and scan the labels on the Secure devices. Each one is saved in \
-                 the key store; nothing is sent to the devices.",
-                if is_local { "in a browser on this computer" } else { "on your phone" }
-            ),
-            "next_step": if is_local {
-                "Give the human the link, the fingerprint (the session code), `data_path` and \
-                 the `read_more` link. They open the link in a browser \
-                 on the computer running this server (it is served on 127.0.0.1; a phone cannot \
-                 reach it), check that the page shows the same fingerprint, and scan or type \
-                 the labels there, never in this chat. Then call knx_enroll_status \
-                 (wait_seconds to wait for labels)."
-            } else {
-                "Give the human the link, the fingerprint (the session code), `data_path` and \
-                 the `read_more` link. They open the link on the phone, \
-                 check that the page shows the same fingerprint, and scan the labels there, \
-                 never in this chat. Then call knx_enroll_status (wait_seconds to wait for \
-                 labels)."
-            },
-        });
-        // A server reading another keyring does not see what this stores.
-        if let Some(keyring) = &self.state().keyring {
-            let store = bussard_project::KeyStore::path(&dir);
-            if !same_file(keyring, &store) {
-                result["note"] = json!(format!(
-                    "this server reads its keys from {}, not from the key store {} the labels \
-                     go to; restart it without --keyring to use them",
-                    keyring.display(),
-                    store.display()
-                ));
-            }
-        }
-        ok(result)
+        Ok(self.after_elicitation(&started.job, action).await.into())
     }
 
     /// `knx_enroll_status`: the results of the enrolment session so far.
@@ -503,6 +533,162 @@ impl BussardMcp {
             wait_for_change(&job, wait, false).await;
         }
         ok(status_json(&job))
+    }
+}
+
+impl BussardMcp {
+    /// Starts an enrolment session after checking its preconditions; the
+    /// error is the refusal to return.
+    fn start_enrolment(&self, local: bool) -> Result<Started, CallToolResult> {
+        if self.enroll.current().is_some_and(|job| job.running()) {
+            return Err(CallToolResult::structured(json!({
+                "ok": false,
+                "refused": true,
+                "reason": "an enrolment session is already running; finish it with \
+                           knx_enroll_status (stop: true) before starting another",
+                "summary": "A certificate page is already open; finish it first.",
+            })));
+        }
+        let dir = self.state().dir.clone();
+        let Ok(password) =
+            bussard_model::dotenv::var(bussard_service::secure::KEYRING_PASSWORD_ENV)
+        else {
+            return Err(refused(format!(
+                "{}; the server needs it to write the key store (ask the human to set it and \
+                 restart the server; never ask for the password in chat)",
+                bussard_service::secure::SecureKeyError::MissingPassword
+            )));
+        };
+        let password = Password::new(password);
+        // The store must load and be writable before the link is shown.
+        if let Err(err) =
+            bussard_service::CertificateEnrolment::open(&dir, password.expose()).map(drop)
+        {
+            return Err(refused(format!("{err}; no session was started")));
+        }
+        let elicitation_id = new_elicitation_id().map_err(refused)?;
+        let endpoint = if local {
+            LocalEnrollServer::start()
+                .map(Endpoint::Local)
+                .map_err(|err| refused(format!("starting the local enrolment page: {err}")))?
+        } else {
+            hosted_endpoint(&dir).map_err(refused)?
+        };
+        let session = EnrollSession::new()
+            .map_err(|err| refused(format!("starting the enrolment session: {err}")))?;
+        let (relay_url, page, relay_in_link, local) = match endpoint {
+            Endpoint::Hosted { relay, page } => (relay, page, true, None),
+            Endpoint::Local(server) => (server.relay_url(), server.page_url(), false, Some(server)),
+        };
+        let relay = HttpRelay::new(&relay_url, &session).map_err(|err| refused(err.to_string()))?;
+        // Local mode: page and relay share the origin, so the link names no relay.
+        let link = session.link(&page, relay_in_link.then(|| relay.base()));
+        let is_local = local.is_some();
+        let message = elicitation_message(link_host(&link), &session.fingerprint(), is_local);
+        let (changed, _) = watch::channel(0u64);
+        let job = Arc::new(EnrollJob {
+            elicitation_id,
+            local: is_local,
+            started: Instant::now(),
+            stop: Arc::new(AtomicBool::new(false)),
+            progress: Arc::default(),
+            changed: Arc::new(changed),
+        });
+        let sink = FreshKeyStore {
+            dir: dir.clone(),
+            password,
+        };
+        let thread_job = Arc::clone(&job);
+        std::thread::Builder::new()
+            .name("enroll-session".to_owned())
+            .spawn(move || run_session(session, relay, sink, local, &thread_job))
+            .map_err(|err| refused(format!("starting the enrolment session: {err}")))?;
+        *lock(&self.enroll.0) = Some(Arc::clone(&job));
+        Ok(Started { job, link, message })
+    }
+
+    /// The second round of a multi round-trip call: `state` names the
+    /// session, `answer` is the human's answer to the elicitation.
+    async fn enroll_answered(&self, state: &str, answer: Option<ElicitResult>) -> CallToolResult {
+        let job = state.strip_prefix(REQUEST_STATE_PREFIX).and_then(|id| {
+            self.enroll
+                .current()
+                .filter(|job| job.elicitation_id == id && job.running())
+        });
+        let Some(job) = job else {
+            return refused(
+                "that certificate page is no longer the current one; call \
+                 knx_enroll_certificates again to start a new session",
+            );
+        };
+        // No answer counts as dismissed: the link was not shown.
+        let action = answer.map_or(ElicitationAction::Cancel, |answer| answer.action);
+        self.after_elicitation(&job, action).await
+    }
+
+    /// The result once the human answered the elicitation of `job`. Carries
+    /// neither the link nor the session code.
+    async fn after_elicitation(
+        &self,
+        job: &EnrollJob,
+        action: ElicitationAction,
+    ) -> CallToolResult {
+        if action != ElicitationAction::Accept {
+            close(job).await;
+            return CallToolResult::structured(json!({
+                "ok": false,
+                "declined": true,
+                "session": "ended",
+                "summary": "You did not open the certificate page, so it was closed. Nothing \
+                            was changed.",
+                "next_step": "The human declined or dismissed the certificate page link. Do \
+                              not offer a link or a session code yourself. Call \
+                              knx_enroll_certificates again only if the human asks to.",
+            }));
+        }
+        let local = job.local;
+        let mut result = json!({
+            "ok": true,
+            "session": "running",
+            "link_shown": true,
+            "local": local,
+            "expires_in_seconds": SESSION_LIFETIME_SECS,
+            "data_path": data_path(local).join(" "),
+            "read_more": DOCS_URL,
+            "summary": format!(
+                "The certificate page link and its session code were shown to you by your chat \
+                 app. Open the link {}, check that the page shows the same session code, and \
+                 scan the certificates on your Secure devices. Each one is saved in the key \
+                 store; nothing is sent to the devices.",
+                if local { "in a browser on this computer" } else { "on your phone" }
+            ),
+            "next_step": "Your chat app showed the human the link and the session code \
+                          directly; you never see them. Never write, repeat or guess a link or \
+                          a session code: if the human lost the link, stop this session \
+                          (knx_enroll_status, stop: true) and start a new one. Give the human \
+                          `summary`, `data_path` and the `read_more` link, then call \
+                          knx_enroll_status (wait_seconds to wait for certificates).",
+        });
+        if let Some(note) = self.keyring_note() {
+            result["note"] = json!(note);
+        }
+        CallToolResult::structured(result)
+    }
+
+    /// A note when this server reads its keys from another file than the
+    /// key store the certificates go to.
+    fn keyring_note(&self) -> Option<String> {
+        let state = self.state();
+        let keyring = state.keyring.as_ref()?;
+        let store = bussard_project::KeyStore::path(&state.dir);
+        (!same_file(keyring, &store)).then(|| {
+            format!(
+                "this server reads its keys from {}, not from the key store {} the certificates \
+                 go to; restart it without --keyring to use them",
+                keyring.display(),
+                store.display()
+            )
+        })
     }
 }
 
@@ -573,8 +759,7 @@ mod tests {
             })
             .collect();
         EnrollJob {
-            link: "https://page.invalid/#x".to_string(),
-            fingerprint: "ABCD-1234".to_string(),
+            elicitation_id: "00".to_string(),
             local: false,
             started: Instant::now(),
             stop: Arc::new(AtomicBool::new(false)),

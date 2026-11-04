@@ -3,10 +3,15 @@
 //! loopback origin) and through a relay named in bussard.toml. The labels
 //! land in a test key store; no tool schema or result ever carries a label
 //! or a key. Synthetic keys only (`dev/enroll/vectors-v1.json`); no bus.
+//!
+//! Issue #798: the link and the session code reach the human only through
+//! URL-mode elicitation, answered here by a fake human in the client; no
+//! tool result carries either, and a client without URL elicitation gets a
+//! refusal pointing at `bussard keys enroll`.
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -20,13 +25,92 @@ use bussard_project::keystore::SerialNumber;
 use bussard_secure::enroll::{Direction, EnrollKeyPair, SessionKey};
 use bussard_service::enroll_session::{DownMessage, EnrollStatus, Envelope};
 use bussard_transport::TransportKind;
-use rmcp::ServiceExt;
-use rmcp::model::CallToolRequestParams;
+use rmcp::model::{
+    CallToolRequestParams, CallToolResponse, ClientCapabilities, ClientInfo, ElicitRequestParams,
+    ElicitResult, ElicitationAction, ElicitationCapability, FormElicitationCapability,
+    Implementation, InputRequest, ProtocolVersion, RequestMetaObject, UrlElicitationCapability,
+};
+use rmcp::service::RequestContext;
+use rmcp::{ClientHandler, ErrorData, RoleClient, ServiceExt};
 use serde_json::{Value, json};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 type TestResult = Result<(), BoxError>;
-type Client = rmcp::service::RunningService<rmcp::RoleClient, ()>;
+type Client = rmcp::service::RunningService<rmcp::RoleClient, Human>;
+
+/// One URL elicitation as the client showed it.
+#[derive(Debug, Clone)]
+struct Shown {
+    message: String,
+    url: String,
+}
+
+/// The chat app with its human: declares URL elicitation (or not), records
+/// every link it shows and answers with `action`.
+#[derive(Clone)]
+struct Human {
+    url_mode: bool,
+    action: ElicitationAction,
+    shown: Arc<Mutex<Vec<Shown>>>,
+}
+
+impl Human {
+    fn new(url_mode: bool, action: ElicitationAction) -> Self {
+        Self {
+            url_mode,
+            action,
+            shown: Arc::default(),
+        }
+    }
+
+    /// The links shown so far.
+    fn shown(&self) -> Vec<Shown> {
+        self.shown.lock().map(|s| s.clone()).unwrap_or_default()
+    }
+
+    fn capabilities(&self) -> ClientCapabilities {
+        let mut elicitation =
+            ElicitationCapability::new().with_form(FormElicitationCapability::new());
+        if self.url_mode {
+            elicitation = elicitation.with_url(UrlElicitationCapability::new());
+        }
+        let mut capabilities = ClientCapabilities::default();
+        capabilities.elicitation = Some(elicitation);
+        capabilities
+    }
+
+    /// Records a URL elicitation and answers it.
+    fn answer(&self, request: ElicitRequestParams) -> ElicitResult {
+        if let ElicitRequestParams::UrlElicitationParams { message, url, .. } = request
+            && let Ok(mut shown) = self.shown.lock()
+        {
+            shown.push(Shown { message, url });
+        }
+        ElicitResult::new(self.action.clone())
+    }
+}
+
+impl ClientHandler for Human {
+    async fn create_elicitation(
+        &self,
+        request: ElicitRequestParams,
+        _context: RequestContext<RoleClient>,
+    ) -> Result<ElicitResult, ErrorData> {
+        Ok(self.answer(request))
+    }
+
+    fn get_info(&self) -> ClientInfo {
+        ClientInfo::new(
+            self.capabilities(),
+            Implementation::new("fake-chat", "0.0.0"),
+        )
+    }
+}
+
+/// A human who opens every link the chat app shows.
+fn accepting() -> Human {
+    Human::new(true, ElicitationAction::Accept)
+}
 
 /// The key store's made-up password.
 const PASSWORD: &str = "synthetic-store-password";
@@ -53,7 +137,7 @@ fn write_model(dir: &Path, bussard_toml: &str) -> Result<(), BoxError> {
     Ok(())
 }
 
-async fn start(dir: &Path) -> Result<Client, BoxError> {
+async fn start(dir: &Path, human: Human) -> Result<Client, BoxError> {
     bussard_model::dotenv::install(vec![(
         bussard_service::secure::KEYRING_PASSWORD_ENV.to_string(),
         PASSWORD.to_string(),
@@ -85,7 +169,7 @@ async fn start(dir: &Path) -> Result<Client, BoxError> {
             let _ = running.waiting().await;
         }
     });
-    Ok(().serve(client_io).await?)
+    Ok(human.serve(client_io).await?)
 }
 
 /// Calls one tool and returns its structured result.
@@ -222,6 +306,41 @@ impl FakePhone {
     }
 }
 
+/// The one link shown so far, after checking its message names the page's
+/// host and the session code of the link's key.
+fn shown_link(human: &Human) -> Result<String, BoxError> {
+    let shown = human.shown();
+    let [one] = shown.as_slice() else {
+        return Err(format!("expected one link shown, got {shown:?}").into());
+    };
+    let b_pk: [u8; 32] = URL_SAFE_NO_PAD
+        .decode(fragment(&one.url)?.get("k").ok_or("no key")?)?
+        .as_slice()
+        .try_into()?;
+    let code = bussard_secure::enroll::fingerprint(&b_pk);
+    assert!(one.message.contains(&code), "{}", one.message);
+    let host = one
+        .url
+        .split_once("://")
+        .and_then(|(_, rest)| rest.split('/').next())
+        .ok_or("no host")?;
+    assert!(one.message.contains(host), "{}", one.message);
+    assert!(!one.message.contains(&one.url), "{}", one.message);
+    Ok(one.url.clone())
+}
+
+/// Asserts that neither `link`, nor its session code, nor its key appears
+/// in `results`, the tool results the assistant saw.
+fn assert_no_link(results: &str, link: &str) -> TestResult {
+    let key = fragment(link)?.get("k").cloned().ok_or("no key")?;
+    let b_pk: [u8; 32] = URL_SAFE_NO_PAD.decode(&key)?.as_slice().try_into()?;
+    let code = bussard_secure::enroll::fingerprint(&b_pk);
+    for secret in [link, key.as_str(), code.as_str()] {
+        assert!(!results.contains(secret), "{secret} leaked: {results}");
+    }
+    Ok(())
+}
+
 /// Asserts no label and no key appears in `shown`.
 fn assert_no_secret(shown: &str) {
     for secret in [
@@ -240,7 +359,8 @@ fn assert_no_secret(shown: &str) {
 async fn test_knx_enroll_certificates_local_mode_stores_labels() -> TestResult {
     let dir = tempfile::tempdir()?;
     write_model(dir.path(), "")?;
-    let client = start(dir.path()).await?;
+    let human = accepting();
+    let client = start(dir.path(), human.clone()).await?;
     let mut shown = String::new();
 
     // No tool takes a label or a key as input.
@@ -274,27 +394,19 @@ async fn test_knx_enroll_certificates_local_mode_stores_labels() -> TestResult {
     shown.push_str(&started.to_string());
     assert_eq!(started["ok"], true, "{started}");
     assert_eq!(started["local"], true, "{started}");
-    let link = started["link"].as_str().ok_or("no link")?.to_string();
+    assert_eq!(started["link_shown"], true, "{started}");
+    let link = shown_link(&human)?;
     assert!(link.starts_with("http://127.0.0.1:"), "{link}");
-    let params = fragment(&link)?;
     assert!(
-        !params.contains_key("r"),
+        !fragment(&link)?.contains_key("r"),
         "a local link names no relay: {link}"
     );
-    let b_pk: [u8; 32] = URL_SAFE_NO_PAD
-        .decode(params.get("k").ok_or("no key")?)?
-        .as_slice()
-        .try_into()?;
-    assert_eq!(
-        started["fingerprint"],
-        bussard_secure::enroll::fingerprint(&b_pk)
-    );
 
-    // One session at a time.
+    // One session at a time; the refusal shows no link.
     let again = call(&client, "knx_enroll_certificates", json!({"local": true})).await?;
     shown.push_str(&again.to_string());
     assert_eq!(again["refused"], true, "{again}");
-    assert_eq!(again["link"], link.as_str());
+    assert_eq!(human.shown().len(), 1);
 
     // The page is served on the link's origin, and the phone stores labels.
     let phone_link = link.clone();
@@ -358,6 +470,7 @@ async fn test_knx_enroll_certificates_local_mode_stores_labels() -> TestResult {
     assert!(store.fdsk_for_serial(SerialNumber(SERIAL_A)).is_some());
 
     assert_no_secret(&shown);
+    assert_no_link(&shown, &link)?;
     Ok(())
 }
 
@@ -373,12 +486,13 @@ async fn test_knx_enroll_status_stop_closes_hosted_session() -> TestResult {
             relay.relay_url()
         ),
     )?;
-    let client = start(dir.path()).await?;
+    let human = accepting();
+    let client = start(dir.path(), human.clone()).await?;
 
     let started = call(&client, "knx_enroll_certificates", json!({})).await?;
     assert_eq!(started["ok"], true, "{started}");
     assert_eq!(started["local"], false, "{started}");
-    let link = started["link"].as_str().ok_or("no link")?.to_string();
+    let link = shown_link(&human)?;
     assert!(link.starts_with("https://page.invalid/enroll/#"), "{link}");
     assert!(fragment(&link)?.contains_key("r"), "{link}");
 
@@ -404,11 +518,16 @@ async fn test_knx_enroll_status_stop_closes_hosted_session() -> TestResult {
     // A new session can start once the last one ended.
     let next = call(&client, "knx_enroll_certificates", json!({})).await?;
     assert_eq!(next["ok"], true, "{next}");
-    assert_ne!(next["link"], link.as_str());
+    let shown = human.shown();
+    let next_link = &shown.get(1).ok_or("no second link")?.url;
+    assert_ne!(next_link, &link);
     let stopped = call(&client, "knx_enroll_status", json!({"stop": true})).await?;
     assert_eq!(stopped["end"], "stopped", "{stopped}");
 
-    assert_no_secret(&format!("{started} {running} {stopped} {next}"));
+    let results = format!("{started} {running} {stopped} {next}");
+    assert_no_secret(&results);
+    assert_no_link(&results, &link)?;
+    assert_no_link(&results, next_link)?;
     Ok(())
 }
 
@@ -420,8 +539,10 @@ async fn test_knx_enroll_certificates_wrong_password_refuses() -> TestResult {
     let mut store = KeyStore::new("Synthetic");
     store.devices.entry("1.1.20".parse()?).or_default().serial = Some(SerialNumber(SERIAL_A));
     store.save(dir.path(), "another-synthetic-password")?;
-    let client = start(dir.path()).await?;
+    let human = accepting();
+    let client = start(dir.path(), human.clone()).await?;
     let refused = call(&client, "knx_enroll_certificates", json!({"local": true})).await?;
+    assert!(human.shown().is_empty());
     assert_eq!(refused["refused"], true, "{refused}");
     assert!(refused.get("link").is_none(), "{refused}");
     let reason = refused["reason"].as_str().ok_or("no reason")?;
@@ -430,4 +551,127 @@ async fn test_knx_enroll_certificates_wrong_password_refuses() -> TestResult {
     let status = call(&client, "knx_enroll_status", json!({})).await?;
     assert_eq!(status["session"], "none", "{status}");
     Ok(())
+}
+
+#[tokio::test]
+async fn test_knx_enroll_certificates_without_url_elicitation_refuses() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    write_model(dir.path(), "")?;
+    // Form elicitation only, as Claude Code 2.1.280 declares it.
+    let human = Human::new(false, ElicitationAction::Accept);
+    let client = start(dir.path(), human.clone()).await?;
+    let refused = call(&client, "knx_enroll_certificates", json!({"local": true})).await?;
+    assert_eq!(refused["refused"], true, "{refused}");
+    let summary = refused["summary"].as_str().ok_or("no summary")?;
+    assert!(summary.contains("`bussard keys enroll`"), "{summary}");
+    assert!(!refused.to_string().contains("http"), "{refused}");
+    assert!(human.shown().is_empty());
+    let status = call(&client, "knx_enroll_status", json!({})).await?;
+    assert_eq!(status["session"], "none", "{status}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_knx_enroll_certificates_declined_closes_session() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    write_model(dir.path(), "")?;
+    let human = Human::new(true, ElicitationAction::Decline);
+    let client = start(dir.path(), human.clone()).await?;
+    let declined = call(&client, "knx_enroll_certificates", json!({"local": true})).await?;
+    assert_eq!(declined["ok"], false, "{declined}");
+    assert_eq!(declined["declined"], true, "{declined}");
+    let link = shown_link(&human)?;
+    let status = call(&client, "knx_enroll_status", json!({})).await?;
+    assert_eq!(status["session"], "ended", "{status}");
+    assert_eq!(status["end"], "stopped", "{status}");
+    assert_no_link(&format!("{declined} {status}"), &link)?;
+    Ok(())
+}
+
+/// `params` with `meta` as its `_meta`.
+fn with_meta(mut params: CallToolRequestParams, meta: RequestMetaObject) -> CallToolRequestParams {
+    params.meta = Some(meta);
+    params
+}
+
+/// The `_meta` of a request from a client speaking protocol 2026-07-28.
+fn meta_2026(human: &Human) -> Result<RequestMetaObject, BoxError> {
+    let mut meta = RequestMetaObject::default();
+    meta.set_protocol_version(ProtocolVersion::V_2026_07_28);
+    meta.set_client_info(Implementation::new("fake-chat", "0.0.0"));
+    meta.set_client_capabilities(human.capabilities());
+    Ok(meta)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_knx_enroll_certificates_multi_round_trip_shows_link() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    write_model(dir.path(), "")?;
+    let human = accepting();
+    let client = start(dir.path(), human.clone()).await?;
+    let mut args = serde_json::Map::new();
+    args.insert("local".to_string(), json!(true));
+    let first = client
+        .call_tool_once(with_meta(
+            CallToolRequestParams::new("knx_enroll_certificates").with_arguments(args.clone()),
+            meta_2026(&human)?,
+        ))
+        .await?;
+    let CallToolResponse::InputRequired(input) = first else {
+        return Err(format!("expected input_required, got {first:?}").into());
+    };
+    // The client shows the elicitation; the server sent no request itself.
+    assert!(human.shown().is_empty());
+    let requests = input.input_requests.clone().ok_or("no input requests")?;
+    let state = input.request_state.clone().ok_or("no request state")?;
+    let mut responses = rmcp::model::InputResponses::new();
+    for (key, request) in requests {
+        let InputRequest::Elicitation(request) = request else {
+            return Err("not an elicitation".into());
+        };
+        let answer = human.answer(request.params);
+        responses.insert(key, serde_json::to_value(answer)?);
+    }
+    let link = shown_link(&human)?;
+    let second = client
+        .call_tool_once(with_meta(
+            CallToolRequestParams::new("knx_enroll_certificates")
+                .with_arguments(args)
+                .with_input_responses(responses)
+                .with_request_state(state.clone()),
+            meta_2026(&human)?,
+        ))
+        .await?;
+    let CallToolResponse::Complete(result) = second else {
+        return Err(format!("expected a result, got {second:?}").into());
+    };
+    let started = result.structured_content.ok_or("no structured content")?;
+    assert_eq!(started["ok"], true, "{started}");
+    assert_eq!(started["link_shown"], true, "{started}");
+    let status = call(&client, "knx_enroll_status", json!({"stop": true})).await?;
+    assert_eq!(status["end"], "stopped", "{status}");
+
+    // A stale request state starts nothing.
+    let stale = call_with_state(&client, &state).await?;
+    assert_eq!(stale["refused"], true, "{stale}");
+
+    let first_json = serde_json::to_string(&input.request_state)?;
+    assert_no_link(&format!("{started} {status} {stale} {first_json}"), &link)?;
+    Ok(())
+}
+
+/// Calls `knx_enroll_certificates` as the second round of `state`, with no
+/// answer.
+async fn call_with_state(client: &Client, state: &str) -> Result<Value, BoxError> {
+    let response = client
+        .call_tool_once(
+            CallToolRequestParams::new("knx_enroll_certificates").with_request_state(state),
+        )
+        .await?;
+    let CallToolResponse::Complete(result) = response else {
+        return Err("expected a result".into());
+    };
+    result
+        .structured_content
+        .ok_or_else(|| "no structured content".into())
 }

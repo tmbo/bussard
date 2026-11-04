@@ -40,8 +40,9 @@ warning.
    key pair `(b_sk, b_pk)` and a 32-byte random owner token. It creates the
    session on the relay (`PUT`, owner token as bearer).
 2. bussard derives the session code (below) and shows the link, as text and
-   as a terminal QR code, and the session code. Over MCP the tool returns
-   the link and the session code.
+   as a terminal QR code, and the session code. Over MCP the client shows the
+   link and the session code to the human with URL-mode elicitation; no tool
+   result carries either (#798).
 3. The phone opens the link. The page generates its own X25519 key pair
    `(p_sk, p_pk)` for this session (or loads the one it kept, see
    "Reconnect"), derives the session key and the session code, shows the
