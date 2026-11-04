@@ -105,10 +105,11 @@ the key up under the new address.
 Every Secure device ships with a certificate label that carries its factory
 key (FDSK). `bussard keys enroll` takes these labels from a phone camera into
 the key store, so you never type or paste one. The MCP tool
-`knx_enroll_certificates` runs the same session for the assistant; your chat
-app shows you the link and the session code itself, so they never pass
-through the assistant. If your chat app cannot show a link that way, run
-`bussard keys enroll` in a terminal.
+`knx_enroll_certificates` runs the same session for the assistant: bussard
+opens a pairing page in your browser with the session code, a QR code for
+your phone and the certificates as they arrive, so the link never passes
+through the assistant. If bussard cannot open a page (an SSH session, no
+display), run `bussard keys enroll` in a terminal.
 
 **How a label travels.** The phone reads the label, encrypts it on the phone
 and sends it to a relay. The relay forwards it to your bussard, which

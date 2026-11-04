@@ -4,10 +4,13 @@
 //! land in a test key store; no tool schema or result ever carries a label
 //! or a key. Synthetic keys only (`dev/enroll/vectors-v2.json`); no bus.
 //!
-//! Issue #798: the link and the session code reach the human only through
-//! URL-mode elicitation, answered here by a fake human in the client; no
-//! tool result carries either, and a client without URL elicitation gets a
-//! refusal pointing at `bussard keys enroll`.
+//! Issue #809: bussard opens a pairing page in the human's browser (a fake
+//! browser here) that shows the session code, the phone link and the
+//! certificates received. A client with URL-mode elicitation (#798, a fake
+//! human) gets the pairing page as an elicitation instead. No tool result
+//! carries the link, the session code or the pairing page's URL, and
+//! without a display the tool refuses with a pointer to `bussard keys
+//! enroll`.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -17,6 +20,7 @@ use std::time::{Duration, Instant};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use bussard_mcp::SharedState;
+use bussard_mcp::browser::BrowserOpener;
 use bussard_mcp::server::BussardMcp;
 use bussard_mcp::state::{BusStatus, ReadLimiter};
 use bussard_model::Model;
@@ -112,6 +116,37 @@ fn accepting() -> Human {
     Human::new(true, ElicitationAction::Accept)
 }
 
+/// The browser of the computer the server runs on: records the pages it
+/// opens, with no display or a failing opener on request.
+#[derive(Clone, Default)]
+struct FakeBrowser {
+    no_display: Option<String>,
+    fails: bool,
+    opened: Arc<Mutex<Vec<String>>>,
+}
+
+impl FakeBrowser {
+    fn opened(&self) -> Vec<String> {
+        self.opened.lock().map(|o| o.clone()).unwrap_or_default()
+    }
+}
+
+impl BrowserOpener for FakeBrowser {
+    fn no_display(&self) -> Option<String> {
+        self.no_display.clone()
+    }
+
+    fn open(&self, url: &str) -> Result<(), String> {
+        if self.fails {
+            return Err("xdg-open failed (exit status: 3)".to_string());
+        }
+        if let Ok(mut opened) = self.opened.lock() {
+            opened.push(url.to_string());
+        }
+        Ok(())
+    }
+}
+
 /// The key store's made-up password.
 const PASSWORD: &str = "synthetic-store-password";
 /// Synthetic certificates of `dev/enroll/vectors-v2.json`.
@@ -138,6 +173,10 @@ fn write_model(dir: &Path, bussard_toml: &str) -> Result<(), BoxError> {
 }
 
 async fn start(dir: &Path, human: Human) -> Result<Client, BoxError> {
+    start_with(dir, human, FakeBrowser::default()).await
+}
+
+async fn start_with(dir: &Path, human: Human, browser: FakeBrowser) -> Result<Client, BoxError> {
     bussard_model::dotenv::install(vec![(
         bussard_service::secure::KEYRING_PASSWORD_ENV.to_string(),
         PASSWORD.to_string(),
@@ -162,7 +201,7 @@ async fn start(dir: &Path, human: Human) -> Result<Client, BoxError> {
         home_assistant: None,
         jobs: Default::default(),
     });
-    let server = BussardMcp::new(state);
+    let server = BussardMcp::new(state).with_browser(Arc::new(browser));
     let (server_io, client_io) = tokio::io::duplex(64 * 1024);
     tokio::spawn(async move {
         if let Ok(running) = server.serve(server_io).await {
@@ -306,37 +345,37 @@ impl FakePhone {
     }
 }
 
-/// The one link shown so far, after checking its message names the page's
-/// host and the session code of the link's key.
-fn shown_link(human: &Human) -> Result<String, BoxError> {
+/// The one pairing page shown so far through elicitation, after checking
+/// its message names the page's host but not its URL.
+fn shown_pairing_page(human: &Human) -> Result<String, BoxError> {
     let shown = human.shown();
     let [one] = shown.as_slice() else {
-        return Err(format!("expected one link shown, got {shown:?}").into());
+        return Err(format!("expected one page shown, got {shown:?}").into());
     };
-    let params = fragment(&one.url)?;
-    let b_pk: [u8; 32] = URL_SAFE_NO_PAD
-        .decode(params.get("k").ok_or("no key")?)?
-        .as_slice()
-        .try_into()?;
-    let sid: [u8; 16] = URL_SAFE_NO_PAD
-        .decode(params.get("s").ok_or("no sid")?)?
-        .as_slice()
-        .try_into()?;
-    let code = bussard_secure::enroll::fingerprint(&sid, &b_pk);
-    assert!(one.message.contains(&code), "{}", one.message);
     let host = one
         .url
         .split_once("://")
         .and_then(|(_, rest)| rest.split('/').next())
         .ok_or("no host")?;
+    assert!(host.starts_with("127.0.0.1:"), "{}", one.url);
     assert!(one.message.contains(host), "{}", one.message);
     assert!(!one.message.contains(&one.url), "{}", one.message);
     Ok(one.url.clone())
 }
 
-/// Asserts that neither `link`, nor its session code, nor its key appears
-/// in `results`, the tool results the assistant saw.
-fn assert_no_link(results: &str, link: &str) -> TestResult {
+/// The text of the element `<tag id="{id}" ...>text</tag>` in `html`.
+fn element_text<'a>(html: &'a str, id: &str) -> Result<&'a str, BoxError> {
+    let start = html
+        .find(&format!("id=\"{id}\""))
+        .ok_or(format!("no #{id}"))?;
+    let rest = &html[start..];
+    let open = rest.find('>').ok_or("unclosed tag")? + 1;
+    let close = rest[open..].find('<').ok_or("no end tag")?;
+    Ok(&rest[open..open + close])
+}
+
+/// The key and the session code of `link`.
+fn key_and_code(link: &str) -> Result<(String, String), BoxError> {
     let params = fragment(link)?;
     let key = params.get("k").cloned().ok_or("no key")?;
     let b_pk: [u8; 32] = URL_SAFE_NO_PAD.decode(&key)?.as_slice().try_into()?;
@@ -345,7 +384,43 @@ fn assert_no_link(results: &str, link: &str) -> TestResult {
         .as_slice()
         .try_into()?;
     let code = bussard_secure::enroll::fingerprint(&sid, &b_pk);
-    for secret in [link, key.as_str(), code.as_str()] {
+    Ok((key, code))
+}
+
+/// The pairing page at `url`: the phone link it shows, after checking the
+/// page's session code is the one of the link's key.
+fn pairing_link(url: &str) -> Result<String, BoxError> {
+    let html = ureq::get(url).call()?.into_string()?;
+    let link = element_text(&html, "phone-link")?
+        .replace("&#39;", "'")
+        .replace("&quot;", "\"")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&");
+    let (_, code) = key_and_code(&link)?;
+    assert_eq!(element_text(&html, "code")?, code);
+    assert_no_secret(&html);
+    Ok(link)
+}
+
+/// The pairing page's live status.
+fn pairing_status(url: &str) -> Result<Value, BoxError> {
+    let body: Value =
+        serde_json::from_str(&ureq::get(&format!("{url}status")).call()?.into_string()?)?;
+    Ok(body["status"].clone())
+}
+
+/// Asserts that neither `link`, nor its session code, nor its key, nor the
+/// pairing page's URL or token appears in `results`, the tool results the
+/// assistant saw.
+fn assert_no_link(results: &str, link: &str, pairing: &str) -> TestResult {
+    let (key, code) = key_and_code(link)?;
+    let token = pairing
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .ok_or("no token")?;
+    for secret in [link, key.as_str(), code.as_str(), pairing, token] {
         assert!(!results.contains(secret), "{secret} leaked: {results}");
     }
     Ok(())
@@ -404,8 +479,9 @@ async fn test_knx_enroll_certificates_local_mode_stores_labels() -> TestResult {
     shown.push_str(&started.to_string());
     assert_eq!(started["ok"], true, "{started}");
     assert_eq!(started["local"], true, "{started}");
-    assert_eq!(started["link_shown"], true, "{started}");
-    let link = shown_link(&human)?;
+    assert_eq!(started["pairing_page_opened"], true, "{started}");
+    let pairing = shown_pairing_page(&human)?;
+    let link = pairing_link(&pairing)?;
     assert!(link.starts_with("http://127.0.0.1:"), "{link}");
     assert!(
         !fragment(&link)?.contains_key("r"),
@@ -479,8 +555,27 @@ async fn test_knx_enroll_certificates_local_mode_stores_labels() -> TestResult {
     let store = KeyStore::load(dir.path(), PASSWORD)?.ok_or("no key store")?;
     assert!(store.fdsk_for_serial(SerialNumber(SERIAL_A)).is_some());
 
+    // The pairing page lists the same certificates by serial number, in
+    // the glossary's words, and shows the end; it is gone shortly after.
+    let page_url = pairing.clone();
+    let page = tokio::task::spawn_blocking(move || pairing_status(&page_url)).await??;
+    assert_eq!(page["running"], false, "{page}");
+    assert_eq!(page["certificates"][0]["serial"], "00FA01020304", "{page}");
+    assert_eq!(page["certificates"][0]["badge"], "added", "{page}");
+    assert_eq!(
+        page["certificates"][0]["detail"], "for 1.1.20 Test actuator",
+        "{page}"
+    );
+    assert_eq!(page["certificates"][1]["badge"], "no device yet", "{page}");
+    assert_eq!(page["certificates"][2]["badge"], "already known", "{page}");
+    assert_eq!(
+        page["ended"], "Finished. You can close this page.",
+        "{page}"
+    );
+    assert_no_secret(&page.to_string());
+
     assert_no_secret(&shown);
-    assert_no_link(&shown, &link)?;
+    assert_no_link(&shown, &link, &pairing)?;
     Ok(())
 }
 
@@ -496,13 +591,28 @@ async fn test_knx_enroll_status_stop_closes_hosted_session() -> TestResult {
             relay.relay_url()
         ),
     )?;
-    let human = accepting();
-    let client = start(dir.path(), human.clone()).await?;
+    // Form elicitation only, as Claude Code before 2.1.287 declares it:
+    // bussard opens the pairing page itself.
+    let human = Human::new(false, ElicitationAction::Accept);
+    let browser = FakeBrowser::default();
+    let client = start_with(dir.path(), human.clone(), browser.clone()).await?;
 
     let started = call(&client, "knx_enroll_certificates", json!({})).await?;
     assert_eq!(started["ok"], true, "{started}");
     assert_eq!(started["local"], false, "{started}");
-    let link = shown_link(&human)?;
+    assert_eq!(started["pairing_page_opened"], true, "{started}");
+    assert!(human.shown().is_empty());
+    let pairing = browser.opened().first().cloned().ok_or("no page opened")?;
+    let page_url = pairing.clone();
+    let (link, html) = tokio::task::spawn_blocking(move || -> Result<_, BoxError> {
+        let html = ureq::get(&page_url).call()?.into_string()?;
+        Ok((pairing_link(&page_url)?, html))
+    })
+    .await??;
+    assert!(
+        html.contains("<svg class=\"qr\""),
+        "the page has no QR code"
+    );
     assert!(link.starts_with("https://page.invalid/enroll/#"), "{link}");
     assert!(fragment(&link)?.contains_key("r"), "{link}");
 
@@ -525,19 +635,21 @@ async fn test_knx_enroll_status_stop_closes_hosted_session() -> TestResult {
     assert_eq!(stopped["end"], "stopped", "{stopped}");
     assert_eq!(stopped["results"][0]["status"], "stored", "{stopped}");
 
-    // A new session can start once the last one ended.
+    // A new session can start once the last one ended, on a new page.
     let next = call(&client, "knx_enroll_certificates", json!({})).await?;
     assert_eq!(next["ok"], true, "{next}");
-    let shown = human.shown();
-    let next_link = &shown.get(1).ok_or("no second link")?.url;
-    assert_ne!(next_link, &link);
+    let next_pairing = browser.opened().get(1).cloned().ok_or("no second page")?;
+    assert_ne!(next_pairing, pairing);
+    let page_url = next_pairing.clone();
+    let next_link = tokio::task::spawn_blocking(move || pairing_link(&page_url)).await??;
+    assert_ne!(next_link, link);
     let stopped = call(&client, "knx_enroll_status", json!({"stop": true})).await?;
     assert_eq!(stopped["end"], "stopped", "{stopped}");
 
     let results = format!("{started} {running} {stopped} {next}");
     assert_no_secret(&results);
-    assert_no_link(&results, &link)?;
-    assert_no_link(&results, next_link)?;
+    assert_no_link(&results, &link, &pairing)?;
+    assert_no_link(&results, &next_link, &next_pairing)?;
     Ok(())
 }
 
@@ -564,20 +676,50 @@ async fn test_knx_enroll_certificates_wrong_password_refuses() -> TestResult {
 }
 
 #[tokio::test]
-async fn test_knx_enroll_certificates_without_url_elicitation_refuses() -> TestResult {
+async fn test_knx_enroll_certificates_without_display_refuses() -> TestResult {
     let dir = tempfile::tempdir()?;
     write_model(dir.path(), "")?;
-    // Form elicitation only, as Claude Code 2.1.280 declares it.
+    // An SSH session: whatever the chat app can do, nobody sees the page.
+    for human in [accepting(), Human::new(false, ElicitationAction::Accept)] {
+        let browser = FakeBrowser {
+            no_display: Some("bussard runs in an SSH session".to_string()),
+            ..FakeBrowser::default()
+        };
+        let client = start_with(dir.path(), human.clone(), browser.clone()).await?;
+        let refused = call(&client, "knx_enroll_certificates", json!({"local": true})).await?;
+        assert_eq!(refused["refused"], true, "{refused}");
+        assert_eq!(refused["pairing_page_opened"], false, "{refused}");
+        let summary = refused["summary"].as_str().ok_or("no summary")?;
+        assert!(summary.contains("`bussard keys enroll`"), "{summary}");
+        let reason = refused["reason"].as_str().ok_or("no reason")?;
+        assert!(reason.contains("SSH"), "{reason}");
+        assert!(!refused.to_string().contains("http"), "{refused}");
+        assert!(human.shown().is_empty());
+        assert!(browser.opened().is_empty());
+        let status = call(&client, "knx_enroll_status", json!({})).await?;
+        assert_eq!(status["session"], "none", "{status}");
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_knx_enroll_certificates_opener_failure_closes_session() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    write_model(dir.path(), "")?;
+    let browser = FakeBrowser {
+        fails: true,
+        ..FakeBrowser::default()
+    };
     let human = Human::new(false, ElicitationAction::Accept);
-    let client = start(dir.path(), human.clone()).await?;
+    let client = start_with(dir.path(), human, browser).await?;
     let refused = call(&client, "knx_enroll_certificates", json!({"local": true})).await?;
     assert_eq!(refused["refused"], true, "{refused}");
+    assert_eq!(refused["pairing_page_opened"], false, "{refused}");
     let summary = refused["summary"].as_str().ok_or("no summary")?;
     assert!(summary.contains("`bussard keys enroll`"), "{summary}");
     assert!(!refused.to_string().contains("http"), "{refused}");
-    assert!(human.shown().is_empty());
     let status = call(&client, "knx_enroll_status", json!({})).await?;
-    assert_eq!(status["session"], "none", "{status}");
+    assert_eq!(status["session"], "ended", "{status}");
     Ok(())
 }
 
@@ -590,11 +732,13 @@ async fn test_knx_enroll_certificates_declined_closes_session() -> TestResult {
     let declined = call(&client, "knx_enroll_certificates", json!({"local": true})).await?;
     assert_eq!(declined["ok"], false, "{declined}");
     assert_eq!(declined["declined"], true, "{declined}");
-    let link = shown_link(&human)?;
+    let pairing = shown_pairing_page(&human)?;
     let status = call(&client, "knx_enroll_status", json!({})).await?;
     assert_eq!(status["session"], "ended", "{status}");
     assert_eq!(status["end"], "stopped", "{status}");
-    assert_no_link(&format!("{declined} {status}"), &link)?;
+    let results = format!("{declined} {status}");
+    assert!(!results.contains(&pairing), "{results}");
+    assert!(!results.contains("http"), "{results}");
     Ok(())
 }
 
@@ -642,7 +786,9 @@ async fn test_knx_enroll_certificates_multi_round_trip_shows_link() -> TestResul
         let answer = human.answer(request.params);
         responses.insert(key, serde_json::to_value(answer)?);
     }
-    let link = shown_link(&human)?;
+    let pairing = shown_pairing_page(&human)?;
+    let page_url = pairing.clone();
+    let link = tokio::task::spawn_blocking(move || pairing_link(&page_url)).await??;
     let second = client
         .call_tool_once(with_meta(
             CallToolRequestParams::new("knx_enroll_certificates")
@@ -657,7 +803,7 @@ async fn test_knx_enroll_certificates_multi_round_trip_shows_link() -> TestResul
     };
     let started = result.structured_content.ok_or("no structured content")?;
     assert_eq!(started["ok"], true, "{started}");
-    assert_eq!(started["link_shown"], true, "{started}");
+    assert_eq!(started["pairing_page_opened"], true, "{started}");
     let status = call(&client, "knx_enroll_status", json!({"stop": true})).await?;
     assert_eq!(status["end"], "stopped", "{status}");
 
@@ -666,7 +812,11 @@ async fn test_knx_enroll_certificates_multi_round_trip_shows_link() -> TestResul
     assert_eq!(stale["refused"], true, "{stale}");
 
     let first_json = serde_json::to_string(&input.request_state)?;
-    assert_no_link(&format!("{started} {status} {stale} {first_json}"), &link)?;
+    assert_no_link(
+        &format!("{started} {status} {stale} {first_json}"),
+        &link,
+        &pairing,
+    )?;
     Ok(())
 }
 

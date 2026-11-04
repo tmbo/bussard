@@ -165,6 +165,7 @@
 #![warn(missing_docs)]
 
 pub mod args;
+pub mod browser;
 pub mod everyday;
 pub mod guidance;
 pub mod http;

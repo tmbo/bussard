@@ -103,7 +103,7 @@ async fn serve_file(path: String) -> Response {
 }
 
 /// Refuses a request whose `Host` is not one of this server's names.
-async fn check_host(
+pub(crate) async fn check_host(
     State(allowed): State<std::sync::Arc<Vec<String>>>,
     request: Request,
     next: Next,
