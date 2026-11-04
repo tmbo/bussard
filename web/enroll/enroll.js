@@ -325,14 +325,21 @@ export function normalizeCertificate(input) {
     .replace(/8/g, "B");
 }
 
-/** CRC-4/ITU (x^4 + x + 1, reflected, init 0, no final xor). */
-export function crc4itu(bytes) {
+/**
+ * The certificate check: plain CRC-4, x^4 + x + 1 (0x3), init 0, MSB first
+ * (not reflected), no final xor, direct (not augmented). Confirmed on real
+ * labels (#201); not CRC-4/ITU, the reflected variant.
+ */
+export function crc4(bytes) {
   let crc = 0;
   for (const byte of bytes) {
-    crc ^= byte;
-    for (let i = 0; i < 8; i++) crc = crc & 1 ? (crc >>> 1) ^ 0x0c : crc >>> 1;
+    for (let bit = 7; bit >= 0; bit--) {
+      const top = ((crc >> 3) & 1) ^ ((byte >> bit) & 1);
+      crc = (crc << 1) & 0x0f;
+      if (top) crc ^= 0x3;
+    }
   }
-  return crc & 0x0f;
+  return crc;
 }
 
 /**
@@ -342,7 +349,7 @@ export function crc4itu(bytes) {
  * - `empty`: nothing typed
  * - `incomplete`: fewer than 36 valid characters so far
  * - `malformed`: a character outside base32, or more than 36
- * - `bad_check`: decodes, but the 4-bit check does not match
+ * - `bad_check`: decodes, but the 4-bit check does not match (not sent)
  * - `ok`: decodes and the check matches
  *
  * `serial` (12 uppercase hex digits) and `check` are set for `bad_check` and
@@ -376,7 +383,7 @@ export function checkCertificate(input) {
   // 180 = 22 * 8 + 4: the last 4 bits remain in `acc`.
   const data = bytes.slice(0, 22);
   const check = acc & 0x0f;
-  const expected = crc4itu(data);
+  const expected = crc4(data);
   const serial = toHex(data.slice(0, 6)).toUpperCase();
   const fdsk = data.slice(6, 22);
   return {

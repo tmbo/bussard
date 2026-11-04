@@ -22,10 +22,10 @@ type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Synthetic certificates from `dev/enroll/vectors-v1.json`.
-const CERT_A: &str = "AD5ACAQDASQKDIVDUSS2NJ5IVGVKXLFNV2X5";
+const CERT_A: &str = "AD5ACAQDASQKDIVDUSS2NJ5IVGVKXLFNV2XR";
 const SERIAL_A: &str = "00FA01020304";
 const FDSK_A: &str = "A0A1A2A3A4A5A6A7A8A9AAABACADAEAF";
-const CERT_B: &str = "ACB2DMWD2QAAAAAAAAAAAAAAAAAAAAAAAAAG";
+const CERT_B: &str = "ACB2DMWD2QAAAAAAAAAAAAAAAAAAAAAAAAAD";
 const SERIAL_B: &str = "0083A1B2C3D4";
 
 /// A test key store: knows the vector certificates' serials, stores each

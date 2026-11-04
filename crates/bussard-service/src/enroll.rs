@@ -71,8 +71,8 @@ pub struct EnrolOutcome {
     /// That device's name in the model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// Whether the label's check matched (CRC-4/ITU, not yet confirmed on a
-    /// real label); absent when the text did not decode.
+    /// Whether the label's check matched; `false` makes the outcome
+    /// `invalid`. Absent when the text did not decode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check_ok: Option<bool>,
     /// A sentence for the user, when there is more to say than the status.
@@ -216,10 +216,9 @@ impl CertificateEnrolment {
     /// device whose lock entry records it (#752); a certificate matched by
     /// the lock also records the serial for that device in the key store.
     ///
-    /// A label whose check does not match is entered only when its serial
-    /// number matches a device (the check variant is not yet confirmed on a
-    /// real label, #201); otherwise it is `invalid`, so a mistyped label does
-    /// not become an unassigned key.
+    /// A label whose check does not match is `invalid` and nothing is
+    /// written, so a mistyped label never becomes a wrong key. The outcome
+    /// still names its serial number and any device that has it.
     pub fn enroll_certificate(&mut self, text: &str) -> EnrolOutcome {
         let certificate = match Certificate::decode(text) {
             Ok(c) => c,
@@ -241,19 +240,11 @@ impl CertificateEnrolment {
             message: None,
         };
         if !certificate.check_ok {
-            if matched.is_none() {
-                outcome.message = Some(
-                    "the label's check does not match and no device has its serial number; \
-                     re-check the text (nothing was written)"
-                        .to_string(),
-                );
-                return outcome;
-            }
             outcome.message = Some(
-                "the label's check does not match (CRC-4/ITU, not yet confirmed on a real \
-                 label); entered because the serial number matched"
+                "the label's check does not match; re-check the text (nothing was written)"
                     .to_string(),
             );
+            return outcome;
         }
         let fdsk = certificate.fdsk.clone();
         // A device only the lock knows by this serial: the store learns the
@@ -574,6 +565,23 @@ mod tests {
     }
 
     #[test]
+    fn test_enroll_certificate_bad_check_refused_even_when_serial_matches() -> TestResult {
+        let dir = temp_dir("badcheck")?;
+        let mut store = KeyStore::new("synthetic");
+        store.devices.entry("1.1.12".parse()?).or_default().serial = Some(SerialNumber(SERIAL));
+        store.save(&dir, PASSWORD)?;
+        // The bad_check vector carries SERIAL.
+        let outcome = enroll_certificate(&dir, PASSWORD, "AD5ACAQDASQKDIVDUSS2NJ5IVGVKXLFNV2XQ")?;
+        assert_eq!(outcome.status, EnrolStatus::Invalid);
+        assert_eq!(outcome.check_ok, Some(false));
+        assert_eq!(outcome.ia.as_deref(), Some("1.1.12"));
+        let back = KeyStore::load(&dir, PASSWORD)?.ok_or("no store")?;
+        assert!(back.fdsk_for_serial(SerialNumber(SERIAL)).is_none());
+        std::fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    #[test]
     fn test_enroll_certificate_unassigned_then_conflict() -> TestResult {
         let dir = temp_dir("unassigned")?;
         let mut session = CertificateEnrolment::open(&dir, PASSWORD)?;
@@ -598,8 +606,8 @@ mod tests {
         let outcome = session.enroll_certificate("ABC");
         assert_eq!(outcome.status, EnrolStatus::Invalid);
         assert!(outcome.serial.is_none());
-        // The bad_check vector: no device has its serial, so nothing is kept.
-        let bad = session.enroll_certificate("AD5ACAQDASQKDIVDUSS2NJ5IVGVKXLFNV2X4");
+        // The bad_check vector: refused, nothing is kept.
+        let bad = session.enroll_certificate("AD5ACAQDASQKDIVDUSS2NJ5IVGVKXLFNV2XQ");
         assert_eq!(bad.status, EnrolStatus::Invalid);
         assert_eq!(bad.check_ok, Some(false));
         assert!(session.store().unassigned.is_empty());

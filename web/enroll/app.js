@@ -178,14 +178,15 @@ function wireEntry() {
   const update = () => {
     const r = checkCertificate(input.value);
     renderTyped(r);
-    sendBtn.disabled = !(r.status === "ok" || r.status === "bad_check") || state.phase !== "active";
-    sendBtn.textContent = r.status === "bad_check" ? "Send anyway" : "Send";
+    // A label whose check does not match is never sent: bussard would refuse
+    // it too (dev/enroll-protocol.md, "Certificate text").
+    sendBtn.disabled = r.status !== "ok" || state.phase !== "active";
     return r;
   };
   input.addEventListener("input", update);
   const submit = async () => {
     const r = update();
-    if (r.status !== "ok" && r.status !== "bad_check") return;
+    if (r.status !== "ok") return;
     // Cleared after sending and on a duplicate alike: a certificate is
     // never shown again once it has left the field.
     const outcome = await submitCertificate(r, "typed");
@@ -223,7 +224,7 @@ function renderTyped(r) {
           : `${r.normalized.length} characters: a certificate has 36`;
       break;
     case "bad_check":
-      status.classList.add("warn");
+      status.classList.add("bad");
       status.textContent = `Serial ${r.serial}. The check character does not match: most likely a typo. Compare with the sticker.`;
       break;
     case "ok":
@@ -258,7 +259,6 @@ async function submitCertificate(r, source) {
     digest: d,
     serial: r.serial,
     source,
-    checkMismatch: r.status === "bad_check",
     status: "queued",
     plaintext: null,
   };
@@ -487,9 +487,6 @@ function renderItem(item) {
     parts.push(long);
   }
   if (item.message) parts.push(item.message);
-  if (item.checkMismatch && !GOOD.has(item.status)) {
-    parts.push("The check character did not match on this phone.");
-  }
   li.querySelector(".detail").textContent = parts.join(". ");
   const n = state.items.size;
   $("count").textContent = n ? `(${n})` : "";
@@ -670,7 +667,15 @@ async function onQr(payload) {
     return;
   }
   const r = checkCertificate(text);
-  if (r.status !== "ok" && r.status !== "bad_check") return;
+  if (r.status === "bad_check") {
+    const now = Date.now();
+    if (now - camera.lastMiss > 3000) {
+      camera.lastMiss = now;
+      toast(`Serial ${r.serial}: the check does not match. Rescan or type the label.`);
+    }
+    return;
+  }
+  if (r.status !== "ok") return;
   await submitCertificate(r, "scan");
 }
 

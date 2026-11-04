@@ -13,7 +13,7 @@ import {
   certificateMessage,
   checkCertificate,
   concatBytes,
-  crc4itu,
+  crc4,
   deriveSessionKey,
   doneMessage,
   extractFromQr,
@@ -248,10 +248,12 @@ test("test_checkCertificate_valid_vectors", () => {
   }
 });
 
-test("test_crc4itu_over_vector_bytes", () => {
+test("test_crc4_over_vector_bytes", () => {
   for (const v of vectors.certificates.valid) {
-    assert.equal(crc4itu(fromHex(v.serial + v.fdsk)), v.check);
+    assert.equal(crc4(fromHex(v.serial + v.fdsk)), v.check);
   }
+  // Plain CRC-4 of "123456789"; the reflected CRC-4/ITU would give 0x7.
+  assert.equal(crc4(new TextEncoder().encode("123456789")), 0xe);
 });
 
 test("test_normalizeCertificate_vectors", () => {
