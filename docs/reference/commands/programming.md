@@ -347,7 +347,7 @@ It refuses before any write when:
 
     "Another application": on System B, `PID_PROGRAM_VERSION` differs from the product's or cannot be read. On System 7, a `PID_PROGRAM_VERSION` of the application object that names another application refuses on its own; otherwise every load-state machine must be `Loaded` and the first octets of each application code segment must read back as the product's bytes. A code segment is one streamed verbatim from the product, never a link table, the group-object descriptor table or parameter memory. A product with no code segment is judged by the load-state machines alone.
 
-    "Placed under the configuration" covers applications without `DownloadInvisibleParameters` and without `PreferPartialDownloadIfApplicationLoaded`, where a hidden parameter is downloaded at its default. Segments not compared after the restart: System 7 segments whose `SegFlags` is 0, and the Jung `0x4916` region.
+    "Placed under the configuration" covers applications without `DownloadInvisibleParameters` whose `MinEtsVersion` is 5 or later, where a hidden parameter is downloaded at its default. Segments not compared after the restart: System 7 segments whose `SegFlags` is 0, and the Jung `0x4916` region.
 
 ### Parameter read-back
 

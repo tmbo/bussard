@@ -79,6 +79,24 @@
 //!   default one (ABB Modbus `A-3002` `signal_N_device_active`, value 1,
 //!   branches `0` and default).
 //!
+//! On System B such a parameter also selects no `test` branch, whatever its
+//! value, when no `<Assign>` anywhere in the Dynamic section targets it
+//! (issue #839): Enertex MeTa² (`M-00A6_A-0031-30-EE6B`, defaults sweep of
+//! 2026-11-04) steers with the `Access="None"` enumeration
+//! `b_ParameterAusblenden` (value 1, never assigned) through chooses with
+//! `test="0"` and `test="1"` branches only, and ETS leaves the parameters and
+//! objects behind its `test="1"` branches out. The Zennio programs steer with
+//! never-shown virtual `Access="None"` parameters the same way, and ETS takes
+//! their matching `test` branches: of the sweep's System B rows, 426 such
+//! parameters in 62 Zennio programs (the Flat push buttons' `numOfButtons`,
+//! value 6; the ALLinBOX `FCR_*_virtual` and `tTh[n].hcAuto_relative`) have a
+//! non-empty branch matching their value, every row compares identical with
+//! the branch taken and two differ without it (`A-5751`, `A-6411`), and every
+//! one of those parameters is an `<Assign>` target; Enertex's is the only
+//! such parameter no `<Assign>` sets. So the assignment, not `Access`,
+//! separates them. A `default` branch beside test branches is taken as for
+//! any parameter when no test matches the value (`A-3002` above).
+//!
 //! Whether the system or something else that sets the System 7 programs apart
 //! decides is open until a System 7 twin of the synthetic product is captured.
 //! The target ref of a reached `<Assign>` counts as active too: ETS writes it.
@@ -1205,6 +1223,7 @@ pub fn evaluate_dynamic<S: DynamicSource + ?Sized>(
 
     let unions = UnionIndex::new(app);
     let placed = Rc::new(placed_parameters(app));
+    let assigned = Rc::new(assigned_parameters(app));
     let mut shared = SharedUnions::default();
     // The active parameters start empty and grow pass by pass (the least
     // fixpoint): a choose whose parameter is shown only later in document
@@ -1218,6 +1237,7 @@ pub fn evaluate_dynamic<S: DynamicSource + ?Sized>(
         walk = Walk {
             shared: std::mem::take(&mut shared),
             placed: Rc::clone(&placed),
+            assigned: Rc::clone(&assigned),
             active_before: std::mem::take(&mut active),
             ..Walk::default()
         };
@@ -2025,6 +2045,39 @@ fn placed_parameters<S: DynamicSource + ?Sized>(app: &S) -> HashSet<String> {
     out
 }
 
+/// The `Parameter` ids (full) an `<Assign>` of the application's or any
+/// `<ModuleDef>`'s Dynamic section targets, in any branch (issue #839).
+fn assigned_parameters<S: DynamicSource + ?Sized>(app: &S) -> HashSet<String> {
+    fn visit<S: DynamicSource + ?Sized>(app: &S, nodes: &[DynamicNode], out: &mut HashSet<String>) {
+        for node in nodes {
+            match node {
+                DynamicNode::Assign { target, .. } => {
+                    if let Some(id) = parameter_id(app, target) {
+                        out.insert(id.to_string());
+                    }
+                }
+                DynamicNode::Choose { whens, .. } => {
+                    for w in whens {
+                        visit(app, &w.children, out);
+                    }
+                }
+                DynamicNode::Channel { children, .. }
+                | DynamicNode::ParameterBlock { children, .. }
+                | DynamicNode::Repeat { children, .. } => visit(app, children, out),
+                DynamicNode::ComObjectRefRef(_)
+                | DynamicNode::Module { .. }
+                | DynamicNode::ParameterRefRef(_) => {}
+            }
+        }
+    }
+    let mut out = HashSet::new();
+    visit(app, app.dynamic(), &mut out);
+    for (_, body) in app.module_dynamics() {
+        visit(app, body, &mut out);
+    }
+    out
+}
+
 /// The scope a ref reached inside `module` belongs to (see [`Walk::scope`]):
 /// the innermost instance, `module` or one of its parents, whose module
 /// definition the ref belongs to.
@@ -2369,6 +2422,9 @@ struct Walk {
     /// The parameters the Dynamic section shows somewhere
     /// ([`placed_parameters`]).
     placed: Rc<HashSet<String>>,
+    /// The parameters an `<Assign>` of the Dynamic section targets
+    /// ([`assigned_parameters`]).
+    assigned: Rc<HashSet<String>>,
     /// The active parameter refs the previous pass reached, keyed by (module
     /// instance id or `""`, app-relative `ParameterRef` id; issue #563).
     active_before: HashSet<(String, String)>,
@@ -2564,10 +2620,24 @@ impl Walk {
             return true;
         };
         if !self.placed.contains(id) {
-            return !(default_only && app.is_system_b() && app.is_virtual(id));
+            return !(default_only && self.never_shown_virtual_b(app, id));
         }
         let key = (instance.to_string(), param_ref_id.to_string());
         self.active_now.contains(&key) || self.active_before.contains(&key)
+    }
+
+    /// Whether `param_id` is a parameter the Dynamic section never shows and
+    /// that is virtual, on a System B program: a `<choose>` on it selects no
+    /// branch when it is default-only (issue #474); see the module docs.
+    fn never_shown_virtual_b<S: DynamicSource + ?Sized>(&self, app: &S, param_id: &str) -> bool {
+        !self.placed.contains(param_id) && app.is_system_b() && app.is_virtual(param_id)
+    }
+
+    /// Whether a `<choose>` on `param_id` selects no `test` branch (issue
+    /// #839): a never-shown virtual parameter on System B
+    /// ([`Self::never_shown_virtual_b`]) that no `<Assign>` targets.
+    fn selects_no_test_branch<S: DynamicSource + ?Sized>(&self, app: &S, param_id: &str) -> bool {
+        self.never_shown_virtual_b(app, param_id) && !self.assigned.contains(param_id)
     }
 
     fn module_args(&self, module: Option<usize>) -> Option<&HashMap<String, i64>> {
@@ -2761,8 +2831,17 @@ impl Walk {
                             value_of(app, values, instance, self.module_args(scope), param_ref_id)
                         })
                         .and_then(|v| v.trim().parse::<f64>().ok());
+                    // A never-shown virtual parameter on System B that no
+                    // `<Assign>` sets selects no `test` branch (issue #839);
+                    // a `default` branch beside tests is taken as usual (ABB
+                    // Modbus `A-3002`).
+                    let no_tests = parameter_id(app, param_ref_id)
+                        .is_some_and(|id| self.selects_no_test_branch(app, id));
                     for i in taken_branches(whens.iter().map(|w| &w.test), value) {
                         if let Some(w) = whens.get(i) {
+                            if no_tests && w.test != WhenTest::Default {
+                                continue;
+                            }
                             self.run(app, values, &w.children, module, depth);
                         }
                     }

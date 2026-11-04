@@ -1357,6 +1357,7 @@ mod tests {
            <Dynamic><ParameterBlock Id="A_MD-1_PB-1"><ComObjectRefRef RefId="A_MD-1_O-1_R-1" /></ParameterBlock></Dynamic>
           </ModuleDef></ModuleDefs>
           <Dynamic>
+           <ChannelIndependentBlock><ParameterBlock Id="A_PB-1"><ParameterRefRef RefId="A_P-1_R-1" /></ParameterBlock></ChannelIndependentBlock>
            <choose ParamRefId="A_P-1_R-1">
             <when test="0"><Module Id="A_MD-1_M-1" RefId="A_MD-1"><NumericArg RefId="A_MD-1_A-2" Value="2" /></Module></when>
             <when test="1">
