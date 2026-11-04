@@ -1,12 +1,12 @@
 # Cloudflare Worker for the bussard enrolment relay (#731).
-# The project's relay is served at relay.bussard.tmbo.dev (decided
+# The project's relay is served at bussard-relay.tmbo.dev (decided
 # 2026-11-03, #731); a self-hosted copy replaces the route (README.md,
 # "Deploy").
 name = "bussard-enroll-relay"
 main = "src/worker.js"
 compatibility_date = "2026-10-01"
 workers_dev = false
-routes = [{ pattern = "relay.bussard.tmbo.dev", custom_domain = true }]
+routes = [{ pattern = "bussard-relay.tmbo.dev", custom_domain = true }]
 
 # The relay never logs bodies, and the request URLs carry session ids, so
 # Workers Logs stay off.
