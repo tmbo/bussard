@@ -10,7 +10,7 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' blob: mediastream:; connect-src 'self' https://bussard-relay.tmbo.dev; base-uri 'none'; form-action 'none'; manifest-src 'none'; worker-src 'none'; frame-src 'none'; object-src 'none'">
   <meta name="referrer" content="no-referrer">
   <meta name="robots" content="noindex, nofollow">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <meta name="color-scheme" content="light dark">
   <title>bussard enrol</title>
   <link rel="icon" href="data:,">
@@ -18,63 +18,106 @@
   <script type="module" src="app.js"></script>
 </head>
 <body>
-  <header class="top">
+  <header id="top" class="top">
     <span class="brand">bussard</span>
     <span class="title">Add KNX Secure certificates</span>
+    <span class="top-tools">
+      <button id="code-chip" class="chip" type="button" hidden aria-label="Show the session code again">
+        <span class="chip-label">Code</span> <span id="code-chip-text" class="chip-code"></span>
+      </button>
+      <button id="sound" class="icon-btn" type="button" aria-pressed="true" aria-label="Sound on" hidden>
+        <svg class="icon on" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor"/><path d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <svg class="icon off" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor"/><path d="M16.5 9.5l5 5M21.5 9.5l-5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+    </span>
   </header>
 
   <main>
     <!-- Shown while the page starts, and instead of everything else on a
-         fatal problem (no link, broken link, browser too old). -->
+         fatal problem (no link, broken link, browser too old, codes differ). -->
     <section id="fatal" class="panel fatal" hidden>
       <h1 id="fatal-title">Starting</h1>
       <p id="fatal-text"></p>
     </section>
 
-    <section id="session" hidden>
-      <div class="fingerprint-box">
-        <div class="fp-label">Session code</div>
-        <div id="fingerprint" class="fingerprint" aria-live="polite">----&#8209;----</div>
-        <p class="fp-hint">Check that bussard shows the same code. If it differs, close this page.</p>
+    <!-- First step: the session code, checked once. -->
+    <section id="confirm" class="panel confirm" hidden>
+      <div class="fp-label">Session code</div>
+      <div id="fingerprint" class="fingerprint">----&#8209;----</div>
+      <p class="confirm-q">Does bussard show the same code?</p>
+      <div class="confirm-actions">
+        <button id="code-ok" class="primary" type="button">Matches</button>
+        <button id="code-bad" class="danger" type="button">Doesn't match</button>
       </div>
+      <p class="muted small">A different code means this page is not talking to your bussard.</p>
+    </section>
 
+    <section id="session" hidden>
       <div id="banner" class="banner" role="status" hidden></div>
 
       <div id="capture">
-        <div class="camera">
-          <video id="video" playsinline muted autoplay></video>
-          <div class="reticle" aria-hidden="true"></div>
-          <div id="camera-msg" class="camera-msg" hidden></div>
-          <button id="camera-start" class="camera-start" type="button" hidden>Start camera</button>
-          <div id="scan-toast" class="scan-toast" role="status" hidden></div>
+        <div class="tabs" role="tablist" aria-label="How to add a label">
+          <button id="tab-scan" class="tab" type="button" role="tab" aria-controls="scan-panel" aria-selected="true">Scan</button>
+          <button id="tab-type" class="tab" type="button" role="tab" aria-controls="type-panel" aria-selected="false">Type</button>
         </div>
-        <p class="hint">Point the camera at the QR code on the device's certificate sticker, or type the 36 characters printed under it.</p>
 
-        <div class="entry">
-          <label for="typed">Certificate text</label>
+        <div id="scan-panel" role="tabpanel" aria-labelledby="tab-scan">
+          <div class="camera">
+            <video id="video" playsinline muted autoplay></video>
+            <div class="reticle" aria-hidden="true"></div>
+            <div id="scan-flash" class="scan-flash" role="status" aria-live="assertive" hidden>
+              <svg class="flash-icon ok" viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="22" fill="currentColor"/><path d="M14 25l7 7 13-15" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <svg class="flash-icon bad" viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="22" fill="currentColor"/><path d="M16 16l16 16M32 16L16 32" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round"/></svg>
+              <svg class="flash-icon repeat" viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="22" fill="currentColor"/><path d="M15 24h18" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round"/></svg>
+              <div id="scan-flash-title" class="flash-title"></div>
+              <div id="scan-flash-text" class="flash-text"></div>
+            </div>
+            <button id="torch" class="torch" type="button" aria-pressed="false" aria-label="Flashlight" hidden>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 2h10v4l-3 4v11a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1V10L7 6z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 13v3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            </button>
+            <div id="camera-msg" class="camera-msg" hidden></div>
+            <button id="camera-start" class="camera-start" type="button" hidden>Start camera</button>
+          </div>
+          <p class="hint">Hold each certificate QR code in the frame. A new label beeps and is sent at once.</p>
+        </div>
+
+        <div id="type-panel" class="entry" role="tabpanel" aria-labelledby="tab-type" hidden>
+          <label for="typed">The 36 characters under the QR code</label>
           <input id="typed" type="text" inputmode="text" autocomplete="off" autocorrect="off"
                  autocapitalize="characters" spellcheck="false" enterkeyhint="send"
-                 placeholder="XXXXXX-XXXXXX-XXXXXX-XXXXXX-XXXXXX-XXXXXX">
+                 placeholder="XXXXXX-XXXXXX-XXXXXX-...">
           <div id="typed-preview" class="typed-preview" aria-live="polite"></div>
-          <div id="typed-status" class="typed-status" aria-live="polite">Dashes and spaces are optional.</div>
-          <button id="send" class="primary" type="button" disabled>Send</button>
+          <div class="entry-row">
+            <div id="typed-status" class="typed-status" aria-live="polite">Dashes and spaces are optional.</div>
+            <button id="send" class="primary" type="button" disabled>Send</button>
+          </div>
         </div>
       </div>
 
-      <h2 class="list-title">Certificates <span id="count" class="count"></span></h2>
+      <h2 class="list-title">Labels</h2>
       <ol id="labels" class="labels"></ol>
-      <p id="labels-empty" class="muted">Nothing sent yet.</p>
+      <p id="labels-empty" class="muted small">Nothing sent yet.</p>
 
-      <div class="finish">
-        <button id="done" class="secondary" type="button">Finished</button>
-        <p class="muted small">Ends the session for this phone. bussard stores what it has received.</p>
-      </div>
+      <p class="foot">
+        Keys are encrypted on this phone for bussard; the relay cannot read them.
+        No tracking. The browser remembers only Scan or Type and the sound setting.
+      </p>
     </section>
   </main>
 
-  <footer class="foot">
-    Keys are encrypted on this phone for bussard; the relay cannot read them.
-    No tracking, nothing stored on this phone.
-  </footer>
+  <!-- Always visible: the running count and the way out. -->
+  <div id="bar" class="bar" hidden>
+    <div class="bar-inner">
+      <div id="summary" class="summary" aria-live="polite">No labels yet</div>
+      <button id="done" class="primary finish" type="button">Finish</button>
+    </div>
+  </div>
+
+  <dialog id="code-dialog" class="code-dialog" aria-labelledby="code-dialog-title">
+    <div id="code-dialog-title" class="fp-label">Session code</div>
+    <div id="code-dialog-code" class="fingerprint"></div>
+    <p class="muted small">bussard shows the same code while the session runs.</p>
+    <button id="code-dialog-close" class="secondary" type="button">Close</button>
+  </dialog>
 </body>
 </html>

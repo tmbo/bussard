@@ -1,6 +1,8 @@
 // UI of the certificate enrolment page: reads the link, derives the session
-// key, scans or takes typed certificates, sends them to the relay encrypted,
-// and shows bussard's result per label. Protocol: dev/enroll-protocol.md.
+// key, asks once to confirm the session code, scans or takes typed
+// certificates, sends them to the relay encrypted, and shows bussard's
+// result per label. Protocol: dev/enroll-protocol.md. Wording and counting:
+// ui.js.
 
 import {
   EnrollError,
@@ -20,6 +22,18 @@ import {
   toHex,
   utf8,
 } from "./enroll.js";
+import {
+  KEPT,
+  PREF_KEYS,
+  ScanGate,
+  bottomInset,
+  readPref,
+  shortStatus,
+  statusDetail,
+  statusTone,
+  summaryText,
+  writePref,
+} from "./ui.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -27,21 +41,7 @@ const POLL_WAIT_S = 25;
 const FETCH_TIMEOUT_MS = (POLL_WAIT_S + 10) * 1000;
 const SCAN_INTERVAL_MS = 180;
 const SCAN_MAX_EDGE = 720;
-
-const STATUS_TEXT = {
-  queued: "Waiting to send",
-  sending: "Sending",
-  sent: "Sent, waiting for bussard",
-  stored: "Stored",
-  unassigned: "Stored, no device in the model has this serial yet",
-  already_stored: "Already stored",
-  conflict: "Conflict: bussard holds a different key for this serial; nothing written",
-  invalid: "bussard rejected the text",
-  error: "Error",
-  rejected: "Not sent",
-};
-const GOOD = new Set(["stored", "unassigned", "already_stored"]);
-const BAD = new Set(["conflict", "invalid", "error", "rejected"]);
+const FLASH_MS = 1100;
 
 /** Session state for this page load. */
 const state = {
@@ -55,9 +55,19 @@ const state = {
   sendQueue: [],
   sending: false,
   downAfter: 0,
-  phase: "active", // active | finished | closed
+  phase: "confirm", // confirm | active | finished | closed
   relayDown: false,
+  mode: "scan", // scan | type
 };
+
+/** localStorage, or null where the browser refuses it. */
+function prefStore() {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
 
 // -------------------------------------------------------------------- boot
 
@@ -91,15 +101,38 @@ async function main() {
   }
   Object.assign(state, { link, subtle, key, phone });
 
-  $("fingerprint").textContent = (await fingerprint(subtle, link.bussardPublic)).replace("-", "‑");
-  $("session").hidden = false;
+  const code = (await fingerprint(subtle, link.bussardPublic)).replace("-", "‑");
+  $("fingerprint").textContent = code;
+  $("code-chip-text").textContent = code;
+  $("code-dialog-code").textContent = code;
   $("fatal").hidden = true;
-
-  wireEntry();
-  $("done").addEventListener("click", finish);
+  $("confirm").hidden = false;
   window.addEventListener("hashchange", () => location.reload());
 
-  startCamera();
+  $("code-ok").addEventListener("click", confirmCode);
+  $("code-bad").addEventListener("click", () => {
+    state.phase = "closed";
+    fatal(
+      "The codes differ",
+      "This page is not talking to your bussard, so nothing was sent. Close this page, stop the session in bussard and start a new one.",
+    );
+  });
+}
+
+/** The session code matched: start the session proper. */
+function confirmCode() {
+  if (state.phase !== "confirm") return;
+  state.phase = "active";
+  unlockAudio(); // inside the tap, which iOS requires for sound
+  $("confirm").hidden = true;
+  $("session").hidden = false;
+  $("bar").hidden = false;
+  $("code-chip").hidden = false;
+  $("top").classList.add("running");
+  wireChrome();
+  wireEntry();
+  updateSummary();
+  setMode(readPref(prefStore(), PREF_KEYS.mode, ["scan", "type"], "scan"), false);
   pollDown();
 }
 
@@ -107,7 +140,11 @@ function fatal(title, text) {
   $("fatal-title").textContent = title;
   $("fatal-text").textContent = text;
   $("fatal").hidden = false;
+  $("confirm").hidden = true;
   $("session").hidden = true;
+  $("bar").hidden = true;
+  $("code-chip").hidden = true;
+  $("sound").hidden = true;
   stopCamera();
 }
 
@@ -126,6 +163,90 @@ function linkProblem(e) {
     "The link is damaged",
     `${e?.message ?? e}. Copy the whole link again from bussard, or scan its QR code.`,
   );
+}
+
+// ------------------------------------------------------------------ chrome
+
+/** Header tools, tabs, the finish bar and the keyboard inset. */
+function wireChrome() {
+  const dialog = $("code-dialog");
+  $("code-chip").addEventListener("click", () => {
+    if (typeof dialog.showModal === "function") dialog.showModal();
+    else dialog.setAttribute("open", "");
+  });
+  $("code-dialog-close").addEventListener("click", () => {
+    if (typeof dialog.close === "function") dialog.close();
+    else dialog.removeAttribute("open");
+  });
+
+  sound.on = readPref(prefStore(), PREF_KEYS.sound, ["on", "off"], "on") === "on";
+  renderSound();
+  $("sound").hidden = false;
+  $("sound").addEventListener("click", () => {
+    sound.on = !sound.on;
+    writePref(prefStore(), PREF_KEYS.sound, sound.on ? "on" : "off");
+    renderSound();
+    if (sound.on) {
+      unlockAudio();
+      beep("ok");
+    }
+  });
+
+  for (const mode of ["scan", "type"]) {
+    $(`tab-${mode}`).addEventListener("click", () => {
+      unlockAudio();
+      setMode(mode, true);
+      // Focus inside the tap: iOS opens the keyboard only then.
+      if (mode === "type") $("typed").focus();
+    });
+  }
+  $("tab-scan").addEventListener("keydown", tabKeys);
+  $("tab-type").addEventListener("keydown", tabKeys);
+
+  $("done").addEventListener("click", finish);
+  $("torch").addEventListener("click", toggleTorch);
+
+  const vv = window.visualViewport;
+  if (vv) {
+    vv.addEventListener("resize", updateInset);
+    vv.addEventListener("scroll", updateInset);
+  }
+  window.addEventListener("resize", updateInset);
+  updateInset();
+}
+
+function tabKeys(ev) {
+  if (ev.key !== "ArrowLeft" && ev.key !== "ArrowRight") return;
+  ev.preventDefault();
+  const next = state.mode === "scan" ? "type" : "scan";
+  setMode(next, true);
+  $(`tab-${next}`).focus();
+}
+
+/** Lift the bottom bar above whatever covers the layout viewport (iOS keyboard). */
+function updateInset() {
+  const px = bottomInset(window.innerHeight, window.visualViewport);
+  const root = document.documentElement;
+  root.style.setProperty("--kb", `${px}px`);
+  root.classList.toggle("kb-open", px > 0);
+}
+
+/** Show Scan or Type; the camera runs only while Scan is shown. */
+function setMode(mode, remember) {
+  state.mode = mode;
+  if (remember) writePref(prefStore(), PREF_KEYS.mode, mode);
+  for (const m of ["scan", "type"]) {
+    const on = m === mode;
+    const tab = $(`tab-${m}`);
+    tab.setAttribute("aria-selected", String(on));
+    tab.tabIndex = on ? 0 : -1;
+    $(`${m}-panel`).hidden = !on;
+  }
+  if (mode === "scan" && state.phase === "active") {
+    if (!camera.stream && !camera.starting) startCamera();
+  } else {
+    stopCamera();
+  }
 }
 
 // ------------------------------------------------------------------ banner
@@ -160,6 +281,8 @@ function closed(text) {
   stopCamera();
   $("capture").hidden = true;
   $("done").hidden = true;
+  $("bar").classList.add("ended");
+  $("sound").hidden = true;
   for (const item of state.items.values()) {
     if (item.status === "queued" || item.status === "sending") {
       item.status = "rejected";
@@ -168,6 +291,8 @@ function closed(text) {
     }
   }
   state.sendQueue.length = 0;
+  updateSummary();
+  window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
 // ------------------------------------------------------------------- entry
@@ -184,18 +309,37 @@ function wireEntry() {
     return r;
   };
   input.addEventListener("input", update);
+  const root = document.documentElement;
+  input.addEventListener("focus", () => root.classList.add("typing"));
+  input.addEventListener("blur", () => root.classList.remove("typing"));
   const submit = async () => {
     const r = update();
-    if (r.status !== "ok") return;
+    if (r.status !== "ok") {
+      if (r.status === "bad_check") beep("bad");
+      return;
+    }
     // Cleared after sending and on a duplicate alike: a certificate is
     // never shown again once it has left the field.
-    const outcome = await submitCertificate(r, "typed");
-    if (outcome === "queued" || outcome === "duplicate") {
-      input.value = "";
-      update();
+    const { outcome, item } = await submitCertificate(r, "typed");
+    if (outcome !== "queued" && outcome !== "duplicate") return;
+    input.value = "";
+    update();
+    const status = $("typed-status");
+    if (outcome === "queued") {
+      status.className = "typed-status good";
+      status.textContent = `Serial ${r.serial} sent. Type the next label, or Finish.`;
+      pulse($("type-panel"), "ok");
+      beep("ok");
+    } else {
+      status.className = "typed-status";
+      status.textContent = `Serial ${r.serial} is already in this session.`;
+      if (item) flashRow(item);
     }
   };
   sendBtn.addEventListener("click", submit);
+  // Keep the field focused across a tap on Send: the keyboard stays up for
+  // the next label.
+  sendBtn.addEventListener("pointerdown", (ev) => ev.preventDefault());
   input.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter") {
       ev.preventDefault();
@@ -241,17 +385,16 @@ async function digest(text) {
 }
 
 /**
- * Queue one checked certificate. Returns `queued`, or `duplicate` when the
- * same text was sent already on this page (it is not sent twice).
+ * Queue one checked certificate. Returns `{outcome: "queued", item}`, or
+ * `{outcome: "duplicate", item}` with the earlier item when the same text was
+ * sent already on this page (it is not sent twice). Feedback is the caller's.
  */
-async function submitCertificate(r, source) {
-  if (state.phase !== "active") return "inactive";
-  const d = await digest(r.normalized);
+async function submitCertificate(r, source, d) {
+  if (state.phase !== "active") return { outcome: "inactive" };
+  d ??= await digest(r.normalized);
   if (state.sentDigests.has(d)) {
     const existing = [...state.items.values()].find((i) => i.digest === d);
-    toast(`Already sent: serial ${r.serial}`);
-    if (existing) flash(existing);
-    return "duplicate";
+    return { outcome: "duplicate", item: existing };
   }
   state.sentDigests.add(d);
   const item = {
@@ -265,13 +408,9 @@ async function submitCertificate(r, source) {
   item.plaintext = certificateMessage(item.id, r.normalized);
   state.items.set(item.id, item);
   renderItem(item);
-  if (source === "scan") {
-    toast(`Scanned serial ${r.serial}`);
-    navigator.vibrate?.(60);
-  }
   state.sendQueue.push(item);
   pumpSend();
-  return "queued";
+  return { outcome: "queued", item };
 }
 
 async function pumpSend() {
@@ -438,6 +577,7 @@ async function handleDown(envelope) {
   renderItem(item);
 }
 
+
 function closedText(stored) {
   const n = typeof stored === "number" ? stored : countGood();
   const what = n === 1 ? "1 certificate" : `${n} certificates`;
@@ -447,7 +587,7 @@ function closedText(stored) {
 }
 
 function countGood() {
-  return [...state.items.values()].filter((i) => GOOD.has(i.status)).length;
+  return [...state.items.values()].filter((i) => KEPT.has(i.status)).length;
 }
 
 async function finish() {
@@ -456,6 +596,7 @@ async function finish() {
   stopCamera();
   $("capture").hidden = true;
   $("done").disabled = true;
+  $("done").textContent = "Finishing…";
   banner("info", "Finishing: sending what is left, then telling bussard you are done.");
   state.sendQueue.push({ control: true, plaintext: doneMessage() });
   pumpSend();
@@ -470,47 +611,26 @@ function renderItem(item) {
     li.id = `item-${item.id}`;
     li.innerHTML =
       '<div class="row"><span class="serial"></span><span class="pill"></span></div>' +
-      '<div class="masked"></div><div class="detail"></div>';
+      '<div class="detail"></div>';
     $("labels").prepend(li);
+    li.classList.add("enter");
+    li.addEventListener("animationend", () => li.classList.remove("enter", "flash"));
   }
-  const pill = li.querySelector(".pill");
-  li.className = `label ${GOOD.has(item.status) ? "good" : BAD.has(item.status) ? "bad" : "pending"}`;
-  li.querySelector(".serial").textContent = `Serial ${item.serial}`;
-  // The certificate itself is never shown again: serial only, key masked.
-  li.querySelector(".masked").textContent = "Key •••••••• (hidden)";
-  pill.textContent = shortStatus(item.status);
-  const parts = [];
-  const long = STATUS_TEXT[item.status];
-  if (item.status === "stored" && (item.ia || item.name)) {
-    parts.push(`Stored for ${[item.ia, item.name].filter(Boolean).join(" ")}`);
-  } else if (long && long !== pill.textContent) {
-    parts.push(long);
-  }
-  if (item.message) parts.push(item.message);
-  li.querySelector(".detail").textContent = parts.join(". ");
-  const n = state.items.size;
-  $("count").textContent = n ? `(${n})` : "";
-  $("labels-empty").hidden = n > 0;
+  const keep = [...li.classList].filter((c) => c === "enter" || c === "flash");
+  li.className = ["label", statusTone(item.status), ...keep].join(" ");
+  // The certificate itself is never shown again: the serial only.
+  li.querySelector(".serial").textContent = item.serial;
+  li.querySelector(".pill").textContent = shortStatus(item.status);
+  li.querySelector(".detail").textContent = statusDetail(item);
+  $("labels-empty").hidden = state.items.size > 0;
+  updateSummary();
 }
 
-function shortStatus(status) {
-  return (
-    {
-      queued: "waiting",
-      sending: "sending",
-      sent: "sent",
-      stored: "stored",
-      unassigned: "saved",
-      already_stored: "known",
-      conflict: "conflict",
-      invalid: "invalid",
-      error: "error",
-      rejected: "not sent",
-    }[status] ?? status
-  );
+function updateSummary() {
+  $("summary").textContent = summaryText([...state.items.values()].map((i) => i.status));
 }
 
-function flash(item) {
+function flashRow(item) {
   const li = document.getElementById(`item-${item.id}`);
   if (!li) return;
   li.classList.remove("flash");
@@ -519,20 +639,95 @@ function flash(item) {
   li.scrollIntoView({ block: "nearest", behavior: "smooth" });
 }
 
-let toastTimer = 0;
-function toast(text) {
-  const el = $("scan-toast");
-  el.textContent = text;
+// -------------------------------------------------------------- feedback
+
+let flashTimer = 0;
+
+/**
+ * The overlay on the viewfinder: `ok` (green, new label), `repeat`
+ * (neutral, already in this session or not a certificate) or `bad` (red,
+ * the check does not match).
+ */
+function scanFlash(kind, title, text) {
+  const el = $("scan-flash");
+  el.className = `scan-flash ${kind}`;
+  $("scan-flash-title").textContent = title;
+  $("scan-flash-text").textContent = text;
   el.hidden = false;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => {
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => {
     el.hidden = true;
-  }, 2200);
+  }, kind === "ok" ? FLASH_MS : FLASH_MS + 600);
+}
+
+/** A short coloured pulse on a panel (Type mode's success). */
+function pulse(el, kind) {
+  el.classList.remove("pulse-ok", "pulse-bad");
+  void el.offsetWidth;
+  el.classList.add(`pulse-${kind}`);
+}
+
+const sound = { on: true, ctx: null };
+
+function renderSound() {
+  const btn = $("sound");
+  btn.setAttribute("aria-pressed", String(sound.on));
+  btn.setAttribute("aria-label", sound.on ? "Sound on, tap to mute" : "Sound off, tap to turn on");
+  btn.classList.toggle("muted", !sound.on);
+}
+
+/** Create or resume the audio context; call from a tap (iOS needs one). */
+function unlockAudio() {
+  if (!sound.on) return;
+  try {
+    const Ctx = window.AudioContext ?? window.webkitAudioContext;
+    if (!Ctx) return;
+    sound.ctx ??= new Ctx();
+    if (sound.ctx.state === "suspended") sound.ctx.resume().catch(() => {});
+  } catch {
+    sound.ctx = null;
+  }
+}
+
+/** A short beep: `ok` rises, `bad` is low and longer. No sound when muted. */
+function beep(kind) {
+  if (!sound.on) return;
+  const ctx = sound.ctx;
+  if (!ctx || ctx.state !== "running") return;
+  try {
+    const notes = kind === "ok" ? [[1046, 0, 0.07], [1568, 0.08, 0.09]] : [[220, 0, 0.22]];
+    for (const [freq, at, len] of notes) {
+      const t = ctx.currentTime + at;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = kind === "ok" ? "sine" : "square";
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(kind === "ok" ? 0.3 : 0.12, t + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + len);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + len + 0.02);
+    }
+  } catch {
+    // no sound is not an error
+  }
 }
 
 // ---------------------------------------------------------------- camera
 
-const camera = { stream: null, detector: null, jsqr: null, timer: 0, canvas: null, busy: false, lastMiss: 0 };
+const camera = {
+  stream: null,
+  starting: false,
+  detector: null,
+  jsqr: null,
+  timer: 0,
+  canvas: null,
+  busy: false,
+  lastMiss: 0,
+  gate: new ScanGate(),
+  torch: false,
+};
 
 async function startCamera() {
   const msg = $("camera-msg");
@@ -540,11 +735,13 @@ async function startCamera() {
   btn.hidden = true;
   msg.hidden = true;
   if (!navigator.mediaDevices?.getUserMedia) {
-    cameraMessage("This browser gives the page no camera. Type the certificates below.");
+    cameraMessage("This browser gives the page no camera. Use Type instead.");
     return;
   }
+  camera.starting = true;
+  let stream;
   try {
-    camera.stream = await navigator.mediaDevices.getUserMedia({
+    stream = await navigator.mediaDevices.getUserMedia({
       audio: false,
       video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
     });
@@ -552,19 +749,23 @@ async function startCamera() {
     const denied = e?.name === "NotAllowedError" || e?.name === "SecurityError";
     cameraMessage(
       denied
-        ? "Camera access was refused. Allow it in the browser settings, or type the certificates below."
-        : "No camera available. Type the certificates below.",
+        ? "Camera access was refused. Allow it in the browser settings, or use Type."
+        : "No camera available. Use Type instead.",
     );
     btn.hidden = false;
     btn.onclick = startCamera;
     return;
+  } finally {
+    camera.starting = false;
   }
-  if (state.phase !== "active") {
-    stopCamera();
+  // Type mode or the end of the session may have come while the browser asked.
+  if (state.phase !== "active" || state.mode !== "scan") {
+    for (const t of stream.getTracks()) t.stop();
     return;
   }
+  camera.stream = stream;
   const video = $("video");
-  video.srcObject = camera.stream;
+  video.srcObject = stream;
   try {
     await video.play();
   } catch {
@@ -576,7 +777,38 @@ async function startCamera() {
     };
   }
   await setupDecoder();
+  setupTorch();
   scheduleScan();
+}
+
+/**
+ * Show the flashlight button where the camera offers a torch (Android
+ * Chrome). Safari on iOS has no torch control, so the button stays hidden.
+ */
+function setupTorch() {
+  const btn = $("torch");
+  camera.torch = false;
+  btn.setAttribute("aria-pressed", "false");
+  let caps;
+  try {
+    caps = camera.stream?.getVideoTracks()[0]?.getCapabilities?.();
+  } catch {
+    caps = null;
+  }
+  btn.hidden = caps?.torch !== true;
+}
+
+async function toggleTorch() {
+  const track = camera.stream?.getVideoTracks()[0];
+  if (!track) return;
+  const want = !camera.torch;
+  try {
+    await track.applyConstraints({ advanced: [{ torch: want }] });
+    camera.torch = want;
+  } catch {
+    camera.torch = false;
+  }
+  $("torch").setAttribute("aria-pressed", String(camera.torch));
 }
 
 function cameraMessage(text) {
@@ -598,7 +830,7 @@ async function setupDecoder() {
     }
   }
   camera.jsqr = await loadJsQr();
-  if (!camera.jsqr) cameraMessage("The QR decoder did not load. Type the certificates below.");
+  if (!camera.jsqr) cameraMessage("The QR decoder did not load. Use Type instead.");
 }
 
 function loadJsQr() {
@@ -662,21 +894,29 @@ async function onQr(payload) {
     const now = Date.now();
     if (now - camera.lastMiss > 3000) {
       camera.lastMiss = now;
-      toast("This QR code holds no certificate.");
+      scanFlash("repeat", "Not a certificate", "This QR code holds no certificate.");
     }
     return;
   }
   const r = checkCertificate(text);
+  if (r.status !== "ok" && r.status !== "bad_check") return;
+  const d = await digest(r.normalized);
   if (r.status === "bad_check") {
-    const now = Date.now();
-    if (now - camera.lastMiss > 3000) {
-      camera.lastMiss = now;
-      toast(`Serial ${r.serial}: the check does not match. Rescan or type the label.`);
-    }
+    if (camera.gate.decide(`bad:${d}`, false, Date.now()) === "hold") return;
+    scanFlash("bad", "Check does not match", `Serial ${r.serial}. Rescan, or type the label.`);
+    beep("bad");
     return;
   }
-  if (r.status !== "ok") return;
-  await submitCertificate(r, "scan");
+  const decision = camera.gate.decide(d, state.sentDigests.has(d), Date.now());
+  if (decision === "hold") return;
+  const { outcome, item } = await submitCertificate(r, "scan", d);
+  if (outcome === "queued") {
+    scanFlash("ok", r.serial, "Added");
+    beep("ok");
+  } else if (outcome === "duplicate") {
+    scanFlash("repeat", r.serial, "Already in this session");
+    if (item) flashRow(item);
+  }
 }
 
 function stopCamera() {
@@ -685,6 +925,9 @@ function stopCamera() {
     for (const t of camera.stream.getTracks()) t.stop();
     camera.stream = null;
   }
+  camera.torch = false;
+  const torch = document.getElementById("torch");
+  if (torch) torch.hidden = true;
   const video = document.getElementById("video");
   if (video) video.srcObject = null;
 }

@@ -1,4 +1,5 @@
-/* Certificate enrolment page. Phone first; colours follow website/index.html. */
+/* Certificate enrolment page. Phone first (iOS Safari is the main target);
+   colours follow website/index.html. */
 
 :root {
   color-scheme: light dark;
@@ -45,25 +46,64 @@ body {
   background: var(--bg);
   color: var(--ink);
   font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
   -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
 }
 
-main { max-width: 560px; margin: 0 auto; padding: 0 16px 24px; }
+button { font: inherit; cursor: pointer; touch-action: manipulation; }
+
+/* Room under the content for the fixed bar and the home indicator. */
+main { max-width: 560px; margin: 0 auto; padding: 0 16px calc(96px + env(safe-area-inset-bottom)); }
+
+/* ------------------------------------------------------------- header */
 
 .top {
   max-width: 560px;
   margin: 0 auto;
-  padding: 12px 16px 4px;
+  padding: 10px 16px 6px;
   display: flex;
-  gap: 10px;
-  align-items: baseline;
-  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  min-height: 52px;
 }
 .brand { font-weight: 700; color: var(--green-ink); }
-.title { color: var(--muted); font-size: 0.95rem; }
+.title { color: var(--muted); font-size: 0.9rem; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Once the session runs, the code chip takes the title's place. */
+.top.running .title { display: none; }
+.top-tools { display: flex; gap: 6px; align-items: center; margin-left: auto; }
+.chip {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 0.85rem;
+  white-space: nowrap;
+  min-height: 36px;
+}
+.chip-label { color: var(--muted); }
+.chip-code { font-family: var(--mono); font-weight: 600; }
+.icon-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+.icon-btn .icon { width: 22px; height: 22px; }
+.icon-btn .off, .icon-btn.muted .on { display: none; }
+.icon-btn.muted .off { display: block; color: var(--muted); }
 
-.panel, .fingerprint-box, .entry, .label {
+/* ------------------------------------------------------------- panels */
+
+.panel, .entry, .label, .code-dialog {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 14px;
@@ -73,26 +113,54 @@ main { max-width: 560px; margin: 0 auto; padding: 0 16px 24px; }
 .fatal h1 { font-size: 1.3rem; margin: 0 0 8px; }
 .fatal p { margin: 0; color: var(--muted); }
 
-.fingerprint-box { padding: 12px 16px; margin: 8px 0 12px; text-align: center; }
+.confirm { margin-top: 12px; padding: 24px 18px 18px; text-align: center; }
 .fp-label { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
 .fingerprint {
   font-family: var(--mono);
-  font-size: clamp(2rem, 11vw, 2.8rem);
+  font-size: clamp(2.2rem, 13vw, 3.2rem);
   font-weight: 700;
   letter-spacing: 0.06em;
   line-height: 1.2;
+  margin: 6px 0 4px;
 }
-.fp-hint { margin: 4px 0 0; font-size: 0.85rem; color: var(--muted); }
+.confirm-q { font-size: 1.1rem; font-weight: 600; margin: 14px 0; }
+.confirm-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
 
-.banner { padding: 10px 14px; border-radius: 12px; margin-bottom: 12px; font-size: 0.95rem; }
+.banner { padding: 10px 14px; border-radius: 12px; margin: 4px 0 10px; font-size: 0.95rem; }
 .banner.warn { background: var(--amber-soft); color: var(--amber-ink); }
 .banner.info { background: var(--green-soft); color: var(--green-ink); }
+
+/* --------------------------------------------------------------- tabs */
+
+.tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  padding: 3px;
+  margin: 4px 0 10px;
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+.tab {
+  min-height: 40px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 600;
+}
+.tab[aria-selected="true"] {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+}
+
+/* ------------------------------------------------------------- camera */
 
 .camera {
   position: relative;
   width: 100%;
-  aspect-ratio: 3 / 4;
-  max-height: 62vh;
+  height: clamp(200px, 36vh, 380px);
+  height: clamp(200px, 36dvh, 380px);
   background: #000;
   border-radius: 16px;
   overflow: hidden;
@@ -100,7 +168,11 @@ main { max-width: 560px; margin: 0 auto; padding: 0 16px 24px; }
 .camera video { width: 100%; height: 100%; object-fit: cover; display: block; }
 .reticle {
   position: absolute;
-  inset: 18% 14%;
+  top: 50%;
+  left: 50%;
+  height: 74%;
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%);
   border: 3px solid rgba(255, 255, 255, 0.85);
   border-radius: 18px;
   box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.25);
@@ -120,7 +192,6 @@ main { max-width: 560px; margin: 0 auto; padding: 0 16px 24px; }
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  font: inherit;
   font-weight: 600;
   padding: 14px 22px;
   border-radius: 999px;
@@ -128,26 +199,57 @@ main { max-width: 560px; margin: 0 auto; padding: 0 16px 24px; }
   background: #fff;
   color: #000;
 }
-.scan-toast {
+.torch {
   position: absolute;
-  top: 12px;
-  left: 50%;
-  transform: translateX(-50%);
-  max-width: calc(100% - 24px);
-  padding: 8px 14px;
+  right: 12px;
+  bottom: 12px;
+  width: 48px;
+  height: 48px;
   border-radius: 999px;
-  background: rgba(0, 0, 0, 0.75);
+  border: 0;
+  background: rgba(0, 0, 0, 0.55);
   color: #fff;
-  font-size: 0.95rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  display: grid;
+  place-items: center;
+  padding: 0;
 }
+.torch svg { width: 24px; height: 24px; }
+.torch[aria-pressed="true"] { background: #ffd54a; color: #000; }
 
-.hint { color: var(--muted); font-size: 0.9rem; margin: 8px 2px 12px; }
+/* Scan feedback: covers the viewfinder for about a second. */
+.scan-flash {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 16px;
+  color: #fff;
+  text-align: center;
+  z-index: 2;
+  animation: flash-in 0.18s ease-out;
+}
+.scan-flash.ok { background: rgba(23, 138, 78, 0.93); }
+.scan-flash.bad { background: rgba(179, 38, 30, 0.94); }
+.scan-flash.repeat { background: rgba(40, 46, 43, 0.92); }
+.flash-icon { width: 76px; height: 76px; display: none; }
+.scan-flash.ok .flash-icon.ok { display: block; color: #0e6b3b; }
+.scan-flash.bad .flash-icon.bad { display: block; color: #7d1a14; }
+.scan-flash.repeat .flash-icon.repeat { display: block; color: #5f6b65; }
+.flash-title { font-family: var(--mono); font-size: 1.5rem; font-weight: 700; letter-spacing: 0.04em; }
+.scan-flash.bad .flash-title, .scan-flash.repeat .flash-title { font-family: inherit; font-size: 1.2rem; }
+.scan-flash.repeat .flash-title { font-family: var(--mono); }
+.flash-text { font-size: 1rem; opacity: 0.95; }
+@keyframes flash-in { from { opacity: 0; transform: scale(1.04); } to { opacity: 1; transform: none; } }
 
-.entry { padding: 14px 16px; display: grid; gap: 8px; }
-.entry label { font-weight: 600; }
+.hint { color: var(--muted); font-size: 0.85rem; margin: 8px 2px 4px; }
+
+/* --------------------------------------------------------------- type */
+
+.entry { padding: 14px 14px 12px; display: grid; gap: 8px; }
+.entry label { font-weight: 600; font-size: 0.95rem; }
 .entry input {
   width: 100%;
   font: 1.05rem var(--mono);
@@ -158,38 +260,46 @@ main { max-width: 560px; margin: 0 auto; padding: 0 16px 24px; }
   color: var(--ink);
   text-transform: uppercase;
 }
+/* 16px or more: iOS Safari does not zoom into the field. */
+.entry input { font-size: max(16px, 1.05rem); }
 .entry input::placeholder { text-transform: none; color: var(--muted); opacity: 0.7; }
-.typed-preview { font-family: var(--mono); font-size: 1rem; min-height: 1.4em; overflow-wrap: anywhere; }
-.typed-status { font-size: 0.9rem; color: var(--muted); }
+.typed-preview { font-family: var(--mono); font-size: 0.95rem; overflow-wrap: anywhere; }
+.typed-preview:empty { display: none; }
+.entry-row { display: flex; gap: 10px; align-items: center; }
+.typed-status { flex: 1; font-size: 0.88rem; color: var(--muted); }
 .typed-status.good { color: var(--green-ink); }
 .typed-status.bad { color: var(--red-ink); }
+.entry.pulse-ok { animation: pulse-ok 0.9s ease-out; }
+@keyframes pulse-ok { from { background: var(--green-soft); border-color: var(--green); } to { background: var(--surface); } }
 
-button.primary, button.secondary {
-  font: inherit;
+/* ------------------------------------------------------------ buttons */
+
+button.primary, button.secondary, button.danger {
   font-weight: 600;
   min-height: 48px;
   border-radius: 12px;
   padding: 10px 18px;
-  cursor: pointer;
 }
 button.primary { background: var(--green); color: #fff; border: 0; }
 button.primary:disabled { opacity: 0.45; cursor: default; }
 button.secondary { background: transparent; color: var(--ink); border: 1px solid var(--line); width: 100%; }
+button.danger { background: transparent; color: var(--red-ink); border: 1px solid var(--red-ink); }
 
-.list-title { font-size: 1.05rem; margin: 22px 2px 8px; }
-.count { color: var(--muted); font-weight: 400; }
-.labels { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-.label { padding: 10px 14px; border-left-width: 5px; }
+/* --------------------------------------------------------------- list */
+
+.list-title { font-size: 1rem; margin: 18px 2px 8px; }
+.labels { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.label { padding: 8px 12px; border-left-width: 5px; }
 .label.good { border-left-color: var(--green); }
+.label.wait { border-left-color: var(--amber-ink); }
 .label.bad { border-left-color: var(--red-ink); }
 .label.pending { border-left-color: var(--line); }
 .label .row { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
 .label .serial { font-family: var(--mono); font-weight: 600; }
-.label .masked { font-family: var(--mono); font-size: 0.85rem; color: var(--muted); }
-.label .detail { font-size: 0.9rem; margin-top: 2px; }
+.label .detail { font-size: 0.82rem; color: var(--muted); margin-top: 1px; }
 .label .detail:empty { display: none; }
 .pill {
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   padding: 2px 10px;
   border-radius: 999px;
   background: var(--surface-2);
@@ -197,16 +307,59 @@ button.secondary { background: transparent; color: var(--ink); border: 1px solid
   white-space: nowrap;
 }
 .label.good .pill { background: var(--green-soft); color: var(--green-ink); }
+.label.wait .pill { background: var(--amber-soft); color: var(--amber-ink); }
 .label.bad .pill { background: var(--red-soft); color: var(--red-ink); }
-.label.flash { animation: flash 1.2s ease-out; }
-@keyframes flash { from { background: var(--amber-soft); } to { background: var(--surface); } }
+.label.enter { animation: row-in 0.45s ease-out; }
+.label.flash { animation: row-flash 1.2s ease-out; }
+@keyframes row-in {
+  from { opacity: 0; transform: translateY(-14px); background: var(--green-soft); }
+  60% { opacity: 1; transform: none; background: var(--green-soft); }
+  to { background: var(--surface); }
+}
+@keyframes row-flash { from { background: var(--surface-2); } to { background: var(--surface); } }
 
-.finish { margin-top: 20px; }
 .muted { color: var(--muted); }
 .small { font-size: 0.85rem; }
+.foot { color: var(--muted); font-size: 0.78rem; margin: 22px 2px 0; }
 
-.foot { max-width: 560px; margin: 0 auto; padding: 8px 16px 24px; color: var(--muted); font-size: 0.8rem; }
+/* ---------------------------------------------------------------- bar */
+
+/* Fixed to the bottom above the home indicator; lifted above the iOS
+   keyboard by --kb (set from visualViewport in app.js). */
+.bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 10;
+  transform: translateY(calc(-1 * var(--kb, 0px)));
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.08);
+  padding: 10px max(16px, env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+}
+/* While typing the keyboard covers the home indicator and half the screen:
+   drop the safe-area padding and the field's label, keep the summary to one
+   line, so the newest labels stay in view. */
+.kb-open .bar, .typing .bar { padding-bottom: 8px; padding-top: 8px; }
+.typing .entry label { display: none; }
+.typing .summary { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 0.85rem; }
+.typing .list-title { margin-top: 12px; }
+.bar-inner { max-width: 528px; margin: 0 auto; display: flex; gap: 12px; align-items: center; }
+.summary { flex: 1; min-width: 0; font-size: 0.9rem; font-weight: 600; line-height: 1.3; }
+.bar .finish { min-width: 112px; }
+.bar.ended .summary { color: var(--muted); }
+
+/* ------------------------------------------------------------- dialog */
+
+.code-dialog {
+  width: min(360px, calc(100vw - 32px));
+  padding: 22px 18px 16px;
+  text-align: center;
+  color: var(--ink);
+}
+.code-dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
 
 @media (prefers-reduced-motion: reduce) {
-  .label.flash { animation: none; }
+  .label.enter, .label.flash, .scan-flash, .entry.pulse-ok { animation: none; }
 }
