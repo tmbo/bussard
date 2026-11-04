@@ -316,3 +316,89 @@ fn test_deliver_from_tool_connectionless_sync_request_from_ets() -> TestResult {
     );
     Ok(())
 }
+
+/// The second #423 run (sim.log, 2026-11-04 21:51): after the connectionless
+/// Sync and two secured A_DeviceDescriptor_Reads, ETS 6.4.1 reads the current
+/// security mode with a secured A_FunctionPropertyExt_State_Read of PID 51,
+/// data `00 00`. The sim's old answer `[rc 00][00]` made ETS stop with
+/// "Unexpected response length when reading current security mode". The
+/// frames are replayed byte for byte; the sim's answers up to the mode read
+/// match the capture byte for byte, and the mode read is answered `[rc 00]
+/// [ReadServiceID 00][mode 00]` (KNX 3/5/1 §6.3.5.2, Figure 71).
+#[test]
+fn test_deliver_from_tool_security_mode_read_from_ets() -> TestResult {
+    use knx_sim::secure::crypto;
+    use knx_sim::wire::{CemiLData, IndividualAddress, MessageCode};
+
+    const ETS: u16 = 0x11FE;
+    const DEV: u16 = 0x1101;
+    let key: [u8; 16] = hex(SYN_SECURE_FDSK)?
+        .try_into()
+        .map_err(|_| "the FDSK is 16 octets")?;
+    let frame = |tpdu: Vec<u8>| CemiLData {
+        message_code: MessageCode::LDataReq,
+        ctrl1: 0xBC,
+        ctrl2: 0x60,
+        source: IndividualAddress(ETS),
+        dest: DEV,
+        tpdu,
+    };
+    // (request, the sim's answer in the capture)
+    let exchanges = [
+        (
+            "03 f1 92 00 40 e4 ed 9a 91 00 00 00 00 00 00 f3 97 e0 ff c6 32 d3 8d c1 b0",
+            "03 f1 93 65 f8 f0 43 d0 75 7a e1 b7 a3 da 23 0c 88 f1 43 98 ff 37 d1 f3 eb",
+        ),
+        (
+            "03 f1 90 00 40 e4 ed 9a ab 33 c9 bf 19 7a 69",
+            "03 f1 90 00 00 00 00 00 00 d7 17 6c 87 76 09 71 e3",
+        ),
+        (
+            "03 f1 90 00 40 e4 ed 9a ac 72 5f 59 a6 b3 c2",
+            "03 f1 90 00 00 00 00 00 01 c3 bf 51 1b fa 51 f5 fb",
+        ),
+    ];
+    let mut bus = syn_secure_bus("mode")?;
+    for (req, captured) in exchanges {
+        let responses = bus.deliver_from_tool(&frame(hex(req)?));
+        let [resp] = responses.as_slice() else {
+            return Err(format!("{req}: expected one answer, got {responses:?}").into());
+        };
+        assert_eq!(resp.tpdu, hex(captured)?, "answer to {req}");
+    }
+
+    let read = hex("03 f1 90 00 40 e4 ed 9a ad c3 29 82 ef 78 ca 3c 69 6c ae f3 ac 28")?;
+    // The captured request: A_FunctionPropertyExt_State_Read, object type 17,
+    // instance 1, PID 51, data `00 00`.
+    let sec = &read[2..];
+    let (b0, c0) = nonce_blocks(&sec[1..7], ETS, DEV, read[0], 9);
+    let (inner, _) = crypto::decrypt_data_ctr(&key, &c0, &sec[16..20], &sec[7..16]);
+    let mac = crypto::cbc_mac(&key, &[sec[0]], &inner, &b0);
+    let (_, expected) = crypto::encrypt_data_ctr(&key, &c0, &mac[..4], &[]);
+    assert_eq!(&expected[..], &sec[16..20], "the captured request verifies");
+    assert_eq!(inner, hex("01 d5 00 11 00 10 33 00 00")?);
+
+    let responses = bus.deliver_from_tool(&frame(read));
+    let [resp] = responses.as_slice() else {
+        return Err(format!("expected one answer, got {responses:?}").into());
+    };
+    let sec = &resp.tpdu[2..];
+    assert_eq!(
+        &sec[..7],
+        &[0x90, 0, 0, 0, 0, 0, 2],
+        "S-A_Data, device seq 2"
+    );
+    let body = &sec[7..sec.len() - 4];
+    let wire_mac = &sec[sec.len() - 4..];
+    let (b0, c0) = nonce_blocks(&sec[1..7], DEV, ETS, resp.tpdu[0], body.len() as u8);
+    let (inner, _) = crypto::decrypt_data_ctr(&key, &c0, wire_mac, body);
+    let mac = crypto::cbc_mac(&key, &[sec[0]], &inner, &b0);
+    let (_, expected) = crypto::encrypt_data_ctr(&key, &c0, &mac[..4], &[]);
+    assert_eq!(&expected[..], wire_mac, "the answer verifies");
+    assert_eq!(
+        inner,
+        hex("01 d6 00 11 00 10 33 00 00 00")?,
+        "rc 00, ReadServiceID 00, security mode 00 (factory)"
+    );
+    Ok(())
+}

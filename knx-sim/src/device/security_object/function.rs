@@ -17,12 +17,16 @@ impl SecurityObject {
         } else {
             match h.pid {
                 pid::LOAD_STATE_CONTROL => {
+                    // PDT_CONTROL (KNX 3/3/7 §3.4.8.4, 03_03_07 Application
+                    // Layer v02.01.01 lines 5385-5400): a positive return code
+                    // carries the new state, a negative one no data.
                     let (rc, event) = self.apply_load_event(body);
-                    (
-                        rc,
-                        vec![self.load_state.to_byte()],
-                        format!(" event={event}"),
-                    )
+                    let state = if rc == rc::SUCCESS {
+                        vec![self.load_state.to_byte()]
+                    } else {
+                        Vec::new()
+                    };
+                    (rc, state, format!(" event={event}"))
                 }
                 pid::SECURITY_MODE => {
                     let (rc, service) = self.apply_security_mode(body);
@@ -87,10 +91,12 @@ impl SecurityObject {
         }
     }
 
-    /// Apply a PID 51 security-mode command. INFERRED layout: the last two
-    /// octets are `[service id][mode]` (the capture's `00 00 01` switches the
-    /// mode on and is answered `rc=00 00`, the service id echoed). Service id
-    /// must be 0 and mode 0 or 1, otherwise `INVALID_COMMAND`.
+    /// Apply a PID 51 security-mode command: `[reserved 00][WriteServiceID
+    /// 00][mode]`, answered `[rc][WriteServiceID]` (KNX 3/5/1 §6.3.5.1,
+    /// 03_05_01 Resources v01.10.01 lines 16889-16940, Figures 69 and 70;
+    /// the capture's `00 00 01` switches the mode on and is answered
+    /// `00 00`). Service id must be 0 and mode 0 or 1, otherwise
+    /// `INVALID_COMMAND` (Table 102, line 16994).
     fn apply_security_mode(&mut self, body: &[u8]) -> (u8, u8) {
         let [.., service, mode] = body else {
             return (rc::INVALID_COMMAND, 0);
@@ -157,9 +163,26 @@ impl SecurityObject {
         }
     }
 
+    /// The PID 51 state read (KNX 3/5/1 §6.3.5.2, 03_05_01 Resources
+    /// v01.10.01 lines 16943-16976): the request data is `[reserved 00]
+    /// [ReadServiceID 00]`, the answer `[rc 00][ReadServiceID 00][mode]`
+    /// (Figure 71, line 16971). Another ReadServiceID is `INVALID_COMMAND`
+    /// with the service id repeated (§6.3.5.3, Table 102, line 16994). ETS
+    /// 6.4.1 sends exactly `00 00` and refuses a shorter answer ("Unexpected
+    /// response length when reading current security mode", #423).
+    fn security_mode_read(&self, body: &[u8]) -> (u8, Vec<u8>) {
+        match body {
+            [0x00, 0x00] => (rc::SUCCESS, vec![0x00, self.security_mode]),
+            [_, service, ..] => (rc::INVALID_COMMAND, vec![*service]),
+            _ => (rc::INVALID_COMMAND, Vec::new()),
+        }
+    }
+
     /// `A_FunctionPropertyExt_State_Read`: PID 5 answers `[rc][state]`, PID 51
-    /// answers `[rc][mode]`, PID 55 the failures log; anything else answers
-    /// `ADDRESS_VOID`.
+    /// answers `[rc][ReadServiceID][mode]`, PID 55 the failures log; anything
+    /// else answers `ADDRESS_VOID`. The response is the header, the return
+    /// code and the function's data (KNX 3/3/7 §3.4.8.2, 03_03_07 Application
+    /// Layer v02.01.01 line 5218, Figure 64).
     pub(super) fn on_function_state_read(
         &mut self,
         data: &[u8],
@@ -167,7 +190,7 @@ impl SecurityObject {
         let h = Self::header("A_FunctionPropertyExt_State_Read", data)?;
         let (rc, state_data) = match (h.is_security_object(), h.pid) {
             (true, pid::LOAD_STATE_CONTROL) => (rc::SUCCESS, vec![self.load_state.to_byte()]),
-            (true, pid::SECURITY_MODE) => (rc::SUCCESS, vec![self.security_mode]),
+            (true, pid::SECURITY_MODE) => self.security_mode_read(&data[5..]),
             (true, pid::SECURITY_FAILURES_LOG) => self.failures_log_read(&data[5..]),
             _ => (rc::ADDRESS_VOID, Vec::new()),
         };
@@ -203,16 +226,17 @@ mod tests {
     fn test_function_command_load_completed_outside_loading_refused() -> TestResult {
         let mut obj = SecurityObject::new_activated();
         cmd(&mut obj, UNLOAD)?;
-        // LoadCompleted from Unloaded: IMPOSSIBLE_COMMAND, state kept.
-        assert_eq!(cmd(&mut obj, COMPLETE)?, hex("01d6 0011 001005 f3 00")?);
+        // LoadCompleted from Unloaded: IMPOSSIBLE_COMMAND, state kept, no
+        // data after a negative return code (KNX 3/3/7 §3.4.8.4).
+        assert_eq!(cmd(&mut obj, COMPLETE)?, hex("01d6 0011 001005 f3")?);
         // Unsupported event 3 and a short value: INVALID_COMMAND.
         assert_eq!(
             cmd(&mut obj, "01d4 0011 001005 03000000000000000000")?,
-            hex("01d6 0011 001005 f2 00")?
+            hex("01d6 0011 001005 f2")?
         );
         assert_eq!(
             cmd(&mut obj, "01d4 0011 001005 01")?,
-            hex("01d6 0011 001005 f2 00")?
+            hex("01d6 0011 001005 f2")?
         );
         assert_eq!(obj.load_state(), SecLoadState::Unloaded);
         Ok(())
@@ -230,6 +254,29 @@ mod tests {
         assert_eq!(
             cmd(&mut obj, "01d4 0011 001033 000002")?,
             hex("01d6 0011 001033 f2 00")?
+        );
+        Ok(())
+    }
+
+    /// The PID 51 read ETS 6.4.1 sends before a commissioning download (#423):
+    /// `[00][ReadServiceID 00]`, answered `[rc 00][00][mode]` (KNX 3/5/1
+    /// §6.3.5.2, Figure 71).
+    #[test]
+    fn test_function_state_read_security_mode_spec_layout() -> TestResult {
+        let mut obj = SecurityObject::new_factory();
+        assert_eq!(
+            cmd(&mut obj, "01d5 0011 001033 0000")?,
+            hex("01d6 0011 001033 00 00 00")?
+        );
+        cmd(&mut obj, "01d4 0011 001033 000001")?;
+        assert_eq!(
+            cmd(&mut obj, "01d5 0011 001033 0000")?,
+            hex("01d6 0011 001033 00 00 01")?
+        );
+        // An unknown ReadServiceID: E_COMMAND_INVALID, the id repeated.
+        assert_eq!(
+            cmd(&mut obj, "01d5 0011 001033 0001")?,
+            hex("01d6 0011 001033 f2 01")?
         );
         Ok(())
     }
