@@ -88,7 +88,22 @@ Rail: a backup sends only read requests.
 
 ## Sunday morning: look around
 
-Ask for the installation in the browser and the assistant gives you the address of the viz page: every device by floor and room, the group addresses, live traffic and a problems panel. Ask for the house manual and it writes the folder the KNX guidelines ask for, with one sheet per room and a sentence for every button; print those for the family. Everything else ("what does the second rocker in the kitchen do?") it answers from the project.
+```text
+You:        Show me the house in the browser.
+Assistant:  (calls knx_viz)
+            Open http://127.0.0.1:52133. The page shows every device by
+            floor and room, the group addresses, live traffic and a
+            problems panel.
+You:        Write the house manual.
+Assistant:  (calls knx_export)
+            Written house-manual/: the device list, the group addresses
+            with their types, and one sheet per room with a sentence for
+            every button and channel.
+```
+
+Print the room sheets for the family. Everything else ("what does the second rocker in the kitchen do?") the assistant answers from the project. [Watch the bus](../how-to/watch-the-bus.md#see-the-installation-in-a-browser) shows the page.
+
+Rail: both only read the project. The page cannot write.
 
 ## Sunday afternoon: the first change
 

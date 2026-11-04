@@ -54,6 +54,9 @@ extra:
 extra_css:
   - assets/stylesheets/site.css
 
+extra_javascript:
+  - assets/javascripts/copy-commands.js
+
 markdown_extensions:
   - admonition
   - attr_list
@@ -63,7 +66,10 @@ markdown_extensions:
       permalink: true
       # heading anchors use GitHub's slug style, set in hooks.py (on_config)
   - pymdownx.details
-  - pymdownx.highlight
+  - pymdownx.highlight:
+      # marks a block with its language (`language-console`), which the copy
+      # button script uses to copy only the commands
+      pygments_lang_class: true
   - pymdownx.inlinehilite
   - pymdownx.superfences
   - pymdownx.tabbed:

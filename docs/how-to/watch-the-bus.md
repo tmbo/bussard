@@ -104,9 +104,8 @@ Recording to a file is a terminal command too. `capture` writes every matching t
 Query the file with any SQLite tool:
 
 ```console
-$ sqlite3 knx/captures/bus.db \
-    "SELECT ts_utc, source, destination, apci FROM telegrams
-     WHERE destination = '3/2/0' ORDER BY ts_utc DESC LIMIT 10"
+$ sqlite3 knx/captures/bus.db "SELECT ts_utc, source, destination, apci \
+    FROM telegrams WHERE destination = '3/2/0' ORDER BY ts_utc DESC LIMIT 10"
 ```
 
 Or give it to the assistant, which then sees telegrams older than its own memory holds:
