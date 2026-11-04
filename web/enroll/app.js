@@ -627,7 +627,11 @@ function renderItem(item) {
 }
 
 function updateSummary() {
-  $("summary").textContent = summaryText([...state.items.values()].map((i) => i.status));
+  // Each count stays with its word when the bar wraps to two lines.
+  $("summary").textContent = summaryText([...state.items.values()].map((i) => i.status))
+    .split(" · ")
+    .map((part) => part.replace(/ /g, "\u00a0"))
+    .join(" · ");
 }
 
 function flashRow(item) {

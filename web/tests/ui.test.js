@@ -62,20 +62,28 @@ test("test_countStatuses_groups", () => {
   );
 });
 
-test("test_summaryText_issue_example", () => {
-  assert.equal(summaryText(["stored", "unassigned", "stored"]), "3 labels · 2 saved · 1 waiting for its device");
+test("test_summaryText_short_form", () => {
+  assert.equal(summaryText(["stored", "unassigned", "stored"]), "3 labels · 2 saved · 1 waiting");
+  assert.equal(summaryText(["stored", "already_stored", "conflict"]), "3 labels · 1 saved · 1 known · 1 failed");
+});
+
+test("test_summaryText_fits_narrow_bar", () => {
+  // Every group present still stays short; the rows hold the long wording.
+  const all = summaryText(["stored", "unassigned", "already_stored", "invalid", "sent"]);
+  assert.equal(all, "5 labels · 1 saved · 1 waiting · 1 known · 1 sending · 1 failed");
+  assert.ok(all.length <= 64, all);
 });
 
 test("test_summaryText_empty_and_singular", () => {
   assert.equal(summaryText([]), "No labels yet");
   assert.equal(summaryText(["sending"]), "1 label · 1 sending");
-  assert.equal(summaryText(["conflict"]), "1 label · 1 problem");
+  assert.equal(summaryText(["conflict"]), "1 label · 1 failed");
 });
 
 test("test_summaryText_all_groups", () => {
   assert.equal(
     summaryText(["stored", "unassigned", "unassigned", "already_stored", "invalid", "error", "sent"]),
-    "7 labels · 1 saved · 2 waiting for their devices · 1 already known · 1 sending · 2 problems",
+    "7 labels · 1 saved · 2 waiting · 1 known · 1 sending · 2 failed",
   );
 });
 

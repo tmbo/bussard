@@ -90,9 +90,9 @@ function plural(n, one, many) {
 }
 
 /**
- * The bottom bar's summary, for example
- * `3 labels · 2 saved · 1 waiting for its device`. Groups with no label are
- * left out.
+ * The bottom bar's summary in short words, for example
+ * `3 labels · 2 saved · 1 waiting`, so it fits the narrow bar; the rows carry
+ * the full wording. Groups with no label are left out.
  *
  * @param {Iterable<string>} statuses
  * @returns {string}
@@ -102,10 +102,10 @@ export function summaryText(statuses) {
   if (c.total === 0) return "No labels yet";
   const parts = [plural(c.total, "label", "labels")];
   if (c.saved) parts.push(`${c.saved} saved`);
-  if (c.waiting) parts.push(plural(c.waiting, "waiting for its device", "waiting for their devices"));
-  if (c.known) parts.push(`${c.known} already known`);
+  if (c.waiting) parts.push(`${c.waiting} waiting`);
+  if (c.known) parts.push(`${c.known} known`);
   if (c.inFlight) parts.push(`${c.inFlight} sending`);
-  if (c.problems) parts.push(plural(c.problems, "problem", "problems"));
+  if (c.problems) parts.push(`${c.problems} failed`);
   return parts.join(" · ");
 }
 

@@ -339,11 +339,11 @@ button.danger { background: transparent; color: var(--red-ink); border: 1px soli
   padding: 10px max(16px, env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
 }
 /* While typing the keyboard covers the home indicator and half the screen:
-   drop the safe-area padding and the field's label, keep the summary to one
-   line, so the newest labels stay in view. */
+   drop the safe-area padding and the field's label, so the newest labels
+   stay in view. The summary wraps rather than truncates. */
 .kb-open .bar, .typing .bar { padding-bottom: 8px; padding-top: 8px; }
 .typing .entry label { display: none; }
-.typing .summary { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 0.85rem; }
+.typing .summary { font-size: 0.85rem; }
 .typing .list-title { margin-top: 12px; }
 .bar-inner { max-width: 528px; margin: 0 auto; display: flex; gap: 12px; align-items: center; }
 .summary { flex: 1; min-width: 0; font-size: 0.9rem; font-weight: 600; line-height: 1.3; }
