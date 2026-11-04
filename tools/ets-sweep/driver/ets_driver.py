@@ -826,12 +826,30 @@ def flow_export_keyring(req: dict) -> dict:
     """`export_keyring_once`, again once when UI Automation failed on the way
     ('Ein Ereignis konnte keinen Abonnenten aufrufen', a COMError, right
     after a download on 2026-11-04)."""
+    started = time.time()
     try:
         return export_keyring_once(req)
     except Exception as e:  # noqa: BLE001 - only the COM failure is retried
         if "COMError" not in repr(e) and "Abonnenten" not in str(e):
             raise
+        # The failure also hits after the save dialog wrote the file (the
+        # overwrite check walks a closing popup): a file written since the
+        # flow started is the export.
         time.sleep(3)
+        path = req["path"]
+        if os.path.exists(path) and os.path.getmtime(path) >= started - 1:
+            for w in ets_popups():
+                try:
+                    w.close()
+                except Exception:  # noqa: BLE001 - a stale popup is gone already
+                    pass
+            click(3450, 93)
+            time.sleep(1.5)
+            hit = project_tab_hit(req["project"])
+            if hit:
+                click(hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2)
+                time.sleep(2)
+            return {"path": path, "exported": True, "com_error_after_save": repr(e)[:120]}
         return {**export_keyring_once(req), "retried": repr(e)[:120]}
 
 
@@ -866,6 +884,15 @@ def export_keyring_once(req: dict) -> dict:
             raise RuntimeError("no keyring password dialog after 'Backup Schlüsselbund'")
         keys(password, pause=0.02)
         time.sleep(1)
+        # 'Gerätezertifikate hinzufügen' puts the FDSKs in the keyring: the
+        # frames ETS sends before it writes the tool key are secured with
+        # the FDSK and decode only then (11 of 104 frames without, syn-secure
+        # 2026-11-04).
+        box = find_text("Gerätezertifikate hinzufügen", (1380, 1440, 2000, 1520), min_ratio=0.8)
+        if not box:
+            raise RuntimeError("no 'Gerätezertifikate hinzufügen' box in the keyring password dialog")
+        click(box["x"] - 35, box["y"] + box["h"] // 2)
+        time.sleep(0.5)
         for _ in range(4):
             if ets_popups():
                 break

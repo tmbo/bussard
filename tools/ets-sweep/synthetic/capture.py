@@ -1003,7 +1003,14 @@ def main() -> int:
             vm.run(c, f'mkdir "{vm.REMOTE_DIR}\\keyrings"')
         result = calibrate.calibrate_one(signed, sid, order, True, Path(tempfile.mkdtemp()), mask, **run_kw)
         if run_kw and result.get("outcome") == "captured":
-            print(f"keyring: {fetch_keyring(c, sid)} (the project password)")
+            keyring = fetch_keyring(c, sid)
+            print(f"keyring: {keyring} (the project password)")
+            # The secured writes (program version among them) are listed only
+            # once ops.txt is decoded with the keyring.
+            import secure
+            import sweep
+
+            result["ops"] = sweep.write_ops(calibrate.run_dir(sid), "1.1.1", keyring, secure.password())
         print(f"ETS download: {result.get('outcome')} ets={result.get('ets')} ops={result.get('ops')} "
               f"loaded={result.get('loaded_objects')}; signed-product oracle: {result.get('oracle', {}).get('summary')}")
         when = datetime.date.today().isoformat()
