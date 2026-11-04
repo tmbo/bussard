@@ -679,6 +679,147 @@ fn test_mcp_knx_setup_on_an_empty_directory_registers_the_full_tool_set() -> Tes
     Ok(())
 }
 
+/// Issue #779: the keyring exported next to the project goes into the key
+/// store during `knx_setup`, and the server reads its KNXnet/IP Secure
+/// tunnelling users then, not at start: the bus opens a secure tunnel to a
+/// secure-only interface without a restart, and the summary says which
+/// credentials it uses. The keyring is the committed SYNTHETIC one (made-up
+/// passwords); the interface is a loopback [`MockSecureGateway`].
+#[test]
+fn test_mcp_knx_setup_uses_the_keyring_tunnel_users_without_a_restart() -> TestResult {
+    use bussard_secure::{Password, salt};
+    use bussard_testkit::MockSecureGateway;
+
+    let tmp = std::env::temp_dir().join(format!("bussard-mcp-setup-ips-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp)?;
+    let knx = tmp.join("knx");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let project = tmp.join("project.json");
+    std::fs::copy(
+        root.join("../bussard-project/tests/fixtures/tiny.xknxproject.json"),
+        &project,
+    )?;
+    std::fs::copy(
+        root.join("../../knx-sim/examples/secure/synthetic.knxkeys"),
+        tmp.join("Site.knxkeys"),
+    )?;
+    // An empty product index: the setup never reaches the network.
+    let index = tmp.join("index.json");
+    std::fs::write(&index, r#"{"entries": []}"#)?;
+
+    // Secure-only: a plain tunnel is refused, user 2 of the keyring accepted.
+    let rt = tokio::runtime::Runtime::new()?;
+    let gw = rt.block_on(
+        MockSecureGateway::builder()
+            .individual_address(0x1100)
+            .device_auth(Password::new("device-auth-pw").derive(salt::DEVICE_AUTHENTICATION_CODE))
+            .user(
+                2,
+                Password::new("tunnel-user-pw").derive(salt::USER_PASSWORD),
+                0x11C8,
+            )
+            .start(),
+    )?;
+    let gateway = gw.addr().to_string();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_bussard"))
+        .args(["mcp", "--dir"])
+        .arg(&knx)
+        .current_dir(&tmp)
+        .env("BUSSARD_NO_DOTENV", "1")
+        .env("BUSSARD_KEYRING_PASSWORD", "synthetic-keyring-pw")
+        .env("BUSSARD_PRODUCT_INDEX", &index)
+        .env_remove("BUSSARD_GATEWAY")
+        .env_remove("BUSSARD_KEYRING")
+        .env_remove("BUSSARD_ALLOW_REAL_GATEWAY")
+        .env_remove("BUSSARD_PROJECT_PASSWORD")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let mut stdin = child.stdin.take().ok_or("no stdin pipe")?;
+    let mut reader = BufReader::new(child.stdout.take().ok_or("no stdout pipe")?);
+    let mut changed = 0;
+    let mut next_id = 1;
+    let mut call = |stdin: &mut std::process::ChildStdin,
+                    reader: &mut BufReader<std::process::ChildStdout>,
+                    method: &str,
+                    params: serde_json::Value,
+                    changed: &mut usize|
+     -> TestResult<serde_json::Value> {
+        next_id += 1;
+        request(stdin, reader, next_id, method, params, changed)
+    };
+    call(
+        &mut stdin,
+        &mut reader,
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "probe", "version": "0"}
+        }),
+        &mut changed,
+    )?;
+    writeln!(
+        stdin,
+        "{}",
+        serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"})
+    )?;
+
+    let setup = call(
+        &mut stdin,
+        &mut reader,
+        "tools/call",
+        serde_json::json!({"name": "knx_setup",
+            "arguments": {"gateway": gateway, "project_file": project}}),
+        &mut changed,
+    )?;
+    let text = setup["result"]["content"][0]["text"]
+        .as_str()
+        .ok_or_else(|| format!("no text content in {setup}"))?;
+    let result: serde_json::Value = serde_json::from_str(text)?;
+    assert_eq!(result["done"], true, "{result}");
+    assert!(knx.join("bussard.keys").is_file(), "{result}");
+    let summary = result["summary"].as_str().ok_or("no summary")?;
+    assert!(
+        summary.contains("KNXnet/IP Secure") && summary.contains("no restart"),
+        "{summary}"
+    );
+
+    // The bus connects lazily: ask until it is up.
+    let mut status = serde_json::Value::Null;
+    for _ in 0..40 {
+        let response = call(
+            &mut stdin,
+            &mut reader,
+            "tools/call",
+            serde_json::json!({"name": "knx_bus_status", "arguments": {}}),
+            &mut changed,
+        )?;
+        let text = response["result"]["content"][0]["text"]
+            .as_str()
+            .ok_or_else(|| format!("no text content in {response}"))?;
+        status = serde_json::from_str(text)?;
+        if status["connected"] == true {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    assert_eq!(status["connected"], true, "{status}");
+    let stats = gw.stats()?;
+    assert_eq!(stats.users, vec![2], "the keyring's user opened the tunnel");
+
+    drop(stdin);
+    let _ = child.wait_timeout(Duration::from_millis(500));
+    let _ = child.kill();
+    let _ = child.wait();
+    drop(gw);
+    let _ = std::fs::remove_dir_all(&tmp);
+    Ok(())
+}
+
 /// Reads one line, returning it trimmed (empty string on EOF).
 fn read_line(reader: &mut impl BufRead) -> String {
     let mut line = String::new();

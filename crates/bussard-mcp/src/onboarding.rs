@@ -58,10 +58,25 @@ pub const ONBOARDING_TOOLS: [&str; 2] = ["knx_setup", "knx_bus_status"];
 /// Resolves the bus connection from the model `knx_setup` wrote, with the
 /// overrides the server was started with (`--gateway`, `--routing`, the
 /// KNXnet/IP Secure flags), and the keyring the model directory now has
-/// (the key store the import wrote).
-pub type ResolveConnection = Arc<
-    dyn Fn(&Model) -> anyhow::Result<(ConnectionConfig, Option<PathBuf>)> + Send + Sync + 'static,
->;
+/// (the key store the import wrote). The KNXnet/IP Secure tunnelling users
+/// of that keyring are read here, after the setup, so a secure-only
+/// interface works without a restart (issue #779).
+pub type ResolveConnection =
+    Arc<dyn Fn(&Model) -> anyhow::Result<ResolvedConnection> + Send + Sync + 'static>;
+
+/// What [`ResolveConnection`] resolved from the model `knx_setup` wrote.
+#[derive(Debug, Clone)]
+pub struct ResolvedConnection {
+    /// The bus connection, with the KNXnet/IP Secure tunnelling credentials
+    /// of the keyring when it lists any.
+    pub connection: ConnectionConfig,
+    /// The keyring for KNX Data Secure (the key store the import wrote).
+    pub keyring: Option<PathBuf>,
+    /// A sentence for the `knx_setup` summary about the tunnel credentials:
+    /// which ones the tunnel uses, or why it stays plain and what restart
+    /// makes it secure. `None` when there is nothing to say.
+    pub tunnel_note: Option<String>,
+}
 
 /// What the onboarding server needs to become the full server.
 #[derive(Clone)]
@@ -499,7 +514,7 @@ impl SetupMcp {
             }
         };
         match self.activate().await {
-            Ok(full) => {
+            Ok((full, tunnel_note)) => {
                 let tools = full.tool_count();
                 let instructions = crate::guidance::Tiers::of(full.state()).instructions();
                 let summary = match &imported {
@@ -523,6 +538,10 @@ impl SetupMcp {
                         dir.display(),
                         dir.display()
                     ),
+                };
+                let summary = match &tunnel_note {
+                    Some(note) => format!("{summary} {note}"),
+                    None => summary,
                 };
                 let mut result = json!({
                     "done": true,
@@ -556,11 +575,16 @@ impl SetupMcp {
 
     /// Loads the written model, opens the bus under the server's write
     /// policy, wires the ring feeder and registers the full server.
-    async fn activate(&self) -> Result<&BussardMcp, String> {
+    /// Returns the full server and the tunnel sentence for the summary.
+    async fn activate(&self) -> Result<(&BussardMcp, Option<String>), String> {
         let onboarding = &self.inner.onboarding;
         let dir = onboarding.config.dir.clone();
         let model = Model::load(&dir).map_err(|e| format!("the model does not load: {e}"))?;
-        let (connection, keyring) = (onboarding.resolve)(&model).map_err(|e| format!("{e:#}"))?;
+        let ResolvedConnection {
+            connection,
+            keyring,
+            tunnel_note,
+        } = (onboarding.resolve)(&model).map_err(|e| format!("{e:#}"))?;
         let mut config = onboarding.config.clone();
         config.connection = connection;
         if config.keyring.is_none() {
@@ -595,6 +619,7 @@ impl SetupMcp {
         self.inner
             .full
             .get()
+            .map(|full| (full, tunnel_note))
             .ok_or_else(|| "the full server did not register".to_string())
     }
 
