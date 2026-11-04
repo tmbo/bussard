@@ -1,0 +1,135 @@
+# Golden request stream (epic #596), written by
+# crates/bussard-cli/tests/it/synthetic_streams.rs; regenerate with
+# BUSSARD_UPDATE_GOLDENS=1 (dev/testing.md).
+#
+# command: bussard flash 1.1.10 --yes
+# product: syn-s7-0701 (M-00FA_A-2801-10-0000)
+# device:  a fresh knx-sim device
+# format:  tools/knxtrace/knxtrace.py ops, without the operation numbers
+#          and the capture header
+#
+# devices/1.1.10.toml:
+#   address = "1.1.10"
+#   name = "sim loop (defaults)"
+#
+#   [links]
+#   1.send = "1/0/1"
+
+connect T_Connect
+authorize Authorize_Request key=FFFFFFFF(free-access)
+descriptor type0 type=0
+prop-read obj0/PID_MAX_APDU_LENGTH count=1 index=1
+mem-read 0xb6ea addr_int=46826 count=1
+mem-read 0xb6eb addr_int=46827 count=1
+mem-read 0xb6ec addr_int=46828 count=1
+mem-read 0xb6ee addr_int=46830 count=1
+mem-write 0x0104 addr_int=260 len=11 sha=90a5c18c extended=False
+mem-read 0xb6ea addr_int=46826 count=1
+mem-write 0x0104 addr_int=260 len=11 sha=fee1420e extended=False
+mem-read 0xb6eb addr_int=46827 count=1
+mem-write 0x0104 addr_int=260 len=11 sha=c23a1256 extended=False
+mem-read 0xb6ec addr_int=46828 count=1
+mem-write 0x0104 addr_int=260 len=11 sha=65546f0d extended=False
+mem-read 0xb6ea addr_int=46826 count=1
+mem-write 0x0104 addr_int=260 len=11 sha=bf9b5e9f extended=False
+mem-read 0xb6ea addr_int=46826 count=1
+mem-read 0x4000 addr_int=16384 count=5
+mem-write 0x4000 addr_int=16384 len=1 sha=dbc1b4c9 extended=False
+mem-write 0x4003 addr_int=16387 len=2 sha=fb8da7eb extended=False
+mem-read 0x4000 addr_int=16384 count=5
+mem-write 0x0104 addr_int=260 len=11 sha=4d15dfeb extended=False
+mem-read 0xb6ea addr_int=46826 count=1
+mem-write 0x0104 addr_int=260 len=11 sha=56227be9 extended=False
+mem-read 0xb6ea addr_int=46826 count=1
+mem-write 0x0104 addr_int=260 len=11 sha=eca3b891 extended=False
+mem-read 0xb6eb addr_int=46827 count=1
+mem-write 0x0104 addr_int=260 len=11 sha=383f2bb3 extended=False
+mem-read 0xb6eb addr_int=46827 count=1
+mem-read 0x4201 addr_int=16897 count=3
+mem-write 0x4201 addr_int=16897 len=3 sha=75c8fd04 extended=False
+mem-read 0x4201 addr_int=16897 count=3
+mem-write 0x0104 addr_int=260 len=11 sha=fefa7ad9 extended=False
+mem-read 0xb6eb addr_int=46827 count=1
+mem-write 0x0104 addr_int=260 len=11 sha=951cfacc extended=False
+mem-read 0xb6eb addr_int=46827 count=1
+mem-write 0x0104 addr_int=260 len=11 sha=41611d63 extended=False
+mem-read 0xb6ec addr_int=46828 count=1
+mem-write 0x0104 addr_int=260 len=11 sha=6f554f20 extended=False
+mem-read 0xb6ec addr_int=46828 count=1
+mem-write 0x0104 addr_int=260 len=11 sha=44f6bf6b extended=False
+mem-read 0xb6ec addr_int=46828 count=1
+mem-read 0x4400 addr_int=17408 count=12
+mem-write 0x4400 addr_int=17408 len=12 sha=a43426ac extended=False
+mem-read 0x4400 addr_int=17408 count=12
+mem-read 0x440c addr_int=17420 count=12
+mem-write 0x440c addr_int=17420 len=12 sha=8688d249 extended=False
+mem-read 0x440c addr_int=17420 count=12
+mem-read 0x4418 addr_int=17432 count=12
+mem-write 0x4418 addr_int=17432 len=12 sha=8688d249 extended=False
+mem-read 0x4418 addr_int=17432 count=12
+mem-read 0x4424 addr_int=17444 count=12
+mem-write 0x4424 addr_int=17444 len=12 sha=8688d249 extended=False
+mem-read 0x4424 addr_int=17444 count=12
+mem-read 0x4430 addr_int=17456 count=12
+mem-write 0x4430 addr_int=17456 len=12 sha=8688d249 extended=False
+mem-read 0x4430 addr_int=17456 count=12
+mem-read 0x443c addr_int=17468 count=4
+mem-write 0x443c addr_int=17468 len=4 sha=ad95131b extended=False
+mem-read 0x443c addr_int=17468 count=4
+mem-write 0x0104 addr_int=260 len=11 sha=1fc9af39 extended=False
+mem-read 0xb6ec addr_int=46828 count=1
+mem-read 0x4440 addr_int=17472 count=12
+mem-write 0x4440 addr_int=17472 len=12 sha=a5403f60 extended=False
+mem-read 0x4440 addr_int=17472 count=12
+mem-read 0x444c addr_int=17484 count=12
+mem-write 0x444c addr_int=17484 len=12 sha=8688d249 extended=False
+mem-read 0x444c addr_int=17484 count=12
+mem-read 0x4458 addr_int=17496 count=12
+mem-write 0x4458 addr_int=17496 len=12 sha=8688d249 extended=False
+mem-read 0x4458 addr_int=17496 count=12
+mem-read 0x4464 addr_int=17508 count=12
+mem-write 0x4464 addr_int=17508 len=12 sha=8688d249 extended=False
+mem-read 0x4464 addr_int=17508 count=12
+mem-read 0x4470 addr_int=17520 count=12
+mem-write 0x4470 addr_int=17520 len=12 sha=8688d249 extended=False
+mem-read 0x4470 addr_int=17520 count=12
+mem-read 0x447c addr_int=17532 count=4
+mem-write 0x447c addr_int=17532 len=4 sha=ad95131b extended=False
+mem-read 0x447c addr_int=17532 count=4
+mem-write 0x0104 addr_int=260 len=11 sha=57050360 extended=False
+mem-read 0xb6ec addr_int=46828 count=1
+mem-write 0x0104 addr_int=260 len=11 sha=aa5398e6 extended=False
+mem-read 0xb6ec addr_int=46828 count=1
+mem-write 0x0104 addr_int=260 len=11 sha=809c4572 extended=False
+mem-read 0xb6ec addr_int=46828 count=1
+restart Restart type=basic
+connect T_Connect
+descriptor type0 type=0
+disconnect T_Disconnect
+connect T_Connect
+authorize Authorize_Request key=FFFFFFFF(free-access)
+mem-read 0xb6ea addr_int=46826 count=3
+descriptor type0 type=0
+descriptor type0 type=0
+prop-read obj1/PID_TABLE_REFERENCE count=1 index=1
+prop-read obj2/PID_TABLE_REFERENCE count=1 index=1
+mem-read 0x4000 addr_int=16384 count=1
+mem-read 0x4000 addr_int=16384 count=5
+mem-read 0x4400 addr_int=17408 count=1
+mem-read 0x4400 addr_int=17408 count=11
+mem-read 0x4201 addr_int=16897 count=1
+mem-read 0x4201 addr_int=16897 count=3
+mem-read 0x4440 addr_int=17472 count=12
+mem-read 0x444c addr_int=17484 count=12
+mem-read 0x4458 addr_int=17496 count=12
+mem-read 0x4464 addr_int=17508 count=12
+mem-read 0x4470 addr_int=17520 count=12
+mem-read 0x447c addr_int=17532 count=4
+disconnect T_Disconnect
+
+memory image (5 region(s), chunking removed):
+    0x000104..0x00010f len=11 sha=809c4572
+    0x004000..0x004001 len=1 sha=dbc1b4c9
+    0x004003..0x004005 len=2 sha=fb8da7eb
+    0x004201..0x004204 len=3 sha=75c8fd04
+    0x004400..0x004480 len=128 sha=398b2b25

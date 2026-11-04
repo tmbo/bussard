@@ -80,6 +80,47 @@ product, rendered by `generate.py` into committed product XML, which
 spec schema, the id and master-data rules, the render, sign and capture flow
 and the catalogue table.
 
+#### Golden request streams and CLI/MCP equivalence
+
+`crates/bussard-cli/tests/it/synthetic_streams.rs` records what bussard
+itself sends to each synthetic product in knx-sim (the sim's `gateway.pcap`)
+and normalizes it with `tools/knxtrace/knxtrace.py ops`: no KNXnet/IP layer,
+no Layer 4 acks, memory writes as address, length and content hash.
+
+- **Goldens.** `tests-support/synthetic-products/<product>/requests/flash.txt`
+  is `bussard flash 1.1.10 --yes` of a seeded configuration (the vendor
+  defaults with a few links) into a fresh device; `apply.txt`, for a product
+  the catalogue captured with a `links` or `partial` run variant, is `bussard
+  apply 1.1.10 --yes` of the sim loop's partial change on top of it (the sim
+  replays the flash session first). Each file starts with the device file it
+  wrote. A change to a write path shows up as a diff of these files; review
+  it like a wire change (`CLAUDE.md`, Device Writes) and regenerate with
+  `BUSSARD_UPDATE_GOLDENS=1`.
+- **CLI vs MCP (the #314 class).** For every product the same change runs
+  through `bussard plan` and `bussard apply` (or `flash`) and through
+  `knx_plan_device` and `knx_apply_device`, each on its own simulator from
+  the same flashed state. Session plumbing (connects, authorize, device
+  descriptor, maximum APDU length, object-type discovery) is dropped. Before
+  the first write the MCP session may read more than the CLI (it re-reads the
+  device to check the plan digest) but never skip a CLI read; from the first
+  write on, the two must be identical. The flash half needs a parameter that
+  shows or hides a com-object (the MCP tier flashes only then):
+  `syn-dynamic-tests` (07B0) and `syn-s7-no-comobjects` (0701) have one.
+
+Locally:
+
+```
+cargo build --manifest-path knx-sim/Cargo.toml --bin serve
+BUSSARD_KNX_SIM_BIN=$PWD/knx-sim/target/debug/serve \
+  cargo nextest run -p bussard-cli -E 'test(/^synthetic_streams::/)'
+# after a deliberate change to what bussard writes:
+BUSSARD_UPDATE_GOLDENS=1 BUSSARD_KNX_SIM_BIN=$PWD/knx-sim/target/debug/serve \
+  cargo nextest run -p bussard-cli -E 'test(/^synthetic_streams::test_synthetic_streams_golden/)'
+```
+
+`BUSSARD_SYNTHETIC_STREAMS_KEEP=1` keeps the scratch directories (models,
+`sim-*.yaml`, the `.pcap` captures) for a look with `knxtrace`.
+
 The rule that holds now and after #596: ETS is a capture tool, CI runs on
 captures. A question about what ETS writes is answered by a capture (house,
 sweep or, once it exists, a synthetic product), never by reasoning about
@@ -270,6 +311,8 @@ pull request, with no environment variable and no vendor data:
 | a product whose `xml/` changed since its capture fails, naming `capture.py` (`synthetic_captures.rs`) | `test` job, every OS |
 | ETS vs sim: knx-sim replays each committed capture's `requests.txt`, every object `Loaded`, segments and memory as ETS wrote them (`knx-sim/tests/synthetic_calibration.rs`) | `knx-sim` job and `sim-conformance` job |
 | bussard vs sim: the flash-then-plan loop with seeded configurations over every synthetic product (`sim_catalog_loop.rs`, `test_sim_catalog_loop_synthetic_catalogue_shard_<k>`) | `sim-conformance` job (`BUSSARD_KNX_SIM_BIN`) |
+| bussard's own request streams: each product's flash (and apply, for a product captured with a `links` or `partial` variant) against knx-sim, normalized by `knxtrace ops`, equals the committed `requests/*.txt` (`synthetic_streams.rs`, `test_synthetic_streams_golden_shard_<k>`) | `sim-conformance` job (`BUSSARD_KNX_SIM_BIN`); the file check (`test_synthetic_streams_goldens_cover_the_catalogue`) in the `test` job |
+| CLI vs MCP: the same apply (and, where a switch shows or hides a com-object, the same flash) through `bussard plan`/`apply`/`flash` and through `knx_plan_device`/`knx_apply_device` writes the same requests (`synthetic_streams.rs`, `test_synthetic_streams_cli_mcp_shard_<k>`) | `sim-conformance` job (`BUSSARD_KNX_SIM_BIN`) |
 | every product's XML reads in `bussard-prod` and knx-sim (`synthetic_products.rs`) | `test` job, `knx-sim` job |
 | the generator's unit tests (`test_generate.py`) and `generate.py --check`: a committed `xml/` or `signed.toml` that no longer matches its `product.toml` fails | `lint` job |
 

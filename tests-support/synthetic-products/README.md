@@ -195,6 +195,25 @@ data. `bussard flash` of a product zipped with the stub programs every object
 and `bussard plan` after it is a no-op; the oracle row of a signed product,
 whose file carries the real master data, compares the same sequence.
 
+## bussard's request streams
+
+`<name>/requests/flash.txt` (and `apply.txt` for a product captured with a
+`links` or `partial` run variant) is what bussard itself sends to the product
+in knx-sim, normalized by `tools/knxtrace/knxtrace.py ops`; the CLI and the
+MCP server must send the same for the same change. Both are checked in the
+`sim-conformance` CI job by `crates/bussard-cli/tests/it/synthetic_streams.rs`
+(epic #596, steps 7 and 8; `dev/testing.md`). A new product, or a deliberate
+change to what bussard writes, regenerates the files:
+
+```sh
+cargo build --manifest-path knx-sim/Cargo.toml --bin serve
+BUSSARD_UPDATE_GOLDENS=1 BUSSARD_KNX_SIM_BIN=$PWD/knx-sim/target/debug/serve \
+  cargo nextest run -p bussard-cli -E 'test(/^synthetic_streams::test_synthetic_streams_golden/)'
+```
+
+The `test` job fails when a product has no `requests/flash.txt` or a
+`requests/` file has no product.
+
 ## Captures
 
 Each product is downloaded by ETS into knx-sim once; the capture is ours and
