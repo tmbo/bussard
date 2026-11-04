@@ -823,6 +823,19 @@ def project_tile(project: str) -> dict:
 
 @flow("export_keyring")
 def flow_export_keyring(req: dict) -> dict:
+    """`export_keyring_once`, again once when UI Automation failed on the way
+    ('Ein Ereignis konnte keinen Abonnenten aufrufen', a COMError, right
+    after a download on 2026-11-04)."""
+    try:
+        return export_keyring_once(req)
+    except Exception as e:  # noqa: BLE001 - only the COM failure is retried
+        if "COMError" not in repr(e) and "Abonnenten" not in str(e):
+            raise
+        time.sleep(3)
+        return {**export_keyring_once(req), "retried": repr(e)[:120]}
+
+
+def export_keyring_once(req: dict) -> dict:
     """Exports the project's keyring (`.knxkeys`) to `path` in the VM,
     protected with `password` (#423). ETS 6.4.1 has it on the start page
     (checked 2026-11-04): the project tile's 'Details', its 'Sicherheit'
