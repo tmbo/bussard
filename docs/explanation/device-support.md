@@ -47,7 +47,7 @@ those devices with ETS.
   that differs between application and device, a System B device whose
   manufacturer is not the application's, or a load procedure with an
   operation bussard cannot execute refuses the procedure rather than leaving
-  a device half-flashed. A System B device with no links in the model gets
+  a device half-flashed. A System B device with no links in your project gets
   empty address and association tables, as ETS writes them, and then reacts
   to no group telegram.
 - **`apply`, `plan` and single-device `reconstruct`** support System B
@@ -74,7 +74,7 @@ those devices with ETS.
   flag it could not check. A device that refuses the read of its group-object
   table is handled the same way; its tables are still read.
 - **System B communication flags.** The same holds on System B: a full flash
-  clears the flag of every object the model does not link. With the device's
+  clears the flag of every object your project does not link. With the device's
   product data, `plan` reads the group-object table and compares it with the
   table a full flash would write; when they differ, `apply` reloads the table
   before the link tables and reads it back, and `plan` names each object whose
@@ -123,7 +123,7 @@ those devices with ETS.
 ## Source address check
 
 Every command that opens a connection to a device first checks that no device
-answers at the individual address bussard itself sends from: the address the
+answers at the address bussard itself sends from: the address the
 gateway assigned to the tunnel, or `0.0.255` on routing. If one answers, the
 command refuses before touching anything:
 
@@ -139,7 +139,7 @@ one while both sides see an acknowledgement. That is silent corruption, so
 bussard checks first, as ETS does.
 
 The check costs one telegram and about 0.6 seconds. The fix is almost always
-on the gateway: give the tunnel an individual address no device owns, since
+on the gateway: give the tunnel an address no device owns, since
 many gateways ship with a default that collides on a busy line.
 `--skip-address-check` turns it off for a gateway that misbehaves on the
 probe; nothing else disables it.
@@ -195,7 +195,7 @@ process on this host holds, and moves on when the interface refuses one. With
 
 The commands that manage a KNX IP interface (`plan` and `apply` of a device
 file with a `[knxnet]` table, `describe` of the interface, `interface secure
-on|off`) reach it over a tunnel to its own individual address. When no tunnel
+on|off`) reach it over a tunnel to its own address. When no tunnel
 can do that, bussard opens a KNXnet/IP device management connection to the
 interface instead, as ETS does. It needs no tunnel slot and no tunnel
 address:
@@ -228,17 +228,16 @@ after 2 seconds.
 - **KNX Data Secure.** bussard programs a Data Secure device with its tool key
   on `flash` and `apply`, and reads one back with `describe`, `plan` and
   `reconstruct`. The handshake and security-object bytes match ETS, full
-  flashes have completed on real activated devices, and secured group
+  flashes have completed on real secured devices, and secured group
   telegrams decrypt on a live bus. One part is inferred: the layout of a
   sender table (the devices a receiver accepts secured telegrams from) with
   more than one entry, since every download observed so far writes at most
   one.
-- **Data Secure activation.** bussard operates devices ETS has activated. It
-  does not activate a factory-fresh device from its FDSK certificate, re-key
-  one or switch Data Secure off; use ETS. A device that answers only under
-  its factory key (FDSK), because it was reset or never commissioned, is
-  recognised by `describe` with the FDSK from the key store and named as
-  such. bussard writes nothing under the factory key.
+- **Securing a device.** bussard operates devices ETS has secured. It does
+  not secure a factory-fresh device from its certificate, re-key one or
+  switch Data Secure off; use ETS. A device that answers only under its
+  factory key, because it was reset or never commissioned, is recognised by
+  `describe` with the factory key from the key store and named as such. bussard writes nothing under the factory key.
 - **KNXnet/IP Secure tunnelling.** A secure-only interface needs a tunnelling
   user, from the key store, `--keyring`, or `--secure-user <id>
   --secure-password-env <VAR>`; without one, bussard refuses at once and
@@ -264,7 +263,7 @@ after 2 seconds.
   calculations that keep changing each other's results, and a value in the
   device file for a parameter a calculation computes differently: remove it,
   or change the parameters the calculation reads. `bussard device`,
-  `bussard doc`, `bussard diff`, `viz` and the MCP model tools show a
+  `bussard doc`, `bussard diff`, `viz` and the MCP project tools show a
   computed parameter with the value the download writes, marked as computed
   by its calculation.
   Verified byte for byte against ETS downloads of Ekinex EK-E72 thermostats
@@ -286,4 +285,4 @@ after 2 seconds.
 - [Find what you have](../how-to/find-what-you-have.md): scan, audit and free tunnel slots.
 - [Device commands](../reference/commands/devices.md): `scan`, `describe`, `reconstruct` and their flags.
 - [What each write command does](write-commands.md): the rails of each write.
-- [KNX Secure](knx-secure.md): keys and what activated means.
+- [KNX Secure](knx-secure.md): keys and what secured means.

@@ -80,7 +80,7 @@ like a real KNX bus. If you really mean to write to it, re-run with
 You opt in per command with `--allow-remote-gateway`, or for a shell session
 with an exported `BUSSARD_ALLOW_REAL_GATEWAY=1`. Treat setting the variable as
 arming the tool and unset it when you are done. `BUSSARD_GATEWAY` and
-`BUSSARD_DIR` only choose which bus and model a command uses; no other
+`BUSSARD_DIR` only choose which bus and project a command uses; no other
 variable can permit a write.
 
 **The simulator is the safe target.** Loopback gateways are always allowed.
@@ -164,8 +164,8 @@ programming tier, one approved plan at a time.
 
 The opt-in is per machine on purpose: only the machine knows whether it is
 meant to write to real buses. A setting in `bussard.toml` would travel with
-the model into every bundle handed to a customer, every clone and every
-assistant session. A `.env` next to a model travels the same way, which is
+the project into every bundle handed to a customer, every clone and every
+assistant session. A `.env` next to a project travels the same way, which is
 why bussard ignores the variable there.
 
 ### Share the interface with ETS

@@ -14,10 +14,10 @@ keys from the key store.
 **KNXnet/IP Secure** protects the link between bussard and the IP interface.
 A secure-only interface accepts a tunnel only from a tunnelling user (a
 user id and password the interface knows), and each of its connection slots
-belongs to one user. With a keyring, bussard picks a user whose slot is free.
+belongs to one user. With the key store, bussard picks a user whose slot is free.
 
 The two are independent. On a secure-only interface every command needs the
-keyring, if only to open the tunnel. A device the keyring does not list is
+keys, if only to open the tunnel. A device the key store does not list is
 then managed in the clear through the encrypted tunnel, as through a plain
 interface.
 
@@ -26,42 +26,42 @@ interface.
 | Key | What it does |
 |---|---|
 | Tool key | the per-device key bussard and ETS use to manage a Data Secure device |
-| FDSK | the factory key the device ships with, from its FDSK certificate; a factory reset returns the device to it |
+| Factory key (FDSK) | the key the device ships with, printed on its certificate; a factory reset returns the device to it |
 | Group key | the key of one secured group address, shared by every device on it |
 | Tunnelling user and password | opens a KNXnet/IP Secure tunnel |
 | Device authentication code, management password | the IP interface's own credentials |
 | Backbone key | secures routing on the IP backbone, which bussard does not implement |
 
-## Activated means ETS has switched Data Secure on
+## Secured means ETS has switched Data Secure on
 
-A device is activated once ETS has turned Data Secure on and written its tool
-key and sending sequence number. bussard operates activated devices but never
-activates, re-keys or deactivates one; activation from the FDSK certificate
-is not implemented. Keep those steps in ETS. KNXnet/IP Secure of an IP
+A device is secured once ETS has turned Data Secure on and written its tool
+key and sending sequence number. bussard operates secured devices but never
+secures, re-keys or unsecures one; securing a device from its certificate is
+not implemented. Keep those steps in ETS. KNXnet/IP Secure of an IP
 interface is the exception: `bussard interface secure on|off` switches it
 with the key store's credentials.
 
-An activated device answers a plain identity read with mask `FFFF`. A device
-whose model file says `security.activated: true` is never tried in the clear:
-without a keyring entry the command refuses before anything is sent. A device
-the model does not mark activated, but that is activated on the bus, refuses
-the plain access, and the command tells you to export a current keyring from
-ETS.
+A secured device answers a plain identity read with mask `FFFF`. A device
+whose device file says `security.activated: true` (the key for secured) is
+never tried in the clear: without its keys the command refuses before
+anything is sent. A device your project does not mark secured, but that is
+secured on the bus, refuses the plain access, and the command tells you to
+export a current keyring from ETS.
 
 ## The key store holds every key
 
-`bussard.keys` in the model directory is bussard's own copy of the key
+`bussard.keys` in your project folder is bussard's own copy of the key
 material: the backbone key, the tunnelling users and passwords, the
 interfaces' authentication codes, every device's tool key, serial number,
-FDSK, management password and authentication code, and the group keys. Anyone
+factory key, management password and authentication code, and the group keys. Anyone
 who can decrypt it can manage every secured device and read and forge every
 secured telegram.
 
 - **It is encrypted and signed like an ETS `.knxkeys`**, with the password in
-  `BUSSARD_KEYRING_PASSWORD`. Its protection is exactly the password's
+  `BUSSARD_KEYRING_PASSWORD` (the variable keeps the older word). Its protection is exactly the password's
   strength, so choose it accordingly. A wrong password or a hand edit fails
   the load rather than yielding wrong keys.
-- **It is committed on purpose**, so `git checkout` restores the model and its
+- **It is committed on purpose**, so `git checkout` restores the project and its
   keys together. A repository that holds it is only as private as the
   password.
 - **The password is never a flag**, and bussard never writes it anywhere.
@@ -76,7 +76,7 @@ secured telegram.
   already accepted.
 
 `bussard keys import` writes the store, and so do `import` and `init`, which
-merge the `.knxkeys` next to the project when the password is set. Every bus
+merge the `.knxkeys` next to the ETS project when the password is set. Every bus
 command reads the store unless `--keyring` or `BUSSARD_KEYRING` names a file.
 `connection.keyring` in `bussard.toml` is deprecated and ignored, with a
 warning, when a store exists.
@@ -85,7 +85,7 @@ warning, when a store exists.
 
 A keyring export (`.knxkeys`) is the file ETS writes and Home Assistant or a
 visualisation loads. `bussard keys export` writes one ETS accepts. Exports
-are not committed: `init` lists `*.knxkeys` in the model's `.gitignore`.
+are not committed: `init` lists `*.knxkeys` in the project's `.gitignore`.
 
 Once the store changes, a consumer that loaded an older export encrypts with
 keys the devices no longer use, or cannot read a newly secured address, and
@@ -97,31 +97,31 @@ when no export is newer than that change. Re-export and load the file again;
 the warning goes away.
 
 After an address change of a Secure device, re-export from ETS too: the
-keyring lists tool keys by individual address, and every later command looks
+keyring lists tool keys by device address, and every later command looks
 the key up under the new address.
 
 ## Certificate entry from a phone
 
-Every Secure device ships with a certificate label that carries its factory
-key (FDSK). `bussard keys enroll` takes these labels from a phone camera into
+Every Secure device ships with a certificate that carries its factory key.
+`bussard keys enroll` takes these certificates from a phone camera into
 the key store, so you never type or paste one. The MCP tool
 `knx_enroll_certificates` runs the same session for the assistant; your chat
 app shows you the link and the session code itself, so they never pass
 through the assistant. If your chat app cannot show a link that way, run
 `bussard keys enroll` in a terminal.
 
-**How a label travels.** The phone reads the label, encrypts it on the phone
+**How a certificate travels.** The phone reads the certificate, encrypts it on the phone
 and sends it to a relay. The relay forwards it to your bussard, which
 decrypts it, matches its serial number to a device and stores the key in the
-encrypted key store. The phone then shows what became of each label.
+encrypted key store. The phone then shows what became of each certificate.
 
 | Party | Sees |
 |---|---|
-| bussard | the labels in plain text; it writes the key store |
-| the page in the phone's browser | the labels it scans, on the phone only |
+| bussard | the certificates in plain text; it writes the key store |
+| the page in the phone's browser | the certificates it scans, on the phone only |
 | the server that hosts the page | a request for a static page; the session details in the link never reach it |
 | the relay | encrypted messages, a session id and their timing; it cannot decrypt them |
-| the assistant and the chat | the link, the session code, serial numbers, addresses and statuses; never a label or a key |
+| the assistant and the chat | the link, the session code, serial numbers, addresses and statuses; never a certificate's code or a key |
 
 **Scanning or typing.** Scanning is the safer way in. When you type a
 code, the page turns off autocorrect, suggestions and autofill as far as
@@ -142,7 +142,7 @@ link was changed on its way to the phone: close the page and start again.
 **The hosted page and relay.** By default the link opens
 `https://bussard-relay.tmbo.dev/enroll/`, served by the hosted relay, and the
 messages pass through that relay. The page talks to no other address.
-Neither keeps a label: bussard deletes the session when it ends, and the
+Neither keeps a certificate: bussard deletes the session when it ends, and the
 relay forgets it 15 minutes after the last message, or 4 hours after it
 started. `[enroll]` in `bussard.toml` points both at your own copies;
 bussard then says so before it shows the link.
@@ -155,7 +155,7 @@ stop the session and start a new one.
 
 **How long a session lasts.** A phone has 10 minutes to open the link. The
 session then stays open while the page is open, up to 4 hours, and ends 15
-minutes after the last label if the page was closed or the phone locked. A
+minutes after the last certificate if the page was closed or the phone locked. A
 phone that loses signal, switches networks or reloads the page comes back
 as the same phone: the page keeps its key for the session in the browser,
 where page script cannot read it, and deletes it when the session ends.
@@ -164,7 +164,7 @@ is waiting once it is back.
 
 **Local mode.** `bussard keys enroll --local` serves the page and the relay
 from bussard itself on `127.0.0.1`. Open the link in a browser on the same
-computer and scan with its camera or type the labels. Nothing leaves this
+computer and scan with its camera or type the codes. Nothing leaves this
 machine, and a phone cannot reach that address.
 
 **At the end** bussard says how many certificates were sent and how many
@@ -177,7 +177,7 @@ reads the serial off the device and attaches the key. After new keys,
 ## Secrets and the .env file
 
 bussard reads `BUSSARD_*` variables from one `.env` file: the first of
-`<model dir>/.env`, the `.env` next to the model directory, and `./.env`.
+`<project folder>/.env`, the `.env` next to the project folder, and `./.env`.
 
 - **The file stays out of git.** Keep `BUSSARD_KEYRING_PASSWORD`,
   `BUSSARD_PROJECT_PASSWORD` and `BUSSARD_HA_TOKEN` there only if `.env` is in
@@ -197,12 +197,12 @@ bussard reads `BUSSARD_*` variables from one `.env` file: the first of
 
 ## Validation reports a broken secured link before a write
 
-`bussard validate` checks the model's secured devices and group addresses
+`bussard validate` checks your project's secured devices and group addresses
 against the store, so a broken link shows up before a write rather than after
 one. It reports when:
 
 - a device on a secured group address cannot run Data Secure, is not
-  activated, or has no tool key in the store;
+  secured, or has no tool key in the store;
 - the address's key is missing from the store, or its `secure` flag, the store
   and the com-object flags disagree; the fix it names is
   `bussard groups secure <ga> on|off`;
