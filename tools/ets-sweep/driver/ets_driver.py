@@ -437,13 +437,33 @@ def flow_state(req: dict) -> dict:
     return {"project": window_project(), "tabs": [l["text"] for l in ocr(LAYOUT["tab_strip"])], "popups": len(ets_popups())}
 
 
+def project_tab_hit(name: str) -> dict | None:
+    """The tab of project `name` in the tab strip. OCR splits a hyphenated
+    name into fragments ('ets', '-sweep', '-secure', 2026-11-04): when no
+    single line matches, adjacent fragments on one row are joined."""
+    hit = find_text(name, LAYOUT["tab_strip"])
+    if hit and re.sub(r"\s", "", hit["text"]) == name:
+        return hit
+    lines = sorted(ocr(LAYOUT["tab_strip"]), key=lambda l: l["x"])
+    for i in range(len(lines)):
+        for j in range(i + 1, min(i + 5, len(lines) + 1)):
+            group = lines[i:j]
+            if any(abs(l["y"] - group[0]["y"]) > 10 for l in group):
+                break
+            if "".join(re.sub(r"\s", "", l["text"]) for l in group) == name:
+                x1 = max(l["x"] + l["w"] for l in group)
+                return {"text": name, "x": group[0]["x"], "y": group[0]["y"],
+                        "w": x1 - group[0]["x"], "h": max(l["h"] for l in group)}
+    return hit
+
+
 @flow("project_tab")
 def flow_project_tab(req: dict) -> dict:
     """Bring the tab of project `name` to the front (it must already be open)."""
     name = req["name"]
     if window_project() == name:
         return {"project": name}
-    hit = find_text(name, LAYOUT["tab_strip"])
+    hit = project_tab_hit(name)
     if not hit:
         raise RuntimeError(f"no tab for project {name!r}: {[l['text'] for l in ocr(LAYOUT['tab_strip'])]}")
     click(hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2)
@@ -691,7 +711,14 @@ def set_project_password(password: str) -> bool:
     if re.search(r"(bestätig|wiederhol|Bestätig|Wiederhol)", text):
         keys("{TAB}")
         keys(password, pause=0.02)
-    keys("{ENTER}")
+    # 'Projektpasswort setzen' does not take Enter: its button 'Passwort
+    # setzen' sits at the dialog's bottom right (ETS 6.4.1, 2026-11-04).
+    time.sleep(0.5)
+    button = find_text("Passwort setzen", (PASSWORD_DIALOG[0], 1600, PASSWORD_DIALOG[2], PASSWORD_DIALOG[3]))
+    if button:
+        click(button["x"] + button["w"] // 2, button["y"] + button["h"] // 2)
+    else:
+        keys("{ENTER}")
     time.sleep(2)
     after = " ".join(l["text"] for l in ocr(PASSWORD_DIALOG))
     if "Projektpasswort" in after:
@@ -708,7 +735,13 @@ def enter_certificate(certificate: str) -> bool:
     if "Zertifikat" not in text:
         return False
     keys(certificate, pause=0.02)
-    keys("{ENTER}")
+    time.sleep(0.5)
+    # The dialog's 'OK' sits at its bottom right next to 'Später'.
+    button = find_text("OK", (2300, 1580, 2560, 1680), min_ratio=0.9)
+    if button:
+        click(button["x"] + button["w"] // 2, button["y"] + button["h"] // 2)
+    else:
+        keys("{ENTER}")
     time.sleep(2)
     after = " ".join(l["text"] for l in ocr(PASSWORD_DIALOG))
     if "Zertifikat" in after and re.search(r"(ungültig|Ungültig|falsch|Fehler)", after):
@@ -724,7 +757,7 @@ def export_from_tab_menu(project: str, entry_re: str, path: str, password: str |
     the file name field set to `path`, then Enter), the export password when
     one is asked for, and the file appearing at `path` in the VM."""
     require_project(project)
-    hit = find_text(project, LAYOUT["tab_strip"])
+    hit = project_tab_hit(project)
     if not hit:
         raise RuntimeError(f"no tab for project {project!r}")
     click(hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2, button="right")
@@ -737,13 +770,7 @@ def export_from_tab_menu(project: str, entry_re: str, path: str, password: str |
     menu_click(entry)
     time.sleep(2)
     dialog = wait_popup(10)
-    edits = [e for e in dialog.descendants(control_type="Edit") if e.is_visible()]
-    if not edits:
-        keys("{ESC}")
-        raise RuntimeError(f"the save dialog has no file name field: {popup_tree(4, 3000)[:400]}")
-    edits[0].set_edit_text(path)
-    keys("{ENTER}")
-    time.sleep(2)
+    save_as(dialog, path)
     answered = set_project_password(password) if password else False
     deadline = time.time() + wait
     while time.time() < deadline and not os.path.exists(path):
@@ -752,11 +779,145 @@ def export_from_tab_menu(project: str, entry_re: str, path: str, password: str |
     return {"path": path, "exported": os.path.exists(path), "password_dialog": answered, "menu_entry": entry}
 
 
+def save_as(dialog, path: str) -> None:
+    """Saves through a Windows save dialog: its file name field (automation id
+    1001, 'Dateiname:'), then Enter. The first visible Edit is the file list's
+    'Name' column header: setting that one left ETS's default name in place
+    and the file landed in the last folder used (2026-11-04)."""
+    names = [e for e in dialog.descendants(control_type="Edit") if e.element_info.automation_id == "1001"]
+    if not names:
+        keys("{ESC}")
+        raise RuntimeError(f"the save dialog has no file name field: {popup_tree(4, 3000)[:400]}")
+    # Typed, not set: set_edit_text shows the text but the dialog saves its
+    # own default name (it asked to overwrite that, 2026-11-04).
+    names[0].click_input()
+    time.sleep(0.3)
+    keys("^a")
+    keys(path, pause=0.01)
+    time.sleep(0.5)
+    buttons = [b for b in dialog.descendants(control_type="Button") if b.window_text() == "Speichern"]
+    if buttons:
+        buttons[0].click_input()
+    else:
+        keys("{ENTER}")
+    time.sleep(2)
+    # A rerun finds the file: replace it (the prompt names our path).
+    for w in ets_popups():
+        text = " ".join(t.window_text() for t in w.descendants(control_type="Text"))
+        if "bereits vorhanden" in text and os.path.basename(path) in text:
+            for b in w.descendants(control_type="Button"):
+                if b.window_text() == "Ja":
+                    b.click_input()
+                    time.sleep(2)
+                    break
+
+
+def project_tile(project: str) -> dict:
+    """The tile of `project` on ETS's start page (its name under the icon)."""
+    lines = ocr((0, 1150, 4112, 1320))
+    hits = [l for l in lines if re.sub(r"\s", "", l["text"]) == project]
+    if not hits:
+        raise RuntimeError(f"no tile for project {project!r}: {[l['text'] for l in lines][:12]}")
+    return hits[0]
+
+
 @flow("export_keyring")
 def flow_export_keyring(req: dict) -> dict:
+    """`export_keyring_once`, again once when UI Automation failed on the way
+    ('Ein Ereignis konnte keinen Abonnenten aufrufen', a COMError, right
+    after a download on 2026-11-04)."""
+    started = time.time()
+    try:
+        return export_keyring_once(req)
+    except Exception as e:  # noqa: BLE001 - only the COM failure is retried
+        if "COMError" not in repr(e) and "Abonnenten" not in str(e):
+            raise
+        # The failure also hits after the save dialog wrote the file (the
+        # overwrite check walks a closing popup): a file written since the
+        # flow started is the export.
+        time.sleep(3)
+        path = req["path"]
+        if os.path.exists(path) and os.path.getmtime(path) >= started - 1:
+            for w in ets_popups():
+                try:
+                    w.close()
+                except Exception:  # noqa: BLE001 - a stale popup is gone already
+                    pass
+            click(3450, 93)
+            time.sleep(1.5)
+            hit = project_tab_hit(req["project"])
+            if hit:
+                click(hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2)
+                time.sleep(2)
+            return {"path": path, "exported": True, "com_error_after_save": repr(e)[:120]}
+        return {**export_keyring_once(req), "retried": repr(e)[:120]}
+
+
+def export_keyring_once(req: dict) -> dict:
     """Exports the project's keyring (`.knxkeys`) to `path` in the VM,
-    protected with `password` (#423)."""
-    return export_from_tab_menu(req["project"], r"(Schlüsselbund|Keyring|knxkeys)", req["path"], req["password"])
+    protected with `password` (#423). ETS 6.4.1 has it on the start page
+    (checked 2026-11-04): the project tile's 'Details', its 'Sicherheit'
+    page, 'Backup Schlüsselbund', a password dialog whose OK takes a second
+    click once the password is valid, then a Windows save dialog. The
+    project tab has no context menu."""
+    project, path, password = req["project"], req["path"], req["password"]
+    if re.search(r"[+^%~(){}\[\]]", password):
+        raise RuntimeError("the keyring password must not contain + ^ % ~ ( ) { } [ ]")
+    require_project(project)
+    click(200, 40)  # the start page tab
+    time.sleep(3)
+    tile = project_tile(project)
+    click(tile["x"] + tile["w"] // 2, tile["y"] - 150, button="right")
+    time.sleep(1.5)
+    items = menu_items()
+    if "Details" not in items:
+        keys("{ESC}")
+        raise RuntimeError(f"the tile menu of {project!r} has no 'Details': {items[:10]}")
+    menu_click("Details")
+    time.sleep(3)
+    try:
+        click_text("Sicherheit", (1630, 700, 1950, 820))
+        time.sleep(3)
+        click_text("Backup Schlüsselbund", (2850, 320, 3400, 400))
+        time.sleep(3)
+        if not find_text("Schlüsselbund mit Passwort", (1350, 860, 2750, 950), min_ratio=0.8):
+            raise RuntimeError("no keyring password dialog after 'Backup Schlüsselbund'")
+        keys(password, pause=0.02)
+        time.sleep(1)
+        # 'Gerätezertifikate hinzufügen' puts the FDSKs in the keyring: the
+        # frames ETS sends before it writes the tool key are secured with
+        # the FDSK and decode only then (11 of 104 frames without, syn-secure
+        # 2026-11-04).
+        box = find_text("Gerätezertifikate hinzufügen", (1380, 1440, 2000, 1520), min_ratio=0.8)
+        if not box:
+            raise RuntimeError("no 'Gerätezertifikate hinzufügen' box in the keyring password dialog")
+        click(box["x"] - 35, box["y"] + box["h"] // 2)
+        time.sleep(0.5)
+        for _ in range(4):
+            if ets_popups():
+                break
+            click_text("OK", (2330, 1570, 2480, 1630))
+            time.sleep(2.5)
+        save_as(wait_popup(10), path)
+        deadline = time.time() + 60
+        while time.time() < deadline and not os.path.exists(path):
+            time.sleep(1)
+        wait_busy()
+    finally:
+        # Close the details dialog (its X; Escape leaves it open) and go back
+        # to the project's tab.
+        for w in ets_popups():
+            try:
+                w.close()
+            except Exception:  # noqa: BLE001 - a stale popup is gone already
+                pass
+        click(3450, 93)
+        time.sleep(1.5)
+        hit = project_tab_hit(project)
+        if hit:
+            click(hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2)
+            time.sleep(2)
+    return {"path": path, "exported": os.path.exists(path)}
 
 
 @flow("export_project")
@@ -1069,6 +1230,14 @@ def flow_catalog_add(req: dict) -> dict:
             password_dialog = True
             break
         time.sleep(1)
+    # With the project password set, ETS asks for the device certificate
+    # right away ('Gerätezertifikat hinzufügen', ETS 6.4.1, 2026-11-04).
+    certificate = False
+    if req.get("certificate"):
+        t0 = time.time()
+        while time.time() - t0 < float(req.get("certificate_wait", 10)) and not certificate:
+            certificate = enter_certificate(req["certificate"])
+            time.sleep(1)
     # When ETS merges the product with its online-catalog entry ('Importiere
     # Daten... / Zusammenführen der Produktdaten', ALLinBOX 1612 1.3,
     # 2026-10-28) the device shows up 10-30 s after the click: poll.
@@ -1088,7 +1257,8 @@ def flow_catalog_add(req: dict) -> dict:
         if compat:
             raise CompatModeRequired(f"ETS asked for compatibility mode on adding: {compat[:200]}")
         time.sleep(2)
-    return {"devices": after, "added": new, "row": row, "password_dialog": password_dialog}
+    return {"devices": after, "added": new, "row": row, "password_dialog": password_dialog,
+            "certificate": certificate}
 
 
 @flow("delete_device")
@@ -1109,6 +1279,9 @@ def flow_delete_device(req: dict) -> dict:
     click(1000, y)
     time.sleep(0.8)
     band = " ".join(l["text"] for l in ocr((680, y - 20, 1700, y + 20), zoom=2))
+    # OCR reads the address's ones as 'l' at times ('l.l.l', 2026-11-04).
+    band = " ".join(t.translate(str.maketrans("lI|", "111")) if re.fullmatch(r"[\dlI|]+\.[\dlI|]+\.[\dlI|-]+", t) else t
+                    for t in band.split())
     if not re.search(rf"(?<![\d.]){re.escape(req['ia'])}(?![\d.])", band):
         raise RuntimeError(f"delete: the row at y={y} reads {band[:80]!r}, not device {req['ia']}")
     # Selected reads blue (219, 234, 255) once the pointer is off the row; a
@@ -1466,7 +1639,12 @@ def flow_download(req: dict) -> dict:
 
 @flow("history")
 def flow_history(req: dict) -> dict:
-    """The text of the 'Laufende Operationen' history pane (expanded if needed)."""
+    """The text of the 'Laufende Operationen' history pane (expanded if needed).
+    The pane belongs to the active tab: a call without `project` let the
+    watchdog switch to ets-sweep, and the secure run read that project's
+    'Abgeschlossen' for its own failed download (2026-11-04)."""
+    if req.get("project"):
+        require_project(req["project"])
     lines = ocr(LAYOUT["ops_pane"])
     if not any("Historie" in l["text"] or "Aktiv" in l["text"] for l in ocr((3320, 600, 4112, 700))):
         click(*LAYOUT["ops_header"])

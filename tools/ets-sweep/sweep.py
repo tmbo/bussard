@@ -296,6 +296,12 @@ def ets_failed_since(c, since: str) -> list[str]:
     return ets_failure_lines(vm.run(c, cmd, 60)[1], since)
 
 
+def ets_log_failed(lines: list[str] | None) -> bool:
+    """Whether ETS's log lines of a download name a failure: an ERROR line
+    or an exception, not a WARN that ETS went on after."""
+    return any(" ERROR " in l or "Exception" in l for l in lines or [])
+
+
 HISTORY_HEADER = "Historie löschen"
 HISTORY_LABELS = ("Verbindung:", "Start:", "Ende:")
 _STATUS = ("Programmieren", "Entladen", "Herunterladen")
@@ -547,7 +553,7 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
         # again.
         settle = time.time()
         while True:
-            result["history"] = vm.driver(c, "POST", "/ets/history", dict(flow_extra or {}), timeout=120).get("lines")
+            result["history"] = vm.driver(c, "POST", "/ets/history", {"project": project, **(flow_extra or {})}, timeout=120).get("lines")
             result["ets"] = ets_status(result["history"])
             if result["ets"] != "unknown" or time.time() - settle > 120:
                 break
@@ -568,10 +574,7 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
     result["loaded_objects"] = sorted(sim.loaded_objects())
     result["seconds"] = round(time.time() - t0)
     if (out / "ets.pcapng").exists():
-        ops = subprocess.run(["uv", "run", "--quiet", str(KNXTRACE), "ops", str(out / "ets.pcapng"), "--device", ia],
-                             capture_output=True, text=True)
-        (out / "ops.txt").write_text(ops.stdout + ops.stderr)
-        result["ops"] = sum(1 for l in ops.stdout.splitlines() if re.match(r"\s+\d+\s", l))
+        result["ops"] = write_ops(out, ia)
     err = result.get("error") or ""
     result["outcome"] = (
         # A prompt met before this product was even added belongs to the
@@ -582,6 +585,12 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
         else "skipped-ets-invalid-product" if "ETS product data invalid" in err
         else "skipped-catalog-version" if "catalog version mismatch" in err
         else "skipped-not-in-catalog" if "not found in catalog search" in err
+        # An exception ETS logged for the download outranks the history pane
+        # (the secure run read 'Abgeschlossen' off another project's pane
+        # while ETS logged 'Das Gerät ist mit einem in diesem Projekt nicht
+        # bekannten Schlüssel gesichert', 2026-11-04). A plain WARN is not a
+        # failure (ekinex A-4945: AssignedIPAddress discovery).
+        else "ets-failed" if ets_log_failed(result.get("ets_log"))
         else "captured" if result.get("ets") == "ok" and result.get("ops")
         else "ets-failed" if result.get("ets") == "failed"
         else "driver-error" if result.get("error")
@@ -591,6 +600,21 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
         result["ets_required"] = ets_required(c, since)
     (out / "driver.json").write_text(json.dumps(result, indent=1, ensure_ascii=False))
     return result
+
+
+def write_ops(out: Path, ia: str, keyring: Path | None = None, password: str | None = None) -> int:
+    """`knxtrace ops` of the run's capture into `ops.txt`; the number of
+    operations. With `keyring` (and its password) the Data Secure frames are
+    decrypted and their inner APDUs listed (#423): without it a secure
+    download's writes show as `secure-data` only."""
+    cmd = ["uv", "run", "--quiet", str(KNXTRACE), "ops", str(out / "ets.pcapng"), "--device", ia]
+    env = dict(os.environ)
+    if keyring is not None:
+        cmd += ["--keyring", str(keyring)]
+        env["BUSSARD_KEYRING_PASSWORD"] = password or ""
+    ops = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    (out / "ops.txt").write_text(ops.stdout + ops.stderr)
+    return sum(1 for l in ops.stdout.splitlines() if re.match(r"\s+\d+\s", l))
 
 
 def run_learning(c, knxprod: Path, app: str, search: str, *, attempts: int = 3, **kw) -> dict:

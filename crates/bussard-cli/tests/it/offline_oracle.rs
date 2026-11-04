@@ -28,12 +28,22 @@
 //! the `partial` run variant) need the simulator binary; a third test runs
 //! them when `KNX_SIM_BIN` names it or `knx-sim/target/debug/knx-sim` exists
 //! (the `sim-conformance` CI job), and skips with a note otherwise.
+//!
+//! A synthetic row of a KNX Data Secure capture (`syn-secure`, issue #423)
+//! decodes it with the keyring committed next to it (`keyring=`), exported
+//! under the public [`SYNTHETIC_KEYRING_PASSWORD`]; the synthetic rows run
+//! with it in `BUSSARD_KEYRING_PASSWORD`.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+/// The password of the synthetic products' keyring exports (issue #423),
+/// `SYNTHETIC_KEYRING_PASSWORD` in `tools/ets-sweep/synthetic/capture.py`.
+/// Public: those keyrings hold only the synthetic keys of fabricated devices.
+const SYNTHETIC_KEYRING_PASSWORD: &str = "SyntheticKeyring1!";
 
 /// A self-cleaning temporary directory (no `tempfile` dev-dependency needed).
 struct TmpDir(PathBuf);
@@ -103,6 +113,15 @@ fn resolved_python() -> Option<&'static str> {
 /// Runs the oracle script in `cwd` with `args`; returns (success, stdout +
 /// stderr). No gateway is ever configured: the script only plans dry runs.
 fn oracle(cwd: &Path, args: &[&str]) -> std::io::Result<(bool, String)> {
+    oracle_with_env(cwd, args, &[])
+}
+
+/// [`oracle`] with extra environment variables.
+fn oracle_with_env(
+    cwd: &Path,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> std::io::Result<(bool, String)> {
     let script = workspace_root().join("scripts/campaign/95-offline-oracle.sh");
     let mut command = Command::new("bash");
     // A `PYTHON` the caller exported wins over the resolved interpreter.
@@ -118,6 +137,7 @@ fn oracle(cwd: &Path, args: &[&str]) -> std::io::Result<(bool, String)> {
         .env("BUSSARD_BIN", env!("CARGO_BIN_EXE_bussard"))
         .env_remove("BUSSARD_ALLOW_REAL_GATEWAY")
         .env_remove("BUSSARD_GATEWAY")
+        .envs(env.iter().copied())
         .stdin(Stdio::null())
         .output()?;
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -260,7 +280,11 @@ fn check_synthetic_row(
     let mut args: Vec<&str> = vec!["--row", line, "--dir", &model_arg, "--out", &out_arg];
     args.extend(options.iter().map(String::as_str));
     args.push("--check");
-    let (mut ok, text) = oracle(root, &args)?;
+    let (mut ok, text) = oracle_with_env(
+        root,
+        &args,
+        &[("BUSSARD_KEYRING_PASSWORD", SYNTHETIC_KEYRING_PASSWORD)],
+    )?;
     let mut detail = String::new();
     if !ok {
         detail = tail(&text, 40);
