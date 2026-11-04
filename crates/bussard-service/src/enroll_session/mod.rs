@@ -46,7 +46,7 @@ pub const DEFAULT_PAGE: &str = "https://bussard.tmbo.dev/enroll/";
 /// (`--relay`, then `[enroll] relay`). The hosted page's CSP allows only
 /// this relay: a self-hosted relay needs a self-hosted page (`[enroll]
 /// page`).
-pub const DEFAULT_RELAY: &str = "https://relay.bussard.tmbo.dev";
+pub const DEFAULT_RELAY: &str = "https://bussard-relay.tmbo.dev";
 
 /// The relay and page of a hosted session: each the first of the
 /// surface's own setting (`--relay`, `--page`), the `[enroll]` table of

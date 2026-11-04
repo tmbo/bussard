@@ -6,5 +6,5 @@
   `local: true` serve the enrolment page and the relay on 127.0.0.1, one
   origin, for a browser on the same computer without a hosted relay.
 - `bussard keys enroll` defaults to the hosted relay
-  `https://relay.bussard.tmbo.dev` (`--relay`, then `[enroll] relay`, then
+  `https://bussard-relay.tmbo.dev` (`--relay`, then `[enroll] relay`, then
   the default); `--relay` is no longer required (#732).
