@@ -727,9 +727,10 @@ A parameter the Dynamic walk does not reach is written at its default, or its
 octets keep the segment template, by
 `ApplicationProgram::downloads_invisible_parameters` (`bussard-ets`), the one
 predicate the image builder and the read-back decoder use on both systems.
-With `DownloadInvisibleParameters` (`None`, `Background`) or
-`PreferPartialDownloadIfApplicationLoaded="true"` the template stays. Without
-either, the application's `MinEtsVersion` decides on System 7:
+With `DownloadInvisibleParameters` (`None`, `Background`) the template stays.
+Without it, the application's `MinEtsVersion` decides, on System 7 and System
+B alike; `PreferPartialDownloadIfApplicationLoaded` does not enter into it
+(#838):
 
 | capture | system | schema | `MinEtsVersion` | ETS at the hidden parameter |
 |---|---|---|---|---|
@@ -746,8 +747,10 @@ either, the application's `MinEtsVersion` decides on System 7:
 `MinEtsVersion` (both project/23), and ETS writes the default on the first and
 keeps the template on the second. So System 7 writes the defaults when
 `MinEtsVersion` is 5 or later and keeps the template below 5 or without one
-(`FIRST_SYSTEM7_MIN_ETS_WITH_HIDDEN_DEFAULTS`); System B writes them at every
-schema and `MinEtsVersion`. The schema does not decide (PR #654 keyed the rule
+(`FIRST_MIN_ETS_WITH_HIDDEN_DEFAULTS`). System B follows the same rule (#838,
+sweep of 2026-11-04: 31 Elsner, ekinex and MDT System B programs below 5 keep
+the template, the Busch-Jaeger and ABB programs with 5.0 write the defaults
+also with `PreferPartialDownloadIfApplicationLoaded="true"`). The schema does not decide (PR #654 keyed the rule
 on project/21; the project/23 twin with 4.0 keeps and the project/20 leakage
 sensor with 5.0 writes). Of 5.x only 5.0 is observed, and the corpus has no
 System 7 program between 4.0 and 5.0. The switch makes the corpus's System 7
@@ -755,7 +758,6 @@ programs with `MinEtsVersion` 5.0 and neither attribute (81, project/14 and
 /20; 42 of `M-00C9`, 29 of `M-0083`, 10 of five others) write their hidden
 defaults; of the sweep's 249 System 7 rows only the leakage sensor changes
 (differs to identical), the other 248 compare as before.
-System B below project/20 is still unseparated by a capture.
 
 ---
 

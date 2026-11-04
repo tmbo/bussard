@@ -792,8 +792,14 @@ fn dynamic_placements<'a>(
                     canonical(config.vendor_default(app, slot.module, ref_id)),
                 ),
                 None => {
-                    let d = canonical(slot.parameter.starting_value().map(str::to_string));
-                    (relative_id(app, &slot.parameter.id), false, d.clone(), d)
+                    let d = canonical(bussard_prod::hidden_slot_value(app, &config, &slot));
+                    let rel = relative_id(app, &slot.parameter.id);
+                    // A module parameter is hidden per instance (issue #835).
+                    let key = match slot.module {
+                        Some(_) => keys.key(config.module_instance_id(slot.module), &rel),
+                        None => rel,
+                    };
+                    (key, false, d.clone(), d)
                 }
             };
             Placed {

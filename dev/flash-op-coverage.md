@@ -151,9 +151,13 @@ The images the table ops stream are built in `crates/bussard-download/src/comput
 
 The parameter image writes a parameter the Dynamic walk does not reach at its
 default only when `ApplicationProgram::downloads_invisible_parameters` says so:
-never with `DownloadInvisibleParameters` or a preferred partial download; on
-System B at every schema; on System 7 when the application's `MinEtsVersion`
-is 5 or later (#448). The evidence is the synthetic twins
+never with `DownloadInvisibleParameters`; otherwise on System B and System 7
+when the application's `MinEtsVersion` is 5 or later, whatever
+`PreferPartialDownloadIfApplicationLoaded` says (#448, #838: the sweep's
+Elsner, ekinex and MDT System B programs below 5 keep the template, the ABB /
+Busch-Jaeger ones with 5.0 and a preferred partial download write the
+defaults). Module parameters get the same treatment once per module instance
+the walk reached, at the instance's base (#835). The evidence is the synthetic twins
 `syn-s7-hidden-default` (project/23, 6.0, default written),
 `syn-s7-hidden-default-ets4` (project/23, 4.0, template kept) and
 `syn-s7-hidden-default-p11` (project/11, 4.0, template kept), the System B

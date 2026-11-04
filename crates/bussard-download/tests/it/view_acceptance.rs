@@ -470,7 +470,7 @@ fn test_parameter_image_is_the_same_under_hidden_and_visible_keys() -> TestResul
 /// Issue #686: a reached, unlinked com-object whose flags are all disabled
 /// gets its descriptor's type octet (priority and size code) with no flags,
 /// as ETS writes it (`syn-com-objects`, object 2: `03 00`). The fixture's
-/// object 4 is one; objects 5 to 8 are reached the same way, with flags.
+/// object 4 is one; objects 5 to 9 are reached the same way, with flags.
 /// The fixture is System B, where the default-only `<choose>`s in front of
 /// objects 4, 5 and 8 select no branch (the Dynamic walk, issue #474), so the
 /// test rewrites the mask to a System 7 one, where they are taken.
@@ -485,7 +485,7 @@ fn test_dynamic_group_object_descriptors_keep_flagless_objects() -> TestResult {
     let config = evaluate_dynamic(&app, &BTreeMap::new());
     let descriptors = dynamic_group_object_descriptors(&app, &config, &BTreeMap::new());
     let asaps: BTreeSet<u16> = descriptors.iter().map(|d| d.asap).collect();
-    assert_eq!(asaps, BTreeSet::from([1, 4, 5, 6, 7, 8]));
+    assert_eq!(asaps, BTreeSet::from([1, 4, 5, 6, 7, 8, 9]));
     let four = descriptors
         .iter()
         .find(|d| d.asap == 4)

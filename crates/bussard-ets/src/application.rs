@@ -1037,8 +1037,8 @@ pub struct ApplicationProgram {
     pub schema_version: Option<String>,
     /// The `MinEtsVersion` attribute of `<ApplicationProgram>` (`"3.0d"`,
     /// `"4.0"`, `"5.0"`, `"6.0"`), or `None` when the application declares
-    /// none. On System 7 it decides whether hidden parameters are written at
-    /// their defaults; see [`Self::downloads_invisible_parameters`].
+    /// none. It decides whether hidden parameters are written at their
+    /// defaults; see [`Self::downloads_invisible_parameters`].
     #[serde(default)]
     pub min_ets_version: Option<String>,
     /// The `<Options DownloadInvisibleParameters>` value (`None`, `Background`),
@@ -1047,6 +1047,7 @@ pub struct ApplicationProgram {
     /// show; see [`Self::downloads_invisible_parameters`].
     pub download_invisible_parameters: Option<String>,
     /// Whether `<Options>` declares `PreferPartialDownloadIfApplicationLoaded="true"`.
+    /// It does not decide whether hidden parameters are written (issue #838).
     pub prefer_partial_download: bool,
     /// Whether the application declares `DynamicTableManagement` (`1` or
     /// `true`). On System 7 ETS then sizes the address-table segment to the
@@ -1134,60 +1135,67 @@ impl ApplicationProgram {
     /// show, with their defaults.
     ///
     /// Never when `<Options>` declares `DownloadInvisibleParameters` (`None`
-    /// or `Background`) or `PreferPartialDownloadIfApplicationLoaded="true"`:
-    /// the segment template stays for them on both systems. Without either
-    /// attribute ETS 6 writes them on a System B program (mask `xxB0`) at
-    /// every schema version, and on a System 7 one (mask `0700`, `0701`,
-    /// `0705`) when its `MinEtsVersion` is
-    /// [`Self::FIRST_SYSTEM7_MIN_ETS_WITH_HIDDEN_DEFAULTS`] or later
-    /// (issues #89 and #448). Established from full-download captures, each
-    /// one a hidden parameter whose default differs from its template:
+    /// or `Background`): the segment template stays for them. Without it ETS
+    /// 6 writes them on a System B program (mask `xxB0`) and on a System 7
+    /// one (mask `0700`, `0701`, `0705`) when its `MinEtsVersion` is
+    /// [`Self::FIRST_MIN_ETS_WITH_HIDDEN_DEFAULTS`] or later, and keeps the
+    /// template below it or when the program declares none (issues #89, #448
+    /// and #838). `PreferPartialDownloadIfApplicationLoaded` does not enter
+    /// into it. Established from full-download captures, each one a hidden
+    /// parameter whose default differs from its template:
     ///
-    /// * System B, neither attribute, defaults written: Busch-Wächter PRO
-    ///   280 / 2800 (`M-0007_A-6179-82`, project/20, `MinEtsVersion` 5.0)
-    ///   and the synthetic `syn-hidden-default` (project/23).
-    /// * System 7, neither attribute, defaults written: the synthetic
-    ///   `syn-s7-hidden-default` (0705, project/23, `MinEtsVersion` 6.0) and
-    ///   the sweep's MDT leakage sensor `M-0083_A-014F-10` (0705, project/20,
-    ///   `MinEtsVersion` 5.0: one octet at +4 of segment 0x4444 differs when
-    ///   the template is kept, none when the default is written).
-    /// * System 7, neither attribute, template kept: its twins
-    ///   `syn-s7-hidden-default-ets4` (project/23, `MinEtsVersion` 4.0, the
-    ///   same product otherwise) and `syn-s7-hidden-default-p11` (project/11,
-    ///   4.0), the sweep's Steinel HPD 2 and TruePresence, ekinex, B.E.G. DIM,
-    ///   Zennio Sensato, MDT rain sensor and Elsner rows (project/11, 4.0,
-    ///   3.0d or none), and Busch-Jaeger `A-FF11-15` (0705, project/20,
-    ///   `MinEtsVersion` 3.0d, 14 octets differ when its hidden defaults are
-    ///   written).
-    /// * System B, partial download preferred, template kept: Busch-Jaeger
-    ///   DALI gateways `A-A0AC`, `A-A0AD`, Zennio DALI-BOX `A-3131`,
-    ///   `A-3311`, `A-3331`, Jung 230021SU, 390041SR, F50, ABB BE/S16.
-    /// * Declared `None` or `Background`, template kept on both systems.
+    /// * System B, `MinEtsVersion` 5 or later, defaults written:
+    ///   Busch-Wächter PRO 280 / 2800 (`M-0007_A-6179-82`, project/20, 5.0),
+    ///   the synthetic `syn-hidden-default` (project/23, 6.0), and with
+    ///   `PreferPartialDownloadIfApplicationLoaded="true"` the ABB /
+    ///   Busch-Jaeger `A-FF40` constant light controllers, the Busch-Jaeger
+    ///   fan coil and valve drive programs `A-A0B1/A0B3/A0B5/A0C5/A0BB/A0BC`
+    ///   and ABB Caldion `A-4981` (project/20, 5.0; defaults sweep of
+    ///   2026-11-04).
+    /// * System B, `MinEtsVersion` below 5, template kept: 19 Elsner programs
+    ///   (`M-00C9_A-100B` .. `A-10A5`, project/11 to /20, 3.0f), 11 ekinex
+    ///   ones (`M-00B6_A-4341`, `A-4544`, `A-4C4D`, ..., project/11, 4.0) and
+    ///   MDT `A-0133` (4.0), all without either option; with
+    ///   `PreferPartialDownloadIfApplicationLoaded="true"` the Zennio
+    ///   DALI-BOX and ACTinBOX programs (`A-3131`, `A-3311`, `A-3331`, ...,
+    ///   4.0).
+    /// * System 7, `MinEtsVersion` 5 or later, defaults written: the
+    ///   synthetic `syn-s7-hidden-default` (0705, project/23, 6.0) and the
+    ///   sweep's MDT leakage sensor `M-0083_A-014F-10` (0705, project/20,
+    ///   5.0: one octet at +4 of segment 0x4444 differs when the template is
+    ///   kept, none when the default is written).
+    /// * System 7, `MinEtsVersion` below 5 or none, template kept: its twins
+    ///   `syn-s7-hidden-default-ets4` (project/23, 4.0, the same product
+    ///   otherwise) and `syn-s7-hidden-default-p11` (project/11, 4.0), the
+    ///   sweep's Steinel HPD 2 and TruePresence, ekinex, B.E.G. DIM, Zennio
+    ///   Sensato, MDT rain sensor and Elsner rows (project/11, 4.0, 3.0d or
+    ///   none), and Busch-Jaeger `A-FF11-15` (0705, project/20, 3.0d, 14
+    ///   octets differ when its hidden defaults are written).
+    /// * Declared `None` or `Background`, template kept on both systems (the
+    ///   Jung and ABB house products, e.g. `A-20DE-22`, `A-A0ED-20`).
     ///
-    /// The two project/23 twins differ in `MinEtsVersion` alone and ETS
-    /// treats them differently, so on System 7 the key is `MinEtsVersion`,
-    /// not the schema (PR #654 keyed it on project/21, which the 4.0 twin in
+    /// The two project/23 System 7 twins differ in `MinEtsVersion` alone and
+    /// ETS treats them differently, so the key is `MinEtsVersion`, not the
+    /// schema (PR #654 keyed it on project/21, which the 4.0 twin in
     /// project/23 and the 5.0 leakage sensor in project/20 both contradict).
     /// The boundary lies between 4.0 (kept) and 5.0 (written); the corpus
-    /// has no System 7 program with a `MinEtsVersion` between the two, and
-    /// only 5.0 itself is observed of 5.x. A missing or unreadable
-    /// `MinEtsVersion` keeps the template, as on the Elsner and MDT
-    /// project/11 rows that declare none.
+    /// has no program with a `MinEtsVersion` between the two, and only 5.0
+    /// itself is observed of 5.x. A missing or unreadable `MinEtsVersion`
+    /// keeps the template, as on the Elsner and MDT project/11 rows that
+    /// declare none.
     pub fn downloads_invisible_parameters(&self) -> bool {
         self.download_invisible_parameters.is_none()
-            && !self.prefer_partial_download
-            && (self.is_system_b()
-                || (self.is_system_7()
-                    && self
-                        .min_ets_major()
-                        .is_some_and(|v| v >= Self::FIRST_SYSTEM7_MIN_ETS_WITH_HIDDEN_DEFAULTS)))
+            && (self.is_system_b() || self.is_system_7())
+            && self
+                .min_ets_major()
+                .is_some_and(|v| v >= Self::FIRST_MIN_ETS_WITH_HIDDEN_DEFAULTS)
     }
 
-    /// The first `MinEtsVersion` major version from which a System 7 program
-    /// without `DownloadInvisibleParameters` gets the parameters the
-    /// configuration does not show written at their defaults (issue #448;
-    /// see [`Self::downloads_invisible_parameters`]).
-    pub const FIRST_SYSTEM7_MIN_ETS_WITH_HIDDEN_DEFAULTS: u32 = 5;
+    /// The first `MinEtsVersion` major version from which a System B or
+    /// System 7 program without `DownloadInvisibleParameters` gets the
+    /// parameters the configuration does not show written at their defaults
+    /// (issues #448 and #838; see [`Self::downloads_invisible_parameters`]).
+    pub const FIRST_MIN_ETS_WITH_HIDDEN_DEFAULTS: u32 = 5;
 
     /// The major version of [`Self::min_ets_version`] (`3` for `"3.0d"`, `6`
     /// for `"6.0"`), `None` when the application declares none or one that
@@ -3297,7 +3305,7 @@ mod tests {
     fn test_parse_application_program_download_invisible_parameters() -> Result<()> {
         let xml = |options: &str| {
             format!(
-                r#"<KNX xmlns="http://knx.org/xml/project/20"><ApplicationProgram Id="M-1_A-1" Name="t" MaskVersion="MV-07B0"><Static>{options}</Static></ApplicationProgram></KNX>"#
+                r#"<KNX xmlns="http://knx.org/xml/project/20"><ApplicationProgram Id="M-1_A-1" Name="t" MaskVersion="MV-07B0" MinEtsVersion="5.0"><Static>{options}</Static></ApplicationProgram></KNX>"#
             )
         };
         for (options, declared, partial, writes) in [
@@ -3315,11 +3323,13 @@ mod tests {
                 true,
                 false,
             ),
+            // Issue #838: partial download preferred does not keep the
+            // template (ABB / Busch-Jaeger `A-FF40`, 5.0).
             (
                 r#"<Options PreferPartialDownloadIfApplicationLoaded="true"></Options>"#,
                 None,
                 true,
-                false,
+                true,
             ),
         ] {
             let app = parse_application_program_str("M-1_A-1", &xml(options))?;
@@ -3381,15 +3391,19 @@ mod tests {
         Ok(())
     }
 
-    /// Issue #448: without the attributes, a System B program writes hidden
-    /// defaults at every schema and `MinEtsVersion`, a System 7 one when its
-    /// `MinEtsVersion` is 5 or later, at any schema; another mask never does.
+    /// Issues #448 and #838: without `DownloadInvisibleParameters`, a System
+    /// B or System 7 program writes hidden defaults when its `MinEtsVersion`
+    /// is 5 or later, at any schema and whatever
+    /// `PreferPartialDownloadIfApplicationLoaded` says; another mask never
+    /// does.
     #[test]
     fn test_downloads_invisible_parameters_by_system_and_min_ets_version() -> Result<()> {
         for (mask, schema, min_ets, writes) in [
-            ("07B0", "11", Some("4.0"), true),
+            ("07B0", "11", Some("4.0"), false),
+            ("07B0", "11", Some("3.0f"), false),
             ("07B0", "20", Some("5.0"), true),
-            ("07B0", "23", None, true),
+            ("07B0", "23", Some("6.0"), true),
+            ("07B0", "23", None, false),
             ("0705", "11", Some("4.0"), false),
             ("0705", "20", Some("3.0d"), false),
             ("0705", "23", Some("4.0"), false),
@@ -3421,6 +3435,17 @@ mod tests {
             );
             let app = parse_application_program_str("M-1_A-1", &background)?;
             assert!(!app.downloads_invisible_parameters(), "{mask} {schema}");
+            let partial = xml.replace(
+                r#"Comparable="true""#,
+                r#"PreferPartialDownloadIfApplicationLoaded="true""#,
+            );
+            let app = parse_application_program_str("M-1_A-1", &partial)?;
+            assert!(app.prefer_partial_download, "{mask} {schema}");
+            assert_eq!(
+                app.downloads_invisible_parameters(),
+                writes,
+                "partial {mask} {schema} {min_ets:?}"
+            );
         }
         Ok(())
     }

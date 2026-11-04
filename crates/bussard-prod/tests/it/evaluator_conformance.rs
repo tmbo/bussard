@@ -694,8 +694,11 @@ fn test_evaluate_dynamic_never_shown_steering_parameter_system_b_skips_default_o
     }
     assert!(!refs.contains("P-8_R-8"), "{refs:?}");
     // A choose with a `test` branch beside the default one still steers:
-    // the matching test (object 6) and the default (object 7, the ABB
-    // Modbus gateway's `signal_N_device_active`).
+    // the matching test of an assigned parameter (object 6, the Zennio
+    // shape) and the default (object 7, the ABB Modbus gateway's
+    // `signal_N_device_active`). One that no `<Assign>` sets selects no
+    // test branch (object 9, the Enertex `b_ParameterAusblenden`, #839).
+    assert!(!objects.contains("O-9_R-9"), "{objects:?}");
     for present in ["O-6_R-6", "O-7_R-7"] {
         assert!(objects.contains(present), "{present} missing: {objects:?}");
     }
@@ -714,7 +717,9 @@ fn test_evaluate_dynamic_never_shown_steering_parameter_system_7_takes_its_defau
     let xml = std::str::from_utf8(CHOOSE_ACTIVITY)?.replace("MV-07B0", "MV-0701");
     let app = parse_application_program(CHOOSE_ACTIVITY_ID, xml.as_bytes())?;
     let (objects, refs) = reached(&app, &[]);
-    for present in ["O-4_R-4", "O-5_R-5", "O-6_R-6", "O-7_R-7", "O-8_R-8"] {
+    for present in [
+        "O-4_R-4", "O-5_R-5", "O-6_R-6", "O-7_R-7", "O-8_R-8", "O-9_R-9",
+    ] {
         assert!(objects.contains(present), "{present} missing: {objects:?}");
     }
     assert!(refs.contains("P-8_R-8"), "{refs:?}");

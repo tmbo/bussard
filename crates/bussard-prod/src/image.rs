@@ -48,7 +48,7 @@
 //! `LdCtrlRelSegment` when it pre-fills (issue #834), else to `0xFF`, the
 //! erased flash ETS writes there (issue #377, see `unplaced_fill`).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Range;
 
 use bussard_ets::application::{
@@ -821,7 +821,7 @@ fn dynamic_image(
                 },
             ),
             None => (
-                slot.parameter.starting_value().map(str::to_string),
+                hidden_slot_value(app, config, &slot),
                 ValueSource::VendorDefault,
             ),
         };
@@ -1133,9 +1133,17 @@ fn parameter_type_of<'a>(
 /// switch-off delay, set to 30 s in the project, is written as its default
 /// 300 s; issue #89). A `<Union>` none of whose members was
 /// reached carries its default member (`DefaultUnionParameter`); a union with
-/// a reached member is left to that member. Module parameters are not
-/// instantiated here (their instances are the walk's business). The caller
-/// writes the reached parameters afterwards, so they win where they overlap.
+/// a reached member is left to that member. The caller writes the reached
+/// parameters afterwards, so they win where they overlap.
+///
+/// The parameters of a module definition get the same treatment once per
+/// module instance the walk reached, at that instance's base (issue #835):
+/// ETS writes the hidden parameters of every instance of the MDT and ekinex
+/// DALI gateways' group and ECG modules (`A-DA22`, `A-0153/0154/0155`), so
+/// leaving them out left their octets at the segment's fill. A module
+/// parameter with a `BaseValue` argument carries its default plus the
+/// instance's value of the argument ([`hidden_slot_value`]). An instance the
+/// walk did not reach gets nothing.
 fn invisible_parameter_slots<'a>(
     app: &'a ApplicationProgram,
     config: &bussard_ets::dynamic::DynamicConfig,
@@ -1144,34 +1152,35 @@ fn invisible_parameter_slots<'a>(
     include: impl Fn(&bussard_ets::application::Parameter) -> bool,
 ) -> Result<()> {
     let prefix = format!("{}_", app.id);
-    // The application-level parameters the walk reached, and the unions they
-    // occupy.
-    let mut reached = std::collections::HashSet::new();
-    let mut occupied_unions = std::collections::HashSet::new();
-    for active in config.parameters.iter().filter(|a| a.module.is_none()) {
+    // The parameters the walk reached and the unions they occupy, per module
+    // instance (`None`: the application itself).
+    let mut reached: HashMap<Option<usize>, HashSet<&str>> = HashMap::new();
+    let mut occupied_unions: HashMap<Option<usize>, HashSet<usize>> = HashMap::new();
+    for active in &config.parameters {
         if let Some(pref) = app
             .parameter_refs
             .get(&format!("{prefix}{}", active.param_ref_id))
         {
-            reached.insert(pref.ref_id.as_str());
+            reached
+                .entry(active.module)
+                .or_default()
+                .insert(pref.ref_id.as_str());
             if let Some(&(ui, _)) = union_of.get(pref.ref_id.as_str()) {
-                occupied_unions.insert(ui);
+                occupied_unions.entry(active.module).or_default().insert(ui);
             }
         }
     }
-    let mut params: Vec<_> = app
-        .parameters
-        .values()
-        .filter(|p| include(p))
-        .filter(|p| !reached.contains(p.id.as_str()))
-        .filter(|p| {
-            !p.id
-                .strip_prefix(&prefix)
-                .unwrap_or(&p.id)
-                .starts_with("MD-")
-        })
-        .collect();
-    params.sort_by(|a, b| a.id.cmp(&b.id));
+    // The candidates by module definition (`None`: application-level), in
+    // id order.
+    let mut by_def: HashMap<Option<&str>, Vec<&bussard_ets::application::Parameter>> =
+        HashMap::new();
+    for p in app.parameters.values().filter(|p| include(p)) {
+        let rel = p.id.strip_prefix(&prefix).unwrap_or(&p.id);
+        by_def.entry(module_def_of(rel)).or_default().push(p);
+    }
+    for params in by_def.values_mut() {
+        params.sort_by(|a, b| a.id.cmp(&b.id));
+    }
     // A hidden calculation output is written with the value the calculation
     // computed (and refused with it), not its default: give it its ref.
     let calculated: BTreeMap<&str, &str> = app
@@ -1185,19 +1194,84 @@ fn invisible_parameter_slots<'a>(
             Some((pref.ref_id.as_str(), o.param_ref.as_str()))
         })
         .collect();
-    for param in params {
-        if let Some(&(ui, mi)) = union_of.get(param.id.as_str())
-            && (occupied_unions.contains(&ui) || !app.unions[ui].members[mi].is_default)
-        {
-            continue;
-        }
-        let Some(at) = location(app, union_of, param) else {
+    let empty_reached = HashSet::new();
+    let empty_unions = HashSet::new();
+    let instances = std::iter::once((None, None)).chain(
+        config
+            .modules
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (Some(i), Some(m.module_def.as_str()))),
+    );
+    for (module, def) in instances {
+        let Some(params) = by_def.get(&def) else {
             continue;
         };
-        let param_ref = calculated.get(param.id.as_str()).map(|r| (*r).to_string());
-        slots.push(slot_at(app, config, param, at, None, param_ref)?);
+        let reached = reached.get(&module).unwrap_or(&empty_reached);
+        let occupied = occupied_unions.get(&module).unwrap_or(&empty_unions);
+        for param in params {
+            if reached.contains(param.id.as_str()) {
+                continue;
+            }
+            if let Some(&(ui, mi)) = union_of.get(param.id.as_str())
+                && (occupied.contains(&ui) || !app.unions[ui].members[mi].is_default)
+            {
+                continue;
+            }
+            let Some(at) = location(app, union_of, param) else {
+                continue;
+            };
+            let param_ref = calculated.get(param.id.as_str()).map(|r| (*r).to_string());
+            slots.push(slot_at(app, config, param, at, module, param_ref)?);
+        }
     }
     Ok(())
+}
+
+/// The module definition an app-relative parameter id belongs to: `MD-1` of
+/// `MD-1_P-7` or `MD-1_UP-3`, `MD-1_SM-2` of a submodule's `MD-1_SM-2_P-4`;
+/// `None` for an application-level parameter (`P-12`, `UP-3`).
+fn module_def_of(rel: &str) -> Option<&str> {
+    if !rel.starts_with("MD-") {
+        return None;
+    }
+    let cut = match (rel.rfind("_P-"), rel.rfind("_UP-")) {
+        (Some(a), Some(b)) => a.max(b),
+        (Some(a), None) | (None, Some(a)) => a,
+        (None, None) => return None,
+    };
+    Some(&rel[..cut])
+}
+
+/// The value a slot of a parameter the configuration does not show carries
+/// (`param_ref_id` `None`, see [`ParameterSlot::param_ref_id`]): the
+/// parameter's starting value, plus, for a module parameter with a
+/// `BaseValue` argument, the instance's value of that argument, as the
+/// Dynamic evaluator resolves a reached one (issue #126). The image builder
+/// and the read-back decoder both read it from here.
+pub fn hidden_slot_value(
+    app: &ApplicationProgram,
+    config: &bussard_ets::dynamic::DynamicConfig,
+    slot: &ParameterSlot<'_>,
+) -> Option<String> {
+    let own = slot.parameter.starting_value().map(str::to_string);
+    let Some(base) = slot
+        .parameter
+        .base_value
+        .as_deref()
+        .and_then(|arg| module_argument(app, config, slot.module, arg))
+    else {
+        return own;
+    };
+    let n = match own.as_deref().map(str::trim) {
+        None | Some("") => 0,
+        Some(v) => match v.parse::<i64>() {
+            Ok(n) => n,
+            // A non-integer default takes no base.
+            Err(_) => return own,
+        },
+    };
+    Some(n.saturating_add(base).to_string())
 }
 
 /// The effective memory location of a `<Union>` member parameter: the union's
@@ -4414,7 +4488,7 @@ mod tests {
             };
             format!(
                 r#"<KNX xmlns="http://knx.org/xml/project/20">
-     <ApplicationProgram Id="A" MaskVersion="MV-07B0" Name="calc">
+     <ApplicationProgram Id="A" MaskVersion="MV-07B0" Name="calc" MinEtsVersion="5.0">
       <Static>
        <Code><RelativeSegment Id="A_RS-1" Size="5" LoadStateMachine="4" Offset="0"><Data>AAAAAAA=</Data></RelativeSegment></Code>
        <ParameterTypes>
@@ -4666,7 +4740,7 @@ mod tests {
     /// sending cycle (default 600, as in `M-0007_A-6179-82` at +0x2A) and one
     /// member of a union; a plain parameter is always shown.
     const HIDDEN_XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/20">
-     <ApplicationProgram Id="A" MaskVersion="MV-07B0" Name="bm">
+     <ApplicationProgram Id="A" MaskVersion="MV-07B0" Name="bm" MinEtsVersion="5.0">
       <Static>
        <Code><RelativeSegment Id="A_RS-1" Size="4" LoadStateMachine="4" Offset="0"><Data>AAAAAA==</Data></RelativeSegment></Code>
        <ParameterTypes>
@@ -4742,9 +4816,9 @@ mod tests {
 
     /// Issue #450: a hidden `LegacyPatchAlways` parameter is written at its
     /// default even when the application keeps hidden parameters at the
-    /// template (`Background`, `None`, or System 7); a hidden parameter
-    /// without the flag keeps the template. The read-back decoder walks the
-    /// same slots.
+    /// template (`Background`, `None`, or `MinEtsVersion` below 5 on either
+    /// system); a hidden parameter without the flag keeps the template. The
+    /// read-back decoder walks the same slots.
     #[test]
     fn test_compute_parameter_image_dynamic_writes_hidden_legacy_patch_always() -> Result<()> {
         let options = r#"<Options TextParameterEncoding="utf-8" Comparable="false" Reconstructable="false" />"#;
@@ -4759,10 +4833,12 @@ mod tests {
                 r#"<Options DownloadInvisibleParameters="None" />"#,
             ),
             ("MV-0705", options),
+            ("MV-07B0", options),
         ] {
             let xml = HIDDEN_XML
                 .replace(options, replacement)
                 .replace("MV-07B0", mask)
+                .replace(r#"MinEtsVersion="5.0""#, r#"MinEtsVersion="4.0""#)
                 .replace(cycle, &format!("{cycle} LegacyPatchAlways=\"true\""));
             let app = parse_application_program("A", xml.as_bytes())?;
             assert!(
@@ -4786,55 +4862,155 @@ mod tests {
         Ok(())
     }
 
-    /// Issue #448: a System 7 program without `DownloadInvisibleParameters`
+    /// Issues #448 and #838: a program without `DownloadInvisibleParameters`
     /// keeps the template for hidden parameters when its `MinEtsVersion` is
     /// below 5 or absent (Steinel HPD 2, Busch-Jaeger `A-FF11-15`,
-    /// `syn-s7-hidden-default-ets4`), where the same System B program writes
-    /// their defaults; from `MinEtsVersion` 5 on it writes them too
-    /// (`syn-s7-hidden-default`, 6.0). A System B one that prefers a partial
-    /// download keeps the template (Zennio DALI-BOX `A-3311`).
+    /// `syn-s7-hidden-default-ets4` on System 7; Elsner, ekinex and MDT
+    /// `A-0133` on System B) and writes their defaults from 5 on
+    /// (`syn-s7-hidden-default`, Busch-Wächter `A-6179-82`), on both systems
+    /// and whether or not it prefers a partial download (ABB / Busch-Jaeger
+    /// `A-FF40` with 5.0 writes, Zennio DALI-BOX `A-3311` with 4.0 keeps).
     #[test]
-    fn test_compute_parameter_image_dynamic_hidden_defaults_follow_the_system() -> Result<()> {
+    fn test_compute_parameter_image_dynamic_hidden_defaults_follow_min_ets_version() -> Result<()> {
         let options = r#"<Options TextParameterEncoding="utf-8" Comparable="false" Reconstructable="false" />"#;
-        let partial = HIDDEN_XML.replace(
-            options,
-            r#"<Options PreferPartialDownloadIfApplicationLoaded="true" />"#,
-        );
-        let app = parse_application_program("A", partial.as_bytes())?;
-        assert!(!app.downloads_invisible_parameters());
-        let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
-        assert_eq!(images["A_RS-1"], [0, 0, 0, 1]);
-        for mask in ["MV-0705", "MV-0701"] {
-            let system7 = HIDDEN_XML.replace("MV-07B0", mask);
-            let app = parse_application_program("A", system7.as_bytes())?;
-            assert!(!app.downloads_invisible_parameters(), "{mask}");
-            let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
-            assert_eq!(images["A_RS-1"], [0, 0, 0, 1], "{mask}");
-            for (min_ets, writes) in [("4.0", false), ("5.0", true), ("6.0", true)] {
-                let declared = system7.replace(
-                    r#"Name="bm">"#,
-                    &format!(r#"Name="bm" MinEtsVersion="{min_ets}">"#),
-                );
-                let app = parse_application_program("A", declared.as_bytes())?;
-                assert_eq!(
-                    app.downloads_invisible_parameters(),
-                    writes,
-                    "{mask} {min_ets}"
-                );
-                let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
-                let expected = if writes {
-                    [0x02, 0x58, 5, 1]
-                } else {
-                    [0, 0, 0, 1]
-                };
-                assert_eq!(images["A_RS-1"], expected, "{mask} {min_ets}");
+        let declared = r#"MinEtsVersion="5.0""#;
+        for mask in ["MV-07B0", "MV-0705", "MV-0701"] {
+            for partial in [false, true] {
+                for (min_ets, writes) in [
+                    (None, false),
+                    (Some("3.0f"), false),
+                    (Some("4.0"), false),
+                    (Some("5.0"), true),
+                    (Some("6.0"), true),
+                ] {
+                    let mut xml = HIDDEN_XML.replace("MV-07B0", mask).replace(
+                        declared,
+                        &min_ets.map_or(String::new(), |v| format!(r#"MinEtsVersion="{v}""#)),
+                    );
+                    if partial {
+                        xml = xml.replace(
+                            options,
+                            r#"<Options PreferPartialDownloadIfApplicationLoaded="true" />"#,
+                        );
+                    }
+                    let app = parse_application_program("A", xml.as_bytes())?;
+                    assert_eq!(
+                        app.downloads_invisible_parameters(),
+                        writes,
+                        "{mask} {partial} {min_ets:?}"
+                    );
+                    let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
+                    let expected = if writes {
+                        [0x02, 0x58, 5, 1]
+                    } else {
+                        [0, 0, 0, 1]
+                    };
+                    assert_eq!(images["A_RS-1"], expected, "{mask} {partial} {min_ets:?}");
+                }
             }
         }
-        // System B writes them in an older schema too.
+        // The schema does not decide: an older one with 5.0 writes too.
         let older = HIDDEN_XML.replace("project/20", "project/11");
         let app = parse_application_program("A", older.as_bytes())?;
         assert!(app.downloads_invisible_parameters());
         Ok(())
+    }
+
+    /// Issue #835: two instances of a module (bases 0 and 3, the MDT /
+    /// ekinex DALI gateway shape). `mode` (bits 7-4) is shown, `level` (default 0x80)
+    /// sits behind `mode` = 1, `night` (default 1) shares the octet in
+    /// bits 3-0 and is never shown, `base` takes the instance's `BaseValue`
+    /// argument (5 and 7). `{options}` is the `<Options>` element.
+    fn module_hidden_xml(options: &str) -> String {
+        format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/20">
+     <ApplicationProgram Id="A" MaskVersion="MV-07B0" Name="dali" MinEtsVersion="5.0">
+      <Static>
+       <Code><RelativeSegment Id="A_RS-1" Size="6" LoadStateMachine="4" Offset="0"><Data>AAAAAAAA</Data></RelativeSegment></Code>
+       <ParameterTypes>
+        <ParameterType Id="A_PT-1" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+        <ParameterType Id="A_PT-4" Name="q"><TypeNumber SizeInBit="4" Type="unsignedInt" minInclusive="0" maxInclusive="15" /></ParameterType>
+       </ParameterTypes>
+       {options}
+      </Static>
+      <ModuleDefs>
+       <ModuleDef Id="A_MD-1" Name="group">
+        <Arguments><Argument Id="A_MD-1_A-1" Name="par" /><Argument Id="A_MD-1_A-2" Name="val" /></Arguments>
+        <Static>
+         <Parameters>
+          <Parameter Id="A_MD-1_P-1" Name="mode" ParameterType="A_PT-4" Value="0"><Memory CodeSegment="A_RS-1" Offset="0" BitOffset="0" BaseOffset="A_MD-1_A-1" /></Parameter>
+          <Parameter Id="A_MD-1_P-2" Name="night" ParameterType="A_PT-4" Value="1"><Memory CodeSegment="A_RS-1" Offset="0" BitOffset="4" BaseOffset="A_MD-1_A-1" /></Parameter>
+          <Parameter Id="A_MD-1_P-3" Name="level" ParameterType="A_PT-1" Value="128"><Memory CodeSegment="A_RS-1" Offset="1" BitOffset="0" BaseOffset="A_MD-1_A-1" /></Parameter>
+          <Parameter Id="A_MD-1_P-4" Name="base" ParameterType="A_PT-1" Value="0" BaseValue="A_MD-1_A-2"><Memory CodeSegment="A_RS-1" Offset="2" BitOffset="0" BaseOffset="A_MD-1_A-1" /></Parameter>
+         </Parameters>
+         <ParameterRefs>
+          <ParameterRef Id="A_MD-1_P-1_R-1" RefId="A_MD-1_P-1" />
+          <ParameterRef Id="A_MD-1_P-2_R-2" RefId="A_MD-1_P-2" />
+          <ParameterRef Id="A_MD-1_P-3_R-3" RefId="A_MD-1_P-3" />
+          <ParameterRef Id="A_MD-1_P-4_R-4" RefId="A_MD-1_P-4" />
+         </ParameterRefs>
+        </Static>
+        <Dynamic><ParameterBlock Id="A_MD-1_PB-1">
+         <ParameterRefRef RefId="A_MD-1_P-1_R-1" />
+         <choose ParamRefId="A_MD-1_P-1_R-1">
+          <when test="1"><ParameterRefRef RefId="A_MD-1_P-3_R-3" /><ParameterRefRef RefId="A_MD-1_P-4_R-4" /></when>
+         </choose>
+        </ParameterBlock></Dynamic>
+       </ModuleDef>
+      </ModuleDefs>
+      <Dynamic>
+       <Module Id="A_MD-1_M-1" RefId="A_MD-1"><NumericArg RefId="A_MD-1_A-1" Value="0" /><NumericArg RefId="A_MD-1_A-2" Value="5" /></Module>
+       <Module Id="A_MD-1_M-2" RefId="A_MD-1"><NumericArg RefId="A_MD-1_A-1" Value="3" /><NumericArg RefId="A_MD-1_A-2" Value="7" /></Module>
+      </Dynamic>
+     </ApplicationProgram></KNX>"#
+        )
+    }
+
+    /// Issue #835: a program that downloads hidden parameters writes the
+    /// hidden parameters of every module instance at its base, a
+    /// `BaseValue` one with the instance's argument added; one that keeps the
+    /// template leaves them. The read-back slots are the same.
+    #[test]
+    fn test_compute_parameter_image_dynamic_writes_hidden_module_parameters_per_instance()
+    -> Result<()> {
+        let app = parse_application_program("A", module_hidden_xml("").as_bytes())?;
+        assert!(app.downloads_invisible_parameters());
+        let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
+        // Per instance: `mode` 0 in bits 4-7 over `night` 1, `level` 0x80,
+        // `base` 0 + the instance's 5 or 7.
+        assert_eq!(images["A_RS-1"], [0x01, 0x80, 5, 0x01, 0x80, 7]);
+        let config = bussard_ets::dynamic::evaluate_dynamic(&app, &no_overrides());
+        let slots = dynamic_parameter_slots(&app, &config)?;
+        let hidden: Vec<(Option<usize>, usize)> = slots
+            .iter()
+            .filter(|s| s.param_ref_id.is_none())
+            .map(|s| (s.module, s.offset))
+            .collect();
+        assert_eq!(
+            hidden,
+            [
+                (Some(0), 0),
+                (Some(0), 1),
+                (Some(0), 2),
+                (Some(1), 3),
+                (Some(1), 4),
+                (Some(1), 5)
+            ]
+        );
+        let kept = module_hidden_xml(r#"<Options DownloadInvisibleParameters="None" />"#);
+        let app = parse_application_program("A", kept.as_bytes())?;
+        let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
+        assert_eq!(images["A_RS-1"], [0; 6]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_module_def_of_splits_module_parameter_ids() {
+        assert_eq!(module_def_of("MD-1_P-7"), Some("MD-1"));
+        assert_eq!(module_def_of("MD-12_UP-3"), Some("MD-12"));
+        assert_eq!(module_def_of("MD-1_SM-2_P-4"), Some("MD-1_SM-2"));
+        assert_eq!(module_def_of("P-12"), None);
+        assert_eq!(module_def_of("UP-3"), None);
     }
 
     /// ETS rounds a DPT 9 parameter's mantissa once, half to even (issue #89:
@@ -4879,7 +5055,8 @@ mod tests {
     }
 
     /// The Jung 230021SU shape (issue #126). The module's "internal group
-    /// communication" parameter has no memory and takes its default from the
+    /// communication" parameter (shown, `Access="Read"` in the product) has
+    /// no memory and takes its default from the
     /// instance argument (`BaseValue`); it picks which ref of the App-ID
     /// parameter is written (66 or 68). The module body also chooses on the
     /// application's "safety release" and assigns the application's alarm
@@ -4916,6 +5093,7 @@ mod tests {
          </ParameterRefs>
         </Static>
         <Dynamic><ParameterBlock Id="A_MD-1_PB-1">
+         <ParameterRefRef RefId="A_MD-1_P-1_R-1" />
          <choose ParamRefId="A_MD-1_P-1_R-1">
           <when test="0"><ParameterRefRef RefId="A_MD-1_P-2_R-4" /></when>
           <when test="4 5"><ParameterRefRef RefId="A_MD-1_P-2_R-5" /></when>

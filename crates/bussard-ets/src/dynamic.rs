@@ -259,8 +259,8 @@ mod tests {
         Ok(())
     }
 
-    /// The Jung 230021SU shape (issue #126): the module's `intcomm` default
-    /// is its `BaseValue` argument, and its switching object is shown only
+    /// The Jung 230021SU shape (issue #126): the module's `intcomm` (shown,
+    /// as in the product) default is its `BaseValue` argument, and its switching object is shown only
     /// while that value is 0; the module body shows and tests the
     /// application's `release` and assigns from the application's `alarm`.
     const MODULE_APP_REFS_XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/20">
@@ -292,6 +292,7 @@ mod tests {
         </Static>
         <Dynamic>
          <ParameterBlock Id="A_MD-1_PB-1">
+          <ParameterRefRef RefId="A_MD-1_P-1_R-1" />
           <choose ParamRefId="A_MD-1_P-1_R-1">
            <when test="0"><ComObjectRefRef RefId="A_MD-1_O-1_R-1" /></when>
           </choose>
@@ -430,7 +431,8 @@ mod tests {
     /// Issue #159 (the 1.1.12 F50 Secure module's extension channel): `ext`
     /// is shown only inside a channel gated by `en`; chooses on it (one with a
     /// `default` branch, one placed before the channel in document order) show
-    /// `inst` refs. `steer` is never shown anywhere and keeps steering.
+    /// `inst` refs. `steer` is never shown anywhere and keeps steering: an
+    /// `<Assign>` sets it (the Zennio shape, issue #839).
     const INACTIVE_XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/20">
      <ApplicationProgram Id="A" MaskVersion="MV-07B0" Name="t">
       <Static>
@@ -471,6 +473,9 @@ mod tests {
         </choose>
         <choose ParamRefId="A_P-4_R-4">
          <when test="1"><ParameterRefRef RefId="A_P-3_R-33" /></when>
+        </choose>
+        <choose ParamRefId="A_P-1_R-1">
+         <when test="9"><Assign TargetParamRefRef="A_P-4_R-4" Value="1" /></when>
         </choose>
        </ParameterBlock></Channel>
       </Dynamic>
@@ -516,7 +521,9 @@ mod tests {
     /// Issue #474: default-only `<choose>`s on never-shown parameters. `virt`
     /// has no memory (the `syn-choose-never-shown` and Zennio Flat shape),
     /// `placed` has memory, `member` is a union member; `testing` is virtual
-    /// but its choose has a `test` branch beside the default one.
+    /// but its choose has a `test` branch beside the default one (ABB
+    /// `A-3002`). Issue #839: `ausblenden` is virtual with `test` branches
+    /// only, one of which matches its value (Enertex `A-0031`).
     const NEVER_SHOWN_XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/20">
      <ApplicationProgram Id="A" MaskVersion="MV-07B0" Name="t">
       <Static>
@@ -531,20 +538,24 @@ mod tests {
          <Parameter Id="A_UP-3" Name="member" Offset="0" BitOffset="0" Value="0" />
         </Union>
         <Parameter Id="A_P-4" Name="testing" Value="1" />
+        <Parameter Id="A_P-5" Name="ausblenden" Access="None" Value="1" />
        </Parameters>
        <ParameterRefs>
         <ParameterRef Id="A_P-1_R-1" RefId="A_P-1" />
         <ParameterRef Id="A_P-2_R-2" RefId="A_P-2" />
         <ParameterRef Id="A_UP-3_R-3" RefId="A_UP-3" />
         <ParameterRef Id="A_P-4_R-4" RefId="A_P-4" />
+        <ParameterRef Id="A_P-5_R-5" RefId="A_P-5" />
        </ParameterRefs>
        <ComObjects>
         <ComObject Id="A_O-1" Number="1" /><ComObject Id="A_O-2" Number="2" />
         <ComObject Id="A_O-3" Number="3" /><ComObject Id="A_O-4" Number="4" />
+        <ComObject Id="A_O-5" Number="5" /><ComObject Id="A_O-6" Number="6" />
        </ComObjects>
        <ComObjectRefs>
         <ComObjectRef Id="A_O-1_R-1" RefId="A_O-1" /><ComObjectRef Id="A_O-2_R-2" RefId="A_O-2" />
         <ComObjectRef Id="A_O-3_R-3" RefId="A_O-3" /><ComObjectRef Id="A_O-4_R-4" RefId="A_O-4" />
+        <ComObjectRef Id="A_O-5_R-5" RefId="A_O-5" /><ComObjectRef Id="A_O-6_R-6" RefId="A_O-6" />
        </ComObjectRefs>
       </Static>
       <Dynamic><ChannelIndependentBlock>
@@ -560,6 +571,10 @@ mod tests {
        <choose ParamRefId="A_P-4_R-4">
         <when test="0" />
         <when default="true"><ComObjectRefRef RefId="A_O-4_R-4" /></when>
+       </choose>
+       <choose ParamRefId="A_P-5_R-5">
+        <when test="0"><ComObjectRefRef RefId="A_O-5_R-5" /></when>
+        <when test="1"><ComObjectRefRef RefId="A_O-6_R-6" /></when>
        </choose>
       </ChannelIndependentBlock></Dynamic>
      </ApplicationProgram></KNX>"#;
@@ -578,7 +593,9 @@ mod tests {
         assert!(app.is_virtual("A_P-1") && app.is_virtual("A_P-4"));
         assert!(!app.is_virtual("A_P-2") && !app.is_virtual("A_UP-3"));
         // System B: the virtual parameter's default-only choose selects no
-        // branch; memory, a union place or a test branch keep it steering.
+        // branch; memory, a union place or a default branch beside a test
+        // keep it steering. The test branch matching `ausblenden` is not
+        // taken.
         let cfg = evaluate_dynamic(&app, &BTreeMap::new());
         assert_eq!(reached_objects(&cfg), ["O-2_R-2", "O-3_R-3", "O-4_R-4"]);
         // System 7: every default-only branch is taken.
@@ -587,7 +604,7 @@ mod tests {
         let cfg = evaluate_dynamic(&app, &BTreeMap::new());
         assert_eq!(
             reached_objects(&cfg),
-            ["O-1_R-1", "O-2_R-2", "O-3_R-3", "O-4_R-4"]
+            ["O-1_R-1", "O-2_R-2", "O-3_R-3", "O-4_R-4", "O-6_R-6"]
         );
         Ok(())
     }
