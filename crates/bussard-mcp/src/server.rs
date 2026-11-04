@@ -92,7 +92,8 @@ impl BussardMcp {
             + Self::program_router()
             + Self::ha_router()
             + Self::ha_automation_router()
-            + Self::enroll_router();
+            + Self::enroll_router()
+            + Self::viz_router();
         if state.no_model_edits {
             for name in crate::tools_model::MODEL_EDIT_TOOLS {
                 tool_router.remove_route(name);

@@ -34,6 +34,7 @@ fn config(dir: &Path, passive: bool, allow_writes: bool) -> McpConfig {
         plan_ttl: tools_program::DEFAULT_PLAN_TTL,
         keyring: None,
         allow_home_assistant: false,
+        viz_listen: None,
     }
 }
 

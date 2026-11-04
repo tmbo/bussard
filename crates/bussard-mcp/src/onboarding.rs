@@ -600,6 +600,9 @@ impl SetupMcp {
 
     /// Closes the bus of the full server, when there is one.
     pub async fn shutdown(&self) {
+        if let Some(full) = self.inner.full.get() {
+            full.state().viz.stop().await;
+        }
         let running = self.inner.running.lock().ok().and_then(|mut r| r.take());
         if let Some(running) = running {
             let _ = running.handle.close().await;

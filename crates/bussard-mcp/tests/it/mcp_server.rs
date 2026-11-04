@@ -88,6 +88,7 @@ fn build_server_over(model: Model, passive: bool, allow_writes: bool) -> TestRes
         plan_ttl: bussard_mcp::tools_program::DEFAULT_PLAN_TTL,
         keyring: None,
         allow_home_assistant: false,
+        viz_listen: None,
     };
     // Reconstruct state directly so we control passivity without touching disk.
     // No bus handle is wired here (the tools we exercise are model-only, and the
@@ -111,6 +112,7 @@ fn build_server_over(model: Model, passive: bool, allow_writes: bool) -> TestRes
         keyring: None,
         home_assistant: None,
         jobs: Default::default(),
+        viz: Default::default(),
     });
     Ok(BussardMcp::new(state))
 }
@@ -143,9 +145,10 @@ async fn tools_list_default_mode() -> TestResult {
         names, expected,
         "default mode with --no-model-edits exposes 14 bus/model tools, the 3 \
          device backup/reconstruct/find tools, the 2 history read tools, the 2 bundle/diff \
-         tools, knx_export and knx_job_status"
+         tools, knx_export, knx_job_status and knx_viz"
     );
-    assert_eq!(tools.len(), 23);
+    assert_eq!(tools.len(), 24);
+    assert!(names.contains(&"knx_viz".to_string()));
     assert!(names.contains(&"knx_export".to_string()));
     assert!(!names.contains(&"knx_import_file".to_string()));
     assert!(names.contains(&"knx_find_devices".to_string()));
@@ -177,7 +180,7 @@ async fn tools_list_with_allow_writes() -> TestResult {
         names, expected,
         "--allow-writes adds knx_write_group and knx_run_tests"
     );
-    assert_eq!(tools.len(), 25);
+    assert_eq!(tools.len(), 26);
     assert!(names.contains(&"knx_run_tests".to_string()));
     assert!(names.contains(&"knx_write_group".to_string()));
     assert!(names.contains(&"knx_read_group".to_string()));
@@ -194,11 +197,13 @@ async fn tools_list_in_passive_mode() -> TestResult {
     let names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
     assert_eq!(
         tools.len(),
-        17,
+        18,
         "passive mode omits knx_read_group, knx_describe_device, knx_backup_device, \
          knx_reconstruct_device, knx_find_devices and knx_bus_reconnect, and keeps \
-         knx_bus_status, knx_job_status, knx_export and the file-only history, bundle and diff tools"
+         knx_bus_status, knx_job_status, knx_viz, knx_export and the file-only history, bundle \
+         and diff tools"
     );
+    assert!(names.contains(&"knx_viz".to_string()));
     assert!(names.contains(&"knx_job_status".to_string()));
     assert!(!names.contains(&"knx_find_devices".to_string()));
     assert!(!names.contains(&"knx_read_group".to_string()));
@@ -453,6 +458,7 @@ fn build_server_with_capture(
         keyring: None,
         home_assistant: None,
         jobs: Default::default(),
+        viz: Default::default(),
     });
     Ok(BussardMcp::new(state))
 }

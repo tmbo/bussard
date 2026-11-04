@@ -44,6 +44,7 @@ pub async fn serve_stdio_with_ready(
     let (handle, feeder) = wire_bus(&state, service);
 
     // Serve MCP over stdio. `stdio()` returns (stdin, stdout).
+    let server_state = Arc::clone(&state);
     let server = BussardMcp::new(state);
     tracing::info!("mcp: serving on stdio");
     on_ready();
@@ -58,7 +59,9 @@ pub async fn serve_stdio_with_ready(
         .map_err(|e| anyhow::anyhow!("MCP service error: {e}"))?;
     tracing::info!("MCP client disconnected: {quit_reason:?}");
 
-    // Close the bus cleanly (releasing the gateway tunnel slot) before exit.
+    // Stop the browser page, then close the bus cleanly (releasing the
+    // gateway tunnel slot) before exit.
+    server_state.viz.stop().await;
     let _ = handle.close().await;
     feeder.abort();
     Ok(())
@@ -149,11 +152,19 @@ pub async fn serve_http_with_ready(
             let _ = tokio::signal::ctrl_c().await;
             tracing::info!("mcp: shutdown requested");
         };
-        crate::http::serve_on(listener, BussardMcp::new(state), options, shutdown).await
+        crate::http::serve_on(
+            listener,
+            BussardMcp::new(Arc::clone(&state)),
+            options,
+            shutdown,
+        )
+        .await
     }
     .await;
 
-    // Close the bus cleanly (releasing the gateway tunnel slot) before exit.
+    // Stop the browser page, then close the bus cleanly (releasing the
+    // gateway tunnel slot) before exit.
+    state.viz.stop().await;
     let _ = handle.close().await;
     feeder.abort();
     served

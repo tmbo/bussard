@@ -97,6 +97,7 @@ async fn serve(
         plan_ttl: Duration::from_secs(600),
         keyring: None,
         allow_home_assistant,
+        viz_listen: None,
     };
     let state = bussard_mcp::build_state(&config)?;
     let (server_io, client_io) = tokio::io::duplex(256 * 1024);

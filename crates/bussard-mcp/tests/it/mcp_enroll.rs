@@ -200,6 +200,7 @@ async fn start_with(dir: &Path, human: Human, browser: FakeBrowser) -> Result<Cl
         keyring: None,
         home_assistant: None,
         jobs: Default::default(),
+        viz: Default::default(),
     });
     let server = BussardMcp::new(state).with_browser(Arc::new(browser));
     let (server_io, client_io) = tokio::io::duplex(64 * 1024);

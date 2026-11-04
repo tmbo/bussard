@@ -51,6 +51,7 @@
 //! | `knx_export_bundle` | The bundle form of `knx_export` under its earlier name: the model and history as one `.bussard` handover file. |
 //! | `knx_diff_project` | What a received `.knxproj` or bundle would change, as sentences. |
 //! | `knx_job_status` | One job of the server's job table, of any tier: `step`, `question`, `done`, `result` (issue #746; registered in every tier). |
+//! | `knx_viz` | Start the `bussard viz` page inside the server and return its URL: read-only, fed from the server's own model and bus connection, the same URL on every call ([`tools_viz`]; registered in every tier). |
 //! | `knx_backup_device` | Back one device or every device up (tables, bounded parameter memory) under `captures/backups/<timestamp>/`, as `bussard backup` (read-only on the bus; not in `--passive`). |
 //! | `knx_reconstruct_device` | Read one device's tables back and diff them against the model, as `bussard reconstruct`; with `line`, sweep a line into a fresh model directory, as `bussard reconstruct --line` (read-only on the bus; not in `--passive`). |
 //! | `knx_plan_device` | Read one device's live tables and return the plan `bussard plan` prints, plus a `plan_digest`; with `line`, every device on a line under one digest, as `bussard plan --line` (registered only with `--allow-programming`). |
@@ -97,9 +98,12 @@
 //! `knx_job_status` reads the server's one job table ([`jobs`], issue #746)
 //! and never touches the bus, so it is registered in every tier.
 //!
-//! Tool counts per tier: `--passive` 29, default 35, `--allow-writes` 37. With
-//! `--no-model-edits` the twelve model-edit tools are withheld, giving 17, 23
-//! and 25.
+//! `knx_viz` serves the `bussard viz` page from the server's model and its one
+//! bus connection, read-only, so it is registered in every tier ([`tools_viz`]).
+//!
+//! Tool counts per tier: `--passive` 32, default 38, `--allow-writes` 40. With
+//! `--no-model-edits` the model-edit and enrolment tools are withheld, giving
+//! 18, 24 and 26. [`tier_help::tier_counts`] computes them from this table.
 //!
 //! `--allow-programming` (issue #118) adds the eleven programming tools
 //! ([`tools_program::PROGRAMMING_TOOLS`]) to any non-passive tier. They write
@@ -195,6 +199,7 @@ pub mod tools_jobs;
 pub mod tools_learn;
 pub mod tools_model;
 pub mod tools_program;
+pub mod tools_viz;
 pub mod warm;
 
 use std::path::PathBuf;
@@ -247,6 +252,9 @@ pub struct McpConfig {
     /// #280). It takes effect only when `bussard.toml` also has a
     /// `[home_assistant]` table.
     pub allow_home_assistant: bool,
+    /// Where `knx_viz` binds the browser page (`--viz-listen`); `None` binds
+    /// `127.0.0.1:0`, a free loopback port.
+    pub viz_listen: Option<std::net::SocketAddr>,
 }
 
 impl McpConfig {
@@ -340,6 +348,7 @@ pub fn build_state_from_model(
         keyring: config.keyring.clone(),
         home_assistant,
         jobs,
+        viz: tools_viz::VizPage::new(config.viz_listen),
     });
 
     Ok(state)
@@ -434,22 +443,23 @@ pub async fn run_onboarding_http_with_ready(
 
 /// The set of tool names exposed, in registration order. Used by tests and docs.
 ///
-/// - passive mode: 29 tools (no bus-touching tools: no `knx_read_group`, no
+/// - passive mode: 32 tools (no bus-touching tools: no `knx_read_group`, no
 ///   `knx_describe_device`, no `knx_backup_device`, no `knx_reconstruct_device`,
 ///   no `knx_bus_reconnect`, no `knx_write_group`, no `knx_run_tests`).
 ///   `knx_infer_group` is there: it only reads the telegram ring.
 ///   `knx_bus_status` reads the connection state. `knx_audit` is there too,
 ///   but refuses `live: true`.
-/// - default mode: 35 tools (adds `knx_read_group`, `knx_describe_device`,
+/// - default mode: 38 tools (adds `knx_read_group`, `knx_describe_device`,
 ///   `knx_bus_reconnect` and [`tools_device::DEVICE_TOOLS`]).
-/// - `--allow-writes`: 37 tools (adds `knx_write_group` and `knx_run_tests`).
-/// - `--no-model-edits` removes the twelve model-edit tools
+/// - `--allow-writes`: 40 tools (adds `knx_write_group` and `knx_run_tests`).
+/// - `--no-model-edits` removes the model-edit tools
 ///   ([`tools_model::MODEL_EDIT_TOOLS`], including the two reservation tools and
-///   `knx_import_file`) from any of those (17, 23 and 25 tools).
+///   `knx_import_file`) and the enrolment tools from any of those (18, 24 and
+///   26 tools).
 ///
 /// The two model/history read tools (`knx_describe_change`, `knx_history`),
 /// the two bundle/diff tools (`knx_export_bundle`, `knx_diff_project`),
-/// `knx_export`, `knx_job_status` and the twelve model-edit tools touch files
+/// `knx_export`, `knx_job_status` and the model-edit tools touch files
 /// only, so they
 /// are present in every tier including `--passive`.
 pub fn tool_names(passive: bool, allow_writes: bool, no_model_edits: bool) -> Vec<&'static str> {
@@ -511,6 +521,7 @@ pub fn tool_names_with_ha(
     names.extend(tools_diff::DIFF_TOOLS);
     names.extend(tools_files::EXPORT_TOOLS);
     names.extend(tools_jobs::JOB_TOOLS);
+    names.extend(tools_viz::VIZ_TOOLS);
     if !no_model_edits {
         names.extend(tools_model::MODEL_EDIT_TOOLS);
         // Certificate enrolment writes the key store, not the model, but is

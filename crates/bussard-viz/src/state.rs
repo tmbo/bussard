@@ -223,6 +223,14 @@ impl ModelHandle {
         )
     }
 
+    /// A projection over a model handle someone else already holds, such as
+    /// the MCP server's: a reload or edit there shows on the next request
+    /// here, without a second load or a second watcher. `dir` is the model
+    /// directory whose product models the projection reads.
+    pub fn from_shared(shared: bussard_service::ModelHandle, dir: Option<PathBuf>) -> Self {
+        Self::over(shared, dir)
+    }
+
     /// Wraps a shared service handle, projecting its current model.
     fn over(shared: bussard_service::ModelHandle, dir: Option<PathBuf>) -> Self {
         let (model, version) = shared.snapshot();
