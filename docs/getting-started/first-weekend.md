@@ -1,21 +1,21 @@
 # The first weekend
 
-This tutorial is for the owner of a KNX house who wants to understand it, back it up and change it without an integrator. By Sunday evening your house is a named model on your laptop, every device is backed up, you have made one change and undone it, and a copy of the whole configuration sits on a USB stick in the cabinet.
+This tutorial is for the owner of a KNX house who wants to understand it, back it up and change it without an integrator. By Sunday evening your house is a bussard project on your laptop, every device is backed up, you have made one change and undone it, and a copy of the whole configuration sits on a USB stick in the cabinet.
 
-An assistant does most of the work. bussard runs as an MCP server, so an assistant such as Claude reads the model, watches the bus, answers questions and proposes changes. This tutorial has you type the commands that program devices, so you see each confirmation once; afterwards the assistant can run them too, each after your yes. Each step names the safety rail that protects it; [Safety](../explanation/safety.md) explains them all in one place.
+An assistant does most of the work. bussard runs as an MCP server, so an assistant such as Claude reads your project, watches the bus, answers questions and proposes changes. This tutorial has you type the commands that program devices, so you see each confirmation once; afterwards the assistant can run them too, each after your yes. Each step names the safety rail that protects it; [Safety](../explanation/safety.md) explains them all in one place.
 
 ## What to have ready
 
 - A KNXnet/IP interface or router in the cabinet, and its IP address. Many houses from the 2010s have only a USB interface; an IP interface is then the first purchase.
 - A laptop on the same network as the interface.
 - An assistant that speaks MCP: Claude Code, Claude Desktop, or any other MCP client.
-- Whatever the previous owner or integrator handed over: the `.knxproj` project file and its password, and the `.knxkeys` keyring for KNX Secure devices. A house with no project file works too; it takes longer.
+- Whatever the previous owner or integrator handed over: the `.knxproj` project file and its password, and the `.knxkeys` keyring for KNX Secure devices. A house with no ETS project file works too; it takes longer.
 
 ## Step 1. Install bussard
 
 On macOS or Linux with Homebrew, run `brew install tmbo/tap/bussard`. Without Homebrew, or on Windows, use an installer from [Install bussard](install.md); it downloads the binary and checks its checksum. `bussard --version` confirms it is on your `PATH`.
 
-## Step 2. Create the model
+## Step 2. Create the project
 
 ```console
 $ mkdir house && cd house
@@ -26,7 +26,7 @@ Found gateway: IP Interface (192.0.2.10:3671, IA 1.1.250, 4 tunnels, 1 in use)
 Created a fresh KNX model in the current directory /Users/nadia/house.
 ```
 
-`init` finds the interface, writes its address into `bussard.toml` and creates an empty model in the current directory. In a directory that already holds other files it asks first. Every later command finds the model from this directory or any directory below it, so there is no `--dir` to remember. If discovery finds nothing, pass the address: `bussard init --gateway 192.0.2.10`.
+`init` finds the interface, writes its address into `bussard.toml` and creates an empty project in the current directory. In a directory that already holds other files it asks first. Every later command finds the project from this directory or any directory below it, so there is no `--dir` to remember. If discovery finds nothing, pass the address: `bussard init --gateway 192.0.2.10`.
 
 Keep passwords in a `.env` file here, for example `BUSSARD_PROJECT_PASSWORD=...`. bussard reads it automatically, and the `.gitignore` that `init` writes already lists `.env`. `BUSSARD_ALLOW_REAL_GATEWAY` is never taken from it: arming writes to the real bus stays a flag or an exported variable.
 
@@ -36,7 +36,7 @@ Safety rail: `init` only reads from the network.
 
 ## Step 3. Connect the assistant
 
-For Claude Code, run this once in the model directory:
+For Claude Code, run this once in the project folder:
 
 ```console
 $ claude mcp add knx -- bussard mcp --dir "$PWD"
@@ -44,15 +44,15 @@ $ claude mcp add knx -- bussard mcp --dir "$PWD"
 
 The client starts the server itself. Run `bussard mcp` by hand and it prints this command and a JSON entry for Claude Desktop and other clients, with your binary's full path, ready to paste. [Connect an assistant](assistant.md) has the steps for Claude Desktop, Cursor, Codex and other clients.
 
-The default server reads the model, watches the bus, sends rate-limited read requests, and edits the model files. It cannot program a device and cannot write a value to the bus.
+The default server reads your project, watches the bus, sends rate-limited read requests, and edits the project files. It cannot program a device and cannot write a value to the bus.
 
-Safety rails: every model edit the assistant makes is saved to the history first and comes back as a plain sentence for the assistant to quote. Group addresses marked `protected = true` cannot be changed or linked over MCP at all. The default server cannot program a device. Started with `--allow-programming`, it plans, writes, adds, replaces and commissions devices, each only after you approve its plan. Two things never run from chat: a write to a protected address (`bussard write --force` at the terminal) and the KNX Secure activation of a factory-fresh device (ETS).
+Safety rails: every edit the assistant makes to your project is saved to the history first and comes back as a plain sentence for the assistant to quote. Group addresses marked `protected = true` cannot be changed or linked over MCP at all. The default server cannot program a device. Started with `--allow-programming`, it plans, writes, adds, replaces and commissions devices, each only after you approve its plan. Two things never run from chat: a write to a protected address (`bussard write --force` at the terminal) and securing a factory-fresh device with KNX Secure (ETS).
 
-## Saturday morning: how good is my project file?
+## Saturday morning: how good is my ETS project?
 
-First get the installation into the model. With a project file, run `bussard import house.knxproj`. bussard takes the project password from `BUSSARD_PROJECT_PASSWORD` (the `.env` works) or asks for it.
+First get the installation into your project. With an ETS project file, run `bussard import house.knxproj`. bussard takes the project password from `BUSSARD_PROJECT_PASSWORD` (the `.env` works) or asks for it.
 
-Without one, find the devices and read back what they carry. `reconstruct` writes a new model directory, because it never merges into an existing one:
+Without one, find the devices and read back what they carry. `reconstruct` writes a new project folder, because it never merges into an existing one:
 
 ```console
 $ bussard scan 1.1
@@ -87,9 +87,9 @@ Protect the safety functions before anything else. Ask the assistant which addre
 
 Safety rails: the audit only reads. A protected address is refused by every MCP tool and needs `--force` on the command line.
 
-## Saturday afternoon: name the house without a project file
+## Saturday afternoon: name the house without an ETS project
 
-A reconstructed model has placeholder names and no data types. The learn loop fixes that one button at a time, in chat:
+A reconstructed project has placeholder names and no data types. The learn loop fixes that one button at a time, in chat:
 
 ```text
 You:        Help me name the group addresses.
@@ -105,7 +105,7 @@ Assistant:  (calls knx_set_group, knx_add_link, knx_set_device)
             Hallway push button now switches Hallway light.
 ```
 
-Every telegram on an address narrows the type candidates, so an uncertain one gets "press it again". `bussard learn` runs the same loop in a terminal. A house with a project file can skip this step, or use it for the 41 untyped addresses with `bussard learn --untyped`.
+Every telegram on an address narrows the type candidates, so an uncertain one gets "press it again". `bussard learn` runs the same loop in a terminal. A house with an ETS project file can skip this step, or use it for the 41 untyped addresses with `bussard learn --untyped`.
 
 Safety rails: learning only listens and never transmits. Each confirmed name is a separate history entry, so a wrong answer is one undo away.
 
@@ -128,25 +128,25 @@ Safety rail: `backup` sends only read requests, so it is safe on a live house.
 
 `bussard viz` serves the whole installation as a web page on `http://127.0.0.1:8080`: devices by line, rooms, group addresses, live traffic, and a Problems panel.
 
-`bussard doc --format html --out house-manual` writes the house manual the KNX guidelines ask for: a device list, a group address list with types, and one sheet per room with a sentence for every button and channel. Print the room sheets for the family. The assistant writes the same folder with `knx_export`, and answers the rest ("what does the second rocker in the kitchen do?") from the model.
+`bussard doc --format html --out house-manual` writes the house manual the KNX guidelines ask for: a device list, a group address list with types, and one sheet per room with a sentence for every button and channel. Print the room sheets for the family. The assistant writes the same folder with `knx_export`, and answers the rest ("what does the second rocker in the kitchen do?") from your project.
 
 Safety rails: `doc` never touches the bus. `viz` without flags is a viewer and cannot write.
 
 ## Sunday afternoon: the first change
 
-Ask for what the house should do. The assistant turns it into model edits and reads them back:
+Ask for what the house should do. The assistant turns it into edits to your project and reads them back:
 
 ```text
 You:        The hallway button should also switch the porch light.
 Assistant:  (calls knx_model_lookup, then knx_add_link)
             Outdoor switch actuator, channel C, now listens to
             Hallway light (1/1/1).
-            This changes the model only. To program the actuator, run
+            This changes your project only. To program the actuator, run
                 bussard plan 1.1.7
                 bussard apply 1.1.7 --allow-remote-gateway
 ```
 
-The model now says what the house should do; the actuator does not know yet. `bussard status` shows every pending change in the same sentences. Look at what programming the actuator would change (the output is illustrative):
+Your project now says what the house should do; the actuator does not know yet. `bussard status` shows every pending change in the same sentences. Look at what programming the actuator would change (the output is illustrative):
 
 ```console
 $ bussard plan 1.1.7
@@ -185,18 +185,18 @@ You:        Undo the porch light change.
 Assistant:  (calls knx_undo)
             Outdoor switch actuator, channel C, no longer listens to
             Hallway light (1/1/1).
-            The model is back. Run plan and apply on 1.1.7 to program it.
+            Your project is back. Run plan and apply on 1.1.7 to program it.
 ```
 
-`bussard undo` does the same from a terminal. Undo restores the model files only, so the device keeps the change until you program it again with `bussard plan 1.1.7` and `bussard apply 1.1.7 --allow-remote-gateway`, or the assistant does after your yes.
+`bussard undo` does the same from a terminal. Undo restores the project files only, so the device keeps the change until you program it again with `bussard plan 1.1.7` and `bussard apply 1.1.7 --allow-remote-gateway`, or the assistant does after your yes.
 
 `bussard history` lists every saved state with the command that caused it, and `bussard show <n>` explains one of them in sentences. The undo itself is saved too, so undoing an undo works.
 
-Safety rail: bussard saves the model before every write, whether the writer is the assistant, an import or an `apply`. Nothing is lost by trying something.
+Safety rail: bussard saves your project before every write, whether the writer is the assistant, an import or an `apply`. Nothing is lost by trying something.
 
 ## Last step: a copy on a USB stick
 
-Write the model and its history into one file:
+Write your project and its history into one file:
 
 ```console
 $ bussard export /Volumes/USB/house.bussard
@@ -204,12 +204,12 @@ exported 72 device(s), 318 group address(es), 14 history snapshot(s) → /Volume
 model sha256 3f1c…
 ```
 
-The assistant writes the same file with `knx_export`. The `.bussard` file holds the model, the history and a checksum of the model. It never holds the `.knxproj`, the `.knxkeys` keyring, vendor product files or passwords; keep those next to it on the stick, or in a password manager. Put the stick in the cabinet with the handover papers. After every `apply`, bussard reminds you when the last export is older than the model you just programmed.
+The assistant writes the same file with `knx_export`. The `.bussard` file holds the project, its history and a checksum of the project. It never holds the `.knxproj`, the `.knxkeys` keyring, vendor product files or passwords; keep those next to it on the stick, or in a password manager. Put the stick in the cabinet with the handover papers. After every `apply`, bussard reminds you when the last export is older than the project you just programmed.
 
 `bussard import house.bussard` in an empty directory on a new laptop brings everything back, history included. The same file is what you send to an integrator; [Work with an integrator](../how-to/work-with-an-integrator.md) describes that exchange.
 
 !!! note "For git users"
-    bussard does not need git, but the model directory is git-friendly. Commit `bussard.toml`, `groups.toml`, `devices/`, `bussard.lock` and `tests.toml`, and let the generated ignore file keep the rest local. [Work with an integrator](../how-to/work-with-an-integrator.md) shows how an owner and an integrator share one repository.
+    bussard does not need git, but the project folder is git-friendly. Commit `bussard.toml`, `groups.toml`, `devices/`, `bussard.lock` and `tests.toml`, and let the generated ignore file keep the rest local. [Work with an integrator](../how-to/work-with-an-integrator.md) shows how an owner and an integrator share one repository.
 
 ## Next steps
 

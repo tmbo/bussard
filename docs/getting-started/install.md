@@ -67,5 +67,5 @@ $ cargo install --path crates/bussard-cli
 
 ## Next steps
 
-- [Your first model](first-model.md): import an ETS export or start empty, then watch the bus.
-- [Connect an assistant](assistant.md): let an LLM read and edit the model over MCP.
+- [Your first project](first-model.md): import an ETS export or start empty, then watch the bus.
+- [Connect an assistant](assistant.md): let an LLM read and edit your project over MCP.

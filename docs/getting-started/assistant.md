@@ -1,18 +1,18 @@
 # Connect an assistant
 
-bussard runs as an MCP server, so an LLM assistant such as Claude can read your model, watch the bus and edit the model files with you. This page connects one and walks through a first conversation.
+bussard runs as an MCP server, so an LLM assistant such as Claude can read your project, watch the bus and edit its files with you. This page connects one and walks through a first conversation.
 
-You need a model directory ([Your first model](first-model.md)) and an assistant that speaks MCP: Claude Code, Claude Desktop, or any other MCP client.
+You need a bussard project ([Your first project](first-model.md)) and an assistant that speaks MCP: Claude Code, Claude Desktop, or any other MCP client.
 
-No model yet? Register the server on an empty folder (`--dir` names a folder that is empty or does not exist yet) and say "set up my house". The server starts with one tool, `knx_setup`: it finds the gateway, writes the model into that folder and imports your ETS export, as `bussard init` does. Put the `.knxproj` next to the folder or tell the assistant where it is. Afterwards the server offers its full tool set in the same conversation.
+No project yet? Register the server on an empty folder (`--dir` names a folder that is empty or does not exist yet) and say "set up my house". The server starts with one tool, `knx_setup`: it finds the gateway, creates the project in that folder and imports your ETS export, as `bussard init` does. Put the `.knxproj` next to the folder or tell the assistant where it is. Afterwards the server offers its full tool set in the same conversation.
 
 ## Register the server
 
-The server talks over stdin and stdout, so the client starts it; there is nothing to connect to. Run `bussard mcp` by hand in the model directory and it prints the Claude Code command and the JSON entry below with your binary's full path, the model directory and the flags you gave, ready to paste. It never prints a password.
+The server talks over stdin and stdout, so the client starts it; there is nothing to connect to. Run `bussard mcp` by hand in the project folder and it prints the Claude Code command and the JSON entry below with your binary's full path, the project folder and the flags you gave, ready to paste. It never prints a password.
 
 === "Claude Code"
 
-    Run this once in the model directory:
+    Run this once in the project folder:
 
     ```console
     $ claude mcp add knx -- bussard mcp --dir "$PWD"
@@ -22,7 +22,7 @@ The server talks over stdin and stdout, so the client starts it; there is nothin
 
 === "Claude Desktop"
 
-    Settings > Developer > Edit Config opens `claude_desktop_config.json` (on macOS in `~/Library/Application Support/Claude/`). Paste this entry, with the absolute path of your model directory, and restart Claude Desktop:
+    Settings > Developer > Edit Config opens `claude_desktop_config.json` (on macOS in `~/Library/Application Support/Claude/`). Paste this entry, with the absolute path of your project folder, and restart Claude Desktop:
 
     ```json
     {
@@ -39,7 +39,7 @@ The server talks over stdin and stdout, so the client starts it; there is nothin
 
 === "Cursor"
 
-    Settings > MCP > Add new global MCP server opens `~/.cursor/mcp.json`; a `.cursor/mcp.json` in the project does the same for one project. Paste this entry with the absolute path of your model directory:
+    Settings > MCP > Add new global MCP server opens `~/.cursor/mcp.json`; a `.cursor/mcp.json` in the project does the same for one project. Paste this entry with the absolute path of your project folder:
 
     ```json
     {
@@ -54,7 +54,7 @@ The server talks over stdin and stdout, so the client starts it; there is nothin
 
 === "Codex CLI"
 
-    Register the server once, with the absolute path of your model directory:
+    Register the server once, with the absolute path of your project folder:
 
     ```console
     $ codex mcp add knx -- bussard mcp --dir /Users/nadia/house
@@ -85,16 +85,16 @@ The server talks over stdin and stdout, so the client starts it; there is nothin
 
 On macOS the first connection from a desktop client triggers the Local Network prompt: allow it, or the server cannot reach the interface and `knx_bus_status` says the operating system refused access to the local network. The permission belongs to the binary, so after you update bussard, allow it again (System Settings > Privacy & Security > Local Network) and restart the client.
 
-The server reads the `.env` in or next to the model directory itself, so the passwords need not be in the client's config.
+The server reads the `.env` in or next to the project folder itself, so the passwords need not be in the client's config.
 
 ## What the default server can do
 
 | The assistant can | The assistant cannot |
 |---|---|
-| read the model and answer "what do I have" | write a value to the bus |
+| read your project and answer "what do I have" | write a value to the bus |
 | watch and decode live telegrams | program a device |
 | send rate-limited read requests | change or link a group address marked `protected = true` |
-| edit the model files, each edit saved to the history first | |
+| edit the project files, each edit saved to the history first | |
 
 Each tier is a flag on `bussard mcp`:
 
@@ -103,7 +103,7 @@ Each tier is a flag on `bussard mcp`:
 | `--passive` | the server never transmits on the bus, not even read requests |
 | `--allow-writes` | adds group writes: the assistant can switch a light or move a blind |
 | `--allow-programming` | adds writing one device's link tables and parameters, after you approve its plan |
-| `--no-model-edits` | removes the model-edit tools |
+| `--no-model-edits` | removes the tools that edit the project |
 
 A server with `--allow-writes` or `--allow-programming` against a gateway that is not on your laptop refuses to start without `--allow-remote-gateway`. A protected group address is refused over MCP with no override at all; only `bussard write --force` on the command line reaches it.
 
@@ -130,7 +130,7 @@ Assistant:  (calls knx_set_group, knx_add_link, knx_set_device)
 
 `knx_wait_for_telegram` waits for the press, `knx_infer_group` ranks the possible data types from the telegrams it has seen, and `knx_set_group` writes the name you agreed to. Every telegram narrows the candidates, so an uncertain one gets "press it again". The loop only listens and never transmits.
 
-Every edit comes back as a plain sentence for the assistant to quote, and touches the model files only. Nothing reaches a device until it is pushed: by you with `bussard plan` and `bussard apply`, or by the assistant on a server started with `--allow-programming`, after your yes to its plan.
+Every edit comes back as a plain sentence for the assistant to quote, and touches the project files only. Nothing reaches a device until it is pushed: by you with `bussard plan` and `bussard apply`, or by the assistant on a server started with `--allow-programming`, after your yes to its plan.
 
 ## Check what the assistant changed
 
@@ -157,7 +157,7 @@ Rocker 1 on Hallway push button (1.1.5) no longer switches Porch light (0/0/4).
 Run `bussard plan 1.1.5` and `bussard apply 1.1.5` to push this to devices.
 ```
 
-Undo restores the model files only. A device you already programmed keeps the change until you program it again. The undo is saved too, so you can undo an undo.
+Undo restores the project files only. A device you already programmed keeps the change until you program it again. The undo is saved too, so you can undo an undo.
 
 ## Next steps
 

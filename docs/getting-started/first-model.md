@@ -1,6 +1,6 @@
-# Your first model
+# Your first project
 
-In fifteen minutes you turn your installation into a model directory on your laptop and watch the bus decode itself against it. You start from an ETS project export if you have one, or from nothing.
+In fifteen minutes you turn your installation into a bussard project on your laptop and watch the bus decode itself against it. You start from an ETS project export if you have one, or from nothing.
 
 You need:
 
@@ -10,7 +10,7 @@ You need:
 
 Nothing on this page writes to a device. Every command here only reads the bus.
 
-## Create the model from an ETS export
+## Create the project from an ETS export
 
 === "In chat"
 
@@ -29,7 +29,7 @@ Nothing on this page writes to a device. Every command here only reads the bus.
 
 === "At the terminal"
 
-    Make an empty directory for the model and import the export into it:
+    Make an empty folder for the project and import the export into it:
 
     ```console
     $ mkdir house && cd house
@@ -37,7 +37,7 @@ Nothing on this page writes to a device. Every command here only reads the bus.
     imported 33 group addresses, 10 devices, 55 link entries → the current directory /home/me/house
     ```
 
-    `bussard init` does the same in one step, and also finds your gateway and writes it into the model:
+    `bussard init` does the same in one step, and also finds your gateway and writes it into the project:
 
     ```console
     $ bussard init ../demo-house.knxproj
@@ -56,7 +56,7 @@ bussard takes the project password from `BUSSARD_PROJECT_PASSWORD` in the `.env`
     You:        Set up my house. I have no ETS project.
     Assistant:  (calls knx_setup)
                 Found the IP Interface at 192.0.2.10 and created an empty
-                model.
+                project.
     ```
 
 === "At the terminal"
@@ -70,18 +70,18 @@ bussard takes the project password from `BUSSARD_PROJECT_PASSWORD` in the `.env`
     Created a fresh KNX model in the current directory /home/me/house.
     ```
 
-With no project file, setup creates an empty model. It only reads from the network and writes the gateway's address into `bussard.toml`. Discovery does not cross subnets; if it finds nothing, name the address yourself (`bussard init --gateway 192.0.2.10`, or tell the assistant).
+With no ETS project file, setup creates an empty project. It only reads from the network and writes the gateway's address into `bussard.toml`. Discovery does not cross subnets; if it finds nothing, name the address yourself (`bussard init --gateway 192.0.2.10`, or tell the assistant).
 
 "4 tunnels, 1 in use" is the tunnel budget: the interface has a fixed number of connection slots, and Home Assistant, ETS and every running bussard command each hold one. With no slot free, bussard says so and exits with code 4 instead of hanging.
 
-To fill it from the devices already on a line, `bussard reconstruct` reads what they carry into a model; [Start without an ETS project](../how-to/add-a-device.md#start-without-an-ets-project) shows that path. To add devices one at a time, see [Add a device](../how-to/add-a-device.md).
+To fill it from the devices already on a line, `bussard reconstruct` reads what they carry into a project; [Start without an ETS project](../how-to/add-a-device.md#start-without-an-ets-project) shows that path. To add devices one at a time, see [Add a device](../how-to/add-a-device.md).
 
-## Check the model
+## Check the project
 
 === "In chat"
 
     ```text
-    You:        Is the model sound?
+    You:        Is the project sound?
     Assistant:  (calls knx_validate)
                 No errors, 4 warnings.
     ```
@@ -120,13 +120,13 @@ The check runs offline, on the files only.
 
 Press a button in the house and its telegram appears. Each `monitor` line reads left to right:
 
-- `1.1.1` is the sender's individual address, the device's own address on the bus.
+- `1.1.1` is the sender's address, the device's own address on the bus.
 - `0/0/0` is the group address, the shared channel a button sends to and an actuator listens on.
 - `1.001` is the data point type (DPT), which says how to read the value: here a switch, on or off.
 
-The names come from your model. A group address or type the model does not know shows as raw hex, never as an error.
+The names come from your project. A group address or type that is not in your project shows as raw hex, never as an error.
 
-## What the model directory holds
+## What the project folder holds
 
 ```
 house/
@@ -143,7 +143,7 @@ house/
 | `devices/<address>.toml` | one device: name, room, parameters, links per channel | you, or `import` and `adopt` |
 | `bussard.lock` | what each device runs: product, application program | `import` and `adopt` only |
 
-A device holds tables and memory, but no names and no record of why a setting has its value. The model holds that meaning, so this directory is your installation as files. Everything except the lock is yours to edit, by hand or through an assistant.
+A device holds tables and memory, but no names and no record of why a setting has its value. Your project holds that meaning, so this folder is your installation as files. Everything except the lock is yours to edit, by hand or through an assistant.
 
 A device file reads like its ETS dialog, one table per channel. From a real import of a Jung switch/blind actuator:
 
@@ -154,21 +154,21 @@ langzeitbetrieb.listen = ["3/1/20"]
 rueckmeldung-lueftungsklappen-dachfensterposition.send = "3/1/23"
 ```
 
-You never pass the directory: every command finds the model from the current directory, then `./knx`, then the parent directories.
+You never pass the directory: every command finds the project from the current directory, then `./knx`, then the parent directories.
 
 !!! note
-    bussard also keeps `products/` (the vendor product data it downloaded) and `.bussard/` (generated files and the history of every change) next to the model. bussard never redistributes vendor product data; it fetches it for your project only.
+    bussard also keeps `products/` (the vendor product data it downloaded) and `.bussard/` (generated files and the history of every change) next to your project files. bussard never redistributes vendor product data; it fetches it for your project only.
 
 ## Keep passwords in `.env`
 
-Put the passwords in a `.env` file in the model directory or in its parent:
+Put the passwords in a `.env` file in the project folder or in its parent:
 
 ```
 BUSSARD_PROJECT_PASSWORD=...
 BUSSARD_KEYRING_PASSWORD=...
 ```
 
-Every command reads it, so you do not export them in each shell. The `.gitignore` that `init` and `import` write already lists `.env`. `BUSSARD_ALLOW_REAL_GATEWAY` is never taken from this file: opening writes to the real bus stays a flag or an exported variable.
+`BUSSARD_KEYRING_PASSWORD` unlocks your key store (`bussard.keys`) and ETS `.knxkeys` files. Every command reads the file, so you do not export the passwords in each shell. The `.gitignore` that `init` and `import` write already lists `.env`. `BUSSARD_ALLOW_REAL_GATEWAY` is never taken from this file: opening writes to the real bus stays a flag or an exported variable.
 
 ## Before your first write
 
@@ -177,7 +177,7 @@ Every command reads it, so you do not export them in each shell. The `.gitignore
 
 ## Next steps
 
-- [Connect an assistant](assistant.md): let an LLM read the model and watch the bus with you.
+- [Connect an assistant](assistant.md): let an LLM read your project and watch the bus with you.
 - [The first weekend](first-weekend.md): back up every device, make one change and undo it.
 - [Watch the bus](../how-to/watch-the-bus.md): read values, capture traffic, see the network in a browser.
-- [How bussard works](../explanation/how-it-works.md): the model, the product data and what a write does.
+- [How bussard works](../explanation/how-it-works.md): the project, the product data and what a write does.
