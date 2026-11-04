@@ -2,10 +2,11 @@
 // key, asks once to confirm the session code, scans or takes typed
 // certificates, sends them to the relay encrypted, and shows bussard's
 // result per certificate. Protocol: dev/enroll-protocol.md. Wording and counting:
-// ui.js.
+// ui.js. The phone key outlives a reload: phonekey.js.
 
 import {
   EnrollError,
+  b64urlEncode,
   certificateMessage,
   checkCertificate,
   deriveSessionKey,
@@ -23,6 +24,7 @@ import {
   toHex,
   utf8,
 } from "./enroll.js";
+import { PhoneKeys, indexedDbBackend } from "./phonekey.js";
 import {
   PREF_KEYS,
   ScanGate,
@@ -44,6 +46,8 @@ import {
 const $ = (id) => document.getElementById(id);
 
 const POLL_WAIT_S = 25;
+/** Retries back off from 1 s, doubling to this (dev/enroll-protocol.md, "Reconnect"). */
+const MAX_BACKOFF_MS = 30_000;
 const FETCH_TIMEOUT_MS = (POLL_WAIT_S + 10) * 1000;
 const SCAN_INTERVAL_MS = 180;
 const SCAN_MAX_EDGE = 720;
@@ -63,6 +67,7 @@ const state = {
   downAfter: 0,
   phase: "confirm", // confirm | active | finished | closed
   relayDown: false,
+  phoneKeys: new PhoneKeys(null), // the kept phone key, see main()
   mode: "scan", // scan | type
 };
 
@@ -110,16 +115,26 @@ async function main() {
     forgetLinkFragment(tabStore());
     return linkProblem(e);
   }
+  state.phoneKeys = new PhoneKeys(await indexedDbBackend());
   // Before the session code and the camera: does the session exist?
   if (!(await checkSession(link))) return;
+  // After a reload or a network switch this is the same phone: the key kept
+  // for this session, else a new one (dev/enroll-protocol.md, "Reconnect").
+  const kept = await state.phoneKeys.load(link.sidText);
   let phone;
-  try {
-    phone = await generatePhoneKey(subtle);
-  } catch {
-    return fatal(
-      "This browser is too old",
-      "The page needs X25519 in the browser's WebCrypto, which current Safari, Chrome and Firefox have. Update the browser or use another one.",
-    );
+  if (kept) {
+    phone = { privateKey: kept.privateKey, publicRaw: kept.publicRaw, publicText: b64urlEncode(kept.publicRaw) };
+    state.nextId = kept.nextId;
+  } else {
+    try {
+      phone = await generatePhoneKey(subtle);
+    } catch {
+      return fatal(
+        "This browser is too old",
+        "The page needs X25519 in the browser's WebCrypto, which current Safari, Chrome and Firefox have. Update the browser or use another one.",
+      );
+    }
+    await state.phoneKeys.save(link.sidText, phone);
   }
   let key;
   try {
@@ -137,22 +152,26 @@ async function main() {
   $("fatal").hidden = true;
   $("confirm").hidden = false;
 
-  $("code-ok").addEventListener("click", confirmCode);
+  $("code-ok").addEventListener("click", () => confirmCode(true));
   $("code-bad").addEventListener("click", () => {
     state.phase = "closed";
+    state.phoneKeys.forget(link.sidText);
     fatal(
       "The codes differ",
       "This page is not talking to your bussard, so nothing was sent. Close this page, stop the session in bussard and start a new one.",
       "error",
     );
   });
+  // The code was confirmed before the reload: go on where the page was.
+  if (kept?.confirmed) confirmCode(false);
 }
 
-/** The session code matched: start the session proper. */
-function confirmCode() {
+/** The session code matched (`tap`), or was before a reload: start the session proper. */
+function confirmCode(tap) {
   if (state.phase !== "confirm") return;
   state.phase = "active";
-  unlockAudio(); // inside the tap, which iOS requires for sound
+  state.phoneKeys.setConfirmed(state.link.sidText);
+  if (tap) unlockAudio(); // inside the tap, which iOS requires for sound
   $("confirm").hidden = true;
   $("session").hidden = false;
   $("bar").hidden = false;
@@ -165,6 +184,7 @@ function confirmCode() {
   // Join: the first phone whose message bussard opens owns the session.
   sendHello();
   setInterval(keepAlive, 60_000);
+  document.addEventListener("visibilitychange", keepAlive);
   pollDown();
 }
 
@@ -206,6 +226,7 @@ async function checkSession(link) {
   if (verdict === "open") return true;
   if (verdict === "gone") {
     forgetLinkFragment(tabStore());
+    state.phoneKeys.forget(link.sidText);
     fatal(
       "This session does not exist or has expired",
       "Start a new session in bussard (bussard keys enroll) and open its link.",
@@ -213,6 +234,7 @@ async function checkSession(link) {
     );
   } else if (verdict === "ended") {
     forgetLinkFragment(tabStore());
+    state.phoneKeys.forget(link.sidText);
     fatal(
       "This session has ended",
       "bussard closed it already. Start a new session in bussard to add more certificates.",
@@ -375,7 +397,11 @@ function setRelayDown(down) {
   if (down === state.relayDown) return;
   state.relayDown = down;
   if (down) {
-    banner("warn", "Cannot reach the server. Check the phone's connection; the page keeps trying and sends what is waiting.");
+    banner(
+      "warn",
+      "The page keeps trying and sends what is waiting. Your session stays open; check the phone's connection.",
+      "Reconnecting…",
+    );
   } else {
     banner(null, "");
   }
@@ -392,6 +418,7 @@ function closed(title, tone = "info", stored) {
   state.phase = "closed";
   state.relayDown = false;
   forgetLinkFragment(tabStore());
+  state.phoneKeys.forget(state.link.sidText);
   stopCamera();
   $("capture").hidden = true;
   $("done").hidden = true;
@@ -515,7 +542,7 @@ async function submitCertificate(r, source, d) {
   }
   state.sentDigests.add(d);
   const item = {
-    id: state.nextId++,
+    id: takeId(),
     digest: d,
     serial: r.serial,
     code: shortCode(r.normalized),
@@ -529,6 +556,13 @@ async function submitCertificate(r, source, d) {
   state.sendQueue.push(item);
   pumpSend();
   return { outcome: "queued", item };
+}
+
+/** The next certificate id, kept so a reload never reuses one. */
+function takeId() {
+  const id = state.nextId++;
+  state.phoneKeys.setNextId(state.link.sidText, state.nextId);
+  return id;
 }
 
 async function pumpSend() {
@@ -573,7 +607,7 @@ async function pumpSend() {
       }
       setRelayDown(true);
       await sleep(backoff);
-      backoff = Math.min(backoff * 2, 15000);
+      backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
     }
   } finally {
     state.sending = false;
@@ -625,7 +659,7 @@ async function pollDown() {
     } catch {
       setRelayDown(true);
       await sleep(backoff);
-      backoff = Math.min(backoff * 2, 15000);
+      backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
       continue;
     }
     if (res.status === 404) {
@@ -636,7 +670,7 @@ async function pollDown() {
     if (!res.ok) {
       setRelayDown(true);
       await sleep(backoff);
-      backoff = Math.min(backoff * 2, 15000);
+      backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
       continue;
     }
     let body;
@@ -663,7 +697,7 @@ async function pollDown() {
 }
 
 async function handleDown(envelope) {
-  // Several phones may share a session; only messages for this key count.
+  // The relay also carries messages for refused phones; only this key's count.
   if (!envelope || envelope.pk !== state.phone.publicText) return;
   let plaintext;
   try {
@@ -687,8 +721,16 @@ async function handleDown(envelope) {
     );
     return;
   }
-  const item = state.items.get(msg.id);
-  if (!item) return;
+  let item = state.items.get(msg.id);
+  if (!item) {
+    // A result for a certificate sent before a reload: show it again.
+    item = { id: msg.id, serial: msg.serial ?? "?", code: `Certificate ${msg.id}`, source: "earlier" };
+    state.items.set(msg.id, item);
+    if (msg.id >= state.nextId) {
+      state.nextId = msg.id + 1;
+      state.phoneKeys.setNextId(state.link.sidText, state.nextId);
+    }
+  }
   item.status = msg.status;
   if (msg.serial) item.serial = msg.serial;
   item.ia = msg.ia;

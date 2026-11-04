@@ -156,7 +156,11 @@ stop the session and start a new one.
 **How long a session lasts.** A phone has 10 minutes to open the link. The
 session then stays open while the page is open, up to 4 hours, and ends 15
 minutes after the last label if the page was closed or the phone locked. A
-phone that loses signal or switches networks comes back as the same phone.
+phone that loses signal, switches networks or reloads the page comes back
+as the same phone: the page keeps its key for the session in the browser,
+where page script cannot read it, and deletes it when the session ends.
+While the connection is gone the page shows "Reconnecting…" and sends what
+is waiting once it is back.
 
 **Local mode.** `bussard keys enroll --local` serves the page and the relay
 from bussard itself on `127.0.0.1`. Open the link in a browser on the same
