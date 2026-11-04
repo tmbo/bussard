@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use crate::args::Parameters;
 use bussard_model::Model;
-use bussard_model::bundle::{self, Bundle, ExportOptions};
+use bussard_model::bundle::{self, Bundle};
 use bussard_model::change::{describe, name_parameters};
 use bussard_model::param_model::ProductModels;
 use rmcp::ErrorData;
@@ -58,7 +58,8 @@ pub struct DiffProjectArgs {
 impl BussardMcp {
     /// `knx_export_bundle`.
     #[tool(
-        description = "Write the whole model (bussard.toml, groups.toml, bussard.lock, devices/) \
+        description = "The bundle form of knx_export, under its earlier name. Write the whole \
+        model (bussard.toml, groups.toml, bussard.lock, devices/) \
         and its history snapshots as ONE .bussard file: the handover file for an integrator, or \
         the owner's backup. It never contains vendor product data (models/, vendor/), captures, \
         keyrings, .knxproj/.knxprod files or .env. Returns the path and the manifest (counts, \
@@ -69,21 +70,17 @@ impl BussardMcp {
         &self,
         Parameters(args): Parameters<ExportBundleArgs>,
     ) -> Result<CallToolResult, ErrorData> {
+        // The bundle form of `knx_export`, kept under its old name for the
+        // clients that call it (issue #744).
         let dir = self.state().dir.clone();
-        let out = args
-            .path
-            .map(PathBuf::from)
-            .unwrap_or_else(|| bundle::default_bundle_path(&dir));
-        let options = ExportOptions {
-            include_history: args.include_history.unwrap_or(true),
-        };
-        match bundle::export(&dir, &out, options) {
-            Ok(manifest) => ok(json!({
-                "ok": true,
-                "path": out.display().to_string(),
-                "manifest": manifest,
-            })),
-            Err(err) => refusal(format!("the export failed: {err}")),
+        let out = args.path.map(PathBuf::from);
+        match crate::tools_files::export_bundle(
+            &dir,
+            out.as_deref(),
+            args.include_history.unwrap_or(true),
+        ) {
+            Ok(value) => ok(value),
+            Err(reason) => refusal(reason),
         }
     }
 
@@ -93,7 +90,7 @@ impl BussardMcp {
         would change compared with the working model, as plain sentences such as \"Group address \
         1/0/1 is now called \\\"Kitchen ceiling\\\" (was \\\"Light Kitchen\\\").\" A renamed \
         group address is one rename, not a removal and an addition. QUOTE THESE SENTENCES TO THE \
-        HUMAN BEFORE SHE IMPORTS the file (`bussard import <file>`); a change marked \
+        HUMAN BEFORE SHE IMPORTS the file (knx_import_file, or `bussard import <file>`); a change marked \
         touches_protected concerns a safety-critical group address and needs her explicit word. \
         At import, hand-edited names, rooms and descriptions that differ stay local unless she \
         chooses --theirs. Read-only: writes nothing, touches no device."

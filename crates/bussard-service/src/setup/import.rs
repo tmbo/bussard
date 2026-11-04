@@ -364,22 +364,37 @@ fn keyring_password() -> Result<String, SetupError> {
 /// No password, a keyring that does not open with it, or a store that does
 /// not load or save.
 pub fn import_keyring(dir: &Path, file: &Path) -> Result<(ImportReport, SaveOutcome), SetupError> {
-    let password = keyring_password()?;
+    import_keyring_with(dir, file, &keyring_password()?)
+}
+
+/// [`import_keyring`] under `password` instead of the environment's: the
+/// MCP tool `knx_import_file` takes it as an argument (issue #743). The
+/// password is never part of a message.
+///
+/// # Errors
+///
+/// A keyring that does not open with `password`, or a store that does not
+/// load or save.
+pub fn import_keyring_with(
+    dir: &Path,
+    file: &Path,
+    password: &str,
+) -> Result<(ImportReport, SaveOutcome), SetupError> {
     let xml =
         std::fs::read_to_string(file).ctx(|| format!("reading keyring {}", file.display()))?;
-    let keyring = bussard_project::parse_keyring(&xml, &password).ctx(|| {
+    let keyring = bussard_project::parse_keyring(&xml, password).ctx(|| {
         format!(
             "loading keyring {} (the store and the export share {KEYRING_PASSWORD_ENV})",
             file.display()
         )
     })?;
     let path = KeyStore::path(dir);
-    let mut store = KeyStore::load(dir, &password)
+    let mut store = KeyStore::load(dir, password)
         .ctx(|| format!("loading the key store {}", path.display()))?
         .unwrap_or_else(|| KeyStore::new(&keyring.project));
     let report = store.merge_keyring(&keyring);
     let outcome = store
-        .save(dir, &password)
+        .save(dir, password)
         .ctx(|| format!("writing the key store {}", path.display()))?;
     Ok((report, outcome))
 }

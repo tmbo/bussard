@@ -8,8 +8,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use anyhow::Context;
-use bussard_model::{Model, to_ets_csv, to_ets_xml};
+use bussard_service::files::export::GroupFormat;
 
 /// The export formats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -22,29 +21,15 @@ pub enum ExportFormat {
 
 /// Runs the export-groups command.
 pub fn run(dir: &Path, format: ExportFormat, out: &Path) -> anyhow::Result<ExitCode> {
-    let model = Model::load(dir).with_context(|| format!("loading {}", dir.display()))?;
-
-    let body = match format {
-        ExportFormat::EtsCsv => to_ets_csv(&model.groups),
-        ExportFormat::EtsXml => to_ets_xml(&model.groups),
+    let format = match format {
+        ExportFormat::EtsCsv => GroupFormat::EtsCsv,
+        ExportFormat::EtsXml => GroupFormat::EtsXml,
     };
-
-    if let Some(parent) = out.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
-    }
-    std::fs::write(out, body.as_bytes()).with_context(|| format!("writing {}", out.display()))?;
-
-    let label = match format {
-        ExportFormat::EtsCsv => "ETS CSV",
-        ExportFormat::EtsXml => "ETS XML",
-    };
+    let count = bussard_service::files::export::groups(dir, format, out)?;
     println!(
-        "Wrote {} group address(es) to {} ({label}).",
-        model.groups.groups.len(),
-        out.display()
+        "Wrote {count} group address(es) to {} ({}).",
+        out.display(),
+        format.label()
     );
     println!("Import it in ETS: Group Addresses -> Import, then pick this file.");
 

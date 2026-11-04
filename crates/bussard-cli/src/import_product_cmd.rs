@@ -17,9 +17,15 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use anyhow::{Context, bail};
-use bussard_prod::{DownloadConsent, ProductData, ProductIndex};
+use anyhow::bail;
+use bussard_prod::{ProductData, ProductIndex};
+use bussard_service::files::products as files;
 use bussard_service::setup::products;
+use bussard_service::setup::{DownloadAnswer, DownloadPrompt, SetupError};
+
+use crate::console::Console;
+
+pub(crate) use bussard_service::files::products::is_project_export;
 
 /// Dispatches the three `import-product` modes:
 ///
@@ -77,79 +83,42 @@ fn run_list() -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Looks an order number up in the index, confirms, downloads and verifies the
-/// `.knxprod`, then runs the normal import on the cached file.
+/// `--order-number`: looks the file up in the index, confirms, downloads,
+/// verifies and imports it
+/// ([`bussard_service::files::products::import_product_order`]).
 fn run_order_number(
     order: &str,
     dir: &Path,
     yes_download: bool,
     inner: Option<&str>,
 ) -> anyhow::Result<ExitCode> {
-    let index = load_index()?;
-    let entry = index.lookup(order).with_context(|| {
-        format!(
-            "no product-data entry for order number `{order}` in the index. \
-             Run `bussard import-product --list` to see what's available, or \
-             pass the .knxprod file directly if you already have it."
-        )
-    })?;
-
-    // Show what and where-from before any network access.
-    println!("Found in the product-data index:");
-    println!("  {} — {}", entry.manufacturer, entry.name);
-    println!("  order number: {order}");
-    println!("  download:     {}", entry.url);
-    println!("  file:         {} ({} bytes)", entry.filename, entry.size);
-    println!("  sha256:       {}", entry.sha256);
-    println!();
-    println!(
-        "This downloads copyrighted vendor product data over the network. It is \
-         stored under {}/products/; whether that directory is committed is your \
-         decision (see docs/reference/product-data.md).",
-        dir.display()
-    );
-
-    if !confirm_download(yes_download)? {
-        println!("Aborted; nothing downloaded.");
-        return Ok(ExitCode::FAILURE);
+    let mut prompt = OrderPrompt { yes_download };
+    match files::import_product_order(order, dir, inner, &mut prompt, &mut Console)? {
+        files::OrderImport::Declined => Ok(ExitCode::FAILURE),
+        files::OrderImport::Imported(_) => Ok(ExitCode::SUCCESS),
     }
-
-    println!("Downloading…");
-    let verified = bussard_prod::fetch_entry(entry, DownloadConsent::granted())
-        .context("downloading product data")?;
-    match &verified {
-        bussard_prod::Verified::Download(bytes) => {
-            println!("Downloaded and verified {} bytes.", bytes.len());
-        }
-        bussard_prod::Verified::Inner { name, bytes } => println!(
-            "Downloaded a ZIP of several products; verified {name} ({} bytes) inside it.",
-            bytes.len()
-        ),
-    }
-
-    // Store the download under <dir>/products/, then import from there.
-    let cached = store_download(entry, dir, verified)?;
-
-    import_from_file(
-        &cached,
-        dir,
-        inner,
-        DownloadNote::Downloaded(bussard_model::schema::ProductOrigin::Index {
-            order_number: Some(order.to_string()),
-            url: Some(entry.url.clone()),
-        }),
-    )
 }
 
-/// Asks the download question on a TTY; without one it needs
-/// `--yes-download` (the one download-consent flag, `crate::confirm`).
-fn confirm_download(yes_download: bool) -> anyhow::Result<bool> {
-    match crate::confirm::download(yes_download, "Download this file?")? {
-        crate::confirm::Download::Yes => Ok(true),
-        crate::confirm::Download::No => Ok(false),
-        crate::confirm::Download::NoTerminal => {
-            bail!("{}", crate::confirm::download_refusal("this file"))
-        }
+/// The download question of `--order-number`: asked on a TTY; without one it
+/// needs `--yes-download` (the one download-consent flag, `crate::confirm`).
+struct OrderPrompt {
+    /// `--yes-download`.
+    yes_download: bool,
+}
+
+impl DownloadPrompt for OrderPrompt {
+    fn download(&mut self, question: &str, _files: usize) -> Result<DownloadAnswer, SetupError> {
+        Ok(
+            match crate::confirm::download(self.yes_download, question)
+                .map_err(SetupError::source)?
+            {
+                crate::confirm::Download::Yes => DownloadAnswer::Yes,
+                crate::confirm::Download::No => DownloadAnswer::No,
+                crate::confirm::Download::NoTerminal => {
+                    DownloadAnswer::Refused(crate::confirm::download_refusal("this file"))
+                }
+            },
+        )
     }
 }
 
@@ -157,26 +126,6 @@ fn confirm_download(yes_download: bool) -> anyhow::Result<bool> {
 /// ([`bussard_service::setup::products::load_index`]).
 pub(crate) fn load_index() -> anyhow::Result<ProductIndex> {
     Ok(products::load_index()?)
-}
-
-/// Stores a verified download under `<dir>/products/` and returns the path
-/// ([`bussard_service::setup::products::store_download`]).
-fn store_download(
-    entry: &bussard_prod::IndexEntry,
-    dir: &Path,
-    verified: bussard_prod::Verified,
-) -> anyhow::Result<std::path::PathBuf> {
-    Ok(products::store_download(entry, dir, verified)?)
-}
-
-/// Reads every application program of `file` with its texts in the model's
-/// language ([`bussard_service::setup::products::read_in_model_language`]).
-fn read_in_model_language(
-    file: &Path,
-    dir: &Path,
-    inner: Option<&str>,
-) -> anyhow::Result<ProductData> {
-    Ok(products::read_in_model_language(file, dir, inner)?)
 }
 
 /// Writes one model file per application program under
@@ -188,117 +137,9 @@ pub(crate) fn write_product_models(
     Ok(products::write_product_models(product, dir)?)
 }
 
-/// Where a to-be-imported file came from, for the report line.
-enum DownloadNote {
-    /// A local positional file (copied into the product store).
-    Local,
-    /// Downloaded from the index and already stored under `products/`
-    /// (verified against the index checksum); carries the lock's origin
-    /// record.
-    Downloaded(bussard_model::schema::ProductOrigin),
-}
-
-/// Runs the normal import on a local `.knxprod` file (positional mode).
+/// Runs the normal import on a local `.knxprod` file (positional mode,
+/// [`bussard_service::files::products::import_product_file`]).
 fn run_file(file: &Path, dir: &Path, inner: Option<&str>) -> anyhow::Result<ExitCode> {
-    if !file.exists() {
-        bail!("product file not found: {}", file.display());
-    }
-    import_from_file(file, dir, inner, DownloadNote::Local)
-}
-
-/// Imports product data: stores the archive under `<dir>/products/`, pins it
-/// in `bussard.lock` and generates a product model under
-/// `<dir>/.bussard/models/` for each application program it contains.
-///
-/// A downloaded file is already in the store. An ETS project export (see
-/// [`is_project_export`]) is not copied: each of its application programs is
-/// extracted once into its own archive in the store.
-fn import_from_file(
-    file: &Path,
-    dir: &Path,
-    inner: Option<&str>,
-    note: DownloadNote,
-) -> anyhow::Result<ExitCode> {
-    let product = read_in_model_language(file, dir, inner)?;
-
-    if product.applications.is_empty() {
-        bail!(
-            "no application programs found in {} (is it a valid .knxprod?)",
-            file.display()
-        );
-    }
-    crate::product_store::prepare(dir);
-
-    // Only a local file can be an export; an index download is vendor data.
-    let project_export = matches!(note, DownloadNote::Local) && is_project_export(file, &product);
-    let (stored_note, entries) = if project_export {
-        let apps: Vec<String> = product
-            .applications
-            .iter()
-            .filter(|a| !a.is_pei_program())
-            .map(|a| a.id.clone())
-            .collect();
-        let entries = crate::lock_pin::extract_and_entries(dir, file, &product, &apps)?;
-        (
-            format!(
-                "Extracted {} application program(s) from the ETS project export {} into {}",
-                entries.len(),
-                file.display(),
-                dir.join(crate::product_store::PRODUCTS_DIR).display()
-            ),
-            entries,
-        )
-    } else {
-        let (stored, origin, what) = match note {
-            DownloadNote::Downloaded(origin) => (file.to_path_buf(), origin, "downloaded"),
-            DownloadNote::Local => (
-                crate::product_store::store_file(dir, file)?,
-                bussard_model::schema::ProductOrigin::File {
-                    path: file.display().to_string(),
-                },
-                "supplied",
-            ),
-        };
-        let entry = crate::lock_pin::archive_entry(&stored, dir, &product, origin)?;
-        (
-            format!("Stored vendor file ({what}): {}", stored.display()),
-            vec![entry],
-        )
-    };
-
-    let models_dir = dir.join(bussard_model::param_model::MODELS_DIR);
-    let written = write_product_models(&product, dir)?;
-    crate::lock_pin::pin(dir, &entries);
-
-    // Report.
-    println!("{stored_note}");
-    println!(
-        "Generated {} product model{} in {}:",
-        written.len(),
-        if written.len() == 1 { "" } else { "s" },
-        models_dir.display()
-    );
-    for name in &written {
-        println!("  {}/{name}", bussard_model::param_model::MODELS_DIR);
-    }
-    println!();
-    println!(
-        "{} holds copyrighted vendor product data and is retained model data: bussard never \
-         regenerates it. Whether it is committed is your decision (a private repository is \
-         the usual case); the product models under .bussard/ regenerate from it.",
-        dir.join(crate::product_store::PRODUCTS_DIR).display()
-    );
-
+    files::import_product_file(file, dir, inner, &mut Console)?;
     Ok(ExitCode::SUCCESS)
-}
-
-/// Whether `file` is an ETS project export (`.knxproj`) rather than vendor
-/// product data: by its extension (case-insensitive) or by the `P-XXXX`
-/// project folder the reader found in the archive.
-pub(crate) fn is_project_export(file: &Path, product: &ProductData) -> bool {
-    product.is_project_export
-        || file
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("knxproj"))
 }

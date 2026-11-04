@@ -46,7 +46,9 @@
 //! | `knx_set_interface` | Edit a KNX IP interface's `[knxnet]` table (IP assignment, static settings, friendly name, tunnels), validated before it is saved. |
 //! | `knx_undo` | Restore the model files to a history snapshot. |
 //! | `knx_discard_edits` | Drop one device's or group address's unapplied edits, leaving the rest. |
-//! | `knx_export_bundle` | Write the model and history as one `.bussard` handover file. |
+//! | `knx_import_file` | Import a `.knxproj`, `.bussard` bundle, `.json` dump, `.knxprod` (or product data by order number, with `download`) or `.knxkeys`, as `bussard import`, `import-product` and `keys import` do (withheld by `--no-model-edits`). |
+//! | `knx_export` | Write the bundle, the group plan for ETS, the keyring or the handover documentation, as `bussard export`, `export-groups`, `keys export` and `doc` do. |
+//! | `knx_export_bundle` | The bundle form of `knx_export` under its earlier name: the model and history as one `.bussard` handover file. |
 //! | `knx_diff_project` | What a received `.knxproj` or bundle would change, as sentences. |
 //! | `knx_job_status` | One job of the server's job table, of any tier: `step`, `question`, `done`, `result` (issue #746; registered in every tier). |
 //! | `knx_backup_device` | Back one device or every device up (tables, bounded parameter memory) under `captures/backups/<timestamp>/`, as `bussard backup` (read-only on the bus; not in `--passive`). |
@@ -69,12 +71,12 @@
 //! The ten from `knx_describe_change` to `knx_discard_edits` are model tools: they
 //! read and write the model files (TOML) under the model directory and never touch the bus,
 //! so they are available in every tier including `--passive`. The eight that
-//! edit, and `knx_scaffold_groups` and `knx_reserve_groups`, which write
-//! `groups.toml`, are withheld by
+//! edit, `knx_scaffold_groups` and `knx_reserve_groups`, which write
+//! `groups.toml`, and `knx_import_file` are withheld by
 //! `--no-model-edits`. Every edit snapshots first, validates after, and returns
-//! the change as sentences for the caller to quote to the human. The last two
-//! only read the model (the export writes one file outside it) and are
-//! available in every tier.
+//! the change as sentences for the caller to quote to the human. The three
+//! export tools and `knx_diff_project` only read the model (an export writes
+//! one file outside it) and are available in every tier.
 //!
 //! In `--passive` mode the bus-touching read tools (`knx_read_group`,
 //! `knx_describe_device`, `knx_backup_device`, `knx_reconstruct_device` and
@@ -95,9 +97,9 @@
 //! `knx_job_status` reads the server's one job table ([`jobs`], issue #746)
 //! and never touches the bus, so it is registered in every tier.
 //!
-//! Tool counts per tier: `--passive` 27, default 33, `--allow-writes` 35. With
-//! `--no-model-edits` the eleven model-edit tools are withheld, giving 16, 22
-//! and 24.
+//! Tool counts per tier: `--passive` 29, default 35, `--allow-writes` 37. With
+//! `--no-model-edits` the twelve model-edit tools are withheld, giving 17, 23
+//! and 25.
 //!
 //! `--allow-programming` (issue #118) adds the nine programming tools
 //! ([`tools_program::PROGRAMMING_TOOLS`]) to any non-passive tier. They write
@@ -168,6 +170,7 @@ pub mod tools;
 pub mod tools_audit;
 pub mod tools_device;
 pub mod tools_diff;
+pub mod tools_files;
 mod tools_find;
 pub mod tools_groups;
 pub mod tools_ha;
@@ -415,22 +418,23 @@ pub async fn run_onboarding_http_with_ready(
 
 /// The set of tool names exposed, in registration order. Used by tests and docs.
 ///
-/// - passive mode: 27 tools (no bus-touching tools: no `knx_read_group`, no
+/// - passive mode: 29 tools (no bus-touching tools: no `knx_read_group`, no
 ///   `knx_describe_device`, no `knx_backup_device`, no `knx_reconstruct_device`,
 ///   no `knx_bus_reconnect`, no `knx_write_group`, no `knx_run_tests`).
 ///   `knx_infer_group` is there: it only reads the telegram ring.
 ///   `knx_bus_status` reads the connection state. `knx_audit` is there too,
 ///   but refuses `live: true`.
-/// - default mode: 33 tools (adds `knx_read_group`, `knx_describe_device`,
+/// - default mode: 35 tools (adds `knx_read_group`, `knx_describe_device`,
 ///   `knx_bus_reconnect` and [`tools_device::DEVICE_TOOLS`]).
-/// - `--allow-writes`: 35 tools (adds `knx_write_group` and `knx_run_tests`).
-/// - `--no-model-edits` removes the eleven model-edit tools
-///   ([`tools_model::MODEL_EDIT_TOOLS`], including the two reservation tools) from
-///   any of those (16, 22 and 24 tools).
+/// - `--allow-writes`: 37 tools (adds `knx_write_group` and `knx_run_tests`).
+/// - `--no-model-edits` removes the twelve model-edit tools
+///   ([`tools_model::MODEL_EDIT_TOOLS`], including the two reservation tools and
+///   `knx_import_file`) from any of those (17, 23 and 25 tools).
 ///
 /// The two model/history read tools (`knx_describe_change`, `knx_history`),
 /// the two bundle/diff tools (`knx_export_bundle`, `knx_diff_project`),
-/// `knx_job_status` and the eleven model-edit tools touch files only, so they
+/// `knx_export`, `knx_job_status` and the twelve model-edit tools touch files
+/// only, so they
 /// are present in every tier including `--passive`.
 pub fn tool_names(passive: bool, allow_writes: bool, no_model_edits: bool) -> Vec<&'static str> {
     tool_names_for(passive, allow_writes, no_model_edits, false)
@@ -489,6 +493,7 @@ pub fn tool_names_with_ha(
     }
     names.extend(tools_model::MODEL_READ_TOOLS);
     names.extend(tools_diff::DIFF_TOOLS);
+    names.extend(tools_files::EXPORT_TOOLS);
     names.extend(tools_jobs::JOB_TOOLS);
     if !no_model_edits {
         names.extend(tools_model::MODEL_EDIT_TOOLS);

@@ -43,6 +43,11 @@
 //!   --line`, `knx_plan_device` / `knx_apply_device` with `line`, issue #748);
 //!   [`reconstruct_line`]: the line sweep that synthesizes a fresh model
 //!   (`bussard reconstruct --line`, `knx_reconstruct_device` with `line`).
+//! - [`files`]: importing and exporting model files outside the first setup
+//!   (a re-import, bundles, product data, the keyring export, the group plan,
+//!   the handover documentation), behind the CLI's `import`,
+//!   `import-product`, `keys`, `export`, `export-groups` and `doc` and the
+//!   MCP `knx_import_file` and `knx_export` (issues #743, #744).
 //! - [`restore`]: replaying a parameter backup (`bussard restore
 //!   --parameters`, `knx_restore_parameters`, issue #290).
 //! - [`setup`]: a model directory from nothing, the gateway, the skeleton
@@ -65,6 +70,7 @@ pub mod enroll;
 pub mod enroll_session;
 pub mod error;
 pub mod facts;
+pub mod files;
 pub mod flash;
 pub mod group;
 pub mod group_security;

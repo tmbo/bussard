@@ -6,6 +6,7 @@
 
 mod capabilities;
 mod diff_tools;
+mod file_tools;
 mod guidance;
 mod mcp_audit;
 mod mcp_bus;

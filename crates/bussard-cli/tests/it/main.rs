@@ -37,6 +37,7 @@ mod learn_mock;
 mod learn_secure_mock;
 mod line_mock;
 mod line_sys7_mock;
+mod mcp_file_tools_log;
 mod mcp_ha_stdio;
 mod mcp_parameters_mock;
 mod mcp_secure_mock;

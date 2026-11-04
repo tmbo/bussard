@@ -143,9 +143,11 @@ async fn tools_list_default_mode() -> TestResult {
         names, expected,
         "default mode with --no-model-edits exposes 14 bus/model tools, the 3 \
          device backup/reconstruct/find tools, the 2 history read tools, the 2 bundle/diff \
-         tools and knx_job_status"
+         tools, knx_export and knx_job_status"
     );
-    assert_eq!(tools.len(), 22);
+    assert_eq!(tools.len(), 23);
+    assert!(names.contains(&"knx_export".to_string()));
+    assert!(!names.contains(&"knx_import_file".to_string()));
     assert!(names.contains(&"knx_find_devices".to_string()));
     assert!(names.contains(&"knx_job_status".to_string()));
     assert!(names.contains(&"knx_backup_device".to_string()));
@@ -175,7 +177,7 @@ async fn tools_list_with_allow_writes() -> TestResult {
         names, expected,
         "--allow-writes adds knx_write_group and knx_run_tests"
     );
-    assert_eq!(tools.len(), 24);
+    assert_eq!(tools.len(), 25);
     assert!(names.contains(&"knx_run_tests".to_string()));
     assert!(names.contains(&"knx_write_group".to_string()));
     assert!(names.contains(&"knx_read_group".to_string()));
@@ -192,10 +194,10 @@ async fn tools_list_in_passive_mode() -> TestResult {
     let names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
     assert_eq!(
         tools.len(),
-        16,
+        17,
         "passive mode omits knx_read_group, knx_describe_device, knx_backup_device, \
          knx_reconstruct_device, knx_find_devices and knx_bus_reconnect, and keeps \
-         knx_bus_status, knx_job_status and the file-only history, bundle and diff tools"
+         knx_bus_status, knx_job_status, knx_export and the file-only history, bundle and diff tools"
     );
     assert!(names.contains(&"knx_job_status".to_string()));
     assert!(!names.contains(&"knx_find_devices".to_string()));

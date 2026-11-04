@@ -13,47 +13,24 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context as _, bail};
-use bussard_model::schema::{Device, ProductEntry, ProductOrigin};
-
-/// The product store under a model directory.
-pub(crate) const PRODUCTS_DIR: &str = bussard_service::params::PRODUCTS_DIR;
-
-/// The directory earlier versions cached vendor archives in; its archives
-/// move to [`PRODUCTS_DIR`] on the first command after the upgrade.
-const LEGACY_VENDOR_DIR: &str = "vendor";
+use anyhow::bail;
+use bussard_model::schema::{Device, ProductEntry};
 
 /// Writes `bytes` into `<dir>/products/` under `name` and returns the path
 /// ([`bussard_service::setup::products::store_bytes`]): an identical file is
 /// kept, a different one of that name never overwritten.
+#[cfg(test)]
 pub(crate) fn store_bytes(dir: &Path, name: &str, bytes: &[u8]) -> anyhow::Result<PathBuf> {
     Ok(bussard_service::setup::products::store_bytes(
         dir, name, bytes,
     )?)
 }
 
-/// Copies `src` into the store under its own file name (see
-/// [`store_bytes`]). A file already in the store is returned as it is.
+/// Copies `src` into the store under its own file name
+/// ([`bussard_service::files::products::store_file`]). A file already in the
+/// store is returned as it is.
 pub(crate) fn store_file(dir: &Path, src: &Path) -> anyhow::Result<PathBuf> {
-    let store = dir.join(PRODUCTS_DIR);
-    if src.parent().is_some_and(|p| same_dir(p, &store)) {
-        return Ok(src.to_path_buf());
-    }
-    let name = src
-        .file_name()
-        .context("product file has no file name")?
-        .to_string_lossy()
-        .into_owned();
-    let bytes = std::fs::read(src).with_context(|| format!("reading {}", src.display()))?;
-    store_bytes(dir, &name, &bytes)
-}
-
-/// Whether two directories are the same (canonical paths when they exist).
-fn same_dir(a: &Path, b: &Path) -> bool {
-    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => a == b,
-    }
+    Ok(bussard_service::files::products::store_file(dir, src)?)
 }
 
 /// Lowercase hex SHA-256 of `bytes`.
@@ -153,94 +130,11 @@ pub(crate) fn pinned_application(
 }
 
 /// The one-shot migration from earlier layouts, and the regeneration of the
-/// product models. Runs before a command that reads an existing model, and
-/// in `import` and `import-product`. Cheap when there is nothing to do: one
-/// directory listing and one `stat`.
-///
-/// - Every `vendor/*.knxprod` moves to `products/` and is pinned in the lock
-///   (origin `index` when the pointer index knows its hash, else `file`),
-///   linking the devices whose order number its catalogue carries; an empty
-///   `vendor/` (apart from its old `.gitignore`) is removed.
-/// - When an application a device in the lock pins has no
-///   `.bussard/models/<app>.yaml` (the directory is absent, empty or partly
-///   deleted), the missing models are regenerated from the archives that
-///   carry them (issues #267, #356). Checking costs one `stat` per pinned
-///   application.
-///
-/// Failures are warnings: the command itself reports what it cannot do.
+/// product models ([`bussard_service::files::products::prepare`]). Runs
+/// before a command that reads an existing model, and in `import` and
+/// `import-product`. Failures are warnings.
 pub(crate) fn prepare(dir: &Path) {
-    if let Err(err) = migrate_vendor(dir) {
-        eprintln!("warning: moving vendor/ into products/: {err:#}");
-    }
-    if bussard_prod::product_model::models_incomplete(dir) {
-        complete_models(dir, None);
-    }
-}
-
-/// Moves `vendor/*.knxprod` into `products/` and pins each one.
-fn migrate_vendor(dir: &Path) -> anyhow::Result<()> {
-    let vendor = dir.join(LEGACY_VENDOR_DIR);
-    let Ok(read) = std::fs::read_dir(&vendor) else {
-        return Ok(());
-    };
-    let mut archives: Vec<PathBuf> = read
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("knxprod"))
-        })
-        .collect();
-    archives.sort();
-    let index = crate::import_product_cmd::load_index().ok();
-    let mut entries = Vec::new();
-    for old in &archives {
-        let moved = store_file(dir, old)?;
-        std::fs::remove_file(old).with_context(|| format!("removing {}", old.display()))?;
-        eprintln!(
-            "moved {} to {} (product data is retained model data now)",
-            old.display(),
-            moved.display()
-        );
-        let product = bussard_prod::read_knxprod(&moved)
-            .with_context(|| format!("reading product data from {}", moved.display()))?;
-        let (sha, _) = bussard_model::sha256_file(&moved)?;
-        let known = index.as_ref().and_then(|i| {
-            i.entries
-                .iter()
-                .find(|e| e.sha256.eq_ignore_ascii_case(&sha))
-        });
-        let origin = match known {
-            Some(e) => ProductOrigin::Index {
-                order_number: e.order_numbers.first().cloned(),
-                url: Some(e.url.clone()),
-            },
-            None => ProductOrigin::File {
-                path: old.display().to_string(),
-            },
-        };
-        entries.push(crate::lock_pin::archive_entry(
-            &moved, dir, &product, origin,
-        )?);
-        crate::import_product_cmd::write_product_models(&product, dir)?;
-    }
-    if !entries.is_empty() {
-        bussard_model::pin_products(dir, &entries)?;
-    }
-    // The old self-protecting .gitignore goes with the directory.
-    let leftover: Vec<PathBuf> = std::fs::read_dir(&vendor)
-        .map(|rd| rd.flatten().map(|e| e.path()).collect())
-        .unwrap_or_default();
-    if leftover
-        .iter()
-        .all(|p| p.file_name().is_some_and(|n| n == ".gitignore"))
-    {
-        for p in &leftover {
-            let _ = std::fs::remove_file(p);
-        }
-        let _ = std::fs::remove_dir(&vendor);
-    }
-    Ok(())
+    bussard_service::files::products::prepare(dir, &mut crate::console::Console);
 }
 
 /// Writes the product model of every application a device in the lock pins
@@ -256,6 +150,7 @@ pub(crate) fn complete_models(dir: &Path, only: Option<&str>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bussard_model::schema::ProductOrigin;
 
     fn scratch(tag: &str) -> anyhow::Result<PathBuf> {
         let dir = std::env::temp_dir().join(format!("bussard-store-{tag}-{}", std::process::id()));
