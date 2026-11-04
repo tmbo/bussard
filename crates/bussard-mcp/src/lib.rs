@@ -117,7 +117,13 @@
 //! read-back and the device file. `knx_commission_line` (issue #753) runs
 //! `bussard commission`'s line walk as one job: per device the button, the
 //! order-number check against the model and the address write with its
-//! read-back, after one yes for the line. See [`tools_program`].
+//! read-back, after one yes for the line.
+//! `knx_replace_device` (issue #751) replaces
+//! a dead device in the same job shape: the backup snapshot, the wait for the
+//! replacement's button and the identification, then after one yes the
+//! address, the application, the parameters and links (the plan and apply
+//! of `knx_plan_device` and `knx_apply_device`) and the record. See
+//! [`tools_program`].
 //!
 //! `--allow-home-assistant` (issue #280) adds the six Home Assistant tools
 //! ([`tools_ha::HA_TOOLS`]) when `bussard.toml` has a `[home_assistant]`

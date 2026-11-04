@@ -55,6 +55,9 @@
 //!   the handover documentation), behind the CLI's `import`,
 //!   `import-product`, `keys`, `export`, `export-groups` and `doc` and the
 //!   MCP `knx_import_file` and `knx_export` (issues #743, #744).
+//! - [`replace`]: the replace flow as a step machine (`bussard replace`,
+//!   `knx_replace_device`, issue #751): the identity cross-check against the
+//!   model, the assign steps, and the record of the hardware swap.
 //! - [`restore`]: replaying a parameter backup (`bussard restore
 //!   --parameters`, `knx_restore_parameters`, issue #290).
 //! - [`setup`]: a model directory from nothing, the gateway, the skeleton
@@ -97,6 +100,7 @@ pub mod policy;
 pub mod property_plan;
 pub mod reconstruct;
 pub mod reconstruct_line;
+pub mod replace;
 pub mod restart;
 pub mod restore;
 pub mod scan;

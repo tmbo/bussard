@@ -29,9 +29,6 @@ use serde_json::{Value, json};
 
 use crate::state::SharedState;
 
-/// The CLI commands no MCP tool replaces, named once in the instructions.
-const CLI_ONLY: &str = "Still needs the CLI: `bussard replace`.";
-
 /// What still needs ETS, named once in the instructions.
 const ETS_ONLY: &str = "Still needs ETS: the Secure activation of a fresh device, and any \
     setting the device's product model does not expose.";
@@ -366,7 +363,12 @@ impl Tiers {
                  press (relay knx_job_status's question), checks the pressed device's order \
                  number against the model and assigns its address with a read-back, and waits \
                  for the human's retry, skip or stop when they differ; read out its labels at \
-                 the end."
+                 the end. \
+                 knx_replace_device replaces a dead device with the same product \
+                 in the same flow: it keeps a backup of the device file and lock record, relays \
+                 the press-the-button question, and after one explicit yes assigns the address, \
+                 loads the application, writes the model's parameters and links, reads them \
+                 back and records the replacement."
                     .to_string(),
             );
         } else {
@@ -374,18 +376,18 @@ impl Tiers {
                 "This server runs without --allow-programming, so edits stay in the files. \
                  Restarted with that flag, knx_plan_device and knx_apply_device push a \
                  device's links and parameter values, knx_add_device adds a new device, \
-                 knx_commission_line commissions a line, knx_restore_tables writes a backup's \
-                 link tables back and knx_restart_device restarts a device; without it, they are \
-                 `bussard plan <ia>`, `bussard apply <ia>`, `bussard adopt`, `bussard commission \
-                 --line <line>`, `bussard restore <backup> <ia>` and `bussard restart <ia>` at \
-                 the CLI."
+                 knx_commission_line commissions a line, knx_replace_device replaces a dead \
+                 one, knx_restore_tables writes a backup's link tables back and \
+                 knx_restart_device restarts a device; without it, they are `bussard plan \
+                 <ia>`, `bussard apply <ia>`, `bussard adopt`, `bussard commission --line \
+                 <line>`, `bussard replace <ia>`, `bussard restore <backup> <ia>` and \
+                 `bussard restart <ia>` at the CLI."
                     .to_string(),
             );
         }
         if self.home_assistant {
             out.push(HA_INSTRUCTIONS.to_string());
         }
-        out.push(CLI_ONLY.to_string());
         out.push(self.flash_push(None));
         out.push(ETS_ONLY.to_string());
         out.join(" ")

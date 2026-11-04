@@ -32,15 +32,15 @@ use rmcp::model::CallToolRequestParams;
 use serde_json::{Value, json};
 use sha2::Digest as _;
 
-const CHANNEL: u8 = 0x56;
+pub(super) const CHANNEL: u8 = 0x56;
 
 /// The application program object's index on the mock.
-const APP_OBJECT: u8 = 3;
+pub(super) const APP_OBJECT: u8 = 3;
 /// Where the resident code and parameter segments sit.
 const CODE_BASE: u32 = 0x5000;
 const PARAM_BASE: u32 = 0x5006;
 /// Where the mock allocates the segments a download asks for.
-const ALLOC_BASE: u32 = 0x6000;
+pub(super) const ALLOC_BASE: u32 = 0x6000;
 
 /// The synthetic application (bussard's own work, MIT; no vendor data).
 const APP_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
@@ -124,6 +124,16 @@ fn device() -> anyhow::Result<MockDevice> {
 /// The device with the links the model asks for, reporting `app_id` (none:
 /// no `PID_PROGRAM_VERSION`) and its application object in `load_state`.
 fn device_running(app_id: Option<[u8; 5]>, load_state: u8) -> anyhow::Result<MockDevice> {
+    device_at(device_ia()?, app_id, load_state)
+}
+
+/// [`device_running`] at `address` (a replacement answers at another one
+/// until it is assigned, issue #751).
+pub(super) fn device_at(
+    address: IndividualAddress,
+    app_id: Option<[u8; 5]>,
+    load_state: u8,
+) -> anyhow::Result<MockDevice> {
     let ga: GroupAddress = "1/2/0".parse()?;
     let mut addresses = 1u16.to_be_bytes().to_vec();
     addresses.extend_from_slice(&ga.raw().to_be_bytes());
@@ -131,7 +141,7 @@ fn device_running(app_id: Option<[u8; 5]>, load_state: u8) -> anyhow::Result<Moc
     associations.extend_from_slice(&1u16.to_be_bytes());
     associations.extend_from_slice(&1u16.to_be_bytes());
     let next_base = Arc::new(Mutex::new(ALLOC_BASE));
-    let mut dev = MockDevice::new(device_ia()?)
+    let mut dev = MockDevice::new(address)
         .with_object_types(&[
             OT_DEVICE,
             OT_ADDRESS_TABLE,
@@ -192,7 +202,7 @@ fn knxprod(path: &Path) -> anyhow::Result<()> {
 
 /// The model: 1.1.4 runs the app with object 2 on (the change), the archive
 /// stored in `products/` and pinned in `bussard.lock`. Returns its SHA-256.
-fn write_model(dir: &Path) -> anyhow::Result<String> {
+pub(super) fn write_model(dir: &Path) -> anyhow::Result<String> {
     std::fs::create_dir_all(dir.join("devices"))?;
     std::fs::create_dir_all(dir.join("products"))?;
     let archive = dir.join("products").join("flash-test.knxprod");
@@ -223,7 +233,7 @@ fn write_model(dir: &Path) -> anyhow::Result<String> {
     Ok(sha)
 }
 
-type Client = rmcp::service::RunningService<rmcp::RoleClient, ()>;
+pub(super) type Client = rmcp::service::RunningService<rmcp::RoleClient, ()>;
 
 /// Shrinks the management timeouts and the source-address probe for the mock
 /// device on loopback, as the CLI mock-device tests do.
@@ -240,7 +250,7 @@ fn fast_mock_timeouts() {
 /// A programming-tier server on `dir` against `gateway`, answering
 /// `knx_apply_device` at once (reply wait zero) so the job runs under
 /// `knx_apply_status`.
-async fn serve(
+pub(super) async fn serve(
     dir: &Path,
     gateway: &MockGateway,
 ) -> anyhow::Result<(Client, tokio::task::JoinHandle<()>)> {
@@ -279,7 +289,7 @@ async fn serve(
 }
 
 /// Calls one tool and returns its structured result.
-async fn call(client: &Client, tool: &str, args: Value) -> anyhow::Result<Value> {
+pub(super) async fn call(client: &Client, tool: &str, args: Value) -> anyhow::Result<Value> {
     let Value::Object(map) = args else {
         anyhow::bail!("tool arguments must be an object");
     };
@@ -293,7 +303,7 @@ async fn call(client: &Client, tool: &str, args: Value) -> anyhow::Result<Value>
 }
 
 /// The load events written to the application object, in order.
-fn app_load_events(dev: &MockDevice) -> Vec<u8> {
+pub(super) fn app_load_events(dev: &MockDevice) -> Vec<u8> {
     dev.requests
         .iter()
         .filter(|(apci, data)| {

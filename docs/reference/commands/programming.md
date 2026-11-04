@@ -516,7 +516,7 @@ The steps:
 1. Check that nothing answers at `ADDRESS`.
 2. Wait for the programming button, read the pressed device's order number, mask and application id, and print its [identity line](#one-identity-verdict).
 3. Ask once for confirmation, naming the gateway. Then assign the address (as `assign` does), flash the application with the model's parameters (as `flash` does; skipped with `--no-flash`), and apply the model's tables (as `apply` does).
-4. Record `replaced: <RFC3339>` in the device file with a one-line edit; the rest of the file is kept as it is.
+4. Record `replaced: <RFC3339>` in the device file with a one-line edit; the rest of the file is kept as it is. The new device's serial number goes into its `bussard.lock` entry, in place of the old one's.
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -538,6 +538,7 @@ Behaviour:
 - With `--no-flash`, refuses a device whose application id differs from the one `bussard.lock` pins, unless `--force`; drop `--no-flash` to flash it.
 - Adds no write of its own: each step is the `assign`, `flash` or `apply` path with its own verification.
 - If the flash or apply step fails, the address is already assigned; the error names the command to re-run.
+- In chat this is [`knx_replace_device`](../mcp-tools.md), on the same step machine.
 
 ## `bussard restart <ADDRESS>`
 
