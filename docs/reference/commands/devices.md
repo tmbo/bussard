@@ -23,8 +23,10 @@ Each row shows the individual address (IA, the device's `area.line.device` addre
 Behaviour:
 
 - Addresses are swept one at a time, one management connection at a time.
-- A Data Secure-activated device hides its mask from a plain read (mask `FFFF`). When the keyring lists the address, `scan` reads it over KNX Data Secure and shows the real mask; the row is marked `Data Secure activated` and JSON adds `"secure": "activated"`.
-- Without a tool key the row keeps mask `FFFF` with the label `Data Secure activated (mask hidden), no tool key in the keyring` and `"secure": "activated_no_key"`. A key the device does not accept gives `"secure": "key_refused"`.
+- The table has the columns Address, Product (manufacturer and order number), Serial number, Secure and In project; a column no device fills is left out. One summary line follows (devices found, addresses swept and how long it took, how many did not answer, how many are not in your project), then the devices of your project on this line that did not answer and the next steps. JSON keeps the mask, system type and `model_status`.
+- A serial number the scan saved to your project is marked `(saved)`, and a certificate it matched to the device is reported as `certificate for 1.1.3 attached`.
+- A Data Secure-activated device hides its mask from a plain read (mask `FFFF`). When the keyring lists the address, `scan` reads it over KNX Data Secure and shows the real mask; the Secure column shows a lock (`secure` without colour) and JSON adds `"secure": "activated"`.
+- Without a tool key the device keeps mask `FFFF`, the Secure column says `(no tool key)` and JSON gives `"secure": "activated_no_key"`. A key the device does not accept gives `(key refused)` and `"secure": "key_refused"`.
 - A plain device's row has no `secure` field.
 - `scan` never refuses a Data Secure device; it only labels it.
 - In chat, [`knx_find_devices`](../mcp-tools.md#tools) runs the same sweep as a job.

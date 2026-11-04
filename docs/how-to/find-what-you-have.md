@@ -86,19 +86,21 @@ It sends only management reads to single devices, never a group telegram, so no 
 
     ```console
     $ bussard scan 1.1
-    IA         MASK    SYSTEM     MANUFACTURER    ORDER             MODEL
-    1.1.1      07B0    System B   MDT             BE-06001.02       known
-    1.1.4      07B0    System B   Albrecht Jung   23024 1S R        known
-    1.1.47     07B0    System B   MDT             JAL-0810.03       NOT in model
+    Address  Product                   Serial number  Secure  In project
+    1.1.1    MDT BE-06001.02           0083000A1B2C           yes
+    1.1.4    Albrecht Jung 23024 1S R  00020011AB34   🔒      yes
+    1.1.47   MDT JAL-0810.03           0083001F00E1           no
 
-    3 device(s) responded
-    1 not in model
-    all model devices on this line responded
+    3 devices found · 256 addresses in 52 s · 253 did not answer within 3 s · 1 not in your project
+
+    Next steps
+      → bussard describe 1.1.47
+        shows what a device that is not in your project is
     ```
 
     Narrow the scan with `--from` and `--to` (device numbers 0 to 255). The line defaults to `1.1`.
 
-The summary is the point: which devices the model knows, which are unexpected, and which model devices did not answer. The scan probes one address at a time, because most gateways handle one device session at a time, so a full line can take a while.
+The summary is the point: which devices are in your project, which are not, and which devices of your project did not answer. A serial number the scan saved to your project is marked `(saved)`. Piped into a file or with `NO_COLOR` set, the output has no colour and the lock reads `secure`. The scan probes one address at a time, because most gateways handle one device session at a time, so a full line can take a while.
 
 ## Look inside one device
 

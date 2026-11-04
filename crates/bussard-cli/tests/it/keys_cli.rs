@@ -86,7 +86,11 @@ fn test_keys_import_show_export_round_trip() -> TestResult {
     assert_eq!(v["interfaces"][0]["user_id"], 2);
 
     let text = ok(&keys(&model, &["show"])?)?;
-    assert!(text.contains("1.1.10: tool key"), "{text}");
+    assert!(
+        text.lines()
+            .any(|l| l.contains("1.1.10") && l.contains("tool key")),
+        "{text}"
+    );
     assert_no_secrets(&text);
 
     // Export, then import the export into a second store (the reader
@@ -357,7 +361,7 @@ fn test_keys_add_certificate_stdin_statuses() -> TestResult {
 
     let show = ok(&keys(&model, &["show"])?)?;
     assert!(
-        show.contains("certificates without a device (serial numbers): 00FA01020304"),
+        show.contains("1 certificate with no device yet (serial numbers): 00FA01020304"),
         "{show}"
     );
 
@@ -372,7 +376,10 @@ fn test_keys_add_certificate_stdin_statuses() -> TestResult {
         Some(PASSWORD),
     )?;
     let text = ok(&out)?;
-    assert!(text.contains("0083A1B2C3D4 1.1.7: stored"), "{text}");
+    assert!(
+        text.contains("0083A1B2C3D4  added          for 1.1.7"),
+        "{text}"
+    );
     let store = bussard_project::KeyStore::load(&model, PASSWORD)?.ok_or("no store")?;
     let device = store.devices.get(&"1.1.7".parse()?).ok_or("no 1.1.7")?;
     assert_eq!(device.fdsk, Some(bussard_secure::Key16::new([0; 16])));

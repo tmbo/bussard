@@ -519,7 +519,7 @@ async fn adopt_flow(
     )?;
     println!("  wrote {}", path.display());
     if let Some(serial) = &verified.serial {
-        crate::keys_cmd::attach_learned_serials(dir, &[(target, serial.clone())], false);
+        crate::keys_cmd::attach_learned_serials(dir, &[(target, serial.clone())]).print(false);
     }
 
     // Step 4: links scaffolding (print only — the model stays untouched), or

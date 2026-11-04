@@ -24,17 +24,18 @@ use bussard_mgmt::{Timeouts, manufacturers, system_type};
 use bussard_model::IndividualAddress;
 use bussard_secure::Key16;
 use bussard_service::BusService;
-use bussard_service::identity;
+use bussard_service::identity::{self, SecureStatus};
 use bussard_service::scan::{self, LineRange, ScanReport, Sweep, SweepEvent};
 use bussard_service::secure::ToolKeys;
 use bussard_service::{L4Options, WritePolicy};
 
-pub(crate) use bussard_service::scan::{Found, secure_label};
+pub(crate) use bussard_service::scan::Found;
 
 use crate::assign_cmd::hex;
 use crate::conn_cmd::{
     ConnOverrides, checked_source_or_close, load_model_required, open_service, resolve_config,
 };
+use crate::style::{Cell, Style, Symbol, Table, Tone, count};
 
 /// The discovery timeout budget ([`scan::discovery_timeouts`]), honouring
 /// `BUSSARD_SCAN_DISCOVERY_MS` when set.
@@ -83,7 +84,7 @@ pub fn run(
     };
     let estimate = range.estimate();
     eprintln!(
-        "scanning line {area}.{line_no}.{from}–{to} sequentially — estimated up to {}m{:02}s on TP1",
+        "Scanning {area}.{line_no}.{from} to {area}.{line_no}.{to}, one address at a time (up to {} min {} s).",
         estimate.as_secs() / 60,
         estimate.as_secs() % 60
     );
@@ -112,6 +113,7 @@ pub fn run(
     })?;
 
     let timing = swept.timing_json();
+    let stats = SweepStats::of(&swept);
     let mut report = scan::cross_reference(swept.found, model.as_ref());
     // The identity verdict per device, against the lock and the stored facts
     // (issue #228, item 5); stale facts are dropped for the next connection.
@@ -136,12 +138,19 @@ pub fn run(
         .iter()
         .filter_map(|f| Some((f.address, f.serial.clone()?, f.identity.as_ref()?.verdict)))
         .collect();
-    crate::keys_cmd::learn_serials(dir, model.as_ref(), &serials, json);
+    let news = crate::keys_cmd::learn_serials(dir, model.as_ref(), &serials);
 
     if json {
+        news.print(true);
+        let style = crate::style::Style::stderr();
+        eprintln!("{}", stats.summary(report.found.len(), &report, style));
         print_json(&report, timing)?;
     } else {
-        print_table(&report);
+        news.print_warnings();
+        print!(
+            "{}",
+            render_report(&report, &news, &stats, range, crate::style::Style::stdout())
+        );
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -164,11 +173,10 @@ async fn sweep(
     })
     .await;
     display.finish();
-    eprintln!(
-        "\rscan complete: {} device(s) found; {}",
-        swept.found.len(),
-        swept.summary()
-    );
+    if matches!(display, crate::progress::SweepDisplay::Plain { .. }) {
+        // End the progress line the plain display rewrites in place.
+        eprintln!();
+    }
     swept
 }
 
@@ -208,76 +216,245 @@ pub(crate) fn parse_line(line: &str) -> anyhow::Result<(u8, u8)> {
     Ok(scan::parse_line(line)?)
 }
 
-/// Prints the aligned table plus a summary.
-fn print_table(report: &ScanReport) {
-    if report.found.is_empty() {
-        println!("no devices responded");
-    } else {
-        // Precompute the model-status column when a model is loaded.
-        println!(
-            "{:<9}  {:<6}  {:<9}  {:<14}  {:<16}  {:<5}",
-            "IA", "MASK", "SYSTEM", "MANUFACTURER", "ORDER", "MODEL"
-        );
-        for f in &report.found {
-            let manufacturer = f
-                .manufacturer_id
-                .map(manufacturers::display)
-                .unwrap_or_else(|| "-".to_string());
-            let order = f.order.clone().unwrap_or_else(|| "-".to_string());
-            let status = if !report.have_model {
-                "-".to_string()
-            } else if report.not_in_model.contains(&f.address) {
-                "NOT in model".to_string()
-            } else {
-                "known".to_string()
-            };
-            let system = f.system_type();
-            let label = secure_label(f.secure)
-                .map(|l| format!("  {l}"))
-                .unwrap_or_default();
-            println!(
-                "{:<9}  {:04X}    {:<9}  {:<14}  {:<16}  {}{label}",
-                f.address.to_string(),
-                f.mask,
-                system,
-                manufacturer,
-                order,
-                status
-            );
+/// The sweep's counts for the summary line (issue #792).
+#[derive(Debug, Clone, Copy, Default)]
+struct SweepStats {
+    /// Addresses probed.
+    addresses: usize,
+    /// The sweep's wall-clock time.
+    elapsed: std::time::Duration,
+    /// Addresses the interface reported absent at once.
+    absent_at_once: usize,
+    /// Addresses that did not answer within the budget.
+    absent_timeout: usize,
+    /// Addresses that refused the connection.
+    refused: usize,
+    /// How long one address is waited for.
+    budget: std::time::Duration,
+}
+
+impl SweepStats {
+    /// The counts of `swept` under the discovery timeouts.
+    fn of(swept: &Sweep) -> SweepStats {
+        use bussard_service::identity::ProbeMiss;
+        let timeouts = discovery_timeouts();
+        SweepStats {
+            addresses: swept.timings.len(),
+            elapsed: swept.elapsed,
+            absent_at_once: swept.count(ProbeMiss::NegativeConfirmation),
+            absent_timeout: swept.count(ProbeMiss::Timeout),
+            refused: swept.count(ProbeMiss::Refused),
+            budget: timeouts.ack_timeout * (timeouts.max_repetitions + 1),
         }
     }
 
-    println!();
-    println!("{} device(s) responded", report.found.len());
-    for f in &report.found {
-        if let Some(check) = f.identity.as_ref().filter(|c| c.is_drift()) {
-            println!("{}", crate::device_facts::identity_line(f.address, check));
-        }
-    }
-    for f in &report.found {
-        if let Some(check) = f.identity.as_ref().filter(|c| c.is_drift()) {
-            println!("{}", crate::device_facts::identity_line(f.address, check));
-        }
-    }
-    if report.have_model {
-        if report.model_device_count == 0 {
-            // A model loaded but has no device inventory: the cross-reference is
-            // vacuous. Say so rather than the misleading "all responded" (#30).
-            println!(
-                "model has no device inventory (no devices/*.toml); cannot cross-reference — run `bussard import` or add device files"
-            );
-        } else {
-            println!("{} not in model", report.not_in_model.len());
-            if report.missing.is_empty() {
-                println!("all model devices on this line responded");
+    /// "46 devices found · 256 addresses in 52 s · 202 did not answer within
+    /// 3 s", plus how many are not in the project.
+    fn summary(&self, found: usize, report: &ScanReport, style: Style) -> String {
+        let absent = self.absent_at_once + self.absent_timeout;
+        let mut parts = vec![
+            (
+                format!("{} found", count(found, "device", "devices")),
+                if found == 0 { Tone::Warn } else { Tone::Ok },
+            ),
+            (
+                format!(
+                    "{} in {}",
+                    count(self.addresses, "address", "addresses"),
+                    seconds(self.elapsed)
+                ),
+                Tone::Plain,
+            ),
+        ];
+        if absent > 0 {
+            let within = if self.absent_timeout > 0 {
+                format!(" within {}", seconds(self.budget))
             } else {
-                println!("{} model device(s) did NOT respond:", report.missing.len());
-                for (addr, name) in &report.missing {
-                    println!("  {addr}  {name}");
-                }
+                String::new()
+            };
+            parts.push((format!("{absent} did not answer{within}"), Tone::Dim));
+        }
+        if self.refused > 0 {
+            parts.push((
+                format!("{} refused the connection", self.refused),
+                Tone::Warn,
+            ));
+        }
+        if report.have_model && !report.not_in_model.is_empty() {
+            parts.push((
+                format!("{} not in your project", report.not_in_model.len()),
+                Tone::Warn,
+            ));
+        }
+        style.summary(&parts)
+    }
+}
+
+/// `52 s`, `3 s`, `0.4 s`, `40 ms`: whole seconds from ten seconds up,
+/// tenths below, milliseconds under one second.
+fn seconds(duration: std::time::Duration) -> String {
+    let secs = duration.as_secs_f64();
+    if duration.as_secs() == 0 && duration.subsec_millis() < 100 {
+        format!("{} ms", duration.as_millis())
+    } else if secs >= 10.0 || duration.subsec_millis() == 0 {
+        format!("{} s", secs.round())
+    } else {
+        format!("{secs:.1} s")
+    }
+}
+
+/// The product of a found device: manufacturer and order number.
+fn product(f: &Found) -> String {
+    let manufacturer = f.manufacturer_id.map(manufacturers::display);
+    match (manufacturer, f.order.as_deref()) {
+        (Some(m), Some(o)) => format!("{m} {o}"),
+        (Some(m), None) => m,
+        (None, Some(o)) => o.to_string(),
+        (None, None) => String::new(),
+    }
+}
+
+/// The Secure cell of a found device, and the sentence that explains a
+/// secured device bussard could not read.
+fn secure_cell(f: &Found, style: Style) -> (Cell, Option<String>) {
+    let lock = style.symbol(Symbol::Secured);
+    match f.secure {
+        SecureStatus::Plain => (Cell::default(), None),
+        SecureStatus::Activated => (Cell::plain(lock), None),
+        SecureStatus::ActivatedNoKey => (
+            Cell::new(format!("{lock} (no tool key)"), Tone::Warn),
+            Some(format!(
+                "{} is secured and bussard has no tool key for it, so its product was not read",
+                f.address
+            )),
+        ),
+        SecureStatus::KeyRefused => (
+            Cell::new(format!("{lock} (key refused)"), Tone::Error),
+            Some(format!(
+                "{} is secured and did not accept the tool key bussard has for it",
+                f.address
+            )),
+        ),
+    }
+}
+
+/// The scan's text report: the table, the notes, the summary line, the
+/// devices of the project that did not answer and the next steps.
+fn render_report(
+    report: &ScanReport,
+    news: &crate::keys_cmd::SerialNews,
+    stats: &SweepStats,
+    range: LineRange,
+    style: Style,
+) -> String {
+    let mut headers = vec!["Address", "Product", "Serial number", "Secure"];
+    if report.have_model {
+        headers.push("In project");
+    }
+    let mut table = Table::new(&headers);
+    let mut notes = Vec::new();
+    let mut secured_without_key = false;
+    for f in &report.found {
+        let serial = match f.serial.as_deref() {
+            Some(bytes) if news.saved(f.address) => {
+                Cell::new(format!("{} (saved)", hex(bytes).to_uppercase()), Tone::Ok)
+            }
+            Some(bytes) => Cell::plain(hex(bytes).to_uppercase()),
+            None => Cell::new(style.symbol(Symbol::Missing), Tone::Dim),
+        };
+        let product = match product(f) {
+            p if p.is_empty() => Cell::new(style.symbol(Symbol::Missing), Tone::Dim),
+            p => Cell::plain(p),
+        };
+        let (secure, note) = secure_cell(f, style);
+        secured_without_key |= f.secure == SecureStatus::ActivatedNoKey;
+        notes.extend(note.map(|n| style.warn(&n)));
+        let mut row = vec![Cell::plain(f.address.to_string()), product, serial, secure];
+        match report.known(f.address) {
+            Some(true) => row.push(Cell::new("yes", Tone::Ok)),
+            Some(false) => row.push(Cell::new("no", Tone::Warn)),
+            None => {}
+        }
+        table.row(row);
+    }
+    for f in &report.found {
+        if let Some(check) = f.identity.as_ref().filter(|c| c.is_drift()) {
+            notes.push(style.warn(&crate::device_facts::identity_line(f.address, check)));
+        }
+    }
+    notes.extend(news.lines(style));
+
+    let mut out = String::new();
+    if !table.is_empty() {
+        out.push_str(&table.render(style));
+        out.push('\n');
+    }
+    for note in &notes {
+        out.push_str(note);
+        out.push('\n');
+    }
+    if !notes.is_empty() {
+        out.push('\n');
+    }
+    out.push_str(&stats.summary(report.found.len(), report, style));
+    out.push('\n');
+
+    let mut steps: Vec<(String, String)> = Vec::new();
+    if report.have_model && report.model_device_count == 0 {
+        // A project without devices: the cross-reference is vacuous (#30).
+        steps.push((
+            "bussard import <FILE>".to_string(),
+            "your project has no devices yet; this brings in the devices of an ETS project"
+                .to_string(),
+        ));
+    } else if report.have_model {
+        let missing: Vec<&(IndividualAddress, String)> = report
+            .missing
+            .iter()
+            .filter(|(a, _)| range.contains(*a))
+            .collect();
+        if !missing.is_empty() {
+            let mut silent = Table::new(&["Address", "Name"]);
+            for (address, name) in &missing {
+                silent.row(vec![
+                    Cell::plain(address.to_string()),
+                    Cell::plain(name.as_str()),
+                ]);
+            }
+            out.push_str(&format!(
+                "\n{}\n",
+                style.bold(&format!(
+                    "{} in your project did not answer",
+                    count(missing.len(), "device", "devices")
+                ))
+            ));
+            for line in silent.render(style).lines() {
+                out.push_str(&format!("  {line}\n"));
             }
         }
+        if let Some(first) = report.not_in_model.first() {
+            steps.push((
+                format!("bussard describe {first}"),
+                "shows what a device that is not in your project is".to_string(),
+            ));
+        }
     }
+    if secured_without_key {
+        steps.push((
+            "bussard keys import <FILE>".to_string(),
+            "adds the tool keys of secured devices from an ETS keyring export".to_string(),
+        ));
+    }
+    let steps: Vec<(&str, &str)> = steps
+        .iter()
+        .map(|(c, w)| (c.as_str(), w.as_str()))
+        .collect();
+    let block = style.next_steps(&steps);
+    if !block.is_empty() {
+        out.push('\n');
+        out.push_str(&block);
+    }
+    out
 }
 
 /// Prints a stable JSON array of the discovered devices plus the model delta
@@ -415,6 +592,95 @@ mod tests {
             secure: SecureStatus::Plain,
             identity: None,
         }
+    }
+
+    fn report_with_secure_devices() -> ScanReport {
+        let model = model_with_devices(&["1.1.4", "1.1.12"]);
+        let mut plain = found_at("1.1.4");
+        plain.manufacturer_id = Some(0x0083);
+        plain.order = Some("JAL-0410.01".to_string());
+        plain.serial = Some(vec![0x00, 0xFA, 0x01, 0x02, 0x03, 0x04]);
+        let mut secured = found_at("1.1.10");
+        secured.secure = SecureStatus::Activated;
+        let mut hidden = found_at("1.1.12");
+        hidden.mask = 0xFFFF;
+        hidden.secure = SecureStatus::ActivatedNoKey;
+        scan::cross_reference(vec![plain, secured, hidden], Some(&model))
+    }
+
+    fn stats() -> SweepStats {
+        SweepStats {
+            addresses: 256,
+            elapsed: std::time::Duration::from_millis(52_200),
+            absent_at_once: 0,
+            absent_timeout: 202,
+            refused: 0,
+            budget: std::time::Duration::from_secs(3),
+        }
+    }
+
+    fn range() -> LineRange {
+        LineRange {
+            area: 1,
+            line: 1,
+            from: 0,
+            to: 255,
+        }
+    }
+
+    #[test]
+    fn test_render_report_plain_marks_secure_and_saved() {
+        let report = report_with_secure_devices();
+        let news = crate::keys_cmd::SerialNews {
+            saved: vec![(ia("1.1.4"), "00FA01020304".to_string())],
+            attached: vec![ia("1.1.4")],
+            ..Default::default()
+        };
+        let text = render_report(&report, &news, &stats(), range(), Style::plain());
+        assert_eq!(
+            text,
+            "Address  Product          Serial number         Secure                In project\n\
+             1.1.4    MDT JAL-0410.01  00FA01020304 (saved)                        yes\n\
+             1.1.10   -                -                     secure                no\n\
+             1.1.12   -                -                     secure (no tool key)  yes\n\
+             \n\
+             1.1.12 is secured and bussard has no tool key for it, so its product was not read\n\
+             certificate for 1.1.4 attached\n\
+             \n\
+             3 devices found, 256 addresses in 52 s, 202 did not answer within 3 s, 1 not in your project\n\
+             \n\
+             Next steps\n  \
+             > bussard describe 1.1.10\n    \
+             shows what a device that is not in your project is\n  \
+             > bussard keys import <FILE>\n    \
+             adds the tool keys of secured devices from an ETS keyring export\n"
+        );
+    }
+
+    #[test]
+    fn test_render_report_colour_uses_lock_and_tones() {
+        let report = report_with_secure_devices();
+        let text = render_report(
+            &report,
+            &crate::keys_cmd::SerialNews::default(),
+            &stats(),
+            range(),
+            Style::rich(),
+        );
+        assert!(text.contains('\u{1F512}'), "{text}");
+        assert!(!text.contains("secure (no tool key)"), "{text}");
+        assert!(text.contains(" \u{00B7} "), "{text}");
+        assert!(text.contains("\u{1b}[32m"), "green: {text:?}");
+        assert!(text.contains("\u{1b}[33m"), "yellow: {text:?}");
+    }
+
+    #[test]
+    fn test_seconds_rounds_by_size() {
+        use std::time::Duration;
+        assert_eq!(seconds(Duration::from_millis(52_200)), "52 s");
+        assert_eq!(seconds(Duration::from_secs(3)), "3 s");
+        assert_eq!(seconds(Duration::from_millis(400)), "0.4 s");
+        assert_eq!(seconds(Duration::from_millis(40)), "40 ms");
     }
 
     /// The live shape from issue #30: a 46-device model is loaded and exactly

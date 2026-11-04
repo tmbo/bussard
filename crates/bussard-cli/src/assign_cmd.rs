@@ -256,7 +256,7 @@ async fn assign_flow(
     // A certificate entered before the device had an address (issue #728):
     // its factory key moves to the new address now that the serial is known.
     if let Some(serial) = &verified.serial {
-        crate::keys_cmd::attach_learned_serials(dir, &[(target, serial.clone())], json);
+        crate::keys_cmd::attach_learned_serials(dir, &[(target, serial.clone())]).print(json);
     }
 
     // 6. Create the stub device file; the lock records the serial (#752).
