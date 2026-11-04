@@ -9,7 +9,7 @@ Every device write follows the same order: read the live state, show the plan, a
 
 ## `bussard plan <ADDRESS>`
 
-Show what `apply` would write, without writing anything. `plan` reads the device's tables and, when product data is at hand, its parameter memory, and compares both with the model.
+Show what `apply` would write, without writing anything. `plan` reads the device's tables and, when product data is at hand, its parameter memory, and compares both with the project.
 
 ```console
 $ bussard plan 1.1.47
@@ -28,7 +28,7 @@ The plan speaks the device file's words, grouped by channel. `+` is a link the d
 | Flag | Default | Meaning |
 |---|---|---|
 | `<ADDRESS>` | | The device to plan for, e.g. `1.1.4`. Omit with `--line`. |
-| `--line <LINE>` | | Plan every model device on this line, e.g. `1.1`, in address order (see [whole-line runs](#whole-line-runs)). |
+| `--line <LINE>` | | Plan every device of the project on this line, e.g. `1.1`, in address order (see [whole-line runs](#whole-line-runs)). |
 | `--product <FILE>` | pinned archive | The product data to compare the parameter memory with (see [parameter read-back](#parameter-read-back)). Without it, the archive `bussard.lock` pins for the device in `<dir>/products/` is used. A pinned archive that is missing or changed prints a warning, and the parameters are not read. |
 | `--application <REF>` | the lock's program | The application program id to decode with. |
 | `--keyring <FILE>` | the key store | The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool key, as for `reconstruct`. With `--line`, each device's key is looked up in it. |
@@ -39,7 +39,7 @@ The plan speaks the device file's words, grouped by channel. `+` is a link the d
 Behaviour:
 
 - Read-only on the bus.
-- Refuses to compute an empty table set for a device with no links in the model, because applying it would wipe the device. A KNX IP interface is the exception (see [KNX IP interfaces](#knx-ip-interfaces)).
+- Refuses to compute an empty table set for a device with no links in the project, because applying it would wipe the device. A KNX IP interface is the exception (see [KNX IP interfaces](#knx-ip-interfaces)).
 - Supports System B (`x7B0`) and System 7 (`0705`, `0701`, `0700`). On other masks it refuses.
 - Parameters are compared only when product data is at hand; without it a `note:` line says so.
 - Prints the device's [identity verdict](#one-identity-verdict) against `bussard.lock` as part of the report.
@@ -62,7 +62,7 @@ Every verified secured write of the security object records the PID 54 table it 
 
 ### A group address that leaves or joins Data Secure
 
-On a KNX Data Secure System B device read with a tool key, `plan` and `apply` also read the group-object security flags (PID 61) and compare them with what the model and the key store ask for. A difference is one change with `subject` `security`:
+On a KNX Data Secure System B device read with a tool key, `plan` and `apply` also read the group-object security flags (PID 61) and compare them with what the project and the key store ask for. A difference is one change with `subject` `security`:
 
 ```text
 - security object: Data Secure off for 1/0/4 (Licht Küche): its group key leaves the group key table (PID 53) and object 12 loses its security flag (PID 61 0x03 to 0x00)
@@ -70,7 +70,7 @@ On a KNX Data Secure System B device read with a tool key, `plan` and `apply` al
 
 or `+ … Data Secure on for …`, with `writes.security_object` `true`. Applying it rewrites the tables and the whole security object, as a full ETS download does, and records the flags in the lock. A device that refuses or does not answer the PID 61 read shows no such change; the write still programs the whole object. `bussard flash` prints the same line from its pre-flight, and `flash --json` carries it as `security_object` (`line`, `mark`, `subject`, `sentence`). See [`groups secure`](secure.md).
 
-A plan keeps the flags it read in the device facts (`.bussard/`). The next plan uses them instead of reading PID 61 when the model and the key store ask for exactly those flags, so a plan with no security change pending costs no PID 61 read. A pending change, `--refresh-facts`, every `apply` and every `flash` read the device; an `apply` or `flash` drops the kept flags.
+A plan keeps the flags it read in the device facts (`.bussard/`). The next plan uses them instead of reading PID 61 when the project and the key store ask for exactly those flags, so a plan with no security change pending costs no PID 61 read. A pending change, `--refresh-facts`, every `apply` and every `flash` read the device; an `apply` or `flash` drops the kept flags.
 
 ### KNX IP interfaces
 
@@ -90,7 +90,7 @@ A device whose file has a `[knxnet]` table and no links is planned as its KNXnet
 - A property the device does not serve refuses the plan.
 - A different number of tunnel addresses needs a device description that calls PID 53 writable with room for them. Otherwise the plan refuses and asks for exactly as many addresses as the device holds.
 - `apply` refuses to change the IP assignment or static address set of the interface the command tunnels through, and any write of its tunnel addresses, unless `--allow-self-reconfigure`. The tunnel drops once the interface applies an IP change, the interface may drop its open tunnels on a tunnel-address write, and the read-back may not reach it. The MCP tools refuse both outright.
-- After the writes, every written property is read back and the whole object read again. `apply verified` means both match the model.
+- After the writes, every written property is read back and the whole object read again. `apply verified` means both match the project.
 - The values before the write go to `<dir>/captures/backups/<ia>-knxnet-<unix seconds>.toml` as a pasteable `[knxnet]` table.
 - No KNXnet/IP Secure property is read or written; use [`interface secure`](secure.md) for that.
 
@@ -99,7 +99,7 @@ A device whose file has a `[knxnet]` table and no links is planned as its KNXnet
 
 ## `bussard apply <ADDRESS>`
 
-Write the model to one device: its link tables and the parameter octets that differ. `apply` is the one verb for everyday changes, links and parameters alike.
+Write the project to one device: its link tables and the parameter octets that differ. `apply` is the one verb for everyday changes, links and parameters alike.
 
 ```console
 $ bussard apply 1.1.47
@@ -110,7 +110,7 @@ apply these 3 changes to 1.1.47 through 192.0.2.10:3671? [y/N]
 
 The output above is illustrative: the plan is the one [`plan`](#bussard-plan-address) prints. The steps:
 
-1. Validate the model. An error stops here with the diagnostics and nothing is written; warnings do not block. A group address the device files use but `groups.toml` does not define is declared there first.
+1. Validate the project. An error stops here with the diagnostics and nothing is written; warnings do not block. A group address the device files use but `groups.toml` does not define is declared there first.
 2. Read the device's live tables and, when product data is at hand, its parameter memory, over one management session.
 3. Print the plan and ask once. An empty plan prints `1.1.47 matches your project; nothing to write` and asks nothing.
 4. Back up the pre-state tables to `<dir>/captures/backups/<ia>-<timestamp>.json` (the format `backup` and `restore` share) and, when parameters change, the parameter memory to `<dir>/captures/backups/parameters/`.
@@ -119,7 +119,7 @@ The output above is illustrative: the plan is the one [`plan`](#bussard-plan-add
 | Flag | Default | Meaning |
 |---|---|---|
 | `<ADDRESS>` | | The device to program, e.g. `1.1.4`. Omit with `--line`. |
-| `--line <LINE>` | | Apply to every model device on this line, e.g. `1.1`, in address order (see [whole-line runs](#whole-line-runs)). |
+| `--line <LINE>` | | Apply to every device of the project on this line, e.g. `1.1`, in address order (see [whole-line runs](#whole-line-runs)). |
 | `--resume` | off | Line mode only: continue the run recorded in `<dir>/captures/apply-line-<line>.json`, skipping the devices it finished. |
 | `--json` | off | Line mode only: emit the summary as JSON. |
 | `--yes` | off | Skip the confirmation prompt. Without a terminal the command is refused unless this is given. |
@@ -127,14 +127,14 @@ The output above is illustrative: the plan is the one [`plan`](#bussard-plan-add
 | `--force` | off | Single-device mode: use a `--product` or `--application` that contradicts `bussard.lock` (another archive hash, another application). The archive is then pinned for the device. Without it such an override is refused before any bus access. |
 | `--product <FILE>` | pinned archive | Single-device mode: the product data to compare and write the parameter memory with. Default: the archive `bussard.lock` pins for the device in `<dir>/products/`. |
 | `--application <REF>` | the lock's program | Single-device mode: the application program id to decode the parameters with. |
-| `--keyring <FILE>` | the key store | KNX Data Secure tool keys and group keys. A device the keyring lists is written over Data Secure and its security object is rewritten with the tables. |
+| `--keyring <FILE>` | the key store | KNX Data Secure tool keys and group keys. A device the key store (or keyring) lists is written over Data Secure and its security object is rewritten with the tables. |
 | `--tool-key <HEX>` | | The raw 32-hex-character tool key, for a simulator or bench device. Conflicts with `--keyring`. |
 | `--secure-sender <IA>` | off | Single-device mode, Data Secure: add this address (bussard's tunnel address) with sequence 0 to the security individual address table (PID 54), as for `flash`. Conflicts with `--line`. |
 | `--allow-self-reconfigure` | off | A KNX IP interface (see [KNX IP interfaces](#knx-ip-interfaces)): write a change of its IP assignment, static address set or tunnel addresses although bussard tunnels through that interface. The tunnel drops (or, for tunnel addresses, may drop) when the interface applies it. Conflicts with `--line`. |
 
 Behaviour:
 
-- Refuses on a model validation error, before the bus is touched.
+- Refuses on a project validation error, before the bus is touched.
 - Refuses before any bus access when the pinned archive is missing or changed, naming the recovery step, and when a `--product` or `--application` contradicts the lock without `--force`.
 - Refuses a device whose application id or mask [drifted](#one-identity-verdict) from `bussard.lock`, before any write, naming the `bussard flash` it needs.
 - Refuses without a terminal unless `--yes`. `--yes` never lifts the real-gateway gate.
@@ -143,29 +143,29 @@ Behaviour:
 - A parameter change that shows or hides a com-object changes the group-object table, which a parameter download does not rewrite. `apply` refuses that device and names the full [`bussard flash <ia>`](#bussard-flash-address) it needs. Enable flags and data-length choices are often such parameters. Over MCP with `--allow-programming`, `knx_plan_device` plans such a change as `method: flash` and `knx_apply_device` runs that flash.
 - A device that runs another application than the product data describes gets its links written and its parameters left alone, with a note that a full `flash` changes the application.
 - An octet the configuration places no parameter in is left as the device holds it, as ETS's download does (see [the write set](#parameter-only-download)).
-- A group address the model marks `secure` without a key in the keyring refuses the plan.
+- A group address the project marks `secure` without a key in the key store or keyring refuses the plan.
 - Tables are rewritten wholesale, so re-running `apply` is idempotent.
 - Prints a hint while no installation-wide `backup` run exists.
 - Authorizes with the free-access key only, so a device with a BCU key set denies it.
-- To go back: re-apply from the model, or `bussard restore <dir>/captures/backups <ADDRESS>`. `restore --parameters` puts backed-up parameter memory back.
+- To go back: re-apply from the project, or `bussard restore <dir>/captures/backups <ADDRESS>`. `restore --parameters` puts backed-up parameter memory back.
 
 ??? note "Details"
     System B (`x7B0`): each table is written into a segment the device allocates for it: StartLoading, `LdCtrlRelSegment`, read the placement from `PID_TABLE_REFERENCE`, memory-write the count word plus the elements, LoadCompleted. The `PID_TABLE` property array is never written, because real devices refuse it. With product data, a group-object table that differs from the one a full flash writes (a newly linked object whose communication flag is off) is reloaded first the same way, from the full flash's image, and read back. A parameter change then runs the parameter-only download: the standard's partial download of the parameter object (unload, load, a Mode 0 re-allocation that keeps the memory, the differing octets), then the load completes and the device restarts.
 
-    System 7 (`0705`, `0701`, `0700`): a link change follows ETS 6.4.1's table-only download: Unload LSM 1 and 2, then each table loaded to completion in turn (StartLoading, the product's allocation record for the whole table segment, 12-octet writes with read-back verify, TaskSegment, LoadCompleted), then a basic restart. Parameters and the application are not rewritten. `apply` waits for the device to answer again after the restart and reads the tables back from the restarted device. The address table is written alone, bounded by its segment, and without its first entry (the device's own address), which ETS never writes either; when the segment's end is unknown (no product data, and no association table the device reports), the table is not grown. With product data, the group-object table the product declares is rewritten whole inside a StartLoading/LoadCompleted bracket on LSM 3 and read back, as ETS does on every table download: the communication flag of each object that gains its first link is switched on, and of each object that loses its last link switched off. A device ignores an object whose flag is off, so without product data `plan` names the newly linked objects whose flag it could not check. A device ignores an object whose flag is off, so without product data `plan` names the newly linked objects whose flag it could not check.
+    System 7 (`0705`, `0701`, `0700`): a link change follows ETS 6.4.1's table-only download: Unload LSM 1 and 2, then each table loaded to completion in turn (StartLoading, the product's allocation record for the whole table segment, 12-octet writes with read-back verify, TaskSegment, LoadCompleted), then a basic restart. Parameters and the application are not rewritten. `apply` waits for the device to answer again after the restart and reads the tables back from the restarted device. The address table is written alone, bounded by its segment, and without its first entry (the device's own address), which ETS never writes either; when the segment's end is unknown (no product data, and no association table the device reports), the table is not grown. With product data, the group-object table the product declares is rewritten whole inside a StartLoading/LoadCompleted bracket on LSM 3 and read back, as ETS does on every table download: the communication flag of each object that gains its first link is switched on, and of each object that loses its last link switched off. A device ignores an object whose flag is off, so without product data `plan` names the newly linked objects whose flag it could not check.
 
     With `--keyring`, `apply` rewrites the security object next to the tables, because the group key table indexes the address table.
 
 ### Whole-line runs
 
-`plan --line` and `apply --line` visit the model's devices on one line in address order and end with one summary table: address, name, mask and status.
+`plan --line` and `apply --line` visit the project's devices on one line in address order and end with one summary table: address, name, mask and status.
 
 | Status | Meaning |
 |---|---|
 | `changes: N` | `plan`: N changes would be written. |
 | `applied: N` | `apply`: N changes were written and verified. |
-| `unchanged` | The device already matches the model. |
-| `skipped: <reason>` | An unsupported mask, or no links in the model. |
+| `unchanged` | The device already matches the project. |
+| `skipped: <reason>` | An unsupported mask, or no links in the project. |
 | `failed: <reason>` | The device could not be read or written. |
 
 - Neither a skip nor a failure stops the run. The exit code is non-zero if any device failed.
@@ -201,7 +201,7 @@ The pre-flight report leads with one line per parameter the flash changes, named
 | `--force` | off | Flash a device that is **not** factory-fresh: it carries a different or unidentifiable application, or its load state could not be read. Destructive: the resident application, its parameters and its links are overwritten with no backup. Not needed to re-flash the same application. Also accepts a `--product` or `--application` that contradicts the lock. |
 | `--full` | off | Skip nothing: re-stream every object. By default, when the device already carries the same application (or none), an object whose resident image matches and which reports `Loaded` is skipped, and the output lists each skipped step. A parameter-only change then re-downloads the parameter segment but not the code segment. On System 7 (mask 0701/0705) it also first unloads load-state machines 1 to 4 and restarts the device, as ETS does after its Unload command; a plain flash sends neither, like ETS's application download. |
 | `--parameters-only` | off | Rewrite only the parameter memory of a device that already runs this application (see [parameter-only download](#parameter-only-download)). Conflicts with `--full`, `--force` and `--no-factory-reset`. With `--dry-run` it prints the op sequence offline. |
-| `--no-factory-reset` | off | Leave out the factory reset (secure-capable System B applications). Use this only when you know the device holds no stale image, for example a device fresh from the box. |
+| `--no-factory-reset` | off | Leave out the factory reset (System B applications that support Secure). Use this only when you know the device holds no stale image, for example a device fresh from the box. |
 | `--bcu-key <HEX>` | free access | The device's BCU access key, in hex (`FFFFFFFF` or `0x11223344`). Unset presents the free-access key `FFFFFFFF`, correct for an unkeyed device; a keyed device needs its project key here or it denies access. |
 | `--keyring <FILE>` | the key store | KNX Data Secure: the tool key and group keys. With it, `flash` also programs the device's security object. |
 | `--tool-key <HEX>` | | The raw 32-hex-character tool key, for a simulator or bench device. Conflicts with `--keyring`; unsuitable for a real key, because process arguments are visible. Carries no group keys, so it only suits a device without secured group addresses. |
@@ -220,10 +220,10 @@ Behaviour:
 - Prints the device's [identity verdict](#one-identity-verdict) but does not refuse on drift: a flash is how drift is fixed. The factory-freshness check decides instead.
 - The parameter memory image is the vendor defaults plus the parameter values in the device file, so a flash also carries parameter changes.
 - No backup exists for a flash. Recovery from a failed or interrupted flash is re-running the same `flash`; if that does not recover the device, download it with ETS. Do not assume a device works until a flash reports the application `Loaded` and verified.
-- A group address the model marks `secure` without a key in the keyring refuses the plan before anything is written.
+- A group address the project marks `secure` without a key in the key store or keyring refuses the plan before anything is written.
 - Verifies after writing: the application reads back as `Loaded`, and written segments are spot-checked byte for byte.
 - Only `flash` takes `--bcu-key`; `plan`, `apply` and `reconstruct` always present the free-access key.
-- Activating Data Secure on a device (turning it on, writing the tool key) is ETS's job. bussard programs devices ETS has activated.
+- Securing a device (turning Data Secure on, writing the tool key) is ETS's job. bussard programs devices ETS has secured.
 
 ### The factory-freshness check
 
@@ -238,26 +238,26 @@ Because there is no backup, `flash` checks in its read-only pre-flight that the 
 | An application loaded that it cannot identify | **Refuses**; `--force` overrides. |
 | A load state it cannot read at all | **Refuses** as unknown; `--force` overrides. |
 
-- A refusal names the device, the resident application and the two ways forward: capture what is on the device first (`reconstruct` reads its links into the model, `apply` backs up the tables), or re-run with `--force`.
+- A refusal names the device, the resident application and the two ways forward: capture what is on the device first (`reconstruct` reads its links into the project, `apply` backs up the tables), or re-run with `--force`.
 - `--force` prints one loud line naming the device, the gateway and what is destroyed, and the confirmation prompt repeats it.
 - Unreadable is not fresh: a device that refuses the state reads is refused.
-- Re-flashing the same application is still a full rewrite: the parameters are reset to the vendor defaults plus the device file's values, and the tables are rewritten from the model's links.
+- Re-flashing the same application is still a full rewrite: the parameters are reset to the vendor defaults plus the device file's values, and the tables are rewritten from the project's links.
 - On a System B device that already holds the same application, `flash` runs the product's `par` load procedure, as ETS does: the application segment is allocated without the fill flag (its memory is kept, then written in full), an object the procedure does not load gets no unload when it reads Unloaded, and the download opens with no factory reset. A device that holds another application, or none, gets the `full` procedure. `plan.json` from `--dump-images` names it in `"load_procedure"`.
 - A loaded System 7 device is asked for `PID_PROGRAM_VERSION` of its application object. An id that names another application is refused by that id. A matching id, or none (the property is optional there), leaves the decision to the code sample below.
 
 ### The factory reset (System B)
 
-Many System B applications allocate their segment with a fill byte, and bussard, like ETS, writes only the octets that differ from it. The fill does not erase anything, so a re-flash would keep the previous image's octets wherever the new one writes nothing. So `flash` starts such a download of a secure-capable application (one whose product data declares `IsSecureEnabled`) the way ETS unloads one, with a factory reset that keeps the individual address. ETS never sends a master reset to an application that is not secure-capable, so neither does `flash`: such a download starts with its load procedure's own unloads.
+Many System B applications allocate their segment with a fill byte, and bussard, like ETS, writes only the octets that differ from it. The fill does not erase anything, so a re-flash would keep the previous image's octets wherever the new one writes nothing. So `flash` starts such a download of an application that supports Secure (one whose product data declares `IsSecureEnabled`) the way ETS unloads one, with a factory reset that keeps the device's address. ETS never sends a master reset to an application that does not support Secure, so neither does `flash`: such a download starts with its load procedure's own unloads.
 
-- The device erases its application, its parameters and its group addresses and links, keeps its individual address, and reboots. `flash` waits the time the device reports (at most 60 s), reconnects and continues.
-- The reset is added, for a secure-capable application, when the download writes filled segments sparsely, and when `--force` replaces an application `flash` did not recognise or could not read.
+- The device erases its application, its parameters and its group addresses and links, keeps its address, and reboots. `flash` waits the time the device reports (at most 60 s), reconnects and continues.
+- The reset is added, for an application that supports Secure, when the download writes filled segments sparsely, and when `--force` replaces an application `flash` did not recognise or could not read.
 - The plan shows it as the first step, and every object is then streamed in full: nothing is skipped.
 - A device that refuses the reset, or does not answer it, fails the flash before anything is written.
 - `--no-factory-reset` leaves it out. System 7 downloads write every region in full and never reset.
 - If the flash stops right after the reset, the device is left unloaded: re-run the same `flash`.
 
 ??? note "Details"
-    The reset is `A_Restart` master reset with erase code 7 and channel 0, sent numbered (`4f 81 07 00`), answered by `A_Restart_Response` with an error code and a process time in seconds (`4f a1 00 00 08`). It sits before the first `Unload`, after any read-only `CompareProp` or `CompareRelMem` preconditions. Every download of a secure-capable System B application ends like ETS's: the terminal `LdCtrlRestart` goes out as a confirmed master reset with erase code 1, and bussard waits its process time before verifying. Every other application keeps the bare `A_Restart` ETS sends it, and an `LdCtrlMasterReset` op in a load procedure is sent as a bare `A_Restart`.
+    The reset is `A_Restart` master reset with erase code 7 and channel 0, sent numbered (`4f 81 07 00`), answered by `A_Restart_Response` with an error code and a process time in seconds (`4f a1 00 00 08`). It sits before the first `Unload`, after any read-only `CompareProp` or `CompareRelMem` preconditions. Every download of a System B application that supports Secure ends like ETS's: the terminal `LdCtrlRestart` goes out as a confirmed master reset with erase code 1, and bussard waits its process time before verifying. Every other application keeps the bare `A_Restart` ETS sends it, and an `LdCtrlMasterReset` op in a load procedure is sent as a bare `A_Restart`.
 
     If the gateway link drops while the reset is pending, it is sent again once the tunnel is back; a link loss during the reconnect after it is ridden out.
 
@@ -266,11 +266,11 @@ Many System B applications allocate their segment with a fill byte, and bussard,
 With `--keyring` (or `--tool-key`), `flash` programs the device's security object the way an ETS secured download does. The object holds the group keys and the per-object security flags, not the link tables.
 
 - The dry run lists each security step; key bytes are never printed.
-- The security individual address table (PID 54) gets one entry per device that sends on a secured group address this device listens to, plus `--secure-sender` or the `admit_tunnel_senders` addresses, plus the `secure_senders` the lock recorded from an earlier read, so a download does not drop a sender the model does not describe.
+- The security individual address table (PID 54) gets one entry per device that sends on a secured group address this device listens to, plus `--secure-sender` or the `admit_tunnel_senders` addresses, plus the `secure_senders` the lock recorded from an earlier read, so a download does not drop a sender the project does not describe.
 - The factory reset stays in secured downloads; the device keeps its tool key across it.
 
 ??? note "Details"
-    The security object is unloaded right after the other objects. After the tables and parameters it is reloaded with the security individual address table (cleared, then one `[IA][sequence]` entry per sender, with the sender's keyring `SequenceNumber` when the model marks it `activated`, else 0), the group key table (one entry per keyed group address the device links) and the group-object security flags, then completed.
+    The security object is unloaded right after the other objects. After the tables and parameters it is reloaded with the security individual address table (cleared, then one `[IA][sequence]` entry per sender, with the sender's keyring `SequenceNumber` when the project marks it `activated`, else 0), the group key table (one entry per keyed group address the device links) and the group-object security flags, then completed.
 
     After any restart `flash` triggers on a Data Secure device, the device can answer at the transport layer before its security layer is ready and drop the first `S-A_Sync_Req`. `flash` probes the rebooted device with a plain `A_DeviceDescriptor_Read` every 500 ms for up to 30 s, keeps that connection and sends the sync request on it. A sync request the device acknowledges but does not answer is repeated: seven attempts after a restart (1 s, then 2 s between them, about 32 s in all), three attempts (1, 2 s) on any other secured connection. No pause outlasts the device's 6 s connection timeout. Then the flash stops with "did not answer the Data Secure sync request".
 
@@ -338,7 +338,7 @@ It refuses before any write when:
 - Segments the application rewrites at run time are written but not compared.
 - `--json` prints the plan as JSON (`parameters`, `regions`, `procedure`).
 
-**The write set.** Only the octets a parameter is placed in under the current configuration are compared and written: a parameter the Dynamic section reaches, a hidden parameter the application downloads at its default, and the device-managed octets alongside another write. Every other octet keeps the device's value, because ETS's download does not write it either. When such an octet differs from the model's image, the plan lists it as not written (`unwritten` in `--json`, `written: false` in `octet_ranges`) and does not count it. The same rule holds for `apply`, `restore --parameters` and the MCP `knx_apply_device`. A full `flash` still writes the whole image, as an ETS full download does, so a device that needs those octets cleared gets a full flash.
+**The write set.** Only the octets a parameter is placed in under the current configuration are compared and written: a parameter the Dynamic section reaches, a hidden parameter the application downloads at its default, and the device-managed octets alongside another write. Every other octet keeps the device's value, because ETS's download does not write it either. When such an octet differs from the project's image, the plan lists it as not written (`unwritten` in `--json`, `written: false` in `octet_ranges`) and does not count it. The same rule holds for `apply`, `restore --parameters` and the MCP `knx_apply_device`. A full `flash` still writes the whole image, as an ETS full download does, so a device that needs those octets cleared gets a full flash.
 
 ??? note "Details"
     System B (Configuration Procedures 03_05_03 §3.5.3, as ETS runs the product's `par` procedure): a check that the object holding the parameter segment is `Loaded`, `Unload` and `StartLoading` on it, its segment re-allocated in Mode 0 with no fill (the device keeps the memory and the base), the procedure's property writes on that object (the `PID_MCB_TABLE` seed and `PID_PROGRAM_VERSION`), the differing parameter octets at the base the object reports through `PID_TABLE_REFERENCE` after the allocation (the whole image if the device moved the segment, nothing if the reference reads zero), `LoadCompleted`, the procedure's MCB checks on that object, and the terminal restart. No factory reset, no table object.
@@ -353,11 +353,11 @@ It refuses before any write when:
 
 `plan <ADDRESS>` and `reconstruct <ADDRESS>` read the parameter memory too when they have the device's product data (`--product`, or the archive `bussard.lock` pins in `products/`). Both stay read-only.
 
-- The memory is decoded as the exact inverse of the image `flash` writes, so a device holding the model's image reports no difference.
+- The memory is decoded as the exact inverse of the image `flash` writes, so a device holding the project's image reports no difference.
 - Only the parameters the configuration shows are decoded; a hidden parameter downloaded at its default is never reported.
-- The report lists the parameters whose value differs from the vendor default and those that differ from the device file (`Threshold: device 9, model 12`), keyed like the model (`P-5_R-5`, `MD-1_M-2_MI-1_P-2_R-5` for a module instance). `--json` adds a `parameters` object with `non_default` and `differences`.
+- The report lists the parameters whose value differs from the vendor default and those that differ from the device file (`Threshold: device 9, model 12`), keyed like the device file (`P-5_R-5`, `MD-1_M-2_MI-1_P-2_R-5` for a module instance). `--json` adds a `parameters` object with `non_default` and `differences`.
 - Parameters the application owns at runtime (`Access="None"`, such as a download flag) are listed separately as device-managed, with no verdict (`device_managed` in `--json`).
-- Internal ETS values whose octets differ from the model's image are listed with both values and, for a selector, what the difference means (`internal` in `--json`).
+- Internal ETS values whose octets differ from the project's image are listed with both values and, for a selector, what the difference means (`internal` in `--json`).
 - The memory is decoded only when the device runs the product's program, by the rule `flash --parameters-only` applies: on System B the same manufacturer, application number and version; on System 7 every loaded load-state machine `Loaded` and the code segments matching. Otherwise the section carries a note instead of values.
 
 ??? note "Details"
@@ -365,40 +365,40 @@ It refuses before any write when:
 
 ### Octet attribution roles
 
-A plan that writes parameter octets names the parameters behind each run of written octets: `octet_ranges` in `knx_plan_device`, the plan's notes, and `internal` in the read-back. Each run carries `written`: `true` for an octet the plan writes, `false` for one that differs from the model's image where no parameter the configuration reaches is placed. Unwritten runs are never counted in `parameter_octets`.
+A plan that writes parameter octets names the parameters behind each run of written octets: `octet_ranges` in `knx_plan_device`, the plan's notes, and `internal` in the read-back. Each run carries `written`: `true` for an octet the plan writes, `false` for one that differs from the project's image where no parameter the configuration reaches is placed. Unwritten runs are never counted in `parameter_octets`.
 
 | Role | Meaning |
 |---|---|
 | `changed` | A shown parameter whose value changes; it is in the changed list. |
-| `same_value` | A shown parameter that decodes to the model's value although bits of its field differ. |
+| `same_value` | A shown parameter that decodes to the project's value although bits of its field differ. |
 | `hidden` | A parameter the configuration hides, or one an `<Assign>` sets. The image holds its default, or the segment's vendor data when the application does not download hidden parameters. |
-| `internal` | An `Access="None"` parameter the configuration does not reach: a value ETS keeps for itself, never shown and never in the model, such as a push-button's function-block selectors. An enumeration is named an internal ETS selector. |
+| `internal` | An `Access="None"` parameter the configuration does not reach: a value ETS keeps for itself, never shown and never in the project, such as a push-button's function-block selectors. An enumeration is named an internal ETS selector. |
 | `device_managed` | An `Access="None"` parameter the configuration reaches, owned by the application at runtime, such as a download flag the application resets after the restart. |
 
 - Octets owned only by `device_managed` parameters do not count as a difference. A plan whose only differing octets are device-managed writes nothing: `plan` prints `<ia> matches your project; nothing to write` with a note naming the octets, `apply` exits without touching the device, and `knx_plan_device` reports `noop: true` with no digest.
-- When a link or another parameter changes, device-managed octets are written along with it at the model's value, as ETS does.
+- When a link or another parameter changes, device-managed octets are written along with it at the project's value, as ETS does.
 - A plan whose only differing octets are unwritten ones writes nothing either.
-- When an internal selector the download writes differs, the plan adds one note: the device's function assignment differs from the project, and writing makes the device match the model.
+- When an internal selector the download writes differs, the plan adds one note: the device's function assignment differs from the project, and writing makes the device match the project.
 
 ??? note "Details"
-    Each parameter in a run carries `device` and `model`, the values the device's octets and the model's image hold, as the enumeration member's text where the value is one, else the number, with the unit. A written run reads `1 octet at offset 165 of segment RS-04-00000: _AppInstanz 51 (internal ETS selector, P-643), device 3, model no application`.
+    Each parameter in a run carries `device` and `model`, the values the device's octets and the project's image hold, as the enumeration member's text where the value is one, else the number, with the unit. A written run reads `1 octet at offset 165 of segment RS-04-00000: _AppInstanz 51 (internal ETS selector, P-643), device 3, model no application`.
 
     An unwritten run reads `1 octet at offset 165 of segment RS-04-00000, not written (ETS does not write this octet in a download): _AppInstanz 51 (internal ETS selector, P-643), device AP_RGBWLED, model no application`, and its `explanation` says `ETS does not write this octet in a download; a full download leaves the segment fill (0x00) there; the device holds <value> from an earlier state`. One plan note lists the unwritten runs. Module parameters are attributed where the configuration places them; an octet no parameter covers names none.
 
 ## `bussard commission --line <LINE>`
 
-Bench mode: commission the devices the model has on a line, one programming button at a time.
+Bench mode: commission the devices the project has on a line, one programming button at a time.
 
 ```console
 $ bussard commission --line 1.1 --flash --apply --labels labels.csv
 ```
 
-The command first checks which model addresses already answer on the bus. An answer means the address is in use: when the device there reports the model's order number it is reported as `present` and left alone; otherwise (another order number, none, or no order number in the model) that device is `failed: the address is in use ...`, naming what answers, and nothing is pressed or written for it. After one confirmation naming the gateway, it walks the rest in address order:
+The command first checks which of the project's addresses already answer on the bus. An answer means the address is in use: when the device there reports the project's order number it is reported as `present` and left alone; otherwise (another order number, none, or no order number in the project) that device is `failed: the address is in use ...`, naming what answers, and nothing is pressed or written for it. After one confirmation naming the gateway, it walks the rest in address order:
 
 1. Prompts `press the programming button on <name> (<order number>)` and waits for exactly one device in programming mode, as `assign` does.
-2. Reads that device's order number and compares it with the model's `product.order_number`, ignoring case and surrounding space.
+2. Reads that device's order number and compares it with the device file's `product.order_number`, ignoring case and surrounding space.
 3. Writes the address, verifies it with a descriptor read, and clears programming mode.
-4. With `--flash`, runs `flash` on the new address, selecting the application by the model's order number. With `--apply`, runs `apply`.
+4. With `--flash`, runs `flash` on the new address, selecting the application by the project's order number. With `--apply`, runs `apply`.
 5. Prints a label line, e.g. `1.1.7  Blind actuator  MDT JAL-0810.03  Ground floor / Living room`, and with `--labels` appends a row to the CSV.
 
 The summary table lists each device as `commissioned`, `present` or `failed: <reason>`.
@@ -407,7 +407,7 @@ The summary table lists each device as `commissioned`, `present` or `failed: <re
 |---|---|---|
 | `--line <LINE>` | | The line to commission, e.g. `1.1`. |
 | `--flash` | off | Also flash each device's application program. |
-| `--apply` | off | Also apply the model's link tables. |
+| `--apply` | off | Also apply the project's link tables. |
 | `--labels <FILE>` | | Append one row per commissioned device, columns `address;name;order_number;floor;room` (header written when the file is new). |
 | `--product <FILE>` | pinned archive | The `.knxprod` to flash from (with `--flash`). Default: the archive `bussard.lock` pins for each device. |
 | `--yes` | off | Skip the confirmation prompt. Without a terminal the command is refused unless this is given. |
@@ -416,8 +416,8 @@ The summary table lists each device as `commissioned`, `present` or `failed: <re
 
 Behaviour:
 
-- Acts on whatever device is in programming mode, so without a terminal and without `--yes` it refuses before loading the model or opening a connection.
-- An order-number mismatch, or an unreadable order number while the model names one, is a hard stop for that device: nothing is written and the run moves on. A model device without an order number is assigned with a warning.
+- Acts on whatever device is in programming mode, so without a terminal and without `--yes` it refuses before loading the project or opening a connection.
+- An order-number mismatch, or an unreadable order number while the project names one, is a hard stop for that device: nothing is written and the run moves on. A device without an order number in the project is assigned with a warning.
 - With `--flash`, every device's archive is resolved before the run starts: a missing or changed one refuses the whole run before any bus access.
 - `--apply` goes through `apply`, so a drifted device is refused there.
 - One confirmation covers the run; each device still gets the full single-device rails of `flash` and `apply`.
@@ -425,7 +425,7 @@ Behaviour:
 
 ## `bussard backup [ADDRESS...]`
 
-Snapshot the installation before you change it. `backup` reads every model device's address and association tables, and its parameters where it can, into one JSON file per device plus a `manifest.json`.
+Snapshot the installation before you change it. `backup` reads the address and association tables of every device in the project, and their parameters where it can, into one JSON file per device plus a `manifest.json`.
 
 ```console
 $ bussard backup
@@ -434,8 +434,8 @@ $ bussard backup --line 1.1 --out ~/knx-backup
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `[ADDRESS...]` | every model device | Back up only these devices. |
-| `--line <LINE>` | | Back up only the model devices on this line, e.g. `1.1`. |
+| `[ADDRESS...]` | every device in the project | Back up only these devices. |
+| `--line <LINE>` | | Back up only the project's devices on this line, e.g. `1.1`. |
 | `--out <DIR>` | `<dir>/captures/backups/<UTC timestamp>/` | Where to write the snapshot. |
 | `--keyring <FILE>` / `--tool-key <HEX>` | | KNX Data Secure tool keys, as for `apply`. |
 
@@ -469,7 +469,7 @@ $ bussard restore knx/captures/backups 1.1.4
 $ bussard restore --parameters knx/captures/backups/parameters/<ia>-<unix time>.json 1.1.4
 ```
 
-`BACKUP_DIR` is a `backup` run, or `<dir>/captures/backups` for the files `apply` leaves. The model is optional here: the tables come from the backup.
+`BACKUP_DIR` is a `backup` run, or `<dir>/captures/backups` for the files `apply` leaves. The project is optional here: the tables come from the backup.
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -495,7 +495,7 @@ Behaviour:
     - `the backup holds the parameters of application <id>, but <ia> runs <id>`
     - `the backup was read from a device with mask <mask>, but <ia> reports mask <mask>`
     - `the backup is of <ia>, not <ia>`
-- Only the octets a parameter is placed in under the model's configuration are compared and written, the set `apply` writes, so a restore puts back everything an apply changed.
+- Only the octets a parameter is placed in under the project's configuration are compared and written, the set `apply` writes, so a restore puts back everything an apply changed.
 - Device-managed octets keep the device's value.
 - The plan lists the octets it writes with the parameters behind them ([roles](#octet-attribution-roles), `device` and `backup` values) and the octets it leaves as the device holds them, then asks once.
 - The gates are `apply`'s: the real-gateway opt-in, the confirmation (`--yes`), the identity verdict against `bussard.lock`, and the parameter-only identity check. A device that does not run the application (a factory-fresh or unloaded one) is refused and needs `bussard flash`.
@@ -505,7 +505,7 @@ Behaviour:
 
 ## `bussard replace <ADDRESS>`
 
-Put a new device of the same product in place of a dead one: assign its address, flash it and apply the model's tables.
+Put a new device of the same product in place of a dead one: assign its address, flash it and apply the project's tables.
 
 ```console
 $ bussard replace 1.1.7
@@ -515,7 +515,7 @@ The steps:
 
 1. Check that nothing answers at `ADDRESS`.
 2. Wait for the programming button, read the pressed device's order number, mask and application id, and print its [identity line](#one-identity-verdict).
-3. Ask once for confirmation, naming the gateway. Then assign the address (as `assign` does), flash the application with the model's parameters (as `flash` does; skipped with `--no-flash`), and apply the model's tables (as `apply` does).
+3. Ask once for confirmation, naming the gateway. Then assign the address (as `assign` does), flash the application with the project's parameters (as `flash` does; skipped with `--no-flash`), and apply the project's tables (as `apply` does).
 4. Record `replaced: <RFC3339>` in the device file with a one-line edit; the rest of the file is kept as it is. The new device's serial number goes into its `bussard.lock` entry, in place of the old one's.
 
 | Flag | Default | Meaning |
@@ -531,10 +531,10 @@ The steps:
 
 Behaviour:
 
-- Acts on whatever device is in programming mode, so without a terminal and without `--yes` it refuses before loading the model or opening a connection.
+- Acts on whatever device is in programming mode, so without a terminal and without `--yes` it refuses before loading the project or opening a connection.
 - The pinned archive is resolved before anything reaches the bus: a missing or changed one refuses the run with its recovery step.
 - Refuses a device that still answers at `ADDRESS`, unless `--force`.
-- Refuses when the pressed device's order number or mask differs from the device file (`product.order_number`, `product.mask`), unless `--force`. A field the model states but the device does not report counts as a mismatch.
+- Refuses when the pressed device's order number or mask differs from the device file (`product.order_number`, `product.mask`), unless `--force`. A field the device file states but the device does not report counts as a mismatch.
 - With `--no-flash`, refuses a device whose application id differs from the one `bussard.lock` pins, unless `--force`; drop `--no-flash` to flash it.
 - Adds no write of its own: each step is the `assign`, `flash` or `apply` path with its own verification.
 - If the flash or apply step fails, the address is already assigned; the error names the command to re-run.
@@ -567,17 +567,17 @@ restart 1.1.52 (Presence detector) via 192.0.2.10:3671? [y/N] y
 | `<ADDRESS>` | | The device to restart, e.g. `1.1.39`. |
 | `--timeout <SECONDS>` | 30 | How long the device may take to answer again. |
 | `--yes` | off | Skip the confirmation prompt. Without a terminal the command is refused unless this is given. |
-| `--keyring <FILE>` | the key store | KNX Data Secure tool keys: a device the keyring lists is restarted over a secured session. |
+| `--keyring <FILE>` | the key store | KNX Data Secure tool keys: a device the key store (or keyring) lists is restarted over a secured session. |
 | `--tool-key <HEX>` | | A raw 32-hex-character KNX Data Secure tool key, for a simulator or bench device. Conflicts with `--keyring`. |
 | `--json` | off | Print `address`, `form` (`confirmed` or `basic`), `form_reason`, `confirmed` (true only when the device answered the confirmed restart with error code 0), `process_time_s` (`null` for the basic form), `mask` and `answered_after_ms`. |
 
 Behaviour:
 
 - Sends the restart form ETS sends that device, chosen from the product data `bussard.lock` pins for it, with the same rule `flash` uses for the restart that ends a download:
-    - **confirmed** for a secure-capable System B application (`IsSecureEnabled`): `A_Restart` master reset with erase code 1 and channel 0. The device answers `A_Restart_Response`; only error code 0 confirms the restart. No answer, or another error code, exits 1. bussard then waits the process time the device reported (at most 60 s).
+    - **confirmed** for a System B application that supports Secure (`IsSecureEnabled`): `A_Restart` master reset with erase code 1 and channel 0. The device answers `A_Restart_Response`; only error code 0 confirms the restart. No answer, or another error code, exits 1. bussard then waits the process time the device reported (at most 60 s).
     - **basic** for every other application, and for a device without product data: a bare `A_Restart`, which a device never answers. The report says the restart was sent and the device answered again, not that it restarted.
-- Either form only re-runs the application: parameters, link tables and the individual address are kept. Neither is a factory reset.
-- A Data Secure device the keyring lists gets the descriptor reads and the restart inside the secured session, as ETS does.
+- Either form only re-runs the application: parameters, link tables and the address are kept. Neither is a factory reset.
+- A secured device the key store lists gets the descriptor reads and the restart inside the secured session, as ETS does.
 - Refuses a non-loopback gateway without `--allow-remote-gateway`, and without a terminal and without `--yes` refuses before it sends anything.
 - Reads the device's mask first, so a device that does not answer is an error before anything is sent.
 - After the restart, waits 2 s and then reconnects every second until the device answers its descriptor read with the mask it reported before. A device that stays silent past `--timeout`, or answers with another mask, exits 1.

@@ -9,10 +9,10 @@ A flag beats its variable, the variable beats `bussard.toml`, and `bussard.toml`
 | Variable | Default | Meaning |
 |---|---|---|
 | `BUSSARD_PROJECT_PASSWORD` | | Password for a protected `.knxproj` when `--password` is not given. Keep it in an untracked `.env`, never in the repository. |
-| `BUSSARD_DIR` | discovered | The model directory when `--dir` is not given; beats [discovery](model-directory.md#discovery). From a `.env`, only the working directory's file counts (see [Which file](#which-file)). |
+| `BUSSARD_DIR` | discovered | The project folder when `--dir` is not given; beats [discovery](model-directory.md#discovery). From a `.env`, only the working directory's file counts (see [Which file](#which-file)). |
 | `BUSSARD_GATEWAY` | `connection.gateway` | The gateway `host[:port]` when `--gateway` is not given; beats `connection.gateway` in `bussard.toml`. It only selects a gateway: a non-loopback one still needs `--allow-remote-gateway` for a write. |
 | `BUSSARD_KEYRING` | | An explicit `.knxkeys` keyring when `--keyring` is not given; beats the key store `bussard.keys` and `connection.keyring` in `bussard.toml`. The password still comes from `BUSSARD_KEYRING_PASSWORD`. |
-| `BUSSARD_KEYRING_PASSWORD` | | Password for the key store `bussard.keys` and for every `.knxkeys` export: passed with `--keyring`, named by `BUSSARD_KEYRING` or `connection.keyring`, found next to the project by `import` or `init`, or read and written by `bussard keys`. There is no flag for it on purpose, so it never lands in shell history or a process listing. |
+| `BUSSARD_KEYRING_PASSWORD` | | Password for the key store `bussard.keys` and for every `.knxkeys` export: passed with `--keyring`, named by `BUSSARD_KEYRING` or `connection.keyring`, found next to the ETS project by `import` or `init`, or read and written by `bussard keys`. The name predates the key store. There is no flag for it on purpose, so it never lands in shell history or a process listing. |
 | *(the `--secure-password-env` variable)* | | The KNXnet/IP Secure tunnelling user's password for `--secure-user`. You choose the variable's name; bussard reads only that variable. |
 | `BUSSARD_ALLOW_REAL_GATEWAY` | off | Set to `1` to permit a write command against a non-loopback (real) gateway, the same as `--allow-remote-gateway`. Loopback gateways never need it. Only an exported variable counts: a `.env` that sets it is ignored with a warning. |
 | `BUSSARD_MCP_TOKEN` | | The bearer token `bussard mcp --listen` requires on every request. Required for a non-loopback bind (`--allow-remote-clients`); unset, such a server generates one and prints it once. See [`bussard mcp`](commands/servers.md#over-http). |
@@ -54,11 +54,11 @@ export BUSSARD_PROJECT_PASSWORD="project pw"
 
 bussard reads the first of these that exists, and only that one; files are never merged:
 
-1. `<model dir>/.env`;
-2. the `.env` in the directory that holds the model directory (the repository root for `knx/`);
+1. `<project folder>/.env`;
+2. the `.env` in the directory that holds the project folder (the repository root for `knx/`);
 3. `./.env` in the working directory.
 
-The model directory decides the lookup, and `BUSSARD_DIR` can decide the model directory, so bussard resolves it in two steps. First the model directory: `--dir`, else an exported `BUSSARD_DIR`, else `BUSSARD_DIR` from `./.env`, else [discovery](model-directory.md#discovery). Then the lookup above runs from that model directory, and the file it picks supplies every other variable. When that is a different file, the working directory's `.env` contributed `BUSSARD_DIR` and nothing else.
+The project folder decides the lookup, and `BUSSARD_DIR` can decide the project folder, so bussard resolves it in two steps. First the project folder: `--dir`, else an exported `BUSSARD_DIR`, else `BUSSARD_DIR` from `./.env`, else [discovery](model-directory.md#discovery). Then the lookup above runs from that project folder, and the file it picks supplies every other variable. When that is a different file, the working directory's `.env` contributed `BUSSARD_DIR` and nothing else.
 
 ### Precedence
 
@@ -87,5 +87,5 @@ No value is ever printed. `bussard -vv` logs which file was read and which keys 
 ## Related
 
 - [Global options](global-options.md): the flags these variables stand in for, and their precedence.
-- [Model directory](model-directory.md): how bussard finds the model directory the `.env` lookup starts from.
+- [Project folder](model-directory.md): how bussard finds the project folder the `.env` lookup starts from.
 - [Safety](../explanation/safety.md): why the write gate never comes from a file.
