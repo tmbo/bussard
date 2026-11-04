@@ -43,7 +43,14 @@ impl Device {
         }
         if self.secure.is_some() {
             if apdu.apci_raw == crate::secure::A_SECURE_DATA_APCI {
-                if !self.connected {
+                // The secure AL-service rides T_Data_Individual as well as
+                // T_Data_Connected (KNX 3/3/7 §5.5.5.1, 03_03_07 Application
+                // Layer v02.01.01 line 9579; S-A_Sync: §5.3.2, lines 8867-8871
+                // and 8897-8898). ETS 6 sends its S-A_Sync_Req connectionless
+                // before it connects (#423). Only a numbered frame needs the
+                // open connection.
+                let unnumbered = cemi.tpdu.first().is_some_and(|b| b & 0xC0 == 0x00);
+                if !self.connected && !unnumbered {
                     return Err(DeviceError::NotConnected);
                 }
                 return self.handle_secure_data(cemi, apdu);
@@ -81,24 +88,30 @@ impl Device {
             // and A_PropertyValue_Read sent unnumbered (T_Data_Individual) with an
             // unnumbered response. ETS 6 probes a KNX Secure capable device that
             // way before it connects (MDT AKR-IO86.01S, ETS-against-sim capture
-            // 2026-10-28). Every other service still needs a connection.
+            // 2026-10-28), and after an S-A_Sync it reads the same way inside
+            // A_SecureData (#423). The property services are point-to-point
+            // connectionless services too (KNX 3/3/7 §3.4.3-§3.4.8, 03_03_07
+            // Application Layer v02.01.01 lines 3143-5385). Every other
+            // service (authorize, memory, restart) still needs a connection.
             let unnumbered = cemi.tpdu.first().is_some_and(|b| b & 0xC0 == 0x00);
+            if !unnumbered {
+                return Err(DeviceError::NotConnected);
+            }
+            let saved = self.tx_seq;
             let reaction = match apdu.apci {
-                Apci::DeviceDescriptorRead(t) if unnumbered => {
-                    let saved = self.tx_seq;
-                    let r = self.on_device_descriptor_read(tool, t);
-                    self.tx_seq = saved;
-                    r?
-                }
-                Apci::PropertyValueRead if unnumbered => {
-                    let saved = self.tx_seq;
-                    let r = self.on_property_read(tool, apdu);
-                    self.tx_seq = saved;
-                    r?
-                }
+                Apci::DeviceDescriptorRead(t) => self.on_device_descriptor_read(tool, t),
+                Apci::PropertyValueRead => self.on_property_read(tool, apdu),
+                Apci::PropertyValueWrite => self.on_property_write(tool, apdu),
+                Apci::PropertyDescriptionRead => self.on_property_description_read(tool, apdu),
+                Apci::PropertyExtValueRead
+                | Apci::PropertyExtValueWriteCon
+                | Apci::PropertyExtDescriptionRead
+                | Apci::FunctionPropertyExtCommand
+                | Apci::FunctionPropertyExtStateRead => self.on_extended_property(tool, apdu),
                 _ => return Err(DeviceError::NotConnected),
             };
-            let mut reaction = reaction;
+            self.tx_seq = saved;
+            let mut reaction = reaction?;
             for resp in &mut reaction.responses {
                 if let Some(first) = resp.tpdu.first_mut() {
                     *first &= 0x03; // T_Data_Individual: no sequence, keep the APCI bits
