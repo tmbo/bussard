@@ -9,8 +9,8 @@ The shape of a telegram in `bussard monitor --json` and in the SQLite database `
 | Field | Meaning |
 |---|---|
 | `ts_utc` | RFC 3339 UTC timestamp, the same name as the capture column. |
-| `source` | The sender's individual address. |
-| `source_name` | The sending device's name from the model. |
+| `source` | The sender's address. |
+| `source_name` | The sending device's name from the project. |
 | `destination` | The destination group address. |
 | `destination_name` | The group address's name from `groups.toml`. |
 | `dest_type` | The destination address type. |
@@ -28,14 +28,14 @@ With `--keyring`, a KNX Data Secure group telegram adds five fields. Plain teleg
 | Field | Meaning |
 |---|---|
 | `secured` | `true` when the MAC verified under the group address's key; the other fields then describe the decrypted inner telegram. `false` otherwise. |
-| `secure_status` | `ok`, `mac_failed`, or `no_key` (the keyring has no key for the address). |
+| `secure_status` | `ok`, `mac_failed`, or `no_key` (the key store or keyring has no key for the address). |
 | `secure_seq` | The sender's sequence number. |
 | `secure_raw` | The raw `A_SecureData` ASDU, hex, when it did not verify; else `null`. |
 | `secure_warning` | An advisory freshness warning (the sequence did not increase over the last one from this sender), else `null`. |
 
 ## The capture database
 
-`capture --to <DB>` writes SQLite. The `telegrams` table stores the raw cEMI bytes plus a decoded snapshot, so you can re-decode telegrams after fixing the model:
+`capture --to <DB>` writes SQLite. The `telegrams` table stores the raw cEMI bytes plus a decoded snapshot, so you can re-decode telegrams after fixing the project:
 
 ```sql
 CREATE TABLE telegrams (
@@ -54,7 +54,7 @@ CREATE INDEX idx_telegrams_dest_ts ON telegrams (destination, ts_utc);
 |---|---|
 | `id` | Row id. |
 | `ts_utc` | RFC 3339 UTC timestamp. |
-| `source` | The sender's individual address. |
+| `source` | The sender's address. |
 | `destination` | The destination group address. |
 | `apci` | The APCI. |
 | `raw_cemi` | The raw cEMI frame. |

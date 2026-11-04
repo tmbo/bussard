@@ -46,7 +46,7 @@ config_path = "../ha/knx.yaml"    # the KNX YAML Home Assistant reads
 | `connection.transport` | `"tunnel"` or `"routing"` | The transport used to reach the bus. |
 | `connection.gateway` | string, optional | Gateway `host:port` for tunnelling. `--gateway` and `BUSSARD_GATEWAY` override it. |
 | `connection.multicast` | string, optional | Multicast `addr:port` for routing. Default `224.0.23.12:3671`. |
-| `connection.keyring` | path, optional | Deprecated: use the key store [bussard.keys](bussard-keys.md), which wins over it. The ETS `.knxkeys` keyring every bus command uses when `--keyring` is not given: for the KNXnet/IP Secure tunnel, the tool keys of the devices it lists, and the group keys. A relative path is resolved against the model directory. The password comes from `BUSSARD_KEYRING_PASSWORD`. Keep the keyring file itself out of git. |
+| `connection.keyring` | path, optional | Deprecated: use the key store [bussard.keys](bussard-keys.md), which wins over it. The ETS `.knxkeys` keyring every bus command uses when `--keyring` is not given: for the KNXnet/IP Secure tunnel, the tool keys of the devices it lists, and the group keys. A relative path is resolved against the project folder. The password comes from `BUSSARD_KEYRING_PASSWORD`. Keep the keyring file itself out of git. |
 | `connection.admit_tunnel_senders` | bool, default `false` | On a KNX Data Secure device, `plan`, `apply`, `flash` and `knx_apply_device` add every tunnelling address of the key store to the device's security individual address table (PID 54), so a secured `write` or `read` from bussard is accepted. |
 | `lint.topology.max_devices_per_line` | integer, optional | The most devices one line may carry (the KNX TP limit is 64). Drives `L001`. |
 | `lint.topology.supply_ma` | table line to mA, optional | Each line's power-supply budget. Drives `L002`. Declaring a line here also declares that it exists, which drives `L003`. |
@@ -57,7 +57,7 @@ config_path = "../ha/knx.yaml"    # the KNX YAML Home Assistant reads
 | `import.language` | string, optional | Overrides the language `import` derives texts and keys in. See [Text language](bussard-lock.md#text-language). |
 | `home_assistant.url` | string | The Home Assistant instance. |
 | `home_assistant.token_env` | string, default `BUSSARD_HA_TOKEN` | The environment variable that holds a long-lived access token. A `.env` supplies it only for a `BUSSARD_*` name. |
-| `home_assistant.config_path` | path | The KNX YAML file Home Assistant reads, relative to the model directory unless absolute. |
+| `home_assistant.config_path` | path | The KNX YAML file Home Assistant reads, relative to the project folder unless absolute. |
 | `enroll.relay` | string, optional | The relay base URL `keys enroll` and the MCP tool `knx_enroll_certificates` use when `--relay` is not given. Default `https://bussard-relay.tmbo.dev`. The hosted page connects only to that relay, so a self-hosted relay needs a self-hosted copy of the page (`web/enroll/`, its CSP `connect-src` naming the relay) set as `enroll.page`. `--local` (`local: true` over MCP) uses neither. The relay only sees ciphertext. |
 | `enroll.page` | string, optional | The enrolment page the `keys enroll` and `knx_enroll_certificates` link opens when `--page` is not given. Default `https://bussard-relay.tmbo.dev/enroll/`. |
 

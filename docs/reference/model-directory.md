@@ -1,6 +1,8 @@
-# Model directory
+# Project folder
 
-The model directory is your installation as files: what each file and folder holds, which ones bussard regenerates, and how a bundle packs them. `knx/` by default.
+The project folder is your installation as files: what each file and folder holds, which ones bussard regenerates, and how a bundle packs them. `knx/` by default.
+
+Some identifiers keep the older word "model" for the project: this page's file name, `--no-model-edits`, `.bussard/model-cache/`, and JSON fields such as `model_sha256` and `model_status`. `.bussard/models/` holds product models, which describe a vendor's application program, not your project.
 
 ```
 knx/
@@ -17,42 +19,42 @@ knx/
   products/               the product archives the lock pins; retained, never regenerated
   products/manufacturers.toml  manufacturer names from the imported ETS data
   captures/               local captures, apply backups, apply-line-<line>.json resume state
-  .bussard/history/       snapshots of the model files
+  .bussard/history/       snapshots of the project files
   .bussard/facts/         @generated device facts, one file per device
   .bussard/products/      the parsed-product cache
   .bussard/models/        @generated product models, rebuilt from products/ when missing
   .bussard/model-cache/   the product models converted to JSON, rebuilt when a model changes
   .bussard/last_export.json
   .bussard/tunnel-users/  which KNXnet/IP Secure tunnelling user each running bussard holds
-  .bussard/instances/     the running `bussard mcp` processes for this model
+  .bussard/instances/     the running `bussard mcp` processes for this project
 ```
 
 Each file has its own page under `files/`; see [Related](#related).
 
 ## Discovery
 
-Without `--dir` and `BUSSARD_DIR`, a command that reads an existing model looks for it the way `git` and `cargo` find their roots. It works from the repository root, from inside the model and from any subdirectory of either:
+Without `--dir` and `BUSSARD_DIR`, a command that reads an existing project looks for it the way `git` and `cargo` find their roots. It works from the repository root, from inside the project folder and from any subdirectory of either:
 
 1. the working directory, when it holds `bussard.toml`;
 2. `./knx`, when it exists;
 3. each parent directory, nearest first: the parent when it holds `bussard.toml`, else its `knx/` when that holds `bussard.toml`;
 4. otherwise the current directory.
 
-`bussard -v` logs the directory it chose. A directory without a model file (`bussard.toml`, `groups.toml`, `bussard.lock` or `devices/`) is no model, and a command that needs one says so:
+`bussard -v` logs the directory it chose. A directory without a project file (`bussard.toml`, `groups.toml`, `bussard.lock` or `devices/`) is no project, and a command that needs one says so:
 
 ```
 no model in the current directory <path>: ...; run `bussard init` or `bussard import <export>` there, or pass --dir <model directory>
 ```
 
-`init` and `import` create or update the model in `--dir`, `BUSSARD_DIR` or the current directory, and never search upward.
+`init` and `import` create or update the project in `--dir`, `BUSSARD_DIR` or the current directory, and never search upward.
 
-## Model files
+## Project files
 
-`bussard.toml`, `groups.toml`, `devices/*.toml`, `bussard.lock`, `tests.toml` and `ha.toml` are the model files. A snapshot, a bundle and the model-change fingerprint cover exactly these.
+`bussard.toml`, `groups.toml`, `devices/*.toml`, `bussard.lock`, `tests.toml` and `ha.toml` are the project files. A snapshot, a bundle and the project's change hash cover exactly these.
 
-- A file is either fully user-owned or fully generated. Of the model files, `bussard.lock` is the only generated one. The generated files under `.bussard/` are regenerable caches outside the model.
+- A file is either fully user-owned or fully generated. Of the project files, `bussard.lock` is the only generated one. The generated files under `.bussard/` are regenerable caches outside them.
 - The device files and `groups.toml` are the source of truth. The lock is what `import` and `adopt` derived from the product data; commit it, as you would `Cargo.lock`.
-- `bussard.keys` is written by `bussard keys` (and by `init` and `import` when they find a keyring export), is encrypted, and is committed with the model. Commit `bussard.keys.meta.toml` with it.
+- `bussard.keys` is written by `bussard keys` (and by `init` and `import` when they find a keyring export), is encrypted, and is committed with the project. Commit `bussard.keys.meta.toml` with it.
 - `captures/` and `.bussard/` are local only. `init` git-ignores `.bussard/`, `*.knxkeys` and the `.env` with the passwords.
 - `products/` holds copyrighted vendor data bussard cannot regenerate, so committing it is your decision (see [Product data](product-data.md)).
 
@@ -62,7 +64,7 @@ All TOML is parsed strictly: unknown fields and duplicate keys are errors, with 
 
 Saves edit the files in place. Comments and the formatting of untouched lines survive; only the entries bussard adds or changes are re-formatted, and everything else stays byte-identical.
 
-- An object key the model no longer links is removed when the lock written by this save, or the lock it replaces, resolves it. A key neither resolves was typed by hand and stays, so validation reports it (E023).
+- An object key the project no longer links is removed when the lock written by this save, or the lock it replaces, resolves it. A key neither resolves was typed by hand and stays, so validation reports it (E023).
 - A re-import puts sections and entries in the order a fresh import writes them; comments move with their entries.
 
 `bussard device <address> [<channel>]` shows the keys a device file accepts.
@@ -75,17 +77,17 @@ Saves edit the files in place. Comments and the formatting of untouched lines su
 |---|---|
 | `init`, `import`, `import-product`, `adopt` | Create it and write `.bussard/models/` and the first history snapshot. `products/` is written next to it, never inside. |
 | `status`, `history`, `show`, `undo`, `export` | The history is empty: `status` says there is no snapshot yet, `history` lists nothing, `show` and `undo` find no snapshot, `export` writes the bundle without snapshots. |
-| `validate`, `groups`, `export-groups`, `doc`, `ha-config`, `device` | Regenerate `.bussard/models/` from the archives the lock pins, in the lock's `language`, then run as usual. `device` also writes a single missing model on demand. |
-| `diff`, `keyring` | Read no model directory. |
+| `validate`, `groups`, `export-groups`, `doc`, `ha-config`, `device` | Regenerate `.bussard/models/` from the archives the lock pins, in the lock's `language`, then run as usual. `device` also writes a single missing product model on demand. |
+| `diff`, `keyring` | Read no project folder. |
 | `scan`, `monitor`, `capture`, `read`, `write`, `learn`, `test` | Unaffected (the product models regenerate first, as above). |
 | `describe`, `plan`, `reconstruct`, `audit --live`, `backup` | Read the device facts from the device and write `.bussard/facts/<ia>.toml`. `plan` and `reconstruct` decode parameters when the archive is in `products/`. |
 | `flash`, `apply` (parameters), `commission --flash`, `replace` | Unaffected by `.bussard/`. They refuse before any bus write only when the archive the lock pins is missing from `products/` or changed. |
 | `restore` | Unaffected: the tables come from the backup directory. |
-| `mcp`, `viz` | Regenerate the missing product models as above at start and again on every model reload (an edit under `knx/`, or `POST /api/reload` in `viz`), so a server that runs for hours heals without a restart. |
+| `mcp`, `viz` | Regenerate the missing product models as above at start and again on every project reload (an edit under `knx/`, or `POST /api/reload` in `viz`), so a server that runs for hours heals without a restart. |
 
-Regeneration also runs when `.bussard/` exists but lacks the model of an application a device in the lock pins: the directory is empty, partly deleted, or a device's archive arrived later. Every command checks one file per pinned application and writes only the missing ones.
+Regeneration also runs when `.bussard/` exists but lacks the product model of an application a device in the lock pins: the directory is empty, partly deleted, or a device's archive arrived later. Every command checks one file per pinned application and writes only the missing ones.
 
-Only the pinned applications get a model. An archive with 407 programs, of which one device runs one, is parsed for that one program. `import` and `import-product` still write a model for every program of the archives they pin.
+Only the pinned applications get a product model. An archive with 407 programs, of which one device runs one, is parsed for that one program. `import` and `import-product` still write a product model for every program of the archives they pin.
 
 ## `.bussard/history`
 
@@ -103,10 +105,10 @@ knx/.bussard/history/20260922T101112Z-001/
 ```
 
 - One directory per snapshot, named by a UTC timestamp plus a sequence number, so a listing is already a timeline.
-- A snapshot is a full copy of the model files, since a house model is well under a megabyte.
+- A snapshot is a full copy of the project files, since a house's project is well under a megabyte.
 - Nothing else is ever copied: `products/`, `.bussard/models/`, `captures/`, keyrings, `.knxproj` and `.knxprod` files stay out.
 
-`import`, `apply`, `flash`, `adopt`, `reconstruct` and every MCP model edit snapshot before they write. `plan` and those commands first record an `external edit` snapshot when the working files differ from the last one, so an edit made in an editor or by an assistant writing TOML is never lost.
+`import`, `apply`, `flash`, `adopt`, `reconstruct` and every MCP edit to the project snapshot before they write. `plan` and those commands first record an `external edit` snapshot when the working files differ from the last one, so an edit made in an editor or by an assistant writing TOML is never lost.
 
 `bussard status`, `history`, `show` and `undo` read this directory. `bussard init` git-ignores it.
 
@@ -154,7 +156,7 @@ Every bus command that uses the facts first reads the device descriptor and the 
 
 - `--refresh-facts` forces the re-read; deleting the file has the same effect.
 - A file that does not parse is ignored with a warning and rewritten.
-- Without a model directory no facts are stored, and every command reads the device each time.
+- Without a project folder no facts are stored, and every command reads the device each time.
 
 `authorize = "unsupported"` lets `describe`, `plan`, `reconstruct`, the read phase of `apply` and the `flash` pre-flight skip `A_Authorize_Request`, which such a device leaves unanswered for the full 3 s response timeout per session. When the facts turn out stale on that connection, the key is presented after all. The write phase of `apply` and `flash` relies on the verdict its own read phase established. A device recorded as `granted` or `denied` is always asked, and `flash --bcu-key` always presents the key. The frames `apply` and `flash` write do not change.
 
@@ -188,7 +190,7 @@ friendly_name = "Bocklisch Alpha"
 
 - An ETS re-import rewrites the device files and the lock, and never touches `.bussard/`.
 - The device files hold intent to review; the facts are observations.
-- The lock is written by `import` and `adopt` only and is covered by snapshots and the model fingerprint, which a read-only bus command must not change.
+- The lock is written by `import` and `adopt` only and is covered by snapshots and the project's change hash, which a read-only bus command must not change.
 
 The facts are not part of a [bundle](#the-bundle-format).
 
@@ -208,11 +210,11 @@ The parsed-product cache. A `.knxproj` carries the application program of every 
 - `BUSSARD_PRODUCT_CACHE=off` turns the cache off. Deleting the directory is always safe.
 
 !!! note
-    Two other start-up costs are paid once per process. The model is parsed once per command: a later load of unchanged files returns the same model, and any edit is parsed again. A keyring is decrypted once per process or MCP server for the same file bytes and password; an edited keyring or another password is decrypted again.
+    Two other start-up costs are paid once per process. The project is parsed once per command: a later load of unchanged files returns the same result, and any edit is parsed again. The key store or a keyring is decrypted once per process or MCP server for the same file bytes and password; an edited file or another password is decrypted again.
 
 ## `.bussard/models`
 
-One generated YAML file per application program, written from the archives in `products/` by `import-product`, and by any command or server that finds a model missing. Never edit them; [Product data](product-data.md) describes what they hold and when they regenerate.
+One generated YAML file per application program, written from the archives in `products/` by `import-product`, and by any command or server that finds one missing. Never edit them; [Product data](product-data.md) describes what they hold and when they regenerate.
 
 ## The bundle format
 
@@ -234,24 +236,24 @@ Entries are sorted, with a fixed timestamp and permissions, so two exports of th
 | Field | Meaning |
 |---|---|
 | `format`, `format_version` | `"bussard-bundle"`, `1`. |
-| `model_version` | The model schema version. A reader refuses a newer one. |
+| `model_version` | The project schema version. A reader refuses a newer one. |
 | `bussard_version` | The bussard that wrote the bundle. |
 | `exported_at` | RFC 3339 in UTC. |
 | `project` | The project name from `groups.toml`, when set. |
 | `devices`, `group_addresses`, `links`, `history_snapshots` | Counts. |
-| `files` | The SHA-256 of each model file, by path. |
+| `files` | The SHA-256 of each project file, by path. |
 | `model_sha256` | SHA-256 over the lines `<file sha256>  <path>\n`, sorted by path (the `sha256sum` output format). |
 | `excluded` | What a bundle never contains (below). |
 
-A bundle never contains `products/`, `.bussard/models/`, `captures/`, keyrings, `.knxproj` or `.knxprod` files, or `.env`: the export copies an allow-list of model files and nothing else. A reader rejects:
+A bundle never contains `products/`, `.bussard/models/`, `captures/`, keyrings, `.knxproj` or `.knxprod` files, or `.env`: the export copies an allow-list of project files and nothing else. A reader rejects:
 
 - any entry outside the layout above;
-- any model file whose hash does not match;
+- any project file whose hash does not match;
 - any entry larger than 64 MiB.
 
 ## Related
 
-- [bussard.toml](files/bussard-toml.md), [groups.toml](files/groups-toml.md), [Device files](files/device-files.md), [bussard.lock](files/bussard-lock.md): the model files key by key.
-- [Product data](product-data.md): `products/`, the product store and the generated models.
+- [bussard.toml](files/bussard-toml.md), [groups.toml](files/groups-toml.md), [Device files](files/device-files.md), [bussard.lock](files/bussard-lock.md): the project files key by key.
+- [Product data](product-data.md): `products/`, the product store and the generated product models.
 - [History commands](commands/history.md): `history`, `show` and `undo` over `.bussard/history`.
 - [Environment variables](environment.md): `BUSSARD_DIR`, `BUSSARD_PRODUCT_CACHE` and the `.env` file.

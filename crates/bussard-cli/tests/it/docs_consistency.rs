@@ -308,7 +308,7 @@ fn test_mcp_tools_doc_names_every_tier_tool() -> TestResult {
         ("Programming", tools_program::PROGRAMMING_TOOLS.to_vec()),
         ("Home Assistant", tools_ha::HA_TOOLS.to_vec()),
         (
-            "No model edits",
+            "No project edits",
             bussard_mcp::tier_help::no_model_edits_omitted(),
         ),
     ];

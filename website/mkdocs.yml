@@ -116,7 +116,7 @@ nav:
           - tests.toml: reference/files/tests-toml.md
           - ha.toml: reference/files/ha-toml.md
           - Errors: reference/files/errors.md
-      - The model directory: reference/model-directory.md
+      - The project folder: reference/model-directory.md
       - Validation diagnostics: reference/diagnostics.md
       - JSON output: reference/json-output.md
       - MCP tools: reference/mcp-tools.md

@@ -33,7 +33,7 @@ groups = [
 | `groups[].dpt` | string, optional | Datapoint type (DPT, the value's encoding), for example `"1.008"`. Without it, `monitor` cannot decode the value (W011). |
 | `groups[].description` | string, optional | Free text. |
 | `groups[].protected` | bool, default `false` | A safety-critical address: the CLI refuses writes without `--force`, and MCP refuses outright. |
-| `groups[].secure` | bool, default `false` | ETS runs the address with KNX Data Secure. Imported from the project; the key itself lives only in the key store or keyring. A secured `flash` or `apply` refuses when the keyring has no key for a linked `secure` address. |
+| `groups[].secure` | bool, default `false` | ETS runs the address with KNX Data Secure. Imported from the ETS project; the key itself lives only in the key store or keyring. A secured `flash` or `apply` refuses when the key store or keyring has no key for a linked `secure` address. |
 
 ## Notes
 
@@ -41,12 +41,12 @@ groups = [
 - **Order.** The file is ordered by address. bussard pads the `name` column so the file reads as a table; a hand edit that breaks the alignment is fine.
 - **Duplicates.** A duplicate `address` is validation error E020, reported on both lines.
 - **Missing addresses.** A group address a device file uses but `groups.toml` does not define is a warning during `validate`. `import`, `apply` and the MCP edit tools add it, named `<channel name> <object function>` with the object's DPT, and report it as added. `bussard groups reserve` adds addresses by plan.
-- **Source.** The project file a model was imported from is recorded in the lock as `source`, not here.
+- **Source.** The file a project was imported from is recorded in the lock as `source`, not here.
 - **Changing `secure`.** `bussard groups secure <ga> on|off` sets the flag, the key store entry and the object flags together.
 
 ## Related
 
-- [Model commands](../commands/model.md): `groups reserve`, `export-groups` and `import`.
+- [Project commands](../commands/model.md): `groups reserve`, `export-groups` and `import`.
 - [Secure commands](../commands/secure.md): `groups secure`.
 - [Device files](device-files.md): the links that use these addresses.
 - [Diagnostics](../diagnostics.md): E001, E020, W011 and the `L` naming rules.

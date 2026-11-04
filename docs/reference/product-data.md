@@ -16,22 +16,22 @@ bussard reads these files; it never ships or redistributes them (see [The never-
 
 An ETS 6 project export (`.knxproj`) carries the application program (the vendor's firmware configuration logic for one device type) of every product used in the project, unencrypted under `M-<manufacturer>/`. This is the only route for devices whose vendor ships product data solely as ETS3-era `.vd4` files, and it is convenient whenever the project already holds the exact application version a device runs.
 
-- `bussard import-product <project>.knxproj` and `bussard import <project>.knxproj` extract each application program the model needs, once, into its own archive under `products/`. After that no command reads the export again.
+- `bussard import-product <project>.knxproj` and `bussard import <project>.knxproj` extract each application program the project needs, once, into its own archive under `products/`. After that no command reads the export again.
 - `bussard flash <ia> --product <project>.knxproj` still reads an export directly. The program is the one the lock pins for the device; `--application <application-id>` is needed only when the lock pins none.
-- The generated models are the same, byte for byte, as from the vendor `.knxprod` when the versions match.
+- The generated product models are the same, byte for byte, as from the vendor `.knxprod` when the versions match.
 
-The export itself is never copied into the model: it is your project, and large. The extracted archive holds only `knx_master.xml`, the manufacturer's `Hardware.xml` and `Catalog.xml`, and the program (plus the programs its `Hardware2Program` lists next to it), copied byte for byte into a plain ZIP with fixed timestamps. A flash image built from the extracted archive is byte-identical to one built from the export. Extracting the same program from the same export again gives the same bytes, so a re-import does not change the lock.
+The export itself is never copied into the project folder: it is your ETS project, and large. The extracted archive holds only `knx_master.xml`, the manufacturer's `Hardware.xml` and `Catalog.xml`, and the program (plus the programs its `Hardware2Program` lists next to it), copied byte for byte into a plain ZIP with fixed timestamps. A flash image built from the extracted archive is byte-identical to one built from the export. Extracting the same program from the same export again gives the same bytes, so a re-import does not change the lock.
 
 ## Reading product data at flash time
 
 `flash`, `plan`, `reconstruct` and `adopt` read an archive in two steps:
 
 1. the table of contents: the application program ids from the entry names (`M-XXXX/M-XXXX_A-….xml`), every `Hardware.xml` and `knx_master.xml`;
-2. only the program the command selects, by `--application`, the model's application reference or the order number, together with the programs its `Hardware2Program` lists next to it.
+2. only the program the command selects, by `--application`, the project's application reference or the order number, together with the programs its `Hardware2Program` lists next to it.
 
 A 15 MB project export with 30 programs costs one program parse instead of 30. When the ids alone do not settle the choice, every program is parsed, so a refusal reads as before. A lookup by order number reads the lock's `[[product]]` entries and parses nothing.
 
-The table of contents and each parsed program are cached as JSON under `.bussard/products/`, so the next command reads them back instead of parsing the XML again. A cached program is the same value a fresh parse returns, so the images are byte-identical. The layout and `BUSSARD_PRODUCT_CACHE=off` are on [Model directory](model-directory.md#bussardproducts).
+The table of contents and each parsed program are cached as JSON under `.bussard/products/`, so the next command reads them back instead of parsing the XML again. A cached program is the same value a fresh parse returns, so the images are byte-identical. The layout and `BUSSARD_PRODUCT_CACHE=off` are on [Project folder](model-directory.md#bussardproducts).
 
 ## What is inside a `.knxprod`
 
@@ -55,14 +55,14 @@ From each application program bussard reads the identity (id, application number
 
     A colour parameter (`TypeColor`) is written as `#` and two hex digits per component: `#RRGGBB` for an RGB or HSV colour, `#RRGGBBWW` for RGBW. RGB and RGBW values are placed one octet per component in that order; an HSV parameter takes the RGB value and is stored as hue, saturation and value octets, as ETS converts it.
 
-    Parameters a program computes with a `<ParameterCalculation>` script are computed as ETS computes them: the script runs once a parameter it reads leaves its vendor default (see [Device support](../explanation/device-support.md)). `bussard device`, `bussard doc`, `bussard diff` and the MCP model tools show such a parameter with the computed value, marked as computed by its calculation.
+    Parameters a program computes with a `<ParameterCalculation>` script are computed as ETS computes them: the script runs once a parameter it reads leaves its vendor default (see [Device support](../explanation/device-support.md)). `bussard device`, `bussard doc`, `bussard diff` and the MCP project tools show such a parameter with the computed value, marked as computed by its calculation.
 
 ??? note "Details"
     The program XML is streamed, never loaded as a whole document; 20 to 28 MB per program is normal. Com-objects are resolved from the `ComObject` base table and the `ComObjectRef` overrides into effective number, DPT, flags, size and text, the same way the `.knxproj` importer does. Parameter types cover `TypeNumber`, `TypeRestriction`, `TypeText`, `TypeFloat`, `TypeColor` (spaces RGB, RGBW and HSV) and `TypeNone`; any other `Type*` element is kept by name. A parameter-ref `Value` or `Access` overrides the parameter's own. Code segments (`RelativeSegment`, `AbsoluteSegment`) keep their id, size, address or offset and load-state machine; the binary payload is dropped. The `LdCtrl*` load procedure is parsed into a typed op list, and unknown ops are kept verbatim.
 
 ## The product store (`products/`)
 
-`products/` holds every product archive the model depends on: vendor `.knxprod` files as downloaded or supplied, and the archives extracted once from an ETS export.
+`products/` holds every product archive the project depends on: vendor `.knxprod` files as downloaded or supplied, and the archives extracted once from an ETS export.
 
 - **Retained, not a cache.** Vendor downloads can disappear and the export is used once, so bussard never regenerates anything in it.
 - **Readable names.** The vendor's file name, or `<application-id>.knxprod` for an extracted program. A different file under a name already taken is stored with the first eight hex digits of its SHA-256 appended; nothing in the store is overwritten.
@@ -92,12 +92,12 @@ An archive whose SHA-256 differs from the lock's is refused, naming both hashes;
 **Overrides.** Every command that needs product data (`flash`, `apply`, `plan`, `reconstruct`, `commission --flash`, `replace`, `adopt`) resolves it from the lock and the store; `--product` and `--application` stay as overrides.
 
 - An override that contradicts the lock (another archive hash, another application) is refused by `flash`, `apply` and `replace` unless `--force`, which uses it and pins the archive for the device. `plan` and `reconstruct` warn.
-- `replace` needs no `--product`: the order number comes from the model and the application from the lock.
+- `replace` needs no `--product`: the order number comes from the device file and the application from the lock.
 - `flash --product <export>.knxproj` needs no `--application` when the lock pins the device's program.
 - `adopt` given an export stores it the way `import-product` does.
 
 !!! note
-    A model directory from an earlier bussard kept its archives in `vendor/`. The first command that reads the model moves every `vendor/*.knxprod` into `products/`, pins it (origin `index` when the pointer index knows its hash, else `file`), links the devices whose order number its catalogue carries, removes the empty `vendor/` with its old `.gitignore`, and generates `.bussard/models/`. A device whose product data only existed in an ETS export gets its archive on the next `bussard import` of that export.
+    A project folder from an earlier bussard kept its archives in `vendor/`. The first command that reads the project moves every `vendor/*.knxprod` into `products/`, pins it (origin `index` when the pointer index knows its hash, else `file`), links the devices whose order number its catalogue carries, removes the empty `vendor/` with its old `.gitignore`, and generates `.bussard/models/`. A device whose product data only existed in an ETS export gets its archive on the next `bussard import` of that export.
 
 ## What `import-product` writes
 
@@ -108,7 +108,7 @@ An archive whose SHA-256 differs from the lock's is refused, naming both hashes;
 3. pins each archive in `bussard.lock` and links the devices it serves;
 4. writes one product model per application program to `.bussard/models/<application-id>.yaml`.
 
-With `--order-number` the downloaded file is stored the same way, with origin `index`. Running the command twice on the same file produces byte-identical archives, lock and models.
+With `--order-number` the downloaded file is stored the same way, with origin `index`. Running the command twice on the same file produces byte-identical archives, lock and product models.
 
 ## Product data and the device files
 
@@ -155,9 +155,9 @@ The index covers about 900 product databases from MDT, Zennio, Lingg & Janke, Th
 
 Order-number matching ignores case and surrounding whitespace but keeps interior separators: `AKK-0216.03` and `akk-0216.03` match, `AKK021603` does not, because `-` and `.` distinguish real KNX order numbers.
 
-## The generated model files
+## The generated product model files
 
-`import-product` turns each application program into a model file under `.bussard/models/`: the object table, the parameters with their types, defaults and memory locations, the download procedure and the ETS dialog structure. The files are generated and carry a banner saying so; do not edit them. When the directory is missing, or a file is of an older format, the next command rebuilds it from the archives in `products/`.
+`import-product` turns each application program into a product model file under `.bussard/models/`: the object table, the parameters with their types, defaults and memory locations, the download procedure and the ETS dialog structure. The files are generated and carry a banner saying so; do not edit them. When the directory is missing, or a file is of an older format, the next command rebuilds it from the archives in `products/`.
 
 ## The never-redistribute rule
 
@@ -167,12 +167,12 @@ bussard never hosts, ships or mirrors vendor product data. `products/` holds the
 
 - **Schema namespace.** Application program XML declares its schema as the default namespace on the root `<KNX>` element, for example `http://knx.org/xml/project/23` for the ETS 6 generation. bussard parses by local element name, so a file from `/20`, `/21` or `/23` reads the same way, and it records the schema version in `identity.schema_version`.
 - **Mask version drives behaviour.** `mask_version` (for example `07B0`, `0705`, `0701`, `0021`) tells the downloader whether the device is property-based (System B) or memory-based (older System 1 and 2). The reader only records it.
-- **Modules.** Complex devices define objects and parameters inside reusable module definitions (`MD-…`) that the device instantiates (`MD-…_M-n_MI-n_…`). The model file lists the application-level refs; bussard maps a device's instances onto them by dropping the `_M-n_MI-n` instance segment, with the instance base offsets recorded in `bussard.lock`.
+- **Modules.** Complex devices define objects and parameters inside reusable module definitions (`MD-…`) that the device instantiates (`MD-…_M-n_MI-n_…`). The product model file lists the application-level refs; bussard maps a device's instances onto them by dropping the `_M-n_MI-n` instance segment, with the instance base offsets recorded in `bussard.lock`.
 - **Translations.** Names and texts resolve to `en-US` when a translation is present, falling back to the file's default language otherwise, matching ETS. Device-file keys and labels follow the lock's `language` instead (see [Text language](files/bussard-lock.md#text-language)).
 
 ## Related
 
 - [Device commands](commands/devices.md): `import-product`, `adopt` and their flags.
 - [bussard.lock](files/bussard-lock.md): the `[[product]]` entries that pin each archive.
-- [Model directory](model-directory.md): `products/`, `.bussard/models/` and the parsed-product cache.
+- [Project folder](model-directory.md): `products/`, `.bussard/models/` and the parsed-product cache.
 - [How it works](../explanation/how-it-works.md): why product data matters to every write.

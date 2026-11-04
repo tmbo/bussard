@@ -1,6 +1,6 @@
 # tests.toml
 
-`tests.toml` holds the acceptance tests `bussard test` and the `knx_run_tests` MCP tool run against the bus. You write it; it is optional, and parsed as strictly as the rest of the model.
+`tests.toml` holds the acceptance tests `bussard test` and the `knx_run_tests` MCP tool run against the bus. You write it; it is optional, and parsed as strictly as the rest of the project.
 
 ## Example
 

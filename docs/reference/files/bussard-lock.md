@@ -1,6 +1,6 @@
 # bussard.lock
 
-`bussard.lock` is the join between your words and the vendor's ids: which product archive each device runs, and the channel handles, object keys and parameter keys its device file uses. `import`, `import-product` and `adopt` write it; never edit it by hand. Commit it with the model, as you would `Cargo.lock`.
+`bussard.lock` is the join between your words and the vendor's ids: which product archive each device runs, and the channel handles, object keys and parameter keys its device file uses. `import`, `import-product` and `adopt` write it; never edit it by hand. Commit it with the project, as you would `Cargo.lock`.
 
 ## Example
 
@@ -50,7 +50,7 @@ hidden = [
 ]
 ```
 
-`hardware_ref`, `has_fdsk_certificate`, `sequence_number` and `module_bases` are absent here rather than `false` or zero: this application resolves no distinct hardware ref, and Data Secure has not been activated on the device. `MD-3_M-18_MI-1_P-103_R-160` is a parameter whose effective `Access` is `"None"`: ETS stores a value for it but never lets you edit it, so it gets no device-file key.
+`hardware_ref`, `has_fdsk_certificate`, `sequence_number` and `module_bases` are absent here rather than `false` or zero: this application resolves no distinct hardware ref, and the device is not secured. `MD-3_M-18_MI-1_P-103_R-160` is a parameter whose effective `Access` is `"None"`: ETS stores a value for it but never lets you edit it, so it gets no device-file key.
 
 ## Keys
 
@@ -60,9 +60,9 @@ hidden = [
 |---|---|---|
 | `version` | integer | The lock format version: `4` when a device entry carries a `serial_number`, `3` otherwise. See [Lock version](#lock-version). |
 | `written_by` | string | The build that wrote the lock (`bussard 0.1.0`, plus the short git commit when the build has one). Informational only. |
-| `source` | string | The project file the model was imported from. |
+| `source` | string | The file the project was imported from. |
 | `language` | string | The language the lock's texts and keys were derived in. See [Text language](#text-language). |
-| `[[product]]` | array of tables | One entry per product-data archive the model depends on. |
+| `[[product]]` | array of tables | One entry per product-data archive the project depends on. |
 | `[[device]]` | array of tables | One entry per device, sorted by address. |
 
 ### `[[product]]`
@@ -81,7 +81,7 @@ hidden = [
 
 | Key | Type | Meaning |
 |---|---|---|
-| `address` | string | The device's individual address. |
+| `address` | string | The device's address. |
 | `product` | string | The order number. Must equal the device file's `product` (E022). |
 | `application` | string | The application program ref the device runs. |
 | `product_sha256` | string | The `[[product]]` entry that carries the application (E032 when there is none). |
@@ -127,7 +127,7 @@ hidden = [
 ### Products and devices
 
 - A save keeps every `[[product]]` entry a device links and every entry that names an archive.
-- A device served both by an archive in the model and by an ETS export links the archive. A save links an unlinked device to an archive entry that lists its order number and application, and drops a link whose entry no longer lists the device's application.
+- A device served both by an archive in the project and by an ETS export links the archive. A save links an unlinked device to an archive entry that lists its order number and application, and drops a link whose entry no longer lists the device's application.
 - `application_id` and `application_version` follow from the application ref (`M-0004_A-20DE-22-…` is manufacturer `0004`, application `20DE`, version `0x22`). The lock writes them so a reader does not need the product data.
 
 ### Identity checks
@@ -164,8 +164,8 @@ One spelling per ref: a ref has one value, in the device file under its `paramet
 
 The product facts (program, manufacturer, hardware, mask) and the device's KNX Secure state (`secure_capable`, `has_fdsk_certificate`, `sequence_number`, `secure_senders`) live here; the device file keeps only the intent.
 
-- A secured `flash` or `apply` writes the `secure_senders` rows back next to the senders the model's links imply; a sender the links imply takes the derived sequence. A device keeps accepting senders the model does not describe. An import never writes `secure_senders`.
-- An object's `secure` is set by the import (from the project's group keys) and by `adopt` (from the device's PID 61). `bussard groups secure` and `knx_set_group` with `secure` change it with its group address. A verified secured `apply` or `flash` rewrites it for the linked objects to the flags the security object received.
+- A secured `flash` or `apply` writes the `secure_senders` rows back next to the senders the project's links imply; a sender the links imply takes the derived sequence. A device keeps accepting senders the project does not describe. An import never writes `secure_senders`.
+- An object's `secure` is set by the import (from the ETS project's group keys) and by `adopt` (from the device's PID 61). `bussard groups secure` and `knx_set_group` with `secure` change it with its group address. A verified secured `apply` or `flash` rewrites it for the linked objects to the flags the security object received.
 
 ## Text language
 
@@ -207,7 +207,7 @@ A program without the chosen language keeps its untranslated texts. The choice i
 - Validation compares each device file's `product` with the lock entry and reports E022 when they differ or when the entry is missing, naming the command to run.
 - A lock entry for a device that has no file is dropped on the next save.
 - E032 (a warning) reports a `product_sha256` with no `[[product]]` entry.
-- E033 (a warning) reports a `[[product]]` entry whose `file` the model directory does not hold, with the command that gets it back.
+- E033 (a warning) reports a `[[product]]` entry whose `file` the project folder does not hold, with the command that gets it back.
 
 ## Lock version
 
@@ -225,4 +225,4 @@ Version history: 2 added the `[[product]]` entries and the per-device product ha
 - [Device files](device-files.md): the file the lock's handles and keys serve.
 - [Product data](../product-data.md): the archives `[[product]]` pins and the product store.
 - [Diagnostics](../diagnostics.md): E021, E022, E032 and E033.
-- [Model commands](../commands/model.md): `import`, which writes the lock.
+- [Project commands](../commands/model.md): `import`, which writes the lock.

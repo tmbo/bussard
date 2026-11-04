@@ -1,6 +1,6 @@
 # bussard.keys
 
-`bussard.keys` is the KNX Secure key store: the tunnelling passwords, the device tool keys and the group keys of a secured installation. `bussard keys import` writes it, and so do `import` and `init` when a `.knxkeys` keyring export sits next to the project and `BUSSARD_KEYRING_PASSWORD` is set. Do not edit it by hand.
+`bussard.keys` is the KNX Secure key store: the tunnelling passwords, the device tool keys and the group keys of a secured installation. `bussard keys import` writes it, and so do `import` and `init` when a `.knxkeys` keyring export sits next to the ETS project and `BUSSARD_KEYRING_PASSWORD` is set. The variable's name predates the key store. Do not edit it by hand.
 
 ## Example
 
@@ -36,7 +36,7 @@
 ## Notes
 
 - **Who reads it.** Every bus command reads its keys from the store unless `--keyring` or `BUSSARD_KEYRING` names an explicit file. The store wins over the deprecated `connection.keyring`.
-- **Git-tracked by design.** A checkout recovers the model and its keys together. `.bussard/` never holds keys.
+- **Git-tracked by design.** A checkout recovers the project and its keys together. `.bussard/` never holds keys.
 - **Protection.** The file is the XML of an ETS `.knxkeys` export, protected the same way and with the same password, `BUSSARD_KEYRING_PASSWORD`. Every key and password attribute is AES-128-CBC encrypted under the PBKDF2 keyring key, and the root `Signature` covers every element and attribute, so a wrong password or a hand edit fails the load.
 - **What differs from an ETS export.** The `Format` attribute and namespace, the optional `ToolKey`, three-level group addresses, and stable ciphertexts. An unchanged key or password keeps its encrypted bytes across writes (fixed `Created`, keyed password prefixes), so `git diff` shows only the entries that changed plus the signature line.
 - **No send sequences.** bussard's own Data Secure send sequences are not stored. They are seeded from the clock (milliseconds since 2018-01-05), so a restored store never makes bussard replay a sequence a device has already seen.
