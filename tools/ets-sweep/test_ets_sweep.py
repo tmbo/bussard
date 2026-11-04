@@ -453,6 +453,27 @@ class TestOracleModel(unittest.TestCase):
         self.assertLess(groups.index('"1/0/1"'), groups.index('"1/0/4"'))
         self.assertLess(groups.index('"1/0/4"'), groups.index('"1/0/9"'))
 
+    def test_additional_addresses_bus_interfaces_order(self):
+        """ETS assigns the tunnels of an application with <BusInterfaces>
+        descending from .255, of one with only AdditionalAddressesCount
+        ascending (#840, sweep captures)."""
+        import zipfile
+
+        def product(name: str, body: str) -> Path:
+            path = self.tmp / f"{name}.knxprod"
+            with zipfile.ZipFile(path, "w") as z:
+                z.writestr(f"M-00FA/{name}.xml", '<ApplicationProgram Id="x" AdditionalAddressesCount="3">' + body)
+            return path
+
+        legacy = product("M-00FA_A-0001-10-0000", "</ApplicationProgram>")
+        modern = product("M-00FA_A-0002-10-0000", '<BusInterfaces><BusInterface AddressIndex="1" '
+                         'AccessType="Tunneling"/></BusInterfaces></ApplicationProgram>')
+        self.assertEqual(oracle_model.additional_addresses(legacy, "M-00FA_A-0001-10-0000"), (3, False))
+        self.assertEqual(oracle_model.additional_addresses(modern, "M-00FA_A-0002-10-0000"), (3, True))
+        self.assertIn('tunnels = ["1.1.253", "1.1.254", "1.1.255"]', oracle_model.knxnet_table("1.1.1", 3, None))
+        self.assertIn('tunnels = ["1.1.255", "1.1.254", "1.1.253"]',
+                      oracle_model.knxnet_table("1.1.1", 3, None, bus_interfaces=True))
+
     def test_shared_import_seed_copies_without_devices(self):
         seed = self.shared()
         (seed / "devices").mkdir()
