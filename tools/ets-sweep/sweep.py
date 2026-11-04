@@ -273,15 +273,67 @@ def ets_required(c, since: str) -> list[dict]:
     return out
 
 
-def ets_failed_since(c, since: str) -> bool:
-    """Whether ETS logged a failed download (LoadDeviceTask WARN/ERROR) since
-    `since` (VM local time). Reads the log's tail only, cheap enough to poll."""
+def ets_failure_lines(log: str, since: str) -> list[str]:
+    """The LoadDeviceTask WARN/ERROR lines of an ETS6.log excerpt written at
+    or after `since` (VM local time, the log's own timestamp format), in log
+    order and without repeats."""
+    out: list[str] = []
+    for line in log.splitlines():
+        line = line.strip()
+        if line[:19] >= since and (" WARN " in line or " ERROR " in line) and line not in out:
+            out.append(line)
+    return out
+
+
+def ets_failed_since(c, since: str) -> list[str]:
+    """The ETS6.log lines of a failed download (LoadDeviceTask WARN/ERROR)
+    since `since` (VM local time); empty when ETS logged none. Reads the
+    log's tail only, cheap enough to poll. The lines name what ETS refused
+    (a run that ends 'ets logged a failure' while the history pane says
+    'Abgeschlossen' is otherwise unexplained: ekinex A-4945, 2026-11-04)."""
     cmd = ("powershell -NoProfile -Command \"Get-Content -Path '" + ETS_LOG +
            "' -Tail 60 | Select-String -Pattern 'LoadDeviceTask' | ForEach-Object { $_.Line }\"")
-    for line in vm.run(c, cmd, 60)[1].splitlines():
-        if line[:19] >= since and (" WARN " in line or " ERROR " in line):
-            return True
-    return False
+    return ets_failure_lines(vm.run(c, cmd, 60)[1], since)
+
+
+HISTORY_HEADER = "Historie löschen"
+HISTORY_LABELS = ("Verbindung:", "Start:", "Ende:")
+_STATUS = ("Programmieren", "Entladen", "Herunterladen")
+_IA_ONLY = re.compile(r"^\d+\.\d+\.\d+$")
+
+
+def is_history_status(line: str) -> bool:
+    """Whether a history line is an entry's status ('Programmieren(Appl.):
+    Abgeschlossen', 'Entladen: fehlgeschlagen', ...), as `ets_status` reads it."""
+    return any(k in line for k in _STATUS)
+
+
+def newest_history_entry(history: list[str] | None) -> list[str]:
+    """The newest entry of ETS's history pane (the OCR'd lines the driver's
+    `history` flow returns, newest first): the device lines before its status
+    line, the status line, and the message lines under it ('Keine Details
+    verfügbar', 'SystemB/300: failed to read association table format', ...).
+    The pane's header, the Verbindung/Start/Ende labels, the connection under
+    them and the older entries are dropped. The OCR splits the address column
+    off the names at times ('1.1.1' four times, then 'KNX IP interface
+    secure'): a repeated line is kept once, a bare address under the status
+    line not at all. Without a status line the first four lines after the
+    header are kept."""
+    lines = [l for l in (history or []) if l.strip() and l.strip() != HISTORY_HEADER]
+    status = next((i for i, l in enumerate(lines) if is_history_status(l)), None)
+    if status is None:
+        return lines[:4]
+    head: list[str] = []
+    for l in lines[:status]:
+        if l not in head:
+            head.append(l)
+    detail: list[str] = []
+    for l in lines[status + 1:status + 1 + 8]:
+        if l in HISTORY_LABELS or is_history_status(l):
+            break
+        if not _IA_ONLY.match(l):
+            detail.append(l)
+    return head + [lines[status]] + detail
 
 
 def product_properties(knxprod: Path, app: str) -> list[dict]:
@@ -477,8 +529,10 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
                 time.sleep(3)
                 result["end"] = "device restarted"
                 break
-            if ets_failed_since(c, since):
+            failure = ets_failed_since(c, since)
+            if failure:
                 result["end"] = "ets logged a failure"
+                result["ets_log"] = failure
                 break
             age = sim.last_telegram_age()
             if seen and age > quiet:

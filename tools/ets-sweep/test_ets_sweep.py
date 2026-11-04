@@ -195,6 +195,73 @@ class TestRepair(unittest.TestCase):
         self.assertEqual(json.loads((repair / "repair.json").read_text())["screen.png"], "ok")
 
 
+class TestEtsHistoryAndLog(unittest.TestCase):
+    """What a run keeps of ETS's history pane and of its log (2026-11-04
+    evaluation: defaults.json held only '1.1.1' lines for A-4945, and a run
+    that ended 'ets logged a failure' did not say which message)."""
+
+    def test_newest_history_entry_ocr_split_address_column(self):
+        import sweep
+
+        hist = ["Historie löschen", "1.1.1", "1.1.1", "1.1.1", "1.1.1", "KNX IP interface secure",
+                "Programmieren(Appl.): Abgeschlossen", "Keine Details verfügbar", "Verbindung:", "Start:",
+                "Ende:", "Modul für Büroräume", "1.1.254 knx-sim (127.0.0.1)",
+                "Programmieren(Appl.): Abgeschlossen"]
+        self.assertEqual(sweep.newest_history_entry(hist),
+                         ["1.1.1", "KNX IP interface secure", "Programmieren(Appl.): Abgeschlossen",
+                          "Keine Details verfügbar"])
+
+    def test_newest_history_entry_failure_keeps_the_message(self):
+        import sweep
+
+        hist = ["Historie löschen", "1.1.1 6108/06-500 Tasterankopplung 2-fach, UP",
+                "Programmieren(Appl.): fehlgeschlagen", "Die Programmierung kann nicht fortgesetzt werden",
+                "aufgrund inkompatibler Produktdaten.", "1.1.1", "Verbindung:", "Start:", "Ende:",
+                "1.1.254 knx-sim (127.0.0.1)", "1.1.1 HeatingBOX 230V", "Programmieren(Appl.): Abgeschlossen"]
+        entry = sweep.newest_history_entry(hist)
+        self.assertEqual(entry[:2], ["1.1.1 6108/06-500 Tasterankopplung 2-fach, UP",
+                                     "Programmieren(Appl.): fehlgeschlagen"])
+        self.assertEqual(entry[2:], ["Die Programmierung kann nicht fortgesetzt werden",
+                                     "aufgrund inkompatibler Produktdaten."])
+        self.assertEqual(sweep.ets_status(entry), "failed")
+
+    def test_newest_history_entry_without_status_and_empty(self):
+        import sweep
+
+        self.assertEqual(sweep.newest_history_entry(["Historie löschen", "a", "b", "c", "d", "e"]),
+                         ["a", "b", "c", "d"])
+        self.assertEqual(sweep.newest_history_entry(None), [])
+        # An entry from an older defaults.json (first four lines) reads the same.
+        self.assertEqual(sweep.newest_history_entry(["Historie löschen", "1.1.1 X",
+                                                     "Programmieren(Appl.): Abgeschlossen",
+                                                     "Keine Details verfügbar"]),
+                         ["1.1.1 X", "Programmieren(Appl.): Abgeschlossen", "Keine Details verfügbar"])
+
+    def test_ets_failure_lines_since_warn_and_error_once(self):
+        import sweep
+
+        log = ("2026-11-04 10:00:01,1 WARN  LoadDeviceTask - old\r\n"
+               "2026-11-04 10:05:00,2 INFO  LoadDeviceTask - started\r\n"
+               "2026-11-04 10:05:03,3 WARN  LoadDeviceTask - LoadImageProp mismatch obj 4\r\n"
+               "2026-11-04 10:05:03,3 WARN  LoadDeviceTask - LoadImageProp mismatch obj 4\r\n"
+               "2026-11-04 10:05:04,4 ERROR LoadDeviceTask - download failed\r\n")
+        self.assertEqual(sweep.ets_failure_lines(log, "2026-11-04 10:05:00"),
+                         ["2026-11-04 10:05:03,3 WARN  LoadDeviceTask - LoadImageProp mismatch obj 4",
+                          "2026-11-04 10:05:04,4 ERROR LoadDeviceTask - download failed"])
+        self.assertEqual(sweep.ets_failure_lines("", "2026-11-04 10:05:00"), [])
+
+    def test_ets_failed_since_returns_the_lines(self):
+        from unittest import mock
+
+        import sweep
+
+        out = "2026-11-04 10:05:03,3 WARN  LoadDeviceTask - x\r\n"
+        with mock.patch.object(sweep.vm, "run", lambda c, cmd, t=60: (0, out)):
+            self.assertEqual(sweep.ets_failed_since(None, "2026-11-04 10:05:00"),
+                             ["2026-11-04 10:05:03,3 WARN  LoadDeviceTask - x"])
+            self.assertEqual(sweep.ets_failed_since(None, "2026-11-04 10:06:00"), [])
+
+
 class TestFollowups(unittest.TestCase):
     def test_draft_names_app_capture_and_diff(self):
         tmp = Path(tempfile.mkdtemp())

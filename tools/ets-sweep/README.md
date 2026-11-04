@@ -176,7 +176,11 @@ uv run tools/ets-sweep/oracle.py
 catalog row whose order number and application version match, select the
 knx-sim connection, application download, wait for the bus to go quiet, read
 ETS's history. Results land in `results/defaults.json`; a run directory per
-application under `captures/ets-sweep/<app>/plain-defaults/`.
+application under `captures/ets-sweep/<app>/plain-defaults/`. A result keeps
+the newest entry of ETS's history pane (`ets_history`: the device, its status
+line and the message under it) and, when the run ended "ets logged a failure",
+the `LoadDeviceTask` warnings and errors of `ETS6.log` that ended it
+(`ets_log`, also in `driver.json`).
 
 **Identity learned from ETS.** Before a download ETS compares the device's
 identity with what the product requires, and refuses with "inkompatible

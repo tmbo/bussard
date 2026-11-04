@@ -248,7 +248,7 @@ def run_series(c, rep: dict, only_steps: str = "abcd") -> dict:
             with c.open_sftp().open(f"{sweep.RemoteSim.DIR}/sim.yaml".replace("\\", "/")) as fh:
                 (out / "sim.yaml").write_bytes(fh.read())
             step = {"mode": mode, "changes": changes, "download": r, "end": end, "ets": sweep.ets_status(hist),
-                    "history": hist[:4], "frames": frames}
+                    "history": sweep.newest_history_entry(hist), "frames": frames}
             (out / "driver.json").write_text(json.dumps({"app": app, "variant": name, **step}, indent=1,
                                                         ensure_ascii=False))
             result["steps"][name] = {"ets": step["ets"], "end": end, "frames": frames}
