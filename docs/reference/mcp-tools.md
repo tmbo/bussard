@@ -233,7 +233,9 @@ The assistant flow:
 
 1. `knx_enroll_certificates`. The chat app shows the link and the session code and asks before opening it; the human opens the link and checks that the page shows the same session code. The assistant never sees either and never offers one of its own.
 2. `knx_enroll_status` with `wait_seconds` while the human scans; quote each result.
-3. The session ends when the human finishes on the page, on `knx_enroll_status` with `stop: true`, or after 30 minutes.
+3. The session ends when the human finishes on the page, on `knx_enroll_status` with `stop: true`, when no phone joins within 10 minutes, 15 minutes after the phone's last sign of life, or after 4 hours.
+
+One phone owns a session. When another phone opens the link, `knx_enroll_status` counts it in `refused_phones` and sets `warning`; tell the human, and stop the session if the phone was not theirs. When the page or relay is not the default, `knx_enroll_certificates` returns `warnings`.
 
 By default the link opens the hosted page and relay, or the ones the `[enroll]` table of [`bussard.toml`](files/bussard-toml.md) names. With `local: true` the server serves the page and the relay itself on `127.0.0.1` at a free port, on one origin, so the link names no relay; it opens in a browser on the computer running the server (a webcam, or labels typed in), not on a phone. One session runs at a time. The key store needs `BUSSARD_KEYRING_PASSWORD` in the server's environment.
 

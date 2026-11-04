@@ -102,7 +102,7 @@ class TestSecure(unittest.TestCase):
 
     def test_certificate_text_matches_the_enroll_vectors(self):
         root = Path(__file__).resolve().parents[2]
-        vectors = json.loads((root / "dev" / "enroll" / "vectors-v1.json").read_text())
+        vectors = json.loads((root / "dev" / "enroll" / "vectors-v2.json").read_text())
         for v in vectors["certificates"]["valid"]:
             text = secure.certificate_text(bytes.fromhex(v["serial"]), bytes.fromhex(v["fdsk"]))
             self.assertEqual(text, v["text"])

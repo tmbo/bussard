@@ -2,8 +2,9 @@
 //! shared with the hosted relay, #731) run against the in-process relay.
 //!
 //! The format is in `services/enroll-relay/README.md` ("API cases"). Each
-//! case gets a fresh session id and fresh owner/other tokens; `short_ttl`
-//! cases run against a relay whose sessions live `short_ttl_seconds`.
+//! case gets a fresh session id and fresh owner/other tokens; `short` cases
+//! run against a relay whose sessions expire after `short.idle_seconds`
+//! without a write and `short.max_seconds` at most.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -218,15 +219,16 @@ async fn test_enroll_relay_conformance_cases() -> Result<(), BoxError> {
         return Ok(());
     };
     let cases: Value = serde_json::from_str(&text)?;
-    assert_eq!(cases["format"].as_u64(), Some(1));
-    let ttl = Duration::from_secs(cases["short_ttl_seconds"].as_u64().ok_or("short_ttl")?);
+    assert_eq!(cases["format"].as_u64(), Some(2));
+    let idle = Duration::from_secs(cases["short"]["idle_seconds"].as_u64().ok_or("idle")?);
+    let max = Duration::from_secs(cases["short"]["max_seconds"].as_u64().ok_or("max")?);
     let default = EnrollRelay::new().router();
-    let short = EnrollRelay::with_lifetime(ttl).router();
+    let short = EnrollRelay::with_lifetimes(idle, max).router();
     let fixtures = &cases["fixtures"];
     let mut runs = Vec::new();
     for case in cases["cases"].as_array().ok_or("cases")? {
         let router = match case["relay"].as_str() {
-            Some("short_ttl") => short.clone(),
+            Some("short") => short.clone(),
             _ => default.clone(),
         };
         let case = case.clone();

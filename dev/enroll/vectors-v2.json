@@ -11,7 +11,8 @@
     "session_code_salt": "627573736172642d656e726f6c6c2d76322073657373696f6e20636f6465c8c9cacbcccdcecfd0d1d2d3d4d5d6d7",
     "session_code_iterations": 1000000,
     "session_code": "3F5B-893B",
-    "link": "https://bussard.tmbo.dev/enroll/#v=2&s=yMnKy8zNzs_Q0dLT1NXW1w&k=B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9_AsrhtHHw&r=https%3A%2F%2Frelay.example"
+    "link": "https://bussard-relay.tmbo.dev/enroll/#v=2&s=yMnKy8zNzs_Q0dLT1NXW1w&k=B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9_AsrhtHHw",
+    "link_other_relay": "https://page.example/enroll/#v=2&s=yMnKy8zNzs_Q0dLT1NXW1w&k=B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9_AsrhtHHw&r=https%3A%2F%2Frelay.example"
   },
   "messages": [
     {

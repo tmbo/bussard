@@ -7,7 +7,7 @@
 
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import worker, { Session } from '../src/worker.js';
+import worker, { CreateLimit, Session } from '../src/worker.js';
 
 class MemoryStorage {
   constructor(onAlarm) {
@@ -55,8 +55,9 @@ class MemoryStorage {
 }
 
 class MemoryNamespace {
-  constructor(env) {
+  constructor(env, ObjectClass) {
     this.env = env;
+    this.ObjectClass = ObjectClass;
     this.objects = new Map();
   }
 
@@ -68,7 +69,7 @@ class MemoryNamespace {
     if (!this.objects.has(id)) {
       let object;
       const storage = new MemoryStorage(() => object.alarm());
-      object = new Session({ storage }, this.env);
+      object = new this.ObjectClass({ storage }, this.env);
       this.objects.set(id, object);
     }
     const object = this.objects.get(id);
@@ -111,12 +112,13 @@ const assets = {
 
 /**
  * Starts the relay on 127.0.0.1 with an ephemeral port. `vars` are the Worker
- * environment variables (for example `SESSION_TTL_SECONDS`). Resolves to
+ * environment variables (for example `SESSION_IDLE_SECONDS`). Resolves to
  * `{ url, close }`.
  */
 export async function startRelay(vars = {}) {
   const env = { ...vars };
-  env.SESSIONS = new MemoryNamespace(env);
+  env.SESSIONS = new MemoryNamespace(env, Session);
+  env.CREATE_LIMITS = new MemoryNamespace(env, CreateLimit);
   env.ASSETS = assets;
   const server = createServer(async (req, res) => {
     try {

@@ -1,18 +1,20 @@
-// Protocol core of the certificate enrolment page (dev/enroll-protocol.md, v1).
+// Protocol core of the certificate enrolment page (dev/enroll-protocol.md, v2).
 //
 // Pure functions over WebCrypto and bytes, with no DOM access, so the same
 // module runs in the browser and under `node --test` (web/tests/), where it is
-// checked against dev/enroll/vectors-v1.json.
+// checked against dev/enroll/vectors-v2.json.
 
 /** Protocol version carried in the link (`v=`) and in every envelope. */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 /** Largest serialized envelope the relay accepts, in bytes. */
 export const MAX_ENVELOPE_BYTES = 4096;
 /** Length of a normalized certificate text. */
 export const CERTIFICATE_LENGTH = 36;
 
-const LABEL = "bussard-enroll-v1";
-const FINGERPRINT_LABEL = "bussard-enroll-v1 fingerprint";
+const LABEL = "bussard-enroll-v2";
+const SESSION_CODE_LABEL = "bussard-enroll-v2 session code";
+/** PBKDF2 iterations of the session code (dev/enroll-protocol.md, "Session code"). */
+export const SESSION_CODE_ITERATIONS = 1_000_000;
 const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
 /** An error with a stable `code` the page maps to a message. */
@@ -94,7 +96,7 @@ export function b64urlDecode(text) {
 // -------------------------------------------------------------------- link
 
 /**
- * Parse the link fragment (`#v=1&s=<sid>&k=<b_pk>&r=<relay>`).
+ * Parse the link fragment (`#v=2&s=<sid>&k=<b_pk>&r=<relay>`).
  *
  * @param {string} hash `location.hash`, with or without the leading `#`, or a
  *   whole link
@@ -162,14 +164,28 @@ export function relayUrl(relay, sidText, dir, query) {
   return `${base}?${new URLSearchParams(query).toString()}`;
 }
 
-// -------------------------------------------------------------- fingerprint
+// ------------------------------------------------------------- session code
 
-/** `XXXX-XXXX`: the first 4 bytes of SHA-256(label || b_pk), uppercase hex. */
-export async function fingerprint(subtle, bussardPublic) {
-  const digest = new Uint8Array(
-    await subtle.digest("SHA-256", concatBytes(utf8(FINGERPRINT_LABEL), bussardPublic)),
+/**
+ * The session code (`fingerprint`), `XXXX-XXXX`: 4 bytes of
+ * PBKDF2-HMAC-SHA256(b_pk, label || sid, 1 000 000 iterations), uppercase
+ * hex. Slow on purpose (about a second on a phone); derive it once.
+ */
+export async function fingerprint(subtle, sid, bussardPublic) {
+  const key = await subtle.importKey("raw", bussardPublic, "PBKDF2", false, ["deriveBits"]);
+  const bits = new Uint8Array(
+    await subtle.deriveBits(
+      {
+        name: "PBKDF2",
+        hash: "SHA-256",
+        salt: concatBytes(utf8(SESSION_CODE_LABEL), sid),
+        iterations: SESSION_CODE_ITERATIONS,
+      },
+      key,
+      32,
+    ),
   );
-  const hex = toHex(digest.slice(0, 4)).toUpperCase();
+  const hex = toHex(bits).toUpperCase();
   return `${hex.slice(0, 4)}-${hex.slice(4)}`;
 }
 
@@ -220,7 +236,7 @@ export async function deriveSessionKey(subtle, phonePrivate, phonePublic, link) 
   return key;
 }
 
-/** `bussard-enroll-v1/<dir>/<sid base64url>`. */
+/** `bussard-enroll-v2/<dir>/<sid base64url>`. */
 export function aad(dir, sidText) {
   return `${LABEL}/${dir}/${sidText}`;
 }
@@ -278,11 +294,17 @@ export function doneMessage() {
   return JSON.stringify({ type: "done" });
 }
 
+/** Plaintext of the `up` hello message (page open, and the keep-alive). */
+export function helloMessage() {
+  return JSON.stringify({ type: "hello" });
+}
+
 const STATUSES = new Set(["stored", "unassigned", "already_stored", "conflict", "invalid", "error"]);
 
 /**
- * Parse a `down` plaintext into `{type: "result", ...}` or
- * `{type: "closed", stored}`; anything else yields `null`.
+ * Parse a `down` plaintext into `{type: "result", ...}`,
+ * `{type: "closed", stored, reason}` or `{type: "refused"}`; anything else
+ * yields `null`.
  */
 export function parseDown(plaintext) {
   let msg;
@@ -305,7 +327,14 @@ export function parseDown(plaintext) {
     };
   }
   if (msg.type === "closed") {
-    return { type: "closed", stored: Number.isInteger(msg.stored) ? msg.stored : 0 };
+    return {
+      type: "closed",
+      stored: Number.isInteger(msg.stored) ? msg.stored : 0,
+      reason: typeof msg.reason === "string" ? msg.reason : undefined,
+    };
+  }
+  if (msg.type === "refused") {
+    return { type: "refused" };
   }
   return null;
 }

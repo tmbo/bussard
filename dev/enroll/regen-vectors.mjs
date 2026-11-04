@@ -27,7 +27,10 @@ const LABEL = "bussard-enroll-v2";
 const SESSION_CODE_LABEL = "bussard-enroll-v2 session code";
 const SESSION_CODE_ITERATIONS = 1_000_000;
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-const PAGE = "https://bussard.tmbo.dev/enroll/";
+// The hosted page is served by the relay Worker, on the relay's origin, so
+// its link carries no `r`; a self-hosted page elsewhere names its relay.
+const PAGE = "https://bussard-relay.tmbo.dev/enroll/";
+const OTHER_PAGE = "https://page.example/enroll/";
 const RELAY = "https://relay.example";
 
 // ------------------------------------------------------------------ inputs
@@ -187,7 +190,8 @@ const vectors = {
     session_code_salt: codeSalt.toString("hex"),
     session_code_iterations: SESSION_CODE_ITERATIONS,
     session_code: sessionCode,
-    link: `${PAGE}#v=2&s=${sidText}&k=${bussard.publicRaw.toString("base64url")}&r=${encodeURIComponent(RELAY)}`,
+    link: `${PAGE}#v=2&s=${sidText}&k=${bussard.publicRaw.toString("base64url")}`,
+    link_other_relay: `${OTHER_PAGE}#v=2&s=${sidText}&k=${bussard.publicRaw.toString("base64url")}&r=${encodeURIComponent(RELAY)}`,
   },
   messages: [
     message("up", phone, key, "000102030405060708090a0b", json({ type: "hello" })),

@@ -5,11 +5,13 @@
 //! bussard's side of `dev/enroll-protocol.md`:
 //!
 //! - [`EnrollSession`]: the one-time X25519 key pair, session id and relay
-//!   owner token; the link and fingerprint to show; and
-//!   [`EnrollSession::handle`], which opens an `up` envelope, hands a
-//!   `certificate` to a [`CertificateSink`] and seals the `result`.
+//!   owner token; the link and session code (fingerprint) to show; and
+//!   [`EnrollSession::handle`], which opens an `up` envelope, lets the first
+//!   phone own the session and refuses every other, hands a `certificate`
+//!   to a [`CertificateSink`] and seals the `result`.
 //! - [`EnrollSession::run`]: the loop over a [`Relay`] (create, long-poll
-//!   `up`, post `down`, close and delete) that every surface drives.
+//!   `up`, post `down`, the connect, idle and maximum timeouts, close and
+//!   delete) that every surface drives.
 //! - [`relay`]: the [`Relay`] trait and its outbound HTTP client
 //!   [`HttpRelay`].
 //!
@@ -25,8 +27,10 @@
 pub mod relay;
 pub mod report;
 
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -69,6 +73,56 @@ pub fn hosted_endpoints(
     )
 }
 
+/// Warnings for a hosted session whose relay or page is not the project's
+/// default (finding F13, `dev/enroll-protocol.md`, "Parties"): the page's
+/// JavaScript sees every label in plaintext, so a user should know when it
+/// is not the project's. Empty for the defaults.
+#[must_use]
+pub fn endpoint_warnings(relay: &str, page: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    if page.trim_end_matches('/') != DEFAULT_PAGE.trim_end_matches('/') {
+        out.push(format!(
+            "the enrolment page is {page}, not the default {DEFAULT_PAGE}; it sees every label \
+             in plaintext, so use it only if you trust whoever serves it"
+        ));
+    }
+    if relay.trim_end_matches('/') != DEFAULT_RELAY {
+        out.push(format!(
+            "the relay is {relay}, not the default {DEFAULT_RELAY}; it sees only ciphertext, \
+             but it can delay or drop messages"
+        ));
+    }
+    out
+}
+
+/// The timeouts of a session (`dev/enroll-protocol.md`, "Timeouts").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Timeouts {
+    /// How long a phone has to join after the session starts.
+    pub connect: Duration,
+    /// How long the owning phone may stay silent.
+    pub idle: Duration,
+    /// The longest a session runs.
+    pub max: Duration,
+}
+
+impl Default for Timeouts {
+    fn default() -> Self {
+        Timeouts {
+            connect: Duration::from_secs(10 * 60),
+            idle: Duration::from_secs(15 * 60),
+            max: Duration::from_secs(4 * 60 * 60),
+        }
+    }
+}
+
+/// How many refused phone keys bussard answers with `refused`; beyond this
+/// it only counts them, so a flood of keys cannot fill the `down` queue.
+pub const MAX_REFUSED_ANSWERS: usize = 16;
+
+/// How many refused phone keys a session remembers, to report each once.
+const MAX_REFUSED_TRACKED: usize = 1024;
+
 /// The largest serialized envelope the protocol allows, in bytes.
 pub const MAX_ENVELOPE_BYTES: usize = 4096;
 
@@ -81,7 +135,7 @@ pub const MAX_WAIT_SECS: u64 = 25;
 /// without padding.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Envelope {
-    /// The protocol version, `1`.
+    /// The protocol version, `2`.
     pub v: u8,
     /// The phone's X25519 public key.
     pub pk: String,
@@ -216,8 +270,23 @@ impl From<crate::enroll::EnrolOutcome> for CertificateOutcome {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum UpMessage {
+    Hello,
     Certificate { id: u64, text: String },
     Done,
+}
+
+/// Why bussard ended a session, as the `closed` message reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloseReason {
+    /// The phone sent `done`.
+    Done,
+    /// The user ended the session on bussard's side.
+    Stopped,
+    /// The owning phone was silent for the idle timeout.
+    IdleTimeout,
+    /// The session reached its maximum duration.
+    MaxDuration,
 }
 
 /// A message from bussard to the page (the plaintext of a `down` envelope).
@@ -232,10 +301,15 @@ pub enum DownMessage {
         #[serde(flatten)]
         outcome: CertificateOutcome,
     },
+    /// This session belongs to another phone; nothing this phone sends is
+    /// processed.
+    Refused,
     /// bussard ended the session after storing `stored` certificates.
     Closed {
         /// How many certificates the session stored.
         stored: u32,
+        /// Why it ended.
+        reason: CloseReason,
     },
 }
 
@@ -243,9 +317,12 @@ pub enum DownMessage {
 /// certificate text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnrollEvent {
-    /// A new phone key sent its first valid message; `phones` is the count.
-    PhoneJoined {
-        /// Phones that joined so far.
+    /// A phone sent its first message that opens and now owns the session.
+    PhoneJoined,
+    /// Another phone sent a message that opens and was refused (one phone
+    /// per session). Reported once per phone key; `phones` counts them.
+    PhoneRefused {
+        /// Refused phones so far.
         phones: usize,
     },
     /// A certificate was handled.
@@ -266,9 +343,41 @@ pub enum EnrollEnd {
     PhoneDone,
     /// The caller's stop flag was set.
     Stopped,
-    /// The relay no longer knows the session (expired after 30 minutes, or
-    /// closed by someone else).
+    /// No phone joined within the connect timeout.
+    ConnectTimeout,
+    /// The owning phone was silent for the idle timeout.
+    IdleTimeout,
+    /// The session reached its maximum duration.
+    MaxDuration,
+    /// The relay no longer knows the session (it expired there, or someone
+    /// else closed it).
     Expired,
+}
+
+impl EnrollEnd {
+    /// The `reason` of the `closed` message, when the phone gets one.
+    fn close_reason(self) -> Option<CloseReason> {
+        match self {
+            EnrollEnd::PhoneDone => Some(CloseReason::Done),
+            EnrollEnd::Stopped => Some(CloseReason::Stopped),
+            EnrollEnd::IdleTimeout => Some(CloseReason::IdleTimeout),
+            EnrollEnd::MaxDuration => Some(CloseReason::MaxDuration),
+            EnrollEnd::ConnectTimeout | EnrollEnd::Expired => None,
+        }
+    }
+
+    /// A short phrase for a person: why the session ended.
+    #[must_use]
+    pub fn describe(self) -> &'static str {
+        match self {
+            EnrollEnd::PhoneDone => "the phone finished",
+            EnrollEnd::Stopped => "stopped",
+            EnrollEnd::ConnectTimeout => "no phone joined within 10 minutes",
+            EnrollEnd::IdleTimeout => "no label or sign of the page for 15 minutes",
+            EnrollEnd::MaxDuration => "the 4-hour limit was reached",
+            EnrollEnd::Expired => "the relay session expired",
+        }
+    }
 }
 
 /// The summary of a finished [`EnrollSession::run`].
@@ -280,6 +389,8 @@ pub struct EnrollSummary {
     pub stored: u32,
     /// How many certificates were handled in total.
     pub certificates: u32,
+    /// How many other phones tried to join and were refused.
+    pub refused_phones: usize,
 }
 
 /// Errors of an enrolment session. None carries a key or certificate text.
@@ -296,6 +407,8 @@ pub enum EnrollSessionError {
 /// What [`EnrollSession::handle`] made of one `up` envelope.
 #[derive(Debug)]
 pub enum Handled {
+    /// The owning phone's `hello`: the page is open.
+    Hello,
     /// A certificate: post `reply` (the sealed `result`) down.
     Certificate {
         /// The sealed `result` for the phone.
@@ -305,6 +418,14 @@ pub enum Handled {
     },
     /// The phone sent `done`.
     Done,
+    /// Another phone's message, refused and not processed.
+    Refused {
+        /// The sealed `refused` for that phone, the first time it is seen
+        /// and while fewer than [`MAX_REFUSED_ANSWERS`] were answered.
+        reply: Option<Envelope>,
+        /// Whether this phone key was refused for the first time.
+        first: bool,
+    },
     /// The message was dropped; `reason` says why without its content.
     Ignored(String),
 }
@@ -315,12 +436,34 @@ pub struct RunOptions {
     /// The long-poll wait per `GET up`, in seconds (at most
     /// [`MAX_WAIT_SECS`]). Bounds how long a stop takes to be noticed.
     pub wait_secs: u64,
+    /// The connect, idle and maximum timeouts.
+    pub timeouts: Timeouts,
 }
 
 impl Default for RunOptions {
     fn default() -> Self {
-        RunOptions { wait_secs: 5 }
+        RunOptions {
+            wait_secs: 5,
+            timeouts: Timeouts::default(),
+        }
     }
+}
+
+/// The phone that owns a session: its public key and session key.
+struct Owner {
+    phone: [u8; PUBLIC_KEY_LEN],
+    key: SessionKey,
+}
+
+/// An `up` envelope that opened.
+enum Opened {
+    /// From the owning phone (possibly just now claimed).
+    Owner(Zeroizing<Vec<u8>>),
+    /// From another phone key.
+    Other {
+        phone: [u8; PUBLIC_KEY_LEN],
+        key: SessionKey,
+    },
 }
 
 /// bussard's side of one enrolment session.
@@ -328,7 +471,11 @@ pub struct EnrollSession {
     sid: [u8; SESSION_ID_LEN],
     keys: EnrollKeyPair,
     owner_token: Zeroizing<[u8; 32]>,
-    phones: BTreeMap<[u8; PUBLIC_KEY_LEN], SessionKey>,
+    /// The session code, derived once (it is slow on purpose).
+    code: OnceLock<String>,
+    owner: Option<Owner>,
+    refused: BTreeSet<[u8; PUBLIC_KEY_LEN]>,
+    refused_answers: usize,
     stored: u32,
     certificates: u32,
 }
@@ -337,7 +484,8 @@ impl std::fmt::Debug for EnrollSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EnrollSession")
             .field("sid", &self.session_id())
-            .field("phones", &self.phones.len())
+            .field("owned", &self.owner.is_some())
+            .field("refused", &self.refused.len())
             .field("stored", &self.stored)
             .finish_non_exhaustive()
     }
@@ -364,7 +512,10 @@ impl EnrollSession {
             sid,
             keys,
             owner_token: Zeroizing::new(owner_token),
-            phones: BTreeMap::new(),
+            code: OnceLock::new(),
+            owner: None,
+            refused: BTreeSet::new(),
+            refused_answers: 0,
             stored: 0,
             certificates: 0,
         }
@@ -382,16 +533,29 @@ impl EnrollSession {
         URL_SAFE_NO_PAD.encode(self.owner_token.as_ref())
     }
 
-    /// The fingerprint both sides show (`XXXX-XXXX`).
+    /// The session code both sides show (`XXXX-XXXX`), the fingerprint.
+    /// Derived on the first call (a few hundred milliseconds, on purpose)
+    /// and remembered.
     #[must_use]
     pub fn fingerprint(&self) -> String {
-        bussard_secure::enroll::fingerprint(&self.keys.public())
+        self.code
+            .get_or_init(|| bussard_secure::enroll::fingerprint(&self.sid, &self.keys.public()))
+            .clone()
+    }
+
+    /// How many other phones tried to join and were refused.
+    #[must_use]
+    pub fn refused_phones(&self) -> usize {
+        self.refused.len()
     }
 
     /// The link to open on the phone: `page` with the session in its
-    /// fragment, and `relay` unless the page's origin serves the relay.
+    /// fragment, and `relay` (`r`) unless the relay sits at the root of the
+    /// page's origin (the hosted page, served by the relay Worker, and local
+    /// mode): the page then uses its own origin.
     #[must_use]
     pub fn link(&self, page: &str, relay: Option<&str>) -> String {
+        let relay = relay.filter(|relay| relay.trim_end_matches('/') != origin(page));
         bussard_secure::enroll::link(page, &self.sid, &self.keys.public(), relay)
     }
 
@@ -401,12 +565,14 @@ impl EnrollSession {
         self.stored
     }
 
-    /// Open one `up` envelope; a `certificate` goes to `sink` and its sealed
+    /// Open one `up` envelope. The first phone key whose message opens owns
+    /// the session; another phone's message is [`Handled::Refused`] and not
+    /// processed. The owner's `certificate` goes to `sink` and its sealed
     /// `result` comes back to post down.
     ///
     /// # Errors
     ///
-    /// [`EnrollSessionError::Crypto`] only when sealing the reply fails (the
+    /// [`EnrollSessionError::Crypto`] only when sealing a reply fails (the
     /// random source). A message that does not open is
     /// [`Handled::Ignored`], not an error: anyone with the link can post.
     pub fn handle(
@@ -414,8 +580,9 @@ impl EnrollSession {
         envelope: &Envelope,
         sink: &mut dyn CertificateSink,
     ) -> Result<Handled, EnrollSessionError> {
-        let (phone, plaintext) = match self.open(envelope) {
-            Ok(opened) => opened,
+        let plaintext = match self.open(envelope) {
+            Ok(Opened::Owner(plaintext)) => plaintext,
+            Ok(Opened::Other { phone, key }) => return self.refuse(phone, &key),
             Err(reason) => return Ok(Handled::Ignored(reason)),
         };
         let message: UpMessage = match serde_json::from_slice(&plaintext) {
@@ -424,6 +591,7 @@ impl EnrollSession {
             Err(_) => return Ok(Handled::Ignored("not a protocol message".to_string())),
         };
         match message {
+            UpMessage::Hello => Ok(Handled::Hello),
             UpMessage::Done => Ok(Handled::Done),
             UpMessage::Certificate { id, mut text } => {
                 let outcome = sink.enroll(&text);
@@ -432,36 +600,62 @@ impl EnrollSession {
                 if outcome.status.is_stored() {
                     self.stored += 1;
                 }
-                let reply = self.seal(
-                    &phone,
-                    &DownMessage::Result {
-                        id,
-                        outcome: outcome.clone(),
-                    },
-                )?;
+                let mut sent = outcome.clone();
+                if sent.status == EnrollStatus::Invalid {
+                    // F7: a label that does not check names no device.
+                    sent.ia = None;
+                    sent.name = None;
+                }
+                let reply = self.seal_owner(&DownMessage::Result { id, outcome: sent })?;
                 Ok(Handled::Certificate { reply, outcome })
             }
         }
     }
 
-    /// The `closed` message for every phone that joined.
+    /// Refuse a message from a phone that does not own the session.
+    fn refuse(
+        &mut self,
+        phone: [u8; PUBLIC_KEY_LEN],
+        key: &SessionKey,
+    ) -> Result<Handled, EnrollSessionError> {
+        if self.refused.contains(&phone) {
+            return Ok(Handled::Refused {
+                reply: None,
+                first: false,
+            });
+        }
+        if self.refused.len() < MAX_REFUSED_TRACKED {
+            self.refused.insert(phone);
+        }
+        let reply = if self.refused_answers < MAX_REFUSED_ANSWERS {
+            self.refused_answers += 1;
+            Some(self.seal(key, &phone, &DownMessage::Refused)?)
+        } else {
+            None
+        };
+        Ok(Handled::Refused { reply, first: true })
+    }
+
+    /// The `closed` message for the owning phone, if one joined.
     ///
     /// # Errors
     ///
     /// [`EnrollSessionError::Crypto`] when sealing fails.
-    pub fn closing(&self) -> Result<Vec<Envelope>, EnrollSessionError> {
-        let closed = DownMessage::Closed {
+    pub fn closing(&self, reason: CloseReason) -> Result<Option<Envelope>, EnrollSessionError> {
+        if self.owner.is_none() {
+            return Ok(None);
+        }
+        self.seal_owner(&DownMessage::Closed {
             stored: self.stored,
-        };
-        self.phones
-            .keys()
-            .map(|phone| self.seal(phone, &closed))
-            .collect()
+            reason,
+        })
+        .map(Some)
     }
 
-    /// Run the session over `relay` until a phone sends `done`, `stop` is
-    /// set or the relay drops the session; then post `closed` to every phone
-    /// and delete the session. `on_event` sees each step.
+    /// Run the session over `relay` until the owning phone sends `done`,
+    /// `stop` is set, a timeout of `options` runs out or the relay drops the
+    /// session; then post `closed` to the owning phone and delete the
+    /// session. `on_event` sees each step.
     ///
     /// # Errors
     ///
@@ -487,16 +681,23 @@ impl EnrollSession {
             }
         };
         if end != EnrollEnd::Expired {
-            for envelope in self.closing()? {
+            if let Some(reason) = end.close_reason()
+                && let Some(envelope) = self.closing(reason)?
+            {
                 // The phone also learns from `closed: true` once deleted.
                 let _ = relay.post_down(&envelope);
             }
-            relay.delete()?;
+            match relay.delete() {
+                // The relay's own expiry may have come first.
+                Ok(()) | Err(RelayError::NotFound) => {}
+                Err(err) => return Err(err.into()),
+            }
         }
         Ok(EnrollSummary {
             end,
             stored: self.stored,
             certificates: self.certificates,
+            refused_phones: self.refused.len(),
         })
     }
 
@@ -509,11 +710,22 @@ impl EnrollSession {
         on_event: &mut dyn FnMut(EnrollEvent),
     ) -> Result<EnrollEnd, EnrollSessionError> {
         let wait = options.wait_secs.min(MAX_WAIT_SECS);
+        let started = Instant::now();
+        // When the owning phone last sent a message; `None` until one joins.
+        let mut last_seen: Option<Instant> = None;
         let mut after = 0;
         loop {
             if stop.load(Ordering::SeqCst) {
                 return Ok(EnrollEnd::Stopped);
             }
+            let (deadline, timeout) = deadline(started, last_seen, &options.timeouts);
+            let now = Instant::now();
+            if now >= deadline {
+                return Ok(timeout);
+            }
+            // Never wait past the deadline (rounded up to a whole second).
+            let left = (deadline - now).as_millis().div_ceil(1000);
+            let wait = wait.min(u64::try_from(left).unwrap_or(u64::MAX));
             let poll = match relay.poll_up(after, wait) {
                 Ok(poll) => poll,
                 Err(RelayError::NotFound) => return Ok(EnrollEnd::Expired),
@@ -527,21 +739,32 @@ impl EnrollSession {
                     });
                     continue;
                 };
-                let phones = self.phones.len();
+                let owned = self.owner.is_some();
                 let handled = self.handle(&envelope, sink)?;
-                if self.phones.len() > phones {
-                    on_event(EnrollEvent::PhoneJoined {
-                        phones: self.phones.len(),
-                    });
+                if !owned && self.owner.is_some() {
+                    on_event(EnrollEvent::PhoneJoined);
                 }
                 match handled {
+                    Handled::Hello => last_seen = Some(Instant::now()),
                     Handled::Certificate { reply, outcome } => {
+                        last_seen = Some(Instant::now());
                         relay.post_down(&reply)?;
                         on_event(EnrollEvent::Certificate(outcome));
                     }
                     Handled::Done => {
                         on_event(EnrollEvent::PhoneDone);
                         return Ok(EnrollEnd::PhoneDone);
+                    }
+                    Handled::Refused { reply, first } => {
+                        if let Some(reply) = reply {
+                            // Best effort: the refused page is a courtesy.
+                            let _ = relay.post_down(&reply);
+                        }
+                        if first {
+                            on_event(EnrollEvent::PhoneRefused {
+                                phones: self.refused.len(),
+                            });
+                        }
                     }
                     Handled::Ignored(reason) => on_event(EnrollEvent::Ignored { reason }),
                 }
@@ -552,12 +775,11 @@ impl EnrollSession {
         }
     }
 
-    /// Decrypt an `up` envelope; the phone key joins on its first message
-    /// that opens. The error is a reason without content.
-    fn open(
-        &mut self,
-        envelope: &Envelope,
-    ) -> Result<([u8; PUBLIC_KEY_LEN], Zeroizing<Vec<u8>>), String> {
+    /// Decrypt an `up` envelope. The first phone key whose message opens
+    /// becomes the owner; another key's message that opens is
+    /// [`Opened::Other`] (its plaintext dropped unread). The error is a
+    /// reason without content.
+    fn open(&mut self, envelope: &Envelope) -> Result<Opened, String> {
         if envelope.v != VERSION {
             return Err(format!("unsupported version {}", envelope.v));
         }
@@ -568,35 +790,44 @@ impl EnrollSession {
         let ciphertext = URL_SAFE_NO_PAD
             .decode(&envelope.c)
             .map_err(|_| "the ciphertext is not base64url".to_string())?;
-        let opened = match self.phones.get(&phone) {
-            Some(key) => key.open(Direction::Up, &self.sid, &nonce, &ciphertext),
-            None => {
-                let key = self
-                    .keys
-                    .bussard_key(&self.sid, &phone)
-                    .map_err(|e| e.to_string())?;
-                let opened = key.open(Direction::Up, &self.sid, &nonce, &ciphertext);
-                if opened.is_ok() {
-                    self.phones.insert(phone, key);
-                }
-                opened
-            }
-        };
-        opened
-            .map(|plaintext| (phone, plaintext))
-            .map_err(|e| e.to_string())
+        if let Some(owner) = &self.owner
+            && owner.phone == phone
+        {
+            return owner
+                .key
+                .open(Direction::Up, &self.sid, &nonce, &ciphertext)
+                .map(Opened::Owner)
+                .map_err(|e| e.to_string());
+        }
+        let key = self
+            .keys
+            .bussard_key(&self.sid, &phone)
+            .map_err(|e| e.to_string())?;
+        let plaintext = key
+            .open(Direction::Up, &self.sid, &nonce, &ciphertext)
+            .map_err(|e| e.to_string())?;
+        if self.owner.is_some() {
+            return Ok(Opened::Other { phone, key });
+        }
+        self.owner = Some(Owner { phone, key });
+        Ok(Opened::Owner(plaintext))
     }
 
-    /// Seal a down message for `phone` under a fresh nonce.
+    /// Seal a down message for the owning phone.
+    fn seal_owner(&self, message: &DownMessage) -> Result<Envelope, EnrollSessionError> {
+        match &self.owner {
+            Some(owner) => self.seal(&owner.key, &owner.phone, message),
+            None => Err(EnrollError::Seal.into()),
+        }
+    }
+
+    /// Seal a down message for `phone` under `key` and a fresh nonce.
     fn seal(
         &self,
+        key: &SessionKey,
         phone: &[u8; PUBLIC_KEY_LEN],
         message: &DownMessage,
     ) -> Result<Envelope, EnrollSessionError> {
-        let key = match self.phones.get(phone) {
-            Some(key) => key,
-            None => return Err(EnrollError::Seal.into()),
-        };
         let plaintext = encode_down(message);
         let (nonce, sealed) = key.seal_random(Direction::Down, &self.sid, plaintext.as_bytes())?;
         Ok(Envelope {
@@ -606,6 +837,31 @@ impl EnrollSession {
             c: URL_SAFE_NO_PAD.encode(sealed),
         })
     }
+}
+
+/// The origin of a URL: scheme, host and port, without a trailing slash.
+fn origin(url: &str) -> &str {
+    let start = url.find("://").map_or(0, |i| i + 3);
+    match url[start..].find(['/', '?', '#']) {
+        Some(end) => &url[..start + end],
+        None => url,
+    }
+}
+
+/// The next deadline of a session and the end it means: the connect
+/// timeout until a phone joins, then the idle timeout, never past the
+/// maximum.
+fn deadline(
+    started: Instant,
+    last_seen: Option<Instant>,
+    timeouts: &Timeouts,
+) -> (Instant, EnrollEnd) {
+    let max = (started + timeouts.max, EnrollEnd::MaxDuration);
+    let next = match last_seen {
+        None => (started + timeouts.connect, EnrollEnd::ConnectTimeout),
+        Some(seen) => (seen + timeouts.idle, EnrollEnd::IdleTimeout),
+    };
+    if next.0 < max.0 { next } else { max }
 }
 
 /// The plaintext JSON of a down message.
@@ -656,12 +912,47 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_link_omits_a_relay_on_the_page_origin() -> Result<(), Box<dyn std::error::Error>> {
+        let session =
+            EnrollSession::from_parts([1; 16], EnrollKeyPair::from_secret([2; 32]), [3; 32]);
+        let same = session.link(
+            "https://relay.example/enroll/",
+            Some("https://relay.example/"),
+        );
+        assert!(!same.contains("&r="), "{same}");
+        let other = session.link(
+            "https://page.example/enroll/",
+            Some("https://relay.example"),
+        );
+        assert!(other.ends_with("&r=https%3A%2F%2Frelay.example"), "{other}");
+        // A relay under a path of the page's origin is not the origin.
+        let path = session.link("https://x.example/enroll/", Some("https://x.example/relay"));
+        assert!(path.contains("&r="), "{path}");
+        assert_eq!(
+            origin("http://127.0.0.1:8123/enroll/#v=2"),
+            "http://127.0.0.1:8123"
+        );
+        assert_eq!(origin("https://relay.example"), "https://relay.example");
+        Ok(())
+    }
+
+    #[test]
+    fn test_endpoint_warnings_only_for_non_defaults() {
+        assert!(endpoint_warnings(DEFAULT_RELAY, DEFAULT_PAGE).is_empty());
+        assert!(endpoint_warnings("https://bussard-relay.tmbo.dev/", DEFAULT_PAGE).is_empty());
+        let warnings = endpoint_warnings("https://relay.example", "https://page.example/enroll/");
+        assert_eq!(warnings.len(), 2);
+        assert!(warnings[0].contains("https://page.example/enroll/"));
+        assert!(warnings[1].contains("https://relay.example"));
+    }
+
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     fn vectors() -> Result<serde_json::Value, Box<dyn std::error::Error>> {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../dev/enroll/vectors-v1.json"
+            "/../../dev/enroll/vectors-v2.json"
         );
         Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
     }
@@ -695,23 +986,52 @@ mod tests {
         Ok(serde_json::from_value(v.clone())?)
     }
 
-    /// Records the texts it sees and answers like the vectors' device.
+    /// Records the texts it sees and answers like the vectors' device:
+    /// `stored` for a label whose check matches, `invalid` (still naming the
+    /// device, as the key store's enrolment does) for the bad-check vector.
     #[derive(Default)]
     struct FakeStore {
         texts: Vec<String>,
     }
 
+    const BAD_CHECK: &str = "AD5ACAQDASQKDIVDUSS2NJ5IVGVKXLFNV2XQ";
+
     impl CertificateSink for FakeStore {
         fn enroll(&mut self, text: &str) -> CertificateOutcome {
             self.texts.push(text.to_string());
+            let invalid = text == BAD_CHECK;
             CertificateOutcome {
-                status: EnrollStatus::Stored,
+                status: if invalid {
+                    EnrollStatus::Invalid
+                } else {
+                    EnrollStatus::Stored
+                },
                 serial: Some("00FA01020304".to_string()),
                 ia: Some("1.1.20".to_string()),
                 name: Some("Test actuator".to_string()),
-                message: None,
+                message: invalid.then(|| {
+                    "the label's check does not match; re-check the text (nothing was written)"
+                        .to_string()
+                }),
             }
         }
+    }
+
+    /// Opens a down envelope with `phone`'s key; returns the plaintext.
+    fn open_down(
+        session: &EnrollSession,
+        phone: &EnrollKeyPair,
+        envelope: &Envelope,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let key = phone.phone_key(&session.sid, &session.keys.public())?;
+        let nonce: [u8; NONCE_LEN] = decode_fixed(&envelope.n).ok_or("nonce")?;
+        let opened = key.open(
+            Direction::Down,
+            &session.sid,
+            &nonce,
+            &URL_SAFE_NO_PAD.decode(&envelope.c)?,
+        )?;
+        Ok(std::str::from_utf8(&opened)?.to_string())
     }
 
     #[test]
@@ -719,13 +1039,24 @@ mod tests {
         let v = vectors()?;
         let (session, _) = vector_session(&v)?;
         assert_eq!(session.session_id(), str_of(&v["session"], "session_id")?);
-        assert_eq!(session.fingerprint(), str_of(&v["session"], "fingerprint")?);
+        assert_eq!(
+            session.fingerprint(),
+            str_of(&v["session"], "session_code")?
+        );
+        // The hosted page lives on the relay's origin: no `r`.
         assert_eq!(
             session.link(
                 "https://bussard-relay.tmbo.dev/enroll/",
-                Some("https://relay.example")
+                Some("https://bussard-relay.tmbo.dev")
             ),
             str_of(&v["session"], "link")?
+        );
+        assert_eq!(
+            session.link(
+                "https://page.example/enroll/",
+                Some("https://relay.example")
+            ),
+            str_of(&v["session"], "link_other_relay")?
         );
         Ok(())
     }
@@ -737,8 +1068,12 @@ mod tests {
         let messages = v["messages"].as_array().ok_or("messages")?;
         let mut store = FakeStore::default();
 
+        assert!(matches!(
+            session.handle(&envelope(&messages[0]["envelope"])?, &mut store)?,
+            Handled::Hello
+        ));
         let Handled::Certificate { reply, outcome } =
-            session.handle(&envelope(&messages[0]["envelope"])?, &mut store)?
+            session.handle(&envelope(&messages[1]["envelope"])?, &mut store)?
         else {
             return Err("the vector certificate was not handled".into());
         };
@@ -747,24 +1082,33 @@ mod tests {
         assert_eq!(session.stored(), 1);
 
         // The reply opens on the phone to exactly the vector's plaintext.
-        let key = phone.phone_key(&session.sid, &session.keys.public())?;
-        let nonce: [u8; NONCE_LEN] = decode_fixed(&reply.n).ok_or("nonce")?;
-        let opened = key.open(
-            Direction::Down,
-            &session.sid,
-            &nonce,
-            &URL_SAFE_NO_PAD.decode(&reply.c)?,
-        )?;
         assert_eq!(
-            std::str::from_utf8(&opened)?,
-            str_of(&messages[1], "plaintext")?
+            open_down(&session, &phone, &reply)?,
+            str_of(&messages[2], "plaintext")?
         );
-        assert_eq!(reply.pk, str_of(&messages[1]["envelope"], "pk")?);
+        assert_eq!(reply.pk, str_of(&messages[2]["envelope"], "pk")?);
+
+        // F7: the invalid result names no device, though the sink did.
+        let Handled::Certificate { reply, outcome } =
+            session.handle(&envelope(&messages[3]["envelope"])?, &mut store)?
+        else {
+            return Err("the bad-check certificate was not handled".into());
+        };
+        assert_eq!(outcome.status, EnrollStatus::Invalid);
+        assert_eq!(
+            open_down(&session, &phone, &reply)?,
+            str_of(&messages[4], "plaintext")?
+        );
 
         assert!(matches!(
-            session.handle(&envelope(&messages[2]["envelope"])?, &mut store)?,
+            session.handle(&envelope(&messages[5]["envelope"])?, &mut store)?,
             Handled::Done
         ));
+        let closed = session.closing(CloseReason::Done)?.ok_or("no closed")?;
+        assert_eq!(
+            open_down(&session, &phone, &closed)?,
+            str_of(&messages[6], "plaintext")?
+        );
         Ok(())
     }
 
@@ -789,7 +1133,7 @@ mod tests {
         let (mut session, _) = vector_session(&v)?;
         let mut sink = crate::CertificateEnrolment::open(&dir, PASSWORD)?;
         let Handled::Certificate { outcome, .. } =
-            session.handle(&envelope(&v["messages"][0]["envelope"])?, &mut sink)?
+            session.handle(&envelope(&v["messages"][1]["envelope"])?, &mut sink)?
         else {
             return Err("the vector certificate was not handled".into());
         };
@@ -817,13 +1161,27 @@ mod tests {
         };
         assert_eq!(
             encode_down(&message),
-            str_of(&v["messages"][1], "plaintext")?
+            str_of(&v["messages"][2], "plaintext")?
         );
-        let parsed: DownMessage = serde_json::from_str(str_of(&v["messages"][1], "plaintext")?)?;
+        let parsed: DownMessage = serde_json::from_str(str_of(&v["messages"][2], "plaintext")?)?;
         assert_eq!(parsed, message);
         assert_eq!(
-            encode_down(&DownMessage::Closed { stored: 2 }),
-            r#"{"type":"closed","stored":2}"#
+            encode_down(&DownMessage::Closed {
+                stored: 1,
+                reason: CloseReason::Done
+            }),
+            str_of(&v["messages"][6], "plaintext")?
+        );
+        assert_eq!(
+            encode_down(&DownMessage::Refused),
+            str_of(&v["other_phone"]["messages"][1], "plaintext")?
+        );
+        assert_eq!(
+            encode_down(&DownMessage::Closed {
+                stored: 0,
+                reason: CloseReason::IdleTimeout
+            }),
+            r#"{"type":"closed","stored":0,"reason":"idle_timeout"}"#
         );
         Ok(())
     }
@@ -833,14 +1191,14 @@ mod tests {
         let v = vectors()?;
         let (mut session, _) = vector_session(&v)?;
         let mut store = FakeStore::default();
-        let mut tampered = envelope(&v["messages"][0]["envelope"])?;
+        let mut tampered = envelope(&v["messages"][1]["envelope"])?;
         tampered.c.replace_range(0..1, "J");
         assert!(matches!(
             session.handle(&tampered, &mut store)?,
             Handled::Ignored(_)
         ));
         // A down envelope posted up does not open (the direction is in the AAD).
-        let down = envelope(&v["messages"][1]["envelope"])?;
+        let down = envelope(&v["messages"][2]["envelope"])?;
         assert!(matches!(
             session.handle(&down, &mut store)?,
             Handled::Ignored(_)
@@ -852,7 +1210,270 @@ mod tests {
         };
         assert!(!reason.contains("short"), "{reason}");
         assert!(store.texts.is_empty());
-        assert!(session.phones.is_empty(), "a failed message joined a phone");
+        assert!(session.owner.is_none(), "a failed message joined a phone");
+        Ok(())
+    }
+
+    #[test]
+    fn test_handle_refuses_second_phone() -> TestResult {
+        let v = vectors()?;
+        let (mut session, _) = vector_session(&v)?;
+        let other = EnrollKeyPair::from_secret(hex32(str_of(&v["other_phone"], "phone_secret")?)?);
+        let mut store = FakeStore::default();
+        let messages = v["messages"].as_array().ok_or("messages")?;
+        let other_hello = envelope(&v["other_phone"]["messages"][0]["envelope"])?;
+
+        // The vector phone joins first and owns the session.
+        assert!(matches!(
+            session.handle(&envelope(&messages[0]["envelope"])?, &mut store)?,
+            Handled::Hello
+        ));
+        // The other phone is refused once, with a `refused` it can open.
+        let Handled::Refused {
+            reply: Some(reply),
+            first: true,
+        } = session.handle(&other_hello, &mut store)?
+        else {
+            return Err("the second phone was not refused".into());
+        };
+        assert_eq!(
+            open_down(&session, &other, &reply)?,
+            str_of(&v["other_phone"]["messages"][1], "plaintext")?
+        );
+        assert_eq!(reply.pk, other_hello.pk);
+        // Again: refused, no second answer.
+        assert!(matches!(
+            session.handle(&other_hello, &mut store)?,
+            Handled::Refused {
+                reply: None,
+                first: false
+            }
+        ));
+        // Its certificate and its done are not processed.
+        let key = other.phone_key(&session.sid, &session.keys.public())?;
+        for plaintext in [
+            r#"{"type":"certificate","id":1,"text":"AD5ACAQDASQKDIVDUSS2NJ5IVGVKXLFNV2XR"}"#,
+            r#"{"type":"done"}"#,
+        ] {
+            let (nonce, sealed) =
+                key.seal_random(Direction::Up, &session.sid, plaintext.as_bytes())?;
+            let forged = Envelope {
+                v: VERSION,
+                pk: other_hello.pk.clone(),
+                n: URL_SAFE_NO_PAD.encode(nonce),
+                c: URL_SAFE_NO_PAD.encode(sealed),
+            };
+            assert!(matches!(
+                session.handle(&forged, &mut store)?,
+                Handled::Refused { reply: None, .. }
+            ));
+        }
+        assert!(store.texts.is_empty());
+        assert_eq!(session.refused_phones(), 1);
+        // The owner still works.
+        assert!(matches!(
+            session.handle(&envelope(&messages[1]["envelope"])?, &mut store)?,
+            Handled::Certificate { .. }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn test_handle_answers_at_most_sixteen_refused_phones() -> TestResult {
+        let v = vectors()?;
+        let (mut session, _) = vector_session(&v)?;
+        let mut store = FakeStore::default();
+        session.handle(&envelope(&v["messages"][0]["envelope"])?, &mut store)?;
+        let mut answered = 0;
+        for i in 0..20u8 {
+            let phone = EnrollKeyPair::from_secret([i + 1; 32]);
+            let key = phone.phone_key(&session.sid, &session.keys.public())?;
+            let (nonce, sealed) = key.seal_random(Direction::Up, &session.sid, b"{}")?;
+            let env = Envelope {
+                v: VERSION,
+                pk: URL_SAFE_NO_PAD.encode(phone.public()),
+                n: URL_SAFE_NO_PAD.encode(nonce),
+                c: URL_SAFE_NO_PAD.encode(sealed),
+            };
+            if let Handled::Refused {
+                reply: Some(_),
+                first: true,
+            } = session.handle(&env, &mut store)?
+            {
+                answered += 1;
+            }
+        }
+        assert_eq!(answered, MAX_REFUSED_ANSWERS);
+        assert_eq!(session.refused_phones(), 20);
+        Ok(())
+    }
+
+    #[test]
+    fn test_deadline_connect_then_idle_never_past_max() {
+        let t = Timeouts {
+            connect: Duration::from_secs(10),
+            idle: Duration::from_secs(15),
+            max: Duration::from_secs(100),
+        };
+        let start = Instant::now();
+        assert_eq!(
+            deadline(start, None, &t),
+            (start + t.connect, EnrollEnd::ConnectTimeout)
+        );
+        let seen = start + Duration::from_secs(50);
+        assert_eq!(
+            deadline(start, Some(seen), &t),
+            (seen + t.idle, EnrollEnd::IdleTimeout)
+        );
+        let late = start + Duration::from_secs(90);
+        assert_eq!(
+            deadline(start, Some(late), &t),
+            (start + t.max, EnrollEnd::MaxDuration)
+        );
+    }
+
+    /// An in-memory relay: `up` is a fixed queue released one per poll.
+    struct FakeRelay {
+        up: std::sync::Mutex<Vec<Envelope>>,
+        down: std::sync::Mutex<Vec<Envelope>>,
+        deleted: AtomicBool,
+    }
+
+    impl FakeRelay {
+        fn new(up: Vec<Envelope>) -> Self {
+            FakeRelay {
+                up: std::sync::Mutex::new(up),
+                down: std::sync::Mutex::default(),
+                deleted: AtomicBool::new(false),
+            }
+        }
+    }
+
+    impl Relay for FakeRelay {
+        fn create(&self) -> Result<(), RelayError> {
+            Ok(())
+        }
+
+        fn poll_up(&self, after: u64, _wait_secs: u64) -> Result<RelayPoll, RelayError> {
+            std::thread::sleep(Duration::from_millis(20));
+            let up = self.up.lock().map_err(|_| RelayError::NotFound)?;
+            let next = usize::try_from(after).map_err(|_| RelayError::NotFound)?;
+            Ok(RelayPoll {
+                messages: up
+                    .get(next)
+                    .map(|envelope| RelayMessage {
+                        seq: after + 1,
+                        envelope: Some(envelope.clone()),
+                    })
+                    .into_iter()
+                    .collect(),
+                closed: false,
+            })
+        }
+
+        fn post_down(&self, envelope: &Envelope) -> Result<u64, RelayError> {
+            let mut down = self.down.lock().map_err(|_| RelayError::NotFound)?;
+            down.push(envelope.clone());
+            Ok(down.len() as u64)
+        }
+
+        fn delete(&self) -> Result<(), RelayError> {
+            self.deleted.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    fn short(connect_ms: u64, idle_ms: u64, max_ms: u64) -> RunOptions {
+        RunOptions {
+            wait_secs: 1,
+            timeouts: Timeouts {
+                connect: Duration::from_millis(connect_ms),
+                idle: Duration::from_millis(idle_ms),
+                max: Duration::from_millis(max_ms),
+            },
+        }
+    }
+
+    fn run_fake(
+        session: &mut EnrollSession,
+        relay: &FakeRelay,
+        options: RunOptions,
+    ) -> Result<(EnrollSummary, Vec<EnrollEvent>), EnrollSessionError> {
+        let mut events = Vec::new();
+        let summary = session.run(
+            relay,
+            &mut FakeStore::default(),
+            options,
+            &AtomicBool::new(false),
+            &mut |e| events.push(e),
+        )?;
+        Ok((summary, events))
+    }
+
+    #[test]
+    fn test_run_connect_timeout_without_a_phone() -> TestResult {
+        let v = vectors()?;
+        let (mut session, _) = vector_session(&v)?;
+        let relay = FakeRelay::new(Vec::new());
+        let (summary, events) = run_fake(&mut session, &relay, short(200, 5_000, 10_000))?;
+        assert_eq!(summary.end, EnrollEnd::ConnectTimeout);
+        assert!(events.is_empty());
+        // No phone, no closed message; the session is deleted.
+        assert!(relay.down.lock().map_err(|_| "lock")?.is_empty());
+        assert!(relay.deleted.load(Ordering::SeqCst));
+        Ok(())
+    }
+
+    #[test]
+    fn test_run_idle_timeout_after_hello_closes_the_phone() -> TestResult {
+        let v = vectors()?;
+        let (mut session, phone) = vector_session(&v)?;
+        let relay = FakeRelay::new(vec![envelope(&v["messages"][0]["envelope"])?]);
+        let (summary, events) = run_fake(&mut session, &relay, short(5_000, 200, 10_000))?;
+        assert_eq!(summary.end, EnrollEnd::IdleTimeout);
+        assert_eq!(events, [EnrollEvent::PhoneJoined]);
+        let down = relay.down.lock().map_err(|_| "lock")?;
+        assert_eq!(down.len(), 1);
+        assert_eq!(
+            open_down(&session, &phone, &down[0])?,
+            r#"{"type":"closed","stored":0,"reason":"idle_timeout"}"#
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_run_max_duration_despite_activity() -> TestResult {
+        let v = vectors()?;
+        let (mut session, _) = vector_session(&v)?;
+        // A hello every poll keeps the idle timer fresh.
+        let hello = envelope(&v["messages"][0]["envelope"])?;
+        let relay = FakeRelay::new(vec![hello; 200]);
+        let started = Instant::now();
+        let (summary, _) = run_fake(&mut session, &relay, short(5_000, 300, 600))?;
+        assert_eq!(summary.end, EnrollEnd::MaxDuration);
+        assert!(started.elapsed() < Duration::from_secs(3));
+        Ok(())
+    }
+
+    #[test]
+    fn test_run_reports_a_refused_phone_and_keeps_going() -> TestResult {
+        let v = vectors()?;
+        let (mut session, _) = vector_session(&v)?;
+        let m = &v["messages"];
+        let relay = FakeRelay::new(vec![
+            envelope(&m[0]["envelope"])?,
+            envelope(&v["other_phone"]["messages"][0]["envelope"])?,
+            envelope(&m[1]["envelope"])?,
+            envelope(&m[5]["envelope"])?,
+        ]);
+        let (summary, events) = run_fake(&mut session, &relay, short(5_000, 5_000, 10_000))?;
+        assert_eq!(summary.end, EnrollEnd::PhoneDone);
+        assert_eq!(summary.refused_phones, 1);
+        assert_eq!(summary.stored, 1);
+        assert_eq!(events[0], EnrollEvent::PhoneJoined);
+        assert_eq!(events[1], EnrollEvent::PhoneRefused { phones: 1 });
+        // refused, result, closed.
+        assert_eq!(relay.down.lock().map_err(|_| "lock")?.len(), 3);
         Ok(())
     }
 

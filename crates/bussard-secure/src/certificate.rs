@@ -2,7 +2,7 @@
 //! a device's serial number and factory default setup key (FDSK), issue #728.
 //!
 //! The contract is `dev/enroll-protocol.md` ("Certificate text"); the test
-//! vectors are `dev/enroll/vectors-v1.json`. In short: 36 characters of RFC
+//! vectors are `dev/enroll/vectors-v2.json`. In short: 36 characters of RFC
 //! 4648 base32 (`A-Z`, `2-7`), printed as six groups of six separated by
 //! dashes, decoded as a 180-bit big-endian number whose upper 176 bits are the
 //! serial number (6 octets) and the FDSK (16 octets) and whose lower 4 bits are
@@ -192,7 +192,7 @@ mod tests {
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    const VECTORS: &str = include_str!("../../../dev/enroll/vectors-v1.json");
+    const VECTORS: &str = include_str!("../../../dev/enroll/vectors-v2.json");
 
     fn hex(s: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         (0..s.len())

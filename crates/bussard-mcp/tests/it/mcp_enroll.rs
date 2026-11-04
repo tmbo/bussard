@@ -2,7 +2,7 @@
 //! fake phone, in local mode (the page and the relay on the server's own
 //! loopback origin) and through a relay named in bussard.toml. The labels
 //! land in a test key store; no tool schema or result ever carries a label
-//! or a key. Synthetic keys only (`dev/enroll/vectors-v1.json`); no bus.
+//! or a key. Synthetic keys only (`dev/enroll/vectors-v2.json`); no bus.
 //!
 //! Issue #798: the link and the session code reach the human only through
 //! URL-mode elicitation, answered here by a fake human in the client; no
@@ -114,7 +114,7 @@ fn accepting() -> Human {
 
 /// The key store's made-up password.
 const PASSWORD: &str = "synthetic-store-password";
-/// Synthetic certificates of `dev/enroll/vectors-v1.json`.
+/// Synthetic certificates of `dev/enroll/vectors-v2.json`.
 const CERT_A: &str = "AD5ACAQDASQKDIVDUSS2NJ5IVGVKXLFNV2XR";
 const SERIAL_A: [u8; 6] = [0x00, 0xFA, 0x01, 0x02, 0x03, 0x04];
 const FDSK_A: &str = "A0A1A2A3A4A5A6A7A8A9AAABACADAEAF";
@@ -256,7 +256,7 @@ impl FakePhone {
             self.key
                 .seal_random(Direction::Up, &self.sid, message.to_string().as_bytes())?;
         let envelope = json!({
-            "v": 1,
+            "v": 2,
             "pk": URL_SAFE_NO_PAD.encode(self.keys.public()),
             "n": URL_SAFE_NO_PAD.encode(nonce),
             "c": URL_SAFE_NO_PAD.encode(c),
@@ -313,11 +313,16 @@ fn shown_link(human: &Human) -> Result<String, BoxError> {
     let [one] = shown.as_slice() else {
         return Err(format!("expected one link shown, got {shown:?}").into());
     };
+    let params = fragment(&one.url)?;
     let b_pk: [u8; 32] = URL_SAFE_NO_PAD
-        .decode(fragment(&one.url)?.get("k").ok_or("no key")?)?
+        .decode(params.get("k").ok_or("no key")?)?
         .as_slice()
         .try_into()?;
-    let code = bussard_secure::enroll::fingerprint(&b_pk);
+    let sid: [u8; 16] = URL_SAFE_NO_PAD
+        .decode(params.get("s").ok_or("no sid")?)?
+        .as_slice()
+        .try_into()?;
+    let code = bussard_secure::enroll::fingerprint(&sid, &b_pk);
     assert!(one.message.contains(&code), "{}", one.message);
     let host = one
         .url
@@ -332,9 +337,14 @@ fn shown_link(human: &Human) -> Result<String, BoxError> {
 /// Asserts that neither `link`, nor its session code, nor its key appears
 /// in `results`, the tool results the assistant saw.
 fn assert_no_link(results: &str, link: &str) -> TestResult {
-    let key = fragment(link)?.get("k").cloned().ok_or("no key")?;
+    let params = fragment(link)?;
+    let key = params.get("k").cloned().ok_or("no key")?;
     let b_pk: [u8; 32] = URL_SAFE_NO_PAD.decode(&key)?.as_slice().try_into()?;
-    let code = bussard_secure::enroll::fingerprint(&b_pk);
+    let sid: [u8; 16] = URL_SAFE_NO_PAD
+        .decode(params.get("s").ok_or("no sid")?)?
+        .as_slice()
+        .try_into()?;
+    let code = bussard_secure::enroll::fingerprint(&sid, &b_pk);
     for secret in [link, key.as_str(), code.as_str()] {
         assert!(!results.contains(secret), "{secret} leaked: {results}");
     }
@@ -427,7 +437,7 @@ async fn test_knx_enroll_certificates_local_mode_stores_labels() -> TestResult {
         .iter()
         .filter_map(|m| match m {
             DownMessage::Result { outcome, .. } => Some(outcome.status),
-            DownMessage::Closed { .. } => None,
+            DownMessage::Closed { .. } | DownMessage::Refused => None,
         })
         .collect();
     assert_eq!(

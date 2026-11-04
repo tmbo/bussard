@@ -20,8 +20,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Context;
 use bussard_service::enroll_session::{
-    DOCS_URL, EnrollEnd, EnrollEvent, EnrollSession, EnrollTally, HttpRelay, RunOptions, data_path,
-    hosted_endpoints,
+    DOCS_URL, EnrollEvent, EnrollSession, EnrollTally, HttpRelay, RunOptions, data_path,
+    endpoint_warnings, hosted_endpoints,
 };
 
 use crate::certificate_view;
@@ -59,6 +59,11 @@ pub fn run(dir: &Path, options: EnrollOptions, json_out: bool) -> anyhow::Result
     drop(password);
 
     let mut session = EnrollSession::new().context("starting the enrolment session")?;
+    // F13: say so when the page or relay is not the project's.
+    let warnings = match &hosted {
+        Some((relay_url, page)) => endpoint_warnings(relay_url, page),
+        None => Vec::new(),
+    };
     let (local, relay, link) = match hosted {
         Some((relay_url, page)) => {
             let relay = HttpRelay::new(&relay_url, &session)?;
@@ -84,9 +89,13 @@ pub fn run(dir: &Path, options: EnrollOptions, json_out: bool) -> anyhow::Result
                 "link": link,
                 "fingerprint": fingerprint,
                 "local": local.is_some(),
+                "warnings": warnings,
             }),
         )?;
     } else {
+        for warning in &warnings {
+            println!("{}", Style::stdout().warning_line(warning));
+        }
         // A phone cannot reach 127.0.0.1: no QR code in local mode.
         let code = if options.no_qr || local.is_some() {
             None
@@ -116,6 +125,7 @@ pub fn run(dir: &Path, options: EnrollOptions, json_out: bool) -> anyhow::Result
         &mut store,
         RunOptions {
             wait_secs: WAIT_SECS,
+            ..RunOptions::default()
         },
         &stop,
         &mut |event| {
@@ -134,11 +144,7 @@ pub fn run(dir: &Path, options: EnrollOptions, json_out: bool) -> anyhow::Result
         return Err(err);
     }
 
-    let why = match summary.end {
-        EnrollEnd::PhoneDone => "the phone finished",
-        EnrollEnd::Stopped => "stopped",
-        EnrollEnd::Expired => "the relay session expired",
-    };
+    let why = summary.end.describe();
     if json_out {
         crate::output::print(
             crate::output::schema::KEYS_ENROLL,
@@ -147,6 +153,7 @@ pub fn run(dir: &Path, options: EnrollOptions, json_out: bool) -> anyhow::Result
                 "end": why,
                 "stored": summary.stored,
                 "certificates": summary.certificates,
+                "refused_phones": summary.refused_phones,
                 "tally": tally,
                 "summary": tally.summary(),
                 "next_steps": tally.next_steps(),
@@ -220,7 +227,10 @@ fn ending_text(why: &str, tally: &EnrollTally, style: Style) -> String {
 fn show(event: &EnrollEvent, json_out: bool) -> anyhow::Result<()> {
     if json_out {
         let line = match event {
-            EnrollEvent::PhoneJoined { phones } => json!({ "event": "phone", "phones": phones }),
+            EnrollEvent::PhoneJoined => json!({ "event": "phone" }),
+            EnrollEvent::PhoneRefused { phones } => {
+                json!({ "event": "refused_phone", "phones": phones })
+            }
             EnrollEvent::Certificate(outcome) => {
                 json!({ "event": "certificate", "result": outcome })
             }
@@ -231,8 +241,9 @@ fn show(event: &EnrollEvent, json_out: bool) -> anyhow::Result<()> {
     }
     let style = Style::stdout();
     match event {
-        EnrollEvent::PhoneJoined { phones } => {
-            println!("{}", style.dim(&format!("phone {phones} connected")));
+        EnrollEvent::PhoneJoined => println!("{}", style.dim("phone connected")),
+        EnrollEvent::PhoneRefused { phones } => {
+            println!("{}", style.warning_line(&refused_line(*phones)));
         }
         EnrollEvent::Certificate(outcome) => {
             println!("{}", certificate_view::line(outcome, style));
@@ -246,6 +257,21 @@ fn show(event: &EnrollEvent, json_out: bool) -> anyhow::Result<()> {
         EnrollEvent::PhoneDone => println!("{}", style.dim("the phone finished")),
     }
     Ok(())
+}
+
+/// The loud line for a second phone: the session belongs to the first one,
+/// so a second one means someone else holds the link.
+fn refused_line(phones: usize) -> String {
+    let count = if phones == 1 {
+        String::new()
+    } else {
+        format!(" ({phones} so far)")
+    };
+    format!(
+        "another phone tried to join this session and was refused{count}. Nothing it \
+         sent was saved. If it was not yours, someone else has the link: type q and Enter, and \
+         start a new session."
+    )
 }
 
 /// The link as a QR code in Unicode half blocks, light on dark.

@@ -6,7 +6,8 @@
 //
 // One Durable Object per session id holds the session's metadata and messages.
 // The Worker in front routes requests to it and adds CORS headers on the two
-// phone-side endpoints (POST up, GET down) only.
+// phone-side endpoints (POST up, GET down) only. One more Durable Object per
+// client IP counts session creations (CreateLimit).
 //
 // The Worker also serves the enrolment page (web/enroll/, bound as ASSETS) at
 // /enroll/, so page and relay share one origin (#797). Every response carries
@@ -14,10 +15,16 @@
 
 import { API_CSP, PAGE_CSP, SECURITY_HEADERS } from './headers.js';
 
-/** Session lifetime in seconds, counted from the PUT that created it. */
-const SESSION_TTL_SECONDS = 30 * 60;
+/** Session lifetime in seconds after its last write (the PUT or a POST). */
+const SESSION_IDLE_SECONDS = 15 * 60;
+/** Longest session lifetime in seconds, counted from its PUT. */
+const SESSION_MAX_SECONDS = 4 * 60 * 60;
 /** Messages per direction per session. */
-const MAX_MESSAGES = 200;
+const MAX_MESSAGES = 500;
+/** Long polls waiting at once per direction per session. */
+const MAX_WAITERS = 4;
+/** Session creations per client IP per minute. */
+const CREATES_PER_IP_PER_MINUTE = 10;
 /** Serialized envelope size limit in bytes. */
 const MAX_ENVELOPE_BYTES = 4096;
 /** Upper bound of a long poll, in seconds. */
@@ -67,16 +74,22 @@ function preflight(dir) {
 }
 
 /**
- * The session TTL in seconds. `SESSION_TTL_SECONDS` in the environment may
- * shorten it (the expiry tests run a relay with a 2-second TTL); it can never
- * lengthen it past the protocol's 30 minutes.
+ * A lifetime in seconds: the protocol's `limit`, or the environment's `name`
+ * when that is shorter (the expiry tests run a relay with lifetimes of a few
+ * seconds). It can never lengthen the protocol's lifetime.
  */
-function sessionTtlSeconds(env) {
-  const configured = Number(env && env.SESSION_TTL_SECONDS);
-  if (Number.isFinite(configured) && configured > 0 && configured < SESSION_TTL_SECONDS) {
+function lifetimeSeconds(env, name, limit) {
+  const configured = Number(env && env[name]);
+  if (Number.isFinite(configured) && configured > 0 && configured < limit) {
     return configured;
   }
-  return SESSION_TTL_SECONDS;
+  return limit;
+}
+
+/** Session creations allowed per client IP and minute (`CREATES_PER_IP_PER_MINUTE`). */
+function createsPerMinute(env) {
+  const configured = Number(env && env.CREATES_PER_IP_PER_MINUTE);
+  return Number.isInteger(configured) && configured > 0 ? configured : CREATES_PER_IP_PER_MINUTE;
 }
 
 async function sha256Hex(text) {
@@ -121,13 +134,13 @@ function parseWait(value) {
   return Math.min(Number(value), MAX_WAIT_SECONDS);
 }
 
-/** Validates an envelope's shape: `{"v": 1, "pk", "n", "c"}`, all base64url. */
+/** Validates an envelope's shape: `{"v": 2, "pk", "n", "c"}`, all base64url. */
 function isEnvelope(value) {
   return (
     value !== null &&
     typeof value === 'object' &&
     !Array.isArray(value) &&
-    value.v === 1 &&
+    value.v === 2 &&
     ['pk', 'n', 'c'].every((k) => typeof value[k] === 'string' && B64URL_RE.test(value[k]))
   );
 }
@@ -202,6 +215,8 @@ const relay = {
     let response;
     if (!SID_RE.test(sid)) {
       response = method === 'PUT' && !dir ? error(400, 'malformed session id') : error(404, 'unknown session');
+    } else if (method === 'PUT' && !dir && !(await createAllowed(request, env))) {
+      response = error(429, 'too many sessions from this address');
     } else {
       const stub = env.SESSIONS.get(env.SESSIONS.idFromName(sid));
       response = await stub.fetch(request);
@@ -209,6 +224,53 @@ const relay = {
     return isPhoneEndpoint(method, dir) ? withCors(response) : response;
   },
 };
+
+/**
+ * Whether the client may create another session: at most
+ * `createsPerMinute(env)` PUTs per client IP in a fixed one-minute window,
+ * counted by that IP's CreateLimit object. Cloudflare sets
+ * `CF-Connecting-IP`; without it (not behind Cloudflare) nothing is counted.
+ */
+async function createAllowed(request, env) {
+  const ip = request.headers.get('cf-connecting-ip');
+  if (!ip || !env.CREATE_LIMITS) {
+    return true;
+  }
+  const stub = env.CREATE_LIMITS.get(env.CREATE_LIMITS.idFromName(ip));
+  const answer = await stub.fetch(
+    new Request(`https://limit.invalid/?limit=${createsPerMinute(env)}`, { method: 'POST' }),
+  );
+  return answer.status === 204;
+}
+
+/** Counts one client IP's session creations per minute. */
+export class CreateLimit {
+  constructor(state) {
+    this.storage = state.storage;
+  }
+
+  /** Counts one creation: `204` when allowed, `429` beyond the limit. */
+  async fetch(request) {
+    const limit = Number(new URL(request.url).searchParams.get('limit')) || CREATES_PER_IP_PER_MINUTE;
+    const now = Date.now();
+    let window = (await this.storage.get('window')) ?? { start: now, count: 0 };
+    if (now - window.start >= 60_000) {
+      window = { start: now, count: 0 };
+    }
+    if (window.count >= limit) {
+      return new Response(null, { status: 429 });
+    }
+    window = { ...window, count: window.count + 1 };
+    await this.storage.put('window', window);
+    // Forget the counter once its window is over.
+    await this.storage.setAlarm(window.start + 60_000);
+    return new Response(null, { status: 204 });
+  }
+
+  async alarm() {
+    await this.storage.deleteAll();
+  }
+}
 
 /** One enrolment session: owner token hash, two message queues, expiry. */
 export class Session {
@@ -218,8 +280,8 @@ export class Session {
     /** `null` when no session exists; loaded once per object instance. */
     this.meta = undefined;
     this.ready = null;
-    /** Long-poll waiters per direction. */
-    this.waiters = { up: new Set(), down: new Set() };
+    /** Long-poll waiters per direction, oldest first: `{done, evicted}`. */
+    this.waiters = { up: [], down: [] };
   }
 
   load() {
@@ -248,10 +310,10 @@ export class Session {
   }
 
   wake(dir) {
-    for (const resolve of this.waiters[dir]) {
-      resolve();
+    for (const waiter of [...this.waiters[dir]]) {
+      waiter.done();
     }
-    this.waiters[dir].clear();
+    this.waiters[dir] = [];
   }
 
   wakeAll() {
@@ -262,6 +324,11 @@ export class Session {
   async alarm() {
     await this.load();
     await this.forget();
+  }
+
+  /** The idle lifetime in milliseconds. */
+  idleMs() {
+    return lifetimeSeconds(this.env, 'SESSION_IDLE_SECONDS', SESSION_IDLE_SECONDS) * 1000;
   }
 
   async isOwner(request) {
@@ -306,10 +373,12 @@ export class Session {
     if (this.meta && now < this.meta.expires) {
       return error(409, 'session exists');
     }
-    const expires = now + sessionTtlSeconds(this.env) * 1000;
+    const hardExpires = now + lifetimeSeconds(this.env, 'SESSION_MAX_SECONDS', SESSION_MAX_SECONDS) * 1000;
+    const expires = Math.min(now + this.idleMs(), hardExpires);
     this.meta = {
       owner: await sha256Hex(token),
       created: now,
+      hardExpires,
       expires,
       closed: false,
       seq: { up: 0, down: 0 },
@@ -378,8 +447,11 @@ export class Session {
     }
     // Assign the sequence number synchronously so concurrent posts never share one.
     const seq = this.meta.seq[dir] + 1;
-    this.meta = { ...this.meta, seq: { ...this.meta.seq, [dir]: seq } };
+    // A write moves the expiry, never past the maximum lifetime.
+    const expires = Math.min(Date.now() + this.idleMs(), this.meta.hardExpires);
+    this.meta = { ...this.meta, expires, seq: { ...this.meta.seq, [dir]: seq } };
     await this.storage.put({ meta: this.meta, [messageKey(dir, seq)]: JSON.stringify(envelope) });
+    await this.storage.setAlarm(expires);
     this.wake(dir);
     return json(202, { seq });
   }
@@ -398,6 +470,8 @@ export class Session {
     }
 
     const deadline = Date.now() + wait * 1000;
+    // Set when a newer long poll pushes this one out (MAX_WAITERS).
+    const self = { evicted: false };
     for (;;) {
       if (!(await this.live())) {
         return error(404, 'unknown session');
@@ -407,7 +481,7 @@ export class Session {
       }
       const pending = await this.pending(dir, after);
       const remaining = deadline - Date.now();
-      if (pending.length > 0 || remaining <= 0) {
+      if (pending.length > 0 || remaining <= 0 || self.evicted) {
         return this.messages(pending, false);
       }
       await new Promise((resolve) => {
@@ -417,13 +491,24 @@ export class Session {
           return;
         }
         const timer = setTimeout(done, remaining);
-        const waiters = this.waiters[dir];
+        const waiters = this.waiters;
+        const waiter = {
+          done,
+          evict() {
+            self.evicted = true;
+            done();
+          },
+        };
         function done() {
           clearTimeout(timer);
-          waiters.delete(done);
+          waiters[dir] = waiters[dir].filter((w) => w !== waiter);
           resolve();
         }
-        waiters.add(done);
+        waiters[dir].push(waiter);
+        // Past the cap, the oldest answers at once with what it has.
+        while (waiters[dir].length > MAX_WAITERS) {
+          waiters[dir][0].evict();
+        }
       });
     }
   }

@@ -3,8 +3,11 @@
 //! (#732), where bussard serves the page and the relay on one origin.
 //!
 //! The relay is a mailbox: it stores envelopes it cannot read, keyed by
-//! session id, and forgets a session 30 minutes after its creation. It holds
-//! SHA-256 of the owner token, never the token.
+//! session id, and forgets a session 15 minutes after its last write (the
+//! `PUT` or a `POST`), never later than 4 hours after its `PUT`. It holds
+//! SHA-256 of the owner token, never the token. At most
+//! [`MAX_WAITERS`] long polls wait per direction and session; another one
+//! answers the oldest at once.
 //!
 //! | method and path | auth |
 //! |---|---|
@@ -15,7 +18,8 @@
 //! | `GET /v1/sessions/{sid}/down?after=&wait=` | none |
 //! | `DELETE /v1/sessions/{sid}` | owner |
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -30,10 +34,14 @@ use sha2::{Digest, Sha256};
 use tokio::sync::watch;
 use tokio::time::Instant;
 
-/// How long a session lives after its `PUT`.
-pub const SESSION_LIFETIME: Duration = Duration::from_secs(30 * 60);
+/// How long a session lives after its last write.
+pub const SESSION_IDLE: Duration = Duration::from_secs(15 * 60);
+/// How long a session lives at most after its `PUT`.
+pub const SESSION_MAX: Duration = Duration::from_secs(4 * 60 * 60);
 /// Messages per direction and session.
-pub const MAX_MESSAGES: usize = 200;
+pub const MAX_MESSAGES: usize = 500;
+/// Long polls waiting at once per direction and session.
+pub const MAX_WAITERS: usize = 4;
 /// Bytes per envelope.
 pub const MAX_ENVELOPE_BYTES: usize = 4096;
 /// The longest long poll, in seconds.
@@ -43,19 +51,33 @@ pub const MAX_SESSIONS: usize = 64;
 
 struct Session {
     token_hash: [u8; 32],
+    /// The `PUT` plus the maximum lifetime.
+    hard_expiry: Instant,
     expires: Instant,
     up: Vec<Value>,
     down: Vec<Value>,
     closed: bool,
     /// Bumped on every change, so long polls wake.
     changed: watch::Sender<u64>,
+    /// The open long polls per direction, oldest first: an id and the flag
+    /// that answers it early.
+    waiters: [VecDeque<(u64, Arc<AtomicBool>)>; 2],
+    next_waiter: u64,
 }
 
-/// An in-process relay: the session table and the session lifetime.
+impl Session {
+    /// A write moves the expiry: the idle lifetime from now, capped.
+    fn touch(&mut self, idle: Duration) {
+        self.expires = (Instant::now() + idle).min(self.hard_expiry);
+    }
+}
+
+/// An in-process relay: the session table and the session lifetimes.
 #[derive(Clone)]
 pub struct EnrollRelay {
     sessions: Arc<Mutex<HashMap<String, Session>>>,
-    lifetime: Duration,
+    idle: Duration,
+    max: Duration,
 }
 
 impl Default for EnrollRelay {
@@ -67,7 +89,8 @@ impl Default for EnrollRelay {
 impl std::fmt::Debug for EnrollRelay {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EnrollRelay")
-            .field("lifetime", &self.lifetime)
+            .field("idle", &self.idle)
+            .field("max", &self.max)
             .finish_non_exhaustive()
     }
 }
@@ -78,23 +101,32 @@ enum Dir {
     Down,
 }
 
-impl EnrollRelay {
-    /// An empty relay with the protocol's 30-minute session lifetime.
-    #[must_use]
-    pub fn new() -> Self {
-        EnrollRelay {
-            sessions: Arc::default(),
-            lifetime: SESSION_LIFETIME,
+impl Dir {
+    fn index(self) -> usize {
+        match self {
+            Dir::Up => 0,
+            Dir::Down => 1,
         }
     }
+}
 
-    /// An empty relay whose sessions live `lifetime` (the expiry tests; it
-    /// can shorten the 30 minutes, never lengthen them).
+impl EnrollRelay {
+    /// An empty relay with the protocol's lifetimes: 15 minutes after the
+    /// last write, at most 4 hours.
     #[must_use]
-    pub fn with_lifetime(lifetime: Duration) -> Self {
+    pub fn new() -> Self {
+        Self::with_lifetimes(SESSION_IDLE, SESSION_MAX)
+    }
+
+    /// An empty relay whose sessions live `idle` after their last write and
+    /// at most `max` (the expiry tests; each can shorten the protocol's
+    /// lifetime, never lengthen it).
+    #[must_use]
+    pub fn with_lifetimes(idle: Duration, max: Duration) -> Self {
         EnrollRelay {
             sessions: Arc::default(),
-            lifetime: lifetime.min(SESSION_LIFETIME),
+            idle: idle.min(SESSION_IDLE),
+            max: max.min(SESSION_MAX),
         }
     }
 
@@ -146,9 +178,9 @@ fn is_base64url(text: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// `{"v": 1, "pk", "n", "c"}` with non-empty base64url strings.
+/// `{"v": 2, "pk", "n", "c"}` with non-empty base64url strings.
 fn is_envelope(value: &Value) -> bool {
-    value["v"] == json!(1)
+    value["v"] == json!(2)
         && ["pk", "n", "c"]
             .iter()
             .all(|k| value[*k].as_str().is_some_and(is_base64url))
@@ -252,15 +284,20 @@ async fn create_session(
     if sessions.len() >= MAX_SESSIONS {
         return error(StatusCode::TOO_MANY_REQUESTS, "too many sessions");
     }
+    let now = Instant::now();
+    let hard_expiry = now + relay.max;
     sessions.insert(
         sid,
         Session {
             token_hash: token_hash(token),
-            expires: Instant::now() + relay.lifetime,
+            hard_expiry,
+            expires: (now + relay.idle).min(hard_expiry),
             up: Vec::new(),
             down: Vec::new(),
             closed: false,
             changed: watch::Sender::new(0),
+            waiters: [VecDeque::new(), VecDeque::new()],
+            next_waiter: 0,
         },
     );
     json_response(StatusCode::CREATED, &json!({}))
@@ -348,6 +385,7 @@ fn post(relay: &EnrollRelay, sid: &str, headers: &HeaderMap, dir: Dir, body: &[u
     }
     mailbox.push(envelope);
     let seq = mailbox.len();
+    session.touch(relay.idle);
     session.changed.send_modify(|v| *v += 1);
     json_response(StatusCode::ACCEPTED, &json!({ "seq": seq }))
 }
@@ -407,24 +445,34 @@ async fn poll(
     dir: Dir,
     query: Option<&str>,
 ) -> Response {
-    let mut changed = {
-        let sessions = relay.sessions();
-        let Some(session) = sessions.get(sid) else {
+    let (Some(after), Some(wait)) = (
+        parse_after(param(query, "after")),
+        parse_wait(param(query, "wait")),
+    ) else {
+        // The 404 and 401 checks come first.
+        return match relay.sessions().get(sid) {
+            None => unknown(),
+            Some(session) if dir == Dir::Up && !is_owner(session, headers) => unauthorized(),
+            Some(_) => error(
+                StatusCode::BAD_REQUEST,
+                "after and wait must be non-negative numbers",
+            ),
+        };
+    };
+    let (mut changed, waiter) = {
+        let mut sessions = relay.sessions();
+        let Some(session) = sessions.get_mut(sid) else {
             return unknown();
         };
         if dir == Dir::Up && !is_owner(session, headers) {
             return unauthorized();
         }
-        session.changed.subscribe()
-    };
-    let (Some(after), Some(wait)) = (
-        parse_after(param(query, "after")),
-        parse_wait(param(query, "wait")),
-    ) else {
-        return error(
-            StatusCode::BAD_REQUEST,
-            "after and wait must be non-negative numbers",
-        );
+        let waiter = if wait.is_zero() {
+            None
+        } else {
+            Some(Waiter::register(relay, sid, dir, session))
+        };
+        (session.changed.subscribe(), waiter)
     };
     let deadline = Instant::now() + wait;
     loop {
@@ -449,7 +497,8 @@ async fn poll(
             (messages, session.closed, session.expires)
         };
         let now = Instant::now();
-        if closed || !messages.is_empty() || now >= deadline {
+        let evicted = waiter.as_ref().is_some_and(Waiter::evicted);
+        if closed || !messages.is_empty() || now >= deadline || evicted {
             let messages = if closed { Vec::new() } else { messages };
             return json_response(
                 StatusCode::OK,
@@ -459,6 +508,52 @@ async fn poll(
         // Wake at the deadline, or at expiry to answer 404.
         let wake = deadline.min(expires);
         let _ = tokio::time::timeout_at(wake, changed.changed()).await;
+    }
+}
+
+/// One open long poll, registered with its session. A newer poll beyond
+/// [`MAX_WAITERS`] sets `evicted` and wakes it; dropping it deregisters.
+struct Waiter {
+    relay: EnrollRelay,
+    sid: String,
+    dir: Dir,
+    id: u64,
+    evicted: Arc<AtomicBool>,
+}
+
+impl Waiter {
+    fn register(relay: &EnrollRelay, sid: &str, dir: Dir, session: &mut Session) -> Self {
+        let id = session.next_waiter;
+        session.next_waiter += 1;
+        let evicted = Arc::new(AtomicBool::new(false));
+        let queue = &mut session.waiters[dir.index()];
+        queue.push_back((id, Arc::clone(&evicted)));
+        if queue.len() > MAX_WAITERS
+            && let Some((_, oldest)) = queue.pop_front()
+        {
+            oldest.store(true, Ordering::SeqCst);
+            session.changed.send_modify(|v| *v += 1);
+        }
+        Waiter {
+            relay: relay.clone(),
+            sid: sid.to_string(),
+            dir,
+            id,
+            evicted,
+        }
+    }
+
+    fn evicted(&self) -> bool {
+        self.evicted.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for Waiter {
+    fn drop(&mut self) {
+        let mut sessions = self.relay.sessions();
+        if let Some(session) = sessions.get_mut(&self.sid) {
+            session.waiters[self.dir.index()].retain(|(id, _)| *id != self.id);
+        }
     }
 }
 
@@ -474,7 +569,7 @@ mod tests {
     type TestResult = Result<(), BoxError>;
 
     const SID: &str = "/v1/sessions/AAAAAAAAAAAAAAAAAAAAAA";
-    const ENVELOPE: &str = r#"{"v":1,"pk":"AA","n":"AA","c":"AA"}"#;
+    const ENVELOPE: &str = r#"{"v":2,"pk":"AA","n":"AA","c":"AA"}"#;
 
     async fn call(
         router: &Router,
