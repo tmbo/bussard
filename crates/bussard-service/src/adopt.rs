@@ -18,7 +18,10 @@
 //!   [`Model`].
 //!
 //! Nothing here touches the bus or key bytes: the group keys are only looked up
-//! by group address, never copied into the model.
+//! by group address, never copied into the model. The flow around it (product
+//! data, the device file, the secured read) is [`flow`] (issue #749).
+
+pub mod flow;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 

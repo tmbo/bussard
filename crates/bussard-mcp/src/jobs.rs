@@ -91,6 +91,10 @@ pub enum JobKind {
     Read,
     /// The line scan of `knx_find_devices` (issue #747).
     Scan,
+    /// Adding a device: the wait for the programming button, then, after
+    /// the human's yes, the address write and the read-back of
+    /// `knx_add_device` (issue #749).
+    Add,
 }
 
 impl JobKind {
@@ -101,6 +105,7 @@ impl JobKind {
             JobKind::Plan => "plan",
             JobKind::Read => "read",
             JobKind::Scan => "scan",
+            JobKind::Add => "add",
         }
     }
 }
@@ -309,6 +314,70 @@ impl JobTable {
         Ok(insert(&mut inner, JobKind::Read, Some(address), None))
     }
 
+    /// Claims the slot for adding a device (issue #749) and returns the new
+    /// job's id, or the refusal naming the job that runs.
+    pub fn claim_add(&self) -> Result<String, String> {
+        let mut inner = self.inner();
+        if let Some(refusal) = busy_message(&inner, JobKind::Add) {
+            return Err(refusal);
+        }
+        Ok(insert(&mut inner, JobKind::Add, None, None))
+    }
+
+    /// The job waits on the human (issue #749): it frees the slot, so other
+    /// bus jobs run meanwhile, and reports `step`, `question`, the device it
+    /// is about (`address`) and the fields of `detail` at the top of its
+    /// status until [`JobTable::resume`] takes it up again.
+    pub fn pause(
+        &self,
+        id: &str,
+        step: &str,
+        question: String,
+        address: Option<IndividualAddress>,
+        detail: Value,
+    ) {
+        let mut inner = self.inner();
+        if inner.running.as_deref() == Some(id) {
+            inner.running = None;
+        }
+        let Some(job) = inner.jobs.get_mut(id) else {
+            return;
+        };
+        job.step = step.to_string();
+        job.question = Some(question);
+        if address.is_some() {
+            job.address = address;
+        }
+        if let Value::Object(detail) = detail {
+            match &mut job.context {
+                Value::Object(context) => context.extend(detail),
+                other => *other = Value::Object(detail),
+            }
+        }
+    }
+
+    /// Takes a paused job up again (issue #749): it holds the slot once more,
+    /// or the refusal names the job that runs now. A job that is not paused
+    /// (unknown, done, or running) is refused too.
+    pub fn resume(&self, id: &str, step: &str) -> Result<(), String> {
+        let mut inner = self.inner();
+        match inner.jobs.get(id) {
+            Some(job) if job.state == JobState::Running && inner.running.as_deref() != Some(id) => {
+            }
+            Some(_) => return Err(format!("job {id} is not waiting for an answer")),
+            None => return Err(format!("no job {id} in this session")),
+        }
+        if let Some(refusal) = busy_message(&inner, JobKind::Add) {
+            return Err(refusal);
+        }
+        inner.running = Some(id.to_string());
+        if let Some(job) = inner.jobs.get_mut(id) {
+            job.step = step.to_string();
+            job.question = None;
+        }
+        Ok(())
+    }
+
     /// Ends a job whose pre-flight refused: nothing was written. The job
     /// stays done with the refusal as its result, for a caller that already
     /// answered `started` (issue #332); one that gets the refusal in time
@@ -342,6 +411,7 @@ fn busy_message(inner: &Inner, wanting: JobKind) -> Option<String> {
     let device = &job.subject;
     let again = match wanting {
         JobKind::Scan => "scan again",
+        JobKind::Add => "add the device again",
         _ => "plan again",
     };
     Some(match (job.kind, wanting) {
@@ -369,6 +439,10 @@ fn busy_message(inner: &Inner, wanting: JobKind) -> Option<String> {
             "a scan is already running on this server: job {id} sweeps {device}; one bus job at \
              a time. Call knx_job_status with job {id} until it is done, then call again"
         ),
+        (JobKind::Add, _) => format!(
+            "a device is being added on this server: job {id}; one bus job at a time. Call \
+             knx_job_status with job {id} until it is done or waits for an answer, then call again"
+        ),
     })
 }
 
@@ -394,6 +468,7 @@ fn insert(
     let subject = match (address, line) {
         (Some(address), _) => address.to_string(),
         (None, Some(line)) => format!("line {line}"),
+        (None, None) if kind == JobKind::Add => "the new device".to_string(),
         (None, None) => "the bus".to_string(),
     };
     let mut id = format!("{prefix}-{stamp}-{tag}");
@@ -408,6 +483,7 @@ fn insert(
         JobKind::Plan => "reading the device",
         JobKind::Read => "reading the bus",
         JobKind::Scan => "scanning the line",
+        JobKind::Add => "press_button",
     };
     let context = match line {
         Some(line) => json!({ "line": line }),
@@ -705,6 +781,9 @@ fn next_step(status: &Value) -> String {
             _ => format!("The scan of line {line} did not run: tell the human result.reason."),
         };
     }
+    if status["kind"] == "add" {
+        return add_next_step(status, job);
+    }
     if status["kind"] == "plan" {
         return match status["state"].as_str() {
             Some("running") => format!(
@@ -747,6 +826,39 @@ fn next_step(status: &Value) -> String {
             "Job {job} on {address} did not verify: tell the human result.reason or \
              result.detail, what result.readback.leftovers still differs, and \
              result.recovery, and the backup paths."
+        ),
+    }
+}
+
+/// What the assistant does next with a `knx_add_device` job (issue #749).
+fn add_next_step(status: &Value, job: &str) -> String {
+    match (status["state"].as_str(), status["step"].as_str()) {
+        (Some("running"), Some("press_button")) => format!(
+            "Relay `question` to the human word for word: the job waits up to 30 s for a device \
+             to enter programming mode. Call knx_job_status with job {job} again in a few \
+             seconds."
+        ),
+        (Some("running"), Some("identified")) => format!(
+            "The device is identified and nothing was written. Show the human `sentences` in \
+             full and ask `question`. Only after an explicit yes call knx_add_device with job \
+             {job}, plan_digest and yes: true, and download: true when `download_needed` is \
+             true and the human agreed to the download."
+        ),
+        (Some("running"), _) => format!(
+            "Still working ({}). Call knx_job_status with job {job} again in a few seconds; the \
+             job continues in the server whether or not you poll.",
+            status["step"].as_str().unwrap_or("working")
+        ),
+        (Some("interrupted"), _) => format!(
+            "The server stopped while job {job} was adding a device. Call knx_add_device again \
+             to start over; check the device with knx_show_device {{live: true}} first."
+        ),
+        _ if status["result"]["ok"] == true => {
+            "Done: tell the human result.summary, then follow result.next_step.".to_string()
+        }
+        _ => format!(
+            "Job {job} did not add the device: tell the human result.reason. Nothing more is \
+             written until knx_add_device is called again."
         ),
     }
 }
@@ -831,6 +943,45 @@ mod tests {
         // A new plan of the device supersedes its finished plan job.
         assert!(matches!(jobs.claim_plan(ia()?)?, PlanClaim::New(_)));
         assert!(jobs.status(Path::new("/nonexistent"), &plan).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_pause_frees_the_slot_and_resume_takes_it_again() -> Result<(), String> {
+        let jobs = JobTable::new();
+        let add = jobs.claim_add()?;
+        assert!(jobs.claim(ia()?).is_err(), "the slot is the add's");
+        jobs.pause(
+            &add,
+            "identified",
+            "Assign 1.1.4? Say yes.".into(),
+            Some(ia()?),
+            json!({"plan_digest": "abc"}),
+        );
+        let status = jobs
+            .status(Path::new("/nonexistent"), &add)
+            .ok_or("the paused job stays")?;
+        assert_eq!(status["step"], "identified", "{status}");
+        assert_eq!(status["plan_digest"], "abc", "{status}");
+        assert_eq!(status["address"], "1.1.4", "{status}");
+        assert_eq!(status["done"], false, "{status}");
+        let other = jobs.claim(ia()?)?;
+        let refused = jobs
+            .resume(&add, "writing")
+            .err()
+            .ok_or("busy slot refuses")?;
+        assert!(refused.contains(&other), "{refused}");
+        jobs.finish(&other, json!({"ok": true}));
+        jobs.resume(&add, "writing")?;
+        assert!(
+            jobs.resume(&add, "writing").is_err(),
+            "a running job is not paused"
+        );
+        jobs.finish(&add, json!({"ok": true}));
+        assert!(
+            jobs.resume(&add, "writing").is_err(),
+            "a done job is not paused"
+        );
         Ok(())
     }
 

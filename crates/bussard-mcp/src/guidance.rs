@@ -31,7 +31,7 @@ use crate::state::SharedState;
 
 /// The CLI commands no MCP tool replaces, named once in the instructions.
 const CLI_ONLY: &str = "Still needs the CLI: `bussard flash` to load a new application \
-    program, `bussard adopt`, `bussard replace` and `bussard commission`.";
+    program, `bussard replace` and `bussard commission`.";
 
 /// What still needs ETS, named once in the instructions.
 const ETS_ONLY: &str = "Still needs ETS: the Secure activation of a fresh device, and any \
@@ -352,17 +352,23 @@ impl Tiers {
                  knx_restore_tables writes a backup's link tables back (a knx_backup_device run \
                  or the pre-write backup an apply kept), with the same plan, explicit yes and \
                  job flow; knx_restart_device restarts a device in the form ETS uses, after the \
-                 human's yes to its question."
+                 human's yes to its question. knx_add_device adds a new device: relay its \
+                 question (press the programming button), poll knx_job_status until the device \
+                 is identified, show its sentences and ask its question; after an explicit yes \
+                 it assigns the address, fetches the product data (download: true is the \
+                 human's separate yes to the download), writes the device file and reads the \
+                 device back."
                     .to_string(),
             );
         } else {
             out.push(
                 "This server runs without --allow-programming, so edits stay in the files. \
                  Restarted with that flag, knx_plan_device and knx_apply_device push a \
-                 device's links and parameter values, knx_restore_tables writes a backup's link \
-                 tables back and knx_restart_device restarts a device; without it, they are \
-                 `bussard plan <ia>`, `bussard apply <ia>`, `bussard restore <backup> <ia>` and \
-                 `bussard restart <ia>` at the CLI."
+                 device's links and parameter values, knx_add_device adds a new device, \
+                 knx_restore_tables writes a backup's link tables back and knx_restart_device \
+                 restarts a device; without it, they are `bussard plan <ia>`, `bussard apply \
+                 <ia>`, `bussard adopt`, `bussard restore <backup> <ia>` and `bussard restart \
+                 <ia>` at the CLI."
                     .to_string(),
             );
         }

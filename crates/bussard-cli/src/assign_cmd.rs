@@ -13,45 +13,22 @@
 //! more than one device in programming mode, and refuses an *implicit* address
 //! allocation when there is no TTY to confirm on.
 
-use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::Path;
 use std::process::ExitCode;
-use std::time::Duration;
 
-use anyhow::{Context, anyhow, bail};
-use bussard_mgmt::apci::{PID_MANUFACTURER_ID, PID_ORDER_INFO, PID_SERIAL_NUMBER};
-use bussard_mgmt::{broadcast, manufacturers, system_type, write_individual_address};
-use bussard_model::schema::{Device, Product};
-use bussard_model::{IndividualAddress, LoadedDevice, Model};
-use bussard_secure::{Key16, SequenceHighWater};
-use bussard_service::identity::{HIDDEN_MASK, SecureStatus};
+use anyhow::{Context, anyhow};
+use bussard_mgmt::system_type;
+use bussard_model::schema::Device;
+use bussard_model::{IndividualAddress, Model};
+use bussard_service::assign::{ProgrammingWait, WaitEvent, wait_for_programming_mode};
+use bussard_service::identity::SecureStatus;
 use bussard_service::secure::ToolKeys;
-use bussard_service::{
-    Authorize, BusService, Device as ServiceDevice, L4Options, ServiceError, SourcePolicy,
-    WritePolicy,
-};
+use bussard_service::{BusService, WritePolicy};
 
 use crate::conn_cmd::{
     ConnOverrides, checked_source_or_close, enforce_write_gate, gateway_display, resolve_config,
 };
-
-/// The line to allocate on when the model has no devices to infer one from.
-const FALLBACK_LINE: (u8, u8) = (1, 1);
-
-/// Total time to wait for a device to enter programming mode before giving up.
-const PROGRAMMING_WAIT_TOTAL: Duration = Duration::from_secs(30);
-
-/// The initial polling budget before we start nagging the user to press the
-/// programming button.
-const INITIAL_POLL_TOTAL: Duration = Duration::from_secs(3);
-
-/// Environment variable that shortens the programming-mode wait windows. Set by
-/// the integration tests so both the outer poll budgets (initial-nag / total)
-/// and the per-poll response-collection window shrink together; unset in normal
-/// use so the full [`PROGRAMMING_WAIT_TOTAL`] and default collection window
-/// apply. Behaviour is unchanged without the variable.
-const WAIT_MS_ENV: &str = "BUSSARD_ASSIGN_WAIT_MS";
 
 /// The on/off flags of one `bussard assign` run.
 #[derive(Debug, Clone, Copy, Default)]
@@ -207,16 +184,11 @@ async fn assign_flow(
     } = run;
     // 2. Decide the target address. The model says it is free; the bus has
     //    the last word (step 3).
-    let target = match address {
-        Some(s) => validate_explicit_address(s, model)?,
-        None => match allocate_address(model) {
-            Some(addr) => addr,
-            None => bail!(
-                "could not allocate a free address automatically; pass one explicitly, \
-                 e.g. `bussard assign 1.1.47`"
-            ),
-        },
-    };
+    let target = bussard_service::assign::target_address(
+        address,
+        model,
+        "pass one explicitly, e.g. `bussard assign 1.1.47`",
+    )?;
 
     // 3. NM_IndividualAddress_Write step 1 (Management Procedures 03_05_02
     //    §2.3, issue #530): nothing may answer at the target before it is
@@ -244,8 +216,7 @@ async fn assign_flow(
     }
 
     // 5. Write, then verify.
-    let write_channel = service.lease_channel().await?;
-    write_individual_address(write_channel, source, target)
+    bussard_service::assign::write_address(service, source, target)
         .await
         .context("broadcasting the new individual address")?;
     eprintln!("wrote {target}; verifying…");
@@ -339,82 +310,29 @@ async fn assign_flow(
     Ok(ExitCode::SUCCESS)
 }
 
-/// What answers at an address bussard is about to give a device: the
-/// occupant step 1 of NM_IndividualAddress_Write looks for (Management
-/// Procedures 03_05_02 §2.3, issue #530).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct Occupant {
-    /// The mask version, `None` when the device closed the connection
-    /// instead of answering the descriptor read (occupied all the same).
-    pub(crate) mask: Option<u16>,
-    /// The KNX manufacturer id, when readable.
-    pub(crate) manufacturer_id: Option<u16>,
-    /// The order info string, when readable.
-    pub(crate) order: Option<String>,
-}
+/// What answers at an address bussard is about to give a device
+/// ([`bussard_service::assign::Occupant`]).
+pub(crate) use bussard_service::assign::Occupant;
 
-impl Occupant {
-    /// One line naming what answered: mask, system, manufacturer, order number.
-    pub(crate) fn describe(&self) -> String {
-        let mut parts = vec![match self.mask {
-            Some(mask) => format!("mask {mask:04X}, {}", system_type(mask)),
-            None => "it closed the connection instead of answering".to_string(),
-        }];
-        if let Some(id) = self.manufacturer_id {
-            parts.push(format!("manufacturer {}", manufacturers::display(id)));
-        }
-        if let Some(order) = &self.order {
-            parts.push(format!("order number {order:?}"));
-        }
-        parts.join(", ")
-    }
-}
+/// What the post-write verification read back from the device
+/// ([`bussard_service::assign::Verified`]).
+pub(crate) use bussard_service::assign::Verified;
 
-/// Step 1 of NM_IndividualAddress_Write (Management Procedures 03_05_02
-/// §2.3, issue #530): connects to `target` and reads its device descriptor.
-/// Any answer means the address is taken, and so does a `T_Disconnect` in
-/// reply; silence means it is free (`None`). An answering device is asked
-/// for its manufacturer and order number too, best-effort, so the refusal
-/// can name it. `replace`, `assign`, `adopt` and `commission` share this.
+/// The tool key for the post-write verification
+/// ([`bussard_service::assign::VerifyKey`]).
+pub(crate) use bussard_service::assign::VerifyKey;
+
+pub(crate) use bussard_service::assign::{build_stub_device, hex};
+pub(crate) use bussard_service::identity::clean_ascii;
+
+/// Step 1 of NM_IndividualAddress_Write
+/// ([`bussard_service::assign::probe_occupant`]).
 pub(crate) async fn probe_occupant(
     service: &BusService,
     source: IndividualAddress,
     target: IndividualAddress,
 ) -> Option<Occupant> {
-    let options = L4Options {
-        source: SourcePolicy::Known(source),
-        timeouts: crate::scan_cmd::discovery_timeouts(),
-        authorize: Authorize::Skip,
-        ..L4Options::default()
-    };
-    service
-        .with_device(target, &options, async |dev| {
-            let mask = match dev.device_descriptor().await {
-                Ok(mask) => mask,
-                Err(bussard_mgmt::MgmtError::Disconnected { .. }) => {
-                    return Ok::<_, ServiceError>(Some(Occupant::default()));
-                }
-                Err(_) => return Ok(None),
-            };
-            let manufacturer_id = match dev.read_device_property(PID_MANUFACTURER_ID).await {
-                Ok(bytes) if bytes.len() >= 2 => Some(u16::from_be_bytes([bytes[0], bytes[1]])),
-                _ => None,
-            };
-            let order = dev
-                .read_device_property(PID_ORDER_INFO)
-                .await
-                .ok()
-                .map(|v| clean_ascii(&v))
-                .filter(|s| !s.is_empty());
-            Ok(Some(Occupant {
-                mask: Some(mask),
-                manufacturer_id,
-                order,
-            }))
-        })
-        .await
-        .ok()
-        .flatten()
+    bussard_service::assign::probe_occupant(service, source, target).await
 }
 
 /// Whether `verb` may write `target`: nothing answers there, or `force`
@@ -437,12 +355,8 @@ pub(crate) async fn target_is_free(
         return true;
     }
     eprintln!(
-        "{target} is already in use: a device answers there ({}). Two devices on one \
-         address answer the same connection, so a later write can land on the wrong one. \
-         Pick a free address, or remove or re-address that device first; if you mean to give \
-         {target} to the device in programming mode anyway, re-run `bussard {verb}` with \
-         --force. Nothing was written.",
-        occupant.describe()
+        "{}",
+        bussard_service::assign::occupied_refusal(target, &occupant, verb)
     );
     false
 }
@@ -461,183 +375,49 @@ pub(crate) async fn wait_for_single_device(
 }
 
 /// [`wait_for_single_device`], naming `verb` (the command, e.g. `adopt`) in the
-/// guidance it prints.
+/// guidance it prints. The wait is
+/// [`bussard_service::assign::wait_for_programming_mode`].
 pub(crate) async fn wait_for_single_device_as(
     service: &BusService,
     source: IndividualAddress,
     verb: &str,
 ) -> anyhow::Result<Option<IndividualAddress>> {
-    let (initial, total) = wait_budgets();
-    let start = tokio::time::Instant::now();
-    let mut nagged = false;
-
-    let window = collection_window();
-    loop {
-        // Lease a fresh channel for this broadcast read (released each poll).
-        let channel = service.lease_channel().await?;
-        let found = broadcast::devices_in_programming_mode_within(channel, source, window).await?;
-        match found.len() {
-            1 => return Ok(Some(found[0])),
-            n if n > 1 => {
-                eprintln!("{n} devices are in programming mode:");
-                for addr in &found {
-                    eprintln!("  {addr}");
-                }
-                eprintln!(
-                    "{verb} works on one device at a time — leave programming mode on all but \
-                     the one you want, then re-run."
-                );
-                return Ok(None);
-            }
-            _ => {}
+    let mut on_event = |event: WaitEvent| match event {
+        WaitEvent::Remind => eprintln!(
+            "no device in programming mode yet — press the programming button on the device, \
+             then keep waiting (or re-run)."
+        ),
+        WaitEvent::Waiting { remaining } => {
+            eprint!("\rwaiting for a device… {}s left   ", remaining.as_secs());
+            let _ = std::io::stderr().flush();
         }
-
-        let elapsed = start.elapsed();
-        if elapsed >= total {
+    };
+    match wait_for_programming_mode(service, source, &mut on_event).await? {
+        ProgrammingWait::One(addr) => Ok(Some(addr)),
+        ProgrammingWait::Several(found) => {
+            eprintln!("{} devices are in programming mode:", found.len());
+            for addr in &found {
+                eprintln!("  {addr}");
+            }
+            eprintln!(
+                "{verb} works on one device at a time — leave programming mode on all but \
+                 the one you want, then re-run."
+            );
+            Ok(None)
+        }
+        ProgrammingWait::Nothing { waited } => {
             eprintln!();
             eprintln!(
                 "no device entered programming mode within {}s.",
-                total.as_secs()
+                waited.as_secs()
             );
             eprintln!(
                 "press the programming button on the new device (its LED usually lights up), \
                  then re-run `bussard {verb}`."
             );
-            return Ok(None);
-        }
-
-        if elapsed >= initial && !nagged {
-            eprintln!(
-                "no device in programming mode yet — press the programming button on the device, \
-                 then keep waiting (or re-run)."
-            );
-            nagged = true;
-        }
-
-        if nagged {
-            let remaining = total.saturating_sub(elapsed).as_secs();
-            eprint!("\rwaiting for a device… {remaining}s left   ");
-            let _ = std::io::stderr().flush();
+            Ok(None)
         }
     }
-}
-
-/// Reads [`WAIT_MS_ENV`] as a millisecond budget, if set and parseable.
-fn wait_ms_override() -> Option<Duration> {
-    bussard_model::dotenv::var(WAIT_MS_ENV)
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .map(Duration::from_millis)
-}
-
-/// The (initial-nag, total) wait budgets, honouring [`WAIT_MS_ENV`] for tests.
-/// With the override set, the initial-nag budget scales to half the total so
-/// [`INITIAL_POLL_TOTAL`] is gated under the same variable as the total.
-fn wait_budgets() -> (Duration, Duration) {
-    match wait_ms_override() {
-        Some(total) => (total / 2, total),
-        None => (INITIAL_POLL_TOTAL, PROGRAMMING_WAIT_TOTAL),
-    }
-}
-
-/// The per-poll response-collection window, honouring [`WAIT_MS_ENV`] for tests.
-/// Without the override the mgmt default ([`PROGRAMMING_MODE_WINDOW`]) applies,
-/// so behaviour is unchanged in normal use.
-fn collection_window() -> Duration {
-    wait_ms_override().unwrap_or(bussard_mgmt::broadcast::PROGRAMMING_MODE_WINDOW)
-}
-
-/// Validates an explicit `--address`/positional argument against the model.
-///
-/// Checks: it parses as an individual address; it is not already used by a model
-/// device; and — when a model is present — it sits on a line the model already
-/// uses (a soft consistency check surfaced as a hard error, since assigning onto
-/// an unmodeled line is almost always a typo).
-pub(crate) fn validate_explicit_address(
-    s: &str,
-    model: Option<&Model>,
-) -> anyhow::Result<IndividualAddress> {
-    let addr: IndividualAddress = s.parse().with_context(|| {
-        format!("invalid address {s:?}; expected area.line.device like \"1.1.47\"")
-    })?;
-
-    if let Some(model) = model {
-        if model.devices.contains_key(&addr) {
-            let name = model
-                .devices
-                .get(&addr)
-                .map(|d| d.device.name.as_str())
-                .unwrap_or("");
-            bail!("address {addr} is already used in the model (\"{name}\"); pick a free one");
-        }
-        let lines = model_lines(model);
-        if !lines.is_empty() && !lines.contains(&(addr.area(), addr.line())) {
-            let known: Vec<String> = lines.iter().map(|(a, l)| format!("{a}.{l}")).collect();
-            bail!(
-                "address {addr} is on line {}.{}, which the model does not use (known lines: {}); \
-                 double-check the address",
-                addr.area(),
-                addr.line(),
-                known.join(", ")
-            );
-        }
-    }
-    Ok(addr)
-}
-
-/// Allocates the lowest free device number on the model's dominant line.
-///
-/// Returns `None` only when there is no model at all (the caller then requires
-/// an explicit address). See [`allocate_on_line`] for the number-picking rule.
-pub(crate) fn allocate_address(model: Option<&Model>) -> Option<IndividualAddress> {
-    let model = model?;
-    let (area, line) = dominant_line(model).unwrap_or(FALLBACK_LINE);
-    let used = used_devices_on_line(model, area, line);
-    allocate_on_line(area, line, &used)
-}
-
-/// Picks the lowest unused device number ≥ 1 on `area.line`, given the set of
-/// already-used numbers. Device 0 is the line/coupler address, so allocation
-/// starts at 1. Returns `None` if the line is somehow full (all of 1..=255 used).
-fn allocate_on_line(area: u8, line: u8, used: &BTreeSet<u8>) -> Option<IndividualAddress> {
-    (1u8..=255)
-        .find(|d| !used.contains(d))
-        .and_then(|d| IndividualAddress::new(area, line, d).ok())
-}
-
-/// The device numbers already spoken for on `area.line`: every model device on
-/// that line.
-fn used_devices_on_line(model: &Model, area: u8, line: u8) -> BTreeSet<u8> {
-    model
-        .devices
-        .keys()
-        .filter(|ia| ia.area() == area && ia.line() == line)
-        .map(|ia| ia.device())
-        .collect()
-}
-
-/// The model's dominant line: the `(area, line)` with the most devices, ties
-/// broken by the lowest `(area, line)`. `None` when the model has no devices.
-fn dominant_line(model: &Model) -> Option<(u8, u8)> {
-    let mut counts: std::collections::BTreeMap<(u8, u8), usize> = std::collections::BTreeMap::new();
-    for ia in model.devices.keys() {
-        *counts.entry((ia.area(), ia.line())).or_default() += 1;
-    }
-    // `max_by_key` keeps the LAST maximal element, so break count ties by
-    // preferring the lowest (area, line) explicitly.
-    counts
-        .into_iter()
-        .max_by_key(|&(line, count)| (count, std::cmp::Reverse(line)))
-        .map(|(line, _)| line)
-}
-
-/// The set of distinct `(area, line)` pairs the model uses.
-fn model_lines(model: &Model) -> BTreeSet<(u8, u8)> {
-    model
-        .devices
-        .keys()
-        .map(|ia| (ia.area(), ia.line()))
-        .collect()
 }
 
 /// Confirms the assignment on a TTY (y/N), naming the resolved gateway. `--yes`
@@ -659,73 +439,9 @@ fn confirm_assignment(
     )
 }
 
-/// What the post-write verification read back from the device.
-#[derive(Default)]
-pub(crate) struct Verified {
-    /// The mask version read back from the device.
-    pub(crate) mask: Option<u16>,
-    /// The KNX manufacturer id, when readable.
-    pub(crate) manufacturer_id: Option<u16>,
-    /// The device serial number, when readable.
-    pub(crate) serial: Option<Vec<u8>>,
-    /// The device's order info string, when readable.
-    pub(crate) order: Option<String>,
-    /// Whether the explicit `PID_PROGMODE = 0` write to clear programming mode was
-    /// confirmed by the device (it echoed the stored `0x00`). `false` when the
-    /// write was not confirmed or the device refused it — the broadcast-based
-    /// persistence check then remains the fallback.
-    pub(crate) programming_mode_cleared: bool,
-    /// How the device was verified with respect to KNX Data Secure
-    /// (issue #203). With [`SecureStatus::ActivatedNoKey`] the mask is `None`:
-    /// the plain read only returned the hidden `FFFF`.
-    pub(crate) secure: SecureStatus,
-}
-
-/// The tool key for the post-write verification of a Data Secure-activated
-/// device (issue #203).
-#[derive(Debug, Clone, Default)]
-pub(crate) struct VerifyKey {
-    /// The tool key, or `None` to verify in the clear.
-    pub(crate) tool_key: Option<Key16>,
-    /// The key came from the keyring entry of the OLD address: the keyring must
-    /// be re-exported after the address change.
-    pub(crate) from_old_address: bool,
-}
-
-impl VerifyKey {
-    /// Picks the key for a device moving from `current` to `target`: a raw
-    /// `--tool-key` wins; else the keyring entry of `target`; else the entry of
-    /// `current` (flagged, since the keyring is then stale); else none.
-    pub(crate) fn resolve(
-        keys: &ToolKeys,
-        current: IndividualAddress,
-        target: IndividualAddress,
-    ) -> VerifyKey {
-        if keys.raw_given() || keys.lists(target) {
-            return VerifyKey {
-                tool_key: keys.tool_key(target),
-                from_old_address: false,
-            };
-        }
-        if keys.lists(current) {
-            return VerifyKey {
-                tool_key: keys.tool_key(current),
-                from_old_address: true,
-            };
-        }
-        VerifyKey::default()
-    }
-}
-
-/// Verifies the write by connecting to `target` and reading its descriptor plus
-/// best-effort manufacturer/serial/order properties.
-///
-/// A device descriptor read is the proof the address took: if it fails, the
-/// write did not land (or the device dropped programming mode without applying
-/// it), which is a clear error naming both the old and new addresses. With a
-/// tool key every read rides A_SecureData; without one, a Data
-/// Secure-activated device answers mask `FFFF`, which verifies the address
-/// but not the mask (issue #203).
+/// Verifies the write by connecting to `target`
+/// ([`bussard_service::assign::verify_assignment_with`]), clearing programming
+/// mode as ETS does.
 pub(crate) async fn verify_assignment(
     service: &BusService,
     source: IndividualAddress,
@@ -737,7 +453,7 @@ pub(crate) async fn verify_assignment(
 
 /// [`verify_assignment`], with the explicit programming-mode clear optional:
 /// `adopt` reads back without clearing it (its wizard re-checks the broadcast
-/// itself), so it passes `false` and gets `programming_mode_cleared: false`.
+/// itself). Prints the warnings the read raised.
 pub(crate) async fn verify_assignment_with(
     service: &BusService,
     source: IndividualAddress,
@@ -745,255 +461,37 @@ pub(crate) async fn verify_assignment_with(
     clear_programming_mode: bool,
     key: &VerifyKey,
 ) -> anyhow::Result<Verified> {
-    let result = verify_session(service, source, target, clear_programming_mode, key).await;
-    let Err(secured_err) = result else {
-        return result;
-    };
-    if key.tool_key.is_none() || secured_err.downcast_ref::<ServiceError>().is_some() {
-        return Err(secured_err);
-    }
-    // The keyring listed the device but the secured read failed: a keyring
-    // entry for a device that is not activated (any more) answers in the
-    // clear. Accept a plain read with a real mask, and say so; otherwise the
-    // secured failure stands.
-    match verify_session(
+    let verified = bussard_service::assign::verify_assignment_with(
         service,
         source,
         target,
         clear_programming_mode,
-        &VerifyKey::default(),
+        key,
     )
-    .await
-    {
-        Ok(verified) if verified.secure == SecureStatus::Plain => {
-            eprintln!(
-                "warning: {target} did not answer the secured read with its keyring tool key but \
-                 answers in the clear: it is not Data Secure-activated, or the keyring is stale"
-            );
-            Ok(verified)
-        }
-        _ => Err(secured_err),
+    .await?;
+    for warning in &verified.warnings {
+        eprintln!("{warning}");
     }
+    Ok(verified)
 }
 
-/// One verification session, secured when `key` carries a tool key.
-async fn verify_session(
-    service: &BusService,
-    source: IndividualAddress,
-    target: IndividualAddress,
-    clear_programming_mode: bool,
-    key: &VerifyKey,
-) -> anyhow::Result<Verified> {
-    // Authorize comes after the descriptor read here (see below), so the
-    // session opens without it.
-    let secured = key.tool_key.is_some();
-    let options = L4Options {
-        source: SourcePolicy::Known(source),
-        authorize: Authorize::Skip,
-        tool_key: key.tool_key.clone(),
-        high_water: SequenceHighWater::new(),
-        ..L4Options::default()
-    };
-    let session = service
-        .with_device(target, &options, async |dev| {
-            Ok::<_, ServiceError>(read_back(dev, target, clear_programming_mode, secured).await)
-        })
-        .await;
-    match session {
-        Ok(verified) => verified,
-        Err(err @ ServiceError::Lease(_)) => Err(err.into()),
-        Err(err) => Err(anyhow!(
-            "wrote {target} but could not connect to it afterwards ({err}); the address may \
-             not have been applied — check the device and re-run"
-        )),
-    }
-}
-
-/// The read-back half of [`verify_assignment_with`], on the open session.
-/// `secured` says the session rides A_SecureData.
-async fn read_back(
-    dev: &mut ServiceDevice,
-    target: IndividualAddress,
-    clear_programming_mode: bool,
-    secured: bool,
-) -> anyhow::Result<Verified> {
-    let mask = dev.device_descriptor().await.map_err(|err| {
-        if secured {
-            anyhow!(
-                "wrote {target} and connected, but the device did not answer the SECURED \
-                 descriptor read ({err}): either the tool key is not this device's, or the \
-                 device is not Data Secure-activated (retry without --keyring/--tool-key); the \
-                 assignment is unverified"
-            )
-        } else if matches!(err, bussard_mgmt::MgmtError::Disconnected { .. }) {
-            anyhow!(
-                "wrote {target} and connected, but the device disconnected on the first read: \
-                 typical for devices whose management is gated on a loaded application or a \
-                 different medium profile (e.g. KNX Virtual IP-medium `*.ip` devices, which \
-                 disconnect on descriptor reads while their `*.tp` siblings answer). The address \
-                 was written but could not be verified."
-            )
-        } else {
-            anyhow!(
-                "wrote {target} and connected, but the device did not answer a descriptor read \
-                 ({err}); the assignment is unverified"
-            )
-        }
-    })?;
-
-    // A Data Secure-activated device read in the clear (issue #203): it
-    // answered at the new address, which verifies the write, but it hides its
-    // mask and drops every further plain read.
-    if !secured && mask == HIDDEN_MASK {
-        return Ok(Verified {
-            secure: SecureStatus::ActivatedNoKey,
-            ..Verified::default()
-        });
-    }
-    // Authorize the session (free access), as ETS does after the descriptor read
-    // (issue #52 finding #1). Best-effort here — the assignment was already
-    // verified by the descriptor read; the property reads below are informational.
-    if let Err(err) = dev.authorize(bussard_mgmt::apci::FREE_ACCESS_KEY).await {
-        tracing::debug!("{target} authorize (free access) did not grant: {err}");
-    }
-
-    // Best-effort property reads: any failure just leaves the field empty.
-    let manufacturer_id = match dev.read_device_property(PID_MANUFACTURER_ID).await {
-        Ok(bytes) if bytes.len() >= 2 => Some(u16::from_be_bytes([bytes[0], bytes[1]])),
-        _ => None,
-    };
-    let serial = dev
-        .read_device_property(PID_SERIAL_NUMBER)
-        .await
-        .ok()
-        .filter(|v| !v.is_empty());
-    let order = dev
-        .read_device_property(PID_ORDER_INFO)
-        .await
-        .ok()
-        .map(|v| clean_ascii(&v))
-        .filter(|s| !s.is_empty());
-
-    // Explicitly clear programming mode, exactly as ETS does after assigning an
-    // address: write PID_PROGMODE = 0 on the device object over this same
-    // authorized connection. A conformant device also clears it on its own, but
-    // ETS does not rely on that, and neither do we. Best-effort: an unconfirmed or
-    // refused write is not fatal — the broadcast persistence check below remains
-    // the fallback that warns if the device is still in programming mode.
-    let programming_mode_cleared = if !clear_programming_mode {
-        false
-    } else {
-        match dev.clear_programming_mode().await {
-            Ok(cleared) => cleared,
-            Err(err) => {
-                tracing::debug!("{target} clear programming mode (PID_PROGMODE=0) failed: {err}");
-                false
-            }
-        }
-    };
-
-    Ok(Verified {
-        mask: Some(mask),
-        manufacturer_id,
-        serial,
-        order,
-        programming_mode_cleared,
-        secure: if secured {
-            SecureStatus::Activated
-        } else {
-            SecureStatus::Plain
-        },
-    })
-}
-
-/// Re-runs the programming-mode broadcast once, briefly, after a successful
-/// write+verify and warns if the just-assigned `target` still answers it.
-///
-/// A device that applied `A_IndividualAddress_Write` normally leaves programming
-/// mode; if it still answers, the next `assign`/`adopt` would re-capture and
-/// re-address it. On KNX Virtual this is expected (the emulation does not clear
-/// programming mode) and the fix is to toggle it off in the GUI; on real hardware
-/// it usually means a stuck programming button.
-///
-/// Best-effort and non-fatal: any bus error while re-checking is swallowed (the
-/// assignment already succeeded), so this never turns a good write into a
-/// failure.
+/// Re-runs the programming-mode broadcast once
+/// ([`bussard_service::assign::still_in_programming_mode`]) and warns if the
+/// just-assigned `target` still answers it. Best-effort and non-fatal.
 pub(crate) async fn warn_if_still_in_programming_mode(
     service: &BusService,
     source: IndividualAddress,
     target: IndividualAddress,
 ) {
-    // A short window: the device answers instantly if at all, and we do not want
-    // to stall the command tail. Honour the same test override the wait loop uses.
-    let window = collection_window();
-    let Ok(channel) = service.lease_channel().await else {
-        return;
-    };
-    let found = match broadcast::devices_in_programming_mode_within(channel, source, window).await {
-        Ok(found) => found,
-        Err(_) => return,
-    };
-    if found.contains(&target) {
+    if bussard_service::assign::still_in_programming_mode(service, source, target).await {
         eprintln!();
-        eprintln!(
-            "warning: {target} is still in programming mode after the assignment. A conformant \
-             device leaves programming mode when it takes its new address; this one did not, so \
-             the next `assign`/`adopt` would re-capture and re-address it."
-        );
-        eprintln!(
-            "  - on KNX Virtual: toggle programming mode off for this device in the GUI.\n  \
-             - on real hardware: this usually means a stuck programming button — release it."
-        );
-    }
-}
-
-/// Builds the stub [`Device`] from the verified read-back. Fields that could not
-/// be read are left empty; the whole product block is omitted when nothing was
-/// readable.
-pub(crate) fn build_stub_device(address: IndividualAddress, v: &Verified) -> Device {
-    let manufacturer = v.manufacturer_id.map(manufacturers::display);
-    let order_number = v.order.clone();
-    let mask = v.mask.map(|m| format!("{m:#06X}"));
-
-    let product = if manufacturer.is_some() || order_number.is_some() || mask.is_some() {
-        Some(Product {
-            manufacturer,
-            manufacturer_ref: None,
-            order_number,
-            hardware_ref: None,
-            application_ref: None,
-            mask,
-        })
-    } else {
-        None
-    };
-
-    Device {
-        address,
-        name: "New device (assign)".to_string(),
-        description: None,
-        location: None,
-        replaced: None,
-        product,
-        channels: Default::default(),
-        parameters: Default::default(),
-        module_bases: Default::default(),
-        com_objects: Default::default(),
-        // KNX Secure state comes only from the knxproj importer (issue #71).
-        security: None,
-        application_override: None,
-        knxnet: None,
-        lock: Default::default(),
+        for line in bussard_service::assign::still_in_programming_mode_warning(target) {
+            eprintln!("{line}");
+        }
     }
 }
 
 /// Writes the stub device file.
-///
-/// When a model is loaded we insert the device and `Model::save` (plain, not
-/// pruning — `save` preserves an existing `bussard.toml` byte-for-byte and does
-/// not delete other files). When there is no model, we save a minimal one
-/// containing just this device so the file lands in `devices/`. Returns the path
-/// of the device file that was written.
 fn write_stub_device_file(
     model: Option<&Model>,
     dir: &Path,
@@ -1004,10 +502,8 @@ fn write_stub_device_file(
 }
 
 /// Inserts `device` into the model (or a fresh one) and saves it without
-/// pruning; shared by `assign` and `adopt`. `serial`, the serial number the
-/// device reported, goes into its lock entry and off any other device's
-/// (issue #752). `what` names the file in the error context. Returns the path
-/// of the device file that was written.
+/// pruning ([`bussard_service::assign::write_device_file`]); shared by
+/// `assign` and `adopt`.
 pub(crate) fn write_device_file(
     model: Option<&Model>,
     dir: &Path,
@@ -1015,210 +511,7 @@ pub(crate) fn write_device_file(
     serial: Option<&[u8]>,
     what: &str,
 ) -> anyhow::Result<std::path::PathBuf> {
-    let address = device.address;
-    let file_stem = device_file_stem(&device);
-
-    let mut model = model.cloned().unwrap_or_else(empty_model);
-    model.devices.insert(
-        address,
-        LoadedDevice {
-            device,
-            file_stem: file_stem.clone(),
-        },
-    );
-    if let Some(serial) = serial.and_then(|s| <[u8; 6]>::try_from(s).ok()) {
-        model.record_serial(address, &serial);
-    }
-    model
-        .save(dir)
-        .with_context(|| format!("saving the {what} to {}", dir.display()))?;
-
-    Ok(dir.join("devices").join(format!("{file_stem}.toml")))
-}
-
-/// The file stem of a device file: its individual address
-/// (`devices/1.1.47.toml`).
-pub(crate) fn device_file_stem(device: &Device) -> String {
-    device.address.to_string()
-}
-
-/// An empty model with default config (used when assigning into a directory that
-/// has no model yet, given an explicit address).
-pub(crate) fn empty_model() -> Model {
-    Model {
-        config: Default::default(),
-        groups: Default::default(),
-        links: Default::default(),
-        devices: Default::default(),
-    }
-}
-
-/// Formats a byte slice as lowercase hex.
-pub(crate) fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// Cleans a raw property value to printable ASCII, trimming trailing NULs/space.
-pub(crate) fn clean_ascii(bytes: &[u8]) -> String {
-    let s: String = bytes
-        .iter()
-        .take_while(|b| **b != 0)
-        .filter(|b| b.is_ascii_graphic() || **b == b' ')
-        .map(|b| *b as char)
-        .collect();
-    s.trim().to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn model_with(addrs: &[&str]) -> Model {
-        let mut model = empty_model();
-        for s in addrs {
-            let addr: IndividualAddress = s.parse().expect("test fixture");
-            model.devices.insert(
-                addr,
-                LoadedDevice {
-                    device: Device {
-                        address: addr,
-                        name: "d".to_string(),
-                        description: None,
-                        location: None,
-                        replaced: None,
-                        product: None,
-                        channels: Default::default(),
-                        parameters: Default::default(),
-                        module_bases: Default::default(),
-                        com_objects: Default::default(),
-                        security: None,
-                        application_override: None,
-                        knxnet: None,
-                        lock: Default::default(),
-                    },
-                    file_stem: addr.to_string(),
-                },
-            );
-        }
-        model
-    }
-
-    #[test]
-    fn allocate_picks_lowest_free_on_dominant_line() -> Result<(), Box<dyn std::error::Error>> {
-        let model = model_with(&["1.1.1", "1.1.2", "1.1.4"]);
-        // Lowest free ≥ 1 on 1.1 is 3.
-        assert_eq!(allocate_address(Some(&model)), Some("1.1.3".parse()?));
-        Ok(())
-    }
-
-    #[test]
-    fn allocate_starts_at_one_not_zero() -> Result<(), Box<dyn std::error::Error>> {
-        let model = model_with(&["1.1.5"]);
-        assert_eq!(allocate_address(Some(&model)), Some("1.1.1".parse()?));
-        Ok(())
-    }
-
-    #[test]
-    fn dominant_line_is_the_busiest() -> Result<(), Box<dyn std::error::Error>> {
-        // 2.4 has two devices, 1.1 has one → dominant is 2.4.
-        let model = model_with(&["1.1.1", "2.4.1", "2.4.9"]);
-        assert_eq!(dominant_line(&model), Some((2, 4)));
-        assert_eq!(allocate_address(Some(&model)), Some("2.4.2".parse()?));
-        Ok(())
-    }
-
-    #[test]
-    fn dominant_line_ties_pick_lowest() {
-        let model = model_with(&["1.1.1", "2.2.1"]);
-        assert_eq!(dominant_line(&model), Some((1, 1)));
-    }
-
-    #[test]
-    fn empty_model_falls_back_to_one_one() -> Result<(), Box<dyn std::error::Error>> {
-        let model = empty_model();
-        assert_eq!(dominant_line(&model), None);
-        assert_eq!(allocate_address(Some(&model)), Some("1.1.1".parse()?));
-        Ok(())
-    }
-
-    #[test]
-    fn no_model_cannot_allocate() {
-        assert_eq!(allocate_address(None), None);
-    }
-
-    #[test]
-    fn allocate_on_line_skips_used() -> Result<(), Box<dyn std::error::Error>> {
-        let used: BTreeSet<u8> = [1, 2, 3, 5].into_iter().collect();
-        assert_eq!(allocate_on_line(1, 1, &used), Some("1.1.4".parse()?));
-        Ok(())
-    }
-
-    #[test]
-    fn allocate_on_line_full_is_none() {
-        let used: BTreeSet<u8> = (1u8..=255).collect();
-        assert_eq!(allocate_on_line(1, 1, &used), None);
-    }
-
-    #[test]
-    fn explicit_address_rejects_already_used() {
-        let model = model_with(&["1.1.1"]);
-        let err = validate_explicit_address("1.1.1", Some(&model)).expect_err("expected an error");
-        assert!(err.to_string().contains("already used"), "got {err}");
-    }
-
-    #[test]
-    fn explicit_address_rejects_unmodeled_line() {
-        let model = model_with(&["1.1.1"]);
-        let err = validate_explicit_address("2.2.5", Some(&model)).expect_err("expected an error");
-        assert!(err.to_string().contains("does not use"), "got {err}");
-    }
-
-    #[test]
-    fn explicit_address_accepts_free_on_known_line() -> Result<(), Box<dyn std::error::Error>> {
-        let model = model_with(&["1.1.1"]);
-        assert_eq!(
-            validate_explicit_address("1.1.9", Some(&model))?,
-            "1.1.9".parse()?
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn explicit_address_without_model_just_parses() -> Result<(), Box<dyn std::error::Error>> {
-        assert_eq!(validate_explicit_address("3.4.5", None)?, "3.4.5".parse()?);
-        assert!(validate_explicit_address("not-an-address", None).is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn device_file_stem_is_the_address() -> Result<(), Box<dyn std::error::Error>> {
-        let dev = build_stub_device("1.1.7".parse()?, &Verified::default());
-        assert_eq!(device_file_stem(&dev), "1.1.7");
-        Ok(())
-    }
-
-    #[test]
-    fn stub_device_omits_empty_product() -> Result<(), Box<dyn std::error::Error>> {
-        let dev = build_stub_device("1.1.7".parse()?, &Verified::default());
-        assert!(dev.product.is_none());
-        assert_eq!(dev.name, "New device (assign)");
-        Ok(())
-    }
-
-    #[test]
-    fn stub_device_carries_readable_product() -> Result<(), Box<dyn std::error::Error>> {
-        let v = Verified {
-            mask: Some(0x07B0),
-            manufacturer_id: Some(0x0083),
-            serial: None,
-            order: Some("MDT-JAL0410".to_string()),
-            ..Default::default()
-        };
-        let dev = build_stub_device("1.1.7".parse()?, &v);
-        let product = dev.product.ok_or("expected a value")?;
-        assert_eq!(product.manufacturer.as_deref(), Some("MDT"));
-        assert_eq!(product.order_number.as_deref(), Some("MDT-JAL0410"));
-        assert_eq!(product.mask.as_deref(), Some("0x07B0"));
-        Ok(())
-    }
+    Ok(bussard_service::assign::write_device_file(
+        model, dir, device, serial, what,
+    )?)
 }
