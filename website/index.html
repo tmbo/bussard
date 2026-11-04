@@ -602,27 +602,64 @@
       stroke-linecap: round;
     }
 
-    /* feature grid */
-    .grid {
+    /* features: the steps on the left, an example chat on the right */
+    .tour {
       display: grid;
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 1fr);
       gap: 1rem;
     }
 
-    @media (min-width: 640px) {
-      .grid {
-        grid-template-columns: 1fr 1fr;
+    @media (min-width: 860px) {
+      .tour {
+        grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+        gap: 1.5rem;
+        align-items: start;
+      }
+
+      .tour-stack {
+        position: sticky;
+        top: 1rem;
       }
     }
 
-    .card {
+    .tour-steps {
+      display: grid;
+      gap: .5rem;
+    }
+
+    .tour-step {
+      display: grid;
+      grid-template-columns: 40px minmax(0, 1fr);
+      gap: .9rem;
+      align-items: start;
+      width: 100%;
+      margin: 0;
+      padding: .85rem 1rem;
+      text-align: left;
+      font: inherit;
+      color: inherit;
       background: var(--surface);
       border: 1px solid var(--line);
       border-radius: 14px;
-      padding: 1.3rem 1.3rem 1.2rem;
+      cursor: pointer;
+      transition: border-color .15s, background-color .15s;
     }
 
-    .card .ico {
+    .tour-step:hover {
+      border-color: var(--green);
+    }
+
+    .tour-step:focus-visible {
+      outline: 2px solid var(--green);
+      outline-offset: 2px;
+    }
+
+    .tour-step[aria-selected="true"] {
+      background: var(--green-soft);
+      border-color: var(--green);
+    }
+
+    .tour-step .ico {
       width: 40px;
       height: 40px;
       border-radius: 10px;
@@ -630,28 +667,182 @@
       color: var(--green-ink);
       display: grid;
       place-items: center;
-      margin-bottom: 1rem;
     }
 
-    .card .ico svg {
+    .tour-step[aria-selected="true"] .ico {
+      background: var(--surface);
+    }
+
+    .tour-step .ico svg {
       width: 22px;
       height: 22px;
     }
 
-    .card h3 {
-      margin: 0 0 .4rem;
-      font-size: 1.12rem;
+    .tour-step strong {
+      display: block;
+      font-family: "Bricolage Grotesque", "Instrument Sans", system-ui, sans-serif;
+      font-size: 1.05rem;
       font-weight: 700;
+      line-height: 1.25;
+      margin-bottom: .2rem;
     }
 
-    .card p {
-      margin: 0;
+    .tour-step .num {
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: .8rem;
+      font-weight: 500;
+      color: var(--green-ink);
+      margin-right: .45rem;
+    }
+
+    .tour-step .desc {
+      display: block;
       color: var(--muted);
-      font-size: .96rem;
+      font-size: .92rem;
     }
 
-    .card code {
+    .tour-step code {
       color: var(--ink);
+    }
+
+    /* with JavaScript every panel shares one cell, so the column keeps the
+       tallest panel's height and the page below does not jump */
+    .tour-stack.js {
+      display: grid;
+    }
+
+    .tour-stack.js > .tour-panel {
+      grid-area: 1 / 1;
+    }
+
+    .tour-stack.js > .tour-panel[hidden] {
+      display: block;
+      visibility: hidden;
+    }
+
+    .tour-panel.enter {
+      animation: tour-in .22s ease-out;
+    }
+
+    @keyframes tour-in {
+      from {
+        opacity: 0;
+        transform: translateY(6px);
+      }
+
+      to {
+        opacity: 1;
+        transform: none;
+      }
+    }
+
+    .tour .term pre {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .chatwin {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .chat-bar {
+      padding: .6rem 1rem;
+      background: var(--surface-2);
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: .78rem;
+    }
+
+    .chat {
+      display: grid;
+      gap: .65rem;
+      padding: 1.1rem 1rem .4rem;
+    }
+
+    .msg {
+      max-width: 88%;
+      padding: .55rem .85rem;
+      border-radius: 14px;
+      font-size: .94rem;
+      line-height: 1.5;
+    }
+
+    .msg.you {
+      justify-self: end;
+      background: var(--green-soft);
+      border: 1px solid var(--green);
+      border-bottom-right-radius: 4px;
+    }
+
+    .msg.bot {
+      justify-self: start;
+      background: var(--surface-2);
+      border: 1px solid var(--line);
+      border-bottom-left-radius: 4px;
+    }
+
+    .tool {
+      justify-self: start;
+      max-width: 100%;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: .1rem .5rem;
+      padding-left: .2rem;
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: .76rem;
+      color: var(--muted);
+    }
+
+    .tool b {
+      font-weight: 500;
+      font-size: .68rem;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      color: var(--amber-ink);
+      border: 1px solid var(--amber);
+      border-radius: 4px;
+      padding: 0 .3rem;
+    }
+
+    .tool code {
+      color: var(--ink);
+      background: none;
+      border: 0;
+      padding: 0;
+      font-size: 1em;
+    }
+
+    .tool .args {
+      overflow-wrap: anywhere;
+    }
+
+    .chat-note {
+      margin: .6rem 1rem 1rem;
+      padding-top: .6rem;
+      border-top: 1px dashed var(--line);
+      color: var(--muted);
+      font-size: .84rem;
+    }
+
+    .tour-panel > .chat-note {
+      margin: .8rem .2rem 0;
+      border-top: 0;
+      padding-top: 0;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .tour-panel.enter {
+        animation: none;
+      }
+
+      .tour-step {
+        transition: none;
+      }
     }
 
     /* steps */
@@ -808,7 +999,7 @@
 
     .tier {
       display: grid;
-      grid-template-columns: 7.5rem 1fr;
+      grid-template-columns: 9.5rem 1fr;
       gap: 1rem;
       align-items: start;
     }
@@ -825,6 +1016,7 @@
       font-family: "JetBrains Mono", monospace;
       font-size: .85rem;
       font-weight: 500;
+      gap: .4rem;
     }
 
     .tier.t1 .bar {
@@ -852,7 +1044,8 @@
       color: var(--green-ink);
     }
 
-    .tier.t3 .bar {
+    .tier.t3 .bar,
+    .tier.t4 .bar {
       background: var(--amber-soft);
       border-color: var(--amber);
       color: var(--amber-ink);
@@ -1140,7 +1333,7 @@
       <nav>
         <a href="#features">Features</a>
         <a href="#download">Download</a>
-        <a href="#docs"><span data-lang="en">Docs</span><span data-lang="de">Doku</span></a>
+        <a href="docs/"><span data-lang="en">Docs</span><span data-lang="de">Doku</span></a>
         <a href="https://github.com/tmbo/bussard">GitHub</a>
       </nav>
       <div class="lang" role="group" aria-label="Language">
@@ -1157,10 +1350,11 @@
             KNX-Installation, <em>in Textform</em>.</span></h1>
         <p class="lede"><span data-lang="en">Start from scratch or import your ETS project. bussard keeps your KNX
             configuration in TOML files
-            that you edit by hand or with your favorite LLM. It flashes your devices, monitors the bus and rolls back
-            any change.</span><span data-lang="de">Starte ein neues Projekt oder importiere eine ETS Datei. Mit bussard
-            kannst du deine KNX Konfiguration in Textdateien per Hand oder mit einer LLM bearbeiten. Und wenn du fertig
-            bist, flasht es deine Geräte, überwacht den Bus und führt einen rollback bei Fehlern aus.</span></p>
+            that you edit by hand or with your favorite LLM. It programs your devices, decodes the bus and keeps a history
+            of every edit, so you can undo it.</span><span data-lang="de">Starte ein neues Projekt oder importiere dein
+            ETS-Projekt. bussard hält deine KNX-Konfiguration in TOML-Dateien, die du von Hand oder mit deinem LLM
+            bearbeitest. Es programmiert deine Geräte, decodiert den Bus und speichert jede Änderung in einer
+            Historie, damit du sie zurücknehmen kannst.</span></p>
         <div class="cta">
           <a class="btn primary" href="#download">Download</a>
           <a class="btn ghost" href="docs/"><span data-lang="en">Read the docs</span><span data-lang="de">Zur
@@ -1171,17 +1365,19 @@
       <div class="term" aria-label="Terminal session" data-aria-de="Terminalsitzung">
         <div class="term-bar"><i></i><i></i><i></i><span>bussard</span></div>
         <pre><span class="p">$</span> bussard import house.knxproj
-<span class="d">imported 318 group addresses, 72 devices → the current directory</span>
+<span class="d">imported 318 group addresses, 72 devices, 540 link entries → the current directory</span>
 <span class="p">$</span> claude mcp add knx -- bussard mcp --dir "$PWD"
 <span class="p">&gt;</span> <span data-lang="en">The hallway button should also switch the porch light.</span><span data-lang="de">Der Flurtaster soll auch das Terrassenlicht schalten.</span>
 <span class="g">✓</span> <span data-lang="en">Outdoor actuator, channel C, now listens to
-  <span class="a">Hallway light (1/1/1)</span>. Config only, saved to history.</span><span data-lang="de">Außenaktor, Kanal C, hört jetzt auf
-  <span class="a">Flurlicht (1/1/1)</span>. Nur Konfiguration, gesichert.</span>
+  <span class="a">Hallway light</span>. Project only, saved to history.</span><span data-lang="de">Außenaktor, Kanal C, hört jetzt auf
+  <span class="a">Flurlicht</span>. Nur im Projekt, in der Historie gesichert.</span>
 <span class="p">$</span> bussard plan 1.1.7
-<span class="d">  + add: object 4 → <span class="a">1/1/1</span></span>
+<span class="d">1.1.7 Outdoor actuator</span>
+<span class="d">  + c-switch now listens on <span class="a">1/1/1</span> (Hallway light)</span>
 <span class="p">$</span> bussard apply 1.1.7 --allow-remote-gateway
-<span class="d">apply 1 change to 1.1.7 via 192.0.2.10:3671? [y/N]</span> y
-<span class="d">backup written · <span class="g">verified</span></span>
+<span class="d">apply 1 change(s) to 1.1.7 via 192.0.2.10:3671? [y/N]</span> y
+<span class="d">backup written to captures/backups/</span>
+<span class="g">apply verified</span><span class="d">: address table Loaded (4 entries), …</span>
 <span class="p">$</span> <span class="cur"></span></pre>
       </div>
     </header>
@@ -1213,66 +1409,236 @@
     <section id="features">
       <div class="sec-head">
         <div class="kicker"><span data-lang="en">Features</span><span data-lang="de">Features</span></div>
-        <h2><span data-lang="en">Day-to-day KNX work using Claude or ChatGPT.</span><span data-lang="de">Arbeite an KNX
-            Projekten mit Claude oder ChatGPT.</span></h2>
-        <p><span data-lang="en">Edit your project in your editor or ask Claude to do it. ETS stays in the drawer for
-            what only ETS can do: certification and the odd exotic device.</span><span data-lang="de">Bearbeite dein
-            Projekt in deinem Editor oder bitte Claude darum. Die ETS bleibt in der
-            Schublade für das, was nur die ETS kann: Zertifizierung und das eine exotische Gerät.</span></p>
+        <h2><span data-lang="en">Day-to-day KNX work, in a chat.</span><span data-lang="de">KNX-Alltag im
+            Chat.</span></h2>
+        <p><span data-lang="en">Import once at the terminal. After that, ask an assistant that speaks MCP, such as
+            Claude Code or Codex CLI. It edits your project and writes a device only after your yes. Pick a step to
+            see an example.</span><span data-lang="de">Einmal im Terminal importieren. Danach fragst du einen
+            Assistenten, der MCP spricht, etwa Claude Code oder Codex CLI. Er bearbeitet dein Projekt und schreibt
+            ein Gerät erst nach deinem Ja. Wähle einen Schritt für ein Beispiel.</span></p>
       </div>
-      <div class="grid">
-        <div class="card">
-          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-              stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 3v11" />
-              <path d="M8 10l4 4 4-4" />
-              <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
-            </svg></div>
-          <h3><span data-lang="en">Import your ETS project</span><span data-lang="de">ETS-Projekt importieren</span>
-          </h3>
-          <p><span data-lang="en">One command turns a <code>.knxproj</code> into TOML files with named devices,
-              group addresses and links. Every later change can be undone.</span><span data-lang="de">Mit einem Befehl
-              kannst du eine
-              <code>.knxproj</code> Datei in ein bussard Projekt verwandeln. Alle benannten Geräte, Gruppenadressen und
-              Verknüpfungen werden importiert. </span></p>
+      <div class="tour">
+        <div class="tour-steps" role="tablist" aria-orientation="vertical" aria-label="Steps"
+          data-aria-de="Schritte">
+          <button type="button" class="tour-step" role="tab" id="tour-tab-1" aria-controls="tour-panel-1"
+            aria-selected="true">
+            <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 3v11" />
+                <path d="M8 10l4 4 4-4" />
+                <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
+              </svg></span>
+            <span class="tour-txt"><strong><span class="num">1</span><span data-lang="en">Import your ETS
+                  project</span><span data-lang="de">ETS-Projekt importieren</span></strong><span class="desc"><span
+                  data-lang="en"><code>bussard init</code> finds your gateway and turns a <code>.knxproj</code> into
+                  TOML files.</span><span data-lang="de"><code>bussard init</code> findet dein Gateway und macht aus
+                  einer <code>.knxproj</code> TOML-Dateien.</span></span></span>
+          </button>
+          <button type="button" class="tour-step" role="tab" id="tour-tab-2" aria-controls="tour-panel-2"
+            aria-selected="false" tabindex="-1">
+            <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 12h3l2-6 4 12 3-8 2 2h4" />
+              </svg></span>
+            <span class="tour-txt"><strong><span class="num">2</span><span data-lang="en">Watch the bus</span><span
+                  data-lang="de">Den Bus beobachten</span></strong><span class="desc"><span data-lang="en">Every
+                  telegram comes with its sender, the group address name and the decoded value.</span><span
+                  data-lang="de">Jedes Telegramm kommt mit Sender, Name der Gruppenadresse und decodiertem
+                  Wert.</span></span></span>
+          </button>
+          <button type="button" class="tour-step" role="tab" id="tour-tab-3" aria-controls="tour-panel-3"
+            aria-selected="false" tabindex="-1">
+            <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 3l1.8 4.6L18.5 9.5l-4.7 1.9L12 16l-1.8-4.6L5.5 9.5l4.7-1.9z" />
+                <path d="M19 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z" />
+              </svg></span>
+            <span class="tour-txt"><strong><span class="num">3</span><span data-lang="en">Change the project in
+                  chat</span><span data-lang="de">Das Projekt im Chat ändern</span></strong><span class="desc"><span
+                  data-lang="en">Parameters, links and group addresses, each edit read back to you as a
+                  sentence.</span><span data-lang="de">Parameter, Verknüpfungen und Gruppenadressen, jede Änderung
+                  als Satz zurückgemeldet.</span></span></span>
+          </button>
+          <button type="button" class="tour-step" role="tab" id="tour-tab-4" aria-controls="tour-panel-4"
+            aria-selected="false" tabindex="-1">
+            <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="6" y="6" width="12" height="12" rx="2" />
+                <path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4" />
+              </svg></span>
+            <span class="tour-txt"><strong><span class="num">4</span><span data-lang="en">Program the
+                  device</span><span data-lang="de">Das Gerät programmieren</span></strong><span class="desc"><span
+                  data-lang="en">Plan, confirm, apply, then a read-back that checks the device against your
+                  project.</span><span data-lang="de">Planen, bestätigen, schreiben, dann zurücklesen und mit deinem
+                  Projekt vergleichen.</span></span></span>
+          </button>
+          <button type="button" class="tour-step" role="tab" id="tour-tab-5" aria-controls="tour-panel-5"
+            aria-selected="false" tabindex="-1">
+            <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3.5 12a8.5 8.5 0 1 0 2.5-6" />
+                <path d="M3 4v4.5h4.5" />
+                <path d="M12 8v4l3 2" />
+              </svg></span>
+            <span class="tour-txt"><strong><span class="num">5</span><span data-lang="en">Keep it safe</span><span
+                  data-lang="de">Sicher bleiben</span></strong><span class="desc"><span data-lang="en">A backup of
+                  every device, a history of every edit, and undo.</span><span data-lang="de">Ein Backup jedes
+                  Geräts, eine Historie jeder Änderung und ein Undo.</span></span></span>
+          </button>
         </div>
-        <div class="card">
-          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-              stroke-linecap="round" stroke-linejoin="round">
-              <path d="M3 12h3l2-6 4 12 3-8 2 2h4" />
-            </svg></div>
-          <h3><span data-lang="en">Watch the bus</span><span data-lang="de">Sehen was auf dem Bus passiert</span></h3>
-          <p><span data-lang="en">Every telegram shows the sending device, the group address by name and the value with
-              its unit. Filter by address or sender, or stream JSON to your own tools.</span><span data-lang="de">Jedes
-              Telegramm zeigt die beteiligten Geräte, die Gruppenadresse mit Namen und den Wert mit
-              Einheit. Filtere nach Adresse oder Sender, oder streame JSON in deine eigenen Tools.</span></p>
-        </div>
-        <div class="card">
-          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-              stroke-linecap="round" stroke-linejoin="round">
-              <rect x="6" y="6" width="12" height="12" rx="2" />
-              <path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4" />
-            </svg></div>
-          <h3><span data-lang="en">Program devices</span><span data-lang="de">Geräte programmieren</span></h3>
-          <p><span data-lang="en">Adopt a new device or flash an application from the vendor <code>.knxprod</code>. You
-              can write
-              its group and association tables. Every write is planned, confirmed and verified.</span><span
-              data-lang="de">Nimm neue Geräte in Betrieb, oder ändere die Applikation aus der <code>.knxprod</code> des
-              Herstellers. Verändere die Funktion oder erstelle neue Gruppenadressen - alles mit Backup.</span></p>
-        </div>
-        <div class="card">
-          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-              stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 3l1.8 4.6L18.5 9.5l-4.7 1.9L12 16l-1.8-4.6L5.5 9.5l4.7-1.9z" />
-              <path d="M19 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z" />
-            </svg></div>
-          <h3><span data-lang="en">Let an LLM help</span><span data-lang="de">Ein LLM helfen lassen</span></h3>
-          <p><span data-lang="en"><code>bussard mcp</code> lets Claude or another agent read the config, watch the bus
-              and propose changes in plain sentences. Bus writes are off until you turn them on, protected group
-              addresses stay out of reach, and only you program devices.</span><span
-              data-lang="de"><code>bussard mcp</code> lässt Claude oder einen anderen Agenten die Konfiguration lesen,
-              den Bus beobachten und Änderungen in klaren Sätzen vorschlagen. Geräte zu verändern ist opt-in -
-              geschützte Gruppenadressen können nicht verändert werden.</span></p>
+
+        <div class="tour-stack">
+          <div class="tour-panel" role="tabpanel" id="tour-panel-1" aria-labelledby="tour-tab-1">
+            <div class="term">
+              <div class="term-bar"><i></i><i></i><i></i><span>Terminal</span></div>
+              <pre><span class="p"><span data-lang="en"># once, at the terminal</span><span data-lang="de"># einmal, im Terminal</span></span>
+<span class="p">$</span> mkdir house &amp;&amp; cd house
+<span class="p">$</span> bussard init ../house.knxproj
+<span class="d">Found gateway: KNX IP Interface (192.0.2.10:3671, IA 1.1.250)</span>
+<span class="d">imported 86 group addresses, 24 devices, 190 link entries → the current directory /home/me/house</span>
+<span class="d">validation: 0 error(s), 3 warning(s)</span>
+<span class="p">$</span> claude mcp add knx -- bussard mcp --dir "$PWD"
+<span class="p"><span data-lang="en"># from here on, the chat takes over</span><span data-lang="de"># ab hier übernimmt der Chat</span></span></pre>
+            </div>
+            <p class="chat-note"><span data-lang="en">No terminal at hand? On an empty folder the assistant runs the
+                same setup with <code>knx_setup</code>.</span><span data-lang="de">Kein Terminal zur Hand? Auf einem
+                leeren Ordner führt der Assistent dasselbe Setup mit <code>knx_setup</code> aus.</span></p>
+          </div>
+
+          <div class="tour-panel" role="tabpanel" id="tour-panel-2" aria-labelledby="tour-tab-2" hidden>
+            <div class="chatwin">
+              <div class="chat-bar"><span class="mono">bussard mcp</span></div>
+              <div class="chat" data-lang="en">
+                <div class="msg you">The kitchen ceiling light came on by itself last night. Who switched it?</div>
+                <div class="tool"><b>tool</b><code>knx_model_lookup</code><span class="args">{"query": "kitchen
+                    ceiling"}</span></div>
+                <div class="tool"><b>tool</b><code>knx_recent_telegrams</code><span class="args">{"ga": "1/",
+                    "since": "2026-11-03T18:00:00Z"}</span></div>
+                <div class="msg bot">At 23:14 the hallway presence detector sent On to Hallway light. Ceiling light on
+                  the kitchen switch actuator listens to Hallway light as well as to its own group address, so it
+                  came on too. Nothing else wrote to it last night.</div>
+              </div>
+              <div class="chat" data-lang="de">
+                <div class="msg you">Das Deckenlicht in der Küche ist letzte Nacht von selbst angegangen. Wer hat es
+                  geschaltet?</div>
+                <div class="tool"><b>tool</b><code>knx_model_lookup</code><span class="args">{"query":
+                    "Deckenlicht"}</span></div>
+                <div class="tool"><b>tool</b><code>knx_recent_telegrams</code><span class="args">{"ga": "1/",
+                    "since": "2026-11-03T18:00:00Z"}</span></div>
+                <div class="msg bot">Um 23:14 hat der Präsenzmelder Flur Ein an Flurlicht gesendet. Deckenlicht am
+                  Schaltaktor Küche hört neben seiner eigenen Gruppenadresse auch auf Flurlicht, also ging es mit
+                  an. Sonst hat letzte Nacht niemand darauf geschrieben.</div>
+              </div>
+              <p class="chat-note"><span data-lang="en">The default server listens and may send read requests. It never writes a group value or a device.</span><span data-lang="de">Der Server hört standardmäßig mit und darf
+                  Leseanfragen senden. Er schreibt nie einen Gruppenwert und nie ein Gerät.</span></p>
+            </div>
+          </div>
+
+          <div class="tour-panel" role="tabpanel" id="tour-panel-3" aria-labelledby="tour-tab-3" hidden>
+            <div class="chatwin">
+              <div class="chat-bar"><span class="mono">bussard mcp</span></div>
+              <div class="chat" data-lang="en">
+                <div class="msg you">Remove that link. And the kitchen light should switch off by itself after 10
+                  minutes.</div>
+                <div class="tool"><b>tool</b><code>knx_remove_link</code><span class="args">{"address": "1.1.4",
+                    "com_object": 12, "ga": "1/1/1", "role": "listen"}</span></div>
+                <div class="tool"><b>tool</b><code>knx_show_device</code><span class="args">{"address": "1.1.4",
+                    "channel": "a-3"}</span></div>
+                <div class="tool"><b>tool</b><code>knx_set_parameter</code><span class="args">{"address": "1.1.4",
+                    "channel": "a-3", "parameter": "switch-off-delay", "value": "10 min"}</span></div>
+                <div class="msg bot">Ceiling light on the kitchen switch actuator no longer listens to Hallway light.
+                  Its switch-off delay is now 10 min, was off. Both changes are in your project only, saved to its
+                  history. The kitchen switch actuator needs a write to take them.</div>
+              </div>
+              <div class="chat" data-lang="de">
+                <div class="msg you">Entferne die Verknüpfung. Und das Küchenlicht soll nach 10 Minuten von selbst
+                  ausgehen.</div>
+                <div class="tool"><b>tool</b><code>knx_remove_link</code><span class="args">{"address": "1.1.4",
+                    "com_object": 12, "ga": "1/1/1", "role": "listen"}</span></div>
+                <div class="tool"><b>tool</b><code>knx_show_device</code><span class="args">{"address": "1.1.4",
+                    "channel": "a-3"}</span></div>
+                <div class="tool"><b>tool</b><code>knx_set_parameter</code><span class="args">{"address": "1.1.4",
+                    "channel": "a-3", "parameter": "ausschaltverzoegerung", "value": "10 min"}</span></div>
+                <div class="msg bot">Deckenlicht am Schaltaktor Küche hört nicht mehr auf Flurlicht. Seine
+                  Ausschaltverzögerung steht jetzt auf 10 min, vorher aus. Beide Änderungen sind nur in deinem
+                  Projekt, in seiner Historie gesichert. Der Schaltaktor Küche übernimmt sie erst, wenn er
+                  programmiert wird.</div>
+              </div>
+              <p class="chat-note"><span data-lang="en">The parameter keys come from the vendor's product data, the
+                  same ones <code>knx_show_device</code> lists.</span><span data-lang="de">Die Parameter-Schlüssel
+                  stammen aus den Produktdaten des Herstellers, dieselben, die <code>knx_show_device</code>
+                  auflistet.</span></p>
+            </div>
+          </div>
+
+          <div class="tour-panel" role="tabpanel" id="tour-panel-4" aria-labelledby="tour-tab-4" hidden>
+            <div class="chatwin">
+              <div class="chat-bar"><span class="mono">bussard mcp --allow-programming</span></div>
+              <div class="chat" data-lang="en">
+                <div class="msg you">Write it to the actuator.</div>
+                <div class="tool"><b>tool</b><code>knx_plan_device</code><span class="args">{"address":
+                    "1.1.4"}</span></div>
+                <div class="msg bot">Kitchen switch actuator: Ceiling light no longer listens to Hallway light, and its
+                  switch-off delay becomes 10 min, was off. The link tables and the parameter memory are backed up
+                  first. Only this actuator pauses for a few seconds. Shall I write it?</div>
+                <div class="msg you">Yes.</div>
+                <div class="tool"><b>tool</b><code>knx_apply_device</code><span class="args">{"address": "1.1.4",
+                    "plan_digest": "9c41…"}</span></div>
+                <div class="msg bot">Written and verified: the read-back matches your project. To test, walk through
+                  the hallway; the kitchen light stays off.</div>
+              </div>
+              <div class="chat" data-lang="de">
+                <div class="msg you">Schreib es auf den Aktor.</div>
+                <div class="tool"><b>tool</b><code>knx_plan_device</code><span class="args">{"address":
+                    "1.1.4"}</span></div>
+                <div class="msg bot">Schaltaktor Küche: Deckenlicht hört nicht mehr auf Flurlicht, und seine
+                  Ausschaltverzögerung wird 10 min, vorher aus. Die Verknüpfungstabellen und der Parameterspeicher
+                  werden vorher gesichert. Nur dieser Aktor pausiert ein paar Sekunden. Soll ich es schreiben?</div>
+                <div class="msg you">Ja.</div>
+                <div class="tool"><b>tool</b><code>knx_apply_device</code><span class="args">{"address": "1.1.4",
+                    "plan_digest": "9c41…"}</span></div>
+                <div class="msg bot">Geschrieben und geprüft: das Zurücklesen stimmt mit deinem Projekt überein. Zum
+                  Testen geh durch den Flur; das Küchenlicht bleibt aus.</div>
+              </div>
+              <p class="chat-note"><span data-lang="en">Only on a server started with
+                  <code>--allow-programming</code>. Without it, the assistant hands you <code>bussard plan</code> and
+                  <code>bussard apply</code> for the terminal.</span><span data-lang="de">Nur mit einem Server, der
+                  mit <code>--allow-programming</code> gestartet wurde. Ohne das gibt dir der Assistent
+                  <code>bussard plan</code> und <code>bussard apply</code> für das Terminal.</span></p>
+            </div>
+          </div>
+
+          <div class="tour-panel" role="tabpanel" id="tour-panel-5" aria-labelledby="tour-tab-5" hidden>
+            <div class="chatwin">
+              <div class="chat-bar"><span class="mono">bussard mcp</span></div>
+              <div class="chat" data-lang="en">
+                <div class="msg you">Back up every device.</div>
+                <div class="tool"><b>tool</b><code>knx_backup_device</code><span class="args">{"all":
+                    true}</span></div>
+                <div class="msg bot">24 of 24 devices backed up into captures/backups/20261104T091500Z.</div>
+                <div class="msg you">On second thought, undo the switch-off delay.</div>
+                <div class="tool"><b>tool</b><code>knx_history</code><span class="args">{"limit": 5}</span></div>
+                <div class="tool"><b>tool</b><code>knx_undo</code><span class="args">{}</span></div>
+                <div class="msg bot">Ceiling light's switch-off delay is back to off in your project. The actuator
+                  keeps 10 min until it is written again. The undo is saved too, so you can take it back.</div>
+              </div>
+              <div class="chat" data-lang="de">
+                <div class="msg you">Sichere alle Geräte.</div>
+                <div class="tool"><b>tool</b><code>knx_backup_device</code><span class="args">{"all":
+                    true}</span></div>
+                <div class="msg bot">24 von 24 Geräten gesichert in captures/backups/20261104T091500Z.</div>
+                <div class="msg you">Doch lieber ohne Ausschaltverzögerung. Mach das rückgängig.</div>
+                <div class="tool"><b>tool</b><code>knx_history</code><span class="args">{"limit": 5}</span></div>
+                <div class="tool"><b>tool</b><code>knx_undo</code><span class="args">{}</span></div>
+                <div class="msg bot">Die Ausschaltverzögerung von Deckenlicht ist in deinem Projekt wieder aus. Der
+                  Aktor behält 10 min, bis er wieder programmiert wird. Auch das Undo ist gesichert, du kannst es
+                  zurücknehmen.</div>
+              </div>
+              <p class="chat-note"><span data-lang="en">Backups run on the default server: they only read the
+                  devices. Undo restores the project files.</span><span data-lang="de">Backups laufen auf dem
+                  Standard-Server: sie lesen die Geräte nur. Undo stellt die Projektdateien wieder her.</span></p>
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -1408,9 +1774,8 @@
           werden jeweils in einer Datei mit Tabellen
           für jeden Kanal konfiguriert.
           Die Keys und Werte stammen aus den Produktdaten des Herstellers, daher liest sich ein Kanal wie seine
-          Seite in der ETS. <code>bussard</code> liest diese Konfugration ein, und erstellt
-          ein lock file. Das lock file wird von <code>bussard</code> verwendet um die Geräte live zu konfigurieren.
-        </span>
+          Seite in der ETS. Hersteller-IDs und Speicher-Offsets stehen im generierten <code>bussard.lock</code>, das
+          niemand bearbeitet.</span>
       </p>
       <div class="two files">
         <div>
@@ -1437,16 +1802,10 @@ room = "Kind 2 Süd"
 [channel.relaisausgaenge-1]
 betriebsart = "Lüftungsklappe / Dachfenster"
 langzeitbetrieb.listen = ["3/1/20"]
-rueckmeldung-lueftungsklappen.send = "3/1/23"</pre>
+rueckmeldung-lueftungsklappen-dachfensterposition.send = "3/1/23"</pre>
         </div>
       </div>
-      <p class="note"><span data-lang="en">Based on the project configuration,
-          Vendor ids and memory offsets <code>bussard</code> generates a <code>bussard.lock</code> file which is used
-          to apply the changes to the physical devices.</span><span data-lang="de"><code>bussard</code> liest diese
-          Konfugration ein, und erstellt
-          ein lock file. Das lock file wird von <code>bussard</code> verwendet um die Geräte live zu konfigurieren.
-        </span>
-      </p>
+      
     </section>
 
     <section>
@@ -1456,32 +1815,30 @@ rueckmeldung-lueftungsklappen.send = "3/1/23"</pre>
         <h2><span data-lang="en">Every device write follows the same six steps.</span><span data-lang="de">Jeder
             Schreibvorgang folgt denselben sechs Schritten.</span></h2>
         <p><span data-lang="en">You see what will change before anything is sent, and the previous state is saved so you
-            can go back. An assistant edits the config; only a person runs <code>plan</code> and
-            <code>apply</code>.</span><span data-lang="de">Bevor etwas geschrieben wird, siehst du, was sich ändert. Der
-            vorherige Zustand wird gesichert, damit du jederzeit ein Backup einspielen kannst.</p>
+            can go back. An assistant edits the project. It writes a device only on a server started
+            with <code>--allow-programming</code>, after your yes to its plan.</span><span data-lang="de">Bevor etwas
+            geschrieben wird, siehst du, was sich ändert. Der vorherige Zustand wird gesichert, damit du zurück
+            kannst. Ein Assistent bearbeitet das Projekt. Auf ein Gerät schreibt er nur mit einem Server, der mit
+            <code>--allow-programming</code> gestartet wurde, und erst nach deinem Ja zu seinem Plan.</span></p>
       </div>
       <ol class="steps">
         <li><strong><span data-lang="en">Read</span><span data-lang="de">Lesen</span></strong><span><span
-              data-lang="en">Fetch the live tables from the device.</span><span data-lang="de">Die aktuellen Tabellen
-              vom Gerät holen.</span></span></li>
-        <li><strong><span data-lang="en">Diff</span><span data-lang="de">Vergleichen</span></strong><span><span
-              data-lang="en">Compare them to your config files.</span><span data-lang="de">Mit deinen
-              Konfigurationsdateien
-              abgleichen.</span></span></li>
+              data-lang="en">Read the device's tables and parameters.</span><span data-lang="de">Tabellen und
+              Parameter vom Gerät lesen.</span></span></li>
+        <li><strong><span data-lang="en">Diff</span><span data-lang="de">Vergleichen</span></strong><span><span data-lang="en">Compare them with your project.</span><span data-lang="de">Mit deinem Projekt
+              vergleichen.</span></span></li>
         <li><strong><span data-lang="en">Confirm</span><span data-lang="de">Bestätigen</span></strong><span><span
               data-lang="en">The plan names the gateway and asks for a yes.</span><span data-lang="de">Der Plan nennt
               das Gateway und fragt nach einer Bestätigung.</span></span></li>
         <li><strong><span data-lang="en">Back up</span><span data-lang="de">Sichern</span></strong><span><span
-              data-lang="en">Save the current tables to disk.</span><span data-lang="de">Die aktuellen Geräte
-              Konfiguration
-              auf die
-              Platte schreiben.</span></span></li>
+              data-lang="en">Save what the device holds now to disk.</span><span data-lang="de">Den aktuellen Stand
+              des Geräts auf die Platte sichern.</span></span></li>
         <li class="write"><strong><span data-lang="en">Write</span><span
-              data-lang="de">Schreiben</span></strong><span><span data-lang="en">Download the new tables to the
-              device.</span><span data-lang="de">Die neuen Konfiguration auf das Gerät laden.</span></span></li>
+              data-lang="de">Schreiben</span></strong><span><span data-lang="en">Write the changed tables and
+              parameters.</span><span data-lang="de">Die geänderten Tabellen und Parameter schreiben.</span></span></li>
         <li><strong><span data-lang="en">Verify</span><span data-lang="de">Prüfen</span></strong><span><span
-              data-lang="en">Read back and check every byte.</span><span data-lang="de">Zurücklesen und jedes Byte
-              vergleichen.</span></span></li>
+              data-lang="en">Read back and compare with your project.</span><span data-lang="de">Zurücklesen und mit
+              deinem Projekt vergleichen.</span></span></li>
       </ol>
     </section>
 
@@ -1535,51 +1892,67 @@ rueckmeldung-lueftungsklappen.send = "3/1/23"</pre>
         <div>
           <div class="sec-head">
             <div class="kicker"><span data-lang="en">LLM access</span><span data-lang="de">LLM-Zugriff</span></div>
-            <h2><span data-lang="en">Three tiers for the MCP server.</span><span data-lang="de">Drei Stufen für den
+            <h2><span data-lang="en">Four tiers for the MCP server.</span><span data-lang="de">Vier Stufen für den
                 MCP-Server.</span></h2>
             <p><span data-lang="en">An agent gets exactly the access you start the server with:</span><span
                 data-lang="de">Ein Agent bekommt genau den Zugriff, mit dem du den Server
                 startest:</span>
             </p>
           </div>
-          <pre class="sh"><span class="p">$</span> claude mcp add knx -- bussard mcp --dir knx</pre>
+          <pre class="sh"><span class="p">$</span> claude mcp add knx -- bussard mcp --dir "$PWD"</pre>
+          <p class="note"><span data-lang="en"><code>bussard mcp --listen</code> serves the same tools over HTTP, for
+              a client that connects to a URL.</span><span data-lang="de"><code>bussard mcp --listen</code> bietet
+              dieselben Tools über HTTP an, für einen Client, der sich mit einer URL verbindet.</span></p>
           <p class="note"><span data-lang="en">Home Assistant users: <code>bussard ha-config</code> writes the KNX
-              integration config from the same TOML files.</span><span data-lang="de">Für Home Assistant erzeugt
-              <code>bussard ha-config</code> die Konfiguration der KNX-Integration aus denselben
-              TOML-Dateien.</span></p>
+              integration config from the same TOML files. With <code>--allow-home-assistant</code> the assistant
+              writes it for you, after your yes.</span><span data-lang="de">Für Home Assistant erzeugt
+              <code>bussard ha-config</code> die Konfiguration der KNX-Integration aus denselben TOML-Dateien. Mit
+              <code>--allow-home-assistant</code> schreibt der Assistent sie für dich, nach deinem Ja.</span></p>
         </div>
         <div class="tiers" role="img"
-          aria-label="Three MCP tiers: passive never transmits, read is the default with rate-limited group reads and config edits, write is opt-in and still refuses protected group addresses. Device programming is never an MCP tool."
-          data-aria-de="Drei MCP-Stufen: passiv sendet nie, lesen ist Standard mit ratenbegrenzten Gruppen-Lesezugriffen und Konfigurationsänderungen, schreiben ist Opt-in und lehnt geschützte Gruppenadressen weiter ab. Geräteprogrammierung ist nie ein MCP-Tool.">
+          aria-label="Four MCP tiers: passive never transmits. Read is the default: rate-limited group and device reads, and edits to the project. Write is opt-in and still refuses protected group addresses. Programming is opt-in and writes a device only after you approved its plan."
+          data-aria-de="Vier MCP-Stufen: passiv sendet nie. Lesen ist Standard: ratenbegrenztes Lesen von Gruppen und Geräten und Änderungen am Projekt. Schreiben ist Opt-in und lehnt geschützte Gruppenadressen weiter ab. Programmieren ist Opt-in und schreibt ein Gerät erst, nachdem du seinen Plan bestätigt hast.">
           <div class="tier t1">
             <div class="bar" style="width:70%">passive</div>
             <div class="txt"><strong><span data-lang="en">Never transmits</span><span data-lang="de">Sendet
-                  nie</span></strong><span><span data-lang="en">Reads the config, listens to the bus, answers
-                  questions.</span><span data-lang="de">Liest die Konfiguration, hört den Bus mit, beantwortet
-                  Fragen.</span></span></div>
+                  nie</span></strong><span><span data-lang="en">Reads and edits the project and listens to the bus.
+                  Sends not even a read request.</span><span data-lang="de">Liest und bearbeitet das Projekt und hört
+                  den Bus mit. Sendet nicht einmal eine Leseanfrage.</span></span></div>
           </div>
           <div class="tier t2">
             <div class="bar" style="width:80%">read</div>
             <div class="txt"><span class="tag"><span data-lang="en">default</span><span
-                  data-lang="de">Standard</span></span><strong><span data-lang="en">Group reads</span><span
-                  data-lang="de">Gruppen-Lesen</span></strong><span><span data-lang="en">Can
-                  ask devices
-                  for values and edit the config, each edit read back as a sentence. Cannot write to the bus or
-                  program a device.</span><span data-lang="de">Kann Geräte nach Werten fragen und die Konfiguration
-                  bearbeiten. Kann nicht auf den Bus schreiben und kein Gerät
-                  programmieren.</span></span></div>
+                  data-lang="de">Standard</span></span><strong><span data-lang="en">Group and device reads</span><span
+                  data-lang="de">Gruppen und Geräte lesen</span></strong><span><span data-lang="en">Also asks devices
+                  for values and reads them for backups and scans, rate-limited. Never writes a group value or a device.</span><span
+                  data-lang="de">Fragt außerdem Werte ab und liest Geräte für Backups und Scans, mit Ratenbegrenzung. Schreibt nie einen Gruppenwert und nie ein Gerät.</span></span></div>
           </div>
           <div class="tier t3">
-            <div class="bar">write<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <div class="bar" style="width:90%">write<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <rect x="4" y="11" width="16" height="10" rx="2" />
                 <path d="M8 11V7a4 4 0 0 1 8 0v4" />
               </svg></div>
             <div class="txt"><strong><span data-lang="en">Opt-in with <code>--allow-writes</code></span><span
                   data-lang="de">Opt-in mit <code>--allow-writes</code></span></strong><span><span data-lang="en">Group
-                  writes and device changes. Group addresses marked <code>protected</code> are still refused, with no
-                  override over MCP.</span><span data-lang="de">Gruppen-Schreiben und Geräteänderungen. Gruppenadressen
-                  mit <code>protected</code> werden weiter abgelehnt.</span></span></div>
+                  writes and the tests in <code>tests.toml</code>. Group addresses marked <code>protected</code> are
+                  still refused, with no override over MCP.</span><span data-lang="de">Gruppen-Schreiben und die Tests
+                  in <code>tests.toml</code>. Gruppenadressen mit <code>protected</code> werden weiter abgelehnt,
+                  ohne Ausnahme über MCP.</span></span></div>
+          </div>
+          <div class="tier t4">
+            <div class="bar">programming<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="4" y="11" width="16" height="10" rx="2" />
+                <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+              </svg></div>
+            <div class="txt"><strong><span data-lang="en">Opt-in with <code>--allow-programming</code></span><span
+                  data-lang="de">Opt-in mit <code>--allow-programming</code></span></strong><span><span
+                  data-lang="en">Writes a device after your yes to its plan: links, parameters and, when needed, its
+                  application. Also adds, replaces, restores and restarts devices.</span><span data-lang="de">Schreibt
+                  ein Gerät nach deinem Ja zu seinem Plan: Verknüpfungen, Parameter und, wenn nötig, die
+                  Applikation. Nimmt außerdem Geräte auf, ersetzt, stellt wieder her und startet neu.</span></span>
+            </div>
           </div>
         </div>
       </div>
@@ -1687,12 +2060,15 @@ cargo install --path crates/bussard-cli</pre>
           <path d="M12 10v4M12 17.5v.5" />
         </svg>
         <p><span data-lang="en"><strong>This is early software that writes to real building hardware.</strong> Device
-            programming covers System B (mask 07B0) and System 7 (mask 0705) devices. Read the <a
-              href="docs/explanation/safety/">safety notes</a>
-            before your first write, and try it on a spare device or the simulator first.</span><span
-            data-lang="de"><strong>Das ist beta Software, die auf echte Gebäudetechnik schreibt.</strong>
-            Geräteprogrammierung deckt System-B-Geräte (Maske 07B0) und System-7-Geräte (Maske 0705) ab. Lies die <a
-              href="docs/explanation/safety/">Sicherheitshinweise</a> vor dem ersten Schreiben.</span></p>
+            programming covers System B (masks 07B0, 27B0, 57B0) and System 7 (masks 0700, 0701, 0705); the <a
+              href="docs/explanation/device-support/">device support</a> page lists the rest. Read the <a
+              href="docs/explanation/safety/">safety notes</a> before your first write, and try it on a spare device
+            or the simulator first.</span><span data-lang="de"><strong>Das ist frühe Software, die auf echte
+              Gebäudetechnik schreibt.</strong> Geräteprogrammierung deckt System B (Masken 07B0, 27B0, 57B0) und
+            System 7 (Masken 0700, 0701, 0705) ab; den Rest listet die Seite <a
+              href="docs/explanation/device-support/">Geräteunterstützung</a>. Lies die <a
+              href="docs/explanation/safety/">Sicherheitshinweise</a> vor dem ersten Schreiben und probiere es zuerst
+            an einem Ersatzgerät oder im Simulator aus.</span></p>
       </div>
     </section>
 
@@ -1703,9 +2079,13 @@ cargo install --path crates/bussard-cli</pre>
             vom ersten Befehl bis zum Protokoll.</span></h2>
       </div>
       <ul class="docs">
-        <li><a href="docs/"><strong><span data-lang="en">Getting started</span><span data-lang="de">Erste
+        <li><a href="docs/getting-started/install/"><strong><span data-lang="en">Getting started</span><span data-lang="de">Erste
                 Schritte</span></strong><span><span data-lang="en">Install and first commands</span><span
                 data-lang="de">Installation und erste Befehle</span></span></a></li>
+        <li><a href="docs/getting-started/assistant/"><strong><span data-lang="en">Connect an assistant</span><span
+                data-lang="de">Einen Assistenten verbinden</span></strong><span><span data-lang="en">Register the MCP
+                server and have a first conversation</span><span data-lang="de">Den MCP-Server eintragen und ein
+                erstes Gespräch führen</span></span></a></li>
         <li><a href="docs/explanation/safety/"><strong><span data-lang="en">Safety</span><span
                 data-lang="de">Sicherheit</span></strong><span><span data-lang="en">Read before your first
                 write</span><span data-lang="de">Vor dem ersten Schreiben lesen</span></span></a></li>
@@ -1723,21 +2103,20 @@ cargo install --path crates/bussard-cli</pre>
                 data-lang="de">Referenz</span></strong><span><span data-lang="en">Every command, flag and
                 MCP tool</span><span data-lang="de">Jeder Befehl, jedes Flag und MCP-Tool</span></span></a>
         </li>
-        <li><a href="docs/reference/files/device-files/"><strong><span data-lang="en">Model format</span><span
-                data-lang="de">Modellformat</span></strong><span><span data-lang="en">Every file in knx/, its keys
-                and its errors</span><span data-lang="de">Jede Datei in knx/, ihre Schlüssel und
-                Fehler</span></span></a></li>
+        <li><a href="docs/reference/model-directory/"><strong><span data-lang="en">Project folder</span><span
+                data-lang="de">Projektordner</span></strong><span><span data-lang="en">Every file in your project
+                and what it holds</span><span data-lang="de">Jede Datei in deinem Projekt und was sie
+                enthält</span></span></a></li>
         <li><a href="docs/reference/home-assistant/"><strong>Home Assistant</strong><span><span data-lang="en">Generate the integration
-                config
-                from your model</span><span data-lang="de">Integrations-Konfiguration aus deinem Modell
+                config from your project</span><span data-lang="de">Integrations-Konfiguration aus deinem Projekt
                 erzeugen</span></span></a>
         </li>
         <li><a href="docs/reference/product-data/"><strong><span data-lang="en">Product data</span><span
                 data-lang="de">Produktdaten</span></strong><span><span data-lang="en">Working with .knxprod
                 files</span><span data-lang="de">Arbeiten mit .knxprod-Dateien</span></span></a></li>
         <li><a href="docs/explanation/how-it-works/"><strong><span data-lang="en">How bussard works</span><span
-                data-lang="de">Wie bussard arbeitet</span></strong><span><span data-lang="en">The model, the product
-                data, the bus</span><span data-lang="de">Das Modell, die Produktdaten, der Bus</span></span></a></li>
+                data-lang="de">Wie bussard arbeitet</span></strong><span><span data-lang="en">The project, the product
+                data, the bus</span><span data-lang="de">Das Projekt, die Produktdaten, der Bus</span></span></a></li>
         <li><a href="https://github.com/tmbo/bussard/issues"><strong>Issues</strong><span><span data-lang="en">Bugs,
                 questions, ideas</span><span data-lang="de">Fehler, Fragen, Ideen</span></span></a></li>
       </ul>
@@ -1776,6 +2155,47 @@ cargo install --path crates/bussard-cli</pre>
           var lang = b.getAttribute("data-set-lang");
           try { localStorage.setItem("bussard-lang", lang); } catch (e) { }
           apply(lang);
+        });
+      });
+    })();
+
+    // Feature steps: a click, or an arrow key on a focused step, shows that
+    // step's example. Without JavaScript the first example shows.
+    (function () {
+      var list = document.querySelector(".tour-steps");
+      var stack = document.querySelector(".tour-stack");
+      if (!list || !stack) return;
+      var tabs = Array.prototype.slice.call(list.querySelectorAll('[role="tab"]'));
+      stack.classList.add("js");
+      function select(tab, focus) {
+        tabs.forEach(function (t) {
+          var on = t === tab;
+          var panel = document.getElementById(t.getAttribute("aria-controls"));
+          t.setAttribute("aria-selected", String(on));
+          t.tabIndex = on ? 0 : -1;
+          if (!panel) return;
+          if (on && panel.hidden) {
+            panel.hidden = false;
+            panel.classList.remove("enter");
+            void panel.offsetWidth;  // restart the fade
+            panel.classList.add("enter");
+          } else if (!on) {
+            panel.hidden = true;
+          }
+        });
+        if (focus) tab.focus({ preventScroll: true });
+      }
+      tabs.forEach(function (t, i) {
+        t.addEventListener("click", function () { select(t, false); });
+        t.addEventListener("keydown", function (e) {
+          var n = null;
+          if (e.key === "ArrowDown" || e.key === "ArrowRight") n = (i + 1) % tabs.length;
+          else if (e.key === "ArrowUp" || e.key === "ArrowLeft") n = (i - 1 + tabs.length) % tabs.length;
+          else if (e.key === "Home") n = 0;
+          else if (e.key === "End") n = tabs.length - 1;
+          if (n === null) return;
+          e.preventDefault();
+          select(tabs[n], true);
         });
       });
     })();
