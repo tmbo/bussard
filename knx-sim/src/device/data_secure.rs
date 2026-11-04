@@ -136,15 +136,18 @@ impl Device {
                     &inner_tpdu,
                 ),
             });
-            // Rebuild the response carrier: same transport framing (connected NDT
-            // with the response's own sequence bits), APCI = A_SecureData (0x3F1),
-            // payload = the ASDU.
-            let tx_seq = (resp.tpdu[0] >> 2) & 0x0F;
+            // Rebuild the response carrier: same transport framing as the plain
+            // response (a connected NDT with its own sequence bits, or an
+            // unnumbered T_Data_Individual for a connectionless request, KNX
+            // 3/3/7 §5.5.5.3, 03_03_07 Application Layer v02.01.01 line 9715),
+            // APCI = A_SecureData (0x3F1), payload = the ASDU.
             let apci10 = crate::secure::A_SECURE_DATA_APCI;
-            let mut tpdu = vec![
-                0x40 | ((tx_seq & 0x0F) << 2) | ((apci10 >> 8) as u8 & 0x03),
-                (apci10 & 0xFF) as u8,
-            ];
+            let tpci = if resp.tpdu[0] & 0xC0 == 0x40 {
+                0x40 | (((resp.tpdu[0] >> 2) & 0x0F) << 2)
+            } else {
+                0x00
+            };
+            let mut tpdu = vec![tpci | ((apci10 >> 8) as u8 & 0x03), (apci10 & 0xFF) as u8];
             tpdu.extend_from_slice(&asdu);
             secured.push(CemiLData { tpdu, ..resp });
         }
@@ -154,8 +157,13 @@ impl Device {
         })
     }
 
-    /// Answer an S-A_Sync_Req (spec §6.3): T_ACK it and send the S-A_Sync_Res as
-    /// a connected data telegram. A request that does not verify is dropped.
+    /// Answer an S-A_Sync_Req (spec §6.3) in the request's communication mode:
+    /// a connected request is T_ACKed and answered with a connected data
+    /// telegram, a connectionless one (`T_Data_Individual`, as ETS 6 sends it
+    /// before it connects, #423) with an unnumbered one. KNX 3/3/7 §5.3.2
+    /// (03_03_07 Application Layer v02.01.01 lines 8897-8898, 8950-8953): the
+    /// receiver takes the request on either transport service and answers with
+    /// the comm_mode of the request. A request that does not verify is dropped.
     fn handle_sync_request(
         &mut self,
         cemi: &CemiLData,
@@ -163,9 +171,18 @@ impl Device {
         apdu: &Apdu,
     ) -> Result<DeviceReaction, DeviceError> {
         let tool = cemi.source;
+        let connectionless = cemi.tpdu.first().is_some_and(|b| b & 0xC0 == 0x00);
         // Build the response carrier first so the ASDU's nonce context matches
-        // the frame that carries it (connected NDT with the device's sequence).
+        // the frame that carries it.
+        let saved_tx_seq = self.tx_seq;
         let mut resp = self.respond(tool, crate::secure::A_SECURE_DATA_APCI, &[]);
+        if connectionless {
+            // T_Data_Individual: no transport sequence, nothing consumed.
+            self.tx_seq = saved_tx_seq;
+            if let Some(first) = resp.tpdu.first_mut() {
+                *first &= 0x03;
+            }
+        }
         let resp_tpci_int = Self::carrier_tpci_int(&resp);
         let receiver = crate::secure::SyncReceiver {
             serial: self.own_serial(),
@@ -188,7 +205,7 @@ impl Device {
                 Err(err) => {
                     // The response sequence was reserved by `respond`; give it
                     // back since nothing is sent.
-                    self.tx_seq = self.tx_seq.wrapping_sub(1) & 0x0F;
+                    self.tx_seq = saved_tx_seq;
                     return Err(err.into());
                 }
             }
