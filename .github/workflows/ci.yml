@@ -259,6 +259,9 @@ jobs:
         with:
           node-version: "24"
 
+      - name: Enrolment protocol vectors are current
+        run: node dev/enroll/regen-vectors.mjs --check
+
       - name: Enrolment page vectors
         run: node --test web/tests/*.test.js
 
