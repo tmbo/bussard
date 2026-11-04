@@ -226,7 +226,14 @@ mod tests {
 
     #[test]
     fn test_page_file_serves_every_page_file() {
-        for path in ["", "app.js", "enroll.js", "style.css", "ui.js", "vendor/jsQR.js"] {
+        for path in [
+            "",
+            "app.js",
+            "enroll.js",
+            "style.css",
+            "ui.js",
+            "vendor/jsQR.js",
+        ] {
             assert!(
                 page_file(path).is_some_and(|(b, _)| !b.is_empty()),
                 "{path}"
