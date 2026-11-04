@@ -1411,10 +1411,10 @@
         <div class="kicker"><span data-lang="en">Features</span><span data-lang="de">Features</span></div>
         <h2><span data-lang="en">Day-to-day KNX work, in a chat.</span><span data-lang="de">KNX-Alltag im
             Chat.</span></h2>
-        <p><span data-lang="en">Import once at the terminal. After that, ask an assistant that speaks MCP, such as
-            Claude Code or Codex CLI. It edits your project and writes a device only after your yes. Pick a step to
-            see an example.</span><span data-lang="de">Einmal im Terminal importieren. Danach fragst du einen
-            Assistenten, der MCP spricht, etwa Claude Code oder Codex CLI. Er bearbeitet dein Projekt und schreibt
+        <p><span data-lang="en">Ask an assistant that speaks MCP, such as Claude Code, Claude Desktop or Codex CLI.
+            It sets up your project from the ETS export, then edits it and writes a device only after your yes. Pick a step to
+            see an example.</span><span data-lang="de">Frag einen Assistenten, der MCP spricht, etwa Claude Code, Claude Desktop oder
+            Codex CLI. Er richtet dein Projekt aus dem ETS-Export ein, dann bearbeitet er es und schreibt
             ein Gerät erst nach deinem Ja. Wähle einen Schritt für ein Beispiel.</span></p>
       </div>
       <div class="tour">
@@ -1430,9 +1430,9 @@
               </svg></span>
             <span class="tour-txt"><strong><span class="num">1</span><span data-lang="en">Import your ETS
                   project</span><span data-lang="de">ETS-Projekt importieren</span></strong><span class="desc"><span
-                  data-lang="en"><code>bussard init</code> finds your gateway and turns a <code>.knxproj</code> into
-                  TOML files.</span><span data-lang="de"><code>bussard init</code> findet dein Gateway und macht aus
-                  einer <code>.knxproj</code> TOML-Dateien.</span></span></span>
+                  data-lang="en">Say "set up my house": the assistant finds your gateway and turns a
+                  <code>.knxproj</code> into TOML files.</span><span data-lang="de">Sag "richte mein Haus ein": der Assistent findet dein Gateway und macht
+                  aus einer <code>.knxproj</code> TOML-Dateien.</span></span></span>
           </button>
           <button type="button" class="tour-step" role="tab" id="tour-tab-2" aria-controls="tour-panel-2"
             aria-selected="false" tabindex="-1">
@@ -1489,20 +1489,32 @@
 
         <div class="tour-stack">
           <div class="tour-panel" role="tabpanel" id="tour-panel-1" aria-labelledby="tour-tab-1">
-            <div class="term">
-              <div class="term-bar"><i></i><i></i><i></i><span>Terminal</span></div>
-              <pre><span class="p"><span data-lang="en"># once, at the terminal</span><span data-lang="de"># einmal, im Terminal</span></span>
-<span class="p">$</span> mkdir house &amp;&amp; cd house
-<span class="p">$</span> bussard init ../house.knxproj
-<span class="d">Found gateway: KNX IP Interface (192.0.2.10:3671, IA 1.1.250)</span>
-<span class="d">imported 86 group addresses, 24 devices, 190 link entries → the current directory /home/me/house</span>
-<span class="d">validation: 0 error(s), 3 warning(s)</span>
-<span class="p">$</span> claude mcp add knx -- bussard mcp --dir "$PWD"
-<span class="p"><span data-lang="en"># from here on, the chat takes over</span><span data-lang="de"># ab hier übernimmt der Chat</span></span></pre>
+            <div class="chatwin">
+              <div class="chat-bar"><span class="mono">bussard mcp</span></div>
+              <div class="chat" data-lang="en">
+                <div class="msg you">Set up my house. The ETS export is house.knxproj.</div>
+                <div class="tool"><b>tool</b><code>knx_setup</code><span class="args">{"project_file": "house.knxproj", "download": true}</span></div>
+                <div class="msg bot">The export is password-protected. I opened a password form on this computer;
+                  the password stays out of this chat. Also, 6 devices lack vendor product data. May I download it?</div>
+                <div class="msg you">Yes.</div>
+                <div class="msg bot">Found the KNX IP Interface at 192.0.2.10. Imported 86 group addresses, 24 devices
+                  and 190 links. Validation: no errors, 3 warnings.</div>
+              </div>
+              <div class="chat" data-lang="de">
+                <div class="msg you">Richte mein Haus ein. Der ETS-Export ist house.knxproj.</div>
+                <div class="tool"><b>tool</b><code>knx_setup</code><span class="args">{"project_file": "house.knxproj", "download": true}</span></div>
+                <div class="msg bot">Der Export ist passwortgeschützt. Ich habe ein Passwortformular auf diesem Rechner
+                  geöffnet; das Passwort bleibt aus dem Chat heraus. Außerdem fehlen für 6 Geräte die Produktdaten des
+                  Herstellers. Darf ich sie herunterladen?</div>
+                <div class="msg you">Ja.</div>
+                <div class="msg bot">KNX IP Interface unter 192.0.2.10 gefunden. 86 Gruppenadressen, 24 Geräte und 190
+                  Verknüpfungen importiert. Prüfung: keine Fehler, 3 Hinweise.</div>
+              </div>
+              <p class="chat-note"><span data-lang="en">Register the server on an empty folder and the assistant does the
+                  setup. At the terminal, <code>bussard init house.knxproj</code> does the same.</span><span
+                  data-lang="de">Registriere den Server auf einem leeren Ordner, und der Assistent übernimmt das Setup.
+                  Im Terminal macht <code>bussard init house.knxproj</code> dasselbe.</span></p>
             </div>
-            <p class="chat-note"><span data-lang="en">No terminal at hand? On an empty folder the assistant runs the
-                same setup with <code>knx_setup</code>.</span><span data-lang="de">Kein Terminal zur Hand? Auf einem
-                leeren Ordner führt der Assistent dasselbe Setup mit <code>knx_setup</code> aus.</span></p>
           </div>
 
           <div class="tour-panel" role="tabpanel" id="tour-panel-2" aria-labelledby="tour-tab-2" hidden>
