@@ -34,8 +34,8 @@ url = "http://homeassistant.local:8123"
 token_env = "BUSSARD_HA_TOKEN"    # default; the token itself never goes here
 config_path = "../ha/knx.yaml"    # the KNX YAML Home Assistant reads
 
-[enroll]                          # optional: bussard keys enroll
-relay = "https://relay.example"   # the enrolment relay; --relay overrides it
+[enroll]                          # optional: bussard keys enroll, knx_enroll_certificates
+# relay = "https://bussard-relay.tmbo.dev"   # the enrolment relay; the default
 # page = "https://bussard.tmbo.dev/enroll/"  # the page the link opens; the default
 ```
 
@@ -58,8 +58,8 @@ relay = "https://relay.example"   # the enrolment relay; --relay overrides it
 | `home_assistant.url` | string | The Home Assistant instance. |
 | `home_assistant.token_env` | string, default `BUSSARD_HA_TOKEN` | The environment variable that holds a long-lived access token. A `.env` supplies it only for a `BUSSARD_*` name. |
 | `home_assistant.config_path` | path | The KNX YAML file Home Assistant reads, relative to the model directory unless absolute. |
-| `enroll.relay` | string, optional | The relay base URL `keys enroll` uses when `--relay` is not given. There is no built-in default. The relay only sees ciphertext. |
-| `enroll.page` | string, optional | The enrolment page the `keys enroll` link opens when `--page` is not given. Default `https://bussard.tmbo.dev/enroll/`. |
+| `enroll.relay` | string, optional | The relay base URL `keys enroll` and the MCP tool `knx_enroll_certificates` use when `--relay` is not given. Default `https://bussard-relay.tmbo.dev`. The hosted page connects only to that relay, so a self-hosted relay needs a self-hosted copy of the page (`web/enroll/`, its CSP `connect-src` naming the relay) set as `enroll.page`. `--local` (`local: true` over MCP) uses neither. The relay only sees ciphertext. |
+| `enroll.page` | string, optional | The enrolment page the `keys enroll` and `knx_enroll_certificates` link opens when `--page` is not given. Default `https://bussard.tmbo.dev/enroll/`. |
 
 ## Notes
 

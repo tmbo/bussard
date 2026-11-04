@@ -167,7 +167,9 @@ impl Tiers {
         parts.push(if self.model_edits {
             "It edits the model files: group addresses (knx_set_group, knx_remove_group), links \
              (knx_add_link, knx_remove_link), names and rooms (knx_set_device) and parameter \
-             values (knx_set_parameter, with the keys knx_show_device lists)."
+             values (knx_set_parameter, with the keys knx_show_device lists). It takes KNX \
+             Secure device certificates from a phone into the key store \
+             (knx_enroll_certificates, knx_enroll_status)."
                 .to_string()
         } else {
             "Model edits are off (--no-model-edits).".to_string()
@@ -315,7 +317,10 @@ impl Tiers {
              Parameters are edited with knx_set_parameter using the keys knx_show_device lists \
              (the device needs its product model). Every edit snapshots the files first and \
              returns a `summary` and the change as sentences: say the summary, then quote the \
-             sentences, and follow the result's next_step."
+             sentences, and follow the result's next_step. KNX Secure device certificates (the \
+             FDSK labels) enter the key store through knx_enroll_certificates and \
+             knx_enroll_status: the human scans them on the page the link opens; never ask for \
+             a label in chat."
                 .to_string()
         } else {
             "Model edits are off (--no-model-edits): the model is read-only here.".to_string()

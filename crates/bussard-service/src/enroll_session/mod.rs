@@ -39,9 +39,32 @@ use zeroize::{Zeroize, Zeroizing};
 pub use relay::{HttpRelay, Relay, RelayError, RelayMessage, RelayPoll};
 
 /// The enrolment page a link opens unless the surface names another
-/// (`dev/enroll-protocol.md`, "Parties"). Only the page; the relay has no
-/// default until the hosted relay's host is decided.
+/// (`dev/enroll-protocol.md`, "Parties").
 pub const DEFAULT_PAGE: &str = "https://bussard.tmbo.dev/enroll/";
+
+/// The hosted relay a session uses unless the surface names another
+/// (`--relay`, then `[enroll] relay`). The hosted page's CSP allows only
+/// this relay: a self-hosted relay needs a self-hosted page (`[enroll]
+/// page`).
+pub const DEFAULT_RELAY: &str = "https://bussard-relay.tmbo.dev";
+
+/// The relay and page of a hosted session: each the first of the
+/// surface's own setting (`--relay`, `--page`), the `[enroll]` table of
+/// bussard.toml, and the default ([`DEFAULT_RELAY`], [`DEFAULT_PAGE`]).
+#[must_use]
+pub fn hosted_endpoints(
+    relay: Option<String>,
+    page: Option<String>,
+    config: &bussard_model::schema::EnrollConfig,
+) -> (String, String) {
+    (
+        relay
+            .or_else(|| config.relay.clone())
+            .unwrap_or_else(|| DEFAULT_RELAY.to_string()),
+        page.or_else(|| config.page.clone())
+            .unwrap_or_else(|| DEFAULT_PAGE.to_string()),
+    )
+}
 
 /// The largest serialized envelope the protocol allows, in bytes.
 pub const MAX_ENVELOPE_BYTES: usize = 4096;
@@ -598,6 +621,31 @@ fn decode_fixed<const N: usize>(text: &str) -> Option<[u8; N]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_hosted_endpoints_flag_then_config_then_default() {
+        use bussard_model::schema::EnrollConfig;
+        let none = EnrollConfig::default();
+        assert_eq!(
+            hosted_endpoints(None, None, &none),
+            (DEFAULT_RELAY.to_string(), DEFAULT_PAGE.to_string())
+        );
+        let config = EnrollConfig {
+            relay: Some("https://relay.example".to_string()),
+            page: Some("https://page.example/enroll/".to_string()),
+        };
+        assert_eq!(
+            hosted_endpoints(None, None, &config),
+            (
+                "https://relay.example".to_string(),
+                "https://page.example/enroll/".to_string()
+            )
+        );
+        assert_eq!(
+            hosted_endpoints(Some("https://flag.example".to_string()), None, &config).0,
+            "https://flag.example"
+        );
+    }
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 

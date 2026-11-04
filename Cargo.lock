@@ -368,6 +368,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.22.1",
  "bussard-bus",
  "bussard-download",
  "bussard-ha",
@@ -380,6 +381,7 @@ dependencies = [
  "bussard-service",
  "bussard-testkit",
  "bussard-transport",
+ "bussard-viz",
  "getrandom 0.2.17",
  "rmcp",
  "serde",

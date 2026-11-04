@@ -566,7 +566,9 @@ const READ_INSTRUCTIONS: &str = "bussard: KNX as code over MCP. The installation
     Parameters are edited with knx_set_parameter using the keys knx_show_device lists (the \
     device needs its product model). Every edit snapshots the files first and returns a \
     `summary` and the change as sentences: say the summary, then quote the sentences, and \
-    follow the result's next_step. Group writes are off: restart with --allow-writes for \
+    follow the result's next_step. KNX Secure device certificates (the FDSK labels) enter the \
+    key store through knx_enroll_certificates and knx_enroll_status: the human scans them on the \
+    page the link opens; never ask for a label in chat. Group writes are off: restart with --allow-writes for \
     knx_write_group. This server runs without --allow-programming, so edits stay in the files. \
     Restarted with that flag, knx_plan_device and knx_apply_device push a device's links and \
     parameter values, knx_restore_tables writes a backup's link tables back and \
@@ -613,7 +615,9 @@ const PROGRAMMING_INSTRUCTIONS: &str = "bussard: KNX as code over MCP. The insta
     Parameters are edited with knx_set_parameter using the keys knx_show_device lists (the \
     device needs its product model). Every edit snapshots the files first and returns a \
     `summary` and the change as sentences: say the summary, then quote the sentences, and \
-    follow the result's next_step. Group writes are off: restart with --allow-writes for \
+    follow the result's next_step. KNX Secure device certificates (the FDSK labels) enter the \
+    key store through knx_enroll_certificates and knx_enroll_status: the human scans them on the \
+    page the link opens; never ask for a label in chat. Group writes are off: restart with --allow-writes for \
     knx_write_group. Push a device with knx_plan_device: say its summary and \
     what_you_will_notice, show its sentences in full, and call knx_apply_device only after an \
     explicit yes in this conversation. It writes the device's links (group-address and \

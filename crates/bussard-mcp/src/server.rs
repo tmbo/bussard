@@ -59,6 +59,9 @@ pub struct BussardMcp {
     /// write or read without admission evidence, kept for the server's
     /// lifetime so each device is read once (issue #316).
     admission_tables: Arc<tokio::sync::Mutex<bussard_service::admission::LiveTables>>,
+    /// The certificate enrolment session of this server, if one was started
+    /// (issue #732).
+    pub(crate) enroll: crate::tools_enroll::EnrollJobs,
 }
 
 impl BussardMcp {
@@ -84,9 +87,14 @@ impl BussardMcp {
             + Self::device_router()
             + Self::program_router()
             + Self::ha_router()
-            + Self::ha_automation_router();
+            + Self::ha_automation_router()
+            + Self::enroll_router();
         if state.no_model_edits {
             for name in crate::tools_model::MODEL_EDIT_TOOLS {
+                tool_router.remove_route(name);
+            }
+            // Certificate enrolment writes the key store (issue #732).
+            for name in crate::tools_enroll::ENROLL_TOOLS {
                 tool_router.remove_route(name);
             }
         }
@@ -130,6 +138,7 @@ impl BussardMcp {
             warm: crate::warm::WarmConnection::new(),
             session_edits: crate::session_edits::SessionEdits::new(),
             admission_tables: Arc::default(),
+            enroll: crate::tools_enroll::EnrollJobs::new(),
         }
     }
 
