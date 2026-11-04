@@ -31,9 +31,9 @@ The output above is illustrative and abridged.
 | `export <FILE>` | | Write the store as a `.knxkeys` file ETS accepts. |
 | `export --force` | off | Overwrite FILE if it exists. |
 | `show` | | Print the summary of what the store holds. |
-| `add-certificate` | | Enter device certificates (the 36-character FDSK labels), one per line, without echo; an empty line ends. |
-| `add-certificate --stdin` | off | Read the labels from standard input, one per line, instead of asking on the terminal. |
-| `enroll` | | Take device certificates (the FDSK labels) from a phone. |
+| `add-certificate` | | Enter device certificates (the 36-character code that carries the factory key, FDSK), one per line, without echo; an empty line ends. |
+| `add-certificate --stdin` | off | Read the codes from standard input, one per line, instead of asking on the terminal. |
+| `enroll` | | Take device certificates from a phone. |
 | `enroll --relay <URL>` | `[enroll] relay`, else the hosted relay | The relay the phone and bussard exchange encrypted messages through. The hosted page talks only to the hosted relay; another relay needs a self-hosted page (`--page`). |
 | `enroll --page <URL>` | `[enroll] page`, else the hosted page | The page the link opens. |
 | `enroll --no-qr` | off | Leave the QR code out. |
@@ -42,22 +42,22 @@ The output above is illustrative and abridged.
 
 What each verb does:
 
-- **`import`** takes new devices, rotated tool keys, changed credentials, factory keys (FDSK) and group keys from the export. Entries the export lacks are kept, and a factory key is never dropped. The report lists what changed by address. Importing the same export twice changes nothing and writes nothing. `--json` prints `written`, `backup`, `changed` and the `report` object.
+- **`import`** takes new devices, rotated tool keys, changed credentials, factory keys and group keys from the export. Entries the export lacks are kept, and a factory key is never dropped. The report lists what changed by address. Importing the same export twice changes nothing and writes nothing. `--json` prints `written`, `backup`, `changed` and the `report` object.
 - **`export`** writes the ETS element and attribute set with a fresh `Created`, signed with the keyring key. A device without a tool key is left out and named.
 - **`show`** prints the backbone, each device with its serial number and which keys it has, each interface with its user id and host, the number of group keys, the serial numbers of certificates without a device, and the devices of your project that support Secure but have no factory key yet, with the next steps. `--json` gives `project`, `created`, `has_backbone_key`, `devices[]` (`address`, `serial`, `has_tool_key`, `has_fdsk`, `has_management_password`, `has_authentication`), `interfaces[]`, `group_keys` (the addresses), `unassigned_certificates` (serial numbers) and `devices_without_fdsk` (addresses).
-- **`add-certificate`** decodes each label (36 base32 characters in six dash-separated groups: serial number, factory key and a 4-bit check; spaces and dashes are ignored, and `0`, `1`, `8` are read as `O`, `I`, `B`) and matches its serial number against the devices in the store. It prints one line per label: the serial number, the state and a detail. **added**: saved on the device with that serial, named with its address and name. **no device yet**: no device in your project has the serial yet, so the key is kept under it until `bussard scan`, `bussard assign` or `bussard adopt` reads that serial off a device (or a `keys import` brings it). **already known**: nothing changed. **conflict**: the key store holds another factory key for the device; nothing is written. **invalid**: not a certificate, or its check does not match. **failed**: the key store could not be saved; the line says why. The `--json` statuses keep their names (`stored`, `unassigned`, `already_stored`, `conflict`, `invalid`, `error`). A label whose check does not match is `invalid` and nothing is written; its serial number is still shown. Every saved label is read back from the store before it is reported. The command fails when any label was a conflict, invalid or not saved. `--json` prints `store` and `results[]` (`status`, `serial`, `ia`, `name`, `check_ok`, `message`).
-- **`enroll`** prints how the labels travel (with a link to [Certificate entry from a phone](../../explanation/knx-secure.md#certificate-entry-from-a-phone)), a link, its QR code and the session code (the fingerprint). Open the link on the phone, check that the page shows the same session code (tap Matches), and scan or type the labels. The phone encrypts each label to this session; the page's server and the relay see only ciphertext. bussard prints one line per label: the serial number, the state (as for `add-certificate`) and the matched device. The session ends when the phone finishes, on `q` and Enter, on Ctrl-C, when no phone joins within 10 minutes, 15 minutes after the phone's last sign of life (the open page sends one every 5 minutes), or after 4 hours. One phone owns the session: bussard refuses any other phone that opens the link and prints a warning. A page or relay other than the default gets a warning before the link. At the end bussard prints a summary line (for example `6 sent · 1 added · 4 already known · 1 no device yet`) and the next steps that apply. With `--local` bussard serves the page and the relay itself on `127.0.0.1` at a free port, on one origin, so the link names no relay and no QR code is printed: open the link in a browser on the same computer and scan with its camera or type the labels. `--json` prints one object per line: `session` (`link`, `fingerprint`, `local`, `warnings[]`), `phone`, `refused_phone` (`phones`), `certificate` (`result`), `ignored`, `done` and `end` (`end`, `stored`, `certificates`, `refused_phones`, `tally`, `summary`, `next_steps[]` with `command` and `why`). Each label is entered exactly as `add-certificate` enters it (same statuses, same read-back). Needs `BUSSARD_KEYRING_PASSWORD`; the store must be writable before the link is shown.
+- **`add-certificate`** decodes each certificate (36 base32 characters in six dash-separated groups: serial number, factory key and a 4-bit check; spaces and dashes are ignored, and `0`, `1`, `8` are read as `O`, `I`, `B`) and matches its serial number against the devices in the store. It prints one line per certificate: the serial number, the state and a detail. **added**: saved on the device with that serial, named with its address and name. **no device yet**: no device in your project has the serial yet, so the key is kept under it until `bussard scan`, `bussard assign` or `bussard adopt` reads that serial off a device (or a `keys import` brings it). **already known**: nothing changed. **conflict**: the key store holds another factory key for the device; nothing is written. **invalid**: not a certificate, or its check does not match. **failed**: the key store could not be saved; the line says why. The `--json` statuses keep their names (`stored`, `unassigned`, `already_stored`, `conflict`, `invalid`, `error`). A certificate whose check does not match is `invalid` and nothing is written; its serial number is still shown. Every saved certificate is read back from the store before it is reported. The command fails when any certificate was a conflict, invalid or not saved. `--json` prints `store` and `results[]` (`status`, `serial`, `ia`, `name`, `check_ok`, `message`).
+- **`enroll`** prints how the certificates travel (with a link to [Certificate entry from a phone](../../explanation/knx-secure.md#certificate-entry-from-a-phone)), a link, its QR code and the session code. Open the link on the phone, check that the page shows the same session code (tap Matches), and scan or type the certificates. The phone encrypts each certificate to this session; the page's server and the relay see only ciphertext. bussard prints one line per certificate: the serial number, the state (as for `add-certificate`) and the matched device. The session ends when the phone finishes, on `q` and Enter, on Ctrl-C, when no phone joins within 10 minutes, 15 minutes after the phone's last sign of life (the open page sends one every 5 minutes), or after 4 hours. One phone owns the session: bussard refuses any other phone that opens the link and prints a warning. A page or relay other than the default gets a warning before the link. At the end bussard prints a summary line (for example `6 sent · 1 added · 4 already known · 1 no device yet`) and the next steps that apply. With `--local` bussard serves the page and the relay itself on `127.0.0.1` at a free port, on one origin, so the link names no relay and no QR code is printed: open the link in a browser on the same computer and scan with its camera or type the codes. `--json` prints one object per line: `session` (`link`, `fingerprint` (the session code), `local`, `warnings[]`), `phone`, `refused_phone` (`phones`), `certificate` (`result`), `ignored`, `done` and `end` (`end`, `stored`, `certificates`, `refused_phones`, `tally`, `summary`, `next_steps[]` with `command` and `why`). Each certificate is entered exactly as `add-certificate` enters it (same statuses, same read-back). Needs `BUSSARD_KEYRING_PASSWORD`; the store must be writable before the link is shown.
 
 Behaviour:
 
 - No key material or password is ever printed, in text or JSON.
-- A certificate is never a command-line argument (shell history): `add-certificate` reads it from the terminal without echo, or from standard input with `--stdin`. Without a terminal and without `--stdin` it refuses. It checks the password and that the store can be written before it reads a label.
+- A certificate is never a command-line argument (shell history): `add-certificate` reads it from the terminal without echo, or from standard input with `--stdin`. Without a terminal and without `--stdin` it refuses. It checks the password and that the store can be written before it reads a certificate.
 - `export` refuses to overwrite an existing FILE unless `--force`.
 - The store and every export it reads or writes share one password, `BUSSARD_KEYRING_PASSWORD`; there is no flag for it.
-- Every bus command reads the store unless `--keyring` or `BUSSARD_KEYRING` names an explicit file (see [Global options](../global-options.md)). `validate` checks the model against it.
-- `import` and `init` merge the one `.knxkeys` exported next to the project into the store when the password is set. Without it they print the `keys import` command to run.
-- `keys import` warns when the export would secure a group address again that the model runs plain, naming the group address and the devices the next apply would secure.
-- The model's `.gitignore` (from `init`) lists `*.knxkeys`, so an export dropped into the model directory is not committed by accident.
+- Every bus command reads the store unless `--keyring` or `BUSSARD_KEYRING` names an explicit file (see [Global options](../global-options.md)). `validate` checks the project against it.
+- `import` and `init` merge the one `.knxkeys` exported next to the ETS project into the store when the password is set. Without it they print the `keys import` command to run.
+- `keys import` warns when the export would secure a group address again that the project runs plain, naming the group address and the devices the next apply would secure.
+- The project's `.gitignore` (from `init`) lists `*.knxkeys`, so an export dropped into the project folder is not committed by accident.
 
 ## `bussard groups secure <GA> on|off`
 
@@ -87,11 +87,11 @@ Behaviour:
 
 - Files only: nothing reaches a device. Afterwards, `bussard plan` on each linked Secure device lists the security-object change, and `bussard apply` writes it (see [`plan`](programming.md)).
 - `off` is refused while a linked object also links another secured group address: a group object's security flag covers all its group addresses.
-- `on` is refused while a linked device is not Data Secure capable in the model.
+- `on` is refused while a linked device does not support Data Secure in the project.
 - Needs `BUSSARD_KEYRING_PASSWORD` and the key store `bussard.keys`. A `BUSSARD_KEYRING` or `connection.keyring` that bus commands read instead gets a warning, since it keeps the old state.
 - The history snapshot taken first keeps a copy of the encrypted key store, so one `bussard undo` restores the flags and the very key.
-- Home Assistant, ETS and every other keyring user still hold the old key and keep sending the group address secured, which the device drops once it runs plain. Run `bussard keys export <file.knxkeys>` and load the new export there.
-- An ETS re-import of a project that still marks the group address secure brings the flags back, and re-importing an old ETS keyring brings the key back. Change the group address in ETS too; `bussard import` and `bussard keys import` warn when this would happen.
+- Home Assistant, ETS and every other user of an exported keyring still hold the old key and keep sending the group address secured, which the device drops once it runs plain. Run `bussard keys export <file.knxkeys>` and load the new export there.
+- An ETS re-import of an ETS project that still marks the group address secure brings the flags back, and re-importing an old ETS keyring brings the key back. Change the group address in ETS too; `bussard import` and `bussard keys import` warn when this would happen.
 - Over MCP the same switch is `knx_set_group` with `secure` (see [MCP tools](../mcp-tools.md)).
 
 ## `bussard interface secure on|off <ADDRESS>`
@@ -108,7 +108,7 @@ $ bussard interface secure on 1.1.200
 | Flag | Default | Meaning |
 |---|---|---|
 | `on` or `off` | | Switch KNXnet/IP Secure on or off. |
-| `<ADDRESS>` | | The interface's individual address. |
+| `<ADDRESS>` | | The interface's address. |
 | `--dry-run` | off | Print the steps; no connection, the key store unchanged. |
 | `--dump-images <DIR>` | none | With `--dry-run`: write the steps' property writes to `DIR/plan.json` (`system: "ip-secure"`, key material as SHA-256 only) for offline comparison with an ETS capture. |
 | `--yes` | off | Skip the confirmation prompt. |
@@ -120,19 +120,19 @@ $ bussard interface secure on 1.1.200
 
 Behaviour:
 
-- `on` needs the device's factory key (FDSK) in the store. A tool key, device authentication code, management password or tunnelling user password the store lacks is generated and saved before the first write.
+- `on` needs the device's factory key in the store. A tool key, device authentication code, management password or tunnelling user password the store lacks is generated and saved before the first write.
 - `on` runs over a plain tunnel to a device in factory state, and is refused when the interface already reports secure-only tunnelling.
 - `off` needs the tool key. Through a secure session with the interface itself it needs `--allow-self-reconfigure`.
 - After the restart, the command reads the device back on a fresh connection under the key it should now hold, and checks the interface's secured service families. Through the interface itself, that connection is a KNXnet/IP Secure session with the store's credentials (`on`) or a plain tunnel (`off`).
-- `off` drops the tool key from the store only once the device verified on its FDSK.
+- `off` drops the tool key from the store only once the device verified on its factory key.
 - Over MCP the same switch is `knx_interface_secure` (see [MCP tools](../mcp-tools.md)).
 
-**Recovery.** If a switch stops half way, the device holds every step before the one named in the error, and the key store holds the credentials it was given and the FDSK. The previous store is `bussard.keys.bak`. Retry the command. If the device is unreachable with every credential the store holds, factory-reset it with its reset button: it returns to its FDSK and plain tunnelling, and `bussard interface secure on <ia>` sets it up again from the store. `bussard keys import` of an ETS keyring export restores the ETS credentials.
+**Recovery.** If a switch stops half way, the device holds every step before the one named in the error, and the key store holds the credentials it was given and the factory key. The previous store is `bussard.keys.bak`. Retry the command. If the device is unreachable with every credential the store holds, factory-reset it with its reset button: it returns to its factory key and plain tunnelling, and `bussard interface secure on <ia>` sets it up again from the store. `bussard keys import` of an ETS keyring export restores the ETS credentials.
 
 ??? note "Details"
-    `on`, under the FDSK: the security mode on (object type 17, PID 51) and the tool key (PID 56). Then under the tool key: the send sequence (PID 59), routing not secured, the device authentication code (type 11 PID 92), the password hashes of the management user and the tunnelling users (PID 93), device management secured, the tunnelling users (PID 97, `user id, address index` per `[knxnet] tunnels` slot; the index points into the interface's tunnelling addresses, PID 79, which the command reads first and which name the `[knxnet] tunnels` slots: a tunnel address that is not among them is refused, and an interface without PID 79 is taken to use the slots in order), tunnelling secured (PID 94), and a master reset.
+    `on`, under the factory key: the security mode on (object type 17, PID 51) and the tool key (PID 56). Then under the tool key: the send sequence (PID 59), routing not secured, the device authentication code (type 11 PID 92), the password hashes of the management user and the tunnelling users (PID 93), device management secured, the tunnelling users (PID 97, `user id, address index` per `[knxnet] tunnels` slot; the index points into the interface's tunnelling addresses, PID 79, which the command reads first and which name the `[knxnet] tunnels` slots: a tunnel address that is not among them is refused, and an interface without PID 79 is taken to use the slots in order), tunnelling secured (PID 94), and a master reset.
 
-    `off`, under the tool key: routing, device management and tunnelling not secured, the security mode off, the tool key back to the FDSK, a master reset. Then under the FDSK the three families again, and a master reset.
+    `off`, under the tool key: routing, device management and tunnelling not secured, the security mode off, the tool key back to the factory key, a master reset. Then under the factory key the three families again, and a master reset.
 
 ## `bussard secure diag <ADDRESS>`
 
@@ -145,7 +145,7 @@ $ bussard secure diag 1.1.5 --clear
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `<ADDRESS>` | | The device's individual address. |
+| `<ADDRESS>` | | The device's address. |
 | `--clear` | off | After a confirmation, clear the failures log and reset the security report, then read both back. |
 | `--yes` | off | Skip the confirmation of `--clear`. |
 | `--tool-key <HEX>` | none | A raw tool key for a test device; prefer `--keyring`. |
@@ -163,7 +163,7 @@ What it reads:
 
 ## Related
 
-- [Use KNX Secure](../../how-to/knx-secure.md): keyring, secure tunnelling and securing a group address, step by step.
+- [Use KNX Secure](../../how-to/knx-secure.md): the key store, secure tunnelling and securing a group address, step by step.
 - [The key store file](../files/bussard-keys.md): what `bussard.keys` holds.
 - [KNX Secure explained](../../explanation/knx-secure.md): keys, secrets, and what secured means.
 - [Programming commands](programming.md): `plan` and `apply`, which push a security change to devices.

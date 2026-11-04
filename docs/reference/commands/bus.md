@@ -4,7 +4,7 @@ The commands that listen to group telegrams, read and write group values, name a
 
 ## `bussard monitor`
 
-Live-monitor the bus and decode each telegram against the model. Reads only; never transmits.
+Live-monitor the bus and decode each telegram against the project. Reads only; never transmits.
 
 ```console
 $ bussard monitor [--filter <EXPR>] [--keyring <FILE>] [--json]
@@ -18,8 +18,8 @@ $ bussard monitor [--filter <EXPR>] [--keyring <FILE>] [--json]
 
 Behaviour:
 
-- A group address (GA) or DPT the model does not know degrades to raw hex, never a failure.
-- With a keyring, a secured group telegram is verified and decrypted with the group key of its destination GA, decoded like a plain one and marked `[secured]`.
+- A group address (GA) or DPT that is not in your project degrades to raw hex, never a failure.
+- With the keys, a secured group telegram is verified and decrypted with the group key of its destination GA, decoded like a plain one and marked `[secured]`.
 - A MAC failure shows `[secured (MAC failed) seq=… raw=…]`, and a GA without a key shows `[secured (no group key) …]`.
 - A sequence number that does not increase per sender adds a warning. Nothing is dropped.
 - A payload a conforming receiver ignores still decodes, with a note saying why (KNX 03_07_01 §2.4): a reserved bit set (`45` on `18.001`), a field out of range (hour 24 on `10.001`, month 0 on `11.001`, `24:30` on `19.001`), tariff 255 on `5.006`, or a reserved enumeration code (`05` on `20.102`). This is the answer to "the bus says X but nothing happened".
@@ -57,7 +57,7 @@ $ bussard read 3/2/0
 
 Behaviour:
 
-- Exits non-zero when no response arrives within 3 seconds, in text and JSON mode.
+- Exits non-zero when nothing answers within 3 seconds, in text and JSON mode.
 - A GA with a group key, or with `secure = true` in `groups.toml`, is read with a secured GroupValueRead. Only a response whose MAC verifies under the group key is accepted, and stderr says `secured: …`.
 - A secured GA without a key is refused before anything is sent.
 - Before a secured read, bussard checks that the responder admits its tunnel address (see [sender admission](#sender-admission-on-a-secured-ga)).
@@ -67,7 +67,7 @@ Behaviour:
 
 A KNX Data Secure device accepts a secured telegram only from an address in its security individual address table, the list of senders it trusts. `read` and `write` check that list before sending from the tunnel address the gateway assigned.
 
-| Evidence for each device the model links to the GA | Verdict |
+| Evidence for each device your project links to the GA | Verdict |
 |---|---|
 | The device's recorded table (`secure_senders` in `bussard.lock`, from `bussard adopt` or a verified secured `apply`, `apply --line`, `flash` or `knx_apply_device`) | Admits exactly the addresses it lists. |
 | No recorded table, but an ETS assignment of the GA to that tunnelling address in the keyring or key store | Admitted. |
@@ -158,7 +158,7 @@ Behaviour:
 - On a terminal it confirms, naming the GA, the decoded value and the resolved gateway. Without a terminal it refuses unless `--yes` is given.
 - A GA marked `protected = true` is refused without `--force`.
 - A GA with a group key, or `secure = true` in `groups.toml`, is written as a secured group telegram. A secured GA without a key is refused before anything is sent.
-- A plain GA is sent byte for byte as without a keyring.
+- A plain GA is sent byte for byte as without keys.
 - A secured write is refused, or carries a note, as described under [sender admission](#sender-admission-on-a-secured-ga).
 - The result line on stderr says only what KNX confirms: `the interface acknowledged the telegram (L_Data.con); KNX reports no application-level result`. A group write gets no reply from the device. When the confirmation is not seen in time the line says so, and the exit code stays 0.
 
@@ -178,8 +178,8 @@ For each telegram it shows the sender, its channel and com object, the payload, 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--ga <GA>` | | Learn this group address. Repeatable; learned in the order given. |
-| `--unnamed` | off | Learn every GA in the model whose name is a placeholder (empty, the address itself, `GA <address>`, `Unnamed`, `Unknown...`). |
-| `--untyped` | off | Learn every GA in the model with no DPT (the ones `validate` reports as W011). |
+| `--unnamed` | off | Learn every GA in your project whose name is a placeholder (empty, the address itself, `GA <address>`, `Unnamed`, `Unknown...`). |
+| `--untyped` | off | Learn every GA in your project with no DPT (the ones `validate` reports as W011). |
 | `--yes` | off | Skip the confirmation prompt: accept the top candidate and the proposed name. Without a terminal the command is refused unless this is given. |
 | `--timeout <SECS>` | `30` | How long to wait for each telegram. |
 | `--keyring <FILE>` | the key store | ETS `.knxkeys` keyring whose group keys decrypt secured group telegrams. The password comes from `BUSSARD_KEYRING_PASSWORD`. |
@@ -189,9 +189,9 @@ Behaviour:
 - `learn` never transmits. It listens on the same connection `monitor` uses.
 - With neither `--ga` nor `--unnamed`/`--untyped`, it takes whatever appears on the bus next, one GA at a time, until a wait times out or you quit.
 - Accepted answers go into `groups.toml`. When the sending com object can be pinned down (an existing link, or exactly one free transmit-capable object on the sending device), the sending device's file gets the `send` link too.
-- A DPT candidate is ranked `high` only when the sending com object declares that DPT in the model. Payload shape alone gives `medium` at most, because most payload lengths fit several DPTs. Repeated telegrams on one GA narrow the candidates.
-- With a keyring, a secured telegram is verified and decrypted as in `monitor --keyring`, and the inference runs on the decrypted value. The stdout line ends in `, secured)`, and the learned group gets `secure = true` in `groups.toml`, so `read`, `write`, `flash` and `apply` treat it as secured.
-- A secured telegram that cannot be verified (no keyring, no group key for the GA, a MAC failure) is reported and skipped. `learn` never guesses a DPT from ciphertext.
+- A DPT candidate is ranked `high` only when the sending com object declares that DPT in your project. Payload shape alone gives `medium` at most, because most payload lengths fit several DPTs. Repeated telegrams on one GA narrow the candidates.
+- With the keys, a secured telegram is verified and decrypted as in `monitor --keyring`, and the inference runs on the decrypted value. The stdout line ends in `, secured)`, and the learned group gets `secure = true` in `groups.toml`, so `read`, `write`, `flash` and `apply` treat it as secured.
+- A secured telegram that cannot be verified (no keys, no group key for the GA, a MAC failure) is reported and skipped. `learn` never guesses a DPT from ciphertext.
 - A sequence number that does not increase over the sender's last one prints the warning `monitor` shows.
 
 ## `bussard test`
@@ -247,4 +247,4 @@ Behaviour:
 - [Watch the bus](../../how-to/watch-the-bus.md): monitor, read and capture in practice.
 - [JSON output](../json-output.md): the telegram JSON and the capture database.
 - [Write commands](../../explanation/write-commands.md): the rails every write goes through.
-- [KNX Secure](../../how-to/knx-secure.md): keyrings, secure tunnelling and secured group addresses.
+- [KNX Secure](../../how-to/knx-secure.md): the key store, secure tunnelling and secured group addresses.

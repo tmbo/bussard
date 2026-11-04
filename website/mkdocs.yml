@@ -100,7 +100,7 @@ nav:
       - Global options: reference/global-options.md
       - Environment variables: reference/environment.md
       - Commands:
-          - Model: reference/commands/model.md
+          - Project: reference/commands/model.md
           - Bus: reference/commands/bus.md
           - Devices: reference/commands/devices.md
           - Programming: reference/commands/programming.md

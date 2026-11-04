@@ -1,6 +1,6 @@
 # History commands
 
-The commands that list, show and restore the model snapshots under `<dir>/.bussard/history`: `history`, `show` and `undo`. They read and write files only, never a device. Global options and exit codes are on [Global options](../global-options.md).
+The commands that list, show and restore the project snapshots under `<dir>/.bussard/history`: `history`, `show` and `undo`. They read and write files only, never a device. Global options and exit codes are on [Global options](../global-options.md).
 
 ## `bussard history`
 
@@ -37,7 +37,7 @@ $ bussard show 10 12
 
 ## `bussard undo [SNAPSHOT]`
 
-Restore the model files to a snapshot, print what that reverts, and point at `plan` and `apply`.
+Restore the project files to a snapshot, print what that reverts, and point at `plan` and `apply`.
 
 ```console
 $ bussard undo
@@ -50,13 +50,13 @@ $ bussard undo
 
 Behaviour:
 
-- Files only. Devices keep their tables until you push the restored model to them with `plan` and `apply`.
-- bussard takes a snapshot before each write, so `undo` with no argument reverts exactly the last change, whether it was a model edit or a bus-only command like `apply`.
+- Files only. Devices keep their tables until you push the restored project to them with `plan` and `apply`.
+- bussard takes a snapshot before each write, so `undo` with no argument reverts exactly the last change, whether it was an edit to the project or a bus-only command like `apply`.
 - The state before the undo is itself snapshotted, so a second `undo` reverts the first.
 - An undo that flips a group address's Data Secure state also changes the key store: the group key comes back from the snapshot's copy, or leaves the store. It needs `BUSSARD_KEYRING_PASSWORD`.
 
 ## Related
 
 - [Change a link](../../how-to/change-a-link.md): plan, apply and undo a change.
-- [Assistant](../../explanation/assistant.md): history and undo when an assistant edits the model.
-- [Model directory](../model-directory.md): where `.bussard/history` lives.
+- [Assistant](../../explanation/assistant.md): history and undo when an assistant edits the project.
+- [Project folder](../model-directory.md): where `.bussard/history` lives.
