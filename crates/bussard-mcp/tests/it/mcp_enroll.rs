@@ -601,6 +601,13 @@ async fn test_knx_enroll_status_stop_closes_hosted_session() -> TestResult {
     assert_eq!(started["ok"], true, "{started}");
     assert_eq!(started["local"], false, "{started}");
     assert_eq!(started["pairing_page_opened"], true, "{started}");
+    // The chat stays short: the page has the steps (#820).
+    assert_eq!(
+        started["summary"],
+        "The pairing page is open in your browser. Follow the steps there."
+    );
+    let next = started["next_step"].as_str().ok_or("no next_step")?;
+    assert!(next.contains("Do not repeat the page's steps"), "{next}");
     assert!(human.shown().is_empty());
     let pairing = browser.opened().first().cloned().ok_or("no page opened")?;
     let page_url = pairing.clone();
@@ -629,6 +636,10 @@ async fn test_knx_enroll_status_stop_closes_hosted_session() -> TestResult {
     let running = call(&client, "knx_enroll_status", json!({"wait_seconds": 10})).await?;
     assert_eq!(running["session"], "running", "{running}");
     assert_eq!(running["certificates"], 1, "{running}");
+    // Counts only while it runs; serial numbers on request.
+    assert!(running.get("results").is_none(), "{running}");
+    let detailed = call(&client, "knx_enroll_status", json!({"details": true})).await?;
+    assert_eq!(detailed["results"][0]["status"], "stored", "{detailed}");
 
     let stopped = call(&client, "knx_enroll_status", json!({"stop": true})).await?;
     assert_eq!(stopped["session"], "ended", "{stopped}");
@@ -646,7 +657,7 @@ async fn test_knx_enroll_status_stop_closes_hosted_session() -> TestResult {
     let stopped = call(&client, "knx_enroll_status", json!({"stop": true})).await?;
     assert_eq!(stopped["end"], "stopped", "{stopped}");
 
-    let results = format!("{started} {running} {stopped} {next}");
+    let results = format!("{started} {running} {detailed} {stopped} {next}");
     assert_no_secret(&results);
     assert_no_link(&results, &link, &pairing)?;
     assert_no_link(&results, &next_link, &next_pairing)?;

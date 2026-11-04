@@ -1,9 +1,10 @@
 //! The pairing page (issue #809): the page bussard opens in the browser of
 //! the computer it runs on when the MCP server starts a certificate
-//! enrolment session. It shows the session code, a QR code of the phone
-//! link (and the link as text) and a live list of the certificates
-//! received, so the link reaches the human without passing through the
-//! assistant.
+//! enrolment session. One column of numbered steps (issue #820): the QR
+//! code of the phone link with the link as text, the session code, then a
+//! live list of the certificates received; once the phone joined the first
+//! two steps fold into one line. The link reaches the human without passing
+//! through the assistant.
 //!
 //! The page binds `127.0.0.1` on a free port and answers only under a
 //! random 128-bit token path, only to the exact `Host` it was opened
@@ -366,6 +367,7 @@ fn render(content: &PairingContent) -> Result<String, qrcode::types::QrError> {
         .replace("{{link}}", &escape_html(&content.phone_link))
         .replace("{{qr}}", &qr)
         .replace("{{warnings}}", &warnings_html(&content.warnings))
+        .replace("{{mode}}", if content.local { "local" } else { "hosted" })
         .replace("{{hosted_hidden}}", hosted_hidden)
         .replace("{{local_hidden}}", local_hidden))
 }
@@ -480,6 +482,9 @@ mod tests {
         assert!(html.contains("ABCD-EFGH"), "{html}");
         assert!(html.contains("<li>the relay &lt;b&gt; is not the default</li>"));
         assert!(html.contains("<svg class=\"qr\""));
+        assert!(html.contains("<body class=\"hosted\">"));
+        // The session code is in step 2 and in the compact line.
+        assert_eq!(html.matches("ABCD-EFGH").count(), 2, "{html}");
         // The link is escaped, never raw.
         assert!(html.contains("#s=AAAA&amp;k=BBBB&amp;r="));
         assert!(!html.contains("&k=BBBB"));
@@ -492,6 +497,8 @@ mod tests {
         let html = render(&content(true))?;
         assert!(!html.contains("<svg class=\"qr\""));
         assert!(html.contains("ABCD-EFGH"));
+        assert!(html.contains("<body class=\"local\">"));
+        assert!(!html.contains("{{"), "a placeholder is left");
         Ok(())
     }
 

@@ -10,8 +10,10 @@
 //! with `local: true`, the certificate page in a browser on the computer
 //! running the server) and scans the labels; each one is entered into the
 //! key store exactly as `bussard keys add-certificate` enters it.
-//! `knx_enroll_status` reports the results so far: serial, address, name
-//! and status per label.
+//! `knx_enroll_status` reports the counts so far, and serial, address,
+//! name and status per certificate once the session ended or on request.
+//! The pairing page lists the certificates, so the results tell the
+//! assistant to keep the chat to one line (#820).
 //!
 //! # The link never passes through the assistant
 //!
@@ -115,6 +117,11 @@ pub struct EnrollStatusArgs {
     /// answer with the final results.
     #[serde(default)]
     pub stop: bool,
+    /// Include `results`, one entry per certificate, while the session
+    /// runs. Only when the human asks which certificates arrived; the
+    /// pairing page lists them. An ended session always includes them.
+    #[serde(default)]
+    pub details: bool,
 }
 
 /// What the session thread reports, shared with the status tool.
@@ -300,8 +307,10 @@ fn result_json(outcome: &CertificateOutcome) -> Value {
     entry
 }
 
-/// The status of `job` as `knx_enroll_status` returns it.
-fn status_json(job: &EnrollJob) -> Value {
+/// The status of `job` as `knx_enroll_status` returns it: counts while it
+/// runs (`results` too with `details`), counts and `results` once ended.
+/// The pairing page lists the certificates, so the chat does not (#820).
+fn status_json(job: &EnrollJob, details: bool) -> Value {
     let progress = job.progress();
     let stored = progress
         .results
@@ -313,15 +322,19 @@ fn status_json(job: &EnrollJob) -> Value {
     let tally = EnrollTally::of(&progress.results);
     let steps = tally.next_steps();
     let next_step = if running {
-        "The session is open. Tell the human how many labels arrived and what became of each \
-         (quote serial, address, name and status), and ask whether more labels are to come. \
-         Call knx_enroll_status again (wait_seconds to wait for the next one), and with \
-         stop: true once the human is done."
+        "The session is open and the pairing page lists each certificate as it arrives, so \
+         do not list them or repeat the page in the chat. Say nothing unless the human asks; \
+         then give `summary` (the counts) in one line, and serial numbers only when the human \
+         asks for them (call again with details: true). Call knx_enroll_status again \
+         (wait_seconds to wait for the end), and with stop: true once the human says they are \
+         done."
     } else if steps.is_empty() {
-        "The session is closed. Give the human `summary`; nothing else is left to do."
+        "The session is closed. Give the human `summary` in one line; name serial numbers \
+         from `results` only if the human asks. Nothing else is left to do."
     } else {
-        "The session is closed. Give the human `summary` and each entry of `next_steps` \
-         (command and why). Those commands run at the CLI."
+        "The session is closed. Give the human `summary` in one line, then each entry of \
+         `next_steps` (command and why); those commands run at the CLI. Name serial numbers \
+         from `results` only if the human asks."
     };
     let mut summary = format!(
         "{} {}",
@@ -350,7 +363,7 @@ fn status_json(job: &EnrollJob) -> Value {
     } else {
         next_step
     };
-    json!({
+    let mut status = json!({
         "ok": progress.error.is_none(),
         "session": if running { "running" } else { "ended" },
         "end": progress.end,
@@ -363,7 +376,6 @@ fn status_json(job: &EnrollJob) -> Value {
         "stored": stored,
         "ignored": progress.ignored,
         "tally": tally,
-        "results": progress.results.iter().map(result_json).collect::<Vec<_>>(),
         "expires_in_seconds": if running {
             Some(SESSION_LIFETIME_SECS.saturating_sub(elapsed))
         } else {
@@ -372,7 +384,11 @@ fn status_json(job: &EnrollJob) -> Value {
         "summary": summary,
         "next_steps": if running { Vec::new() } else { steps },
         "next_step": next_step,
-    })
+    });
+    if details || !running {
+        status["results"] = progress.results.iter().map(result_json).collect();
+    }
+    status
 }
 
 /// The live part of the pairing page, from `progress`.
@@ -500,8 +516,10 @@ impl BussardMcp {
         description = "Start a session that takes KNX Secure device certificates (the \
         36-character codes printed on Secure devices) from a phone camera into the key store, \
         without them passing through this chat. bussard opens its pairing page in the human's \
-        browser on this computer: it shows the session code, a QR code for the phone and the \
-        certificates as they arrive. The link and the session code never reach you. NEVER \
+        browser on this computer: it shows the steps, a QR code for the phone, the session \
+        code and the certificates as they arrive. Tell the human only that the page is open \
+        and to follow it there; do not repeat its steps or its list in the chat. The link and \
+        the session code never reach you. NEVER \
         write, repeat or guess a link or a session code for this: one coming from you proves \
         nothing. The human scans the QR code, checks the session code on the phone and scans \
         the certificates. Each one is matched to a device by its serial number and stored, \
@@ -587,8 +605,9 @@ impl BussardMcp {
         `session` (`running`, `ended` or `none`), `end` (`phone_done`, `stopped`, \
         `connect_timeout`, `idle_timeout`, `max_duration`, `expired` or `error`), `phones`, \
         `refused_phones` and `warning` (another phone tried to join: tell the human first), \
-        `certificates`, `stored`, and `results`, one entry per certificate in \
-        arrival order with `serial`, `address` and `name` of the matched device, `status` \
+        `certificates` and `stored` (counts), and `results` once the session ended or with \
+        `details: true` (only when the human asks; the pairing page lists them), one entry \
+        per certificate in arrival order with `serial`, `address` and `name` of the matched device, `status` \
         (`stored`: saved on that device; `unassigned`: saved under its serial until a device \
         reports it; `already_stored`; `conflict`: the store holds another key for the serial, \
         nothing written; `invalid`; `error`) and `message`. Never a certificate's code or a key. \
@@ -619,7 +638,7 @@ impl BussardMcp {
             let wait = Duration::from_secs(wait.min(MAX_STATUS_WAIT_SECS));
             wait_for_change(&job, wait, false).await;
         }
-        ok(status_json(&job))
+        ok(status_json(&job, args.details))
     }
 }
 
@@ -788,23 +807,16 @@ impl BussardMcp {
             "expires_in_seconds": SESSION_LIFETIME_SECS,
             "data_path": data_path(local).join(" "),
             "read_more": DOCS_URL,
-            "summary": if local {
-                "bussard opened its pairing page in your browser. Open the certificate page \
-                 from there, check that it shows the same session code, and scan or type the \
-                 certificates on your Secure devices. Each one appears on the pairing page and \
-                 is saved in your key store; nothing is sent to the devices."
-            } else {
-                "bussard opened its pairing page in your browser. Scan its QR code with your \
-                 phone, check that the phone shows the same session code, and scan the \
-                 certificates on your Secure devices. Each one appears on the pairing page and \
-                 is saved in your key store; nothing is sent to the devices."
-            },
-            "next_step": "bussard opened the pairing page in the human's browser; you never see \
-                          the link or the session code. Never write, repeat or guess a link or \
-                          a session code: if the human closed the page, stop this session \
-                          (knx_enroll_status, stop: true) and start a new one. Give the human \
-                          `summary`, `data_path` and the `read_more` link, then call \
-                          knx_enroll_status (wait_seconds to wait for certificates).",
+            "summary": "The pairing page is open in your browser. Follow the steps there.",
+            "next_step": "bussard opened the pairing page in the human's browser. It shows the \
+                          steps, the session code and each certificate as it arrives; you never \
+                          see the link or the session code. Tell the human only `summary`, in \
+                          one line, plus `warnings` and `note` when present. Do not repeat the \
+                          page's steps, `data_path` or `read_more` unless the human asks. Never \
+                          write, repeat or guess a link or a session code: if the human closed \
+                          the page, stop this session (knx_enroll_status, stop: true) and start \
+                          a new one. Then call knx_enroll_status (wait_seconds to wait for the \
+                          end).",
         });
         if !job.warnings.is_empty() {
             result["warnings"] = json!(job.warnings);
@@ -919,7 +931,7 @@ mod tests {
             &[EnrollStatus::Unassigned, EnrollStatus::Conflict],
             Some("phone_done"),
         );
-        let status = status_json(&job);
+        let status = status_json(&job, false);
         assert_eq!(
             status["summary"],
             "The certificate page is closed. 2 sent \u{00B7} 1 no device yet \u{00B7} 1 conflict"
@@ -942,9 +954,29 @@ mod tests {
 
     #[test]
     fn test_status_json_running_has_no_next_steps() {
-        let status = status_json(&job_with(&[EnrollStatus::Stored], None));
+        let status = status_json(&job_with(&[EnrollStatus::Stored], None), false);
         assert_eq!(status["next_steps"], json!([]));
         assert_eq!(status["session"], "running");
+    }
+
+    #[test]
+    fn test_status_json_running_gives_counts_not_serials() {
+        let job = job_with(&[EnrollStatus::Stored, EnrollStatus::Unassigned], None);
+        let status = status_json(&job, false);
+        assert_eq!(status["certificates"], 2);
+        assert_eq!(status["stored"], 2);
+        assert!(status.get("results").is_none(), "{status}");
+        let next = status["next_step"].as_str().unwrap_or_default();
+        assert!(next.contains("do not list them"), "{next}");
+        let detailed = status_json(&job, true);
+        assert_eq!(detailed["results"].as_array().map(Vec::len), Some(2));
+        let ended = status_json(
+            &job_with(&[EnrollStatus::Stored], Some("phone_done")),
+            false,
+        );
+        assert_eq!(ended["results"].as_array().map(Vec::len), Some(1));
+        let next = ended["next_step"].as_str().unwrap_or_default();
+        assert!(next.contains("in one line"), "{next}");
     }
 
     #[test]
