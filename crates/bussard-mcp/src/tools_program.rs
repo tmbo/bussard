@@ -509,8 +509,10 @@ impl BussardMcp {
         `sentences` start with \"! <ia> must have its application program loaded\", \
         `flash.load_application` says why and what it replaces, and the `question` asks to \
         load it; one yes covers the load and the write of the project with it. A load is \
-        refused when the device's application cannot be identified or its state read, and \
-        when the download writes no link table while the links would differ. A flash plan's `flash` field lists the com-objects that appear or \
+        refused when the device's application cannot be identified or its state read. When \
+        the download writes no link table while the links differ, the same yes also writes \
+        the links after it (`flash.links_after_download`), as `bussard apply` does; the result \
+        carries that write in `links`. A flash plan's `flash` field lists the com-objects that appear or \
         disappear (number, text, DPT) and the parameters behind them, the address, \
         association and group-object table sizes before and after, `device_offline_seconds` \
         (the device restarts), that the parameter memory is backed up first, and the product \
@@ -1269,7 +1271,9 @@ impl BussardMcp {
             match &f.load {
                 // Issue #750: the load leads the plan's sentences.
                 Some(why) => {
-                    device_plan.notes.insert(0, load_note(target, why, &f.plan));
+                    device_plan
+                        .notes
+                        .insert(0, load_note(target, why, &f.plan, f.links_after));
                     if device_plan.writes.full_image.is_none() {
                         device_plan.writes.full_image = Some(bussard_download::FullImage {
                             segments: Vec::new(),
@@ -1279,7 +1283,12 @@ impl BussardMcp {
                         });
                     }
                 }
-                None => device_plan.notes.push(flash_note(target)),
+                None => {
+                    device_plan.notes.push(flash_note(target));
+                    if f.links_after {
+                        device_plan.notes.push(links_after_note(target, &f.plan));
+                    }
+                }
             }
             // Issue #326: name what the full download writes.
             if let Some(full) = device_plan.writes.full_image.as_mut() {
@@ -1333,7 +1342,9 @@ impl BussardMcp {
         };
         let question = match &flash {
             _ if noop => None,
-            Some(f) if f.load.is_some() => Some(load_question(target, &gateway, &f.plan)),
+            Some(f) if f.load.is_some() => {
+                Some(load_question(target, &gateway, &f.plan, f.links_after))
+            }
             Some(_) => Some(flash_question(target, &gateway, device_plan.change_count())),
             None => Some(device_plan.question()),
         };
@@ -1343,6 +1354,14 @@ impl BussardMcp {
             .as_ref()
             .and_then(|f| f.load.as_ref().map(|why| (f, why)))
         {
+            Some((f, why)) if f.links_after => format!(
+                "! {target} must have its application program loaded: {why}. The yes loads {} \
+                 with the model's parameters and reads it back, then writes the model's links \
+                 (the download of this application does not write the link tables) and reads \
+                 them back, as one job.\n{}",
+                f.plan.identity.id,
+                device_plan.render_text()
+            ),
             Some((f, why)) => format!(
                 "! {target} must have its application program loaded: {why}. The yes loads {} \
                  and writes the model's parameters and links with it.\n{}",
@@ -1411,13 +1430,19 @@ impl BussardMcp {
                     "Show the plan above to the human (every sentence, and \
                      flash.load_application) and say that the application program must be \
                      loaded first: {why}. Loading it replaces what {target} runs now, \
-                     {target} restarts and is offline for {} to {} s, and the model's \
-                     parameters and links are written with it and read back. Ask whether to \
+                     {target} restarts and is offline for {} to {} s, and {} Ask whether to \
                      load the application into {target}. Call knx_apply_device with this \
                      plan_digest only after an explicit yes to loading it; that one call runs \
                      the load and the write as one job.",
                     bussard_service::flash::DEVICE_OFFLINE_SECONDS.0,
-                    bussard_service::flash::DEVICE_OFFLINE_SECONDS.1
+                    bussard_service::flash::DEVICE_OFFLINE_SECONDS.1,
+                    if flash.as_ref().is_some_and(|f| f.links_after) {
+                        "the model's parameters are written with it and read back; then the \
+                         links are written by a table write (this application's download does \
+                         not write them) and read back."
+                    } else {
+                        "the model's parameters and links are written with it and read back."
+                    }
                 )
             } else if flash.is_some() {
                 format!(
@@ -1613,9 +1638,140 @@ impl BussardMcp {
         });
         tier.jobs.started(job, prepared.result.clone(), record);
         let _ = started.send(Ok(()));
+        let links_after = LinksAfter::of(&prepared);
         let result = self.apply_write(tier, job, prepared).await;
         drop(warm);
+        drop(_guard);
+        let result = match links_after {
+            Some(consent) => self.links_after_download(tier, job, consent, result).await,
+            None => result,
+        };
         tier.jobs.finish(job, result);
+    }
+
+    /// The table write after a download that writes no link table (issue
+    /// #779), as `bussard replace` runs `bussard apply` after `bussard
+    /// flash`: once the download verified, the device is planned again (it
+    /// now runs the application, so the plan is the table write of `bussard
+    /// apply`), and that plan is written through the apply pre-flight and
+    /// write, read-back included. The human's yes to the load covered it:
+    /// the model's tables and parameter values for the device must still be
+    /// the ones the yes was given for. `flashed` is the download's result;
+    /// the answer is verified only when the table write's read-back
+    /// matches. Called without the bus lock (the plan takes it).
+    pub(super) async fn links_after_download(
+        &self,
+        tier: &ProgrammingTier,
+        job: &str,
+        consent: LinksAfter,
+        mut flashed: Value,
+    ) -> Value {
+        let target = consent.target;
+        let application = flashed["application"]
+            .as_str()
+            .unwrap_or("the application")
+            .to_string();
+        if !(flashed["ok"] == json!(true) && flashed["verified"] == json!(true)) {
+            flashed["links"] = json!({
+                "written": false,
+                "reason": "not written: the download did not verify",
+            });
+            return flashed;
+        }
+        let fail = |mut flashed: Value, reason: String| -> Value {
+            flashed["ok"] = json!(false);
+            flashed["verified"] = json!(false);
+            flashed["reason"] = json!(format!(
+                "{application} is loaded on {target} and verified, but its links were not \
+                 written: {reason}"
+            ));
+            flashed["recovery"] = json!(format!(
+                "Plan {target} again with knx_plan_device: the device runs the application now, \
+                 so the plan is the table write of its links. Do not report the change as done \
+                 until a plan reports nothing to do."
+            ));
+            flashed["links"] = json!({"written": false, "reason": reason});
+            flashed
+        };
+        tier.jobs.step(
+            job,
+            format!(
+                "{application} is loaded on {target}; planning its links (the download does not \
+                 write the link tables)"
+            ),
+        );
+        let plan = match self.plan_body(&target.to_string()).await {
+            Ok(plan) => plan,
+            Err(reason) => return fail(flashed, format!("the plan of its links failed: {reason}")),
+        };
+        if !consent.holds(self) {
+            return fail(
+                flashed,
+                "the project's links or parameter values for the device changed since the yes"
+                    .to_string(),
+            );
+        }
+        if plan["noop"] == json!(true) {
+            // A fresh read after the load shows the device holds the model:
+            // that read is the read-back.
+            flashed["links"] = json!({
+                "written": false,
+                "verified": true,
+                "note": "a fresh read after the download shows the device already holds the \
+                         project's links",
+            });
+            self.session_edits().applied(target, true);
+            return flashed;
+        }
+        if plan["method"] != json!("apply") {
+            return fail(
+                flashed,
+                format!(
+                    "the plan after the download is method {} rather than the table write",
+                    plan["method"]
+                ),
+            );
+        }
+        let Some(digest) = plan["plan_digest"].as_str().map(str::to_string) else {
+            return fail(
+                flashed,
+                "the plan after the download has no digest".to_string(),
+            );
+        };
+        let _guard = tier.bus_lock.lock().await;
+        let mut warm = self.warm().lock().await;
+        warm.release().await;
+        tier.jobs.step(
+            job,
+            format!("writing {target}'s links: pre-flight, backups"),
+        );
+        let prepared = match self.apply_preflight(tier, target, &digest, None).await {
+            Ok(prepared) => prepared,
+            Err(reason) => {
+                return fail(
+                    flashed,
+                    format!("the table write was refused in its pre-flight: {reason}"),
+                );
+            }
+        };
+        let links = self.apply_write(tier, job, prepared).await;
+        drop(warm);
+        let verified = links["ok"] == json!(true) && links["verified"] == json!(true);
+        if !verified {
+            let reason = links["reason"]
+                .as_str()
+                .or_else(|| links["detail"].as_str())
+                .unwrap_or("the table write did not verify")
+                .to_string();
+            let mut result = fail(flashed, reason);
+            if let Some(recovery) = links["recovery"].as_str() {
+                result["recovery"] = json!(recovery);
+            }
+            result["links"] = links;
+            return result;
+        }
+        flashed["links"] = links;
+        flashed
     }
 
     /// The pre-flight of an apply: the digest names a fresh plan of this
@@ -1939,6 +2095,7 @@ impl BussardMcp {
             ..
         } = p;
         if let Some(image) = flash {
+            let links_after = image.links_after;
             let ctx = flash::FlashJob {
                 target,
                 gateway: &gateway,
@@ -1953,7 +2110,11 @@ impl BussardMcp {
             if result["ok"] == json!(true) {
                 // The lock may have changed (the PID 54 record): serve it.
                 self.state().model.reload();
-                self.session_edits().applied(target, true);
+                // With the links still to write (issue #779), the edits are
+                // applied once the table write after the download verified.
+                if !links_after {
+                    self.session_edits().applied(target, true);
+                }
             }
             return result;
         }
@@ -2406,6 +2567,57 @@ impl BussardMcp {
                 ),
             }),
         })
+    }
+}
+
+/// What a yes to a download with the links written after it (issue #779)
+/// was given for: the device, and the model's tables and parameter values
+/// for it. The table write after the download runs only while the model
+/// still holds them.
+pub(super) struct LinksAfter {
+    /// The device.
+    target: IndividualAddress,
+    /// The model's tables for the device when the yes was given.
+    desired: DesiredTables,
+    /// The device's parameter values in the model when the yes was given.
+    parameters: Option<std::collections::BTreeMap<String, String>>,
+}
+
+impl LinksAfter {
+    /// The consent `p` carries, `None` unless its download leaves the links
+    /// to a table write after it.
+    fn of(p: &Prepared) -> Option<LinksAfter> {
+        p.flash.as_ref().filter(|f| f.links_after)?;
+        Some(LinksAfter {
+            target: p.target,
+            desired: p.desired.clone(),
+            parameters: Self::parameters(&p.model, p.target),
+        })
+    }
+
+    /// The device's parameter values in `model`.
+    fn parameters(
+        model: &Model,
+        target: IndividualAddress,
+    ) -> Option<std::collections::BTreeMap<String, String>> {
+        model
+            .devices
+            .get(&target)
+            .map(|d| d.device.parameters.clone())
+    }
+
+    /// Whether the model the server serves now still holds what the yes was
+    /// given for.
+    fn holds(&self, server: &BussardMcp) -> bool {
+        let model = server.state().model.reload();
+        let product = product_for(&server.state().dir, &model, self.target);
+        let desired = desired_tables_for_app(
+            &model,
+            self.target,
+            product.source.as_ref().and_then(|p| p.app()),
+        );
+        desired.is_ok_and(|d| d == self.desired)
+            && Self::parameters(&model, self.target) == self.parameters
     }
 }
 
@@ -3127,19 +3339,47 @@ fn flash_question(target: IndividualAddress, gateway: &str, changes: usize) -> S
 }
 
 /// The plan note of a load (issue #750): why, and what the download does.
-fn load_note(target: IndividualAddress, why: &str, plan: &bussard_download::FlashPlan) -> String {
+/// With `links_after` (issue #779) the links follow the download as `bussard
+/// apply` writes them.
+fn load_note(
+    target: IndividualAddress,
+    why: &str,
+    plan: &bussard_download::FlashPlan,
+    links_after: bool,
+) -> String {
     let (min, max) = bussard_service::flash::DEVICE_OFFLINE_SECONDS;
+    let reset = if plan.has_factory_reset() {
+        ", after a factory reset that erases what it runs now"
+    } else {
+        ""
+    };
+    if links_after {
+        return format!(
+            "method: flash. The application program must be loaded: {why}. {target} gets {} \
+             with the model's parameters as `bussard flash {target} --yes` writes them{reset}, \
+             restarts, and is offline for {min} to {max} s; the download is read back and \
+             compared with the model. {}",
+            plan.identity.id,
+            links_after_note(target, plan)
+        );
+    }
     format!(
         "method: flash. The application program must be loaded: {why}. {target} gets {} with \
-         the model's parameters and tables as `bussard flash {target} --yes` writes them{}, \
+         the model's parameters and tables as `bussard flash {target} --yes` writes them{reset}, \
          restarts, and is offline for {min} to {max} s; the result is read back and compared \
          with the model.",
         plan.identity.id,
-        if plan.has_factory_reset() {
-            ", after a factory reset that erases what it runs now"
-        } else {
-            ""
-        }
+    )
+}
+
+/// The plan note of a download that writes no link table while the links
+/// differ (issue #779): the table write that follows it.
+fn links_after_note(target: IndividualAddress, plan: &bussard_download::FlashPlan) -> String {
+    format!(
+        "The download of {} does not write the link tables, so once it verified the same job \
+         writes {target}'s links as `bussard apply {target}` does and reads them back; the \
+         result is verified only when that read-back matches the model.",
+        plan.identity.id
     )
 }
 
@@ -3148,11 +3388,17 @@ fn load_question(
     target: IndividualAddress,
     gateway: &str,
     plan: &bussard_download::FlashPlan,
+    links_after: bool,
 ) -> String {
     let (min, max) = bussard_service::flash::DEVICE_OFFLINE_SECONDS;
+    let what = if links_after {
+        "with the model's parameters, then write its links"
+    } else {
+        "and write the model's parameters and links with it"
+    };
     format!(
-        "load application {} into {target} through {gateway} and write the model's \
-         parameters and links with it? The device restarts and is offline for {min} to {max} s.",
+        "load application {} into {target} through {gateway} {what}? The device restarts and is \
+         offline for {min} to {max} s.",
         plan.identity.id
     )
 }

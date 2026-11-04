@@ -608,12 +608,50 @@ async fn test_knx_apply_device_loads_the_application_over_another_one() -> anyho
     Ok(())
 }
 
-/// Issue #750: when the links change too and this application's download
-/// writes no link table, a load would leave the links different from the
-/// model, which its read-back cannot see. The plan refuses before anything
-/// is written and names the way through.
+/// Writes the model of [`write_model`] with object 1 also listening on
+/// 1/2/1, a link the device does not hold.
+fn write_model_with_a_new_link(dir: &Path, obj2: &str) -> anyhow::Result<()> {
+    write_model(dir)?;
+    std::fs::write(
+        dir.join("devices").join("1.1.4.toml"),
+        format!(
+            "address = \"1.1.4\"\nname = \"Weather station\"\n\n[parameters]\n\
+             \"thr@P-0_R-1\" = \"9\"\n\"obj2@P-1_R-2\" = \"{obj2}\"\n\n[links]\n\
+             1.listen = [\"1/2/0\", \"1/2/1\"]\n"
+        ),
+    )?;
+    std::fs::write(
+        dir.join("groups.toml"),
+        "groups = [\n  { address = \"1/2/0\", name = \"Switch\" },\n  \
+         { address = \"1/2/1\", name = \"Switch 2\" },\n]\n",
+    )?;
+    Ok(())
+}
+
+/// The address table the device holds after the job: count word, then
+/// the group addresses.
+fn address_table(gateway: &MockGateway) -> anyhow::Result<Vec<u8>> {
+    let image = gateway.with_device(device_ia()?, |dev| dev.table_image(1))?;
+    image.ok_or_else(|| anyhow::anyhow!("the mock holds no address table"))
+}
+
+/// The address table image of 1/2/0 and 1/2/1 (System B: the count word,
+/// then the group addresses).
+fn two_links() -> anyhow::Result<Vec<u8>> {
+    let mut image = 2u16.to_be_bytes().to_vec();
+    for ga in ["1/2/0", "1/2/1"] {
+        image.extend_from_slice(&ga.parse::<GroupAddress>()?.raw().to_be_bytes());
+    }
+    Ok(image)
+}
+
+/// Issue #779: when the links change too and this application's download
+/// writes no link table, the plan loads the application and then writes the
+/// links, as `bussard replace` runs `flash` and then `apply`. One yes covers
+/// both, each ends with its read-back, and the result is verified only when
+/// the table write's read-back matches the model.
 #[tokio::test]
-async fn test_knx_plan_device_refuses_a_load_that_would_leave_the_links() -> anyhow::Result<()> {
+async fn test_knx_apply_device_loads_the_application_then_writes_the_links() -> anyhow::Result<()> {
     let gateway = MockGateway::builder()
         .channel(CHANNEL)
         .keep_serving()
@@ -622,26 +660,165 @@ async fn test_knx_plan_device_refuses_a_load_that_would_leave_the_links() -> any
         .start()
         .await?;
     let dir = tempfile::tempdir()?;
-    write_model(dir.path())?;
-    std::fs::write(
-        dir.path().join("devices").join("1.1.4.toml"),
-        "address = \"1.1.4\"\nname = \"Weather station\"\n\n[parameters]\n\
-         \"thr@P-0_R-1\" = \"9\"\n\"obj2@P-1_R-2\" = \"1\"\n\n[links]\n\
-         1.listen = [\"1/2/0\", \"1/2/1\"]\n",
-    )?;
-    std::fs::write(
-        dir.path().join("groups.toml"),
-        "groups = [\n  { address = \"1/2/0\", name = \"Switch\" },\n  \
-         { address = \"1/2/1\", name = \"Switch 2\" },\n]\n",
-    )?;
+    write_model_with_a_new_link(dir.path(), "1")?;
     let (client, task) = serve(dir.path(), &gateway).await?;
 
     let plan = call(&client, "knx_plan_device", json!({"address": "1.1.4"})).await?;
-    assert_ne!(plan["ok"], true, "plan: {plan}");
-    let text = plan.to_string();
-    assert!(text.contains("does not write the link tables"), "{text}");
-    assert!(text.contains("bussard flash 1.1.4"), "{text}");
+    assert_eq!(plan["ok"], true, "plan: {plan}");
+    assert_eq!(plan["method"], "flash", "plan: {plan}");
+    assert_eq!(plan["flash"]["links_after_download"], true, "{plan}");
+    let sentences = plan["sentences"].as_str().unwrap_or_default();
+    assert!(
+        sentences.starts_with("! 1.1.4 must have its application program loaded")
+            && sentences.contains("then writes the model's links"),
+        "{sentences}"
+    );
+    let question = plan["question"].as_str().unwrap_or_default();
+    assert!(
+        question.starts_with("load application M-00FA_A-0002 into 1.1.4")
+            && question.contains("then write its links"),
+        "{question}"
+    );
+    let next = plan["next_step"].as_str().unwrap_or_default();
+    assert!(
+        next.contains("links are written by a table write"),
+        "{next}"
+    );
+    let notes = plan["notes"].to_string();
+    assert!(notes.contains("bussard apply 1.1.4"), "{notes}");
+    let digest = plan["plan_digest"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("no plan_digest in {plan}"))?
+        .to_string();
     assert_eq!(gateway.with_device(device_ia()?, |dev| dev.writes)?, 0);
+
+    let started = call(
+        &client,
+        "knx_apply_device",
+        json!({"address": "1.1.4", "plan_digest": digest}),
+    )
+    .await?;
+    let done = finish(&client, &started).await?;
+    let result = &done["result"];
+    assert_eq!(result["ok"], true, "{done}");
+    assert_eq!(result["verified"], true, "{done}");
+    assert_eq!(result["method"], "flash", "{done}");
+    assert_eq!(result["load_application"]["loaded"], true, "{done}");
+    // The download's read-back: the parameters, not the tables it did not
+    // write.
+    assert_eq!(result["readback"]["verified"], true, "{done}");
+    assert_eq!(result["readback"]["compared"]["parameters"], 2, "{done}");
+    // The table write after it, with its own read-back of the links.
+    let links = &result["links"];
+    assert_eq!(links["method"], "apply", "{done}");
+    assert_eq!(links["ok"], true, "{done}");
+    assert_eq!(links["verified"], true, "{done}");
+    assert_eq!(links["readback"]["verified"], true, "{done}");
+    assert_eq!(links["resulting_address_count"], 2, "{done}");
+
+    let params = gateway.with_device(device_ia()?, |dev| dev.read_mem(ALLOC_BASE + 0x100, 2))?;
+    assert_eq!(params, [9, 0x80], "threshold 9, object 2 on");
+    assert_eq!(address_table(&gateway)?, two_links()?);
+
+    let replan = call(&client, "knx_plan_device", json!({"address": "1.1.4"})).await?;
+    assert_eq!(replan["noop"], true, "replan: {replan}");
+
+    client.cancel().await?;
+    task.abort();
+    Ok(())
+}
+
+/// Issue #779: a parameter that shows a com-object needs a full download
+/// (issue #303); when the links change too, the same job writes them after
+/// it.
+#[tokio::test]
+async fn test_knx_apply_device_flashes_then_writes_the_links() -> anyhow::Result<()> {
+    let gateway = MockGateway::builder()
+        .channel(CHANNEL)
+        .keep_serving()
+        .idle_timeout(Duration::from_secs(120))
+        .device(device()?)
+        .start()
+        .await?;
+    let dir = tempfile::tempdir()?;
+    write_model_with_a_new_link(dir.path(), "1")?;
+    let (client, task) = serve(dir.path(), &gateway).await?;
+
+    let plan = call(&client, "knx_plan_device", json!({"address": "1.1.4"})).await?;
+    assert_eq!(plan["ok"], true, "plan: {plan}");
+    assert_eq!(plan["method"], "flash", "plan: {plan}");
+    assert!(plan["flash"]["load_application"].is_null(), "{plan}");
+    assert_eq!(plan["flash"]["links_after_download"], true, "{plan}");
+    let notes = plan["notes"].to_string();
+    assert!(
+        notes.contains("does not write the link tables") && notes.contains("bussard apply 1.1.4"),
+        "{notes}"
+    );
+    let digest = plan["plan_digest"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("no plan_digest in {plan}"))?
+        .to_string();
+    let started = call(
+        &client,
+        "knx_apply_device",
+        json!({"address": "1.1.4", "plan_digest": digest}),
+    )
+    .await?;
+    let done = finish(&client, &started).await?;
+    let result = &done["result"];
+    assert_eq!(result["ok"], true, "{done}");
+    assert_eq!(result["verified"], true, "{done}");
+    assert_eq!(result["links"]["verified"], true, "{done}");
+    assert_eq!(result["links"]["readback"]["verified"], true, "{done}");
+    let params = gateway.with_device(device_ia()?, |dev| dev.read_mem(ALLOC_BASE + 0x100, 2))?;
+    assert_eq!(params, [9, 0x80], "threshold 9, object 2 on");
+    assert_eq!(address_table(&gateway)?, two_links()?);
+
+    client.cancel().await?;
+    task.abort();
+    Ok(())
+}
+
+/// Issue #779: the download verifies, but the device refuses the table
+/// write after it. The result says the application is loaded and that the
+/// links were not written: not verified.
+#[tokio::test]
+async fn test_knx_apply_device_load_whose_links_fail_is_not_verified() -> anyhow::Result<()> {
+    let gateway = MockGateway::builder()
+        .channel(CHANNEL)
+        .keep_serving()
+        .idle_timeout(Duration::from_secs(120))
+        .device(device_running(None, LS_UNLOADED)?.with_nak_writes_into(OT_ADDRESS_TABLE))
+        .start()
+        .await?;
+    let dir = tempfile::tempdir()?;
+    write_model_with_a_new_link(dir.path(), "1")?;
+    let (client, task) = serve(dir.path(), &gateway).await?;
+
+    let plan = call(&client, "knx_plan_device", json!({"address": "1.1.4"})).await?;
+    assert_eq!(plan["flash"]["links_after_download"], true, "{plan}");
+    let digest = plan["plan_digest"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("no plan_digest in {plan}"))?
+        .to_string();
+    let started = call(
+        &client,
+        "knx_apply_device",
+        json!({"address": "1.1.4", "plan_digest": digest}),
+    )
+    .await?;
+    let done = finish(&client, &started).await?;
+    let result = &done["result"];
+    assert_eq!(result["ok"], false, "{done}");
+    assert_eq!(result["verified"], false, "{done}");
+    assert_eq!(result["load_application"]["loaded"], true, "{done}");
+    assert_eq!(result["links"]["verified"], false, "{done}");
+    let reason = result["reason"].as_str().unwrap_or_default();
+    assert!(
+        reason.contains("is loaded on 1.1.4 and verified, but its links were not written"),
+        "{reason}"
+    );
+    assert!(result["recovery"].is_string(), "{done}");
 
     client.cancel().await?;
     task.abort();
