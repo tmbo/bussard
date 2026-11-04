@@ -18,6 +18,12 @@
 //! archive pinned in the lock, a device whose state the probe could not
 //! read or whose application cannot be identified
 //! ([`bussard_service::flash_flow::load_refusal`]).
+//!
+//! A self-contained application's download writes no link table (issue
+//! #779). When the links differ from the model, the job writes them after
+//! the verified download with the table write of `bussard apply`, as `bussard
+//! replace` runs `flash` and then `apply`; the one yes covers both, and the
+//! result is verified only when the table write's read-back matches.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -59,6 +65,13 @@ pub(super) struct FlashImage {
     /// Why the application must be loaded (issue #750), `None` when the
     /// flash writes a parameter change of the application the device runs.
     pub(super) load: Option<String>,
+    /// Whether the links are written after the download (issue #779): the
+    /// download of a self-contained application writes no link table, so
+    /// when the links differ from the model, or a factory reset erases them,
+    /// the job writes them with the table write `bussard apply` runs once
+    /// the download verified, as `bussard replace` chains `flash` and
+    /// `apply`.
+    pub(super) links_after: bool,
     /// What the device reported that the plan relied on (its identity and
     /// the freshness verdict), bound into the digest.
     binds: String,
@@ -139,14 +152,8 @@ pub(super) fn flash_image(
         return Err(why);
     }
     // A self-contained application's download carries no table objects: the
-    // flash would leave changed links unwritten.
-    if !report.is_noop() && !bussard_service::flash_flow::loads_link_tables(&plan) {
-        return Err(format!(
-            "the download of {} does not write the link tables, and {target}'s links change \
-             too; flash first (this plan), then plan again for the links",
-            app.id
-        ));
-    }
+    // links that change are written after it (issue #779).
+    let links_after = links_after(model, target, report, &plan, &freshness, &detail.resident);
     let before = inputs.visible_objects(&detail.decoded.values);
     let because: Vec<String> = built
         .parameters
@@ -174,6 +181,7 @@ pub(super) fn flash_image(
             before: Some(before),
             because,
             parameter_backup: true,
+            links_after,
         },
         &pinned,
         &inputs,
@@ -295,32 +303,9 @@ pub(super) fn load_image(
         return Err(format!("{}; {refusal}", need.why));
     }
     // A download that does not load the link tables leaves them as the
-    // device holds them, and a factory reset erases them: either would end
-    // with links that differ from the model, which the flash's read-back
-    // could not see. Refused, with the way through.
-    if !bussard_service::flash_flow::loads_link_tables(&plan) {
-        let mut probe = plan.clone();
-        bussard_service::flash::apply_freshness(
-            &mut probe,
-            Some(&freshness),
-            Some(resident),
-            false,
-            false,
-        );
-        let has_links = model
-            .links
-            .links
-            .get(&target)
-            .is_some_and(|l| !l.is_empty());
-        if !report.is_noop() || (probe.erases_resident_objects() && has_links) {
-            return Err(format!(
-                "{}; the download of {} does not write the link tables, so loading it would \
-                 leave {target}'s links different from the model. Load it at the terminal with \
-                 `bussard flash {target}`, then plan again with knx_plan_device for the links",
-                need.why, app.id
-            ));
-        }
-    }
+    // device holds them, and a factory reset erases them: the links are then
+    // written after the load (issue #779).
+    let links_after = links_after(model, target, report, &plan, &freshness, resident);
     shape(
         Shaping {
             dir,
@@ -335,6 +320,7 @@ pub(super) fn load_image(
             before: None,
             because: Vec::new(),
             parameter_backup: false,
+            links_after,
         },
         &pinned,
         &inputs,
@@ -343,6 +329,42 @@ pub(super) fn load_image(
         &gate,
         resident,
     )
+}
+
+/// Whether the links must be written after `plan`'s download (issue #779):
+/// it loads no link table (a self-contained application), and the links
+/// differ from the model, or the factory reset the download starts with
+/// erases the links the device holds while the model has some. The flash's
+/// read-back does not compare tables it did not write, so without the table
+/// write after it the job would end with links that differ from the model.
+fn links_after(
+    model: &Model,
+    target: IndividualAddress,
+    report: &PlanReport,
+    plan: &FlashPlan,
+    freshness: &Freshness,
+    resident: &bussard_download::ResidentState,
+) -> bool {
+    if bussard_service::flash_flow::loads_link_tables(plan) {
+        return false;
+    }
+    if !report.is_noop() {
+        return true;
+    }
+    let mut probe = plan.clone();
+    bussard_service::flash::apply_freshness(
+        &mut probe,
+        Some(freshness),
+        Some(resident),
+        false,
+        false,
+    );
+    let has_links = model
+        .links
+        .links
+        .get(&target)
+        .is_some_and(|l| !l.is_empty());
+    probe.erases_resident_objects() && has_links
 }
 
 /// The archive bussard.lock pins for the device and its application.
@@ -420,6 +442,8 @@ struct Shaping<'a> {
     because: Vec<String>,
     /// Whether the parameter memory is backed up first (it is readable).
     parameter_backup: bool,
+    /// Whether the links are written after the download (issue #779).
+    links_after: bool,
 }
 
 /// Shapes `plan` as `bussard flash` does for the verdict (the factory reset
@@ -513,6 +537,9 @@ fn shape(
         },
         "factory_reset": plan.has_factory_reset(),
         "differential": options.skip_matching_mcb,
+        // Issue #779: the download writes no link table; the job writes the
+        // links after it with the table write `bussard apply` runs.
+        "links_after_download": s.links_after,
     });
     let binds = format!(
         "{:?}|{:?}|{:?}",
@@ -528,6 +555,7 @@ fn shape(
         summary,
         readback: None,
         load: s.load,
+        links_after: s.links_after,
         binds,
     })
 }
@@ -546,6 +574,11 @@ pub(super) fn with_flash(model: [u8; 32], flash: Option<&FlashImage>) -> [u8; 32
     // that lives for one server session needs.
     put(&mut h, format!("{:?}", image.plan).as_bytes());
     put(&mut h, format!("{:?}", image.options).as_bytes());
+    // A yes to a load with the table write after it (issue #779) is a yes
+    // to both.
+    if image.links_after {
+        put(&mut h, b"links-after");
+    }
     // What the device reported, for a load (issue #750): a yes to replacing
     // one application is not a yes to replacing another.
     if image.load.is_some() {

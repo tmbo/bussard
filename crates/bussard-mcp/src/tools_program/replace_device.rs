@@ -504,9 +504,17 @@ impl BussardMcp {
                     .join(crate::jobs::RECORD_FILE)
             });
             tier.jobs.started(job, prepared.result.clone(), record);
+            let links_after = super::LinksAfter::of(&prepared);
             let result = self.apply_write(tier, job, prepared).await;
             drop(warm);
-            Some(result)
+            drop(_guard);
+            // A self-contained application's download writes no link table
+            // (issue #779): its links follow it, as `bussard replace` runs
+            // `apply` after `flash`.
+            Some(match links_after {
+                Some(consent) => self.links_after_download(tier, job, consent, result).await,
+                None => result,
+            })
         };
         let written_ok = write
             .as_ref()

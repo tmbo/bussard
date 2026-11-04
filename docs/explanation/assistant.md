@@ -171,8 +171,10 @@ to the plan's question loads the application and writes your project's
 parameters and links with it, as one job. It runs the same functions as
 `bussard flash`: the download, the read-back against your project and the lock
 update, so the result says verified only when the device matches your project.
-A device whose state cannot be read, or whose application bussard cannot
-identify, is refused; `bussard flash --force` at the terminal stays the way
+When the application's download writes no link table and your links
+differ, the plan says so and the same yes also writes the links afterwards,
+as `bussard apply` does, with its own read-back. A device whose state cannot
+be read, or whose application bussard cannot identify, is refused; `bussard flash --force` at the terminal stays the way
 to overwrite it.
 
 ## Parameters are approved by name
