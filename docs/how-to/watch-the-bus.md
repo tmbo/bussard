@@ -62,13 +62,23 @@ A group address that is not in your project shows as raw hex. Give it a `dpt` in
 
 ## See the installation in a browser
 
-The browser view is a terminal command in both forms: ask the assistant and it names the command for you.
+=== "In chat"
 
-```console
-$ bussard viz
-bussard viz serving on http://127.0.0.1:8080 (Ctrl-C to stop)
-read-only: group writes return 403 (pass --allow-writes to enable them)
-```
+    ```text
+    You:        Show me the installation in the browser.
+    Assistant:  (calls knx_viz)
+                Open http://127.0.0.1:52133.
+    ```
+
+    `knx_viz` starts the page inside the server and answers with its address. The page shows the telegrams the server already receives, so it takes no extra tunnelling slot. It is read-only in every tier, `--passive` included, and stops when the server stops.
+
+=== "At the terminal"
+
+    ```console
+    $ bussard viz
+    bussard viz serving on http://127.0.0.1:8080 (Ctrl-C to stop)
+    read-only: group writes return 403 (pass --allow-writes to enable them)
+    ```
 
 Open the address. You get every device drawn along the bus by floor and room, the group-address tree, and live telegrams as they happen. Select a device or a group address to see its links, senders and listeners. With no reachable gateway the page still shows your project, without live traffic.
 
