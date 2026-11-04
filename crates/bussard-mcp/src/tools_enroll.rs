@@ -15,6 +15,24 @@
 //! The pairing page lists the certificates, so the results tell the
 //! assistant to keep the chat to one line (#820).
 //!
+//! # The call waits for the end (#831)
+//!
+//! `knx_enroll_certificates` keeps the call open until the session ends
+//! (Finish on the phone, `stop`, a timeout) and then returns the end
+//! summary, so the chat continues by itself. While it waits it sends an MCP
+//! progress notification on every change (a phone, a certificate) and every
+//! [`PROGRESS_INTERVAL_SECS`], when the client sent a progress token.
+//! Claude Code (2.1.280, `code.claude.com/docs/en/mcp`) sends one, allows a
+//! call about 28 hours (`MCP_TOOL_TIMEOUT`; progress does not extend that),
+//! aborts a call that sends nothing for its idle window (5 minutes over
+//! HTTP, 30 over stdio; progress resets it) and moves a call that runs past
+//! 2 minutes to a background task whose result arrives as a notification.
+//! A client without a progress token gets an answer after
+//! [`SILENT_WAIT_SECS`], under the shortest idle window, saying the session
+//! still runs; the assistant then waits with `knx_enroll_status`
+//! (`until_end: true`). A cancelled call (`notifications/cancelled`) stops
+//! waiting and leaves the session running.
+//!
 //! # The link never passes through the assistant
 //!
 //! A link and session code the assistant relays prove nothing: a prompt
@@ -53,7 +71,7 @@ use crate::args::Parameters;
 use bussard_secure::Password;
 use bussard_service::enroll_session::{
     CertificateOutcome, CertificateSink, DOCS_URL, EnrollEnd, EnrollEvent, EnrollSession,
-    EnrollTally, HttpRelay, RunOptions, data_path, endpoint_warnings, hosted_endpoints,
+    EnrollTally, HttpRelay, RunOptions, Timeouts, data_path, endpoint_warnings, hosted_endpoints,
 };
 use bussard_viz::enroll_local::LocalEnrollServer;
 use bussard_viz::pairing_page::{
@@ -62,7 +80,8 @@ use bussard_viz::pairing_page::{
 use rmcp::handler::server::tool::{InputResponses, RequestState};
 use rmcp::model::{
     CallToolResponse, CallToolResult, ElicitRequest, ElicitRequestParams, ElicitResult,
-    ElicitationAction, InputRequest, InputRequests, InputRequiredResult, ProtocolVersion,
+    ElicitationAction, InputRequest, InputRequests, InputRequiredResult, ProgressNotificationParam,
+    ProgressToken, ProtocolVersion,
 };
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::service::RequestContext;
@@ -81,8 +100,26 @@ pub const ENROLL_TOOLS: [&str; 2] = ["knx_enroll_certificates", "knx_enroll_stat
 /// The relay's session lifetime, which bounds a session.
 const SESSION_LIFETIME_SECS: u64 = 4 * 60 * 60;
 
-/// The longest `wait_seconds` of `knx_enroll_status`.
+/// The longest `wait_seconds` of `knx_enroll_status` for the next
+/// certificate; `until_end` waits up to the session's lifetime.
 const MAX_STATUS_WAIT_SECS: u64 = 120;
+
+/// How often a waiting call sends a progress notification when nothing
+/// changed: well inside the shortest idle window of Claude Code (5 minutes,
+/// HTTP servers), which a progress notification resets.
+pub const PROGRESS_INTERVAL_SECS: u64 = 60;
+
+/// How long a call waits for the end when the client sent no progress
+/// token, so nothing resets its idle timer: under Claude Code's shortest
+/// idle window (5 minutes).
+pub const SILENT_WAIT_SECS: u64 = 4 * 60;
+
+/// What a waiting call says to the chat app once the pairing page is open.
+const OPENED_PROGRESS: &str = "The pairing page is open in your browser. Follow the steps there.";
+
+/// The line the pairing page ends with: the human goes back to the chat,
+/// which continues by itself (#831).
+const BACK_TO_CHAT: &str = "You can close this tab and go back to your chat.";
 
 /// The `requestState` prefix of a multi round-trip enrolment call; the rest
 /// is the session's elicitation id.
@@ -122,6 +159,10 @@ pub struct EnrollStatusArgs {
     /// pairing page lists them. An ended session always includes them.
     #[serde(default)]
     pub details: bool,
+    /// Wait for the end of the session rather than the next certificate,
+    /// for as long as the chat app allows (`wait_seconds` caps it).
+    #[serde(default)]
+    pub until_end: bool,
 }
 
 /// What the session thread reports, shared with the status tool.
@@ -150,6 +191,8 @@ struct EnrollJob {
     local: bool,
     /// F13: the page or relay is not the default (empty otherwise).
     warnings: Vec<String>,
+    /// The session's connect, idle and maximum timeouts.
+    timeouts: Timeouts,
     started: Instant,
     stop: Arc<AtomicBool>,
     progress: Arc<Mutex<Progress>>,
@@ -170,7 +213,11 @@ impl EnrollJob {
 /// The server's enrolment session: at most one at a time, shared by every
 /// clone of the handler.
 #[derive(Debug, Clone, Default)]
-pub struct EnrollJobs(Arc<Mutex<Option<Arc<EnrollJob>>>>);
+pub struct EnrollJobs {
+    current: Arc<Mutex<Option<Arc<EnrollJob>>>>,
+    /// The timeouts of every session this server starts.
+    timeouts: Timeouts,
+}
 
 impl EnrollJobs {
     /// No session yet.
@@ -178,8 +225,17 @@ impl EnrollJobs {
         Self::default()
     }
 
+    /// No session yet; sessions run with `timeouts` (the tests shorten
+    /// them).
+    pub fn with_timeouts(timeouts: Timeouts) -> Self {
+        Self {
+            timeouts,
+            ..Self::default()
+        }
+    }
+
     fn current(&self) -> Option<Arc<EnrollJob>> {
-        lock(&self.0).clone()
+        lock(&self.current).clone()
     }
 }
 
@@ -307,6 +363,54 @@ fn result_json(outcome: &CertificateOutcome) -> Value {
     entry
 }
 
+/// `span` in words: `10 minutes`, `1 minute`, `30 seconds`.
+fn span_words(span: Duration) -> String {
+    let secs = span.as_secs();
+    let (n, unit) = if secs >= 60 && secs.is_multiple_of(60) {
+        (secs / 60, "minute")
+    } else {
+        (secs, "second")
+    };
+    format!("{n} {unit}{}", if n == 1 { "" } else { "s" })
+}
+
+/// Why the session of `job` ended, in one sentence of the glossary's words;
+/// `None` while it runs.
+fn end_reason(job: &EnrollJob, progress: &Progress) -> Option<String> {
+    let end = progress.end?;
+    Some(match end {
+        "phone_done" => "Finished on the phone.".to_string(),
+        "stopped" => "The session was ended from the chat.".to_string(),
+        "connect_timeout" => format!(
+            "No phone joined within {}, so the session was closed.",
+            span_words(job.timeouts.connect)
+        ),
+        "idle_timeout" => format!(
+            "Nothing happened for {}, so the session was closed.",
+            span_words(job.timeouts.idle)
+        ),
+        "max_duration" | "expired" => "The session ran out of time.".to_string(),
+        _ => format!(
+            "The session failed: {}.",
+            progress.error.as_deref().unwrap_or("for an unknown reason")
+        ),
+    })
+}
+
+/// The certificates of `progress` in one line: serial number and badge
+/// (`00FA01020304 added · 0083A1B2C3D4 no device yet`).
+fn serials_line(progress: &Progress) -> String {
+    progress
+        .results
+        .iter()
+        .map(|outcome| {
+            let certificate = PairingCertificate::of(outcome);
+            format!("{} {}", certificate.serial, certificate.badge)
+        })
+        .collect::<Vec<_>>()
+        .join(" \u{00B7} ")
+}
+
 /// The status of `job` as `knx_enroll_status` returns it: counts while it
 /// runs (`results` too with `details`), counts and `results` once ended.
 /// The pairing page lists the certificates, so the chat does not (#820).
@@ -325,26 +429,23 @@ fn status_json(job: &EnrollJob, details: bool) -> Value {
         "The session is open and the pairing page lists each certificate as it arrives, so \
          do not list them or repeat the page in the chat. Say nothing unless the human asks; \
          then give `summary` (the counts) in one line, and serial numbers only when the human \
-         asks for them (call again with details: true). Call knx_enroll_status again \
-         (wait_seconds to wait for the end), and with stop: true once the human says they are \
+         asks for them (call again with details: true). To wait for the end, call \
+         knx_enroll_status with until_end: true, without a message to the human, and again \
+         while it answers `running`; call it with stop: true once the human says they are \
          done."
     } else if steps.is_empty() {
-        "The session is closed. Give the human `summary` in one line; name serial numbers \
-         from `results` only if the human asks. Nothing else is left to do."
+        "The session ended. Give the human `summary` in one or two lines; name serial numbers \
+         (`serials`) only if the human asks. Do not repeat the pairing page. Nothing else is \
+         left to do."
     } else {
-        "The session is closed. Give the human `summary` in one line, then each entry of \
-         `next_steps` (command and why); those commands run at the CLI. Name serial numbers \
-         from `results` only if the human asks."
+        "The session ended. Give the human `summary` in one or two lines and suggest the first \
+         entry of `next_steps` (command and why; those commands run at the CLI). Name serial \
+         numbers (`serials`) only if the human asks. Do not repeat the pairing page."
     };
-    let mut summary = format!(
-        "{} {}",
-        if running {
-            "The certificate page is open."
-        } else {
-            "The certificate page is closed."
-        },
-        tally.summary()
-    );
+    let mut summary = match end_reason(job, &progress) {
+        Some(reason) => format!("{reason} {}", tally.summary()),
+        None => format!("The certificate page is open. {}", tally.summary()),
+    };
     let refused_warning = (progress.refused_phones > 0).then(|| {
         format!(
             "Another phone tried to join this session and was refused ({} so far); nothing it \
@@ -388,28 +489,45 @@ fn status_json(job: &EnrollJob, details: bool) -> Value {
     if details || !running {
         status["results"] = progress.results.iter().map(result_json).collect();
     }
+    if !running {
+        status["serials"] = json!(serials_line(&progress));
+    }
     status
 }
 
+/// The progress message of a waiting call: counts only, never a link, a
+/// session code or a certificate (#831).
+fn progress_message(job: &EnrollJob, progress: &Progress) -> String {
+    let device = if job.local {
+        "The certificate page"
+    } else {
+        "Your phone"
+    };
+    let mut message = if progress.phones == 0 {
+        OPENED_PROGRESS.to_string()
+    } else if progress.results.is_empty() {
+        format!("{device} is connected. Nothing sent yet.")
+    } else {
+        format!(
+            "{device} is connected. {}",
+            EnrollTally::of(&progress.results).summary()
+        )
+    };
+    if progress.refused_phones > 0 {
+        message.push_str(" Another phone tried to join and was refused.");
+    }
+    message
+}
+
 /// The live part of the pairing page, from `progress`.
-fn pairing_status(progress: &Progress) -> PairingStatus {
+fn pairing_status(job: &EnrollJob, progress: &Progress) -> PairingStatus {
     let tally = EnrollTally::of(&progress.results);
-    let ended = progress.end.map(|end| match end {
-        "phone_done" => "Finished. You can close this page.".to_string(),
-        "stopped" => "The session was ended from the chat. You can close this page.".to_string(),
-        "connect_timeout" => "No phone joined within 10 minutes, so the session was closed. \
-                              You can close this page."
-            .to_string(),
-        "idle_timeout" => "Nothing happened for 15 minutes, so the session was closed. You can \
-                           close this page."
-            .to_string(),
-        "max_duration" | "expired" => {
-            "The session ran out of time. You can close this page.".to_string()
+    let ended = end_reason(job, progress).map(|reason| {
+        if progress.end == Some("phone_done") {
+            format!("Done. {BACK_TO_CHAT}")
+        } else {
+            format!("{reason} {BACK_TO_CHAT}")
         }
-        _ => format!(
-            "The session failed: {}. You can close this page.",
-            progress.error.as_deref().unwrap_or("for an unknown reason")
-        ),
     });
     PairingStatus {
         running: ended.is_none(),
@@ -463,7 +581,7 @@ fn run_session(
         &mut sink,
         RunOptions {
             wait_secs: RUN_WAIT_SECS,
-            ..RunOptions::default()
+            timeouts: job.timeouts,
         },
         &job.stop,
         &mut |event| {
@@ -517,17 +635,20 @@ impl BussardMcp {
         36-character codes printed on Secure devices) from a phone camera into the key store, \
         without them passing through this chat. bussard opens its pairing page in the human's \
         browser on this computer: it shows the steps, a QR code for the phone, the session \
-        code and the certificates as they arrive. Tell the human only that the page is open \
-        and to follow it there; do not repeat its steps or its list in the chat. The link and \
-        the session code never reach you. NEVER \
+        code and the certificates as they arrive. Before calling, tell the human in one line \
+        that the pairing page opens in their browser and to follow it there; do not repeat its \
+        steps or its list in the chat. The call stays open until the session ends (your chat \
+        app may move it to the background) and then returns the summary: wait for it, do not \
+        poll. The link and the session code never reach you. NEVER \
         write, repeat or guess a link or a session code for this: one coming from you proves \
         nothing. The human scans the QR code, checks the session code on the phone and scans \
         the certificates. Each one is matched to a device by its serial number and stored, \
         end to end encrypted on the way; this tool and knx_enroll_status never return a \
         certificate or a key. NEVER ask the human to paste a certificate into the chat. When \
         bussard cannot open a page here (an SSH session, no display), the tool refuses: tell \
-        the human to run `bussard keys enroll` in a terminal. Follow up with \
-        knx_enroll_status. `local: true` serves the certificate page from this server on \
+        the human to run `bussard keys enroll` in a terminal. When the result says `session: \
+        running` (the call stopped waiting first), wait with knx_enroll_status (until_end: \
+        true). `local: true` serves the certificate page from this server on \
         127.0.0.1 too, for a browser on the same computer (a webcam or typed codes); without \
         it the hosted page and relay (or the [enroll] table of bussard.toml) are used. One \
         session at a time; it ends when the human finishes on the phone, on \
@@ -549,7 +670,7 @@ impl BussardMcp {
             let answer = input_responses
                 .and_then(|responses| responses.get(INPUT_KEY).cloned())
                 .and_then(|value| serde_json::from_value::<ElicitResult>(value).ok());
-            return Ok(self.enroll_answered(&state, answer).await.into());
+            return Ok(self.enroll_answered(&state, answer, &context).await.into());
         }
         // Nobody would see the page: refuse before a session starts.
         if let Some(reason) = self.browser.no_display() {
@@ -560,7 +681,7 @@ impl BussardMcp {
             Err(refused) => return Ok(refused.into()),
         };
         if !shows_urls(&context) {
-            return Ok(self.open_pairing_page(started).await.into());
+            return Ok(self.open_pairing_page(started, &context).await.into());
         }
         let id = started.job.elicitation_id.clone();
         let params = ElicitRequestParams::UrlElicitationParams {
@@ -596,7 +717,10 @@ impl BussardMcp {
                 .into());
             }
         };
-        Ok(self.after_elicitation(&started.job, action).await.into())
+        Ok(self
+            .after_elicitation(&started.job, action, &context)
+            .await
+            .into())
     }
 
     /// `knx_enroll_status`: the results of the enrolment session so far.
@@ -614,12 +738,15 @@ impl BussardMcp {
         `tally` counts the statuses (`stored`, `waiting`, `already_known`, `conflicts`, \
         `invalid`, `errors`); `summary` says it in one line, and once the session has ended \
         `next_steps` lists the CLI commands that apply (`command`, `why`). \
-        `wait_seconds` (at most 120) waits for the next certificate or the end first; `stop: true` \
-        ends the session. Reads nothing from the bus."
+        `wait_seconds` (at most 120) waits for the next certificate or the end first; \
+        `until_end: true` waits for the end of the session instead, as long as the chat app \
+        allows (`wait_seconds` caps it); `stop: true` ends the session. Reads nothing from the \
+        bus."
     )]
     async fn knx_enroll_status(
         &self,
         Parameters(args): Parameters<EnrollStatusArgs>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let Some(job) = self.enroll.current() else {
             return ok(json!({
@@ -634,6 +761,13 @@ impl BussardMcp {
             job.stop.store(true, Ordering::SeqCst);
             // The loop notices within one long poll and closes the session.
             wait_for_change(&job, Duration::from_secs(RUN_WAIT_SECS + 15), true).await;
+        } else if args.until_end {
+            let limit = wait_limit(&job, context.meta.get_progress_token().is_some());
+            let limit = args
+                .wait_seconds
+                .filter(|w| *w > 0)
+                .map_or(limit, |w| limit.min(Duration::from_secs(w)));
+            wait_for_end(&job, &context, limit).await;
         } else if let Some(wait) = args.wait_seconds.filter(|w| *w > 0) {
             let wait = Duration::from_secs(wait.min(MAX_STATUS_WAIT_SECS));
             wait_for_change(&job, wait, false).await;
@@ -701,13 +835,14 @@ impl BussardMcp {
             elicitation_id,
             local: is_local,
             warnings,
+            timeouts: self.enroll.timeouts,
             started: Instant::now(),
             stop: Arc::new(AtomicBool::new(false)),
             progress: Arc::default(),
             changed: Arc::new(changed),
         });
-        let progress = Arc::clone(&job.progress);
-        let status: StatusFn = Arc::new(move || pairing_status(&lock(&progress)));
+        let page_job = Arc::clone(&job);
+        let status: StatusFn = Arc::new(move || pairing_status(&page_job, &page_job.progress()));
         let pairing = PairingPage::start(
             &PairingContent {
                 code: session.fingerprint(),
@@ -729,13 +864,18 @@ impl BussardMcp {
             .name("enroll-session".to_owned())
             .spawn(move || run_session(session, relay, sink, local, pairing, &thread_job))
             .map_err(|err| refused(format!("starting the enrolment session: {err}")))?;
-        *lock(&self.enroll.0) = Some(Arc::clone(&job));
+        *lock(&self.enroll.current) = Some(Arc::clone(&job));
         Ok(Started { job, pairing_url })
     }
 
     /// The second round of a multi round-trip call: `state` names the
     /// session, `answer` is the human's answer to the elicitation.
-    async fn enroll_answered(&self, state: &str, answer: Option<ElicitResult>) -> CallToolResult {
+    async fn enroll_answered(
+        &self,
+        state: &str,
+        answer: Option<ElicitResult>,
+        context: &RequestContext<RoleServer>,
+    ) -> CallToolResult {
         let job = state.strip_prefix(REQUEST_STATE_PREFIX).and_then(|id| {
             self.enroll
                 .current()
@@ -749,7 +889,7 @@ impl BussardMcp {
         };
         // No answer counts as dismissed: the link was not shown.
         let action = answer.map_or(ElicitationAction::Cancel, |answer| answer.action);
-        self.after_elicitation(&job, action).await
+        self.after_elicitation(&job, action, context).await
     }
 
     /// The result once the human answered the elicitation of `job`. Carries
@@ -758,6 +898,7 @@ impl BussardMcp {
         &self,
         job: &EnrollJob,
         action: ElicitationAction,
+        context: &RequestContext<RoleServer>,
     ) -> CallToolResult {
         if action != ElicitationAction::Accept {
             close(job).await;
@@ -773,19 +914,23 @@ impl BussardMcp {
                               again only if the human asks to.",
             }));
         }
-        self.opened(job)
+        self.wait_and_report(job, context).await
     }
 
     /// Opens the pairing page of `started` in the browser; closes the
     /// session when that fails.
-    async fn open_pairing_page(&self, started: Started) -> CallToolResult {
+    async fn open_pairing_page(
+        &self,
+        started: Started,
+        context: &RequestContext<RoleServer>,
+    ) -> CallToolResult {
         let browser = Arc::clone(&self.browser);
         let url = started.pairing_url;
         let opened = tokio::task::spawn_blocking(move || browser.open(&url))
             .await
             .unwrap_or_else(|err| Err(format!("opening the browser: {err}")));
         match opened {
-            Ok(()) => self.opened(&started.job),
+            Ok(()) => self.wait_and_report(&started.job, context).await,
             Err(err) => {
                 close(&started.job).await;
                 no_pairing_page(format!("{err}; the session was closed"))
@@ -793,31 +938,32 @@ impl BussardMcp {
         }
     }
 
-    /// The result once the pairing page of `job` is open. Carries neither
-    /// the link, nor the session code, nor the page's URL.
-    fn opened(&self, job: &EnrollJob) -> CallToolResult {
-        let local = job.local;
-        let mut result = json!({
-            "ok": true,
-            "session": "running",
-            "pairing_page_opened": true,
-            "local": local,
-            "certificates": 0,
-            "results": [],
-            "expires_in_seconds": SESSION_LIFETIME_SECS,
-            "data_path": data_path(local).join(" "),
-            "read_more": DOCS_URL,
-            "summary": "The pairing page is open in your browser. Follow the steps there.",
-            "next_step": "bussard opened the pairing page in the human's browser. It shows the \
-                          steps, the session code and each certificate as it arrives; you never \
-                          see the link or the session code. Tell the human only `summary`, in \
-                          one line, plus `warnings` and `note` when present. Do not repeat the \
-                          page's steps, `data_path` or `read_more` unless the human asks. Never \
-                          write, repeat or guess a link or a session code: if the human closed \
-                          the page, stop this session (knx_enroll_status, stop: true) and start \
-                          a new one. Then call knx_enroll_status (wait_seconds to wait for the \
-                          end).",
-        });
+    /// The result once the pairing page of `job` is open: waits for the end
+    /// of the session (#831) and returns its summary, or that it still runs
+    /// when the wait stopped first. Carries neither the link, nor the
+    /// session code, nor the page's URL.
+    async fn wait_and_report(
+        &self,
+        job: &EnrollJob,
+        context: &RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        let limit = wait_limit(job, context.meta.get_progress_token().is_some());
+        if wait_for_end(job, context, limit).await == Waited::Cancelled {
+            tracing::debug!("enrolment: the call was cancelled; the session keeps running");
+        }
+        let mut result = status_json(job, false);
+        result["pairing_page_opened"] = json!(true);
+        if job.running() {
+            result["data_path"] = json!(data_path(job.local).join(" "));
+            result["read_more"] = json!(DOCS_URL);
+            result["summary"] = json!(format!(
+                "{OPENED_PROGRESS} {}",
+                result["summary"].as_str().unwrap_or_default()
+            ));
+            if result["warning"].is_null() {
+                result["next_step"] = json!(STILL_RUNNING);
+            }
+        }
         if !job.warnings.is_empty() {
             result["warnings"] = json!(job.warnings);
         }
@@ -841,6 +987,103 @@ impl BussardMcp {
                 store.display()
             )
         })
+    }
+}
+
+/// The `next_step` of a `knx_enroll_certificates` call that stopped
+/// waiting before the session ended.
+const STILL_RUNNING: &str = "bussard opened the pairing page in the human's browser and the \
+    session still runs; this call stopped waiting so the chat app does not time it out. If you \
+    have not yet told the human that the page is open, say so in one line, plus `warnings` and \
+    `note` when present; otherwise say nothing. Then call knx_enroll_status with until_end: true \
+    at once, and again while it answers `running`. Do not repeat the page's steps, `data_path` \
+    or `read_more` unless the human asks. Never write, repeat or guess a link or a session code: \
+    if the human closed the page, stop this session (knx_enroll_status, stop: true) and start a \
+    new one.";
+
+/// How a wait for the end of a session stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Waited {
+    /// The session ended.
+    Ended,
+    /// The client cancelled the call; the session keeps running.
+    Cancelled,
+    /// The wait's limit passed first; the session keeps running.
+    TimedOut,
+}
+
+/// The longest a call waits for the end of `job`: past the session's
+/// maximum when the client sent a progress token (the notifications keep
+/// its idle timer from firing), else [`SILENT_WAIT_SECS`].
+fn wait_limit(job: &EnrollJob, has_progress_token: bool) -> Duration {
+    if has_progress_token {
+        job.timeouts.max + Duration::from_secs(RUN_WAIT_SECS + 60)
+    } else {
+        Duration::from_secs(SILENT_WAIT_SECS)
+    }
+}
+
+/// Sends progress notification number `seq` with `message` for `token`.
+async fn notify_progress(
+    context: &RequestContext<RoleServer>,
+    token: &ProgressToken,
+    seq: u32,
+    message: &str,
+) {
+    let param = ProgressNotificationParam::new(token.clone(), f64::from(seq)).with_message(message);
+    if let Err(err) = context.peer.notify_progress(param).await {
+        tracing::debug!(%err, "enrolment: a progress notification was not sent");
+    }
+}
+
+/// Waits up to `limit` for `job` to end. When the client of `context` sent
+/// a progress token, sends a progress notification on every change (a
+/// phone, a certificate) and every [`PROGRESS_INTERVAL_SECS`] without one;
+/// the progress value counts the notifications, so it always increases.
+/// Returns early when the client cancels the call.
+async fn wait_for_end(
+    job: &EnrollJob,
+    context: &RequestContext<RoleServer>,
+    limit: Duration,
+) -> Waited {
+    let token = context.meta.get_progress_token();
+    let mut changes = job.changed.subscribe();
+    let deadline = tokio::time::Instant::now() + limit;
+    let interval = Duration::from_secs(PROGRESS_INTERVAL_SECS);
+    let mut sent = 0u32;
+    let mut last: Option<String> = None;
+    loop {
+        let message = {
+            let progress = job.progress();
+            if progress.end.is_some() {
+                return Waited::Ended;
+            }
+            progress_message(job, &progress)
+        };
+        if let Some(token) = &token
+            && last.as_deref() != Some(message.as_str())
+        {
+            sent = sent.saturating_add(1);
+            notify_progress(context, token, sent, &message).await;
+            last = Some(message);
+        }
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Waited::TimedOut;
+        }
+        let wake = deadline.min(now + interval);
+        tokio::select! {
+            () = context.ct.cancelled() => return Waited::Cancelled,
+            changed = tokio::time::timeout_at(wake, changes.changed()) => match changed {
+                Ok(Ok(())) => {}
+                // Nothing changed for an interval: send the same line again.
+                Err(_) => last = None,
+                // The sender is gone: nothing changes any more.
+                Ok(Err(_)) => {
+                    return if job.running() { Waited::TimedOut } else { Waited::Ended };
+                }
+            },
+        }
     }
 }
 
@@ -914,6 +1157,7 @@ mod tests {
             elicitation_id: "00".to_string(),
             local: false,
             warnings: Vec::new(),
+            timeouts: Timeouts::default(),
             started: Instant::now(),
             stop: Arc::new(AtomicBool::new(false)),
             progress: Arc::new(Mutex::new(Progress {
@@ -934,7 +1178,11 @@ mod tests {
         let status = status_json(&job, false);
         assert_eq!(
             status["summary"],
-            "The certificate page is closed. 2 sent \u{00B7} 1 no device yet \u{00B7} 1 conflict"
+            "Finished on the phone. 2 sent \u{00B7} 1 no device yet \u{00B7} 1 conflict"
+        );
+        assert_eq!(
+            status["serials"],
+            "00FA01020304 no device yet \u{00B7} 00FA01020304 conflict"
         );
         assert_eq!(status["tally"]["waiting"], 1);
         assert_eq!(status["tally"]["conflicts"], 1);
@@ -976,7 +1224,73 @@ mod tests {
         );
         assert_eq!(ended["results"].as_array().map(Vec::len), Some(1));
         let next = ended["next_step"].as_str().unwrap_or_default();
-        assert!(next.contains("in one line"), "{next}");
+        assert!(next.contains("in one or two lines"), "{next}");
+    }
+
+    #[test]
+    fn test_end_reason_names_each_end() {
+        let mut job = job_with(&[], Some("connect_timeout"));
+        let reason = |job: &EnrollJob| end_reason(job, &job.progress());
+        assert_eq!(
+            reason(&job).as_deref(),
+            Some("No phone joined within 10 minutes, so the session was closed.")
+        );
+        job.timeouts.connect = Duration::from_secs(1);
+        assert_eq!(
+            reason(&job).as_deref(),
+            Some("No phone joined within 1 second, so the session was closed.")
+        );
+        job.progress().end = Some("phone_done");
+        assert_eq!(reason(&job).as_deref(), Some("Finished on the phone."));
+        job.progress().end = None;
+        assert_eq!(reason(&job), None);
+    }
+
+    #[test]
+    fn test_pairing_status_ended_points_back_to_the_chat() {
+        let job = job_with(&[EnrollStatus::Stored], Some("phone_done"));
+        let status = pairing_status(&job, &job.progress());
+        assert_eq!(
+            status.ended.as_deref(),
+            Some("Done. You can close this tab and go back to your chat.")
+        );
+        let job = job_with(&[], Some("stopped"));
+        let status = pairing_status(&job, &job.progress());
+        assert_eq!(
+            status.ended.as_deref(),
+            Some(
+                "The session was ended from the chat. You can close this tab and go back to \
+                 your chat."
+            )
+        );
+        let running = job_with(&[], None);
+        assert!(pairing_status(&running, &running.progress()).running);
+    }
+
+    #[test]
+    fn test_progress_message_has_counts_and_no_link() {
+        let job = job_with(&[], None);
+        assert_eq!(progress_message(&job, &job.progress()), OPENED_PROGRESS);
+        let job = job_with(&[EnrollStatus::Stored, EnrollStatus::Unassigned], None);
+        job.progress().phones = 1;
+        let message = progress_message(&job, &job.progress());
+        assert_eq!(
+            message,
+            "Your phone is connected. 2 sent \u{00B7} 1 added \u{00B7} 1 no device yet"
+        );
+        assert!(!message.contains("http"), "{message}");
+    }
+
+    #[test]
+    fn test_wait_limit_without_progress_token_stays_under_the_idle_window() {
+        let job = job_with(&[], None);
+        assert_eq!(
+            wait_limit(&job, false),
+            Duration::from_secs(SILENT_WAIT_SECS)
+        );
+        const { assert!(SILENT_WAIT_SECS < 5 * 60) };
+        const { assert!(PROGRESS_INTERVAL_SECS < 5 * 60) };
+        assert!(wait_limit(&job, true) > job.timeouts.max);
     }
 
     #[test]

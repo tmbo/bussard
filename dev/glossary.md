@@ -47,7 +47,9 @@ wire values (`dev/enroll-protocol.md`) do not change.
 
 Summary on the phone: "6 sent · 1 added · 4 already known · 1 no device yet".
 At the end: "Finished. You can close this page." then "Sent 6 certificates to
-your bussard: 1 added, 5 already known."
+your bussard: 1 added, 5 already known." The pairing page on the computer
+ends with "Done. You can close this tab and go back to your chat." and the
+summary, since the chat continues by itself (#831).
 
 ## Showing certificates
 

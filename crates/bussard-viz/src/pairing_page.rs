@@ -147,7 +147,8 @@ pub struct PairingStatus {
     pub certificates: Vec<PairingCertificate>,
     /// The running summary (`6 sent · 1 added · ...`).
     pub summary: String,
-    /// Once ended: the headline (`Finished.`, `The session expired.`, ...).
+    /// Once ended: the headline, which points back to the chat (`Done. You
+    /// can close this tab and go back to your chat.`, #831).
     pub ended: Option<String>,
     /// Once ended: what is left to do, as CLI commands.
     pub next_steps: Vec<NextStep>,
@@ -500,6 +501,15 @@ mod tests {
         assert!(html.contains("<body class=\"local\">"));
         assert!(!html.contains("{{"), "a placeholder is left");
         Ok(())
+    }
+
+    #[test]
+    fn test_script_ends_by_pointing_back_to_the_chat() {
+        // #831: the end banner shows the summary, and the page tries to
+        // close a tab it watched end; the message stays when that fails.
+        assert!(TEMPLATE.contains("id=\"end-summary\""));
+        assert!(SCRIPT.contains("window.close()"));
+        assert!(SCRIPT.contains("go back to your chat"));
     }
 
     #[test]

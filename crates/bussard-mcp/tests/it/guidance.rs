@@ -571,9 +571,13 @@ const READ_INSTRUCTIONS: &str = "bussard: KNX as code over MCP. The installation
     follow the result's next_step. KNX Secure device certificates (the codes that carry each \
     device's factory key) enter the key store through knx_enroll_certificates and \
     knx_enroll_status: bussard opens a pairing page in the human's browser that shows the \
-    steps, the phone link, its session code and the certificates as they arrive. Tell the \
-    human only that the page is open and to follow it there; do not repeat its steps or its \
-    list in the chat. Never \
+    steps, the phone link, its session code and the certificates as they arrive. Say in one \
+    line that the page opens in their browser and to follow it there, then wait for the call: \
+    it stays open until the session ends (Finish on the phone, a stop or a timeout) and \
+    returns the summary, so the chat continues by itself; do not poll and do not repeat the \
+    page's steps or its list. When it ends, summarise it in one or two lines and suggest the \
+    first of its next_steps (for example `bussard scan` for certificates with no device \
+    yet). Never \
     write, repeat or guess an enrolment link or session code yourself, and never ask for a \
     certificate in chat; when bussard cannot open the page, point the human to `bussard keys \
     enroll` in a terminal. Group writes are off: restart with --allow-writes for \
@@ -629,9 +633,13 @@ const PROGRAMMING_INSTRUCTIONS: &str = "bussard: KNX as code over MCP. The insta
     follow the result's next_step. KNX Secure device certificates (the codes that carry each \
     device's factory key) enter the key store through knx_enroll_certificates and \
     knx_enroll_status: bussard opens a pairing page in the human's browser that shows the \
-    steps, the phone link, its session code and the certificates as they arrive. Tell the \
-    human only that the page is open and to follow it there; do not repeat its steps or its \
-    list in the chat. Never \
+    steps, the phone link, its session code and the certificates as they arrive. Say in one \
+    line that the page opens in their browser and to follow it there, then wait for the call: \
+    it stays open until the session ends (Finish on the phone, a stop or a timeout) and \
+    returns the summary, so the chat continues by itself; do not poll and do not repeat the \
+    page's steps or its list. When it ends, summarise it in one or two lines and suggest the \
+    first of its next_steps (for example `bussard scan` for certificates with no device \
+    yet). Never \
     write, repeat or guess an enrolment link or session code yourself, and never ask for a \
     certificate in chat; when bussard cannot open the page, point the human to `bussard keys \
     enroll` in a terminal. Group writes are off: restart with --allow-writes for \
