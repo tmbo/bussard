@@ -30,13 +30,13 @@ use serde_json::{Value, json};
 use crate::state::SharedState;
 
 /// What still needs ETS, named once in the instructions.
-const ETS_ONLY: &str = "Still needs ETS: the Secure activation of a fresh device, and any \
+const ETS_ONLY: &str = "Still needs ETS: securing a fresh device with KNX Secure, and any \
     setting the device's product model does not expose.";
 
 /// How to talk to the human (issue #306), named once in the instructions.
 pub const HOW_TO_TALK: &str = "How to talk: the human is a homeowner unless she says \
-    otherwise. Name things the way the model names them: rooms, device names, channel names \
-    and group names. Group addresses, individual addresses, com-object numbers, parameter keys \
+    otherwise. Name things the way the project names them: rooms, device names, channel names \
+    and group names. Group addresses, device addresses, com-object numbers, parameter keys \
     and ETS references are for tool calls, not for the reply: use ids only in tool calls, \
     unless the human asks for the technical detail or a thing has no name. A result that \
     changes something, or asks for her yes, carries a `summary` written for her, and a device \
@@ -56,7 +56,7 @@ const HA_CAPABILITY: &str = "It reads Home Assistant (knx_ha_status) and, after 
 /// The Home Assistant tier in the instructions.
 const HA_INSTRUCTIONS: &str = "Home Assistant tier: knx_ha_status reads Home Assistant \
     (version, KNX integration, entity counts, the KNX YAML file) and changes nothing. \
-    knx_ha_plan says per entity what writing the KNX YAML generated from the model would add, \
+    knx_ha_plan says per entity what writing the KNX YAML generated from the project would add, \
     change or remove; say its summary, show those sentences in full and call knx_ha_apply \
     only after an explicit yes in this conversation. It writes only that one file, keeps a \
     backup and reloads the KNX integration. For logic the bus cannot do alone (when the guest \
@@ -148,27 +148,27 @@ impl Tiers {
     pub fn capabilities(&self) -> String {
         let mut parts = Vec::new();
         parts.push(if self.passive {
-            "This server observes the bus without transmitting and reads the model files. It \
+            "This server observes the bus without transmitting and reads the project files. It \
              reports the bus connection (knx_bus_status)."
                 .to_string()
         } else {
-            "This server reads the model files, observes the bus, reads group values \
+            "This server reads the project files, observes the bus, reads group values \
              (knx_read_group), introspects devices (knx_describe_device), backs devices up \
-             (knx_backup_device), reads a device's tables back against the model \
+             (knx_backup_device), reads a device's tables back against the project \
              (knx_reconstruct_device), finds the devices on a line (knx_find_devices) and \
              reads one device's live status (knx_show_device with live: true). It reports the \
              bus connection (knx_bus_status) and rebuilds it on request (knx_bus_reconnect)."
                 .to_string()
         });
         parts.push(if self.model_edits {
-            "It edits the model files: group addresses (knx_set_group, knx_remove_group), links \
+            "It edits the project files: group addresses (knx_set_group, knx_remove_group), links \
              (knx_add_link, knx_remove_link), names and rooms (knx_set_device) and parameter \
              values (knx_set_parameter, with the keys knx_show_device lists). It takes KNX \
              Secure device certificates from a phone into the key store \
              (knx_enroll_certificates, knx_enroll_status)."
                 .to_string()
         } else {
-            "Model edits are off (--no-model-edits).".to_string()
+            "Edits to the project are off (--no-model-edits).".to_string()
         });
         if !self.passive {
             parts.push(if self.writes {
@@ -198,7 +198,7 @@ impl Tiers {
             "It pushes a device's links and parameter values: knx_plan_device reads the \
              device and returns the plan, and knx_apply_device writes the group-address and \
              association tables and the parameter values that differ after the human said yes \
-             to that plan, over KNX Data Secure when the server's keyring lists the device."
+             to that plan, over KNX Data Secure when the server holds the device's tool key."
                 .to_string()
         } else {
             "Nothing it edits reaches a device from here: this server runs without \
@@ -225,7 +225,7 @@ impl Tiers {
                  human's yes must be a yes to flashing {ia}. So is a device that does not run \
                  the application program bussard.lock pins (another one, or none loaded): the \
                  plan's sentences say the application must be loaded, and one yes to its \
-                 question loads it and writes the model with it as one job."
+                 question loads it and writes the project's values with it as one job."
             )
         } else {
             format!(
@@ -280,7 +280,7 @@ impl Tiers {
              works with the live bus. Active tiers: {}. Start with knx_project_summary (its \
              `server` and `capabilities` fields say what this server may do), then \
              knx_model_lookup, knx_get_group, knx_get_device and knx_show_device to explore, \
-             and knx_validate and knx_audit to check the model. To find a device that can \
+             and knx_validate and knx_audit to check the project. To find a device that can \
              provide a function, use knx_model_lookup with the function's words and read \
              knx_show_device for the candidates.",
             self.names().join(", ")
@@ -302,7 +302,7 @@ impl Tiers {
              knx_backup_device backs one device or all of them up (tables, and the parameter \
              memory a System B device bounds) under captures/backups, and \
              knx_reconstruct_device reads a device's tables back and diffs them against the \
-             model; both are read-only on the bus. To find what is on the bus, \
+             project; both are read-only on the bus. To find what is on the bus, \
              knx_find_devices scans a line as a job (mask, manufacturer and order number per \
              device) and knx_show_device with live: true reads one device's identity and, for \
              an IP interface, its IP settings and tunnels; both only read. When a bus tool says the bus is not connected, knx_bus_status says why (the last \
@@ -311,19 +311,19 @@ impl Tiers {
                 .to_string()
         });
         out.push(if self.model_edits {
-            "Change the model with the edit tools, never by writing files: knx_set_group, \
+            "Change the project with the edit tools, never by writing files: knx_set_group, \
              knx_remove_group, knx_add_link, knx_remove_link, knx_set_device, \
              knx_set_parameter, knx_discard_edits and knx_undo. To abandon a change on one \
-             device, knx_discard_edits; knx_undo rolls the whole model back to a snapshot. \
+             device, knx_discard_edits; knx_undo rolls the whole project back to a snapshot. \
              Parameters are edited with knx_set_parameter using the keys knx_show_device lists \
              (the device needs its product model). Every edit snapshots the files first and \
              returns a `summary` and the change as sentences: say the summary, then quote the \
              sentences, and follow the result's next_step. KNX Secure device certificates (the \
-             FDSK labels) enter the key store through knx_enroll_certificates and \
+             codes that carry each device's factory key) enter the key store through knx_enroll_certificates and \
              knx_enroll_status: bussard opens a pairing page in the human's browser with the phone link and its session code, and the human scans the certificates with the phone. Never write, repeat or guess an enrolment link or session code yourself, and never ask for a certificate in chat; when bussard cannot open the page, point the human to `bussard keys enroll` in a terminal."
                 .to_string()
         } else {
-            "Model edits are off (--no-model-edits): the model is read-only here.".to_string()
+            "Edits to the project are off (--no-model-edits): the project is read-only here.".to_string()
         });
         if !self.passive {
             out.push(if self.writes {
@@ -342,7 +342,7 @@ impl Tiers {
                  yes in this conversation. It \
                  writes the device's links (group-address and association tables) and the \
                  parameter values that differ from your project (one plan sentence each), over KNX \
-                 Data Secure when the server's keyring lists the device. A plan without the \
+                 Data Secure when the server holds the device's tool key. A plan without the \
                  device's product data writes the links only and says why. knx_apply_device \
                  runs the write as a job: when it answers `started` with a job id, call \
                  knx_apply_status with that job until `done` is true and report its result; \
@@ -360,13 +360,13 @@ impl Tiers {
                  device back. knx_commission_line commissions a line: show its plan's sentences \
                  and ask its question; one explicit yes starts a job that names each device to \
                  press (relay knx_job_status's question), checks the pressed device's order \
-                 number against the model and assigns its address with a read-back, and waits \
+                 number against the project and assigns its address with a read-back, and waits \
                  for the human's retry, skip or stop when they differ; read out its labels at \
                  the end. \
                  knx_replace_device replaces a dead device with the same product \
                  in the same flow: it keeps a backup of the device file and lock record, relays \
                  the press-the-button question, and after one explicit yes assigns the address, \
-                 loads the application, writes the model's parameters and links, reads them \
+                 loads the application, writes the project's parameters and links, reads them \
                  back and records the replacement."
                     .to_string(),
             );
@@ -400,7 +400,7 @@ impl Tiers {
     pub fn next_step(&self, changes: &ChangeSet, model: Option<&Model>) -> String {
         let push = Push::of(changes);
         if push.links.is_empty() && push.parameters.is_empty() {
-            return "Nothing to push: this change is only in the model files (names, rooms and \
+            return "Nothing to push: this change is only in the project files (names, rooms and \
                     group-address metadata are stored in no device). Links that use a group \
                     address are pushed per device with knx_plan_device and knx_apply_device."
                 .to_string();

@@ -129,7 +129,7 @@ An interface with KNXnet/IP Secure on and no plain tunnel refuses an ordinary co
 - A device the key store lists is managed over KNX Data Secure with its tool key.
 - A device it does not list is managed in the clear through the secure tunnel, so plain devices behind a secure-only interface stay reachable.
 - A device whose device file says `security.activated: true` (secured) but that the key store does not list is refused with `the keyring ... has no tool key for <IA>`. This holds for `describe`, `reconstruct`, `plan`, `flash`, `apply`, `commission`, `replace`, `backup`, `restore`, the `--line` walks and the MCP device tools.
-- `scan`, `assign` and `audit --live` never refuse. A secured device without a tool key is shown as "Data Secure activated (mask hidden), no tool key in the keyring".
+- `scan`, `assign` and `audit --live` never refuse. A secured device without a tool key is shown as `secured, bussard has no tool key for it` (`scan`) or `secured (mask hidden), bussard has no tool key for it` (`assign`).
 
 **TCP only.** A KNXnet/IP Secure tunnelling session runs over TCP, as ETS uses it. The KNX standard allows no other carrier: a unicast secure session must use TCP, and an interface discards a session request that arrives over UDP (KNX IP Secure 3/8/9 §2.2.3.3, §2.2.3.6.4). When the TCP connect is refused by an interface that advertises KNXnet/IP Secure, bussard fails with a message that names the likely causes: secure tunnelling disabled or misconfigured, the interface's TCP connections all taken (often there is just one), or a different device at that address.
 

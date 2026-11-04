@@ -138,7 +138,7 @@ impl std::fmt::Debug for SetupMcp {
 pub struct SetupArgs {
     /// The ETS project export to import: a `.knxproj` (or an xknxproject
     /// `.json` dump), as a path on this computer. Omit it to import the one
-    /// `.knxproj` lying next to the model directory, or to start without a
+    /// `.knxproj` lying next to the project folder, or to start without a
     /// project when there is none.
     #[serde(default)]
     pub project_file: Option<String>,
@@ -248,7 +248,7 @@ impl SetupHooks for Chat {
 impl SetupMcp {
     /// `knx_setup` (issue #745).
     #[tool(
-        description = "Set the house up: there is no model yet. Finds the KNXnet/IP gateway (or uses `gateway`), writes the model directory, and imports the ETS project export (`project_file`, or the one .knxproj next to the directory) with its product data and keyring, as `bussard init` does. Ask the human first whether they have an ETS export and where it is. `download: true` also fetches vendor product data the export lacks; pass it only after the human agreed. A `question` in the result means nothing was written: relay it and call again. On success the server registers its full tool set (the tool list changes); continue with knx_project_summary."
+        description = "Set the house up: there is no project yet. Finds the KNXnet/IP gateway (or uses `gateway`), writes the project folder, and imports the ETS project export (`project_file`, or the one .knxproj next to the directory) with its product data and keyring, as `bussard init` does. Ask the human first whether they have an ETS export and where it is. `download: true` also fetches vendor product data the export lacks; pass it only after the human agreed. A `question` in the result means nothing was written: relay it and call again. On success the server registers its full tool set (the tool list changes); continue with knx_project_summary."
     )]
     async fn knx_setup(
         &self,
@@ -371,7 +371,7 @@ impl SetupMcp {
 
     /// `knx_bus_status` before the model exists.
     #[tool(
-        description = "The bus connection. Before knx_setup has written the model there is none: the result says so."
+        description = "The bus connection. Before knx_setup has written the project there is none: the result says so."
     )]
     async fn knx_bus_status(&self) -> Result<CallToolResult, ErrorData> {
         Ok(CallToolResult::structured(json!({

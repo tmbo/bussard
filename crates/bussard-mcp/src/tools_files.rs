@@ -90,7 +90,7 @@ pub struct ImportFileArgs {
     #[serde(default)]
     pub password: Option<String>,
     /// On a re-import, take the incoming value for every hand-edited field
-    /// that differs (default false: keep the model's values and list them).
+    /// that differs (default false: keep the project's values and list them).
     #[serde(default)]
     pub theirs: Option<bool>,
 }
@@ -110,13 +110,13 @@ impl std::fmt::Debug for ImportFileArgs {
 /// Arguments for `knx_export`.
 #[derive(Default, Deserialize, JsonSchema)]
 pub struct ExportArgs {
-    /// What to write: `bundle` (the model and its history as one `.bussard`
+    /// What to write: `bundle` (the project and its history as one `.bussard`
     /// file), `groups` (the group-address plan for ETS's import), `keyring`
     /// (the key store as a signed `.knxkeys` ETS accepts) or `doc` (the
     /// handover documentation folder).
     pub what: String,
-    /// Where to write. Optional for `bundle` (default: next to the model
-    /// directory, named after it and today's date); required otherwise (a
+    /// Where to write. Optional for `bundle` (default: next to the project
+    /// folder, named after it and today's date); required otherwise (a
     /// file for `groups` and `keyring`, a directory for `doc`).
     #[serde(default)]
     pub out: Option<String>,
@@ -156,10 +156,10 @@ impl std::fmt::Debug for ExportArgs {
 impl BussardMcp {
     /// `knx_import_file`.
     #[tool(
-        description = "Import a file from ETS or a vendor into the model, as `bussard import`, \
+        description = "Import a file from ETS or a vendor into the project, as `bussard import`, \
         `bussard import-product` and `bussard keys import` do, chosen by the file type: a \
         .knxproj (ETS project export) or .bussard bundle or .json xknxproject dump is written \
-        into the model (a re-import keeps hand-edited names, rooms and descriptions and lists \
+        into the project (a re-import keeps hand-edited names, rooms and descriptions and lists \
         each one that differs; pass theirs: true to take the incoming values); a .knxprod is \
         stored as product data and its product models generated; a .knxkeys is merged into the \
         key store bussard.keys. Vendor product data by order number: {order_number, download: \
@@ -168,7 +168,7 @@ impl BussardMcp {
         would be. A protected .knxproj or a .knxkeys needs `password` (ask the human; it is \
         never echoed or stored) unless the server's environment has it. Run knx_diff_project \
         first and quote its sentences before importing a project or bundle. Snapshots the \
-        model first (knx_undo puts it back); touches no device. Returns sentences: quote the \
+        project first (knx_undo puts it back); touches no device. Returns sentences: quote the \
         summary."
     )]
     async fn knx_import_file(
@@ -190,16 +190,16 @@ impl BussardMcp {
 
     /// `knx_export`.
     #[tool(
-        description = "Write an export of the model, as `bussard export`, `bussard \
+        description = "Write an export of the project, as `bussard export`, `bussard \
         export-groups`, `bussard keys export` and `bussard doc` do. what: `bundle` writes the \
-        model and its history as one .bussard file (the handover file for an integrator, or the \
+        project and its history as one .bussard file (the handover file for an integrator, or the \
         owner's backup; never vendor product data, keyrings or passwords; `out` optional); \
         `groups` writes the group-address plan for ETS's Group Addresses -> Import (format \
         ets-csv or ets-xml); `keyring` writes the key store as a signed .knxkeys ETS accepts, \
         reads it back and says whether it carries every key (needs the keyring `password` \
         unless the server's environment has it; force: true to overwrite); `doc` renders the \
         handover documentation folder (format md or html). Returns the written path and one \
-        summary sentence; never key material. Touches no device and no model file."
+        summary sentence; never key material. Touches no device and no project file."
     )]
     async fn knx_export(
         &self,

@@ -83,10 +83,10 @@ impl BussardMcp {
     #[tool(
         description = "Infer what a group address IS from the traffic already seen on it: ranked \
         DPT candidates with the reasoning for each, the sending device (address, name, location), \
-        its channel and com object (index, name, declared DPT, flags), the model's current entry \
+        its channel and com object (index, name, declared DPT, flags), the project's current entry \
         for the GA, and a proposed human name built from location, channel and com-object \
         function. This is the second half of the learn loop: ask the human to press the button, \
-        call knx_wait_for_telegram, then call this. It reads the telegram buffer and the model \
+        call knx_wait_for_telegram, then call this. It reads the telegram buffer and the project \
         only and NEVER transmits, so it works in --passive mode. Confidence is never 'high' \
         unless the sending com object declares the DPT. Pass payload_hex to ask about a specific \
         payload instead of the buffered ones. Secured (KNX Data Secure) telegrams count only when \
@@ -222,7 +222,7 @@ impl BussardMcp {
 
     /// `knx_run_tests` (registered only with `--allow-writes`).
     #[tool(
-        description = "Run the acceptance tests in the model directory's tests.toml against the \
+        description = "Run the acceptance tests in the project folder's tests.toml against the \
         PHYSICAL bus and return a pass/fail report. Each test writes a group value and waits for \
         the telegram that proves the installation reacted, so actuators MOVE. Only available when \
         the server was started with --allow-writes. A test that writes to a protected group \

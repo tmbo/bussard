@@ -95,10 +95,10 @@ struct Cli {
 #[derive(Debug, Args)]
 #[command(next_help_heading = "Global options")]
 struct Global {
-    /// The model directory. Default: `BUSSARD_DIR`, else discovered: `.` when
+    /// The project folder. Default: `BUSSARD_DIR`, else discovered: `.` when
     /// it holds `bussard.toml`, else `./knx`, else the nearest parent holding
     /// `bussard.toml` (or `knx/bussard.toml`), else `knx`. `init` and `import`
-    /// create the model in `--dir`, `BUSSARD_DIR` or `knx` and never search.
+    /// create the project in `--dir`, `BUSSARD_DIR` or `knx` and never search.
     #[arg(long, global = true, value_name = "DIR")]
     dir: Option<PathBuf>,
     /// The KNXnet/IP gateway `host[:port]`; implies tunnelling. Default:
@@ -113,18 +113,18 @@ struct Global {
     /// Manage the KNX IP interface at `--gateway` itself over a KNXnet/IP
     /// device management connection instead of a tunnel (issue #523): for
     /// `plan`/`apply` of an interface, `describe` of it and `interface
-    /// secure`. Needs no tunnelling slot and no individual address of the
+    /// secure`. Needs no tunnelling slot and no address of the
     /// tunnel, so it reaches an interface whose slots are taken, whose
     /// tunnel address is duplicated, or that is factory-fresh. Inside
     /// KNXnet/IP Secure it authenticates as the management user (the
-    /// keyring's `ManagementPassword` for the interface).
+    /// `ManagementPassword` the key store or keyring holds for the interface).
     #[arg(long, global = true)]
     device_management: bool,
     /// An ETS `.knxkeys` keyring. Its tunnelling users open a KNXnet/IP Secure
     /// tunnel, its device entries carry the KNX Data Secure tool keys for
     /// management, and its group keys secure and decrypt group telegrams.
-    /// Default: `BUSSARD_KEYRING`, else `connection.keyring` in
-    /// `bussard.toml`. The password comes from `BUSSARD_KEYRING_PASSWORD`,
+    /// Default: `BUSSARD_KEYRING`, else the key store `bussard.keys`, else
+    /// `connection.keyring` in `bussard.toml`. The password comes from `BUSSARD_KEYRING_PASSWORD`,
     /// never a CLI argument.
     #[arg(long, global = true, value_name = "FILE")]
     keyring: Option<PathBuf>,
@@ -139,7 +139,7 @@ struct Global {
     #[arg(long, global = true)]
     allow_remote_gateway: bool,
     /// Skip the pre-flight check that no bus device answers at bussard's own
-    /// source individual address. That check stops two management clients
+    /// source address. That check stops two management clients
     /// sharing one source address, which interleaves their numbered telegrams
     /// inside one layer-4 session at the device and can silently corrupt a
     /// download. Only pass this for a gateway that misbehaves on the probe.
@@ -663,8 +663,8 @@ enum GroupsCommand {
     /// generates a new random one as ETS does. One change, snapshotted with
     /// the key store, so `bussard undo` restores all three. Needs
     /// `BUSSARD_KEYRING_PASSWORD`. The Secure devices linked to the group
-    /// address then need `bussard plan` and `bussard apply`, and every
-    /// keyring user (Home Assistant) a new `bussard keys export`.
+    /// address then need `bussard plan` and `bussard apply`, and every user
+    /// of an exported keyring (Home Assistant) a new `bussard keys export`.
     // Issue #331.
     Secure {
         /// The group address, e.g. `1/0/4`.
@@ -684,7 +684,7 @@ enum KeysCommand {
     ///
     /// New devices, rotated tool keys, changed credentials and group keys are
     /// taken from the export; entries it lacks are kept and a factory key
-    /// (FDSK) is never dropped. Prints what changed, never a key.
+    /// is never dropped. Prints what changed, never a key.
     Import {
         /// The `.knxkeys` file to import.
         #[arg(value_name = "FILE")]
@@ -702,24 +702,25 @@ enum KeysCommand {
     /// Summarize the key store: devices, interfaces and group addresses,
     /// never a key.
     Show,
-    /// Enter device certificates (the 36-character FDSK labels) into the
+    /// Enter device certificates (the 36-character code that carries the
+    /// factory key, FDSK) into the
     /// key store (issue #728).
     ///
-    /// On a terminal it asks for one label per line, without echo, until an
+    /// On a terminal it asks for one certificate per line, without echo, until an
     /// empty line; with `--stdin` it reads every line of standard input. A
-    /// label is never a command-line argument (shell history). The label's
+    /// certificate is never a command-line argument (shell history). Its
     /// serial number selects the device; an unknown serial is kept until
     /// `bussard assign` reads it off a device. Prints the serial, the matched
-    /// address and the status per label, never a key.
+    /// address and the status per certificate, never a key.
     AddCertificate {
-        /// Read the labels from standard input, one per line.
+        /// Read the certificates from standard input, one per line.
         #[arg(long)]
         stdin: bool,
     },
-    /// Take device certificates (FDSK labels) from a phone: prints a link, its
-    /// QR code and a fingerprint, then one line per label the phone scans.
+    /// Take device certificates from a phone: prints a link, its QR code and
+    /// the session code, then one line per certificate the phone scans.
     ///
-    /// The phone encrypts each label to this session; the page's server and
+    /// The phone encrypts each certificate to this session; the page's server and
     /// the relay only see ciphertext. Ends when the phone finishes, on `q`
     /// and Enter, or on Ctrl-C. Prints serials and addresses, never a key.
     Enroll {
@@ -736,7 +737,7 @@ enum KeysCommand {
         #[arg(long)]
         no_qr: bool,
         /// Serve the page and the relay on 127.0.0.1 instead, for a browser
-        /// on this computer (a webcam or typed labels); no hosted relay.
+        /// on this computer (a webcam or typed codes); no hosted relay.
         #[arg(long, conflicts_with_all = ["relay", "page"])]
         local: bool,
     },
@@ -779,20 +780,20 @@ enum InterfaceCommand {
     /// does.
     ///
     /// `on` takes a device in factory state over a plain tunnel: under its
-    /// FDSK the security mode and a tool key, then under the tool key the
+    /// factory key the security mode and a tool key, then under the tool key the
     /// device authentication code, the password hashes of the management and
     /// tunnelling users, the tunnelling users and the secured service
     /// families, and a master reset. Credentials come from the key store
     /// (`bussard.keys`); missing ones are generated and saved there before
     /// the first write. `off` undoes it under the tool key, then again under
-    /// the FDSK. Both end with a read-back after the restart. The model never
-    /// holds a credential. See https://bussard.tmbo.dev/docs/explanation/safety/ for the recovery.
+    /// the factory key. Both end with a read-back after the restart. The
+    /// project files never hold a credential. See https://bussard.tmbo.dev/docs/explanation/safety/ for the recovery.
     // Issue #398.
     Secure {
         /// `on` or `off`.
         #[arg(value_name = "on|off")]
         state: String,
-        /// The interface's individual address, e.g. `1.1.200`.
+        /// The interface's address, e.g. `1.1.200`.
         #[arg(value_name = "ADDRESS")]
         address: String,
         /// Print the steps and send nothing (no connection, the key store
@@ -817,13 +818,13 @@ enum InterfaceCommand {
 /// The top-level subcommands.
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Create a fresh model directory: discover the gateway, write the
+    /// Create a fresh project: discover the gateway, write the
     /// skeleton, then import the ETS project (the one given, or the one
     /// `.knxproj` next to the directory) or offer to scan the line.
     Init {
         /// The ETS project to import right away (`.knxproj`, or an
         /// xknxproject `.json` dump). Default: the one `.knxproj` next to the
-        /// model directory, when there is exactly one.
+        /// project folder, when there is exactly one.
         #[arg(value_name = "PROJECT")]
         project: Option<PathBuf>,
         /// Project password (else `BUSSARD_PROJECT_PASSWORD`, else prompt).
@@ -856,7 +857,7 @@ enum Command {
         /// Project password (else `BUSSARD_PROJECT_PASSWORD`, else prompt).
         #[arg(long)]
         password: Option<String>,
-        /// On a re-import, keep this model's value for every hand-edited
+        /// On a re-import, keep this project's value for every hand-edited
         /// conflict and exit 0.
         #[arg(long, conflicts_with_all = ["theirs", "interactive"])]
         mine: bool,
@@ -875,13 +876,13 @@ enum Command {
         #[arg(long)]
         no_download: bool,
         /// Skip the confirmation prompt: import into a non-empty directory
-        /// that holds no model yet.
+        /// that holds no project yet.
         #[arg(long)]
         yes: bool,
     },
-    /// Write the model and its history as one `.bussard` file to hand over.
+    /// Write the project and its history as one `.bussard` file to hand over.
     Export {
-        /// The bundle to write (default: next to the model directory, named
+        /// The bundle to write (default: next to the project folder, named
         /// after it and today's date).
         #[arg(value_name = "FILE")]
         file: Option<PathBuf>,
@@ -892,7 +893,7 @@ enum Command {
     /// Explain what changes between two projects, as plain sentences.
     Diff {
         /// The first side: a `.knxproj`, a `.bussard` bundle, an xknxproject
-        /// `.json` dump or a model directory.
+        /// `.json` dump or a project folder.
         #[arg(value_name = "A")]
         a: PathBuf,
         /// The second side, in any of the same forms.
@@ -924,7 +925,7 @@ enum Command {
         #[arg(long, value_name = "N", default_value_t = 255)]
         to: u8,
     },
-    /// Assign an individual address to the device in programming mode.
+    /// Assign an address to the device in programming mode.
     Assign {
         /// The address to assign, e.g. `1.1.47` (default: next free on the line).
         #[arg(value_name = "ADDRESS")]
@@ -934,8 +935,8 @@ enum Command {
         #[arg(long)]
         yes: bool,
         /// A raw KNX Data Secure tool key (32 hex characters) to verify a
-        /// security-activated device with after the address write.
-        /// Overrides the keyring, which lists devices by individual address and
+        /// secured device with after the address write.
+        /// Overrides the keyring, which lists devices by address and
         /// so only knows the new address once ETS re-exports it. For a test or
         /// bench device: process arguments are visible to other users.
         // Issue #203.
@@ -947,14 +948,14 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
-    /// Read a device's tables back over the bus and diff them against the model,
-    /// or (with `--line`) sweep a whole line and synthesize a fresh model.
+    /// Read a device's tables back over the bus and diff them against the project,
+    /// or (with `--line`) sweep a whole line and synthesize a fresh project.
     Reconstruct {
         /// The single device to read, e.g. `1.1.4` (mutually exclusive with
         /// `--line`).
         #[arg(value_name = "ADDRESS", required_unless_present = "line")]
         address: Option<String>,
-        /// Sweep a whole line, e.g. `1.1`, and synthesize a fresh model from
+        /// Sweep a whole line, e.g. `1.1`, and synthesize a fresh project from
         /// every System B device's tables (requires `--out`).
         #[arg(long, value_name = "LINE", conflicts_with_all = ["address", "keyring"])]
         line: Option<String>,
@@ -964,8 +965,8 @@ enum Command {
         /// The last device number to probe in line mode (0–255).
         #[arg(long, value_name = "N", default_value_t = 255, requires = "line")]
         to: u8,
-        /// Line mode only: the fresh model directory to synthesize into. Must be
-        /// absent or empty — reconstruction never merges into an existing model.
+        /// Line mode only: the fresh project folder to synthesize into. Must be
+        /// absent or empty: reconstruction never merges into an existing project.
         #[arg(long, value_name = "DIR", requires = "line")]
         out: Option<PathBuf>,
         /// The device's vendor `.knxprod`, to read back and decode its parameter
@@ -1015,7 +1016,7 @@ enum Command {
     /// summary. Key material is NEVER printed.
     ///
     /// The store is encrypted with the password in
-    /// `BUSSARD_KEYRING_PASSWORD` and meant to be committed with the model.
+    /// `BUSSARD_KEYRING_PASSWORD` and meant to be committed with the project.
     // Issue #241.
     Keys {
         #[command(subcommand)]
@@ -1050,14 +1051,14 @@ enum Command {
         #[arg(long, conflicts_with_all = ["file", "order_number"])]
         list: bool,
     },
-    /// Guide a new device from programming mode into the model (assign +
+    /// Guide a new device from programming mode into the project (assign +
     /// product data + links scaffolding).
     Adopt {
         /// The address to give the device, e.g. `1.1.47` (default: next free on
         /// the line; a KNX Data Secure device keeps the address ETS gave it).
         #[arg(value_name = "ADDRESS")]
         address: Option<String>,
-        /// The vendor `.knxprod` for the new device (else the cached model is used).
+        /// The vendor `.knxprod` for the new device (else the cached product model is used).
         #[arg(long, value_name = "FILE")]
         product: Option<PathBuf>,
         /// Skip the confirmation prompt. Without a terminal the command is
@@ -1123,10 +1124,10 @@ enum Command {
         #[arg(long)]
         full: bool,
         /// Skip the factory reset before the download. By default a System B
-        /// flash of a secure-capable application that writes filled segments
+        /// flash of an application that supports Secure and writes filled segments
         /// sparsely, or that replaces a device that is not factory-fresh, first
         /// sends a confirmed master reset (erase code 7): the device erases its application, parameters and links and
-        /// keeps its individual address, so no octet of a previous image survives
+        /// keeps its address, so no octet of a previous image survives
         /// where the new one writes nothing. Use this only when you
         /// know the device holds no stale image.
         // Issue #117.
@@ -1187,14 +1188,14 @@ enum Command {
         resident: Option<PathBuf>,
     },
     /// Show what `apply` would write to a device (links and, with product
-    /// data, parameters) without writing; or (with `--line`) plan every model
-    /// device on a line. Read-only on the bus.
+    /// data, parameters) without writing; or (with `--line`) plan every
+    /// device of the project on a line. Read-only on the bus.
     Plan {
         /// The device to plan for, e.g. `1.1.4` (mutually exclusive with
         /// `--line`).
         #[arg(value_name = "ADDRESS", required_unless_present = "line")]
         address: Option<String>,
-        /// Plan every device the model has on this line, e.g. `1.1`, in address
+        /// Plan every device the project has on this line, e.g. `1.1`, in address
         /// order, and print one summary table.
         // Issue #100.
         #[arg(long, value_name = "LINE", conflicts_with = "address")]
@@ -1217,15 +1218,15 @@ enum Command {
         #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
         tool_key: Option<String>,
     },
-    /// Write the model to a device: validate, read the device, show the plan,
+    /// Write the project to a device: validate, read the device, show the plan,
     /// ask once, back up, write only what differs (links and parameter
-    /// octets), verify. With `--line`, every model device on a line.
+    /// octets), verify. With `--line`, every device of the project on a line.
     Apply {
         /// The device to write, e.g. `1.1.4` (mutually exclusive with
         /// `--line`).
         #[arg(value_name = "ADDRESS", required_unless_present = "line")]
         address: Option<String>,
-        /// Apply to every device the model has on this line, e.g. `1.1`, in
+        /// Apply to every device the project has on this line, e.g. `1.1`, in
         /// address order: one confirmation for the run, one summary table, and a
         /// resumable state file.
         // Issue #100.
@@ -1281,7 +1282,7 @@ enum Command {
         #[arg(long, conflicts_with = "line")]
         allow_self_reconfigure: bool,
     },
-    /// Bench mode: walk the model's devices on a line, prompt for each device's
+    /// Bench mode: walk the project's devices on a line, prompt for each device's
     /// programming button, verify its order number, assign its address, and
     /// print a label.
     // Issue #100.
@@ -1292,7 +1293,7 @@ enum Command {
         /// Also flash each device's application program after assigning it.
         #[arg(long)]
         flash: bool,
-        /// Also apply the model's link tables after assigning (and flashing).
+        /// Also apply the project's link tables after assigning (and flashing).
         #[arg(long)]
         apply: bool,
         /// Append one label row per commissioned device to this CSV file
@@ -1312,13 +1313,13 @@ enum Command {
         #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
         tool_key: Option<String>,
     },
-    /// Show what has changed in the model since the last history snapshot,
+    /// Show what has changed in the project since the last history snapshot,
     /// or, given a device ADDRESS, read that device's live state over the bus:
     /// its identity and, for a KNX IP interface, its IP settings, MAC address,
     /// tunnelling addresses and state.
     // Issue #391.
     Status {
-        /// The device to read, e.g. `1.1.200`. Without it, the model's change
+        /// The device to read, e.g. `1.1.200`. Without it, the project's change
         /// summary.
         #[arg(value_name = "ADDRESS")]
         address: Option<String>,
@@ -1326,7 +1327,7 @@ enum Command {
         #[arg(long, conflicts_with = "address")]
         raw: bool,
     },
-    /// List the model's history snapshots, oldest first.
+    /// List the project's history snapshots, oldest first.
     History {},
     /// Show what a device can do, in its device file's words: its channels or
     /// ETS parameter pages (inactive ones marked with what enables them), and
@@ -1355,7 +1356,7 @@ enum Command {
         #[arg(value_name = "SNAPSHOT")]
         to: Option<String>,
     },
-    /// Put the model files back to a history snapshot (files only, no devices).
+    /// Put the project files back to a history snapshot (files only, no devices).
     Undo {
         /// The snapshot to restore: its id, or its number from `bussard history`
         /// (default: the newest one that differs from the working files, which
@@ -1372,10 +1373,10 @@ enum Command {
     // Issue #96.
     Backup {
         /// Back up only these devices, e.g. `1.1.4 1.1.7` (default: every device
-        /// in the model).
+        /// in the project).
         #[arg(value_name = "ADDRESS")]
         addresses: Vec<String>,
-        /// Back up only the model devices on this line, e.g. `1.1`.
+        /// Back up only the project's devices on this line, e.g. `1.1`.
         #[arg(long, value_name = "LINE", conflicts_with = "addresses")]
         line: Option<String>,
         /// Where to write the snapshot (default:
@@ -1392,7 +1393,7 @@ enum Command {
     ///
     /// `restore <BACKUP_DIR> <ADDRESS>` runs the same plan, confirm, back up,
     /// write and verify path as `apply`, with the backup as the desired state
-    /// instead of the model. `restore --parameters <BACKUP_JSON> <ADDRESS>`
+    /// instead of the project. `restore --parameters <BACKUP_JSON> <ADDRESS>`
     /// replays a parameter backup with `apply`'s parameter-only download.
     // Issues #96, #290.
     Restore {
@@ -1406,7 +1407,7 @@ enum Command {
         /// (`<dir>/captures/backups/parameters/<ia>-<ts>.json`) instead of
         /// link tables: refused unless the backup's device, application and
         /// mask match; writes only the octets a parameter is placed in under
-        /// the model's configuration, keeps device-managed octets, verifies by
+        /// the project's configuration, keeps device-managed octets, verifies by
         /// read-back.
         #[arg(long, value_name = "BACKUP_JSON")]
         parameters: Option<PathBuf>,
@@ -1420,8 +1421,8 @@ enum Command {
         tool_key: Option<String>,
     },
     /// Restart a device (the application restarts, nothing is erased) in the
-    /// form ETS uses for it: the confirmed restart for a secure-capable
-    /// System B application, else a bare `A_Restart`. Then wait until it
+    /// form ETS uses for it: the confirmed restart for a System B application
+    /// that supports Secure, else a bare `A_Restart`. Then wait until it
     /// answers again. The device may transmit its status objects as it starts.
     Restart {
         /// The device to restart, e.g. `1.1.39`.
@@ -1456,7 +1457,7 @@ enum Command {
         yes: bool,
         /// Override the replacement-identity refusals: proceed although the old
         /// device still answers, or although the pressed device's order number,
-        /// mask or application does not match the model's device file.
+        /// mask or application does not match the device file.
         #[arg(long)]
         force: bool,
         /// Assign and apply, but leave the application image alone — for a spare
@@ -1473,7 +1474,7 @@ enum Command {
         #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
         tool_key: Option<String>,
     },
-    /// Validate the model and report diagnostics (`--json` for the
+    /// Validate the project and report diagnostics (`--json` for the
     /// machine-readable report).
     Validate {},
     /// Work with the group-address plan (`groups.toml`): reserve the
@@ -1501,7 +1502,7 @@ enum Command {
         #[arg(long, value_name = "FILE")]
         out: PathBuf,
     },
-    /// Render the handover documentation folder from the model.
+    /// Render the handover documentation folder from the project.
     Doc {
         /// The directory to write the rendered documentation into.
         #[arg(long, default_value = "docs/installation")]
@@ -1510,7 +1511,7 @@ enum Command {
         #[arg(long, value_enum, default_value_t = DocOutputFormat::Md)]
         format: DocOutputFormat,
     },
-    /// Live-monitor the bus, decoding telegrams against the model.
+    /// Live-monitor the bus, decoding telegrams against the project.
     Monitor {
         /// Only show telegrams matching this filter: a comma-separated list of
         /// GAs (`3/2/0`), GA prefixes (`3/` or `3/2/`) or IAs (`1.1.30`).
@@ -1553,7 +1554,7 @@ enum Command {
         #[arg(long)]
         yes: bool,
     },
-    /// Generate the Home Assistant KNX integration YAML from the model.
+    /// Generate the Home Assistant KNX integration YAML from the project.
     HaConfig {
         /// Output file (default: stdout).
         #[arg(long, value_name = "FILE")]
@@ -1584,14 +1585,14 @@ enum Command {
     /// Name and type group addresses from live traffic (never transmits).
     Learn {
         /// Learn this group address (repeatable). Without it, `--unnamed` /
-        /// `--untyped` pick targets from the model, and a bare `learn` takes
+        /// `--untyped` pick targets from the project, and a bare `learn` takes
         /// whatever appears on the bus.
         #[arg(long = "ga", value_name = "GA")]
         gas: Vec<String>,
-        /// Learn every group address in the model whose name is a placeholder.
+        /// Learn every group address in the project whose name is a placeholder.
         #[arg(long)]
         unnamed: bool,
-        /// Learn every group address in the model that has no DPT.
+        /// Learn every group address in the project that has no DPT.
         #[arg(long)]
         untyped: bool,
         /// Skip the confirmation prompt: accept the top DPT candidate and the
@@ -1631,12 +1632,12 @@ enum Command {
         #[arg(long, value_name = "SECS", conflicts_with_all = ["file", "force", "skip_manual", "only"])]
         secure_idle: Option<u64>,
     },
-    /// Audit the installation: model gaps, one-sided links, what bussard can do
+    /// Audit the installation: project gaps, one-sided links, what bussard can do
     /// per device mask, KNX Secure coverage; with `--live`, the gateway's tunnel
-    /// slots, a traffic sample and a scan of the modelled devices. Read-only.
+    /// slots, a traffic sample and a scan of the project's devices. Read-only.
     Audit {
         /// Add the live part: gateway description, traffic sample and a probe of
-        /// every modelled device. Read tier only; never sends a group telegram.
+        /// every device in the project. Read tier only; never sends a group telegram.
         #[arg(long)]
         live: bool,
         /// Traffic-sample window in seconds for `--live`.
@@ -1644,7 +1645,7 @@ enum Command {
         window: u64,
     },
     /// Run the MCP server over stdio (or streamable HTTP with `--listen`):
-    /// model tools and bus reads by default; bus writes and device
+    /// project tools and bus reads by default; bus writes and device
     /// programming only when their flags allow it.
     // The tier flags' help and the tool counts are built from the registration
     // tables in `bussard_mcp::tier_help`, so they cannot drift (issue #704).

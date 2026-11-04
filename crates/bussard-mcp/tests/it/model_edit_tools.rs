@@ -682,7 +682,7 @@ async fn test_link_tools_describe_the_address_field() -> TestResult {
             .ok_or_else(|| format!("{name} is not registered"))?;
         let description = tool.description.as_deref().unwrap_or_default();
         assert!(
-            description.contains("The device's individual address goes in `address`"),
+            description.contains("The device's address goes in `address`"),
             "{name}: {description}"
         );
         assert!(!description.contains("`device`"), "{name}: {description}");

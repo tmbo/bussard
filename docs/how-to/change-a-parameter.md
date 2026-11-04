@@ -102,7 +102,7 @@ The file stores only values that differ from the vendor default, and a choice ta
     parameters (application M-0083_A-0042-10-1234):
       1 parameter(s) differ from the vendor default:
           Night setback: 17 °C (default 18 °C)
-      the device matches the model's parameters: block
+      the device matches the parameters: block in your project
     ```
 
 The plan reads the device's parameter memory and lists each parameter that will change, in the vendor's words. It compares parameters only when it has the product data: the archive the lock pins in `products/`, or `--product <file.knxprod>` at the terminal. Without it, the plan says the parameters were not compared.

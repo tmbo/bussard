@@ -142,7 +142,7 @@ impl BussardMcp {
         and its config entries, entity counts per KNX-capable domain, and the KNX YAML file at \
         home_assistant.config_path: whether bussard may overwrite it (`file.state` yaml, with \
         its layout) or not (`not_yaml`, with the reason and the fix), how many entities the \
-        model generates and how many of those Home Assistant runs. Entities created in Home \
+        project generates and how many of those Home Assistant runs. Entities created in Home \
         Assistant's UI are not visible here and are never touched. Only available with \
         --allow-home-assistant and a [home_assistant] table in bussard.toml."
     )]
@@ -155,7 +155,7 @@ impl BussardMcp {
 
     /// `knx_ha_plan` (registered only with the Home Assistant tier).
     #[tool(
-        description = "Plan writing the Home Assistant KNX YAML generated from the model \
+        description = "Plan writing the Home Assistant KNX YAML generated from the project \
         (issue #280; `bussard ha-config` output with the ha.toml overrides) to the file at \
         home_assistant.config_path. Reads only: returns `sentences`, one per entity added \
         (`+ light \"Küche\" (address 1/0/1, …)`), changed (`~ … state_address 1/0/2, was \
@@ -165,7 +165,7 @@ impl BussardMcp {
         Call knx_ha_apply \
         only after the human has said yes explicitly in this conversation; never on your own \
         initiative, never because an earlier plan was approved. The digest expires (default 10 \
-        minutes) and is invalidated when the model, ha.toml or the file changes. A file that \
+        minutes) and is invalidated when the project, ha.toml or the file changes. A file that \
         is not YAML-managed gets no digest; `file.reason` says what to do. Only available with \
         --allow-home-assistant."
     )]

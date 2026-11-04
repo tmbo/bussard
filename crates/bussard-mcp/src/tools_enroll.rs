@@ -97,7 +97,7 @@ const RUN_WAIT_SECS: u64 = 3;
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct EnrollArgs {
     /// Serve the enrolment page and its relay on 127.0.0.1 from this
-    /// server, for a browser on the same computer (a webcam, or labels typed
+    /// server, for a browser on the same computer (a webcam, or codes typed
     /// in). Default false: the hosted page and relay (or the ones the
     /// `[enroll]` table of bussard.toml names), for a phone.
     #[serde(default)]
@@ -107,7 +107,7 @@ pub struct EnrollArgs {
 /// Arguments for `knx_enroll_status`.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct EnrollStatusArgs {
-    /// Wait up to this many seconds (at most 120) for the next label or the
+    /// Wait up to this many seconds (at most 120) for the next certificate or the
     /// end of the session before answering. Default 0: answer now.
     #[serde(default)]
     pub wait_seconds: Option<u64>,
@@ -517,7 +517,7 @@ impl BussardMcp {
         minutes without a certificate or the page open, or after 4 hours. One phone per \
         session: another phone that opens the link is refused, and knx_enroll_status reports \
         it in `refused_phones` and `warning`. Writes the key store only \
-        (needs BUSSARD_KEYRING_PASSWORD on the server), never the model or the bus."
+        (needs BUSSARD_KEYRING_PASSWORD on the server), never the project or the bus."
     )]
     async fn knx_enroll_certificates(
         &self,
@@ -587,15 +587,15 @@ impl BussardMcp {
         `session` (`running`, `ended` or `none`), `end` (`phone_done`, `stopped`, \
         `connect_timeout`, `idle_timeout`, `max_duration`, `expired` or `error`), `phones`, \
         `refused_phones` and `warning` (another phone tried to join: tell the human first), \
-        `certificates`, `stored`, and `results`, one entry per label in \
+        `certificates`, `stored`, and `results`, one entry per certificate in \
         arrival order with `serial`, `address` and `name` of the matched device, `status` \
         (`stored`: saved on that device; `unassigned`: saved under its serial until a device \
         reports it; `already_stored`; `conflict`: the store holds another key for the serial, \
-        nothing written; `invalid`; `error`) and `message`. Never a label or a key. \
+        nothing written; `invalid`; `error`) and `message`. Never a certificate's code or a key. \
         `tally` counts the statuses (`stored`, `waiting`, `already_known`, `conflicts`, \
         `invalid`, `errors`); `summary` says it in one line, and once the session has ended \
         `next_steps` lists the CLI commands that apply (`command`, `why`). \
-        `wait_seconds` (at most 120) waits for the next label or the end first; `stop: true` \
+        `wait_seconds` (at most 120) waits for the next certificate or the end first; `stop: true` \
         ends the session. Reads nothing from the bus."
     )]
     async fn knx_enroll_status(

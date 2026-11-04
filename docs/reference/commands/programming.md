@@ -296,9 +296,9 @@ With `--keyring` (or `--tool-key`), `flash` programs the device's security objec
 Every management command that reads a device compares what it reports with what `bussard.lock` pins for that address, and prints the same line on stderr (on stdout in `describe`, `plan` and `reconstruct`, whose report it belongs to):
 
 ```text
-identity of 1.1.4: matches bussard.lock (application id 0004D14122, mask 07B0)
-identity of 1.1.4: drift from bussard.lock: the device reports application id 0004D14123 but the lock pins 0004D14122 (M-0004_A-D141-22-151B)
-identity of 1.1.9: not pinned in bussard.lock
+identity of 1.1.4: matches your project (application id 0004D14122, mask 07B0)
+identity of 1.1.4: differs from your project: the device reports application id 0004D14123 but your project pins 0004D14122 (M-0004_A-D141-22-151B)
+identity of 1.1.9: no product pinned in your project
 ```
 
 - The application id comes from the device facts (System B) or the pre-flight; outside System B the mask alone is compared.
@@ -355,7 +355,7 @@ It refuses before any write when:
 
 - The memory is decoded as the exact inverse of the image `flash` writes, so a device holding the project's image reports no difference.
 - Only the parameters the configuration shows are decoded; a hidden parameter downloaded at its default is never reported.
-- The report lists the parameters whose value differs from the vendor default and those that differ from the device file (`Threshold: device 9, model 12`), keyed like the device file (`P-5_R-5`, `MD-1_M-2_MI-1_P-2_R-5` for a module instance). `--json` adds a `parameters` object with `non_default` and `differences`.
+- The report lists the parameters whose value differs from the vendor default and those that differ from the device file (`Threshold: device 9, project 12`), keyed like the device file (`P-5_R-5`, `MD-1_M-2_MI-1_P-2_R-5` for a module instance). `--json` adds a `parameters` object with `non_default` and `differences`.
 - Parameters the application owns at runtime (`Access="None"`, such as a download flag) are listed separately as device-managed, with no verdict (`device_managed` in `--json`).
 - Internal ETS values whose octets differ from the project's image are listed with both values and, for a selector, what the difference means (`internal` in `--json`).
 - The memory is decoded only when the device runs the product's program, by the rule `flash --parameters-only` applies: on System B the same manufacturer, application number and version; on System 7 every loaded load-state machine `Loaded` and the code segments matching. Otherwise the section carries a note instead of values.

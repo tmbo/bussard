@@ -67,7 +67,7 @@ Behaviour:
 - Verifies by reading the device at its new address. "Verified" means the device answered there.
 - A secured device is verified over KNX Data Secure with its tool key: `--tool-key` if given, else the entry of the new address in the key store or keyring, else the entry of the old address.
 - In the last case `assign` prints a note to re-export the keyring from ETS. The keyring lists tool keys by address, so `describe`, `flash`, `apply`, `scan` and `audit --live` find the key under the new address only after the re-export.
-- Without any key, a secured device answers mask `FFFF`. The address is still verified, the output says `Data Secure activated (mask hidden), no tool key in the keyring`, and the stub device file records no mask.
+- Without any key, a secured device answers mask `FFFF`. The address is still verified, the output says `secured (mask hidden), bussard has no tool key for it`, and the stub device file records no mask.
 
 ## `bussard describe <ADDRESS>`
 
@@ -181,7 +181,7 @@ Behaviour:
 - The device file gets the links (an object with the `T` flag sends on its first associated address and listens on the rest; others listen), the parameters that differ from the vendor defaults, and `[security] activated = true, secure_commissioning = true`.
 - The lock gets `secure_capable = true`, the keyring's sequence number and the device's list of trusted senders as `secure_senders`. A later secured `flash` or `apply` writes those senders back next to the ones the links imply.
 - Secured objects and the linked group addresses the keyring holds a key for are marked `secure`. A group address your project lacks is created as `GA <address> (adopted from <ia>)`. Where the device and the keyring disagree, the summary says which way.
-- `bussard plan <ia>` right after reports `matches the model`.
+- `bussard plan <ia>` right after reports `matches your project`.
 - A secured device the keyring does not list (mask `FFFF`) fails with "the keyring … has no tool key for <ia>" and a hint to re-export the keyring. No device file is written.
 - Securing a factory-fresh device from its certificate, re-keying it or turning Data Secure off stays with ETS.
 

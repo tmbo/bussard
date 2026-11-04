@@ -48,7 +48,7 @@ pub struct DescribeChangeArgs {
     /// Defaults to the latest snapshot.
     #[serde(default)]
     pub from: Option<String>,
-    /// The snapshot to compare to. Defaults to the working model on disk, i.e.
+    /// The snapshot to compare to. Defaults to the working project on disk, i.e.
     /// the changes that have not been pushed to any device yet.
     #[serde(default)]
     pub to: Option<String>,
@@ -73,7 +73,7 @@ pub struct SetGroupArgs {
     /// The datapoint type, e.g. `"1.001"`.
     #[serde(default)]
     pub dpt: Option<String>,
-    /// A free-text note for the humans reading the model.
+    /// A free-text note for the humans reading the project.
     #[serde(default)]
     pub description: Option<String>,
     /// KNX Data Secure for this group address. `false` removes its group key
@@ -91,7 +91,7 @@ pub struct LinkArgs {
     // The Claude remote-devices bridge reserves the key `device` for its own
     // routing and strips it from forwarded calls, so the field is `address`
     // and no other name is accepted.
-    /// The device's individual address, e.g. `"1.1.4"`.
+    /// The device's address, e.g. `"1.1.4"`.
     pub address: String,
     /// The ETS com-object number on that device.
     pub com_object: u16,
@@ -106,7 +106,7 @@ pub struct LinkArgs {
 /// Arguments for `knx_set_device`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SetDeviceArgs {
-    /// The device's individual address, e.g. `"1.1.4"`.
+    /// The device's address, e.g. `"1.1.4"`.
     pub address: String,
     /// A new display name.
     #[serde(default)]
@@ -122,7 +122,7 @@ pub struct SetDeviceArgs {
 /// Arguments for `knx_set_parameter`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SetParameterArgs {
-    /// The device's individual address, e.g. `"1.1.4"`.
+    /// The device's address, e.g. `"1.1.4"`.
     pub address: String,
     /// The parameter key as `knx_show_device` lists it (`"betriebsart"`,
     /// page-qualified `"sollwerte.komfort"`, escape hatch
@@ -150,7 +150,7 @@ pub struct SetParameterArgs {
 /// pass only what changes.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct SetInterfaceArgs {
-    /// The IP interface's individual address, e.g. `"1.1.200"`.
+    /// The IP interface's address, e.g. `"1.1.200"`.
     pub address: String,
     /// How the interface gets its IP address: `"dhcp"` or `"static"`.
     /// Switching to `"dhcp"` drops the static address, netmask and gateway.
@@ -193,7 +193,7 @@ pub struct RemoveGroupArgs {
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct DiscardEditsArgs {
     // `address`, not `device`: the remote-devices bridge strips `device`.
-    /// A device's individual address, e.g. `"1.1.5"`: drop its unapplied link
+    /// A device's address, e.g. `"1.1.5"`: drop its unapplied link
     /// and parameter edits.
     #[serde(default)]
     pub address: Option<String>,
@@ -244,9 +244,9 @@ pub const MODEL_READ_TOOLS: [&str; 2] = ["knx_describe_change", "knx_history"];
 impl BussardMcp {
     /// `knx_describe_change`.
     #[tool(
-        description = "Describe a model change in plain sentences a homeowner can judge, e.g. \
+        description = "Describe a change to the project in plain sentences a homeowner can judge, e.g. \
         \"Rocker 1 on Hallway push button now switches Porch light.\" With no arguments it \
-        describes the PENDING changes: the model files as they are now against the last history \
+        describes the PENDING changes: the project files as they are now against the last history \
         snapshot, i.e. everything edited but not yet pushed to any device. Pass `from` and `to` \
         snapshot ids (from knx_history) to describe the change between two snapshots instead. \
         SAY THE `summary` (the change in rooms and names), THEN QUOTE THESE SENTENCES TO THE \
@@ -313,7 +313,7 @@ impl BussardMcp {
 
     /// `knx_history`.
     #[tool(
-        description = "List the model's history snapshots, oldest first: id, time, the command \
+        description = "List the project's history snapshots, oldest first: id, time, the command \
         that caused it, the gateway it wrote to (if any) and a one-line plain-language summary of \
         what it changed. Use it to answer \"what did we change, and when?\", and to get a snapshot \
         id for knx_describe_change or knx_undo."
@@ -362,7 +362,7 @@ impl BussardMcp {
         com-object on every device, true sets them and generates a group key when the store has \
         none; one change, undone with knx_undo. The Secure devices linked to it then need \
         knx_plan_device and knx_apply_device (their security object changes), and Home Assistant \
-        and every other keyring user need a new `bussard keys export`. Returns the change as \
+        and every other user of an exported keyring need a new `bussard keys export`. Returns the change as \
         sentences and a `summary`: say the summary to the human, then quote the sentences."
     )]
     async fn knx_set_group(
@@ -453,7 +453,7 @@ impl BussardMcp {
 
     /// `knx_add_link`.
     #[tool(
-        description = "Bind a device's com object to a group address in its device file (devices/<address>.toml). The device's individual address goes in `address` (e.g. \"1.1.4\"). Role \"send\" \
+        description = "Bind a device's com object to a group address in its device file (devices/<address>.toml). The device's address goes in `address` (e.g. \"1.1.4\"). Role \"send\" \
         makes the com object transmit on that GA (a com object has at most one, so an existing one \
         is replaced), role \"listen\" makes it react to the GA. A GA that groups.toml does not \
         define yet is added there, named `<channel or device name> <object function>` with the \
@@ -540,7 +540,7 @@ impl BussardMcp {
     /// `knx_remove_link`.
     #[tool(
         description = "Unbind a device's com object from a group address in its device file (devices/<address>.toml) (role \
-        \"send\" or \"listen\"). The device's individual address goes in `address` (e.g. \"1.1.4\"). This edits FILES ONLY: the device keeps its current wiring until \
+        \"send\" or \"listen\"). The device's address goes in `address` (e.g. \"1.1.4\"). This edits FILES ONLY: the device keeps its current wiring until \
         knx_plan_device and knx_apply_device push it (the result's next_step says how at this \
         server's tier). Protected group addresses are \
         refused outright. Returns the change as sentences and a `summary`: say the summary to the human, then quote the sentences."
@@ -596,7 +596,7 @@ impl BussardMcp {
     #[tool(
         description = "Rename a device or change where it lives (floor and room) in its \
         devices/*.toml file. Names and locations are what every other sentence is built from, so \
-        good ones make the whole model readable. This edits FILES ONLY and never touches the bus. \
+        good ones make the whole project readable. This edits FILES ONLY and never touches the bus. \
         Returns the change as sentences and a `summary`: say the summary to the human, then quote the sentences."
     )]
     async fn knx_set_device(
@@ -736,8 +736,8 @@ impl BussardMcp {
         it). Pass only what changes. The table is validated before it is saved: a static \
         assignment needs an address and a netmask, static settings under dhcp, a friendly name \
         over 30 ISO 8859-1 characters, a tunnel address listed twice, off the interface's line \
-        or used by a device of the model are refused (E043 to E046), and the result's \
-        `warnings` carry W047 when the tunnels differ from the ones the server's keyring lists \
+        or used by a device of the project are refused (E043 to E046), and the result's \
+        `warnings` carry W047 when the tunnels differ from the ones the server's keys list \
         for the interface. The device must already have a [knxnet] table (import and adopt \
         write it). This edits FILES ONLY: knx_plan_device shows the property writes and \
         knx_apply_device writes them to the interface's KNXnet/IP parameter object; a change of \
@@ -814,7 +814,7 @@ impl BussardMcp {
 
     /// `knx_undo`.
     #[tool(
-        description = "Put the model files back to a history snapshot (default: the newest \
+        description = "Put the project files back to a history snapshot (default: the newest \
         snapshot that differs from the current files, i.e. undo the last change). This changes FILES ONLY: devices keep whatever is in their tables until \
         knx_plan_device and knx_apply_device push them (the result's next_step names the \
         devices and says how at this server's tier). The state before the undo is \
@@ -934,10 +934,10 @@ impl BussardMcp {
     #[tool(
         description = "Abandon this session's unapplied edits of ONE subject and leave every \
         other edit alone: `address` (a device: its link and parameter edits since it last \
-        matched the model) or `group` (a group address: its groups.toml edits). The subject's \
+        matched the project) or `group` (a group address: its groups.toml edits). The subject's \
         part of the files goes back to the snapshot before its first such edit. Use it to \
         revert one device while edits on other devices stay; knx_undo instead rolls the whole \
-        model back to a snapshot. A group created this session that a link still uses cannot \
+        project back to a snapshot. A group created this session that a link still uses cannot \
         be discarded (the refusal lists the links; knx_remove_link first). A group whose Data \
         Secure state the discard flips gets its group key back in the key store, or loses it, \
         as knx_undo does (`key_store`). This edits FILES \

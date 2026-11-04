@@ -49,11 +49,11 @@ pub const DEVICE_TOOLS: [&str; 3] = [
 /// Arguments for `knx_backup_device`.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct BackupDeviceArgs {
-    /// The individual address of the device to back up, e.g. `"1.1.4"`.
-    /// Omit it and pass `all: true` to back up every device in the model.
+    /// The address of the device to back up, e.g. `"1.1.4"`.
+    /// Omit it and pass `all: true` to back up every device in the project.
     #[serde(default)]
     pub address: Option<String>,
-    /// Back up every device the model lists (instead of one `address`).
+    /// Back up every device the project lists (instead of one `address`).
     #[serde(default)]
     pub all: Option<bool>,
 }
@@ -61,16 +61,16 @@ pub struct BackupDeviceArgs {
 /// Arguments for `knx_reconstruct_device`.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ReconstructDeviceArgs {
-    /// The individual address of the device to read back, e.g. `"1.1.4"`.
+    /// The address of the device to read back, e.g. `"1.1.4"`.
     /// Pass either `address` or `line`.
     #[serde(default)]
     pub address: Option<String>,
-    /// A line, e.g. `"1.1"`: sweep it and synthesize a fresh model from the
+    /// A line, e.g. `"1.1"`: sweep it and synthesize a fresh project from the
     /// tables, as `bussard reconstruct --line` does.
     #[serde(default)]
     pub line: Option<String>,
-    /// With `line`: the fresh (absent or empty) directory to write the model
-    /// to, relative to the model directory. Default:
+    /// With `line`: the fresh (absent or empty) directory to write the project
+    /// to, relative to the project folder. Default:
     /// `captures/reconstructed/line-<line>-<unix time>`.
     #[serde(default)]
     pub out: Option<String>,
@@ -101,7 +101,7 @@ pub struct FindDevicesArgs {
 impl BussardMcp {
     /// `knx_backup_device` (omitted in passive mode).
     #[tool(
-        description = "Back up ONE device (`address`) or every device in the model (`all: \
+        description = "Back up ONE device (`address`) or every device in the project (`all: \
         true`) over the bus, as `bussard backup` does (issue #717): reads each device's \
         group-address and association tables and, on System B, the parameter memory the device \
         bounds itself (PID_TABLE_REFERENCE + PID_MCB_TABLE), and writes one JSON file per \
@@ -136,14 +136,14 @@ impl BussardMcp {
         `parameters` (the parameter read-back when bussard.lock pins the product data) and \
         `diff` in the shape knx_diff_project returns: `from`, `to`, `count`, `summary`, \
         `touches_protected`, `sentences` (one per object/group-address pair the device and the \
-        model disagree on), `changes`, plus `matches` and `note`. The tables do not say \
+        project disagree on), `changes`, plus `matches` and `note`. The tables do not say \
         whether an object sends or listens, so the diff compares group-address sets per \
         object. Quote the sentences to the human. Use it after an apply or a restore, or to \
         see what ETS or another tool left on a device. LINE FORM: pass `line` (e.g. \"1.1\") \
         instead of `address` to sweep the line (device numbers `from` to `to`, default 0 to \
-        255) and synthesize a fresh model from the tables, as `bussard reconstruct --line` \
-        does: written to `out` (a fresh directory relative to the model directory; default \
-        captures/reconstructed/line-<line>-<time>), never into the model this server serves. \
+        255) and synthesize a fresh project from the tables, as `bussard reconstruct --line` \
+        does: written to `out` (a fresh directory relative to the project folder; default \
+        captures/reconstructed/line-<line>-<time>), never into the project this server serves. \
         Group names and DPTs are placeholders and every group address is recorded as listen. \
         It runs as a job (about 3 s per address; `started: true` with a `job`: poll \
         knx_job_status) and returns `out`, `devices_found`, `devices_read`, \
@@ -194,9 +194,9 @@ impl BussardMcp {
         result, otherwise `started: true` and a `job` id for knx_job_status, whose \
         `progress` counts the addresses `probed` and the devices `found` so far. The result \
         has `summary` (one sentence, names first), `devices` (per responder: `name` from the \
-        model or null, `address`, `known` (in the model), `mask`, `system_type`, \
+        project or null, `address`, `known` (in the project), `mask`, `system_type`, \
         `manufacturer`, `order_number`, `serial`, `secure` for a Data Secure device, \
-        `identity_line` against bussard.lock), `not_in_model`, `missing_from_bus` (model \
+        `identity_line` against bussard.lock), `not_in_model`, `missing_from_bus` (the project's \
         devices in the scanned range that did not answer) and `timing`. Tell the human the \
         summary. Only available when the server is NOT in passive mode."
     )]
