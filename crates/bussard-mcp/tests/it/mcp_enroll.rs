@@ -31,10 +31,10 @@ type Client = rmcp::service::RunningService<rmcp::RoleClient, ()>;
 /// The key store's made-up password.
 const PASSWORD: &str = "synthetic-store-password";
 /// Synthetic certificates of `dev/enroll/vectors-v1.json`.
-const CERT_A: &str = "AD5ACAQDASQKDIVDUSS2NJ5IVGVKXLFNV2X5";
+const CERT_A: &str = "AD5ACAQDASQKDIVDUSS2NJ5IVGVKXLFNV2XR";
 const SERIAL_A: [u8; 6] = [0x00, 0xFA, 0x01, 0x02, 0x03, 0x04];
 const FDSK_A: &str = "A0A1A2A3A4A5A6A7A8A9AAABACADAEAF";
-const CERT_B: &str = "ACB2DMWD2QAAAAAAAAAAAAAAAAAAAAAAAAAG";
+const CERT_B: &str = "ACB2DMWD2QAAAAAAAAAAAAAAAAAAAAAAAAAD";
 const FDSK_B: &str = "00000000000000000000000000000000";
 
 /// A model with 1.1.20 "Test actuator", whose serial the key store knows.
@@ -76,6 +76,7 @@ async fn start(dir: &Path) -> Result<Client, BoxError> {
         programming: None,
         keyring: None,
         home_assistant: None,
+        jobs: Default::default(),
     });
     let server = BussardMcp::new(state);
     let (server_io, client_io) = tokio::io::duplex(64 * 1024);
