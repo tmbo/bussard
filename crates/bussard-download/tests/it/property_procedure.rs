@@ -189,10 +189,9 @@ fn test_plan_flash_keeps_refusing_a_property_only_procedure_on_other_families() 
     Ok(())
 }
 
-#[test]
-fn test_plan_flash_refuses_a_write_prop_without_a_value_source() -> TestResult {
+/// The fabricated program with no parameter stored in PID 205 any more.
+fn without_preferred_parameters() -> TestResult<ApplicationProgram> {
     let mut app = ip_interface_app("0021")?;
-    // No parameter is located in PID 205 any more.
     for param in app.parameters.values_mut() {
         if param
             .property
@@ -202,12 +201,95 @@ fn test_plan_flash_refuses_a_write_prop_without_a_value_source() -> TestResult {
             param.property = None;
         }
     }
+    Ok(app)
+}
+
+#[test]
+fn test_plan_flash_describes_a_write_prop_no_parameter_is_stored_in() -> TestResult {
+    // Issue #841: a data-less write on a property nothing in the program
+    // decides is a description read, as ETS sends for the Enertex 50001/211.
+    let app = without_preferred_parameters()?;
+    let plan = plan_for(&app, 0x0021)?;
+    assert!(plan.is_property_only());
+    assert_eq!(
+        plan.steps.get(3),
+        Some(&FlashStep::DescribeProp {
+            object: PropObject::Type {
+                object_type: OT_KNXNETIP,
+                occurrence: 0,
+            },
+            prop_id: 205,
+        })
+    );
+    Ok(())
+}
+
+#[test]
+fn test_plan_flash_refuses_a_write_prop_without_a_value_source() -> TestResult {
+    let mut app = ip_interface_app("0021")?;
+    // The PID 205 parameters name the object by index while the op names it
+    // by type: bussard cannot tell whether they live in the property the op
+    // writes, so it neither composes a value nor skips the write.
+    for param in app.parameters.values_mut() {
+        if let Some(p) = param.property.as_mut().filter(|p| p.property_id == 205) {
+            p.object_type = None;
+            p.object_index = Some(1);
+        }
+    }
     match plan_for(&app, 0x0021) {
         Err(PlanError::UnsupportedWriteProp { reason, .. }) => {
             assert!(reason.contains("object type 11 PID 205"), "{reason}");
         }
         other => return Err(format!("expected UnsupportedWriteProp, got {other:?}").into()),
     }
+    Ok(())
+}
+
+/// The application requests a device hook saw, as `(APCI, payload)`.
+type RequestLog = std::sync::Arc<std::sync::Mutex<Vec<(u16, Vec<u8>)>>>;
+
+#[tokio::test]
+async fn test_flash_describe_prop_reads_the_description_and_writes_nothing() -> TestResult {
+    let seen: RequestLog = Default::default();
+    let log = seen.clone();
+    let device = ip_interface(true)?.with_hook(move |_, apci, data| {
+        if let Ok(mut log) = log.lock() {
+            log.push((apci, data.to_vec()));
+        }
+        None
+    });
+    let gw = MockGateway::builder().device(device).start().await?;
+    let app = without_preferred_parameters()?;
+    let plan = plan_for(&app, 0x0021)?;
+    let mut bus = connect(&gw).await?;
+    let l4 = Layer4Connection::connect(&mut bus, ia("1.1.200")?, ia("0.0.255")?).await?;
+    let mut session = Session::from_connection(l4);
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await?;
+    let _ = session.into_disconnect().await;
+    assert!(outcome.ok(), "{outcome:?}");
+    let dev = gw.with_device(ia("1.1.200")?, |d| d.clone())?;
+    // PID 205 keeps what the device held; 204 and 211 are written.
+    assert_eq!(dev.property_ext(OT_KNXNETIP, 205), Some(&[0u8; 8][..]));
+    assert_eq!(dev.property_ext(OT_KNXNETIP, 204), Some(&TIMEOUT[..]));
+    assert_eq!(dev.property_ext(OT_VENDOR, 211), Some(&RATE[..]));
+    assert_eq!(dev.writes, 2);
+    // One A_PropertyExtDescription_Read of object type 11 instance 1 PID 205.
+    let log = seen.lock().map_err(|e| e.to_string())?;
+    let described: Vec<&Vec<u8>> = log
+        .iter()
+        .filter(|(apci, _)| *apci == bussard_mgmt::property_ext::A_PROPERTY_EXT_DESCRIPTION_READ)
+        .map(|(_, data)| data)
+        .collect();
+    assert_eq!(
+        described,
+        vec![&vec![0x00, 0x0B, 0x00, 0x10, 0xCD, 0x00, 0x00]]
+    );
     Ok(())
 }
 

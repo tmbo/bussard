@@ -974,10 +974,10 @@ pub fn plan_flash_with_memo(
                         // A write without `InlineData` writes the value the
                         // program's property-located parameters compose, as ETS
                         // does (issue #669: `syn-property-param`, `5A` to object
-                        // 4 PID 201), with the op's `Count` and `Verify`. A write
-                        // no parameter supplies a value for is refused: skipping
-                        // it would report a flash whose device does not hold
-                        // the model's property.
+                        // 4 PID 201), with the op's `Count` and `Verify`. On a
+                        // property no parameter is stored in it is a description
+                        // read and no write, as ETS (issue #841); a stored
+                        // property without a composed value is refused.
                         let values = match property_values {
                             Some(ref values) => values,
                             None => property_values.insert(
@@ -992,7 +992,9 @@ pub fn plan_flash_with_memo(
                                 )?,
                             ),
                         };
-                        steps.push(super::plan_props::lower_write_prop(step_no, op, values)?);
+                        steps.push(super::plan_props::lower_write_prop(
+                            step_no, op, values, app,
+                        )?);
                     }
                 }
             }
@@ -3316,12 +3318,13 @@ mod tests {
     }
 
     #[test]
-    fn test_plan_flash_refuses_a_bare_write_prop_no_parameter_supplies()
+    fn test_plan_flash_describes_a_bare_write_prop_no_parameter_supplies()
     -> Result<(), Box<dyn std::error::Error>> {
         // A bare WriteProp (no InlineData) writes the value the property-located
-        // parameters compose (issue #669). With no such parameter there is no
-        // value: the plan refuses instead of skipping a write ETS makes, which
-        // would report a flash whose device does not hold the model.
+        // parameters compose (issue #669). With no parameter stored in the
+        // property there is nothing to write: ETS reads the property's
+        // description and goes on (issue #841, `M-00A6_A-0033-20-BFA6`), and so
+        // does the plan.
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
          <ApplicationProgram Id="M-1_A-B" MaskVersion="MV-07B0" Name="BareWriteProp">
           <Static>
@@ -3343,13 +3346,27 @@ mod tests {
             &BTreeMap::new(),
             None,
             &BTreeMap::new(),
+        )?;
+        let props: Vec<&FlashStep> = plan
+            .steps
+            .iter()
+            .filter(|s| {
+                matches!(
+                    s,
+                    FlashStep::WriteProp { .. } | FlashStep::DescribeProp { .. }
+                )
+            })
+            .collect();
+        assert_eq!(
+            props,
+            vec![&FlashStep::DescribeProp {
+                object: crate::flash::PropObject::Type {
+                    object_type: 11,
+                    occurrence: 0,
+                },
+                prop_id: 204,
+            }]
         );
-        match plan {
-            Err(PlanError::UnsupportedWriteProp { reason, .. }) => {
-                assert!(reason.contains("no parameter"), "{reason}");
-            }
-            other => return Err(format!("expected UnsupportedWriteProp, got {other:?}").into()),
-        }
         Ok(())
     }
 

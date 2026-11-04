@@ -119,7 +119,10 @@ fn test_plan_flash_writes_the_overridden_property_value() -> TestResult {
 }
 
 #[test]
-fn test_plan_flash_refuses_a_bare_write_prop_no_parameter_supplies() -> TestResult {
+fn test_plan_flash_describes_a_bare_write_prop_no_parameter_supplies() -> TestResult {
+    // Issue #841: with no parameter stored in object 4 PID 201 the write has
+    // nothing to carry; ETS reads the property's description and writes
+    // nothing (the Enertex 50001/211 of `M-00A6_A-0033-20-BFA6`).
     let (product, _tmp) = product()?;
     let mut app = product
         .applications
@@ -128,6 +131,42 @@ fn test_plan_flash_refuses_a_bare_write_prop_no_parameter_supplies() -> TestResu
         .clone();
     for param in app.parameters.values_mut() {
         param.property = None;
+    }
+    let plan = plan_of(&product, &app, &BTreeMap::new()).map_err(|e| e.to_string())?;
+    assert!(
+        plan.steps.contains(&FlashStep::DescribeProp {
+            object: PropObject::Index(4),
+            prop_id: 201,
+        }),
+        "{:?}",
+        plan.steps
+    );
+    assert!(
+        !plan
+            .steps
+            .iter()
+            .any(|s| matches!(s, FlashStep::WriteProp { prop_id: 201, .. })),
+        "{:?}",
+        plan.steps
+    );
+    Ok(())
+}
+
+#[test]
+fn test_plan_flash_refuses_a_bare_write_prop_whose_parameter_is_addressed_by_type() -> TestResult {
+    // The parameter names its object by type, the op by index: bussard cannot
+    // tell whether they meet, so it refuses rather than skip the write.
+    let (product, _tmp) = product()?;
+    let mut app = product
+        .applications
+        .first()
+        .ok_or("one application")?
+        .clone();
+    for param in app.parameters.values_mut() {
+        if let Some(p) = param.property.as_mut() {
+            p.object_index = None;
+            p.object_type = Some(3);
+        }
     }
     match plan_of(&product, &app, &BTreeMap::new()) {
         Err(e) => match e.downcast_ref::<PlanError>() {

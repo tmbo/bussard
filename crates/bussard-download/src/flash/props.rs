@@ -18,7 +18,7 @@ use bussard_mgmt::connection::{L4Channel, Layer4Connection};
 use bussard_mgmt::load::{WriteError, read_property_elements, write_property};
 use bussard_mgmt::property_ext::{
     PropertyExtAddress, declined_as_none, max_read_elements, read_property_ext,
-    write_property_ext_chunked,
+    read_property_ext_description_optional, write_property_ext_chunked,
 };
 
 /// The octets an `A_PropertyValue_Write`/`_Response` adds to its value on the
@@ -281,6 +281,41 @@ fn masked_equal(expected: &[u8], actual: &[u8], mask: Option<&[u8]>) -> bool {
             let m = mask.and_then(|m| m.get(i)).copied().unwrap_or(0xFF);
             (e & m) == (a & m)
         })
+}
+
+/// Executes a [`FlashStep::DescribeProp`](super::FlashStep::DescribeProp):
+/// reads the description of `object`/`prop_id` as ETS does for a property
+/// write it has no value for (issue #841), on the extended service for an
+/// object named by type and the plain one for an index, and ignores the
+/// answer. A device that stays silent or declines keeps the flash going.
+///
+/// # Errors
+///
+/// A transport failure only.
+pub async fn describe_property<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    object: PropObject,
+    prop_id: u32,
+) -> Result<(), WriteError> {
+    match object {
+        PropObject::Type {
+            object_type,
+            occurrence,
+        } => {
+            read_property_ext_description_optional(
+                l4,
+                ext_address(object_type, occurrence, prop_id),
+            )
+            .await?;
+        }
+        PropObject::Index(index) => {
+            let (Ok(index), Ok(pid)) = (u8::try_from(index), u8::try_from(prop_id)) else {
+                return Ok(());
+            };
+            bussard_mgmt::connection::read_property_description_optional(l4, index, pid).await?;
+        }
+    }
+    Ok(())
 }
 
 /// Executes an `LdCtrlCompareProp`: reads element `start` (1-based) of
