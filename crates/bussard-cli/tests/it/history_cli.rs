@@ -82,7 +82,7 @@ fn test_status_history_show_and_undo_round_trip() -> TestResult {
         out.contains("Group address Porch light is now called \"Front light\"."),
         "{out}"
     );
-    assert!(out.contains("1 pending change(s)"), "{out}");
+    assert!(out.contains("1 pending change since snapshot"), "{out}");
 
     // The JSON shape carries the same change, structured.
     let out = run(&dir, &["status", "--json"])?;

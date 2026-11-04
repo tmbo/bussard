@@ -100,15 +100,35 @@ pub fn run_status(dir: &Path, json: bool, raw: bool) -> anyhow::Result<ExitCode>
         return Ok(ExitCode::SUCCESS);
     }
 
+    let style = crate::style::Style::stdout();
     println!(
-        "{} pending change(s) since snapshot {} ({}):\n",
-        changes.len(),
-        latest.id,
-        latest.manifest.created_at
+        "{} {}\n",
+        style.bold(&crate::style::count(
+            changes.len(),
+            "pending change",
+            "pending changes"
+        )),
+        style.dim(&format!(
+            "since snapshot {} ({})",
+            latest.id, latest.manifest.created_at
+        ))
     );
     print!("{}", render_text(&changes));
-    println!("\nNothing has reached any device yet. Run `bussard plan <ia>` to check a device,");
-    println!("`bussard apply <ia>` to write it, or `bussard undo` to put the files back.");
+    println!("\n{}\n", style.warn("Nothing has reached any device yet."));
+    print!(
+        "{}",
+        style.next_steps(&[
+            (
+                "bussard plan <ADDRESS>",
+                "shows what writing a device would change"
+            ),
+            ("bussard apply <ADDRESS>", "writes it to the device"),
+            (
+                "bussard undo",
+                "puts the files back as they were at the snapshot"
+            ),
+        ])
+    );
     Ok(ExitCode::SUCCESS)
 }
 

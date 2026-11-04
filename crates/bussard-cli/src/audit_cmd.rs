@@ -30,6 +30,7 @@ use serde_json::{Value, json};
 use crate::conn_cmd::{
     ConnOverrides, checked_source_or_close, load_model_required, resolve_config,
 };
+use crate::style::{Cell, Style, Table, Tone, count};
 
 /// Options for one `bussard audit` run.
 pub struct AuditOptions<'a> {
@@ -83,7 +84,7 @@ pub fn run(
     if options.json {
         crate::output::print(crate::output::schema::AUDIT, &report)?;
     } else {
-        print!("{}", render_text(&report));
+        print!("{}", render_text(&report, Style::stdout()));
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -394,52 +395,56 @@ async fn scan_model_devices(
 }
 
 /// Renders the text report from the audit JSON.
-pub fn render_text(report: &Value) -> String {
+pub fn render_text(report: &Value, style: Style) -> String {
     let mut out = String::new();
     let mut line = |s: String| {
         out.push_str(&s);
         out.push('\n');
     };
+    let heading = |title: &str| style.bold(title);
+    let n = |value: &Value| usize::try_from(value.as_u64().unwrap_or(0)).unwrap_or(0);
     let model = &report["model"];
 
-    line("== Model ==".to_string());
+    line(heading("Your project"));
     line(format!(
-        "project: {}   imported from: {}",
+        "  {} {}   {} {}",
+        style.dim("project:"),
         text_or(&model["project"], "(not recorded)"),
+        style.dim("imported from:"),
         text_or(&model["imported_from"], "(not recorded)")
     ));
     line(format!(
-        "{} device(s), {} group address(es), {} link(s)",
-        model["devices"], model["group_addresses"], model["links"]
+        "  {}, {}, {}",
+        count(n(&model["devices"]), "device", "devices"),
+        count(
+            n(&model["group_addresses"]),
+            "group address",
+            "group addresses"
+        ),
+        count(n(&model["links"]), "link", "links")
     ));
     for l in array(&model["devices_per_line"]) {
         line(format!(
-            "  line {}: {} device(s)",
+            "    line {}: {}",
             text_or(&l["line"], "?"),
-            l["devices"]
+            count(n(&l["devices"]), "device", "devices")
         ));
     }
     line(String::new());
 
-    line("== Model gaps ==".to_string());
-    list_section(
-        &mut line,
-        "devices without a name",
-        &model["devices_without_name"],
-    );
-    list_section(
-        &mut line,
+    line(heading("Gaps in your project"));
+    let mut gap = |label: &str, items: &Value| list_section(&mut line, style, label, items);
+    gap("devices without a name", &model["devices_without_name"]);
+    gap(
         "devices without a location",
         &model["devices_without_location"],
     );
-    list_section(
-        &mut line,
-        "GAs without a DPT",
+    gap(
+        "group addresses without a DPT",
         &model["group_addresses_without_dpt"],
     );
-    list_section(
-        &mut line,
-        "GAs without a name",
+    gap(
+        "group addresses without a name",
         &model["group_addresses_without_name"],
     );
     let unknown_objects: Vec<Value> = array(&model["links_to_unknown_objects"])
@@ -452,100 +457,117 @@ pub fn render_text(report: &Value) -> String {
             ))
         })
         .collect();
-    list_section(
-        &mut line,
+    gap(
         "links to unknown com-objects",
         &Value::Array(unknown_objects),
     );
-    list_section(
-        &mut line,
+    gap(
         "links for devices without a device file",
         &model["links_to_unknown_devices"],
     );
     line(String::new());
 
-    line("== Findings (one-sided links) ==".to_string());
+    line(heading("One-sided links"));
     let findings = array(&model["findings"]);
     if findings.is_empty() {
-        line("none".to_string());
+        line(format!("  {}", style.ok("none")));
     }
     for f in findings {
-        line(format!("  {}", text_or(&f["message"], "?")));
+        line(format!("  {}", style.warn(&text_or(&f["message"], "?"))));
     }
     line(format!(
-        "info: {} unlinked com-object(s) and {} unused GA(s) (normal, not problems)",
-        model["info"]["unlinked_com_objects"], model["info"]["unused_group_addresses"]
+        "  {}",
+        style.dim(&format!(
+            "{} and {} (normal, not problems)",
+            count(
+                n(&model["info"]["unlinked_com_objects"]),
+                "unlinked com-object",
+                "unlinked com-objects"
+            ),
+            count(
+                n(&model["info"]["unused_group_addresses"]),
+                "unused group address",
+                "unused group addresses"
+            )
+        ))
     ));
     line(String::new());
 
-    line("== Devices per mask ==".to_string());
+    line(heading("Devices per mask"));
     for m in array(&report["masks"]) {
         let devices: Vec<String> = array(&m["devices"])
             .iter()
             .map(|d| text_or(d, "?"))
             .collect();
         line(format!(
-            "  {} {} ({} device(s)): bussard can: {}",
+            "  {} {} ({}): {} {}",
             text_or(&m["mask"], "----"),
             text_or(&m["family"], "?"),
-            devices.len(),
+            count(devices.len(), "device", "devices"),
+            style.dim("bussard can:"),
             text_or(&m["bussard_can"], "?")
         ));
-        line(format!("      {}", devices.join(", ")));
+        line(format!("      {}", style.dim(&devices.join(", "))));
     }
     line(String::new());
 
-    line("== KNX Secure ==".to_string());
+    line(heading("KNX Secure"));
     let secure = &report["secure"];
     let secure_devices = array(&secure["devices"]);
     if secure_devices.is_empty() {
-        line("no Secure-capable devices in the model".to_string());
-    }
-    for d in secure_devices {
-        let entry = match d["keyring_entry"].as_bool() {
-            Some(true) => "keyring: tool key present",
-            Some(false) => "keyring: NO tool key",
-            None => "keyring: not checked (pass --keyring)",
-        };
         line(format!(
-            "  {} {}  {}  {}",
-            text_or(&d["address"], "?"),
-            text_or(&d["name"], ""),
-            if d["activated"].as_bool() == Some(true) {
-                "activated"
-            } else {
-                "capable"
-            },
-            entry
+            "  {}",
+            style.dim("no device in your project supports Secure")
         ));
+    }
+    let mut table = Table::new(&["Address", "Name", "Secure", "Tool key"]);
+    for d in secure_devices {
+        let key = match d["keyring_entry"].as_bool() {
+            Some(true) => Cell::new("present", Tone::Ok),
+            Some(false) => Cell::new("missing", Tone::Warn),
+            None => Cell::new("not checked (pass --keyring)", Tone::Dim),
+        };
+        table.row(vec![
+            Cell::plain(text_or(&d["address"], "?")),
+            Cell::plain(text_or(&d["name"], "")),
+            if d["activated"].as_bool() == Some(true) {
+                Cell::plain("secured")
+            } else {
+                Cell::new("supports Secure", Tone::Dim)
+            },
+            key,
+        ]);
+    }
+    if !table.is_empty() {
+        for l in table.render(style).lines() {
+            line(format!("  {l}"));
+        }
     }
     list_section(
         &mut line,
-        "protected GAs",
+        style,
+        "protected group addresses",
         &model["protected_group_addresses"],
     );
 
     let products = &report["products"];
     if !products.is_null() {
         line(String::new());
-        line("== Product data (bussard.lock) ==".to_string());
-        list_section(
-            &mut line,
+        line(heading("Product data (bussard.lock)"));
+        let mut gap = |label: &str, items: &Value| list_section(&mut line, style, label, items);
+        gap(
             "devices with a product but no pinned product data",
             &products["unpinned"],
         );
-        list_section(
-            &mut line,
-            "pinned archives missing from the model",
+        gap(
+            "pinned archives missing from your project",
             &products["missing_archives"],
         );
-        list_section(
-            &mut line,
+        gap(
             "pinned archives whose content changed (sha256 mismatch)",
             &products["hash_mismatch"],
         );
-        list_section(
-            &mut line,
+        gap(
             "devices whose stored facts report another application than the lock pins",
             &products["application_drift"],
         );
@@ -554,46 +576,71 @@ pub fn render_text(report: &Value) -> String {
     let live = &report["live"];
     if !live.is_null() {
         line(String::new());
-        line("== Gateway ==".to_string());
+        line(heading("Gateway"));
         let gw = &live["gateway"];
         if let Some(err) = gw["error"].as_str() {
-            line(format!("  description unavailable: {err}"));
+            line(format!(
+                "  {}",
+                style.warn(&format!("description unavailable: {err}"))
+            ));
         } else {
             line(format!(
-                "  {} ({}, IA {})",
+                "  {} {}",
                 text_or(&gw["name"], "KNXnet/IP interface"),
-                text_or(&gw["endpoint"], "?"),
-                text_or(&gw["individual_address"], "?")
+                style.dim(&format!(
+                    "({}, address {})",
+                    text_or(&gw["endpoint"], "?"),
+                    text_or(&gw["individual_address"], "?")
+                ))
             ));
             match (gw["tunnels"].as_u64(), gw["tunnels_in_use"].as_u64()) {
-                (Some(n), Some(m)) => line(format!("  {n} tunnels, {m} in use")),
-                (Some(n), None) => line(format!("  {n} tunnels (usage not reported)")),
-                _ => line("  tunnel slots not reported by this interface".to_string()),
+                (Some(t), Some(m)) => line(format!("  {t} tunnels, {m} in use")),
+                (Some(t), None) => line(format!("  {t} tunnels (usage not reported)")),
+                _ => line(format!(
+                    "  {}",
+                    style.dim("tunnel slots not reported by this interface")
+                )),
             }
         }
 
         line(String::new());
-        line("== Scan delta ==".to_string());
+        line(heading("Devices on the bus"));
         let scan = &live["scan"];
+        let answered = n(&scan["answered"]);
+        let probed = n(&scan["probed"]);
         line(format!(
-            "  {} of {} modelled device(s) answered",
-            scan["answered"], scan["probed"]
+            "  {}",
+            style.summary(&[(
+                format!(
+                    "{answered} of {} answered",
+                    count(probed, "device in your project", "devices in your project")
+                ),
+                if answered == probed {
+                    Tone::Ok
+                } else {
+                    Tone::Warn
+                },
+            )])
         ));
         for l in array(&scan["lines"]) {
             line(format!("  line {}:", text_or(&l["line"], "?")));
             for d in array(&l["answered"]) {
                 let mismatch = if d["mask_mismatch"].as_bool() == Some(true) {
-                    format!(" (model says {})", text_or(&d["model_mask"], "?"))
+                    style.warn(&format!(
+                        " (your project says {})",
+                        text_or(&d["model_mask"], "?")
+                    ))
                 } else {
                     String::new()
                 };
                 let secure = d["secure"]
                     .as_str()
-                    .map(|status| format!(", Data Secure: {}", secure_phrase(status)))
+                    .map(|status| format!(", {}", secure_phrase(status)))
                     .unwrap_or_default();
                 line(format!(
-                    "    {} answered, mask {}{}{}",
+                    "    {} {}, mask {}{}{}",
                     text_or(&d["address"], "?"),
+                    style.ok("answered"),
                     text_or(&d["mask"], "?"),
                     mismatch,
                     secure
@@ -604,17 +651,21 @@ pub fn render_text(report: &Value) -> String {
                     ),
                     text_or(&d["address"], "?").parse(),
                 ) {
-                    line(format!(
-                        "      {}",
-                        crate::device_facts::identity_line(address, &check)
-                    ));
+                    let identity = crate::device_facts::identity_line(address, &check);
+                    let identity = if check.is_drift() {
+                        style.warn(&identity)
+                    } else {
+                        style.dim(&identity)
+                    };
+                    line(format!("      {identity}"));
                 }
             }
             for d in array(&l["not_answering"]) {
                 line(format!(
-                    "    {} {} did NOT answer",
+                    "    {} {} {}",
                     text_or(&d["address"], "?"),
-                    text_or(&d["name"], "")
+                    text_or(&d["name"], ""),
+                    style.warn("did not answer")
                 ));
             }
         }
@@ -622,7 +673,7 @@ pub fn render_text(report: &Value) -> String {
         let secure_live = array(&live["secure"]["devices"]);
         if !secure_live.is_empty() {
             line(String::new());
-            line("== KNX Secure (live) ==".to_string());
+            line(heading("KNX Secure on the bus"));
             for d in secure_live {
                 line(format!(
                     "  {} {}: {}",
@@ -634,18 +685,23 @@ pub fn render_text(report: &Value) -> String {
         }
 
         line(String::new());
-        line("== Traffic sample ==".to_string());
+        line(heading("Traffic sample"));
         let traffic = &live["traffic"];
         line(format!(
-            "  {} group telegram(s) in {} s",
-            traffic["telegrams"], traffic["window_seconds"]
+            "  {} in {} s",
+            count(
+                n(&traffic["telegrams"]),
+                "group telegram",
+                "group telegrams"
+            ),
+            traffic["window_seconds"]
         ));
         for g in array(&traffic["per_ga"]) {
             line(format!(
-                "    {} {}: {} telegram(s), {} repeated ({:.0}%)",
+                "    {} {}: {}, {} repeated ({:.0}%)",
                 text_or(&g["ga"], "?"),
                 text_or(&g["name"], ""),
-                g["telegrams"],
+                count(n(&g["telegrams"]), "telegram", "telegrams"),
                 g["repeated"],
                 g["repeat_rate"].as_f64().unwrap_or(0.0) * 100.0
             ));
@@ -656,28 +712,28 @@ pub fn render_text(report: &Value) -> String {
             .collect();
         list_section(
             &mut line,
-            "GAs sent on the bus with no listener in the model",
+            style,
+            "group addresses sent on the bus that no device in your project listens to",
             &Value::Array(orphans),
         );
         list_section(
             &mut line,
-            "sources not in the model",
+            style,
+            "senders not in your project",
             &traffic["unknown_sources"],
         );
     }
     out
 }
 
-/// The operator's words for a [`SecureProbe::status`] (issue #203).
+/// The words for a [`SecureProbe::status`] (issue #203).
 fn secure_phrase(status: &str) -> &'static str {
     match status {
-        "reachable_secured" => "activated, reachable secured with the keyring's tool key",
-        "key_refused" => "activated, plain reads refused, the keyring's tool key was NOT accepted",
-        "not_in_keyring" => "activated, plain reads refused, not in keyring",
-        "plain_reads_refused" => {
-            "activated, plain reads refused (pass --keyring to probe it secured)"
-        }
-        "plain" => "not activated (answers in the clear)",
+        "reachable_secured" => "secured, read with the tool key",
+        "key_refused" => "secured, plain reads refused, the tool key was not accepted",
+        "not_in_keyring" => "secured, plain reads refused, no tool key for it",
+        "plain_reads_refused" => "secured, plain reads refused (pass --keyring to read it secured)",
+        "plain" => "not secured (answers in the clear)",
         "not_answering" => "did not answer",
         _ => "unknown",
     }
@@ -697,13 +753,17 @@ fn array(value: &Value) -> Vec<Value> {
     value.as_array().cloned().unwrap_or_default()
 }
 
-/// Prints `label: none` or `label (N): a, b, c`.
-fn list_section(line: &mut impl FnMut(String), label: &str, items: &Value) {
+/// Prints `label: none` (dim) or `label (N): a, b, c` (the label yellow).
+fn list_section(line: &mut impl FnMut(String), style: Style, label: &str, items: &Value) {
     let items: Vec<String> = array(items).iter().map(|v| text_or(v, "?")).collect();
     if items.is_empty() {
-        line(format!("{label}: none"));
+        line(format!("  {}", style.dim(&format!("{label}: none"))));
     } else {
-        line(format!("{label} ({}): {}", items.len(), items.join(", ")));
+        line(format!(
+            "  {} {}",
+            style.warn(&format!("{label} ({}):", items.len())),
+            items.join(", ")
+        ));
     }
 }
 
@@ -720,20 +780,21 @@ mod tests {
             devices: Default::default(),
         };
         let report = tools_audit::static_report(&model, None);
-        let text = render_text(&report);
+        let text = render_text(&report, Style::plain());
         for section in [
-            "== Model ==",
-            "== Model gaps ==",
-            "== Findings (one-sided links) ==",
-            "== Devices per mask ==",
-            "== KNX Secure ==",
-            "protected GAs: none",
+            "Your project\n",
+            "Gaps in your project\n",
+            "One-sided links\n",
+            "Devices per mask\n",
+            "KNX Secure\n",
+            "  protected group addresses: none\n",
+            "  0 devices, 0 group addresses, 0 links\n",
         ] {
             assert!(text.contains(section), "missing {section}:\n{text}");
         }
-        assert!(
-            !text.contains("== Gateway =="),
-            "static report has no live part"
-        );
+        assert!(!text.contains("Gateway"), "static report has no live part");
+        assert!(!text.contains("model"), "{text}");
+        let rich = render_text(&report, Style::rich());
+        assert!(rich.contains("\u{1b}[1mYour project"), "{rich:?}");
     }
 }

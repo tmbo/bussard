@@ -512,20 +512,27 @@ pub fn run(
         out.identity = identity;
         crate::output::print(crate::output::schema::PLAN, &out)?;
     } else {
+        let style = crate::style::Style::stdout();
         if let Some(check) = &identity {
             let line = crate::device_facts::identity_line(target, check);
             if check.is_drift() {
                 println!(
-                    "{line}; `bussard apply` refuses until `bussard flash {target}` loads the \
-                     application the lock pins\n"
+                    "{}\n",
+                    style.warn(&format!(
+                        "{line}; `bussard apply` refuses until `bussard flash {target}` loads \
+                         the application your project pins"
+                    ))
                 );
             } else {
-                println!("{line}\n");
+                println!("{}\n", style.dim(&line));
             }
         }
-        print!("{}", built.plan.render_text());
+        print!(
+            "{}",
+            crate::plan_view::render(&built.plan, crate::style::Style::stdout())
+        );
         if let Some(refusal) = &built.refusal {
-            println!("  note: {refusal}");
+            println!("  {}", style.warn(&format!("note: {refusal}")));
         }
         if verbose > 0 {
             println!();
@@ -538,10 +545,17 @@ pub fn run(
             }
         }
         if !built.plan.is_empty() && built.refusal.is_none() {
-            println!(
-                "\nrun `bussard apply {target}` to write these changes (it asks once), or \
-                 `bussard apply {target} --plan {}` to refuse if the device changes first.",
-                built.plan.state_hash
+            let apply = format!("bussard apply {target}");
+            let pinned = format!("bussard apply {target} --plan {}", built.plan.state_hash);
+            print!(
+                "\n{}",
+                style.next_steps(&[
+                    (apply.as_str(), "writes these changes (it asks once)"),
+                    (
+                        pinned.as_str(),
+                        "the same, but refuses if the device changed since this plan"
+                    ),
+                ])
             );
         }
     }
@@ -636,6 +650,11 @@ pub(crate) fn print_text(target: IndividualAddress, live: &DeviceTables, report:
         bussard_download::render_plan_text(target, live, report)
     );
     if !report.is_noop() {
-        println!("\nrun `bussard apply {target}` to write these changes (with confirmation).");
+        let apply = format!("bussard apply {target}");
+        print!(
+            "\n{}",
+            crate::style::Style::stdout()
+                .next_steps(&[(apply.as_str(), "writes these changes (it asks first)")])
+        );
     }
 }

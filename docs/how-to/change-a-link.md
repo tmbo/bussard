@@ -155,13 +155,20 @@ bussard saves a copy of the model files before every command that writes the mod
 
     ```console
     $ bussard status
-    2 pending change(s) since snapshot 20260922T101112Z-001 (2026-09-22T10:11:12Z):
+    2 pending changes since snapshot 20260922T101112Z-001 (2026-09-22T10:11:12Z)
 
     Rocker 1 on Hallway push button now switches Porch light.
     Porch light (0/0/4) changes type from 1.001 to 1.002.
 
-    Nothing has reached any device yet. Run `bussard plan <ia>` to check a device,
-    `bussard apply <ia>` to write it, or `bussard undo` to put the files back.
+    Nothing has reached any device yet.
+
+    Next steps
+      > bussard plan <ADDRESS>
+        shows what writing a device would change
+      > bussard apply <ADDRESS>
+        writes it to the device
+      > bussard undo
+        puts the files back as they were at the snapshot
     $ bussard history
       1  20260922T100000Z-001  import home.knxproj (before writing the imported model)
          the first snapshot of the model
@@ -184,7 +191,7 @@ Undo changes files only. The devices keep working as before until you plan and w
 
 ```console
 $ bussard status
-1 pending change(s) since snapshot 20260922T104500Z-001 (2026-09-22T10:45:00Z):
+1 pending change since snapshot 20260922T104500Z-001 (2026-09-22T10:45:00Z)
 
 Living room blind actuator, channel B, now listens to Central down.
 ```

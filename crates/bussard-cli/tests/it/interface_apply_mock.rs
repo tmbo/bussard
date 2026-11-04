@@ -158,7 +158,7 @@ fn test_interface_plan_apply_then_plan_is_a_noop() -> TestResult {
         "- tunnel address 1.1.29 removed",
         "writes: KNXnet/IP parameter object (PID 76, PID 53)",
         "write: object type 11 instance 1 PID 53 start 1 count 8:",
-        "run `bussard apply 1.1.200`",
+        "> bussard apply 1.1.200",
     ] {
         assert!(stdout.contains(needle), "missing {needle:?} in:\n{stdout}");
     }

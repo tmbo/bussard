@@ -163,7 +163,10 @@ fn read_and_plan(
 
 /// Prints the plan as text, with the writes on the wire under `-v`.
 fn print_plan(plan: &InterfacePlan, device_plan: &bussard_download::DevicePlan, verbose: bool) {
-    print!("{}", device_plan.render_text());
+    print!(
+        "{}",
+        crate::plan_view::render(device_plan, crate::style::Style::stdout())
+    );
     if verbose {
         for step in &plan.steps {
             println!("  write: {}", step.wire());
@@ -267,11 +270,20 @@ pub(crate) fn plan(
                 "\n`bussard apply {target}` refuses this without --allow-self-reconfigure: {why}"
             ),
             Some(why) => println!("\n`bussard apply {target}` refuses this: {why}"),
-            None => println!(
-                "\nrun `bussard apply {target}` to write these changes (it asks once), or \
-                 `bussard apply {target} --plan {}` to refuse if the device changes first.",
-                device_plan.state_hash
-            ),
+            None => {
+                let apply = format!("bussard apply {target}");
+                let pinned = format!("bussard apply {target} --plan {}", device_plan.state_hash);
+                print!(
+                    "\n{}",
+                    crate::style::Style::stdout().next_steps(&[
+                        (apply.as_str(), "writes these changes (it asks once)"),
+                        (
+                            pinned.as_str(),
+                            "the same, but refuses if the device changed since this plan"
+                        ),
+                    ])
+                );
+            }
         }
     }
     Ok(ExitCode::SUCCESS)

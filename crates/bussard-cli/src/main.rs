@@ -46,6 +46,7 @@ mod monitor_cmd;
 mod output;
 mod param_readback;
 mod plan_cmd;
+mod plan_view;
 mod product_cache;
 mod product_fetch;
 mod product_store;

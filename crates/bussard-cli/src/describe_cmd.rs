@@ -29,6 +29,7 @@ use bussard_service::facts::property_desc;
 use bussard_service::{FactsCache, FactsSource, FactsWant, L4Options, SourcePolicy, WritePolicy};
 
 use crate::conn_cmd::{ConnOverrides, load_model_required, resolve_config};
+use crate::style::{Cell, Style, Table, Tone};
 
 /// One interface object plus its enumerated properties, shaped for text and
 /// `--json`.
@@ -189,6 +190,10 @@ pub fn run(
     // `flash`. `None` is the plain, byte-identical path.
     // A management command: a present-but-broken model is a hard error.
     let model = load_model_required(dir)?;
+    let name = model
+        .as_ref()
+        .and_then(|m| m.devices.get(&target))
+        .map(|d| d.device.name.clone());
     // A keyring without an entry for the target serves the tunnel only; the
     // device is read in the clear unless the model says it is activated
     // (issue #189).
@@ -340,7 +345,7 @@ pub fn run(
         if json {
             crate::output::print(crate::output::schema::DESCRIBE, &report)?;
         } else {
-            print_text(&report);
+            print_text(&report, name.as_deref());
         }
         eprintln!("error: {message}");
         return Ok(ExitCode::FAILURE);
@@ -349,7 +354,7 @@ pub fn run(
     if json {
         crate::output::print(crate::output::schema::DESCRIBE, &report)?;
     } else {
-        print_text(&report);
+        print_text(&report, name.as_deref());
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -557,96 +562,137 @@ fn table_capacity_line(tables: &bussard_model::param_model::DataSecureCapacity) 
     )
 }
 
-fn print_text(report: &Report) {
-    println!(
-        "device {} — mask {} ({})",
-        report.address, report.mask, report.system_type
+fn print_text(report: &Report, name: Option<&str>) {
+    print!("{}", render_text(report, name, Style::stdout()));
+}
+
+/// The report as text: the heading, the serial number, KNX Secure in the
+/// project and in this run, the identity, KNXnet/IP and one property table
+/// per interface object.
+fn render_text(report: &Report, name: Option<&str>, style: Style) -> String {
+    let mut out = crate::status_cmd::device_heading(
+        &report.address,
+        name,
+        &report.mask,
+        &report.system_type,
+        style,
     );
+    let label = |text: &str| style.dim(&format!("{text:<22}"));
     if let Some(serial) = &report.serial {
-        println!("  serial: {serial}");
+        out.push_str(&format!(
+            "  {}{}\n",
+            label("serial number"),
+            serial.to_uppercase()
+        ));
     }
     if let Some(sec) = &report.secure {
         if let Some(model) = &sec.model {
             let state = if model.activated {
-                "activated"
+                "secured"
             } else if model.secure_capable {
-                "capable, not activated"
+                "supports Secure, not secured"
             } else {
-                "not secure-capable"
+                "does not support Secure"
             };
-            print!("  KNX Secure (model): {state}");
-            if model.has_fdsk_certificate {
-                print!("; FDSK certificate present");
-            }
-            println!();
+            let certificate = if model.has_fdsk_certificate {
+                "; certificate in the key store"
+            } else {
+                ""
+            };
+            out.push_str(&format!(
+                "  {}{state}{certificate}\n",
+                label("Secure in your project")
+            ));
             if let Some(tables) = &model.tables {
-                println!(
-                    "  Data Secure tables (product): {}",
+                out.push_str(&format!(
+                    "  {}{}\n",
+                    label("Data Secure tables"),
                     table_capacity_line(tables)
-                );
+                ));
             }
         }
         let plain = match sec.device.plain_management {
-            PlainManagement::Answered => "answered",
-            PlainManagement::Refused => "refused",
-            PlainManagement::NotAttempted => "not attempted",
+            PlainManagement::Answered => style.ok("answered"),
+            PlainManagement::Refused => style.warn("refused"),
+            PlainManagement::NotAttempted => style.dim("not attempted"),
         };
         let secured = match sec.device.secured_management {
-            SecuredManagement::Used => "used",
-            SecuredManagement::NotAttempted => "not attempted",
-            SecuredManagement::Unanswered => "unanswered",
-            SecuredManagement::FactoryKey => "answered under the factory key (FDSK)",
+            SecuredManagement::Used => style.ok("used"),
+            SecuredManagement::NotAttempted => style.dim("not attempted"),
+            SecuredManagement::Unanswered => style.warn("unanswered"),
+            SecuredManagement::FactoryKey => style.ok("answered under the factory key"),
         };
-        println!("  KNX Secure (this run): plain management {plain}; secured management {secured}");
+        out.push_str(&format!(
+            "  {}plain management {plain}; secured management {secured}\n",
+            label("Secure in this run")
+        ));
     }
     if let (Some(identity), Ok(target)) = (&report.identity, report.address.parse()) {
-        println!("  {}", crate::device_facts::identity_line(target, identity));
+        let line = crate::device_facts::identity_line(target, identity);
+        let line = if identity.is_drift() {
+            style.warn(&line)
+        } else {
+            line
+        };
+        out.push_str(&format!("  {line}\n"));
     }
     if let Some(knxnet) = &report.knxnet {
-        crate::status_cmd::print_knxnet(knxnet);
+        out.push_str(&crate::status_cmd::render_knxnet(knxnet, style));
     }
     let Some(objects) = &report.objects else {
-        return;
+        return out;
     };
     if objects.is_empty() {
-        println!("  no interface objects discoverable");
-        return;
+        out.push_str(&format!(
+            "  {}\n",
+            style.dim("no interface objects discoverable")
+        ));
+        return out;
     }
     for obj in objects {
-        println!(
-            "\nobject {} — type {} ({}), {} propert{}",
-            obj.index,
-            obj.object_type,
-            obj.object_type_name,
-            obj.properties.len(),
-            if obj.properties.len() == 1 {
-                "y"
-            } else {
-                "ies"
-            }
-        );
+        out.push_str(&format!(
+            "\n{} {}\n",
+            style.bold(&format!(
+                "Object {}: type {} ({})",
+                obj.index, obj.object_type, obj.object_type_name
+            )),
+            style.dim(&crate::style::count(
+                obj.properties.len(),
+                "property",
+                "properties"
+            ))
+        ));
         if obj.properties.is_empty() {
-            println!(
-                "  (no properties enumerable — device may not support A_PropertyDescription_Read)"
-            );
+            out.push_str(&format!(
+                "  {}\n",
+                style.dim(
+                    "no properties enumerable (the device may not support \
+                     A_PropertyDescription_Read)"
+                )
+            ));
             continue;
         }
-        println!(
-            "  {:<4}  {:<5}  {:<20}  {:<6}  {:<5}  {:<5}  {:<6}",
-            "IDX", "PID", "NAME", "TYPE", "COUNT", "W?", "ACCESS"
-        );
+        let mut table = Table::new(&[
+            "Index", "PID", "Name", "Type", "Count", "Writable", "Access",
+        ]);
         for p in &obj.properties {
-            println!(
-                "  {:<4}  {:<5}  {:<20}  {:<6}  {:<5}  {:<5}  r{} w{}",
-                p.index,
-                p.pid,
-                p.name,
-                p.pdt,
-                p.max_elements,
-                if p.writable { "yes" } else { "no" },
-                p.read_level,
-                p.write_level
-            );
+            table.row(vec![
+                Cell::plain(p.index.to_string()),
+                Cell::plain(p.pid.to_string()),
+                Cell::plain(p.name.to_string()),
+                Cell::plain(p.pdt.to_string()),
+                Cell::plain(p.max_elements.to_string()),
+                if p.writable {
+                    Cell::new("yes", Tone::Plain)
+                } else {
+                    Cell::new("no", Tone::Dim)
+                },
+                Cell::plain(format!("r{} w{}", p.read_level, p.write_level)),
+            ]);
+        }
+        for line in table.render(style).lines() {
+            out.push_str(&format!("  {line}\n"));
         }
     }
+    out
 }

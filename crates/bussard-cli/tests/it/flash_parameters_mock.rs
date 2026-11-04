@@ -881,7 +881,7 @@ fn test_apply_with_an_empty_plan_writes_nothing() -> TestResult {
     let (stdout, stderr) = text(&out);
     assert!(out.status.success(), "stdout:\n{stdout}\nstderr:\n{stderr}");
     assert!(
-        stdout.contains("1.1.4 matches the model; nothing to write"),
+        stdout.contains("1.1.4 matches your project; nothing to write"),
         "{stdout}"
     );
     let dev = bench.device();

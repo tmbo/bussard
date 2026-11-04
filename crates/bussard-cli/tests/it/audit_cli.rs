@@ -75,20 +75,20 @@ fn test_audit_static_text_has_every_section() -> TestResult {
         String::from_utf8_lossy(&out.stderr)
     );
     for section in [
-        "== Model ==",
+        "Your project\n",
         "project: small-installation",
-        "4 device(s)",
-        "line 1.0: 4 device(s)",
-        "== Model gaps ==",
-        "== Findings (one-sided links) ==",
-        "== Devices per mask ==",
-        "07B0 System B (4 device(s)): bussard can: plan/apply, flash, reconstruct, describe",
-        "== KNX Secure ==",
-        "protected GAs",
+        "4 devices",
+        "line 1.0: 4 devices",
+        "Gaps in your project\n",
+        "One-sided links\n",
+        "Devices per mask\n",
+        "07B0 System B (4 devices): bussard can: plan/apply, flash, reconstruct, describe",
+        "KNX Secure\n",
+        "protected group addresses",
     ] {
         assert!(stdout.contains(section), "missing {section:?}:\n{stdout}");
     }
-    assert!(!stdout.contains("== Gateway =="), "{stdout}");
+    assert!(!stdout.contains("Gateway\n"), "{stdout}");
     Ok(())
 }
 

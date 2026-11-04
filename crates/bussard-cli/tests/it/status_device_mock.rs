@@ -106,7 +106,8 @@ fn test_status_address_prints_the_knxnet_state_and_the_drift() -> TestResult {
     );
     assert_eq!(writes, 0, "status writes nothing");
     for needle in [
-        "device 1.1.200 — mask 0021",
+        "Device 1.1.200",
+        "mask 0021",
         "KNX IP Interface",
         "IP address     192.168.1.74 (dhcp)",
         "MAC            00:00:5E:00:53:01",
