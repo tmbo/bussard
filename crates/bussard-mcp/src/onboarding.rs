@@ -18,6 +18,10 @@
 //! data download is the `download` argument, never a `yes`, and the project
 //! password comes from `BUSSARD_PROJECT_PASSWORD` (the `.env` the server
 //! reads) or the `password` argument, which no result or log line repeats.
+//! Without either, a client with URL-mode elicitation gets bussard's
+//! password form ([`crate::password_form`], #818): the human types the
+//! password into a page on this computer, bussard stores it in the `.env`
+//! and runs the setup with it.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -32,8 +36,10 @@ use bussard_service::setup::{
 use bussard_transport::ConnectionConfig;
 use bussard_transport::knxnet::GatewayInfo;
 use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::tool::{InputResponses, RequestState};
 use rmcp::model::{
-    CallToolResult, ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool,
+    CallToolResponse, CallToolResult, ListToolsResult, PaginatedRequestParams, ServerCapabilities,
+    ServerInfo, Tool,
 };
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::service::RequestContext;
@@ -43,6 +49,7 @@ use serde_json::json;
 
 use crate::McpConfig;
 use crate::args::Parameters;
+use crate::password_form::{self, Attempt, PasswordForms, Step};
 use crate::server::BussardMcp;
 
 /// The tools of the onboarding state, in registration order.
@@ -112,6 +119,8 @@ struct Inner {
     running: std::sync::Mutex<Option<Running>>,
     /// One setup at a time.
     setup_lock: tokio::sync::Mutex<()>,
+    /// The project password form `knx_setup` shows (#818).
+    forms: PasswordForms,
 }
 
 /// The MCP server of the onboarding state: `knx_setup` and `knx_bus_status`
@@ -248,18 +257,22 @@ impl SetupHooks for Chat {
 impl SetupMcp {
     /// `knx_setup` (issue #745).
     #[tool(
-        description = "Set the house up: there is no project yet. Finds the KNXnet/IP gateway (or uses `gateway`), writes the project folder, and imports the ETS project export (`project_file`, or the one .knxproj next to the directory) with its product data and keyring, as `bussard init` does. Ask the human first whether they have an ETS export and where it is. `download: true` also fetches vendor product data the export lacks; pass it only after the human agreed. A `question` in the result means nothing was written: relay it and call again. On success the server registers its full tool set (the tool list changes); continue with knx_project_summary."
+        description = "Set the house up: there is no project yet. Finds the KNXnet/IP gateway (or uses `gateway`), writes the project folder, and imports the ETS project export (`project_file`, or the one .knxproj next to the directory) with its product data and keyring, as `bussard init` does. Ask the human first whether they have an ETS export and where it is. A password-protected export the server has no password for: bussard shows the human its own password form (a page on this computer, through the chat app), stores the password in .env and goes on; never ask for the password in chat. `download: true` also fetches vendor product data the export lacks; pass it only after the human agreed. A `question` in the result means nothing was written: relay it and call again. On success the server registers its full tool set (the tool list changes); continue with knx_project_summary."
     )]
     async fn knx_setup(
         &self,
         Parameters(args): Parameters<SetupArgs>,
-    ) -> Result<CallToolResult, ErrorData> {
+        context: RequestContext<RoleServer>,
+        RequestState(request_state): RequestState,
+        InputResponses(input_responses): InputResponses,
+    ) -> Result<CallToolResponse, ErrorData> {
         let _one = self.inner.setup_lock.lock().await;
         if self.inner.full.get().is_some() {
             return Ok(CallToolResult::structured(json!({
                 "done": true,
                 "summary": "The model is already set up; the full tool set is registered.",
-            })));
+            }))
+            .into());
         }
         let onboarding = &self.inner.onboarding;
         let dir = onboarding.config.dir.clone();
@@ -274,39 +287,202 @@ impl SetupMcp {
             routing,
             project: args.project_file.as_deref().map(PathBuf::from),
             find_project: args.project_file.is_none(),
-            password: args.password,
+            password: args.password.clone(),
         };
         let download = args.download;
-        let joined = tokio::task::spawn_blocking(move || {
-            let mut hooks = Chat {
-                download,
-                question: None,
-            };
-            let mut out = Collected::default();
-            let outcome = setup::run(&request, &mut hooks, &mut out);
-            (outcome, hooks.question, out.lines)
+        let forms = &self.inner.forms;
+        // The client's second round of a 2026-07-28 call: the human's answer
+        // to the password form's elicitation (#818).
+        if let Some(state) = request_state.filter(|s| password_form::is_form_state(s)) {
+            return Ok(
+                match password_form::resume(forms, &state, input_responses.as_ref()) {
+                    Step::Open(form) => self.setup_with_form(form, request, download).await.into(),
+                    Step::Answer(answer) => answer,
+                    Step::Unsupported => password_required(Vec::new()).into(),
+                },
+            );
+        }
+        let (outcome, question, log) = run_setup(request.clone(), download).await;
+        // No password, or a wrong one from the .env: the form, when the
+        // client can show it (#818).
+        let needs_password = match &outcome {
+            Err(SetupError::PasswordRequired) => true,
+            Err(err) => args.password.is_none() && err.is_wrong_password(),
+            Ok(_) => false,
+        };
+        if needs_password {
+            match password_form::ask(forms, &context, project_name(&request)).await {
+                Step::Open(form) => {
+                    return Ok(self.setup_with_form(form, request, download).await.into());
+                }
+                Step::Answer(answer) => return Ok(answer),
+                Step::Unsupported => {}
+            }
+        }
+        Ok(self.finish_setup(outcome, question, log, None).await.into())
+    }
+
+    /// `knx_bus_status` before the model exists.
+    #[tool(
+        description = "The bus connection. Before knx_setup has written the project there is none: the result says so."
+    )]
+    async fn knx_bus_status(&self) -> Result<CallToolResult, ErrorData> {
+        Ok(CallToolResult::structured(json!({
+            "state": "no_model",
+            "connected": false,
+            "reason": format!(
+                "There is no model in {} yet, so there is no bus connection. Call knx_setup: \
+                 it finds the gateway and writes the model.",
+                self.inner.onboarding.config.dir.display()
+            ),
+        })))
+    }
+}
+
+/// The refusal when the project needs a password and the form cannot be
+/// shown.
+fn password_required(log: Vec<String>) -> CallToolResult {
+    failure(
+        "The project is password-protected. Nothing was written. Ask the owner to put \
+         BUSSARD_PROJECT_PASSWORD=<password> in the .env next to the model directory (the \
+         server reads it), or pass the password as `password`."
+            .to_string(),
+        log,
+    )
+}
+
+/// What a setup run returns: the outcome, the question a hook asked, the
+/// lines it said.
+type SetupRun = (
+    Result<SetupOutcome, SetupError>,
+    Option<String>,
+    Vec<String>,
+);
+
+/// Runs the setup of `request` on a blocking thread, answering its
+/// questions as a chat does.
+async fn run_setup(request: SetupRequest, download: bool) -> SetupRun {
+    let joined = tokio::task::spawn_blocking(move || {
+        let mut hooks = Chat {
+            download,
+            question: None,
+        };
+        let mut out = Collected::default();
+        let outcome = setup::run(&request, &mut hooks, &mut out);
+        (outcome, hooks.question, out.lines)
+    })
+    .await;
+    joined.unwrap_or_else(|err| {
+        (
+            Err(SetupError::Message(format!("the setup stopped: {err}"))),
+            None,
+            Vec::new(),
+        )
+    })
+}
+
+/// The file name of the project `request` imports, for the password form.
+fn project_name(request: &SetupRequest) -> Option<String> {
+    let project = match &request.project {
+        Some(project) => Some(project.clone()),
+        None => match setup::skeleton::find_project(&request.dir) {
+            setup::skeleton::ProjectSearch::One(found) => Some(found),
+            _ => None,
+        },
+    };
+    project
+        .as_deref()
+        .and_then(Path::file_name)
+        .map(|name| name.to_string_lossy().into_owned())
+}
+
+/// A tool error result: the sentence and the lines the setup said.
+fn failure(sentence: String, log: Vec<String>) -> CallToolResult {
+    let mut result = CallToolResult::structured(json!({
+        "done": false,
+        "error": sentence,
+        "log": log,
+    }));
+    result.is_error = Some(true);
+    result
+}
+
+impl SetupMcp {
+    /// The onboarding server for `onboarding.config.dir`.
+    pub fn new(onboarding: Onboarding) -> Self {
+        SetupMcp {
+            inner: Arc::new(Inner {
+                onboarding,
+                full: OnceLock::new(),
+                running: std::sync::Mutex::new(None),
+                setup_lock: tokio::sync::Mutex::new(()),
+                forms: PasswordForms::new(),
+            }),
+            tool_router: Self::tool_router(),
+        }
+    }
+
+    /// Collects the project password from `form` and runs the setup with
+    /// it (#818).
+    async fn setup_with_form(
+        &self,
+        form: Arc<password_form::PendingForm>,
+        request: SetupRequest,
+        download: bool,
+    ) -> CallToolResult {
+        let dir = request.dir.clone();
+        let collected = password_form::collect(form, &dir, "set the project up", |password| {
+            let mut request = request.clone();
+            request.password = Some(password.expose().to_string());
+            async move {
+                let (outcome, question, log) = run_setup(request, download).await;
+                match outcome {
+                    Err(err) if err.is_wrong_password() => Attempt::WrongPassword,
+                    Ok(outcome) => Attempt::Opened((Ok(outcome), question, log)),
+                    Err(err) => Attempt::Failed((Err(err), question, log)),
+                }
+            }
         })
         .await;
-        let (outcome, question, log) = match joined {
-            Ok(result) => result,
-            Err(err) => return Ok(failure(format!("the setup stopped: {err}"), Vec::new())),
-        };
+        match collected {
+            password_form::Collected::Opened {
+                value: (outcome, question, log),
+                stored,
+            } => {
+                self.finish_setup(
+                    outcome,
+                    question,
+                    log,
+                    Some(password_form::stored_note(&stored)),
+                )
+                .await
+            }
+            password_form::Collected::Failed((outcome, question, log)) => {
+                self.finish_setup(outcome, question, log, None).await
+            }
+            password_form::Collected::Ended(reason) => password_form::ended(&reason),
+        }
+    }
+
+    /// The result of a setup run: the failure or question it ended with,
+    /// or the full server it activated. `password` says where the project
+    /// password came from when it was the form.
+    async fn finish_setup(
+        &self,
+        outcome: Result<SetupOutcome, SetupError>,
+        question: Option<String>,
+        log: Vec<String>,
+        password: Option<String>,
+    ) -> CallToolResult {
+        let dir = self.inner.onboarding.config.dir.clone();
         let outcome = match outcome {
             Ok(outcome) => outcome,
-            Err(SetupError::PasswordRequired) => {
-                return Ok(failure(
-                    "The project is password-protected. Nothing was written. Ask the owner to \
-                     put BUSSARD_PROJECT_PASSWORD=<password> in the .env next to the model \
-                     directory (the server reads it), or pass the password as `password`."
-                        .to_string(),
-                    log,
-                ));
-            }
+            Err(SetupError::PasswordRequired) => return password_required(log),
             Err(err) => {
-                return Ok(failure(
+                return failure(
                     format!("The setup failed: {}", setup::products::error_chain(&err)),
                     log,
-                ));
+                );
             }
         };
         let imported = match outcome {
@@ -315,11 +491,11 @@ impl SetupMcp {
             // terminal): load it as it is.
             SetupOutcome::HasModel => None,
             SetupOutcome::NotConfirmed | SetupOutcome::Stopped => {
-                return Ok(CallToolResult::structured(json!({
+                return CallToolResult::structured(json!({
                     "done": false,
                     "question": question.unwrap_or_else(|| "Nothing was written.".to_string()),
                     "log": log,
-                })));
+                }));
             }
         };
         match self.activate().await {
@@ -348,7 +524,7 @@ impl SetupMcp {
                         dir.display()
                     ),
                 };
-                Ok(CallToolResult::structured(json!({
+                let mut result = json!({
                     "done": true,
                     "dir": dir.display().to_string(),
                     "project": imported.as_ref().map(|(p, _)| p.display().to_string()),
@@ -356,58 +532,20 @@ impl SetupMcp {
                     "tools": tools,
                     "log": log,
                     "instructions": instructions,
-                })))
+                });
+                if let Some(password) = password {
+                    result["password"] = json!(password);
+                }
+                CallToolResult::structured(result)
             }
-            Err(reason) => Ok(failure(
+            Err(reason) => failure(
                 format!(
                     "The model was written to {}, but the server could not load it: {reason}. \
                      Restart the server (the MCP client reconnects it) to use it.",
                     dir.display()
                 ),
                 log,
-            )),
-        }
-    }
-
-    /// `knx_bus_status` before the model exists.
-    #[tool(
-        description = "The bus connection. Before knx_setup has written the project there is none: the result says so."
-    )]
-    async fn knx_bus_status(&self) -> Result<CallToolResult, ErrorData> {
-        Ok(CallToolResult::structured(json!({
-            "state": "no_model",
-            "connected": false,
-            "reason": format!(
-                "There is no model in {} yet, so there is no bus connection. Call knx_setup: \
-                 it finds the gateway and writes the model.",
-                self.inner.onboarding.config.dir.display()
             ),
-        })))
-    }
-}
-
-/// A tool error result: the sentence and the lines the setup said.
-fn failure(sentence: String, log: Vec<String>) -> CallToolResult {
-    let mut result = CallToolResult::structured(json!({
-        "done": false,
-        "error": sentence,
-        "log": log,
-    }));
-    result.is_error = Some(true);
-    result
-}
-
-impl SetupMcp {
-    /// The onboarding server for `onboarding.config.dir`.
-    pub fn new(onboarding: Onboarding) -> Self {
-        SetupMcp {
-            inner: Arc::new(Inner {
-                onboarding,
-                full: OnceLock::new(),
-                running: std::sync::Mutex::new(None),
-                setup_lock: tokio::sync::Mutex::new(()),
-            }),
-            tool_router: Self::tool_router(),
         }
     }
 

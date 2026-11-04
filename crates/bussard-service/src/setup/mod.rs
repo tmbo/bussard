@@ -87,6 +87,26 @@ impl SetupError {
     pub fn source(err: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Self {
         SetupError::Source(err.into())
     }
+
+    /// Whether the project password given does not open the project
+    /// ([`bussard_project::ImportError::WrongPassword`]).
+    pub fn is_wrong_password(&self) -> bool {
+        let source: &(dyn std::error::Error + 'static) = match self {
+            SetupError::Source(source) | SetupError::Failed { source, .. } => source.as_ref(),
+            SetupError::Message(_) | SetupError::PasswordRequired => return false,
+        };
+        let mut next = Some(source);
+        while let Some(err) = next {
+            if matches!(
+                err.downcast_ref::<bussard_project::ImportError>(),
+                Some(bussard_project::ImportError::WrongPassword)
+            ) {
+                return true;
+            }
+            next = err.source();
+        }
+        false
+    }
 }
 
 /// `with_context` for [`SetupError`]: the context line over the cause.
@@ -213,8 +233,8 @@ pub trait SetupHooks: DownloadPrompt {
     }
 }
 
-/// What [`run`] is asked to do.
-#[derive(Debug, Clone, Default)]
+/// What [`run`] is asked to do. Its `Debug` never shows the password.
+#[derive(Clone, Default)]
 pub struct SetupRequest {
     /// The model directory to create.
     pub dir: PathBuf,
@@ -228,6 +248,19 @@ pub struct SetupRequest {
     pub find_project: bool,
     /// The project password; `None` reads `BUSSARD_PROJECT_PASSWORD`.
     pub password: Option<String>,
+}
+
+impl std::fmt::Debug for SetupRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SetupRequest")
+            .field("dir", &self.dir)
+            .field("gateway", &self.gateway)
+            .field("routing", &self.routing)
+            .field("project", &self.project)
+            .field("find_project", &self.find_project)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 /// How a [`run`] ended.
@@ -502,5 +535,29 @@ mod tests {
         assert!(!request.dir.exists(), "nothing written");
         std::fs::remove_dir_all(&root).ok();
         Ok(())
+    }
+
+    #[test]
+    fn test_is_wrong_password_finds_the_import_error() {
+        let wrong = SetupError::source(bussard_project::ImportError::WrongPassword);
+        assert!(wrong.is_wrong_password());
+        let wrapped = SetupError::Failed {
+            context: "loading".to_string(),
+            source: Box::new(bussard_project::ImportError::WrongPassword),
+        };
+        assert!(wrapped.is_wrong_password());
+        assert!(!SetupError::PasswordRequired.is_wrong_password());
+        assert!(!SetupError::Message("x".to_string()).is_wrong_password());
+    }
+
+    #[test]
+    fn test_setup_request_debug_redacts_the_password() {
+        let request = SetupRequest {
+            password: Some("hunter2".to_string()),
+            ..SetupRequest::default()
+        };
+        let text = format!("{request:?}");
+        assert!(!text.contains("hunter2"), "{text}");
+        assert!(text.contains("<redacted>"), "{text}");
     }
 }

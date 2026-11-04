@@ -22,13 +22,17 @@
 //!
 //! * [`DISABLE_ENV`] (`BUSSARD_NO_DOTENV=1`, process environment only) skips
 //!   the file.
+//! * [`store`] writes one key into a `.env` (the project password a chat
+//!   user typed into bussard's password form, issue #818); [`store_target`]
+//!   picks the file the lookup above finds, so the next command reads it.
+//!   [`remember`] makes the stored value visible to this process too.
 //!
 //! No function here prints or logs a value.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 /// The file name looked up in each candidate directory.
 pub const FILE_NAME: &str = ".env";
@@ -53,6 +57,10 @@ pub fn disabled() -> bool {
 
 /// The values installed from the `.env` file, set once per process.
 static FILE_VALUES: OnceLock<BTreeMap<String, String>> = OnceLock::new();
+
+/// Values this process stored in its `.env` after start-up ([`remember`]).
+/// They win over [`FILE_VALUES`], which still holds the file as it was read.
+static STORED_VALUES: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
 
 /// Parses `.env` text into its `BUSSARD_*` assignments, in file order.
 ///
@@ -174,8 +182,8 @@ pub fn install(pairs: Vec<(String, String)>) -> Installed {
 /// [`std::env::VarError::NotUnicode`] for a non-UTF-8 process value.
 pub fn var(name: &str) -> Result<String, std::env::VarError> {
     match std::env::var(name) {
-        Err(std::env::VarError::NotPresent) => file_value(name)
-            .map(str::to_string)
+        Err(std::env::VarError::NotPresent) => stored_value(name)
+            .or_else(|| file_value(name).map(str::to_string))
             .ok_or(std::env::VarError::NotPresent),
         other => other,
     }
@@ -184,7 +192,141 @@ pub fn var(name: &str) -> Result<String, std::env::VarError> {
 /// `std::env::var_os` with the installed `.env` values as the fallback.
 #[must_use]
 pub fn var_os(name: &str) -> Option<OsString> {
-    std::env::var_os(name).or_else(|| file_value(name).map(OsString::from))
+    std::env::var_os(name)
+        .or_else(|| stored_value(name).map(OsString::from))
+        .or_else(|| file_value(name).map(OsString::from))
+}
+
+/// Makes `value` the `.env` value of `name` for the rest of this process,
+/// after [`store`] wrote it to the file. The process environment still wins.
+pub fn remember(name: &str, value: &str) {
+    let mut stored = match STORED_VALUES.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    stored.insert(name.to_string(), value.to_string());
+}
+
+/// The value [`remember`] recorded for `name`.
+fn stored_value(name: &str) -> Option<String> {
+    let stored = match STORED_VALUES.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    stored.get(name).cloned()
+}
+
+/// The `.env` file a value for the model directory `model_dir` is stored
+/// in: the file [`find`] picks, else a new `.env` next to the model
+/// directory (in its parent), the second place the lookup looks.
+#[must_use]
+pub fn store_target(model_dir: &Path, cwd: &Path) -> PathBuf {
+    find(model_dir, cwd).unwrap_or_else(|| {
+        candidates(model_dir, cwd)
+            .into_iter()
+            .nth(1)
+            .unwrap_or_else(|| model_dir.join(FILE_NAME))
+    })
+}
+
+/// `value` as it is written after `KEY=` so that [`parse`] reads it back
+/// unchanged: bare when it holds only plain characters, else in single
+/// quotes, else in double quotes. `None` when no form reads back (a line
+/// break, or both quote characters).
+fn encode_value(value: &str) -> Option<String> {
+    if value.contains(['\n', '\r']) {
+        return None;
+    }
+    let plain = !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_-.,:/@%+=".contains(c));
+    if plain {
+        Some(value.to_string())
+    } else if !value.contains('\'') {
+        Some(format!("'{value}'"))
+    } else if !value.contains('"') {
+        Some(format!("\"{value}\""))
+    } else {
+        None
+    }
+}
+
+/// Sets `key` to `value` in the `.env` file at `path`: the first line that
+/// assigns `key` is replaced, later ones are dropped (a later duplicate would
+/// win), every other line is kept as it is. A missing file is created with
+/// mode 0600 on Unix; an existing file keeps its mode. The file is replaced
+/// atomically.
+///
+/// # Errors
+///
+/// `key` is not a `BUSSARD_*` key, `value` cannot be written so [`parse`]
+/// reads it back (a line break, or both quote characters), or the file
+/// cannot be read or written. No error text holds the value.
+pub fn store(path: &Path, key: &str, value: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let invalid =
+        |what: &str| std::io::Error::new(std::io::ErrorKind::InvalidInput, what.to_string());
+    let valid_key =
+        key.starts_with(PREFIX) && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+    if !valid_key {
+        return Err(invalid("not a BUSSARD_* key"));
+    }
+    let encoded = encode_value(value).ok_or_else(|| {
+        invalid("the value holds a line break or both quote characters, which a .env cannot hold")
+    })?;
+    // Write through a symlink to the file it names.
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let (old, permissions) = match std::fs::read_to_string(&path) {
+        Ok(text) => (text, std::fs::metadata(&path).ok().map(|m| m.permissions())),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => (String::new(), None),
+        Err(err) => return Err(err),
+    };
+    let line = format!("{key}={encoded}");
+    let mut replaced = false;
+    let mut lines: Vec<&str> = Vec::new();
+    for existing in old.lines() {
+        if parse(existing).first().is_some_and(|(k, _)| k == key) {
+            if !replaced {
+                lines.push(&line);
+                replaced = true;
+            }
+        } else {
+            lines.push(existing);
+        }
+    }
+    if !replaced {
+        lines.push(&line);
+    }
+    let mut text = lines.join("\n");
+    text.push('\n');
+
+    let dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let tmp = dir.join(format!(".env.bussard-{}.tmp", std::process::id()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let written = (|| {
+        let mut file = options.open(&tmp)?;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        if let Some(permissions) = permissions {
+            std::fs::set_permissions(&tmp, permissions)?;
+        }
+        std::fs::rename(&tmp, &path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
 }
 
 /// The installed `.env` value of `name`, ignoring the process environment.
@@ -373,6 +515,104 @@ mod tests {
         let again = install(vec![kv("BUSSARD_DOTENV_TEST_ONLY", "other")]);
         assert_eq!(again, Installed::default());
         assert_eq!(var("BUSSARD_DOTENV_TEST_ONLY")?, "from-file");
+        Ok(())
+    }
+
+    #[test]
+    fn test_store_creates_file_with_mode_0600() -> TestResult {
+        let dir = scratch("store-create")?;
+        let file = dir.join(FILE_NAME);
+        store(&file, "BUSSARD_PROJECT_PASSWORD", "p w#'x")?;
+        assert_eq!(read(&file)?, vec![kv("BUSSARD_PROJECT_PASSWORD", "p w#'x")]);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&file)?.permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "{mode:o}");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn test_store_replaces_the_key_and_keeps_other_lines() -> TestResult {
+        let dir = scratch("store-replace")?;
+        let file = dir.join(FILE_NAME);
+        std::fs::write(
+            &file,
+            "# mine\nexport BUSSARD_PROJECT_PASSWORD=old\nBUSSARD_KEYRING_PASSWORD=k\n\nOTHER=1\nBUSSARD_PROJECT_PASSWORD=older",
+        )?;
+        store(&file, "BUSSARD_PROJECT_PASSWORD", "new-pw")?;
+        assert_eq!(
+            std::fs::read_to_string(&file)?,
+            "# mine\nBUSSARD_PROJECT_PASSWORD=new-pw\nBUSSARD_KEYRING_PASSWORD=k\n\nOTHER=1\n"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn test_store_refuses_values_a_env_cannot_hold() -> TestResult {
+        let dir = scratch("store-refuse")?;
+        let file = dir.join(FILE_NAME);
+        for value in ["a\nb", "it's \"x\""] {
+            let err = store(&file, "BUSSARD_PROJECT_PASSWORD", value)
+                .err()
+                .ok_or("refused")?;
+            assert!(!err.to_string().contains(value), "{err}");
+        }
+        assert!(store(&file, "PATH", "x").is_err());
+        assert!(!file.exists());
+        std::fs::remove_dir_all(&dir).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn test_encode_value_round_trips_through_parse() -> TestResult {
+        for value in [
+            "plain-1.2",
+            "with space",
+            "a#b",
+            " lead",
+            "it's",
+            "x\"y",
+            "",
+            "$HOME",
+        ] {
+            let encoded = encode_value(value).ok_or("encodable")?;
+            assert_eq!(
+                parse(&format!("BUSSARD_X={encoded}")),
+                vec![kv("BUSSARD_X", value)],
+                "{value:?} as {encoded}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_store_target_prefers_the_found_file_else_the_parent() -> TestResult {
+        let root = scratch("store-target")?;
+        let model = root.join("knx");
+        let cwd = root.join("elsewhere");
+        std::fs::create_dir_all(&model)?;
+        std::fs::create_dir_all(&cwd)?;
+        assert_eq!(store_target(&model, &cwd), root.join(FILE_NAME));
+        std::fs::write(cwd.join(FILE_NAME), "BUSSARD_A=1\n")?;
+        assert_eq!(store_target(&model, &cwd), cwd.join(FILE_NAME));
+        std::fs::write(model.join(FILE_NAME), "BUSSARD_A=1\n")?;
+        assert_eq!(store_target(&model, &cwd), model.join(FILE_NAME));
+        std::fs::remove_dir_all(&root).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn test_remember_wins_over_the_file() -> TestResult {
+        remember("BUSSARD_DOTENV_REMEMBER_TEST", "stored");
+        assert_eq!(var("BUSSARD_DOTENV_REMEMBER_TEST")?, "stored");
+        assert_eq!(
+            var_os("BUSSARD_DOTENV_REMEMBER_TEST"),
+            Some(OsString::from("stored"))
+        );
         Ok(())
     }
 }
