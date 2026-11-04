@@ -127,6 +127,7 @@ mod flash;
 mod interface;
 mod ip_secure;
 mod line;
+mod replace_device;
 mod restart;
 mod restore;
 mod restore_tables;
@@ -137,7 +138,12 @@ pub const PROGRAMMING_TOOLS: [&str; 11] = [
     "knx_plan_device",
     "knx_apply_device",
     "knx_add_device",
+<<<<<<< HEAD
     "knx_commission_line",
+||||||| parent of de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
+=======
+    "knx_replace_device",
+>>>>>>> de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
     "knx_interface_secure",
     "knx_clear_security_log",
     "knx_apply_status",
@@ -180,8 +186,15 @@ pub struct ProgrammingTier {
     /// Devices `knx_add_device` identified, waiting for the human's yes, by
     /// job id (issue #749).
     adds: std::sync::Mutex<HashMap<String, add_device::PendingAdd>>,
+<<<<<<< HEAD
     /// `knx_commission_line`'s plans and jobs (issue #753).
     commissions: std::sync::Mutex<commission::Commissions>,
+||||||| parent of de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
+=======
+    /// Replacements `knx_replace_device` identified, waiting for the human's
+    /// yes, by job id (issue #751).
+    replaces: std::sync::Mutex<HashMap<String, replace_device::PendingReplace>>,
+>>>>>>> de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
 }
 
 impl ProgrammingTier {
@@ -205,7 +218,12 @@ impl ProgrammingTier {
             table_restores: std::sync::Mutex::new(HashMap::new()),
             line_plans: std::sync::Mutex::new(HashMap::new()),
             adds: std::sync::Mutex::new(HashMap::new()),
+<<<<<<< HEAD
             commissions: std::sync::Mutex::new(commission::Commissions::default()),
+||||||| parent of de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
+=======
+            replaces: std::sync::Mutex::new(HashMap::new()),
+>>>>>>> de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
         }
     }
 
@@ -411,6 +429,7 @@ pub struct AddDeviceArgs {
     pub download: Option<bool>,
 }
 
+<<<<<<< HEAD
 /// Arguments for `knx_commission_line`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CommissionLineArgs {
@@ -434,6 +453,32 @@ pub struct CommissionLineArgs {
     pub answer: Option<String>,
 }
 
+||||||| parent of de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
+=======
+/// Arguments for `knx_replace_device`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ReplaceDeviceArgs {
+    /// The individual address of the dead device, e.g. `"1.1.4"`: the
+    /// address its replacement gets. First call only.
+    #[serde(default)]
+    pub address: Option<String>,
+    /// The `job` the first call returned. Pass it with `plan_digest` and
+    /// `yes: true` to write, after the human's yes.
+    #[serde(default)]
+    pub job: Option<String>,
+    /// The `plan_digest` the job reported at the `identified` step.
+    #[serde(default)]
+    pub plan_digest: Option<String>,
+    /// `true` only after the human's explicit yes to the job's question.
+    #[serde(default)]
+    pub yes: Option<bool>,
+    /// `true` only after the human agreed to download the vendor product
+    /// data (`download_needed`); `yes` never answers that.
+    #[serde(default)]
+    pub download: Option<bool>,
+}
+
+>>>>>>> de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
 /// Arguments for `knx_apply_status`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ApplyStatusArgs {
@@ -620,6 +665,7 @@ impl BussardMcp {
         }
     }
 
+<<<<<<< HEAD
     /// `knx_commission_line` (registered only with `--allow-programming`).
     #[tool(
         description = "Commission a LINE on the PHYSICAL bus, the flow of `bussard commission` \
@@ -664,6 +710,53 @@ impl BussardMcp {
         }
     }
 
+||||||| parent of de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
+=======
+    /// `knx_replace_device` (registered only with `--allow-programming`).
+    #[tool(
+        description = "Replace a DEAD device with the same product on the PHYSICAL bus, the \
+        flow of `bussard replace` (issue #751): backup, press the button, identify, then the \
+        address, the application, the model's parameters and links and the record, with one \
+        yes. Three calls. (1) Call with `address` (the dead device's): it snapshots the model \
+        (`backup`: the device file and its bussard.lock record, kept in the history) and \
+        answers at once with `job` and `question` (press the programming button on the \
+        replacement): tell the human what `backup` kept, relay the question word for word, \
+        then poll knx_job_status. The job first checks that the address no longer answers \
+        (a device that still answers is refused), then waits up to 30 s for the replacement. \
+        (2) knx_job_status reports step `identified`: serial, mask, order number, the \
+        resident application, `identity` against bussard.lock, `application` and \
+        `product_data` (the pinned archive, or what would be downloaded), `sentences`, \
+        `plan_digest` and `question`. Another product (order number or mask) is refused. \
+        Nothing is written yet: show the sentences and ask the question. (3) ONLY after the \
+        human's explicit yes in this conversation, call again with `job`, `plan_digest` and \
+        `yes: true`, plus `download: true` when `download_needed` is true and the human \
+        agreed to the download too. It re-reads the device and refuses when it changed, \
+        writes the address and reads it back, then plans and writes the device as \
+        knx_plan_device and knx_apply_device do (the pinned application loaded when the \
+        replacement does not run it, the backups, the independent read-back) as the same \
+        job, and records `replaced` in the device file and the new serial in bussard.lock. \
+        The result has `step: done`, `ok`, `verified`, `assigned`, `flashed`, `write` (the \
+        apply result), `recorded`, `summary` and `next_step`; when the address took but the \
+        write did not verify, `ok: false` with `reason` and `recovery`. A device the model \
+        records as KNX Data Secure-activated is refused: Secure activation of a factory-fresh \
+        device stays with ETS. Only available with --allow-programming."
+    )]
+    async fn knx_replace_device(
+        &self,
+        Parameters(args): Parameters<ReplaceDeviceArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let address = args
+            .address
+            .clone()
+            .or_else(|| args.job.clone())
+            .unwrap_or_default();
+        match self.replace_device_tool(args).await {
+            Ok(value) => ok(value),
+            Err(reason) => refusal(&address, reason),
+        }
+    }
+
+>>>>>>> de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
     /// `knx_restore_parameters` (registered only with `--allow-programming`).
     #[tool(
         description = "Replay a parameter backup onto ONE device on the PHYSICAL bus (issue \

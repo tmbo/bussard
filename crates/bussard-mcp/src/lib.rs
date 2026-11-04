@@ -114,10 +114,21 @@
 //! of a backup and a device restart. `knx_add_device` (issue #749) adds a
 //! new device: the wait for the programming button and the identification
 //! as a job that pauses for the human's yes, then the address write, the
+<<<<<<< HEAD
 //! read-back and the device file. `knx_commission_line` (issue #753) runs
 //! `bussard commission`'s line walk as one job: per device the button, the
 //! order-number check against the model and the address write with its
 //! read-back, after one yes for the line. See [`tools_program`].
+||||||| parent of de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
+//! read-back and the device file. See [`tools_program`].
+=======
+//! read-back and the device file. `knx_replace_device` (issue #751) replaces
+//! a dead device in the same job shape: the backup snapshot, the wait for the
+//! replacement's button and the identification, then after one yes the
+//! address, the application, the parameters and links (the plan and apply
+//! of `knx_plan_device` and `knx_apply_device`) and the record. See
+//! [`tools_program`].
+>>>>>>> de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
 //!
 //! `--allow-home-assistant` (issue #280) adds the six Home Assistant tools
 //! ([`tools_ha::HA_TOOLS`]) when `bussard.toml` has a `[home_assistant]`

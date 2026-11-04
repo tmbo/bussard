@@ -95,11 +95,20 @@ pub enum JobKind {
     /// the human's yes, the address write and the read-back of
     /// `knx_add_device` (issue #749).
     Add,
+<<<<<<< HEAD
     /// Commissioning a line: per device of the model, the wait for the
     /// programming button, the identification against the model and the
     /// address write with its read-back, of `knx_commission_line` (issue
     /// #753).
     Commission,
+||||||| parent of de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
+=======
+    /// Replacing a dead device: the check that it is gone and the wait for
+    /// the replacement's programming button, then, after the human's yes,
+    /// the address, the flash and the apply with their read-backs and the
+    /// record of `knx_replace_device` (issue #751).
+    Replace,
+>>>>>>> de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
 }
 
 impl JobKind {
@@ -111,7 +120,12 @@ impl JobKind {
             JobKind::Read => "read",
             JobKind::Scan => "scan",
             JobKind::Add => "add",
+<<<<<<< HEAD
             JobKind::Commission => "commission",
+||||||| parent of de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
+=======
+            JobKind::Replace => "replace",
+>>>>>>> de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
         }
     }
 }
@@ -330,6 +344,7 @@ impl JobTable {
         Ok(insert(&mut inner, JobKind::Add, None, None))
     }
 
+<<<<<<< HEAD
     /// Claims the slot for commissioning `line` (`"1.1"`, issue #753) and
     /// returns the new job's id, or the refusal naming the job that runs.
     pub fn claim_commission(&self, line: &str) -> Result<String, String> {
@@ -350,6 +365,19 @@ impl JobTable {
         }
     }
 
+||||||| parent of de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
+=======
+    /// Claims the slot for replacing the device at `address` (issue #751)
+    /// and returns the new job's id, or the refusal naming the job that runs.
+    pub fn claim_replace(&self, address: IndividualAddress) -> Result<String, String> {
+        let mut inner = self.inner();
+        if let Some(refusal) = busy_message(&inner, JobKind::Replace) {
+            return Err(refusal);
+        }
+        Ok(insert(&mut inner, JobKind::Replace, Some(address), None))
+    }
+
+>>>>>>> de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
     /// The job waits on the human (issue #749): it frees the slot, so other
     /// bus jobs run meanwhile, and reports `step`, `question`, the device it
     /// is about (`address`) and the fields of `detail` at the top of its
@@ -387,13 +415,14 @@ impl JobTable {
     /// (unknown, done, or running) is refused too.
     pub fn resume(&self, id: &str, step: &str) -> Result<(), String> {
         let mut inner = self.inner();
-        match inner.jobs.get(id) {
+        let kind = match inner.jobs.get(id) {
             Some(job) if job.state == JobState::Running && inner.running.as_deref() != Some(id) => {
+                job.kind
             }
             Some(_) => return Err(format!("job {id} is not waiting for an answer")),
             None => return Err(format!("no job {id} in this session")),
-        }
-        if let Some(refusal) = busy_message(&inner, JobKind::Add) {
+        };
+        if let Some(refusal) = busy_message(&inner, kind) {
             return Err(refusal);
         }
         inner.running = Some(id.to_string());
@@ -438,7 +467,12 @@ fn busy_message(inner: &Inner, wanting: JobKind) -> Option<String> {
     let again = match wanting {
         JobKind::Scan => "scan again",
         JobKind::Add => "add the device again",
+<<<<<<< HEAD
         JobKind::Commission => "commission the line again",
+||||||| parent of de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
+=======
+        JobKind::Replace => "replace the device again",
+>>>>>>> de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
         _ => "plan again",
     };
     Some(match (job.kind, wanting) {
@@ -470,11 +504,20 @@ fn busy_message(inner: &Inner, wanting: JobKind) -> Option<String> {
             "a device is being added on this server: job {id}; one bus job at a time. Call \
              knx_job_status with job {id} until it is done or waits for an answer, then call again"
         ),
+<<<<<<< HEAD
         (JobKind::Commission, _) => format!(
             "{device} is being commissioned on this server: job {id}; one bus job at a time. \
              Call knx_job_status with job {id} until it is done or waits for an answer (or stop \
              it with knx_commission_line {{job, answer: \"stop\"}}), then call again"
         ),
+||||||| parent of de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
+=======
+        (JobKind::Replace, _) => format!(
+            "a device is being replaced on this server: job {id} for {device}; one bus job at a \
+             time. Call knx_job_status with job {id} until it is done or waits for an answer, \
+             then call again"
+        ),
+>>>>>>> de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
     })
 }
 
@@ -516,7 +559,12 @@ fn insert(
         JobKind::Read => "reading the bus",
         JobKind::Scan => "scanning the line",
         JobKind::Add => "press_button",
+<<<<<<< HEAD
         JobKind::Commission => "checking which devices already answer",
+||||||| parent of de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
+=======
+        JobKind::Replace => "check_gone",
+>>>>>>> de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
     };
     let context = match line {
         Some(line) => json!({ "line": line }),
@@ -817,9 +865,16 @@ fn next_step(status: &Value) -> String {
     if status["kind"] == "add" {
         return add_next_step(status, job);
     }
+<<<<<<< HEAD
     if status["kind"] == "commission" {
         return commission_next_step(status, job);
     }
+||||||| parent of de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
+=======
+    if status["kind"] == "replace" {
+        return replace_next_step(status, job, address);
+    }
+>>>>>>> de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
     if status["kind"] == "plan" {
         return match status["state"].as_str() {
             Some("running") => format!(
@@ -899,6 +954,7 @@ fn add_next_step(status: &Value, job: &str) -> String {
     }
 }
 
+<<<<<<< HEAD
 /// What the assistant does next with a `knx_commission_line` job (issue
 /// #753).
 fn commission_next_step(status: &Value, job: &str) -> String {
@@ -933,6 +989,43 @@ fn commission_next_step(status: &Value, job: &str) -> String {
     }
 }
 
+||||||| parent of de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
+=======
+/// What the assistant does next with a `knx_replace_device` job (issue #751).
+fn replace_next_step(status: &Value, job: &str, address: &str) -> String {
+    match (status["state"].as_str(), status["step"].as_str()) {
+        (Some("running"), Some("check_gone" | "press_button")) => format!(
+            "Relay `question` to the human word for word when there is one: the job checks \
+             that {address} no longer answers, then waits up to 30 s for the replacement to \
+             enter programming mode. Call knx_job_status with job {job} again in a few seconds."
+        ),
+        (Some("running"), Some("identified")) => format!(
+            "The replacement is identified and nothing was written. Show the human `sentences` \
+             in full and ask `question`. Only after an explicit yes call knx_replace_device \
+             with job {job}, plan_digest and yes: true, and download: true when \
+             `download_needed` is true and the human agreed to the download."
+        ),
+        (Some("running"), _) => format!(
+            "Still working on {address} ({}). Call knx_job_status with job {job} again in a few \
+             seconds; the job continues in the server whether or not you poll.",
+            status["step"].as_str().unwrap_or("working")
+        ),
+        (Some("interrupted"), _) => format!(
+            "The server stopped while job {job} was replacing {address}; the device may be \
+             addressed and partly written. Call knx_plan_device for {address}, show the plan \
+             to the human and ask again."
+        ),
+        _ if status["result"]["ok"] == true => {
+            "Done: tell the human result.summary, then follow result.next_step.".to_string()
+        }
+        _ => format!(
+            "Job {job} did not complete the replacement of {address}: tell the human \
+             result.reason and result.recovery when there is one."
+        ),
+    }
+}
+
+>>>>>>> de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
 #[cfg(test)]
 mod tests {
     use super::*;
