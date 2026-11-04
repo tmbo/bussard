@@ -29,8 +29,8 @@ use std::time::{Duration, Instant};
 use crate::args::Parameters;
 use bussard_secure::Password;
 use bussard_service::enroll_session::{
-    CertificateOutcome, CertificateSink, EnrollEnd, EnrollEvent, EnrollSession, HttpRelay,
-    RunOptions, hosted_endpoints,
+    CertificateOutcome, CertificateSink, DOCS_URL, EnrollEnd, EnrollEvent, EnrollSession,
+    EnrollTally, HttpRelay, RunOptions, data_path, hosted_endpoints,
 };
 use bussard_viz::enroll_local::LocalEnrollServer;
 use rmcp::ErrorData;
@@ -199,16 +199,28 @@ fn status_json(job: &EnrollJob) -> Value {
         .count();
     let running = progress.end.is_none();
     let elapsed = job.started.elapsed().as_secs();
+    let tally = EnrollTally::of(&progress.results);
+    let steps = tally.next_steps();
     let next_step = if running {
         "The session is open. Tell the human how many labels arrived and what became of each \
          (quote serial, address, name and status), and ask whether more labels are to come. \
          Call knx_enroll_status again (wait_seconds to wait for the next one), and with \
          stop: true once the human is done."
+    } else if steps.is_empty() {
+        "The session is closed. Give the human `summary`; nothing else is left to do."
     } else {
-        "The session is closed. Summarize the results for the human. A `conflict` needs a \
-         decision at the CLI (the store holds another key for that serial); an `invalid` label \
-         should be scanned again in a new session."
+        "The session is closed. Give the human `summary` and each entry of `next_steps` \
+         (command and why). Those commands run at the CLI."
     };
+    let summary = format!(
+        "{} {}",
+        if running {
+            "The certificate page is open."
+        } else {
+            "The certificate page is closed."
+        },
+        tally.summary()
+    );
     json!({
         "ok": progress.error.is_none(),
         "session": if running { "running" } else { "ended" },
@@ -221,21 +233,15 @@ fn status_json(job: &EnrollJob) -> Value {
         "certificates": progress.results.len(),
         "stored": stored,
         "ignored": progress.ignored,
+        "tally": tally,
         "results": progress.results.iter().map(result_json).collect::<Vec<_>>(),
         "expires_in_seconds": if running {
             Some(SESSION_LIFETIME_SECS.saturating_sub(elapsed))
         } else {
             None
         },
-        "summary": format!(
-            "{} {} label(s) received, {stored} saved in the key store.",
-            if running {
-                "The certificate page is open."
-            } else {
-                "The certificate page is closed."
-            },
-            progress.results.len()
-        ),
+        "summary": summary,
+        "next_steps": if running { Vec::new() } else { steps },
         "next_step": next_step,
     })
 }
@@ -422,6 +428,8 @@ impl BussardMcp {
             "fingerprint": fingerprint,
             "local": is_local,
             "expires_in_seconds": SESSION_LIFETIME_SECS,
+            "data_path": data_path(is_local).join(" "),
+            "read_more": DOCS_URL,
             "summary": format!(
                 "The certificate page is ready. Open the link {}, check that it shows the code \
                  {fingerprint}, and scan the labels on the Secure devices. Each one is saved in \
@@ -429,13 +437,15 @@ impl BussardMcp {
                 if is_local { "in a browser on this computer" } else { "on your phone" }
             ),
             "next_step": if is_local {
-                "Give the human the link and the fingerprint. They open the link in a browser \
+                "Give the human the link, the fingerprint (the session code), `data_path` and \
+                 the `read_more` link. They open the link in a browser \
                  on the computer running this server (it is served on 127.0.0.1; a phone cannot \
                  reach it), check that the page shows the same fingerprint, and scan or type \
                  the labels there, never in this chat. Then call knx_enroll_status \
                  (wait_seconds to wait for labels)."
             } else {
-                "Give the human the link and the fingerprint. They open the link on the phone, \
+                "Give the human the link, the fingerprint (the session code), `data_path` and \
+                 the `read_more` link. They open the link on the phone, \
                  check that the page shows the same fingerprint, and scan the labels there, \
                  never in this chat. Then call knx_enroll_status (wait_seconds to wait for \
                  labels)."
@@ -465,6 +475,9 @@ impl BussardMcp {
         (`stored`: saved on that device; `unassigned`: saved under its serial until a device \
         reports it; `already_stored`; `conflict`: the store holds another key for the serial, \
         nothing written; `invalid`; `error`) and `message`. Never a label or a key. \
+        `tally` counts the statuses (`stored`, `waiting`, `already_known`, `conflicts`, \
+        `invalid`, `errors`); `summary` says it in one line, and once the session has ended \
+        `next_steps` lists the CLI commands that apply (`command`, `why`). \
         `wait_seconds` (at most 120) waits for the next label or the end first; `stop: true` \
         ends the session. Reads nothing from the bus."
     )]
@@ -545,6 +558,67 @@ mod tests {
                 "status": "stored",
             })
         );
+    }
+
+    fn job_with(statuses: &[EnrollStatus], end: Option<&'static str>) -> EnrollJob {
+        let (changed, _) = watch::channel(0u64);
+        let results = statuses
+            .iter()
+            .map(|status| CertificateOutcome {
+                status: *status,
+                serial: Some("00FA01020304".to_string()),
+                ia: None,
+                name: None,
+                message: None,
+            })
+            .collect();
+        EnrollJob {
+            link: "https://page.invalid/#x".to_string(),
+            fingerprint: "ABCD-1234".to_string(),
+            local: false,
+            started: Instant::now(),
+            stop: Arc::new(AtomicBool::new(false)),
+            progress: Arc::new(Mutex::new(Progress {
+                results,
+                end,
+                ..Progress::default()
+            })),
+            changed: Arc::new(changed),
+        }
+    }
+
+    #[test]
+    fn test_status_json_ended_has_summary_and_next_steps() {
+        let job = job_with(
+            &[EnrollStatus::Unassigned, EnrollStatus::Conflict],
+            Some("phone_done"),
+        );
+        let status = status_json(&job);
+        assert_eq!(
+            status["summary"],
+            "The certificate page is closed. 2 label(s): 1 waiting for a device, 1 conflict(s)."
+        );
+        assert_eq!(status["tally"]["waiting"], 1);
+        assert_eq!(status["tally"]["conflicts"], 1);
+        let commands: Vec<&str> = status["next_steps"]
+            .as_array()
+            .map(|steps| steps.iter().filter_map(|s| s["command"].as_str()).collect())
+            .unwrap_or_default();
+        assert_eq!(
+            commands,
+            [
+                "bussard scan <LINE>, or bussard adopt <ADDRESS>",
+                "bussard keys export <FILE>",
+                "bussard keys show"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_status_json_running_has_no_next_steps() {
+        let status = status_json(&job_with(&[EnrollStatus::Stored], None));
+        assert_eq!(status["next_steps"], json!([]));
+        assert_eq!(status["session"], "running");
     }
 
     #[test]
