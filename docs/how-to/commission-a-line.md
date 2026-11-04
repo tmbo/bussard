@@ -15,7 +15,7 @@ A group address (`1/1/0`) is the topic a button sends on and an actuator listens
     You:        Yes.
     Assistant:  (calls knx_reserve_groups)
                 Reserved 20 group addresses for EG Küche, starting at
-                1/1/0 EG Küche Light Switch. The model validates clean.
+                1/1/0 EG Küche Light Switch. The project validates clean.
     ```
 
     `knx_reserve_groups` reserves one room; `knx_scaffold_groups` takes a list of rooms at once. The assistant confirms the floors, rooms and functions before it writes.
@@ -45,10 +45,10 @@ The room names the floor first. The functions are `light`, `light-dim`, `blind`,
 
 ## Commission the devices on the bench
 
-Put the model's devices for the line on the bench, factory-fresh. Each needs its individual address (`1.1.7`, area.line.device), the address bussard and ETS use to program it.
+Put your project's devices for the line on the bench, factory-fresh. Each needs its address (`1.1.7`, area.line.device), the one bussard and ETS use to program it.
 
 !!! warning
-    Commissioning writes individual addresses. Against a real gateway it also needs `--allow-remote-gateway`.
+    Commissioning writes device addresses. Against a real gateway it also needs `--allow-remote-gateway`.
 
 === "In chat"
 
@@ -57,7 +57,7 @@ Put the model's devices for the line on the bench, factory-fresh. Each needs its
     ```text
     You:        Commission line 1.1.
     Assistant:  (calls knx_commission_line)
-                The model has 2 devices on line 1.1: Blind actuator in the
+                Your project has 2 devices on line 1.1: Blind actuator in the
                 living room and Switch actuator in the kitchen. Start?
     You:        Yes.
     Assistant:  (calls knx_commission_line with yes, then knx_job_status)
@@ -69,7 +69,7 @@ Put the model's devices for the line on the bench, factory-fresh. Each needs its
                 programming button on Switch actuator (AKK-0216.03).
     ```
 
-    `knx_commission_line` needs a server started with `--allow-programming`. Your one yes covers every device whose order number matches the model. When the pressed device is another product, or nothing answers, the job waits for your word: retry, skip or stop. At the end the assistant reads out the label lines.
+    `knx_commission_line` needs a server started with `--allow-programming`. Your one yes covers every device whose order number matches your project. When the pressed device is another product, or nothing answers, the job waits for your word: retry, skip or stop. At the end the assistant reads out the label lines.
 
 === "At the terminal"
 
@@ -85,7 +85,7 @@ Put the model's devices for the line on the bench, factory-fresh. Each needs its
 
 bussard first checks which devices already answer at their address. Those are reported as `present` and left alone. For each of the others it asks you to press the programming button, then:
 
-1. Reads the pressed device's order number and compares it with the model.
+1. Reads the pressed device's order number and compares it with your project.
 2. Writes the address, verifies it, and clears programming mode.
 3. Gives you a label line.
 
@@ -138,7 +138,7 @@ manual = "Press the test button on the weather station"
 expect = { ga = "3/1/0", value = "up", within = "5s" }
 ```
 
-Each test has exactly one of `write` or `manual`. `within` defaults to `3s`; leave out `value` to accept any value. An assistant can draft the file from the model: switches with a status address are the obvious first tests.
+Each test has exactly one of `write` or `manual`. `within` defaults to `3s`; leave out `value` to accept any value. An assistant can draft the file from your project: switches with a status address are the obvious first tests.
 
 ## Run the acceptance test
 
@@ -192,7 +192,7 @@ The report has no timestamps, so a rerun at the three-month visit gives a protoc
     $ bussard doc --format html --out handover/
     ```
 
-The documentation reads only the model and writes the folder the KNX guidelines ask for, by default to `docs/installation`: a device list, a group-address list with senders and listeners, one sheet per room in plain language, the connection details (never credentials) and a change log from git. Devices without a `location:` get no room sheet. Two runs on the same model write identical files, so commit the folder and regenerate it after every change.
+The documentation reads only your project and writes the folder the KNX guidelines ask for, by default to `docs/installation`: a device list, a group-address list with senders and listeners, one sheet per room in plain language, the connection details (never credentials) and a change log from git. Devices without a `location:` get no room sheet. Two runs on the same project write identical files, so commit the folder and regenerate it after every change.
 
 ## Next steps
 

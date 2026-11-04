@@ -1,6 +1,6 @@
 # Find what you have
 
-Find out what the model holds, which devices answer on the bus, and what bussard can do with each of them. Every command here reads; none of them changes a device.
+Find out what your project holds, which devices answer on the bus, and what bussard can do with each of them. Every command here reads; none of them changes a device.
 
 ## Audit the installation
 
@@ -16,7 +16,7 @@ Find out what the model holds, which devices answer on the bus, and what bussard
                 only be described. 12 group addresses have no type.
     ```
 
-    `knx_audit` returns the same report as the terminal command. With the server's keyring it also says which Secure devices the keyring covers.
+    `knx_audit` returns the same report as the terminal command. With the server's key store it also says which Secure devices it covers.
 
 === "At the terminal"
 
@@ -64,7 +64,7 @@ Unlinked com objects and unused group addresses are counted, not flagged. Actuat
     $ bussard audit --live
     ```
 
-    `--live` adds three things: the gateway's tunnel budget, a traffic sample over `--window` seconds (default 30), and a probe of every modelled device, one at a time.
+    `--live` adds three things: the gateway's tunnel budget, a traffic sample over `--window` seconds (default 30), and a probe of every device in your project, one at a time.
 
 It sends only management reads to single devices, never a group telegram, so no light switches.
 
@@ -75,9 +75,9 @@ It sends only management reads to single devices, never a group telegram, so no 
     ```text
     You:        Which devices answer on line 1.1?
     Assistant:  (calls knx_find_devices, then knx_job_status until done)
-                3 devices answered. 2 are in the model; the blind actuator
-                MDT JAL-0810.03 at 1.1.47 is not. Every model device on
-                this line answered.
+                3 devices answered. 2 are in your project; the blind actuator
+                MDT JAL-0810.03 at 1.1.47 is not. Every device of your
+                project on this line answered.
     ```
 
     `knx_find_devices` runs the scan as a job, so the assistant checks back with `knx_job_status` while it runs. A server started with `--passive` does not offer it.
@@ -109,13 +109,13 @@ The summary is the point: which devices are in your project, which are not, and 
     ```text
     You:        What does the Jung actuator 1.1.4 actually carry?
     Assistant:  (calls knx_reconstruct_device)
-                Its tables match the model, except one group address the
-                device has and the model does not.
+                Its tables match your project, except one group address the
+                device has and your project does not.
     You:        And what does it report about itself?
     Assistant:  (calls knx_describe_device)
     ```
 
-    `knx_reconstruct_device` reads the link tables back and compares them with the model. `knx_describe_device` lists the interface objects and properties. With the server's keyring a Secure device is read with its tool key.
+    `knx_reconstruct_device` reads the link tables back and compares them with your project. `knx_describe_device` lists the interface objects and properties. With the server's key store a Secure device is read with its tool key.
 
 === "At the terminal"
 
@@ -129,18 +129,18 @@ The summary is the point: which devices are in your project, which are not, and 
     $ bussard reconstruct 1.1.4
     ```
 
-    `reconstruct` reads the device's link tables back and compares them with the model, group addresses per com object. Give it `--product <file.knxprod>`, or let it use the product data the lock pins, and it also decodes the parameters that differ from the vendor default and from the model.
+    `reconstruct` reads the device's link tables back and compares them with your project, group addresses per com object. Give it `--product <file.knxprod>`, or let it use the product data the lock pins, and it also decodes the parameters that differ from the vendor default and from your project.
 
-Use the description on an unknown device during commissioning. Neither form writes. A Secure device that answers only under its factory key (FDSK) from the key store was reset or never commissioned; bussard says so, and you commission it with ETS and import the new keyring.
+Use the description on an unknown device during commissioning. Neither form writes. A Secure device that answers only under its factory key from the key store was reset or never commissioned; bussard says so, and you commission it with ETS and import the new ETS keyring.
 
-The read-back cannot tell send from listen, because many devices do not expose that. It refuses a device whose mask it cannot read; the audit shows which devices allow it. To build a new model from what a whole line carries, see [Add a device](add-a-device.md).
+The read-back cannot tell send from listen, because many devices do not expose that. It refuses a device whose mask it cannot read; the audit shows which devices allow it. To build a new project from what a whole line carries, see [Add a device](add-a-device.md).
 
 ## Check one device's identity
 
 === "In chat"
 
     ```text
-    You:        Is the IP interface still the device the model expects?
+    You:        Is the IP interface still the device my project expects?
     Assistant:  (calls knx_show_device with live: true)
     ```
 
@@ -152,7 +152,7 @@ The read-back cannot tell send from listen, because many devices do not expose t
     $ bussard status 1.1.250
     ```
 
-    With an address, `status` reads the device's mask and identity and compares them with the lock. For a KNX IP interface it also prints its IP settings, tunnelling addresses and state, and each difference from the device file. Without an address, `status` shows the model changes not yet written to any device (see [Change what a button does](change-a-link.md)).
+    With an address, `status` reads the device's mask and identity and compares them with the lock. For a KNX IP interface it also prints its IP settings, tunnelling addresses and state, and each difference from the device file. Without an address, `status` shows the changes to your project not yet written to any device (see [Change what a button does](change-a-link.md)).
 
 ## Get past "no free tunnelling connection"
 

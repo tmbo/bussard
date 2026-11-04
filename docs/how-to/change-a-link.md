@@ -12,7 +12,7 @@ Point a button at another light, check the change, write it to the device, and t
     You:        Make the hallway rocker switch the porch light too.
     Assistant:  (calls knx_model_lookup, then knx_add_link)
                 Rocker 1 on Hallway push button now switches Porch light.
-                This changes the model only.
+                This changes your project only.
     ```
 
     `knx_model_lookup` finds the button and the light by their names, and `knx_add_link` writes the link into the device file. The assistant reads the change back as a sentence; nothing reaches the bus.
@@ -37,12 +37,12 @@ Point a button at another light, check the change, write it to the device, and t
 
 `send` is the address an object reports on; `listen` lists the addresses it obeys. Both forms change the same files.
 
-## Check the model
+## Check the project
 
 === "In chat"
 
     ```text
-    You:        Is the model still valid?
+    You:        Is the project still valid?
     Assistant:  (calls knx_validate)
                 No errors, 2 warnings.
     ```
@@ -56,7 +56,7 @@ Point a button at another light, check the change, write it to the device, and t
 
     `validate` exits non-zero on an error.
 
-The check reads files only. A write is refused while the model has an error. Warnings do not block.
+The check reads files only. A write is refused while the project has an error. Warnings do not block.
 
 ## Preview the write
 
@@ -92,7 +92,7 @@ The check reads files only. A write is refused while the model has an error. War
 
 The plan reads the device and shows what the write would change, in the device file's words. An address only the device has is often a stale link from an old ETS download; the write removes it.
 
-A device that already matches has nothing to write. The plan never writes. It refuses a device with no links in the model, because writing that plan would empty the device.
+A device that already matches has nothing to write. The plan never writes. It refuses a device with no links in your project, because writing that plan would empty the device.
 
 ## Write the change
 
@@ -104,8 +104,8 @@ A device that already matches has nothing to write. The plan never writes. It re
     ```text
     You:        Yes.
     Assistant:  (calls knx_apply_device)
-                Written and verified: the blind actuator now matches the
-                model.
+                Written and verified: the blind actuator now matches your
+                project.
     ```
 
     `knx_apply_device` writes only with the digest of a plan you said yes to, and refuses when a fresh read of the device no longer produces that plan. A long write runs as a job the assistant follows with `knx_job_status`.
@@ -117,9 +117,9 @@ A device that already matches has nothing to write. The plan never writes. It re
     apply these 3 changes to 1.1.47 through 192.0.2.10:3671? [y/N] y
     ```
 
-    `apply` validates the model, reads the device, shows the plan, and asks once. Without a terminal it needs `--yes`.
+    `apply` validates the project, reads the device, shows the plan, and asks once. Without a terminal it needs `--yes`.
 
-Both forms run the same write. It backs up the device's tables to `captures/backups/<address>-<timestamp>.json`, writes only what differs, and reads every write back. Both refuse before writing when the model has a validation error or the backup cannot be written.
+Both forms run the same write. It backs up the device's tables to `captures/backups/<address>-<timestamp>.json`, writes only what differs, and reads every write back. Both refuse before writing when the project has a validation error or the backup cannot be written.
 
 At the terminal `apply` also refuses when:
 
@@ -129,11 +129,11 @@ At the terminal `apply` also refuses when:
 
 In chat these become part of the plan instead. The assistant says the device needs its application loaded or a full flash, and your yes covers that too. Without the product data the plan writes the links only, and says so.
 
-"Verified" means bussard read the tables and parameters back from the device and they match the model, not merely that the writes completed. The tables are rewritten whole, so writing again after a failure is safe. `apply` also reminds you when no installation-wide [backup](back-up-and-replace.md) exists yet.
+"Verified" means bussard read the tables and parameters back from the device and they match your project, not merely that the writes completed. The tables are rewritten whole, so writing again after a failure is safe. `apply` also reminds you when no installation-wide [backup](back-up-and-replace.md) exists yet.
 
 ## Undo a change
 
-bussard saves a copy of the model files before every command that writes the model or the bus, and before every edit the assistant makes. You do not need git.
+bussard saves a copy of the project files before every command that writes them or the bus, and before every edit the assistant makes. You do not need git.
 
 === "In chat"
 
@@ -146,7 +146,7 @@ bussard saves a copy of the model files before every command that writes the mod
     You:        Undo that.
     Assistant:  (calls knx_undo)
                 Rocker 1 on Hallway push button no longer switches Porch
-                light. The model is back; the devices were never changed.
+                light. Your project is back; the devices were never changed.
     ```
 
     `knx_describe_change` says in sentences what changed since the last snapshot, `knx_history` lists the snapshots, and `knx_undo` restores one.

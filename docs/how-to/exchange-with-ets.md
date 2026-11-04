@@ -1,6 +1,6 @@
 # Exchange with ETS
 
-Keep bussard and ETS, the KNX Association's commissioning tool, in step in both directions: your names into an ETS project, and an integrator's new ETS export into your model. For owners who work with an ETS integrator, and for integrators who keep ETS as the tool of record.
+Keep bussard and ETS, the KNX Association's commissioning tool, in step in both directions: your names into an ETS project, and an integrator's new ETS export into your project. For owners who work with an ETS integrator, and for integrators who keep ETS as the tool of record.
 
 None of these steps touch the bus.
 
@@ -70,7 +70,7 @@ Before you import an integrator's new file, ask what it changes.
                 room thermostat: 2 to 3. No protected address is touched.
     ```
 
-    `knx_diff_project` compares a `.knxproj` or `.bussard` file with your model. A password-protected project needs `BUSSARD_PROJECT_PASSWORD` in the `.env`.
+    `knx_diff_project` compares a `.knxproj` or `.bussard` file with your project. A password-protected ETS project needs `BUSSARD_PROJECT_PASSWORD` in the `.env`.
 
 === "At the terminal"
 
@@ -81,9 +81,9 @@ Before you import an integrator's new file, ask what it changes.
       Night setback on Living room thermostat: 2 to 3.
     ```
 
-    Each side can be a model directory, a `.bussard` bundle or a `.knxproj`. `diff` exits 0 whether or not there are differences.
+    Each side can be a project folder, a `.bussard` bundle or a `.knxproj`. `diff` exits 0 whether or not there are differences.
 
-    - A password-protected project takes `--password`, `--password-b` for a second project with another password, or `BUSSARD_PROJECT_PASSWORD` from your `.env`.
+    - A password-protected ETS project takes `--password`, `--password-b` for a second ETS project with another password, or `BUSSARD_PROJECT_PASSWORD` from your `.env`.
     - `--json` gives the structured changes, `--raw` a file-level TOML diff.
 
 A renamed group address is one rename, not a removal and an addition. The comparison writes nothing.
@@ -95,7 +95,7 @@ A renamed group address is one rename, not a removal and an addition. The compar
     ```text
     You:        Import it.
     Assistant:  (calls knx_import_file)
-                Imported. The new night setback is in the model; no
+                Imported. The new night setback is in your project; no
                 device has it yet.
     ```
 
@@ -116,10 +116,10 @@ The import takes the generated data from the file: com-object tables, links and 
 | `--theirs` | Take the file's value. |
 | `--interactive` | Ask for each one (`m` keeps mine, `t` takes theirs). |
 
-A link you have and the file lacks is a disagreement too, because bussard cannot tell a link you added from one the project dropped. The import snapshots the model first, so an undo reverts it. Afterwards, plan and write the devices that changed; the import itself writes no device.
+A link you have and the file lacks is a disagreement too, because bussard cannot tell a link you added from one the ETS project dropped. The import snapshots your project first, so an undo reverts it. Afterwards, plan and write the devices that changed; the import itself writes no device.
 
 ## Next steps
 
 - [Work with an integrator](work-with-an-integrator.md): the full file exchange, with bundles.
 - [Change a link](change-a-link.md): push the imported change to the device.
-- [Model commands](../reference/commands/model.md): every flag of `diff`, `import` and `export-groups`.
+- [Project commands](../reference/commands/model.md): every flag of `diff`, `import` and `export-groups`.

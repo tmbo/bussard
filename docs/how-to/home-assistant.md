@@ -1,8 +1,8 @@
 # Generate the Home Assistant config
 
-Turn the model into the configuration of Home Assistant's KNX integration, so your lights, blinds and heating show up there with the names you gave them. For owners who run Home Assistant next to their KNX bus.
+Turn your project into the configuration of Home Assistant's KNX integration, so your lights, blinds and heating show up there with the names you gave them. For owners who run Home Assistant next to their KNX bus.
 
-The generator reads only the model and never touches the bus.
+The generator reads only your project and never touches the bus.
 
 ## Generate the file
 
@@ -11,7 +11,7 @@ The generator reads only the model and never touches the bus.
     Start the server with `--allow-home-assistant` and a `[home_assistant]` table in `bussard.toml` ([MCP tools](../reference/mcp-tools.md)), then:
 
     ```text
-    You:        Bring Home Assistant up to date with the model.
+    You:        Bring Home Assistant up to date with my project.
     Assistant:  (calls knx_ha_plan)
                 2 entities are added: Kitchen Light Switch and Living
                 Room Blind. Write the file and reload the KNX integration?
@@ -51,13 +51,13 @@ knx:
 # unmapped: 3 group addresses (no-dpt: 1, dpt 1: 1, dpt 20: 1)
 ```
 
-bussard walks each device's com objects (the inputs and outputs of a device) and makes one Home Assistant entity per channel (or per com object where the model records no channel): a switch, light, cover, climate, sensor or binary sensor. The output is sorted, so a rerun after a small model change gives a small diff.
+bussard walks each device's com objects (the inputs and outputs of a device) and makes one Home Assistant entity per channel (or per com object where your project records no channel): a switch, light, cover, climate, sensor or binary sensor. The output is sorted, so a rerun after a small change to your project gives a small diff.
 
 ## Put it where Home Assistant reads it
 
 In chat the assistant writes the file Home Assistant reads, so skip this step. At the terminal, copy the file into your Home Assistant configuration directory and include it from `configuration.yaml`, or paste the `knx:` block in directly. The header says not to hand-edit it: regenerate instead, and put your changes in `ha.toml`.
 
-## Check the result against the model
+## Check the result against your project
 
 Read the footer first. It counts the entities per platform and the group addresses that mapped. Every address that fits no rule is counted on the `# unmapped:` line by DPT, the data type of the address, so nothing is dropped silently.
 
@@ -69,7 +69,7 @@ A room becomes a `climate` entity only when it has an operation-mode command add
 
 ## Tune it with ha.toml
 
-Put an `ha.toml` next to the model to change the result:
+Put an `ha.toml` next to your project files to change the result:
 
 ```toml
 [global]

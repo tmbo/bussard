@@ -11,16 +11,16 @@ On both sides an assistant usually does the reading and writing over MCP, and th
 | `.knxproj` project files | The full ETS project, often password-protected, owned by whoever the contract says. |
 | `.knxprod` vendor product files, `products/` (unless the repository is private), `.bussard/` | The manufacturer's copyrighted application data. |
 | `.knxkeys` keyrings and tool keys | The KNX Secure keys to every secured device. |
-| Passwords, `.env` | The project password, keyring password, gateway credentials. |
+| Passwords, `.env` | The ETS project password, the key store password, gateway credentials. |
 | `captures/` | Bus recordings of a lived-in house. |
 
-`bussard export` copies an allow-list of model files and nothing else, so a bundle cannot carry any of these by accident. A repository needs the ignore entries that `bussard init` writes. Send keyrings and passwords on a separate channel, or in person.
+`bussard export` copies an allow-list of project files and nothing else, so a bundle cannot carry any of these by accident. A repository needs the ignore entries that `bussard init` writes. Send keyrings and passwords on a separate channel, or in person.
 
 ## Exchange files
 
-The handover bundle is the delivered state. At acceptance the integrator exports it, and the model checksum from its manifest goes on the acceptance protocol. From then on:
+The handover bundle is the delivered state. At acceptance the integrator exports it, and the project checksum from its manifest goes on the acceptance protocol. From then on:
 
-1. The owner exports the current model (`bussard export`, or `knx_export` over MCP), or describes the wish in words.
+1. The owner exports the current project (`bussard export`, or `knx_export` over MCP), or describes the wish in words.
 2. The integrator runs `bussard diff` between the delivered bundle and the one received. That lists, in sentences, everything the owner changed since handover: the warranty question, answered before work starts.
 3. The integrator makes the change, in ETS or in bussard, and sends back a `.knxproj` or a bundle.
 4. The owner previews the file (`bussard diff`, or `knx_diff_project`) and imports it with `bussard import` (or `knx_import_file` over MCP). Names, rooms and descriptions the owner wrote stay hers; each disagreement is reported as a sentence.
@@ -30,9 +30,9 @@ The handover bundle is the delivered state. At acceptance the integrator exports
 
 ### Example: one link, by file
 
-This uses the four-device model in `knx-sim/examples/small-installation`, which points at the simulator on `127.0.0.1:13671`. The outputs are illustrative.
+This uses the four-device project in `knx-sim/examples/small-installation`, which points at the simulator on `127.0.0.1:13671`. The outputs are illustrative.
 
-The owner wants the kitchen switch to switch the hallway light too. Her assistant exports the model as `knx-2026-10-01.bussard`. The integrator first checks what changed since he delivered:
+The owner wants the kitchen switch to switch the hallway light too. Her assistant exports her project as `knx-2026-10-01.bussard`. The integrator first checks what changed since he delivered:
 
 ```console
 $ bussard diff delivered-2026-06-01.bussard knx-2026-10-01.bussard
@@ -40,7 +40,7 @@ $ bussard diff delivered-2026-06-01.bussard knx-2026-10-01.bussard
   Group address 1/0/1 is now called "Kitchen ceiling" (was "Light Kitchen").
 ```
 
-A rename, nothing that affects the warranty. He imports the bundle into an empty directory, which reproduces her model byte for byte, history included:
+A rename, nothing that affects the warranty. He imports the bundle into an empty directory, which reproduces her project byte for byte, history included:
 
 ```console
 $ bussard import knx-2026-10-01.bussard --dir house
@@ -94,13 +94,13 @@ The owner's assistant reads the returned file with `knx_diff_project` and report
     apply verified: address table Loaded (3 entries), association table Loaded (3 entries)
     ```
 
-The import snapshots the model first, so `bussard undo` reverts it. Had the integrator worked in ETS, he would have sent a `.knxproj`; the owner's side is the same. If both renamed the same thing, the import keeps her value, prints the disagreement and exits 3; `--theirs`, `--mine` or `--interactive` settles it.
+The import snapshots the project first, so `bussard undo` reverts it. Had the integrator worked in ETS, he would have sent a `.knxproj`; the owner's side is the same. If both renamed the same thing, the import keeps her value, prints the disagreement and exits 3; `--theirs`, `--mine` or `--interactive` settles it.
 
 ## Share a repository
 
 For customers who already use git, one repository per installation replaces the mail:
 
-1. The repository holds the model directory (`knx/`) and the ignore entries from `bussard init`, and nothing from the table above.
+1. The repository holds the project folder (`knx/`) and the ignore entries from `bussard init`, and nothing from the table above.
 2. The owner's assistant makes the change on a branch and opens a pull request quoting the sentences from `knx_describe_change`.
 3. CI checks the change without a bus.
 4. The integrator reviews the sentences and approves.
@@ -127,4 +127,4 @@ jobs:
 ## Next steps
 
 - [Exchange with ETS](exchange-with-ets.md): get names into ETS and read a new export.
-- [Model directory](../reference/model-directory.md): what a bundle contains.
+- [Project folder](../reference/model-directory.md): what a bundle contains.
