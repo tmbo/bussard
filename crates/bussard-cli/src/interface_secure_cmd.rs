@@ -117,15 +117,15 @@ pub(crate) fn run(
     };
     let password = bussard_model::dotenv::var(KEYRING_PASSWORD_ENV)
         .map_err(|_| bussard_service::secure::SecureKeyError::MissingPassword)?;
-    let store = KeyStore::load(dir, &password)
-        .with_context(|| format!("loading the key store {}", KeyStore::path(dir).display()))?
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "no key store at {}: the interface's factory key (FDSK) and credentials live \
+    let (store, keystore_loaded) = KeyStore::load_with_revision(dir, &password)
+        .with_context(|| format!("loading the key store {}", KeyStore::path(dir).display()))?;
+    let store = store.ok_or_else(|| {
+        anyhow::anyhow!(
+            "no key store at {}: the interface's factory key (FDSK) and credentials live \
                  there; create it with `bussard keys import <file.knxkeys>`",
-                KeyStore::path(dir).display()
-            )
-        })?;
+            KeyStore::path(dir).display()
+        )
+    })?;
     let mut plan = match switch {
         Switch::On => plan_on(&store, target, &knxnet.tunnels)?,
         Switch::Off => plan_off(&store, target)?,
@@ -203,6 +203,7 @@ pub(crate) fn run(
         skip_address_check: overrides.skip_address_check,
         dir,
         keystore_password: &password,
+        keystore_loaded: &keystore_loaded,
         connect_wait: crate::conn_cmd::connect_wait(),
     };
     let json = inputs.json;

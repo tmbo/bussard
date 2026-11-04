@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 
 use bussard_model::{IndividualAddress, SerialRecord};
 use bussard_project::keystore::{
-    AttachOutcome, FdskEnrolment, KeyStore, KeyStoreError, SerialNumber,
+    AttachOutcome, FdskEnrolment, KeyStore, KeyStoreError, SerialNumber, StoreRevision,
 };
 use bussard_secure::{Certificate, Key16, Password};
 use serde::{Deserialize, Serialize};
@@ -124,15 +124,18 @@ pub enum EnrolError {
     },
 }
 
-/// An open enrolment: the key store of a model directory, loaded once, and
-/// the model's device names. Each certificate is saved as it is entered.
+/// An open enrolment: a model directory whose key store loads with the
+/// password, and the model's device names. Each certificate loads the store
+/// afresh, enters its key and saves it at once, refusing when the file changed
+/// in between (issue #793), so a long session never writes a stale copy over
+/// a key another command or the MCP server saved meanwhile.
 pub struct CertificateEnrolment {
     /// The model directory.
     dir: PathBuf,
     /// The key store password.
     password: Password,
-    /// The loaded (or new) store.
-    store: KeyStore,
+    /// The project name a store created by this enrolment gets.
+    project: String,
     /// The model's device names by address.
     names: BTreeMap<IndividualAddress, String>,
     /// The serial numbers `bussard.lock` records, and their device (#752).
@@ -143,7 +146,7 @@ impl std::fmt::Debug for CertificateEnrolment {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CertificateEnrolment")
             .field("dir", &self.dir)
-            .field("store", &self.store)
+            .field("project", &self.project)
             .finish_non_exhaustive()
     }
 }
@@ -160,17 +163,15 @@ impl CertificateEnrolment {
     pub fn open(dir: &Path, password: &str) -> Result<Self, EnrolError> {
         let path = KeyStore::path(dir);
         let model = bussard_model::Model::load(dir).ok();
-        let store = match KeyStore::load(dir, password) {
-            Ok(Some(store)) => store,
-            Ok(None) => {
-                let project = model
-                    .as_ref()
-                    .and_then(|m| m.groups.project.clone())
-                    .unwrap_or_default();
-                KeyStore::new(&project)
-            }
-            Err(source) => return Err(EnrolError::Load { path, source }),
-        };
+        // Loaded here only to check the password; each certificate loads it
+        // again (#793).
+        if let Err(source) = KeyStore::load(dir, password) {
+            return Err(EnrolError::Load { path, source });
+        }
+        let project = model
+            .as_ref()
+            .and_then(|m| m.groups.project.clone())
+            .unwrap_or_default();
         probe_writable(dir).map_err(|source| EnrolError::NotWritable {
             path: path.clone(),
             source,
@@ -198,19 +199,16 @@ impl CertificateEnrolment {
         Ok(CertificateEnrolment {
             dir: dir.to_path_buf(),
             password: Password::new(password),
-            store,
+            project,
             names,
             lock_serials,
         })
     }
 
-    /// The key store as it stands (for a summary after the session).
-    pub fn store(&self) -> &KeyStore {
-        &self.store
-    }
-
-    /// Enters one certificate: decodes `text`, matches its serial number,
-    /// stores the FDSK and reads it back (see the module docs).
+    /// Enters one certificate: decodes `text`, loads the key store afresh,
+    /// matches its serial number, stores the FDSK and reads it back (see the
+    /// module docs). The save is refused, as an `error` outcome, when the
+    /// store file changed between that load and the save.
     ///
     /// The serial number selects a device in the key store first, then a
     /// device whose lock entry records it (#752); a certificate matched by
@@ -225,7 +223,16 @@ impl CertificateEnrolment {
             Err(err) => return EnrolOutcome::bare(EnrolStatus::Invalid, err.to_string()),
         };
         let serial = SerialNumber(certificate.serial);
-        let in_store = self.store.device_with_serial(serial);
+        let (mut store, mut revision) = match self.load_store() {
+            Ok(loaded) => loaded,
+            Err(err) => {
+                let mut outcome = EnrolOutcome::bare(EnrolStatus::Error, err.to_string());
+                outcome.serial = Some(serial.to_string());
+                outcome.check_ok = Some(certificate.check_ok);
+                return outcome;
+            }
+        };
+        let in_store = store.device_with_serial(serial);
         let in_lock = match in_store {
             Some(_) => None,
             None => self.lock_serials.get(&serial).copied(),
@@ -250,9 +257,8 @@ impl CertificateEnrolment {
         // A device only the lock knows by this serial: the store learns the
         // serial for it, and a certificate entered earlier moves to it.
         let mut moved = false;
-        let mut claimed = None;
         if let Some(ia) = in_lock {
-            let held = self.store.devices.get(&ia);
+            let held = store.devices.get(&ia);
             if held.and_then(|d| d.serial).is_some_and(|s| s != serial) {
                 outcome.status = EnrolStatus::Conflict;
                 outcome.message = Some(format!(
@@ -261,8 +267,8 @@ impl CertificateEnrolment {
                 ));
                 return outcome;
             }
-            if self.store.unassigned.contains_key(&serial) {
-                match self.store.attach_serial(ia, serial) {
+            if store.unassigned.contains_key(&serial) {
+                match store.attach_serial(ia, serial) {
                     AttachOutcome::Attached => moved = true,
                     AttachOutcome::NothingPending => {}
                     AttachOutcome::Conflict => {
@@ -275,21 +281,11 @@ impl CertificateEnrolment {
                     }
                 }
             } else {
-                claimed = Some((ia, held.is_none()));
-                self.store.devices.entry(ia).or_default().serial = Some(serial);
+                // Kept only in this copy of the store unless it is saved.
+                store.devices.entry(ia).or_default().serial = Some(serial);
             }
         }
-        let result = self.store.enrol_fdsk(serial, certificate.fdsk);
-        if !result.changed()
-            && let Some((ia, created)) = claimed
-        {
-            // Nothing is written: the in-memory store goes back as it was.
-            if created {
-                self.store.devices.remove(&ia);
-            } else if let Some(device) = self.store.devices.get_mut(&ia) {
-                device.serial = None;
-            }
-        }
+        let result = store.enrol_fdsk(serial, certificate.fdsk);
         outcome.status = match result {
             FdskEnrolment::Stored(_) => EnrolStatus::Stored,
             FdskEnrolment::Unassigned => EnrolStatus::Unassigned,
@@ -304,7 +300,7 @@ impl CertificateEnrolment {
             }
         };
         if (result.changed() || moved)
-            && let Err(err) = self.save_and_verify(serial, &fdsk)
+            && let Err(err) = self.save_and_verify(&store, &mut revision, serial, &fdsk)
         {
             outcome.status = EnrolStatus::Error;
             outcome.message = Some(err.to_string());
@@ -312,24 +308,36 @@ impl CertificateEnrolment {
         outcome
     }
 
-    /// Saves the store and reads it back: the FDSK for `serial` must be
-    /// `fdsk`. On failure the in-memory store is reloaded from disk.
-    fn save_and_verify(&mut self, serial: SerialNumber, fdsk: &Key16) -> Result<(), EnrolError> {
-        let path = KeyStore::path(&self.dir);
-        let saved = self
-            .store
-            .save(&self.dir, self.password.expose())
-            .map_err(|source| EnrolError::Save {
-                path: path.clone(),
+    /// Loads the key store afresh (a new one when there is none) and the
+    /// revision of the file it read.
+    fn load_store(&self) -> Result<(KeyStore, StoreRevision), EnrolError> {
+        let (store, revision) = KeyStore::load_with_revision(&self.dir, self.password.expose())
+            .map_err(|source| EnrolError::Load {
+                path: KeyStore::path(&self.dir),
                 source,
-            })
-            .and_then(|_| read_back(&self.dir, self.password.expose(), serial, fdsk));
-        if saved.is_err()
-            && let Ok(Some(on_disk)) = KeyStore::load(&self.dir, self.password.expose())
-        {
-            self.store = on_disk;
-        }
-        saved
+            })?;
+        Ok((
+            store.unwrap_or_else(|| KeyStore::new(&self.project)),
+            revision,
+        ))
+    }
+
+    /// Saves `store`, unless the file changed since `revision` was read, and
+    /// reads it back: the FDSK for `serial` must be `fdsk`.
+    fn save_and_verify(
+        &self,
+        store: &KeyStore,
+        revision: &mut StoreRevision,
+        serial: SerialNumber,
+        fdsk: &Key16,
+    ) -> Result<(), EnrolError> {
+        store
+            .save_unchanged_since(&self.dir, self.password.expose(), revision)
+            .map_err(|source| EnrolError::Save {
+                path: KeyStore::path(&self.dir),
+                source,
+            })?;
+        read_back(&self.dir, self.password.expose(), serial, fdsk)
     }
 }
 
@@ -600,6 +608,45 @@ mod tests {
     }
 
     #[test]
+    fn test_enroll_certificate_keeps_a_store_edit_between_certificates() -> TestResult {
+        // Issue #793: a session open for minutes must not write its copy of
+        // the store over a key another command saved meanwhile.
+        let dir = temp_dir("fresh")?;
+        let mut session = CertificateEnrolment::open(&dir, PASSWORD)?;
+        let first = session.enroll_certificate(&label(SERIAL, 0x11));
+        assert_eq!(first.status, EnrolStatus::Unassigned);
+
+        // Another command (a tool key, a group key) edits the store.
+        let tool_ia: IndividualAddress = "1.1.40".parse()?;
+        let ga: bussard_model::GroupAddress = "2/3/4".parse()?;
+        let mut other = KeyStore::load(&dir, PASSWORD)?.ok_or("no store")?;
+        other.devices.entry(tool_ia).or_default().tool_key = Some(Key16::new([0x7A; 16]));
+        other.group_keys.insert(ga, Key16::new([0x6B; 16]));
+        other.save(&dir, PASSWORD)?;
+
+        let second_serial = [0x00, 0xFA, 0x09, 0x08, 0x07, 0x06];
+        let second = session.enroll_certificate(&label(second_serial, 0x22));
+        assert_eq!(second.status, EnrolStatus::Unassigned, "{second:?}");
+
+        let back = KeyStore::load(&dir, PASSWORD)?.ok_or("no store")?;
+        assert_eq!(
+            back.devices.get(&tool_ia).and_then(|d| d.tool_key.as_ref()),
+            Some(&Key16::new([0x7A; 16]))
+        );
+        assert_eq!(back.group_keys.get(&ga), Some(&Key16::new([0x6B; 16])));
+        assert_eq!(
+            back.unassigned.get(&SerialNumber(SERIAL)),
+            Some(&Key16::new([0x11; 16]))
+        );
+        assert_eq!(
+            back.unassigned.get(&SerialNumber(second_serial)),
+            Some(&Key16::new([0x22; 16]))
+        );
+        std::fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    #[test]
     fn test_enroll_certificate_invalid_and_bad_check() -> TestResult {
         let dir = temp_dir("invalid")?;
         let mut session = CertificateEnrolment::open(&dir, PASSWORD)?;
@@ -610,7 +657,6 @@ mod tests {
         let bad = session.enroll_certificate("AD5ACAQDASQKDIVDUSS2NJ5IVGVKXLFNV2XQ");
         assert_eq!(bad.status, EnrolStatus::Invalid);
         assert_eq!(bad.check_ok, Some(false));
-        assert!(session.store().unassigned.is_empty());
         assert!(!KeyStore::path(&dir).exists());
         std::fs::remove_dir_all(&dir)?;
         Ok(())

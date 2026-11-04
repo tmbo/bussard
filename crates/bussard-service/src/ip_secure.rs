@@ -62,7 +62,7 @@ use bussard_mgmt::property_ext::{
 };
 use bussard_model::IndividualAddress;
 use bussard_project::KeyStore;
-use bussard_project::keystore::StoreInterface;
+use bussard_project::keystore::{StoreInterface, StoreRevision};
 use bussard_secure::{Key16, Password, Sequence, salt};
 use sha2::{Digest, Sha256};
 
@@ -288,18 +288,23 @@ impl SwitchPlan {
         self.store_update.is_some()
     }
 
-    /// Saves the key store with the generated credentials, if any, in `dir`.
+    /// Saves the key store with the generated credentials, if any, in `dir`,
+    /// unless the file changed since `loaded` was read
+    /// ([`KeyStore::save_unchanged_since`]).
     ///
     /// # Errors
     ///
-    /// The store cannot be written.
+    /// The store cannot be written, or it changed on disk since `loaded`.
     pub fn save_store(
         &self,
         dir: &Path,
         password: &str,
+        loaded: &mut StoreRevision,
     ) -> Result<bool, bussard_project::keystore::KeyStoreError> {
         match &self.store_update {
-            Some(store) => store.save(dir, password).map(|_| true),
+            Some(store) => store
+                .save_unchanged_since(dir, password, loaded)
+                .map(|_| true),
             None => Ok(false),
         }
     }
@@ -1076,6 +1081,11 @@ pub struct SwitchContext<'a> {
     pub dir: &'a Path,
     /// The keyring password the key store is encrypted with.
     pub keystore_password: &'a str,
+    /// The revision of `bussard.keys` the switch's store was loaded from
+    /// ([`KeyStore::load_with_revision`]): a save is refused when the file
+    /// changed since (issue #793), as the store is held across the
+    /// confirmation and the bus session.
+    pub keystore_loaded: &'a StoreRevision,
     /// How long to wait for a tunnel to come up.
     pub connect_wait: std::time::Duration,
 }
@@ -1290,8 +1300,9 @@ pub async fn run_switch(
 ) -> Result<SwitchOutcome, SwitchError> {
     let gateway = probe_gateway(&ctx.config).await;
     let target_is_gateway = gateway.and_then(|(ia, _)| ia) == Some(plan.target);
+    let mut loaded = ctx.keystore_loaded.clone();
     let store_saved_before = plan
-        .save_store(ctx.dir, ctx.keystore_password)
+        .save_store(ctx.dir, ctx.keystore_password, &mut loaded)
         .map_err(|source| SwitchError::Store {
             stage: "saving the generated credentials to the key store before the first write",
             source,
@@ -1406,7 +1417,7 @@ pub async fn run_switch(
     };
     if plan.switch == Switch::Off && outcome.verified(Switch::Off) {
         store_after_off(store, plan.target)
-            .save(ctx.dir, ctx.keystore_password)
+            .save_unchanged_since(ctx.dir, ctx.keystore_password, &mut loaded)
             .map_err(|source| SwitchError::Store {
                 stage: "dropping the tool key from the key store after the verified switch",
                 source,
