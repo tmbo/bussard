@@ -1,10 +1,12 @@
 // Runs src/worker.js under Node for the tests: an HTTP server in front of the
-// Worker's fetch handler and an in-memory stand-in for the Durable Object
-// namespace (storage, alarms). It covers only the runtime surface the relay
+// Worker's fetch handler, an in-memory stand-in for the Durable Object
+// namespace (storage, alarms) and a stand-in for the static assets binding
+// that reads web/enroll/. It covers only the runtime surface the Worker
 // uses. The same cases run against `wrangler dev` (workerd) by setting
 // RELAY_URL; see README.md.
 
 import { createServer } from 'node:http';
+import { readFile } from 'node:fs/promises';
 import worker, { Session } from '../src/worker.js';
 
 class MemoryStorage {
@@ -74,6 +76,39 @@ class MemoryNamespace {
   }
 }
 
+/** The page directory `wrangler.toml` names in `[assets]`. */
+const ASSETS_DIR = new URL('../../../web/enroll/', import.meta.url);
+
+const CONTENT_TYPES = {
+  html: 'text/html; charset=utf-8',
+  js: 'text/javascript; charset=utf-8',
+  css: 'text/css; charset=utf-8',
+  json: 'application/json',
+};
+
+/** The assets binding with `html_handling = "none"`: a path is a file or a 404. */
+const assets = {
+  async fetch(request) {
+    const { pathname } = new URL(request.url);
+    const file = new URL(`.${decodeURIComponent(pathname)}`, ASSETS_DIR);
+    if (!file.href.startsWith(ASSETS_DIR.href) || file.href.endsWith('/')) {
+      return new Response(null, { status: 404 });
+    }
+    let body;
+    try {
+      body = await readFile(file);
+    } catch {
+      return new Response(null, { status: 404 });
+    }
+    const ext = pathname.split('.').pop();
+    const type = CONTENT_TYPES[ext] || 'application/octet-stream';
+    return new Response(request.method === 'HEAD' ? null : body, {
+      status: 200,
+      headers: { 'content-type': type },
+    });
+  },
+};
+
 /**
  * Starts the relay on 127.0.0.1 with an ephemeral port. `vars` are the Worker
  * environment variables (for example `SESSION_TTL_SECONDS`). Resolves to
@@ -82,6 +117,7 @@ class MemoryNamespace {
 export async function startRelay(vars = {}) {
   const env = { ...vars };
   env.SESSIONS = new MemoryNamespace(env);
+  env.ASSETS = assets;
   const server = createServer(async (req, res) => {
     try {
       const chunks = [];

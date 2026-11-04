@@ -2,12 +2,12 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <!-- Strict CSP: only this page's own files; network only to this origin
-       (bussard's local mode serves the page and the relay together) and the
-       hosted relay. A self-hosted relay needs a self-hosted copy of this
-       page with its own relay here. No inline script or style, no
-       third-party requests. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' blob: mediastream:; connect-src 'self' https://bussard-relay.tmbo.dev; base-uri 'none'; form-action 'none'; manifest-src 'none'; worker-src 'none'; frame-src 'none'; object-src 'none'">
+  <!-- Strict CSP: only this page's own files; network only to this origin.
+       The page is always served by its relay: the hosted relay's Worker
+       (services/enroll-relay) or bussard's local mode. Both also send this
+       policy as a header, with frame-ancestors. No inline script or style,
+       no third-party requests. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' blob: mediastream:; connect-src 'self'; base-uri 'none'; form-action 'none'; manifest-src 'none'; worker-src 'none'; frame-src 'none'; object-src 'none'">
   <meta name="referrer" content="no-referrer">
   <meta name="robots" content="noindex, nofollow">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">

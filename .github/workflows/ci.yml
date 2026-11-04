@@ -56,17 +56,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 1 # we never need history for lint
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable (branch)
         with:
           components: rustfmt, clippy
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Read-only. rust-cache refuses to overwrite an existing key, so a
           # shared key can only ever have ONE writer: whichever job finishes
@@ -114,16 +114,16 @@ jobs:
       matrix:
         os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable (branch)
         # No rustfmt/clippy components here: linting lives in the `lint` job.
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # The only writer of the shared `rust-ubuntu` key (every other
           # ubuntu job sets `save-if: false`): this job builds the fullest
@@ -141,7 +141,7 @@ jobs:
       # output. install-action pulls a prebuilt binary (a few seconds), so the
       # install cost is far below the runtime saved.
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
+        uses: taiki-e/install-action@379230e3202a8992f107d2a2dca15562c37d67bf # nextest
 
       # The `ci` profile (.config/nextest.toml) does not fail-fast (so every
       # platform reports all its failures), retries flaky real-socket mock tests
@@ -197,15 +197,15 @@ jobs:
       BUSSARD_ORACLE_ROOT: ${{ vars.BUSSARD_ORACLE_ROOT }}
       BUSSARD_ORACLE_DIR: ${{ vars.BUSSARD_ORACLE_DIR }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable (branch)
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Read-only: the ubuntu `test` job is the single writer of this
           # shared key (see there).
@@ -214,7 +214,7 @@ jobs:
           shared-key: rust-ubuntu
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
+        uses: taiki-e/install-action@379230e3202a8992f107d2a2dca15562c37d67bf # nextest
 
       # The committed-fixture conformance sweep, golden images, and the sweep
       # module unit tests — no cache needed. These fail if the fabricated-fixture
@@ -245,17 +245,18 @@ jobs:
   # The certificate enrolment page (web/enroll, #730): its protocol core
   # against dev/enroll/vectors-v1.json with Node's built-in test runner and
   # WebCrypto. No npm install: the page has no dependencies besides the
-  # vendored jsQR, which the tests do not load.
+  # vendored jsQR, which the tests do not load; vendor.test.js checks its
+  # sha256 against web/enroll/vendor/jsQR.json.
   web:
     name: web (node --test)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 1
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24"
 
@@ -277,21 +278,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 1 # deny reads Cargo.lock, not history
 
       # cargo-deny shells out to `cargo metadata`, so it needs a toolchain —
       # but nothing is compiled, so there is no cache step either.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable (branch)
 
       # A prebuilt cargo-deny binary, installed in a couple of seconds. The
       # EmbarkStudios/cargo-deny-action this replaces built a Docker image on
       # every run and then downloaded a second (musl) toolchain inside it, so
       # ~30 s of setup wrapped a 2 s check.
       - name: Install cargo-deny
-        uses: taiki-e/install-action@cargo-deny
+        uses: taiki-e/install-action@a5adbc370d74d501ea91075eecdb603bec8857bc # cargo-deny
 
       # `--all-features` and the full check set (advisories, bans, licenses,
       # sources) are exactly what the action ran by default.
@@ -308,21 +309,23 @@ jobs:
   # The hosted enrolment relay (services/enroll-relay, #731) is a Cloudflare
   # Worker in plain JavaScript with no npm dependencies at all, so there is
   # nothing to install and no licence gate to run: `node --test` runs the
-  # shared Relay API cases (test/cases.json) against the Worker under Node.
+  # shared Relay API cases (test/cases.json) against the Worker under Node,
+  # and the enrolment page it serves from web/enroll/ with its security
+  # headers (test/page.test.mjs, #797).
   enroll-relay:
     name: enroll-relay worker tests (ubuntu)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 1
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
 
-      - name: Relay API cases
+      - name: Relay API cases and page headers
         working-directory: services/enroll-relay
         run: npm test
 
@@ -342,16 +345,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 1
 
       - name: Install Rust 1.88
         id: msrv-toolchain
-        uses: dtolnay/rust-toolchain@1.88
+        uses: dtolnay/rust-toolchain@360a4e93673de6630fac2478bc9e35244b01a759 # 1.88 (branch)
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           # Own cache key: the 1.88 build graph differs from the stable one, so
@@ -382,17 +385,17 @@ jobs:
       run:
         working-directory: knx-sim
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable (branch)
         with:
           components: rustfmt, clippy
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           # Own cache key and workspace root: knx-sim shares no build graph with
@@ -432,15 +435,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable (branch)
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           # Two workspaces in one job: the bussard root and knx-sim.
@@ -450,7 +453,7 @@ jobs:
           shared-key: rust-sim-conformance
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
+        uses: taiki-e/install-action@379230e3202a8992f107d2a2dca15562c37d67bf # nextest
 
       # The sim side: the System 7 calibration plus the two capture replays
       # (Jung M2 property LSM, Theben 0701 memory-mapped), the group runtime, and
@@ -542,15 +545,15 @@ jobs:
     env:
       BUSSARD_PRODUCT_CORPUS: ${{ inputs.product_corpus || vars.BUSSARD_PRODUCT_CORPUS }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable (branch)
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: false
           # Both workspaces: the bussard root and knx-sim, as sim-conformance.
@@ -560,7 +563,7 @@ jobs:
           shared-key: rust-sim-conformance
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
+        uses: taiki-e/install-action@379230e3202a8992f107d2a2dca15562c37d67bf # nextest
 
       - name: Flash-then-plan loop (curated subset)
         run: scripts/sim-catalog-loop.sh --subset --configs 2
@@ -588,15 +591,15 @@ jobs:
     # something is actually wrong.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable (branch)
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Read-only: the ubuntu `test` job is the single writer of this
           # shared key (see there).
@@ -609,7 +612,7 @@ jobs:
       # track the pin in build.sh; bump it there and this cache misses once.
       - name: Cache virtual-device build
         id: vdev-cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: target/virtual-device
           key: vdev-thelsing-980c047ad7fc5e27bf2fae95e48acde5d5e0b4fd
@@ -744,7 +747,7 @@ jobs:
 
       - name: Upload interop diagnostics
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: virtual-device-diagnostics
           path: |
@@ -783,15 +786,15 @@ jobs:
     timeout-minutes: 30
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable (branch)
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Read-only: the ubuntu `test` job is the single writer of this
           # shared key (see there).
@@ -801,7 +804,7 @@ jobs:
       # Reuse the same pinned-commit build cache the `virtual-device` job warms.
       - name: Cache virtual-device build
         id: vdev-cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: target/virtual-device
           key: vdev-thelsing-980c047ad7fc5e27bf2fae95e48acde5d5e0b4fd
@@ -864,7 +867,7 @@ jobs:
 
       - name: Upload flash interop diagnostics
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: virtual-device-flash-diagnostics
           path: |
@@ -902,15 +905,15 @@ jobs:
     # Non-blocking: an external-browser flake must not fail the required suite.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable (branch)
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Read-only: the ubuntu `test` job is the single writer of this
           # shared key. This job only builds `-p bussard-viz`, so letting it
@@ -920,7 +923,7 @@ jobs:
           shared-key: rust-ubuntu
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
+        uses: taiki-e/install-action@379230e3202a8992f107d2a2dca15562c37d67bf # nextest
 
       # GitHub's ubuntu-latest image preinstalls Google Chrome as
       # `google-chrome`; the test's Chrome finder checks /usr/bin/google-chrome.

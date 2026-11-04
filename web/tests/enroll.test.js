@@ -58,7 +58,7 @@ async function publicOf(privateKey) {
 }
 
 async function vectorKey() {
-  const link = parseLink(S.link, "https://bussard.tmbo.dev");
+  const link = parseLink(S.link, "https://bussard-relay.tmbo.dev");
   const phonePrivate = await importPrivate(S.phone_secret);
   return {
     link,
@@ -72,7 +72,7 @@ test("test_publicOf_matches_vector_keys", async () => {
 });
 
 test("test_parseLink_vector", () => {
-  const link = parseLink(S.link, "https://bussard.tmbo.dev");
+  const link = parseLink(S.link, "https://bussard-relay.tmbo.dev");
   assert.equal(link.sidText, S.session_id);
   assert.equal(link.sid.length, 16);
   assert.equal(b64urlEncode(link.bussardPublic), S.bussard_public);
@@ -107,7 +107,7 @@ test("test_parseLink_rejects", () => {
   ];
   for (const [hash, code] of cases) {
     assert.throws(
-      () => parseLink(hash, "https://bussard.tmbo.dev"),
+      () => parseLink(hash, "https://bussard-relay.tmbo.dev"),
       (e) => e instanceof EnrollError && e.code === code,
       `${JSON.stringify(hash)} should fail with ${code}`,
     );
@@ -120,7 +120,7 @@ test("test_fingerprint_vector", async () => {
 });
 
 test("test_sharedSecret_and_key_vector", async () => {
-  const link = parseLink(S.link, "https://bussard.tmbo.dev");
+  const link = parseLink(S.link, "https://bussard-relay.tmbo.dev");
   const phonePrivate = await importPrivate(S.phone_secret);
   const shared = await sharedSecret(subtle, phonePrivate, link.bussardPublic);
   assert.equal(toHex(shared), S.shared_secret);
@@ -217,7 +217,7 @@ test("test_parseDown_vector_result", () => {
 test("test_generatePhoneKey_roundtrip_with_bussard_side", async () => {
   const phone = await generatePhoneKey(subtle);
   assert.equal(phone.publicRaw.length, 32);
-  const link = parseLink(S.link, "https://bussard.tmbo.dev");
+  const link = parseLink(S.link, "https://bussard-relay.tmbo.dev");
   const key = await deriveSessionKey(subtle, phone.privateKey, phone.publicRaw, link);
   const envelope = await seal(subtle, key, {
     dir: "up",

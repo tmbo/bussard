@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 1
       - name: Verify the tag matches the crate version
@@ -96,15 +96,15 @@ jobs:
             asset: bussard-linux-arm64
             path: target/release/bussard
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 1
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable (branch)
         with:
           targets: ${{ matrix.target || '' }}
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: release-build-${{ matrix.asset }}
       - name: Build
@@ -148,7 +148,7 @@ jobs:
           echo "::notice::HOMEBREW_TAP_TOKEN is not set, so the Homebrew tap was \
           not updated. Create tmbo/homebrew-tap and add the secret; see \
           packaging/README.md."
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         if: env.HOMEBREW_TAP_TOKEN != ''
         with:
           fetch-depth: 1

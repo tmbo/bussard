@@ -140,8 +140,8 @@ that both show the same code before you scan. A different code means the
 link was changed on its way to the phone: close the page and start again.
 
 **The hosted page and relay.** By default the link opens
-`https://bussard.tmbo.dev/enroll/` and the messages pass through the hosted
-relay. Neither keeps a label: bussard deletes the session when it ends, and
+`https://bussard-relay.tmbo.dev/enroll/`, served by the hosted relay, and the
+messages pass through that relay. The page talks to no other address. Neither keeps a label: bussard deletes the session when it ends, and
 the relay forgets it after 30 minutes at the latest. `[enroll]` in
 `bussard.toml` points both at your own copies.
 

@@ -53,15 +53,15 @@ jobs:
             artifact: bussard-linux-arm64
             path: target/release/bussard
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 1
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable (branch)
         with:
           targets: ${{ matrix.target || '' }}
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: release-build-${{ matrix.artifact }}
       - name: Build
@@ -71,7 +71,7 @@ jobs:
           cargo build --release -p bussard-cli \
             ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
       - name: Upload artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.path }}

@@ -244,7 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn test_page_file_index_connects_to_self_and_default_relay() -> TestResult {
+    fn test_page_file_index_connects_to_self_only() -> TestResult {
         let (index, _) = page_file("").ok_or("no index")?;
         let index = std::str::from_utf8(index)?;
         let csp = index
@@ -255,14 +255,10 @@ mod tests {
             .split(';')
             .find(|d| d.trim().starts_with("connect-src"))
             .ok_or("no connect-src")?;
-        assert!(connect.contains("'self'"), "{connect}");
-        // The hosted page reaches the built-in default relay, and only it.
+        // The page is served by its relay (the hosted Worker or this local
+        // server), so it reaches its own origin and nothing else (#797).
         let sources: Vec<&str> = connect.split_whitespace().skip(1).collect();
-        assert_eq!(
-            sources,
-            ["'self'", bussard_service::enroll_session::DEFAULT_RELAY],
-            "{connect}"
-        );
+        assert_eq!(sources, ["'self'"], "{connect}");
         Ok(())
     }
 
