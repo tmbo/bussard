@@ -1977,8 +1977,10 @@ fn handle_empty(
             });
         }
         b"TypeText" => {
-            state.pt_kind = Some(ParameterType::Text {
-                size_bits: get(m, b"SizeInBit").and_then(|s| s.parse().ok()),
+            let size_bits: Option<u32> = get(m, b"SizeInBit").and_then(|s| s.parse().ok());
+            state.pt_kind = Some(match get(m, b"Pattern").and_then(text_color_space) {
+                Some(space) => text_color_type(space, size_bits),
+                None => ParameterType::Text { size_bits },
             });
         }
         b"TypeFloat" => {
@@ -2884,6 +2886,47 @@ fn decode_hex_bytes(s: &str) -> Option<Vec<u8>> {
 /// Without a `Mode` attribute the older reading applies: `Fill="1"`/`"true"` is
 /// the flag and `FillByte` the byte (decimal or `0x` hex, default `0`). No
 /// attribute at all is [`SegmentFill::NONE`] (the DA.tp shape).
+/// The colour space a `<TypeText Pattern>` names in a trailing regex
+/// comment `(?# TypeColor:<space>)`, `None` when the pattern carries no such
+/// marker (issue #833).
+///
+/// ekinex and MDT declare colours as 56-bit text with the pattern
+/// `^#[0-9a-fA-F]{6}$(?# TypeColor:RGB)` (or `:HSV`). ETS treats such a
+/// parameter as a colour, not as text: the ETS 6.4.1 download of ekinex
+/// `M-00B6_A-4534-03-4181` writes `LedRGBConnectedBlinkColor` (default
+/// `#FFFFFF`) as `ff ff ff` and leaves the fourth octet of the template
+/// (defaults sweep 2026-11-04).
+fn text_color_space(pattern: &str) -> Option<&str> {
+    let body = pattern.trim_end().strip_suffix(')')?;
+    let start = body.rfind("(?#")?;
+    body[start + 3..]
+        .trim()
+        .strip_prefix("TypeColor:")
+        .map(str::trim)
+}
+
+/// The type of a `<TypeText>` whose pattern names the colour space `space`
+/// (see [`text_color_space`]): a [`ParameterType::Color`] when bussard
+/// encodes the space and its octets fit in the declared text width, else the
+/// `Other` `TypeColor` an unknown `<TypeColor Space>` also gets, which the
+/// image builder refuses: the value is never written as text over the
+/// parameters that follow it. The corpus holds `RGB` (26 programs) and `HSV`
+/// (20, all MDT) only.
+fn text_color_type(space: &str, size_bits: Option<u32>) -> ParameterType {
+    match ColorSpace::from_attr(space) {
+        Some(known)
+            if size_bits.is_none_or(|bits| u64::from(bits) >= known.octets() as u64 * 8) =>
+        {
+            ParameterType::Color { space: known }
+        }
+        _ => ParameterType::Other {
+            kind: "TypeColor".to_string(),
+            size_bits: None,
+            unit: None,
+        },
+    }
+}
+
 fn parse_fill(m: &Attrs) -> SegmentFill {
     let byte = |raw: Option<&str>| {
         raw.and_then(|s| {
@@ -4745,5 +4788,38 @@ mod tests {
             }
         ));
         Ok(())
+    }
+
+    /// Issue #833: the `(?# TypeColor:<space>)` marker of a `TypeText`
+    /// pattern makes the type a colour; anything else stays text.
+    #[test]
+    fn test_text_color_space_marker() {
+        let rgb = "^#[0-9a-fA-F]{6}$(?# TypeColor:RGB)";
+        assert_eq!(text_color_space(rgb), Some("RGB"));
+        assert_eq!(
+            text_color_space("^#[0-9a-fA-F]{6}$(?# TypeColor:HSV)"),
+            Some("HSV")
+        );
+        assert_eq!(text_color_space("^[0-9]*$"), None);
+        assert_eq!(text_color_space("."), None);
+        assert_eq!(text_color_space("(?# a comment)"), None);
+        assert!(matches!(
+            text_color_type("RGB", Some(56)),
+            ParameterType::Color {
+                space: ColorSpace::Rgb
+            }
+        ));
+        assert!(matches!(
+            text_color_type("HSV", None),
+            ParameterType::Color {
+                space: ColorSpace::Hsv
+            }
+        ));
+        for (space, bits) in [("XYZ", Some(56)), ("RGB", Some(16))] {
+            assert!(matches!(
+                text_color_type(space, bits),
+                ParameterType::Other { ref kind, size_bits: None, unit: None } if kind == "TypeColor"
+            ));
+        }
     }
 }
