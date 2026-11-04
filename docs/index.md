@@ -4,12 +4,23 @@ bussard is an open-source command line tool for a KNX building bus. It keeps you
 
 It is for the owner of a KNX house who wants to know what every button does, change one safely and undo it, and for the integrator who needs the exact command, its flags and what it refuses. See the [landing page](../) for the overview and the [GitHub repository](https://github.com/tmbo/bussard) for the source.
 
-## Two ways to start
+## Talk to your house
 
-- **With an ETS project export** (`.knxproj`): `bussard import` turns it into a fully named model in a minute.
-- **Without one**: `bussard init` creates an empty model, and you scan, reconstruct or adopt the devices you have.
+You say what you want in chat, and an assistant such as Claude runs bussard for you over MCP. Start here if you own the house and would rather not learn commands.
 
-Either way, start with [Install bussard](getting-started/install.md) and [Your first model](getting-started/first-model.md). Read [Safety](explanation/safety.md) before your first write.
+1. [Install bussard](getting-started/install.md).
+2. [Connect an assistant](getting-started/assistant.md) on an empty folder and say "set up my house": it finds the gateway and imports your ETS export, if you have one.
+3. [The first weekend](getting-started/first-weekend.md): an audit, a backup of every device, one change and its undo.
+
+## Work at the terminal
+
+You type the commands yourself and read their output. Start here if you are an integrator, or want the exact command and its flags.
+
+1. [Install bussard](getting-started/install.md).
+2. [Your first model](getting-started/first-model.md): `bussard import` turns an ETS project export (`.knxproj`) into a named model in a minute; without one, `bussard init` creates an empty model and you scan, reconstruct or adopt the devices you have.
+3. The [how-to guides](how-to/index.md), one task each.
+
+Every guide shows both forms, in chat and at the terminal. Read [Safety](explanation/safety.md) before your first write.
 
 ## Getting started
 

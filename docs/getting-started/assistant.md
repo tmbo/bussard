@@ -130,7 +130,7 @@ Assistant:  (calls knx_set_group, knx_add_link, knx_set_device)
 
 `knx_wait_for_telegram` waits for the press, `knx_infer_group` ranks the possible data types from the telegrams it has seen, and `knx_set_group` writes the name you agreed to. Every telegram narrows the candidates, so an uncertain one gets "press it again". The loop only listens and never transmits.
 
-Every edit comes back as a plain sentence for the assistant to quote, and touches the model files only. Nothing reaches a device until you push it with `bussard plan` and `bussard apply`.
+Every edit comes back as a plain sentence for the assistant to quote, and touches the model files only. Nothing reaches a device until it is pushed: by you with `bussard plan` and `bussard apply`, or by the assistant on a server started with `--allow-programming`, after your yes to its plan.
 
 ## Check what the assistant changed
 

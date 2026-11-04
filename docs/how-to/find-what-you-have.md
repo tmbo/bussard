@@ -4,18 +4,36 @@ Find out what the model holds, which devices answer on the bus, and what bussard
 
 ## Audit the installation
 
-```console
-$ bussard audit
-== Model ==
-project: my-house   imported from: my-house.knxproj
-38 device(s), 214 group address(es), 402 link(s)
-  line 1.1: 38 device(s)
-...
-== Devices per mask ==
-  07B0 System B (29 device(s)): bussard can: plan/apply, flash, reconstruct, describe
-  0705 System 7 (7 device(s)): bussard can: plan/apply, flash, reconstruct, describe
-  0012 System 1 (2 device(s)): bussard can: describe only
-```
+=== "In chat"
+
+    An illustrative exchange:
+
+    ```text
+    You:        What do I have, and what needs attention?
+    Assistant:  (calls knx_audit)
+                38 devices on line 1.1, 214 group addresses, 402 links.
+                bussard can plan and apply 36 devices; 2 older ones can
+                only be described. 12 group addresses have no type.
+    ```
+
+    `knx_audit` returns the same report as the terminal command. With the server's keyring it also says which Secure devices the keyring covers.
+
+=== "At the terminal"
+
+    ```console
+    $ bussard audit
+    == Model ==
+    project: my-house   imported from: my-house.knxproj
+    38 device(s), 214 group address(es), 402 link(s)
+      line 1.1: 38 device(s)
+    ...
+    == Devices per mask ==
+      07B0 System B (29 device(s)): bussard can: plan/apply, flash, reconstruct, describe
+      0705 System 7 (7 device(s)): bussard can: plan/apply, flash, reconstruct, describe
+      0012 System 1 (2 device(s)): bussard can: describe only
+    ```
+
+    Add `--keyring <file.knxkeys>` (password in `BUSSARD_KEYRING_PASSWORD`) to see which Secure devices your keyring covers. `--json` prints the same report as one object.
 
 The first section is the project summary: name, import source, and the count of devices, group addresses and links per line. Below it `audit` lists what needs attention:
 
@@ -29,55 +47,110 @@ The first section is the project summary: name, import source, and the count of 
 
 Unlinked com objects and unused group addresses are counted, not flagged. Actuators ship far more objects than a house uses, and an unused group address is a reserve.
 
-Add `--keyring <file.knxkeys>` (password in `BUSSARD_KEYRING_PASSWORD`) to see which Secure devices your keyring covers. `--json` prints the same report as one object; the assistant gets it from `knx_audit`, and `knx_project_summary` gives it the counts and the bus status.
-
 ## Check the live bus
 
-```console
-$ bussard audit --live
-```
+=== "In chat"
 
-`--live` adds three things: the gateway's tunnel budget, a traffic sample over `--window` seconds (default 30), and a probe of every modelled device, one at a time. It sends only management reads to single devices, never a group telegram, so no light switches.
+    ```text
+    You:        Check the live bus too.
+    Assistant:  (calls knx_audit with live: true)
+    ```
+
+    The live audit adds the interface's tunnel slots and a traffic sample from the telegrams the server has seen.
+
+=== "At the terminal"
+
+    ```console
+    $ bussard audit --live
+    ```
+
+    `--live` adds three things: the gateway's tunnel budget, a traffic sample over `--window` seconds (default 30), and a probe of every modelled device, one at a time.
+
+It sends only management reads to single devices, never a group telegram, so no light switches.
 
 ## See which devices are on a line
 
-```console
-$ bussard scan 1.1
-IA         MASK    SYSTEM     MANUFACTURER    ORDER             MODEL
-1.1.1      07B0    System B   MDT             BE-06001.02       known
-1.1.4      07B0    System B   Albrecht Jung   23024 1S R        known
-1.1.47     07B0    System B   MDT             JAL-0810.03       NOT in model
+=== "In chat"
 
-3 device(s) responded
-1 not in model
-all model devices on this line responded
-```
+    ```text
+    You:        Which devices answer on line 1.1?
+    Assistant:  (calls knx_find_devices, then knx_job_status until done)
+                3 devices answered. 2 are in the model; the blind actuator
+                MDT JAL-0810.03 at 1.1.47 is not. Every model device on
+                this line answered.
+    ```
 
-The summary is the point: which devices the model knows, which are unexpected, and which model devices did not answer. `scan` probes one address at a time, because most gateways handle one device session at a time, so a full line can take a while. Narrow it with `--from` and `--to` (device numbers 0 to 255). The line defaults to `1.1`.
+    `knx_find_devices` runs the scan as a job, so the assistant checks back with `knx_job_status` while it runs. A server started with `--passive` does not offer it.
+
+=== "At the terminal"
+
+    ```console
+    $ bussard scan 1.1
+    IA         MASK    SYSTEM     MANUFACTURER    ORDER             MODEL
+    1.1.1      07B0    System B   MDT             BE-06001.02       known
+    1.1.4      07B0    System B   Albrecht Jung   23024 1S R        known
+    1.1.47     07B0    System B   MDT             JAL-0810.03       NOT in model
+
+    3 device(s) responded
+    1 not in model
+    all model devices on this line responded
+    ```
+
+    Narrow the scan with `--from` and `--to` (device numbers 0 to 255). The line defaults to `1.1`.
+
+The summary is the point: which devices the model knows, which are unexpected, and which model devices did not answer. The scan probes one address at a time, because most gateways handle one device session at a time, so a full line can take a while.
 
 ## Look inside one device
 
-```console
-$ bussard describe 1.1.4
-```
+=== "In chat"
 
-`describe` lists the device's interface objects and every property it reports, with type, size and access level. Use it on an unknown device during commissioning. It never writes. A Secure device needs its tool key: pass `--keyring`. A Secure device that answers only under its factory key (FDSK) from the key store was reset or never commissioned; `describe` says so, and you commission it with ETS and import the new keyring.
+    ```text
+    You:        What does the Jung actuator 1.1.4 actually carry?
+    Assistant:  (calls knx_reconstruct_device)
+                Its tables match the model, except one group address the
+                device has and the model does not.
+    You:        And what does it report about itself?
+    Assistant:  (calls knx_describe_device)
+    ```
 
-```console
-$ bussard reconstruct 1.1.4
-```
+    `knx_reconstruct_device` reads the link tables back and compares them with the model. `knx_describe_device` lists the interface objects and properties. With the server's keyring a Secure device is read with its tool key.
 
-`reconstruct` reads the device's link tables back and compares them with the model, group addresses per com object. It cannot tell send from listen, because many devices do not expose that. Give it `--product <file.knxprod>`, or let it use the product data the lock pins, and it also decodes the parameters that differ from the vendor default and from the model. It refuses a device whose mask it cannot read; `audit` shows which devices allow `reconstruct`.
+=== "At the terminal"
 
-To build a new model from what a whole line carries, see [Add a device](add-a-device.md).
+    ```console
+    $ bussard describe 1.1.4
+    ```
+
+    `describe` lists the device's interface objects and every property it reports, with type, size and access level. A Secure device needs its tool key: pass `--keyring`.
+
+    ```console
+    $ bussard reconstruct 1.1.4
+    ```
+
+    `reconstruct` reads the device's link tables back and compares them with the model, group addresses per com object. Give it `--product <file.knxprod>`, or let it use the product data the lock pins, and it also decodes the parameters that differ from the vendor default and from the model.
+
+Use the description on an unknown device during commissioning. Neither form writes. A Secure device that answers only under its factory key (FDSK) from the key store was reset or never commissioned; bussard says so, and you commission it with ETS and import the new keyring.
+
+The read-back cannot tell send from listen, because many devices do not expose that. It refuses a device whose mask it cannot read; the audit shows which devices allow it. To build a new model from what a whole line carries, see [Add a device](add-a-device.md).
 
 ## Check one device's identity
 
-```console
-$ bussard status 1.1.250
-```
+=== "In chat"
 
-With an address, `status` reads the device's mask and identity and compares them with the lock. For a KNX IP interface it also prints its IP settings, tunnelling addresses and state, and each difference from the device file. Without an address, `status` shows the model changes not yet written to any device (see [Change what a button does](change-a-link.md)).
+    ```text
+    You:        Is the IP interface still the device the model expects?
+    Assistant:  (calls knx_show_device with live: true)
+    ```
+
+    The live form of `knx_show_device` reads the device over the bus and adds its mask, its identity against the lock and, for an IP interface, its IP settings and tunnelling addresses.
+
+=== "At the terminal"
+
+    ```console
+    $ bussard status 1.1.250
+    ```
+
+    With an address, `status` reads the device's mask and identity and compares them with the lock. For a KNX IP interface it also prints its IP settings, tunnelling addresses and state, and each difference from the device file. Without an address, `status` shows the model changes not yet written to any device (see [Change what a button does](change-a-link.md)).
 
 ## Get past "no free tunnelling connection"
 

@@ -4,93 +4,167 @@ Keep a copy of what every device holds, put a device back to that copy, and swap
 
 ## Back up every device
 
-```console
-$ bussard backup
-backing up 12 device(s) via 192.0.2.10:3671 into knx/captures/backups/20260922T101500Z
-...
-  1.1.4      07B0  backed up
-      parameters: 1840 octet(s)
-  1.1.12     0010  skipped
-      unsupported mask 0010 (System 1): ...
+=== "In chat"
 
-10 backed up, 1 skipped, 1 unreachable, 0 failed
-```
+    ```text
+    You:        Back up every device.
+    Assistant:  (calls knx_backup_device with all: true)
+                10 of 12 devices backed up into captures/backups/. One
+                System 1 device cannot be read, and one did not answer.
+    ```
 
-`backup` only reads, so it is safe on a live bus. Each device gets one JSON file with its link tables, the tables that say which group addresses each com object uses. `manifest.json` lists every device and what happened to it:
+    `knx_backup_device` backs up one device or all of them. The default server may run it; a `--passive` server does not offer it.
+
+=== "At the terminal"
+
+    ```console
+    $ bussard backup
+    backing up 12 device(s) via 192.0.2.10:3671 into knx/captures/backups/20260922T101500Z
+    ...
+      1.1.4      07B0  backed up
+          parameters: 1840 octet(s)
+      1.1.12     0010  skipped
+          unsupported mask 0010 (System 1): ...
+
+    10 backed up, 1 skipped, 1 unreachable, 0 failed
+    ```
+
+    Back up part of the installation with `--line 1.1` or a list of addresses, and write elsewhere with `--out <dir>`. Secure devices need `--keyring`.
+
+The backup only reads, so it is safe on a live bus. Each device gets one JSON file with its link tables, the tables that say which group addresses each com object uses. `manifest.json` lists every device and what happened to it:
 
 | Status | Meaning |
 |---|---|
 | `backed_up` | Tables, and where possible parameters, were saved. |
 | `skipped` | bussard cannot read this mask (the device's system generation). |
 | `unreachable` | Nothing answered at the address. |
-| `failed` | The device answered but a read failed. The run exits 1. |
+| `failed` | The device answered but a read failed. The terminal run exits 1. |
 
 On System B devices the backup includes the parameters, with no product data needed. On System 7 it does not, because those devices do not report the size of their parameter memory.
 
-Back up part of the installation with `--line 1.1` or a list of addresses, and write elsewhere with `--out <dir>`. Secure devices need `--keyring`.
-
-Besides this, `apply` saves each device's tables to `captures/backups/` before it writes, and its parameters to `captures/backups/parameters/` when they change.
-
-The assistant takes the same backup with `knx_backup_device`, for one device or all of them. It reads only.
+Besides this, every write saves the device's tables to `captures/backups/` first, and its parameters to `captures/backups/parameters/` when they change.
 
 ## Restore a device's links
 
 !!! warning
-    `restore` writes the device's link tables. A gateway that is not on your own machine needs `--allow-remote-gateway`.
+    A restore writes the device's link tables. A gateway that is not on your own machine needs `--allow-remote-gateway`.
 
-```console
-$ bussard restore knx/captures/backups/20260922T101500Z 1.1.4
-```
+=== "In chat"
 
-`restore` takes the newest backup of that device in the directory and runs it through `apply`: plan, confirmation, a fresh backup, write, read-back. A device that has not changed since the backup plans empty and nothing is written. `restore` writes link tables only; parameters in a table backup are reported, not written.
+    ```text
+    You:        Put 1.1.4 back the way it was in this morning's backup.
+    Assistant:  (calls knx_restore_tables)
+                Restoring adds 2 links and removes 1 on the Jung
+                actuator. Nothing is written yet. Restore it?
+    You:        Yes.
+    Assistant:  (calls knx_restore_tables with the plan's digest)
+                Restored and verified: the tables match the backup.
+    ```
 
-With `--allow-programming` the assistant does the same with `knx_restore_tables`, after your yes to the plan.
+    `knx_restore_tables` needs a server started with `--allow-programming`. Without a named backup it takes the newest one an earlier write kept of the device.
+
+=== "At the terminal"
+
+    ```console
+    $ bussard restore knx/captures/backups/20260922T101500Z 1.1.4
+    ```
+
+    `restore` takes the newest backup of that device in the directory and runs it through `apply`.
+
+Either way the restore is a plan, your yes, a fresh backup, the write and a read-back. A device that has not changed since the backup plans empty and nothing is written. Only link tables are written; parameters in a table backup are reported, not written.
 
 ## Restore a parameter backup
 
 !!! warning
-    `restore --parameters` writes the device's parameter memory and restarts it.
+    A parameter restore writes the device's parameter memory and restarts it.
 
-```console
-$ bussard restore --parameters knx/captures/backups/parameters/1.1.12-1790182579.json 1.1.12
-```
+=== "In chat"
 
-This puts back the parameter memory saved before an earlier parameter write. It needs the product data the lock pins. It refuses before planning when the backup is of another device, another application or another mask. A device that does not run the application, such as a factory-fresh one, is refused and needs `bussard flash`.
+    ```text
+    You:        Put the heating actuator's old parameters back.
+    Assistant:  (calls knx_restore_parameters)
+                Night setback goes back from 17 °C to 18 °C. Restore it?
+    You:        Yes.
+    Assistant:  (calls knx_restore_parameters with the plan's digest)
+                Restored and verified.
+    ```
 
-Only the octets a parameter occupies are written; values the device manages itself keep their current state. The memory it overwrites is backed up first and the write is read back. The assistant does the same with `knx_restore_parameters`, after your yes to the plan.
+    `knx_restore_parameters` needs a server started with `--allow-programming` and the backup's file name under `captures/backups/parameters/`.
+
+=== "At the terminal"
+
+    ```console
+    $ bussard restore --parameters knx/captures/backups/parameters/1.1.12-1790182579.json 1.1.12
+    ```
+
+This puts back the parameter memory saved before an earlier parameter write. It needs the product data the lock pins. It refuses before planning when the backup is of another device, another application or another mask. A device that does not run the application, such as a factory-fresh one, is refused: it needs its application loaded first ([Add a device](add-a-device.md#flash-a-factory-fresh-device)).
+
+Only the octets a parameter occupies are written; values the device manages itself keep their current state. The memory it overwrites is backed up first and the write is read back.
 
 ## Replace a dead device
 
 !!! warning
-    `replace` assigns the address, flashes the application and writes the links on the device you press.
+    Replacing assigns the address, loads the application and writes the links on the device you press.
 
-Mount a new device of the same product, connect it to the bus, and run:
+Mount a new device of the same product and connect it to the bus.
 
-```console
-$ bussard replace 1.1.4 --product MDT_JAL_0410_02.knxprod
-Press the programming button on the replacement device for 1.1.4.
-device in programming mode: 15.15.255
-  mask: 07B0 (System B)
-  order number: MDT-JAL-0410.02
-replace 1.1.4: address 15.15.255 → 1.1.4, flash the application and apply the model's tables, via 192.0.2.10:3671? [y/N] y
-...
-replaced 1.1.4 via 192.0.2.10:3671
-```
+=== "In chat"
 
-After one confirmation `replace` assigns the old address, flashes the application with the model's parameters, writes the model's links, and records `replaced = <date>` in the device file. Without `--product` it uses the product data the lock pins. It refuses when:
+    An illustrative exchange:
+
+    ```text
+    You:        The blind actuator in the living room is dead. I mounted
+                a new one of the same type.
+    Assistant:  (calls knx_replace_device)
+                I kept a backup of its device file. Press the programming
+                button on the new device, then say done.
+    You:        Done.
+    Assistant:  (calls knx_job_status)
+                It is an MDT JAL-0410.02 at 15.15.255, the same product.
+                I would give it 1.1.4, load its application and write
+                the model's parameters and links. Go ahead?
+    You:        Yes.
+    Assistant:  (calls knx_replace_device with yes, then knx_job_status)
+                Replaced and verified: 1.1.4 holds the model again.
+    ```
+
+    `knx_replace_device` needs a server started with `--allow-programming`. One yes covers the address, the application and the links, and the replacement is recorded only after a verified write. A device the model records as KNX Data Secure is refused, because its replacement needs the Secure activation in ETS.
+
+=== "At the terminal"
+
+    ```console
+    $ bussard replace 1.1.4 --product MDT_JAL_0410_02.knxprod
+    Press the programming button on the replacement device for 1.1.4.
+    device in programming mode: 15.15.255
+      mask: 07B0 (System B)
+      order number: MDT-JAL-0410.02
+    replace 1.1.4: address 15.15.255 → 1.1.4, flash the application and apply the model's tables, via 192.0.2.10:3671? [y/N] y
+    ...
+    replaced 1.1.4 via 192.0.2.10:3671
+    ```
+
+    Without `--product` it uses the product data the lock pins. `--force` overrides the first three refusals below, for a model that is out of date. Pass `--no-flash` for a spare that already carries the right application.
+
+After one confirmation bussard assigns the old address, loads the application with the model's parameters, writes the model's links, and records the replacement in the device file. It refuses when:
 
 - the old device still answers at the address
 - the new device reports another order number or mask than the device file
 - with `--no-flash`, the new device runs another application than the lock pins
 - the pinned product data is missing or changed, before anything reaches the bus
 
-`--force` overrides the first three, for a model that is out of date. Pass `--no-flash` for a spare that already carries the right application. If the flash or apply step fails, the address is already assigned, and the error names the command to run again.
+If the flash or the write fails, the address is already assigned, and the error names what to run again.
 
 ## Clean stale links off a device
 
-A link an old ETS download left on the device, but missing from its device file, shows in `bussard plan 1.1.5` as a `-` line: an address only the device has, which it `no longer uses` after the write.
+A link an old ETS download left on the device, but missing from its device file, shows in the plan as an address only the device has, which it `no longer uses` after the write (a `-` line in `bussard plan 1.1.5`).
 
-`bussard apply 1.1.5` removes it, after the usual confirmation and backup. To see first what a device carries, `bussard reconstruct 1.1.5` reads its tables back and compares them with the model.
+=== "In chat"
+
+    Ask the assistant to plan the device (`knx_plan_device`) and say yes to the write (`knx_apply_device`). To see first what a device carries, `knx_reconstruct_device` reads its tables back against the model.
+
+=== "At the terminal"
+
+    `bussard apply 1.1.5` removes it, after the usual confirmation and backup. To see first what a device carries, `bussard reconstruct 1.1.5` reads its tables back and compares them with the model.
 
 ## Next steps
 

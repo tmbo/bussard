@@ -6,19 +6,34 @@ None of these steps touch the bus.
 
 ## Send your group-address names to ETS
 
-```console
-$ bussard export-groups --format ets-csv --out groups.csv
-Wrote 62 group address(es) to groups.csv (ETS CSV).
-Import it in ETS: Group Addresses -> Import, then pick this file.
-```
+=== "In chat"
 
-In ETS, open the project, select *Group Addresses* in the project tree, and use *Import* on the toolbar. The CSV is the three-level form ETS itself exports. `--format ets-xml` writes ETS's group-address XML instead, which keeps the main and middle group names as a tree.
+    ```text
+    You:        Export my group addresses for ETS.
+    Assistant:  (calls knx_export with what: groups)
+                Wrote 62 group addresses as an ETS CSV. Import it in ETS
+                under Group Addresses, Import.
+    ```
+
+    `format: ets-xml` writes ETS's group-address XML instead.
+
+=== "At the terminal"
+
+    ```console
+    $ bussard export-groups --format ets-csv --out groups.csv
+    Wrote 62 group address(es) to groups.csv (ETS CSV).
+    Import it in ETS: Group Addresses -> Import, then pick this file.
+    ```
+
+    `--format ets-xml` writes ETS's group-address XML instead.
+
+In ETS, open the project, select *Group Addresses* in the project tree, and use *Import* on the toolbar. The CSV is the three-level form ETS itself exports. The XML keeps the main and middle group names as a tree.
 
 Names, descriptions and DPTs (the data type of each address) cross over as they are. ETS has no field for bussard's `protected` flag, so a protected address carries a leading `[protected]` marker in its description.
 
 ## Redo the other changes in ETS by hand
 
-bussard cannot write into a `.knxproj`: ETS signs its project files, so bussard cannot write changes back into one. ETS stays in step only when someone redoes the changes there, so let bussard write the list:
+bussard cannot write into a `.knxproj`: ETS signs its project files, so bussard cannot write changes back into one. ETS stays in step only when someone redoes the changes there, so let bussard write the list. The checklist is a terminal command; in chat the assistant reads the same changes to you as sentences (`knx_diff_project`).
 
 ```console
 $ bussard diff project.knxproj knx --checklist
@@ -43,29 +58,56 @@ Work through it, export the project from ETS, and run the diff again. When it re
 
 ## See what a new export would change
 
-Before you import an integrator's new file, ask what it changes:
+Before you import an integrator's new file, ask what it changes.
 
-```console
-$ bussard diff knx integrator-2026-10-01.bussard
-2 change(s) from knx to integrator-2026-10-01.bussard:
-  Group address 1/0/1 is now called "Kitchen ceiling" (was "Light Kitchen").
-  Night setback on Living room thermostat: 2 to 3.
-```
+=== "In chat"
 
-Each side can be a model directory, a `.bussard` bundle or a `.knxproj`. A renamed group address is one rename, not a removal and an addition. `diff` writes nothing and exits 0 whether or not there are differences.
+    ```text
+    You:        What would integrator-2026-10-01.bussard change?
+    Assistant:  (calls knx_diff_project)
+                2 changes. Group address 1/0/1 is now called "Kitchen
+                ceiling" (was "Light Kitchen"). Night setback on Living
+                room thermostat: 2 to 3. No protected address is touched.
+    ```
 
-- A password-protected project takes `--password`, `--password-b` for a second project with another password, or `BUSSARD_PROJECT_PASSWORD` from your `.env`.
-- `--json` gives the structured changes, `--raw` a file-level TOML diff.
+    `knx_diff_project` compares a `.knxproj` or `.bussard` file with your model. A password-protected project needs `BUSSARD_PROJECT_PASSWORD` in the `.env`.
 
-With an assistant, `knx_diff_project` returns the same sentences. It reads them to you before you import, and says whether a protected address is touched.
+=== "At the terminal"
+
+    ```console
+    $ bussard diff knx integrator-2026-10-01.bussard
+    2 change(s) from knx to integrator-2026-10-01.bussard:
+      Group address 1/0/1 is now called "Kitchen ceiling" (was "Light Kitchen").
+      Night setback on Living room thermostat: 2 to 3.
+    ```
+
+    Each side can be a model directory, a `.bussard` bundle or a `.knxproj`. `diff` exits 0 whether or not there are differences.
+
+    - A password-protected project takes `--password`, `--password-b` for a second project with another password, or `BUSSARD_PROJECT_PASSWORD` from your `.env`.
+    - `--json` gives the structured changes, `--raw` a file-level TOML diff.
+
+A renamed group address is one rename, not a removal and an addition. The comparison writes nothing.
 
 ## Import the new export
 
-```console
-$ bussard import integrator-2026-10-01.bussard --dir knx
-```
+=== "In chat"
 
-The import takes the generated data from the file: com-object tables, links and parameters. Names, rooms, descriptions, DPTs and `protected` flags you edited stay yours. Each disagreement is printed as a sentence, and the command exits 3 so you notice:
+    ```text
+    You:        Import it.
+    Assistant:  (calls knx_import_file)
+                Imported. The new night setback is in the model; no
+                device has it yet.
+    ```
+
+    `knx_import_file` takes `theirs: true` to take the file's values.
+
+=== "At the terminal"
+
+    ```console
+    $ bussard import integrator-2026-10-01.bussard --dir knx
+    ```
+
+The import takes the generated data from the file: com-object tables, links and parameters. Names, rooms, descriptions, DPTs and `protected` flags you edited stay yours. Each disagreement is reported as a sentence. At the terminal the command exits 3 so you notice:
 
 | Flag | On a disagreement |
 |---|---|
@@ -74,7 +116,7 @@ The import takes the generated data from the file: com-object tables, links and 
 | `--theirs` | Take the file's value. |
 | `--interactive` | Ask for each one (`m` keeps mine, `t` takes theirs). |
 
-A link you have and the file lacks is a disagreement too, because bussard cannot tell a link you added from one the project dropped. The import snapshots the model first, so `bussard undo` reverts it. Afterwards, run `plan` and `apply` for the devices that changed; the import itself writes no device.
+A link you have and the file lacks is a disagreement too, because bussard cannot tell a link you added from one the project dropped. The import snapshots the model first, so an undo reverts it. Afterwards, plan and write the devices that changed; the import itself writes no device.
 
 ## Next steps
 

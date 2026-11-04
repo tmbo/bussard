@@ -1,33 +1,68 @@
 # Watch the bus
 
-Watch telegrams as they happen, read a single value, see the installation in a browser, and keep a history you can query later. Everything on this page only listens, except `read`, which asks one device for one value.
+Watch telegrams as they happen, read a single value, see the installation in a browser, and keep a history you can query later. Everything on this page only listens, except a read, which asks one device for one value.
 
 ## Watch and decode the bus
 
-```console
-$ bussard monitor
-12:03:41.221  1.1.7 Weather Station    → 3/0/0 Wind Alarm           = Alarm (1.005, obj "Wind Alarm")
-12:03:44.809  1.1.1 Push Button Hallway → 0/0/0 Hallway Light Switch = On (1.001, obj "Rocker 1")
-12:03:44.981  1.1.3 Switch Actuator     → 0/0/1 Hallway Light Status = On (1.001)
-```
+=== "In chat"
 
-Each line is one telegram: the sending device, the group address it went to (a group address such as `0/0/0` is the shared channel a button and an actuator both use), its name, and the decoded value. Flip a switch and watch it name itself.
+    An illustrative exchange:
 
-Narrow the stream with `--filter 3/2/0,1/0/`: group addresses, group-address prefixes, or sender addresses such as `1.1.30`. `--json` prints one JSON object per line for other tools. A group address the model does not know shows as raw hex; add it to `groups.toml` with a `dpt` (its data type, which tells bussard how to decode the value) and run `monitor` again.
+    ```text
+    You:        What just happened on the bus?
+    Assistant:  (calls knx_recent_telegrams)
+                The weather station raised the wind alarm. A moment later
+                the hallway push button switched the hallway light on, and
+                the switch actuator reported it on.
+    You:        Tell me when someone presses a button in the hallway.
+    Assistant:  (calls knx_wait_for_telegram)
+                Hallway push button just sent "on" to Hallway light.
+    ```
 
-Secured telegrams (KNX Data Secure) decode only with the keyring: pass `--keyring <file.knxkeys>` and set the password in `BUSSARD_KEYRING_PASSWORD`. Decoded ones are marked `[secured]`.
+    `knx_recent_telegrams` returns the latest telegrams the server has decoded, filtered by group address or sender. `knx_wait_for_telegram` waits up to five minutes for the next matching one. A secured telegram arrives decrypted when the server has the keyring.
+
+=== "At the terminal"
+
+    ```console
+    $ bussard monitor
+    12:03:41.221  1.1.7 Weather Station    → 3/0/0 Wind Alarm           = Alarm (1.005, obj "Wind Alarm")
+    12:03:44.809  1.1.1 Push Button Hallway → 0/0/0 Hallway Light Switch = On (1.001, obj "Rocker 1")
+    12:03:44.981  1.1.3 Switch Actuator     → 0/0/1 Hallway Light Status = On (1.001)
+    ```
+
+    Each line is one telegram: the sending device, the group address it went to (a group address such as `0/0/0` is the shared channel a button and an actuator both use), its name, and the decoded value. Flip a switch and watch it name itself.
+
+    Narrow the stream with `--filter 3/2/0,1/0/`: group addresses, group-address prefixes, or sender addresses such as `1.1.30`. `--json` prints one JSON object per line for other tools.
+
+    Secured telegrams (KNX Data Secure) decode only with the keyring: pass `--keyring <file.knxkeys>` and set the password in `BUSSARD_KEYRING_PASSWORD`. Decoded ones are marked `[secured]`.
+
+A group address the model does not know shows as raw hex. Give it a `dpt` in `groups.toml` (its data type, which tells bussard how to decode the value), or let the assistant do it, and it decodes from then on.
 
 ## Read a value
 
-```console
-$ bussard read 3/2/0
-```
+=== "In chat"
 
-`read` sends one read request to the group address and prints the typed answer. It exits non-zero when nothing answers within 3 seconds. `--json` prints the result as one object, with `answered` set to `false` when no answer came.
+    ```text
+    You:        Is the wind alarm on right now?
+    Assistant:  (calls knx_read_group)
+                Wind alarm answered: no alarm.
+    ```
 
-A secured group address needs `--keyring`. Without a key for it, `read` refuses before sending anything.
+    `knx_read_group` sends one read request and returns the decoded answer. The default server may send reads; a server started with `--passive` does not offer the tool.
+
+=== "At the terminal"
+
+    ```console
+    $ bussard read 3/2/0
+    ```
+
+    `read` sends one read request to the group address and prints the typed answer. It exits non-zero when nothing answers within 3 seconds. `--json` prints the result as one object, with `answered` set to `false` when no answer came.
+
+    A secured group address needs `--keyring`. Without a key for it, `read` refuses before sending anything.
 
 ## See the installation in a browser
+
+The browser view is a terminal command in both forms: ask the assistant and it names the command for you.
 
 ```console
 $ bussard viz
@@ -48,7 +83,7 @@ A bare `bussard viz` never transmits, so it is safe to point at the live install
 $ bussard capture --to knx/captures/bus.db --filter 3/
 ```
 
-`capture` writes every matching telegram into a SQLite file, created if absent. It stores the raw bytes next to the decoded value, so you can decode the history again after you fix a name or a type in the model. `--filter` works as for `monitor`, and `--keyring` decrypts secured telegrams.
+Recording to a file is a terminal command too. `capture` writes every matching telegram into a SQLite file, created if absent. It stores the raw bytes next to the decoded value, so you can decode the history again after you fix a name or a type in the model. `--filter` works as for `monitor`, and `--keyring` decrypts secured telegrams.
 
 Query the file with any SQLite tool:
 
@@ -68,28 +103,49 @@ The table layout is in the [JSON and capture reference](../reference/json-output
 
 ## Name group addresses from live traffic
 
-```console
-$ bussard learn --untyped --gateway 192.0.2.10
+=== "In chat"
 
-[1/12] 1/0/1: trigger the object you want to name (waiting up to 30s)
-  1/0/1  sender 1.1.30 Schaltaktor (Kitchen)
-  com object 3 Kanal A - Schalten, channel Ceiling light, declares 1.001
-  payload 01 (1 byte(s))
-    1. 1.001 [high] the sending com object declares DPT 1.001 in the model
-  proposed name: Kitchen ceiling light, schalten
-  accept as "Kitchen ceiling light, schalten" / 1.001? [a]ccept, [e]dit name, [d]pt, [s]kip, [q]uit:
-```
+    ```text
+    You:        Help me name the group addresses.
+    Assistant:  Press a button you know, then tell me which one it was.
+    You:        The ceiling light switch in the kitchen.
+    Assistant:  (calls knx_wait_for_telegram, then knx_infer_group)
+                Device 1.1.30 in the kitchen sent "on" to 1/0/1. Its com
+                object declares 1.001 (switch), high confidence.
+                I would call it "Kitchen ceiling light, switch". OK?
+    You:        Yes.
+    Assistant:  (calls knx_set_group)
+                1/0/1 is now Kitchen ceiling light, switch, type 1.001.
+    ```
 
-`learn` asks you to press a button, waits for the telegram, and proposes a type and a name from the sending device's room, channel and com object (one input or output of a device). Accept, edit the name, change the type, skip, or quit. Press the same button again when the candidates are uncertain: each extra telegram narrows them.
+    `knx_wait_for_telegram` waits for the press, `knx_infer_group` ranks the possible types and proposes a name, and `knx_set_group` writes the one you agreed to. The loop works with a `--passive` server.
 
-| Flag | What it learns |
-|---|---|
-| `--untyped` | Every group address in the model without a type |
-| `--unnamed` | Every group address with a placeholder name |
-| `--ga <GA>` | The addresses you name, in that order (repeatable) |
-| none | Whatever appears on the bus next, until a wait times out |
+=== "At the terminal"
 
-Accepted answers go into `groups.toml`, and into the sending device's file when the com object is clear. `learn` never transmits; it only changes files. Review the result and run `bussard validate`. `--timeout` changes the 30-second wait.
+    ```console
+    $ bussard learn --untyped --gateway 192.0.2.10
+
+    [1/12] 1/0/1: trigger the object you want to name (waiting up to 30s)
+      1/0/1  sender 1.1.30 Schaltaktor (Kitchen)
+      com object 3 Kanal A - Schalten, channel Ceiling light, declares 1.001
+      payload 01 (1 byte(s))
+        1. 1.001 [high] the sending com object declares DPT 1.001 in the model
+      proposed name: Kitchen ceiling light, schalten
+      accept as "Kitchen ceiling light, schalten" / 1.001? [a]ccept, [e]dit name, [d]pt, [s]kip, [q]uit:
+    ```
+
+    `learn` asks you to press a button, waits for the telegram, and proposes a type and a name. Accept, edit the name, change the type, skip, or quit.
+
+    | Flag | What it learns |
+    |---|---|
+    | `--untyped` | Every group address in the model without a type |
+    | `--unnamed` | Every group address with a placeholder name |
+    | `--ga <GA>` | The addresses you name, in that order (repeatable) |
+    | none | Whatever appears on the bus next, until a wait times out |
+
+    `--timeout` changes the 30-second wait.
+
+The proposal comes from the sending device's room, channel and com object (one input or output of a device). Press the same button again when the candidates are uncertain: each extra telegram narrows them. Accepted answers go into `groups.toml`, and into the sending device's file when the com object is clear. Either way nothing is transmitted; only files change. Review the result with `bussard validate`, or ask the assistant to validate.
 
 ## Next steps
 

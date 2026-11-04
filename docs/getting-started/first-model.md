@@ -12,39 +12,65 @@ Nothing on this page writes to a device. Every command here only reads the bus.
 
 ## Create the model from an ETS export
 
-Make an empty directory for the model and import the export into it:
+=== "In chat"
 
-```console
-$ mkdir house && cd house
-$ bussard import ../demo-house.knxproj
-imported 33 group addresses, 10 devices, 55 link entries → the current directory /home/me/house
-```
+    Register the server on an empty folder, as [Connect an assistant](assistant.md) shows, put the export next to that folder, and say:
 
-bussard takes the project password from `BUSSARD_PROJECT_PASSWORD` or asks for it. It then looks up the vendor product data (the `.knxprod` files that describe each device's parameters) for every device, lists what it would download, and asks once. A device without product data still gets its file, with its identity, location and links.
+    ```text
+    You:        Set up my house. The ETS export is demo-house.knxproj.
+    Assistant:  May I download the vendor product data the export lacks?
+    You:        Yes.
+    Assistant:  (calls knx_setup with download: true)
+                Found the KNX IP Interface at 192.0.2.10. Imported 33
+                group addresses, 10 devices and 55 links.
+    ```
 
-`bussard init` does the same in one step, and also finds your gateway and writes it into the model:
+    `knx_setup` runs what `bussard init` runs. Without your yes to the download it imports without the missing product data. Afterwards the assistant has its full tool set in the same conversation.
 
-```console
-$ bussard init ../demo-house.knxproj
-Found gateway: KNX IP Interface (192.0.2.10:3671, IA 1.1.250)
-imported 33 group addresses, 10 devices, 55 link entries → the current directory /home/me/house
-validation: 0 error(s), 4 warning(s)
-```
+=== "At the terminal"
+
+    Make an empty directory for the model and import the export into it:
+
+    ```console
+    $ mkdir house && cd house
+    $ bussard import ../demo-house.knxproj
+    imported 33 group addresses, 10 devices, 55 link entries → the current directory /home/me/house
+    ```
+
+    `bussard init` does the same in one step, and also finds your gateway and writes it into the model:
+
+    ```console
+    $ bussard init ../demo-house.knxproj
+    Found gateway: KNX IP Interface (192.0.2.10:3671, IA 1.1.250)
+    imported 33 group addresses, 10 devices, 55 link entries → the current directory /home/me/house
+    validation: 0 error(s), 4 warning(s)
+    ```
+
+bussard takes the project password from `BUSSARD_PROJECT_PASSWORD` in the `.env`, or at the terminal asks for it. It then looks up the vendor product data (the `.knxprod` files that describe each device's parameters) for every device, lists what it would download, and asks once. A device without product data still gets its file, with its identity, location and links.
 
 ## Or start without one
 
-With no project file, `bussard init` creates an empty model:
+=== "In chat"
 
-```console
-$ mkdir house && cd house
-$ bussard init
-Searching for KNXnet/IP gateways on the local network...
-Found gateway: IP Interface (192.0.2.10:3671, IA 1.1.250, 4 tunnels, 1 in use)
+    ```text
+    You:        Set up my house. I have no ETS project.
+    Assistant:  (calls knx_setup)
+                Found the IP Interface at 192.0.2.10 and created an empty
+                model.
+    ```
 
-Created a fresh KNX model in the current directory /home/me/house.
-```
+=== "At the terminal"
 
-`init` only reads from the network. It writes the gateway's address into `bussard.toml`. Discovery does not cross subnets; if it finds nothing, pass the address yourself with `bussard init --gateway 192.0.2.10`.
+    ```console
+    $ mkdir house && cd house
+    $ bussard init
+    Searching for KNXnet/IP gateways on the local network...
+    Found gateway: IP Interface (192.0.2.10:3671, IA 1.1.250, 4 tunnels, 1 in use)
+
+    Created a fresh KNX model in the current directory /home/me/house.
+    ```
+
+With no project file, setup creates an empty model. It only reads from the network and writes the gateway's address into `bussard.toml`. Discovery does not cross subnets; if it finds nothing, name the address yourself (`bussard init --gateway 192.0.2.10`, or tell the assistant).
 
 "4 tunnels, 1 in use" is the tunnel budget: the interface has a fixed number of connection slots, and Home Assistant, ETS and every running bussard command each hold one. With no slot free, bussard says so and exits with code 4 instead of hanging.
 
@@ -52,28 +78,53 @@ To fill it from the devices already on a line, `bussard reconstruct` reads what 
 
 ## Check the model
 
-```console
-$ bussard validate
-0 errors, 4 warnings
-```
+=== "In chat"
 
-`validate` checks the model offline, never prompts, and exits non-zero when it finds an error. Warnings alone exit 0.
+    ```text
+    You:        Is the model sound?
+    Assistant:  (calls knx_validate)
+                No errors, 4 warnings.
+    ```
+
+=== "At the terminal"
+
+    ```console
+    $ bussard validate
+    0 errors, 4 warnings
+    ```
+
+    `validate` never prompts, and exits non-zero when it finds an error. Warnings alone exit 0.
+
+The check runs offline, on the files only.
 
 ## Watch the bus
 
-```console
-$ bussard monitor
-12:03:44.809  1.1.1 Push Button Hallway → 0/0/0 Hallway Light Switch = On (1.001, obj "Rocker 1")
-12:03:44.981  1.1.3 Switch Actuator     → 0/0/1 Hallway Light Status = On (1.001)
-```
+=== "In chat"
 
-Press a button in the house and its telegram appears. Each line reads left to right:
+    ```text
+    You:        I just pressed the hallway button. What did you see?
+    Assistant:  (calls knx_recent_telegrams)
+                Push Button Hallway sent "on" to Hallway Light Switch,
+                and the switch actuator reported Hallway Light Status on.
+    ```
+
+=== "At the terminal"
+
+    ```console
+    $ bussard monitor
+    12:03:44.809  1.1.1 Push Button Hallway → 0/0/0 Hallway Light Switch = On (1.001, obj "Rocker 1")
+    12:03:44.981  1.1.3 Switch Actuator     → 0/0/1 Hallway Light Status = On (1.001)
+    ```
+
+    `bussard monitor --filter 0/0` shows only the telegrams you name.
+
+Press a button in the house and its telegram appears. Each `monitor` line reads left to right:
 
 - `1.1.1` is the sender's individual address, the device's own address on the bus.
 - `0/0/0` is the group address, the shared channel a button sends to and an actuator listens on.
 - `1.001` is the data point type (DPT), which says how to read the value: here a switch, on or off.
 
-The names come from your model. A group address or type the model does not know shows as raw hex, never as an error. `bussard monitor --filter 0/0` shows only the telegrams you name.
+The names come from your model. A group address or type the model does not know shows as raw hex, never as an error.
 
 ## What the model directory holds
 

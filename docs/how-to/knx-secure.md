@@ -18,22 +18,47 @@ The key store is encrypted like the ETS keyring and meant to be committed with t
 
 ## Import an ETS keyring
 
-```console
-$ bussard keys import project.knxkeys
-devices: 1 added (1.1.13), 1 tool key(s) rotated (1.1.12), 8 unchanged
-```
+=== "In chat"
+
+    ```text
+    You:        Import project.knxkeys.
+    Assistant:  (calls knx_import_file)
+                1 device added (1.1.13), 1 tool key rotated (1.1.12),
+                8 unchanged.
+    ```
+
+    `knx_import_file` reads the password from `BUSSARD_KEYRING_PASSWORD` in the `.env`. No result carries key material.
+
+=== "At the terminal"
+
+    ```console
+    $ bussard keys import project.knxkeys
+    devices: 1 added (1.1.13), 1 tool key(s) rotated (1.1.12), 8 unchanged
+    ```
+
+    `bussard keys show` lists what the store holds, without key material.
 
 The first import creates the store; later ones merge. New devices, rotated keys and changed credentials are taken from the export, entries it lacks are kept, and a factory key (FDSK, the key on the device's sticker) is never dropped. The keyring's password must be the store's. Importing the same keyring twice writes nothing.
 
-`bussard import` and `bussard init` merge the one keyring exported next to the project automatically when the password is set. Each write keeps the previous store as `bussard.keys.bak`; copy it back to undo a bad import. `bussard keys show` lists what the store holds, without key material.
+`bussard import` and `bussard init` merge the one keyring exported next to the project automatically when the password is set. Each write keeps the previous store as `bussard.keys.bak`; copy it back to undo a bad import.
 
 ## Export a keyring for ETS or Home Assistant
 
-```console
-$ bussard keys export house.knxkeys
-```
+=== "In chat"
 
-The file is a keyring ETS accepts, signed with the same password. A device without a tool key is left out and named. An existing file is refused unless you pass `--force`.
+    ```text
+    You:        Export the keyring for Home Assistant as house.knxkeys.
+    Assistant:  (calls knx_export with what: keyring)
+                Wrote house.knxkeys and read it back.
+    ```
+
+=== "At the terminal"
+
+    ```console
+    $ bussard keys export house.knxkeys
+    ```
+
+The file is a keyring ETS accepts, signed with the same password, and read back after writing. A device without a tool key is left out and named. An existing file is refused unless you pass `--force` (`force: true` in chat).
 
 Home Assistant, ETS and a visualisation hold a copy of the keys. After the store changes, export again and load the new file there; `bussard validate` warns about a recorded export that is older than the last change.
 
@@ -57,15 +82,30 @@ A device the keyring lists is managed over KNX Data Secure with its tool key; a 
 
 ## Secure or unsecure one group address
 
-```console
-$ bussard groups secure 1/0/4 off
-Licht Küche now runs plain (KNX Data Secure off).
-Aktor Küche: object 12 now runs plain (KNX Data Secure off).
-The key store no longer holds a group key for 1/0/4.
-...
-```
+=== "In chat"
 
-This lets a non-Secure sender switch the address. It changes the key store, `groups.toml` and the lock in one snapshot, so `bussard undo` restores them, the key included. The devices change only when you run `bussard plan` and `bussard apply` on each linked device the output names.
+    ```text
+    You:        Let a plain sender switch Licht Küche.
+    Assistant:  (calls knx_set_group with secure: false)
+                Licht Küche now runs plain (KNX Data Secure off).
+                Aktor Küche: object 12 now runs plain. The key store no
+                longer holds a group key for it. Plan and write Aktor
+                Küche next, and export the keyring for Home Assistant.
+    ```
+
+    The tool is refused for a protected group address.
+
+=== "At the terminal"
+
+    ```console
+    $ bussard groups secure 1/0/4 off
+    Licht Küche now runs plain (KNX Data Secure off).
+    Aktor Küche: object 12 now runs plain (KNX Data Secure off).
+    The key store no longer holds a group key for 1/0/4.
+    ...
+    ```
+
+This lets a non-Secure sender switch the address. It changes the key store, `groups.toml` and the lock in one snapshot, so an undo restores them, the key included. The devices change only when you plan and write each linked device the result names.
 
 - `off` is refused while a linked com object also links another secured group address.
 - `on` keeps the store's key or generates a new one, as ETS does. It is refused while a linked device cannot run Data Secure.
@@ -74,18 +114,31 @@ This lets a non-Secure sender switch the address. It changes the key store, `gro
 
 ## Switch KNXnet/IP Secure of an IP interface
 
-Preview the steps first; `--dry-run` opens no connection and leaves the store unchanged:
-
-```console
-$ bussard interface secure on 1.1.200 --dry-run
-```
-
 !!! warning
-    `interface secure` writes the interface's security settings and ends with a master reset of the interface.
+    The switch writes the interface's security settings and ends with a master reset of the interface.
 
-```console
-$ bussard interface secure on 1.1.200
-```
+=== "In chat"
+
+    ```text
+    You:        Turn on KNXnet/IP Secure on the IP interface 1.1.200.
+    Assistant:  (calls knx_interface_secure)
+                These steps run, and the key store gains a tool key and a
+                tunnelling user. Nothing is written yet. Go ahead?
+    You:        Yes.
+    Assistant:  (calls knx_interface_secure with the plan's digest)
+                Switched and verified.
+    ```
+
+    `knx_interface_secure` needs a server started with `--allow-programming`. It is refused when the server's own session is a secure session with that interface.
+
+=== "At the terminal"
+
+    Preview the steps first; `--dry-run` opens no connection and leaves the store unchanged:
+
+    ```console
+    $ bussard interface secure on 1.1.200 --dry-run
+    $ bussard interface secure on 1.1.200
+    ```
 
 `on` runs over a plain tunnel to an interface in factory state and needs its FDSK in the key store. Any tool key, password or tunnelling user the store lacks is generated and saved before the first write. `on` is refused when the interface already reports secure-only tunnelling. `off` needs the tool key, and through a secure session with the same interface it also needs `--allow-self-reconfigure`. Each switch ends with a read-back on a fresh connection under the key the interface should now hold.
 

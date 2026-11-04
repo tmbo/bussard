@@ -1,6 +1,6 @@
 # How-to guides
 
-Each guide answers one question and starts with the command. Pick the task.
+Every guide shows each step in two forms, "In chat" with an assistant and "At the terminal", and the tab you pick stays picked on every page. Each guide answers one question; pick the task.
 
 | I want to ... | Guide |
 |---|---|

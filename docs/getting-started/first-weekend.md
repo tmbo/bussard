@@ -2,7 +2,7 @@
 
 This tutorial is for the owner of a KNX house who wants to understand it, back it up and change it without an integrator. By Sunday evening your house is a named model on your laptop, every device is backed up, you have made one change and undone it, and a copy of the whole configuration sits on a USB stick in the cabinet.
 
-An assistant does most of the work. bussard runs as an MCP server, so an assistant such as Claude reads the model, watches the bus, answers questions and proposes changes. You type the commands that program devices, because those need a hand on the keyboard and a look at the confirmation. Each step names the safety rail that protects it; [Safety](../explanation/safety.md) explains them all in one place.
+An assistant does most of the work. bussard runs as an MCP server, so an assistant such as Claude reads the model, watches the bus, answers questions and proposes changes. This tutorial has you type the commands that program devices, so you see each confirmation once; afterwards the assistant can run them too, each after your yes. Each step names the safety rail that protects it; [Safety](../explanation/safety.md) explains them all in one place.
 
 ## What to have ready
 
@@ -46,7 +46,7 @@ The client starts the server itself. Run `bussard mcp` by hand and it prints thi
 
 The default server reads the model, watches the bus, sends rate-limited read requests, and edits the model files. It cannot program a device and cannot write a value to the bus.
 
-Safety rails: every model edit the assistant makes is saved to the history first and comes back as a plain sentence for the assistant to quote. Group addresses marked `protected = true` cannot be changed or linked over MCP at all. Device programming (`plan`, `apply`, `flash`) is on the command line; the server can write one device's link tables and parameters only when you start it with `--allow-programming` and approve the plan.
+Safety rails: every model edit the assistant makes is saved to the history first and comes back as a plain sentence for the assistant to quote. Group addresses marked `protected = true` cannot be changed or linked over MCP at all. The default server cannot program a device. Started with `--allow-programming`, it plans, writes, adds, replaces and commissions devices, each only after you approve its plan. Two things never run from chat: a write to a protected address (`bussard write --force` at the terminal) and the KNX Secure activation of a factory-fresh device (ETS).
 
 ## Saturday morning: how good is my project file?
 
@@ -120,7 +120,7 @@ backing up 72 device(s) via 192.0.2.10:3671 into captures/backups/20260926T18000
 64 backed up, 8 skipped, 0 unreachable, 0 failed
 ```
 
-Skipped devices are the ones whose mask bussard cannot read. The backup holds each device's address and association tables and, on System B devices, the parameters. `bussard restore <backup-dir> <address>` writes one device back from it.
+Or ask the assistant to back up every device; it calls `knx_backup_device`, which only reads. Skipped devices are the ones whose mask bussard cannot read. The backup holds each device's address and association tables and, on System B devices, the parameters. `bussard restore <backup-dir> <address>` writes one device back from it.
 
 Safety rail: `backup` sends only read requests, so it is safe on a live house.
 
@@ -128,7 +128,7 @@ Safety rail: `backup` sends only read requests, so it is safe on a live house.
 
 `bussard viz` serves the whole installation as a web page on `http://127.0.0.1:8080`: devices by line, rooms, group addresses, live traffic, and a Problems panel.
 
-`bussard doc --format html --out house-manual` writes the house manual the KNX guidelines ask for: a device list, a group address list with types, and one sheet per room with a sentence for every button and channel. Print the room sheets for the family. The assistant answers the rest ("what does the second rocker in the kitchen do?") from the model.
+`bussard doc --format html --out house-manual` writes the house manual the KNX guidelines ask for: a device list, a group address list with types, and one sheet per room with a sentence for every button and channel. Print the room sheets for the family. The assistant writes the same folder with `knx_export`, and answers the rest ("what does the second rocker in the kitchen do?") from the model.
 
 Safety rails: `doc` never touches the bus. `viz` without flags is a viewer and cannot write.
 
@@ -172,6 +172,8 @@ apply verified: address table Loaded (6 entries), association table Loaded (6 en
 
 Press the hallway button. The porch light follows.
 
+Next time, ask the assistant to do this step. With a server started with `--allow-programming` it shows you the same plan (`knx_plan_device`) and writes it after your yes (`knx_apply_device`), with the same backup and read-back.
+
 Safety rails: `plan` only reads. `apply` refuses a gateway that is not on this laptop unless you pass `--allow-remote-gateway`, because the most dangerous mistake is writing to the wrong bus. `apply` backs up the device's tables first and reads them back after writing. The assistant's server holds one tunnel while it runs, so `apply` needs a second free one.
 
 ## Monday: undo it
@@ -186,7 +188,7 @@ Assistant:  (calls knx_undo)
             The model is back. Run plan and apply on 1.1.7 to program it.
 ```
 
-`bussard undo` does the same from a terminal. Undo restores the model files only, so the device keeps the change until you program it again with `bussard plan 1.1.7` and `bussard apply 1.1.7 --allow-remote-gateway`.
+`bussard undo` does the same from a terminal. Undo restores the model files only, so the device keeps the change until you program it again with `bussard plan 1.1.7` and `bussard apply 1.1.7 --allow-remote-gateway`, or the assistant does after your yes.
 
 `bussard history` lists every saved state with the command that caused it, and `bussard show <n>` explains one of them in sentences. The undo itself is saved too, so undoing an undo works.
 
@@ -202,7 +204,7 @@ exported 72 device(s), 318 group address(es), 14 history snapshot(s) → /Volume
 model sha256 3f1c…
 ```
 
-The `.bussard` file holds the model, the history and a checksum of the model. It never holds the `.knxproj`, the `.knxkeys` keyring, vendor product files or passwords; keep those next to it on the stick, or in a password manager. Put the stick in the cabinet with the handover papers. After every `apply`, bussard reminds you when the last export is older than the model you just programmed.
+The assistant writes the same file with `knx_export`. The `.bussard` file holds the model, the history and a checksum of the model. It never holds the `.knxproj`, the `.knxkeys` keyring, vendor product files or passwords; keep those next to it on the stick, or in a password manager. Put the stick in the cabinet with the handover papers. After every `apply`, bussard reminds you when the last export is older than the model you just programmed.
 
 `bussard import house.bussard` in an empty directory on a new laptop brings everything back, history included. The same file is what you send to an integrator; [Work with an integrator](../how-to/work-with-an-integrator.md) describes that exchange.
 
