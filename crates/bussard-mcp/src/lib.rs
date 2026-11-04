@@ -174,6 +174,7 @@ pub mod jobs;
 pub mod model_handle;
 pub mod onboarding;
 pub mod param_keys;
+pub mod password_form;
 pub mod run;
 mod secure_group;
 pub mod server;

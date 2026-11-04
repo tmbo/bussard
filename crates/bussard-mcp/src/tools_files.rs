@@ -12,7 +12,9 @@
 //!
 //! Consent to download vendor product data is the `download` argument, never
 //! `yes`. A password argument is never echoed, and no result carries key
-//! material: keyring results are addresses and counts.
+//! material: keyring results are addresses and counts. A protected
+//! `.knxproj` without a password gets bussard's password form when the
+//! client shows URLs ([`crate::password_form`], #818).
 
 use std::path::{Path, PathBuf};
 
@@ -26,14 +28,19 @@ use bussard_service::files::{FileKind, export, import, keyring, products};
 use bussard_service::secure::KEYRING_PASSWORD_ENV;
 use bussard_service::setup::products::error_chain;
 use bussard_service::setup::{self, Collected, DownloadAnswer, DownloadPrompt, SetupError};
-use rmcp::ErrorData;
-use rmcp::model::CallToolResult;
+use std::sync::Arc;
+
+use rmcp::handler::server::tool::{InputResponses, RequestState};
+use rmcp::model::{CallToolResponse, CallToolResult};
 use rmcp::schemars::{self, JsonSchema};
+use rmcp::service::RequestContext;
+use rmcp::{ErrorData, RoleServer};
 use rmcp::{tool, tool_router};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::args::Parameters;
+use crate::password_form::{self, Attempt, Step};
 use crate::server::BussardMcp;
 
 /// The export tool, registered in every tier. `knx_import_file` writes the
@@ -165,8 +172,11 @@ impl BussardMcp {
         key store bussard.keys. Vendor product data by order number: {order_number, download: \
         true}. Downloading copyrighted vendor data needs the human's consent: ask, then pass \
         download: true (never `yes`); without it nothing is downloaded and the result says what \
-        would be. A protected .knxproj or a .knxkeys needs `password` (ask the human; it is \
-        never echoed or stored) unless the server's environment has it. Run knx_diff_project \
+        would be. A protected .knxproj the server has no password for: when the chat app \
+        shows links, bussard shows the human its own password form on this computer, stores \
+        the password in .env and imports; never ask for it in chat. Otherwise the result asks \
+        for `password`. A .knxkeys needs `password` (ask the human; it is never echoed or \
+        stored) unless the server's environment has it. Run knx_diff_project \
         first and quote its sentences before importing a project or bundle. Snapshots the \
         project first (knx_undo puts it back); touches no device. Returns sentences: quote the \
         summary."
@@ -174,18 +184,62 @@ impl BussardMcp {
     async fn knx_import_file(
         &self,
         Parameters(args): Parameters<ImportFileArgs>,
-    ) -> Result<CallToolResult, ErrorData> {
+        context: RequestContext<RoleServer>,
+        RequestState(request_state): RequestState,
+        InputResponses(input_responses): InputResponses,
+    ) -> Result<CallToolResponse, ErrorData> {
         if self.state().no_model_edits {
-            return refusal("this server was started with --no-model-edits");
+            return refusal("this server was started with --no-model-edits").map(Into::into);
         }
         let dir = self.state().dir.clone();
-        let result = tokio::task::spawn_blocking(move || import_file(&dir, &args)).await;
-        // Whatever the import wrote, the server reads the files afresh.
-        self.state().model.reload();
-        match result {
-            Ok(Ok(value) | Err(value)) => ok(value),
-            Err(err) => refusal(format!("the import did not finish: {err}")),
+        let args = Arc::new(args);
+        // The client's second round of a 2026-07-28 call: the human's answer
+        // to the password form's elicitation (#818).
+        if let Some(state) = request_state.filter(|s| password_form::is_form_state(s)) {
+            return Ok(
+                match password_form::resume(&self.password_forms, &state, input_responses.as_ref())
+                {
+                    Step::Open(form) => self.import_with_form(form, &args).await.into(),
+                    Step::Answer(answer) => answer,
+                    Step::Unsupported => CallToolResult::structured(refused(
+                        "the password form is closed",
+                        &Collected::default(),
+                    ))
+                    .into(),
+                },
+            );
         }
+        let Some(path) = project_path(&args) else {
+            let thread_args = Arc::clone(&args);
+            let result = tokio::task::spawn_blocking(move || import_file(&dir, &thread_args)).await;
+            // Whatever the import wrote, the server reads the files afresh.
+            self.state().model.reload();
+            return match result {
+                Ok(Ok(value) | Err(value)) => ok(value),
+                Err(err) => refusal(format!("the import did not finish: {err}")),
+            }
+            .map(Into::into);
+        };
+        let run = run_project_import(&dir, &path, &args, None).await;
+        self.state().model.reload();
+        // No password, or a wrong one from the .env: the form, when the
+        // client can show it (#818).
+        let needs_password = match &run {
+            ProjectRun::PasswordRequired(_) => true,
+            ProjectRun::WrongPassword(_) => args.password.is_none(),
+            ProjectRun::Done(_) | ProjectRun::Failed(_) => false,
+        };
+        if needs_password {
+            let file = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned());
+            match password_form::ask(&self.password_forms, &context, file).await {
+                Step::Open(form) => return Ok(self.import_with_form(form, &args).await.into()),
+                Step::Answer(answer) => return Ok(answer),
+                Step::Unsupported => {}
+            }
+        }
+        ok(run.into_value()).map(Into::into)
     }
 
     /// `knx_export`.
@@ -246,7 +300,10 @@ fn import_file(dir: &Path, args: &ImportFileArgs) -> Result<Value, Value> {
             let path = PathBuf::from(raw);
             match FileKind::of(&path) {
                 Some(FileKind::Project | FileKind::Json) => {
-                    import_project(dir, &path, args, &mut prompt, &mut out)
+                    match import_project(dir, &path, args, None, &mut prompt, &mut out) {
+                        ProjectRun::Done(value) => Ok(value),
+                        run => Err(run.into_value()),
+                    }
                 }
                 Some(FileKind::Bundle) => {
                     match import::import_bundle(&path, dir, choice(args), &mut NoPrompt, &mut out) {
@@ -295,23 +352,127 @@ fn password(arg: Option<&String>, env: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// How a project import ended, each with its result.
+enum ProjectRun {
+    /// Imported.
+    Done(Value),
+    /// The project is password-protected and no password was given.
+    PasswordRequired(Value),
+    /// The password given does not open the project.
+    WrongPassword(Value),
+    /// Another refusal.
+    Failed(Value),
+}
+
+impl ProjectRun {
+    /// The tool result.
+    fn into_value(self) -> Value {
+        match self {
+            ProjectRun::Done(value)
+            | ProjectRun::PasswordRequired(value)
+            | ProjectRun::WrongPassword(value)
+            | ProjectRun::Failed(value) => value,
+        }
+    }
+}
+
+/// The `.knxproj` `args` imports, when it imports one by `path`.
+fn project_path(args: &ImportFileArgs) -> Option<PathBuf> {
+    if args.order_number.is_some() {
+        return None;
+    }
+    let path = PathBuf::from(args.path.as_deref()?);
+    matches!(FileKind::of(&path), Some(FileKind::Project)).then_some(path)
+}
+
+/// [`import_project`] on a blocking thread, with `password` in place of the
+/// argument when given.
+async fn run_project_import(
+    dir: &Path,
+    path: &Path,
+    args: &Arc<ImportFileArgs>,
+    password: Option<String>,
+) -> ProjectRun {
+    let (dir, path, args) = (dir.to_path_buf(), path.to_path_buf(), Arc::clone(args));
+    let joined = tokio::task::spawn_blocking(move || {
+        let mut prompt = ChatDownload {
+            download: args.download.unwrap_or(false),
+        };
+        let mut out = Collected::default();
+        import_project(&dir, &path, &args, password, &mut prompt, &mut out)
+    })
+    .await;
+    joined.unwrap_or_else(|err| {
+        ProjectRun::Failed(refused(
+            format!("the import did not finish: {err}"),
+            &Collected::default(),
+        ))
+    })
+}
+
+impl BussardMcp {
+    /// Collects the project password from `form` and imports the project of
+    /// `args` with it (#818).
+    async fn import_with_form(
+        &self,
+        form: Arc<password_form::PendingForm>,
+        args: &Arc<ImportFileArgs>,
+    ) -> CallToolResult {
+        let dir = self.state().dir.clone();
+        let Some(path) = project_path(args) else {
+            return CallToolResult::structured(refused(
+                "the password form is for a .knxproj import",
+                &Collected::default(),
+            ));
+        };
+        let collected = password_form::collect(form, &dir, "imported the project", |password| {
+            let (dir, path, args) = (dir.clone(), path.clone(), Arc::clone(args));
+            async move {
+                match run_project_import(&dir, &path, &args, Some(password.expose().to_string()))
+                    .await
+                {
+                    ProjectRun::Done(value) => Attempt::Opened(value),
+                    ProjectRun::WrongPassword(_) => Attempt::WrongPassword,
+                    ProjectRun::PasswordRequired(value) | ProjectRun::Failed(value) => {
+                        Attempt::Failed(value)
+                    }
+                }
+            }
+        })
+        .await;
+        self.state().model.reload();
+        match collected {
+            password_form::Collected::Opened { mut value, stored } => {
+                value["password"] = json!(password_form::stored_note(&stored));
+                CallToolResult::structured(value)
+            }
+            password_form::Collected::Failed(value) => CallToolResult::structured(value),
+            password_form::Collected::Ended(reason) => password_form::ended(&reason),
+        }
+    }
+}
+
 /// Imports a `.knxproj` or `.json` dump as `bussard import` does: loaded
-/// with the project password ([`setup::import::load_project`]), written
-/// over the model ([`import::write_model`]), then the one `.knxkeys` next to
-/// it merged into the key store ([`setup::import::import_neighbour`]).
+/// with the project password ([`setup::import::load_project`]; `password`,
+/// else the argument, else the server's), written over the model
+/// ([`import::write_model`]), then the one `.knxkeys` next to it merged
+/// into the key store ([`setup::import::import_neighbour`]).
 fn import_project(
     dir: &Path,
     path: &Path,
     args: &ImportFileArgs,
+    password: Option<String>,
     prompt: &mut ChatDownload,
     out: &mut Collected,
-) -> Result<Value, Value> {
-    let given = args.password.clone().filter(|s| !s.is_empty());
+) -> ProjectRun {
+    let given = password
+        .or_else(|| args.password.clone())
+        .filter(|s| !s.is_empty());
     let had_password = given.is_some();
     let model = match setup::import::load_project(path, dir, given, || Ok(None)) {
         Ok(model) => model,
         Err(SetupError::PasswordRequired) => {
-            return Err(refused(
+            return ProjectRun::PasswordRequired(refused(
                 format!(
                     "{} is password-protected; ask the human for the project password and pass \
                      it as password (it is never echoed or stored)",
@@ -326,14 +487,19 @@ fn import_project(
             } else {
                 ""
             };
-            return Err(refused(
+            let value = refused(
                 format!(
                     "{} could not be read: {}{hint}",
                     path.display(),
                     error_chain(&err)
                 ),
                 out,
-            ));
+            );
+            return if err.is_wrong_password() {
+                ProjectRun::WrongPassword(value)
+            } else {
+                ProjectRun::Failed(value)
+            };
         }
     };
     let project = (!setup::is_json(path)).then_some(path);
@@ -350,9 +516,9 @@ fn import_project(
     match written {
         Ok(outcome) => {
             setup::import::import_neighbour(path, dir, out);
-            Ok(model_result("project", path, dir, &outcome, out))
+            ProjectRun::Done(model_result("project", path, dir, &outcome, out))
         }
-        Err(err) => Err(refused(error_chain(&err), out)),
+        Err(err) => ProjectRun::Failed(refused(error_chain(&err), out)),
     }
 }
 

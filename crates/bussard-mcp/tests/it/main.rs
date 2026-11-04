@@ -23,6 +23,7 @@ mod mcp_ha_automation;
 mod mcp_http;
 mod mcp_interface;
 mod mcp_learn;
+mod mcp_password_form;
 mod mcp_program;
 mod mcp_replace;
 mod mcp_safety_net;

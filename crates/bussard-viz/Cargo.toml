@@ -30,6 +30,9 @@ axum = { workspace = true }
 # The in-process enrolment relay (issue #729) stores SHA-256 of each session's
 # owner token, never the token. Already in the tree. MIT OR Apache-2.0.
 sha2 = { workspace = true }
+# The password form (#818) holds the posted password as a zeroizing,
+# redacted `Password`. First party.
+bussard-secure = { workspace = true }
 getrandom = { workspace = true }
 qrcode = { workspace = true }
 

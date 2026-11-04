@@ -62,6 +62,8 @@ pub struct BussardMcp {
     /// The certificate enrolment session of this server, if one was started
     /// (issue #732).
     pub(crate) enroll: crate::tools_enroll::EnrollJobs,
+    /// The project password form `knx_import_file` shows (#818).
+    pub(crate) password_forms: crate::password_form::PasswordForms,
     /// Opens the enrolment pairing page in the human's browser (issue #809).
     pub(crate) browser: Arc<dyn crate::browser::BrowserOpener>,
 }
@@ -141,6 +143,7 @@ impl BussardMcp {
             session_edits: crate::session_edits::SessionEdits::new(),
             admission_tables: Arc::default(),
             enroll: crate::tools_enroll::EnrollJobs::new(),
+            password_forms: crate::password_form::PasswordForms::new(),
             browser: Arc::new(crate::browser::SystemBrowser),
         }
     }
