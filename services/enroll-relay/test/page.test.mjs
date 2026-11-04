@@ -51,6 +51,7 @@ test('test_page_files_served_with_headers', async () => {
   for (const [file, type] of [
     ['app.js', /javascript/],
     ['enroll.js', /javascript/],
+    ['phonekey.js', /javascript/],
     ['ui.js', /javascript/],
     ['style.css', /^text\/css/],
     ['vendor/jsQR.js', /javascript/],
