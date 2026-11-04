@@ -72,6 +72,12 @@ read-only: group writes return 403 (pass --allow-writes to enable them)
 
 Open the address. You get every device drawn along the bus by floor and room, the group-address tree, and live telegrams as they happen. Select a device or a group address to see its links, senders and listeners. With no reachable gateway the page still shows your project, without live traffic.
 
+![The viz page: devices by floor and room on the left, the group-address tree on the right, live telegrams below](../assets/screenshots/viz-overview.png)
+
+Select a device and the inspector shows its com objects with their types, flags and group addresses:
+
+![The inspector for a switch actuator: two com objects, one listening on the switch address and one sending the status](../assets/screenshots/viz-device.png)
+
 A bare `bussard viz` never transmits, so it is safe to point at the live installation. It holds one tunnelling slot of your interface while it runs (see [Find what you have](find-what-you-have.md)).
 
 !!! warning

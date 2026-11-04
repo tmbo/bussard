@@ -8,17 +8,24 @@ No project yet? Register the server on an empty folder (`--dir` names a folder t
 
 ## Register the server
 
-The server talks over stdin and stdout, so the client starts it; there is nothing to connect to. Run `bussard mcp` by hand in the project folder and it prints the Claude Code command and the JSON entry below with your binary's full path, the project folder and the flags you gave, ready to paste. It never prints a password.
+The server talks over stdin and stdout, so the client starts it; there is nothing to connect to. Each client takes one entry that names the binary and the project folder. Use absolute paths, because the client may start the server from any directory. The entry never holds a password.
 
 === "Claude Code"
 
-    Run this once in the project folder:
+    Put a `.mcp.json` next to the project folder, or in it:
 
-    ```console
-    $ claude mcp add knx -- bussard mcp --dir "$PWD"
+    ```json
+    {
+      "mcpServers": {
+        "knx": {
+          "command": "bussard",
+          "args": ["mcp", "--dir", "/Users/nadia/house"]
+        }
+      }
+    }
     ```
 
-    `claude mcp list` shows the server, and the tools appear in the next conversation you start there.
+    Claude Code reads it when you start a conversation in that folder and asks once whether to use the server. The tools appear in that conversation.
 
 === "Claude Desktop"
 
@@ -35,7 +42,7 @@ The server talks over stdin and stdout, so the client starts it; there is nothin
     }
     ```
 
-    The server shows under the tools icon in a chat, not in the connector list: that dialog takes only the HTTPS URL of a remote server, and bussard does not offer an HTTP transport yet.
+    The server shows under the tools icon in a chat, not in the connector list. The connector dialog takes the HTTPS URL of a remote server: bussard serves its tools over HTTP with `--listen`, behind a TLS front of your own, see [Over HTTP](../reference/commands/servers.md#over-http).
 
 === "Cursor"
 
@@ -54,13 +61,7 @@ The server talks over stdin and stdout, so the client starts it; there is nothin
 
 === "Codex CLI"
 
-    Register the server once, with the absolute path of your project folder:
-
-    ```console
-    $ codex mcp add knx -- bussard mcp --dir /Users/nadia/house
-    ```
-
-    That writes this table into `~/.codex/config.toml`, which you can also edit by hand:
+    Add this table to `~/.codex/config.toml`, with the absolute path of your project folder:
 
     ```toml
     [mcp_servers.knx]
@@ -70,7 +71,7 @@ The server talks over stdin and stdout, so the client starts it; there is nothin
 
 === "Other clients"
 
-    Any client that starts a stdio MCP server takes a `mcpServers` entry of this shape. Use absolute paths, because the client may start the server from any directory:
+    Any client that starts a stdio MCP server takes a `mcpServers` entry of this shape:
 
     ```json
     {
@@ -130,31 +131,32 @@ Assistant:  (calls knx_set_group, knx_add_link, knx_set_device)
 
 `knx_wait_for_telegram` waits for the press, `knx_infer_group` ranks the possible data types from the telegrams it has seen, and `knx_set_group` writes the name you agreed to. Every telegram narrows the candidates, so an uncertain one gets "press it again". The loop only listens and never transmits.
 
-Every edit comes back as a plain sentence for the assistant to quote, and touches the project files only. Nothing reaches a device until it is pushed: by you with `bussard plan` and `bussard apply`, or by the assistant on a server started with `--allow-programming`, after your yes to its plan.
+Every edit comes back as a plain sentence for the assistant to quote, and touches the project files only. Nothing reaches a device until it is programmed: on a server started with `--allow-programming` the assistant shows you its plan and writes the device after your yes. [Change what a button does](../how-to/change-a-link.md) walks through that.
 
 ## Check what the assistant changed
 
-```console
-$ bussard status
-1 pending change since snapshot 20260922T104500Z-001 (2026-09-22T10:45:00Z)
-
-Living room blind actuator, channel B, now listens to Central down.
+```text
+You:        What did you change in my project?
+Assistant:  (calls knx_describe_change)
+            One change since the last saved state: Living room blind
+            actuator, channel B, now listens to Central down. The actuator
+            still needs to be programmed.
+You:        And before that?
+Assistant:  (calls knx_history)
+            Saved states, newest first: the link above at 10:45 today, and
+            the import of house.knxproj yesterday at 18:12.
 ```
 
-`status` lists every change since the last saved state in the same sentences. `bussard history` lists every saved state with the command that caused it; an edit over MCP shows as `mcp knx_add_link` and similar.
+`knx_describe_change` lists every change since the last saved state in the same sentences, and `knx_history` lists every saved state with the command that caused it; an edit over MCP shows as `mcp knx_add_link` and similar.
 
 ## Undo
 
-Ask the assistant to undo, or run `bussard undo` yourself:
-
-```console
-$ bussard undo
-Restored the model files to snapshot 20260922T100000Z-001 (2026-09-22T10:00:00Z).
-The state before this undo is kept as snapshot 20260922T103000Z-001.
-
-Rocker 1 on Hallway push button (1.1.5) no longer switches Porch light (0/0/4).
-
-Run `bussard plan 1.1.5` and `bussard apply 1.1.5` to push this to devices.
+```text
+You:        Undo that.
+Assistant:  (calls knx_undo)
+            Living room blind actuator, channel B, no longer listens to
+            Central down. Your project is back at the state saved at 10:00;
+            the state before this undo is kept as well.
 ```
 
 Undo restores the project files only. A device you already programmed keeps the change until you program it again. The undo is saved too, so you can undo an undo.
