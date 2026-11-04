@@ -101,7 +101,7 @@
 //! `--no-model-edits` the twelve model-edit tools are withheld, giving 17, 23
 //! and 25.
 //!
-//! `--allow-programming` (issue #118) adds the ten programming tools
+//! `--allow-programming` (issue #118) adds the eleven programming tools
 //! ([`tools_program::PROGRAMMING_TOOLS`]) to any non-passive tier. They write
 //! device tables, so they pass the non-loopback write gate on every call, run
 //! the source-address probe, and apply only a plan whose digest this session
@@ -114,7 +114,10 @@
 //! of a backup and a device restart. `knx_add_device` (issue #749) adds a
 //! new device: the wait for the programming button and the identification
 //! as a job that pauses for the human's yes, then the address write, the
-//! read-back and the device file. See [`tools_program`].
+//! read-back and the device file. `knx_commission_line` (issue #753) runs
+//! `bussard commission`'s line walk as one job: per device the button, the
+//! order-number check against the model and the address write with its
+//! read-back, after one yes for the line. See [`tools_program`].
 //!
 //! `--allow-home-assistant` (issue #280) adds the six Home Assistant tools
 //! ([`tools_ha::HA_TOOLS`]) when `bussard.toml` has a `[home_assistant]`

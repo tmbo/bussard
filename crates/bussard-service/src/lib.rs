@@ -38,6 +38,9 @@
 //! - [`adopt`]: the adopt flow on top of it: the product data shaped into the
 //!   device file, and what a KNX Data Secure-activated device records (links,
 //!   `secure` flags, the security intent and lock facts).
+//! - [`commission`]: the line walk of `bussard commission` and
+//!   `knx_commission_line` on the assign steps: the order-number check
+//!   before the write, the read-back and the label (issue #753).
 //! - [`describe`]: the interface-object walk and the PID / object-type name
 //!   tables shared by `bussard describe` and `knx_describe_device`.
 //! - [`backup`]: the device reads behind `bussard backup` and
@@ -69,6 +72,7 @@ pub mod adopt;
 pub mod assign;
 pub mod backup;
 pub mod bus;
+pub mod commission;
 pub mod describe;
 pub mod download;
 pub mod enroll;

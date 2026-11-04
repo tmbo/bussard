@@ -15,7 +15,7 @@ tier:
 | Passive | `--passive` | Read and edit the model files, watch the bus. Nothing is transmitted. |
 | Read | none | Also read group values and introspect devices, rate-limited. |
 | Write | `--allow-writes` | Also send group values (`knx_write_group`, `knx_run_tests`). Protected addresses are refused. |
-| Programming | `--allow-programming` | Also write one device's link tables and parameters after you approve the plan, replay a parameter backup (`knx_restore_parameters`), clear a Secure device's security failures log (`knx_clear_security_log`), switch KNXnet/IP Secure of an IP interface (`knx_interface_secure`) and add a new device (`knx_add_device`), each after your yes. Not with `--passive`. |
+| Programming | `--allow-programming` | Also write one device's link tables and parameters after you approve the plan, replay a parameter backup (`knx_restore_parameters`), clear a Secure device's security failures log (`knx_clear_security_log`), switch KNXnet/IP Secure of an IP interface (`knx_interface_secure`), add a new device (`knx_add_device`) and commission a line (`knx_commission_line`), each after your yes. Not with `--passive`. |
 | Home Assistant | `--allow-home-assistant` | Read Home Assistant and rewrite its KNX configuration, each change after your yes. Never touches the bus. |
 
 Model edits touch files only, at every tier; `--no-model-edits` withholds
@@ -106,6 +106,25 @@ entry. Downloading the vendor's product data is a separate question:
 your yes to the address does not answer it. A device the keyring lists keeps
 its address and is read over KNX Data Secure, as `adopt` does; the Secure
 activation of a factory-fresh device stays with ETS.
+
+## Commissioning a line is one job
+
+`knx_commission_line` is `bussard commission --line` in chat, on the same
+functions. The assistant shows you the devices the model has on the line
+and asks once. Your yes covers the whole line, as the CLI's one
+confirmation does. Devices that already answer at their address are
+skipped. For each other device the assistant names the one to press, by
+name, room and order number. The server reads the pressed device's order
+number before it writes anything; when it is the product the model
+expects, it writes the address, reads the device back at it and gives you
+the label text, without asking again.
+
+When the pressed device is another product, reports no order number, or
+nothing or two devices answer, the job waits for your word: retry, skip
+that device, or stop. A device the model has no order number for waits
+too, and you can say assign. You can stop the run at any time. Only
+addresses are written; links, parameters and the application follow per
+device with `knx_plan_device` and `knx_apply_device`.
 
 ## A com-object change becomes a flash
 

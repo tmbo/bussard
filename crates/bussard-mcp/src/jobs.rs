@@ -95,6 +95,11 @@ pub enum JobKind {
     /// the human's yes, the address write and the read-back of
     /// `knx_add_device` (issue #749).
     Add,
+    /// Commissioning a line: per device of the model, the wait for the
+    /// programming button, the identification against the model and the
+    /// address write with its read-back, of `knx_commission_line` (issue
+    /// #753).
+    Commission,
 }
 
 impl JobKind {
@@ -106,6 +111,7 @@ impl JobKind {
             JobKind::Read => "read",
             JobKind::Scan => "scan",
             JobKind::Add => "add",
+            JobKind::Commission => "commission",
         }
     }
 }
@@ -324,6 +330,26 @@ impl JobTable {
         Ok(insert(&mut inner, JobKind::Add, None, None))
     }
 
+    /// Claims the slot for commissioning `line` (`"1.1"`, issue #753) and
+    /// returns the new job's id, or the refusal naming the job that runs.
+    pub fn claim_commission(&self, line: &str) -> Result<String, String> {
+        let mut inner = self.inner();
+        if let Some(refusal) = busy_message(&inner, JobKind::Commission) {
+            return Err(refusal);
+        }
+        Ok(insert(&mut inner, JobKind::Commission, None, Some(line)))
+    }
+
+    /// Drops `key` from the fields a paused job reported at the top of its
+    /// status ([`JobTable::pause`]), once the answer it waited for came.
+    pub fn forget(&self, id: &str, key: &str) {
+        if let Some(job) = self.inner().jobs.get_mut(id)
+            && let Value::Object(context) = &mut job.context
+        {
+            context.remove(key);
+        }
+    }
+
     /// The job waits on the human (issue #749): it frees the slot, so other
     /// bus jobs run meanwhile, and reports `step`, `question`, the device it
     /// is about (`address`) and the fields of `detail` at the top of its
@@ -412,6 +438,7 @@ fn busy_message(inner: &Inner, wanting: JobKind) -> Option<String> {
     let again = match wanting {
         JobKind::Scan => "scan again",
         JobKind::Add => "add the device again",
+        JobKind::Commission => "commission the line again",
         _ => "plan again",
     };
     Some(match (job.kind, wanting) {
@@ -442,6 +469,11 @@ fn busy_message(inner: &Inner, wanting: JobKind) -> Option<String> {
         (JobKind::Add, _) => format!(
             "a device is being added on this server: job {id}; one bus job at a time. Call \
              knx_job_status with job {id} until it is done or waits for an answer, then call again"
+        ),
+        (JobKind::Commission, _) => format!(
+            "{device} is being commissioned on this server: job {id}; one bus job at a time. \
+             Call knx_job_status with job {id} until it is done or waits for an answer (or stop \
+             it with knx_commission_line {{job, answer: \"stop\"}}), then call again"
         ),
     })
 }
@@ -484,6 +516,7 @@ fn insert(
         JobKind::Read => "reading the bus",
         JobKind::Scan => "scanning the line",
         JobKind::Add => "press_button",
+        JobKind::Commission => "checking which devices already answer",
     };
     let context = match line {
         Some(line) => json!({ "line": line }),
@@ -784,6 +817,9 @@ fn next_step(status: &Value) -> String {
     if status["kind"] == "add" {
         return add_next_step(status, job);
     }
+    if status["kind"] == "commission" {
+        return commission_next_step(status, job);
+    }
     if status["kind"] == "plan" {
         return match status["state"].as_str() {
             Some("running") => format!(
@@ -860,6 +896,40 @@ fn add_next_step(status: &Value, job: &str) -> String {
             "Job {job} did not add the device: tell the human result.reason. Nothing more is \
              written until knx_add_device is called again."
         ),
+    }
+}
+
+/// What the assistant does next with a `knx_commission_line` job (issue
+/// #753).
+fn commission_next_step(status: &Value, job: &str) -> String {
+    let waiting = status["waiting"].is_object();
+    match status["state"].as_str() {
+        Some("running") if waiting => format!(
+            "The job waits for the human's word and nothing more is written until it comes. \
+             Tell the human `waiting.reason`, then ask `question`; pass the answer as \
+             knx_commission_line {{job: {job}, answer}} with answer \"retry\", \"skip\" or \
+             \"stop\" (\"assign\" only where `question` offers it)."
+        ),
+        Some("running") if status["question"].is_string() => format!(
+            "Relay `question` to the human word for word: the job waits up to 30 s for the named \
+             device to enter programming mode, then identifies it and assigns its address \
+             without asking again when it is the product the model expects. Call knx_job_status \
+             with job {job} again in a few seconds; progress.devices lists each device's \
+             outcome and label as it ends."
+        ),
+        Some("running") => format!(
+            "Still working ({}). Call knx_job_status with job {job} again in a few seconds; the \
+             job continues in the server whether or not you poll.",
+            status["step"].as_str().unwrap_or("working")
+        ),
+        Some("interrupted") => format!(
+            "The server stopped while job {job} was commissioning a line. Call \
+             knx_commission_line again for a new plan; devices already commissioned are found \
+             at their address and skipped."
+        ),
+        _ => "Done: tell the human result.summary and read out result.labels so they can label \
+              each device; follow result.next_step."
+            .to_string(),
     }
 }
 
